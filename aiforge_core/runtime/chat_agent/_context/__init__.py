@@ -7,6 +7,8 @@ from ._generation import (
     _GEN_SEM,
     _gen_sem,
     _complete_cancellable,
+    _progress_recap,
+    _stuck_recovery_max,
 )
 from ._recall import (
     _WEB_INTENT_STRONG_RE,

@@ -13,7 +13,7 @@ from ._tools import (_ROOT_SCOPED_TOOLS, _chat_repo_key, _preferences_context, _
 from ._registry import (TOOLS, _ANALYZE_BANNER, _BUILDER_FINALIZE_TOOL, _BUILDER_NUDGE_AFTER, _FINALIZE_TOOLS, _PLAN_BANNER, _READONLY_TOOLS, _is_mutating, _perf_family)
 from ._preview import (_diff_preview)
 from ._prompt import (_SYSTEM, _parse, _strip_reasoning_prefix)
-from ._context import (_CANCELLED, _EDIT_TOOL_NAMES, _LOOP_REPEAT, _OUTPUT_REPEAT, _WEB_LOOKUP_DIRECTIVE, _cap_system_prompt, _cave_mode, _chat_session_recall, _claims_file_edits, _compact_convo, _complete_cancellable, _compress_prompt, _ctx_budget_chars, _ctx_on, _edit_claim_disclaimer, _edit_claim_guard_enabled, _edit_claim_nudge, _fire_stop, _has_web_intent, _post_edit_syntax_error, _repo_name, _run_project_verify, _split_asks, _sys_prompt_budget_chars, _text_of, _verify_fix_message, _verify_max_rounds, _verify_on_final_enabled, _worktree_fingerprint)
+from ._context import (_CANCELLED, _EDIT_TOOL_NAMES, _LOOP_REPEAT, _OUTPUT_REPEAT, _WEB_LOOKUP_DIRECTIVE, _cap_system_prompt, _cave_mode, _chat_session_recall, _claims_file_edits, _compact_convo, _complete_cancellable, _compress_prompt, _ctx_budget_chars, _ctx_on, _edit_claim_disclaimer, _edit_claim_guard_enabled, _edit_claim_nudge, _fire_stop, _has_web_intent, _post_edit_syntax_error, _progress_recap, _repo_name, _stuck_recovery_max, _run_project_verify, _split_asks, _sys_prompt_budget_chars, _text_of, _verify_fix_message, _verify_max_rounds, _verify_on_final_enabled, _worktree_fingerprint)
 
 def run_chat_agent(
     messages: list[dict], *,
@@ -397,6 +397,7 @@ def run_chat_agent(
     recent_outputs: collections.deque = collections.deque(maxlen=_OUTPUT_REPEAT)
     condensed_notified = False
     continue_nudges = 0   # consecutive "narrated but didn't act" re-prompts
+    stuck_recoveries = 0  # progress-recap nudges spent recovering a repeated step
 
     # Mid-run steering (simple mode): let the user type WHILE the agent works —
     # each message is folded into the conversation as a live instruction the next
@@ -574,11 +575,32 @@ def run_chat_agent(
         if out is None:
             out = ""   # a real empty completion — treat as an empty turn
 
-        # Stuck-output loop: identical model reply N times running. Rather
-        # than just bailing, ASK the user for guidance (don't circle).
+        # Stuck-output loop: identical model reply N times running. A local model
+        # deep in a long tool chain (esp. a many-file read sweep) loses track and
+        # re-emits an action it already ran — so FIRST recover with a progress
+        # recap + "do the NEXT step" nudge (bounded); only give up if that keeps
+        # failing. The old hard bail here discarded all the work done so far.
         recent_outputs.append(out.strip())
         if (len(recent_outputs) == _OUTPUT_REPEAT
                 and len(set(recent_outputs)) == 1):
+            if stuck_recoveries < _stuck_recovery_max():
+                stuck_recoveries += 1
+                recent_outputs.clear()          # fresh slate for the recovered plan
+                _recap = _progress_recap(convo)
+                yield {"type": "thought", "role": "system",
+                       "text": "↺ repeated output — recap + nudge to continue"}
+                # Append the repeated assistant turn BEFORE the nudge — else two
+                # consecutive user turns (the prior OBSERVATION + this nudge)
+                # break providers like claude_local.
+                convo.append({"role": "assistant", "content": out})
+                convo.append({"role": "user", "content":
+                    "[loop guard — not the user] You repeated the SAME output — "
+                    "that makes no progress. "
+                    + (_recap + ". " if _recap else "")
+                    + "Take the NEXT, DIFFERENT step now: act on something not yet "
+                    "done (e.g. the next unread file), or output `FINAL: <answer>` "
+                    "if the task is fully complete. Do NOT repeat a previous action."})
+                continue
             yield {"type": "message", "awaiting_input": True,
                    "text": "I seem to be going in circles on this. Could you "
                            "clarify what you'd like me to do, or give a bit "
@@ -766,6 +788,27 @@ def run_chat_agent(
         sig = name + "|" + json.dumps(args, sort_keys=True, default=str)
         action_counts[sig] = action_counts.get(sig, 0) + 1
         if action_counts[sig] >= _LOOP_REPEAT:
+            # A local model on a long chain re-issues an action it already ran —
+            # most often re-reading a file it read earlier (it lost track over the
+            # growing history), which the old hard bail turned into an abandoned
+            # task. Recover FIRST: recap what's already done + point at the next
+            # step (bounded); only give up if the model keeps repeating.
+            if stuck_recoveries < _stuck_recovery_max():
+                stuck_recoveries += 1
+                action_counts[sig] = 0          # clear this action's strike count
+                _recap = _progress_recap(convo)
+                yield {"type": "thought", "role": "system",
+                       "text": f"↺ repeated `{name}` — recap + nudge to continue"}
+                convo.append({"role": "user", "content":
+                    f"[loop guard — not the user] You already ran `{name}` with "
+                    "these exact args and its result is ABOVE — repeating it makes "
+                    "no progress. "
+                    + (_recap + ". " if _recap else "")
+                    + "Do the NEXT, DIFFERENT step now: act on something not yet "
+                    "done (e.g. the next unread file from the request), or output "
+                    "`FINAL: <answer>` if everything is complete. Do NOT repeat a "
+                    "previous action."})
+                continue
             yield {"type": "message", "awaiting_input": True,
                    "text": f"I keep trying the same step (`{name}`) without "
                            "progress. I've paused — could you clarify or tell "

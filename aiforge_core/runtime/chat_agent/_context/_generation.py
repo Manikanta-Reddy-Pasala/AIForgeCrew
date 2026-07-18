@@ -12,6 +12,68 @@ _LOOP_REPEAT = 4
 _OUTPUT_REPEAT = 3
 
 
+def _stuck_recovery_max() -> int:
+    """How many times a stuck-loop trip (same action / identical output) is met
+    with a progress-recap NUDGE before the run finally gives up. Local models on
+    long tool chains lose track and re-issue an action they already ran (esp.
+    re-reading a file) — a recap of what's done + 'do the NEXT step' recovers
+    them, where a hard bail lost all the work. 0 restores the old hard-abort.
+    Tune with AIFORGE_CHAT_STUCK_RECOVERIES (default 3)."""
+    try:
+        return max(0, int(os.environ.get("AIFORGE_CHAT_STUCK_RECOVERIES", "3")))
+    except ValueError:
+        return 3
+
+
+import re as _re
+
+# An assistant turn's synthesized action line ("ACTION: file_read"). Native tool
+# calls and the text protocol both render to this, so one regex covers both.
+_RECAP_ACTION_RE = _re.compile(r"^\s*ACTION:\s*([A-Za-z0-9_]+)", _re.MULTILINE)
+_RECAP_PATH_RE = _re.compile(r'"(?:path|file|filename|target)"\s*:\s*"([^"]+)"')
+
+
+def _progress_recap(convo: list, *, max_files: int = 15) -> str:
+    """Compact recap of the DISTINCT actions already taken, so a stuck model can
+    see its own progress and pick the NEXT step instead of repeating a done one.
+
+    File-reading actions → a de-duped basename list ('read: A.java, B.java …');
+    every other tool → a name×count tally. Pure function of ``convo`` (scans the
+    assistant ACTION lines the loop appended), dependency-free, best-effort —
+    returns '' when there's nothing to recap."""
+    files: list[str] = []
+    seen: set[str] = set()
+    tallies: dict[str, int] = {}
+    for m in convo:
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        txt = m.get("content")
+        if not isinstance(txt, str):
+            continue
+        am = _RECAP_ACTION_RE.search(txt)
+        if not am:
+            continue
+        tool = am.group(1)
+        pm = _RECAP_PATH_RE.search(txt)
+        if pm:
+            base = pm.group(1).rstrip("/").rsplit("/", 1)[-1]
+            if base and base not in seen:
+                seen.add(base)
+                files.append(base)
+        else:
+            tallies[tool] = tallies.get(tool, 0) + 1
+    parts: list[str] = []
+    if files:
+        shown = files[:max_files]
+        more = f" (+{len(files) - len(shown)} more)" if len(files) > len(shown) else ""
+        parts.append(f"Files already read ({len(files)}): "
+                     + ", ".join(shown) + more)
+    tally = ", ".join(f"{k}×{v}" for k, v in tallies.items())
+    if tally:
+        parts.append(f"Other actions run: {tally}")
+    return " ".join(parts)
+
+
 _CANCELLED = object()   # sentinel: generation abandoned because Stop was pressed
 
 # Bound on concurrent generation threads (live + abandoned-but-still-running).
