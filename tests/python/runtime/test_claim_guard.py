@@ -105,3 +105,13 @@ def test_descriptive_noun_as_object_still_fires():
     assert _claims_file_edits("I edited the config file and updated the deploy script")
     # a LEADING third-party subject still suppresses (it's not an object)
     assert not _claims_file_edits("The linter removed the unused imports from utils.py")
+
+
+def test_negated_verb_is_not_a_claim():
+    # denying an edit must NOT trip the guard
+    assert not _claims_file_edits("I haven't updated the file yet")
+    assert not _claims_file_edits("I have not modified the file")
+    assert not _claims_file_edits("I did not change X.py")
+    assert not _claims_file_edits("I won't touch the config file")
+    # a 'not' AFTER the verb (contrasting) does NOT suppress a real claim
+    assert _claims_file_edits("I updated config.yaml, not the readme")

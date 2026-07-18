@@ -119,12 +119,23 @@ def _subject_is_descriptive(clause: str) -> bool:
     return False
 
 
+# A NEGATION marker — the edit verb is DENIED, not claimed ("I haven't updated
+# the file", "I did not change X.py"). Must sit just before the verb.
+_NEGATION_RE = re.compile(
+    r"(?i)\b(?:not|never|no|n't|didn't|don't|doesn't|haven't|hasn't|hadn't|"
+    r"won't|wouldn't|can't|cannot|couldn't|wasn't|weren't|isn't|aren't|"
+    r"did not|do not|does not|have not|has not|had not|will not|would not|"
+    r"could not|can not|was not|were not|is not|are not)\b")
+
+
 def _advisory_before(clause: str, pos: int) -> bool:
-    """True when an advisory/modal marker sits just BEFORE the edit verb at
-    ``pos`` — i.e. it FRAMES that verb as a suggestion ("the config should be
-    updated"). A stray "please"/"make sure" LATER in the clause ("I updated X,
-    please review") does not, so a real claim isn't suppressed."""
-    return bool(_ADVISORY_RE.search(clause[max(0, pos - 30): pos]))
+    """True when an advisory/modal marker OR a negation sits just BEFORE the edit
+    verb at ``pos`` — i.e. the verb is FRAMED as a suggestion ("the config should
+    be updated") or DENIED ("I haven't updated the file"), not claimed. A stray
+    "please"/"not" LATER in the clause ("I updated X, please review" / "I updated
+    X, not Y") does not, so a real claim isn't suppressed."""
+    pre = clause[max(0, pos - 30): pos]
+    return bool(_ADVISORY_RE.search(pre) or _NEGATION_RE.search(pre))
 
 
 def _claims_file_edits(text: str) -> bool:

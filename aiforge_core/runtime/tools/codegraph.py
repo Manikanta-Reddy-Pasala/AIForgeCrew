@@ -143,14 +143,23 @@ def _index_healthy(repo: str) -> bool:
     d = os.path.join(repo, ".codegraph")
     try:
         dbs = (glob.glob(os.path.join(d, "**", "*.db"), recursive=True)
-               + glob.glob(os.path.join(d, "**", "*.sqlite*"), recursive=True))
+               + glob.glob(os.path.join(d, "**", "*.sqlite"), recursive=True))
+        # drop WAL/SHM/journal sidecars — they aren't standalone DBs; a
+        # quick_check on them throws and would wrongly condemn a HEALTHY
+        # WAL-mode index. (Also why *.sqlite, not *.sqlite*.)
+        dbs = [x for x in dbs
+               if not x.endswith(("-wal", "-shm", "-journal", ".db-wal",
+                                  ".db-shm", ".sqlite-wal", ".sqlite-shm"))]
     except Exception:  # noqa: BLE001
         return False
     if not dbs:
         return False                      # no DB → not a usable index
     for db in dbs:
         try:
-            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
+            # immutable=1: read-only WITHOUT needing to create a -shm/-wal (the
+            # build is done, no writer), so a WAL-mode DB opens cleanly.
+            con = sqlite3.connect(f"file:{db}?mode=ro&immutable=1", uri=True,
+                                  timeout=2)
             row = con.execute("PRAGMA quick_check").fetchone()
             con.close()
             if not row or str(row[0]).lower() != "ok":
