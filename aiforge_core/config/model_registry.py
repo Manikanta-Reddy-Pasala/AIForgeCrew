@@ -30,13 +30,16 @@ _THINKING_MARKERS = (
 # NOTE: markers are substring-matched, so a bare "vl" wrongly flagged "vllm" /
 # "nvl" etc. — use BOUNDARY forms (-vl / vl- / -vl-) so a served-by-vllm text
 # model isn't mistaken for a vision-language model.
+# Substring markers for a VLM NAME. Deliberately conservative — a name-heuristic
+# hit is PERSISTED as vision WITHOUT probing, so a false match durably mis-marks
+# a text model. Dropped: 'gemma-3'/'gemma3' (the family mixes text-only 1b with
+# vision 4b+ under one prefix — let the live probe decide), and '-v-' (matched
+# version tags like 'foo-v-2'). Vision-only sizes stay explicit.
 _VISION_MARKERS = (
-    "-vl", "vl-", "-vl-", "vision", "-v-", "llava", "bakllava", "moondream",
-    "pixtral", "internvl", "minicpm-v", "qwen2-vl", "qwen2.5-vl", "gemma-3",
-    "gemma3", "llama-3.2-11b", "llama-3.2-90b", "-omni",
-    # explicit VLM families where "vl" isn't dash-bordered (bare "vl" was
-    # dropped as it false-matched "vllm"/generic ids).
-    "cogvlm", "nvlm",
+    "-vl", "vl-", "-vl-", "vision", "llava", "bakllava", "moondream",
+    "pixtral", "internvl", "minicpm-v", "qwen2-vl", "qwen2.5-vl",
+    "gemma-3-4b", "gemma-3-12b", "gemma-3-27b",   # vision gemma sizes only
+    "llama-3.2-11b", "llama-3.2-90b", "-omni", "cogvlm", "nvlm",
 )
 
 

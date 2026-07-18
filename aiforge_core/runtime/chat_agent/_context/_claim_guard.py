@@ -45,7 +45,17 @@ _MADE_CHANGES_RE = re.compile(
 _DESCRIPTIVE_NOUN_RE = re.compile(
     r"(?i)\b(?:this|that|the|a|another|the\s+following)\s+"
     r"(?:commit|pull\s+request|pr|mr|changeset|revision|author|contributor|"
-    r"developer|maintainer)\b")
+    r"developer|maintainer|linter|formatter|compiler|tool|script|"
+    r"pipeline|ci|bot|migration)\b")
+
+# ADVISORY / MODAL / PASSIVE framing — the clause RECOMMENDS an edit ("the config
+# should be updated", "a new file needs to be created", "must be removed") rather
+# than CLAIMING one happened. The edit verb-lemmas are identical to the past
+# tense the guard looks for, so without this a suggestion trips the guard.
+_ADVISORY_RE = re.compile(
+    r"(?i)\b(?:should|shall|must|ought to|need to|needs to|have to|has to|"
+    r"to be|can be|could be|will be|would be|may be|might be|"
+    r"recommend|suggest|consider|make sure|please)\b")
 
 # An OBJECT that makes the verb about a file/code artifact — a path with an
 # extension, an explicit file/code noun, or the screenshot's "fixes applied"
@@ -116,7 +126,8 @@ def _claims_file_edits(text: str) -> bool:
                      or _MADE_CHANGES_RE.search(clause))
         if not has_claim:
             continue
-        if _RECAP_CUE_RE.search(clause) or _subject_is_descriptive(clause):
+        if (_RECAP_CUE_RE.search(clause) or _ADVISORY_RE.search(clause)
+                or _subject_is_descriptive(clause)):
             continue
         return True
     return False

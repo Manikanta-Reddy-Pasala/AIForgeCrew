@@ -179,6 +179,18 @@ def forget_session(session_id) -> None:
         log.debug("forget_session(%s) failed: %s", session_id, exc)
 
 
+def clear_all_markers() -> None:
+    """Wipe ALL compaction offsets — used when every session is reset/deleted in
+    bulk. Session ids restart at 1 after a reset, so a leftover offset would make
+    a NEW session id-1 read a stale high-water mark and skip folding (silent
+    knowledge loss). Under the marker lock. Never raises."""
+    try:
+        with _MARKER_LOCK:
+            _save_marker({})
+    except Exception as exc:  # noqa: BLE001
+        log.debug("clear_all_markers failed: %s", exc)
+
+
 def _load_marker() -> dict:
     import json
     try:
@@ -331,4 +343,5 @@ def previous_session_brief(exclude_session_id, *, max_turns: int = 6,
     return "\n".join(lines)[:max_chars]
 
 
-__all__ = ["compact_session", "previous_session_brief", "forget_session"]
+__all__ = ["compact_session", "previous_session_brief", "forget_session",
+           "clear_all_markers"]

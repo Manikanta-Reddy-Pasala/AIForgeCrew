@@ -143,3 +143,15 @@ def test_compact_session_only_new_turns(monkeypatch, mem):
     chat_okr.compact_session("s1", repo="svc")               # only the new one
     assert "BRAND NEW deploy" in seen["last"]
     assert "always run tests" not in seen["last"]            # old turns not re-sent
+
+
+def test_clear_all_markers_wipes_offsets(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "mem"))
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    import importlib
+    import aiforge_core.runtime.chat_okr as okr
+    importlib.reload(okr)
+    okr._save_marker({"1": 40, "2": 12})
+    assert okr._load_marker() == {"1": 40, "2": 12}
+    okr.clear_all_markers()
+    assert okr._load_marker() == {}      # a reset-reused id-1 won't skip folding

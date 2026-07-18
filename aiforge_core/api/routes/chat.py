@@ -486,6 +486,13 @@ def chat_sessions_reset() -> dict:
     # managed workspaces they owned (a pinned user repo is refused by the helper).
     cwds = [(s or {}).get("cwd") for s in (chat_store.list_sessions() or [])]
     deleted = chat_store.delete_all_sessions()
+    # Wipe compaction offsets too — ids restart at 1 after a reset, so a leftover
+    # marker would make the new session-1 skip folding (silent knowledge loss).
+    try:
+        from aiforge_core.runtime import chat_okr
+        chat_okr.clear_all_markers()
+    except Exception:  # noqa: BLE001
+        pass
     removed = 0
     for _cwd in cwds:
         if _delete_chat_workspace(_cwd):

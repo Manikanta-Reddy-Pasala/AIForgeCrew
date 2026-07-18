@@ -71,3 +71,16 @@ def test_descriptive_subject_not_a_claim():
     # a recap/descriptive sentence must not mask a fresh claim in a NEXT clause
     assert _claims_file_edits(
         "This commit added logging. I've now applied the fix to config.py")
+
+
+def test_advisory_prose_is_not_a_claim():
+    # modal / passive / imperative SUGGESTIONS are not this-turn edit claims
+    assert not _claims_file_edits("the config file should be updated with a 30s timeout")
+    assert not _claims_file_edits("A new test file needs to be created")
+    assert not _claims_file_edits("The unused import must be removed from utils.py")
+    assert not _claims_file_edits("You should update the config module")
+    # a third-party TOOL subject driving the verb is descriptive, not a claim
+    assert not _claims_file_edits("The linter removed the unused imports from utils.py")
+    # real this-turn claims still fire
+    assert _claims_file_edits("I updated config.yaml")
+    assert _claims_file_edits("Applied the fix to Dashboard.vue")
