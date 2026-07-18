@@ -59,18 +59,29 @@ class _SessionFoldLock:
                 ent = _FOLD_LOCKS[self._key] = [threading.Lock(), 0]
             ent[1] += 1
             self._lock = ent[0]
-        self._lock.acquire()
+        try:
+            self._lock.acquire()
+        except BaseException:
+            # __exit__ is NOT called when __enter__ raises (e.g. a signal /
+            # KeyboardInterrupt during the blocking acquire), so balance the
+            # refcount here or the entry leaks forever.
+            self._release_refcount()
+            self._lock = None
+            raise
         return self
 
-    def __exit__(self, *exc):
-        if self._lock is not None:
-            self._lock.release()
+    def _release_refcount(self):
         with _FOLD_LOCKS_GUARD:
             ent = _FOLD_LOCKS.get(self._key)
             if ent is not None:
                 ent[1] -= 1
                 if ent[1] <= 0:
                     _FOLD_LOCKS.pop(self._key, None)
+
+    def __exit__(self, *exc):
+        if self._lock is not None:
+            self._lock.release()
+            self._release_refcount()
         return False
 
 

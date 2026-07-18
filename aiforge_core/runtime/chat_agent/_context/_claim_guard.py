@@ -27,10 +27,14 @@ _EDIT_CLAIM_VERB_RE = re.compile(
     r"patched|replaced|inserted|refactored|implemented|created|corrected|"
     r"adjusted|rewrote|overwrote|added|removed|deleted|fixed|renamed|appended)\b")
 
-# The specific this-turn phrasing "made the changes / made some edits" — a claim
-# even though "made" is too promiscuous to be a general edit verb.
+# The specific this-turn phrasing "I made the changes / we've made some edits" —
+# a claim even though "made" is too promiscuous to be a general edit verb.
+# Requires a FIRST-PERSON subject so "the author made the changes" (third party)
+# and "once you've made the changes" (instruction to the user) don't fire.
 _MADE_CHANGES_RE = re.compile(
-    r"(?i)\bmade\s+(?:the\s+|some\s+|a\s+few\s+|these\s+)?"
+    r"(?i)\b(?:i|we)(?:'ve|'ll| have| will)?\s+"
+    r"(?:just\s+|now\s+|also\s+|already\s+|then\s+)?made\s+"
+    r"(?:the\s+|some\s+|a\s+few\s+|these\s+)?"
     r"(?:changes?|edits?|updates?|modifications?|fixes?|adjustments?)\b")
 
 # A THIRD-PARTY subject that is the one DOING the edit — a commit / author /
@@ -74,15 +78,25 @@ _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
 _SUBJECT_WINDOW = 40
 
 
+# A re-subject boundary — after it, the edit verb belongs to a NEW subject (the
+# assistant), not the preceding descriptive noun ("the pull request, I updated…").
+_RESUBJECT_RE = re.compile(r"(?i)[,;:]|\b(?:i|we)\b")
+
+
 def _subject_is_descriptive(clause: str) -> bool:
     """True when a third-party subject (commit / author / …) is the one doing an
     edit verb in this clause — the noun is closely FOLLOWED by an edit verb
     ("this commit added…", "the author removed…"), so the clause DESCRIBES
     someone else's diff rather than claiming a this-turn edit. A descriptive noun
-    used only as an OBJECT ("I updated the diff view component") does NOT
-    suppress, because no edit verb follows it."""
+    used only as an OBJECT ("I updated the diff view component"), or one whose
+    verb belongs to a RE-SUBJECT ("after the pull request, I updated…"), does NOT
+    suppress."""
     for m in _DESCRIPTIVE_NOUN_RE.finditer(clause):
-        if _EDIT_CLAIM_VERB_RE.search(clause[m.end(): m.end() + _SUBJECT_WINDOW]):
+        tail = clause[m.end(): m.end() + _SUBJECT_WINDOW]
+        cut = _RESUBJECT_RE.search(tail)      # stop before a new subject takes over
+        if cut:
+            tail = tail[:cut.start()]
+        if _EDIT_CLAIM_VERB_RE.search(tail):
             return True
     return False
 

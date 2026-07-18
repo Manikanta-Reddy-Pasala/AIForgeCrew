@@ -77,7 +77,12 @@ def indexed(cwd: str | None = None) -> bool:
         # out / aborted (esp. on the "nolock" path where we can't safely remove
         # it) leaves an empty or partial .codegraph dir; trusting mere existence
         # made every later turn short-circuit onto a corrupt index forever.
-        return os.path.isdir(d) and any(os.scandir(d))
+        # `with` so the ScandirIterator's dir fd is closed on the hot (populated)
+        # path where any() short-circuits before exhausting it.
+        if not os.path.isdir(d):
+            return False
+        with os.scandir(d) as it:
+            return any(it)
     except Exception:  # noqa: BLE001
         return False
 
@@ -236,6 +241,14 @@ def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> b
     repo = _repo(cwd)
     if not repo or not os.path.isdir(repo):
         return False
+    # Canonicalize ONCE so the per-repo thread lock, the negative cache AND the
+    # cross-process flock all key on the SAME path — else two spellings of one
+    # repo (the "." fallback, a symlink) would get separate _FAILED / _LOCKS
+    # entries and the flock's canonical guarantee wouldn't match them.
+    try:
+        repo = os.path.normcase(os.path.realpath(repo))
+    except Exception:  # noqa: BLE001
+        pass
     # Negative cache: a repo that failed/timed out must NOT re-trigger the
     # (blocking) build every turn — that hung chat forever on a repo too big to
     # index in the budget. Skip re-attempts for a cooldown window.

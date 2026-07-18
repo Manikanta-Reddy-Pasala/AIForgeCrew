@@ -65,10 +65,15 @@ def test_protocol_env_overrides(monkeypatch):
 
 def test_tools_unsupported_classifier():
     assert _native._tools_unsupported(RuntimeError("this model does not support tools"))
-    assert _native._tools_unsupported(RuntimeError("unknown parameter: tools"))
+    assert _native._tools_unsupported(RuntimeError("tools are unsupported by this model"))
+    assert _native._tools_unsupported(RuntimeError("no such tool 'x'"))
     # a plain timeout / connection drop is NOT a tools-rejection
     assert not _native._tools_unsupported(TimeoutError("read timed out"))
     assert not _native._tools_unsupported(ConnectionError("connection refused"))
+    # a GENERIC 400 (invalid_request_error) echoing the tools schema must NOT be
+    # treated as a capability rejection — that permanently disabled native.
+    assert not _native._tools_unsupported(RuntimeError(
+        'invalid_request_error: unknown parameter "temperature"; function schema echoed'))
 
 
 def test_probe_transient_failure_stays_optimistic(monkeypatch):

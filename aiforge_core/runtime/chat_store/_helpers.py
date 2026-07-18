@@ -51,13 +51,14 @@ def _stem(t: str) -> str:
 def _stem_root(t: str) -> str:
     """Fixed-point of :func:`_stem` (idempotent) — repeatedly stem until stable,
     so a word and its own once-stemmed form collapse to the SAME grouping key
-    (``process``/``proces`` → ``proce``). Bounded iterations."""
-    for _ in range(4):
+    (``process``/``proces`` → ``proc``). Loops to the true fixed point;
+    termination is guaranteed because ``_stem`` strips >=1 char whenever it
+    changes ``t`` (strictly decreasing length, can't cycle)."""
+    while True:
         s = _stem(t)
         if s == t:
-            break
+            return t
         t = s
-    return t
 
 
 def _tokens(query: str) -> list[str]:
@@ -139,10 +140,12 @@ def _rank_search(rows: list[dict], toks: list[str], limit: int) -> list[dict]:
         matched = sum(1 for grp in groups if any(g in low for g in grp))
         if matched == 0:
             continue
-        # Density = total hits (a term repeated on-topic ranks above one
-        # incidental mention), each token CAPPED so a short repetitive row
-        # ("car car car") can't dominate. Ties break by relevance before recency.
-        density = sum(min(low.count(t), 3) for t in toks)
+        # Density = per-CONCEPT hit count (a term repeated on-topic ranks above
+        # one incidental mention), counted ONCE per group and CAPPED so a short
+        # repetitive row can't dominate — and so a stemmable concept doesn't get
+        # double the density weight of a non-stemmable one (raw + stem both count
+        # the same text). Ties break by relevance before recency.
+        density = sum(min(max(low.count(g) for g in grp), 3) for grp in groups)
         scored.append((matched, density, r["id"], r, content))
     scored.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
     out: list[dict] = []

@@ -16,6 +16,7 @@ to detect + persist capability for a model not yet wired to any role.
 from __future__ import annotations
 
 import os
+import re
 
 # 1x1 transparent PNG — inline fallback if the bundled probe image is missing.
 # Some VLM servers reject a 1x1/degenerate image, so the real probe prefers the
@@ -58,36 +59,38 @@ def _error_text(exc: Exception) -> str:
 # An explicit text-only declaration → definitive no-vision (order-independent).
 _TEXT_ONLY = ("text only", "text-only", "only supports text", "only support text",
               "text-only model", "language-only", "language only")
-# MODALITY-BOUND rejection PHRASES — the rejection targets the model's IMAGE/
-# VISION capability, not the probe payload. Kept as specific phrases (not bare
-# tokens like "invalid"/"unsupported"/"bad request") so a real VLM rejecting the
-# PROBE IMAGE ("invalid image_url", "cannot decode image", "unsupported image
-# format") is NOT wrongly marked non-vision — those contain no phrase here and
-# stay inconclusive. Matched as substrings on the full error text incl. body.
-_MODALITY_REJECT = (
-    "does not support image", "doesn't support image", "not support image",
-    "does not support images", "not support images",
-    "does not support vision", "doesn't support vision", "not support vision",
-    "vision not supported", "vision is not supported", "no vision support",
-    "no image support", "no support for image", "no support for vision",
-    "does not support multimodal", "not support multimodal", "not multimodal",
-    "multimodal not", "no vision", "not a vision model",
-    "image input is not", "image inputs are not", "image input not supported",
-    "images are not supported", "images not supported",
-    "does not accept image", "not accept image",
-    "cannot process image", "can't process image", "unable to process image",
-)
+# MODALITY-BOUND rejection phrases — the rejection targets the model's IMAGE/
+# VISION CAPABILITY, not the probe payload. Deliberately does NOT include:
+#   • bare tokens ('invalid'/'unsupported'/'bad request') — every 400 carries
+#     them, so a real VLM rejecting the PROBE IMAGE stays INCONCLUSIVE (None);
+#   • "cannot/unable to process image" — a genuine VLM emits these when it
+#     chokes on the degenerate 1x1 fallback probe (assets note, top of file),
+#     i.e. a per-image FAILURE, not a capability verdict;
+#   • form-specific "support image FORMAT/_URL/TYPE" — a VLM that takes image
+#     URLs but not the data-URI the probe sends says "does not support image_url
+#     …"; the negative lookahead keeps those inconclusive.
+_MODALITY_REJECT_RE = re.compile(
+    r"(?i)(?:"
+    r"(?:does\s?n[o']t|do not|not) support (?:image|images|vision|multimodal)s?"
+    r"(?!\s*[-_a-z]*(?:url|format|type|scheme|encoding|codec|base64|dimension|size|mode))"
+    r"|vision (?:is )?not supported|no (?:image|vision) support"
+    r"|no support for (?:image|vision)|not multimodal|multimodal not"
+    r"|\bno vision\b|not a vision model"
+    r"|images? (?:is|are) not supported|image inputs? (?:is|are) not"
+    r"|does not accept image|not accept image"
+    r")")
 
 
 def _classify_probe_error(exc: Exception) -> bool | None:
     """Read a failed vision probe. Returns ``False`` ONLY when the endpoint
     definitively rejected the IMAGE MODALITY — an explicit text-only declaration
     (:data:`_TEXT_ONLY`) or a modality-bound rejection phrase
-    (:data:`_MODALITY_REJECT`). A transport blip, a bare 400 (whose ``str`` is
-    just 'HTTP Error 400: Bad Request'), a 5xx/429, or a PAYLOAD error ('invalid
-    image_url', 'cannot decode image', 'unsupported image format') stays
-    inconclusive (``None``) so a genuine VLM is never permanently marked
-    non-vision. Classifies on the full error text incl. the HTTP body."""
+    (:data:`_MODALITY_REJECT_RE`). A transport blip, a bare 400 (whose ``str`` is
+    just 'HTTP Error 400: Bad Request'), a 5xx/429, a payload error ('invalid
+    image_url', 'cannot decode image'), a per-image processing failure, or a
+    form-specific rejection stays inconclusive (``None``) so a genuine VLM is
+    never permanently marked non-vision. Classifies on the full error text incl.
+    the HTTP body."""
     # A 5xx / 429 is transient (busy / loading / rate-limited), NEVER a
     # definitive modality rejection — a mid-inference crash body could otherwise
     # look like one and poison the cache as no-vision.
@@ -97,7 +100,7 @@ def _classify_probe_error(exc: Exception) -> bool | None:
     msg = _error_text(exc).lower()
     if any(p in msg for p in _TEXT_ONLY):
         return False
-    return False if any(p in msg for p in _MODALITY_REJECT) else None
+    return False if _MODALITY_REJECT_RE.search(msg) else None
 
 
 # model id -> probed vision capability. One live probe per model, then cached.

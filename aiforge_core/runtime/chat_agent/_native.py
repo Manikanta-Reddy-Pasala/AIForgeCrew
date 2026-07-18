@@ -71,14 +71,16 @@ def _tools_unsupported(exc: Exception) -> bool:
         body = ""
     m = (str(exc) + " " + body).lower()
     mentions_tools = "tool" in m or "function" in m
-    # DELIBERATELY excludes the generic validator words 'unrecognized' /
-    # 'unexpected' — a Jackson/Spring proxy rejecting an UNKNOWN request field
-    # emits 'Unrecognized field …' and echoes the tools schema (which contains
-    # "function"), which would falsely + PERMANENTLY disable native. The tokens
-    # below signal a real tools-capability rejection.
+    # DELIBERATELY excludes generic 400 words — 'invalid' (every OpenAI-compatible
+    # 400 body carries `"type":"invalid_request_error"`), 'unknown' ('Unknown
+    # parameter'), 'unrecognized'/'unexpected' (Jackson 'Unrecognized field') —
+    # each of which, paired with a tools-schema echo (contains "function"), would
+    # falsely + PERMANENTLY disable native. The tokens below name a real
+    # tools-CAPABILITY rejection and do NOT appear in a generic 400.
     rejected = any(t in m for t in (
-        "unsupported", "not support", "does not support", "unknown", "invalid",
-        "no such", "not allowed", "not implemented"))
+        "unsupported", "not support", "does not support", "no such tool",
+        "no such function", "not allowed", "not implemented", "not capable",
+        "tools are disabled", "function calling is disabled"))
     return mentions_tools and rejected
 
 
