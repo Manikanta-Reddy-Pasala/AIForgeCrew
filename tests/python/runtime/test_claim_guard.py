@@ -173,3 +173,24 @@ def test_round11_fp1_adverb_separated_passive_suppressed():
     # An adverb between passive aux and participle must not defeat suppression.
     assert not _claims_file_edits("This file was automatically updated.")
     assert not _claims_file_edits("The config was successfully modified.")
+
+
+def test_round12_f1_nonedit_verb_object_noun_not_a_phantom_subject():
+    # A descriptive noun used as the OBJECT of a non-edit verb ("ran the script")
+    # must NOT become a phantom third-party subject that swallows the real claim.
+    assert _claims_file_edits("I ran the script and updated main.py.")
+    assert _claims_file_edits("I used the tool and created output.json.")
+    assert _claims_file_edits("I ran the formatter and renamed utils.py.")
+
+
+def test_round12_f2_appositive_comma_keeps_third_party_subject():
+    # An appositive comma does not hand the subject to the assistant — a commit
+    # is still the third-party actor.
+    assert not _claims_file_edits("This commit, from Jane, added helper.py.")
+    assert not _claims_file_edits("This PR, reviewed already, updated main.py.")
+
+
+def test_round12_third_party_and_first_person_both_preserved():
+    # third-party alone → suppressed; genuine first-person claim → fires.
+    assert not _claims_file_edits("The linter reformatted and cleaned config.py.")
+    assert _claims_file_edits("I edited config.py.")

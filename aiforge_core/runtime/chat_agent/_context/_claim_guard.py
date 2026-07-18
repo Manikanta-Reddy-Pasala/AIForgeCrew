@@ -103,35 +103,41 @@ _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
 # assistant), not the preceding descriptive noun ("the pull request, I updated…").
 _RESUBJECT_RE = re.compile(r"(?i)[,;:]|\b(?:i|we)\b")
 
+# A FIRST-PERSON subject marker. Government of a descriptive noun is only broken
+# by the assistant retaking the subject ("…and I edited X"), NOT by a bare comma
+# (an appositive "This commit, from Jane, added X" keeps the commit as subject).
+_FIRST_PERSON_RE = re.compile(r"(?i)\b(?:i|we)\b")
+
 
 def _verb_subject_descriptive(clause: str, vpos: int) -> bool:
     """True when the edit verb at ``vpos`` is governed by a THIRD-PARTY subject
     (commit / author / linter / …), so THIS verb describes someone else's diff,
     not a this-turn claim. Per-VERB (not per-clause) so a conjoined re-subjected
     claim — "The linter fixed formatting and I edited main.py" — still fires on
-    "edited": its nearest descriptive noun ("The linter") is separated from it by
-    a re-subject boundary ("and I") and by another edit verb, so it does NOT
-    govern "edited"."""
+    "edited": a first-person subject retakes government before it."""
     best = None
     for m in _DESCRIPTIVE_NOUN_RE.finditer(clause):
         if m.end() > vpos:
             break
-        # A noun with an edit verb BEFORE it is that verb's OBJECT, not a subject
-        # ("I refactored the build script and updated X" — "script" is the object
-        # of "refactored", not the subject of "updated"). Skip it.
-        if (_EDIT_CLAIM_VERB_RE.search(clause[:m.start()])
-                or _MADE_CHANGES_RE.search(clause[:m.start()])):
+        head = clause[:m.start()]
+        # The noun is only a real THIRD-PARTY SUBJECT if nothing before it already
+        # claimed the subject role: skip it when a FIRST-PERSON pronoun precedes
+        # ("I ran the script and updated X" — "I" is the subject, "script" the
+        # object) or when an edit verb precedes ("I refactored the build script
+        # and updated X" — "script" is that verb's object).
+        if (_FIRST_PERSON_RE.search(head)
+                or _EDIT_CLAIM_VERB_RE.search(head)
+                or _MADE_CHANGES_RE.search(head)):
             continue
         best = m                           # nearest leading descriptive subject
     if best is None:
         return False
     between = clause[best.end():vpos]
-    # a re-subject boundary (comma/";"/"I"/"we") hands the verb to a NEW subject
-    # ("The linter fixed it and I edited main.py" — "edited" is the assistant's).
-    # A conjoined predicate on the SAME subject ("This commit added X and fixed Y")
-    # has no such boundary, so "fixed" stays third-party. Only the boundary breaks
-    # government, NOT an intervening edit verb.
-    if _RESUBJECT_RE.search(between):
+    # Government is broken only when the assistant RETAKES the subject ("…and I
+    # edited main.py"), NOT by a bare/appositive comma ("This commit, from Jane,
+    # added X" keeps the commit as subject). A conjoined predicate on the SAME
+    # subject ("This commit added X and fixed Y") also stays third-party.
+    if _FIRST_PERSON_RE.search(between):
         return False
     return True
 

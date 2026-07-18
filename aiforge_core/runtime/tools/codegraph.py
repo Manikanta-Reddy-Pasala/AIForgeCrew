@@ -376,13 +376,17 @@ def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> b
             except Exception:  # noqa: BLE001 — timeout / spawn failure
                 # A TIMEOUT means the PROCESS didn't exit in time — NOT
                 # necessarily that the index is incomplete: a build that finished
-                # writing the DB but overran on slow teardown is VALID. But a
-                # timeout mid-DB-write leaves a CORRUPT non-empty dir that
-                # indexed() (existence only) would trust forever, so gate on a
-                # real integrity probe: keep only a DB that passes quick_check.
-                if indexed(cwd) and _index_healthy(repo):
+                # writing the DB but overran on slow teardown is VALID. Keep the
+                # index UNLESS it's PROVEN corrupt (a recognised DB failed
+                # quick_check). An unprobeable store (the binary named its DB with
+                # an extension we can't read) is trusted, exactly as the clean-exit
+                # path below does — gating on _index_healthy here instead deleted a
+                # complete build whose DB we simply couldn't locate, plus locked
+                # out rebuild for the cooldown.
+                if indexed(cwd) and not _db_corrupt(repo):
                     _FAILED.pop(repo, None)
-                    _VERIFIED_HEALTHY.add(repo)
+                    if _index_healthy(repo):        # proven-good → trust fast-path
+                        _VERIFIED_HEALTHY.add(repo)
                     return True
                 # Remove the stub if we hold the lock OR it's PROVEN corrupt (a
                 # found DB failed quick_check) — a corrupt index is never a

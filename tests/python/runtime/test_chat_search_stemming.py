@@ -117,3 +117,21 @@ def test_round11_common_stems_still_unify():
     for a, b in (("tests", "test"), ("bugs", "bug"), ("fixed", "fix"),
                  ("deployment", "deployed"), ("registries", "registry")):
         assert _stem_root(a) == _stem_root(b), (a, b)
+
+
+def test_round12_y_floor_reverted_keeps_singular_plural_symmetry():
+    from aiforge_core.runtime.chat_store._helpers import _stem_root, _rank_search, _tokens
+    # the round-11 y-floor-5 regression: 4-letter -y nouns must still unify with
+    # their -ies plural (else a "body" query MISSES a "bodies" doc entirely).
+    for sing, plur in (("body", "bodies"), ("copy", "copies"), ("city", "cities")):
+        assert _stem_root(sing) == _stem_root(plur), (sing, plur)
+    # and the er/ers fix is still in place (server not crushed to serv).
+    assert _stem_root("server") == "server"
+    assert _stem_root("servers") == "server"
+    # end-to-end: a "body" query finds a request/response bodies doc.
+    def _row(i, text):
+        return {"id": i, "session_id": "s", "session_title": "t", "role": "user",
+                "content": text, "created_at": "2026-01-01T00:00:00+00:00"}
+    rows = [_row("a", "parse the request bodies and response bodies")]
+    ranked = _rank_search(rows, _tokens("body"), 10)
+    assert ranked and ranked[0]["content"].startswith("parse the request bodies")

@@ -31,14 +31,16 @@ _STOPWORDS = frozenset({
 _STEM_SUFFIXES = ("ations", "ation", "ements", "ement", "ments", "ment",
                   "ings", "ing", "ies", "edly", "ers", "er", "ed", "es", "s", "y")
 
-# DERIVATIONAL agent/quality suffixes ("worker→work", "policy→polic") that, on a
-# SHORT word, leave a 3-4 char root common enough to substring-match unrelated
-# words: server→"serv" hits pre**serv**e/ob**serv**e/con**serv**e, reader→"read"
-# hits al**read**y/th**read**, player→"play", policy→"polic". For THESE we require
-# the root to stay >=5 chars, so only genuinely long stems unify. Plural/tense
-# suffixes (s/es/ed/ing) are NOT here — they must stay aggressive so test/tests,
-# bug/bugs and fix/fixed still collapse.
-_DERIV_SHORTROOT_SUFFIXES = ("ers", "er", "edly", "y")
+# DERIVATIONAL agent suffixes ("worker→work") that, on a SHORT word, leave a 3-4
+# char root common enough to substring-match unrelated words: server→"serv" hits
+# pre**serv**e/ob**serv**e/con**serv**e, reader→"read" hits al**read**y/th**read**,
+# player→"play". For THESE we require the root to stay >=5 chars, so only
+# genuinely long stems unify (builder→build still works; server stays "server").
+# NOTE: "y" is DELIBERATELY excluded — a >=5 floor on it breaks singular→plural
+# for 4-letter nouns (body↦"body" but bodies↦"bod", so "body" would miss a
+# "bodies" doc). Plural/tense (s/es/ed/ing) and "y" keep the >=3 floor so
+# test/tests, fix/fixed, body/bodies and registry/registries still collapse.
+_DERIV_SHORTROOT_SUFFIXES = ("ers", "er", "edly")
 _DERIV_MIN_ROOT = 5
 
 

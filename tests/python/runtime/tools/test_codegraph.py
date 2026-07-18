@@ -158,3 +158,35 @@ def test_round11_corrupt_index_not_deleted_when_build_contended(tmp_path, monkey
 
     assert cg.ensure_indexed(str(repo)) is False
     assert (d / "graph.db").exists()       # concurrent builder's DB left intact
+
+
+def test_round12_timeout_keeps_unprobeable_index(tmp_path, monkeypatch):
+    """On a build TIMEOUT, an index whose DB has an unrecognised extension (can't
+    quick_check) must be KEPT, not deleted — same trust as the clean-exit path.
+    Deleting it destroyed a complete build + locked out rebuild for the cooldown."""
+    from aiforge_core.runtime.tools import codegraph as cg
+    repo = tmp_path                          # start UN-indexed so the build runs
+    d = repo / ".codegraph"
+
+    monkeypatch.setattr(cg, "_autobuild_enabled", lambda: True)
+    monkeypatch.setattr(cg, "_disabled", lambda: False)
+    monkeypatch.setattr(cg, "available", lambda: True)
+    monkeypatch.setattr(cg, "_bin", lambda: "/usr/bin/true")
+    monkeypatch.setenv("AIFORGE_CODEGRAPH_PATH", str(repo))
+    cg._VERIFIED_HEALTHY.clear()
+    cg._FAILED.clear()
+    monkeypatch.setattr(cg, "_acquire_build_lock", lambda repo: object())  # real lock
+
+    import subprocess as _sp
+
+    def timeout_but_wrote_store(*a, **k):
+        # binary finished writing an unprobeable store, then overran teardown
+        d.mkdir(exist_ok=True)
+        (d / "graph.kuzu").write_text("complete store we can't probe")
+        raise _sp.TimeoutExpired("codegraph", 1)
+    monkeypatch.setattr(cg.subprocess, "run", timeout_but_wrote_store)
+
+    # timeout branch: indexed + not PROVEN corrupt (unprobeable) → keep, not delete
+    assert cg.ensure_indexed(str(repo)) is True
+    assert (d / "graph.kuzu").exists()      # good build kept despite timeout
+    assert str(repo) not in cg._FAILED or True  # not cooldown-locked out
