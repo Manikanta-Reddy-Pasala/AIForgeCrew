@@ -24,6 +24,7 @@ ARGS_JSON: <a single-line JSON object of the tool's arguments>
 
 Tool arguments:
 - file_read    {{"path": "rel/or/abs"}}
+- read_files   {{"paths": ["a.java", "b.java", "c.java"]}}   (read MANY files in ONE call — ALWAYS use this instead of many file_read calls when you need several files; reading one at a time over many turns loses track and stalls)
 - file_write   {{"path": "...", "content": "..."}}      (creates/overwrites; code is syntax-checked before it lands — pass "force": true to override)
 - file_patch   {{"path": "...", "old_text": "...", "new_text": "..."}}   (syntax-checked result; "force": true overrides)
 - multi_edit   {{"edits": [{{"path":"a.py","old_str":"foo","new_str":"bar"}}, {{"path":"b.py","old_str":"x","new_str":"y","replace_all":true}}]}}

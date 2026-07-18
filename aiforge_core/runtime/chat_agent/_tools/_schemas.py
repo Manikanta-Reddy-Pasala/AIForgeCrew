@@ -29,6 +29,9 @@ _T = {
 CATALOG: dict = {
     # ── files / editing ──────────────────────────────────────────────────
     "file_read": ("Read a file's contents.", {"path": "s"}, ("path",)),
+    "read_files": ("Read MANY files in ONE call (batched file_read). Pass a "
+                   "`paths` list — ALWAYS prefer this over reading files one at "
+                   "a time when you need several.", {"paths": "arrs"}, ("paths",)),
     "file_write": ("Create/overwrite a file (syntax-checked; force:true "
                    "overrides).", {"path": "s", "content": "s", "force": "b"},
                    ("path", "content")),

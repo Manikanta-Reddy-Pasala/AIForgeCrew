@@ -8,11 +8,12 @@ import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
-from ._shell import (_t_file_patch, _t_file_read, _t_file_write, _t_list_dir, _t_run_command)
+from ._shell import (_t_file_patch, _t_file_read, _t_file_write, _t_list_dir, _t_read_files, _t_run_command)
 from ._tools import (_t_browse, _t_codegraph_callees, _t_codegraph_callers, _t_codegraph_explore, _t_codegraph_impact, _t_codegraph_query, _t_confluence_add_label, _t_confluence_attach, _t_confluence_children, _t_confluence_comment, _t_confluence_comments, _t_confluence_create, _t_confluence_descendants, _t_confluence_labels, _t_confluence_page_by_title, _t_confluence_read, _t_confluence_resolve_space, _t_confluence_search, _t_confluence_spaces, _t_confluence_update, _t_context_gather, _t_create_job_script, _t_delegate, _t_editor, _t_email_read, _t_email_send, _t_ensure_runtime, _t_find, _t_format, _t_git_blame, _t_git_diff, _t_git_log, _t_git_status, _t_github_pr, _t_gitlab_comment, _t_gitlab_create, _t_gitlab_mr_comment, _t_gitlab_mr_create, _t_gitlab_read, _t_gitlab_search, _t_gitlab_update, _t_grep, _t_ipython, _t_jira_assign, _t_jira_boards, _t_jira_comment, _t_jira_create, _t_jira_dashboard_create, _t_jira_dashboard_read, _t_jira_dashboards, _t_jira_link_issues, _t_jira_log_work, _t_jira_myself, _t_jira_projects, _t_jira_read, _t_jira_remote_links, _t_jira_resolve_project, _t_jira_search, _t_jira_sprint_issues, _t_jira_sprints, _t_jira_transition, _t_jira_transitions, _t_jira_update, _t_jira_worklog, _t_learn_skill, _t_learn_workflow, _t_list_repos, _t_list_services, _t_lsp, _t_mcp, _t_memory_lookup, _t_memory_write, _t_multi_edit, _t_note_consolidate, _t_note_curate, _t_project, _t_read_lines, _t_remember_rule, _t_rename_symbol, _t_resolve_repo, _t_run_tests, _t_search_chat_sessions, _t_serve, _t_set_integration_default, _t_set_repo_folder, _t_set_repo_root, _t_skill_search, _t_stop_service, _t_typecheck, _t_web_crawl, _t_web_fetch, _t_web_search, _t_workflow_search)
 
 TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "file_read": _t_file_read,
+    "read_files": _t_read_files,
     "file_write": _t_file_write,
     "file_create": _t_file_write,   # alias
     "file_patch": _t_file_patch,
@@ -119,8 +120,8 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
 }
 
 _SEARCH_TOOLS = ("grep", "find", "repo_map", "graphify_lookup", "memory_lookup")
-_FILE_TOOLS = ("file_read", "file_write", "file_create", "file_patch",
-               "list_dir", "editor")
+_FILE_TOOLS = ("file_read", "read_files", "file_write", "file_create",
+               "file_patch", "list_dir", "editor")
 
 
 def _perf_family(name: str) -> str:
@@ -133,7 +134,7 @@ def _perf_family(name: str) -> str:
 
 
 # PLAN mode (#2): read-only tool subset — inspect + recall, never mutate.
-_READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup",
+_READONLY_TOOLS = ("file_read", "read_files", "list_dir", "find", "grep", "memory_lookup",
                    "search_chat_sessions", "graphify_lookup", "repo_map",
                    "codegraph_query", "codegraph_callers", "codegraph_callees",
                    "codegraph_impact", "codegraph_explore",

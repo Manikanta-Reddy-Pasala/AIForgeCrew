@@ -31,7 +31,7 @@ _READ_OBS_TOOLS = frozenset({
     "context_gather", "resolve_repo", "jira_resolve_project",
     "confluence_resolve_space",
     "jira_boards", "jira_sprints", "jira_sprint_issues", "jira_dashboards",
-    "jira_dashboard_read", "jira_myself", "file_read", "read_lines",
+    "jira_dashboard_read", "jira_myself", "file_read", "read_files", "read_lines",
     "gitlab_read", "web_fetch", "web_crawl", "email_read",
 })
 
@@ -216,6 +216,53 @@ def _t_file_read(args: dict, cwd: str) -> dict:
     if not p.is_file():
         return {"ok": False, "error": f"no such file or directory: {args['path']}"}
     return {"ok": True, "content": p.read_text(encoding="utf-8", errors="replace")}
+
+
+def _t_read_files(args: dict, cwd: str) -> dict:
+    """Read MANY files in ONE call — the batched form of :func:`_t_file_read`.
+
+    Local models on a long ONE-AT-A-TIME read chain lose track of what they've
+    read and stall re-reading old files; batching a whole set into a single turn
+    sidesteps that entirely. Accepts ``paths`` (a list, or a comma/newline
+    string). Returns every file's content concatenated under ``=== path ===``
+    headers in one ``content`` field, each file capped so no single file eats the
+    observation budget (raise AIFORGE_CHAT_READ_FILES_PER_CAP; default 6000)."""
+    raw = args.get("paths")
+    if raw is None:
+        raw = args.get("path") or []
+    if isinstance(raw, str):
+        raw = [s for s in re.split(r"[,\n]+", raw) if s.strip()]
+    paths = [str(p).strip() for p in (raw or []) if str(p).strip()]
+    if not paths:
+        return {"ok": False, "error": "missing 'paths' (a list of file paths)"}
+    try:
+        per_cap = max(200, int(os.environ.get(
+            "AIFORGE_CHAT_READ_FILES_PER_CAP", "6000")))
+    except ValueError:
+        per_cap = 6000
+    max_files = 60
+    dropped = max(0, len(paths) - max_files)
+    parts: list[str] = []
+    ok_n = err_n = 0
+    for p in paths[:max_files]:
+        r = _t_file_read({"path": p}, cwd)
+        if isinstance(r, dict) and r.get("ok") and not r.get("is_dir"):
+            txt = str(r.get("content") or "")
+            if len(txt) > per_cap:
+                txt = (txt[:per_cap]
+                       + f"\n…[truncated {len(txt) - per_cap} chars — "
+                         "use read_lines for the rest]")
+            parts.append(f"=== {p} ===\n{txt}")
+            ok_n += 1
+        else:
+            _err = r.get("error") if isinstance(r, dict) else "unknown error"
+            parts.append(f"=== {p} ===\n[read failed: {_err}]")
+            err_n += 1
+    note = f"{ok_n} read, {err_n} failed"
+    if dropped:
+        note += f", {dropped} skipped (>{max_files}-file cap — call again)"
+    return {"ok": ok_n > 0, "count": ok_n, "read": ok_n, "failed": err_n,
+            "content": "\n\n".join(parts), "note": note}
 
 
 # Code extensions where a syntax check is meaningful (so we never reject a
