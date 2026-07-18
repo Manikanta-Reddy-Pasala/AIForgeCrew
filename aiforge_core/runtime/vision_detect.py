@@ -76,7 +76,7 @@ _MODALITY_REJECT_RE = re.compile(
     r"(?i)(?:"
     # "(does not) support image/vision/multimodal / input modality" — but NOT a
     # form-specific rejection (image_url / format / resolution / …).
-    r"(?:does\s?n[o']t|do not|not) support "
+    r"(?:does\s?n[o']t|do not|\bnot) support "
     r"(?:the following input modalit\w*|image|images|vision|multimodal)s?"
     + _FORM_LOOKAHEAD +
     # "<modality> [input(s)/support] (is|are) not supported/enabled/…" — the
@@ -87,7 +87,7 @@ _MODALITY_REJECT_RE = re.compile(
     r"|no (?:image|vision|multimodal) support"
     r"|no support for (?:image|vision|multimodal)"
     r"|not a (?:vision|multimodal) model"
-    r"|(?:does not|doesn't|not) accept images?" + _FORM_LOOKAHEAD +
+    r"|(?:does not|doesn't|\bnot) accept images?" + _FORM_LOOKAHEAD +
     r")")
 
 

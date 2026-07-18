@@ -115,3 +115,14 @@ def test_negated_verb_is_not_a_claim():
     assert not _claims_file_edits("I won't touch the config file")
     # a 'not' AFTER the verb (contrasting) does NOT suppress a real claim
     assert _claims_file_edits("I updated config.yaml, not the readme")
+
+
+def test_passive_and_thirdparty_human_not_a_claim():
+    # passive voice — the assistant isn't the actor
+    assert not _claims_file_edits("The file was deleted during the migration")
+    assert not _claims_file_edits("The config is updated automatically on deploy")
+    # a third-party HUMAN subject describing history
+    assert not _claims_file_edits("Someone deleted config.py yesterday")
+    assert not _claims_file_edits("The engineer implemented the fix in auth.py")
+    # active first-person still fires
+    assert _claims_file_edits("I updated config.yaml")

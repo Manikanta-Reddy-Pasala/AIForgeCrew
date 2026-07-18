@@ -117,3 +117,13 @@ def test_classifier_plural_images_rejection():
     from aiforge_core.runtime import vision_detect as vd
     assert vd._classify_probe_error(RuntimeError("Images are not supported")) is False
     assert vd._classify_probe_error(RuntimeError("images not supported")) is False
+
+
+def test_classifier_cannot_is_not_a_capability_verdict():
+    from aiforge_core.runtime import vision_detect as vd
+    # 'cannot support/accept image …' is a transient/payload phrasing (the 'not'
+    # is inside 'cannot') — must stay inconclusive, not sticky no-vision
+    assert vd._classify_probe_error(RuntimeError("cannot support image inputs right now")) is None
+    assert vd._classify_probe_error(RuntimeError("cannot accept images at this resolution")) is None
+    # a real modality rejection still definitive
+    assert vd._classify_probe_error(RuntimeError("does not support image inputs")) is False

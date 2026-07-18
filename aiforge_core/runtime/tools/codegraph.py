@@ -339,15 +339,19 @@ def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> b
                 if indexed(cwd) and _index_healthy(repo):
                     _FAILED.pop(repo, None)
                     return True
-                if _have_lock:
+                # Remove the stub if we hold the lock OR it's PROVEN corrupt
+                # (a failed quick_check) — a corrupt index is never a concurrent
+                # process's good one, so it's safe to drop even under "nolock"
+                # (else indexed()'s existence check would trust it forever).
+                if _have_lock or not _index_healthy(repo):
                     _remove_partial_index(repo)
                 _FAILED[repo] = _time.monotonic()
                 return False
             # A non-zero exit (wrong subcommand, disk full, partial write) can
-            # still leave a stub .codegraph — require BOTH a clean exit and a real
-            # index; else remove the stub, negative-cache, stay off.
-            if p.returncode != 0 or not indexed(cwd):
-                if _have_lock:
+            # still leave a stub .codegraph — require a clean exit AND a real,
+            # HEALTHY index; else remove the stub, negative-cache, stay off.
+            if p.returncode != 0 or not indexed(cwd) or not _index_healthy(repo):
+                if _have_lock or not _index_healthy(repo):
                     _remove_partial_index(repo)
                 _FAILED[repo] = _time.monotonic()
                 return False

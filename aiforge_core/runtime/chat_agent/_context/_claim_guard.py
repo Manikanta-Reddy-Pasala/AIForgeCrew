@@ -43,11 +43,17 @@ _MADE_CHANGES_RE = re.compile(
 # in genuine claims). Used with an adjacency check (:func:`_subject_is_descriptive`)
 # so it suppresses only when the noun actually precedes the edit verb.
 _DESCRIPTIVE_NOUN_RE = re.compile(
-    r"(?i)\b(?:this|that|the|a|another|the\s+following)\s+"
+    r"(?i)(?:\b(?:this|that|the|a|another|the\s+following)\s+"
     r"(?:\w+\s+){0,2}"          # optional adjectives ("the recent commit")
     r"(?:commit|pull\s+request|pr|mr|changeset|revision|author|contributor|"
     r"developer|maintainer|linter|formatter|compiler|tool|script|"
-    r"pipeline|ci|bot|migration)\b")
+    r"pipeline|ci|bot|migration|engineer|team|user|colleague|reviewer)"
+    # bare third-party subjects (no determiner)
+    r"|\b(?:someone|somebody|anyone|everyone|nobody|they|he|she))\b")
+
+# PASSIVE-VOICE auxiliary — "the file WAS deleted", "the config IS updated" — the
+# subject is not the assistant asserting a this-turn write.
+_PASSIVE_RE = re.compile(r"(?i)\b(?:was|were|been|being|is|are|be|get|got|gets)\b")
 
 # ADVISORY / MODAL / PASSIVE framing — the clause RECOMMENDS an edit ("the config
 # should be updated", "a new file needs to be created", "must be removed") rather
@@ -135,7 +141,8 @@ def _advisory_before(clause: str, pos: int) -> bool:
     "please"/"not" LATER in the clause ("I updated X, please review" / "I updated
     X, not Y") does not, so a real claim isn't suppressed."""
     pre = clause[max(0, pos - 30): pos]
-    return bool(_ADVISORY_RE.search(pre) or _NEGATION_RE.search(pre))
+    return bool(_ADVISORY_RE.search(pre) or _NEGATION_RE.search(pre)
+                or _PASSIVE_RE.search(pre))
 
 
 def _claims_file_edits(text: str) -> bool:
