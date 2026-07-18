@@ -144,4 +144,41 @@ def validate_syntax(path: str, content: str) -> tuple[bool, str]:
     return True, ""
 
 
-__all__ = ["validate_syntax"]
+# Code-file extensions, sourced from the language registry (DRY — same set the
+# syntax checkers cover), plus the compile()/heuristic-only languages that expose
+# no external checker but are still code.
+_CODE_EXTS = frozenset(
+    [ext for _p in _languages.all_profiles() for ext in _p.extensions]
+    + [".py", ".rs", ".kt", ".ts", ".tsx", ".jsx", ".vue", ".go", ".rb", ".php"])
+
+
+def _line_cap() -> int:
+    """~500-line hard cap on a single file (env AIFORGE_MAX_FILE_LINES; <=0
+    disables the nudge)."""
+    try:
+        return int(os.environ.get("AIFORGE_MAX_FILE_LINES", "500"))
+    except (TypeError, ValueError):
+        return 500
+
+
+def oversize_warning(path: str, content: str) -> str:
+    """A soft, NON-BLOCKING nudge when a written CODE file exceeds the line cap —
+    the standing DRY / KISS / separation-of-concerns rule: split a growing file
+    into concern-grouped modules. Returns '' when within the cap, for a non-code
+    file, or when disabled. Never raises (a nudge must not break a write)."""
+    try:
+        cap = _line_cap()
+        if cap <= 0:
+            return ""
+        if os.path.splitext(path)[1].lower() not in _CODE_EXTS:
+            return ""
+        n = (content or "").count("\n") + 1
+        if n <= cap:
+            return ""
+        return (f"file is {n} lines (over the {cap}-line cap) — split into "
+                f"concern-grouped modules (DRY / KISS / separation of concerns)")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+__all__ = ["validate_syntax", "oversize_warning"]
