@@ -43,7 +43,10 @@ def fold_sync(session_id: int) -> dict:
         from aiforge_core.runtime import chat_okr
         return chat_okr.compact_session(session_id, repo=_repo_for(session_id))
     except Exception as exc:  # noqa: BLE001 — a fold must never break the turn
-        log.debug("fold_sync failed for session %s: %s", session_id, exc)
+        # WARNING (not debug): a fold runs in a daemon thread whose exceptions
+        # are otherwise invisible, so a persistently broken fold must be
+        # diagnosable at the default level.
+        log.warning("fold_sync failed for session %s: %s", session_id, exc)
         return {"ok": False, "error": str(exc), "captured": 0}
 
 

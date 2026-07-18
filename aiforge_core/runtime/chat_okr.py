@@ -110,6 +110,19 @@ def _marker_path():
     return md_store.memory_dir() / ".session_okr_marker.json"
 
 
+def forget_session(session_id) -> None:
+    """Drop a session's compaction-offset marker entry — called when the session
+    is deleted so the marker file doesn't grow unbounded across many sessions.
+    Under the same lock as compact_session. Never raises."""
+    try:
+        with _COMPACT_LOCK:
+            marker = _load_marker()
+            if marker.pop(str(session_id), None) is not None:
+                _save_marker(marker)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("forget_session(%s) failed: %s", session_id, exc)
+
+
 def _load_marker() -> dict:
     import json
     try:
@@ -254,4 +267,4 @@ def previous_session_brief(exclude_session_id, *, max_turns: int = 6,
     return "\n".join(lines)[:max_chars]
 
 
-__all__ = ["compact_session", "previous_session_brief"]
+__all__ = ["compact_session", "previous_session_brief", "forget_session"]

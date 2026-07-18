@@ -22,14 +22,14 @@ import re
 _EDIT_CLAIM_VERB_RE = re.compile(
     r"(?i)\b(?:applied|committed|wrote|written|saved|updated|modified|edited|"
     r"patched|replaced|inserted|refactored|implemented|created|corrected|"
-    r"adjusted|rewrote|overwrote)\b")
+    r"adjusted|rewrote|overwrote|added|removed|deleted|fixed|renamed|appended)\b")
 # An OBJECT that makes the verb about a file/code artifact — a path with an
 # extension, an explicit file/code noun, or the screenshot's "fixes applied"
 # heading. Required ALONGSIDE the verb so prose like "I updated my estimate"
 # doesn't trip it.
 _EDIT_CLAIM_OBJ_RE = re.compile(
     r"(?i)(?:\bthe\s+(?:file|code|function|method|component|class|config|"
-    r"module|script)\b|\bfiles?\b|\bfix(?:es)?\s+applied\b|\bchanges?\s+"
+    r"module|script|change)s?\b|\bfiles?\b|\bfix(?:es)?\s+applied\b|\bchanges?\s+"
     r"(?:applied|made|written|committed|saved)\b|[\w./-]+\.(?:py|js|jsx|ts|tsx|"
     r"vue|java|kt|kts|go|rs|c|cc|cpp|h|hpp|rb|php|cs|swift|scala|sh|bash|yaml|"
     r"yml|json|xml|html|css|scss|md|sql|toml|gradle|dockerfile|cfg|ini))")

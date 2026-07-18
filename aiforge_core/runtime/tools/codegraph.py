@@ -75,6 +75,32 @@ def indexed(cwd: str | None = None) -> bool:
         return False
 
 
+def _acquire_build_lock(repo: str):
+    """Non-blocking OS file lock so two PROCESSES (per-ticket Doers run as
+    separate processes, all resolving to the same parent repo) don't run
+    ``codegraph init`` on the same SQLite index concurrently — a half-written
+    index. Returns the held file object, the string ``"nolock"`` on a platform
+    without ``fcntl`` (proceed on the thread-lock alone), or ``None`` when
+    another process holds it (caller skips the duplicate build). Never raises."""
+    try:
+        import fcntl
+    except Exception:  # noqa: BLE001 — non-POSIX: rely on the per-repo thread lock
+        return "nolock"
+    try:
+        f = open(os.path.join(repo, ".codegraph.build.lock"), "w")
+    except OSError:
+        return "nolock"
+    try:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return f
+    except OSError:                      # another process is building
+        f.close()
+        return None
+    except Exception:  # noqa: BLE001
+        f.close()
+        return "nolock"
+
+
 def _remove_partial_index(repo: str) -> None:
     """Best-effort remove a half-written ``.codegraph`` left by a failed/timed-out
     build. Safe: ensure_indexed only builds when the repo was NOT already
@@ -203,35 +229,44 @@ def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> b
         exe = _bin()
         if not exe:
             return False
+        # Cross-PROCESS guard: another process may already be building this same
+        # repo's index (concurrent tickets). None = contended → skip the
+        # duplicate build (the other process will finish; next turn re-checks).
+        _fl = _acquire_build_lock(repo)
+        if _fl is None:
+            return False
         try:
-            # NOTE: `init` takes a POSITIONAL path (`codegraph init <path>`) —
-            # unlike the query subcommands, which use `-p/--path`. Passing
-            # `--path` here makes the binary reject it ("unknown option
-            # '--path'") so autobuild silently failed and every un-preindexed
-            # repo stayed "CodeGraph not initialized".
-            # split() so an override like "init --force" becomes two argv tokens,
-            # not one bogus subcommand string.
-            p = subprocess.run([exe, *_init_cmd().split(), repo],
-                               capture_output=True, text=True,
-                               timeout=timeout_s or _build_timeout_s())
-        except Exception:  # noqa: BLE001 — timeout / spawn failure
-            # A timed-out build may have left a HALF-WRITTEN .codegraph dir;
-            # indexed() only checks dir existence, so leaving it would make every
-            # future turn short-circuit (line "if indexed(cwd): return True")
-            # onto a corrupt index and never consult the negative cache. Remove
-            # the partial index so the next attempt is clean.
-            _remove_partial_index(repo)
-            _FAILED[repo] = _time.monotonic()
-            return False
-        # A non-zero exit (wrong subcommand, disk full, partial write) can still
-        # leave a stub .codegraph dir — require BOTH a clean exit and a real
-        # index before trusting it; remove the stub, negative-cache, stay off.
-        if p.returncode != 0 or not indexed(cwd):
-            _remove_partial_index(repo)
-            _FAILED[repo] = _time.monotonic()
-            return False
-        _FAILED.pop(repo, None)
-        return True
+            if indexed(cwd):            # built by the other process meanwhile
+                return True
+            try:
+                # NOTE: `init` takes a POSITIONAL path (`codegraph init <path>`)
+                # — the query subcommands use `-p/--path`. Passing `--path` here
+                # made the binary reject it ("unknown option '--path'") so
+                # autobuild silently failed. split() so an override like
+                # "init --force" becomes two argv tokens, not one bogus token.
+                p = subprocess.run([exe, *_init_cmd().split(), repo],
+                                   capture_output=True, text=True,
+                                   timeout=timeout_s or _build_timeout_s())
+            except Exception:  # noqa: BLE001 — timeout / spawn failure
+                # A timed-out build may leave a HALF-WRITTEN .codegraph; indexed()
+                # only checks dir existence, so leaving it would make every future
+                # turn short-circuit onto a corrupt index. Remove it so the next
+                # attempt is clean.
+                _remove_partial_index(repo)
+                _FAILED[repo] = _time.monotonic()
+                return False
+            # A non-zero exit (wrong subcommand, disk full, partial write) can
+            # still leave a stub .codegraph — require BOTH a clean exit and a real
+            # index; else remove the stub, negative-cache, stay off.
+            if p.returncode != 0 or not indexed(cwd):
+                _remove_partial_index(repo)
+                _FAILED[repo] = _time.monotonic()
+                return False
+            _FAILED.pop(repo, None)
+            return True
+        finally:
+            if hasattr(_fl, "close"):
+                _fl.close()
 
 
 def _run(args: list[str], cwd: str | None) -> dict:

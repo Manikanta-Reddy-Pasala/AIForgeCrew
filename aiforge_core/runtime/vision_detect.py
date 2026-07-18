@@ -303,5 +303,8 @@ def classify_and_store_vision(registry_id: str, model: str, base_url: str,
             registry_id, vision=("yes" if verdict else "no"))
     except Exception:  # noqa: BLE001
         pass
-    reset_vision_cache()
+    # Evict ONLY this model's cached probe (a definite verdict was just
+    # persisted) — not the whole cache, which would force a needless re-probe of
+    # every OTHER model on the next use.
+    _VISION_CACHE.pop(model, None)
     return verdict

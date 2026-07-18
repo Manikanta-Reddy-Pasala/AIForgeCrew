@@ -592,6 +592,13 @@ def chat_session_delete(session_id: int) -> None:
         chat_session_fold.fold_sync(session_id)
     if not chat_store.delete_session(session_id):
         raise HTTPException(404, f"session {session_id} not found")
+    # Drop the session's compaction-offset marker so the marker file doesn't
+    # accumulate entries for deleted sessions.
+    try:
+        from aiforge_core.runtime import chat_okr
+        chat_okr.forget_session(session_id)
+    except Exception:  # noqa: BLE001
+        pass
     _delete_chat_workspace((_sess or {}).get("cwd"))
 
 

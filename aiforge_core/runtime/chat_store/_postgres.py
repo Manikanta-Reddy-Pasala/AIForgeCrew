@@ -143,6 +143,8 @@ class _PgChatStore:
         return [_message_out(r) for r in rows]
 
     def _search_candidates(self, toks, exclude_session) -> list[dict]:
+        if not toks:                       # empty tokens → invalid SQL (WHERE ())
+            return []
         where = " OR ".join(["strpos(lower(m.content), %s) > 0"] * len(toks))
         params: list = list(toks)
         sql = (

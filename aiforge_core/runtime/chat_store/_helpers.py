@@ -116,10 +116,11 @@ def _rank_search(rows: list[dict], toks: list[str], limit: int) -> list[dict]:
         matched = sum(1 for t in toks if t in low)
         if matched == 0:
             continue
-        # Density = total hits, so an on-topic message (a term repeated) ranks
-        # above one incidental mention — breaking ties by relevance BEFORE
-        # recency (id), not purely by how new the message is.
-        density = sum(low.count(t) for t in toks)
+        # Density = total hits (a term repeated on-topic ranks above one
+        # incidental mention), but each token's count is CAPPED so a short
+        # repetitive row ("car car car") can't outrank a substantive message
+        # that mentions each term once. Ties break by relevance BEFORE recency.
+        density = sum(min(low.count(t), 3) for t in toks)
         scored.append((matched, density, r["id"], r, content))
     scored.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
     out: list[dict] = []

@@ -149,6 +149,8 @@ class _SqliteChatStore:
         return [_message_out(dict(r)) for r in rows]
 
     def _search_candidates(self, toks, exclude_session) -> list[dict]:
+        if not toks:                       # empty tokens → invalid SQL (WHERE ())
+            return []
         where = " OR ".join(["instr(lower(m.content), ?)"] * len(toks))
         params: list = list(toks)
         sql = (
