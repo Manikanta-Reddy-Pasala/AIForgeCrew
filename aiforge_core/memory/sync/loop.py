@@ -135,3 +135,9 @@ def main() -> None:
 
 
 __all__ = ["sync_with", "run_once", "run_forever", "main"]
+
+
+if __name__ == "__main__":  # pragma: no cover — exercised by test_cli_entry
+    # Without this, `python -m aiforge_core.memory.sync.loop` imports the module
+    # and exits silently: the console script reaches main() but -m does not.
+    main()
