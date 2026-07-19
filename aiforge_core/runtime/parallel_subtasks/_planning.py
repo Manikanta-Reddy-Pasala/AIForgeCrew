@@ -421,9 +421,9 @@ def _max_compiled_modules() -> int:
     AIFORGE_ARCHITECT_MAX_MODULES_COMPILED for a genuinely large compiled build."""
     try:
         return max(1, int(os.environ.get(
-            "AIFORGE_ARCHITECT_MAX_MODULES_COMPILED", "3")))
+            "AIFORGE_ARCHITECT_MAX_MODULES_COMPILED", "2")))
     except ValueError:
-        return 3
+        return 2
 
 
 def _max_code_modules() -> int:
@@ -472,26 +472,51 @@ def _coalesce_code_modules(files: list[dict]) -> tuple[list[dict], int]:
     code_set = set(code_paths)
     code = [f for f in files if _p(f) in code_set]
     others = [f for f in files if _p(f) not in code_set]
-    code.sort(key=_p)                          # stable, keeps same-dir adjacency
-    buckets: list[list[dict]] = [[] for _ in range(cap)]
     n = len(code)
-    for i, f in enumerate(code):
-        buckets[i * cap // n].append(f)        # even contiguous split into `cap`
-    merged: list[dict] = []
-    for b in buckets:
-        if not b:
-            continue
-        # keep the shallowest/shortest path as the canonical merged module name.
-        rep = min(b, key=lambda f: (_p(f).count("/"), len(_p(f))))
-        api: list[str] = []
-        for f in b:
-            for a in (f.get("api") or []):
-                if a and a not in api:
-                    api.append(a)
-        purpose = "; ".join(str(f.get("purpose") or "") for f in b
-                            if f.get("purpose")).strip("; ")[:250]
-        merged.append({"path": _p(rep), "purpose": purpose or "combined module",
-                       "api": api})
+
+    def _symbols(f) -> list[str]:
+        # bare identifier after class/struct/def/fn/type/enum/interface, so we can
+        # tell WHICH module references another's type.
+        names: list[str] = []
+        for a in (f.get("api") or []):
+            m = re.search(r"\b(?:class|struct|def|fn|func|type|enum|interface|"
+                           r"trait)\s+([A-Za-z_][A-Za-z0-9_]*)", str(a))
+            if m:
+                names.append(m.group(1))
+        return names
+
+    # COUPLING-AWARE greedy merge: repeatedly fold a HELPER (a module whose type
+    # is REFERENCED in another module's api text — e.g. LRUCache's api mentions
+    # `Node`) INTO its user, smallest helper first, so the helper lands in the
+    # file that uses it — killing the cross-module constructor/type mismatch. When
+    # nothing is coupled, fold the smallest module into the largest.
+    mods = [{"path": _p(f), "purpose": str(f.get("purpose") or ""),
+             "api": list(f.get("api") or [])} for f in code]
+    while len(mods) > cap:
+        pair = None
+        for h in mods:
+            hs = _symbols(h)
+            if not hs:
+                continue
+            for u in mods:
+                if u is h:
+                    continue
+                utext = " ".join(str(x) for x in u["api"])
+                if any(re.search(r"\b" + re.escape(s) + r"\b", utext) for s in hs):
+                    if pair is None or len(h["api"]) < len(pair[0]["api"]):
+                        pair = (h, u)
+        if pair is None:
+            order = sorted(mods, key=lambda m: len(m["api"]))
+            pair = (order[0], order[-1])
+        h, u = pair
+        for a in h["api"]:
+            if a not in u["api"]:
+                u["api"].append(a)
+        if h["purpose"]:
+            u["purpose"] = (u["purpose"] + "; " + h["purpose"]).strip("; ")[:250]
+        mods.remove(h)
+    merged = [{"path": m["path"], "purpose": m["purpose"] or "combined module",
+               "api": m["api"]} for m in mods]
     return others + merged, n - len(merged)
 
 

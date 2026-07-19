@@ -88,12 +88,31 @@ def test_hard_coalesce_enforces_python_cap_preserving_symbols(monkeypatch):
 
 
 def test_hard_coalesce_tighter_for_compiled(monkeypatch):
-    monkeypatch.setenv("AIFORGE_ARCHITECT_MAX_MODULES_COMPILED", "3")
+    monkeypatch.setenv("AIFORGE_ARCHITECT_MAX_MODULES_COMPILED", "2")
     files = [{"path": f"src/main/java/pkg/M{i}.java", "purpose": "x",
               "api": [f"class M{i}"]} for i in range(6)]
     out, removed = _coalesce_code_modules(files)
     java = [f for f in out if f["path"].endswith(".java")]
-    assert len(java) == 3 and removed == 3          # compiled cap 3
+    assert len(java) == 2 and removed == 4          # compiled cap 2
+
+
+def test_coalesce_folds_helper_into_its_user(monkeypatch):
+    # the classic LRU split: LRUCache USES Node → Node must fold INTO LRUCache
+    monkeypatch.setenv("AIFORGE_ARCHITECT_MAX_MODULES_COMPILED", "2")
+    files = [
+        {"path": "src/main/java/lru/LRUCache.java", "purpose": "cache",
+         "api": ["class LRUCache", "LRUCache uses a Node doubly-linked list"]},
+        {"path": "src/main/java/lru/Node.java", "purpose": "node",
+         "api": ["class Node", "Node(int key, int value)"]},
+        {"path": "src/main/java/lru/DoublyLinkedList.java", "purpose": "list",
+         "api": ["class DoublyLinkedList"]},
+    ]
+    out, removed = _coalesce_code_modules(files)
+    assert removed == 1                              # 3 → 2
+    # Node folded into the LRUCache module (which references it), not left alone
+    lru = next(f for f in out if f["path"].endswith("LRUCache.java"))
+    assert any("class Node" in a for a in lru["api"])
+    assert not any(f["path"].endswith("Node.java") for f in out)
 
 
 def test_coalesce_noop_within_cap():
@@ -112,7 +131,7 @@ def test_compiled_plan_gets_tighter_cap(monkeypatch):
             + [{"path": "src/test/java/pkg/MTest.java", "purpose": "t", "api": []},
                {"path": "pom.xml", "purpose": "manifest", "api": []}])
     _c, issues = _validate_plan(java)
-    assert any("over-fragmented" in i and "at most 3" in i for i in issues)
+    assert any("over-fragmented" in i and "at most 2" in i for i in issues)
     # the SAME count in Python is fine (default cap 4)
     py = ([{"path": f"pkg/m{i}.py", "purpose": "x", "api": []} for i in range(4)]
           + [{"path": "tests/test_m.py", "purpose": "t", "api": []}])
