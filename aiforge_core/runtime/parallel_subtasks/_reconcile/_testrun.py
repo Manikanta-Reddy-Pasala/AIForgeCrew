@@ -96,6 +96,17 @@ def _project_test_output(cwd: str) -> tuple[bool, str]:
         stacks = (detect(cwd) or {}).get("stacks") or []
         if not stacks:
             return True, ""
+        # Pre-warm dependencies for a compiled stack (maven/gradle/rust/go) ONCE
+        # so the FIRST real test run isn't a cold download — a hiccup while
+        # fetching JUnit/crates on the cold run otherwise flags a FALSE failure on
+        # code that actually passes (observed: a green Java build verdict'd
+        # NOTCLEAN). Best-effort + cached; skip with AIFORGE_RECONCILE_PREWARM=0.
+        if (os.environ.get("AIFORGE_RECONCILE_PREWARM", "1") not in ("0", "false")
+                and any(s in ("maven", "gradle", "rust", "go") for s in stacks)):
+            try:
+                project(action="install", cwd=cwd)
+            except Exception:  # noqa: BLE001 — warm-up is best-effort
+                pass
         action = "test" if _has_tests(cwd, stacks) else "build"
         res = project(action=action, cwd=cwd) or {}
         out = _collect_run_output(res)
