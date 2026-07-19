@@ -11,36 +11,26 @@ dedupe device rather than an integrity check.
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 from pathlib import Path
+
+from aiforge_core.memory.sync import _io
 
 _log = logging.getLogger("aiforge.sync")
 
 
-def _root() -> Path:
-    from aiforge_core.memory.md_store import memory_dir
-
-    return memory_dir()
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _rel(root: Path, path: Path) -> str:
-    return path.relative_to(root).as_posix()
-
-
-def _class_a(root: Path) -> list[dict]:
+def _class_a() -> list[dict]:
     out: list[dict] = []
     for sub in ("captures", "compacted"):
-        d = root / sub
+        d = _io.root() / sub
         if not d.is_dir():
             continue
         for p in sorted(d.glob("*.md")):
+            if not _io.is_syncable(p):
+                # glob follows symlinks; advertising one would serve its target.
+                continue
             try:
-                out.append({"path": _rel(root, p), "hash": _sha256(p), "cls": "A"})
+                out.append({"path": _io.rel(p), "hash": _io.sha256_file(p), "cls": "A"})
             except OSError:  # noqa: BLE001 — a file vanishing mid-scan is not fatal
                 _log.warning("sync: unreadable capture %s", p)
     return out
@@ -48,9 +38,7 @@ def _class_a(root: Path) -> list[dict]:
 
 def build() -> list[dict]:
     """Full local manifest, sorted by path for stable diffs."""
-    root = _root()
-    entries = _class_a(root)
-    return sorted(entries, key=lambda e: e["path"])
+    return sorted(_class_a(), key=lambda e: e["path"])
 
 
 def path_for_hash(digest: str) -> Path | None:
@@ -63,7 +51,7 @@ def path_for_hash(digest: str) -> Path | None:
     digest = (digest or "").strip().lower()
     if not digest:
         return None
-    root = _root()
+    root = _io.root()
     for e in build():
         if e["hash"] == digest:
             p = root / e["path"]

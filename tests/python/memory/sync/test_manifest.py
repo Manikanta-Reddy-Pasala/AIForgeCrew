@@ -49,3 +49,21 @@ def test_path_for_hash_only_resolves_advertised_files(monkeypatch, tmp_path):
     assert manifest.path_for_hash(good) is not None
     assert manifest.path_for_hash(hashlib.sha256(b"nope").hexdigest()) is None
     assert manifest.path_for_hash("../../etc/passwd") is None
+
+
+def test_a_symlinked_capture_is_never_advertised(monkeypatch, tmp_path):
+    """Path.glob follows symlinks; /blob must not become an arbitrary file reader."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import manifest
+
+    secret = tmp_path / "secret.txt"
+    secret.write_text("classified", encoding="utf-8")
+    d = tmp_path / "md" / "captures"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "real-20260719-aaaaaa.md").write_text("fine", encoding="utf-8")
+    (d / "evil-20260719-bbbbbb.md").symlink_to(secret)
+
+    paths = {e["path"] for e in manifest.build()}
+    assert paths == {"captures/real-20260719-aaaaaa.md"}
+    assert manifest.path_for_hash(
+        hashlib.sha256(b"classified").hexdigest()) is None
