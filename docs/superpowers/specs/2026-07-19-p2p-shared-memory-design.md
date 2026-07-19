@@ -1,7 +1,7 @@
 # P2P Shared Memory — Design
 
 **Date:** 2026-07-19
-**Status:** Design settled, ready to plan
+**Status:** Implemented and validated on two machines — see "Live validation" at the end
 **Topology:** Full mesh, pull-only, no master for replication
 
 ## Problem
@@ -365,3 +365,69 @@ Existing files touched:
 - `aiforge_core/api/api.py` — mount the sync routes
 - `aiforge_core/memory/md_store/_ingest.py` — ingest path for synced files (reuse, not change,
   if the existing `write()` suffices)
+
+---
+
+## Live validation — 2026-07-19
+
+Run between `nuc` (192.168.70.115) and `book` (192.168.70.227, Mac) on one LAN
+segment. Two deliberate deviations from the plan's Task 15, both risk reductions:
+the test ran against **scratch memory trees** (`/tmp/p2p-live/md`) rather than the
+real ones, and against a **separate API on :8798 from a git worktree** rather than
+restarting the production service. The NUC stayed on `main` throughout, its
+production API on :8799 was never restarted, and its 1,684 real notes were never
+in the path of a write.
+
+| Property | Result |
+|---|---|
+| Convergence, both directions | ✅ `book` applied 2, `nuc` applied 1; both trees identical after |
+| Byte-identity across the network | ✅ md5 `94d8ce29…` matched on both sides |
+| Idempotence | ✅ second cycle `applied: 0` |
+| Concurrent edit, equal `rev` | ✅ `conflicts: 1`; `nuc` won the tie (lexicographic), loser preserved in `L-99.conflict.md` |
+| Tombstone propagation | ✅ delete on `nuc` at rev 6 over a node at rev 5; node removed on `book`, tombstone replicated |
+| Discovery quarantine | ✅ only hand-configured peers `approved`; no peer self-promoted |
+| No escape from the scratch tree | ✅ both real memory trees untouched |
+| SSDP | ❌ did not work on this segment — see below |
+
+### One bug found that the test suite could not reach
+
+`python -m aiforge_core.memory.sync.loop --once` **did nothing and exited 0.**
+`loop.py` had no `if __name__ == "__main__"` guard, so the module imported and
+exited silently — which reads exactly like "ran fine, nothing to sync". The
+console-script entry (`aiforge-sync`) reached `main()`; `-m` did not. Invisible to
+all 111 unit tests because they call `run_once()`/`sync_with()` directly. Fixed in
+`60fc070`, with a subprocess test that invokes the module the way an operator does.
+
+### SSDP: two separate findings, only one of them ours
+
+1. **This segment filters multicast.** Verified with a raw multicast listener that
+   bypasses our code entirely: an announce from the NUC never arrived at the Mac.
+   Not an implementation fault — and precisely the reason the design says gossip
+   over the manifest carries the mesh and SSDP is only a convenience.
+2. **Nothing answers an `M-SEARCH`.** `discover()` sends a search and `announce()`
+   sends a `NOTIFY`, but no responder replies to a search. Even on a permissive
+   segment, discovery would only catch announcements that happen to fire inside a
+   listening window. Making SSDP actually useful needs a responder loop in the API
+   process. Deferred: gossip covers the case, and this segment cannot use SSDP
+   regardless.
+
+### Test suite
+
+`tests/python`: 2,811 passed, 49 failed, 13 skipped (29 min). **No failure is in
+code this branch touches.** The three `test_md_memory.py` failures were confirmed
+pre-existing by running them against unmodified `main` in a separate worktree; the
+rest are in `run.sh`/compose/chat/doer areas untouched here.
+
+### Known gaps, deliberately not closed
+
+- 12 `os.replace` sites elsewhere in the repo still use a fixed temp filename and
+  can tear under concurrent writers, the same flaw fixed in `_io.write_atomic`.
+  `config/_filecache.py` and `runtime/perf_recorder.py` document crash-safety they
+  do not fully deliver.
+- The sync endpoints are unauthenticated when `AIFORGE_API_TOKEN` is unset, which
+  is the NUC's current state. On a LAN, `/api/memory/sync/manifest` plus
+  `/blob/{hash}` is a two-call bulk read of the whole memory tree. Accepted as a
+  trusted-LAN tradeoff; setting a token on both peers and in `peers.json` closes it
+  with no code change.
+- `_io.root`/`rel`/`safe_target` are arguably layout concerns living in the I/O
+  module. Reviewed, judged not worth the churn.
