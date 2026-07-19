@@ -69,6 +69,19 @@ A link naming a bare `O-01` resolves against its containing node's `origin`. A l
 a foreign scope explicitly. Every lookup, link resolution and index key carries the scope
 prefix from here on — that is the accepted cost of avoiding a migration.
 
+**Identity is compound, but the filename is not.** `_filename()`
+(`aiforge_core/memory/okf/store.py:115`) renders both `(nuc, O-01)` and `(ms, O-01)` to
+`O-01.md`, so two peers' unrelated nodes would collide on disk. The receiver therefore
+computes the local target path itself and treats the sender's advertised `path` as a hint
+only:
+
+- an identity already held locally is updated in place, wherever it currently lives;
+- anything new minted by another peer lands under `okf/peers/<origin>/<key>.md`.
+
+Every peer derives the same answer from the same inputs, so the on-disk layout converges along
+with the content. Class A is exempt — capture filenames already embed a content digest and are
+globally unique.
+
 ### Schema change 2 — version stamp on mutable nodes
 
 Three frontmatter fields:
@@ -102,7 +115,7 @@ Each peer exposes two read-only endpoints on the API server it already runs
 ```
 GET /api/memory/sync/manifest
     → {
-        manifest: [{path, hash, class, origin?, key?, rev?, updated_by?}, …],
+        manifest: [{path, hash, cls, origin?, key?, rev?, updated_by?}, …],
         roster:   [{id, urls[], last_seen}, …]
       }
 
@@ -135,7 +148,7 @@ Union merge cannot express removal; the next pull restores the file. Deletion wr
 tombstone instead:
 
 ```
-okf/.tomb/<origin>/<key>   →   {rev, updated_by}
+okf/.tomb/<origin>/<key>.json   →   {origin, key, rev, updated_by, tomb: true}
 ```
 
 The tombstone is itself a class B record and merges by the same rule. A delete at `rev` 48
@@ -159,7 +172,7 @@ failure that erodes trust in the whole memory.
 
 ### Discovery
 
-**Seed.** `peers.yaml` ships with at least one reachable peer. Every P2P system needs a
+**Seed.** `peers.json` ships with at least one reachable peer. Every P2P system needs a
 bootstrap; this is one line.
 
 **Gossip.** The roster rides along on the manifest response already being fetched each cycle.
@@ -208,10 +221,16 @@ is archived out of the roster and reappears on its next successful contact.
 
 ### Trust
 
-Peers live in `$AIFORGE_CONFIG_DIR/peers.yaml` as `{id, urls[], token, state, last_seen}`
+Peers live in `$AIFORGE_CONFIG_DIR/peers.json` as `{id, urls[], token, state, last_seen}`
 where `state` is `approved` or `candidate`. The token is a bearer credential on both
 endpoints. This file is local configuration, not memory: it is never synced and never appears
 in the manifest. The gossiped roster is merged *into* it, subject to the candidate rule below.
+
+Two implementation notes settled during planning. The registry is JSON rather than YAML
+because PyYAML is not a root dependency and every config file in this repo is JSON through the
+`aiforge_core/config/integrations.py:15` idiom. And the token requires no new code:
+`aiforge_core/api/api.py:581` already enforces `AIFORGE_API_TOKEN` as bearer auth on every
+path beginning `/api/`, which the sync routes do.
 
 Because the surface is read-only and the direction is pull-only, a hostile peer's blast radius
 is narrow. It cannot delete local data, cannot overwrite a node with a stale revision, and
@@ -220,7 +239,7 @@ so it cannot serve different bytes than it advertised.
 
 Residual risk, stated plainly: a trusted peer can feed wrong *facts*. No protocol fixes that.
 It is a policy question, and the policy is already set by choosing to share a memory with
-those people. Revocation is removing the token from `peers.yaml`; the peer's class B nodes
+those people. Revocation is removing the token from `peers.json`; the peer's class B nodes
 stop winning merges and its class A files can be purged by hash.
 
 Deferred: an ed25519 keypair per peer with `peer_id = hash(pubkey)` and signed manifests would
@@ -279,11 +298,13 @@ Each unit has one job and a testable boundary.
 
 | Unit | Responsibility | Depends on |
 |---|---|---|
-| `sync/manifest.py` | Build the local manifest from the memory tree | `md_store`, `okf.store` |
+| `sync/identity.py` | This peer's slug; the `origin`/`rev`/`updated_by` stamp | nothing |
+| `sync/manifest.py` | Build the local manifest from the memory tree | `md_store`, `okf.nodes` |
 | `sync/merge.py` | Given local + remote manifest entries, decide want/keep/conflict | nothing (pure) |
-| `sync/client.py` | Fetch manifest and blobs from one peer, verify, write atomically | `merge`, `peers` |
-| `sync/server.py` | Serve the two endpoints, enforce bearer token | `manifest`, `peers` |
-| `sync/peers.py` | `peers.yaml` load/save, roster gossip merge, candidate quarantine | nothing |
+| `sync/client.py` | Fetch from one peer, verify, resolve the local target, write atomically | `okf.nodes` |
+| `sync/tombstone.py` | Express a local delete as a record the mesh can merge | `client` |
+| `api/routes/sync.py` | Serve the two endpoints (bearer auth inherited from `/api/`) | `manifest`, `peers` |
+| `sync/peers.py` | `peers.json` load/save, roster gossip merge, candidate quarantine | `identity` |
 | `sync/discovery_ssdp.py` | Multicast announce/search on the local segment | `peers` |
 | `sync/lease.py` | Claim, renew, check the compaction lease | `okf.store` |
 | `sync/loop.py` | Scheduler that runs the cycle per peer | all of the above |
