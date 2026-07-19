@@ -21,6 +21,7 @@ import contextlib
 import os
 import re
 import threading
+from pathlib import Path
 
 from . import nodes as _n
 
@@ -179,18 +180,17 @@ def save_node(node_type: str, node_id: str | None, meta: dict,
             if os.path.abspath(old) != os.path.abspath(path):
                 with contextlib.suppress(OSError):
                     os.unlink(old)
+        from aiforge_core.memory.sync import _io as _sync_io
         from aiforge_core.memory.sync.identity import stamp as _stamp
 
         meta = _stamp(meta or {})
         text = _n.render_node(node_type, nid, meta, body)
-        tmp = path + ".tmp"
         try:
-            with open(tmp, "w", encoding="utf-8") as fh:
-                fh.write(text)
-            os.replace(tmp, path)
+            # One atomic-write implementation for the whole memory tree: a
+            # sync applier and this function write the same files, and a
+            # per-caller ".tmp" name is exactly what lets them tear.
+            _sync_io.write_atomic(Path(path), text.encode("utf-8"))
         except OSError as exc:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp)
             return {"ok": False, "error": f"write failed: {exc}"}
         _invalidate()        # a node changed → next read reparses
         if reindex:
@@ -224,11 +224,12 @@ def _write_index() -> str:
                 lines.append(f"- [{rel.rsplit('/', 1)[-1]}]({rel})"
                              + (f" — {hook}" if hook else ""))
             lines.append("")
+        from aiforge_core.memory.sync import _io as _sync_io
+
         idx = os.path.join(root, "index.md")
-        tmp = idx + ".tmp"                     # atomic: never a half-written index
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write("\n".join(lines).rstrip() + "\n")
-        os.replace(tmp, idx)
+        # Atomic: a reader never sees a half-written index, and two savers
+        # racing here stage into separate temp files.
+        _sync_io.write_atomic(Path(idx), ("\n".join(lines).rstrip() + "\n").encode("utf-8"))
         return idx
     except Exception:  # noqa: BLE001 — index is navigation, never block a save
         return ""
@@ -260,10 +261,8 @@ def _dir_signature() -> tuple:
         for f in fns:
             if f.endswith(".md"):
                 n += 1
-                try:
+                with contextlib.suppress(OSError):
                     newest = max(newest, os.path.getmtime(os.path.join(dp, f)))
-                except OSError:
-                    pass
     # include the ROOT so two different memory dirs with the same (mtime, count)
     # never collide (test isolation / a re-pointed AIFORGE_MEMORY_MD_DIR).
     return (root, round(newest, 3), n)
