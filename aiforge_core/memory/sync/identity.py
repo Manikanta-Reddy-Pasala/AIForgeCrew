@@ -7,12 +7,19 @@ last-writer-wins would hand every conflict to the most wrong clock in the mesh.
 from __future__ import annotations
 
 import os
-import re
 import socket
 
 
 def _slug(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_-]+", "-", str(value or "")).strip("-").lower() or "peer"
+    """A peer id in the identity alphabet, lowercased.
+
+    Sanitisation is ``paths.sanitise`` rather than a second regex here: this
+    slug becomes the ``origin`` half of every node this peer mints, so it must
+    survive ``paths.is_addressable`` or the node is never advertised.
+    """
+    from aiforge_core.memory.sync import paths
+
+    return paths.sanitise(value, "peer").lower()
 
 
 def self_id() -> str:

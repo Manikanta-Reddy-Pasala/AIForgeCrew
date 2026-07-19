@@ -186,7 +186,7 @@ def test_a_tampered_blob_is_rejected(monkeypatch, tmp_path):
 
 def test_transitive_discovery_quarantines_the_third_peer(monkeypatch, tmp_path):
     """A knows B; B knows C. After one cycle A knows *of* C but never pulls it."""
-    from aiforge_core.memory.sync import loop, peers
+    from aiforge_core.memory.sync import peers
 
     nuc = _peer(monkeypatch, tmp_path, "nuc")
     # nuc has alice approved, so alice appears in nuc's advertised roster.

@@ -100,7 +100,7 @@ def discover(bind_host: str, timeout: float = 3.0) -> list[dict]:
     found: dict[str, dict] = {}
     try:
         sock = _multicast_socket(bind_host)
-    except OSError as exc:  # noqa: BLE001 — no multicast here is normal, not an error
+    except OSError as exc:  # no multicast here is normal, not an error
         _log.info("sync: ssdp unavailable on %s: %s", bind_host, exc)
         return []
     try:
@@ -114,7 +114,7 @@ def discover(bind_host: str, timeout: float = 3.0) -> list[dict]:
             entry = parse(raw)
             if entry:
                 found[entry["id"]] = entry
-    except OSError as exc:  # noqa: BLE001 — e.g. ENETUNREACH is normal, not an error
+    except OSError as exc:  # e.g. ENETUNREACH is normal, not an error
         _log.info("sync: ssdp send/recv error on %s: %s", bind_host, exc)
         return []
     finally:
@@ -125,13 +125,13 @@ def discover(bind_host: str, timeout: float = 3.0) -> list[dict]:
 def announce(bind_host: str, peer_id: str, url: str) -> bool:
     try:
         sock = _multicast_socket(bind_host)
-    except OSError as exc:  # noqa: BLE001 — no multicast here is normal, not an error
+    except OSError as exc:  # no multicast here is normal, not an error
         _log.info("sync: ssdp announce unavailable on %s: %s", bind_host, exc)
         return False
     try:
         sock.sendto(build_announce(peer_id, url), (MCAST_ADDR, MCAST_PORT))
         return True
-    except OSError as exc:  # noqa: BLE001 — e.g. ENETUNREACH is normal, not an error
+    except OSError as exc:  # e.g. ENETUNREACH is normal, not an error
         _log.info("sync: ssdp announce send error on %s: %s", bind_host, exc)
         return False
     finally:
