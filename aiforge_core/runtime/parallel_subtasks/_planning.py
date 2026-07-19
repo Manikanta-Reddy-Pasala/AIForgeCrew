@@ -409,6 +409,23 @@ _PLAN_CODE_EXTS = {"py", "java", "js", "ts", "tsx", "go", "rs", "kt", "rb",
                    "c", "cpp", "cs", "php"}
 
 
+# Compiled languages — their cross-module contracts must line up to COMPILE, so
+# fragmentation is far more fragile than in Python/JS. Tighter cap for these.
+_COMPILED_CODE_EXTS = {"java", "go", "rs", "kt", "c", "cpp", "cc", "cs"}
+
+
+def _max_compiled_modules() -> int:
+    """Tighter module cap for a COMPILED-language plan (default 3). Java/Go/Rust
+    isolated agents diverge on the exact type contracts needed to compile;
+    keeping a coupled subsystem in ONE module avoids the mismatch. Raise
+    AIFORGE_ARCHITECT_MAX_MODULES_COMPILED for a genuinely large compiled build."""
+    try:
+        return max(1, int(os.environ.get(
+            "AIFORGE_ARCHITECT_MAX_MODULES_COMPILED", "3")))
+    except ValueError:
+        return 3
+
+
 def _max_code_modules() -> int:
     """Cap on NON-TEST code modules in one plan. Finer decompose is WORSE on a
     local model — it over-splits one responsibility (a single queue into
@@ -470,7 +487,15 @@ def _validate_plan(files: list[dict]) -> tuple[list[dict], list[str]]:
     _code_modules = [p for p in paths
                      if p.rsplit(".", 1)[-1].lower() in _PLAN_CODE_EXTS
                      and "test" not in p.lower()]
-    _cap = _max_code_modules()
+    # Compiled languages punish fragmentation HARDER — cross-module type
+    # contracts (generics, nested-type constructors, signatures) must line up
+    # exactly to even COMPILE, and isolated agents diverge on them (observed: a
+    # Java LRU split into LRUCache/Node/List → constructor + generic mismatches,
+    # uncompilable). So a compiled plan gets a TIGHTER cap.
+    _compiled = any(p.rsplit(".", 1)[-1].lower() in _COMPILED_CODE_EXTS
+                    for p in _code_modules)
+    _cap = min(_max_code_modules(), _max_compiled_modules()) if _compiled \
+        else _max_code_modules()
     if len(_code_modules) > _cap:
         issues.append(
             f"{len(_code_modules)} code modules is over-fragmented for one build "

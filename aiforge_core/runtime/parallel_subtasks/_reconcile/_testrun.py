@@ -364,4 +364,15 @@ def _broken_project_config(cwd: str) -> str | None:
                 _json.load(fh)
         except Exception as exc:  # noqa: BLE001
             return f"package.json: {str(exc)[:200]}"
+    # Maven: a malformed pom.xml makes mvn die at ModelParse — 0 parsed TEST
+    # failures, so without this the pre-existing gate mis-rules the whole Java
+    # build "not your fault" and skips the repair loop. XML well-formedness is a
+    # cheap, deterministic gate (semantic pom errors still surface via mvn).
+    pom = os.path.join(cwd, "pom.xml")
+    if os.path.isfile(pom):
+        try:
+            import xml.etree.ElementTree as _ET
+            _ET.parse(pom)
+        except Exception as exc:  # noqa: BLE001
+            return f"pom.xml: {str(exc)[:200]}"
     return None

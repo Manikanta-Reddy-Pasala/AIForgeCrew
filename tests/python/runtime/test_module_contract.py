@@ -67,6 +67,23 @@ def test_cap_ignores_tests_and_manifest(monkeypatch):
     assert not any("over-fragmented" in i for i in issues)
 
 
+def test_compiled_plan_gets_tighter_cap(monkeypatch):
+    monkeypatch.delenv("AIFORGE_ARCHITECT_MAX_MODULES", raising=False)
+    monkeypatch.delenv("AIFORGE_ARCHITECT_MAX_MODULES_COMPILED", raising=False)
+    # 4 Java modules → over the compiled cap of 3 → consolidate issue
+    java = ([{"path": f"src/main/java/pkg/M{i}.java", "purpose": "x", "api": []}
+             for i in range(4)]
+            + [{"path": "src/test/java/pkg/MTest.java", "purpose": "t", "api": []},
+               {"path": "pom.xml", "purpose": "manifest", "api": []}])
+    _c, issues = _validate_plan(java)
+    assert any("over-fragmented" in i and "at most 3" in i for i in issues)
+    # the SAME count in Python is fine (default cap 4)
+    py = ([{"path": f"pkg/m{i}.py", "purpose": "x", "api": []} for i in range(4)]
+          + [{"path": "tests/test_m.py", "purpose": "t", "api": []}])
+    _c2, issues2 = _validate_plan(py)
+    assert not any("over-fragmented" in i for i in issues2)
+
+
 def test_hyphenated_python_module_is_sanitized(monkeypatch):
     monkeypatch.setenv("AIFORGE_ARCHITECT_MAX_MODULES", "9")
     clean, issues = _validate_plan([

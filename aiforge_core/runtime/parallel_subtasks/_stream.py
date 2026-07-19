@@ -425,9 +425,23 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
                     "failing assertions against the intent before treating them as "
                     "bugs — the implementation may be right.")
     else:
-        _verdict = ("ℹ️ **Built.** Couldn't run the tests on this host (no matching "
-                    "toolchain) — the code is written; run the suite where the "
-                    "toolchain is available.")
+        # ok is None — the reconcile didn't produce a clear pass/fail. Don't lie
+        # "no toolchain" when one IS installed and the build simply errored (a
+        # compile error, a malformed pom): detect the stack + say the truth.
+        try:
+            from aiforge_core.runtime.tools.project_runner import detect as _detect
+            _stk = (_detect(cwd) or {}).get("stacks") or []
+        except Exception:  # noqa: BLE001
+            _stk = []
+        if _stk:
+            _verdict = ("⚠️ **Built — but the build/tests did NOT pass cleanly** ("
+                        + ", ".join(_stk) + "). The toolchain ran and reported "
+                        "errors (a compile error or a broken build file) — see the "
+                        "integration report below for the exact error.")
+        else:
+            _verdict = ("ℹ️ **Built.** Couldn't run the tests on this host (no "
+                        "matching toolchain) — the code is written; run the suite "
+                        "where the toolchain is available.")
     # Only attach the detailed integration report when it AGREES with the
     # authoritative verdict — otherwise it contradicts (e.g. "✅ all tests pass"
     # followed by "❌ tests failed" from a different runner that missed a dep).

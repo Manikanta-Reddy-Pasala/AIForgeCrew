@@ -212,6 +212,44 @@ _SRC_EXTS = (".py", ".java", ".go", ".js", ".mjs", ".ts", ".tsx", ".c", ".cc",
              ".scala", ".sh")
 
 
+def _turn_changed_source(cwd: str) -> "list[str] | None":
+    """Source files THIS turn changed — BOTH uncommitted (working tree) AND
+    COMMITTED since the pre-turn baseline. The parallel subtasks COMMIT their
+    files, so ``git status`` shows a clean tree and misses everything they built;
+    without the baseline diff a greenfield build looks like "nothing changed" and
+    its compile error is wrongly ruled pre-existing. Returns None on git error
+    (caller treats as "don't skip")."""
+    import subprocess as _sp
+    files: set[str] = set()
+    try:
+        r = _sp.run(["git", "-C", cwd, "status", "--porcelain"],
+                    capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            return None                       # git unusable
+        for ln in (r.stdout or "").splitlines():
+            p = ln[3:].strip().strip('"')
+            if p:
+                files.add(p)
+    except Exception:  # noqa: BLE001
+        return None
+    # committed-since-baseline (the subtasks' work) — diff HEAD against the most
+    # recent 'baseline' commit the planner pinned.
+    try:
+        base = _sp.run(["git", "-C", cwd, "rev-list", "--max-count=1",
+                        "--grep=baseline", "HEAD"],
+                       capture_output=True, text=True, timeout=10).stdout.strip()
+        if base:
+            d = _sp.run(["git", "-C", cwd, "diff", "--name-only", f"{base}..HEAD"],
+                        capture_output=True, text=True, timeout=10)
+            if d.returncode == 0:
+                for p in (d.stdout or "").splitlines():
+                    if p.strip():
+                        files.add(p.strip())
+    except Exception:  # noqa: BLE001
+        pass
+    return [f for f in files if f.endswith(_SRC_EXTS)]
+
+
 def _change_in_error(cwd: str, output: str) -> bool:
     """True if any source file THIS turn changed is named in the test/build
     error — i.e. the failure plausibly stems from the change (so repair it).
@@ -219,17 +257,10 @@ def _change_in_error(cwd: str, output: str) -> bool:
     pre-existing/unrelated. Best-effort; True on any doubt (git unusable) so we
     keep the normal repair loop rather than wrongly skip a real regression."""
     import os as _os
-    import subprocess as _sp
     out = output or ""
-    try:
-        r = _sp.run(["git", "-C", cwd, "status", "--porcelain"],
-                    capture_output=True, text=True, timeout=10)
-        if r.returncode != 0:
-            return True                       # git unusable → don't skip
-        changed = [ln[3:].strip() for ln in (r.stdout or "").splitlines()
-                   if ln.strip() and ln[3:].strip().endswith(_SRC_EXTS)]
-    except Exception:  # noqa: BLE001
-        return True
+    changed = _turn_changed_source(cwd)
+    if changed is None:
+        return True                           # git unusable → don't skip
     if not changed:
         return False                          # nothing source changed → not the cause
     for f in changed:
