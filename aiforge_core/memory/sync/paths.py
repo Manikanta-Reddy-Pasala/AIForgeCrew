@@ -36,16 +36,27 @@ def okf_dir() -> Path:
     return _io.root() / "okf"
 
 
+def tomb_dir() -> Path:
+    """Root of the tombstone tree. Callers enumerating tombstones start here
+    rather than rebuilding the ``.tomb`` literal themselves."""
+    return okf_dir() / ".tomb"
+
+
 def tomb_path(origin: str, key: str) -> Path:
-    return okf_dir() / ".tomb" / _component(origin) / f"{_component(key)}.json"
+    return tomb_dir() / _component(origin) / f"{_component(key)}.json"
 
 
 def lease_path() -> Path:
     return okf_dir() / ".lease.json"
 
 
+def peers_dir() -> Path:
+    """Root of the foreign-node tree."""
+    return okf_dir() / "peers"
+
+
 def peer_node_path(origin: str, key: str) -> Path:
-    return okf_dir() / "peers" / _component(origin) / f"{_component(key)}.md"
+    return peers_dir() / _component(origin) / f"{_component(key)}.md"
 
 
 def node_paths(origin: str, key: str) -> list[Path]:
@@ -88,5 +99,6 @@ def target_for(entry: dict) -> Path | None:
     return existing[0] if existing else peer_node_path(origin, key)
 
 
-__all__ = ["okf_dir", "tomb_path", "lease_path", "peer_node_path", "node_paths",
+__all__ = ["okf_dir", "tomb_dir", "tomb_path", "lease_path", "peers_dir",
+           "peer_node_path", "node_paths",
            "target_for", "LEASE_KEY"]

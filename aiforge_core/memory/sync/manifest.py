@@ -91,7 +91,7 @@ def _class_b() -> list[dict]:
         entry = _entry_for_node(p)
         if entry:
             out.append(entry)
-    tomb = okf / ".tomb"
+    tomb = paths.tomb_dir()
     if tomb.is_dir():
         for p in sorted(tomb.rglob("*.json")):
             entry = _entry_for_json(p)
