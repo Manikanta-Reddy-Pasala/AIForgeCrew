@@ -1,6 +1,8 @@
 """Peer identity and the version stamp applied to mutable nodes."""
 from __future__ import annotations
 
+from pathlib import Path
+
 
 def test_self_id_defaults_to_hostname_slug(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
@@ -48,7 +50,7 @@ def test_save_node_stamps_frontmatter(monkeypatch, tmp_path):
     from aiforge_core.memory.okf import nodes, store
 
     res = store.save_node("learning", None, {"title": "L"}, "body")
-    node = nodes.parse_node(open(res["path"], encoding="utf-8").read())
+    node = nodes.parse_node(Path(res["path"]).read_text(encoding="utf-8"))
     assert node["meta"]["origin"] == "nuc"
     assert node["meta"]["rev"] == 1
     assert node["meta"]["updated_by"] == "nuc"
