@@ -182,3 +182,47 @@ def test_a_tampered_blob_is_rejected(monkeypatch, tmp_path):
     assert res["rejected"] == 1
     assert not (book["home"] / "md" / "captures").exists()
     assert hashlib.sha256(b"from nuc").hexdigest()   # sanity: the real hash differs
+
+
+def test_transitive_discovery_quarantines_the_third_peer(monkeypatch, tmp_path):
+    """A knows B; B knows C. After one cycle A knows *of* C but never pulls it."""
+    from aiforge_core.memory.sync import loop, peers
+
+    nuc = _peer(monkeypatch, tmp_path, "nuc")
+    # nuc has alice approved, so alice appears in nuc's advertised roster.
+    _activate(monkeypatch, nuc)
+    peers.save({"self": {"id": "nuc", "urls": ["http://nuc"]}, "peers": [
+        {"id": "alice", "urls": ["http://alice"], "token": "t",
+         "state": "approved"},
+    ]})
+
+    book = _peer(monkeypatch, tmp_path, "book")
+    _activate(monkeypatch, book)
+    peers.save({"self": {"id": "book", "urls": ["http://book"]}, "peers": [
+        {"id": "nuc", "urls": ["http://stub"], "token": "", "state": "approved"},
+    ]})
+
+    _pull(monkeypatch, book, nuc)
+
+    _activate(monkeypatch, book)
+    known = {p["id"]: p for p in peers.load()["peers"]}
+    assert known["alice"]["state"] == "candidate"
+    assert "token" not in known["alice"]
+    assert [p["id"] for p in peers.approved()] == ["nuc"]
+
+
+def test_ssdp_discoveries_are_also_quarantined(monkeypatch, tmp_path):
+    from aiforge_core.memory.sync import loop, peers
+
+    book = _peer(monkeypatch, tmp_path, "book")
+    _activate(monkeypatch, book)
+    peers.save({"self": {"id": "book", "urls": ["http://book"]}, "peers": []})
+    monkeypatch.setenv("AIFORGE_SYNC_SSDP", "1")
+    monkeypatch.setattr("aiforge_core.memory.sync.discovery_ssdp.discover",
+                        lambda *a, **k: [{"id": "nuc", "urls": ["http://found"]}])
+
+    loop.run_once()
+
+    known = {p["id"]: p for p in peers.load()["peers"]}
+    assert known["nuc"]["state"] == "candidate"
+    assert peers.approved() == []

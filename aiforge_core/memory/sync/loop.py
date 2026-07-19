@@ -63,10 +63,47 @@ def sync_with(peer: dict) -> dict:
     return result
 
 
+def _ssdp_sweep() -> None:
+    """Fold any locally-announced peers into the registry as candidates.
+
+    Off unless ``AIFORGE_SYNC_SSDP=1``: multicast is useless across WireGuard
+    and the internet, so it is opt-in for operators who genuinely have peers
+    on the same physical segment. Discovered peers are folded through
+    ``peers.merge_roster`` exactly like gossiped ones — this function does not
+    (and must not) decide trust; a wildcard bind host is refused by
+    ``discover`` itself, not re-checked here, so that guard lives in one place.
+    """
+    import os
+
+    if os.environ.get("AIFORGE_SYNC_SSDP", "0") != "1":
+        return
+    from aiforge_core.memory.sync import discovery_ssdp, peers
+
+    bind = os.environ.get("AIFORGE_SYNC_SSDP_HOST", "")
+    try:
+        found = discovery_ssdp.discover(bind)
+    except ValueError as exc:
+        # discover() refuses a wildcard/empty bind (DDoS-amplification guard).
+        # That means SSDP is enabled without AIFORGE_SYNC_SSDP_HOST set to a
+        # real interface address — a misconfiguration the operator needs to
+        # see, not an ordinary "no peers on this segment" result, so it is
+        # logged at a distinct level rather than folded into the info-level
+        # best-effort case below.
+        _log.warning("sync: ssdp enabled but misconfigured: %s "
+                      "(set AIFORGE_SYNC_SSDP_HOST to a real interface address)", exc)
+        return
+    except Exception as exc:  # noqa: BLE001 — discovery is best-effort by nature
+        _log.info("sync: ssdp sweep failed: %s", exc)
+        return
+    if found:
+        peers.merge_roster(found)
+
+
 def run_once() -> list[dict]:
     """One cycle across every approved peer."""
     from aiforge_core.memory.sync import peers
 
+    _ssdp_sweep()
     out = []
     for peer in peers.approved():
         try:
