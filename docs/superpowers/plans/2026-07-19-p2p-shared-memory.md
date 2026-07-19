@@ -45,19 +45,38 @@
 | File | Responsibility |
 |---|---|
 | `__init__.py` | Public re-exports only |
+| `_io.py` | The only place touching disk primitives: tree root, hashing, atomic write, JSON |
+| `paths.py` | The only place that knows the on-disk layout: where an identity lives |
 | `identity.py` | This peer's slug; the `origin`/`rev`/`updated_by` stamp on a local write |
 | `manifest.py` | Build the local manifest from the memory tree; resolve a hash back to a path |
 | `merge.py` | **Pure.** Two manifests in, a want/conflict decision set out. No I/O |
 | `peers.py` | `peers.json` load/save, roster gossip merge, candidate quarantine |
-| `client.py` | Fetch from one peer, verify hashes, resolve the local target, apply atomically |
+| `transport.py` | HTTP only. Fetch a manifest or blob from one peer. Never touches a path |
+| `apply.py` | Disk only. Verify a blob, place it, keep sidecars. Never imports httpx |
 | `tombstone.py` | Express a local delete as a record the mesh can merge |
 | `lease.py` | Claim / renew / check the compaction lease |
 | `discovery_ssdp.py` | Multicast announce and search on the local segment |
 | `loop.py` | Scheduler: run one cycle across all approved peers; CLI entry |
 
+**Separation of concerns.** `transport.py` and `apply.py` were a single `client.py` in an
+earlier draft. They are split because "talk HTTP to a peer" and "decide where a file goes on
+disk" fail differently, are tested differently, and change for different reasons. Nothing in
+`apply.py` imports httpx; nothing in `transport.py` touches a path.
+
+**DRY.** Every module needs the memory-tree root, a content hash, and a crash-safe write —
+those live once, in `_io.py`. Every module that resolves an identity to a file needs the layout
+rule — it lives once, in `paths.py`. No module reimplements either, and no module hand-rolls
+temp-file-plus-`os.replace`.
+
+**KISS.** `merge.py` stays pure so the only intricate logic is testable with two lists and no
+fixtures. Every other module stays thin enough to read on one screen; none should approach the
+500-line house cap.
+
 **New route — `aiforge_core/api/routes/sync.py`** (mounted in `aiforge_core/api/api.py`)
 
-**New tests — `tests/python/memory/sync/`**: `test_manifest.py`, `test_merge.py`, `test_peers.py`, `test_client.py`, `test_lease.py`, `test_sync_routes.py`, `test_two_peer.py`
+**New tests — `tests/python/memory/sync/`**: `test_io.py`, `test_paths.py`, `test_manifest.py`,
+`test_merge.py`, `test_peers.py`, `test_apply.py`, `test_lease.py`, `test_tombstone.py`,
+`test_ssdp.py`, `test_sync_routes.py`, `test_two_peer.py`
 
 ## Data shapes
 
@@ -432,11 +451,464 @@ git commit -m "feat(sync): stamp origin/rev/updated_by onto OKF nodes"
 
 ---
 
-## Task 3: Class B manifest entries, tombstones and the lease
+## Task 3: Shared I/O and layout modules, then class B manifest entries
+
+This task has two halves. First extract the disk primitives and the layout rule into `_io.py`
+and `paths.py` — Task 1 put `_root`, `_sha256` and `_rel` directly in `manifest.py`, and four
+later modules would otherwise each grow their own copy. Then build class B entries on top of
+them.
 
 **Files:**
-- Modify: `aiforge_core/memory/sync/manifest.py`
+- Create: `aiforge_core/memory/sync/_io.py`
+- Create: `aiforge_core/memory/sync/paths.py`
+- Modify: `aiforge_core/memory/sync/manifest.py` (use `_io`, add class B)
+- Test: `tests/python/memory/sync/test_io.py`
 - Test: `tests/python/memory/sync/test_manifest.py` (append)
+
+### Half one — extract the shared modules
+
+- [ ] **Step A1: Write the failing test for `_io`**
+
+Create `tests/python/memory/sync/test_io.py`:
+
+```python
+"""Disk primitives. Every other sync module builds on exactly these."""
+from __future__ import annotations
+
+import hashlib
+
+
+def test_sha256_file_hashes_the_bytes(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import _io
+
+    p = tmp_path / "f.md"
+    p.write_bytes(b"hello")
+
+    assert _io.sha256_file(p) == hashlib.sha256(b"hello").hexdigest()
+
+
+def test_write_atomic_leaves_no_temp_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import _io
+
+    target = tmp_path / "deep" / "nested" / "f.md"
+    _io.write_atomic(target, b"body")
+
+    assert target.read_bytes() == b"body"
+    assert list(target.parent.glob("*.tmp")) == []
+
+
+def test_write_atomic_replaces_existing_content(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import _io
+
+    target = tmp_path / "f.md"
+    _io.write_atomic(target, b"old")
+    _io.write_atomic(target, b"new")
+
+    assert target.read_bytes() == b"new"
+
+
+def test_read_json_returns_empty_on_missing_or_corrupt(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import _io
+
+    assert _io.read_json(tmp_path / "absent.json") == {}
+
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    assert _io.read_json(bad) == {}
+
+
+def test_write_json_round_trips(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import _io
+
+    p = tmp_path / "x.json"
+    _io.write_json(p, {"a": 1})
+
+    assert _io.read_json(p) == {"a": 1}
+
+
+def test_safe_target_rejects_escapes(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import _io
+
+    assert _io.safe_target("captures/a.md") is not None
+    assert _io.safe_target("../../.ssh/authorized_keys") is None
+    assert _io.safe_target("/etc/passwd") is None
+    assert _io.safe_target("") is None
+
+
+def test_is_syncable_refuses_a_symlink(monkeypatch, tmp_path):
+    """A symlink under captures/ must never be advertised or served."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import _io
+
+    secret = tmp_path / "outside.txt"
+    secret.write_text("secret", encoding="utf-8")
+    real = tmp_path / "real.md"
+    real.write_text("fine", encoding="utf-8")
+    link = tmp_path / "link.md"
+    link.symlink_to(secret)
+
+    assert _io.is_syncable(real) is True
+    assert _io.is_syncable(link) is False
+    assert _io.is_syncable(tmp_path / "absent.md") is False
+```
+
+- [ ] **Step A2: Run it and confirm it fails**
+
+Run: `.venv/bin/pytest tests/python/memory/sync/test_io.py -v`
+Expected: FAIL — `ImportError: cannot import name '_io'`
+
+- [ ] **Step A3: Write `_io.py`**
+
+Create `aiforge_core/memory/sync/_io.py`:
+
+```python
+"""Disk primitives shared by every sync module.
+
+This is the single place that knows how to find the memory tree, hash a file,
+and write one without risking a truncated result. Modules that need any of
+those import them from here rather than growing their own copy.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import os
+from pathlib import Path
+
+_log = logging.getLogger("aiforge.sync")
+
+
+def root() -> Path:
+    """The markdown memory tree — the source of truth this whole feature syncs."""
+    from aiforge_core.memory.md_store import memory_dir
+
+    return memory_dir()
+
+
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def rel(path: Path) -> str:
+    """Path relative to the tree root, in the posix form the manifest uses."""
+    return path.relative_to(root()).as_posix()
+
+
+def safe_target(relative: str) -> Path | None:
+    """Resolve a manifest-supplied path inside the tree, or None if it escapes.
+
+    A peer supplies these strings, so they are untrusted input: anything that
+    resolves to the root itself or outside it is refused rather than clamped.
+    """
+    if not relative:
+        return None
+    base = root().resolve()
+    try:
+        target = (base / relative).resolve()
+    except (OSError, ValueError):  # noqa: BLE001 — a hostile path must not raise
+        return None
+    if target == base or base not in target.parents:
+        _log.warning("sync: rejected out-of-tree path %s", relative)
+        return None
+    return target
+
+
+def is_syncable(path: Path) -> bool:
+    """True for a real file we are willing to advertise to a peer.
+
+    Symlinks are refused. ``Path.glob`` follows them, so a symlink planted under
+    ``captures/`` would otherwise be listed in the manifest and its *target*
+    served over ``/blob`` — turning a read-only sync endpoint into a way to read
+    arbitrary files outside the memory tree.
+    """
+    return path.is_file() and not path.is_symlink()
+
+
+def write_atomic(target: Path, body: bytes) -> None:
+    """Write via temp file + os.replace so a crash cannot leave a partial file."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp.write_bytes(body)
+    os.replace(tmp, target)
+
+
+def read_json(path: Path) -> dict:
+    """Load a JSON record, or {} if it is absent or unreadable.
+
+    Soft-fail is correct here: a corrupt marker file must degrade the node, not
+    stop it. The caller treats {} as "no record".
+    """
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — hand-edited or truncated JSON must not raise
+        _log.warning("sync: unreadable json %s, treating as empty", path)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_json(path: Path, record: dict) -> None:
+    write_atomic(path, json.dumps(record, indent=2).encode("utf-8"))
+
+
+__all__ = ["root", "sha256_file", "rel", "safe_target", "is_syncable",
+           "write_atomic", "read_json", "write_json"]
+```
+
+- [ ] **Step A4: Run it and confirm it passes**
+
+Run: `.venv/bin/pytest tests/python/memory/sync/test_io.py -v`
+Expected: PASS, 6 passed
+
+- [ ] **Step A5: Write the failing test for `paths`**
+
+Create `tests/python/memory/sync/test_paths.py`:
+
+```python
+"""The on-disk layout rule, in one place.
+
+OKF ids are per-scope counters, so (nuc, O-01) and (ms, O-01) are different
+objects that both render to O-01.md. These functions are the only thing that
+decides where an identity lives.
+"""
+from __future__ import annotations
+
+
+def _env(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+
+
+def _node(tmp_path, scope: str, origin: str, key: str):
+    p = tmp_path / "md" / "okf" / scope / "learnings" / f"{key}.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(f'---\ntype: learning\nid: "{key}"\norigin: "{origin}"\n'
+                 f'rev: 1\nupdated_by: "{origin}"\n---\n\nb\n', encoding="utf-8")
+    return p
+
+
+def test_node_paths_matches_on_origin_not_just_filename(monkeypatch, tmp_path):
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    mine = _node(tmp_path, "global", "book", "O-01")
+    _node(tmp_path, "peers/ms", "ms", "O-01")
+
+    assert paths.node_paths("book", "O-01") == [mine]
+
+
+def test_node_paths_is_empty_for_an_unknown_identity(monkeypatch, tmp_path):
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    assert paths.node_paths("nuc", "L-99") == []
+
+
+def test_tomb_and_lease_paths_are_stable(monkeypatch, tmp_path):
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    assert paths.tomb_path("nuc", "L-07").as_posix().endswith(
+        "okf/.tomb/nuc/L-07.json")
+    assert paths.lease_path().as_posix().endswith("okf/.lease.json")
+
+
+def test_target_for_known_identity_is_updated_in_place(monkeypatch, tmp_path):
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    mine = _node(tmp_path, "global", "nuc", "L-07")
+    entry = {"cls": "B", "origin": "nuc", "key": "L-07",
+             "path": "okf/peers/nuc/L-07.md"}   # sender's layout differs
+
+    assert paths.target_for(entry) == mine
+
+
+def test_target_for_a_new_foreign_node_lands_under_peers(monkeypatch, tmp_path):
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    entry = {"cls": "B", "origin": "ms", "key": "O-01",
+             "path": "okf/global/objectives/O-01.md"}
+
+    assert paths.target_for(entry).as_posix().endswith("okf/peers/ms/O-01.md")
+
+
+def test_target_for_class_a_uses_the_advertised_path(monkeypatch, tmp_path):
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    entry = {"cls": "A", "path": "captures/a.md"}
+
+    assert paths.target_for(entry).as_posix().endswith("captures/a.md")
+
+
+def test_target_for_class_a_still_refuses_to_escape(monkeypatch, tmp_path):
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    assert paths.target_for({"cls": "A", "path": "../../evil"}) is None
+
+
+def test_target_for_a_tombstone_and_the_lease(monkeypatch, tmp_path):
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    tomb = paths.target_for({"cls": "B", "origin": "nuc", "key": "L-07",
+                             "tomb": True, "path": "x"})
+    lease = paths.target_for({"cls": "B", "origin": "", "key": "__lease__",
+                              "path": "x"})
+
+    assert tomb.as_posix().endswith("okf/.tomb/nuc/L-07.json")
+    assert lease.as_posix().endswith("okf/.lease.json")
+```
+
+- [ ] **Step A6: Run it and confirm it fails**
+
+Run: `.venv/bin/pytest tests/python/memory/sync/test_paths.py -v`
+Expected: FAIL — `ImportError: cannot import name 'paths'`
+
+- [ ] **Step A7: Write `paths.py`**
+
+Create `aiforge_core/memory/sync/paths.py`:
+
+```python
+"""Where an identity lives on disk. The single owner of the layout rule.
+
+OKF ids are per-scope counters (``aiforge_core/memory/okf/store.py:127``), so
+``(nuc, O-01)`` and ``(ms, O-01)`` are unrelated objects that both render to
+``O-01.md``. A peer's advertised path is therefore a hint, never an instruction:
+trusting it would let one peer silently overwrite another's node.
+
+The rule: an identity already held is updated wherever it currently lives;
+anything new from another peer lands under ``okf/peers/<origin>/``. Every peer
+derives the same answer from the same inputs, so the layout converges along with
+the content.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+from aiforge_core.memory.sync import _io
+
+LEASE_KEY = "__lease__"
+
+
+def okf_dir() -> Path:
+    return _io.root() / "okf"
+
+
+def tomb_path(origin: str, key: str) -> Path:
+    return okf_dir() / ".tomb" / (origin or "_") / f"{key}.json"
+
+
+def lease_path() -> Path:
+    return okf_dir() / ".lease.json"
+
+
+def peer_node_path(origin: str, key: str) -> Path:
+    return okf_dir() / "peers" / (origin or "_") / f"{key}.md"
+
+
+def node_paths(origin: str, key: str) -> list[Path]:
+    """Every node file on disk carrying this identity, across all scopes."""
+    from aiforge_core.memory.okf import nodes as _nodes
+
+    okf = okf_dir()
+    if not okf.is_dir():
+        return []
+    out: list[Path] = []
+    for p in sorted(okf.rglob(f"{key}.md")):
+        if p.name.endswith(".conflict.md"):
+            continue
+        try:
+            meta = (_nodes.parse_node(p.read_text(encoding="utf-8")).get("meta") or {})
+        except Exception:  # noqa: BLE001 — an unreadable node is left untouched
+            continue
+        if str(meta.get("origin") or "") == origin:
+            out.append(p)
+    return out
+
+
+def target_for(entry: dict) -> Path | None:
+    """Local destination for a manifest entry, or None if it must be refused."""
+    if entry.get("cls") == "A":
+        # Capture filenames embed a content digest, so they are globally unique.
+        return _io.safe_target(str(entry.get("path") or ""))
+
+    key = str(entry.get("key") or "")
+    if not key:
+        return None
+    origin = str(entry.get("origin") or "")
+
+    if entry.get("tomb"):
+        return tomb_path(origin, key)
+    if key == LEASE_KEY:
+        return lease_path()
+
+    existing = node_paths(origin, key)
+    return existing[0] if existing else peer_node_path(origin, key)
+
+
+__all__ = ["okf_dir", "tomb_path", "lease_path", "peer_node_path", "node_paths",
+           "target_for", "LEASE_KEY"]
+```
+
+- [ ] **Step A8: Run it and confirm it passes**
+
+Run: `.venv/bin/pytest tests/python/memory/sync/test_paths.py -v`
+Expected: PASS, 8 passed
+
+- [ ] **Step A9: Refactor `manifest.py` onto `_io`, confirm no behaviour change**
+
+Delete `_root`, `_sha256` and `_rel` from `manifest.py` and use `_io.root()`,
+`_io.sha256_file()` and `_io.rel()` instead. Replace the body of `path_for_hash` so it uses
+`_io.root()`. Do not change any behaviour.
+
+One behaviour *is* added here, and it is a security fix rather than a refactor: guard the
+`_class_a` scan with `_io.is_syncable(p)` so symlinks are neither advertised nor servable.
+Add a test for it alongside the existing manifest tests:
+
+```python
+def test_a_symlinked_capture_is_never_advertised(monkeypatch, tmp_path):
+    """Path.glob follows symlinks; /blob must not become an arbitrary file reader."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import manifest
+
+    secret = tmp_path / "secret.txt"
+    secret.write_text("classified", encoding="utf-8")
+    d = tmp_path / "md" / "captures"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "real-20260719-aaaaaa.md").write_text("fine", encoding="utf-8")
+    (d / "evil-20260719-bbbbbb.md").symlink_to(secret)
+
+    paths = {e["path"] for e in manifest.build()}
+    assert paths == {"captures/real-20260719-aaaaaa.md"}
+    assert manifest.path_for_hash(
+        hashlib.sha256(b"classified").hexdigest()) is None
+```
+
+Run: `.venv/bin/pytest tests/python/memory/sync/ -v`
+Expected: PASS — the Task 1 tests still pass unchanged (the point of the refactor), plus the
+new symlink test
+
+- [ ] **Step A10: Commit half one**
+
+```bash
+git add aiforge_core/memory/sync/_io.py aiforge_core/memory/sync/paths.py \
+        aiforge_core/memory/sync/manifest.py \
+        tests/python/memory/sync/test_io.py tests/python/memory/sync/test_paths.py
+git commit -m "refactor(sync): extract shared disk primitives and the layout rule"
+```
+
+### Half two — class B manifest entries
 
 - [ ] **Step 1: Write the failing test**
 
@@ -518,14 +990,12 @@ Expected: FAIL — the four new tests fail; `build()` returns only class A entri
 
 - [ ] **Step 3: Write minimal implementation**
 
-In `aiforge_core/memory/sync/manifest.py`, add the constant, the class B builder, and wire it
-into `build()`:
+In `aiforge_core/memory/sync/manifest.py`, add the class B builder and wire it into `build()`.
+Note this half uses `_io` and `paths` throughout — it must not reintroduce a local `_root`,
+`_sha256` or `_rel`, and it must not hand-roll the tombstone or lease path, which `paths` owns.
 
 ```python
-LEASE_KEY = "__lease__"
-
-
-def _entry_for_node(root: Path, p: Path) -> dict | None:
+def _entry_for_node(p: Path) -> dict | None:
     from aiforge_core.memory.okf import nodes as _nodes
 
     try:
@@ -540,8 +1010,8 @@ def _entry_for_node(root: Path, p: Path) -> dict | None:
         # Not yet stamped by identity.stamp(); stays local until it is written again.
         return None
     return {
-        "path": _rel(root, p),
-        "hash": _sha256(p),
+        "path": _io.rel(p),
+        "hash": _io.sha256_file(p),
         "cls": "B",
         "origin": origin,
         "key": key,
@@ -550,19 +1020,13 @@ def _entry_for_node(root: Path, p: Path) -> dict | None:
     }
 
 
-def _entry_for_json(root: Path, p: Path) -> dict | None:
-    import json
-
-    try:
-        rec = json.loads(p.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 — a truncated marker must not break the manifest
-        _log.warning("sync: unreadable marker %s", p)
-        return None
-    if not isinstance(rec, dict) or not rec.get("key"):
+def _entry_for_json(p: Path) -> dict | None:
+    rec = _io.read_json(p)
+    if not rec.get("key"):
         return None
     entry = {
-        "path": _rel(root, p),
-        "hash": _sha256(p),
+        "path": _io.rel(p),
+        "hash": _io.sha256_file(p),
         "cls": "B",
         "origin": str(rec.get("origin") or ""),
         "key": str(rec.get("key")),
@@ -574,8 +1038,8 @@ def _entry_for_json(root: Path, p: Path) -> dict | None:
     return entry
 
 
-def _class_b(root: Path) -> list[dict]:
-    okf = root / "okf"
+def _class_b() -> list[dict]:
+    okf = paths.okf_dir()
     if not okf.is_dir():
         return []
     out: list[dict] = []
@@ -583,18 +1047,18 @@ def _class_b(root: Path) -> list[dict]:
         if p.name == "index.md" or p.name.endswith(".conflict.md"):
             # index.md is regenerated locally; sidecars are local-only by design.
             continue
-        entry = _entry_for_node(root, p)
+        entry = _entry_for_node(p)
         if entry:
             out.append(entry)
     tomb = okf / ".tomb"
     if tomb.is_dir():
         for p in sorted(tomb.rglob("*.json")):
-            entry = _entry_for_json(root, p)
+            entry = _entry_for_json(p)
             if entry:
                 out.append(entry)
-    lease = okf / ".lease.json"
+    lease = paths.lease_path()
     if lease.is_file():
-        entry = _entry_for_json(root, lease)
+        entry = _entry_for_json(lease)
         if entry:
             out.append(entry)
     return out
@@ -605,15 +1069,13 @@ Change `build()` to include them:
 ```python
 def build() -> list[dict]:
     """Full local manifest, sorted by path for stable diffs."""
-    root = _root()
-    entries = _class_a(root) + _class_b(root)
-    return sorted(entries, key=lambda e: e["path"])
+    return sorted(_class_a() + _class_b(), key=lambda e: e["path"])
 ```
 
-Update `__all__`:
+Imports at the top of the module become:
 
 ```python
-__all__ = ["build", "path_for_hash", "LEASE_KEY"]
+from aiforge_core.memory.sync import _io, paths
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -1284,18 +1746,26 @@ git commit -m "feat(sync): read-only manifest and blob endpoints"
 
 ---
 
-## Task 7: Client — fetch, verify, apply
+## Task 7: Transport and apply, as two separate concerns
+
+"Talk HTTP to a peer" and "decide where a file goes on disk" fail differently, are tested
+differently, and change for different reasons — so they are two modules. `apply.py` never
+imports httpx; `transport.py` never touches a path. Both build on `_io` and `paths`; neither
+reimplements hashing, atomic writes, or the layout rule.
 
 **Files:**
-- Create: `aiforge_core/memory/sync/client.py`
-- Test: `tests/python/memory/sync/test_client.py`
+- Create: `aiforge_core/memory/sync/transport.py`
+- Create: `aiforge_core/memory/sync/apply.py`
+- Test: `tests/python/memory/sync/test_apply.py`
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/python/memory/sync/test_client.py`:
+Create `tests/python/memory/sync/test_apply.py`. Note the target-path rules are already covered
+by `test_paths.py` — do not duplicate them here. These tests cover verification, the
+node/tombstone invariant, and sidecars.
 
 ```python
-"""Applying a fetched decision set to the local tree."""
+"""Applying a fetched blob to the local tree: verify, place, preserve."""
 from __future__ import annotations
 
 import hashlib
