@@ -38,6 +38,8 @@ def build_search() -> bytes:
 
 
 def build_announce(peer_id: str, url: str) -> bytes:
+    if any(c in peer_id or c in url for c in ("\r", "\n")):
+        raise ValueError("peer_id and url must not contain CR or LF")
     return (
         "NOTIFY * HTTP/1.1\r\n"
         f"HOST: {MCAST_ADDR}:{MCAST_PORT}\r\n"
@@ -62,22 +64,28 @@ def parse(raw: bytes) -> dict | None:
             k, _, v = line.partition(":")
             headers[k.strip().upper()] = v.strip()
     usn = headers.get("USN", "")
-    if SERVICE_TYPE not in usn or SERVICE_TYPE not in text:
+    if SERVICE_TYPE not in usn:
         return None
     location = headers.get("LOCATION", "")
     peer_id = usn.removeprefix("uuid:").split("::", 1)[0].strip()
     if not peer_id or not location:
         return None
+    if any(c in peer_id or c in location for c in ("\r", "\n")):
+        return None
     return {"id": peer_id, "urls": [location]}
 
 
-def _socket(bind_host: str) -> socket.socket:
+def _multicast_socket(bind_host: str) -> socket.socket:
     """A multicast socket bound to one interface.
 
     Binding to a specific LAN address rather than ``0.0.0.0`` is deliberate:
     SSDP responders are a well-known DDoS amplification vector, and a responder
-    reachable beyond the local segment becomes someone else's amplifier.
+    reachable beyond the local segment becomes someone else's amplifier. This is
+    a misconfiguration to fix, not a condition to degrade around, so it raises
+    rather than falling back to a safer bind.
     """
+    if bind_host in ("0.0.0.0", "::", "", None):
+        raise ValueError(f"refusing to bind SSDP socket to wildcard address: {bind_host!r}")
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
@@ -91,7 +99,7 @@ def discover(bind_host: str, timeout: float = 3.0) -> list[dict]:
     """Multicast a search and collect replies for ``timeout`` seconds."""
     found: dict[str, dict] = {}
     try:
-        sock = _socket(bind_host)
+        sock = _multicast_socket(bind_host)
     except OSError as exc:  # noqa: BLE001 — no multicast here is normal, not an error
         _log.info("sync: ssdp unavailable on %s: %s", bind_host, exc)
         return []
@@ -106,6 +114,9 @@ def discover(bind_host: str, timeout: float = 3.0) -> list[dict]:
             entry = parse(raw)
             if entry:
                 found[entry["id"]] = entry
+    except OSError as exc:  # noqa: BLE001 — e.g. ENETUNREACH is normal, not an error
+        _log.info("sync: ssdp send/recv error on %s: %s", bind_host, exc)
+        return []
     finally:
         sock.close()
     return list(found.values())
@@ -113,13 +124,16 @@ def discover(bind_host: str, timeout: float = 3.0) -> list[dict]:
 
 def announce(bind_host: str, peer_id: str, url: str) -> bool:
     try:
-        sock = _socket(bind_host)
+        sock = _multicast_socket(bind_host)
     except OSError as exc:  # noqa: BLE001 — no multicast here is normal, not an error
         _log.info("sync: ssdp announce unavailable on %s: %s", bind_host, exc)
         return False
     try:
         sock.sendto(build_announce(peer_id, url), (MCAST_ADDR, MCAST_PORT))
         return True
+    except OSError as exc:  # noqa: BLE001 — e.g. ENETUNREACH is normal, not an error
+        _log.info("sync: ssdp announce send error on %s: %s", bind_host, exc)
+        return False
     finally:
         sock.close()
 
