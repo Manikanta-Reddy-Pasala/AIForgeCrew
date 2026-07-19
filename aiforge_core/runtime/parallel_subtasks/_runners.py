@@ -159,6 +159,61 @@ def _in_scope(rel: str, globs: list[str]) -> bool:
         return True
 
 
+import re as _re
+
+# Test-helper / framework / builtin names that are NOT part of the impl's API —
+# a `.assertEqual(...)` or `.push_back(...)` on a stdlib type must not be demanded
+# of the unit under test.
+_TEST_CALL_NOISE = frozenset({
+    # test-framework assertions / lifecycle (called on self / the test object)
+    "assert", "asserttrue", "assertfalse", "assertequal", "assertnotequal",
+    "assertraises", "assertisnone", "assertisnotnone", "assertin", "assertnotin",
+    "assertis", "assertalmostequal", "assertgreater", "assertless", "assertthat",
+    "expect", "should", "setup", "teardown", "before", "after", "beforeeach",
+    "aftereach", "fail",
+    # output / language builtins (never the unit's own API)
+    "print", "println", "printf", "format", "fmt",
+    # Object/base methods every class already inherits — don't demand them
+    "tostring", "hashcode", "equals", "clone", "getclass",
+})
+
+
+def _required_api_from_tests(tests_src: str) -> list:
+    """Method/function names the TEST source CALLS — the exact surface the impl
+    must expose so the test compiles. Language-agnostic: pulls ``.method(`` calls
+    and bare ``Name(`` calls, drops the test-framework/builtin noise. Best-effort;
+    caps the list so the prompt stays small."""
+    if not tests_src:
+        return []
+    names: list[str] = []
+    seen: set = set()
+    # dotted method calls (obj.method(...)) — the class's own API
+    for m in _re.finditer(r"\.\s*([A-Za-z_]\w*)\s*\(", tests_src):
+        nm = m.group(1)
+        if nm.lower() not in _TEST_CALL_NOISE and nm not in seen:
+            seen.add(nm)
+            names.append(nm)
+    return names[:24]
+
+
+_CPP_EXTS_R = (".cpp", ".cc", ".cxx", ".hpp", ".hh", ".h", ".c++")
+
+
+def _lang_rules(path: str) -> str:
+    """Language-specific coding rules for the target file that a local model
+    reliably gets wrong (injected into the impl prompt). C++ TEMPLATES are the
+    big one — a template body in a .cpp causes redefinition / undefined-reference
+    link errors (observed: DynamicArray<T> split .h + .cpp → won't build)."""
+    pl = (path or "").lower()
+    if pl.endswith(_CPP_EXTS_R):
+        return ("C++ RULE — any TEMPLATE class/function MUST be fully defined in a "
+                "HEADER (declaration + method bodies together in the .hpp/.h); do "
+                "NOT put template method bodies in a .cpp (it causes redefinition / "
+                "undefined-reference link errors). A single self-contained header "
+                "for a templated type is correct.\n\n")
+    return ""
+
+
 def lightweight_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict:
     """Fast per-subtask runner: ONE LLM call to implement the subtask as
     complete file(s), written into the worktree. Far cheaper than the full
@@ -177,6 +232,17 @@ def lightweight_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict
     path = str(subtask.get("path") or "").strip().lstrip("/")
     retry_err = str(subtask.get("_retry_error") or "").strip()
     tests_src = str(subtask.get("_tests") or "").strip()
+    # Test-first divergence guard: the impl gets the test as ground truth, but a
+    # local model still MISSES a method the test calls (observed: a Java Stack
+    # test called a method the impl never defined → uncompilable test). Extract
+    # the exact API the test CALLS and make "implement ALL of these" explicit.
+    _req = _required_api_from_tests(tests_src)
+    _req_block = (("REQUIRED API — the test CALLS every one of these; your code "
+                   "MUST define ALL of them with matching names/arity (missing "
+                   "one = the test won't compile):\n"
+                   + ", ".join(_req) + "\n\n") if _req else "")
+    # Language rules for the target file (e.g. C++ templates must be header-only).
+    _lang_block = _lang_rules(path)
     prompt = (
         (f"⚠ YOUR PREVIOUS ATTEMPT FAILED with:\n{retry_err[:800]}\nFix that this "
          f"time — re-read the SPEC, emit correct, complete code.\n\n---\n\n"
@@ -190,8 +256,10 @@ def lightweight_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict
            f"match it EXACTLY — NEVER 'correct'/'standardize' a value the test "
            f"asserts. If the test calls `x._foo(a, b)` you define `_foo(self, a, b)`; "
            f"if it asserts `grid[0][3] == COLORS['cyan']` your code must produce "
-           f"cyan.\n\nTESTS (ground truth):\n{tests_src[:6000]}\n\n---\n\n"
+           f"cyan.\n\nTESTS (ground truth):\n{tests_src[:6000]}\n\n"
+           + _req_block + "---\n\n"
            if tests_src else "")
+        + _lang_block
         + (f"EXISTING PROJECT FILES already on disk (REAL, committed — import from "
            f"these using their EXACT class/function/constant names + signatures; do "
            f"NOT guess or invent variant names):\n{subtask.get('_existing_files')}\n\n"
