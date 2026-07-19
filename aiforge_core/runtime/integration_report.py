@@ -246,7 +246,8 @@ def run_bare_python_tests(cwd: str, timeout: int = 300):
             # mock) so a `--cov`/`@pytest.mark.asyncio` config doesn't exit with
             # "unrecognized arguments" and zero signal.
             subprocess.run([py, "-m", "pip", "-q", "install", "pytest",
-                            "pytest-cov", "pytest-asyncio", "pytest-mock", "ruff"],
+                            "pytest-cov", "pytest-asyncio", "pytest-mock",
+                            "pytest-timeout", "ruff"],
                            capture_output=True, timeout=timeout)
             # Third-party imports BEST-EFFORT and one at a time — a single
             # unresolvable/mis-detected name (a stray stdlib module, a private
@@ -261,7 +262,20 @@ def run_bare_python_tests(cwd: str, timeout: int = 300):
                 subprocess.run([py, "-m", "pip", "-q", "install", "-r", req],
                                capture_output=True, timeout=timeout)
         env = dict(os.environ, SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy")
-        p = subprocess.run([py, "-m", "pytest", "-q"], cwd=cwd, env=env,
+        # Per-TEST timeout (pytest-timeout, installed above): a generated
+        # `while True` worker / accidental infinite loop otherwise hangs the WHOLE
+        # pytest run until the subprocess timeout, masking every result — the
+        # reconcile then sees nothing to fix and ships the hang. With a per-test
+        # cap the loop fails as ONE visible "Timeout" the reconcile can target.
+        # Default (signal/SIGALRM) method — pytest runs here as its OWN subprocess
+        # on the main thread, so SIGALRM reliably INTERRUPTS a CPU-bound `while
+        # True` (the thread method only reports, can't break a busy loop).
+        try:
+            _ptt = max(3, int(os.environ.get("AIFORGE_PYTEST_TIMEOUT", "20")))
+        except ValueError:
+            _ptt = 20
+        _to = ["--timeout", str(_ptt)]
+        p = subprocess.run([py, "-m", "pytest", "-q", *_to], cwd=cwd, env=env,
                            capture_output=True, text=True, timeout=timeout)
         out = p.stdout + p.stderr
         # If pytest couldn't even START because of a broken CONFIG (a plugin/
@@ -274,7 +288,7 @@ def run_bare_python_tests(cwd: str, timeout: int = 300):
         if _config_broke:
             p = subprocess.run(
                 [py, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-                 "-o", "addopts="], cwd=cwd, env=env,
+                 "-o", "addopts=", *_to], cwd=cwd, env=env,
                 capture_output=True, text=True, timeout=timeout)
             out = p.stdout + p.stderr
         ok = p.returncode == 0
