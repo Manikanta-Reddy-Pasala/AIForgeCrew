@@ -2094,6 +2094,17 @@ git commit -m "feat(sync): split transport (HTTP) from apply (disk)"
 
 ## Task 8: The sync loop, plus a two-peer in-process test
 
+> **The test harness below is broken as written — see the committed
+> `test_two_peer.py` instead.** `memory_dir()` re-reads `AIFORGE_MEMORY_MD_DIR` on
+> every call and the env is process-wide, so `_pull` activating the destination and
+> then serving through the source's `TestClient` makes the "source" read the
+> *destination's* tree. Three of the five tests fail against a correct `loop.py`, and
+> `test_a_tampered_blob_is_rejected` passes vacuously — empty manifest, nothing
+> fetched, `rejected == 0`. The committed version adds a `_serving(peer)` context
+> manager that swaps the env around each faked call, and asserts the two trees are
+> distinct before the sync and identical after, with each arrived file physically
+> present under the receiving peer's own directory.
+
 **Files:**
 - Create: `aiforge_core/memory/sync/loop.py`
 - Test: `tests/python/memory/sync/test_two_peer.py`
