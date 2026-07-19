@@ -467,8 +467,8 @@ def _coalesce_code_modules(files: list[dict]) -> tuple[list[dict], int]:
         return str(f.get("path") or "").strip().lstrip("/")
     paths = [_p(f) for f in files]
     code_paths, cap = _module_cap_for(paths)
-    if len(code_paths) <= cap:
-        return files, 0
+    compiled = any(p.rsplit(".", 1)[-1].lower() in _COMPILED_CODE_EXTS
+                   for p in code_paths)
     code_set = set(code_paths)
     code = [f for f in files if _p(f) in code_set]
     others = [f for f in files if _p(f) not in code_set]
@@ -485,26 +485,39 @@ def _coalesce_code_modules(files: list[dict]) -> tuple[list[dict], int]:
                 names.append(m.group(1))
         return names
 
-    # COUPLING-AWARE greedy merge: repeatedly fold a HELPER (a module whose type
-    # is REFERENCED in another module's api text — e.g. LRUCache's api mentions
-    # `Node`) INTO its user, smallest helper first, so the helper lands in the
-    # file that uses it — killing the cross-module constructor/type mismatch. When
-    # nothing is coupled, fold the smallest module into the largest.
-    mods = [{"path": _p(f), "purpose": str(f.get("purpose") or ""),
-             "api": list(f.get("api") or [])} for f in code]
-    while len(mods) > cap:
-        pair = None
-        for h in mods:
+    def _coupled(ms) -> "tuple | None":
+        # (helper, user): helper's type NAME appears in user's api text → fold
+        # helper INTO user. Smallest helper first.
+        best = None
+        for h in ms:
             hs = _symbols(h)
             if not hs:
                 continue
-            for u in mods:
+            for u in ms:
                 if u is h:
                     continue
                 utext = " ".join(str(x) for x in u["api"])
                 if any(re.search(r"\b" + re.escape(s) + r"\b", utext) for s in hs):
-                    if pair is None or len(h["api"]) < len(pair[0]["api"]):
-                        pair = (h, u)
+                    if best is None or len(h["api"]) < len(best[0]["api"]):
+                        best = (h, u)
+        return best
+
+    # COUPLING-AWARE merge. Fold a HELPER (a module whose type is REFERENCED in
+    # another module's api — e.g. LRUCache's api names DoublyLinkedList/Node) INTO
+    # its user, so the helper lands in the file that uses it → no cross-module
+    # constructor/type mismatch. For COMPILED languages this runs even WITHIN the
+    # count cap (a coupled pair at exactly the cap is the exact failure mode);
+    # for looser languages it only fires to hit the count cap. No coupling → fold
+    # smallest into largest to reach the cap.
+    if len(code) <= cap and not compiled:
+        return files, 0
+    mods = [{"path": _p(f), "purpose": str(f.get("purpose") or ""),
+             "api": list(f.get("api") or [])} for f in code]
+    while len(mods) > 1:
+        pair = _coupled(mods)
+        over = len(mods) > cap
+        if not over and not (compiled and pair):
+            break
         if pair is None:
             order = sorted(mods, key=lambda m: len(m["api"]))
             pair = (order[0], order[-1])
