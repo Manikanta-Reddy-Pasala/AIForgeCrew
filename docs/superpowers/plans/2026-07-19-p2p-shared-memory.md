@@ -394,7 +394,9 @@ import socket
 
 
 def _slug(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "")).strip("-").lower() or "peer"
+    # Dots are stripped, not kept: this slug becomes a filesystem path component,
+    # where a dot invites extension parsing and a leading one makes a hidden file.
+    return re.sub(r"[^A-Za-z0-9_-]+", "-", str(value or "")).strip("-").lower() or "peer"
 
 
 def self_id() -> str:
