@@ -1126,6 +1126,17 @@ git commit -m "feat(sync): class B manifest entries, tombstones and lease"
 
 ## Task 4: Merge decisions for both classes
 
+> **Partly superseded by remediation R1.** An adversarial review later proved three
+> defects live in the code below. `int(rev)` raises on a non-numeric revision and
+> aborts the *entire* merge rather than skipping one entry, so a single hand-edited
+> node on any peer takes the mesh's sync offline. The `(rev, updated_by)` ordering is
+> not total: two peers at equal revision with the same writer and differing content
+> deadlock permanently, because the comparison is false in both directions. And a
+> remote entry missing `hash` matches the `None` that an unhashed local entry puts in
+> the `have` set, so a real capture is dropped as already-present with no log line.
+> The committed `merge.py` adds `as_rev()`, orders on `(rev, updated_by, hash)`, and
+> skips unhashed entries loudly. Read the committed module, not this block.
+
 `merge.py` is deliberately pure: two lists in, a decision set out, no filesystem and no
 network. This is where the interesting logic lives, so it must be testable without a second
 machine.
