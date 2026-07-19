@@ -33,7 +33,7 @@ def as_rev(value) -> int:
     """
     try:
         return int(value or 0)
-    except (TypeError, ValueError):  # noqa: BLE001 — one bad record, not a dead mesh
+    except (TypeError, ValueError):  # one bad record, not a dead mesh
         return 0
 
 
@@ -53,14 +53,14 @@ def plan_sync(local: list[dict], remote: list[dict]) -> dict:
     Returns ``{"want": [remote entries to fetch], "conflict": [{local, remote}]}``.
     A conflicting entry may also appear in ``want`` when the remote is the winner.
     """
-    have = {h for e in local if e.get("cls") == "A" and (h := e.get("hash"))}
+    have = {h for e in local if e.get("kind") == "A" and (h := e.get("hash"))}
 
     # One identity can appear twice locally (the same node held in two scopes).
     # The highest version is the one compared, matching the file
     # ``paths.node_paths`` would write to — see I1.
     by_ident: dict[tuple[str, str], dict] = {}
     for e in local:
-        if e.get("cls") != "B":
+        if e.get("kind") != "B":
             continue
         ident = _ident(e)
         cur = by_ident.get(ident)
@@ -78,7 +78,7 @@ def plan_sync(local: list[dict], remote: list[dict]) -> dict:
             _log.warning("sync: peer entry %s has no hash, skipping", r.get("path"))
             continue
 
-        if r.get("cls") == "A":
+        if r.get("kind") == "A":
             if r["hash"] not in have:
                 want.append(r)
             continue

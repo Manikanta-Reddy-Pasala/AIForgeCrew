@@ -50,7 +50,7 @@ def test_target_for_known_identity_is_updated_in_place(monkeypatch, tmp_path):
     from aiforge_core.memory.sync import paths
 
     mine = _node(tmp_path, "global", "nuc", "L-07")
-    entry = {"cls": "B", "origin": "nuc", "key": "L-07",
+    entry = {"kind": "B", "origin": "nuc", "key": "L-07",
              "path": "okf/peers/nuc/L-07.md"}   # sender's layout differs
 
     assert paths.target_for(entry) == mine
@@ -60,7 +60,7 @@ def test_target_for_a_new_foreign_node_lands_under_peers(monkeypatch, tmp_path):
     _env(monkeypatch, tmp_path)
     from aiforge_core.memory.sync import paths
 
-    entry = {"cls": "B", "origin": "ms", "key": "O-01",
+    entry = {"kind": "B", "origin": "ms", "key": "O-01",
              "path": "okf/global/objectives/O-01.md"}
 
     assert paths.target_for(entry).as_posix().endswith("okf/peers/ms/O-01.md")
@@ -70,7 +70,7 @@ def test_target_for_class_a_uses_the_advertised_path(monkeypatch, tmp_path):
     _env(monkeypatch, tmp_path)
     from aiforge_core.memory.sync import paths
 
-    entry = {"cls": "A", "path": "captures/a.md"}
+    entry = {"kind": "A", "path": "captures/a.md"}
 
     assert paths.target_for(entry).as_posix().endswith("captures/a.md")
 
@@ -79,7 +79,7 @@ def test_target_for_class_a_still_refuses_to_escape(monkeypatch, tmp_path):
     _env(monkeypatch, tmp_path)
     from aiforge_core.memory.sync import paths
 
-    assert paths.target_for({"cls": "A", "path": "../../evil"}) is None
+    assert paths.target_for({"kind": "A", "path": "../../evil"}) is None
 
 
 def test_a_hostile_origin_or_key_cannot_climb_the_tree(monkeypatch, tmp_path):
@@ -106,7 +106,7 @@ def test_a_glob_metacharacter_key_cannot_address_another_node(monkeypatch, tmp_p
 
     for key in ("*", "?-0[0-9]", "**/L-07"):
         assert paths.node_paths("nuc", key) == []
-        target = paths.target_for({"cls": "B", "origin": "nuc", "key": key,
+        target = paths.target_for({"kind": "B", "origin": "nuc", "key": key,
                                    "path": "x"})
         assert target != mine
 
@@ -143,7 +143,7 @@ def test_node_paths_puts_the_highest_rev_first(monkeypatch, tmp_path):
     newer = _rev_node("projects/x", 9)
 
     assert paths.node_paths("nuc", "L-07")[0] == newer
-    assert paths.target_for({"cls": "B", "origin": "nuc", "key": "L-07",
+    assert paths.target_for({"kind": "B", "origin": "nuc", "key": "L-07",
                              "path": "x"}) == newer
 
 
@@ -151,9 +151,9 @@ def test_target_for_a_tombstone_and_the_lease(monkeypatch, tmp_path):
     _env(monkeypatch, tmp_path)
     from aiforge_core.memory.sync import paths
 
-    tomb = paths.target_for({"cls": "B", "origin": "nuc", "key": "L-07",
+    tomb = paths.target_for({"kind": "B", "origin": "nuc", "key": "L-07",
                              "tomb": True, "path": "x"})
-    lease = paths.target_for({"cls": "B", "origin": "", "key": "__lease__",
+    lease = paths.target_for({"kind": "B", "origin": "", "key": "__lease__",
                               "path": "x"})
 
     assert tomb.as_posix().endswith("okf/.tomb/nuc/L-07.json")

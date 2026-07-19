@@ -31,7 +31,7 @@ def test_class_a_entries_carry_sha256_of_file_bytes(monkeypatch, tmp_path):
     assert len(entries) == 1
     e = entries[0]
     assert e["path"] == "captures/a-20260719-aaaaaa.md"
-    assert e["cls"] == "A"
+    assert e["kind"] == "A"
     assert e["hash"] == hashlib.sha256(b"hello").hexdigest()
 
 
@@ -91,7 +91,7 @@ def test_class_b_entry_from_node_frontmatter(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    b = [e for e in manifest.build() if e["cls"] == "B"]
+    b = [e for e in manifest.build() if e["kind"] == "B"]
     assert len(b) == 1
     assert b[0]["origin"] == "nuc"
     assert b[0]["key"] == "L-07"
@@ -108,7 +108,7 @@ def test_unstamped_node_is_local_only(monkeypatch, tmp_path):
     (d / "L-09.md").write_text('---\ntype: learning\nid: "L-09"\n---\n\nbody\n',
                                encoding="utf-8")
 
-    assert [e for e in manifest.build() if e["cls"] == "B"] == []
+    assert [e for e in manifest.build() if e["kind"] == "B"] == []
 
 
 def test_index_and_conflict_sidecars_never_sync(monkeypatch, tmp_path):
@@ -185,7 +185,7 @@ def test_an_unaddressable_key_or_origin_never_enters_the_manifest(monkeypatch,
     _node(tmp_path, "global", "nuc", "日本語", filename="nihongo.md")
     _node(tmp_path, "global", "../..", "L-08", filename="badorigin.md")
 
-    entries = [e for e in manifest.build() if e["cls"] == "B"]
+    entries = [e for e in manifest.build() if e["kind"] == "B"]
     assert [e["key"] for e in entries] == ["L-07"]
     assert entries[0]["path"] == "okf/global/learnings/" + good.name
 
@@ -230,7 +230,7 @@ def test_a_malformed_rev_drops_one_record_not_the_manifest(monkeypatch, tmp_path
     entries = manifest.build()
 
     assert {e["hash"] for e in entries} >= {hashlib.sha256(b"hello").hexdigest()}
-    assert [e["rev"] for e in entries if e["cls"] == "B"] == [0]
+    assert [e["rev"] for e in entries if e["kind"] == "B"] == [0]
     assert manifest.path_for_hash(hashlib.sha256(b"hello").hexdigest()) is not None
 
 
@@ -242,8 +242,53 @@ def test_one_identity_in_two_scopes_yields_one_entry(monkeypatch, tmp_path):
     _node(tmp_path, "global", "nuc", "L-07", rev=3, body="old")
     _node(tmp_path, "projects/x", "nuc", "L-07", rev=9, body="new")
 
-    entries = [e for e in manifest.build() if e["cls"] == "B"]
+    entries = [e for e in manifest.build() if e["kind"] == "B"]
 
     assert len(entries) == 1
     assert entries[0]["rev"] == 9
     assert entries[0]["path"] == "okf/projects/x/learnings/L-07.md"
+
+
+def test_build_is_memoised_but_never_stale(monkeypatch, tmp_path):
+    """The cache must not cost correctness: a sync resolves one hash per blob.
+
+    Uncached, every /blob request re-hashed the whole tree — n full scans and
+    n x m hashes to serve n files. Cached, a repeat build does no hashing at
+    all, and any add / edit / delete invalidates it.
+    """
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import _io, manifest
+
+    root = tmp_path / "md"
+    _seed_capture(root, "a-20260719-aaaaaa.md", "hello")
+    first = manifest.build()
+
+    hashed: list = []
+    real = _io.sha256_file
+    monkeypatch.setattr(_io, "sha256_file", lambda p: (hashed.append(p), real(p))[1])
+
+    assert manifest.build() == first
+    assert hashed == []                       # served from the memo
+
+    _seed_capture(root, "b-20260719-bbbbbb.md", "second")
+    assert len(manifest.build()) == 2         # an added file invalidates
+    (root / "captures" / "a-20260719-aaaaaa.md").write_text("edited", encoding="utf-8")
+    assert (manifest.path_for_hash(hashlib.sha256(b"edited").hexdigest())
+            is not None)                      # an edit does too
+    assert manifest.path_for_hash(hashlib.sha256(b"hello").hexdigest()) is None
+    (root / "captures" / "b-20260719-bbbbbb.md").unlink()
+    assert len(manifest.build()) == 1         # and so does a delete
+
+
+def test_the_cache_is_not_shared_between_two_trees(monkeypatch, tmp_path):
+    """Two peers in one process must not see each other's manifest."""
+    from aiforge_core.memory.sync import manifest
+
+    for name, text in (("one", "from one"), ("two", "from two")):
+        monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / name / "md"))
+        _seed_capture(tmp_path / name / "md", f"{name[0]}-20260719-aaaaaa.md", text)
+
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "one" / "md"))
+    assert [e["path"] for e in manifest.build()] == ["captures/o-20260719-aaaaaa.md"]
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "two" / "md"))
+    assert [e["path"] for e in manifest.build()] == ["captures/t-20260719-aaaaaa.md"]

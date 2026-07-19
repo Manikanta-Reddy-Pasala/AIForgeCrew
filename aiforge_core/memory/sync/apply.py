@@ -33,7 +33,7 @@ def apply_blob(entry: dict, body: bytes) -> bool:
 
 def _enforce_invariant(entry: dict) -> None:
     """For one (origin, key), either the node file or its tombstone exists, never both."""
-    if entry.get("cls") != "B":
+    if entry.get("kind") != "B":
         return
     key = str(entry.get("key") or "")
     if not key:
@@ -58,7 +58,7 @@ def keep_conflict(local_entry: dict) -> Path | None:
     sidecar = target.with_name(target.stem + ".conflict.md")
     try:
         _io.write_atomic(sidecar, target.read_bytes())
-    except OSError:  # noqa: BLE001 — losing the sidecar must not abort the sync
+    except OSError:  # losing the sidecar must not abort the sync
         _log.warning("sync: could not write conflict sidecar for %s", target)
         return None
     _log.info("sync: conflict on %s, kept losing version at %s",

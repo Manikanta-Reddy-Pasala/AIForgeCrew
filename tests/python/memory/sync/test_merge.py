@@ -5,12 +5,12 @@ from aiforge_core.memory.sync import merge
 
 
 def a(path: str, h: str) -> dict:
-    return {"path": path, "hash": h, "cls": "A"}
+    return {"path": path, "hash": h, "kind": "A"}
 
 
 def b(key: str, rev: int, by: str, h: str, *, origin: str = "nuc",
       tomb: bool = False) -> dict:
-    e = {"path": f"okf/global/learnings/{key}.md", "hash": h, "cls": "B",
+    e = {"path": f"okf/global/learnings/{key}.md", "hash": h, "kind": "B",
          "origin": origin, "key": key, "rev": rev, "updated_by": by}
     if tomb:
         e["tomb"] = True
@@ -149,7 +149,7 @@ def test_equal_rev_and_equal_writer_still_resolves_to_one_winner():
 def test_a_remote_entry_without_a_hash_is_skipped_not_treated_as_present():
     """I3: None in the `have` set made a hash-less remote look already-held."""
     local = [a("captures/x.md", "h1")]
-    remote = [{"path": "captures/y.md", "cls": "A"},
+    remote = [{"path": "captures/y.md", "kind": "A"},
               dict(b("L-09", 1, "nuc", "h9"), hash=None)]
 
     plan = merge.plan_sync(local, remote)
@@ -159,7 +159,7 @@ def test_a_remote_entry_without_a_hash_is_skipped_not_treated_as_present():
 
 
 def test_a_local_entry_without_a_hash_does_not_mask_a_real_remote():
-    local = [{"path": "captures/x.md", "cls": "A"}]
+    local = [{"path": "captures/x.md", "kind": "A"}]
     remote = [a("captures/y.md", "h2")]
 
     assert [e["hash"] for e in merge.plan_sync(local, remote)["want"]] == ["h2"]
@@ -193,9 +193,9 @@ def test_a_newer_edit_beats_a_tombstone():
 
 
 def test_lease_is_a_singleton_ordered_on_rev():
-    local = [{"path": "okf/.lease.json", "hash": "h1", "cls": "B", "origin": "",
+    local = [{"path": "okf/.lease.json", "hash": "h1", "kind": "B", "origin": "",
               "key": "__lease__", "rev": 3, "updated_by": "nuc"}]
-    remote = [{"path": "okf/.lease.json", "hash": "h2", "cls": "B", "origin": "",
+    remote = [{"path": "okf/.lease.json", "hash": "h2", "kind": "B", "origin": "",
                "key": "__lease__", "rev": 4, "updated_by": "ms"}]
 
     plan = merge.plan_sync(local, remote)

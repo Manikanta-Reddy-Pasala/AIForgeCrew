@@ -42,7 +42,7 @@ def test_tombstone_rev_beats_the_node_it_replaced(monkeypatch, tmp_path):
     tombstone.delete_node("nuc", "L-07")
 
     from aiforge_core.memory.sync import manifest
-    local = [{"path": "x", "hash": "h", "cls": "B", "origin": "nuc",
+    local = [{"path": "x", "hash": "h", "kind": "B", "origin": "nuc",
               "key": "L-07", "rev": 47, "updated_by": "nuc"}]
     remote = manifest.build()
 

@@ -115,7 +115,7 @@ Each peer exposes two read-only endpoints on the API server it already runs
 ```
 GET /api/memory/sync/manifest
     → {
-        manifest: [{path, hash, cls, origin?, key?, rev?, updated_by?}, …],
+        manifest: [{path, hash, kind, origin?, key?, rev?, updated_by?}, …],
         roster:   [{id, urls[], last_seen}, …]
       }
 

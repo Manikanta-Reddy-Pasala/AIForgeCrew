@@ -22,14 +22,23 @@ LEASE_KEY = "__lease__"
 _UNSAFE = re.compile(r"[^A-Za-z0-9_-]+")
 
 
-def _component(value: str) -> str:
-    """Sanitise one untrusted path component.
+def sanitise(value: str, fallback: str = "_") -> str:
+    """Reduce ``value`` to the identity alphabet: ``[A-Za-z0-9_-]``.
+
+    The single owner of that alphabet, shared with ``identity.self_id`` — a peer
+    id becomes the ``origin`` half of every node it mints, so a slug that this
+    function would rewrite is an identity ``is_addressable`` then refuses.
 
     ``origin`` and ``key`` arrive from a peer's frontmatter, so they are
     attacker-controlled. Dots are stripped along with separators, which is what
-    makes ``".."`` collapse to the empty string rather than climbing the tree.
+    makes ``".."`` collapse to the fallback rather than climbing the tree.
     """
-    return _UNSAFE.sub("-", str(value or "")).strip("-") or "_"
+    return _UNSAFE.sub("-", str(value or "")).strip("-") or fallback
+
+
+def _component(value: str) -> str:
+    """One untrusted path component."""
+    return sanitise(value)
 
 
 def is_addressable(value: str) -> bool:
@@ -84,8 +93,6 @@ def node_paths(origin: str, key: str) -> list[Path]:
     advertises, so the file we compare is the file we write. Ties on ``rev``
     break on the path, which every peer computes identically.
     """
-    from aiforge_core.memory.okf import nodes as _nodes
-
     if not is_addressable(key):
         # Sanitising would silently retarget: "**/L-07" collapses onto L-07.md.
         return []
@@ -96,9 +103,8 @@ def node_paths(origin: str, key: str) -> list[Path]:
     for p in _io.iter_syncable(okf_dir(), "**/*.md"):
         if p.name != name:
             continue
-        try:
-            meta = (_nodes.parse_node(p.read_text(encoding="utf-8")).get("meta") or {})
-        except Exception:  # noqa: BLE001 — an unreadable node is left untouched
+        meta = _io.read_node_meta(p)
+        if not meta:      # unreadable or frontmatter-less — left untouched
             continue
         if str(meta.get("origin") or "") == origin:
             ranked.append((merge.as_rev(meta.get("rev")), p.as_posix(), p))
@@ -108,7 +114,7 @@ def node_paths(origin: str, key: str) -> list[Path]:
 
 def target_for(entry: dict) -> Path | None:
     """Local destination for a manifest entry, or None if it must be refused."""
-    if entry.get("cls") == "A":
+    if entry.get("kind") == "A":
         # Capture filenames embed a content digest, so they are globally unique.
         return _io.safe_target(str(entry.get("path") or ""))
 
@@ -133,6 +139,6 @@ def target_for(entry: dict) -> Path | None:
     return existing[0] if existing else peer_node_path(origin, key)
 
 
-__all__ = ["is_addressable", "okf_dir", "tomb_dir", "tomb_path", "lease_path",
+__all__ = ["sanitise", "is_addressable", "okf_dir", "tomb_dir", "tomb_path", "lease_path",
            "peers_dir", "peer_node_path", "node_paths",
            "target_for", "LEASE_KEY"]
