@@ -67,6 +67,17 @@ def test_cap_ignores_tests_and_manifest(monkeypatch):
     assert not any("over-fragmented" in i for i in issues)
 
 
+def test_hyphenated_python_module_is_sanitized(monkeypatch):
+    monkeypatch.setenv("AIFORGE_ARCHITECT_MAX_MODULES", "9")
+    clean, issues = _validate_plan([
+        {"path": "pkg/task-queue.py", "purpose": "q", "api": []},
+        {"path": "tests/test_task-queue.py", "purpose": "t", "api": []}])
+    paths = [f["path"] for f in clean]
+    assert "pkg/task_queue.py" in paths           # hyphen → underscore
+    assert "pkg/task-queue.py" not in paths
+    assert any("aren't importable" in i for i in issues)
+
+
 def test_plan_files_still_unique_slugs_and_paths():
     # regression: the contract injection must not disturb slug/path handling
     subs = _plan_files([

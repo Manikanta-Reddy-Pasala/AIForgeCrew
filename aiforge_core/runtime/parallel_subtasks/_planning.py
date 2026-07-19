@@ -418,9 +418,9 @@ def _max_code_modules() -> int:
     (coarser = safer). Raise AIFORGE_ARCHITECT_MAX_MODULES for a genuinely large
     build. Tests + manifests don't count — only implementation modules."""
     try:
-        return max(1, int(os.environ.get("AIFORGE_ARCHITECT_MAX_MODULES", "6")))
+        return max(1, int(os.environ.get("AIFORGE_ARCHITECT_MAX_MODULES", "4")))
     except ValueError:
-        return 6
+        return 4
 
 
 def _validate_plan(files: list[dict]) -> tuple[list[dict], list[str]]:
@@ -440,6 +440,19 @@ def _validate_plan(files: list[dict]) -> tuple[list[dict], list[str]]:
         if p.startswith("..") or "/../" in f"/{p}/":
             issues.append(f"path escapes the workspace: {p!r} (dropped)")
             continue
+        # HYPHEN sanitize: a Python module file with a hyphen in its stem
+        # (`task-queue.py`) is UNIMPORTABLE — `import task-queue` is a syntax
+        # error — so an isolated worker writes it and every `from .task-queue
+        # import …` fails. Rename the stem's hyphens to underscores (dir parts +
+        # extension untouched); the architect's api/imports reference the module
+        # NAME, which the doer derives from this path.
+        if p.rsplit(".", 1)[-1].lower() == "py" and "-" in os.path.basename(p):
+            d, b = os.path.split(p)
+            stem, _dot, ext = b.rpartition(".")
+            fixed = os.path.join(d, stem.replace("-", "_") + "." + ext)
+            issues.append(f"invalid python module name {p!r} → {fixed!r} "
+                          "(hyphens aren't importable)")
+            p = fixed
         if p in seen:
             issues.append(f"duplicate path: {p!r} (deduped)")
             continue
