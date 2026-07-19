@@ -1,5 +1,8 @@
-"""SSDP message construction and parsing. No sockets are opened here."""
+"""SSDP message construction and parsing, plus one real round trip over sockets."""
 from __future__ import annotations
+
+import socket
+import time
 
 import pytest
 
@@ -162,3 +165,149 @@ def test_build_announce_rejects_crlf_in_peer_id():
 def test_build_announce_rejects_crlf_in_url():
     with pytest.raises(ValueError):
         ssdp.build_announce("nuc", "http://10.0.1.14:8799\r\nEVIL: header")
+
+
+# --- finding #5 (live validation): nothing answered an M-SEARCH ---
+
+def test_reply_is_a_wellformed_200_ok():
+    msg = ssdp.build_reply("nuc", "http://10.0.1.14:8799").decode()
+
+    assert msg.startswith("HTTP/1.1 200 OK\r\n")
+    assert "CACHE-CONTROL: max-age=1800\r\n" in msg
+    assert "EXT:\r\n" in msg
+    assert "LOCATION: http://10.0.1.14:8799\r\n" in msg
+    assert f"ST: {ssdp.SERVICE_TYPE}\r\n" in msg
+    assert f"USN: uuid:nuc::{ssdp.SERVICE_TYPE}\r\n" in msg
+    assert msg.endswith("\r\n\r\n")
+    assert "\n" not in msg.replace("\r\n", "")
+
+
+def test_reply_round_trips_through_parse():
+    raw = ssdp.build_reply("nuc", "http://10.0.1.14:8799")
+
+    assert ssdp.parse(raw) == {"id": "nuc", "urls": ["http://10.0.1.14:8799"]}
+
+
+def test_build_reply_rejects_crlf():
+    with pytest.raises(ValueError):
+        ssdp.build_reply("nuc\r\nEVIL: header", "http://x")
+    with pytest.raises(ValueError):
+        ssdp.build_reply("nuc", "http://x\r\nEVIL: header")
+
+
+def _search(st=ssdp.SERVICE_TYPE, usn=None):
+    lines = ["M-SEARCH * HTTP/1.1", 'MAN: "ssdp:discover"', f"ST: {st}"]
+    if usn:
+        lines.append(f"USN: {usn}")
+    return ("\r\n".join(lines) + "\r\n\r\n").encode()
+
+
+def _fresh_limiter():
+    return ssdp._RateLimiter()
+
+
+def test_subnet_check_accepts_on_link_and_rejects_off_link():
+    assert ssdp._same_subnet("10.0.1.5", "10.0.1.99") is True
+    assert ssdp._same_subnet("10.0.1.5", "10.0.2.99") is False
+    assert ssdp._same_subnet("10.0.1.5", "203.0.113.7") is False
+
+
+def test_off_subnet_search_is_not_answered():
+    headers = ssdp._headers(_search())
+
+    assert ssdp._should_reply(headers, "203.0.113.7", "10.0.1.5", "nuc",
+                              _fresh_limiter()) is False
+
+
+def test_on_subnet_search_for_our_service_is_answered():
+    headers = ssdp._headers(_search())
+
+    assert ssdp._should_reply(headers, "10.0.1.9", "10.0.1.5", "nuc",
+                              _fresh_limiter()) is True
+
+
+def test_ssdp_all_is_never_answered():
+    # The classic amplification query: one small request, many large answers.
+    for st in ("ssdp:all", "upnp:rootdevice", ""):
+        headers = ssdp._headers(_search(st=st))
+        assert ssdp._should_reply(headers, "10.0.1.9", "10.0.1.5", "nuc",
+                                  _fresh_limiter()) is False
+
+
+def test_our_own_search_is_ignored():
+    headers = ssdp._headers(_search(usn=f"uuid:nuc::{ssdp.SERVICE_TYPE}"))
+
+    assert ssdp._should_reply(headers, "10.0.1.9", "10.0.1.5", "nuc",
+                              _fresh_limiter()) is False
+
+
+def test_rate_limiter_caps_a_chatty_source():
+    limiter = _fresh_limiter()
+    headers = ssdp._headers(_search())
+
+    answered = sum(ssdp._should_reply(headers, "10.0.1.9", "10.0.1.5", "nuc", limiter)
+                   for _ in range(50))
+
+    assert answered == ssdp.RATE_LIMIT
+
+
+def test_rate_limiter_forgets_a_source_after_the_window():
+    limiter = ssdp._RateLimiter(limit=2, window=10.0)
+
+    assert limiter.allow("10.0.1.9", now=100.0) is True
+    assert limiter.allow("10.0.1.9", now=100.1) is True
+    assert limiter.allow("10.0.1.9", now=100.2) is False
+    assert limiter.allow("10.0.1.9", now=200.0) is True
+    assert limiter._hits.keys() == {"10.0.1.9"}  # stale entries pruned, not hoarded
+
+
+def test_rate_limit_is_per_source():
+    limiter = ssdp._RateLimiter(limit=1)
+
+    assert limiter.allow("10.0.1.9") is True
+    assert limiter.allow("10.0.1.9") is False
+    assert limiter.allow("10.0.1.10") is True
+
+
+def test_responder_refuses_a_wildcard_bind():
+    assert ssdp.serve_in_background("0.0.0.0", "nuc", "http://x") is None
+    assert ssdp.serve_in_background("", "nuc", "http://x") is None
+
+
+def test_responder_refuses_crlf_poisoned_identity():
+    assert ssdp.serve_in_background("10.0.1.5", "nuc\r\nEVIL: 1", "http://x") is None
+
+
+# --- the test that would have caught the original gap: real sockets, one host ---
+
+def _lan_ip() -> str:
+    """This host's primary IPv4 address. No packet is sent by connect() on UDP."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 53))
+        return sock.getsockname()[0]
+    except OSError:
+        return ""
+    finally:
+        sock.close()
+
+
+def test_discover_finds_a_live_responder_on_this_host():
+    ip = _lan_ip()
+    if not ip or ip.startswith("127."):
+        pytest.skip("no routable IPv4 interface: this host cannot do multicast at all")
+    try:
+        probe = ssdp._listener_socket(ip)
+    except OSError as exc:
+        pytest.skip(f"cannot bind/join SSDP multicast on {ip}: {exc}")
+    probe.close()
+
+    stop = ssdp.serve_in_background(ip, "responder-under-test", "http://127.0.0.1:8799")
+    assert stop is not None
+    try:
+        time.sleep(0.3)  # let the thread reach recvfrom before we search
+        found = ssdp.discover(ip, timeout=2.0)
+    finally:
+        stop.set()
+
+    assert {"id": "responder-under-test", "urls": ["http://127.0.0.1:8799"]} in found

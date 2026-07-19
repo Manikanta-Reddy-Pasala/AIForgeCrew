@@ -6,6 +6,7 @@ import hashlib
 import importlib
 import os
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -226,3 +227,42 @@ def test_ssdp_discoveries_are_also_quarantined(monkeypatch, tmp_path):
     known = {p["id"]: p for p in peers.load()["peers"]}
     assert known["nuc"]["state"] == "candidate"
     assert peers.approved() == []
+
+
+def _record_responder(monkeypatch, tmp_path):
+    """Set up a node with SSDP on and capture any responder start. Returns the log."""
+    from aiforge_core.memory.sync import peers
+
+    book = _peer(monkeypatch, tmp_path, "book")
+    _activate(monkeypatch, book)
+    peers.save({"self": {"id": "book", "urls": ["http://book:8799"]}, "peers": []})
+    monkeypatch.setenv("AIFORGE_SYNC_SSDP", "1")
+    monkeypatch.setenv("AIFORGE_SYNC_SSDP_HOST", "10.0.1.5")
+    monkeypatch.setattr("aiforge_core.memory.sync.discovery_ssdp.discover",
+                        lambda *a, **k: [])
+    started: list[tuple] = []
+    monkeypatch.setattr("aiforge_core.memory.sync.discovery_ssdp.serve_in_background",
+                        lambda *a: started.append(a))
+    return started
+
+
+def test_run_once_leaves_no_responder_thread_behind(monkeypatch, tmp_path):
+    from aiforge_core.memory.sync import loop
+
+    started = _record_responder(monkeypatch, tmp_path)
+
+    loop.run_once()
+
+    assert started == []
+
+
+def test_run_forever_starts_the_responder_with_our_own_identity(monkeypatch, tmp_path):
+    from aiforge_core.memory.sync import loop
+
+    started = _record_responder(monkeypatch, tmp_path)
+    monkeypatch.setattr(loop, "run_once", lambda: (_ for _ in ()).throw(KeyboardInterrupt))
+
+    with pytest.raises(KeyboardInterrupt):
+        loop.run_forever(interval=0)
+
+    assert started == [("10.0.1.5", "book", "http://book:8799")]

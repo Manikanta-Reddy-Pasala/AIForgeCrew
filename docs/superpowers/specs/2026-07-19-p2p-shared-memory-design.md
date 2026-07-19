@@ -404,12 +404,23 @@ all 111 unit tests because they call `run_once()`/`sync_with()` directly. Fixed 
    bypasses our code entirely: an announce from the NUC never arrived at the Mac.
    Not an implementation fault — and precisely the reason the design says gossip
    over the manifest carries the mesh and SSDP is only a convenience.
-2. **Nothing answers an `M-SEARCH`.** `discover()` sends a search and `announce()`
-   sends a `NOTIFY`, but no responder replies to a search. Even on a permissive
-   segment, discovery would only catch announcements that happen to fire inside a
-   listening window. Making SSDP actually useful needs a responder loop in the API
-   process. Deferred: gossip covers the case, and this segment cannot use SSDP
-   regardless.
+2. **Nothing answered an `M-SEARCH`** — *fixed*. `discover()` sent a search and
+   `announce()` sent a `NOTIFY`, but no responder replied to a search, so
+   discovery only ever caught an announcement that happened to fire inside a
+   listening window: a race, not a protocol. `discovery_ssdp.respond_forever()`
+   now answers searches, and `serve_in_background()` runs it on a daemon thread
+   started once from `loop.run_forever()` under the existing `AIFORGE_SYNC_SSDP=1`
+   gate (never from `run_once`, which must not leave a thread behind).
+
+   The responder is deliberately a poor amplifier: it answers **only** our own
+   `ST` (never `ssdp:all` or `upnp:rootdevice`, the queries that make classic
+   SSDP amplification pay), only senders on our own /24, at most 10 replies per
+   source per 10 seconds, and never its own search. The listener binds
+   `("", 1900)` because a receiver must — that is not a hole in the sender-side
+   wildcard guard, which stays as it was; off-link requests are dropped by the
+   subnet check instead. Covered by unit tests plus a real single-host socket
+   round trip (`test_discover_finds_a_live_responder_on_this_host`), which is the
+   test that would have caught this gap in the first place.
 
 ### Test suite
 

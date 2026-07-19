@@ -113,7 +113,35 @@ def run_once() -> list[dict]:
     return out
 
 
+def _start_ssdp_responder() -> None:
+    """Answer other peers' searches for as long as this process runs.
+
+    Same gate and same bind address as ``_ssdp_sweep``; started only from
+    ``run_forever`` because ``run_once`` is a single-shot cycle and must not
+    leave a thread behind. The SSDP message itself is built in
+    ``discovery_ssdp`` — this only supplies who we are and where to reach us.
+    """
+    import os
+
+    if os.environ.get("AIFORGE_SYNC_SSDP", "0") != "1":
+        return
+    from aiforge_core.memory.sync import discovery_ssdp, identity, peers
+
+    bind = os.environ.get("AIFORGE_SYNC_SSDP_HOST", "")
+    me = peers.load()["self"]
+    peer_id = str(me.get("id") or "").strip() or identity.self_id()
+    urls = [u for u in (me.get("urls") or []) if u]
+    if not urls:
+        _log.info("sync: ssdp responder not started: no self url in peers.json")
+        return
+    try:
+        discovery_ssdp.serve_in_background(bind, peer_id, str(urls[0]))
+    except Exception as exc:  # noqa: BLE001 — discovery is best-effort by nature
+        _log.info("sync: ssdp responder failed to start: %s", exc)
+
+
 def run_forever(interval: int = DEFAULT_INTERVAL) -> None:
+    _start_ssdp_responder()
     while True:
         run_once()
         time.sleep(interval)
