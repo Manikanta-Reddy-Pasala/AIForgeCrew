@@ -1,7 +1,7 @@
 # Two-Tier Knowledge Compaction — Design
 
 **Date:** 2026-07-20
-**Status:** Approved, to implement
+**Status:** Implemented — see commits 77aae97, 22ad7e9, fb17e7d
 **Supersedes:** the `okf/peers/<origin>/` layout in
 `2026-07-19-p2p-shared-memory-design.md` (schema change 1)
 
