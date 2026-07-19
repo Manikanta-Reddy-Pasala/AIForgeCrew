@@ -1498,11 +1498,12 @@ is promoted only when a human supplies a token obtained out of band.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
 from pathlib import Path
+
+from aiforge_core.memory.sync import _io
 
 _log = logging.getLogger("aiforge.sync")
 
@@ -1511,29 +1512,20 @@ STATE_CANDIDATE = "candidate"
 
 
 def _path() -> Path:
+    # peers.json is CONFIG, not memory — it lives beside the other config files
+    # and is never synced, so it does not go under the memory tree.
     d = Path(os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")))
     d.mkdir(parents=True, exist_ok=True)
     return d / "peers.json"
 
 
 def load() -> dict:
-    p = _path()
-    if p.exists():
-        try:
-            data = json.loads(p.read_text(encoding="utf-8")) or {}
-        except Exception:  # noqa: BLE001 — a corrupt registry must not stop the node
-            _log.warning("sync: unreadable peers.json, treating as empty")
-            data = {}
-    else:
-        data = {}
+    data = _io.read_json(_path())
     return {"self": data.get("self") or {}, "peers": data.get("peers") or []}
 
 
 def save(data: dict) -> dict:
-    p = _path()
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    os.replace(tmp, p)
+    _io.write_json(_path(), data)
     return data
 
 
@@ -1809,41 +1801,41 @@ def _md(tmp_path):
 
 def test_apply_writes_a_class_a_blob(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(_md(tmp_path)))
-    from aiforge_core.memory.sync import client
+    from aiforge_core.memory.sync import apply
 
     body = b"hello"
     entry = {"path": "captures/a.md", "hash": hashlib.sha256(body).hexdigest(),
              "cls": "A"}
 
-    assert client.apply_blob(entry, body) is True
+    assert apply.apply_blob(entry, body) is True
     assert (tmp_path / "md" / "captures" / "a.md").read_bytes() == body
 
 
 def test_apply_rejects_a_hash_mismatch(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(_md(tmp_path)))
-    from aiforge_core.memory.sync import client
+    from aiforge_core.memory.sync import apply
 
     entry = {"path": "captures/a.md", "hash": "0" * 64, "cls": "A"}
 
-    assert client.apply_blob(entry, b"tampered") is False
+    assert apply.apply_blob(entry, b"tampered") is False
     assert not (tmp_path / "md" / "captures" / "a.md").exists()
 
 
 def test_apply_refuses_to_escape_the_memory_tree(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(_md(tmp_path)))
-    from aiforge_core.memory.sync import client
+    from aiforge_core.memory.sync import apply
 
     body = b"pwn"
     entry = {"path": "../../.ssh/authorized_keys",
              "hash": hashlib.sha256(body).hexdigest(), "cls": "A"}
 
-    assert client.apply_blob(entry, body) is False
+    assert apply.apply_blob(entry, body) is False
     assert not (tmp_path / ".ssh").exists()
 
 
 def test_applying_a_tombstone_removes_the_node(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(_md(tmp_path)))
-    from aiforge_core.memory.sync import client
+    from aiforge_core.memory.sync import apply
 
     node = tmp_path / "md" / "okf" / "global" / "learnings" / "L-07.md"
     node.parent.mkdir(parents=True, exist_ok=True)
@@ -1856,14 +1848,14 @@ def test_applying_a_tombstone_removes_the_node(monkeypatch, tmp_path):
              "origin": "nuc", "key": "L-07", "rev": 48, "updated_by": "nuc",
              "tomb": True}
 
-    assert client.apply_blob(entry, body) is True
+    assert apply.apply_blob(entry, body) is True
     assert not node.exists()
     assert (tmp_path / "md" / "okf" / ".tomb" / "nuc" / "L-07.json").exists()
 
 
 def test_applying_a_node_removes_its_tombstone(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(_md(tmp_path)))
-    from aiforge_core.memory.sync import client
+    from aiforge_core.memory.sync import apply
 
     tomb = tmp_path / "md" / "okf" / ".tomb" / "nuc" / "L-07.json"
     tomb.parent.mkdir(parents=True, exist_ok=True)
@@ -1875,7 +1867,7 @@ def test_applying_a_node_removes_its_tombstone(monkeypatch, tmp_path):
              "hash": hashlib.sha256(body).hexdigest(), "cls": "B",
              "origin": "nuc", "key": "L-07", "rev": 49, "updated_by": "ms"}
 
-    assert client.apply_blob(entry, body) is True
+    assert apply.apply_blob(entry, body) is True
     assert not tomb.exists()
 
 
@@ -1884,7 +1876,7 @@ def test_foreign_node_lands_under_peers_not_over_a_local_id(monkeypatch, tmp_pat
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(_md(tmp_path)))
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
     monkeypatch.setenv("AIFORGE_PEER_ID", "book")
-    from aiforge_core.memory.sync import client
+    from aiforge_core.memory.sync import apply
 
     mine = tmp_path / "md" / "okf" / "global" / "objectives" / "O-01.md"
     mine.parent.mkdir(parents=True, exist_ok=True)
@@ -1897,7 +1889,7 @@ def test_foreign_node_lands_under_peers_not_over_a_local_id(monkeypatch, tmp_pat
              "hash": hashlib.sha256(body).hexdigest(), "cls": "B",
              "origin": "ms", "key": "O-01", "rev": 1, "updated_by": "ms"}
 
-    assert client.apply_blob(entry, body) is True
+    assert apply.apply_blob(entry, body) is True
     assert "mine" in mine.read_text(encoding="utf-8")          # untouched
     assert (tmp_path / "md" / "okf" / "peers" / "ms" / "O-01.md").exists()
 
@@ -1906,7 +1898,7 @@ def test_an_update_to_an_existing_identity_lands_in_place(monkeypatch, tmp_path)
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(_md(tmp_path)))
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
     monkeypatch.setenv("AIFORGE_PEER_ID", "book")
-    from aiforge_core.memory.sync import client
+    from aiforge_core.memory.sync import apply
 
     node = tmp_path / "md" / "okf" / "global" / "learnings" / "L-07.md"
     node.parent.mkdir(parents=True, exist_ok=True)
@@ -1919,20 +1911,20 @@ def test_an_update_to_an_existing_identity_lands_in_place(monkeypatch, tmp_path)
              "hash": hashlib.sha256(body).hexdigest(), "cls": "B",
              "origin": "nuc", "key": "L-07", "rev": 48, "updated_by": "ms"}
 
-    assert client.apply_blob(entry, body) is True
+    assert apply.apply_blob(entry, body) is True
     assert "new" in node.read_text(encoding="utf-8")           # updated in place
     assert not (tmp_path / "md" / "okf" / "peers" / "nuc" / "L-07.md").exists()
 
 
 def test_conflict_writes_a_sidecar_beside_the_loser(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(_md(tmp_path)))
-    from aiforge_core.memory.sync import client
+    from aiforge_core.memory.sync import apply
 
     node = tmp_path / "md" / "okf" / "global" / "learnings" / "L-07.md"
     node.parent.mkdir(parents=True, exist_ok=True)
     node.write_text("local version\n", encoding="utf-8")
 
-    client.keep_conflict({"path": "okf/global/learnings/L-07.md",
+    apply.keep_conflict({"path": "okf/global/learnings/L-07.md",
                           "key": "L-07", "updated_by": "alice"})
 
     sidecar = node.parent / "L-07.conflict.md"
@@ -1941,153 +1933,128 @@ def test_conflict_writes_a_sidecar_beside_the_loser(monkeypatch, tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venv/bin/pytest tests/python/memory/sync/test_client.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'aiforge_core.memory.sync.client'`
+Run: `.venv/bin/pytest tests/python/memory/sync/test_apply.py -v`
+Expected: FAIL — `ImportError: cannot import name 'apply' from 'aiforge_core.memory.sync'`
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `aiforge_core/memory/sync/client.py`:
+Create `aiforge_core/memory/sync/transport.py` — HTTP only, never touches a path:
 
 ```python
-"""Pull from one peer: fetch, verify, apply atomically.
+"""Fetching from one peer over HTTP. Knows nothing about disk.
 
-Every blob is verified against the hash the peer advertised before it touches
-the tree, and every write goes through a temp file plus ``os.replace`` so an
-interrupted fetch can never leave a truncated note behind. A blob that fails
-either check is simply dropped — it reappears in the next diff.
+An unreachable peer is normal operation, not an error: pull-only means nothing
+is queued for it and nothing blocks on it, so every failure here degrades to
+"nothing new this cycle" and is retried on the next one.
+"""
+from __future__ import annotations
+
+import logging
+
+_log = logging.getLogger("aiforge.sync")
+
+TIMEOUT = 20.0
+
+
+def _headers(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def fetch_manifest(base_url: str, token: str = "") -> dict:
+    """GET a peer's manifest. Returns {} when the peer is unreachable."""
+    import httpx
+
+    try:
+        r = httpx.get(f"{base_url.rstrip('/')}/api/memory/sync/manifest",
+                      headers=_headers(token), timeout=TIMEOUT)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as exc:  # noqa: BLE001 — an unreachable peer is expected, not exceptional
+        _log.info("sync: peer %s unreachable: %s", base_url, exc)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def fetch_blob(base_url: str, digest: str, token: str = "") -> bytes | None:
+    """GET one blob by hash. Returns None on any failure; retried next cycle."""
+    import httpx
+
+    try:
+        r = httpx.get(f"{base_url.rstrip('/')}/api/memory/sync/blob/{digest}",
+                      headers=_headers(token), timeout=TIMEOUT)
+        r.raise_for_status()
+        return r.content
+    except Exception as exc:  # noqa: BLE001 — retried on the next cycle
+        _log.info("sync: blob %s from %s failed: %s", digest[:8], base_url, exc)
+        return None
+
+
+__all__ = ["fetch_manifest", "fetch_blob", "TIMEOUT"]
+```
+
+Create `aiforge_core/memory/sync/apply.py` — disk only, never imports httpx:
+
+```python
+"""Placing a fetched blob into the local tree. Knows nothing about HTTP.
+
+Every blob is verified against the hash its peer advertised before it touches
+the tree, and every write goes through ``_io.write_atomic``, so an interrupted
+or tampered fetch can never leave a partial or forged note behind. A rejected
+blob is simply dropped — it reappears in the next diff.
 """
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
-import os
 from pathlib import Path
+
+from aiforge_core.memory.sync import _io, paths
 
 _log = logging.getLogger("aiforge.sync")
 
-_TIMEOUT = 20.0
-
-
-def _root() -> Path:
-    from aiforge_core.memory.md_store import memory_dir
-
-    return memory_dir()
-
-
-def _safe_target(rel: str) -> Path | None:
-    """Resolve a manifest path inside the memory tree, or ``None`` if it escapes."""
-    root = _root().resolve()
-    try:
-        target = (root / rel).resolve()
-    except (OSError, ValueError):  # noqa: BLE001 — a hostile path must not raise
-        return None
-    if target == root or root not in target.parents:
-        _log.warning("sync: rejected out-of-tree path %s", rel)
-        return None
-    return target
-
-
-def _write_atomic(target: Path, body: bytes) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix(target.suffix + ".tmp")
-    tmp.write_bytes(body)
-    os.replace(tmp, target)
-
-
-def tomb_path(origin: str, key: str) -> Path:
-    return _root() / "okf" / ".tomb" / (origin or "_") / f"{key}.json"
-
-
-def node_paths(origin: str, key: str) -> list[Path]:
-    """Every on-disk node file matching this identity, across all scopes."""
-    from aiforge_core.memory.okf import nodes as _nodes
-
-    okf = _root() / "okf"
-    if not okf.is_dir():
-        return []
-    out: list[Path] = []
-    for p in okf.rglob(f"{key}.md"):
-        try:
-            meta = (_nodes.parse_node(p.read_text(encoding="utf-8")).get("meta") or {})
-        except Exception:  # noqa: BLE001 — unreadable node, leave it alone
-            continue
-        if str(meta.get("origin") or "") == origin:
-            out.append(p)
-    return out
-
-
-def _target_for(entry: dict) -> Path | None:
-    """Where this blob belongs *locally*.
-
-    The remote's ``path`` is a hint, never an instruction. OKF ids are per-scope
-    counters, so ``(nuc, O-01)`` and ``(ms, O-01)`` are different objects that
-    both render to ``O-01.md`` — trusting the advertised path would let one peer
-    silently overwrite an unrelated local node.
-
-    Rule: an identity we already hold is updated in place, wherever it lives;
-    anything new from another peer lands under ``okf/peers/<origin>/``. Every
-    peer derives the same answer, so the layout converges.
-    """
-    cls = entry.get("cls")
-    if cls == "A":
-        # Capture filenames embed a content digest, so they are globally unique.
-        return _safe_target(str(entry.get("path") or ""))
-
-    origin = str(entry.get("origin") or "")
-    key = str(entry.get("key") or "")
-    if not key:
-        return None
-
-    if entry.get("tomb"):
-        return tomb_path(origin, key)
-    if key == "__lease__":
-        return _root() / "okf" / ".lease.json"
-
-    existing = node_paths(origin, key)
-    if existing:
-        return existing[0]
-    return _root() / "okf" / "peers" / (origin or "_") / f"{key}.md"
-
 
 def apply_blob(entry: dict, body: bytes) -> bool:
-    """Verify and write one fetched blob. Returns False if it was rejected."""
-    digest = hashlib.sha256(body).hexdigest()
-    if digest != str(entry.get("hash") or ""):
+    """Verify and write one fetched blob. False means it was rejected."""
+    if hashlib.sha256(body).hexdigest() != str(entry.get("hash") or ""):
         _log.warning("sync: hash mismatch for %s, dropping", entry.get("path"))
         return False
 
-    target = _target_for(entry)
+    target = paths.target_for(entry)
     if target is None:
         return False
 
-    _write_atomic(target, body)
-
-    # Maintain the invariant: for one (origin, key) either the node file or its
-    # tombstone exists, never both.
-    origin = str(entry.get("origin") or "")
-    key = str(entry.get("key") or "")
-    if entry.get("cls") == "B" and key:
-        if entry.get("tomb"):
-            for p in node_paths(origin, key):
-                p.unlink(missing_ok=True)
-        else:
-            tomb_path(origin, key).unlink(missing_ok=True)
+    _io.write_atomic(target, body)
+    _enforce_invariant(entry)
     return True
+
+
+def _enforce_invariant(entry: dict) -> None:
+    """For one (origin, key), either the node file or its tombstone exists, never both."""
+    if entry.get("cls") != "B":
+        return
+    key = str(entry.get("key") or "")
+    if not key:
+        return
+    origin = str(entry.get("origin") or "")
+    if entry.get("tomb"):
+        for p in paths.node_paths(origin, key):
+            p.unlink(missing_ok=True)
+    else:
+        paths.tomb_path(origin, key).unlink(missing_ok=True)
 
 
 def keep_conflict(local_entry: dict) -> Path | None:
     """Preserve a losing local version beside the node as a ``.conflict`` sidecar.
 
-    Sidecars are local artefacts. They are excluded from the manifest, because
-    replicating them would multiply one collision across the whole mesh.
+    Sidecars are local artefacts, excluded from the manifest: replicating them
+    would multiply one collision across the whole mesh.
     """
-    target = _safe_target(str(local_entry.get("path") or ""))
+    target = _io.safe_target(str(local_entry.get("path") or ""))
     if target is None or not target.is_file():
         return None
     sidecar = target.with_name(target.stem + ".conflict.md")
     try:
-        sidecar.write_bytes(target.read_bytes())
+        _io.write_atomic(sidecar, target.read_bytes())
     except OSError:  # noqa: BLE001 — losing the sidecar must not abort the sync
         _log.warning("sync: could not write conflict sidecar for %s", target)
         return None
@@ -2096,50 +2063,20 @@ def keep_conflict(local_entry: dict) -> Path | None:
     return sidecar
 
 
-def fetch_manifest(base_url: str, token: str = "") -> dict:
-    """GET the peer's manifest. Returns ``{}`` when the peer is unreachable."""
-    import httpx
-
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    try:
-        r = httpx.get(f"{base_url.rstrip('/')}/api/memory/sync/manifest",
-                      headers=headers, timeout=_TIMEOUT)
-        r.raise_for_status()
-        data = r.json()
-    except Exception as exc:  # noqa: BLE001 — an unreachable peer is normal, not an error
-        _log.info("sync: peer %s unreachable: %s", base_url, exc)
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def fetch_blob(base_url: str, digest: str, token: str = "") -> bytes | None:
-    import httpx
-
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    try:
-        r = httpx.get(f"{base_url.rstrip('/')}/api/memory/sync/blob/{digest}",
-                      headers=headers, timeout=_TIMEOUT)
-        r.raise_for_status()
-        return r.content
-    except Exception as exc:  # noqa: BLE001 — retried on the next cycle
-        _log.info("sync: blob %s from %s failed: %s", digest[:8], base_url, exc)
-        return None
-
-
-__all__ = ["apply_blob", "keep_conflict", "fetch_manifest", "fetch_blob",
-           "node_paths", "tomb_path"]
+__all__ = ["apply_blob", "keep_conflict"]
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venv/bin/pytest tests/python/memory/sync/test_client.py -v`
+Run: `.venv/bin/pytest tests/python/memory/sync/test_apply.py -v`
 Expected: PASS, 8 passed
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add aiforge_core/memory/sync/client.py tests/python/memory/sync/test_client.py
-git commit -m "feat(sync): verified, atomic blob application with conflict sidecars"
+git add aiforge_core/memory/sync/transport.py aiforge_core/memory/sync/apply.py \
+        tests/python/memory/sync/test_apply.py
+git commit -m "feat(sync): split transport (HTTP) from apply (disk)"
 ```
 
 ---
@@ -2205,8 +2142,8 @@ def _pull(monkeypatch, dst, src) -> dict:
         r = src["client"].get(f"/api/memory/sync/blob/{digest}")
         return r.content if r.status_code == 200 else None
 
-    monkeypatch.setattr("aiforge_core.memory.sync.client.fetch_manifest", _fetch_manifest)
-    monkeypatch.setattr("aiforge_core.memory.sync.client.fetch_blob", _fetch_blob)
+    monkeypatch.setattr("aiforge_core.memory.sync.transport.fetch_manifest", _fetch_manifest)
+    monkeypatch.setattr("aiforge_core.memory.sync.transport.fetch_blob", _fetch_blob)
     _activate(monkeypatch, dst)
     return loop.sync_with({"id": src["name"], "urls": ["http://stub"], "token": ""})
 
@@ -2265,7 +2202,7 @@ def test_an_unreachable_peer_is_survived(monkeypatch, tmp_path):
 
     book = _peer(monkeypatch, tmp_path, "book")
     _activate(monkeypatch, book)
-    monkeypatch.setattr("aiforge_core.memory.sync.client.fetch_manifest",
+    monkeypatch.setattr("aiforge_core.memory.sync.transport.fetch_manifest",
                         lambda *a, **k: {})
 
     res = loop.sync_with({"id": "gone", "urls": ["http://127.0.0.1:1"], "token": ""})
@@ -2281,10 +2218,10 @@ def test_a_tampered_blob_is_rejected(monkeypatch, tmp_path):
     _write_capture(nuc, "n-20260719-aaaaaa.md", "from nuc")
     book = _peer(monkeypatch, tmp_path, "book")
 
-    monkeypatch.setattr("aiforge_core.memory.sync.client.fetch_manifest",
+    monkeypatch.setattr("aiforge_core.memory.sync.transport.fetch_manifest",
                         lambda *a, **k: nuc["client"].get(
                             "/api/memory/sync/manifest").json())
-    monkeypatch.setattr("aiforge_core.memory.sync.client.fetch_blob",
+    monkeypatch.setattr("aiforge_core.memory.sync.transport.fetch_blob",
                         lambda *a, **k: b"TAMPERED")
     _activate(monkeypatch, book)
 
@@ -2333,14 +2270,14 @@ def sync_with(peer: dict) -> dict:
     Returns ``{ok, applied, rejected, conflicts}``. Never raises: an unreachable
     or misbehaving peer must not take the local node down.
     """
-    from aiforge_core.memory.sync import client, manifest, merge, peers
+    from aiforge_core.memory.sync import apply, manifest, merge, peers, transport
 
     result = {"ok": False, "applied": 0, "rejected": 0, "conflicts": 0}
     base = _first_url(peer)
     if not base:
         return result
 
-    remote = client.fetch_manifest(base, str(peer.get("token") or ""))
+    remote = transport.fetch_manifest(base, str(peer.get("token") or ""))
     if not remote:
         return result
     result["ok"] = True
@@ -2349,16 +2286,16 @@ def sync_with(peer: dict) -> dict:
     plan = merge.plan_sync(local, remote.get("manifest") or [])
 
     for pair in plan["conflict"]:
-        if client.keep_conflict(pair["local"]):
+        if apply.keep_conflict(pair["local"]):
             result["conflicts"] += 1
 
     for entry in plan["want"]:
-        body = client.fetch_blob(base, str(entry.get("hash") or ""),
+        body = transport.fetch_blob(base, str(entry.get("hash") or ""),
                                  str(peer.get("token") or ""))
         if body is None:
             result["rejected"] += 1
             continue
-        if client.apply_blob(entry, body):
+        if apply.apply_blob(entry, body):
             result["applied"] += 1
         else:
             result["rejected"] += 1
@@ -2896,44 +2833,25 @@ replaces consensus.
 """
 from __future__ import annotations
 
-import json
 import logging
-import os
 import time
-from pathlib import Path
+
+from aiforge_core.memory.sync import _io, paths
+from aiforge_core.memory.sync.paths import LEASE_KEY
 
 _log = logging.getLogger("aiforge.sync")
 
 TTL = 600          # 10 minutes
 RENEW_EVERY = 180  # 3 minutes
-LEASE_KEY = "__lease__"
-
-
-def _path() -> Path:
-    from aiforge_core.memory.md_store import memory_dir
-
-    p = memory_dir() / "okf"
-    p.mkdir(parents=True, exist_ok=True)
-    return p / ".lease.json"
 
 
 def read() -> dict:
-    p = _path()
-    if not p.is_file():
-        return {}
-    try:
-        rec = json.loads(p.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 — a corrupt lease is treated as no lease
-        _log.warning("sync: unreadable lease, treating as free")
-        return {}
-    return rec if isinstance(rec, dict) else {}
+    """The current lease record, or {} if there is none."""
+    return _io.read_json(paths.lease_path())
 
 
 def _write(rec: dict) -> None:
-    p = _path()
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(json.dumps(rec, indent=2), encoding="utf-8")
-    os.replace(tmp, p)
+    _io.write_json(paths.lease_path(), rec)
 
 
 def _expired(rec: dict) -> bool:
@@ -3098,48 +3016,36 @@ other peer is still holding, and a genuinely newer edit later beats it back.
 """
 from __future__ import annotations
 
-import json
 import logging
-import os
-from pathlib import Path
+
+from aiforge_core.memory.sync import _io, paths
 
 _log = logging.getLogger("aiforge.sync")
-
-
-def _root() -> Path:
-    from aiforge_core.memory.md_store import memory_dir
-
-    return memory_dir()
 
 
 def delete_node(origin: str, key: str) -> bool:
     """Remove a node and record a tombstone. False if no such identity exists."""
     from aiforge_core.memory.okf import nodes as _nodes
-    from aiforge_core.memory.sync.client import node_paths, tomb_path
     from aiforge_core.memory.sync.identity import self_id
 
-    paths = node_paths(origin, key)
-    if not paths:
+    found = paths.node_paths(origin, key)
+    if not found:
         return False
 
     rev = 0
-    for p in paths:
+    for p in found:
         try:
             meta = (_nodes.parse_node(p.read_text(encoding="utf-8")).get("meta") or {})
             rev = max(rev, int(meta.get("rev") or 0))
         except Exception:  # noqa: BLE001 — an unreadable node is still deletable
             continue
 
-    for p in paths:
+    for p in found:
         p.unlink(missing_ok=True)
 
-    target = _tomb_path(origin, key)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix(target.suffix + ".tmp")
-    tmp.write_text(json.dumps({"origin": origin, "key": key, "rev": rev + 1,
-                               "updated_by": self_id(), "tomb": True}),
-                   encoding="utf-8")
-    os.replace(tmp, target)
+    _io.write_json(paths.tomb_path(origin, key),
+                   {"origin": origin, "key": key, "rev": rev + 1,
+                    "updated_by": self_id(), "tomb": True})
     _log.info("sync: tombstoned (%s, %s) at rev %d", origin, key, rev + 1)
     return True
 
