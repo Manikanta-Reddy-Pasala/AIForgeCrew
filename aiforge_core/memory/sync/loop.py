@@ -146,10 +146,18 @@ def run_forever(interval: int = DEFAULT_INTERVAL) -> None:
     Nothing here drives leadership: the compaction leader is *elected* from the
     peer registry each time somebody asks (``election.py``), so there is no
     record to claim and no heartbeat to keep alive.
+
+    Knowledge compaction rides this cycle rather than owning a schedule of its
+    own — one moving part. It runs *after* the sync pass so a cycle folds the
+    data that cycle just pulled, and it can never take the daemon down: both
+    tiers skip when their inputs are unchanged and soft-fail when they are not.
     """
+    from aiforge_core.memory.okf import tiers
+
     _start_ssdp_responder()
     while True:
         run_once()
+        tiers.run_after_sync()
         time.sleep(interval)
 
 
