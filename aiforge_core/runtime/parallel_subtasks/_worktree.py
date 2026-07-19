@@ -198,6 +198,23 @@ def _run_subtask(repo: str, base_branch: str, ticket_id: int | None,
             "error": last.get("error")}
 
 
+def _project_fail_detail(res: dict) -> str:
+    """Real compiler/test output from a ``project()`` result — buried under
+    ``results[].output`` for compiled stacks (a ``javac``/``rustc``/``go``/gradle
+    error lives there, not the top-level ``error`` which is usually None). Without
+    this the integration verdict + the reconcile's fix prompt got an EMPTY detail
+    and couldn't act on a Java build error at all."""
+    if not isinstance(res, dict):
+        return ""
+    parts = []
+    if res.get("error"):
+        parts.append(str(res["error"]))
+    for r in (res.get("results") or []):
+        if isinstance(r, dict) and not r.get("ok"):
+            parts.append(str(r.get("output") or r.get("error") or ""))
+    return ("\n".join(p for p in parts if p).strip())[-4000:] or None
+
+
 def _build_or_test(worktree: str) -> dict:
     """Quality gate for a checkout: if the project HAS tests, gate strictly on
     the test result (FAILING tests do NOT pass via a build fallback); only when
@@ -214,11 +231,11 @@ def _build_or_test(worktree: str) -> dict:
             test = project(action="test", cwd=worktree)
             ok = bool(isinstance(test, dict) and test.get("ok"))
             return {"ok": ok, "via": "test",
-                    "detail": None if ok else (test or {}).get("error")}
+                    "detail": None if ok else _project_fail_detail(test)}
         build = project(action="build", cwd=worktree)
         ok = bool(isinstance(build, dict) and build.get("ok"))
         return {"ok": ok, "via": "build", "note": "no tests",
-                "detail": None if ok else (build or {}).get("error")}
+                "detail": None if ok else _project_fail_detail(build)}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
 

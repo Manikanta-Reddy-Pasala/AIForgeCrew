@@ -44,10 +44,19 @@ def _escalation_model() -> "str | None":
 
 def _collect_run_output(res: dict) -> str:
     """Gather the run output from ANY key project_runner might use — a compiled
-    build puts the compile error under stdout/stderr, not just output/error."""
-    return "\n".join(str(res.get(k) or "") for k in
-                     ("error", "output", "stdout", "stderr", "logs", "details",
-                      "message")).strip()
+    build puts the compile error under stdout/stderr, not just output/error.
+
+    CRITICAL for compiled languages: ``project()`` buries each command's real
+    output under ``results[].output`` (a Maven/Gradle/Go/Rust compile error is
+    there, NOT at the top level), so without digging into ``results`` the
+    reconcile sees an EMPTY error and can't fix a javac/rustc/go error it never
+    saw. Pull both the top-level keys AND every failing sub-result's output."""
+    parts = [str(res.get(k) or "") for k in
+             ("error", "output", "stdout", "stderr", "logs", "details", "message")]
+    for r in (res.get("results") or []):
+        if isinstance(r, dict):
+            parts.append(str(r.get("output") or r.get("error") or ""))
+    return "\n".join(p for p in parts if p).strip()
 
 
 def _raw_build_test_output(cwd: str, stacks: list) -> str:
