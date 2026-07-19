@@ -76,6 +76,13 @@ def _class_b_entry(p: Path, meta: dict, *, tomb: bool = False) -> dict | None:
         return None
     if tomb:
         entry["tomb"] = True
+    # `derived` is a routing hint, not decoration: paths.target_for sends a
+    # mesh-marked node to mesh/ rather than to the raw inbox, so the folder a
+    # node lands in matches what it is. Surfaced only when the node carries it,
+    # like `tomb` — an absent marker must not read as an empty one.
+    derived = str(meta.get("derived") or "").strip()
+    if derived:
+        entry["derived"] = derived
     return entry
 
 

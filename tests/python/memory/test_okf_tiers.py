@@ -176,6 +176,58 @@ def test_an_unchanged_mesh_costs_no_fold(mem, folds):
     assert folds == []
 
 
+def test_a_local_note_reaches_the_view_without_waiting_for_a_new_mesh(mem, folds):
+    """Own knowledge is a tier-2 input, so it must not be gated on the leader:
+    keying only on the mesh hid a note here until the next publish, or forever
+    while the leader was down."""
+    from aiforge_core.memory.okf import tiers
+    from aiforge_core.memory.sync import paths
+
+    _write_node(paths.mesh_dir(), "M-sync", "the mesh says mtu 1380",
+                derived="mesh")
+    tiers.build_view()
+    folds.clear()
+
+    _write_node(paths.okf_dir() / "global" / "learnings", "L-03",
+                "locally we override it to 1280")
+    out = tiers.build_view()
+
+    assert out["ok"] and folds
+    assert "override it to 1280" in _read(paths.view_dir() / "V-sync.md")["body"]
+
+
+def test_an_unchanged_okf_and_mesh_cost_no_merge(mem, folds, monkeypatch):
+    """Widening what counts as a change must not make every cycle rebuild:
+    authoring nothing still costs a directory walk and no LLM call."""
+    from aiforge_core.memory.okf import tiers
+    from aiforge_core.memory.sync import paths
+
+    _write_node(paths.mesh_dir(), "M-sync", "the mesh says mtu 1380",
+                derived="mesh")
+    _write_node(paths.okf_dir() / "global" / "learnings", "L-03", "and 1280 here")
+    tiers.build_view()
+
+    def _never(*a, **kw):
+        raise AssertionError("consolidate called on an unchanged tree")
+
+    monkeypatch.setattr("aiforge_core.runtime.work_notes.consolidate", _never)
+
+    assert tiers.build_view() == {"ok": True, "skipped": "unchanged"}
+
+
+def test_a_mesh_node_received_into_the_inbox_is_still_recognised(mem, folds):
+    """Tolerance kept on purpose: a peer on a build older than the mesh routing
+    files its copy under peers/, and so did every node received before it."""
+    from aiforge_core.memory.okf import tiers
+    from aiforge_core.memory.sync import paths
+
+    _write_node(mem / "peers" / "air", "M-sync", "the mesh says mtu 1380",
+                origin="air", derived="mesh")
+
+    assert tiers.build_view()["inputs"] == 1
+    assert "mtu 1380" in _read(paths.view_dir() / "V-sync.md")["body"]
+
+
 def test_a_corrupt_mesh_leaves_a_good_view_standing(mem, folds):
     from aiforge_core.memory.okf import tiers
     from aiforge_core.memory.sync import paths

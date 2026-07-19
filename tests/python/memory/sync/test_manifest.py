@@ -149,6 +149,53 @@ def test_okf_peers_and_mesh_are_all_advertised(monkeypatch, tmp_path):
     assert sorted(e["key"] for e in manifest.build()) == ["L-01", "L-02", "L-03"]
 
 
+def _mesh_node(tmp_path, origin: str, key: str, *, rev: int = 1):
+    """A tier-1 result: flat in mesh/, carrying the `derived: mesh` marker."""
+    p = tmp_path / "md" / "mesh" / f"{key}.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(f'---\ntype: learning\nid: "{key}"\norigin: "{origin}"\n'
+                 f'rev: {rev}\nupdated_by: "{origin}"\nderived: "mesh"\n---\n\nb\n',
+                 encoding="utf-8")
+    return p
+
+
+def test_a_mesh_node_advertises_its_derived_marker(monkeypatch, tmp_path):
+    """The marker is what tells the receiver to file it under mesh/ rather than
+    in the raw inbox — it has to survive the manifest to get there."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import manifest
+
+    _mesh_node(tmp_path, "nuc", "M-sync")
+
+    assert [e["derived"] for e in manifest.build()] == ["mesh"]
+
+
+def test_an_ordinary_node_carries_no_derived_key(monkeypatch, tmp_path):
+    """Absent, not empty: `derived: ""` would route as a falsy marker today and
+    as a real one the moment somebody compares with `in`."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import manifest
+
+    _node(tmp_path, "global", "nuc", "L-07")
+
+    assert [e for e in manifest.build() if "derived" in e] == []
+
+
+def test_one_identity_in_both_mesh_and_the_inbox_is_advertised_once(
+        monkeypatch, tmp_path):
+    """I1 across the new routing: a mesh node left in peers/ by an older build
+    and re-filed into mesh/ is still one advertised entry, not two."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import manifest
+
+    winner = _mesh_node(tmp_path, "air", "M-sync", rev=2)
+    _flat_node(tmp_path, "peers", "air", "M-sync")      # rev 1, the stale copy
+
+    entries = [e for e in manifest.build() if e["key"] == "M-sync"]
+    assert len(entries) == 1
+    assert entries[0]["path"] == winner.relative_to(tmp_path / "md").as_posix()
+
+
 def test_the_local_view_is_never_advertised(monkeypatch, tmp_path):
     """The break in the amplification loop: tier-2 output is local-only. If view/
     synced, the leader would fold it into mesh/, it would come back down, and be

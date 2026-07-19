@@ -146,8 +146,11 @@ def _mesh_nodes() -> list[dict]:
     """The tier-1 result as it is visible here.
 
     A mesh node is identified by its ``derived: mesh`` marker, not by the folder
-    it happens to sit in: on the leader it is in ``mesh/``, and on a follower it
-    arrives through the ordinary node inbox. One marker, both cases.
+    it happens to sit in. ``paths.target_for`` now routes an arriving mesh node
+    to ``mesh/``, so that is where it normally lives on a follower too — but the
+    inbox is still read, because a peer running a build from before that routing
+    (or a node received before it) left its copy in ``peers/``. One marker,
+    either folder.
     """
     from aiforge_core.memory.sync import paths
 
@@ -162,10 +165,22 @@ def _mesh_nodes() -> list[dict]:
 
 
 def _mesh_dirs() -> tuple[Path, ...]:
-    """Directories a mesh node can appear in — the tier-2 staleness key."""
+    """Directories a mesh node can appear in."""
     from aiforge_core.memory.sync import paths
 
     return (paths.mesh_dir(), paths.peers_root())
+
+
+def _view_dirs() -> tuple[Path, ...]:
+    """Everything tier 2 reads — its staleness key.
+
+    ``okf/`` is in here because it is an input: keying on the mesh alone meant a
+    note authored locally stayed out of the local view until the leader
+    published again — a full cycle away, or forever while the leader is down.
+    """
+    from aiforge_core.memory.sync import paths
+
+    return (paths.okf_dir(), *_mesh_dirs())
 
 
 # ── grouping (md_store's, not a second one) ───────────────────────────────
@@ -375,14 +390,15 @@ def distil_mesh(*, role: str = _ROLE) -> dict:
 def build_view(*, role: str = _ROLE) -> dict:
     """Rebuild ``view/`` from this machine's ``okf/`` plus the mesh result.
 
-    Runs on every peer, the leader included. Skipped unless the mesh actually
-    changed, so a cycle where nothing arrived costs no tokens. A mesh that is
-    missing, empty or unreadable leaves the previous view exactly where it is:
-    a bad mesh must never destroy a good local view.
+    Runs on every peer, the leader included. Skipped unless one of its inputs —
+    the mesh or our own ``okf/`` — actually changed, so a cycle where nothing
+    arrived and nothing was authored costs no tokens. A mesh that is missing,
+    empty or unreadable leaves the previous view exactly where it is: a bad mesh
+    must never destroy a good local view.
     """
     from aiforge_core.memory.sync import paths
 
-    fingerprint = _fingerprint(_mesh_dirs())
+    fingerprint = _fingerprint(_view_dirs())
     if _read_state().get("view") == fingerprint:
         return {"ok": True, "skipped": "unchanged"}
 

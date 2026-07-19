@@ -91,6 +91,48 @@ def test_target_for_a_new_foreign_node_lands_in_the_inbox_not_in_okf(monkeypatch
     assert paths.okf_dir() not in target.parents
 
 
+def test_target_for_a_mesh_marked_node_lands_in_mesh_not_in_the_inbox(
+        monkeypatch, tmp_path):
+    """The leader's fold is not raw peer knowledge: filing it in peers/ left
+    mesh/ empty on every follower and made the per-directory counts a fiction."""
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    entry = {"kind": "B", "origin": "air", "key": "M-sync",
+             "derived": "mesh", "path": "mesh/M-sync.md"}
+
+    assert paths.target_for(entry).as_posix().endswith("md/mesh/M-sync.md")
+
+
+def test_a_hostile_key_on_a_mesh_node_cannot_climb_the_tree(monkeypatch, tmp_path):
+    """`derived` is a routing hint from a peer; the key it routes is still
+    attacker input."""
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    root = (tmp_path / "md").resolve()
+
+    for key in ("../../../../etc/passwd", "..", "*"):
+        target = paths.target_for({"kind": "B", "origin": "air", "key": key,
+                                   "derived": "mesh", "path": "x"})
+        if target is not None:              # unaddressable keys are refused
+            assert root in target.resolve().parents
+        assert root in paths.mesh_node_path(key).resolve().parents
+
+
+def test_a_held_identity_is_not_relocated_by_a_mesh_marker(monkeypatch, tmp_path):
+    """I1 beats the routing hint: compare one file and write another and the
+    pair flip-flops every round."""
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    mine = _peer_node(tmp_path, "air", "M-sync")
+    entry = {"kind": "B", "origin": "air", "key": "M-sync",
+             "derived": "mesh", "path": "mesh/M-sync.md"}
+
+    assert paths.target_for(entry) == mine
+
+
 def test_target_for_class_a_uses_the_advertised_path(monkeypatch, tmp_path):
     _env(monkeypatch, tmp_path)
     from aiforge_core.memory.sync import paths

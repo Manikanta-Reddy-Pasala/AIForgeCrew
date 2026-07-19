@@ -5,8 +5,9 @@ OKF ids are per-scope counters (``aiforge_core/memory/okf/store.py:127``), so
 ``O-01.md``. A peer's advertised path is therefore a hint, never an instruction:
 trusting it would let one peer silently overwrite another's node.
 
-The rule: an identity already held is updated wherever it currently lives;
-anything new from another peer lands under ``peers/<origin>/``. Every peer
+The rule: an identity already held is updated wherever it currently lives; a new
+node marked ``derived: mesh`` is the leader's fold and lands in ``mesh/``;
+anything else new from another peer lands under ``peers/<origin>/``. Every peer
 derives the same answer from the same inputs, so the layout converges along with
 the content.
 
@@ -130,6 +131,25 @@ def peer_node_path(origin: str, key: str) -> Path:
     return peers_root() / _component(origin) / f"{_component(key)}.md"
 
 
+def mesh_node_path(key: str) -> Path:
+    """Where an arriving tier-1 result lands. Flat, like the leader writes it —
+    the mesh is one fold of everybody's knowledge, so it has no per-origin
+    subtree. ``key`` still comes from a peer, hence ``_component``."""
+    return mesh_dir() / f"{_component(key)}.md"
+
+
+def _mesh_marker() -> str:
+    """The ``derived:`` value tier 1 stamps on its output.
+
+    Imported here rather than restated: the compaction tier owns the frontmatter
+    vocabulary it writes, and a second copy of the literal is how the two drift
+    apart. Lazy because ``okf.tiers`` reads its directories from this module.
+    """
+    from aiforge_core.memory.okf import tiers
+
+    return tiers.MESH
+
+
 def node_paths(origin: str, key: str) -> list[Path]:
     """Every node file on disk carrying this identity, highest ``rev`` first.
 
@@ -183,10 +203,19 @@ def target_for(entry: dict) -> Path | None:
         return tomb_path(origin, key)
 
     existing = node_paths(origin, key)
-    return existing[0] if existing else peer_node_path(origin, key)
+    if existing:
+        # An identity already held is updated where it lives, whichever
+        # directory that is: the file we compare must be the file we write (I1).
+        # Relocating it here would compare one path and write another forever.
+        return existing[0]
+    if str(entry.get("derived") or "") == _mesh_marker():
+        # The leader's fold, arriving for the first time. Without this it would
+        # land in the raw inbox, leaving mesh/ permanently empty on followers.
+        return mesh_node_path(key)
+    return peer_node_path(origin, key)
 
 
 __all__ = ["sanitise", "is_addressable", "okf_dir", "tomb_dir", "tomb_path",
            "peers_root", "legacy_peers_dir", "mesh_dir", "view_dir",
            "node_roots", "node_scans", "iter_nodes", "peer_node_path",
-           "node_paths", "target_for"]
+           "mesh_node_path", "node_paths", "target_for"]

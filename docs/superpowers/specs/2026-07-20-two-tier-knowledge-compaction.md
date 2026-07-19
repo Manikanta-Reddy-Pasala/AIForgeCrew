@@ -54,6 +54,11 @@ Four directories under `memory_dir()`, each with one writer:
 `okf/peers/` disappears. A migration moves any existing `okf/peers/<origin>/*` to
 `peers/<origin>/*`.
 
+The `derived: mesh` marker travels in the manifest, and an arriving node that
+carries it is filed in `mesh/` rather than in the raw inbox — otherwise `mesh/`
+would stay empty on every follower and the per-directory counts would mislead.
+An identity already held is still updated where it lives.
+
 **What agents read:** `okf/` (own raw knowledge) plus `view/` (distilled mesh +
 own). `mesh/` is an *input* to `view/`, not read directly by retrieval — reading
 both would surface the same content twice.
@@ -114,7 +119,9 @@ install runs tier 1 over an empty inbox and behaves exactly as it does today.
 
 Tier 2 means every peer spends some tokens whenever the mesh updates. The input
 is its own `okf/` plus one mesh folder — not N peers' raw material — and it is
-skipped entirely when `mesh/` is unchanged. Accepted: the local view is what makes
+skipped entirely when both of those inputs are unchanged (`okf/` counts because
+a note authored here must reach the local view without waiting on the leader).
+Accepted: the local view is what makes
 shared knowledge usable on a machine whose context differs from the leader's.
 
 ## Out of scope
