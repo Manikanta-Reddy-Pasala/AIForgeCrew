@@ -81,6 +81,7 @@ from aiforge_core.api.routes import tickets as _r_tickets  # noqa: E402
 from aiforge_core.api.routes import runtime as _r_runtime  # noqa: E402
 from aiforge_core.api.routes import observability as _r_observability  # noqa: E402
 from aiforge_core.api.routes import files as _r_files  # noqa: E402
+from aiforge_core.api.routes import sync as _r_sync  # noqa: E402
 app.include_router(_r_jobs.router)
 app.include_router(_r_repos.router)
 app.include_router(_r_library.router)
@@ -94,6 +95,7 @@ app.include_router(_r_tickets.router)
 app.include_router(_r_runtime.router)
 app.include_router(_r_observability.router)
 app.include_router(_r_files.router)
+app.include_router(_r_sync.router)
 
 # Backwards-compat re-exports: private chat helpers relocated into
 # aiforge_core.api.routes.chat but still imported by name from
