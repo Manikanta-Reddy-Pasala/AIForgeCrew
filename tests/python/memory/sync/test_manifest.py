@@ -67,3 +67,71 @@ def test_a_symlinked_capture_is_never_advertised(monkeypatch, tmp_path):
     assert paths == {"captures/real-20260719-aaaaaa.md"}
     assert manifest.path_for_hash(
         hashlib.sha256(b"classified").hexdigest()) is None
+
+
+def test_class_b_entry_from_node_frontmatter(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import manifest
+
+    d = tmp_path / "md" / "okf" / "global" / "learnings"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "L-07.md").write_text(
+        '---\ntype: learning\nid: "L-07"\norigin: "nuc"\nrev: 47\n'
+        'updated_by: "ms"\n---\n\nbody\n',
+        encoding="utf-8",
+    )
+
+    b = [e for e in manifest.build() if e["cls"] == "B"]
+    assert len(b) == 1
+    assert b[0]["origin"] == "nuc"
+    assert b[0]["key"] == "L-07"
+    assert b[0]["rev"] == 47
+    assert b[0]["updated_by"] == "ms"
+
+
+def test_unstamped_node_is_local_only(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import manifest
+
+    d = tmp_path / "md" / "okf" / "global" / "learnings"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "L-09.md").write_text('---\ntype: learning\nid: "L-09"\n---\n\nbody\n',
+                               encoding="utf-8")
+
+    assert [e for e in manifest.build() if e["cls"] == "B"] == []
+
+
+def test_index_and_conflict_sidecars_never_sync(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import manifest
+
+    okf = tmp_path / "md" / "okf"
+    (okf / "global" / "learnings").mkdir(parents=True, exist_ok=True)
+    (okf / "index.md").write_text("# index\n", encoding="utf-8")
+    (okf / "global" / "learnings" / "L-07.conflict.md").write_text("loser\n",
+                                                                   encoding="utf-8")
+
+    assert manifest.build() == []
+
+
+def test_tombstone_and_lease_are_class_b(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import manifest
+
+    okf = tmp_path / "md" / "okf"
+    (okf / ".tomb" / "nuc").mkdir(parents=True, exist_ok=True)
+    (okf / ".tomb" / "nuc" / "L-07.json").write_text(
+        '{"origin":"nuc","key":"L-07","rev":48,"updated_by":"nuc","tomb":true}',
+        encoding="utf-8",
+    )
+    (okf / ".lease.json").write_text(
+        '{"origin":"","key":"__lease__","rev":3,"updated_by":"nuc",'
+        '"holder":"nuc","expires_at":1763000000}',
+        encoding="utf-8",
+    )
+
+    by_key = {e["key"]: e for e in manifest.build()}
+    assert by_key["L-07"]["tomb"] is True
+    assert by_key["L-07"]["rev"] == 48
+    assert by_key["__lease__"]["rev"] == 3
+    assert by_key["__lease__"]["origin"] == ""
