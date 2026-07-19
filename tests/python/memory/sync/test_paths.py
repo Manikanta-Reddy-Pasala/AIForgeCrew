@@ -97,6 +97,56 @@ def test_a_hostile_origin_or_key_cannot_climb_the_tree(monkeypatch, tmp_path):
             assert root in p.resolve().parents
 
 
+def test_a_glob_metacharacter_key_cannot_address_another_node(monkeypatch, tmp_path):
+    """B1: key comes from a peer's manifest; rglob would interpret '*' as a pattern."""
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    mine = _node(tmp_path, "global", "nuc", "L-07")
+
+    for key in ("*", "?-0[0-9]", "**/L-07"):
+        assert paths.node_paths("nuc", key) == []
+        target = paths.target_for({"cls": "B", "origin": "nuc", "key": key,
+                                   "path": "x"})
+        assert target != mine
+
+
+def test_node_paths_skips_a_symlinked_node(monkeypatch, tmp_path):
+    """B2: a symlink resolving outside the tree must not be an update target."""
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    outside = tmp_path / "outside.md"
+    outside.write_text('---\ntype: learning\nid: "L-99"\norigin: "nuc"\n'
+                       'rev: 1\nupdated_by: "nuc"\n---\n\nsecret\n', encoding="utf-8")
+    d = tmp_path / "md" / "okf" / "global" / "learnings"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "L-99.md").symlink_to(outside)
+
+    assert paths.node_paths("nuc", "L-99") == []
+
+
+def test_node_paths_puts_the_highest_rev_first(monkeypatch, tmp_path):
+    """I1: the same identity in two scopes — compare and write the same file."""
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    def _rev_node(scope: str, rev: int):
+        p = tmp_path / "md" / "okf" / scope / "learnings" / "L-07.md"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f'---\ntype: learning\nid: "L-07"\norigin: "nuc"\n'
+                     f'rev: {rev}\nupdated_by: "nuc"\n---\n\nb{rev}\n',
+                     encoding="utf-8")
+        return p
+
+    _rev_node("global", 3)
+    newer = _rev_node("projects/x", 9)
+
+    assert paths.node_paths("nuc", "L-07")[0] == newer
+    assert paths.target_for({"cls": "B", "origin": "nuc", "key": "L-07",
+                             "path": "x"}) == newer
+
+
 def test_target_for_a_tombstone_and_the_lease(monkeypatch, tmp_path):
     _env(monkeypatch, tmp_path)
     from aiforge_core.memory.sync import paths

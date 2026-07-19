@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from aiforge_core.memory.sync import _io
+from aiforge_core.memory.sync import _io, merge
 
 LEASE_KEY = "__lease__"
 
@@ -30,6 +30,19 @@ def _component(value: str) -> str:
     makes ``".."`` collapse to the empty string rather than climbing the tree.
     """
     return _UNSAFE.sub("-", str(value or "")).strip("-") or "_"
+
+
+def is_addressable(value: str) -> bool:
+    """True when ``value`` survives sanitisation unchanged.
+
+    A component that does not round-trip cannot be used as an identity: either
+    it carries separator or glob metacharacters (``*``, ``[0-9]``, ``..``) and
+    would address some other peer's node, or it collapses — every non-ASCII key
+    sanitises to the same ``_`` — so distinct identities would share one file.
+    Such records are refused entry to the identity space rather than repaired,
+    because repairing them invents an identity the originating peer never used.
+    """
+    return bool(value) and _component(value) == value
 
 
 def okf_dir() -> Path:
@@ -60,23 +73,37 @@ def peer_node_path(origin: str, key: str) -> Path:
 
 
 def node_paths(origin: str, key: str) -> list[Path]:
-    """Every node file on disk carrying this identity, across all scopes."""
+    """Every node file on disk carrying this identity, highest ``rev`` first.
+
+    ``key`` arrives from a peer's manifest, so the filename is compared
+    literally rather than handed to ``rglob`` as a pattern: a peer advertising
+    ``key="*"`` must not resolve to somebody else's node.
+
+    The order is the layout half of the one-winner rule (I1): when the same
+    identity is held in two scopes, ``[0]`` is the version the manifest also
+    advertises, so the file we compare is the file we write. Ties on ``rev``
+    break on the path, which every peer computes identically.
+    """
     from aiforge_core.memory.okf import nodes as _nodes
 
-    okf = okf_dir()
-    if not okf.is_dir():
+    if not is_addressable(key):
+        # Sanitising would silently retarget: "**/L-07" collapses onto L-07.md.
         return []
-    out: list[Path] = []
-    for p in sorted(okf.rglob(f"{key}.md")):
-        if p.name.endswith(".conflict.md"):
+    name = f"{key}.md"
+    ranked: list[tuple[int, str, Path]] = []
+    # A ``.conflict.md`` sidecar can never match: it is `<stem>.conflict.md`,
+    # and a key containing a dot does not survive _component().
+    for p in _io.iter_syncable(okf_dir(), "**/*.md"):
+        if p.name != name:
             continue
         try:
             meta = (_nodes.parse_node(p.read_text(encoding="utf-8")).get("meta") or {})
         except Exception:  # noqa: BLE001 — an unreadable node is left untouched
             continue
         if str(meta.get("origin") or "") == origin:
-            out.append(p)
-    return out
+            ranked.append((merge.as_rev(meta.get("rev")), p.as_posix(), p))
+    ranked.sort(key=lambda t: (-t[0], t[1]))
+    return [t[2] for t in ranked]
 
 
 def target_for(entry: dict) -> Path | None:
@@ -86,19 +113,26 @@ def target_for(entry: dict) -> Path | None:
         return _io.safe_target(str(entry.get("path") or ""))
 
     key = str(entry.get("key") or "")
-    if not key:
-        return None
     origin = str(entry.get("origin") or "")
+
+    # The entry came from a peer and was never seen by our manifest builder, so
+    # the identity rule is enforced here too: a key that does not round-trip
+    # sanitisation ("*", "**/L-07") would sanitise onto an unrelated local node
+    # and overwrite it. Only the lease may travel without an origin.
+    if not is_addressable(key):
+        return None
+    if key == LEASE_KEY and not entry.get("tomb"):
+        return lease_path()
+    if not is_addressable(origin):
+        return None
 
     if entry.get("tomb"):
         return tomb_path(origin, key)
-    if key == LEASE_KEY:
-        return lease_path()
 
     existing = node_paths(origin, key)
     return existing[0] if existing else peer_node_path(origin, key)
 
 
-__all__ = ["okf_dir", "tomb_dir", "tomb_path", "lease_path", "peers_dir",
-           "peer_node_path", "node_paths",
+__all__ = ["is_addressable", "okf_dir", "tomb_dir", "tomb_path", "lease_path",
+           "peers_dir", "peer_node_path", "node_paths",
            "target_for", "LEASE_KEY"]

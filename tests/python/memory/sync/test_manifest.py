@@ -10,6 +10,16 @@ def _seed_capture(root, name: str, text: str) -> None:
     (d / name).write_text(text, encoding="utf-8")
 
 
+def _node(tmp_path, scope: str, origin: str, key: str, *, rev: int = 1,
+          body: str = "b", filename: str | None = None):
+    p = tmp_path / "md" / "okf" / scope / "learnings" / (filename or f"{key}.md")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(f'---\ntype: learning\nid: "{key}"\norigin: "{origin}"\n'
+                 f'rev: {rev}\nupdated_by: "{origin}"\n---\n\n{body}\n',
+                 encoding="utf-8")
+    return p
+
+
 def test_class_a_entries_carry_sha256_of_file_bytes(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
     from aiforge_core.memory.sync import manifest
@@ -110,8 +120,11 @@ def test_index_and_conflict_sidecars_never_sync(monkeypatch, tmp_path):
     (okf / "index.md").write_text("# index\n", encoding="utf-8")
     (okf / "global" / "learnings" / "L-07.conflict.md").write_text("loser\n",
                                                                    encoding="utf-8")
+    # Positive control: an empty manifest would otherwise pass this test even if
+    # build() were broken outright.
+    _node(tmp_path, "global", "nuc", "L-07")
 
-    assert manifest.build() == []
+    assert [e["key"] for e in manifest.build()] == ["L-07"]
 
 
 def test_tombstone_and_lease_are_class_b(monkeypatch, tmp_path):
@@ -134,4 +147,103 @@ def test_tombstone_and_lease_are_class_b(monkeypatch, tmp_path):
     assert by_key["L-07"]["tomb"] is True
     assert by_key["L-07"]["rev"] == 48
     assert by_key["__lease__"]["rev"] == 3
+    # The lease is the one class B record allowed an empty origin: it is a
+    # mesh-wide singleton addressed by its reserved key (see I5 below).
     assert by_key["__lease__"]["origin"] == ""
+
+
+def test_a_tombstone_without_an_origin_is_refused(monkeypatch, tmp_path):
+    """I5: ('', key) is not an identity — one peer's tombstone would clobber another's."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import manifest
+
+    okf = tmp_path / "md" / "okf"
+    (okf / ".tomb" / "_").mkdir(parents=True, exist_ok=True)
+    (okf / ".tomb" / "_" / "L-07.json").write_text(
+        '{"origin":"","key":"L-07","rev":48,"updated_by":"nuc","tomb":true}',
+        encoding="utf-8",
+    )
+    (okf / ".lease.json").write_text(
+        '{"origin":"","key":"__lease__","rev":3,"updated_by":"nuc"}',
+        encoding="utf-8",
+    )
+
+    keys = [e["key"] for e in manifest.build()]
+    assert keys == ["__lease__"]
+
+
+def test_an_unaddressable_key_or_origin_never_enters_the_manifest(monkeypatch,
+                                                                  tmp_path):
+    """B1: a key carrying glob metacharacters would address an unrelated node."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import manifest
+
+    good = _node(tmp_path, "global", "nuc", "L-07")
+    _node(tmp_path, "global", "nuc", "*", filename="star.md")
+    _node(tmp_path, "global", "nuc", "../../etc/passwd", filename="dots.md")
+    # Non-ASCII keys all sanitise to the same "_" and would overwrite each other.
+    _node(tmp_path, "global", "nuc", "日本語", filename="nihongo.md")
+    _node(tmp_path, "global", "../..", "L-08", filename="badorigin.md")
+
+    entries = [e for e in manifest.build() if e["cls"] == "B"]
+    assert [e["key"] for e in entries] == ["L-07"]
+    assert entries[0]["path"] == "okf/global/learnings/" + good.name
+
+
+def test_symlinked_class_b_records_are_never_advertised(monkeypatch, tmp_path):
+    """B2: the symlink guard covered class A only — nodes, tombs and the lease leaked."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import manifest
+
+    secret = tmp_path / "private.md"
+    secret.write_text('---\ntype: learning\nid: "L-99"\norigin: "nuc"\nrev: 1\n'
+                      'updated_by: "nuc"\n---\n\nclassified\n', encoding="utf-8")
+    secret_json = tmp_path / "private.json"
+    secret_json.write_text('{"origin":"nuc","key":"L-98","rev":1,'
+                           '"updated_by":"nuc","tomb":true}', encoding="utf-8")
+
+    okf = tmp_path / "md" / "okf"
+    (okf / "global" / "learnings").mkdir(parents=True, exist_ok=True)
+    (okf / ".tomb" / "nuc").mkdir(parents=True, exist_ok=True)
+    (okf / "global" / "learnings" / "L-99.md").symlink_to(secret)
+    (okf / ".tomb" / "nuc" / "L-98.json").symlink_to(secret_json)
+    (okf / ".lease.json").symlink_to(secret_json)
+
+    assert manifest.build() == []
+    for blob in (secret, secret_json):
+        assert manifest.path_for_hash(
+            hashlib.sha256(blob.read_bytes()).hexdigest()) is None
+
+
+def test_a_malformed_rev_drops_one_record_not_the_manifest(monkeypatch, tmp_path):
+    """B3: int('v2') outside the try 404'd /blob for every file in the tree."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import manifest
+
+    _seed_capture(tmp_path / "md", "a-20260719-aaaaaa.md", "hello")
+    d = tmp_path / "md" / "okf" / "global" / "learnings"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "L-07.md").write_text('---\ntype: learning\nid: "L-07"\norigin: "nuc"\n'
+                               'rev: "v2"\nupdated_by: "nuc"\n---\n\nb\n',
+                               encoding="utf-8")
+
+    entries = manifest.build()
+
+    assert {e["hash"] for e in entries} >= {hashlib.sha256(b"hello").hexdigest()}
+    assert [e["rev"] for e in entries if e["cls"] == "B"] == [0]
+    assert manifest.path_for_hash(hashlib.sha256(b"hello").hexdigest()) is not None
+
+
+def test_one_identity_in_two_scopes_yields_one_entry(monkeypatch, tmp_path):
+    """I1: two entries for one identity made the mesh flip-flop every round."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import manifest
+
+    _node(tmp_path, "global", "nuc", "L-07", rev=3, body="old")
+    _node(tmp_path, "projects/x", "nuc", "L-07", rev=9, body="new")
+
+    entries = [e for e in manifest.build() if e["cls"] == "B"]
+
+    assert len(entries) == 1
+    assert entries[0]["rev"] == 9
+    assert entries[0]["path"] == "okf/projects/x/learnings/L-07.md"

@@ -92,13 +92,77 @@ def test_same_rev_conflict_where_local_wins_reports_but_does_not_fetch():
 
 
 def test_same_origin_and_key_across_different_scopes_is_one_identity():
-    local = [b("L-07", 46, "nuc", "h1")]
-    remote = [dict(b("L-07", 47, "nuc", "h2"),
-                   path="okf/projects/oneshell/learnings/L-07.md")]
+    """I1: two local files carry the identity — the highest rev is the one compared."""
+    local = [dict(b("L-07", 48, "nuc", "h3"),
+                  path="okf/projects/oneshell/learnings/L-07.md"),
+             b("L-07", 46, "nuc", "h1")]
+    remote = [b("L-07", 47, "nuc", "h2")]
 
     plan = merge.plan_sync(local, remote)
 
-    assert [e["rev"] for e in plan["want"]] == [47]
+    # rev 48 is held locally, so a remote rev 47 is stale: nothing to fetch and
+    # nothing to report. Keeping the LAST local entry would want it forever.
+    assert plan == {"want": [], "conflict": []}
+
+
+def test_a_malformed_rev_does_not_abort_the_whole_merge():
+    """B3: int('v2') used to raise, losing every well-formed entry beside it."""
+    local = [b("L-01", 1, "nuc", "h0"), b("L-07", 46, "nuc", "h1")]
+    remote = [dict(b("L-01", 1, "nuc", "hbad"), rev="v2"),
+              b("L-07", 47, "nuc", "h2")]
+
+    plan = merge.plan_sync(local, remote)
+
+    # The good entry survives the bad one instead of the whole merge aborting.
+    assert [e["key"] for e in plan["want"]] == ["L-07"]
+
+
+def test_a_malformed_local_rev_sorts_as_zero():
+    local = [dict(b("L-07", 0, "nuc", "h1"), rev="oops")]
+    remote = [b("L-07", 1, "nuc", "h2")]
+
+    assert [e["rev"] for e in merge.plan_sync(local, remote)["want"]] == [1]
+
+
+def test_as_rev_coerces_anything_to_an_int():
+    assert merge.as_rev(5) == 5
+    assert merge.as_rev("7") == 7
+    assert merge.as_rev("v2") == 0
+    assert merge.as_rev(None) == 0
+    assert merge.as_rev({"a": 1}) == 0
+
+
+def test_equal_rev_and_equal_writer_still_resolves_to_one_winner():
+    """I2: (rev, updated_by) is not total — both sides used to refuse to fetch."""
+    local = [b("L-07", 47, "nuc", "h1")]
+    remote = [b("L-07", 47, "nuc", "h2")]
+
+    theirs = merge.plan_sync(local, remote)   # as seen by the local peer
+    mine = merge.plan_sync(remote, local)     # as seen by the other peer
+
+    # Exactly one of the two peers fetches; the mesh converges instead of
+    # reporting the same conflict forever.
+    assert len(theirs["want"]) + len(mine["want"]) == 1
+    assert len(theirs["conflict"]) == 1
+
+
+def test_a_remote_entry_without_a_hash_is_skipped_not_treated_as_present():
+    """I3: None in the `have` set made a hash-less remote look already-held."""
+    local = [a("captures/x.md", "h1")]
+    remote = [{"path": "captures/y.md", "cls": "A"},
+              dict(b("L-09", 1, "nuc", "h9"), hash=None)]
+
+    plan = merge.plan_sync(local, remote)
+
+    assert plan["want"] == []
+    assert plan["conflict"] == []
+
+
+def test_a_local_entry_without_a_hash_does_not_mask_a_real_remote():
+    local = [{"path": "captures/x.md", "cls": "A"}]
+    remote = [a("captures/y.md", "h2")]
+
+    assert [e["hash"] for e in merge.plan_sync(local, remote)["want"]] == ["h2"]
 
 
 def test_different_origins_with_the_same_key_are_different_objects():
