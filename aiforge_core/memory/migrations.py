@@ -8,6 +8,8 @@ Chain (order matters):
   3. okf.store.migrate_scoped    — flat okf/<type>/ → global/ + projects/<repo>/
   4. neo4j_drain                 — old Neo4j Observation/Decision nodes → md
                                    captures (which then roll up into 2+3)
+  5. peers_out_of_okf            — okf/peers/<origin>/ → peers/<origin>/ (the
+                                   two-tier compaction layout)
 
 Steps 1 and 3 are cheap + safe to run every boot (they no-op once done). Steps 2
 and 4 are ONE-SHOT — guarded by a marker file so a re-run can't undo later
@@ -172,6 +174,53 @@ def _rename_okr_dir_to_okf() -> dict:
         return {"ok": True, "moved_to": str(dst)}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
+
+
+def _move_okf_peers_to_inbox() -> dict:
+    """Move foreign OKF nodes out of ``okf/peers/<origin>/`` into the top-level
+    ``peers/<origin>/`` inbox.
+
+    ``okf/`` now means "knowledge this machine authored" — it is the compaction
+    source and the only thing this peer contributes to the mesh — so other
+    peers' raw nodes must not sit inside it (see
+    ``docs/superpowers/specs/2026-07-20-two-tier-knowledge-compaction.md``).
+
+    Idempotent: a second run finds nothing to move. Never clobbers a file
+    already at the destination — the newer layout wins and the source is left in
+    place for a human to look at. Never raises: a node must boot even when its
+    memory tree is odd."""
+    import shutil
+    try:
+        from aiforge_core.memory.sync import paths as _paths
+        src = _paths.legacy_peers_dir()
+        if not src.is_dir():
+            return {"ok": True, "skipped": "no legacy okf/peers/ folder"}
+        moved = kept = 0
+        for f in sorted(src.rglob("*")):
+            if not f.is_file():
+                continue
+            dest = _paths.peers_root() / f.relative_to(src)
+            if dest.exists():
+                kept += 1                   # destination wins; nothing is lost
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(f), str(dest))
+            moved += 1
+        for d in sorted(src.rglob("*"), reverse=True):
+            if d.is_dir():
+                _rmdir_if_empty(d)
+        _rmdir_if_empty(src)                # gone entirely once fully drained
+        log.info("moved %s foreign okf/peers/ node(s) → peers/ (%s kept in place)",
+                 moved, kept)
+        return {"ok": True, "moved": moved, "kept_at_destination": kept}
+    except Exception as exc:  # noqa: BLE001 — a migration must never block startup
+        return {"ok": False, "error": str(exc)}
+
+
+def _rmdir_if_empty(d) -> None:
+    import contextlib
+    with contextlib.suppress(OSError):   # not empty, or already gone — both fine
+        d.rmdir()
 
 
 def _discover_repos() -> list:
@@ -447,6 +496,15 @@ def run_startup_migrations() -> dict:
             done.add("briefs_to_okr")
         except Exception as exc:  # noqa: BLE001
             out["briefs_to_okr"] = {"ok": False, "error": str(exc)}
+
+    # ── foreign nodes out of okf/ and into the top-level peers/ inbox. One-shot:
+    # nothing writes okf/peers/ any more, so once it is drained there is no
+    # reason to walk it again on every boot.
+    if "peers_out_of_okf" not in done:
+        r = _move_okf_peers_to_inbox()
+        out["peers_out_of_okf"] = r
+        if r.get("ok"):
+            done.add("peers_out_of_okf")
 
     if "neo4j_drain" not in done:
         r = _neo4j_drain()

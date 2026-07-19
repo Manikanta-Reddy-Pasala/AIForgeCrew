@@ -6,13 +6,25 @@ OKF ids are per-scope counters (``aiforge_core/memory/okf/store.py:127``), so
 trusting it would let one peer silently overwrite another's node.
 
 The rule: an identity already held is updated wherever it currently lives;
-anything new from another peer lands under ``okf/peers/<origin>/``. Every peer
+anything new from another peer lands under ``peers/<origin>/``. Every peer
 derives the same answer from the same inputs, so the layout converges along with
 the content.
+
+Four directories under the memory root, each with exactly one writer
+(``docs/superpowers/specs/2026-07-20-two-tier-knowledge-compaction.md``):
+
+* ``okf/``          — this machine's own authored knowledge; the only thing we
+                      contribute to the mesh.
+* ``peers/<origin>/`` — raw inbox written by the sync applier, never edited here.
+* ``mesh/``         — the leader's global compaction result, received like any
+                      other record.
+* ``view/``         — the local tier-2 working view. Local-only by construction:
+                      it is never advertised, so it can never travel.
 """
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 from aiforge_core.memory.sync import _io, merge
@@ -66,13 +78,56 @@ def tomb_path(origin: str, key: str) -> Path:
     return tomb_dir() / _component(origin) / f"{_component(key)}.json"
 
 
-def peers_dir() -> Path:
-    """Root of the foreign-node tree."""
+def peers_root() -> Path:
+    """Root of the foreign-node inbox, a sibling of ``okf/``.
+
+    Deliberately *outside* ``okf/``: compaction reads ``okf/`` as "my knowledge",
+    so foreign raw nodes living there made every peer distil a different pile.
+    """
+    return _io.root() / "peers"
+
+
+def legacy_peers_dir() -> Path:
+    """Where foreign nodes landed before the split. Only the migration reads it —
+    it exists here so no other module has to spell the old layout out."""
     return okf_dir() / "peers"
 
 
+def mesh_dir() -> Path:
+    """The leader's tier-1 compaction result. Received, never authored locally
+    (except on the leader itself)."""
+    return _io.root() / "mesh"
+
+
+def view_dir() -> Path:
+    """The local tier-2 working view. Regenerated, never synced."""
+    return _io.root() / "view"
+
+
+def node_roots() -> tuple[Path, ...]:
+    """Every directory that may hold a class B node file.
+
+    ``view/`` is absent on purpose — see ``manifest._class_b``. The manifest
+    builder and ``node_paths`` share this list so the file we advertise is the
+    file we compare and write (the one-winner rule, I1).
+    """
+    return (okf_dir(), peers_root(), mesh_dir())
+
+
+def node_scans() -> tuple[tuple[Path, str], ...]:
+    """``(directory, glob)`` for every node root, for callers that stat rather
+    than read (the manifest fingerprint)."""
+    return tuple((d, "**/*.md") for d in node_roots())
+
+
+def iter_nodes() -> Iterator[Path]:
+    """Every real node file across the node roots, in directory then path order."""
+    for directory, pattern in node_scans():
+        yield from _io.iter_syncable(directory, pattern)
+
+
 def peer_node_path(origin: str, key: str) -> Path:
-    return peers_dir() / _component(origin) / f"{_component(key)}.md"
+    return peers_root() / _component(origin) / f"{_component(key)}.md"
 
 
 def node_paths(origin: str, key: str) -> list[Path]:
@@ -94,7 +149,7 @@ def node_paths(origin: str, key: str) -> list[Path]:
     ranked: list[tuple[int, str, Path]] = []
     # A ``.conflict.md`` sidecar can never match: it is `<stem>.conflict.md`,
     # and a key containing a dot does not survive _component().
-    for p in _io.iter_syncable(okf_dir(), "**/*.md"):
+    for p in iter_nodes():
         if p.name != name:
             continue
         meta = _io.read_node_meta(p)
@@ -132,4 +187,6 @@ def target_for(entry: dict) -> Path | None:
 
 
 __all__ = ["sanitise", "is_addressable", "okf_dir", "tomb_dir", "tomb_path",
-           "peers_dir", "peer_node_path", "node_paths", "target_for"]
+           "peers_root", "legacy_peers_dir", "mesh_dir", "view_dir",
+           "node_roots", "node_scans", "iter_nodes", "peer_node_path",
+           "node_paths", "target_for"]

@@ -76,11 +76,19 @@ computes the local target path itself and treats the sender's advertised `path` 
 only:
 
 - an identity already held locally is updated in place, wherever it currently lives;
-- anything new minted by another peer lands under `okf/peers/<origin>/<key>.md`.
+- anything new minted by another peer lands under `peers/<origin>/<key>.md`.
 
 Every peer derives the same answer from the same inputs, so the on-disk layout converges along
 with the content. Class A is exempt — capture filenames already embed a content digest and are
 globally unique.
+
+> **Superseded in part.** Foreign nodes originally landed at `okf/peers/<origin>/`, *inside*
+> the tree compaction reads as its source. They now land in a top-level `peers/` inbox
+> alongside `okf/` (mine), `mesh/` (the leader's global compaction) and `view/` (the local
+> working view, never advertised). See
+> [2026-07-20-two-tier-knowledge-compaction.md](2026-07-20-two-tier-knowledge-compaction.md);
+> a startup migration moves any existing `okf/peers/*`. The identity rule above is otherwise
+> unchanged.
 
 ### Schema change 2 — version stamp on mutable nodes
 

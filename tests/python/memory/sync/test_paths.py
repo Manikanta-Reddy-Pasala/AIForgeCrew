@@ -19,14 +19,37 @@ def _node(tmp_path, scope: str, origin: str, key: str):
     return p
 
 
+def _peer_node(tmp_path, origin: str, key: str):
+    """A foreign node in the inbox — the layout the applier writes."""
+    p = tmp_path / "md" / "peers" / origin / f"{key}.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(f'---\ntype: learning\nid: "{key}"\norigin: "{origin}"\n'
+                 f'rev: 1\nupdated_by: "{origin}"\n---\n\nb\n', encoding="utf-8")
+    return p
+
+
 def test_node_paths_matches_on_origin_not_just_filename(monkeypatch, tmp_path):
     _env(monkeypatch, tmp_path)
     from aiforge_core.memory.sync import paths
 
     mine = _node(tmp_path, "global", "book", "O-01")
-    _node(tmp_path, "peers/ms", "ms", "O-01")
+    _peer_node(tmp_path, "ms", "O-01")
 
     assert paths.node_paths("book", "O-01") == [mine]
+
+
+def test_node_paths_spans_the_inbox_and_the_mesh(monkeypatch, tmp_path):
+    """The manifest advertises okf/, peers/ and mesh/, so the layout rule must
+    find an identity in any of them — otherwise we compare one file and write
+    another (I1)."""
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    inbox = _peer_node(tmp_path, "ms", "O-01")
+
+    assert paths.node_paths("ms", "O-01") == [inbox]
+    assert paths.target_for({"kind": "B", "origin": "ms", "key": "O-01",
+                             "path": "x"}) == inbox
 
 
 def test_node_paths_is_empty_for_an_unknown_identity(monkeypatch, tmp_path):
@@ -50,19 +73,22 @@ def test_target_for_known_identity_is_updated_in_place(monkeypatch, tmp_path):
 
     mine = _node(tmp_path, "global", "nuc", "L-07")
     entry = {"kind": "B", "origin": "nuc", "key": "L-07",
-             "path": "okf/peers/nuc/L-07.md"}   # sender's layout differs
+             "path": "peers/nuc/L-07.md"}      # sender's layout differs
 
     assert paths.target_for(entry) == mine
 
 
-def test_target_for_a_new_foreign_node_lands_under_peers(monkeypatch, tmp_path):
+def test_target_for_a_new_foreign_node_lands_in_the_inbox_not_in_okf(monkeypatch, tmp_path):
+    """okf/ means "my knowledge" — a foreign node must land beside it, not in it."""
     _env(monkeypatch, tmp_path)
     from aiforge_core.memory.sync import paths
 
     entry = {"kind": "B", "origin": "ms", "key": "O-01",
              "path": "okf/global/objectives/O-01.md"}
 
-    assert paths.target_for(entry).as_posix().endswith("okf/peers/ms/O-01.md")
+    target = paths.target_for(entry)
+    assert target.as_posix().endswith("peers/ms/O-01.md")
+    assert paths.okf_dir() not in target.parents
 
 
 def test_target_for_class_a_uses_the_advertised_path(monkeypatch, tmp_path):

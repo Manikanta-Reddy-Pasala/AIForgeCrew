@@ -127,6 +127,42 @@ def test_index_and_conflict_sidecars_never_sync(monkeypatch, tmp_path):
     assert [e["key"] for e in manifest.build()] == ["L-07"]
 
 
+def _flat_node(tmp_path, folder: str, origin: str, key: str):
+    """A node written straight into one of the top-level directories."""
+    p = tmp_path / "md" / folder / origin / f"{key}.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(f'---\ntype: learning\nid: "{key}"\norigin: "{origin}"\n'
+                 f'rev: 1\nupdated_by: "{origin}"\n---\n\nb\n', encoding="utf-8")
+    return p
+
+
+def test_okf_peers_and_mesh_are_all_advertised(monkeypatch, tmp_path):
+    """Each has a different writer, but all three travel: my own knowledge, the
+    inbox I received, and the leader's mesh result."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import manifest
+
+    _node(tmp_path, "global", "book", "L-01")
+    _flat_node(tmp_path, "peers", "ms", "L-02")
+    _flat_node(tmp_path, "mesh", "nuc", "L-03")
+
+    assert sorted(e["key"] for e in manifest.build()) == ["L-01", "L-02", "L-03"]
+
+
+def test_the_local_view_is_never_advertised(monkeypatch, tmp_path):
+    """The break in the amplification loop: tier-2 output is local-only. If view/
+    synced, the leader would fold it into mesh/, it would come back down, and be
+    merged into the view again on every round."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import manifest
+
+    _flat_node(tmp_path, "view", "book", "V-01")
+    # Positive control: an empty manifest would pass even if build() were broken.
+    _node(tmp_path, "global", "book", "L-01")
+
+    assert [e["key"] for e in manifest.build()] == ["L-01"]
+
+
 def test_a_tombstone_is_class_b(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
     from aiforge_core.memory.sync import manifest

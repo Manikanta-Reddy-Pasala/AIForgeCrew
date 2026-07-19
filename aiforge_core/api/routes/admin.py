@@ -91,7 +91,13 @@ def _probe_all(peers: list[dict]) -> list[dict]:
         return list(pool.map(_probe_peer, peers))
 
 
+def _md_count(directory) -> int:
+    return sum(1 for _ in directory.rglob("*.md")) if directory.is_dir() else 0
+
+
 def _local_counts() -> dict:
+    """What this node holds, and — since each of the four directories has a
+    different writer — where it holds it."""
     from aiforge_core.memory.sync import manifest as _man
     from aiforge_core.memory.sync import paths as _paths
 
@@ -101,7 +107,9 @@ def _local_counts() -> dict:
     okf = _paths.okf_dir()
     conflicts = sum(1 for _ in okf.rglob("*.conflict.md")) if okf.exists() else 0
     return {"class_a": class_a, "class_b": len(entries) - class_a,
-            "tombstones": tombs, "conflicts": conflicts, "total": len(entries)}
+            "tombstones": tombs, "conflicts": conflicts, "total": len(entries),
+            "okf": _md_count(okf), "peers": _md_count(_paths.peers_root()),
+            "mesh": _md_count(_paths.mesh_dir()), "view": _md_count(_paths.view_dir())}
 
 
 def _leader_view() -> dict:
@@ -230,7 +238,11 @@ function render(d){
     card('compaction leader', L.is_us ? L.leader + ' (us)' : L.leader) +
     card('class A', C.class_a) + card('class B', C.class_b) +
     card('tombstones', C.tombstones) + card('conflicts', C.conflicts) +
-    card('peers', d.peers.length);
+    // one card per directory: each has a different writer, so this says where
+    // knowledge actually is — mine, received, the mesh result, my local view.
+    card('okf/ (mine)', C.okf) + card('peers/ (inbox)', C.peers) +
+    card('mesh/', C.mesh) + card('view/ (local)', C.view) +
+    card('known peers', d.peers.length);
   document.getElementById('rows').innerHTML = d.peers.map(function(p){
     var reach = d.probed
       ? (p.reachable ? '<span class="dot"></span>up'

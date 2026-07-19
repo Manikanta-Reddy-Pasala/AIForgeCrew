@@ -7,6 +7,9 @@ consulting a clock. Exactly one entry is advertised per ``(origin,
 key)`` — see ``_dedupe`` — and both halves of an identity must round-trip
 ``paths.is_addressable`` before it is advertised at all.
 
+Class B is scanned across ``paths.node_roots()`` — ``okf/``, ``peers/`` and
+``mesh/``. ``view/`` is not a node root and is therefore never advertised.
+
 The manifest ``hash`` is sha256 of the file bytes. It is unrelated to the
 ``sha1(title+text)[:6]`` digest embedded in capture filenames, which is a
 dedupe device rather than an integrity check.
@@ -113,7 +116,12 @@ def _rank(entry: dict) -> tuple[int, str, str]:
 
 def _class_b() -> list[dict]:
     out: list[dict] = []
-    for p in _io.iter_syncable(paths.okf_dir(), "**/*.md"):
+    # okf/ (authored here), peers/ (received) and mesh/ (the leader's tier-1
+    # result) are advertised. view/ is NOT a node root, so tier-2 output can
+    # never be advertised — that exclusion is what breaks the amplification
+    # loop: a synced view would be folded into mesh/, come back down, and be
+    # merged into the view again on every round.
+    for p in paths.iter_nodes():
         if p.name == "index.md" or p.name.endswith(".conflict.md"):
             # index.md is regenerated locally; sidecars are local-only by design.
             continue
@@ -131,7 +139,7 @@ def _scans() -> tuple[tuple[Path, str], ...]:
     """Every (directory, glob) pair ``build`` reads. Used to fingerprint it."""
     root = _io.root()
     return ((root / "captures", "*.md"), (root / "compacted", "*.md"),
-            (paths.okf_dir(), "**/*.md"), (paths.tomb_dir(), "**/*.json"))
+            *paths.node_scans(), (paths.tomb_dir(), "**/*.json"))
 
 
 def _fingerprint() -> tuple:

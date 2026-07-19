@@ -92,7 +92,8 @@ def test_sync_status_shape(monkeypatch, tmp_path):
     assert set(body["leader"]) == {"leader", "is_us"}
     assert body["leader"] == {"leader": "nuc", "is_us": True}
     assert body["local"]["class_a"] == 1
-    assert set(body["local"]) == {"class_a", "class_b", "tombstones", "conflicts", "total"}
+    assert set(body["local"]) == {"class_a", "class_b", "tombstones", "conflicts",
+                                  "total", "okf", "peers", "mesh", "view"}
     assert body["probed"] is True
 
     ids = [p["id"] for p in body["peers"]]
@@ -103,6 +104,30 @@ def test_sync_status_shape(monkeypatch, tmp_path):
     assert mac["last_seen"] == 1700000000
     assert set(mac) >= {"reachable", "latency_ms", "their_entries", "error"}
     assert body["peers"][1]["state"] == "candidate"
+
+
+def test_local_counts_say_which_directory_holds_what(monkeypatch, tmp_path):
+    """Each of the four directories has a different writer, so one total tells
+    you nothing about where knowledge actually is."""
+    api, admin = _fresh_api(monkeypatch, tmp_path)
+    _seed_peers(tmp_path)
+    _no_probe(monkeypatch, admin, [])
+    seq = iter(range(99))
+    for folder, count in (("okf", 2), ("peers", 3), ("mesh", 1), ("view", 4)):
+        d = tmp_path / "md" / folder / "nuc"
+        d.mkdir(parents=True, exist_ok=True)
+        for _ in range(count):
+            key = f"L-{next(seq):02d}"          # distinct identities, not copies
+            (d / f"{key}.md").write_text(
+                f'---\ntype: learning\nid: "{key}"\norigin: "nuc"\nrev: 1\n'
+                f'updated_by: "nuc"\n---\n\nb\n', encoding="utf-8")
+    c = TestClient(api.app, client=LOOPBACK)
+
+    local = c.get("/api/admin/sync-status").json()["local"]
+
+    assert (local["okf"], local["peers"], local["mesh"], local["view"]) == (2, 3, 1, 4)
+    # view/ is local-only, so it is counted but never advertised: 2+3+1 class B.
+    assert local["class_b"] == 6
 
 
 def test_tokens_never_appear_in_json(monkeypatch, tmp_path):

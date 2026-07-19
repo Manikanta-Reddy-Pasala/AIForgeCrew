@@ -103,7 +103,9 @@ def test_foreign_node_lands_under_peers_not_over_a_local_id(monkeypatch, tmp_pat
 
     assert apply.apply_blob(entry, body) is True
     assert "mine" in mine.read_text(encoding="utf-8")          # untouched
-    assert (tmp_path / "md" / "okf" / "peers" / "ms" / "O-01.md").exists()
+    # the inbox is a sibling of okf/, not a subtree of it
+    assert (tmp_path / "md" / "peers" / "ms" / "O-01.md").exists()
+    assert not (tmp_path / "md" / "okf" / "peers").exists()
 
 
 def test_an_update_to_an_existing_identity_lands_in_place(monkeypatch, tmp_path):
@@ -119,13 +121,13 @@ def test_an_update_to_an_existing_identity_lands_in_place(monkeypatch, tmp_path)
 
     body = (b'---\ntype: learning\nid: "L-07"\norigin: "nuc"\nrev: 48\n'
             b'updated_by: "ms"\n---\n\nnew\n')
-    entry = {"path": "okf/peers/nuc/L-07.md",   # the peer's own layout differs
+    entry = {"path": "peers/nuc/L-07.md",      # the peer's own layout differs
              "hash": hashlib.sha256(body).hexdigest(), "kind": "B",
              "origin": "nuc", "key": "L-07", "rev": 48, "updated_by": "ms"}
 
     assert apply.apply_blob(entry, body) is True
     assert "new" in node.read_text(encoding="utf-8")           # updated in place
-    assert not (tmp_path / "md" / "okf" / "peers" / "nuc" / "L-07.md").exists()
+    assert not (tmp_path / "md" / "peers" / "nuc" / "L-07.md").exists()
 
 
 def test_conflict_writes_a_sidecar_beside_the_loser(monkeypatch, tmp_path):
