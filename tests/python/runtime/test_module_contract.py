@@ -4,7 +4,7 @@ lives (the `from .queue import X` vs class-in-core.py failure)."""
 from __future__ import annotations
 
 from aiforge_core.runtime.parallel_subtasks._planning import (
-    _module_contract, _plan_files, _validate_plan,
+    _coalesce_code_modules, _module_contract, _plan_files, _validate_plan,
 )
 
 
@@ -65,6 +65,42 @@ def test_cap_ignores_tests_and_manifest(monkeypatch):
             + [{"path": "pyproject.toml", "purpose": "m", "api": []}])
     _clean, issues = _validate_plan(plan)
     assert not any("over-fragmented" in i for i in issues)
+
+
+def test_hard_coalesce_enforces_python_cap_preserving_symbols(monkeypatch):
+    monkeypatch.setenv("AIFORGE_ARCHITECT_MAX_MODULES", "4")
+    monkeypatch.delenv("AIFORGE_ARCHITECT_MAX_MODULES_COMPILED", raising=False)
+    files = ([{"path": f"pkg/m{i}.py", "purpose": f"p{i}",
+               "api": [f"def f{i}()"]} for i in range(6)]
+             + [{"path": "tests/test_a.py", "purpose": "t", "api": []},
+                {"path": "pyproject.toml", "purpose": "m", "api": []}])
+    out, removed = _coalesce_code_modules(files)
+    code = [f for f in out if f["path"].endswith(".py")
+            and "test" not in f["path"]]
+    assert len(code) == 4 and removed == 2          # 6 → 4
+    # every original symbol survives (union of apis across merged modules)
+    all_api = [a for f in code for a in f["api"]]
+    for i in range(6):
+        assert f"def f{i}()" in all_api
+    # tests + manifest untouched
+    assert any(f["path"] == "tests/test_a.py" for f in out)
+    assert any(f["path"] == "pyproject.toml" for f in out)
+
+
+def test_hard_coalesce_tighter_for_compiled(monkeypatch):
+    monkeypatch.setenv("AIFORGE_ARCHITECT_MAX_MODULES_COMPILED", "3")
+    files = [{"path": f"src/main/java/pkg/M{i}.java", "purpose": "x",
+              "api": [f"class M{i}"]} for i in range(6)]
+    out, removed = _coalesce_code_modules(files)
+    java = [f for f in out if f["path"].endswith(".java")]
+    assert len(java) == 3 and removed == 3          # compiled cap 3
+
+
+def test_coalesce_noop_within_cap():
+    files = [{"path": "a.py", "purpose": "x", "api": []},
+             {"path": "b.py", "purpose": "y", "api": []}]
+    out, removed = _coalesce_code_modules(files)
+    assert removed == 0 and out == files
 
 
 def test_compiled_plan_gets_tighter_cap(monkeypatch):

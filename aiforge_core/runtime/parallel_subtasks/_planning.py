@@ -440,6 +440,61 @@ def _max_code_modules() -> int:
         return 4
 
 
+def _module_cap_for(paths: list[str]) -> tuple[list[str], int]:
+    """NON-test code modules in ``paths`` + the applicable cap. Compiled languages
+    punish fragmentation HARDER (cross-module type contracts — generics, nested-
+    type constructors, signatures — must line up to even COMPILE), so a compiled
+    plan gets the tighter :func:`_max_compiled_modules` cap."""
+    code = [p for p in paths
+            if "." in p and p.rsplit(".", 1)[-1].lower() in _PLAN_CODE_EXTS
+            and "test" not in p.lower()]
+    compiled = any(p.rsplit(".", 1)[-1].lower() in _COMPILED_CODE_EXTS
+                   for p in code)
+    cap = (min(_max_code_modules(), _max_compiled_modules()) if compiled
+           else _max_code_modules())
+    return code, cap
+
+
+def _coalesce_code_modules(files: list[dict]) -> tuple[list[dict], int]:
+    """HARD-enforce the module cap the architect keeps IGNORING in its re-ask:
+    deterministically merge excess NON-test code modules down to the cap, at PLAN
+    time (before any code is written, so it's safe). Symbols are PRESERVED (union
+    of every merged module's ``api``) — they just live in fewer files; the module
+    contract + SPEC api-contract carry the merged mapping, so a test importing a
+    moved symbol still resolves. Tests / manifests / config files are untouched.
+    Returns ``(new_files, n_modules_removed)`` (0 when already within the cap)."""
+    def _p(f):
+        return str(f.get("path") or "").strip().lstrip("/")
+    paths = [_p(f) for f in files]
+    code_paths, cap = _module_cap_for(paths)
+    if len(code_paths) <= cap:
+        return files, 0
+    code_set = set(code_paths)
+    code = [f for f in files if _p(f) in code_set]
+    others = [f for f in files if _p(f) not in code_set]
+    code.sort(key=_p)                          # stable, keeps same-dir adjacency
+    buckets: list[list[dict]] = [[] for _ in range(cap)]
+    n = len(code)
+    for i, f in enumerate(code):
+        buckets[i * cap // n].append(f)        # even contiguous split into `cap`
+    merged: list[dict] = []
+    for b in buckets:
+        if not b:
+            continue
+        # keep the shallowest/shortest path as the canonical merged module name.
+        rep = min(b, key=lambda f: (_p(f).count("/"), len(_p(f))))
+        api: list[str] = []
+        for f in b:
+            for a in (f.get("api") or []):
+                if a and a not in api:
+                    api.append(a)
+        purpose = "; ".join(str(f.get("purpose") or "") for f in b
+                            if f.get("purpose")).strip("; ")[:250]
+        merged.append({"path": _p(rep), "purpose": purpose or "combined module",
+                       "api": api})
+    return others + merged, n - len(merged)
+
+
 def _validate_plan(files: list[dict]) -> tuple[list[dict], list[str]]:
     """Deterministic sanity gate on the architect's file plan — the plan is a
     single point of failure (every subtask builds against it), so structural
@@ -484,18 +539,7 @@ def _validate_plan(files: list[dict]) -> tuple[list[dict], list[str]]:
     # Over-fragmentation gate: too many NON-TEST code modules → the architect
     # atomised a coupled subsystem. Re-ask to consolidate (coarser = safer on a
     # local model; finer split diverges and won't reconcile).
-    _code_modules = [p for p in paths
-                     if p.rsplit(".", 1)[-1].lower() in _PLAN_CODE_EXTS
-                     and "test" not in p.lower()]
-    # Compiled languages punish fragmentation HARDER — cross-module type
-    # contracts (generics, nested-type constructors, signatures) must line up
-    # exactly to even COMPILE, and isolated agents diverge on them (observed: a
-    # Java LRU split into LRUCache/Node/List → constructor + generic mismatches,
-    # uncompilable). So a compiled plan gets a TIGHTER cap.
-    _compiled = any(p.rsplit(".", 1)[-1].lower() in _COMPILED_CODE_EXTS
-                    for p in _code_modules)
-    _cap = min(_max_code_modules(), _max_compiled_modules()) if _compiled \
-        else _max_code_modules()
+    _code_modules, _cap = _module_cap_for(paths)
     if len(_code_modules) > _cap:
         issues.append(
             f"{len(_code_modules)} code modules is over-fragmented for one build "
@@ -566,6 +610,16 @@ def _architect(spec: str, *, cwd: str | None = None) -> list[dict]:
             if issues:
                 log.warning("architect plan still imperfect after reask "
                             "(shipping sanitized): %s", issues)
+        # HARD cap: the re-ask above is ADVISORY and local models routinely ignore
+        # it — so if the plan STILL over-fragments, coalesce the excess modules
+        # deterministically (plan-time, symbol-preserving) rather than fan out an
+        # uncompilable split. Disable with AIFORGE_ARCHITECT_HARD_CAP=0.
+        if os.environ.get("AIFORGE_ARCHITECT_HARD_CAP", "1") not in ("0", "false"):
+            files, _removed = _coalesce_code_modules(files)
+            if _removed:
+                log.info("architect over-fragmented past the cap — coalesced "
+                         "%d module(s) deterministically (symbols preserved)",
+                         _removed)
         return files
     except Exception as exc:  # noqa: BLE001
         log.warning("architect step failed: %s", exc)
