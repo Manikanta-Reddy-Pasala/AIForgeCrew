@@ -50,6 +50,8 @@
 #   --port N     listen port (default 8799)
 #   --host H     bind host (default 127.0.0.1)
 #   --dev        uvicorn --reload (hot reload)
+#   --admin      open the loopback-only P2P sync admin page (/admin) in a
+#                browser once the server is up (the URL is printed either way)
 #   --skip-web   don't (re)build the web UI
 #   --test       probe the configured model endpoint (OK/FAIL), then exit
 #   --reset-config  wipe ~/.aiforge/agent_config.json (backed up) so stale
@@ -127,6 +129,7 @@ export AIFORGE_ALLOW_SSH="${AIFORGE_ALLOW_SSH:-1}"
 PORT=8799
 HOST=127.0.0.1
 DEV=0
+ADMIN=0
 SKIP_WEB=0
 TEST=0
 # Default mode is config-driven: AIFORGE_MODE (from .env / the service env) →
@@ -151,6 +154,7 @@ while [[ $# -gt 0 ]]; do
     --purge-code) MAINT=purge ;;      # drop code-as-learnings from a bad drain, then exit
     --install-model2vec|--install-semantic) INSTALL_MODEL2VEC=1 ;;  # install semantic memory (model2vec, ~30MB, NO torch). --install-semantic kept as an alias.
     --dev) DEV=1 ;;
+    --admin) ADMIN=1 ;;           # open the loopback-only sync admin page once up
     --skip-web) SKIP_WEB=1 ;;
     --test) TEST=1 ;;             # model probe runs in the venv, no stack
     --with-graphify) WITH_GRAPHIFY=1 ;;
@@ -775,4 +779,23 @@ RELOAD=()
 # Tell the app which host it's bound to, so the security boot-guard can refuse
 # a non-loopback bind that has no AIFORGE_API_TOKEN set (unauth shell API on LAN).
 export AIFORGE_BIND_HOST="$HOST"
+
+# --admin: the sync admin page. Always PRINT the URL (headless boxes have no
+# browser, and an operator on an SSH tunnel wants the address, not a launch),
+# and only try to open it when a launcher actually exists. The opener waits for
+# the port in the BACKGROUND so uvicorn still runs in the foreground below.
+ADMIN_URL="http://127.0.0.1:$PORT/admin"
+if [[ $ADMIN -eq 1 ]]; then
+  echo "  admin: $ADMIN_URL  (loopback-only; tunnel with ssh -L $PORT:127.0.0.1:$PORT)"
+  (
+    for _ in $(seq 1 60); do
+      (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null && break
+      sleep 1
+    done
+    if command -v open >/dev/null 2>&1; then open "$ADMIN_URL"
+    elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$ADMIN_URL"
+    fi
+  ) >/dev/null 2>&1 &
+fi
+
 exec .venv/bin/python -m uvicorn aiforge_core.api.api:app --host "$HOST" --port "$PORT" ${RELOAD[@]+"${RELOAD[@]}"}
