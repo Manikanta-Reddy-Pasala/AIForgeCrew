@@ -18,12 +18,15 @@ mid-migration. All reads soft-fail (a missing/half-written file is skipped).
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import re
 import threading
 from pathlib import Path
 
 from . import nodes as _n
+
+_log = logging.getLogger("aiforge.memory.okf")
 
 # Serialize node mutations (write + de-dupe + index) so two concurrent chat
 # turns authoring solutions can't interleave a dedup-miss into a double write or
@@ -456,9 +459,25 @@ def dedupe_nodes() -> dict:
     normalized content and FUZZILY (difflib >= AIFORGE_OKF_CONCEPT_SIMILARITY,
     default 0.86) so paraphrases of one concept — the L-01/L-07/L-13 pile-up the
     learner produced over repeated runs — collapse to a single file, restoring
-    OKF 'one concept = one file'. Returns {ok, removed, kept}. Soft-fail."""
+    OKF 'one concept = one file'. Returns {ok, removed, kept}. Soft-fail.
+
+    Leader-only in a mesh, by the SAME election as compaction (one policy, one
+    place): a near-duplicate merge is non-deterministic, so two peers each run
+    by hand would fold the same shared knowledge two different ways and diverge.
+    A single machine (no approved peers) is always the leader, so nothing
+    changes there. The skip is returned AND logged because this one is typed by
+    an operator, who would otherwise read a silent no-op as a broken command."""
     import difflib
     import os
+
+    from aiforge_core.memory.sync import election  # lazy: heavy sync package
+
+    if not election.may_distil():                   # soft-fails OPEN (see there)
+        chief = election.leader_name()
+        _log.info("dedupe_nodes: skipped — %s is the elected leader "
+                  "(node dedupe runs there, not here)", chief)
+        return {"ok": True, "removed": 0, "kept": 0,
+                "skipped": "not-leader", "leader": chief}
     try:
         threshold = float(os.environ.get("AIFORGE_OKF_CONCEPT_SIMILARITY", "0.86"))
     except (TypeError, ValueError):

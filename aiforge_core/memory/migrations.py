@@ -633,7 +633,14 @@ if __name__ == "__main__":       # python -m aiforge_core.memory.migrations [fla
     if "--purge-code" in sys.argv:
         print(purge_migrated_code())
     elif "--dedupe" in sys.argv:              # remove duplicate OKR + chat
-        print(dedupe_all())
+        _res = dedupe_all()
+        _okr = _res.get("okr") or {}
+        if _okr.get("skipped") == "not-leader":
+            # An operator who TYPED this deserves to be told why nothing moved;
+            # a bare "removed: 0" reads as a broken command.
+            print(f"note: OKR node dedupe skipped — {_okr.get('leader')} is the "
+                  "elected compaction leader; run --dedupe there.")
+        print(_res)
     elif "--recompact-all" in sys.argv:      # compact at any cost (+ dedupe)
         print(force_recompact_all())
     elif "--migrate-okf" in sys.argv:        # okr→okf dir + all md → OKF frontmatter

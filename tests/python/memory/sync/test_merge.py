@@ -190,14 +190,3 @@ def test_a_newer_edit_beats_a_tombstone():
     plan = merge.plan_sync(local, remote)
 
     assert plan["want"][0].get("tomb") is None
-
-
-def test_lease_is_a_singleton_ordered_on_rev():
-    local = [{"path": "okf/.lease.json", "hash": "h1", "kind": "B", "origin": "",
-              "key": "__lease__", "rev": 3, "updated_by": "nuc"}]
-    remote = [{"path": "okf/.lease.json", "hash": "h2", "kind": "B", "origin": "",
-               "key": "__lease__", "rev": 4, "updated_by": "ms"}]
-
-    plan = merge.plan_sync(local, remote)
-
-    assert [e["rev"] for e in plan["want"]] == [4]

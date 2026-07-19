@@ -17,8 +17,6 @@ from pathlib import Path
 
 from aiforge_core.memory.sync import _io, merge
 
-LEASE_KEY = "__lease__"
-
 _UNSAFE = re.compile(r"[^A-Za-z0-9_-]+")
 
 
@@ -66,10 +64,6 @@ def tomb_dir() -> Path:
 
 def tomb_path(origin: str, key: str) -> Path:
     return tomb_dir() / _component(origin) / f"{_component(key)}.json"
-
-
-def lease_path() -> Path:
-    return okf_dir() / ".lease.json"
 
 
 def peers_dir() -> Path:
@@ -124,11 +118,9 @@ def target_for(entry: dict) -> Path | None:
     # The entry came from a peer and was never seen by our manifest builder, so
     # the identity rule is enforced here too: a key that does not round-trip
     # sanitisation ("*", "**/L-07") would sanitise onto an unrelated local node
-    # and overwrite it. Only the lease may travel without an origin.
+    # and overwrite it.
     if not is_addressable(key):
         return None
-    if key == LEASE_KEY and not entry.get("tomb"):
-        return lease_path()
     if not is_addressable(origin):
         return None
 
@@ -139,6 +131,5 @@ def target_for(entry: dict) -> Path | None:
     return existing[0] if existing else peer_node_path(origin, key)
 
 
-__all__ = ["sanitise", "is_addressable", "okf_dir", "tomb_dir", "tomb_path", "lease_path",
-           "peers_dir", "peer_node_path", "node_paths",
-           "target_for", "LEASE_KEY"]
+__all__ = ["sanitise", "is_addressable", "okf_dir", "tomb_dir", "tomb_path",
+           "peers_dir", "peer_node_path", "node_paths", "target_for"]

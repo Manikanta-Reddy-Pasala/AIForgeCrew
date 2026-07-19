@@ -62,6 +62,7 @@ from ._compact import (
     _topic_labels,
     _topic_split_cap,
     _union_back,
+    archive_covered_captures,
     cleanup_legacy_compacted,
     compact,
     sweep_empty_briefs,
@@ -115,6 +116,7 @@ from ._render import (
     _reconcile_dropped_index,
     _render_brief,
     brief_index,
+    brief_source_stems,
     migrate_to_okr,
     seed_memory_block,
 )
@@ -122,7 +124,9 @@ from ._scope import _SCOPE_SYS, _snap_topic, classify_scope
 
 __all__ = [
     "append_bullet",
+    "archive_covered_captures",
     "brief_index",
+    "brief_source_stems",
     "brief_path",
     "briefs_dir",
     "capture",

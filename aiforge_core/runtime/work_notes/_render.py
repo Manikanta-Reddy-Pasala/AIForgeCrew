@@ -91,7 +91,7 @@ def render_note(kind: str, key: str, *, title: str, source_url: str = "",
                 links=None, learnings=None, body_md: str = "",
                 updated_at: str = "", tags=None,
                 description: str = "", resource: str = "",
-                timestamp: str = "") -> str:
+                timestamp: str = "", sources=None) -> str:
     """Render the standard note in **Open Knowledge Format (OKF v0.1)**: the
     frontmatter's required identity field is ``type:`` (from ``kind``), the
     resource URI is ``resource:`` (from ``resource``/``source_url``), the
@@ -100,7 +100,10 @@ def render_note(kind: str, key: str, *, title: str, source_url: str = "",
     are skipped; ordering is fixed (frontmatter → title → Objective → Key
     Results → Facts → Links → Learnings → free body). The stamp is injectable
     for deterministic tests / read-modify-write; it defaults to now (UTC).
-    ``tags`` land in the frontmatter (metadata, not a body section).
+    ``tags`` land in the frontmatter (metadata, not a body section), and so does
+    ``sources`` — the PROVENANCE of a folded note: the stems of the raw capture
+    files whose content this note now carries. Emitted only when non-empty, so
+    notes that consume nothing keep the frontmatter they always had.
 
     Legacy aliases (``source_url``/``updated_at`` kwargs) are still accepted so
     callers need no change; the OUTPUT is always OKF names. :func:`parse_note`
@@ -133,6 +136,10 @@ def render_note(kind: str, key: str, *, title: str, source_url: str = "",
         fm.extend(f"  - {_yaml_str(lk)}" for lk in norm_links)
     else:
         fm.append("links: []")
+    norm_sources = [s for s in (str(x).strip() for x in (sources or [])) if s]
+    if norm_sources:
+        fm.append("sources:")
+        fm.extend(f"  - {_yaml_str(s)}" for s in norm_sources)
     fm.append("---")
 
     parts = ["\n".join(fm), f"# {str(title or key).strip()}"]
@@ -293,6 +300,10 @@ def update_note(path: str, **section_updates) -> dict:
         body_md=_pick("body_md", parsed["body"]),
         timestamp=_now_iso(),      # the write IS the freshness event
         tags=_pick("tags", fm.get("tags")),
+        # Provenance is carried through unchanged unless the caller replaces it:
+        # a read-modify-write that dropped it would un-claim captures a peer is
+        # waiting to archive.
+        sources=_pick("sources", fm.get("sources")),
     )
     tmp = path + ".tmp"
     try:

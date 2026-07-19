@@ -63,6 +63,12 @@ def merge_roster(entries: list[dict]) -> dict:
     Unknown peers are recorded as candidates. Nothing in a roster can promote a
     peer or grant a token: state and token fields arriving over the wire are
     dropped, so a compromised peer can add noise but never mesh membership.
+
+    ``last_seen`` is dropped with them. It means "when did *we* last reach this
+    peer", stamped by :func:`touch` off our own clock, and the leader election
+    subtracts it from our own ``now`` — so folding somebody else's clock reading
+    into it would put a foreign clock back into the one calculation that exists
+    to avoid comparing clocks across machines.
     """
     from aiforge_core.memory.sync.identity import self_id
 
@@ -75,16 +81,14 @@ def merge_roster(entries: list[dict]) -> dict:
         if not pid or pid == me:
             continue
         urls = [str(u) for u in (raw.get("urls") or []) if u]
-        seen = int(raw.get("last_seen") or 0)
         cur = index.get(pid)
         if cur is None:
             index[pid] = {"id": pid, "urls": urls, "state": STATE_CANDIDATE,
-                          "last_seen": seen}
+                          "last_seen": 0}      # never contacted BY US yet
             _log.info("sync: discovered candidate peer %s", pid)
             continue
         if urls:
             cur["urls"] = urls
-        cur["last_seen"] = max(int(cur.get("last_seen") or 0), seen)
 
     data["peers"] = list(index.values())
     return save(data)

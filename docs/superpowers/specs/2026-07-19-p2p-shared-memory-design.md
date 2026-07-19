@@ -253,25 +253,37 @@ non-deterministic: compaction, OKF node deduplication
 (`aiforge_core/memory/okf/store.py:451` `dedupe_nodes()`), and distillation. Two peers running
 them concurrently produce different answers from the same input.
 
-The lease is a class B record — `okf/.lease` holding `{holder, rev, expires_at}` — and syncs
-by the same rule as everything else. It is the one class B record with no `origin`: it is a
-mesh-wide singleton, so its identity is the fixed path and it merges on `rev` alone, with the
-holder slug as tiebreak.
+The leader is **elected, not claimed** (`sync/election.py`). Every peer computes the same
+answer from data it already replicates: the candidates are its own `identity.self_id()` plus
+every *approved* peer it still considers alive, and the **lexicographically smallest candidate
+leads**. Nothing is written, claimed or renewed, so there is no record to replicate and no
+heartbeat to keep alive.
 
-- **Claim.** If the lease is absent or expired, write it with `rev + 1`. Wait one full sync
-  interval, then read again. Still holding it? You are the leader. *That wait replaces
-  consensus.*
-- **Renew** every 3 minutes. **TTL** 10 minutes.
-- **Leader dies.** The lease lapses on its own; the next peer to notice claims it. No failure
-  detection, no failover protocol, no quorum.
+- **Alive** = a `peers.json` entry whose `last_seen` is inside `ALIVE_WINDOW`
+  (`3 × loop.DEFAULT_INTERVAL`, i.e. three sync cycles). `last_seen` is stamped by
+  `peers.touch()` when *we* successfully pulled from that peer — our clock observing them,
+  never their clock — so the comparison is skew-free. Gossiped `last_seen` values are dropped
+  on the way in for exactly that reason.
+- **No approved peers** → we are trivially the leader, so a single machine is unaffected.
+- **Leader dies.** It ages out of every peer's alive window within three cycles and the next
+  id takes over. No failure detection, no failover protocol, no quorum.
 
-**Split-brain is tolerated by design.** If two peers both believe they hold the lease, both
-compact. Both briefs are class A content-addressed files, so both land, and the next
-concept-similarity dedupe pass merges them. The cost of split-brain is wasted tokens, never
+**Split-brain is tolerated by design.** Peers can briefly disagree (A reaches C while B does
+not), and both then compact. Both briefs are class A content-addressed files, so both land,
+and the next concept-similarity dedupe pass merges them. The cost is wasted tokens, never
 corruption — which is precisely why this does not need Raft.
 
-The lease is the only component that reads a wall clock. Its failure mode under skew is
-duplicate compaction, which is already tolerated.
+*Superseded:* the original design used a wall-clock lease record (`okf/.lease.json`,
+TTL 600s, renewed every 180s). It could not elect anything: the record only reaches another
+peer on the 1800s pull cycle, so every peer always saw it as long expired and claimed it.
+The lease, its heartbeat and its wire format have been removed; no component reads a wall
+clock across machines any more.
+
+**Housekeeping is not leader-only.** Only distillation is. A brief records the capture stems
+it consumed in its `sources:` frontmatter, and a non-leader archives its own copies of a
+capture once a brief claiming it has arrived. That check fails CLOSED (archive nothing when
+provenance is missing or unreadable) while the leader gate fails OPEN — losing a capture is
+unrecoverable, losing compaction for a cycle is not.
 
 ## Failure handling
 
@@ -282,10 +294,10 @@ duplicate compaction, which is already tolerated.
 | New peer joins | Empty local manifest means the diff is everything. Bootstrap *is* the steady-state path. | None |
 | Interrupted fetch | Per-blob, hash-verified, atomic rename. A failed blob reappears in the next diff. | None |
 | Network partition | Both sides keep working and diverge; revision LWW converges them on heal. | None |
-| Clock skew | Irrelevant to merge — ordering is `(rev, peer)`. Only the lease reads a clock. | Lease only |
+| Clock skew | Irrelevant — ordering is `(rev, peer)` and the election only ever compares our own clock to itself. | None |
 | Concurrent edit, same node | Higher `rev` wins, ties on peer slug. Loser preserved as `.conflict` sidecar. | Needs review |
 | Corrupt or mismatched blob | Hash check fails; blob discarded, logged, retried next cycle. | None |
-| Leader dies mid-compaction | Lease lapses after 10 min; next peer claims and redoes it. Partial output is content-addressed, so it is complete or absent. | ≤10 min lag |
+| Leader dies mid-compaction | It ages out of the alive window within three sync cycles; the next id leads and redoes it. Partial output is content-addressed, so it is complete or absent. | ≤3 cycles lag |
 | Two leaders at once | Both compact. Duplicate briefs merged by concept-similarity dedupe. | Wasted tokens |
 | All seed peers down | Partitioned, not broken. Local work continues; converges when any peer answers. | Stale until heal |
 | Peer changes address | Url list tried in order; roster entry updates on next successful contact. | None |
@@ -306,7 +318,7 @@ Each unit has one job and a testable boundary.
 | `api/routes/sync.py` | Serve the two endpoints (bearer auth inherited from `/api/`) | `manifest`, `peers` |
 | `sync/peers.py` | `peers.json` load/save, roster gossip merge, candidate quarantine | `identity` |
 | `sync/discovery_ssdp.py` | Multicast announce/search on the local segment | `peers` |
-| `sync/lease.py` | Claim, renew, check the compaction lease | `okf.store` |
+| `sync/election.py` | Elect the distillation leader from the peer registry | `peers`, `identity` |
 | `sync/loop.py` | Scheduler that runs the cycle per peer | all of the above |
 
 `merge.py` is deliberately pure — it takes two lists and returns a decision set with no I/O.
@@ -327,7 +339,7 @@ filesystem, or a second machine.
   has C as a `candidate` and — critically — has **not** pulled from it.
 - **Partition and heal (integration).** Diverge two peers with the network stubbed out,
   reconnect, assert convergence and that no write was lost.
-- **Lease (integration).** Two peers race to claim; assert exactly one holds after the
+- **Election (integration).** Two peers see each other a full sync cycle late; assert exactly one leads after the
   claim-wait-verify sequence. Then stall the holder past TTL and assert the other claims.
 - **Hash verification (unit).** A server that returns bytes not matching the advertised hash
   must have its blob rejected and not written.
@@ -348,14 +360,14 @@ mesh-wide compromise). SSDP adopted for the local segment but rejected as primar
 multicast does not cross WireGuard, so it fails between my own machines, not just across the
 internet.
 
-**No consensus protocol.** Rejected: Raft or a quorum for the compaction lease. The operation
+**No consensus protocol.** Rejected: Raft or a quorum for the compaction leader. The operation
 being protected is idempotent-in-effect — duplicate output is merged by existing dedupe — so
-the worst case of a lease race is wasted tokens, not corruption. A consensus implementation
+the worst case of a split election is wasted tokens, not corruption. A consensus implementation
 would be more code than the entire rest of this design.
 
 ## Implementation surface
 
-New code is confined to §schema changes, the protocol endpoints, discovery, and the lease.
+New code is confined to §schema changes, the protocol endpoints, discovery, and the election.
 Everything else follows from the store already being a content-addressed markdown tree.
 
 Existing files touched:

@@ -127,7 +127,7 @@ def test_index_and_conflict_sidecars_never_sync(monkeypatch, tmp_path):
     assert [e["key"] for e in manifest.build()] == ["L-07"]
 
 
-def test_tombstone_and_lease_are_class_b(monkeypatch, tmp_path):
+def test_a_tombstone_is_class_b(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
     from aiforge_core.memory.sync import manifest
 
@@ -137,23 +137,15 @@ def test_tombstone_and_lease_are_class_b(monkeypatch, tmp_path):
         '{"origin":"nuc","key":"L-07","rev":48,"updated_by":"nuc","tomb":true}',
         encoding="utf-8",
     )
-    (okf / ".lease.json").write_text(
-        '{"origin":"","key":"__lease__","rev":3,"updated_by":"nuc",'
-        '"holder":"nuc","expires_at":1763000000}',
-        encoding="utf-8",
-    )
 
     by_key = {e["key"]: e for e in manifest.build()}
     assert by_key["L-07"]["tomb"] is True
     assert by_key["L-07"]["rev"] == 48
-    assert by_key["__lease__"]["rev"] == 3
-    # The lease is the one class B record allowed an empty origin: it is a
-    # mesh-wide singleton addressed by its reserved key (see I5 below).
-    assert by_key["__lease__"]["origin"] == ""
 
 
-def test_a_tombstone_without_an_origin_is_refused(monkeypatch, tmp_path):
-    """I5: ('', key) is not an identity — one peer's tombstone would clobber another's."""
+def test_a_class_b_record_without_an_origin_is_refused(monkeypatch, tmp_path):
+    """I5: ('', key) is not an identity — one peer's tombstone would clobber
+    another's. Nothing is exempt: the lease used to be, and it is gone."""
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
     from aiforge_core.memory.sync import manifest
 
@@ -163,13 +155,8 @@ def test_a_tombstone_without_an_origin_is_refused(monkeypatch, tmp_path):
         '{"origin":"","key":"L-07","rev":48,"updated_by":"nuc","tomb":true}',
         encoding="utf-8",
     )
-    (okf / ".lease.json").write_text(
-        '{"origin":"","key":"__lease__","rev":3,"updated_by":"nuc"}',
-        encoding="utf-8",
-    )
 
-    keys = [e["key"] for e in manifest.build()]
-    assert keys == ["__lease__"]
+    assert [e["key"] for e in manifest.build()] == []
 
 
 def test_an_unaddressable_key_or_origin_never_enters_the_manifest(monkeypatch,

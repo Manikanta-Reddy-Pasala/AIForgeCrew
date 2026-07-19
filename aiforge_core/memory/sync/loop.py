@@ -143,15 +143,11 @@ def _start_ssdp_responder() -> None:
 def run_forever(interval: int = DEFAULT_INTERVAL) -> None:
     """Sync every ``interval`` seconds for as long as this process lives.
 
-    The compaction lease is deliberately NOT driven from this loop: at a
-    30-minute interval and a 10-minute TTL a per-cycle renew would always be
-    too late. ``lease.start_heartbeat`` claims it here, on this thread, and then
-    keeps it on its own ``RENEW_EVERY`` timer (see lease.py).
+    Nothing here drives leadership: the compaction leader is *elected* from the
+    peer registry each time somebody asks (``election.py``), so there is no
+    record to claim and no heartbeat to keep alive.
     """
-    from aiforge_core.memory.sync import lease
-
     _start_ssdp_responder()
-    lease.start_heartbeat()
     while True:
         run_once()
         time.sleep(interval)

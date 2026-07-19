@@ -86,8 +86,11 @@ def test_sync_status_shape(monkeypatch, tmp_path):
     body = c.get("/api/admin/sync-status").json()
     assert body["self"]["id"] == "nuc"
     assert body["self"]["urls"] == ["http://127.0.0.1:8799"]
-    assert set(body["lease"]) == {"holder", "is_holder", "expires_in", "rev"}
-    assert body["lease"]["is_holder"] is False
+    # The elected leader, not a lease record. 'mac' was last reached in 2023,
+    # i.e. far outside the alive window, so it is not even a candidate and we
+    # lead by default.
+    assert set(body["leader"]) == {"leader", "is_us"}
+    assert body["leader"] == {"leader": "nuc", "is_us": True}
     assert body["local"]["class_a"] == 1
     assert set(body["local"]) == {"class_a", "class_b", "tombstones", "conflicts", "total"}
     assert body["probed"] is True

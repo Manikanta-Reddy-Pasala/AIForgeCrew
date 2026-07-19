@@ -83,18 +83,20 @@ def _render_brief(key: str, *, facts: list[str], body_md: str = "",
                   learnings: list[str] | None = None, title: str = "",
                   tags: list[str] | None = None,
                   key_results: list[str] | None = None,
-                  links: list[str] | None = None) -> str:
+                  links: list[str] | None = None,
+                  sources: list[str] | None = None) -> str:
     from aiforge_core.runtime import work_notes
     return work_notes.render_note(
         "knowledge", key,
         title=title or f"{key} memory (compacted)",
         objective=_BRIEF_OBJECTIVE.format(key=key),
         facts=facts, key_results=key_results, learnings=learnings,
-        links=links, body_md=body_md, tags=tags)
+        links=links, body_md=body_md, tags=tags, sources=sources)
 
 
 def _parse_brief(raw: str) -> dict:
-    """Parse a brief (OKR or legacy) → {"facts", "learnings", "body", "title"}.
+    """Parse a brief (OKR or legacy) → {"facts", "learnings", "body", "title",
+    "links", "key_results", "sources"}.
     A legacy brief's ``## Recent`` bullets migrate into facts; its prose stays
     in body. Never raises."""
     from aiforge_core.runtime import work_notes
@@ -109,7 +111,46 @@ def _parse_brief(raw: str) -> dict:
     return {"facts": facts, "body": body, "title": parsed["title"],
             "learnings": list(parsed["sections"].get("learnings") or []),
             "links": list(parsed["sections"].get("links") or []),
-            "key_results": list(parsed["sections"].get("key_results") or [])}
+            "key_results": list(parsed["sections"].get("key_results") or []),
+            "sources": _stems(
+                (parsed.get("frontmatter") or {}).get("sources"))}
+
+
+def _stems(values) -> list[str]:
+    """Normalise a brief's ``sources:`` frontmatter to capture STEMS.
+
+    Tolerant of a hand-written ``foo.md``; anything blank is dropped. Kept here
+    because both the writer and the reader of provenance must agree on the
+    spelling, and this is the file that owns the brief format.
+    """
+    out: list[str] = []
+    for v in values or []:
+        s = str(v or "").strip()
+        if s.endswith(".md"):
+            s = s[:-3]
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
+def brief_source_stems() -> set[str]:
+    """Every capture stem that some brief RECORDS having consumed.
+
+    The provenance a non-leader needs before it may archive anything: a capture
+    is only tidied away once a brief that claims it has arrived by sync. Briefs
+    written before ``sources:`` existed claim nothing, so their captures are
+    simply left in place — untidy, never lost.
+
+    Deliberately does NOT swallow read errors: the caller must archive nothing
+    when the covered set is uncertain, and a half-read set would look certain.
+    """
+    from aiforge_core.runtime import work_notes
+    out: set[str] = set()
+    for p in iter_briefs():
+        parsed = work_notes.parse_note(
+            p.read_text(encoding="utf-8", errors="replace"))
+        out.update(_stems((parsed.get("frontmatter") or {}).get("sources")))
+    return out
 
 
 # A "key: value" fact whose key is a short label (status, owner, port, mode…) —
@@ -177,6 +218,7 @@ def _brief_upsert(repo: str, text: str, *, topic: str | None = None) -> None:
         body = ""
         learnings: list[str] = []
         key_results: list[str] = []
+        sources: list[str] = []
         title = ""
         if path.exists():
             raw = path.read_text(encoding="utf-8", errors="replace")
@@ -184,6 +226,10 @@ def _brief_upsert(repo: str, text: str, *, topic: str | None = None) -> None:
             facts, body = b["facts"], b["body"]
             learnings, title = b["learnings"], b["title"]
             key_results = b["key_results"]
+            # Provenance survives a write-time fact fold: this path adds a fact,
+            # it does not consume captures, so what the brief already claims
+            # must stay claimed (a peer is waiting on it to tidy up).
+            sources = b["sources"]
         # already captured (contained in an existing fact) or folded into prose
         if any(fact in _fact_body(f) for f in facts) or (fact and fact in body):
             return
@@ -246,7 +292,8 @@ def _brief_upsert(repo: str, text: str, *, topic: str | None = None) -> None:
             facts.pop(0)
         path.write_text(
             _render_brief(repo, facts=facts, body_md=body, learnings=learnings,
-                          title=title, key_results=key_results),
+                          title=title, key_results=key_results,
+                          sources=sources),
             encoding="utf-8")
 
 
@@ -280,7 +327,8 @@ def migrate_to_okr() -> dict:
             try:
                 p.write_text(
                     _render_brief(key, facts=b["facts"], body_md=b["body"],
-                                  learnings=b["learnings"], title=b["title"]),
+                                  learnings=b["learnings"], title=b["title"],
+                                  sources=b["sources"]),
                     encoding="utf-8")
             except OSError:
                 continue

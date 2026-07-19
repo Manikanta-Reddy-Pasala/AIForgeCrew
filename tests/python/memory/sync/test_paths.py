@@ -36,13 +36,12 @@ def test_node_paths_is_empty_for_an_unknown_identity(monkeypatch, tmp_path):
     assert paths.node_paths("nuc", "L-99") == []
 
 
-def test_tomb_and_lease_paths_are_stable(monkeypatch, tmp_path):
+def test_tomb_paths_are_stable(monkeypatch, tmp_path):
     _env(monkeypatch, tmp_path)
     from aiforge_core.memory.sync import paths
 
     assert paths.tomb_path("nuc", "L-07").as_posix().endswith(
         "okf/.tomb/nuc/L-07.json")
-    assert paths.lease_path().as_posix().endswith("okf/.lease.json")
 
 
 def test_target_for_known_identity_is_updated_in_place(monkeypatch, tmp_path):
@@ -147,14 +146,14 @@ def test_node_paths_puts_the_highest_rev_first(monkeypatch, tmp_path):
                              "path": "x"}) == newer
 
 
-def test_target_for_a_tombstone_and_the_lease(monkeypatch, tmp_path):
+def test_target_for_a_tombstone(monkeypatch, tmp_path):
     _env(monkeypatch, tmp_path)
     from aiforge_core.memory.sync import paths
 
     tomb = paths.target_for({"kind": "B", "origin": "nuc", "key": "L-07",
                              "tomb": True, "path": "x"})
-    lease = paths.target_for({"kind": "B", "origin": "", "key": "__lease__",
-                              "path": "x"})
 
     assert tomb.as_posix().endswith("okf/.tomb/nuc/L-07.json")
-    assert lease.as_posix().endswith("okf/.lease.json")
+    # No class B record travels without an origin any more (the lease did).
+    assert paths.target_for({"kind": "B", "origin": "", "key": "L-07",
+                             "path": "x"}) is None

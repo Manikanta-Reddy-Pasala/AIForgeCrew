@@ -5,8 +5,8 @@ Read-only and loopback-only. There is no new auth system here: the gate is
 operator already crossed to run the process. Anything further away is told to
 use an SSH tunnel.
 
-This module is a thin adapter over ``memory.sync`` — ``peers``, ``lease`` and
-``manifest`` own the data, this file only shapes it for a screen.
+This module is a thin adapter over ``memory.sync`` — ``peers``, ``election``
+and ``manifest`` own the data, this file only shapes it for a screen.
 """
 from __future__ import annotations
 
@@ -104,19 +104,17 @@ def _local_counts() -> dict:
             "tombstones": tombs, "conflicts": conflicts, "total": len(entries)}
 
 
-def _lease_view() -> dict:
-    import time
+def _leader_view() -> dict:
+    """Who distils — the elected leader, and whether that is us.
 
-    from aiforge_core.memory.sync import lease as _lease
-    from aiforge_core.memory.sync import merge as _merge
+    There is nothing to read from disk: every peer derives the same answer from
+    its peer registry (see ``memory.sync.election``).
+    """
+    from aiforge_core.memory.sync import election as _election
+    from aiforge_core.memory.sync import identity as _identity
 
-    rec = _lease.read() or {}
-    expires_at = _merge.as_rev(rec.get("expires_at"))
-    remaining = expires_at - int(time.time()) if expires_at else 0
-    return {"holder": rec.get("holder") or None,
-            "is_holder": bool(_lease.is_holder()),
-            "expires_in": max(0, remaining) if rec else None,
-            "rev": _merge.as_rev(rec.get("rev"))}
+    name = _election.leader_name()
+    return {"leader": name, "is_us": name == _identity.self_id()}
 
 
 @router.get("/api/admin/sync-status")
@@ -144,7 +142,7 @@ def sync_status(request: Request, probe: int = Query(1)) -> dict:
     me = data.get("self") or {}
     return {"self": {"id": _identity.self_id(),
                      "urls": [str(u) for u in (me.get("urls") or [])]},
-            "lease": _lease_view(),
+            "leader": _leader_view(),
             "local": _local_counts(),
             "peers": out,
             "probed": bool(probe)}
@@ -226,10 +224,10 @@ function esc(v){ return String(v == null ? '' : v)
   .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function card(l, v){ return '<div class="card"><b>' + esc(v) + '</b><span>' + l + '</span></div>'; }
 function render(d){
-  var L = d.lease, C = d.local;
+  var L = d.leader, C = d.local;
   document.getElementById('cards').innerHTML =
     card('this peer', d.self.id) +
-    card('lease holder', L.holder ? (L.is_holder ? L.holder + ' (us)' : L.holder) : 'none') +
+    card('compaction leader', L.is_us ? L.leader + ' (us)' : L.leader) +
     card('class A', C.class_a) + card('class B', C.class_b) +
     card('tombstones', C.tombstones) + card('conflicts', C.conflicts) +
     card('peers', d.peers.length);

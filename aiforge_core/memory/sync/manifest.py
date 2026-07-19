@@ -1,9 +1,9 @@
 """Build the local sync manifest from the markdown memory tree.
 
 Class A (``captures/``, ``compacted/``) is immutable and merges by union on a
-content hash. Class B (OKF nodes, tombstones, the compaction lease) is mutable
-and carries ``(origin, key, rev, updated_by)`` so two versions can be ordered
-without consulting a clock. Exactly one entry is advertised per ``(origin,
+content hash. Class B (OKF nodes, tombstones) is mutable and carries
+``(origin, key, rev, updated_by)`` so two versions can be ordered without
+consulting a clock. Exactly one entry is advertised per ``(origin,
 key)`` — see ``_dedupe`` — and both halves of an identity must round-trip
 ``paths.is_addressable`` before it is advertised at all.
 
@@ -36,23 +36,22 @@ def _class_a() -> list[dict]:
 
 
 def _class_b_entry(p: Path, meta: dict, *, tomb: bool = False) -> dict | None:
-    """Build one class B entry — node, tombstone or lease — or None to refuse it.
+    """Build one class B entry — node or tombstone — or None to refuse it.
 
     The single validation point for the identity space: a rule applied to one
     kind of mutable record applies to all of them. ``meta`` is frontmatter for a
-    node (``id``) and the JSON record for a tombstone or the lease (``key``).
+    node (``id``) and the JSON record for a tombstone (``key``).
     """
     key = str(meta.get("id") or meta.get("key") or "")
     origin = str(meta.get("origin") or "")
     if not key:
         return None
 
-    if not origin and key != paths.LEASE_KEY:
+    if not origin:
         # Half an identity is not an identity. An unstamped node simply stays
         # local until identity.stamp() writes it again; a tombstone would be
         # worse — ("" , key) is shared by every peer, so one peer's tombstone
-        # would overwrite another's. The lease is the sole exception: a
-        # mesh-wide singleton addressed by its reserved key, with no origin.
+        # would overwrite another's.
         return None
     if not paths.is_addressable(key) or (origin and not paths.is_addressable(origin)):
         _log.warning("sync: unaddressable identity (%s, %s) in %s, skipping",
@@ -125,11 +124,6 @@ def _class_b() -> list[dict]:
         entry = _entry_for_json(p)
         if entry:
             out.append(entry)
-    lease = paths.lease_path()
-    if _io.is_syncable(lease):
-        entry = _entry_for_json(lease)
-        if entry:
-            out.append(entry)
     return _dedupe(out)
 
 
@@ -137,8 +131,7 @@ def _scans() -> tuple[tuple[Path, str], ...]:
     """Every (directory, glob) pair ``build`` reads. Used to fingerprint it."""
     root = _io.root()
     return ((root / "captures", "*.md"), (root / "compacted", "*.md"),
-            (paths.okf_dir(), "**/*.md"), (paths.tomb_dir(), "**/*.json"),
-            (paths.okf_dir(), ".lease.json"))
+            (paths.okf_dir(), "**/*.md"), (paths.tomb_dir(), "**/*.json"))
 
 
 def _fingerprint() -> tuple:

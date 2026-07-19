@@ -25,7 +25,12 @@ from ._base import (
 )
 from ._capture import capture
 from ._ingest import _ingest_unit
-from ._render import _BRIEF_OBJECTIVE, _parse_brief, _render_brief
+from ._render import (
+    _BRIEF_OBJECTIVE,
+    _parse_brief,
+    _render_brief,
+    brief_source_stems,
+)
 
 # Sentinel topic key for a note the topic labeller couldn't theme. Such a note
 # already lives in its repo/shared brief, so it must NOT spawn a topic file —
@@ -286,13 +291,15 @@ def _topic_split_cap() -> int:
         return 12000
 
 
-def _brief_parts(key: str, sections: dict, tags, title: str) -> list[tuple[str, str]]:
+def _brief_parts(key: str, sections: dict, tags, title: str,
+                 sources: list[str] | None = None) -> list[tuple[str, str]]:
     """Render an OKR knowledge brief → ``[(stem, content), …]``. Facts are paged
     under the split cap: a topic that fits is ONE file; a topic that outgrows it
     splits into compacted-<key>.md + compacted-<key>-2.md … each carrying the
     OKR envelope (kind/tags/objective) and a cross-reference back to part 1 /
     forward to the next (the "split and refer" pattern). Key Results + Learnings
-    stay on part 1 (the canonical head)."""
+    stay on part 1 (the canonical head) — and so does ``sources``, the
+    provenance of the whole fold: one claim per topic, on its canonical head."""
     from aiforge_core.runtime import work_notes
     facts = [str(f) for f in (sections.get("facts") or [])]
     kr = sections.get("key_results") or []
@@ -332,6 +339,7 @@ def _brief_parts(key: str, sections: dict, tags, title: str) -> list[tuple[str, 
             key_results=(kr if i == 0 else None),
             facts=page, links=links,
             learnings=(learnings if i == 0 else None),
+            sources=(sources if i == 0 else None),
             tags=tags, body_md="\n\n".join(xref))
         parts.append((stem, content))
     return parts
@@ -436,24 +444,72 @@ def _consolidate_brief_content(key: str, path, blocks: list[str], title: str,
         links=links, learnings=learnings, body_md="", tags=all_tags)
 
 
-def _lease_allows_compaction() -> bool:
-    """May we compact right now? The peer-sync lease decides; we only ask.
+def _may_distil() -> bool:
+    """May we run the LLM fold right now? The sync election decides; we only ask.
 
-    Soft-fails OPEN. Compaction is what keeps the memory tree legible, so losing
-    it because a lease file is unreadable is far worse than the duplicate work a
-    stale answer can cause — which the lease design tolerates by construction
-    (both briefs are content-addressed and the next dedupe pass merges them).
+    ``election.may_distil`` owns the policy AND its soft-fail direction (OPEN —
+    losing distillation is worse than duplicating it), so there is no second
+    copy of either here. The import is lazy: the sync package is heavy and a
+    single machine never needs it on the hot path.
     """
+    from aiforge_core.memory.sync import election
+
+    return election.may_distil()
+
+
+# How many consumed capture stems a brief carries. Provenance is a hand-off
+# note, not an archive: only a peer that has NOT yet archived a capture cares,
+# and it sees the claim within a cycle or two. The cap keeps a long-lived brief
+# from growing an unbounded frontmatter; a stem that ages out simply leaves that
+# capture un-archived on a peer that never saw the claim — untidy, never lost.
+_SOURCES_CAP = 400
+
+
+def _fold_sources(prior: list[str], consumed: list[str]) -> list[str]:
+    """Prior claims + the stems this fold just consumed, newest last, capped."""
+    return list(dict.fromkeys(list(prior) + list(consumed)))[-_SOURCES_CAP:]
+
+
+def archive_covered_captures() -> dict:
+    """Archive local captures that an ARRIVED brief already claims to have eaten.
+
+    Housekeeping is EVERY peer's job — only distillation is leader-only. Without
+    this a non-leader's ``captures/`` grows forever, because the leader archives
+    its own copies and replication only ever adds files.
+
+    Soft-fails CLOSED, the opposite of the distillation gate, and deliberately:
+    archiving a capture no brief covers destroys an un-distilled memory and
+    nothing can rebuild it, while failing to archive one that IS covered leaves
+    a tidy-up for the next cycle. Any doubt at all → move nothing.
+    """
+    import shutil
     try:
-        from aiforge_core.memory.sync import lease  # lazy: heavy sync package
-        if lease.may_compact():
-            return True
-        _log.info("compact: skipped — peer %s holds the compaction lease",
-                  lease.holder() or "?")
-        return False
-    except Exception as exc:  # noqa: BLE001 — never let the lease block compaction
-        _log.info("compact: lease check failed (%s) — compacting anyway", exc)
-        return True
+        covered = brief_source_stems()
+    except Exception as exc:  # noqa: BLE001 — see docstring: uncertainty ⇒ nothing
+        _log.info("compact: provenance unreadable (%s) — archiving nothing", exc)
+        return {"archived": 0, "housekeeping": "provenance-unreadable"}
+    if not covered:
+        # No brief claims anything (e.g. every brief predates provenance) —
+        # nothing is PROVABLY distilled, so nothing may be moved.
+        return {"archived": 0}
+
+    dst = memory_dir() / "archive" / _now_iso().replace(":", "")
+    moved: list[str] = []
+    with _COMPACT_LOCK, _WRITE_LOCK:
+        for p in _capture_md_files():
+            if p.stem not in covered:
+                continue
+            try:
+                dst.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(p), str(dst / p.name))
+                moved.append(p.name)
+            except OSError:      # keep the capture; the next cycle retries
+                continue
+    if moved:
+        _log.info("compact: archived %d capture(s) already covered by a brief",
+                  len(moved))
+    return {"archived": len(moved), "archived_files": moved,
+            "archive": str(dst)}
 
 
 def compact(*, group_by: str = "kind", min_group: int = 2,
@@ -486,11 +542,14 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
     """
     import shutil
     # dry_run is a read-only preview and costs no tokens — only the real,
-    # LLM-expensive run needs the lease.
-    if not dry_run and not _lease_allows_compaction():
+    # LLM-expensive run needs to be the elected leader. A non-leader still does
+    # its HOUSEKEEPING: distillation is leader-only, tidying up after it is not.
+    if not dry_run and not _may_distil():
         return {"ok": True, "dry_run": False, "group_by": group_by,
                 "groups": {}, "files_in": 0, "files_out": 0,
-                "skipped": "lease", "note": "another peer holds the compaction lease"}
+                "skipped": "not-leader",
+                "note": "another peer is the elected compaction leader",
+                **archive_covered_captures()}
     if force:
         summarize = True
         min_group = 1
@@ -602,13 +661,23 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
             # Objective/Facts head or the sentinel) is re-fed — otherwise the
             # envelope text would nest inside the new body every compaction.
             existing_body = ""
+            prior_sources: list[str] = []
             if path.exists():
                 prev = path.read_text(encoding="utf-8", errors="replace")
+                prior_sources = _parse_brief(prev)["sources"]
                 if group_by in ("repo", "topic"):
                     existing_body = _parse_brief(prev)["body"].strip()
                 else:
                     pm = _FM_RE.match(prev)
                     existing_body = (pm.group(2).strip() if pm else prev.strip())
+            # PROVENANCE: the stems this brief now carries, so a peer that
+            # received it can archive its own copies of them. Claimed only when
+            # we are actually archiving the originals — in projection mode the
+            # units stay alive for the OTHER axis, and a peer must not tidy away
+            # what this axis has not really consumed.
+            fold_sources = _fold_sources(
+                prior_sources,
+                [d["_path"].stem for d in items] if archive_sources else [])
 
             sections, blocks = [], []
             if existing_body:
@@ -656,7 +725,8 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                 # so the topic note(s) ARE the memory.
                 merged, all_tags = _consolidate_brief_sections(
                     key, path, blocks, model_role, all_tags)
-                part_list = _brief_parts(key, merged, all_tags, title)
+                part_list = _brief_parts(key, merged, all_tags, title,
+                                         sources=fold_sources)
                 did_summarize = True
             elif group_by in ("repo", "topic"):
                 # No model: keep the OKR envelope, consolidation lives in the body
@@ -667,7 +737,8 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                 part_list = [(stem, _render_brief(
                     key, facts=[],
                     body_md=re.sub(r"^#\s[^\n]*\n+", "", body.strip()),
-                    learnings=prev_learnings, title=title, tags=all_tags))]
+                    learnings=prev_learnings, title=title, tags=all_tags,
+                    sources=fold_sources))]
             else:
                 fm = (
                     "---\n"
@@ -678,7 +749,9 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                     f"created: {_now_iso()}\n"
                     f"count: {len(items)}\n"
                     f"summarized: {str(did_summarize).lower()}\n"
-                    "---\n\n"
+                    + "".join(["sources:\n"] + [f"  - {s}\n" for s in fold_sources]
+                              if fold_sources else [])
+                    + "---\n\n"
                 )
                 part_list = [(stem, fm + body.strip() + "\n")]
             prepared.append({"items": items, "base_stem": stem, "key": key,
