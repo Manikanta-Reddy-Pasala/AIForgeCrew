@@ -436,6 +436,26 @@ def _consolidate_brief_content(key: str, path, blocks: list[str], title: str,
         links=links, learnings=learnings, body_md="", tags=all_tags)
 
 
+def _lease_allows_compaction() -> bool:
+    """May we compact right now? The peer-sync lease decides; we only ask.
+
+    Soft-fails OPEN. Compaction is what keeps the memory tree legible, so losing
+    it because a lease file is unreadable is far worse than the duplicate work a
+    stale answer can cause — which the lease design tolerates by construction
+    (both briefs are content-addressed and the next dedupe pass merges them).
+    """
+    try:
+        from aiforge_core.memory.sync import lease  # lazy: heavy sync package
+        if lease.may_compact():
+            return True
+        _log.info("compact: skipped — peer %s holds the compaction lease",
+                  lease.holder() or "?")
+        return False
+    except Exception as exc:  # noqa: BLE001 — never let the lease block compaction
+        _log.info("compact: lease check failed (%s) — compacting anyway", exc)
+        return True
+
+
 def compact(*, group_by: str = "kind", min_group: int = 2,
             dry_run: bool = False, summarize: bool = True,
             model_role: str = "learner", archive_sources: bool = True,
@@ -465,6 +485,12 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
     import, or to re-run the LLM pass over everything.
     """
     import shutil
+    # dry_run is a read-only preview and costs no tokens — only the real,
+    # LLM-expensive run needs the lease.
+    if not dry_run and not _lease_allows_compaction():
+        return {"ok": True, "dry_run": False, "group_by": group_by,
+                "groups": {}, "files_in": 0, "files_out": 0,
+                "skipped": "lease", "note": "another peer holds the compaction lease"}
     if force:
         summarize = True
         min_group = 1

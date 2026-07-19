@@ -767,8 +767,16 @@ echo ""
 # uvicorn exits.
 ( while true; do .venv/bin/python -m aiforge_core.runtime.adk_runner || true; sleep "${AIFORGE_RUNNER_POLL_SEC:-10}"; done ) &
 RUNNER_PID=$!
-trap 'kill $RUNNER_PID 2>/dev/null' EXIT INT TERM
 echo "  runner: host pid $RUNNER_PID (polls every ${AIFORGE_RUNNER_POLL_SEC:-10}s)"
+
+# Peer memory sync. Always on, with no opt-out: a cycle with no approved peers
+# in peers.json (the default) touches no network and builds no manifest, so on a
+# single machine this costs one small JSON read every 30 minutes. It also drives
+# the compaction lease heartbeat. Reaped when uvicorn exits.
+( while true; do .venv/bin/python -m aiforge_core.memory.sync.loop || true; sleep 30; done ) &
+SYNC_PID=$!
+trap 'kill $RUNNER_PID $SYNC_PID 2>/dev/null' EXIT INT TERM
+echo "  memory sync: host pid $SYNC_PID (peer pull every 30m)"
 
 RELOAD=()
 [[ $DEV -eq 1 ]] && RELOAD=(--reload)

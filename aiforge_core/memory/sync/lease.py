@@ -24,6 +24,7 @@ timestamp comparison anywhere else in the design.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 from aiforge_core.memory.sync import _io, merge, paths
@@ -33,6 +34,8 @@ _log = logging.getLogger("aiforge.sync")
 
 TTL = 600          # 10 minutes
 RENEW_EVERY = 180  # 3 minutes
+
+_heartbeat: threading.Thread | None = None
 
 
 def read() -> dict:
@@ -94,4 +97,83 @@ def is_holder() -> bool:
     return bool(rec) and not _expired(rec) and rec.get("holder") == self_id()
 
 
-__all__ = ["claim", "renew", "is_holder", "read", "TTL", "RENEW_EVERY", "LEASE_KEY"]
+def holder() -> str:
+    """The peer id holding a *live* lease, or "" if nobody does."""
+    rec = read()
+    return "" if not rec or _expired(rec) else str(rec.get("holder") or "")
+
+
+def may_compact() -> bool:
+    """Whether this node is allowed to run compaction/dedupe/distillation now.
+
+    The single place the lease policy lives, so callers stay callers. Compaction
+    is blocked only when there is somebody else to collide with: a lone machine
+    (no approved peers — the default) is always free to compact, and so is a
+    mesh whose lease is unheld or expired. The lease is not a mutex; losing this
+    check costs duplicate LLM work, never correctness.
+    """
+    from aiforge_core.memory.sync import peers
+    from aiforge_core.memory.sync.identity import self_id
+
+    if not peers.approved():
+        return True
+    live = holder()
+    return not live or live == self_id()
+
+
+def _heartbeat_tick() -> None:
+    """Hold the lease if we have it, take it if it is going spare.
+
+    Re-claiming is what recovers a dead leader's lease: whoever is still running
+    picks it up once it expires. Skipped entirely with no approved peers so a
+    single-machine install never writes a lease record it has no use for.
+    """
+    from aiforge_core.memory.sync import peers
+
+    if not peers.approved():
+        return
+    if is_holder():
+        renew()
+    else:
+        claim()
+
+
+def _spawn(run) -> threading.Thread:
+    """The one place a thread is created, so tests can take it away."""
+    t = threading.Thread(target=run, name="aiforge-lease", daemon=True)
+    t.start()
+    return t
+
+
+def start_heartbeat() -> None:
+    """Keep the lease alive on its OWN timer, independent of the sync cycle.
+
+    The sync cycle is half an hour and the lease lives ten minutes, so renewing
+    once per cycle would let it lapse every time. The heartbeat therefore runs
+    at ``RENEW_EVERY`` (3 min) in a daemon thread — three renewals per TTL, and
+    it dies with the process. The first tick runs on the caller's thread so the
+    lease is claimed before any work depending on it starts.
+    """
+    global _heartbeat
+
+    _tick_safely()
+    if _heartbeat is not None and _heartbeat.is_alive():
+        return
+
+    def _run() -> None:
+        while True:
+            time.sleep(RENEW_EVERY)
+            _tick_safely()
+
+    _heartbeat = _spawn(_run)
+
+
+def _tick_safely() -> None:
+    try:
+        _heartbeat_tick()
+    except Exception as exc:  # noqa: BLE001 — a lease we cannot write is not fatal
+        _log.warning("sync: lease heartbeat failed: %s", exc)
+
+
+__all__ = ["claim", "renew", "is_holder", "holder", "may_compact", "read",
+           "start_heartbeat", "TTL", "RENEW_EVERY", "LEASE_KEY"]

@@ -11,7 +11,7 @@ import time
 
 _log = logging.getLogger("aiforge.sync")
 
-DEFAULT_INTERVAL = 900  # 15 minutes
+DEFAULT_INTERVAL = 1800  # 30 minutes
 
 
 def _first_url(peer: dict) -> str:
@@ -141,7 +141,17 @@ def _start_ssdp_responder() -> None:
 
 
 def run_forever(interval: int = DEFAULT_INTERVAL) -> None:
+    """Sync every ``interval`` seconds for as long as this process lives.
+
+    The compaction lease is deliberately NOT driven from this loop: at a
+    30-minute interval and a 10-minute TTL a per-cycle renew would always be
+    too late. ``lease.start_heartbeat`` claims it here, on this thread, and then
+    keeps it on its own ``RENEW_EVERY`` timer (see lease.py).
+    """
+    from aiforge_core.memory.sync import lease
+
     _start_ssdp_responder()
+    lease.start_heartbeat()
     while True:
         run_once()
         time.sleep(interval)
