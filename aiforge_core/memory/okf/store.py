@@ -179,6 +179,9 @@ def save_node(node_type: str, node_id: str | None, meta: dict,
             if os.path.abspath(old) != os.path.abspath(path):
                 with contextlib.suppress(OSError):
                     os.unlink(old)
+        from aiforge_core.memory.sync.identity import stamp as _stamp
+
+        meta = _stamp(meta or {})
         text = _n.render_node(node_type, nid, meta, body)
         tmp = path + ".tmp"
         try:

@@ -1,0 +1,54 @@
+"""Peer identity and the version stamp applied to mutable nodes."""
+from __future__ import annotations
+
+
+def test_self_id_defaults_to_hostname_slug(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.delenv("AIFORGE_PEER_ID", raising=False)
+    monkeypatch.setattr("socket.gethostname", lambda: "My Laptop.local")
+    from aiforge_core.memory.sync import identity
+
+    assert identity.self_id() == "my-laptop-local"
+
+
+def test_self_id_env_wins(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("AIFORGE_PEER_ID", "nuc")
+    from aiforge_core.memory.sync import identity
+
+    assert identity.self_id() == "nuc"
+
+
+def test_stamp_sets_origin_on_first_write(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("AIFORGE_PEER_ID", "nuc")
+    from aiforge_core.memory.sync import identity
+
+    meta = identity.stamp({"title": "T"})
+    assert meta["origin"] == "nuc"
+    assert meta["rev"] == 1
+    assert meta["updated_by"] == "nuc"
+
+
+def test_stamp_bumps_rev_and_records_writer(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("AIFORGE_PEER_ID", "ms")
+    from aiforge_core.memory.sync import identity
+
+    meta = identity.stamp({"title": "T", "origin": "nuc", "rev": 46, "updated_by": "nuc"})
+    assert meta["origin"] == "nuc"      # origin never changes hands
+    assert meta["rev"] == 47
+    assert meta["updated_by"] == "ms"
+
+
+def test_save_node_stamps_frontmatter(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("AIFORGE_PEER_ID", "nuc")
+    from aiforge_core.memory.okf import nodes, store
+
+    res = store.save_node("learning", None, {"title": "L"}, "body")
+    node = nodes.parse_node(open(res["path"], encoding="utf-8").read())
+    assert node["meta"]["origin"] == "nuc"
+    assert node["meta"]["rev"] == 1
+    assert node["meta"]["updated_by"] == "nuc"
