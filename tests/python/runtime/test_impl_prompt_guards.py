@@ -28,3 +28,13 @@ def test_cpp_gets_template_header_rule():
 def test_non_cpp_no_rule():
     for p in ("heap.py", "Stack.java", "lib.rs", "main.go"):
         assert _lang_rules(p) == ""
+
+
+def test_greenfield_detection(tmp_path):
+    import subprocess
+    from aiforge_core.runtime.parallel_subtasks._reconcile._sources import _is_greenfield
+    def g(a): subprocess.run(["git","-C",str(tmp_path)]+a, capture_output=True)
+    g(["init"]); g(["config","user.email","t@t"]); g(["config","user.name","t"])
+    (tmp_path/".gitignore").write_text("x"); g(["add","-A"]); g(["commit","-m","workspace baseline"])
+    (tmp_path/"Stack.java").write_text("class Stack{}"); g(["add","-A"]); g(["commit","-m","build"])
+    assert _is_greenfield(str(tmp_path)) is True     # source added AFTER baseline

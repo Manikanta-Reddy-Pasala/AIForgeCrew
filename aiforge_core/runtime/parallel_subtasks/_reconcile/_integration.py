@@ -7,7 +7,7 @@ import os
 
 from ._drift import _prune_dead_python_imports
 from ._rewrite import _rewrite_fix
-from ._sources import _change_in_error, _gather_sources
+from ._sources import _change_in_error, _gather_sources, _is_greenfield
 from ._testrun import (
     _broken_project_config,
     _directed_hints,
@@ -55,6 +55,7 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
     # AIFORGE_RECONCILE_SKIP_PREEXISTING=0.
     if os.environ.get("AIFORGE_RECONCILE_SKIP_PREEXISTING", "1") not in ("0", "false") \
             and _fail_count(output) in (0, 999) and not _broken_project_config(cwd) \
+            and not _is_greenfield(cwd) \
             and not _change_in_error(cwd, output):
         yield {"type": "thought", "role": "reconciler",
                "text": "⚠ tests don't collect on this repo independent of your "

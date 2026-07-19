@@ -250,6 +250,30 @@ def _turn_changed_source(cwd: str) -> "list[str] | None":
     return [f for f in files if f.endswith(_SRC_EXTS)]
 
 
+def _is_greenfield(cwd: str) -> bool:
+    """True when this turn BUILT the project from nothing — the pre-turn baseline
+    commit had NO source files. On a greenfield build there IS no 'pre-existing'
+    failure: every failure is this turn's fault, so the pre-existing-skip gate
+    must NOT fire (else a TRANSIENT first-test error — a cold `mvn`/`cargo`
+    download whose message names no source file — is wrongly ruled environmental,
+    the repair loop is skipped, and a GREEN build is verdict'd NOTCLEAN)."""
+    import subprocess as _sp
+    try:
+        base = _sp.run(["git", "-C", cwd, "rev-list", "--max-count=1",
+                        "--grep=baseline", "HEAD"],
+                       capture_output=True, text=True, timeout=10).stdout.strip()
+        if not base:
+            return False                       # no baseline marker → can't tell
+        r = _sp.run(["git", "-C", cwd, "ls-tree", "-r", "--name-only", base],
+                    capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            return False
+        return not any(f.strip().endswith(_SRC_EXTS)
+                       for f in (r.stdout or "").splitlines())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _change_in_error(cwd: str, output: str) -> bool:
     """True if any source file THIS turn changed is named in the test/build
     error — i.e. the failure plausibly stems from the change (so repair it).
