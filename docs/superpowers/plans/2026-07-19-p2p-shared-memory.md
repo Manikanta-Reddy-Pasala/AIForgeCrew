@@ -757,6 +757,21 @@ def test_target_for_class_a_still_refuses_to_escape(monkeypatch, tmp_path):
     assert paths.target_for({"cls": "A", "path": "../../evil"}) is None
 
 
+def test_a_hostile_origin_or_key_cannot_climb_the_tree(monkeypatch, tmp_path):
+    """origin and key come from a peer's frontmatter — treat them as attacker input."""
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    root = (tmp_path / "md").resolve()
+
+    for origin, key in (("../../..", "L-07"),
+                        ("nuc", "../../../../etc/passwd"),
+                        ("..", ".."),
+                        ("", "")):
+        for p in (paths.peer_node_path(origin, key), paths.tomb_path(origin, key)):
+            assert root in p.resolve().parents
+
+
 def test_target_for_a_tombstone_and_the_lease(monkeypatch, tmp_path):
     _env(monkeypatch, tmp_path)
     from aiforge_core.memory.sync import paths
@@ -794,11 +809,24 @@ the content.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from aiforge_core.memory.sync import _io
 
 LEASE_KEY = "__lease__"
+
+_UNSAFE = re.compile(r"[^A-Za-z0-9_-]+")
+
+
+def _component(value: str) -> str:
+    """Sanitise one untrusted path component.
+
+    ``origin`` and ``key`` arrive from a peer's frontmatter, so they are
+    attacker-controlled. Dots are stripped along with separators, which is what
+    makes ``".."`` collapse to the empty string rather than climbing the tree.
+    """
+    return _UNSAFE.sub("-", str(value or "")).strip("-") or "_"
 
 
 def okf_dir() -> Path:
@@ -806,7 +834,7 @@ def okf_dir() -> Path:
 
 
 def tomb_path(origin: str, key: str) -> Path:
-    return okf_dir() / ".tomb" / (origin or "_") / f"{key}.json"
+    return okf_dir() / ".tomb" / _component(origin) / f"{_component(key)}.json"
 
 
 def lease_path() -> Path:
@@ -814,7 +842,7 @@ def lease_path() -> Path:
 
 
 def peer_node_path(origin: str, key: str) -> Path:
-    return okf_dir() / "peers" / (origin or "_") / f"{key}.md"
+    return okf_dir() / "peers" / _component(origin) / f"{_component(key)}.md"
 
 
 def node_paths(origin: str, key: str) -> list[Path]:
