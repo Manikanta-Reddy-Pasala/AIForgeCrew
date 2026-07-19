@@ -6,4 +6,4 @@ syncing means replicating text files. See
 """
 from __future__ import annotations
 
-__all__ = ["manifest", "merge"]
+__all__ = ["identity", "manifest", "merge"]
