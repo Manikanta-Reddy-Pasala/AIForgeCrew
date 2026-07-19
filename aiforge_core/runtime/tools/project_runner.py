@@ -32,6 +32,23 @@ def _has(cwd: str, *names: str) -> bool:
     return any(os.path.exists(os.path.join(cwd, n)) for n in names)
 
 
+def _has_ext(cwd: str, exts: tuple) -> bool:
+    """Bounded walk for a source file with any of ``exts`` (for stacks with no
+    manifest file, e.g. bare C/C++)."""
+    for root, dirs, files in os.walk(cwd):
+        dirs[:] = [d for d in dirs if d not in {
+            ".git", "build", "target", "node_modules", ".venv", "venv"}]
+        if any(f.endswith(exts) for f in files):
+            return True
+        if root.count(os.sep) - cwd.count(os.sep) >= 4:
+            dirs[:] = []
+    return False
+
+
+_C_EXTS = (".c",)
+_CPP_EXTS = (".cpp", ".cc", ".cxx", ".c++")
+
+
 def _node_pm(cwd: str) -> str:
     if os.path.exists(os.path.join(cwd, "pnpm-lock.yaml")):
         return "pnpm"
@@ -63,10 +80,14 @@ def _has_tests(cwd: str, stacks: list[str]) -> bool:
         dirs[:] = [d for d in dirs if d not in {
             ".git", "node_modules", ".venv", "venv", "target", "build", "dist"}]
         for f in files:
+            _fl = f.lower()
             if (f.startswith("test_") and f.endswith(".py")) \
                     or f.endswith("_test.go") or f.endswith(".test.js") \
                     or f.endswith(".test.ts") or f.endswith(".spec.ts") \
-                    or f.endswith("Test.java") or f.endswith("Tests.java"):
+                    or f.endswith("Test.java") or f.endswith("Tests.java") \
+                    or f.endswith(".rs") and "test" in _fl \
+                    or (("test" in _fl) and _fl.endswith(
+                        (".c", ".cpp", ".cc", ".cxx"))):
                 return True
         if root.count(os.sep) - cwd.count(os.sep) >= 4:   # bound the walk
             dirs[:] = []
@@ -98,6 +119,16 @@ def detect(cwd: str) -> dict:
         stacks.append("go")
     if _has(cwd, "Cargo.toml"):
         stacks.append("rust")
+    # C / C++ — native builds have no single manifest, so detect a build file
+    # (CMake / Make) or bare sources. Only when no higher-level stack already
+    # claimed the tree (a Python/Node repo may carry an incidental Makefile).
+    if not stacks:
+        if _has(cwd, "CMakeLists.txt"):
+            stacks.append("cmake")
+        elif _has(cwd, "Makefile", "makefile", "GNUmakefile"):
+            stacks.append("make")
+        elif _has_ext(cwd, _CPP_EXTS + _C_EXTS):
+            stacks.append("cpp" if _has_ext(cwd, _CPP_EXTS) else "c")
     return {"ok": True, "stacks": stacks, "cwd": cwd,
             "has_tests": _has_tests(cwd, stacks),
             "note": "no recognised project markers" if not stacks else ""}
@@ -158,6 +189,33 @@ def _plan(stack: str, action: str, cwd: str) -> tuple[list[str], list[str]]:
     if stack == "rust":
         return ["cargo"], {"install": ["cargo fetch"], "build": ["cargo build"],
                            "test": ["cargo test"], "run": ["cargo run"]}.get(action, [])
+    if stack == "make":
+        return ["make"], {"install": [], "build": ["make"],
+                          # try a `test`/`check` target; fall back to a plain
+                          # build so a Makefile without a test target still gates.
+                          "test": ["make test 2>/dev/null || make check 2>/dev/null || make"],
+                          "run": ["make run"]}.get(action, [])
+    if stack == "cmake":
+        return ["cmake", "make"], {
+            "install": [],
+            "build": ["cmake -S . -B build && cmake --build build"],
+            "test": ["cmake -S . -B build && cmake --build build && "
+                     "ctest --test-dir build --output-on-failure"],
+            "run": ["cmake --build build --target run"]}.get(action, [])
+    if stack in ("c", "cpp"):
+        # Bare sources, no build file: compile EVERYTHING into one binary and run
+        # it (a generated test main asserts + exits non-zero on failure). g++
+        # compiles C and C++; the -std picks a modern default. Shell $(find …)
+        # works because _exec runs with shell=True.
+        cxx = "g++ -std=c++17" if stack == "cpp" else "gcc -std=c11"
+        srcs = (r"$(find . -path ./build -prune -o "
+                r"\( -name '*.c' -o -name '*.cpp' -o -name '*.cc' -o -name '*.cxx' \) "
+                r"-print)")
+        compile_cmd = f"{cxx} -O0 -o ./a.out {srcs}"
+        tool = "g++" if stack == "cpp" else "gcc"
+        return [tool], {"install": [], "build": [compile_cmd],
+                        "test": [f"{compile_cmd} && ./a.out"],
+                        "run": ["./a.out"]}.get(action, [])
     return [], []
 
 
