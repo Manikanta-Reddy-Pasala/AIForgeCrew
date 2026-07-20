@@ -490,10 +490,13 @@ def _start_daily_reindex() -> None:
 # This control plane RUNS SHELL and EDITS FILES over HTTP, so exposing it
 # unauthenticated is a remote-code-execution surface. Design (pragmatic, must
 # not break local dev / the UI / the tests):
-#   * AIFORGE_API_TOKEN set  → every /api/* route (except health) requires a
-#     matching ``Authorization: Bearer <token>`` (or ``X-AIForge-Token``).
-#   * token unset + LOOPBACK bind → open (preserves local dev + the UI on
-#     localhost + TestClient, which has no real host → treated as loopback).
+#   * AIFORGE_API_TOKEN set  → every /api/* route (except health) requires
+#     EITHER a matching ``Authorization: Bearer <token>`` (or
+#     ``X-AIForge-Token``) OR a loopback peer address. Loopback is trusted
+#     because reaching the socket from this machine already implies read/write
+#     access to the same files over the filesystem.
+#   * token unset → open (preserves local dev + the UI on localhost); a
+#     non-loopback bind in that state is refused at boot instead.
 #   * NON-loopback bind + no token → REFUSE TO BOOT (see _security_boot_guard).
 # The UI static assets, ``/files`` and ``/`` stay open (no token) so the app
 # shell can load; the browser then sends the operator-configured token on API
@@ -591,6 +594,24 @@ def _auth_exempt(path: str) -> bool:
     return not path.startswith("/api/")
 
 
+def _request_is_loopback(request: Request) -> bool:
+    """True when the request's TCP peer is this machine.
+
+    Delegates to ``routes.admin._require_loopback`` — the admin page already
+    owns this predicate, and a security check with two implementations WILL
+    drift. That helper decides purely from ``request.client.host`` (the real
+    peer address); X-Forwarded-For / X-Real-IP / Host / Forwarded are
+    attacker-controlled and are deliberately never consulted. It raises
+    ``HTTPException`` for "not local", which is adapted to a bool here.
+    """
+    from fastapi import HTTPException as _HTTPException
+    try:
+        _r_admin._require_loopback(request)
+    except _HTTPException:
+        return False
+    return True
+
+
 def _extract_request_token(request: Request) -> str:
     auth = request.headers.get("authorization", "")
     if auth[:7].lower() == "bearer ":
@@ -607,9 +628,19 @@ async def _require_token(request: Request, call_next):
         and not _auth_exempt(request.url.path)
     ):
         supplied = _extract_request_token(request)
-        if not (supplied and hmac.compare_digest(supplied, token)):
+        ok_token = bool(supplied) and hmac.compare_digest(supplied, token)
+        # Loopback is trusted WITHOUT a token: anyone who can reach the socket
+        # from this machine can already read the memory tree (and everything
+        # else) straight off disk, so a token adds nothing there. The token
+        # exists to authenticate REMOTE callers — peers and a browser opened
+        # from another host. Same trust boundary the /admin page uses.
+        if not ok_token and not _request_is_loopback(request):
             return JSONResponse(
-                {"detail": "missing or invalid API token"}, status_code=401
+                {"detail": "missing or invalid API token — this AIForge "
+                           "requires AIFORGE_API_TOKEN for non-local callers. "
+                           "In the browser: localStorage.setItem("
+                           "'aiforge_api_token', '<token>') then reload."},
+                status_code=401,
             )
     return await call_next(request)
 

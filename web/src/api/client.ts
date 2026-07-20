@@ -1,4 +1,4 @@
-import { j, BASE } from './core';
+import { j, apiFetch } from './core';
 import type {
   RegistryModel, ModelInput, LlmSettings,
   AgentRole, AgentRoleConfig, AgentRoleConfigInput, ProviderCatalog,
@@ -23,7 +23,7 @@ export const api = {
       body: JSON.stringify(body),
     }),
   deleteModel: (id: string) =>
-    fetch(`${BASE}/agents/models/${id}`, { method: 'DELETE' }).then(r => {
+    apiFetch(`/agents/models/${id}`, { method: 'DELETE' }).then(r => {
       if (!r.ok && r.status !== 204) throw new Error(`${r.status} ${r.statusText}`);
     }),
   applyModel: (id: string, roles: string[]) =>
@@ -151,7 +151,7 @@ export const api = {
       body: JSON.stringify(body),
     }),
   memorySourceDelete: (id: number) =>
-    fetch(`${BASE}/memory/sources/${id}`, { method: 'DELETE' }).then(r => {
+    apiFetch(`/memory/sources/${id}`, { method: 'DELETE' }).then(r => {
       if (!r.ok && r.status !== 204) throw new Error(`${r.status} ${r.statusText}`);
     }),
   memorySourceIndex: (id: number) =>
@@ -160,7 +160,7 @@ export const api = {
     const fd = new FormData();
     fd.append('file', file);
     if (name) fd.append('name', name);
-    const r = await fetch(`${BASE}/memory/sources/upload`, { method: 'POST', body: fd });
+    const r = await apiFetch(`/memory/sources/upload`, { method: 'POST', body: fd });
     if (!r.ok) {
       let detail = '';
       try { const b = await r.json(); detail = b?.detail || b?.error || ''; } catch { /* ignore */ }

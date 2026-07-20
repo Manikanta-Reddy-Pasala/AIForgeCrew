@@ -1,4 +1,4 @@
-import { j, BASE } from './core';
+import { j, BASE, apiFetch } from './core';
 import { api } from './client';
 
 // ── Chat session types ────────────────────────────────────────────
@@ -126,7 +126,7 @@ export const chatApi = {
     }),
 
   sessionDelete: (id: number) =>
-    fetch(`${BASE}/chat/sessions/${id}`, { method: 'DELETE' }).then(r => {
+    apiFetch(`/chat/sessions/${id}`, { method: 'DELETE' }).then(r => {
       if (!r.ok && r.status !== 204) throw new Error(`${r.status} ${r.statusText}`);
     }),
 
@@ -176,7 +176,7 @@ export interface ChatMedia {
 export function chatMediaUpload(sessionId: number, file: File): Promise<ChatMedia> {
   const fd = new FormData();
   fd.append('file', file);
-  return fetch(`${BASE}/chat/sessions/${sessionId}/media`, { method: 'POST', body: fd })
+  return apiFetch(`/chat/sessions/${sessionId}/media`, { method: 'POST', body: fd })
     .then(async r => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `upload failed (${r.status})`); return r.json(); });
 }
 export function chatMediaList(sessionId: number): Promise<{ media: ChatMedia[]; vision: boolean }> {
@@ -192,7 +192,7 @@ export function chatMediaDescribe(mediaId: number, description: string): Promise
   });
 }
 export function chatMediaDelete(mediaId: number): Promise<void> {
-  return fetch(`${BASE}/chat/media/${mediaId}`, { method: 'DELETE' }).then(r => {
+  return apiFetch(`/chat/media/${mediaId}`, { method: 'DELETE' }).then(r => {
     if (!r.ok && r.status !== 204) throw new Error(`${r.status} ${r.statusText}`);
   });
 }
@@ -202,7 +202,7 @@ export function chatMediaRawURL(mediaId: number): string {
 
 // Stop the in-flight run for a session (halts agents + kills subprocesses).
 export function chatSessionStop(id: number): Promise<{ stopped: boolean }> {
-  return fetch(`${BASE}/chat/sessions/${id}/stop`, { method: 'POST' })
+  return apiFetch(`/chat/sessions/${id}/stop`, { method: 'POST' })
     .then(r => r.ok ? r.json() : { stopped: false })
     .catch(() => ({ stopped: false }));
 }
@@ -210,7 +210,7 @@ export function chatSessionStop(id: number): Promise<{ stopped: boolean }> {
 // Force-reset ALL chat runs (kill all) — recovers from a wedged run that left a
 // session stuck busy or a new chat waiting on the team run lock.
 export function chatKillAll(): Promise<{ killed: number[]; count: number; team_lock_released: boolean }> {
-  return fetch(`${BASE}/chat/kill-all`, { method: 'POST' })
+  return apiFetch(`/chat/kill-all`, { method: 'POST' })
     .then(r => r.ok ? r.json() : { killed: [], count: 0, team_lock_released: false })
     .catch(() => ({ killed: [], count: 0, team_lock_released: false }));
 }
@@ -218,7 +218,7 @@ export function chatKillAll(): Promise<{ killed: number[]; count: number; team_l
 // Steer the IN-FLIGHT run without stopping it (Gap A — mid-run steering).
 // The message is queued and folded into the agent's context at its next step.
 export function chatSessionSteer(id: number, content: string): Promise<{ queued: boolean; unsupported?: boolean; reason?: string }> {
-  return fetch(`${BASE}/chat/sessions/${id}/steer`, {
+  return apiFetch(`/chat/sessions/${id}/steer`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content }),

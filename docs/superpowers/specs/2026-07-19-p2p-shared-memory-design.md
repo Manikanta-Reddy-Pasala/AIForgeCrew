@@ -455,10 +455,67 @@ rest are in `run.sh`/compose/chat/doer areas untouched here.
   can tear under concurrent writers, the same flaw fixed in `_io.write_atomic`.
   `config/_filecache.py` and `runtime/perf_recorder.py` document crash-safety they
   do not fully deliver.
-- The sync endpoints are unauthenticated when `AIFORGE_API_TOKEN` is unset, which
-  is the NUC's current state. On a LAN, `/api/memory/sync/manifest` plus
-  `/blob/{hash}` is a two-call bulk read of the whole memory tree. Accepted as a
-  trusted-LAN tradeoff; setting a token on both peers and in `peers.json` closes it
-  with no code change.
+- ~~The sync endpoints are unauthenticated when `AIFORGE_API_TOKEN` is unset~~ —
+  **closed**, see "Auth: loopback is trusted, remote needs the token" below. The
+  gap persisted because setting a token used to break the shipped React UI, so
+  nobody set one; that trap is gone.
 - `_io.root`/`rel`/`safe_target` are arguably layout concerns living in the I/O
   module. Reviewed, judged not worth the churn.
+
+## Auth: loopback is trusted, remote needs the token
+
+`GET /api/memory/sync/manifest` enumerates every syncable memory file and
+`GET /api/memory/sync/blob/{hash}` returns its bytes, so two unauthenticated
+calls from the LAN used to be a full copy of the memory tree. The API auth
+middleware (`aiforge_core/api/api.py::_require_token`) now admits a request to
+`/api/…` when **either**:
+
+1. it carries the shared token (`Authorization: Bearer <token>` or
+   `X-AIForge-Token`), **or**
+2. its TCP peer is loopback.
+
+Loopback is decided **only** from `request.client.host` (accepting `127.0.0.1`,
+`::1`, `::ffff:127.0.0.1`, rejecting a missing peer) by reusing
+`routes/admin.py::_require_loopback` — the same predicate the `/admin` page
+uses. `X-Forwarded-For`, `X-Real-IP`, `Host` and `Forwarded` are client-settable
+and are never consulted; there is no trusted proxy in front of this app.
+Rationale: anyone who can reach the socket from this machine can already read
+the memory tree straight off disk, so a token buys nothing locally. It exists to
+authenticate *remote* callers.
+
+`_security_boot_guard()` still refuses to boot when `AIFORGE_BIND_HOST` is
+non-loopback and no token is set (escape hatch: `AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1`
+for operators who front the API with their own access layer). That guard now
+matters more, not less — it is the only thing standing between a LAN and the
+memory tree.
+
+### Deployment: turning sync on between peers
+
+1. Generate one shared secret (any peer): `openssl rand -hex 32`.
+2. Set the **same** value as `AIFORGE_API_TOKEN` in each peer's environment
+   (`.env` / the systemd unit's `EnvironmentFile`) and restart the API.
+3. Put that same value in the `token` field of every *other* peer's entry in
+   `~/.aiforge/memory/sync/peers.json`, so `memory/sync/transport.py` sends
+   `Authorization: Bearer <token>` when it pulls a manifest or a blob. A peer
+   with no/blank token gets 401 and simply reports the peer as unreachable.
+4. Nothing else changes locally: browsing the UI from the machine itself and
+   `./run.sh --admin` are loopback and keep working with no token at all.
+
+### The UI when opened from another machine
+
+A browser on a *different* host is a remote caller, so it must send the token.
+`web/src/api/core.ts` reads it from `localStorage` under `aiforge_api_token` and
+attaches it in `apiFetch()` — the single choke point behind `j<T>()` and the
+remaining raw `fetch` calls in `web/src/api/`. No login screen, no session, no
+roles: it is the one shared token, typed once from the console:
+
+```js
+localStorage.setItem('aiforge_api_token', '<the AIFORGE_API_TOKEN value>')
+```
+
+A 401 from any call throws with exactly that instruction, so a remote user is
+told what to do rather than seeing a blank page. **Known limitation:** URL-only
+surfaces cannot carry a header — `EventSource` log/trace streams
+(`/api/logs/*/stream`, `/api/trace/*`, chat SSE) and direct media/raw URLs will
+401 for a remote browser with a token configured. Reach those over an SSH tunnel
+(`ssh -L 8799:127.0.0.1:8799 <host>`), which is also how `/admin` is reached.
