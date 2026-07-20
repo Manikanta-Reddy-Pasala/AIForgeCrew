@@ -1,3 +1,25 @@
+> # ⚠ SUPERSEDED — HISTORICAL ARTEFACT, DO NOT EXECUTE
+>
+> This plan was executed on 2026-07-19 and the design moved underneath it. It
+> still instructs an agent to build things that were deliberately deleted, and
+> its opening line tells you to execute it task-by-task — so an agent handed
+> this file *will* rebuild them. Notably it still contains:
+>
+> - **Task 11: `lease.py`** — the clock-based compaction lease. Built, tested,
+>   then removed: its TTL was shorter than the sync interval, so a replicated
+>   lease was always expired on arrival and it elected nobody. Replaced by
+>   deterministic election in `sync/election.py`.
+> - `okf/peers/<origin>/` — foreign nodes moved out of `okf/` to a top-level
+>   `peers/<origin>/`, plus new `mesh/` and `view/` directories.
+> - the wire field `cls` — renamed to `kind`.
+> - `DEFAULT_INTERVAL = 900` — now 1800.
+> - `client.py` — split into `transport.py` + `apply.py`.
+>
+> **Current design lives in the two specs:**
+> `docs/superpowers/specs/2026-07-19-p2p-shared-memory-design.md` and
+> `docs/superpowers/specs/2026-07-20-two-tier-knowledge-compaction.md`.
+> Read the committed code before either.
+
 # P2P Shared Memory Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

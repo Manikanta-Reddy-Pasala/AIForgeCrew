@@ -1,12 +1,22 @@
 """Operator admin surface for P2P memory sync (/admin + /api/admin/*).
 
-Read-only, loopback-only, and — whenever ``AIFORGE_API_TOKEN`` is set — token
-required as well, enforced by the middleware in ``api.py`` before this module
-is reached. There is no new auth system here: still one shared token plus the
-"the request came from this machine" gate below. Both, not either: a loopback
-peer address is a weak signal (a same-host reverse proxy makes every request in
-the world look local), and this is the highest-value surface we serve.
-Anything further away is told to use an SSH tunnel.
+Read-only, and reachable on **loopback OR a valid token** — the same rule
+``api._require_token`` applies to everything else; this surface is not special
+-cased. On top of that, the ``_require_loopback`` dependency below refuses a
+remote caller *even with a valid token*, so a stolen token does not open the
+admin page from another machine.
+
+An earlier revision demanded the token here regardless of peer address, on the
+reasoning that the highest-value surface should not rest on the weakest signal.
+It was reverted (``11f5778``): a browser navigation cannot send an
+``Authorization`` header, so the day a token existed — the day you add one
+remote peer — this page stopped opening in a browser at all.
+
+The weak signal is real: a same-host reverse proxy makes every request on earth
+arrive from ``127.0.0.1``. **``AIFORGE_TRUST_LOOPBACK=0`` is the only thing
+that closes that**, and a fronted deployment must set it for the rest of the
+API regardless. Do not re-add a special case here instead — it charges every
+correctly-configured operator for a hole that flag already shuts.
 
 This module is a thin adapter over ``memory.sync`` — ``peers``, ``election``
 and ``manifest`` own the data, this file only shapes it for a screen.

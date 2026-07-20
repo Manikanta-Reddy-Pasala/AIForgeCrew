@@ -131,7 +131,9 @@ GET /api/memory/sync/blob/{hash}
     → raw file bytes
 ```
 
-Sync loop, every 15 minutes by default, once per approved peer:
+Sync loop, once per approved peer, every `loop.DEFAULT_INTERVAL` seconds
+(**1800 — 30 minutes**; that constant is the single source of truth, and
+`election.ALIVE_WINDOW` is 3× it, so leadership handover is ~90 minutes):
 
 1. Fetch the peer's manifest.
 2. Diff against the local manifest. Want any class A entry whose hash is absent locally; want
@@ -146,9 +148,10 @@ Sync loop, every 15 minutes by default, once per approved peer:
 Every node pulling from every other node is sufficient for the whole mesh to converge. A peer
 that is down is simply a request returning nothing this cycle.
 
-Manifest responses are gzipped. Peer count is expected under 20 and the manifest is a few
-thousand rows of JSON; no incremental-digest or Merkle optimisation until measurement says
-otherwise.
+Peer count is expected under 20 and the manifest is a few thousand rows of JSON, so there is
+no incremental-digest or Merkle optimisation until measurement says otherwise. Responses are
+**not** compressed — an earlier draft claimed gzip as part of that argument; no
+`GZipMiddleware` is mounted, and `transport` caps the manifest at 4 MiB instead.
 
 ### Deletes — tombstones
 
@@ -160,9 +163,10 @@ okf/.tomb/<origin>/<key>.json   →   {origin, key, rev, updated_by, tomb: true}
 ```
 
 The tombstone is itself a class B record and merges by the same rule. A delete at `rev` 48
-beats an edit at 47; an edit at 49 resurrects the node. Tombstones are reaped after 90 days.
-A peer offline longer than that must full-resync — an acceptable price for not carrying
-tombstones forever.
+beats an edit at 47; an edit at 49 resurrects the node. **No reaper exists yet** — an earlier
+draft promised a 90-day sweep; tombstones currently accumulate without bound, as do
+`.conflict.md` sidecars. Small per record, but say so rather than implying a sweep that
+nothing performs.
 
 ### Conflicts — `.conflict` sidecar
 
@@ -224,8 +228,9 @@ discovered peers land in candidates and need a hand-supplied token regardless; a
 responders are a known DDoS amplification vector, so the socket binds to a specific LAN
 interface, never `0.0.0.0`.
 
-**Departure is passive.** No leave message. `last_seen` ages; a peer unreachable for 30 days
-is archived out of the roster and reappears on its next successful contact.
+**Departure is passive.** No leave message. `last_seen` ages, and an aged peer stops being an
+election candidate. **Rows are never removed** — an earlier draft promised a 30-day archive;
+`peers.py` has no such sweep. `MAX_PEERS` bounds the registry instead.
 
 ### Trust
 
@@ -321,7 +326,12 @@ Each unit has one job and a testable boundary.
 | `sync/identity.py` | This peer's slug; the `origin`/`rev`/`updated_by` stamp | nothing |
 | `sync/manifest.py` | Build the local manifest from the memory tree | `md_store`, `okf.nodes` |
 | `sync/merge.py` | Given local + remote manifest entries, decide want/keep/conflict | nothing (pure) |
-| `sync/client.py` | Fetch from one peer, verify, resolve the local target, write atomically | `okf.nodes` |
+| `sync/transport.py` | HTTP only: fetch a manifest or blob from one peer. Never touches a path | httpx |
+| `sync/apply.py` | Disk only: verify, place via `paths.target_for`, sidecar conflicts. Never imports httpx | `paths`, `_io` |
+| `sync/_io.py` | Disk primitives: tree root, hashing, syncable scan, JSON, owner-only atomic write | `config._atomic` |
+| `sync/paths.py` | The on-disk layout rule: where an identity lives | `_io` |
+| `sync/election.py` | Deterministic compaction-leader election over the roster | `peers`, `identity` |
+| `okf/tiers.py` | Tier 1 (leader folds peers+own → `mesh/`) and tier 2 (own+mesh → `view/`) | `paths`, `election` |
 | `sync/tombstone.py` | Express a local delete as a record the mesh can merge | `client` |
 | `api/routes/sync.py` | Serve the two endpoints (bearer auth inherited from `/api/`) | `manifest`, `peers` |
 | `sync/peers.py` | `peers.json` load/save, roster gossip merge, candidate quarantine | `identity` |
@@ -347,8 +357,12 @@ filesystem, or a second machine.
   has C as a `candidate` and — critically — has **not** pulled from it.
 - **Partition and heal (integration).** Diverge two peers with the network stubbed out,
   reconnect, assert convergence and that no write was lost.
-- **Election (integration).** Two peers see each other a full sync cycle late; assert exactly one leads after the
-  claim-wait-verify sequence. Then stall the holder past TTL and assert the other claims.
+- **Election (integration).** Two peers see each other a full sync cycle late; assert exactly
+  one leads. A roster entry whose case differs from the peer's own slug still elects one
+  leader that both agree on. A `last_seen` in the future does not keep a dead peer alive.
+  (This section previously described a claim-wait-verify lease with a TTL. That lease was
+  deleted: its TTL was shorter than the sync interval, so a replicated lease was always
+  expired on arrival and it elected nobody. `election.py` writes no state at all.)
 - **Hash verification (unit).** A server that returns bytes not matching the advertised hash
   must have its blob rejected and not written.
 - **Idempotence.** Running a full cycle twice changes nothing on the second pass.
@@ -493,8 +507,15 @@ now in the code:
 * Loopback trust is **declared, not implied**: `AIFORGE_TRUST_LOOPBACK` (default
   on, so a bare local run needs no config) must be set to `0` on any deployment
   fronted by a same-host reverse proxy, where the peer address is the proxy's
-  `127.0.0.1` for every request on earth. And `/admin` + `/api/admin/*` always
-  require the token when one is configured, whatever the peer address is.
+  `127.0.0.1` for every request on earth. That flag is the *only* thing which
+  closes that hole.
+
+  `/admin` follows the same rule as every other path — loopback **or** token.
+  A revision that made it always demand the token was reverted (`11f5778`): a
+  browser navigation cannot send an `Authorization` header, so the day a token
+  existed the local admin page stopped opening at all. It was also redundant —
+  `routes/admin.py`'s own `_require_loopback` dependency refuses a remote caller
+  *even with a valid token* (403), so a stolen token never opens that surface.
 * `_security_boot_guard()` reads the **real listening address** off the running
   uvicorn server at startup, not `AIFORGE_BIND_HOST` (which only `run.sh`
   exports — a systemd unit or a bare `uvicorn --host 0.0.0.0` used to satisfy
