@@ -435,7 +435,11 @@ all 111 unit tests because they call `run_once()`/`sync_with()` directly. Fixed 
    The responder is deliberately a poor amplifier: it answers **only** our own
    `ST` (never `ssdp:all` or `upnp:rootdevice`, the queries that make classic
    SSDP amplification pay), only senders on our own /24, at most 10 replies per
-   source per 10 seconds, and never its own search. The listener binds
+   source per 10 seconds, and never its own search. It is a poor amplifier, not
+   a non-amplifier: measured, a 176-byte reply against the 37-byte minimum
+   datagram this responder accepts is a factor of ~4.7x (an earlier comment
+   claimed ~1:1 and was wrong). On-link only and capped at 10 replies per source
+   per 10s ≈ 176 B/s, so the exposure stays small. The listener binds
    `("", 1900)` because a receiver must — that is not a hole in the sender-side
    wildcard guard, which stays as it was; off-link requests are dropped by the
    subnet check instead. Covered by unit tests plus a real single-host socket
@@ -483,11 +487,22 @@ Rationale: anyone who can reach the socket from this machine can already read
 the memory tree straight off disk, so a token buys nothing locally. It exists to
 authenticate *remote* callers.
 
-`_security_boot_guard()` still refuses to boot when `AIFORGE_BIND_HOST` is
-non-loopback and no token is set (escape hatch: `AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1`
-for operators who front the API with their own access layer). That guard now
-matters more, not less — it is the only thing standing between a LAN and the
-memory tree.
+Two corrections came out of the adversarial review of this design, and both are
+now in the code:
+
+* Loopback trust is **declared, not implied**: `AIFORGE_TRUST_LOOPBACK` (default
+  on, so a bare local run needs no config) must be set to `0` on any deployment
+  fronted by a same-host reverse proxy, where the peer address is the proxy's
+  `127.0.0.1` for every request on earth. And `/admin` + `/api/admin/*` always
+  require the token when one is configured, whatever the peer address is.
+* `_security_boot_guard()` reads the **real listening address** off the running
+  uvicorn server at startup, not `AIFORGE_BIND_HOST` (which only `run.sh`
+  exports — a systemd unit or a bare `uvicorn --host 0.0.0.0` used to satisfy
+  the guard with the loopback default). The env var is a pre-boot hint and a
+  last-resort fallback, and using it is logged. Escape hatch unchanged:
+  `AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1` for operators who front the API with
+  their own access layer. That guard matters more, not less — it is the only
+  thing standing between a LAN and the memory tree.
 
 ### Deployment: turning sync on between peers
 

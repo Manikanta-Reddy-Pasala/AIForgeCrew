@@ -1,9 +1,12 @@
 """Operator admin surface for P2P memory sync (/admin + /api/admin/*).
 
-Read-only and loopback-only. There is no new auth system here: the gate is
-"the request came from this machine", which is the same trust boundary the
-operator already crossed to run the process. Anything further away is told to
-use an SSH tunnel.
+Read-only, loopback-only, and — whenever ``AIFORGE_API_TOKEN`` is set — token
+required as well, enforced by the middleware in ``api.py`` before this module
+is reached. There is no new auth system here: still one shared token plus the
+"the request came from this machine" gate below. Both, not either: a loopback
+peer address is a weak signal (a same-host reverse proxy makes every request in
+the world look local), and this is the highest-value surface we serve.
+Anything further away is told to use an SSH tunnel.
 
 This module is a thin adapter over ``memory.sync`` — ``peers``, ``election``
 and ``manifest`` own the data, this file only shapes it for a screen.
@@ -30,6 +33,16 @@ _LOOPBACK = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
 # no error string and no latency to show. Changing transport's timeout would
 # degrade the sync loop to serve this page, so httpx is used directly instead.
 PROBE_TIMEOUT = 3.0
+
+# Bounds on one page load. The registry is grown by gossip and SSDP, i.e. by
+# whoever can reach us, so its size and contents are attacker-influenced: an
+# unbounded fan-out turns a page load into a minutes-long hang, and probing
+# unapproved entries turns it into a port scanner (reachability, latency and
+# the exception text of arbitrary internal urls, fetched by this host). So:
+# approved peers only, at most this many, and never longer than this in total.
+PROBE_MAX_PEERS = 16
+PROBE_FANOUT = 8
+PROBE_BUDGET = 8.0
 
 
 def _require_loopback(request: Request) -> None:
@@ -63,7 +76,7 @@ def _probe_peer(peer: dict) -> dict:
     urls = [u for u in (peer.get("urls") or []) if u]
     if not urls:
         return {"reachable": False, "latency_ms": None, "their_entries": None,
-                "error": "no url configured"}
+                "error": "no url configured", "probed": True}
     token = str(peer.get("token") or "")
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     started = time.monotonic()
@@ -74,21 +87,52 @@ def _probe_peer(peer: dict) -> dict:
         entries = (r.json() or {}).get("manifest") or []
         return {"reachable": True,
                 "latency_ms": int((time.monotonic() - started) * 1000),
-                "their_entries": len(entries), "error": None}
+                "their_entries": len(entries), "error": None, "probed": True}
     except Exception as exc:  # noqa: BLE001 — an unreachable peer is a datum, not a failure
         return {"reachable": False,
                 "latency_ms": int((time.monotonic() - started) * 1000),
-                "their_entries": None, "error": f"{type(exc).__name__}: {exc}"[:200]}
+                "their_entries": None, "error": f"{type(exc).__name__}: {exc}"[:200],
+                "probed": True}
+
+
+def _unprobed(error: str | None = None) -> dict:
+    """The result for a peer we deliberately did not contact."""
+    return {"reachable": False, "latency_ms": None, "their_entries": None,
+            "error": error, "probed": False}
 
 
 def _probe_all(peers: list[dict]) -> list[dict]:
-    """Probe every peer concurrently so one dead peer costs one timeout, not N."""
-    from concurrent.futures import ThreadPoolExecutor
+    """Probe the APPROVED peers concurrently, bounded, aligned with ``peers``.
 
-    if not peers:
-        return []
-    with ThreadPoolExecutor(max_workers=min(8, len(peers))) as pool:
-        return list(pool.map(_probe_peer, peers))
+    Only approved entries are contacted: a candidate's url arrived over gossip
+    or SSDP, neither of which confers trust, and fetching one on behalf of an
+    operator viewing a page is a server-side request forgery with the result
+    rendered back. Candidates keep their slot in the list (the page still shows
+    them, labelled unprobed). The fan-out and the wall-clock budget are capped
+    so no roster, however long, can make this page hang.
+    """
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import TimeoutError as _FuturesTimeout
+
+    results = [_unprobed() for _ in peers]
+    targets = [(i, p) for i, p in enumerate(peers)
+               if str(p.get("state") or "") == "approved"][:PROBE_MAX_PEERS]
+    if not targets:
+        return results
+    deadline = time.monotonic() + PROBE_BUDGET
+    pool = ThreadPoolExecutor(max_workers=min(PROBE_FANOUT, len(targets)))
+    try:
+        futures = {pool.submit(_probe_peer, p): i for i, p in targets}
+        for fut, i in futures.items():
+            try:
+                results[i] = fut.result(timeout=max(0.0, deadline - time.monotonic()))
+            except _FuturesTimeout:
+                results[i] = _unprobed("probe budget exceeded")
+    finally:
+        # Do not join: a straggler must not hold the page open past the budget.
+        pool.shutdown(wait=False, cancel_futures=True)
+    return results
 
 
 def _md_count(directory) -> int:
@@ -145,6 +189,9 @@ def sync_status(request: Request, probe: int = Query(1)) -> dict:
                     "reachable": pr.get("reachable", False),
                     "latency_ms": pr.get("latency_ms"),
                     "their_entries": pr.get("their_entries"),
+                    # Per-peer, because a candidate is never probed even on a
+                    # probed request — the page must not read that as "down".
+                    "probed": bool(pr.get("probed")),
                     "error": pr.get("error")})
 
     me = data.get("self") or {}
@@ -219,8 +266,10 @@ border-radius:6px;padding:3px 10px;cursor:pointer}
 <th class="num">Entries</th><th class="num">Last seen</th><th>URLs</th></tr></thead>
 <tbody id="rows"></tbody></table>
 <div id="cand" class="note" style="display:none">Candidate peers were
-<b>discovered, not trusted</b>. They are never pulled from. Approve one by adding its
-token to <span class="mono">peers.json</span> and setting its state to
+<b>discovered, not trusted</b>. They are never pulled from, and never probed — their
+urls came from gossip or SSDP, so contacting one would make this page fetch whatever
+a stranger named. Approve one by adding its token to
+<span class="mono">peers.json</span> and setting its state to
 <span class="mono">approved</span>.</div>
 <script>
 var last = 0;
@@ -244,7 +293,7 @@ function render(d){
     card('mesh/', C.mesh) + card('view/ (local)', C.view) +
     card('known peers', d.peers.length);
   document.getElementById('rows').innerHTML = d.peers.map(function(p){
-    var reach = d.probed
+    var reach = (d.probed && p.probed)
       ? (p.reachable ? '<span class="dot"></span>up'
                      : '<span class="dot down"></span><span class="bad">down</span>'
                        + (p.error ? ' <span class="dim mono">' + esc(p.error) + '</span>' : ''))

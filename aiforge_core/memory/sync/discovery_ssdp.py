@@ -256,7 +256,15 @@ def _should_reply(headers: dict, sender_host: str, bind_host: str, peer_id: str,
     st = headers.get("ST", "")
     # Exactly our own service type. Never ``ssdp:all`` or ``upnp:rootdevice``:
     # those are the classic amplification queries precisely because one small
-    # request draws many large answers. One match, one reply, factor ~1:1.
+    # request draws many large answers. One match, one reply — but NOT a ~1:1
+    # byte ratio, as this comment used to claim. Measured: the smallest
+    # datagram that gets through this function is a bare ``ST: <service type>``
+    # (37 bytes; ``_headers`` needs no request line), and ``build_reply`` is
+    # ~176 bytes, so the amplification factor is ~4.7x. That is real, it is
+    # simply small: it is bounded by RATE_LIMIT replies per source per
+    # RATE_WINDOW (10 per 10s ≈ 176 B/s), and ``_same_subnet`` below refuses
+    # every off-link source, which is where a spoofed victim address would have
+    # to be for the factor to buy an attacker anything.
     if st != SERVICE_TYPE:
         return False
     if not _same_subnet(bind_host, sender_host):

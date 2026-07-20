@@ -241,6 +241,31 @@ def test_our_own_search_is_ignored():
                               _fresh_limiter()) is False
 
 
+def test_amplification_factor_is_stated_honestly_in_the_source():
+    """The reply-size comment claimed "factor ~1:1"; it is ~4.7x.
+
+    The exposure is genuinely small — on-link only and rate-limited — but a
+    security comment that understates a factor by 4.7x is worse than no comment,
+    because the next reader budgets against it. Measure it here so the claim
+    cannot rot again.
+    """
+    import inspect
+
+    # The smallest datagram this responder will answer: _headers needs no
+    # request line, only an ST header carrying our service type.
+    smallest = f"ST: {ssdp.SERVICE_TYPE}".encode()
+    assert ssdp._should_reply(ssdp._headers(smallest), "10.0.1.9", "10.0.1.5",
+                              "nuc", _fresh_limiter()) is True
+
+    factor = len(ssdp.build_reply("nuc", "http://10.0.1.14:8799")) / len(smallest)
+    assert 4.0 < factor < 5.5, factor
+
+    source = inspect.getsource(ssdp)
+    assert "factor ~1:1" not in source          # the false claim is gone
+    assert "~4.7x" in source                    # the measured one is stated
+    assert "RATE_LIMIT" in source.split("_should_reply", 1)[1][:1500]
+
+
 def test_rate_limiter_caps_a_chatty_source():
     limiter = _fresh_limiter()
     headers = ssdp._headers(_search())

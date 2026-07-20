@@ -37,14 +37,29 @@ def as_rev(value) -> int:
         return 0
 
 
+def _hash(entry: dict) -> str:
+    """A peer's hash, normalised.
+
+    We emit lowercase hex; a peer emitting uppercase is comparing equal content
+    that never matches, so the pair reports a conflict and rewrites a sidecar
+    every cycle, forever, and the entry can never be applied. The loop already
+    normalises an incoming manifest, but this is the comparison itself — the
+    rule belongs where the comparison lives, not only at one caller.
+    """
+    return str(entry.get("hash") or "").strip().lower()
+
+
 def _ident(entry: dict) -> tuple[str, str]:
-    return (str(entry.get("origin") or ""), str(entry.get("key") or ""))
+    # Case-folded to match paths/apply: on a case-insensitive filesystem
+    # "MS" and "ms" address one file, so they must be one identity here too.
+    return (str(entry.get("origin") or "").lower(),
+            str(entry.get("key") or "").lower())
 
 
 def _order(entry: dict) -> tuple[int, str, str]:
     """Total order over one identity's versions. See the module docstring."""
     return (as_rev(entry.get("rev")), str(entry.get("updated_by") or ""),
-            str(entry.get("hash") or ""))
+            _hash(entry))
 
 
 def plan_sync(local: list[dict], remote: list[dict]) -> dict:

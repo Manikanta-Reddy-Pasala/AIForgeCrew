@@ -219,10 +219,13 @@ def test_unreachable_peer_reports_error_without_failing_the_request(monkeypatch,
 
     r = c.get("/api/admin/sync-status")
     assert r.status_code == 200
-    for p in r.json()["peers"]:
-        assert p["reachable"] is False
-        assert "connection refused" in p["error"]
-        assert p["their_entries"] is None
+    # 'mac' is approved, so it is probed and its failure is reported; 'laptop'
+    # is a candidate and is never contacted at all (see the SSRF tests below).
+    mac, laptop = r.json()["peers"]
+    assert mac["reachable"] is False and mac["probed"] is True
+    assert "connection refused" in mac["error"]
+    assert mac["their_entries"] is None
+    assert laptop["probed"] is False and laptop["error"] is None
 
 
 def test_probe_counts_peer_manifest_entries(monkeypatch, tmp_path):
@@ -251,6 +254,60 @@ def test_probe_counts_peer_manifest_entries(monkeypatch, tmp_path):
     assert seen["url"] == "http://10.0.0.5:8799/api/memory/sync/manifest"
     assert seen["headers"] == {"Authorization": "Bearer tk"}
     assert seen["timeout"] == admin.PROBE_TIMEOUT      # short — this runs in a page load
+
+
+def test_candidate_peers_are_listed_but_never_probed(monkeypatch, tmp_path):
+    """A candidate's url arrived over gossip or SSDP — unauthenticated channels.
+    Probing one makes an operator's page load fetch whatever a stranger named
+    (an internal service, say) and renders reachability, latency and the
+    exception text back: a port scanner driven through peer discovery.
+    """
+    _api, admin = _fresh_api(monkeypatch, tmp_path)
+    probed: list = []
+    monkeypatch.setattr(admin, "_probe_peer",
+                        lambda p: probed.append(p["id"]) or {"reachable": True,
+                                                             "probed": True})
+
+    roster = [{"id": "mac", "state": "approved", "urls": ["http://10.0.0.5:8799"]},
+              {"id": "evil", "state": "candidate", "urls": ["http://10.0.0.1:8080"]},
+              {"id": "vague", "state": "", "urls": ["http://169.254.169.254/"]}]
+    out = admin._probe_all(roster)
+
+    assert probed == ["mac"]                      # and nothing else was touched
+    assert out[0]["reachable"] is True and out[0]["probed"] is True
+    for skipped in out[1:]:
+        assert skipped == {"reachable": False, "latency_ms": None,
+                           "their_entries": None, "error": None, "probed": False}
+
+
+def test_probe_fanout_and_budget_bound_one_page_load(monkeypatch, tmp_path):
+    """A hostile roster is unbounded (gossip grows peers.json), so the page must
+    be bounded: at most PROBE_MAX_PEERS contacted, and never longer than
+    PROBE_BUDGET, whatever the peers do."""
+    import time
+
+    _api, admin = _fresh_api(monkeypatch, tmp_path)
+    monkeypatch.setattr(admin, "PROBE_BUDGET", 0.2)
+    calls: list = []
+
+    def _blackhole(peer):
+        calls.append(peer["id"])
+        time.sleep(1.0)                            # never answers in budget
+        return {"reachable": True, "probed": True}
+
+    monkeypatch.setattr(admin, "_probe_peer", _blackhole)
+    roster = [{"id": f"p{i}", "state": "approved", "urls": ["http://10.0.0.9:9"]}
+              for i in range(200)]
+
+    started = time.monotonic()
+    out = admin._probe_all(roster)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.9                           # returned on the budget, not on the peers
+    assert len(calls) <= admin.PROBE_MAX_PEERS     # fan-out capped
+    assert len(out) == 200                         # every peer still has its row
+    assert out[0]["error"] == "probe budget exceeded"
+    assert all(p["reachable"] is False for p in out[admin.PROBE_MAX_PEERS:])
 
 
 def test_peer_without_url_is_not_probed(monkeypatch, tmp_path):
