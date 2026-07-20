@@ -81,17 +81,33 @@ def is_syncable(path: Path) -> bool:
     return path.is_file() and not path.is_symlink()
 
 
+def _hidden_below(directory: Path, path: Path) -> bool:
+    """True when ``path`` sits in — or is — a dotted entry *below* ``directory``.
+
+    ``Path.glob("**/*.md")`` descends into dot-directories, so ``okf/.trash/``
+    (the reversible bin ``okf.author`` moves a node the operator classified as
+    noise into) was advertised in the manifest, served over ``/blob``, re-planted
+    on every peer and folded into the mesh. A dotted name below a scanned root is
+    this machine's own bookkeeping, never knowledge.
+
+    Only components *below* ``directory`` are judged, so a root that is itself
+    dotted still scans: ``okf/.tomb/`` is passed in as the directory and its
+    tombstones (``<origin>/<key>.json``) keep being advertised.
+    """
+    return any(part.startswith(".") for part in path.relative_to(directory).parts)
+
+
 def iter_syncable(directory: Path, pattern: str) -> Iterator[Path]:
     """Every real file under ``directory`` matching ``pattern``, in path order.
 
     The single scan used by both the manifest and the layout rule, so the
-    symlink refusal above applies to every record class rather than only the one
-    whose scan remembered to ask.
+    symlink refusal above — and the dot-directory refusal below it — applies to
+    every record class rather than only the one whose scan remembered to ask.
     """
     if not directory.is_dir():
         return
     for p in sorted(directory.glob(pattern)):
-        if is_syncable(p):
+        if is_syncable(p) and not _hidden_below(directory, p):
             yield p
 
 
