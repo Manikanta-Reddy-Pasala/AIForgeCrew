@@ -59,7 +59,7 @@ def test_applying_a_tombstone_removes_the_node(monkeypatch, tmp_path):
              "origin": "nuc", "key": "L-07", "rev": 48, "updated_by": "nuc",
              "tomb": True}
 
-    assert apply.apply_blob(entry, body) is True
+    assert apply.apply_blob(entry, body, peer_id="nuc") is True
     assert not node.exists()
     assert (tmp_path / "md" / "okf" / ".tomb" / "nuc" / "L-07.json").exists()
 
@@ -79,7 +79,7 @@ def test_applying_a_node_removes_its_tombstone(monkeypatch, tmp_path):
              "hash": hashlib.sha256(body).hexdigest(), "kind": "B",
              "origin": "nuc", "key": "L-07", "rev": 49, "updated_by": "ms"}
 
-    assert apply.apply_blob(entry, body) is True
+    assert apply.apply_blob(entry, body, peer_id="nuc") is True
     assert not tomb.exists()
 
 
@@ -101,7 +101,7 @@ def test_foreign_node_lands_under_peers_not_over_a_local_id(monkeypatch, tmp_pat
              "hash": hashlib.sha256(body).hexdigest(), "kind": "B",
              "origin": "ms", "key": "O-01", "rev": 1, "updated_by": "ms"}
 
-    assert apply.apply_blob(entry, body) is True
+    assert apply.apply_blob(entry, body, peer_id="ms") is True
     assert "mine" in mine.read_text(encoding="utf-8")          # untouched
     # the inbox is a sibling of okf/, not a subtree of it
     assert (tmp_path / "md" / "peers" / "ms" / "O-01.md").exists()
@@ -114,18 +114,22 @@ def test_an_update_to_an_existing_identity_lands_in_place(monkeypatch, tmp_path)
     monkeypatch.setenv("AIFORGE_PEER_ID", "book")
     from aiforge_core.memory.sync import apply
 
-    node = tmp_path / "md" / "okf" / "global" / "learnings" / "L-07.md"
+    # Held in mesh/ (nuc's fold arrived earlier). okf/ is deliberately not a
+    # destination for anything a peer sends — see paths._is_ours.
+    node = tmp_path / "md" / "mesh" / "nuc" / "L-07.md"
     node.parent.mkdir(parents=True, exist_ok=True)
     node.write_text('---\ntype: learning\nid: "L-07"\norigin: "nuc"\nrev: 47\n'
-                    'updated_by: "nuc"\n---\n\nold\n', encoding="utf-8")
+                    'updated_by: "nuc"\nderived: "mesh"\n---\n\nold\n',
+                    encoding="utf-8")
 
     body = (b'---\ntype: learning\nid: "L-07"\norigin: "nuc"\nrev: 48\n'
-            b'updated_by: "ms"\n---\n\nnew\n')
+            b'updated_by: "ms"\nderived: "mesh"\n---\n\nnew\n')
     entry = {"path": "peers/nuc/L-07.md",      # the peer's own layout differs
              "hash": hashlib.sha256(body).hexdigest(), "kind": "B",
-             "origin": "nuc", "key": "L-07", "rev": 48, "updated_by": "ms"}
+             "origin": "nuc", "key": "L-07", "rev": 48, "updated_by": "ms",
+             "derived": "mesh"}
 
-    assert apply.apply_blob(entry, body) is True
+    assert apply.apply_blob(entry, body, peer_id="nuc") is True
     assert "new" in node.read_text(encoding="utf-8")           # updated in place
     assert not (tmp_path / "md" / "peers" / "nuc" / "L-07.md").exists()
 

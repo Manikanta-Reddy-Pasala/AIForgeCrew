@@ -125,21 +125,25 @@ def test_a_second_cycle_changes_nothing(monkeypatch, tmp_path):
 
 
 def test_concurrent_edit_leaves_a_winner_and_a_sidecar(monkeypatch, tmp_path):
-    def _node(peer, by: str, text: str) -> None:
-        d = peer["home"] / "md" / "okf" / "global" / "learnings"
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "L-07.md").write_text(
+    """Both sides edited nuc's node at the same rev. The receiver holds its copy
+    in the inbox, not in ``okf/``: ``okf/`` has one writer (us), so a node minted
+    by nuc lives under ``peers/nuc/`` however it was edited — see
+    ``paths._is_ours``."""
+    def _node(peer, relative: str, by: str, text: str) -> None:
+        p = peer["home"] / "md" / relative
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
             f'---\ntype: learning\nid: "L-07"\norigin: "nuc"\nrev: 47\n'
             f'updated_by: "{by}"\n---\n\n{text}\n', encoding="utf-8")
 
     nuc = _peer(monkeypatch, tmp_path, "nuc")
-    _node(nuc, "nuc", "nuc version")
+    _node(nuc, "okf/global/learnings/L-07.md", "nuc", "nuc version")
     book = _peer(monkeypatch, tmp_path, "book")
-    _node(book, "book", "book version")
+    _node(book, "peers/nuc/L-07.md", "book", "book version")
 
     res = _pull(monkeypatch, book, nuc)
 
-    node = book["home"] / "md" / "okf" / "global" / "learnings" / "L-07.md"
+    node = book["home"] / "md" / "peers" / "nuc" / "L-07.md"
     sidecar = node.parent / "L-07.conflict.md"
     assert res["conflicts"] == 1
     # 'nuc' > 'book' lexicographically, so the remote wins on the tie.
@@ -263,6 +267,8 @@ def test_run_forever_starts_the_responder_with_our_own_identity(monkeypatch, tmp
     monkeypatch.setattr(loop, "run_once", lambda: (_ for _ in ()).throw(KeyboardInterrupt))
 
     with pytest.raises(KeyboardInterrupt):
-        loop.run_forever(interval=0)
+        # Any positive interval: run_once raises before the sleep is reached.
+        # Zero is refused now — it made the loop spin without throttling.
+        loop.run_forever(interval=1)
 
     assert started == [("10.0.1.5", "book", "http://book:8799")]

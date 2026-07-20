@@ -19,6 +19,16 @@ def _node(tmp_path, scope: str, origin: str, key: str):
     return p
 
 
+def _mesh_node(tmp_path, origin: str, key: str, rev: int = 1):
+    """A node in the leader's fold — the other place a received identity lives."""
+    p = tmp_path / "md" / "mesh" / origin / f"{key}.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(f'---\ntype: learning\nid: "{key}"\norigin: "{origin}"\n'
+                 f'rev: {rev}\nupdated_by: "{origin}"\nderived: "mesh"\n---\n\nb\n',
+                 encoding="utf-8")
+    return p
+
+
 def _peer_node(tmp_path, origin: str, key: str):
     """A foreign node in the inbox — the layout the applier writes."""
     p = tmp_path / "md" / "peers" / origin / f"{key}.md"
@@ -71,11 +81,27 @@ def test_target_for_known_identity_is_updated_in_place(monkeypatch, tmp_path):
     _env(monkeypatch, tmp_path)
     from aiforge_core.memory.sync import paths
 
-    mine = _node(tmp_path, "global", "nuc", "L-07")
+    held = _mesh_node(tmp_path, "nuc", "L-07")
     entry = {"kind": "B", "origin": "nuc", "key": "L-07",
              "path": "peers/nuc/L-07.md"}      # sender's layout differs
 
-    assert paths.target_for(entry) == mine
+    assert paths.target_for(entry) == held
+
+
+def test_a_foreign_node_held_in_okf_is_never_updated_inside_okf(monkeypatch, tmp_path):
+    """okf/ has one writer: us. "Update the identity wherever it lives" let a
+    peer whose node happens to sit there (hand-moved, or a pre-split tree) write
+    its text into the directory compaction reads as *our* knowledge."""
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    stray = _node(tmp_path, "global", "ms", "L-07")
+    target = paths.target_for({"kind": "B", "origin": "ms", "key": "L-07",
+                               "path": "peers/ms/L-07.md"})
+
+    assert target != stray
+    assert paths.okf_dir() not in target.parents
+    assert target.as_posix().endswith("peers/ms/L-07.md")
 
 
 def test_target_for_a_new_foreign_node_lands_in_the_inbox_not_in_okf(monkeypatch, tmp_path):
@@ -210,6 +236,19 @@ def test_node_paths_puts_the_highest_rev_first(monkeypatch, tmp_path):
     newer = _rev_node("projects/x", 9)
 
     assert paths.node_paths("nuc", "L-07")[0] == newer
+
+
+def test_target_for_writes_the_highest_rev_copy_it_would_compare(monkeypatch,
+                                                                 tmp_path):
+    """I1 across the two roots a received identity may occupy. okf/ is excluded
+    from this rule (a peer may not write there at all), so the ranking is shown
+    where it actually decides a write."""
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    _peer_node(tmp_path, "nuc", "L-07")             # rev 1 in the inbox
+    newer = _mesh_node(tmp_path, "nuc", "L-07", rev=9)
+
     assert paths.target_for({"kind": "B", "origin": "nuc", "key": "L-07",
                              "path": "x"}) == newer
 

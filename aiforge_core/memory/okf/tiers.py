@@ -196,17 +196,39 @@ def _mesh_nodes() -> list[dict]:
     before it) left its copy in ``peers/``. One marker, either folder — and a
     node from anyone but the leader is left to be treated as an ordinary foreign
     node, which ``_authored`` then discards from the fold.
+
+    Both folders key on the minting peer (``mesh/<origin>/`` and
+    ``peers/<origin>/``), so a node received from the network carries a *second*
+    statement of who minted it — and that one is written by ``apply``, which
+    only accepts a node whose ``origin`` is the peer that served it. Requiring
+    the two to agree is defence in depth for what is already on disk: a node
+    planted before that check existed — ``peers/nuc/M-99.md`` whose frontmatter
+    claims ``origin: <leader>`` — would otherwise still be folded into
+    ``view/``, the only thing retrieval surfaces to agents.
+
+    A node sitting directly in ``mesh/`` or ``peers/`` carries no such second
+    statement: nothing arriving over the network can land there (every write
+    target is ``<root>/<origin>/<key>.md``), so it is a local artefact of this
+    machine — a fold from a build before the per-origin split, or an operator's
+    own file — and is judged on its frontmatter alone as before.
     """
     from aiforge_core.memory.sync import paths
 
     leader = _trusted_origin()
     seen: set[Path] = set()
     out: list[dict] = []
-    for n in _load((paths.mesh_dir(), paths.peers_root())):
-        if _derived(n) != MESH or _origin(n) != leader or n["path"] in seen:
-            continue
-        seen.add(n["path"])
-        out.append(n)
+    for root in (paths.mesh_dir(), paths.peers_root()):
+        for n in _load((root,)):
+            if _derived(n) != MESH or _origin(n) != leader or n["path"] in seen:
+                continue
+            owner = n["path"].relative_to(root).parts[:-1]
+            if owner and paths.fold(owner[0]) != leader:
+                _log.warning("tiers: mesh node %s claims the leader's origin but "
+                             "was filed under %s — not folding it into the view",
+                             n["path"].name, owner[0])
+                continue
+            seen.add(n["path"])
+            out.append(n)
     return out
 
 

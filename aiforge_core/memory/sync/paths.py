@@ -5,7 +5,8 @@ OKF ids are per-scope counters (``aiforge_core/memory/okf/store.py:127``), so
 ``O-01.md``. A peer's advertised path is therefore a hint, never an instruction:
 trusting it would let one peer silently overwrite another's node.
 
-The rule: an identity already held is updated wherever it currently lives; a new
+The rule: an identity already held is updated wherever it currently lives —
+outside ``okf/``, which only this machine writes (see ``_is_ours``); a new
 node marked ``derived: mesh`` is the leader's fold and lands in ``mesh/``;
 anything else new from another peer lands under ``peers/<origin>/``. Every peer
 derives the same answer from the same inputs, so the layout converges along with
@@ -251,6 +252,21 @@ def node_paths(origin: str, key: str) -> list[Path]:
     return [t[2] for t in ranked]
 
 
+def _is_ours(path: Path) -> bool:
+    """True when ``path`` sits in ``okf/`` — this machine's authored space.
+
+    ``okf/`` has exactly one writer, us. ``target_for`` is only ever asked about
+    an entry that arrived from a peer, so an ``okf/`` answer is always wrong: a
+    foreign-origin node that happens to sit there (a hand-moved file, a tree
+    written by a build predating the okf//peers split) made "update the identity
+    wherever it currently lives" mean *inside our own authored knowledge*, and a
+    peer could then place its text in the one directory that is trusted as ours
+    — compaction reads okf/ as "my knowledge" and folds it into the mesh.
+    """
+    okf = okf_dir()
+    return path == okf or okf in path.parents
+
+
 def target_for(entry: dict) -> Path | None:
     """Local destination for a manifest entry, or None if it must be refused."""
     if entry.get("kind") == "A":
@@ -273,11 +289,12 @@ def target_for(entry: dict) -> Path | None:
     if entry.get("tomb"):
         return tomb_path(origin, key)
 
-    existing = node_paths(origin, key)
+    existing = [p for p in node_paths(origin, key) if not _is_ours(p)]
     if existing:
         # An identity already held is updated where it lives, whichever
-        # directory that is: the file we compare must be the file we write (I1).
-        # Relocating it here would compare one path and write another forever.
+        # directory that is *except* okf/ (see ``_is_ours``): the file we
+        # compare must be the file we write (I1). Relocating it here would
+        # compare one path and write another forever.
         return existing[0]
     if str(entry.get("derived") or "") == _mesh_marker():
         # The leader's fold, arriving for the first time. Without this it would
