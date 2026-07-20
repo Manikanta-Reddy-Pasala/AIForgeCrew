@@ -108,6 +108,69 @@ def approved() -> list[dict]:
     return out
 
 
+def mesh_key() -> str:
+    """The shared mesh secret (AIFORGE_MESH_KEY), or "".
+
+    When set, three things change: it is the bearer every pull sends (replacing
+    the per-peer, human-copied token); a candidate that answers it with a real
+    manifest holds the same secret and therefore auto-joins; and — enforced in
+    ``api._require_token``, not here — it unlocks ONLY the sync routes, never
+    the control plane. When unset, approval stays a human step (a token copied
+    out of band), i.e. the original, stricter model.
+    """
+    return (os.environ.get("AIFORGE_MESH_KEY") or "").strip()
+
+
+def mesh_proof(nonce: str) -> str:
+    """``HMAC-SHA256(mesh_key, nonce)`` hex, or "" when no mesh key is set.
+
+    The one place the shared secret is turned into a proof, so the server that
+    answers a challenge and the client that verifies one can never disagree on
+    the construction. The key itself never leaves the process — only the HMAC,
+    which is one-way, so answering a challenge does not reveal the key (a strong
+    key also defeats offline brute-force over collected nonce/proof pairs).
+    """
+    import hashlib
+    import hmac
+    key = mesh_key()
+    if not key or not nonce:
+        return ""
+    return hmac.new(key.encode(), nonce.encode(), hashlib.sha256).hexdigest()
+
+
+def candidates() -> list[dict]:
+    """Discovered-but-unapproved rows — the auto-join gate's input."""
+    return [p for p in load()["peers"]
+            if isinstance(p, dict) and p.get("state") == STATE_CANDIDATE]
+
+
+def promote(peer_id: str, url: str = "") -> bool:
+    """Flip a candidate to approved (shared-key auto-join). Idempotent.
+
+    Returns True only on an actual state change, so the caller logs the join
+    once. A ``url`` is adopted ONLY when the row has none — an approved peer's
+    address is out-of-band configuration that a later gossip/discovery must
+    never silently re-point (the same rule ``merge_roster`` enforces).
+    """
+    pid = normalise_id(peer_id)
+    if not pid:
+        return False
+    data = load()
+    changed = False
+    for p in data["peers"]:
+        if not isinstance(p, dict) or normalise_id(p.get("id")) != pid:
+            continue
+        if url and not (p.get("urls") or []):
+            p["urls"] = [url]
+        if p.get("state") != STATE_APPROVED:
+            p["state"] = STATE_APPROVED
+            changed = True
+        break
+    if changed:
+        save(data)
+    return changed
+
+
 def roster() -> list[dict]:
     """What this node advertises to others. Ids and urls only — never tokens."""
     from aiforge_core.memory.sync.identity import self_id
@@ -240,5 +303,6 @@ def touch(peer_id: str) -> None:
 
 
 __all__ = ["load", "save", "approved", "roster", "merge_roster", "touch",
-           "as_epoch", "normalise_id", "MAX_PEERS", "MAX_NEW_PER_MERGE",
-           "STATE_APPROVED", "STATE_CANDIDATE"]
+           "as_epoch", "normalise_id", "mesh_key", "mesh_proof", "candidates",
+           "promote", "MAX_PEERS", "MAX_NEW_PER_MERGE", "STATE_APPROVED",
+           "STATE_CANDIDATE"]

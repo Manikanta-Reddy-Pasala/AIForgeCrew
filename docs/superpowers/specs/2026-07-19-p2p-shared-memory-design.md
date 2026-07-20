@@ -192,10 +192,22 @@ Pull from `nuc`, learn about `alice` and `bob` for free. No tracker, no new port
 mechanism. The roster is eventually consistent and is allowed to be wrong — being wrong costs
 one failed request.
 
-**Discovery is not trust.** This is the load-bearing rule. A gossiped peer lands in
-`candidates`: visible, never pulled from. Promotion requires a token obtained out-of-band from
-that human. The roster carries ids and urls only, **never tokens**. A compromised peer can
-spam your candidate list; it cannot add itself to your mesh.
+**Discovery is not trust.** This is the load-bearing rule. A gossiped or SSDP-discovered peer
+lands in `candidates`: visible, never pulled from. The roster carries ids and urls only,
+**never tokens/keys**. A compromised peer can spam your candidate list; it cannot add itself to
+your mesh. Promotion happens one of two ways:
+
+- **Shared-key auto-join (`AIFORGE_MESH_KEY` set).** A candidate is challenged with a random
+  nonce (`GET /api/memory/sync/challenge?nonce=…`); if its `HMAC(mesh_key, nonce)` matches ours
+  it holds the shared secret and is promoted to `approved` with no human step. The key is never
+  transmitted in either direction — the probe carries no credential, so a candidate url from
+  untrusted SSDP/gossip can never trick us into leaking the secret. This is `loop._auto_promote`.
+- **Human token, no mesh key.** The original model: an operator pastes a token obtained
+  out-of-band into the peer's `peers.json` row and it is pulled from thereafter.
+
+The mesh key is **sync-scoped**: `api._require_token` accepts it only on `/api/memory/sync/*`,
+never on the shell/config/chat control plane the API token unlocks — so "joined the mesh" is
+not "has a shell here". Set it to a value *different* from `AIFORGE_API_TOKEN`.
 
 **Reachability.** Each peer advertises an ordered url list — WireGuard address, LAN address,
 public HTTPS. Try in order, cache whichever answered, re-probe on failure. This covers a mesh
@@ -314,8 +326,9 @@ unrecoverable, losing compaction for a cycle is not.
 | Two leaders at once | Both compact. Duplicate briefs merged by concept-similarity dedupe. | Wasted tokens |
 | All seed peers down | Partitioned, not broken. Local work continues; converges when any peer answers. | Stale until heal |
 | Peer changes address | Url list tried in order; roster entry updates on next successful contact. | None |
-| Roster poisoned with fake peers | They land in `candidates`, never pulled from. Promotion needs a hand-supplied token. | Noise only |
-| Malicious peer serves bad facts | Not a protocol failure. Revoke the token; its nodes stop winning, its files purge by hash. | Policy |
+| Roster poisoned with fake peers | They land in `candidates`, never pulled from. Auto-join promotes only a candidate that PROVES it holds `AIFORGE_MESH_KEY` (HMAC challenge, key never sent); without the key, promotion needs a hand-supplied token. | Noise only |
+| Hostile LAN host probed for auto-join | The challenge carries no credential, so it receives nothing; it cannot forge the HMAC without the key. Key is never leaked to an unverified url. | None |
+| Approved peer turns hostile | Mesh key = sync only, never the control plane, so it cannot run a shell here. Origin-bound applies mean it can write only its own identity space. Rotate `AIFORGE_MESH_KEY`; its nodes stop winning, its files purge by hash. | Policy |
 
 ## Components
 
@@ -525,17 +538,26 @@ now in the code:
   their own access layer. That guard matters more, not less — it is the only
   thing standing between a LAN and the memory tree.
 
-### Deployment: turning sync on between peers
+### Deployment: turning sync on between peers (shared-key auto-join)
 
-1. Generate one shared secret (any peer): `openssl rand -hex 32`.
-2. Set the **same** value as `AIFORGE_API_TOKEN` in each peer's environment
-   (`.env` / the systemd unit's `EnvironmentFile`) and restart the API.
-3. Put that same value in the `token` field of every *other* peer's entry in
-   `~/.aiforge/memory/sync/peers.json`, so `memory/sync/transport.py` sends
-   `Authorization: Bearer <token>` when it pulls a manifest or a blob. A peer
-   with no/blank token gets 401 and simply reports the peer as unreachable.
+1. Generate one shared mesh secret (any peer): `openssl rand -hex 32`. Use a
+   long random value — the challenge endpoint answers `HMAC(key, nonce)` to
+   anyone, so a weak key is brute-forceable offline.
+2. Set that value as **`AIFORGE_MESH_KEY`** in every peer's environment
+   (`.env` / the systemd unit's `EnvironmentFile`) and restart the API. Keep it
+   **different** from `AIFORGE_API_TOKEN`: the mesh key unlocks only the
+   pull-only sync routes, the API token unlocks the whole control plane.
+3. Enable discovery on each peer: `AIFORGE_SYNC_SSDP=1` and
+   `AIFORGE_SYNC_SSDP_HOST=<this peer's LAN interface address>`. From there the
+   peers find each other by SSDP, challenge-verify the shared key, and promote
+   each other to `approved` automatically — no `peers.json` editing, no
+   per-peer token copy. (Peers on segments SSDP cannot cross still learn each
+   other by gossip once any one pair is connected.)
 4. Nothing else changes locally: browsing the UI from the machine itself and
    `./run.sh --admin` are loopback and keep working with no token at all.
+
+Without `AIFORGE_MESH_KEY`, the older manual model still applies: paste a
+per-peer bearer token into each `peers.json` row by hand.
 
 ### The UI when opened from another machine
 

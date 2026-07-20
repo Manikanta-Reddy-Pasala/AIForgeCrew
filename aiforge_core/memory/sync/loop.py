@@ -103,12 +103,16 @@ def _pull(peer: dict, result: dict, deadline: float | None = None) -> None:
     if not base:
         return
 
-    remote = transport.fetch_manifest(base, str(peer.get("token") or ""))
+    # The shared mesh key, when configured, is the bearer for EVERY peer
+    # (replacing the per-peer, human-copied token); the per-peer token is the
+    # fallback for the older, no-mesh-key deployment.
+    token = peers.mesh_key() or str(peer.get("token") or "")
+
+    remote = transport.fetch_manifest(base, token)
     if not remote:
         return
     result["ok"] = True
 
-    token = str(peer.get("token") or "")
     local = manifest.build()
     plan = merge.plan_sync(local, _ingest(remote.get("manifest") or []))
 
@@ -204,6 +208,47 @@ def _ssdp_sweep() -> None:
         peers.merge_roster(found)
 
 
+def _auto_promote(deadline: float | None = None) -> None:
+    """Shared-key auto-join: promote every candidate that PROVES it holds the key.
+
+    A candidate — discovered by SSDP or learned by gossip — is challenged with a
+    fresh random nonce; if its ``HMAC(mesh_key, nonce)`` matches ours, it holds
+    the shared secret, and holding the secret IS mesh membership, so it is
+    promoted to approved with no human step. Without a mesh key configured this
+    is a no-op and approval stays the out-of-band human token copy.
+
+    The proof is challenge-response, NOT "send the candidate our key and see if
+    it works": a candidate url arrives over untrusted SSDP/gossip, so handing it
+    our bearer key would leak the shared secret to any host that can get itself
+    listed. Here neither side transmits the key — only an HMAC over a nonce we
+    chose, so a replayed proof for an old nonce is worthless.
+
+    Bounded by the cycle deadline like everything else: probing candidates is a
+    network request each (each already bounded by ``REQUEST_DEADLINE``), and a
+    segment full of candidates must not spend the whole cycle here and starve
+    the pull. The unprobed ones are simply retried next cycle.
+    """
+    import hmac
+    import secrets
+
+    from aiforge_core.memory.sync import peers, transport
+
+    if not peers.mesh_key():
+        return
+    for cand in peers.candidates():
+        if _spent(deadline):
+            break
+        base = _first_url(cand)
+        if not base:
+            continue
+        nonce = secrets.token_hex(16)
+        proof = transport.membership_proof(base, nonce)
+        if proof and hmac.compare_digest(proof, peers.mesh_proof(nonce)):
+            if peers.promote(_peer_id(cand), base):
+                _log.info("sync: auto-joined peer %s (proved shared mesh key)",
+                          _peer_id(cand))
+
+
 def _skipped(peer) -> dict:
     """A peer the cycle ran out of budget for — reported, not silently absent."""
     return {"peer": _peer_id(peer), "ok": False, "applied": 0, "rejected": 0,
@@ -234,6 +279,15 @@ def run_once() -> list[dict]:
         _ssdp_sweep()
     except Exception as exc:  # noqa: BLE001 — discovery must never cost the peers
         _log.warning("sync: discovery sweep failed, syncing anyway: %s", exc)
+
+    # Between discovery and the pull: a candidate that proves it holds the
+    # shared mesh key is promoted to approved now, so it is in `roster` below
+    # and syncs this same cycle. Best-effort like discovery — a probe that
+    # raises must not cost the peers.
+    try:
+        _auto_promote(deadline)
+    except Exception as exc:  # noqa: BLE001 — auto-join must never cost the peers
+        _log.warning("sync: auto-join failed, syncing anyway: %s", exc)
 
     try:
         from aiforge_core.memory.sync import peers

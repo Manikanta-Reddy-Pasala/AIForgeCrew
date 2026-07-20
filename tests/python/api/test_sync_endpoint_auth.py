@@ -39,7 +39,8 @@ SPOOF_HEADERS = {
 }
 
 
-def _fresh_api(monkeypatch, tmp_path, *, token: str | None = TOKEN):
+def _fresh_api(monkeypatch, tmp_path, *, token: str | None = TOKEN,
+               mesh_key: str | None = None):
     monkeypatch.delenv("AIFORGE_PG_URL", raising=False)
     monkeypatch.delenv("AIFORGE_FORCE_PG", raising=False)
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
@@ -55,6 +56,10 @@ def _fresh_api(monkeypatch, tmp_path, *, token: str | None = TOKEN):
         monkeypatch.delenv("AIFORGE_API_TOKEN", raising=False)
     else:
         monkeypatch.setenv("AIFORGE_API_TOKEN", token)
+    if mesh_key is None:
+        monkeypatch.delenv("AIFORGE_MESH_KEY", raising=False)
+    else:
+        monkeypatch.setenv("AIFORGE_MESH_KEY", mesh_key)
     import aiforge_core.config.env as envmod
     importlib.reload(envmod)
     import aiforge_core.tickets.backend_factory as bf
@@ -152,6 +157,98 @@ def test_health_stays_open_for_remote_callers(monkeypatch, tmp_path):
     assert TestClient(api.app, client=LOOPBACK).get("/api/health").status_code == 200
 
 
+# ── the shared mesh key: sync-scoped, never a shell ────────────────────────
+#
+# AIFORGE_MESH_KEY authenticates a peer against the pull-only sync routes and
+# NOTHING else. Its whole reason to exist is shared-key auto-join: a machine
+# holding the key joins the mesh by itself, so the key must not double as the
+# control-plane (shell/config) credential the API token is.
+
+MESH = "mesh-" + "s3cret" * 4   # >= 24 chars, past the boot-guard floor
+
+
+def test_mesh_key_reads_the_sync_manifest_from_the_lan(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path, mesh_key=MESH)
+    digest = _seed_capture(tmp_path)
+    client = TestClient(api.app, client=REMOTE)
+
+    r = client.get(SYNC, headers={"Authorization": f"Bearer {MESH}"})
+    assert r.status_code == 200
+    assert [e["hash"] for e in r.json()["manifest"]] == [digest]
+
+    blob = client.get(f"/api/memory/sync/blob/{digest}",
+                      headers={"X-AIForge-Token": MESH})
+    assert blob.status_code == 200
+
+
+def test_mesh_key_does_NOT_open_the_control_plane(monkeypatch, tmp_path):
+    """The security crux: the key that lets a peer sync must not let it run a
+    shell or rewrite config. A non-sync route rejects the mesh key outright."""
+    api = _fresh_api(monkeypatch, tmp_path, mesh_key=MESH)
+    client = TestClient(api.app, client=REMOTE)
+
+    for path in ("/api/config/agents", "/api/mcp/servers", "/api/chat/sessions",
+                 "/api/tickets", "/api/repos"):
+        r = client.get(path, headers={"Authorization": f"Bearer {MESH}"})
+        assert r.status_code == 401, f"{path} accepted the mesh key: {r.status_code}"
+
+
+def test_api_token_still_opens_both_surfaces(monkeypatch, tmp_path):
+    """The API token is a superset — it authenticates every route, sync too."""
+    api = _fresh_api(monkeypatch, tmp_path, token=TOKEN, mesh_key=MESH)
+    _seed_capture(tmp_path)
+    client = TestClient(api.app, client=REMOTE)
+
+    assert client.get(SYNC, headers={"Authorization": f"Bearer {TOKEN}"}
+                      ).status_code == 200
+    assert client.get("/api/config/agents",
+                      headers={"Authorization": f"Bearer {TOKEN}"}
+                      ).status_code == 200
+
+
+def test_wrong_mesh_key_is_rejected_on_sync(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path, mesh_key=MESH)
+    _seed_capture(tmp_path)
+    r = TestClient(api.app, client=REMOTE).get(
+        SYNC, headers={"Authorization": "Bearer not-the-key"})
+    assert r.status_code == 401
+
+
+def test_challenge_is_reachable_unauth_and_proves_the_key(monkeypatch, tmp_path):
+    """The auto-join handshake: /challenge is the one sync route open without a
+    credential (it returns only an HMAC, never data), and its proof is
+    HMAC(mesh_key, nonce) — so a peer can verify membership without either side
+    transmitting the key."""
+    import hashlib
+    import hmac
+    api = _fresh_api(monkeypatch, tmp_path, token=TOKEN, mesh_key=MESH)
+    r = TestClient(api.app, client=REMOTE).get(
+        "/api/memory/sync/challenge", params={"nonce": "n0nce"})
+    assert r.status_code == 200          # reachable with NO token from the LAN
+    expected = hmac.new(MESH.encode(), b"n0nce", hashlib.sha256).hexdigest()
+    assert r.json()["proof"] == expected
+
+
+def test_challenge_404s_when_no_mesh_key_is_configured(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path, token=TOKEN, mesh_key=None)
+    r = TestClient(api.app, client=REMOTE).get(
+        "/api/memory/sync/challenge", params={"nonce": "n0nce"})
+    assert r.status_code == 404          # nothing to prove, and says so (not 401)
+
+
+def test_sync_is_gated_by_mesh_key_even_with_no_api_token(monkeypatch, tmp_path):
+    """A box that sets ONLY the mesh key (control plane loopback-only) must
+    still refuse an unauthenticated remote on the sync routes — the mesh key
+    protects them on its own."""
+    api = _fresh_api(monkeypatch, tmp_path, token=None, mesh_key=MESH)
+    _seed_capture(tmp_path)
+    client = TestClient(api.app, client=REMOTE)
+
+    assert client.get(SYNC).status_code == 401
+    assert client.get(SYNC, headers={"Authorization": f"Bearer {MESH}"}
+                      ).status_code == 200
+
+
 # ── the boot guard, now the only thing between a LAN and the memory tree ───
 
 def test_boot_guard_still_refuses_non_loopback_bind_without_a_token(
@@ -168,3 +265,40 @@ def test_boot_guard_escape_hatch_survives(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_BIND_HOST", "0.0.0.0")
     monkeypatch.setenv("AIFORGE_ALLOW_UNAUTH_NONLOOPBACK", "1")
     api._security_boot_guard()  # must not raise
+
+
+# ── mesh-key boot hardening ────────────────────────────────────────────────
+
+def test_boot_guard_refuses_a_weak_mesh_key(monkeypatch, tmp_path):
+    """The challenge oracle brute-forces a short key offline, and the key is
+    auto-join, so a weak one is refused at boot."""
+    api = _fresh_api(monkeypatch, tmp_path, token=TOKEN, mesh_key="short")
+    with pytest.raises(RuntimeError, match="MESH_KEY is too short"):
+        api._security_boot_guard(hosts=["127.0.0.1"])
+
+
+def test_boot_guard_allows_a_strong_mesh_key(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path, token=TOKEN, mesh_key="x" * 32)
+    api._security_boot_guard(hosts=["127.0.0.1"])  # must not raise
+
+
+def test_boot_guard_refuses_mesh_key_equal_to_api_token(monkeypatch, tmp_path):
+    """Same value = the sync-scoped key becomes the control-plane token, i.e.
+    every sync peer gets a shell. Refused."""
+    same = "x" * 32
+    api = _fresh_api(monkeypatch, tmp_path, token=same, mesh_key=same)
+    with pytest.raises(RuntimeError, match="equals AIFORGE_API_TOKEN"):
+        api._security_boot_guard(hosts=["127.0.0.1"])
+
+
+def test_mesh_key_does_not_authenticate_a_traversal_path(monkeypatch, tmp_path):
+    """`_is_sync_path` rejects dot-segments/encoded traversal, so the mesh key
+    cannot authenticate a path a fronting proxy might collapse into a
+    control-plane dispatch."""
+    api = _fresh_api(monkeypatch, tmp_path, token=TOKEN, mesh_key="x" * 32)
+    for p in ("/api/memory/sync/../config/agents",
+              "/api/memory/sync//../chat/sessions",
+              "/api/memory/sync/%2e%2e/config/agents"):
+        assert api._is_sync_path(p) is False, p
+    assert api._is_sync_path("/api/memory/sync/manifest") is True
+    assert api._is_sync_path("/api/memory/sync/blob/abc123") is True

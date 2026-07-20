@@ -16,6 +16,26 @@ router = APIRouter()
 _af_log = logging.getLogger("aiforge")
 
 
+@router.get("/api/memory/sync/challenge")
+def sync_challenge(nonce: str) -> dict:
+    """Prove we hold the shared mesh key over the caller's ``nonce``.
+
+    The shared-key auto-join handshake, and the ONE sync route reachable
+    without a credential (see ``api._auth_exempt``): a candidate cannot present
+    the key it is trying to prove it has, and we must not send ours to an
+    unverified URL, so instead each side answers the other's nonce with an HMAC.
+    Returns 404 when no mesh key is configured — a node not running shared-key
+    auto-join simply has no proof to give, and says so rather than 401'ing (a
+    401 would be indistinguishable from "wrong key" to the prober).
+    """
+    from aiforge_core.memory.sync import peers as _peers
+
+    proof = _peers.mesh_proof(nonce or "")
+    if not proof:
+        raise HTTPException(status_code=404, detail="no mesh key configured")
+    return {"proof": proof}
+
+
 @router.get("/api/memory/sync/manifest")
 def sync_manifest() -> dict:
     from aiforge_core.memory.sync import manifest as _man

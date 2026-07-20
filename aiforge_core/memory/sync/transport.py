@@ -147,6 +147,29 @@ def _fetch(url: str, token: str, limit: int) -> bytes | None:
     return out.get("body")
 
 
+def membership_proof(base_url: str, nonce: str) -> str:
+    """Ask a candidate to prove it holds the shared mesh key over ``nonce``.
+
+    Returns the peer's ``HMAC(mesh_key, nonce)`` hex, or "" on any failure.
+    Sends NO credential: the auto-join probe must never hand our key to an
+    unverified URL that arrived over SSDP/gossip (that would leak the shared
+    secret to any host that can get itself listed as a candidate). The peer
+    proves possession; we verify against our own key locally.
+    """
+    import json
+
+    try:
+        body = _fetch(
+            f"{base_url.rstrip('/')}/api/memory/sync/challenge?nonce={nonce}",
+            "", MAX_MANIFEST_BYTES)
+        data = json.loads(body)
+    except Exception as exc:  # noqa: BLE001 — an unreachable peer is expected, not exceptional
+        _log.info("sync: peer %s challenge unreachable: %s", base_url, exc)
+        return ""
+    proof = data.get("proof") if isinstance(data, dict) else None
+    return proof if isinstance(proof, str) else ""
+
+
 def fetch_manifest(base_url: str, token: str = "") -> dict:
     """GET a peer's manifest. Returns {} when the peer is unreachable or absurd."""
     import json
@@ -189,5 +212,6 @@ def fetch_blob(base_url: str, digest: str, token: str = "") -> bytes | None:
         return None
 
 
-__all__ = ["fetch_manifest", "fetch_blob", "TIMEOUT", "REQUEST_DEADLINE",
-           "MAX_BLOB_BYTES", "MAX_MANIFEST_BYTES", "MAX_MANIFEST_ENTRIES"]
+__all__ = ["fetch_manifest", "fetch_blob", "membership_proof", "TIMEOUT",
+           "REQUEST_DEADLINE", "MAX_BLOB_BYTES", "MAX_MANIFEST_BYTES",
+           "MAX_MANIFEST_ENTRIES"]

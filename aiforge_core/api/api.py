@@ -511,6 +511,39 @@ def _api_token() -> str:
     return os.environ.get("AIFORGE_API_TOKEN", "").strip()
 
 
+def _mesh_key() -> str:
+    """The shared mesh secret (AIFORGE_MESH_KEY).
+
+    A sync-SCOPED credential: it authenticates a peer against the pull-only
+    ``/api/memory/sync/*`` routes and NOTHING else — never the shell-running,
+    config-writing control plane the API token unlocks. That split is the whole
+    point: with shared-key auto-join, any machine holding this secret joins the
+    mesh by itself, so the secret must not also be a shell. Set it to a value
+    DIFFERENT from AIFORGE_API_TOKEN, or the split collapses.
+    """
+    return os.environ.get("AIFORGE_MESH_KEY", "").strip()
+
+
+_MESH_KEY_MIN_LEN = 24
+
+
+def _is_sync_path(path: str) -> bool:
+    """The pull-only peer-sync surface the mesh key may unlock (and ONLY it).
+
+    Matched on the raw request path, so a dot-segment or encoded-traversal
+    variant (``/api/memory/sync/../chat/agent``) is rejected here rather than
+    trusted to dead-end at the router: Starlette does not collapse ``..``, but a
+    fronting proxy might, and the mesh key must never authenticate a path that
+    could dispatch to the control plane. The legitimate sync paths contain none
+    of these, so refusing them costs nothing.
+    """
+    if not path.startswith("/api/memory/sync/"):
+        return False
+    lowered = path.lower()
+    return not ("//" in path or ".." in path
+                or "%2e" in lowered or "%2f" in lowered or "%5c" in lowered)
+
+
 def _flag_on(name: str, default: str = "1") -> bool:
     return (os.environ.get(name) or default).strip().lower() \
         not in ("0", "false", "no", "off")
@@ -609,6 +642,31 @@ def _security_boot_guard(hosts: list[str] | None = None) -> None:
     unit-testable by passing ``hosts``."""
     token = _api_token()
     boot_log = logging.getLogger("aiforge.boot")
+
+    # A configured mesh key must be high-entropy, because the auto-join
+    # challenge (`/api/memory/sync/challenge`) is an unauthenticated, unthrottled
+    # HMAC-signing oracle: any LAN host can harvest (nonce, HMAC(key, nonce))
+    # pairs and brute-force a weak key offline in seconds, and the key is
+    # auto-join — cracking it is full read access to the memory tree. Enforce a
+    # floor rather than trusting a docstring. 24 chars is the shortest value
+    # that isn't trivially crackable; `openssl rand -hex 32` gives 64.
+    mesh = _mesh_key()
+    if mesh and len(mesh) < _MESH_KEY_MIN_LEN:
+        raise RuntimeError(
+            f"AIForge refuses to boot: AIFORGE_MESH_KEY is too short "
+            f"({len(mesh)} chars, minimum {_MESH_KEY_MIN_LEN}). The auto-join "
+            "challenge signs attacker-chosen nonces without auth, so a weak "
+            "mesh key is brute-forceable offline. Generate one with "
+            "`openssl rand -hex 32`."
+        )
+    if mesh and token and hmac.compare_digest(mesh, token):
+        raise RuntimeError(
+            "AIForge refuses to boot: AIFORGE_MESH_KEY equals AIFORGE_API_TOKEN. "
+            "The mesh key is sync-scoped on purpose — making it the same value "
+            "as the control-plane token hands every sync peer a shell. Use "
+            "different secrets."
+        )
+
     observed = _observed_bind_hosts() if hosts is None else list(hosts)
     if observed:
         exposed = [h for h in observed if not _is_loopback_host(h)]
@@ -699,6 +757,11 @@ def _auth_exempt(path: str) -> bool:
         return False
     if path == "/api/health":
         return True
+    # The mesh-key auto-join handshake: it is the PRE-auth step (a candidate
+    # proves it holds the key before it is approved) and returns only an HMAC
+    # proof, never memory data, so it is reachable without a credential.
+    if path == "/api/memory/sync/challenge":
+        return True
     return not path.startswith("/api/")
 
 
@@ -730,13 +793,27 @@ def _extract_request_token(request: Request) -> str:
 @app.middleware("http")
 async def _require_token(request: Request, call_next):
     token = _api_token()
+    mesh = _mesh_key()
+    path = request.url.path
+    sync_path = _is_sync_path(path)
+    # The sync surface is protected the moment EITHER credential exists, so a
+    # box that sets only the mesh key (control plane loopback-only) still gates
+    # its peer routes. Everything else is protected only by the API token.
+    need_auth = bool(token) or (sync_path and bool(mesh))
     if (
-        token
+        need_auth
         and request.method != "OPTIONS"          # let CORS preflight through
-        and not _auth_exempt(request.url.path)
+        and not _auth_exempt(path)
     ):
         supplied = _extract_request_token(request)
-        ok_token = bool(supplied) and hmac.compare_digest(supplied, token)
+        ok_token = bool(supplied) and bool(token) and hmac.compare_digest(supplied, token)
+        # The mesh key authenticates ONLY the sync routes. `ok_mesh` is gated on
+        # `sync_path`, so a peer holding the mesh key gets 401 on /api/chat,
+        # /api/mcp, /api/config — joining the mesh is not gaining a shell.
+        ok_mesh = (
+            sync_path and bool(supplied) and bool(mesh)
+            and hmac.compare_digest(supplied, mesh)
+        )
         # Loopback may be trusted WITHOUT a token (AIFORGE_TRUST_LOOPBACK, on by
         # default): anyone who can reach the socket from this machine can
         # already read the memory tree (and everything else) straight off disk,
@@ -756,7 +833,7 @@ async def _require_token(request: Request, call_next):
         # wrong, and it charged every correctly-configured operator for the
         # privilege.
         loopback_ok = _trust_loopback() and _request_is_loopback(request)
-        if not ok_token and not loopback_ok:
+        if not ok_token and not ok_mesh and not loopback_ok:
             return JSONResponse(
                 {"detail": "missing or invalid API token — this AIForge "
                            "requires AIFORGE_API_TOKEN for any caller that is "

@@ -131,6 +131,32 @@ def test_an_ordinary_peer_still_syncs(peer):
     assert transport.fetch_manifest(base, "t")["manifest"][0]["key"] == "O-01"
 
 
+def test_membership_proof_reads_the_challenge_and_sends_no_credential(peer):
+    """The auto-join probe returns the peer's proof hex and — the security
+    point — carries no Authorization/token header, so a hostile candidate url
+    never receives our key."""
+    from aiforge_core.memory.sync import transport
+
+    seen = {}
+
+    def _challenge(h, _s):
+        seen["auth"] = h.headers.get("Authorization")
+        seen["tok"] = h.headers.get("X-AIForge-Token")
+        body = json.dumps({"proof": "abc123"}).encode()
+        _json_body(h, body)
+
+    base, _state = peer(_challenge)
+    assert transport.membership_proof(base, "nonce-xyz") == "abc123"
+    assert seen["auth"] is None and seen["tok"] is None
+
+    # A 404 (peer runs no mesh key) yields "" rather than raising.
+    def _no_key(h, _s):
+        h.send_response(404)
+        h.end_headers()
+    base2, _s2 = peer(_no_key)
+    assert transport.membership_proof(base2, "n") == ""
+
+
 def test_a_blob_within_the_cap_arrives_whole(peer):
     from aiforge_core.memory.sync import transport
 
