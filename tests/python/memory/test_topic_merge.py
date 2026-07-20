@@ -70,3 +70,56 @@ def test_merge_protects_repo_briefs(mem, monkeypatch):
     assert r["merged"] == 0
     briefs = {p.stem[len("compacted-"):] for p in m.iter_briefs()}
     assert "gps-tracker" in briefs and "gps-tracker-web" in briefs
+
+
+# ─────────── aggressive family + typo merging (the /admin Topics sprawl) ─────
+
+def test_family_collapses_single_word_prefix():
+    from aiforge_core.memory import md_store as m
+    keys = ["windows-ntp", "windows-cpu-mode", "windows-time-verify",
+            "windows-w32tm-config", "unrelated-thing"]
+    clusters = m._topic_clusters(keys)
+    fam = next((c for c in clusters if "windows-ntp" in c), None)
+    assert fam is not None and len(fam) == 4          # all four windows-* fuse
+    assert all("unrelated-thing" not in c for c in clusters)
+
+
+def test_two_word_prefix_and_typo_merge_even_with_families_off(monkeypatch):
+    from aiforge_core.memory import md_store as m
+    monkeypatch.setenv("AIFORGE_TOPIC_MERGE_FAMILIES", "0")
+    keys = ["wifi-device-access", "wifi-device-connection",   # 2-word prefix
+            "windows-ntp", "windows-npt",                     # transposition typo
+            "vm-management", "vm-xml-patching"]               # 1-word only → stay
+    clusters = {tuple(sorted(c)) for c in m._topic_clusters(keys)}
+    assert ("wifi-device-access", "wifi-device-connection") in clusters
+    assert ("windows-npt", "windows-ntp") in clusters
+    # single-word family is NOT merged when families are off
+    assert all("vm-management" not in c or "vm-xml-patching" not in c
+               for c in clusters)
+
+
+def test_merge_folds_family_into_the_common_prefix_topic(mem):
+    from aiforge_core.memory import md_store as m
+    for k, f in [("windows-ntp", "configure w32time as an NTP client"),
+                 ("windows-npt-peers", "add peers to the NTP config"),
+                 ("windows-cpu-mode", "set the CPU to high performance")]:
+        m._brief_upsert(k, f, topic=k)
+    assert len(m.iter_briefs()) == 3
+
+    r = m.merge_similar_topics()
+    assert r["merged"] == 3                       # all three fold into "windows"
+    briefs = {p.stem[len("compacted-"):] for p in m.iter_briefs()}
+    assert briefs == {"windows"}                  # one broad topic remains
+    # the folded facts survived into the new canonical brief
+    body = m.brief_path("windows").read_text(encoding="utf-8")
+    assert "w32time" in body and "peers" in body and "CPU" in body
+
+
+def test_family_merge_never_folds_a_protected_repo_or_shared(mem, monkeypatch):
+    from aiforge_core.memory import md_store as m
+    # 'shared' is protected; a 'shared-*' family must not swallow it.
+    m._brief_upsert("shared", "a global fact")
+    m._brief_upsert("shared-notes", "another", topic="shared-notes")
+    r = m.merge_similar_topics()
+    briefs = {p.stem[len("compacted-"):] for p in m.iter_briefs()}
+    assert "shared" in briefs                      # protected, still present
