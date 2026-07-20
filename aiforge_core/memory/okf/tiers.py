@@ -61,6 +61,11 @@ _ID_SLUG_MAX = 48
 # rendering already put these there: feeding them back in produced "- - fact".
 _BULLET_RE = re.compile(r"^\s*[-*]\s+")
 
+# Leading/trailing punctuation on a claim line. Stripped only for *comparison*
+# in `_unrepresented`, so "port 8080." and "port 8080" count as the same fact —
+# part of the "exact-ish whole-line identity" that replaced substring matching.
+_EDGE_PUNCT_RE = re.compile(r"^\W+|\W+$")
+
 
 # ── bookkeeping ───────────────────────────────────────────────────────────
 
@@ -107,6 +112,19 @@ def _fingerprint(dirs) -> list:
             size += st.st_size
             newest = max(newest, st.st_mtime_ns)
     return [count, size, newest]
+
+
+def _combine_fp(a: list, b: list) -> list:
+    """Merge two fingerprints as if taken over one set of dirs.
+
+    ``_fingerprint`` sums file counts and sizes and maxes the newest mtime across
+    its dirs, and ``okf/``, ``peers/`` and ``mesh/`` are disjoint — so combining a
+    fingerprint of the inputs with one of ``mesh/`` reproduces
+    ``_fingerprint(_tier1_dirs())`` exactly, but lets the two halves be sampled at
+    different instants. That is what tier 1 needs (see :func:`distil_mesh`): the
+    inputs frozen before the fold, ``mesh/`` read after it.
+    """
+    return [a[0] + b[0], a[1] + b[1], max(a[2], b[2])]
 
 
 # ── inputs ────────────────────────────────────────────────────────────────
@@ -172,6 +190,12 @@ def _trusted_origin() -> str:
     victim, i.e. an LLM-instruction injection channel with mesh-wide reach.
     Signed manifests are the real fix and are out of scope here.
 
+    The *effective* leader, not the elected one: when the elected leader is
+    reachable but never folds, ``election.effective_leader`` promotes the next
+    candidate, and the view must trust that peer's fold — otherwise the fallback
+    folder writes ``mesh/<self>/`` and its own view rejects it (origin ≠ trusted)
+    and stays empty, defeating the fallback.
+
     Falls back to our own id when the election cannot be computed: a view built
     from our own fold alone is a far smaller loss than one built from whatever a
     peer asked us to believe.
@@ -179,10 +203,31 @@ def _trusted_origin() -> str:
     from aiforge_core.memory.sync import election, identity, paths
 
     try:
-        return paths.fold(election.leader())
+        return paths.fold(election.effective_leader())
     except Exception as exc:  # noqa: BLE001 — an unreadable roster must not widen trust
         _log.info("tiers: cannot name the leader (%s) — trusting only our own fold", exc)
         return paths.fold(identity.self_id())
+
+
+def leader_has_mesh_output(leader: str) -> bool:
+    """Whether the elected leader's fold is visible here — the passive-leader
+    liveness signal ``election.effective_leader`` reads.
+
+    True when ``mesh/<leader>/`` holds at least one *usable* node. A leader that
+    is reachable (it answers /manifest, so the election keeps electing it) but
+    never runs the fold — a peer serving ``aiforge-api`` without the sync loop —
+    produces no such node, so every follower deferring to it keeps an empty view
+    forever. This read is what lets the election notice a leader that will never
+    fold and hand over to the next candidate.
+
+    Read-only: it inspects the tree, never folds. An empty or truncated fold is
+    *not* output (``_usable`` drops it), so a leader that wrote a blank node
+    still counts as passive.
+    """
+    from aiforge_core.memory.sync import paths
+
+    own = paths.mesh_dir() / paths.fold(leader)
+    return bool(_usable(_load((own,))))
 
 
 def _mesh_nodes() -> list[dict]:
@@ -243,12 +288,18 @@ def _unbulleted(body: str) -> str:
 
 
 def _claims(node: dict) -> list[str]:
-    """A node's body as comparable content lines: markers and headings dropped."""
+    """A node's body as comparable content lines: markers and headings dropped,
+    each surviving line normalised for case, whitespace and surrounding
+    punctuation. This normalised whole line is the unit ``_unrepresented``
+    compares — never a substring of it."""
     out: list[str] = []
     for raw in _unbulleted(node.get("body") or "").splitlines():
-        line = " ".join(raw.split()).lower()
-        if line and not line.startswith("#"):
-            out.append(line)
+        line = " ".join(raw.split())
+        if not line or line.startswith("#"):
+            continue
+        norm = _EDGE_PUNCT_RE.sub("", line.lower())
+        if norm:
+            out.append(norm)
     return out
 
 
@@ -259,9 +310,24 @@ def _unrepresented(local: list[dict], mesh: list[dict]) -> list[dict]:
     merges the same knowledge twice — every fact rendered twice in the view, and
     with no model reachable the deterministic merge has nothing to dedupe it
     away. Bounded at 2x rather than amplifying, but still wrong.
+
+    Representation is WHOLE-LINE identity, never substring containment. The old
+    ``claim not in "\\n".join(...)`` test declared a claim represented whenever it
+    appeared *inside* any mesh line, so a local "use port 8080" was suppressed by
+    the mesh's "never use port 8080 for the gateway" — the negation swallowed its
+    own affirmation, and since ``unrepresented`` also gates recall the agent was
+    served only the negation. It also dropped any node whose body was
+    headings-only (no claims → ``any()`` over nothing → ``False``). Both are
+    fixed here: a claim counts as carried only when a whole mesh line equals it,
+    and a node that states nothing comparable is kept rather than silently lost.
     """
-    haystack = "\n".join(c for n in mesh for c in _claims(n))
-    return [n for n in local if any(c not in haystack for c in _claims(n))]
+    carried = {c for n in mesh for c in _claims(n)}
+    kept: list[dict] = []
+    for n in local:
+        claims = _claims(n)
+        if not claims or any(c not in carried for c in claims):
+            kept.append(n)
+    return kept
 
 
 def _mesh_dirs() -> tuple[Path, ...]:
@@ -522,20 +588,35 @@ def distil_mesh(*, role: str = _ROLE) -> dict:
     if _read_state().get("mesh") == _fingerprint(_tier1_dirs()):
         return {"ok": True, "skipped": "unchanged"}
 
+    # Snapshot the INPUT fingerprint BEFORE reading the inputs — the same
+    # before-the-fold ordering build_view uses. The stamp saved below combines
+    # THIS snapshot with a post-fold read of mesh/, never one post-fold read of
+    # everything. WHY: the old code re-computed _fingerprint(_tier1_dirs()) AFTER
+    # the fold, so any node that landed in okf/ or peers/ between _load and
+    # _save_state was baked into the "fresh" stamp without ever being folded — it
+    # stayed on disk, stayed advertised, and reached no peer's view/ until some
+    # unrelated file changed. Freezing the inputs here means such an arrival
+    # leaves the stamp describing a tree that no longer matches, so the next
+    # cycle re-folds and picks it up. mesh/ is still read post-fold (there is no
+    # race on what we ourselves just wrote), which keeps _tier1_dirs' repair of a
+    # mesh destroyed from outside.
+    inputs_fp = _fingerprint(sources)
+
+    def _stamp() -> list:
+        return _combine_fp(inputs_fp, _fingerprint((paths.mesh_dir(),)))
+
     inputs = _usable(_authored(_load(sources)))
     if not inputs:
         # Nothing authored anywhere. Returning before the fold also means the
         # prune never runs: a leader that momentarily reads an empty tree must
         # not answer by deleting the mesh everyone else is using.
-        _save_state("mesh", _fingerprint(_tier1_dirs()))
+        _save_state("mesh", _stamp())
         return {"ok": True, "skipped": "no-inputs", "inputs": 0}
     _log.info("tiers: mesh fold over %d authored node(s)", len(inputs))
     result = _run_tier(directory=_own_mesh_dir(), prefix="M", derived=MESH,
                        inputs=inputs, role=role)
-    # Stamped after the fold, and re-read rather than reused: the fold itself
-    # legitimately changes mesh/, so the key must describe what we produced. A
-    # run that dies half way records nothing and re-reads its inputs next cycle.
-    _save_state("mesh", _fingerprint(_tier1_dirs()))
+    # A run that dies half way records nothing and re-reads its inputs next cycle.
+    _save_state("mesh", _stamp())
     return {**result, "inputs": len(inputs)}
 
 
@@ -596,15 +677,94 @@ def unrepresented(local: list[dict], view: list[dict]) -> list[dict]:
     return _unrepresented(local, view) if view else list(local)
 
 
+# ── retiring a demoted leader's own fold ──────────────────────────────────
+
+def _retire_own_mesh() -> dict:
+    """Tombstone this peer's own ``mesh/<id>/`` fold once it no longer leads.
+
+    A fold is a class B node like any other: advertised, replicated, and keyed
+    on its minting origin (``mesh/<origin>/``). So a demoted leader's subtree
+    otherwise rides every future sync out to every peer and every NEW peer,
+    forever — one dead subtree per leadership change — and the tier-1 prune never
+    reaches it (``_prune`` only ever touches the *current* leader's own dir, and
+    ``_mesh_nodes`` ignores non-leader origins).
+
+    No *other* peer can clean it up: a foreign mesh node deleted locally is
+    re-fetched on the next pull, and forging a tombstone for another origin is
+    exactly what ``apply._accept_class_b`` refuses (it would delete that peer's
+    nodes mesh-wide). The retiring owner is the only peer allowed to remove its
+    own identity — and it does so through the self-origin-guarded
+    ``tombstone.mark_deleted``, whose tombstone propagates the removal instead of
+    letting the next pull bounce the node back.
+
+    A *dead* ex-leader cannot run this, so its subtree lingers until it returns
+    and retires — the unavoidable price of never forging another peer's deletion.
+    """
+    from aiforge_core.memory.okf import nodes
+    from aiforge_core.memory.sync import (election, identity, merge, paths,
+                                          tombstone)
+
+    me = paths.fold(identity.self_id())
+    try:
+        if election.effective_leader() == me:
+            return {"retired": 0, "skipped": "still-leading"}
+    except Exception as exc:  # noqa: BLE001 — unsure who leads → never delete a fold
+        _log.info("okf: cannot resolve the leader (%s) — keeping our mesh fold", exc)
+        return {"retired": 0, "skipped": "no-election"}
+
+    own = _own_mesh_dir()
+    if not own.is_dir():
+        return {"retired": 0}
+
+    retired = 0
+    for p in sorted(own.glob("*.md")):
+        key = p.stem
+        rev = 0
+        try:
+            meta = (nodes.parse_node(p.read_text(encoding="utf-8")).get("meta") or {})
+            rev = merge.as_rev(meta.get("rev"))
+        except OSError:      # unreadable is still deletable; rev 0 tombstones it
+            pass
+        try:
+            p.unlink()
+        except OSError as exc:
+            _log.warning("okf: could not drop stale mesh node %s (%s)", p, exc)
+            continue
+        # Tombstone AFTER the unlink: mark_deleted refuses while a copy is still
+        # on disk (a per-scope id can legitimately name a live node elsewhere),
+        # so the removal must come first — the same contract okf.author and
+        # store.dedupe_nodes honour when they hand it their already-removed node.
+        tombstone.mark_deleted(identity.self_id(), key, rev)
+        retired += 1
+
+    try:
+        own.rmdir()          # tidy the now-empty subtree; harmless if not empty
+    except OSError:
+        pass
+    if retired:
+        _log.info("okf: retired %d stale mesh node(s) after losing leadership", retired)
+    return {"retired": retired}
+
+
 # ── the one entry point the sync cycle calls ──────────────────────────────
 
 def run_after_sync(*, role: str = _ROLE) -> dict:
     """Both tiers, once, after a sync pass — so this cycle's arrivals are in.
 
-    Each tier soft-fails independently: compaction is upkeep, and a fold that
+    Each step soft-fails independently: compaction is upkeep, and a fold that
     raises must cost a cycle rather than the daemon that would have retried it.
+
+    Retirement runs first: a peer that has lost leadership must retract its own
+    now-stale mesh fold before anything else, or it stays advertised to the whole
+    mesh forever (see :func:`_retire_own_mesh`). It runs unconditionally, so a
+    demoted peer whose inputs are otherwise unchanged still retracts.
     """
     out: dict = {}
+    try:
+        out["retire"] = _retire_own_mesh()
+    except Exception as exc:  # noqa: BLE001 — see docstring: never kill the loop
+        _log.warning("tiers: mesh retirement failed (%s)", exc)
+        out["retire"] = {"ok": False, "error": str(exc)}
     for name, fn in (("mesh", distil_mesh), ("view", build_view)):
         try:
             out[name] = fn(role=role)
@@ -615,4 +775,4 @@ def run_after_sync(*, role: str = _ROLE) -> dict:
 
 
 __all__ = ["MESH", "VIEW", "distil_mesh", "build_view", "run_after_sync",
-           "view_nodes", "unrepresented"]
+           "leader_has_mesh_output", "view_nodes", "unrepresented"]
