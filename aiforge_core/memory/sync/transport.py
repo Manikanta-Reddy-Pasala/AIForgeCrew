@@ -3,6 +3,12 @@
 An unreachable peer is normal operation, not an error: pull-only means nothing
 is queued for it and nothing blocks on it, so every failure here degrades to
 "nothing new this cycle" and is retried on the next one.
+
+A *reachable* peer is not trusted either. Everything below is bounded before it
+is buffered: a peer is a machine somebody else administers, and an unbounded
+read makes "how much memory does this daemon use" that peer's decision. Bodies
+are streamed and abandoned the moment they pass the cap, so a multi-GB blob
+costs one chunk, not one allocation of its full size.
 """
 from __future__ import annotations
 
@@ -12,38 +18,89 @@ _log = logging.getLogger("aiforge.sync")
 
 TIMEOUT = 20.0
 
+# A node is a markdown note and a capture is a paste — both kilobytes. 8 MiB is
+# three orders of magnitude of headroom for a legitimate blob while still being
+# a number the daemon can hold; the applier then hashes the same bytes again, so
+# whatever is accepted here is paid for roughly twice.
+MAX_BLOB_BYTES = 8 * 1024 * 1024
+
+# A manifest is one small JSON row per advertised entry. The byte cap is lower
+# than the blob cap because ``json.loads`` expands: 4 MiB of rows becomes tens
+# of MiB of dicts, so the parse is the real cost, not the transfer. The entry
+# cap is the same limit expressed in the unit the caller iterates, since a
+# pathological body (deeply repeated tiny rows) can stay under the byte cap.
+MAX_MANIFEST_BYTES = 4 * 1024 * 1024
+MAX_MANIFEST_ENTRIES = 20_000
+
 
 def _headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
-def fetch_manifest(base_url: str, token: str = "") -> dict:
-    """GET a peer's manifest. Returns {} when the peer is unreachable."""
+def _fetch(url: str, token: str, limit: int) -> bytes | None:
+    """GET ``url``, refusing anything over ``limit`` bytes. None on any failure.
+
+    Streamed rather than buffered: ``Content-Length`` is a claim, so it is used
+    to refuse early when it is honest and the running total is what actually
+    enforces the cap when it is not (absent, chunked, or a lie).
+    """
     import httpx
 
-    try:
-        r = httpx.get(f"{base_url.rstrip('/')}/api/memory/sync/manifest",
-                      headers=_headers(token), timeout=TIMEOUT)
+    total = 0
+    chunks: list[bytes] = []
+    with httpx.stream("GET", url, headers=_headers(token), timeout=TIMEOUT) as r:
         r.raise_for_status()
-        data = r.json()
+        declared = 0
+        try:
+            declared = int(r.headers.get("content-length") or 0)
+        except (TypeError, ValueError):
+            declared = 0        # a garbage header is simply no header
+        if declared > limit:
+            raise ValueError(f"peer declares {declared} bytes, cap is {limit}")
+        for chunk in r.iter_bytes():
+            total += len(chunk)
+            if total > limit:
+                # Leaving the ``with`` closes the response, so the rest of the
+                # body is never transferred, let alone kept.
+                raise ValueError(f"response exceeded {limit} bytes")
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def fetch_manifest(base_url: str, token: str = "") -> dict:
+    """GET a peer's manifest. Returns {} when the peer is unreachable or absurd."""
+    import json
+
+    try:
+        body = _fetch(f"{base_url.rstrip('/')}/api/memory/sync/manifest",
+                      token, MAX_MANIFEST_BYTES)
+        data = json.loads(body)
     except Exception as exc:  # noqa: BLE001 — an unreachable peer is expected, not exceptional
         _log.info("sync: peer %s unreachable: %s", base_url, exc)
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    for field in ("manifest", "roster"):
+        rows = data.get(field)
+        if isinstance(rows, list) and len(rows) > MAX_MANIFEST_ENTRIES:
+            # Refused whole rather than truncated: half a manifest is a sync
+            # that silently never completes, which is harder to notice than a
+            # peer that plainly does not sync.
+            _log.warning("sync: peer %s advertises %d %s entries (cap %d) — refused",
+                         base_url, len(rows), field, MAX_MANIFEST_ENTRIES)
+            return {}
+    return data
 
 
 def fetch_blob(base_url: str, digest: str, token: str = "") -> bytes | None:
     """GET one blob by hash. Returns None on any failure; retried next cycle."""
-    import httpx
-
     try:
-        r = httpx.get(f"{base_url.rstrip('/')}/api/memory/sync/blob/{digest}",
-                      headers=_headers(token), timeout=TIMEOUT)
-        r.raise_for_status()
-        return r.content
+        return _fetch(f"{base_url.rstrip('/')}/api/memory/sync/blob/{digest}",
+                      token, MAX_BLOB_BYTES)
     except Exception as exc:  # noqa: BLE001 — retried on the next cycle
         _log.info("sync: blob %s from %s failed: %s", digest[:8], base_url, exc)
         return None
 
 
-__all__ = ["fetch_manifest", "fetch_blob", "TIMEOUT"]
+__all__ = ["fetch_manifest", "fetch_blob", "TIMEOUT", "MAX_BLOB_BYTES",
+           "MAX_MANIFEST_BYTES", "MAX_MANIFEST_ENTRIES"]

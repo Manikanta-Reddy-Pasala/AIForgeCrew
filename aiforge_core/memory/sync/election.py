@@ -44,12 +44,12 @@ _log = logging.getLogger("aiforge.sync")
 ALIVE_WINDOW = 3 * loop.DEFAULT_INTERVAL
 
 
-def _as_epoch(value) -> int:
-    """A ``last_seen`` stamp read tolerantly — peers.json is hand-editable."""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
+def _me() -> str:
+    """Our own id in the form the roster is compared in."""
+    from aiforge_core.memory.sync import identity, peers
+
+    mine = identity.self_id()
+    return peers.normalise_id(mine) or mine
 
 
 def candidates() -> list[str]:
@@ -58,16 +58,29 @@ def candidates() -> list[str]:
     An approved peer we have never reached (``last_seen`` 0) is not a candidate:
     it may not exist. With no approved peers the list is just us, so a single
     machine always leads and behaves exactly as it did before the mesh existed.
+
+    Ids are compared in canonical form (``peers.normalise_id``, the same slug
+    ``identity.self_id`` produces) and ones that will not round-trip
+    ``paths.is_addressable`` are dropped. A roster row typed by a human as
+    ``NUC-Prod`` for a peer that calls itself ``nuc-prod`` otherwise elects a
+    machine that does not exist — and since uppercase sorts first, it wins:
+    every peer defers to it, nothing is ever distilled, and the only trace is
+    one log line.
     """
-    from aiforge_core.memory.sync import identity, peers
+    from aiforge_core.memory.sync import peers
 
     now = int(time.time())
-    out = {identity.self_id()}
+    out = {_me()}
     for p in peers.approved():
-        pid = str(p.get("id") or "").strip()
-        seen = _as_epoch(p.get("last_seen"))
-        # OUR clock on both sides of the subtraction (see module docstring).
-        if pid and seen and (now - seen) <= ALIVE_WINDOW:
+        pid = peers.normalise_id(p.get("id"))
+        seen = peers.as_epoch(p.get("last_seen"))
+        # OUR clock on both sides of the subtraction (see module docstring) —
+        # and both ends of the window. A stamp AHEAD of our clock (bad RTC, an
+        # NTP step, a hand-edited file) makes the difference negative, which an
+        # upper bound alone accepts forever: a peer stamped two years ahead
+        # stays a live candidate for two years, and if its id sorts first
+        # nothing ever distils.
+        if pid and seen and 0 <= (now - seen) <= ALIVE_WINDOW:
             out.add(pid)
     return sorted(out)
 
@@ -78,9 +91,7 @@ def leader() -> str:
 
 
 def is_leader() -> bool:
-    from aiforge_core.memory.sync import identity
-
-    return leader() == identity.self_id()
+    return leader() == _me()
 
 
 def leader_name() -> str:

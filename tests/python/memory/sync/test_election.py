@@ -150,6 +150,39 @@ def test_the_election_never_reads_a_foreign_clock(monkeypatch, tmp_path):
     assert election.is_leader() is True
 
 
+def test_a_miscased_roster_entry_still_elects_exactly_one_leader(
+        monkeypatch, tmp_path):
+    """BLOCKER regression: a hand-typed id elects a machine that does not exist.
+
+    Both peers call themselves lowercase; a human approved each of them on the
+    other side with the capitalisation they wrote in their notes. Uppercase
+    sorts before lowercase, so each peer concluded the *other* led, ``mesh/``
+    was never written by anybody, and every peer's view returned ``no-mesh``
+    forever — with one log line as the only trace.
+    """
+    from aiforge_core.memory.sync import election
+
+    leaders = []
+    for me, other in (("nuc-prod", "Book-Air"), ("book-air", "NUC-Prod")):
+        _env(monkeypatch, tmp_path / me, me)
+        _approve((other, 60))
+        leaders.append(election.leader())
+
+    assert leaders == ["book-air", "book-air"], "the two peers disagree"
+
+
+def test_a_last_seen_in_the_future_does_not_keep_a_dead_peer_alive(
+        monkeypatch, tmp_path):
+    """``now - seen`` is negative under clock skew, and an upper bound alone
+    accepts that forever: a peer stamped two years ahead leads for two years."""
+    _env(monkeypatch, tmp_path, "nuc")
+    from aiforge_core.memory.sync import election
+    _approve(("air", -2 * 365 * 24 * 3600))       # stamped two years ahead
+
+    assert election.candidates() == ["nuc"]
+    assert election.is_leader() is True
+
+
 def test_a_broken_registry_makes_us_distil_anyway(monkeypatch, tmp_path):
     """Soft-fail OPEN: losing distillation is worse than duplicating it."""
     _env(monkeypatch, tmp_path, "nuc")
