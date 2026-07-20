@@ -471,6 +471,7 @@ def dedupe_nodes() -> dict:
     import os
 
     from aiforge_core.memory.sync import election  # lazy: heavy sync package
+    from aiforge_core.memory.sync import tombstone as _tomb
 
     if not election.may_distil():                   # soft-fails OPEN (see there)
         chief = election.leader_name()
@@ -503,7 +504,13 @@ def dedupe_nodes() -> dict:
                 os.unlink(d["path"])
                 removed += 1
             except OSError:
-                pass
+                continue
+            # The loser is gone here, so say so to the mesh — an unlink alone is
+            # undone by the next pull from any peer still holding it. Only the
+            # loser: the survivor keeps its identity, and mark_deleted refuses
+            # anything this machine did not mint (see there).
+            m = d.get("meta") or {}
+            _tomb.mark_deleted(m.get("origin"), d.get("id"), m.get("rev"))
         else:
             prior.append(key_text)
     if removed:
