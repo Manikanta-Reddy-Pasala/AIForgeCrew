@@ -806,4 +806,13 @@ if [[ $ADMIN -eq 1 ]]; then
   ) >/dev/null 2>&1 &
 fi
 
-exec .venv/bin/python -m uvicorn aiforge_core.api.api:app --host "$HOST" --port "$PORT" ${RELOAD[@]+"${RELOAD[@]}"}
+# NOT `exec`: exec replaces this shell's process image, taking the trap on line
+# 778 with it, so the ticket runner and the peer-sync loop would outlive the
+# server as orphans whenever the API is stopped by PID rather than by killing
+# the whole process group. Running uvicorn as a child and waiting keeps the trap
+# alive, so one Ctrl-C / SIGTERM tears down all three. `wait` is interrupted by
+# the trapped signal, which is what lets the handler run.
+.venv/bin/python -m uvicorn aiforge_core.api.api:app --host "$HOST" --port "$PORT" ${RELOAD[@]+"${RELOAD[@]}"} &
+UVICORN_PID=$!
+trap 'kill $UVICORN_PID $RUNNER_PID $SYNC_PID 2>/dev/null' EXIT INT TERM
+wait "$UVICORN_PID"
