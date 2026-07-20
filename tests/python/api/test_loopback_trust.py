@@ -76,16 +76,37 @@ def test_trust_loopback_off_makes_a_local_caller_present_the_token(
     assert client.get("/api/health").status_code == 200
 
 
-def test_admin_needs_the_token_even_from_loopback(monkeypatch, tmp_path):
-    """Highest-value surface, weakest signal: /admin does not accept the peer
-    address as proof, even with loopback trust left at its default (on)."""
+def test_admin_opens_locally_in_a_browser_when_a_token_is_configured(monkeypatch, tmp_path):
+    """A browser navigation cannot send an Authorization header.
+
+    An earlier revision made /admin demand a token even from loopback. That
+    meant the day you added one remote peer — and therefore a token — the local
+    admin page stopped opening in a browser at all, needing a curl workaround
+    for a page whose whole value is being glanceable. It now follows the same
+    rule as everything else; a fronted deployment closes the proxy hole with
+    AIFORGE_TRUST_LOOPBACK=0, which it must set for the rest of the API anyway.
+    """
     api = _fresh_api(monkeypatch, tmp_path)
     client = TestClient(api.app, client=LOOPBACK)
 
     for path in ADMIN_PATHS:
-        assert client.get(path).status_code == 401, path
-        assert client.get(
-            path, headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 200, path
+        assert client.get(path).status_code == 200, path
+
+
+def test_admin_is_still_shut_to_remote_callers_holding_a_valid_token(monkeypatch, tmp_path):
+    """Two independent gates, which is why the special case above was redundant.
+
+    The middleware refuses a remote caller with no token (401); routes.admin's
+    own loopback dependency refuses one even WITH a valid token (403). A stolen
+    token does not open the admin surface from another machine.
+    """
+    api = _fresh_api(monkeypatch, tmp_path)
+    remote = TestClient(api.app, client=("10.0.0.9", 40002))
+
+    for path in ADMIN_PATHS:
+        assert remote.get(path).status_code == 401, path
+        assert remote.get(
+            path, headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 403, path
 
 
 def test_loopback_stays_open_by_default_for_everything_else(monkeypatch, tmp_path):

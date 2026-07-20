@@ -742,20 +742,27 @@ async def _require_token(request: Request, call_next):
         # already read the memory tree (and everything else) straight off disk,
         # so a token adds nothing there. The token exists to authenticate
         # REMOTE callers. That trust is only sound when nothing on this host
-        # forwards other people's requests into the socket — hence the flag,
-        # and hence the admin surface never taking that shortcut.
-        loopback_ok = (
-            not _is_admin_path(request.url.path)
-            and _trust_loopback()
-            and _request_is_loopback(request)
-        )
+        # forwards other people's requests into the socket — hence the flag.
+        #
+        # The admin surface follows the SAME rule rather than always demanding a
+        # token. An earlier revision special-cased it, on the reasoning that the
+        # highest-value surface should not rest on the weakest signal. The cost
+        # was disproportionate: a browser navigation cannot send an
+        # Authorization header, so the moment a token existed — which is the day
+        # you add one remote peer — the local admin page stopped opening in a
+        # browser at all. A fronted deployment must set AIFORGE_TRUST_LOOPBACK=0
+        # for the rest of the API regardless, and that one flag closes the proxy
+        # hole here too. The special case only helped when that flag was already
+        # wrong, and it charged every correctly-configured operator for the
+        # privilege.
+        loopback_ok = _trust_loopback() and _request_is_loopback(request)
         if not ok_token and not loopback_ok:
             return JSONResponse(
                 {"detail": "missing or invalid API token — this AIForge "
-                           "requires AIFORGE_API_TOKEN (always for /admin, and "
-                           "for any caller that is not a trusted loopback one). "
-                           "In the browser: localStorage.setItem("
-                           "'aiforge_api_token', '<token>') then reload."},
+                           "requires AIFORGE_API_TOKEN for any caller that is "
+                           "not a trusted loopback one. In the browser: "
+                           "localStorage.setItem('aiforge_api_token', "
+                           "'<token>') then reload."},
                 status_code=401,
             )
     return await call_next(request)
