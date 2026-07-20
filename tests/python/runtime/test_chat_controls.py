@@ -426,8 +426,10 @@ def test_persist_skips_empty_turn(monkeypatch):
     from aiforge_core.runtime import chat_persist
     added = []
     import aiforge_core.runtime.chat_store as cs
+    # add_message gained mode/duration_s kwargs; **kw keeps this stub tolerant
+    # of future signature growth (the assertion here is only about text/steps).
     monkeypatch.setattr(cs, "add_message",
-                        lambda sid, role, text, steps=None: added.append((text, steps)))
+                        lambda sid, role, text, steps=None, **kw: added.append((text, steps)))
     monkeypatch.setenv("AIFORGE_CHAT_AUTO_MEMORY", "0")
     # empty final + no steps → nothing persisted
     chat_persist.persist_turn(session_id=1, cwd="/tmp", prompt="x", final_text="",

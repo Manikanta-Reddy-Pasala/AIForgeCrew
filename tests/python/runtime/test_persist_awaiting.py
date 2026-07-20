@@ -10,8 +10,13 @@ class _FakeStore:
     def __init__(self):
         self.saved = []
 
-    def add_message(self, session_id, role, content, steps=None):
-        self.saved.append({"role": role, "content": content, "steps": steps or []})
+    # chat_store.add_message grew mode/duration_s kwargs (persist_turn now
+    # records which chat mode produced the turn and how long it took), so the
+    # fake must accept them or persist_turn dies with a TypeError.
+    def add_message(self, session_id, role, content, steps=None,
+                    mode="simple", duration_s=None, **_kw):
+        self.saved.append({"role": role, "content": content, "steps": steps or [],
+                           "mode": mode, "duration_s": duration_s})
         return len(self.saved)
 
 

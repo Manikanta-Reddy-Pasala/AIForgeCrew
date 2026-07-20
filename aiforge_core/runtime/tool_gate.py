@@ -142,11 +142,12 @@ def make_approval_gate_callback():
             # PUSH is explicitly EXCLUDED — a push updates a remote (external,
             # may trigger CI / a merge), so it ALWAYS requires an explicit
             # approval even when local commits are auto-approved.
-            # Captured commit-bypass applies ONLY when this mode's approvals are
-            # OFF — with approvals ON the per-mode toggle is the master and we
-            # ask regardless (mode-OFF already returned above, so this block is
-            # effectively for the OFF path / defensive).
-            if policy != tool_policy.DENY and not force_review and not approvals_on:
+            # Consulted REGARDLESS of the per-mode approval toggle. Gating it on
+            # ``not approvals_on`` made it dead code: the mode-OFF early return
+            # above already allowed everything non-DENY, so the flag — and the
+            # UI pill that sets it — could never have an effect. The floors kept
+            # above (DENY, forced review, push, chained) are what keep this safe.
+            if policy != tool_policy.DENY and not force_review:
                 try:
                     from aiforge_core.runtime import rule_capture as _rc
                     _cmd = (args or {}).get("cmd") or (args or {}).get("command") or ""
@@ -214,7 +215,11 @@ def make_approval_gate_callback():
                 # /stop) is already a stop, so don't re-cancel.
                 if _note != "cancelled":
                     try:
-                        from aiforge_core.runtime import chat_cancel
+                        # NOTE: do NOT re-import chat_cancel here. A function-local
+                        # import binds the name as a local for the WHOLE function,
+                        # so `chat_cancel.active()` at the top raised
+                        # UnboundLocalError, which the broad except below swallowed
+                        # — silently disabling the entire gate (DENY included).
                         chat_cancel.cancel(sid)
                     except Exception:  # noqa: BLE001 — best-effort halt
                         pass
@@ -224,7 +229,9 @@ def make_approval_gate_callback():
                                  + " — run halted; waiting for the user's next message."}
             return None
         except Exception as exc:  # noqa: BLE001 — never block the pipeline on a gate bug
-            log.debug("tool_gate internal error (allow): %s", exc)
+            # A bug in here silently DISABLES the gate, so make it loud
+            # (this masked an UnboundLocalError that neutered the gate entirely).
+            log.exception("tool_gate internal error (allow): %s", exc)
             return None
 
     return _cb
