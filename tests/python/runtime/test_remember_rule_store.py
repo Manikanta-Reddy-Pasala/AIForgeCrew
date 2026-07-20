@@ -37,7 +37,12 @@ def test_remember_rule_lands_in_library_store(cfg):
     assert rule.scope == "global"
 
 
-def test_remember_rule_reaches_agent_context(cfg):
+def test_remember_rule_reaches_agent_context(cfg, monkeypatch):
+    # WHY: this asserts the rule REACHES the context, not how it is worded.
+    # With elaboration on, the body is whatever a live model returned that
+    # minute — it kept the sentence often enough to look green and dropped it
+    # often enough to fail one run in three of a triple full-suite pass.
+    monkeypatch.setenv("AIFORGE_BUILDER_ELABORATE", "0")
     from aiforge_core.runtime import chat_agent as ca
     ca._t_remember_rule({"text": "Never commit secrets", "scope": "global"}, ".")
     ctx = ca._rules_context(".")
