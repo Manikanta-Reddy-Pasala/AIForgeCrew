@@ -53,6 +53,7 @@ from ._shell import (
     _SEGMENT_SPLIT_RE,
     _mask_noncode,
     _is_blanket_git,
+    _is_server_start,
     _workspace_root,
     _resolve,
     _t_file_read,

@@ -180,6 +180,147 @@ def _is_blanket_git(cmd: str) -> bool:
     return False
 
 
+# ─── Chat-side: REFUSE a foreground server-start (run it via `serve`) ─────────
+#
+# ``run_command`` polls the process until it exits or the timeout, so a
+# long-lived server launcher (``./run.sh``, ``npm run dev``, ``uvicorn`` …) that
+# never returns WEDGES the whole turn for up to AIFORGE_CHAT_CMD_TIMEOUT_S
+# (default 600s) — the source of the chat "Agent error: network error" bug (the
+# request sits open on a self-conflicting server-start and the browser drops
+# it). The `serve` tool exists exactly for this: it detaches the process and
+# returns immediately with the bound URL. So we REFUSE a blocking server-start
+# (fail-CLOSED) and redirect the model to `serve`; the loop turns the refusal
+# into an observation. Escape hatch: append ` &` to background it yourself.
+
+# Programs whose bare invocation is a long-lived server/dev process.
+_SERVER_PROGRAMS = frozenset({
+    "uvicorn", "gunicorn", "hypercorn", "daphne", "nodemon", "vite",
+    "http-server", "serve", "caddy", "honcho", "foreman",
+    "webpack-dev-server", "webpack-serve"})
+_NODE_PMS = frozenset({"npm", "pnpm", "yarn", "bun"})
+# npm/pnpm/yarn/bun sub-commands that run a dev server (vs one-shot build/test).
+_NODE_SERVER_SUBS = frozenset({"dev", "start", "serve"})
+# Python ``-m`` modules that ARE a server.
+_SERVER_PY_MODULES = frozenset({
+    "http.server", "uvicorn", "gunicorn", "hypercorn", "daphne", "waitress"})
+# Benign leading words to peel before the real program (like sudo/env for git).
+_SERVER_PREFIX_WORDS = frozenset({"sudo", "nohup", "exec", "time", "command"})
+
+
+def _peel_prefixes(toks: list[str]) -> list[str]:
+    """Drop leading ``env=val`` assignments + benign prefix words (sudo/nohup/
+    exec/time, with their dash-flags) so the real program surfaces — the same
+    peel :func:`_is_blanket_git` does, shared here (DRY)."""
+    k = 0
+    while k < len(toks):
+        t = toks[k]
+        if _ENV_ASSIGN_RE.match(t):
+            k += 1
+            continue
+        if t in _SERVER_PREFIX_WORDS:
+            k += 1
+            while k < len(toks) and toks[k].startswith("-"):
+                k += 1
+            continue
+        break
+    return toks[k:]
+
+
+def _cmd_starts_server(toks: list[str]) -> bool:
+    """True when a single (already prefix-peeled) command launches a long-lived
+    server/dev process: ``npm run dev``, ``uvicorn app:app``, ``flask run``,
+    ``python -m http.server``, ``rails server``, ``php -S …``, ``next dev`` …
+    One-shot builds/tests/installs (``npm run build``, ``npm ci``) are NOT."""
+    if not toks:
+        return False
+    prog = toks[0].rsplit("/", 1)[-1]
+    rest = toks[1:]
+    if prog in _NODE_PMS:
+        args = [a for a in rest if not a.startswith("-")]
+        if args and args[0] == "run" and len(args) > 1 \
+                and args[1] in _NODE_SERVER_SUBS:
+            return True                      # npm run dev / pnpm run serve
+        return bool(args and args[0] in _NODE_SERVER_SUBS)   # yarn dev
+    if prog in ("python", "python3") and "-m" in rest:
+        i = rest.index("-m")
+        if i + 1 < len(rest) and rest[i + 1] in _SERVER_PY_MODULES:
+            return True
+    if prog in ("python", "python3", "manage.py") or any(
+            a.rsplit("/", 1)[-1] == "manage.py" for a in rest):
+        if "runserver" in rest:             # (python) manage.py runserver
+            return True
+    if prog == "flask":
+        return "run" in rest
+    if prog == "django-admin":
+        return "runserver" in rest
+    if prog in ("next", "ng"):              # next dev/start · ng serve
+        return any(a in _NODE_SERVER_SUBS for a in rest)
+    if prog == "rails":
+        return any(a in ("server", "s") for a in rest)
+    if prog == "php":
+        return "-S" in rest
+    return prog in _SERVER_PROGRAMS
+
+
+def _script_starts_server(path: str, base: str | None) -> bool:
+    """True when a local shell script's CONTENT launches a server — so a
+    ``./run.sh`` that execs uvicorn is flagged, while a one-shot ``run.sh`` that
+    just echoes is NOT. Content-driven (not name-based) so it stays generic: no
+    project-specific launcher names hardcoded. Bounded read; fails OPEN (a
+    missing/unreadable script → not flagged, so the preflight can handle it)."""
+    if not base:
+        return False
+    p = path[2:] if path.startswith("./") else path
+    full = p if os.path.isabs(p) else os.path.join(base, p)
+    try:
+        with open(full, encoding="utf-8", errors="replace") as fh:
+            body = fh.read(4000)
+    except (OSError, ValueError):
+        return False
+    for line in _mask_noncode(body).splitlines():
+        if _cmd_starts_server(_peel_prefixes(line.split())):
+            return True
+    return False
+
+
+def _is_server_start(cmd: str, base: str | None = None) -> bool:
+    """True when ``cmd`` would launch a long-lived FOREGROUND server that never
+    returns, so ``run_command`` would poll it until the timeout and WEDGE the
+    whole turn (the chat "network error" bug) — the ``serve`` tool should start
+    it instead.
+
+    Detects explicit server commands (``npm run dev``, ``uvicorn``, ``flask
+    run``, ``python -m http.server`` …) from the string, AND a launcher SCRIPT
+    (``./run.sh`` / ``bash run.sh``) by its CONTENT when ``base`` locates it —
+    so a one-shot script keeps working. Quote/heredoc-aware, sees a server in an
+    ``a && b`` chain, peels ``sudo``/``env=val`` prefixes. A command already
+    BACKGROUNDED (trailing ``&``) returns at once, so it is NOT flagged."""
+    for seg in _SEGMENT_SPLIT_RE.split(_mask_noncode(cmd or "")):
+        seg = seg.strip()
+        if not seg or seg.endswith("&"):     # backgrounded → returns; allow
+            continue
+        toks = _peel_prefixes(seg.split())
+        if not toks:
+            continue
+        prog = toks[0]
+        pbase = prog.rsplit("/", 1)[-1]
+        # A shell-script invocation (``./x.sh`` or ``bash x.sh``): flag only if
+        # the script's CONTENT starts a server — never on the name alone.
+        script = None
+        if pbase.endswith((".sh", ".bash")):
+            script = prog
+        elif pbase in ("bash", "sh", "zsh") and len(toks) > 1 \
+                and toks[1].rsplit("/", 1)[-1].endswith((".sh", ".bash")):
+            script = toks[1]
+        if script is not None:
+            if _script_starts_server(script, base):
+                return True
+            continue
+        if _cmd_starts_server(toks):
+            return True
+    return False
+
+
 def _workspace_root() -> Path | None:
     from aiforge_core.runtime import request_context
     raw = request_context.get_workspace_dir()
@@ -469,6 +610,18 @@ def _t_run_command(args: dict, cwd: str) -> dict:
                 "unrelated files. Stage ONLY the files you changed: "
                 "`git add <path1> <path2>` then `git commit -m \"...\"` then "
                 "`git push`."}
+    # Refuse a FOREGROUND server-start: it never returns, so run_command would
+    # poll it until the (10-min) timeout and wedge the turn — the chat "network
+    # error" bug. Redirect to the `serve` tool (backgrounds it, returns the URL
+    # at once). Fail-fast so the request can't sit open on a hung tool call.
+    if _is_server_start(cmd, base):
+        return {"ok": False, "blocked": "server_start",
+                "error": "This starts a long-lived server/dev process that "
+                "won't return, so run_command would block the whole turn. Use "
+                "the `serve` tool instead — serve(cmd=\"…\") starts it in the "
+                "background and gives you the URL immediately (stop it later "
+                "with stop_service). If you truly want it in the foreground, "
+                "append ` &` to background it yourself."}
     # Pre-flight: a literal `cd <missing dir>` or `bash <missing script>` is
     # refused with an actionable error instead of the shell's cryptic
     # "No such file or directory" (which the model then thrashes on).
