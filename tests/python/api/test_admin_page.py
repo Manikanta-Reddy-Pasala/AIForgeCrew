@@ -345,3 +345,110 @@ def test_page_embeds_the_peer_ids_and_no_token(monkeypatch, tmp_path):
     assert '"mac"' in html and '"laptop"' in html
     assert "s3cr3t-token-value" not in html
     assert called == []          # rendering the page makes no network calls
+
+
+# ─────────────────────── add peer by IP (seed) ──────────────────────────────
+#
+# The manual fallback for when SSDP can't reach a peer. It must: be loopback-
+# only; refuse to leak the mesh key to a typo'd address (challenge FIRST, key
+# never sent); and only approve a peer that proves the shared key.
+
+import hashlib
+import hmac as _hmac
+
+
+def _stub_seed_transport(monkeypatch, *, server_key, self_id="mac",
+                         url="http://10.0.0.5:8799"):
+    """Stand in for the peer at `url`: it answers the challenge with
+    HMAC(server_key, nonce) and serves a roster advertising `self_id`. A
+    `server_key` of None means the peer never answers (unreachable / no key)."""
+    sent = {"manifest_token": None}
+
+    def _proof(base_url, nonce):
+        if server_key is None:
+            return ""
+        return _hmac.new(server_key.encode(), nonce.encode(),
+                         hashlib.sha256).hexdigest()
+
+    def _manifest(base_url, token=""):
+        sent["manifest_token"] = token
+        return {"manifest": [], "roster": [{"id": self_id, "urls": [url]}]}
+
+    monkeypatch.setattr("aiforge_core.memory.sync.transport.membership_proof", _proof)
+    monkeypatch.setattr("aiforge_core.memory.sync.transport.fetch_manifest", _manifest)
+    return sent
+
+
+def _peer_state(tmp_path, pid):
+    import json as _json
+    f = tmp_path / "cfg" / "peers.json"
+    if not f.exists():
+        return None
+    for p in _json.loads(f.read_text()).get("peers", []):
+        if p.get("id") == pid:
+            return p.get("state")
+    return None
+
+
+def test_add_peer_by_ip_is_loopback_only(monkeypatch, tmp_path):
+    api, admin = _fresh_api(monkeypatch, tmp_path)
+    monkeypatch.setenv("AIFORGE_MESH_KEY", "x" * 32)
+    r = TestClient(api.app, client=REMOTE).post(
+        "/api/admin/peers", json={"url": "http://10.0.0.5:8799"})
+    assert r.status_code == 403
+
+
+def test_add_peer_that_proves_the_key_is_approved(monkeypatch, tmp_path):
+    api, admin = _fresh_api(monkeypatch, tmp_path)
+    monkeypatch.setenv("AIFORGE_MESH_KEY", "shared" * 6)
+    sent = _stub_seed_transport(monkeypatch, server_key="shared" * 6)
+    r = TestClient(api.app, client=LOOPBACK).post(
+        "/api/admin/peers", json={"url": "http://10.0.0.5:8799/"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["id"] == "mac" and body["state"] == "approved"
+    assert _peer_state(tmp_path, "mac") == "approved"
+    # The mesh key WAS sent to fetch the manifest — but only AFTER the challenge
+    # proved membership; that ordering is asserted by the wrong-key test below.
+    assert sent["manifest_token"] == "shared" * 6
+
+
+def test_add_peer_with_a_wrong_key_is_refused_and_never_sent_the_key(monkeypatch,
+                                                                     tmp_path):
+    api, admin = _fresh_api(monkeypatch, tmp_path)
+    monkeypatch.setenv("AIFORGE_MESH_KEY", "ours" * 8)
+    # The peer holds a DIFFERENT key, so the challenge fails.
+    sent = _stub_seed_transport(monkeypatch, server_key="theirs" * 6, self_id="evil")
+    r = TestClient(api.app, client=LOOPBACK).post(
+        "/api/admin/peers", json={"url": "http://10.0.0.9:8799"})
+    assert r.status_code == 502
+    # The key was NEVER sent: fetch_manifest is only reached after a good
+    # challenge, which never happened.
+    assert sent["manifest_token"] is None
+    assert _peer_state(tmp_path, "evil") is None      # not added
+
+
+def test_add_peer_unreachable_is_502(monkeypatch, tmp_path):
+    api, admin = _fresh_api(monkeypatch, tmp_path)
+    monkeypatch.setenv("AIFORGE_MESH_KEY", "k" * 32)
+    _stub_seed_transport(monkeypatch, server_key=None)   # never answers
+    r = TestClient(api.app, client=LOOPBACK).post(
+        "/api/admin/peers", json={"url": "http://10.0.0.5:8799"})
+    assert r.status_code == 502
+
+
+def test_add_peer_without_a_mesh_key_is_refused_with_guidance(monkeypatch, tmp_path):
+    api, admin = _fresh_api(monkeypatch, tmp_path)
+    monkeypatch.delenv("AIFORGE_MESH_KEY", raising=False)
+    r = TestClient(api.app, client=LOOPBACK).post(
+        "/api/admin/peers", json={"url": "http://10.0.0.5:8799"})
+    assert r.status_code == 400
+    assert "AIFORGE_MESH_KEY" in r.json()["detail"]
+
+
+def test_add_peer_rejects_a_non_http_url(monkeypatch, tmp_path):
+    api, admin = _fresh_api(monkeypatch, tmp_path)
+    monkeypatch.setenv("AIFORGE_MESH_KEY", "k" * 32)
+    r = TestClient(api.app, client=LOOPBACK).post(
+        "/api/admin/peers", json={"url": "ssh://10.0.0.5"})
+    assert r.status_code == 400

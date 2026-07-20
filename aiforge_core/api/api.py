@@ -862,6 +862,45 @@ app.add_middleware(
 )
 
 
+# Quiet the uvicorn ACCESS log for high-frequency polls: the /admin page hits
+# /api/admin/sync-status every 10s and probes hit /api/health, so each would
+# otherwise write an access line several times a minute, forever, burying the
+# lines that matter. This filters ONLY those paths (and only the access log —
+# errors and app logs are untouched); override the set with
+# AIFORGE_ACCESS_LOG_MUTE (comma-separated substrings), or "" to mute nothing.
+class _MuteHighFrequencyPolls(logging.Filter):
+    """Drop uvicorn.access lines whose path matches any muted substring."""
+
+    def __init__(self, muted: list[str]):
+        super().__init__()
+        self._muted = muted
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # uvicorn.access passes (client, method, full_path, http_ver, status)
+        # as record.args; fall back to the formatted message otherwise.
+        try:
+            path = str(record.args[2]) if record.args else record.getMessage()
+        except (IndexError, TypeError):
+            path = record.getMessage()
+        return not any(m in path for m in self._muted)
+
+
+def _install_access_log_filter() -> None:
+    raw = os.environ.get("AIFORGE_ACCESS_LOG_MUTE",
+                         "/api/admin/sync-status,/api/health")
+    muted = [s.strip() for s in raw.split(",") if s.strip()]
+    if not muted:
+        return
+    log = logging.getLogger("uvicorn.access")
+    # Module-level class → isinstance matches across reloads, so a re-import
+    # (tests, a hot reload) never stacks a second copy.
+    if not any(isinstance(f, _MuteHighFrequencyPolls) for f in log.filters):
+        log.addFilter(_MuteHighFrequencyPolls(muted))
+
+
+_install_access_log_filter()
+
+
 # ─────────────────────────── Boot-time wiring ───────────────────────────
 # OpenTelemetry — no-op when AIFORGE_OTEL_ENABLED != "1" (see otel.py).
 # Initialised once at module load so every request inherits the tracer.

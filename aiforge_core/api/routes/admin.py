@@ -27,6 +27,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 
 router = APIRouter()
 
@@ -53,6 +54,16 @@ PROBE_TIMEOUT = 3.0
 PROBE_MAX_PEERS = 16
 PROBE_FANOUT = 8
 PROBE_BUDGET = 8.0
+
+
+def _new_nonce() -> str:
+    """A fresh random challenge nonce (kept here so the one caller stays terse)."""
+    import secrets
+    return secrets.token_hex(16)
+
+
+class _AddPeerBody(BaseModel):
+    url: str
 
 
 def _require_loopback(request: Request) -> None:
@@ -213,6 +224,66 @@ def sync_status(request: Request, probe: int = Query(1)) -> dict:
             "probed": bool(probe)}
 
 
+@router.post("/api/admin/peers")
+def admin_add_peer(request: Request, body: _AddPeerBody) -> dict:
+    """Seed a peer by URL — the manual fallback for when SSDP can't reach it
+    (a flaky segment, a different VLAN). Loopback-only, like the rest of admin.
+
+    Keeps the shared-key model intact and leaks nothing on a typo:
+      1. Challenge the URL for the mesh key FIRST (HMAC over a nonce, our key
+         never sent). A mistyped address that does not hold the key is refused
+         here, before any credential leaves this host.
+      2. Only then authenticate to learn the peer's own id (its manifest's
+         roster advertises it), and approve it — the challenge already proved
+         membership, so no second round-trip.
+
+    Requires AIFORGE_MESH_KEY: without it there is no shared secret to verify a
+    typed address against, so this falls back to the manual token model (edit
+    peers.json). Reachability failures are surfaced, not swallowed."""
+    _require_loopback(request)
+    import hmac
+
+    from aiforge_core.memory.sync import peers as _peers
+    from aiforge_core.memory.sync import transport as _transport
+
+    url = str(body.url or "").strip().rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(400, "url must be like http://<host>:<port>")
+
+    key = _peers.mesh_key()
+    if not key:
+        raise HTTPException(
+            400, "set AIFORGE_MESH_KEY to add a peer by IP (it verifies the "
+            "address holds the shared key); without it, add the peer to "
+            "peers.json with a token by hand")
+
+    # 1. Prove the address holds the key WITHOUT sending ours — a typo'd IP
+    #    pointing at a hostile host must not be handed the secret.
+    nonce = _new_nonce()
+    proof = _transport.membership_proof(url, nonce)
+    if not proof or not hmac.compare_digest(proof, _peers.mesh_proof(nonce)):
+        raise HTTPException(
+            502, f"the peer at {url} did not prove the shared mesh key — "
+            "unreachable, wrong key, or not an AIForge peer")
+
+    # 2. Safe to authenticate now: learn the peer's own id from its manifest.
+    remote = _transport.fetch_manifest(url, key)
+    roster = (remote or {}).get("roster") or []
+    # roster is coerced to a list by transport but its ELEMENTS are not typed:
+    # a peer on another build (or a hostile one that holds the key) can send
+    # ``roster: ["a string"]``, and ``"a string".get("id")`` would 500. Take the
+    # first dict, or nothing.
+    first = roster[0] if roster and isinstance(roster[0], dict) else {}
+    rid = _peers.normalise_id(first.get("id"))
+    if not rid:
+        raise HTTPException(502, f"the peer at {url} did not advertise an id")
+
+    # 3. Register + approve (membership already proven above).
+    _peers.merge_roster([{"id": rid, "urls": [url]}])
+    _peers.promote(rid, url)
+    return {"ok": True, "id": rid, "url": url, "state": _peers.STATE_APPROVED}
+
+
 @router.get("/admin", response_class=HTMLResponse)
 def admin_page(request: Request) -> HTMLResponse:
     # Gated identically to the JSON: a page that refuses to render while its
@@ -267,9 +338,20 @@ border-radius:50%}
 border-radius:6px;padding:8px 10px;font-size:12px;margin-top:12px}
 button{font:inherit;background:var(--card);color:var(--fg);border:1px solid var(--line);
 border-radius:6px;padding:3px 10px;cursor:pointer}
+input{font:inherit;background:var(--card);color:var(--fg);border:1px solid var(--line);
+border-radius:6px;padding:3px 8px;min-width:220px}
+.add{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0 14px}
+.add .msg{font-size:12px}
+.add .msg.ok{color:var(--ok)} .add .msg.bad{color:var(--bad)}
 </style>
 <h1>Memory sync status</h1>
 <div class="sub"><span id="age">loading…</span> · <button id="refresh">Refresh</button></div>
+<div class="add">
+  <input id="peerurl" type="text" placeholder="http://192.168.1.50:8799"
+    title="Seed a peer by URL when SSDP can't reach it. It must hold the shared mesh key.">
+  <button id="addpeer">Add peer by IP</button>
+  <span id="addmsg" class="msg"></span>
+</div>
 <div id="err" class="note" style="display:none"></div>
 <div class="cards" id="cards"></div>
 <table><thead><tr><th>Peer</th><th>State</th><th>Reachable</th><th class="num">Latency</th>
@@ -278,8 +360,9 @@ border-radius:6px;padding:3px 10px;cursor:pointer}
 <div id="cand" class="note" style="display:none">Candidate peers were
 <b>discovered, not trusted</b>. They are never pulled from, and never probed — their
 urls came from gossip or SSDP, so contacting one would make this page fetch whatever
-a stranger named. Approve one by adding its token to
-<span class="mono">peers.json</span> and setting its state to
+a stranger named. With <span class="mono">AIFORGE_MESH_KEY</span> set they are
+promoted automatically once they prove the shared key; otherwise approve one by
+adding its token to <span class="mono">peers.json</span> and setting its state to
 <span class="mono">approved</span>.</div>
 <script>
 var last = 0;
@@ -335,6 +418,31 @@ function load(){
 function tick(){ document.getElementById('age').textContent = last
   ? 'updated ' + Math.round((Date.now() - last)/1000) + 's ago' : 'never updated'; }
 document.getElementById('refresh').onclick = load;
+function addPeer(){
+  var inp = document.getElementById('peerurl');
+  var msg = document.getElementById('addmsg');
+  var url = inp.value.trim();
+  if (!url){ inp.focus(); return; }
+  msg.className = 'msg'; msg.textContent = 'verifying…';
+  fetch('/api/admin/peers', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({url: url})
+  }).then(function(r){ return r.json().then(function(d){ return {ok: r.ok, d: d}; }); })
+    .then(function(res){
+      if (res.ok){
+        msg.className = 'msg ok';
+        msg.textContent = 'added ' + esc(res.d.id) + ' (' + esc(res.d.state) + ')';
+        inp.value = ''; load();
+      } else {
+        msg.className = 'msg bad';
+        msg.textContent = esc((res.d && res.d.detail) || 'failed');
+      }
+    }).catch(function(e){ msg.className = 'msg bad'; msg.textContent = e.message; });
+}
+document.getElementById('addpeer').onclick = addPeer;
+document.getElementById('peerurl').addEventListener('keydown', function(e){
+  if (e.key === 'Enter') addPeer();
+});
 render(__BOOT__);        // local state, painted with no network round-trip
 setInterval(load, 10000); setInterval(tick, 1000); load();
 </script>
