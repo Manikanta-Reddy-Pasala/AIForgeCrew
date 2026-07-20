@@ -44,7 +44,11 @@ def test_remember_rule_reaches_agent_context(cfg):
     assert "Never commit secrets" in ctx
 
 
-def test_remember_rule_writes_memory_scoped(cfg):
+def test_remember_rule_writes_memory_scoped(cfg, monkeypatch):
+    # WHY: rule bodies are LLM-elaborated before they hit the rules file. This
+    # test is about the MEMORY row, not the elaboration, so turn elaboration
+    # off — otherwise the assertion depends on a live model being reachable.
+    monkeypatch.setenv("AIFORGE_BUILDER_ELABORATE", "0")
     from aiforge_core.runtime import chat_agent as ca
     from aiforge_core.memory import sqlite_memory as m
     ca._t_remember_rule({"text": "Global rule X", "scope": "global"}, ".")

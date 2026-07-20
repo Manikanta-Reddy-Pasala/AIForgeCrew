@@ -153,7 +153,12 @@ def run_chat_agent(
     # Multi-part message (simple mode has no enhancer/spec, so nothing else
     # tracks the parts): derive an ASK CHECKLIST and pin it HIGH in the
     # system prompt — the model must cover every part, not answer #1 and stop.
-    _asks = [] if builder else _split_asks(last_user)
+    # Skipped on strict_finish (pipeline Doer / subtask runners): there the
+    # "user message" is a MACHINE-built seed whose instruction bullets
+    # ("CONTEXT-FIRST…", "MINIMAL DIFF…") are style rules, not asks — counting
+    # them made the Doer enumerate its own charter in FINAL and burned an extra
+    # model turn on the completeness gate every run.
+    _asks = [] if (builder or strict_finish) else _split_asks(last_user)
     if _asks:
         sys_msg = ("MULTI-PART REQUEST — the user's CURRENT message contains "
                    f"{len(_asks)} distinct asks. Address EVERY one; number "
