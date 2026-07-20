@@ -55,17 +55,26 @@ def _default_mode() -> int:
 _MODE = _default_mode()
 
 
-def write_bytes(target: str | Path, body: bytes) -> None:
+def write_bytes(target: str | Path, body: bytes, *, mode: int | None = None) -> None:
     """Publish ``body`` at ``target`` as a single visible step.
 
     Missing parent directories are created. See the module docstring for what
     is and is not guaranteed.
+
+    ``mode`` overrides the permissions of the published file. Left as None it
+    honours the umask, matching what a plain ``open(path, "w")`` would have
+    produced — which is what every call site this replaced used. Pass it
+    explicitly for content that should stay private regardless of umask; the
+    memory tree does exactly that, because ``mkstemp``'s own 0600 would
+    otherwise be widened here and quietly publish a peer's notes to every
+    local account.
     """
     path = Path(target)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
-        os.chmod(tmp, _MODE)  # ``os.fchmod`` is Unix-only; the name is ours and random
+        # ``os.fchmod`` is Unix-only; the name is ours and random
+        os.chmod(tmp, _MODE if mode is None else mode)
         with os.fdopen(fd, "wb") as fh:
             fh.write(body)
             fh.flush()
@@ -77,6 +86,7 @@ def write_bytes(target: str | Path, body: bytes) -> None:
         raise
 
 
-def write_text(target: str | Path, text: str, *, encoding: str = "utf-8") -> None:
+def write_text(target: str | Path, text: str, *, encoding: str = "utf-8",
+               mode: int | None = None) -> None:
     """``write_bytes`` for callers that hold a str. Same guarantees."""
-    write_bytes(target, text.encode(encoding))
+    write_bytes(target, text.encode(encoding), mode=mode)

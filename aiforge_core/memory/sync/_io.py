@@ -103,8 +103,13 @@ def write_atomic(target: Path, body: bytes) -> None:
     guarantees (one whole body under concurrent writers, fsynced content, no
     temp litter, and *no* durability for the rename itself) are documented
     there; this is not a second implementation.
+
+    Mode 0600 is passed explicitly: the memory tree holds this machine's
+    knowledge and every peer's synced notes, so it stays owner-only rather than
+    following the umask. Without this the shared helper would widen these files
+    to 0644 to match the config call sites it also serves.
     """
-    _atomic.write_bytes(target, body)
+    _atomic.write_bytes(target, body, mode=0o600)
 
 
 def read_json(path: Path) -> dict:

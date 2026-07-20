@@ -127,3 +127,35 @@ def test_integrations_set_writes_indent_2(tmp_path, monkeypatch):
     expected = {"jira": {"url": "https://j", "token": "t"}}
     assert p.read_bytes() == json.dumps(expected, indent=2).encode("utf-8")
     assert integrations.load_all() == expected
+
+
+def test_mode_override_keeps_private_content_owner_only(tmp_path):
+    """The memory tree passes mode=0o600 so a permissive umask cannot widen it.
+
+    Without the override the shared helper honours the umask (0644 typically),
+    which would publish this machine's knowledge and every peer's synced notes
+    to every local account.
+    """
+    import os
+
+    from aiforge_core.config import _atomic
+
+    default = tmp_path / "d.json"
+    private = tmp_path / "p.md"
+    _atomic.write_bytes(default, b"{}")
+    _atomic.write_bytes(private, b"secret", mode=0o600)
+
+    assert os.stat(private).st_mode & 0o777 == 0o600
+    assert os.stat(default).st_mode & 0o777 != 0o600 or (os.umask(0), os.umask(0o077))[0] == 0o077
+
+
+def test_sync_io_writes_are_owner_only(monkeypatch, tmp_path):
+    """The memory tree's own writer must not depend on the caller's umask."""
+    import os
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import _io
+
+    target = tmp_path / "md" / "captures" / "n.md"
+    _io.write_atomic(target, b"private note")
+
+    assert os.stat(target).st_mode & 0o777 == 0o600
