@@ -23,6 +23,13 @@ DEFAULT_INTERVAL = 1800  # 30 minutes
 # on the next cycle, which is what an unreachable peer costs anyway.
 CYCLE_BUDGET = DEFAULT_INTERVAL // 3
 
+# How many consecutive failed cycles before the log says so. A cycle that fails
+# once is weather; a cycle that fails every time is a broken machine — a full
+# disk, a state file nobody can parse — and the two used to produce the same
+# line forever, so the second was invisible until somebody noticed sync had been
+# dead for a week.
+REPEATED_FAILURES = 5
+
 
 def _first_url(peer: dict) -> str:
     urls = [u for u in (peer.get("urls") or []) if u]
@@ -34,9 +41,15 @@ def _peer_id(peer) -> str:
 
     peers.json is hand-editable and is also fed by gossip, so a row can be a
     string, ``null``, or a nested list. Reading an id must never be the thing
-    that raises — see ``run_once``.
+    that raises — see ``run_once``. The ``try`` is not paranoia about ``dict``:
+    this is called from the handler that logs a failed peer, so a row whose
+    ``get`` misbehaves would raise *out of the except clause* and take the
+    cycle down at the one point built to survive it.
     """
-    return str(peer.get("id") or "") if isinstance(peer, dict) else ""
+    try:
+        return str(peer.get("id") or "") if isinstance(peer, dict) else ""
+    except Exception:  # noqa: BLE001 — an unreadable id is "", never a crash
+        return ""
 
 
 def _ingest(entries) -> list[dict]:
@@ -57,8 +70,12 @@ def _ingest(entries) -> list[dict]:
     return out
 
 
-def sync_with(peer: dict) -> dict:
+def sync_with(peer: dict, deadline: float | None = None) -> dict:
     """Run one cycle against a single peer.
+
+    ``deadline`` is a ``time.monotonic`` stamp after which this peer stops
+    fetching — see ``run_once``. Optional so that a caller syncing one peer on
+    purpose (the admin page) is not forced to invent a budget.
 
     Returns ``{ok, applied, rejected, conflicts}``. Never raises, and the counts
     survive a failure part-way through: under a global ENOSPC the per-entry
@@ -68,13 +85,17 @@ def sync_with(peer: dict) -> dict:
     """
     result = {"ok": False, "applied": 0, "rejected": 0, "conflicts": 0}
     try:
-        _pull(peer, result)
+        _pull(peer, result, deadline)
     except Exception as exc:  # noqa: BLE001 — a misbehaving peer is not our death
         _log.warning("sync: peer %s failed mid-cycle: %s", _peer_id(peer), exc)
     return result
 
 
-def _pull(peer: dict, result: dict) -> None:
+def _spent(deadline: float | None) -> bool:
+    return deadline is not None and time.monotonic() >= deadline
+
+
+def _pull(peer: dict, result: dict, deadline: float | None = None) -> None:
     """One peer's manifest, blobs and bookkeeping, accumulated into ``result``."""
     from aiforge_core.memory.sync import apply, manifest, merge, peers, transport
 
@@ -96,6 +117,8 @@ def _pull(peer: dict, result: dict) -> None:
     # and the remote's text is the version nothing else preserves.
     winning = {str(e.get("hash") or "") for e in plan["want"]}
     for pair in plan["conflict"]:
+        if _spent(deadline):
+            break
         losing_body = None
         if str(pair["remote"].get("hash") or "") not in winning:
             losing_body = transport.fetch_blob(base, str(pair["remote"].get("hash") or ""),
@@ -106,12 +129,26 @@ def _pull(peer: dict, result: dict) -> None:
             result["conflicts"] += 1
 
     for entry in plan["want"]:
+        if _spent(deadline):
+            # The budget has to be re-checked *inside* this loop, not only
+            # between peers: one manifest may advertise MAX_MANIFEST_ENTRIES
+            # (20 000) blobs, so a single peer that passes the pre-flight check
+            # by a millisecond could otherwise spend hours here while every
+            # other peer and the compaction pass behind it wait their turn. The
+            # remaining entries are still advertised next cycle.
+            _log.warning("sync: cycle budget spent part-way through peer %s — "
+                         "%d entries left for the next cycle", _peer_id(peer),
+                         len(plan["want"]) - result["applied"] - result["rejected"])
+            break
         body = transport.fetch_blob(base, str(entry.get("hash") or ""), token)
         if body is None:
             result["rejected"] += 1
             continue
         try:
-            applied = apply.apply_blob(entry, body)
+            # peer_id is load-bearing, not bookkeeping: apply refuses any class
+            # B entry whose `origin` is not this peer, so dropping it here would
+            # let `nuc` forge `ms`'s nodes and tombstones again.
+            applied = apply.apply_blob(entry, body, peer_id=_peer_id(peer))
         except OSError as exc:
             # One unwritable record — a 400-character key is "File name too
             # long" — used to abort the cycle: every later entry was discarded
@@ -183,34 +220,51 @@ def run_once() -> list[dict]:
     loop, so it stopped too, from a cause no log connected to a peer file.
     """
     out: list[dict] = []
+    # Started before discovery, not after: the SSDP sweep is a multicast wait
+    # and its cost is cycle time like any other. Timing from after it let a slow
+    # sweep spend the whole interval and still hand the peers a full budget.
+    deadline = time.monotonic() + CYCLE_BUDGET
+
+    # Discovery is best-effort and is deliberately *outside* the registry read's
+    # try. Sharing one meant a sweep that raised (its merge_roster hitting
+    # ENOSPC) was indistinguishable from an unreadable peers.json, and cost the
+    # cycle every healthy peer — for a step whose entire output is candidates
+    # that this cycle will not pull from anyway.
+    try:
+        _ssdp_sweep()
+    except Exception as exc:  # noqa: BLE001 — discovery must never cost the peers
+        _log.warning("sync: discovery sweep failed, syncing anyway: %s", exc)
+
     try:
         from aiforge_core.memory.sync import peers
 
-        _ssdp_sweep()
         roster = list(peers.approved())
     except Exception as exc:  # noqa: BLE001 — bad state is data, not a crash
         _log.warning("sync: cycle could not read the peer registry: %s", exc)
         return out
 
-    started = time.monotonic()
-    over_budget = False
+    announced = False
     for peer in roster:
         try:
-            if over_budget:
+            # Checked *before* starting the peer, not only after it returns.
+            # Sampling it afterwards cannot preempt the peer that is stuck, so
+            # the real bound was CYCLE_BUDGET plus one peer's full cost — a
+            # manifest plus up to MAX_MANIFEST_ENTRIES blobs.
+            if _spent(deadline):
+                if not announced:
+                    _log.warning("sync: cycle budget of %ss spent — skipping the "
+                                 "rest of this cycle, starting at peer %s",
+                                 CYCLE_BUDGET, _peer_id(peer))
+                    announced = True
                 out.append(_skipped(peer))
                 continue
             row = {"peer": _peer_id(peer)}
             try:
-                row.update(sync_with(peer))
+                row.update(sync_with(peer, deadline))
             finally:
                 # Appended whatever happened: a row with partial counts is the
                 # only evidence on the admin page that the peer was tried.
                 out.append(row)
-            if time.monotonic() - started >= CYCLE_BUDGET:
-                over_budget = True
-                _log.warning("sync: cycle budget of %ds spent on/by peer %s — "
-                             "skipping the rest of this cycle", CYCLE_BUDGET,
-                             _peer_id(peer))
         except Exception as exc:  # noqa: BLE001 — one bad peer must not stop the rest
             _log.warning("sync: cycle failed for %s: %s", _peer_id(peer), exc)
     return out
@@ -260,7 +314,16 @@ def run_forever(interval: int = DEFAULT_INTERVAL) -> None:
     """
     from aiforge_core.memory.okf import tiers
 
+    # Rejected here, before the responder thread exists, because there is no
+    # recovering from it later: ``interval=0`` turns the blanket except below
+    # into an unthrottled traceback firehose, and a negative one raises out of
+    # ``time.sleep`` — the single line the try cannot cover — killing a daemon
+    # whose whole design is to outlive its own failures.
+    if interval <= 0:
+        raise ValueError(f"sync interval must be positive, got {interval}")
+
     _start_ssdp_responder()
+    failures = 0
     while True:
         try:
             run_once()
@@ -271,7 +334,18 @@ def run_forever(interval: int = DEFAULT_INTERVAL) -> None:
             # a peer nobody anticipated) is almost always transient or fixable
             # while we keep running, whereas exiting means the supervisor
             # restarts us straight back into it and compaction never runs again.
-            _log.error("sync: cycle failed, continuing: %s", exc, exc_info=True)
+            failures += 1
+            if failures >= REPEATED_FAILURES:
+                # A permanent on-disk fault otherwise looks exactly like a
+                # transient one, forever, and nothing in the log distinguishes
+                # "syncing fine" from "has not synced since Tuesday".
+                _log.error("sync: %d consecutive cycles have failed — this is "
+                           "not transient, sync and compaction are both "
+                           "stopped: %s", failures, exc, exc_info=True)
+            else:
+                _log.error("sync: cycle failed, continuing: %s", exc, exc_info=True)
+        else:
+            failures = 0
         time.sleep(interval)
 
 
@@ -282,6 +356,12 @@ def main() -> None:
     ap.add_argument("--once", action="store_true", help="run a single cycle and exit")
     ap.add_argument("--interval", type=int, default=DEFAULT_INTERVAL)
     args = ap.parse_args()
+    if args.interval <= 0:
+        # argparse's own exit, so the operator gets usage on stderr and a
+        # non-zero status instead of a daemon that spins or dies on its first
+        # sleep. Checked here as well as in run_forever: this is the boundary
+        # the value actually arrives at.
+        ap.error("--interval must be a positive number of seconds")
     logging.basicConfig(level=logging.INFO)
     if args.once:
         for row in run_once():

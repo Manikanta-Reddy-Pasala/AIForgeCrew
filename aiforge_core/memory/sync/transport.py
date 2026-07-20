@@ -13,7 +13,10 @@ costs one chunk, not one allocation of its full size.
 from __future__ import annotations
 
 import logging
+import threading
 import time
+
+from aiforge_core.memory.sync import _deadline
 
 _log = logging.getLogger("aiforge.sync")
 
@@ -34,7 +37,17 @@ TIMEOUT = 20.0
 # 60 s against the 8 MiB blob cap asks a peer for ~140 KiB/s, which any link
 # worth syncing over beats by orders of magnitude, while keeping a handful of
 # sick peers comfortably inside one cycle's budget (see ``loop.CYCLE_BUDGET``).
+#
+# It bounds the WHOLE request, not just the body. Checking it only inside the
+# ``iter_bytes`` loop bounded nothing that mattered: connect, request send and
+# *response header* receive all happen before the first chunk exists, and
+# TIMEOUT is per read, so a peer dribbling one header byte per second resets
+# the read timer forever, never completes its headers, and never lets the loop
+# start. Measured at production constants: one such peer held ``run_once`` past
+# 90 s with zero rows produced, two healthy peers never contacted, and
+# compaction — which rides the same loop — never run.
 REQUEST_DEADLINE = 60.0
+
 
 # A node is a markdown note and a capture is a paste — both kilobytes. 8 MiB is
 # three orders of magnitude of headroom for a legitimate blob while still being
@@ -55,20 +68,17 @@ def _headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
-def _fetch(url: str, token: str, limit: int) -> bytes | None:
-    """GET ``url``, refusing anything over ``limit`` bytes. None on any failure.
+def _stream(client, url: str, token: str, limit: int, started: float) -> bytes:
+    """The request itself: connect, send, read headers, stream the body.
 
-    Streamed rather than buffered: ``Content-Length`` is a claim, so it is used
-    to refuse early when it is honest and the running total is what actually
-    enforces the cap when it is not (absent, chunked, or a lie). Bounded in
-    wall-clock too, because a slow enough body never reaches any byte cap.
+    Every phase here can block, which is why it does not run on the caller's
+    thread — see ``_fetch``. The in-loop deadline check stays so that a request
+    which is merely slow ends itself cleanly, closing the response on the way
+    out, rather than being abandoned by the watchdog.
     """
-    import httpx
-
-    started = time.monotonic()
     total = 0
     chunks: list[bytes] = []
-    with httpx.stream("GET", url, headers=_headers(token), timeout=TIMEOUT) as r:
+    with client.stream("GET", url, headers=_headers(token)) as r:
         r.raise_for_status()
         declared = 0
         try:
@@ -89,6 +99,52 @@ def _fetch(url: str, token: str, limit: int) -> bytes | None:
                 raise ValueError(f"response exceeded {limit} bytes")
             chunks.append(chunk)
     return b"".join(chunks)
+
+
+def _fetch(url: str, token: str, limit: int) -> bytes | None:
+    """GET ``url``, refusing anything over ``limit`` bytes. None on any failure.
+
+    Streamed rather than buffered: ``Content-Length`` is a claim, so it is used
+    to refuse early when it is honest and the running total is what actually
+    enforces the cap when it is not (absent, chunked, or a lie). Bounded in
+    wall-clock too, because a slow enough body never reaches any byte cap.
+
+    ``REQUEST_DEADLINE`` is enforced twice, because neither half is sufficient:
+
+    * ``_deadline.client`` bounds every socket operation by the time left, so a
+      peer stalling in *any* phase — connect, TLS, response headers, body — is
+      hung up on in place. This is what makes the abort real: closing the client
+      from another thread does **not** wake a reader already blocked in
+      ``recv`` (verified on macOS: the worker stayed blocked indefinitely), so a
+      watchdog alone would leak one thread and one socket per hostile request.
+    * The worker thread bounds the *caller* whatever httpx does. Name resolution
+      happens inside ``connect_tcp`` before any socket exists and honours no
+      timeout at all, so a hostile resolver is still unbounded below.
+    """
+    started = time.monotonic()
+    deadline = started + REQUEST_DEADLINE
+    client = _deadline.client(TIMEOUT, deadline)
+    out: dict = {}
+
+    def _run() -> None:
+        try:
+            out["body"] = _stream(client, url, token, limit, started)
+        except BaseException as exc:   # noqa: BLE001 — re-raised on the caller's thread
+            out["error"] = exc
+
+    worker = threading.Thread(target=_run, name="aiforge-sync-fetch", daemon=True)
+    worker.start()
+    worker.join(REQUEST_DEADLINE)
+    if worker.is_alive():
+        # The socket deadline has already expired, so the worker is either
+        # unwinding or stuck somewhere no timeout reaches (DNS). Do not wait for
+        # it — waiting is exactly the cost this deadline exists to refuse.
+        client.close()
+        raise ValueError(f"request exceeded {REQUEST_DEADLINE:.0f}s deadline")
+    client.close()
+    if "error" in out:
+        raise out["error"]
+    return out.get("body")
 
 
 def fetch_manifest(base_url: str, token: str = "") -> dict:

@@ -369,6 +369,8 @@ def test_the_sync_cycle_runs_both_tiers_after_the_pass(mem, monkeypatch):
 
     monkeypatch.setattr(tiers, "run_after_sync", _tiers)
     with contextlib.suppress(_Stop):
-        loop.run_forever(interval=0)
+        # Any positive interval: _tiers raises before the sleep is reached.
+        # Zero is refused now — it made the loop spin without throttling.
+        loop.run_forever(interval=1)
 
     assert order == ["sync", "compact"]

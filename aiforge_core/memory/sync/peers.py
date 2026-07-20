@@ -81,8 +81,31 @@ def save(data: dict) -> dict:
 
 
 def approved() -> list[dict]:
-    """Peers this node is willing to pull from."""
-    return [p for p in load()["peers"] if p.get("state") == STATE_APPROVED]
+    """Peers this node is willing to pull from. A bad row costs only itself.
+
+    ``[p for p in ... if p.get("state")]`` raised on the first row that was not
+    a dict, and peers.json is hand-editable and gossip-fed, so one stray string
+    is entirely ordinary. The caller (``loop.run_once``) catches that as "the
+    registry is unreadable" and returns no peers at all — so a single malformed
+    row silently dropped *every healthy peer*, every cycle, forever, taking the
+    compaction pass that rides the same loop with it. Skipping the row confines
+    the damage to the row.
+    """
+    out, dropped = [], 0
+    for p in load()["peers"]:
+        if not isinstance(p, dict):
+            dropped += 1
+            continue
+        try:
+            if p.get("state") == STATE_APPROVED:
+                out.append(p)
+        except Exception:  # noqa: BLE001 — a row that cannot be read is not approved
+            dropped += 1
+    if dropped:
+        # One line per cycle, not per row: a file full of junk must not become
+        # a log full of junk.
+        _log.warning("sync: %d unreadable row(s) in peers.json skipped", dropped)
+    return out
 
 
 def roster() -> list[dict]:
@@ -114,6 +137,14 @@ def _index(data: dict) -> dict:
     """
     index: dict[str, dict] = {}
     for p in data.get("peers") or []:
+        if not isinstance(p, dict):
+            # Same reason as ``approved``: one stray row in a hand-edited file
+            # must not raise. This one is worse if it does — merge_roster and
+            # touch both run *after* a peer's blobs are applied, so the peer's
+            # last_seen never advances, it ages out of the election, and its
+            # result row is lost even though the sync itself worked.
+            _log.info("sync: dropping non-record peer row %r", p)
+            continue
         pid = normalise_id(p.get("id"))
         if not pid:
             _log.info("sync: dropping unusable peer id %r", p.get("id"))
@@ -194,6 +225,8 @@ def touch(peer_id: str) -> None:
     pid = normalise_id(peer_id)
     data = load()
     for p in data["peers"]:
+        if not isinstance(p, dict):
+            continue          # a junk row is not the peer we are stamping
         if pid and normalise_id(p.get("id")) == pid:
             p["last_seen"] = now
         elif as_epoch(p.get("last_seen")) > now:

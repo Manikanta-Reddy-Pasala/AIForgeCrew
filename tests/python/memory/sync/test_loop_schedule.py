@@ -70,7 +70,9 @@ def test_run_forever_only_runs_cycles_and_holds_no_leadership_record(
 
     monkeypatch.setattr(loop, "run_once", _once)
     with contextlib.suppress(_Stop):
-        loop.run_forever(interval=0)
+        # Any positive interval: _once raises before the sleep is reached.
+        # Zero is refused now — it made the loop spin without throttling.
+        loop.run_forever(interval=1)
 
     assert cycles == [1]
     assert list((tmp_path / "md").rglob("*.json")) == []
