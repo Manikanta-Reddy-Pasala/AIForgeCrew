@@ -143,7 +143,7 @@ def chat_agent(body: _ChatAgentBody) -> StreamingResponse:
             yield f"data: {json.dumps({'type': 'error', 'text': str(exc)})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
-    return sse_response(_gen())
+    return sse_response(_gen(), label="chat-agent")
 
 
 class _NewSessionBody(BaseModel):
@@ -1894,7 +1894,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         for ev in chat_runs.iter_subscription(run, q):
             yield f"data: {json.dumps(ev)}\n\n"
 
-    return sse_response(_stream())
+    return sse_response(_stream(), label=f"chat-session-{session_id}")
 
 
 @router.get("/api/chat/sessions/{session_id}/attach")
@@ -1925,7 +1925,7 @@ def chat_session_attach(session_id: int) -> StreamingResponse:
         for ev in chat_runs.iter_subscription(run, q):
             yield f"data: {json.dumps(ev)}\n\n"
 
-    return sse_response(_gen())
+    return sse_response(_gen(), label=f"chat-attach-{session_id}")
 
 
 @router.post("/api/chat/sessions/{session_id}/stop")

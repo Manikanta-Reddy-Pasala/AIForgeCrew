@@ -17,9 +17,13 @@ owns those, and setting them here draws h11 warnings for no benefit.
 """
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Iterator
 
 from fastapi.responses import StreamingResponse
+
+_log = logging.getLogger("aiforge.sse")
 
 SSE_HEADERS = {
     "Cache-Control": "no-cache",
@@ -27,7 +31,41 @@ SSE_HEADERS = {
 }
 
 
-def sse_response(generator: Iterator) -> StreamingResponse:
-    """A ``text/event-stream`` response that survives a buffering proxy."""
-    return StreamingResponse(generator, media_type="text/event-stream",
+def _instrumented(generator: Iterator, label: str) -> Iterator:
+    """Wrap an SSE generator so how it ENDS is visible in the server log.
+
+    A "network error" in the browser is silent on the server unless we record
+    it: when the client (or a proxy) drops the connection mid-stream, Starlette
+    calls ``.close()`` on this generator, raising ``GeneratorExit`` at the yield
+    — so a disconnect after N events at T seconds is exactly what a mid-stream
+    drop looks like from here. Correlating that line's timestamp with the user's
+    error pins the mechanism: a ``client disconnected`` line means the
+    connection died (network/proxy); a ``failed`` line means the app raised; and
+    a ``completed`` line while the browser still errored means the drop is purely
+    downstream (proxy buffering/timeout), not the app.
+    """
+    start = time.monotonic()
+    n = 0
+    try:
+        for item in generator:
+            n += 1
+            yield item
+    except GeneratorExit:
+        _log.info("sse %s: client disconnected after %.1fs, %d events",
+                  label, time.monotonic() - start, n)
+        raise
+    except Exception as exc:  # noqa: BLE001 — re-raised; we only annotate it
+        _log.warning("sse %s: stream failed after %.1fs, %d events: %s",
+                     label, time.monotonic() - start, n, exc)
+        raise
+    else:
+        _log.info("sse %s: completed after %.1fs, %d events",
+                  label, time.monotonic() - start, n)
+
+
+def sse_response(generator: Iterator, *, label: str = "sse") -> StreamingResponse:
+    """A ``text/event-stream`` response that survives a buffering proxy and logs
+    how it ended (see :func:`_instrumented`)."""
+    return StreamingResponse(_instrumented(generator, label),
+                             media_type="text/event-stream",
                              headers=dict(SSE_HEADERS))

@@ -9,6 +9,8 @@ SSE route that forgets it is caught here, not in production.
 """
 from __future__ import annotations
 
+import logging
+
 from aiforge_core.api.routes._sse import SSE_HEADERS, sse_response
 
 
@@ -22,6 +24,61 @@ def test_sse_response_sets_the_anti_buffering_headers():
     # The load-bearing one: nginx streams instead of buffering.
     assert r.headers["x-accel-buffering"] == "no"
     assert r.headers["cache-control"] == "no-cache"
+
+
+class _Capture(logging.Handler):
+    """Capture records straight off the aiforge.sse logger — independent of
+    caplog's root propagation, which another test in this suite mutes."""
+    def __init__(self):
+        super().__init__(level=logging.INFO)
+        self.messages = []
+
+    def emit(self, record):
+        self.messages.append(record.getMessage())
+
+
+def _capture_sse_logs():
+    log = logging.getLogger("aiforge.sse")
+    h = _Capture()
+    prev_level, prev_disabled = log.level, log.disabled
+    log.setLevel(logging.INFO)
+    log.disabled = False
+    log.addHandler(h)
+    return log, h, prev_level, prev_disabled
+
+
+def test_a_client_disconnect_is_logged():
+    """A mid-stream drop must leave a server-side fingerprint: Starlette calls
+    .close() on the generator, and the wrapper logs 'client disconnected' with
+    the elapsed time and event count so the next 'network error' is diagnosable."""
+    from aiforge_core.api.routes._sse import _instrumented
+
+    def _events():
+        yield "data: 1\n\n"
+        yield "data: 2\n\n"
+        yield "data: 3\n\n"
+
+    log, h, lvl, dis = _capture_sse_logs()
+    try:
+        gen = _instrumented(_events(), "chat-agent")
+        assert next(gen) == "data: 1\n\n"
+        assert next(gen) == "data: 2\n\n"
+        gen.close()          # what Starlette does when the client drops
+    finally:
+        log.removeHandler(h); log.setLevel(lvl); log.disabled = dis
+    assert any("client disconnected" in m and "chat-agent" in m and "2 events" in m
+               for m in h.messages)
+
+
+def test_a_clean_stream_logs_completion():
+    from aiforge_core.api.routes._sse import _instrumented
+
+    log, h, lvl, dis = _capture_sse_logs()
+    try:
+        list(_instrumented(iter(["data: x\n\n"]), "chat-agent"))
+    finally:
+        log.removeHandler(h); log.setLevel(lvl); log.disabled = dis
+    assert any("completed" in m and "1 events" in m for m in h.messages)
 
 
 def test_sse_headers_constant_is_the_contract():
