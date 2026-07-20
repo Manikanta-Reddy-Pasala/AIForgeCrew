@@ -67,6 +67,18 @@ def _read(path):
     return nodes.parse_node(path.read_text(encoding="utf-8"))
 
 
+def _node(directory, prefix: str):
+    """The one compacted node under ``directory``, found rather than spelled.
+
+    Two reasons the literal filename is gone: a node id now carries a digest of
+    its raw group (distinct groups used to alias onto one file), and the leader
+    writes its fold into its own ``mesh/<origin>/`` subtree.
+    """
+    found = sorted(p for p in directory.rglob(f"{prefix}-*.md"))
+    assert len(found) == 1, found
+    return found[0]
+
+
 # ── tier 1 ────────────────────────────────────────────────────────────────
 
 def test_the_leader_folds_every_inbox_and_its_own_okf_into_the_mesh(mem, folds):
@@ -83,7 +95,7 @@ def test_the_leader_folds_every_inbox_and_its_own_okf_into_the_mesh(mem, folds):
     out = tiers.distil_mesh()
 
     assert out["ok"] and out["inputs"] == 3 and out["groups"] == 1
-    node = _read(paths.mesh_dir() / "M-sync.md")
+    node = _read(_node(paths.mesh_dir(), "M"))
     assert node["meta"]["derived"] == "mesh"
     for claim in ("tunnel mtu", "retry backoff", "lock timeout"):
         assert claim in node["body"]
@@ -100,7 +112,7 @@ def test_a_follower_leaves_the_mesh_alone(mem, folds):
     out = tiers.distil_mesh()
 
     assert out["skipped"] == "not-leader" and out["leader"] == "air"
-    assert not list(paths.mesh_dir().glob("*.md"))
+    assert not list(paths.mesh_dir().rglob("*.md"))
     assert folds == []
 
 
@@ -116,7 +128,7 @@ def test_mesh_content_arriving_in_the_inbox_is_never_refolded(mem, folds):
     out = tiers.distil_mesh()
 
     assert out["inputs"] == 1
-    body = _read(paths.mesh_dir() / "M-sync.md")["body"]
+    body = _read(_node(paths.mesh_dir(), "M"))["body"]
     assert "authored by air" in body
     assert "already distilled" not in body
 
@@ -142,7 +154,7 @@ def test_new_knowledge_reopens_the_fold(mem, folds):
     _write_node(mem / "peers" / "ms", "L-02", "later knowledge", origin="ms")
 
     assert tiers.distil_mesh()["inputs"] == 2
-    assert "later knowledge" in _read(paths.mesh_dir() / "M-sync.md")["body"]
+    assert "later knowledge" in _read(_node(paths.mesh_dir(), "M"))["body"]
 
 
 # ── tier 2 ────────────────────────────────────────────────────────────────
@@ -159,7 +171,7 @@ def test_the_view_is_built_from_the_mesh_and_our_own_okf(mem, folds):
     out = tiers.build_view()
 
     assert out["ok"] and out["inputs"] == 2
-    body = _read(paths.view_dir() / "V-sync.md")["body"]
+    body = _read(_node(paths.view_dir(), "V"))["body"]
     assert "mtu 1380" in body and "override it to 1280" in body
 
 
@@ -193,7 +205,7 @@ def test_a_local_note_reaches_the_view_without_waiting_for_a_new_mesh(mem, folds
     out = tiers.build_view()
 
     assert out["ok"] and folds
-    assert "override it to 1280" in _read(paths.view_dir() / "V-sync.md")["body"]
+    assert "override it to 1280" in _read(_node(paths.view_dir(), "V"))["body"]
 
 
 def test_an_unchanged_okf_and_mesh_cost_no_merge(mem, folds, monkeypatch):
@@ -217,15 +229,20 @@ def test_an_unchanged_okf_and_mesh_cost_no_merge(mem, folds, monkeypatch):
 
 def test_a_mesh_node_received_into_the_inbox_is_still_recognised(mem, folds):
     """Tolerance kept on purpose: a peer on a build older than the mesh routing
-    files its copy under peers/, and so did every node received before it."""
+    files its copy under peers/, and so did every node received before it.
+
+    'air' is approved and alive, so it is the elected leader — a mesh marker is
+    only honoured from the peer the election names (see the hostile-peer test).
+    """
     from aiforge_core.memory.okf import tiers
     from aiforge_core.memory.sync import paths
 
+    _approve("air")
     _write_node(mem / "peers" / "air", "M-sync", "the mesh says mtu 1380",
                 origin="air", derived="mesh")
 
     assert tiers.build_view()["inputs"] == 1
-    assert "mtu 1380" in _read(paths.view_dir() / "V-sync.md")["body"]
+    assert "mtu 1380" in _read(_node(paths.view_dir(), "V"))["body"]
 
 
 def test_a_corrupt_mesh_leaves_a_good_view_standing(mem, folds):
@@ -235,13 +252,14 @@ def test_a_corrupt_mesh_leaves_a_good_view_standing(mem, folds):
     _write_node(paths.mesh_dir(), "M-sync", "the mesh says mtu 1380",
                 derived="mesh")
     tiers.build_view()
-    good = (paths.view_dir() / "V-sync.md").read_text(encoding="utf-8")
+    view = _node(paths.view_dir(), "V")
+    good = view.read_text(encoding="utf-8")
 
     (paths.mesh_dir() / "M-sync.md").write_text("", encoding="utf-8")
     out = tiers.build_view()
 
     assert out["skipped"] == "no-mesh"
-    assert (paths.view_dir() / "V-sync.md").read_text(encoding="utf-8") == good
+    assert view.read_text(encoding="utf-8") == good
 
 
 def test_the_view_is_never_advertised(mem, folds):
@@ -253,7 +271,7 @@ def test_the_view_is_never_advertised(mem, folds):
                 derived="mesh")
     tiers.build_view()
 
-    assert list(paths.view_dir().glob("*.md"))          # there IS a view
+    assert list(paths.view_dir().rglob("*.md"))          # there IS a view
     assert not [e for e in manifest.build() if e["path"].startswith("view/")]
 
 
@@ -265,13 +283,13 @@ def test_the_view_is_rebuilt_rather_than_merged_into(mem, folds):
     _write_node(paths.mesh_dir(), "M-sync", "the mesh says mtu 1380",
                 derived="mesh")
     tiers.build_view()
-    first = _read(paths.view_dir() / "V-sync.md")["body"]
+    first = _read(_node(paths.view_dir(), "V"))["body"]
 
-    (paths.view_dir() / "V-sync.md").unlink()
+    _node(paths.view_dir(), "V").unlink()
     tiers._save_state("view", [])          # forget the stamp, not the inputs
     tiers.build_view()
 
-    assert _read(paths.view_dir() / "V-sync.md")["body"] == first
+    assert _read(_node(paths.view_dir(), "V"))["body"] == first
 
 
 # ── end to end ────────────────────────────────────────────────────────────
@@ -287,8 +305,8 @@ def test_a_lone_machine_runs_both_tiers_over_its_own_knowledge(mem, folds):
     out = tiers.run_after_sync()
 
     assert out["mesh"]["ok"] and out["view"]["ok"]
-    assert "systemd" in _read(paths.mesh_dir() / "M-sync.md")["body"]
-    assert "systemd" in _read(paths.view_dir() / "V-sync.md")["body"]
+    assert "systemd" in _read(_node(paths.mesh_dir(), "M"))["body"]
+    assert "systemd" in _read(_node(paths.view_dir(), "V"))["body"]
 
 
 def test_an_empty_tree_folds_nothing_and_deletes_nothing(mem, folds):
@@ -315,7 +333,7 @@ def test_both_tiers_work_with_no_model_reachable(mem):
     out = tiers.run_after_sync()
 
     assert out["mesh"]["ok"] and out["view"]["ok"]
-    assert "1380" in _read(paths.view_dir() / "V-sync.md")["body"]
+    assert "1380" in _read(_node(paths.view_dir(), "V"))["body"]
 
 
 def test_a_failing_tier_is_reported_not_raised(mem, monkeypatch):

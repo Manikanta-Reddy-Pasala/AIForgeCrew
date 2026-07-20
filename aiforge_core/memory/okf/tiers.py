@@ -4,9 +4,11 @@
 
 **Tier 1 — the leader, once per mesh.** Every peer's authored knowledge arrives
 by ordinary sync and lands in ``peers/<origin>/``. The elected leader folds that
-inbox together with its own ``okf/`` into ``mesh/``: one node per topic/repo
-group, each marked ``derived: mesh``. That result is advertised, so it syncs out
-to everyone.
+inbox together with its own ``okf/`` into its own subtree of ``mesh/``: one node
+per topic/repo group, each marked ``derived: mesh``. That result is advertised,
+so it syncs out to everyone. One subtree per fold, so two leaders across a
+partition are two identities rather than one silently overwritten file — and so
+each peer prunes only what it owns.
 
 **Tier 2 — every peer, locally.** Each machine folds its own ``okf/`` together
 with the mesh result into ``view/``, its working view. ``view/`` is regenerated
@@ -31,7 +33,9 @@ no second copy of either here. Directory literals belong to ``sync.paths``.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 from pathlib import Path
 
 _log = logging.getLogger("aiforge.okf")
@@ -47,6 +51,15 @@ VIEW = "view"
 _STATE_FILE = ".tiers.json"
 
 _ROLE = "learner"
+
+# How much of a group name survives into its node id. The digest beside it, not
+# the slug, is what keeps two groups apart, so this only has to stay readable —
+# and short enough that the id clears ``paths.is_addressable``'s length cap.
+_ID_SLUG_MAX = 48
+
+# A rendered list marker at the start of a line. Bodies are re-folded, and OKR
+# rendering already put these there: feeding them back in produced "- - fact".
+_BULLET_RE = re.compile(r"^\s*[-*]\s+")
 
 
 # ── bookkeeping ───────────────────────────────────────────────────────────
@@ -142,26 +155,91 @@ def _usable(nodes_in: list[dict]) -> list[dict]:
     return [n for n in nodes_in if (n.get("body") or "").strip()]
 
 
+def _origin(node: dict) -> str:
+    """This node's minting peer, in the form ids are compared in."""
+    from aiforge_core.memory.sync import paths
+
+    return paths.fold(str((node.get("meta") or {}).get("origin") or ""))
+
+
+def _trusted_origin() -> str:
+    """The one peer whose ``derived: mesh`` nodes this machine will fold.
+
+    Trust-on-election, NOT cryptography: ``derived: mesh`` is ordinary
+    frontmatter, so any peer can stamp it on a node it advertises. Unchecked,
+    that node landed in ``mesh/`` and was folded straight into ``view/`` — the
+    working knowledge agents read — and was then re-advertised onward by the
+    victim, i.e. an LLM-instruction injection channel with mesh-wide reach.
+    Signed manifests are the real fix and are out of scope here.
+
+    Falls back to our own id when the election cannot be computed: a view built
+    from our own fold alone is a far smaller loss than one built from whatever a
+    peer asked us to believe.
+    """
+    from aiforge_core.memory.sync import election, identity, paths
+
+    try:
+        return paths.fold(election.leader())
+    except Exception as exc:  # noqa: BLE001 — an unreadable roster must not widen trust
+        _log.info("tiers: cannot name the leader (%s) — trusting only our own fold", exc)
+        return paths.fold(identity.self_id())
+
+
 def _mesh_nodes() -> list[dict]:
     """The tier-1 result as it is visible here.
 
-    A mesh node is identified by its ``derived: mesh`` marker, not by the folder
-    it happens to sit in. ``paths.target_for`` now routes an arriving mesh node
-    to ``mesh/``, so that is where it normally lives on a follower too — but the
-    inbox is still read, because a peer running a build from before that routing
-    (or a node received before it) left its copy in ``peers/``. One marker,
-    either folder.
+    A mesh node is identified by its ``derived: mesh`` marker plus an ``origin``
+    naming the current leader, not by the folder it sits in.
+    ``paths.target_for`` routes an arriving mesh node to ``mesh/``, so that is
+    where it normally lives on a follower too — but the inbox is still read,
+    because a peer running a build from before that routing (or a node received
+    before it) left its copy in ``peers/``. One marker, either folder — and a
+    node from anyone but the leader is left to be treated as an ordinary foreign
+    node, which ``_authored`` then discards from the fold.
     """
     from aiforge_core.memory.sync import paths
 
+    leader = _trusted_origin()
     seen: set[Path] = set()
     out: list[dict] = []
     for n in _load((paths.mesh_dir(), paths.peers_root())):
-        if _derived(n) != MESH or n["path"] in seen:
+        if _derived(n) != MESH or _origin(n) != leader or n["path"] in seen:
             continue
         seen.add(n["path"])
         out.append(n)
     return out
+
+
+def _unbulleted(body: str) -> str:
+    """``body`` with rendered list markers stripped from the start of each line.
+
+    Both tiers fold already-rendered OKR markdown, and ``render_note`` puts the
+    markers back: without this the re-fold read ``- fact`` as the fact itself
+    and rendered ``- - fact``, one marker deeper on every round.
+    """
+    return "\n".join(_BULLET_RE.sub("", ln) for ln in body.splitlines())
+
+
+def _claims(node: dict) -> list[str]:
+    """A node's body as comparable content lines: markers and headings dropped."""
+    out: list[str] = []
+    for raw in _unbulleted(node.get("body") or "").splitlines():
+        line = " ".join(raw.split()).lower()
+        if line and not line.startswith("#"):
+            out.append(line)
+    return out
+
+
+def _unrepresented(local: list[dict], mesh: list[dict]) -> list[dict]:
+    """Local nodes the mesh does not already carry.
+
+    Tier 1 folded this machine's ``okf/`` into the mesh, so handing tier 2 both
+    merges the same knowledge twice — every fact rendered twice in the view, and
+    with no model reachable the deterministic merge has nothing to dedupe it
+    away. Bounded at 2x rather than amplifying, but still wrong.
+    """
+    haystack = "\n".join(c for n in mesh for c in _claims(n))
+    return [n for n in local if any(c not in haystack for c in _claims(n))]
 
 
 def _mesh_dirs() -> tuple[Path, ...]:
@@ -169,6 +247,33 @@ def _mesh_dirs() -> tuple[Path, ...]:
     from aiforge_core.memory.sync import paths
 
     return (paths.mesh_dir(), paths.peers_root())
+
+
+def _own_mesh_dir() -> Path:
+    """Where *our* fold is written: this peer's own subtree of ``mesh/``.
+
+    Derived from ``paths.mesh_node_path`` — that function owns the
+    ``mesh/<origin>/<key>.md`` shape, and the leader must write exactly where a
+    follower will file the same node — rather than spelling the layout again
+    here. Owning a whole subtree is what makes the prune safe: everything under
+    it is ours to delete, and another leader's fold is not.
+    """
+    from aiforge_core.memory.sync import identity, paths
+
+    return paths.mesh_node_path(identity.self_id(), "key").parent
+
+
+def _tier1_dirs() -> tuple[Path, ...]:
+    """Tier 1's staleness key: its inputs *and* its output.
+
+    ``mesh/`` is in here because the fold is the only thing that repairs it. Key
+    on the inputs alone and a mesh destroyed from outside — a peer tombstoning
+    what its frontmatter called its node, a hand-deleted directory — stays
+    destroyed on every peer until somebody happens to author a new note.
+    """
+    from aiforge_core.memory.sync import paths
+
+    return (paths.okf_dir(), paths.peers_root(), paths.mesh_dir())
 
 
 def _view_dirs() -> tuple[Path, ...]:
@@ -230,10 +335,18 @@ def _node_id(prefix: str, group: str) -> str:
     ``paths.sanitise`` rather than a local regex: this id becomes the ``key``
     half of a synced identity, and one that does not round-trip is refused by
     the manifest — silently, which would look like compaction never ran.
+
+    The digest is what keeps distinct groups apart. Sanitisation is lossy —
+    ``pos repo``, ``pos-repo`` and ``pos/repo`` all reduce to ``pos-repo`` — so
+    the slug alone made three folds overwrite one file and two thirds of the
+    knowledge vanished inside a single run, while ``rev`` was bumped once per
+    collision and every peer re-fetched the survivor. Hashing the raw group
+    string also makes the truncation above safe.
     """
     from aiforge_core.memory.sync import paths
 
-    return f"{prefix}-{paths.sanitise(group, 'shared')}"
+    digest = hashlib.sha256(group.encode("utf-8")).hexdigest()[:8]
+    return f"{prefix}-{paths.sanitise(group, 'shared')[:_ID_SLUG_MAX]}-{digest}"
 
 
 def _fold(group: str, items: list[dict], role: str) -> dict:
@@ -250,7 +363,8 @@ def _fold(group: str, items: list[dict], role: str) -> dict:
     blocks = []
     for n in items:
         title = str((n.get("meta") or {}).get("title") or n.get("id") or "").strip()
-        blocks.append((f"### {title}\n\n" if title else "") + (n.get("body") or "").strip())
+        blocks.append((f"### {title}\n\n" if title else "")
+                      + _unbulleted(n.get("body") or "").strip())
     return work_notes.consolidate(
         {}, "\n\n".join(b for b in blocks if b), role=role,
         label=f"group '{group}' ({len(items)} node(s))")
@@ -313,11 +427,22 @@ def _write(directory: Path, node_id: str, group: str, body: str,
 
 def _prune(directory: Path, keep: set[str]) -> int:
     """Drop compacted nodes for groups this run no longer produces, so a topic
-    that disappeared upstream does not linger as a stale node forever."""
+    that disappeared upstream does not linger as a stale node forever.
+
+    ``directory`` is always a tree this peer owns outright — its own subtree of
+    ``mesh/``, or ``view/`` — because a delete here leaves no tombstone: pruning
+    a *foreign* mesh node deleted a file the next pull simply fetched again, one
+    wasted transfer and delete per cycle forever, with the two peers permanently
+    disagreeing about the view. Removing a node mesh-wide is
+    ``tombstone.delete_node(origin, key)``, which propagates.
+
+    Recursive, so it still sees its nodes if a fold ever nests them; ``*.md``
+    stopped matching anything once the mesh gained its ``<origin>/`` level.
+    """
     from aiforge_core.memory.sync import _io
 
     dropped = 0
-    for p in _io.iter_syncable(directory, "*.md"):
+    for p in _io.iter_syncable(directory, "**/*.md"):
         if p.stem in keep:
             continue
         try:
@@ -334,7 +459,8 @@ def _run_tier(*, directory: Path, prefix: str, derived: str,
     directory.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
     keep: set[str] = set()
-    for group, items in sorted(_grouped(inputs).items()):
+    groups = _grouped(inputs)
+    for group, items in sorted(groups.items()):
         node_id = _node_id(prefix, group)
         keep.add(node_id)
         tags = sorted({str(t) for n in items
@@ -344,6 +470,12 @@ def _run_tier(*, directory: Path, prefix: str, derived: str,
                       tags, derived)
         if path is not None:
             written.append(path.name)
+    if len(keep) != len(groups):
+        # Two groups sharing one id means one overwrote the other and its
+        # knowledge is gone — invisible in the result, because `keep` held a
+        # single id and the prune saw nothing missing. Loud beats silent.
+        raise RuntimeError(
+            f"{len(groups)} group(s) collapsed onto {len(keep)} node id(s)")
     return {"ok": True, "groups": len(keep), "written": written,
             "pruned": _prune(directory, keep)}
 
@@ -365,8 +497,7 @@ def distil_mesh(*, role: str = _ROLE) -> dict:
         return {"ok": True, "skipped": "not-leader", "leader": election.leader_name()}
 
     sources = (paths.okf_dir(), paths.peers_root())
-    fingerprint = _fingerprint(sources)
-    if _read_state().get("mesh") == fingerprint:
+    if _read_state().get("mesh") == _fingerprint(_tier1_dirs()):
         return {"ok": True, "skipped": "unchanged"}
 
     inputs = _usable(_authored(_load(sources)))
@@ -374,14 +505,15 @@ def distil_mesh(*, role: str = _ROLE) -> dict:
         # Nothing authored anywhere. Returning before the fold also means the
         # prune never runs: a leader that momentarily reads an empty tree must
         # not answer by deleting the mesh everyone else is using.
-        _save_state("mesh", fingerprint)
+        _save_state("mesh", _fingerprint(_tier1_dirs()))
         return {"ok": True, "skipped": "no-inputs", "inputs": 0}
     _log.info("tiers: mesh fold over %d authored node(s)", len(inputs))
-    result = _run_tier(directory=paths.mesh_dir(), prefix="M", derived=MESH,
+    result = _run_tier(directory=_own_mesh_dir(), prefix="M", derived=MESH,
                        inputs=inputs, role=role)
-    # Stamped after the fold: a run that dies half way re-reads its inputs next
-    # cycle rather than recording work it never finished.
-    _save_state("mesh", fingerprint)
+    # Stamped after the fold, and re-read rather than reused: the fold itself
+    # legitimately changes mesh/, so the key must describe what we produced. A
+    # run that dies half way records nothing and re-reads its inputs next cycle.
+    _save_state("mesh", _fingerprint(_tier1_dirs()))
     return {**result, "inputs": len(inputs)}
 
 
@@ -407,7 +539,9 @@ def build_view(*, role: str = _ROLE) -> dict:
         _log.info("tiers: no usable mesh content — keeping the existing view")
         return {"ok": True, "skipped": "no-mesh"}
 
-    inputs = mesh + _usable(_load((paths.okf_dir(),)))
+    # Only what the mesh does not already carry: tier 1 folded this machine's
+    # okf/ in already, so passing all of it would merge the same facts twice.
+    inputs = mesh + _unrepresented(_usable(_load((paths.okf_dir(),))), mesh)
     _log.info("tiers: view rebuild over %d node(s)", len(inputs))
     result = _run_tier(directory=paths.view_dir(), prefix="V", derived=VIEW,
                        inputs=inputs, role=role)
