@@ -13,10 +13,30 @@ _log = logging.getLogger("aiforge.sync")
 
 DEFAULT_INTERVAL = 1800  # 30 minutes
 
+# How long one cycle may spend on peers before it stops starting new ones.
+# Per-request deadlines bound a single peer (``transport.REQUEST_DEADLINE``);
+# they do not bound their sum, and MAX_PEERS is 64, each costing a manifest plus
+# N blobs. A handful of dead or dribbling peers could therefore push one cycle
+# past DEFAULT_INTERVAL, and since this daemon is strictly sequential that also
+# stops the compaction pass that runs after it. A third of the interval leaves
+# two thirds for compaction and the sleep; the skipped peers are simply pulled
+# on the next cycle, which is what an unreachable peer costs anyway.
+CYCLE_BUDGET = DEFAULT_INTERVAL // 3
+
 
 def _first_url(peer: dict) -> str:
     urls = [u for u in (peer.get("urls") or []) if u]
     return urls[0] if urls else ""
+
+
+def _peer_id(peer) -> str:
+    """The id of a registry row that may be anything at all.
+
+    peers.json is hand-editable and is also fed by gossip, so a row can be a
+    string, ``null``, or a nested list. Reading an id must never be the thing
+    that raises — see ``run_once``.
+    """
+    return str(peer.get("id") or "") if isinstance(peer, dict) else ""
 
 
 def _ingest(entries) -> list[dict]:
@@ -40,19 +60,31 @@ def _ingest(entries) -> list[dict]:
 def sync_with(peer: dict) -> dict:
     """Run one cycle against a single peer.
 
-    Returns ``{ok, applied, rejected, conflicts}``. Never raises: an unreachable
-    or misbehaving peer must not take the local node down.
+    Returns ``{ok, applied, rejected, conflicts}``. Never raises, and the counts
+    survive a failure part-way through: under a global ENOSPC the per-entry
+    applies were correctly counted as rejected and then the bookkeeping below
+    raised, so the whole row was discarded and one WARNING was the only trace
+    the peer had been tried at all.
     """
+    result = {"ok": False, "applied": 0, "rejected": 0, "conflicts": 0}
+    try:
+        _pull(peer, result)
+    except Exception as exc:  # noqa: BLE001 — a misbehaving peer is not our death
+        _log.warning("sync: peer %s failed mid-cycle: %s", _peer_id(peer), exc)
+    return result
+
+
+def _pull(peer: dict, result: dict) -> None:
+    """One peer's manifest, blobs and bookkeeping, accumulated into ``result``."""
     from aiforge_core.memory.sync import apply, manifest, merge, peers, transport
 
-    result = {"ok": False, "applied": 0, "rejected": 0, "conflicts": 0}
     base = _first_url(peer)
     if not base:
-        return result
+        return
 
     remote = transport.fetch_manifest(base, str(peer.get("token") or ""))
     if not remote:
-        return result
+        return
     result["ok"] = True
 
     token = str(peer.get("token") or "")
@@ -90,12 +122,13 @@ def sync_with(peer: dict) -> dict:
             applied = False
         result["applied" if applied else "rejected"] += 1
 
+    # ``roster`` is already coerced to a list by transport, so a peer on another
+    # build cannot make this the line that ends the cycle.
     peers.merge_roster(remote.get("roster") or [])
-    peers.touch(str(peer.get("id") or ""))
+    peers.touch(_peer_id(peer))
 
-    _log.info("sync: %s applied=%d rejected=%d conflicts=%d", peer.get("id"),
+    _log.info("sync: %s applied=%d rejected=%d conflicts=%d", _peer_id(peer),
               result["applied"], result["rejected"], result["conflicts"])
-    return result
 
 
 def _ssdp_sweep() -> None:
@@ -134,17 +167,52 @@ def _ssdp_sweep() -> None:
         peers.merge_roster(found)
 
 
-def run_once() -> list[dict]:
-    """One cycle across every approved peer."""
-    from aiforge_core.memory.sync import peers
+def _skipped(peer) -> dict:
+    """A peer the cycle ran out of budget for — reported, not silently absent."""
+    return {"peer": _peer_id(peer), "ok": False, "applied": 0, "rejected": 0,
+            "conflicts": 0, "skipped": True}
 
-    _ssdp_sweep()
-    out = []
-    for peer in peers.approved():
+
+def run_once() -> list[dict]:
+    """One cycle across every approved peer. Never raises.
+
+    Reading the registry used to be outside every ``try``: a hand-edited or
+    half-written peers.json (``{"peers": "beta"}``) raised out of here, out of
+    ``run_forever``, and killed the process — which the supervisor restarted
+    into the same file thirty seconds later, forever. Compaction rides this same
+    loop, so it stopped too, from a cause no log connected to a peer file.
+    """
+    out: list[dict] = []
+    try:
+        from aiforge_core.memory.sync import peers
+
+        _ssdp_sweep()
+        roster = list(peers.approved())
+    except Exception as exc:  # noqa: BLE001 — bad state is data, not a crash
+        _log.warning("sync: cycle could not read the peer registry: %s", exc)
+        return out
+
+    started = time.monotonic()
+    over_budget = False
+    for peer in roster:
         try:
-            out.append({"peer": peer.get("id"), **sync_with(peer)})
+            if over_budget:
+                out.append(_skipped(peer))
+                continue
+            row = {"peer": _peer_id(peer)}
+            try:
+                row.update(sync_with(peer))
+            finally:
+                # Appended whatever happened: a row with partial counts is the
+                # only evidence on the admin page that the peer was tried.
+                out.append(row)
+            if time.monotonic() - started >= CYCLE_BUDGET:
+                over_budget = True
+                _log.warning("sync: cycle budget of %ds spent on/by peer %s — "
+                             "skipping the rest of this cycle", CYCLE_BUDGET,
+                             _peer_id(peer))
         except Exception as exc:  # noqa: BLE001 — one bad peer must not stop the rest
-            _log.warning("sync: cycle failed for %s: %s", peer.get("id"), exc)
+            _log.warning("sync: cycle failed for %s: %s", _peer_id(peer), exc)
     return out
 
 
@@ -186,13 +254,24 @@ def run_forever(interval: int = DEFAULT_INTERVAL) -> None:
     own — one moving part. It runs *after* the sync pass so a cycle folds the
     data that cycle just pulled, and it can never take the daemon down: both
     tiers skip when their inputs are unchanged and soft-fail when they are not.
+
+    Only a ``BaseException`` — a signal, a ``SystemExit`` — ends this loop. Any
+    ordinary ``Exception`` from a cycle is logged and the next cycle runs.
     """
     from aiforge_core.memory.okf import tiers
 
     _start_ssdp_responder()
     while True:
-        run_once()
-        tiers.run_after_sync()
+        try:
+            run_once()
+            tiers.run_after_sync()
+        except Exception as exc:  # noqa: BLE001 — outliving a bad cycle is the point
+            # The daemon surviving one bad cycle is the entire reason this loop
+            # exists: whatever broke (disk full, a state file somebody edited,
+            # a peer nobody anticipated) is almost always transient or fixable
+            # while we keep running, whereas exiting means the supervisor
+            # restarts us straight back into it and compaction never runs again.
+            _log.error("sync: cycle failed, continuing: %s", exc, exc_info=True)
         time.sleep(interval)
 
 

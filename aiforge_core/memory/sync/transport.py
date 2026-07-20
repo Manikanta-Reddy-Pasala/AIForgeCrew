@@ -13,10 +13,28 @@ costs one chunk, not one allocation of its full size.
 from __future__ import annotations
 
 import logging
+import time
 
 _log = logging.getLogger("aiforge.sync")
 
+# Per *operation* (connect, read, write, pool) — this is what httpx means by
+# "timeout", and it is not a request deadline.
 TIMEOUT = 20.0
+
+# The deadline for a whole request, enforced by hand while the body streams.
+# httpx cannot express it: ``httpx.Timeout(connect=…, read=…)`` bounds the gap
+# between two chunks, not the total, so a peer sending one byte every 15 s
+# resets the read timer forever and never trips it. Measured before this
+# existed: 80 s of one sync cycle spent on 5 dribbled bytes, and a 200-byte
+# variant still running past 200 s. The byte caps do not help — at that rate the
+# 8 MiB cap is years away. The daemon is sequential, so such a peer stalls every
+# other peer *and* the compaction pass behind it. Do not "simplify" this back
+# into the timeout argument.
+#
+# 60 s against the 8 MiB blob cap asks a peer for ~140 KiB/s, which any link
+# worth syncing over beats by orders of magnitude, while keeping a handful of
+# sick peers comfortably inside one cycle's budget (see ``loop.CYCLE_BUDGET``).
+REQUEST_DEADLINE = 60.0
 
 # A node is a markdown note and a capture is a paste — both kilobytes. 8 MiB is
 # three orders of magnitude of headroom for a legitimate blob while still being
@@ -42,10 +60,12 @@ def _fetch(url: str, token: str, limit: int) -> bytes | None:
 
     Streamed rather than buffered: ``Content-Length`` is a claim, so it is used
     to refuse early when it is honest and the running total is what actually
-    enforces the cap when it is not (absent, chunked, or a lie).
+    enforces the cap when it is not (absent, chunked, or a lie). Bounded in
+    wall-clock too, because a slow enough body never reaches any byte cap.
     """
     import httpx
 
+    started = time.monotonic()
     total = 0
     chunks: list[bytes] = []
     with httpx.stream("GET", url, headers=_headers(token), timeout=TIMEOUT) as r:
@@ -58,6 +78,10 @@ def _fetch(url: str, token: str, limit: int) -> bytes | None:
         if declared > limit:
             raise ValueError(f"peer declares {declared} bytes, cap is {limit}")
         for chunk in r.iter_bytes():
+            if time.monotonic() - started > REQUEST_DEADLINE:
+                # Same exit as the byte cap: leaving the ``with`` closes the
+                # response, so the dribble stops costing us anything.
+                raise ValueError(f"response exceeded {REQUEST_DEADLINE:.0f}s deadline")
             total += len(chunk)
             if total > limit:
                 # Leaving the ``with`` closes the response, so the rest of the
@@ -89,6 +113,13 @@ def fetch_manifest(base_url: str, token: str = "") -> dict:
             _log.warning("sync: peer %s advertises %d %s entries (cap %d) — refused",
                          base_url, len(rows), field, MAX_MANIFEST_ENTRIES)
             return {}
+        # Coerced here, once, rather than re-checked by every caller: a peer on
+        # a different build sent {"manifest": {...}, "roster": "nope"} and the
+        # caller's ``roster`` iteration raised *after* the blobs had been
+        # applied, skipping peers.touch — the peer's last_seen froze, it aged
+        # out of the election, and its whole result row vanished from the cycle
+        # output. A wrong-shaped field must mean "nothing to sync", not that.
+        data[field] = rows if isinstance(rows, list) else []
     return data
 
 
@@ -102,5 +133,5 @@ def fetch_blob(base_url: str, digest: str, token: str = "") -> bytes | None:
         return None
 
 
-__all__ = ["fetch_manifest", "fetch_blob", "TIMEOUT", "MAX_BLOB_BYTES",
-           "MAX_MANIFEST_BYTES", "MAX_MANIFEST_ENTRIES"]
+__all__ = ["fetch_manifest", "fetch_blob", "TIMEOUT", "REQUEST_DEADLINE",
+           "MAX_BLOB_BYTES", "MAX_MANIFEST_BYTES", "MAX_MANIFEST_ENTRIES"]

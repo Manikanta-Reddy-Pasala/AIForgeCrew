@@ -55,7 +55,11 @@ def test_run_forever_only_runs_cycles_and_holds_no_leadership_record(
     _approve()
     from aiforge_core.memory.sync import loop
 
-    class _Stop(Exception):
+    class _Stop(BaseException):
+        # Not an Exception: run_forever now *swallows* those on purpose (a bad
+        # cycle must not end the daemon — see test_loop_resilience), so an
+        # Exception here would be caught and the loop would spin forever. The
+        # assertion this test makes is unchanged.
         pass
 
     cycles = []

@@ -357,8 +357,8 @@ def test_the_sync_cycle_runs_both_tiers_after_the_pass(mem, monkeypatch):
     from aiforge_core.memory.okf import tiers
     from aiforge_core.memory.sync import loop
 
-    class _Stop(Exception):
-        pass
+    class _Stop(BaseException):
+        """Not an ``Exception``: ``run_forever`` deliberately outlives those."""
 
     order: list[str] = []
     monkeypatch.setattr(loop, "run_once", lambda: order.append("sync"))
