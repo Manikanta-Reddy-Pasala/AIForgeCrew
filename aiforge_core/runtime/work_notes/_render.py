@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 import re
 
+from aiforge_core.config import _atomic
+
 from ._helpers import (
     _BODY_MARK,
     _FRONTMATTER_RE,
@@ -305,15 +307,9 @@ def update_note(path: str, **section_updates) -> dict:
         # waiting to archive.
         sources=_pick("sources", fm.get("sources")),
     )
-    tmp = path + ".tmp"
     try:
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(rendered)
-        os.replace(tmp, path)
+        _atomic.write_text(path, rendered)
     except OSError as exc:
-        import contextlib
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
         return {"ok": False, "error": f"write failed: {exc}"}
     return {"ok": True, "path": path}
 

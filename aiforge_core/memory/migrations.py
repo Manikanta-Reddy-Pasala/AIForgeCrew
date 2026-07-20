@@ -23,6 +23,8 @@ import json
 import logging
 import os
 
+from aiforge_core.config import _atomic
+
 log = logging.getLogger("aiforge.memory.migrations")
 
 
@@ -97,10 +99,7 @@ def _rewrite_file_frontmatter_to_okf(path) -> bool:
         return False
     new_text = head + "\n".join(out_lines) + tail + text[m.end():]
     try:
-        tmp = str(path) + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(new_text)
-        os.replace(tmp, path)
+        _atomic.write_text(path, new_text)
     except OSError:
         return False
     return True
@@ -266,14 +265,9 @@ def _load_marker() -> dict:
 
 
 def _save_marker(done: dict) -> None:
-    try:
-        os.makedirs(os.path.dirname(_marker_path()), exist_ok=True)
-        tmp = _marker_path() + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(done, fh)
-        os.replace(tmp, _marker_path())
-    except OSError:
-        pass
+    import contextlib
+    with contextlib.suppress(OSError):
+        _atomic.write_text(_marker_path(), json.dumps(done))
 
 
 def _neo4j_drain(limit: int = 5000) -> dict:

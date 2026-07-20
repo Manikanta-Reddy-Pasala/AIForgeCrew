@@ -37,6 +37,8 @@ from pathlib import Path
 
 import yaml
 
+from aiforge_core.config import _atomic
+
 log = logging.getLogger("aiforge.repo_rules")
 
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n(.*)$", re.DOTALL)
@@ -172,9 +174,9 @@ def write_rule(name: str, body: str, *, globs: list[str] | None = None,
             _dt.datetime.now(_dt.UTC).replace(microsecond=0).isoformat()))
         front.append("---")
         path = d / f"{slug}.md"
-        tmp = path.with_suffix(".md.tmp")
-        tmp.write_text("\n".join(front) + "\n\n" + body + "\n", encoding="utf-8")
-        os.replace(tmp, path)   # atomic — a concurrent reader never sees a half-write
+        # Atomic — a concurrent reader never sees a half-write, and a second
+        # writer of the same rule never blends its body into ours.
+        _atomic.write_text(path, "\n".join(front) + "\n\n" + body + "\n")
         return {"ok": True, "name": name, "path": str(path)}
     except OSError as exc:
         return {"ok": False, "error": str(exc)}

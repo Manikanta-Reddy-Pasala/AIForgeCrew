@@ -24,6 +24,8 @@ import threading
 import time
 from contextlib import contextmanager
 
+from aiforge_core.config import _atomic
+
 # Soft size cap (~5 MB). When exceeded we keep only the last _TRIM_KEEP lines.
 _MAX_BYTES = 5 * 1024 * 1024
 _TRIM_KEEP = 5000
@@ -73,21 +75,19 @@ def record(family: str, name: str, ms: float) -> None:
 def _maybe_trim(path: str) -> None:
     """Trim the ndjson to the last _TRIM_KEEP lines if it grew past the cap.
 
-    Serialized under _TRIM_LOCK and committed via a temp file + os.replace so a
-    concurrent trim/reset can't interleave a truncate-in-place and lose or
-    corrupt samples (CC2). os.replace is an atomic swap: readers see either the
-    whole old file or the whole new one, never a torn write."""
+    Serialized under _TRIM_LOCK and published through ``_atomic.write_text`` so
+    a concurrent trim/reset can't interleave a truncate-in-place and lose or
+    corrupt samples (CC2). Readers see either the whole old file or the whole
+    new one, never a torn write. The lock only orders *this* process — a second
+    process trimming the same file is covered by the helper's per-writer
+    staging name, not by the lock."""
     try:
         with _TRIM_LOCK:
             if os.path.getsize(path) <= _MAX_BYTES:
                 return
-            with open(path, "r", encoding="utf-8") as fh:
+            with open(path, encoding="utf-8") as fh:
                 lines = fh.readlines()
-            keep = lines[-_TRIM_KEEP:]
-            tmp = f"{path}.trim.{os.getpid()}.tmp"
-            with open(tmp, "w", encoding="utf-8") as fh:
-                fh.writelines(keep)
-            os.replace(tmp, path)
+            _atomic.write_text(path, "".join(lines[-_TRIM_KEEP:]))
     except Exception:
         pass
 

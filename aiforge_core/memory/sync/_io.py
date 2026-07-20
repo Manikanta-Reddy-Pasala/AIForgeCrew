@@ -6,14 +6,14 @@ those import them from here rather than growing their own copy.
 """
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import logging
 import os
-import tempfile
 from collections.abc import Iterator
 from pathlib import Path
+
+from aiforge_core.config import _atomic
 
 _log = logging.getLogger("aiforge.sync")
 
@@ -98,35 +98,13 @@ def iter_syncable(directory: Path, pattern: str) -> Iterator[Path]:
 def write_atomic(target: Path, body: bytes) -> None:
     """Publish ``body`` at ``target`` as a single visible step.
 
-    Two guarantees, both of which the obvious ``target.with_suffix(".tmp")``
-    version quietly fails to give:
-
-    * **Concurrency.** The temp name is unique (``mkstemp``), so two writers of
-      the same target — a sync applier and a local ``save_node``, or two
-      overlapping cycles — stage into different files. ``os.replace`` is atomic,
-      but a *shared* staging path is not: their writes interleave and the rename
-      publishes a mixture of both bodies. A reader always sees one whole body,
-      and the last rename wins.
-    * **Content durability.** The bytes are fsynced before the rename, so a
-      crash cannot publish a truncated or zero-length file.
-
-    Not guaranteed: the *rename* surviving a crash. The parent directory is not
-    fsynced, so a power loss immediately after may leave the previous content in
-    place. That is the correct trade here — a lost write reappears on the next
-    sync cycle, a torn one would propagate.
+    The sync-side name for the repo-wide primitive in ``config._atomic`` — kept
+    because every sync module already reaches for its disk verbs here. The
+    guarantees (one whole body under concurrent writers, fsynced content, no
+    temp litter, and *no* durability for the rename itself) are documented
+    there; this is not a second implementation.
     """
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(body)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, target)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
+    _atomic.write_bytes(target, body)
 
 
 def read_json(path: Path) -> dict:

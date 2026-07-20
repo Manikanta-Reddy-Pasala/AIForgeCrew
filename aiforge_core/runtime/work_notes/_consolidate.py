@@ -6,6 +6,8 @@ import json
 import os
 import re
 
+from aiforge_core.config import _atomic
+
 from ._helpers import _as_items, _log, _now_iso
 from ._render import parse_note, render_note
 
@@ -271,14 +273,8 @@ def consolidate_note(path: str, new_content: str, *, role: str = "learner",
         facts=merged["facts"], links=merged["links"],
         learnings=merged["learnings"], body_md=parsed["body"],
         updated_at=_now_iso(), tags=fm.get("tags"))
-    tmp = path + ".tmp"
     try:
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(rendered)
-        os.replace(tmp, path)
+        _atomic.write_text(path, rendered)
     except OSError as exc:
-        import contextlib
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
         return {"ok": False, "error": f"write failed: {exc}"}
     return {"ok": True, "path": path}

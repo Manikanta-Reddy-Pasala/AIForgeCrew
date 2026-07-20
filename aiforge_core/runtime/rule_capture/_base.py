@@ -13,8 +13,9 @@ import json
 import logging
 import os
 import threading
-import uuid
 from pathlib import Path
+
+from aiforge_core.config import _atomic
 
 try:
     import fcntl  # POSIX advisory file locks (macOS/Linux)
@@ -109,17 +110,6 @@ def _file_lock(path: Path):
             f.close()
 
 
-def _atomic_write(path: Path, text: str) -> None:
-    """Write ``text`` to ``path`` atomically (temp file + os.replace) so a
-    crashed/concurrent writer can never leave a half-written JSON file."""
-    tmp = Path(f"{path}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(text)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
-
-
 # ─────────────────────────── persistence helpers ────────────────────
 
 def _load_index() -> dict:
@@ -137,7 +127,7 @@ def _load_index() -> dict:
 
 def _save_index(data: dict) -> None:
     try:
-        _atomic_write(_index_path(), json.dumps(data, indent=2))
+        _atomic.write_text(_index_path(), json.dumps(data, indent=2))
     except Exception as exc:  # noqa: BLE001
         log.debug("rule_capture index save failed: %s", exc)
 
@@ -161,6 +151,6 @@ def _load_flags() -> dict:
 def _save_flags(data: dict) -> None:
     from aiforge_core.runtime import rule_capture as _rc
     try:
-        _atomic_write(_rc._flags_path(), json.dumps(data, indent=2))
+        _atomic.write_text(_rc._flags_path(), json.dumps(data, indent=2))
     except Exception as exc:  # noqa: BLE001
         log.debug("rule_capture flags save failed: %s", exc)
