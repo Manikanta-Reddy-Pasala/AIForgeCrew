@@ -17,6 +17,8 @@ from datetime import UTC
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
+
+from aiforge_core.api.routes._sse import sse_response
 from pydantic import BaseModel, Field
 
 from aiforge_core.api._shared import _ticket_files_base
@@ -686,4 +688,4 @@ def stream_ticket_events(identifier: str) -> StreamingResponse:
                 break
             _t.sleep(2)
 
-    return StreamingResponse(_gen(), media_type="text/event-stream")
+    return sse_response(_gen())

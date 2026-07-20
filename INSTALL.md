@@ -100,6 +100,23 @@ docker compose up -d --build        # rebuild after a git pull
 The API runs shell commands and edits files over HTTP. It binds **loopback**
 by default. To expose it beyond localhost you must set **both**
 `AIFORGE_BIND_HOST=0.0.0.0` **and** `AIFORGE_API_TOKEN=<secret>` — the app
-refuses to boot on a non-loopback bind without a token. In docker mode the
-full host FS is reachable at `/host`; narrow it with `AIFORGE_HOST_ROOT`
-unless you intend whole-host access.
+refuses to boot on a non-loopback bind without a token. The refusal is decided
+from the **real listening socket** (read off the running server), not from
+`AIFORGE_BIND_HOST`, so `uvicorn --host 0.0.0.0` is refused too.
+
+**Behind a reverse proxy on the same host, set `AIFORGE_TRUST_LOOPBACK=0`.**
+With a token configured, a loopback caller is trusted *without* one by default
+(reaching the socket locally already implies read/write access to the same
+files). If nginx/Cloudflared/anything else on this box forwards to the API,
+every request in the world arrives from `127.0.0.1` and would inherit that
+trust — turning the proxy into an auth bypass. `AIFORGE_TRUST_LOOPBACK=0` makes
+the token mandatory for everyone (`/api/health` stays open).
+
+The operator page `/admin` and `/api/admin/*` **always** require the token when
+one is configured, loopback or not. A browser cannot send a header on a plain
+navigation, so with a token set reach it as
+`curl -H "Authorization: Bearer $AIFORGE_API_TOKEN" http://127.0.0.1:8799/admin`
+(or over an SSH tunnel with a header-setting client).
+
+In docker mode the full host FS is reachable at `/host`; narrow it with
+`AIFORGE_HOST_ROOT` unless you intend whole-host access.

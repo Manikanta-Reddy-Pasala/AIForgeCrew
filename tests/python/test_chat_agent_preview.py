@@ -10,7 +10,9 @@ def test_diff_preview_is_markdown_not_json_string():
                          {"project": "ENG", "summary": "Fix", "description": "## D"},
                          "/tmp")
     assert p.startswith("### Create Jira issue")
-    assert "**Project:**" in p and "## D" in p
+    # the body is previewed as the Jira WIKI markup that will actually be sent
+    # ('## D' → 'h2. D'), so what you approve is what Jira renders
+    assert "**Project:**" in p and "h2. D" in p
     assert not p.lstrip().startswith("{")        # NOT a raw json dump
     # command / diff / unknown → fenced code so the renderer shows monospace
     assert "```bash" in ca._diff_preview("run_command", {"cmd": "ls"}, "/tmp")

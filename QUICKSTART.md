@@ -201,4 +201,8 @@ searching files.
   on the host. Set `AIFORGE_WORKSPACE_DIR=/path` to clamp it, and use `--docker` for
   shared/untrusted deploys. Binding non-loopback (`--host 0.0.0.0`) requires
   `AIFORGE_API_TOKEN` (or the explicit `AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1` opt-out
-  when you front it with your own auth/tunnel).
+  when you front it with your own auth/tunnel); the check reads the real socket, so
+  a bare `uvicorn --host 0.0.0.0` is refused too. **If a reverse proxy on the same
+  host fronts the API, also set `AIFORGE_TRUST_LOOPBACK=0`** — otherwise every
+  proxied request looks like `127.0.0.1` and skips the token. `/admin` always needs
+  the token when one is set.

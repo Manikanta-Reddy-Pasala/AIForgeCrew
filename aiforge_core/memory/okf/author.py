@@ -401,14 +401,27 @@ def reclassify_global_learnings(repos: "list[str]", *, dry_run: bool = False) ->
                              reindex=False)
         if r.get("ok"):
             moved += 1
-    # REVERSIBLE delete: noise nodes MOVE to okf/.trash/ (not unlink) so a
-    # mis-classified learning can be restored.
+    # LOCALLY REVERSIBLE delete: noise nodes MOVE to okf/.trash/ (not unlink) so
+    # a mis-classified learning can be restored *on this machine* — put the file
+    # back and retrieval sees it again. It does NOT come back mesh-wide: the
+    # tombstone below travels at rev+1, so the restored file (still at the old
+    # rev) is no longer the advertised version of its identity. Re-publishing a
+    # restored node means re-authoring it, which stamps a fresh rev.
+    # ``.trash`` is a dot-directory, so ``_io.iter_syncable`` never advertises,
+    # serves or folds what lands there.
+    import contextlib as _cl
+
+    from aiforge_core.memory.sync import tombstone as _tomb
     trash = _os.path.join(_store.okf_root(), ".trash")
     for nid in plan["delete"]:
-        with __import__("contextlib").suppress(OSError):
+        meta = by_id[nid].get("meta") or {}
+        with _cl.suppress(OSError):
             _os.makedirs(trash, exist_ok=True)
             _sh.move(by_id[nid]["path"], _os.path.join(trash, f"{nid}.md"))
             deleted += 1
+            # Removal has to be expressible to the mesh: without this the next
+            # pull from any peer re-plants the node we just called noise.
+            _tomb.mark_deleted(meta.get("origin"), nid, meta.get("rev"))
     _store._invalidate()       # nodes moved to .trash → drop stale parse cache
     _store._write_index()
     return {"ok": True, "moved": moved, "deleted_to_trash": deleted,

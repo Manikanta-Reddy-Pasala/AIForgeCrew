@@ -1,5 +1,10 @@
 """Guard: the docker stack must persist ALL data on the HOST (bind mounts),
-never in docker-internal named volumes, and mount the agent workspace."""
+never in docker-internal named volumes, and mount the agent workspace.
+
+The stack is single-mode now (embedded SQLite + scoped-OKR memory): ONE
+``aiforge`` service, no Postgres/Neo4j/runner sidecars — so the old
+per-sidecar assertions were rewritten against the service that exists.
+"""
 from __future__ import annotations
 import pathlib, yaml
 
@@ -10,27 +15,27 @@ def _c():
     return yaml.safe_load(_COMPOSE.read_text())
 
 
-def test_only_postgres_uses_named_volume():
-    # Postgres is the ONE exception (host bind breaks initdb on macOS/virtiofs);
-    # everything else is a host bind. No other named volumes allowed.
+def test_no_named_volumes():
+    # Named volumes hide state inside docker; every mount must be a host bind
+    # so `docker compose down -v` / a rebuild can't wipe the user's data.
     d = _c()
     named = set((d.get("volumes") or {}).keys())
-    assert named == {"aiforge_pgdata"}, f"unexpected named volumes: {named}"
+    assert not named, f"unexpected named volumes: {named}"
 
 
-def test_data_services_bind_mount_host():
-    svc = _c()["services"]
-    # postgres persists via the named volume; neo4j is a host bind
-    assert "aiforge_pgdata:/var/lib/postgresql/data" in " ".join(svc["postgres"]["volumes"])
-    neo = " ".join(svc["neo4j"]["volumes"])
-    assert ":/data" in neo and ("NEO4J_DATA_DIR" in neo or "/data/neo4j" in neo)
+def test_app_state_bind_mounts_host():
+    # config + sqlite + memory briefs/captures + caches all land under a host
+    # dir (AIFORGE_DATA_DIR) so they survive image rebuilds.
+    vols = " ".join(_c()["services"]["aiforge"]["volumes"])
+    assert "AIFORGE_DATA_DIR" in vols and ":/data/aiforge" in vols
+    assert not any(v.startswith("aiforge_") for v in
+                   _c()["services"]["aiforge"]["volumes"])
 
 
-def test_api_and_runner_mount_workspace_and_repo_root():
-    svc = _c()["services"]
-    for s in ("api", "runner"):
-        vols = " ".join(svc[s]["volumes"])
-        assert "/workspace" in vols, f"{s} missing workspace mount"
-        assert "/data/aiforge" in vols, f"{s} missing host app-state"
-    # AIFORGE_REPO_ROOT points at the mounted workspace
-    assert svc["api"]["environment"]["AIFORGE_REPO_ROOT"] == "/workspace"
+def test_service_mounts_workspace_and_repo_root():
+    svc = _c()["services"]["aiforge"]
+    vols = " ".join(svc["volumes"])
+    # the agent's workspace is the mounted host filesystem at /host
+    assert ":/host" in vols and "AIFORGE_HOST_ROOT" in vols
+    # AIFORGE_REPO_ROOT points at that mount
+    assert svc["environment"]["AIFORGE_REPO_ROOT"] == "${AIFORGE_REPO_ROOT:-/host}"

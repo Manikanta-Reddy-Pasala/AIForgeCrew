@@ -99,6 +99,13 @@ then its scripts, task recipes, and the learnings/solutions most RELEVANT to
 from other projects. `store.load_all()` caches the full parse on a dir
 signature; writes are locked + reindex-deferrable for bulk.
 
+It is also the ONE consumer of the peer-to-peer `view/` fold: a
+`<SHARED_KNOWLEDGE>` block carries `okf.tiers.view_nodes()`, and the global rules
+the fold already restates are dropped (`tiers.unrepresented`) so a fact held both
+locally and in the view is rendered once. `mesh/` and `peers/` stay unread here —
+they are inputs to the fold, not a second retrieval source
+(`docs/superpowers/specs/2026-07-20-two-tier-knowledge-compaction.md`).
+
 ## Migrations (auto, on boot)
 `memory.migrations.run_startup_migrations()` upgrades any older memory into this
 shape: legacy brief format → OKR envelope, `compacted-<topic>.md` briefs → OKR

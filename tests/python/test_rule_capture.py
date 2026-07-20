@@ -333,11 +333,14 @@ def test_looks_actionable_backstop(rc):
 
 # ─────────────────────── inline gate (chat_agent) ───────────────────
 
-def test_commit_auto_approve_skips_inline_gate_and_audits(rc, monkeypatch, tmp_path):
-    """With an EXPLICIT session 'commit directly' flag, a whole-command git
-    commit runs without an approval event AND emits an auto_approved audit."""
+def _commit_run(monkeypatch, tmp_path, session_id):
+    """Drive one chat run whose first turn is a whole-command ``git commit``.
+
+    Stops at the first ``approval`` event: the gate blocks on
+    ``chat_approve.wait`` (900s) right after yielding it, so draining the
+    generator would wedge the test rather than fail it.
+    """
     monkeypatch.setenv("AIFORGE_CHAT_TOOL_POLICY", "run_command=ask")
-    rc.set_gate_flag("commit_auto_approve", scope="session", session_id="s1")
     from aiforge_core.runtime.chat_agent import run_chat_agent
 
     calls = {"n": 0}
@@ -349,13 +352,54 @@ def test_commit_auto_approve_skips_inline_gate_and_audits(rc, monkeypatch, tmp_p
                     'ARGS_JSON: {"cmd": "git commit -m x"}')
         return "FINAL: done"
 
-    events = list(run_chat_agent(
-        [{"role": "user", "content": "go"}], cwd=str(tmp_path),
-        role="chat", complete_fn=fake_complete, session_id="s1"))
+    events = []
+    for ev in run_chat_agent([{"role": "user", "content": "go"}],
+                             cwd=str(tmp_path), role="chat",
+                             complete_fn=fake_complete, session_id=session_id):
+        events.append(ev)
+        if ev.get("type") in ("approval", "done"):
+            break
+    return events
+
+
+def test_commit_auto_approve_skips_inline_gate_and_audits(rc, monkeypatch, tmp_path):
+    """With an EXPLICIT session 'commit directly' flag, a whole-command git
+    commit runs without an approval event AND emits an auto_approved audit —
+    even with this mode's approvals ON, which is the only state in which the
+    flag can do anything (approvals OFF gates nothing to begin with)."""
+    from aiforge_core.runtime import chat_approve
+    monkeypatch.setattr(chat_approve, "approvals_required", lambda sid: True)
+    rc.set_gate_flag("commit_auto_approve", scope="session", session_id="s1")
+
+    events = _commit_run(monkeypatch, tmp_path, "s1")
     assert not any(e.get("type") == "approval" for e in events)
     assert any(e.get("type") == "auto_approved"
                and e.get("flag") == "commit_auto_approve" for e in events)
     assert any(e.get("type") == "tool" for e in events)
+
+
+def test_push_not_auto_approved_by_commit_flag(rc, monkeypatch, tmp_path):
+    """``git push`` updates a REMOTE (CI, merges, other people) — the commit
+    flag never covers it, so the gate still fires."""
+    from aiforge_core.runtime import chat_approve
+    monkeypatch.setattr(chat_approve, "approvals_required", lambda sid: True)
+    monkeypatch.setenv("AIFORGE_CHAT_TOOL_POLICY", "run_command=ask")
+    rc.set_gate_flag("commit_auto_approve", scope="session", session_id="s3")
+    from aiforge_core.runtime.chat_agent import run_chat_agent
+
+    def fake_complete(role, convo, **kw):
+        return ('THOUGHT: ship\nACTION: run_command\n'
+                'ARGS_JSON: {"cmd": "git push"}')
+
+    events = []
+    for ev in run_chat_agent([{"role": "user", "content": "go"}],
+                             cwd=str(tmp_path), role="chat",
+                             complete_fn=fake_complete, session_id="s3"):
+        events.append(ev)
+        if ev.get("type") in ("approval", "done"):
+            break
+    assert any(e.get("type") == "approval" for e in events)
+    assert not any(e.get("type") == "auto_approved" for e in events)
 
 
 def test_chained_command_after_git_not_auto_approved(rc, monkeypatch, tmp_path):

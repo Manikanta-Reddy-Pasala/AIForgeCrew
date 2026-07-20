@@ -1,4 +1,4 @@
-import { j, BASE } from './core';
+import { j, apiFetch } from './core';
 
 // ── Rule / Memory / Feedback capture transparency ──────────────────────────
 export type AppliedFlag = {
@@ -36,7 +36,7 @@ export function setRuleScope(id: string, scope: string): Promise<any> {
 }
 
 export function deleteRule(id: string): Promise<{ ok: boolean }> {
-  return fetch(`${BASE}/rules/${id}`, { method: 'DELETE' })
+  return apiFetch(`/rules/${id}`, { method: 'DELETE' })
     .then(r => r.ok ? r.json() : { ok: false })
     .catch(() => ({ ok: false }));
 }
@@ -73,7 +73,7 @@ export function clearGateFlag(
   const qs = new URLSearchParams({ scope });
   if (opts?.repo) qs.set('repo', opts.repo);
   if (opts?.session_id != null) qs.set('session_id', String(opts.session_id));
-  return fetch(`${BASE}/rules/flags/${encodeURIComponent(name)}?${qs.toString()}`,
+  return apiFetch(`/rules/flags/${encodeURIComponent(name)}?${qs.toString()}`,
     { method: 'DELETE' })
     .then(r => r.ok ? r.json() : { ok: false })
     .catch(() => ({ ok: false }));

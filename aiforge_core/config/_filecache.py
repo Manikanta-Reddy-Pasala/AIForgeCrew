@@ -20,6 +20,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from aiforge_core.config import _atomic
+
 # path(str) -> (mtime, parsed)
 _CACHE: dict[str, tuple[float, Any]] = {}
 
@@ -47,17 +49,15 @@ def read_json(path: str | Path) -> Any | None:
 def write_json(path: str | Path, data: Any) -> None:
     """ATOMICALLY persist ``data`` as JSON, then drop the cache entry.
 
-    tmp-write + ``os.replace`` so a crash/power-loss/ENOSPC mid-write can't
-    leave a truncated/empty file (which the readers silently treat as 'missing'
-    → fall back to defaults → silent config wipe). Also pops the mtime cache so
-    the new value resolves immediately even within the FS mtime granularity.
+    Published through ``_atomic.write_text``: a crash/power-loss/ENOSPC
+    mid-write can't leave a truncated/empty file (which the readers silently
+    treat as 'missing' → fall back to defaults → silent config wipe), and two
+    processes writing the same config can't blend their bodies. Also pops the
+    mtime cache so the new value resolves immediately even within the FS mtime
+    granularity.
     """
     p = str(path)
-    os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
-    tmp = f"{p}.{os.getpid()}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, p)
+    _atomic.write_text(p, json.dumps(data, indent=2))
     _CACHE.pop(p, None)
 
 

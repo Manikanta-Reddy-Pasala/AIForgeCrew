@@ -8,6 +8,8 @@ Chain (order matters):
   3. okf.store.migrate_scoped    — flat okf/<type>/ → global/ + projects/<repo>/
   4. neo4j_drain                 — old Neo4j Observation/Decision nodes → md
                                    captures (which then roll up into 2+3)
+  5. peers_out_of_okf            — okf/peers/<origin>/ → peers/<origin>/ (the
+                                   two-tier compaction layout)
 
 Steps 1 and 3 are cheap + safe to run every boot (they no-op once done). Steps 2
 and 4 are ONE-SHOT — guarded by a marker file so a re-run can't undo later
@@ -20,6 +22,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+
+from aiforge_core.config import _atomic
 
 log = logging.getLogger("aiforge.memory.migrations")
 
@@ -95,10 +99,7 @@ def _rewrite_file_frontmatter_to_okf(path) -> bool:
         return False
     new_text = head + "\n".join(out_lines) + tail + text[m.end():]
     try:
-        tmp = str(path) + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(new_text)
-        os.replace(tmp, path)
+        _atomic.write_text(path, new_text)
     except OSError:
         return False
     return True
@@ -174,6 +175,53 @@ def _rename_okr_dir_to_okf() -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def _move_okf_peers_to_inbox() -> dict:
+    """Move foreign OKF nodes out of ``okf/peers/<origin>/`` into the top-level
+    ``peers/<origin>/`` inbox.
+
+    ``okf/`` now means "knowledge this machine authored" — it is the compaction
+    source and the only thing this peer contributes to the mesh — so other
+    peers' raw nodes must not sit inside it (see
+    ``docs/superpowers/specs/2026-07-20-two-tier-knowledge-compaction.md``).
+
+    Idempotent: a second run finds nothing to move. Never clobbers a file
+    already at the destination — the newer layout wins and the source is left in
+    place for a human to look at. Never raises: a node must boot even when its
+    memory tree is odd."""
+    import shutil
+    try:
+        from aiforge_core.memory.sync import paths as _paths
+        src = _paths.legacy_peers_dir()
+        if not src.is_dir():
+            return {"ok": True, "skipped": "no legacy okf/peers/ folder"}
+        moved = kept = 0
+        for f in sorted(src.rglob("*")):
+            if not f.is_file():
+                continue
+            dest = _paths.peers_root() / f.relative_to(src)
+            if dest.exists():
+                kept += 1                   # destination wins; nothing is lost
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(f), str(dest))
+            moved += 1
+        for d in sorted(src.rglob("*"), reverse=True):
+            if d.is_dir():
+                _rmdir_if_empty(d)
+        _rmdir_if_empty(src)                # gone entirely once fully drained
+        log.info("moved %s foreign okf/peers/ node(s) → peers/ (%s kept in place)",
+                 moved, kept)
+        return {"ok": True, "moved": moved, "kept_at_destination": kept}
+    except Exception as exc:  # noqa: BLE001 — a migration must never block startup
+        return {"ok": False, "error": str(exc)}
+
+
+def _rmdir_if_empty(d) -> None:
+    import contextlib
+    with contextlib.suppress(OSError):   # not empty, or already gone — both fine
+        d.rmdir()
+
+
 def _discover_repos() -> list:
     """Best-effort GENERIC repo list for classification — no hardcoded paths.
     Sources: AIFORGE_REPOS_ROOT (explicit), sibling git repos of the running
@@ -217,14 +265,9 @@ def _load_marker() -> dict:
 
 
 def _save_marker(done: dict) -> None:
-    try:
-        os.makedirs(os.path.dirname(_marker_path()), exist_ok=True)
-        tmp = _marker_path() + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(done, fh)
-        os.replace(tmp, _marker_path())
-    except OSError:
-        pass
+    import contextlib
+    with contextlib.suppress(OSError):
+        _atomic.write_text(_marker_path(), json.dumps(done))
 
 
 def _neo4j_drain(limit: int = 5000) -> dict:
@@ -448,6 +491,15 @@ def run_startup_migrations() -> dict:
         except Exception as exc:  # noqa: BLE001
             out["briefs_to_okr"] = {"ok": False, "error": str(exc)}
 
+    # ── foreign nodes out of okf/ and into the top-level peers/ inbox. One-shot:
+    # nothing writes okf/peers/ any more, so once it is drained there is no
+    # reason to walk it again on every boot.
+    if "peers_out_of_okf" not in done:
+        r = _move_okf_peers_to_inbox()
+        out["peers_out_of_okf"] = r
+        if r.get("ok"):
+            done.add("peers_out_of_okf")
+
     if "neo4j_drain" not in done:
         r = _neo4j_drain()
         out["neo4j_drain"] = r
@@ -633,7 +685,14 @@ if __name__ == "__main__":       # python -m aiforge_core.memory.migrations [fla
     if "--purge-code" in sys.argv:
         print(purge_migrated_code())
     elif "--dedupe" in sys.argv:              # remove duplicate OKR + chat
-        print(dedupe_all())
+        _res = dedupe_all()
+        _okr = _res.get("okr") or {}
+        if _okr.get("skipped") == "not-leader":
+            # An operator who TYPED this deserves to be told why nothing moved;
+            # a bare "removed: 0" reads as a broken command.
+            print(f"note: OKR node dedupe skipped — {_okr.get('leader')} is the "
+                  "elected compaction leader; run --dedupe there.")
+        print(_res)
     elif "--recompact-all" in sys.argv:      # compact at any cost (+ dedupe)
         print(force_recompact_all())
     elif "--migrate-okf" in sys.argv:        # okr→okf dir + all md → OKF frontmatter

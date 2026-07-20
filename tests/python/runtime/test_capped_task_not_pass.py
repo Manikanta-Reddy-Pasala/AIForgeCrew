@@ -43,7 +43,10 @@ def test_deadline_banner_flags_incomplete(tmp_path, monkeypatch):
 
 
 def test_normal_final_not_flagged(tmp_path, monkeypatch):
+    # A real edit is part of "normal": a FINAL with ZERO edits is separately
+    # (and correctly) flagged incomplete by the no-edit guard.
     monkeypatch.setattr(ca, "run_chat_agent", _fake_events(
+        {"type": "tool", "name": "file_write", "result": {"ok": True}},
         {"type": "message", "text": "FINAL done: implemented impl.py, tests green"},
         {"type": "done"},
     ))

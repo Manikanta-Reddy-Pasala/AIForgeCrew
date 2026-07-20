@@ -25,6 +25,8 @@ import re
 import time
 import urllib.parse
 
+from aiforge_core.config import _atomic
+
 # query keys whose VALUES are secrets — redacted before anything is persisted
 _SECRET_QS_RE = re.compile(r"token|key|secret|password|passwd|auth|sig|cred",
                            re.IGNORECASE)
@@ -51,14 +53,6 @@ def _slug_for(url: str) -> str:
     base = (p.netloc + "-" + p.path.strip("/").replace("/", "-"))[:70]
     s = re.sub(r"[^A-Za-z0-9._-]+", "-", base).strip("-").lower() or "page"
     return f"{s}-{hashlib.sha1(clean.encode('utf-8')).hexdigest()[:8]}"
-
-
-def _write_atomic(path: str, data: str) -> None:
-    """tmp + rename so a concurrent reader never sees a torn page."""
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(data)
-    os.replace(tmp, path)
 
 
 def web_crawl(args: dict, cwd: str | None = None) -> dict:
@@ -135,8 +129,8 @@ def web_crawl(args: dict, cwd: str | None = None) -> dict:
                f"engine: {engine}"],
         links=[safe_url], body_md=text)
     try:
-        _write_atomic(page_path, note)
-        _write_atomic(meta_path, json.dumps(
+        _atomic.write_text(page_path, note)
+        _atomic.write_text(meta_path, json.dumps(
             {"url": safe_url, "title": title, "engine": engine,
              "fetched_at": int(time.time()), "chars": len(text)}, indent=1))
     except OSError as exc:

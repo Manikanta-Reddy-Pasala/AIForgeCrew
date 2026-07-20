@@ -185,10 +185,14 @@ def _t_remember_rule(args: dict, cwd: str) -> dict:
         if isinstance(triggers, str):
             triggers = [t.strip() for t in triggers.split(",") if t.strip()]
         scope = (args.get("scope") or "global").lower()
-        text = _elaborate_body("rule", text, name=name,
+        # The elaborated markdown is the RULE FILE body; the user's own
+        # sentence stays in `text` so the memory unit below records the
+        # statement the user actually made (a whole '# Title + bullets' doc
+        # is useless as a recall unit and drifts with every model rewrite).
+        body = _elaborate_body("rule", text, name=name,
                                description=description)   # LLM format+elaborate
         res = repo_rules.write_rule(
-            name, text, globs=globs, always=True,
+            name, body, globs=globs, always=True,
             description=description, triggers=triggers, scope=scope)
         if not res.get("ok"):
             return res
@@ -208,7 +212,7 @@ def _t_remember_rule(args: dict, cwd: str) -> dict:
                     repo=(_chat_repo_key(cwd) if scope == "repo" else None))
         except Exception:  # noqa: BLE001 — memory write must not block the rule
             pass
-        return {"ok": True, "name": name, "scope": scope, "remembered": text,
+        return {"ok": True, "name": name, "scope": scope, "remembered": body,
                 "path": res.get("path")}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}

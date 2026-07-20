@@ -17,6 +17,8 @@ import re
 import threading
 from typing import Any
 
+from aiforge_core.config import _atomic
+
 _LOCK = threading.Lock()
 _VISION = ("auto", "yes", "no")
 _THINKING = ("auto", "yes", "no")
@@ -66,12 +68,7 @@ def _load() -> list[dict]:
 
 
 def _save(rows: list[dict]) -> None:
-    p = _path()
-    os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
-    tmp = p + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(rows, f, indent=2)
-    os.replace(tmp, p)
+    _atomic.write_text(_path(), json.dumps(rows, indent=2))
 
 
 def _slug(label: str, model: str) -> str:

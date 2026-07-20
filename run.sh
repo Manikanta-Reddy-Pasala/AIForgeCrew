@@ -50,6 +50,8 @@
 #   --port N     listen port (default 8799)
 #   --host H     bind host (default 127.0.0.1)
 #   --dev        uvicorn --reload (hot reload)
+#   --admin      open the loopback-only P2P sync admin page (/admin) in a
+#                browser once the server is up (the URL is printed either way)
 #   --skip-web   don't (re)build the web UI
 #   --test       probe the configured model endpoint (OK/FAIL), then exit
 #   --reset-config  wipe ~/.aiforge/agent_config.json (backed up) so stale
@@ -127,6 +129,7 @@ export AIFORGE_ALLOW_SSH="${AIFORGE_ALLOW_SSH:-1}"
 PORT=8799
 HOST=127.0.0.1
 DEV=0
+ADMIN=0
 SKIP_WEB=0
 TEST=0
 # Default mode is config-driven: AIFORGE_MODE (from .env / the service env) →
@@ -151,6 +154,7 @@ while [[ $# -gt 0 ]]; do
     --purge-code) MAINT=purge ;;      # drop code-as-learnings from a bad drain, then exit
     --install-model2vec|--install-semantic) INSTALL_MODEL2VEC=1 ;;  # install semantic memory (model2vec, ~30MB, NO torch). --install-semantic kept as an alias.
     --dev) DEV=1 ;;
+    --admin) ADMIN=1 ;;           # open the loopback-only sync admin page once up
     --skip-web) SKIP_WEB=1 ;;
     --test) TEST=1 ;;             # model probe runs in the venv, no stack
     --with-graphify) WITH_GRAPHIFY=1 ;;
@@ -159,7 +163,7 @@ while [[ $# -gt 0 ]]; do
     --reset-config) RESET_CONFIG=1 ;;
     --port) PORT="$2"; shift ;;
     --host) HOST="$2"; shift ;;
-    -h|--help) sed -n '2,60p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,76p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift
@@ -763,8 +767,16 @@ echo ""
 # uvicorn exits.
 ( while true; do .venv/bin/python -m aiforge_core.runtime.adk_runner || true; sleep "${AIFORGE_RUNNER_POLL_SEC:-10}"; done ) &
 RUNNER_PID=$!
-trap 'kill $RUNNER_PID 2>/dev/null' EXIT INT TERM
 echo "  runner: host pid $RUNNER_PID (polls every ${AIFORGE_RUNNER_POLL_SEC:-10}s)"
+
+# Peer memory sync. Always on, with no opt-out: a cycle with no approved peers
+# in peers.json (the default) touches no network and builds no manifest, so on a
+# single machine this costs one small JSON read every 30 minutes. Reaped when
+# uvicorn exits.
+( while true; do .venv/bin/python -m aiforge_core.memory.sync.loop || true; sleep 30; done ) &
+SYNC_PID=$!
+trap 'kill $RUNNER_PID $SYNC_PID 2>/dev/null' EXIT INT TERM
+echo "  memory sync: host pid $SYNC_PID (peer pull every 30m)"
 
 RELOAD=()
 [[ $DEV -eq 1 ]] && RELOAD=(--reload)
@@ -775,4 +787,32 @@ RELOAD=()
 # Tell the app which host it's bound to, so the security boot-guard can refuse
 # a non-loopback bind that has no AIFORGE_API_TOKEN set (unauth shell API on LAN).
 export AIFORGE_BIND_HOST="$HOST"
-exec .venv/bin/python -m uvicorn aiforge_core.api.api:app --host "$HOST" --port "$PORT" ${RELOAD[@]+"${RELOAD[@]}"}
+
+# --admin: the sync admin page. Always PRINT the URL (headless boxes have no
+# browser, and an operator on an SSH tunnel wants the address, not a launch),
+# and only try to open it when a launcher actually exists. The opener waits for
+# the port in the BACKGROUND so uvicorn still runs in the foreground below.
+ADMIN_URL="http://127.0.0.1:$PORT/admin"
+if [[ $ADMIN -eq 1 ]]; then
+  echo "  admin: $ADMIN_URL  (loopback-only; tunnel with ssh -L $PORT:127.0.0.1:$PORT)"
+  (
+    for _ in $(seq 1 60); do
+      (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null && break
+      sleep 1
+    done
+    if command -v open >/dev/null 2>&1; then open "$ADMIN_URL"
+    elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$ADMIN_URL"
+    fi
+  ) >/dev/null 2>&1 &
+fi
+
+# NOT `exec`: exec replaces this shell's process image, taking the trap on line
+# 778 with it, so the ticket runner and the peer-sync loop would outlive the
+# server as orphans whenever the API is stopped by PID rather than by killing
+# the whole process group. Running uvicorn as a child and waiting keeps the trap
+# alive, so one Ctrl-C / SIGTERM tears down all three. `wait` is interrupted by
+# the trapped signal, which is what lets the handler run.
+.venv/bin/python -m uvicorn aiforge_core.api.api:app --host "$HOST" --port "$PORT" ${RELOAD[@]+"${RELOAD[@]}"} &
+UVICORN_PID=$!
+trap 'kill $UVICORN_PID $RUNNER_PID $SYNC_PID 2>/dev/null' EXIT INT TERM
+wait "$UVICORN_PID"

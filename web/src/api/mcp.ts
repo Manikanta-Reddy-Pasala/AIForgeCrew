@@ -1,4 +1,4 @@
-import { j, BASE } from './core';
+import { j, apiFetch } from './core';
 
 export type McpCatalogEntry = {
   id: string; name: string; description: string; transport: string;
@@ -24,7 +24,7 @@ export const mcpApi = {
       body: JSON.stringify(body),
     }),
   remove: (id: string) =>
-    fetch(`${BASE}/mcp/servers/${id}`, { method: 'DELETE' }).then(r => {
+    apiFetch(`/mcp/servers/${id}`, { method: 'DELETE' }).then(r => {
       if (!r.ok && r.status !== 204) throw new Error(`${r.status} ${r.statusText}`);
     }),
   test: (id: string) =>

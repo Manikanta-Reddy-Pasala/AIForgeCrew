@@ -81,6 +81,8 @@ from aiforge_core.api.routes import tickets as _r_tickets  # noqa: E402
 from aiforge_core.api.routes import runtime as _r_runtime  # noqa: E402
 from aiforge_core.api.routes import observability as _r_observability  # noqa: E402
 from aiforge_core.api.routes import files as _r_files  # noqa: E402
+from aiforge_core.api.routes import sync as _r_sync  # noqa: E402
+from aiforge_core.api.routes import admin as _r_admin  # noqa: E402
 app.include_router(_r_jobs.router)
 app.include_router(_r_repos.router)
 app.include_router(_r_library.router)
@@ -94,6 +96,8 @@ app.include_router(_r_tickets.router)
 app.include_router(_r_runtime.router)
 app.include_router(_r_observability.router)
 app.include_router(_r_files.router)
+app.include_router(_r_sync.router)
+app.include_router(_r_admin.router)
 
 # Backwards-compat re-exports: private chat helpers relocated into
 # aiforge_core.api.routes.chat but still imported by name from
@@ -486,10 +490,17 @@ def _start_daily_reindex() -> None:
 # This control plane RUNS SHELL and EDITS FILES over HTTP, so exposing it
 # unauthenticated is a remote-code-execution surface. Design (pragmatic, must
 # not break local dev / the UI / the tests):
-#   * AIFORGE_API_TOKEN set  → every /api/* route (except health) requires a
-#     matching ``Authorization: Bearer <token>`` (or ``X-AIForge-Token``).
-#   * token unset + LOOPBACK bind → open (preserves local dev + the UI on
-#     localhost + TestClient, which has no real host → treated as loopback).
+#   * AIFORGE_API_TOKEN set  → every /api/* route (except health) requires
+#     EITHER a matching ``Authorization: Bearer <token>`` (or
+#     ``X-AIForge-Token``) OR — only while AIFORGE_TRUST_LOOPBACK is on — a
+#     loopback peer address. Loopback is trusted by default because reaching
+#     the socket from this machine already implies read/write access to the
+#     same files over the filesystem.
+#   * THE ADMIN SURFACE (``/admin`` + ``/api/admin/*``) ALWAYS requires the
+#     token when one is configured, loopback or not: it is the highest-value
+#     screen and must not rest on the weakest signal we have.
+#   * token unset → open (preserves local dev + the UI on localhost); a
+#     non-loopback bind in that state is refused at boot instead.
 #   * NON-loopback bind + no token → REFUSE TO BOOT (see _security_boot_guard).
 # The UI static assets, ``/files`` and ``/`` stay open (no token) so the app
 # shell can load; the browser then sends the operator-configured token on API
@@ -500,11 +511,116 @@ def _api_token() -> str:
     return os.environ.get("AIFORGE_API_TOKEN", "").strip()
 
 
+def _mesh_key() -> str:
+    """The shared mesh secret (AIFORGE_MESH_KEY).
+
+    A sync-SCOPED credential: it authenticates a peer against the pull-only
+    ``/api/memory/sync/*`` routes and NOTHING else — never the shell-running,
+    config-writing control plane the API token unlocks. That split is the whole
+    point: with shared-key auto-join, any machine holding this secret joins the
+    mesh by itself, so the secret must not also be a shell. Set it to a value
+    DIFFERENT from AIFORGE_API_TOKEN, or the split collapses.
+    """
+    return os.environ.get("AIFORGE_MESH_KEY", "").strip()
+
+
+_MESH_KEY_MIN_LEN = 24
+
+
+def _is_sync_path(path: str) -> bool:
+    """The pull-only peer-sync surface the mesh key may unlock (and ONLY it).
+
+    Matched on the raw request path, so a dot-segment or encoded-traversal
+    variant (``/api/memory/sync/../chat/agent``) is rejected here rather than
+    trusted to dead-end at the router: Starlette does not collapse ``..``, but a
+    fronting proxy might, and the mesh key must never authenticate a path that
+    could dispatch to the control plane. The legitimate sync paths contain none
+    of these, so refusing them costs nothing.
+    """
+    if not path.startswith("/api/memory/sync/"):
+        return False
+    lowered = path.lower()
+    return not ("//" in path or ".." in path
+                or "%2e" in lowered or "%2f" in lowered or "%5c" in lowered)
+
+
+def _flag_on(name: str, default: str = "1") -> bool:
+    return (os.environ.get(name) or default).strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
+def _trust_loopback() -> bool:
+    """Whether a loopback TCP peer counts as authenticated (AIFORGE_TRUST_LOOPBACK).
+
+    Default ON so a bare local run keeps working with no configuration. It MUST
+    be set to ``0`` on any deployment that is fronted by a reverse proxy on the
+    same host (Cloudflare → nginx → this app is the documented one): the peer
+    address the app sees is then the proxy's ``127.0.0.1`` for every request on
+    earth, so implicit loopback trust becomes a full auth bypass. The trust is
+    a deliberate configuration statement, never an accident of topology.
+    """
+    return _flag_on("AIFORGE_TRUST_LOOPBACK")
+
+
 def _bind_host() -> str:
-    """The host uvicorn binds to, surfaced to the app via AIFORGE_BIND_HOST
-    (set by run.sh / docker-compose). Defaults to loopback so a bare
-    ``uvicorn ...`` / TestClient run is treated as local-open."""
+    """Pre-boot HINT for the host uvicorn binds to (AIFORGE_BIND_HOST, set by
+    run.sh / docker-compose). Only a hint: the real listening address is read
+    off the running server by ``_observed_bind_hosts`` — an env var says nothing
+    about what a ``uvicorn --host 0.0.0.0`` actually did."""
     return (os.environ.get("AIFORGE_BIND_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+
+
+def _observed_bind_hosts() -> list[str]:
+    """The addresses this process is REALLY listening on, or ``[]`` if unknown.
+
+    ``AIFORGE_BIND_HOST`` is exported by run.sh only, so a systemd unit, a
+    Dockerfile CMD or a developer typing ``uvicorn --host 0.0.0.0`` used to
+    satisfy the boot guard with the loopback default while publishing a
+    shell-running control plane to the LAN. So ask the server, not the env.
+
+    Startup hooks run inside uvicorn's lifespan task, not under
+    ``Server.startup``, so the server is not on our own stack — it is found by
+    walking the coroutine frames of the live asyncio tasks. Real listening
+    sockets win when they exist (``getsockname``); ``config.host`` is the
+    answer during startup, before the sockets are created. Returns ``[]`` under
+    TestClient / gunicorn / anything else we cannot introspect, which the
+    caller must treat as "unobserved", not as "loopback".
+    """
+    try:
+        import asyncio
+        tasks = asyncio.all_tasks()
+    except Exception:  # noqa: BLE001 — no running loop (TestClient, unit tests)
+        return []
+    server = None
+    for task in tasks:
+        coro = task.get_coro()
+        while coro is not None and server is None:
+            frame = getattr(coro, "cr_frame", None)
+            if frame is None:
+                break
+            obj = frame.f_locals.get("self")
+            cls = type(obj)
+            if cls.__name__ == "Server" and cls.__module__.split(".")[0] == "uvicorn":
+                server = obj
+            coro = getattr(coro, "cr_await", None)
+        if server is not None:
+            break
+    if server is None:
+        return []
+    hosts: list[str] = []
+    for asgi_server in (getattr(server, "servers", None) or []):
+        for sock in (getattr(asgi_server, "sockets", None) or []):
+            try:
+                hosts.append(str(sock.getsockname()[0]))
+            except Exception:  # noqa: BLE001 — a unix socket has no host tuple
+                continue
+    if hosts:
+        return hosts
+    config = getattr(server, "config", None)
+    if getattr(config, "uds", None) or getattr(config, "fd", None) is not None:
+        return []                      # not an inet bind we can reason about
+    host = getattr(config, "host", None)
+    return [str(host)] if host else []
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -519,32 +635,81 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
-def _security_boot_guard() -> None:
-    """Refuse to boot when binding a shell-running control plane to a
-    non-loopback host without a token. Raises ``RuntimeError`` — called from a
-    startup hook AND directly unit-testable."""
+def _security_boot_guard(hosts: list[str] | None = None) -> None:
+    """Refuse to boot when a shell-running control plane is listening on a
+    non-loopback address without a token. Raises ``RuntimeError`` — called from
+    a startup hook (where the REAL bind is observable) AND directly
+    unit-testable by passing ``hosts``."""
     token = _api_token()
-    host = _bind_host()
+    boot_log = logging.getLogger("aiforge.boot")
+
+    # A configured mesh key must be high-entropy, because the auto-join
+    # challenge (`/api/memory/sync/challenge`) is an unauthenticated, unthrottled
+    # HMAC-signing oracle: any LAN host can harvest (nonce, HMAC(key, nonce))
+    # pairs and brute-force a weak key offline in seconds, and the key is
+    # auto-join — cracking it is full read access to the memory tree. Enforce a
+    # floor rather than trusting a docstring. 24 chars is the shortest value
+    # that isn't trivially crackable; `openssl rand -hex 32` gives 64.
+    mesh = _mesh_key()
+    if mesh and len(mesh) < _MESH_KEY_MIN_LEN:
+        raise RuntimeError(
+            f"AIForge refuses to boot: AIFORGE_MESH_KEY is too short "
+            f"({len(mesh)} chars, minimum {_MESH_KEY_MIN_LEN}). The auto-join "
+            "challenge signs attacker-chosen nonces without auth, so a weak "
+            "mesh key is brute-forceable offline. Generate one with "
+            "`openssl rand -hex 32`."
+        )
+    if mesh and token and hmac.compare_digest(mesh, token):
+        raise RuntimeError(
+            "AIForge refuses to boot: AIFORGE_MESH_KEY equals AIFORGE_API_TOKEN. "
+            "The mesh key is sync-scoped on purpose — making it the same value "
+            "as the control-plane token hands every sync peer a shell. Use "
+            "different secrets."
+        )
+
+    observed = _observed_bind_hosts() if hosts is None else list(hosts)
+    if observed:
+        exposed = [h for h in observed if not _is_loopback_host(h)]
+    else:
+        # Nothing to observe (TestClient, gunicorn, an embedder): fall back to
+        # the pre-boot hint and SAY SO, because the fallback is the thing that
+        # used to be trusted silently.
+        env_host = _bind_host()
+        exposed = [] if _is_loopback_host(env_host) else [env_host]
+        if not token:
+            boot_log.warning(
+                "could not observe the real listening address; falling back to "
+                "AIFORGE_BIND_HOST=%s for the security guard — if this process "
+                "actually binds a non-loopback address, set AIFORGE_API_TOKEN.",
+                env_host)
+    if not exposed:
+        return
+    where = ", ".join(exposed)
     # Escape hatch: the operator fronts the api with their OWN access layer
     # (Cloudflare Access / a WireGuard-only reverse proxy / nginx auth) and
     # accepts responsibility for exposure. Explicit opt-out so a bind to a
     # tunnel/LAN interface works without the app requiring a token.
     fronted = os.environ.get("AIFORGE_ALLOW_UNAUTH_NONLOOPBACK", "").strip().lower() \
         in ("1", "true", "yes", "on")
-    if not _is_loopback_host(host) and not token and not fronted:
+    if not token and not fronted:
         raise RuntimeError(
-            f"AIForge refuses to boot: binding to a non-loopback host ({host}) "
+            f"AIForge refuses to boot: listening on a non-loopback host ({where}) "
             "exposes a shell-running control plane. Set AIFORGE_API_TOKEN to a "
             "shared secret (and configure the UI with it), bind 127.0.0.1, OR "
             "set AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1 if you front it yourself "
             "(Cloudflare / WireGuard-only proxy)."
         )
-    if not _is_loopback_host(host) and not token and fronted:
-        import logging
-        logging.getLogger("aiforge.boot").warning(
-            "api bound to %s WITHOUT a token (AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1) "
-            "— ensure your own access layer (Cloudflare/WireGuard/nginx) fronts it.",
-            host)
+    if not token and fronted:
+        boot_log.warning(
+            "api listening on %s WITHOUT a token (AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1) "
+            "— ensure your own access layer (Cloudflare/WireGuard/nginx) fronts it, "
+            "and set AIFORGE_TRUST_LOOPBACK=0 so the proxy's loopback peer address "
+            "does not read as authenticated.", where)
+    elif token and _trust_loopback():
+        boot_log.warning(
+            "api listening on %s with AIFORGE_TRUST_LOOPBACK on — if a reverse "
+            "proxy on THIS host forwards to it, every request arrives from "
+            "127.0.0.1 and skips the token; set AIFORGE_TRUST_LOOPBACK=0.", where)
 
 
 @app.on_event("startup")
@@ -578,13 +743,44 @@ def _warn_default_db_creds() -> None:
         pass
 
 
+def _is_admin_path(path: str) -> bool:
+    """The operator admin surface: the page and its data endpoint."""
+    return path == "/admin" or path.startswith("/admin/") or path.startswith("/api/admin")
+
+
 def _auth_exempt(path: str) -> bool:
     """Routes reachable without a token even when one is configured: health,
     the UI shell / static assets and the root redirect. Everything else under
-    ``/api/`` is protected."""
+    ``/api/`` is protected — as is the admin surface, which lives outside
+    ``/api/`` but is never exempt."""
+    if _is_admin_path(path):
+        return False
     if path == "/api/health":
         return True
+    # The mesh-key auto-join handshake: it is the PRE-auth step (a candidate
+    # proves it holds the key before it is approved) and returns only an HMAC
+    # proof, never memory data, so it is reachable without a credential.
+    if path == "/api/memory/sync/challenge":
+        return True
     return not path.startswith("/api/")
+
+
+def _request_is_loopback(request: Request) -> bool:
+    """True when the request's TCP peer is this machine.
+
+    Delegates to ``routes.admin._require_loopback`` — the admin page already
+    owns this predicate, and a security check with two implementations WILL
+    drift. That helper decides purely from ``request.client.host`` (the real
+    peer address); X-Forwarded-For / X-Real-IP / Host / Forwarded are
+    attacker-controlled and are deliberately never consulted. It raises
+    ``HTTPException`` for "not local", which is adapted to a bool here.
+    """
+    from fastapi import HTTPException as _HTTPException
+    try:
+        _r_admin._require_loopback(request)
+    except _HTTPException:
+        return False
+    return True
 
 
 def _extract_request_token(request: Request) -> str:
@@ -597,15 +793,54 @@ def _extract_request_token(request: Request) -> str:
 @app.middleware("http")
 async def _require_token(request: Request, call_next):
     token = _api_token()
+    mesh = _mesh_key()
+    path = request.url.path
+    sync_path = _is_sync_path(path)
+    # The sync surface is protected the moment EITHER credential exists, so a
+    # box that sets only the mesh key (control plane loopback-only) still gates
+    # its peer routes. Everything else is protected only by the API token.
+    need_auth = bool(token) or (sync_path and bool(mesh))
     if (
-        token
+        need_auth
         and request.method != "OPTIONS"          # let CORS preflight through
-        and not _auth_exempt(request.url.path)
+        and not _auth_exempt(path)
     ):
         supplied = _extract_request_token(request)
-        if not (supplied and hmac.compare_digest(supplied, token)):
+        ok_token = bool(supplied) and bool(token) and hmac.compare_digest(supplied, token)
+        # The mesh key authenticates ONLY the sync routes. `ok_mesh` is gated on
+        # `sync_path`, so a peer holding the mesh key gets 401 on /api/chat,
+        # /api/mcp, /api/config — joining the mesh is not gaining a shell.
+        ok_mesh = (
+            sync_path and bool(supplied) and bool(mesh)
+            and hmac.compare_digest(supplied, mesh)
+        )
+        # Loopback may be trusted WITHOUT a token (AIFORGE_TRUST_LOOPBACK, on by
+        # default): anyone who can reach the socket from this machine can
+        # already read the memory tree (and everything else) straight off disk,
+        # so a token adds nothing there. The token exists to authenticate
+        # REMOTE callers. That trust is only sound when nothing on this host
+        # forwards other people's requests into the socket — hence the flag.
+        #
+        # The admin surface follows the SAME rule rather than always demanding a
+        # token. An earlier revision special-cased it, on the reasoning that the
+        # highest-value surface should not rest on the weakest signal. The cost
+        # was disproportionate: a browser navigation cannot send an
+        # Authorization header, so the moment a token existed — which is the day
+        # you add one remote peer — the local admin page stopped opening in a
+        # browser at all. A fronted deployment must set AIFORGE_TRUST_LOOPBACK=0
+        # for the rest of the API regardless, and that one flag closes the proxy
+        # hole here too. The special case only helped when that flag was already
+        # wrong, and it charged every correctly-configured operator for the
+        # privilege.
+        loopback_ok = _trust_loopback() and _request_is_loopback(request)
+        if not ok_token and not ok_mesh and not loopback_ok:
             return JSONResponse(
-                {"detail": "missing or invalid API token"}, status_code=401
+                {"detail": "missing or invalid API token — this AIForge "
+                           "requires AIFORGE_API_TOKEN for any caller that is "
+                           "not a trusted loopback one. In the browser: "
+                           "localStorage.setItem('aiforge_api_token', "
+                           "'<token>') then reload."},
+                status_code=401,
             )
     return await call_next(request)
 

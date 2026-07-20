@@ -151,8 +151,14 @@ def test_researcher_keeps_read_tools():
 
 
 def test_ctx_memory_scoped_to_memory_lookup_only():
+    # WHY: 66784fc deliberately added web_search + web_crawl to ctx_memory's
+    # allowlist in agents.yaml (stuck-recovery: search → crawl the best hit),
+    # so the set is no longer memory_lookup ALONE. What must still hold is:
+    # memory_lookup is granted and nothing that reads/writes/executes the repo
+    # is.
     names = _names(doer_tools.adk_function_tools(role="ctx_memory"))
-    assert names == {"memory_lookup"}
+    assert "memory_lookup" in names
+    assert names <= {"memory_lookup", "web_search", "web_crawl"}
 
 
 def test_doer_keeps_full_working_surface():

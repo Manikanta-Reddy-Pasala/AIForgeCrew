@@ -37,7 +37,6 @@ from ._base import (
     _SESSION_ITEMS,
     _VALID_CATEGORIES,
     _VALID_SCOPES,
-    _atomic_write,
     _config_dir,
     _disabled,
     _file_lock,

@@ -27,6 +27,8 @@ import os
 import re
 import threading
 
+from aiforge_core.config import _atomic
+
 _LOCK = threading.Lock()
 _CATALOG_PATH = os.path.join(os.path.dirname(__file__), "mcp_catalog.json")
 
@@ -46,12 +48,7 @@ def _load() -> list[dict]:
 
 
 def _save(rows: list[dict]) -> None:
-    p = _path()
-    os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
-    tmp = p + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(rows, f, indent=2)
-    os.replace(tmp, p)
+    _atomic.write_text(_path(), json.dumps(rows, indent=2))
 
 
 def _slug(name: str) -> str:

@@ -11,6 +11,8 @@ import json
 import os
 from pathlib import Path
 
+from aiforge_core.config import _atomic
+
 
 def _path() -> Path:
     d = Path(os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")))
@@ -40,12 +42,10 @@ def set_(name: str, cfg: dict) -> dict:
     cur = data.get(name) if isinstance(data.get(name), dict) else {}
     cur.update({k: v for k, v in cfg.items() if v is not None})
     data[name] = cur
-    # Atomic write (temp + rename) — a crash mid-write must not leave a
-    # truncated/corrupt integrations.json that loses every saved credential.
-    p = _path()
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2))
-    os.replace(tmp, p)
+    # Atomic publish — a crash mid-write, or a second process saving another
+    # integration at the same moment, must not leave a truncated or blended
+    # integrations.json that loses every saved credential.
+    _atomic.write_text(_path(), json.dumps(data, indent=2))
     return cur
 
 

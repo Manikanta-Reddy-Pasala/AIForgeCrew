@@ -167,19 +167,21 @@ def test_quality_signal_callback_never_alters_response() -> None:
 
 def test_pipeline_modes_and_retry(monkeypatch) -> None:
     monkeypatch.setenv("AIFORGE_ESCALATE_DISABLE", "1")
+    monkeypatch.delenv("AIFORGE_DOER_PROTOCOL", raising=False)  # pin the default
     from aiforge_core.runtime.pipeline import build_pipeline
     p = build_pipeline(skip_researcher=True)
     nodes = {n.name: n for n in p.graph.nodes}
     # 3-axis verify fan-out collapsed to ONE single-turn verifier call.
     for judge in ("triage", "validator", "verifier"):
         assert nodes[judge].mode == "single_turn", judge
-    # Chatty LlmAgents preserve conversation history (mode="chat"). The DOER is a
-    # text-doer FunctionNode — it drives its OWN ReAct loop, so chat/single_turn
-    # is meaningless and it carries no `mode` field (pydantic model). Assert that
-    # explicitly rather than expecting a mode on it.
-    for chatty in ("enhancer", "planner", "refiner", "feedback", "learner"):
+    # Chatty LlmAgents preserve conversation history (mode="chat").
+    # WHY the doer is in this list now: should_use_text_protocol() defaults to
+    # NATIVE tool-calling (AIFORGE_DOER_PROTOCOL unset), so build_pipeline
+    # yields an LlmAgent doer that DOES carry mode="chat". Only with
+    # AIFORGE_DOER_PROTOCOL=text is it the mode-less text-doer FunctionNode.
+    for chatty in ("enhancer", "planner", "doer", "refiner", "feedback",
+                   "learner"):
         assert nodes[chatty].mode == "chat", chatty
-    assert not hasattr(nodes["doer"], "mode"), "doer is a FunctionNode, no mode"
     # Critical-path chokepoints (incl the doer FunctionNode) carry node-level
     # retry so a transient blip retries instead of aborting the graph.
     for guarded in ("triage", "enhancer", "planner", "doer", "validator",

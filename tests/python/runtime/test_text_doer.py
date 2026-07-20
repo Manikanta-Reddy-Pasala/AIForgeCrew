@@ -18,10 +18,26 @@ from aiforge_core.runtime import chat_agent as ca
 from aiforge_core.runtime import text_doer as td
 
 
+@pytest.fixture(autouse=True)
+def _no_llm_retries(monkeypatch):
+    """No completion retries anywhere in this module: the chat loop otherwise
+    treats a scripted-script exhaustion as a dead model and burns 5 retries
+    with escalating sleeps (~45s), wedging the suite."""
+    monkeypatch.setenv("AIFORGE_CHAT_LLM_RETRIES", "0")
+
+
+class ScriptExhausted(AssertionError):
+    """The scripted model ran out of turns — the test's script is stale."""
+
+
 def _scripted(outputs, *, seen=None):
     """A complete_fn that returns the given model turns in order. When
     ``seen`` is a list, each call appends the flattened user-message text so
-    a test can assert what seed reached the model."""
+    a test can assert what seed reached the model.
+
+    Exhausting the script raises :class:`ScriptExhausted` — LOUD and instant.
+    (The chat loop swallows it into "the model didn't respond", so the assert
+    text is what tells you the script, not the product, is short.)"""
     seq = list(outputs)
 
     def _fn(role, messages, **kw):
@@ -29,6 +45,10 @@ def _scripted(outputs, *, seen=None):
             user = next((m.get("content") for m in reversed(messages)
                          if m.get("role") == "user"), "")
             seen.append(user if isinstance(user, str) else str(user))
+        if not seq:
+            raise ScriptExhausted(
+                f"scripted model ran out of turns after {len(outputs)} "
+                "completions — the loop asked for another one")
         return seq.pop(0)
 
     return _fn
@@ -56,6 +76,9 @@ def test_run_text_doer_captures_outcome_and_tests_ok(tmp_path, monkeypatch):
 
 
 def test_run_text_doer_tests_fail_sets_false(tmp_path, monkeypatch):
+    # Signal harvesting only — opt out of the no-edit corrective retry, which
+    # would (rightly) fire on this edit-free script and clear the signals.
+    monkeypatch.setenv("AIFORGE_DOER_MIN_EDIT_RETRIES", "0")
     monkeypatch.setitem(ca.TOOLS, "run_tests", lambda args, cwd: {"ok": False})
     fn = _scripted([
         'THOUGHT: test\nACTION: run_tests\nARGS_JSON: {}',
@@ -78,6 +101,8 @@ def test_run_text_doer_no_test_tool_leaves_signal_none(tmp_path):
 
 
 def test_run_text_doer_typecheck_and_lint_signals(tmp_path, monkeypatch):
+    # Signal harvesting only — see above: the no-edit retry clears signals.
+    monkeypatch.setenv("AIFORGE_DOER_MIN_EDIT_RETRIES", "0")
     monkeypatch.setitem(ca.TOOLS, "typecheck", lambda args, cwd: {"ok": True})
     monkeypatch.setitem(ca.TOOLS, "format", lambda args, cwd: {"ok": False})
     fn = _scripted([

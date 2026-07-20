@@ -24,6 +24,8 @@ import logging
 import os
 import threading
 
+from aiforge_core.config import _atomic
+
 log = logging.getLogger("aiforge.chat_okr")
 
 # PER-SESSION lock: serializes folds (+ the message snapshot) of the SAME
@@ -209,15 +211,10 @@ def _load_marker() -> dict:
 
 
 def _save_marker(d: dict) -> None:
+    import contextlib
     import json
-    try:
-        p = _marker_path()
-        tmp = str(p) + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(d, fh)
-        os.replace(tmp, p)
-    except OSError:
-        pass
+    with contextlib.suppress(OSError):
+        _atomic.write_text(_marker_path(), json.dumps(d))
 
 
 def compact_session(session_id, *, repo: str | None = None,

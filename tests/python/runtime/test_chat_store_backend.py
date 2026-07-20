@@ -36,6 +36,18 @@ def test_pg_selected_when_pg_url_set(cs, monkeypatch):
     monkeypatch.setattr(env, "AIFORGE_USE_SQLITE", False, raising=False)
     monkeypatch.setattr(env, "AIFORGE_PG_URL",
                         "postgresql://u@127.0.0.1:5432/db", raising=False)
+    # WHY the _conn stub: _backend() now PROBES the DSN with a real connection
+    # and degrades to embedded SQLite when Postgres is unreachable (single-mode
+    # SQLite stacks have no PG running). That is deliberate product behaviour,
+    # so this selection test stubs the probe instead of requiring a live
+    # server — a unit test must never depend on a running database.
+    import contextlib
+
+    @contextlib.contextmanager
+    def _fake_conn(self):
+        yield None
+
+    monkeypatch.setattr(cs._PgChatStore, "_conn", _fake_conn)
     cs.reset_backend_for_tests()
     be = cs._backend()
     assert isinstance(be, cs._PgChatStore)

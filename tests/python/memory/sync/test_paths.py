@@ -1,0 +1,266 @@
+"""The on-disk layout rule, in one place.
+
+OKF ids are per-scope counters, so (nuc, O-01) and (ms, O-01) are different
+objects that both render to O-01.md. These functions are the only thing that
+decides where an identity lives.
+"""
+from __future__ import annotations
+
+
+def _env(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+
+
+def _node(tmp_path, scope: str, origin: str, key: str):
+    p = tmp_path / "md" / "okf" / scope / "learnings" / f"{key}.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(f'---\ntype: learning\nid: "{key}"\norigin: "{origin}"\n'
+                 f'rev: 1\nupdated_by: "{origin}"\n---\n\nb\n', encoding="utf-8")
+    return p
+
+
+def _mesh_node(tmp_path, origin: str, key: str, rev: int = 1):
+    """A node in the leader's fold — the other place a received identity lives."""
+    p = tmp_path / "md" / "mesh" / origin / f"{key}.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(f'---\ntype: learning\nid: "{key}"\norigin: "{origin}"\n'
+                 f'rev: {rev}\nupdated_by: "{origin}"\nderived: "mesh"\n---\n\nb\n',
+                 encoding="utf-8")
+    return p
+
+
+def _peer_node(tmp_path, origin: str, key: str):
+    """A foreign node in the inbox — the layout the applier writes."""
+    p = tmp_path / "md" / "peers" / origin / f"{key}.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(f'---\ntype: learning\nid: "{key}"\norigin: "{origin}"\n'
+                 f'rev: 1\nupdated_by: "{origin}"\n---\n\nb\n', encoding="utf-8")
+    return p
+
+
+def test_node_paths_matches_on_origin_not_just_filename(monkeypatch, tmp_path):
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    mine = _node(tmp_path, "global", "book", "O-01")
+    _peer_node(tmp_path, "ms", "O-01")
+
+    assert paths.node_paths("book", "O-01") == [mine]
+
+
+def test_node_paths_spans_the_inbox_and_the_mesh(monkeypatch, tmp_path):
+    """The manifest advertises okf/, peers/ and mesh/, so the layout rule must
+    find an identity in any of them — otherwise we compare one file and write
+    another (I1)."""
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    inbox = _peer_node(tmp_path, "ms", "O-01")
+
+    assert paths.node_paths("ms", "O-01") == [inbox]
+    assert paths.target_for({"kind": "B", "origin": "ms", "key": "O-01",
+                             "path": "x"}) == inbox
+
+
+def test_node_paths_is_empty_for_an_unknown_identity(monkeypatch, tmp_path):
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    assert paths.node_paths("nuc", "L-99") == []
+
+
+def test_tomb_paths_are_stable(monkeypatch, tmp_path):
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    assert paths.tomb_path("nuc", "L-07").as_posix().endswith(
+        "okf/.tomb/nuc/L-07.json")
+
+
+def test_target_for_known_identity_is_updated_in_place(monkeypatch, tmp_path):
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    held = _mesh_node(tmp_path, "nuc", "L-07")
+    entry = {"kind": "B", "origin": "nuc", "key": "L-07",
+             "path": "peers/nuc/L-07.md"}      # sender's layout differs
+
+    assert paths.target_for(entry) == held
+
+
+def test_a_foreign_node_held_in_okf_is_never_updated_inside_okf(monkeypatch, tmp_path):
+    """okf/ has one writer: us. "Update the identity wherever it lives" let a
+    peer whose node happens to sit there (hand-moved, or a pre-split tree) write
+    its text into the directory compaction reads as *our* knowledge."""
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    stray = _node(tmp_path, "global", "ms", "L-07")
+    target = paths.target_for({"kind": "B", "origin": "ms", "key": "L-07",
+                               "path": "peers/ms/L-07.md"})
+
+    assert target != stray
+    assert paths.okf_dir() not in target.parents
+    assert target.as_posix().endswith("peers/ms/L-07.md")
+
+
+def test_target_for_a_new_foreign_node_lands_in_the_inbox_not_in_okf(monkeypatch, tmp_path):
+    """okf/ means "my knowledge" — a foreign node must land beside it, not in it."""
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    entry = {"kind": "B", "origin": "ms", "key": "O-01",
+             "path": "okf/global/objectives/O-01.md"}
+
+    target = paths.target_for(entry)
+    assert target.as_posix().endswith("peers/ms/O-01.md")
+    assert paths.okf_dir() not in target.parents
+
+
+def test_target_for_a_mesh_marked_node_lands_in_mesh_not_in_the_inbox(
+        monkeypatch, tmp_path):
+    """The leader's fold is not raw peer knowledge: filing it in peers/ left
+    mesh/ empty on every follower and made the per-directory counts a fiction."""
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    entry = {"kind": "B", "origin": "air", "key": "M-sync",
+             "derived": "mesh", "path": "mesh/M-sync.md"}
+
+    assert paths.target_for(entry).as_posix().endswith("md/mesh/air/M-sync.md")
+
+
+def test_a_hostile_key_on_a_mesh_node_cannot_climb_the_tree(monkeypatch, tmp_path):
+    """`derived` is a routing hint from a peer; the key it routes is still
+    attacker input."""
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    root = (tmp_path / "md").resolve()
+
+    for key in ("../../../../etc/passwd", "..", "*"):
+        target = paths.target_for({"kind": "B", "origin": "air", "key": key,
+                                   "derived": "mesh", "path": "x"})
+        if target is not None:              # unaddressable keys are refused
+            assert root in target.resolve().parents
+        assert root in paths.mesh_node_path("air", key).resolve().parents
+
+
+def test_a_held_identity_is_not_relocated_by_a_mesh_marker(monkeypatch, tmp_path):
+    """I1 beats the routing hint: compare one file and write another and the
+    pair flip-flops every round."""
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    mine = _peer_node(tmp_path, "air", "M-sync")
+    entry = {"kind": "B", "origin": "air", "key": "M-sync",
+             "derived": "mesh", "path": "mesh/M-sync.md"}
+
+    assert paths.target_for(entry) == mine
+
+
+def test_target_for_class_a_uses_the_advertised_path(monkeypatch, tmp_path):
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    entry = {"kind": "A", "path": "captures/a.md"}
+
+    assert paths.target_for(entry).as_posix().endswith("captures/a.md")
+
+
+def test_target_for_class_a_still_refuses_to_escape(monkeypatch, tmp_path):
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    assert paths.target_for({"kind": "A", "path": "../../evil"}) is None
+
+
+def test_a_hostile_origin_or_key_cannot_climb_the_tree(monkeypatch, tmp_path):
+    """origin and key come from a peer's frontmatter — treat them as attacker input."""
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    root = (tmp_path / "md").resolve()
+
+    for origin, key in (("../../..", "L-07"),
+                        ("nuc", "../../../../etc/passwd"),
+                        ("..", ".."),
+                        ("", "")):
+        for p in (paths.peer_node_path(origin, key), paths.tomb_path(origin, key)):
+            assert root in p.resolve().parents
+
+
+def test_a_glob_metacharacter_key_cannot_address_another_node(monkeypatch, tmp_path):
+    """B1: key comes from a peer's manifest; rglob would interpret '*' as a pattern."""
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    mine = _node(tmp_path, "global", "nuc", "L-07")
+
+    for key in ("*", "?-0[0-9]", "**/L-07"):
+        assert paths.node_paths("nuc", key) == []
+        target = paths.target_for({"kind": "B", "origin": "nuc", "key": key,
+                                   "path": "x"})
+        assert target != mine
+
+
+def test_node_paths_skips_a_symlinked_node(monkeypatch, tmp_path):
+    """B2: a symlink resolving outside the tree must not be an update target."""
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    outside = tmp_path / "outside.md"
+    outside.write_text('---\ntype: learning\nid: "L-99"\norigin: "nuc"\n'
+                       'rev: 1\nupdated_by: "nuc"\n---\n\nsecret\n', encoding="utf-8")
+    d = tmp_path / "md" / "okf" / "global" / "learnings"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "L-99.md").symlink_to(outside)
+
+    assert paths.node_paths("nuc", "L-99") == []
+
+
+def test_node_paths_puts_the_highest_rev_first(monkeypatch, tmp_path):
+    """I1: the same identity in two scopes — compare and write the same file."""
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    def _rev_node(scope: str, rev: int):
+        p = tmp_path / "md" / "okf" / scope / "learnings" / "L-07.md"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f'---\ntype: learning\nid: "L-07"\norigin: "nuc"\n'
+                     f'rev: {rev}\nupdated_by: "nuc"\n---\n\nb{rev}\n',
+                     encoding="utf-8")
+        return p
+
+    _rev_node("global", 3)
+    newer = _rev_node("projects/x", 9)
+
+    assert paths.node_paths("nuc", "L-07")[0] == newer
+
+
+def test_target_for_writes_the_highest_rev_copy_it_would_compare(monkeypatch,
+                                                                 tmp_path):
+    """I1 across the two roots a received identity may occupy. okf/ is excluded
+    from this rule (a peer may not write there at all), so the ranking is shown
+    where it actually decides a write."""
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    _peer_node(tmp_path, "nuc", "L-07")             # rev 1 in the inbox
+    newer = _mesh_node(tmp_path, "nuc", "L-07", rev=9)
+
+    assert paths.target_for({"kind": "B", "origin": "nuc", "key": "L-07",
+                             "path": "x"}) == newer
+
+
+def test_target_for_a_tombstone(monkeypatch, tmp_path):
+    _env(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import paths
+
+    tomb = paths.target_for({"kind": "B", "origin": "nuc", "key": "L-07",
+                             "tomb": True, "path": "x"})
+
+    assert tomb.as_posix().endswith("okf/.tomb/nuc/L-07.json")
+    # No class B record travels without an origin any more (the lease did).
+    assert paths.target_for({"kind": "B", "origin": "", "key": "L-07",
+                             "path": "x"}) is None

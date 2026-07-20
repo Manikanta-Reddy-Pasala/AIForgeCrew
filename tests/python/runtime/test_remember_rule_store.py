@@ -37,14 +37,23 @@ def test_remember_rule_lands_in_library_store(cfg):
     assert rule.scope == "global"
 
 
-def test_remember_rule_reaches_agent_context(cfg):
+def test_remember_rule_reaches_agent_context(cfg, monkeypatch):
+    # WHY: this asserts the rule REACHES the context, not how it is worded.
+    # With elaboration on, the body is whatever a live model returned that
+    # minute — it kept the sentence often enough to look green and dropped it
+    # often enough to fail one run in three of a triple full-suite pass.
+    monkeypatch.setenv("AIFORGE_BUILDER_ELABORATE", "0")
     from aiforge_core.runtime import chat_agent as ca
     ca._t_remember_rule({"text": "Never commit secrets", "scope": "global"}, ".")
     ctx = ca._rules_context(".")
     assert "Never commit secrets" in ctx
 
 
-def test_remember_rule_writes_memory_scoped(cfg):
+def test_remember_rule_writes_memory_scoped(cfg, monkeypatch):
+    # WHY: rule bodies are LLM-elaborated before they hit the rules file. This
+    # test is about the MEMORY row, not the elaboration, so turn elaboration
+    # off — otherwise the assertion depends on a live model being reachable.
+    monkeypatch.setenv("AIFORGE_BUILDER_ELABORATE", "0")
     from aiforge_core.runtime import chat_agent as ca
     from aiforge_core.memory import sqlite_memory as m
     ca._t_remember_rule({"text": "Global rule X", "scope": "global"}, ".")

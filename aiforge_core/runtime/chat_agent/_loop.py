@@ -153,7 +153,12 @@ def run_chat_agent(
     # Multi-part message (simple mode has no enhancer/spec, so nothing else
     # tracks the parts): derive an ASK CHECKLIST and pin it HIGH in the
     # system prompt — the model must cover every part, not answer #1 and stop.
-    _asks = [] if builder else _split_asks(last_user)
+    # Skipped on strict_finish (pipeline Doer / subtask runners): there the
+    # "user message" is a MACHINE-built seed whose instruction bullets
+    # ("CONTEXT-FIRST…", "MINIMAL DIFF…") are style rules, not asks — counting
+    # them made the Doer enumerate its own charter in FINAL and burned an extra
+    # model turn on the completeness gate every run.
+    _asks = [] if (builder or strict_finish) else _split_asks(last_user)
     if _asks:
         sys_msg = ("MULTI-PART REQUEST — the user's CURRENT message contains "
                    f"{len(_asks)} distinct asks. Address EVERY one; number "
@@ -911,21 +916,34 @@ def run_chat_agent(
                     and delete_guard.is_destructive_delete(_cmd))
             except Exception:  # noqa: BLE001
                 _destructive_del = False
-            # Captured bypass flags apply ONLY when this mode's approvals are OFF
-            # — with approvals ON the toggle wins and we ask regardless.
-            if not _mode_approvals:
-                try:
-                    from aiforge_core.runtime import rule_capture as _rc
-                    _repo = _repo_name(cwd)
-                    if _rc.is_commit_command(_cmd) and _rc.flag_active(
-                            "commit_auto_approve", repo=_repo, session_id=session_id):
-                        _auto_commit = True
-                    if _destructive_del and _rc.flag_active(
-                            "allow_delete", repo=_repo, session_id=session_id):
-                        _destructive_del = False
-                        args["confirm_delete"] = True
-                except Exception:  # noqa: BLE001
-                    pass
+            try:
+                from aiforge_core.runtime import rule_capture as _rc
+                _repo = _repo_name(cwd)
+                # commit_auto_approve is consulted REGARDLESS of the per-mode
+                # approval toggle. Gating it on ``not _mode_approvals`` made it
+                # dead code: with approvals off nothing gates anyway, so the
+                # flag — and the UI pill that sets it — could never have an
+                # effect. It is an explicit, scoped, revocable, audited opt-in
+                # for exactly one thing (a whole-command local git commit/add),
+                # and every floor below still gates: DENY, destructive delete,
+                # forced review, and any chained command (is_commit_command
+                # rejects those). PUSH is excluded here as it is in tool_gate —
+                # it updates a remote, so it always asks.
+                if _rc.is_commit_command(_cmd) \
+                        and not re.search(r"\bgit\s+push\b", _cmd, re.I) \
+                        and _rc.flag_active("commit_auto_approve", repo=_repo,
+                                            session_id=session_id):
+                    _auto_commit = True
+                # allow_delete stays SUBORDINATE to the toggle: auto-confirming
+                # an `rm -rf` in a mode whose approvals are on is a far bigger
+                # relaxation than skipping a commit prompt, and nothing asked
+                # for it.
+                if not _mode_approvals and _destructive_del and _rc.flag_active(
+                        "allow_delete", repo=_repo, session_id=session_id):
+                    _destructive_del = False
+                    args["confirm_delete"] = True
+            except Exception:  # noqa: BLE001
+                pass
         # review_edits (_force_review) is an EXPLICIT per-request / global opt-in
         # ("hold my edits") — it must gate INDEPENDENTLY of the per-mode approval
         # toggle, else body.review_edits=True / AIFORGE_CHAT_REVIEW_EDITS=1 were

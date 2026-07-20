@@ -18,11 +18,15 @@ mid-migration. All reads soft-fail (a missing/half-written file is skipped).
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import re
 import threading
+from pathlib import Path
 
 from . import nodes as _n
+
+_log = logging.getLogger("aiforge.memory.okf")
 
 # Serialize node mutations (write + de-dupe + index) so two concurrent chat
 # turns authoring solutions can't interleave a dedup-miss into a double write or
@@ -179,15 +183,17 @@ def save_node(node_type: str, node_id: str | None, meta: dict,
             if os.path.abspath(old) != os.path.abspath(path):
                 with contextlib.suppress(OSError):
                     os.unlink(old)
+        from aiforge_core.memory.sync import _io as _sync_io
+        from aiforge_core.memory.sync.identity import stamp as _stamp
+
+        meta = _stamp(meta or {})
         text = _n.render_node(node_type, nid, meta, body)
-        tmp = path + ".tmp"
         try:
-            with open(tmp, "w", encoding="utf-8") as fh:
-                fh.write(text)
-            os.replace(tmp, path)
+            # One atomic-write implementation for the whole memory tree: a
+            # sync applier and this function write the same files, and a
+            # per-caller ".tmp" name is exactly what lets them tear.
+            _sync_io.write_atomic(Path(path), text.encode("utf-8"))
         except OSError as exc:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp)
             return {"ok": False, "error": f"write failed: {exc}"}
         _invalidate()        # a node changed → next read reparses
         if reindex:
@@ -221,11 +227,12 @@ def _write_index() -> str:
                 lines.append(f"- [{rel.rsplit('/', 1)[-1]}]({rel})"
                              + (f" — {hook}" if hook else ""))
             lines.append("")
+        from aiforge_core.memory.sync import _io as _sync_io
+
         idx = os.path.join(root, "index.md")
-        tmp = idx + ".tmp"                     # atomic: never a half-written index
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write("\n".join(lines).rstrip() + "\n")
-        os.replace(tmp, idx)
+        # Atomic: a reader never sees a half-written index, and two savers
+        # racing here stage into separate temp files.
+        _sync_io.write_atomic(Path(idx), ("\n".join(lines).rstrip() + "\n").encode("utf-8"))
         return idx
     except Exception:  # noqa: BLE001 — index is navigation, never block a save
         return ""
@@ -257,10 +264,8 @@ def _dir_signature() -> tuple:
         for f in fns:
             if f.endswith(".md"):
                 n += 1
-                try:
+                with contextlib.suppress(OSError):
                     newest = max(newest, os.path.getmtime(os.path.join(dp, f)))
-                except OSError:
-                    pass
     # include the ROOT so two different memory dirs with the same (mtime, count)
     # never collide (test isolation / a re-pointed AIFORGE_MEMORY_MD_DIR).
     return (root, round(newest, 3), n)
@@ -454,9 +459,26 @@ def dedupe_nodes() -> dict:
     normalized content and FUZZILY (difflib >= AIFORGE_OKF_CONCEPT_SIMILARITY,
     default 0.86) so paraphrases of one concept — the L-01/L-07/L-13 pile-up the
     learner produced over repeated runs — collapse to a single file, restoring
-    OKF 'one concept = one file'. Returns {ok, removed, kept}. Soft-fail."""
+    OKF 'one concept = one file'. Returns {ok, removed, kept}. Soft-fail.
+
+    Leader-only in a mesh, by the SAME election as compaction (one policy, one
+    place): a near-duplicate merge is non-deterministic, so two peers each run
+    by hand would fold the same shared knowledge two different ways and diverge.
+    A single machine (no approved peers) is always the leader, so nothing
+    changes there. The skip is returned AND logged because this one is typed by
+    an operator, who would otherwise read a silent no-op as a broken command."""
     import difflib
     import os
+
+    from aiforge_core.memory.sync import election  # lazy: heavy sync package
+    from aiforge_core.memory.sync import tombstone as _tomb
+
+    if not election.may_distil():                   # soft-fails OPEN (see there)
+        chief = election.leader_name()
+        _log.info("dedupe_nodes: skipped — %s is the elected leader "
+                  "(node dedupe runs there, not here)", chief)
+        return {"ok": True, "removed": 0, "kept": 0,
+                "skipped": "not-leader", "leader": chief}
     try:
         threshold = float(os.environ.get("AIFORGE_OKF_CONCEPT_SIMILARITY", "0.86"))
     except (TypeError, ValueError):
@@ -482,7 +504,13 @@ def dedupe_nodes() -> dict:
                 os.unlink(d["path"])
                 removed += 1
             except OSError:
-                pass
+                continue
+            # The loser is gone here, so say so to the mesh — an unlink alone is
+            # undone by the next pull from any peer still holding it. Only the
+            # loser: the survivor keeps its identity, and mark_deleted refuses
+            # anything this machine did not mint (see there).
+            m = d.get("meta") or {}
+            _tomb.mark_deleted(m.get("origin"), d.get("id"), m.get("rev"))
         else:
             prior.append(key_text)
     if removed:
