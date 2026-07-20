@@ -89,6 +89,10 @@ def test_enhance_skip_disabled_via_env(monkeypatch):
     monkeypatch.setenv("AIFORGE_ENHANCER_SKIP_CONCRETE", "0")
     monkeypatch.setattr("aiforge_core.memory.unified_query.query",
                         lambda *a, **k: {"hits": [], "errors": []})
+    # WHY the stub echoes app.py: _spec_degenerate() now rejects a rewrite that
+    # drops EVERY named anchor of the prompt and falls back to the raw prompt.
+    # A bare "enhanced spec" trips that guard, so it can no longer stand in for
+    # a real enhancement of a prompt that names a file.
     monkeypatch.setattr("aiforge_core.llm.client.complete",
-                        lambda *a, **k: "enhanced spec")
-    assert pp._enhance("fix the bug in app.py") == "enhanced spec"
+                        lambda *a, **k: "enhanced spec for app.py")
+    assert pp._enhance("fix the bug in app.py") == "enhanced spec for app.py"

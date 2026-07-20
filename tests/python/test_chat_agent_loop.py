@@ -37,7 +37,12 @@ def test_loop_detection_same_action(tmp_path):
         complete_fn=_fn))
     asks = [e for e in evs if e["type"] == "message" and e.get("awaiting_input")]
     assert asks and ("clarify" in asks[0]["text"] or "proceed" in asks[0]["text"])
-    assert len([e for e in evs if e["type"] == "tool"]) < ca._LOOP_REPEAT
+    # Bounded well below the runaway cap: the stuck guard now RECOVERS
+    # (recap + nudge, clearing the strike count) a few times before it gives up,
+    # so the ceiling is _LOOP_REPEAT strikes per recovery round — not one round.
+    from aiforge_core.runtime.chat_agent._context import _stuck_recovery_max
+    assert len([e for e in evs if e["type"] == "tool"]) <= (
+        ca._LOOP_REPEAT * (_stuck_recovery_max() + 1))
     assert evs[-1] == {"type": "done"}
 
 

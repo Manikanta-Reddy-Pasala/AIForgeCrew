@@ -89,9 +89,10 @@ def test_run_command_preflight_missing_cd_and_script(tmp_path):
     (tmp_path / "sub").mkdir()
     r = ca._t_run_command({"cmd": "cd sub && python x.py"}, repo)
     assert r["blocked"] == "missing_path" and "x.py" in r["error"]
-    # existing paths run fine…
-    (tmp_path / "sub" / "x.py").write_text("print('hi')\n")
-    r = ca._t_run_command({"cmd": "cd sub && python x.py"}, repo)
+    # existing paths run fine… (use `sh`, not `python`: a bare `python` is
+    # absent on modern macOS/CI hosts, which fails the RUN, not the preflight)
+    (tmp_path / "sub" / "run.sh").write_text("echo hi\n")
+    r = ca._t_run_command({"cmd": "cd sub && sh run.sh"}, repo)
     assert r.get("ok") is True and "hi" in r["stdout"]
     # …and dynamic paths fail OPEN (no false block on $VARs / substitution).
     r = ca._t_run_command({"cmd": "cd $HOME && echo ok"}, repo)

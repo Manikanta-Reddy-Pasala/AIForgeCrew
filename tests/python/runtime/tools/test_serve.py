@@ -20,14 +20,33 @@ def _alive(pid):
         return False
 
 
+@pytest.fixture
+def port():
+    """A port nobody is on RIGHT NOW.
+
+    These tests used to hardcode 8781/8782/8783. One leaked ``http.server``
+    (a run killed mid-test, a reaper that didn't get there) then squatted the
+    port and every later run failed at the first assert — a permanently red
+    test with nothing wrong in the product. Asking the OS for a free port makes
+    a leak cost one run instead of all of them.
+    """
+    import socket
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+    finally:
+        s.close()
+
+
 def test_serve_requires_cmd(srv):
     assert srv.serve({})["error"] == "missing 'cmd'"
 
 
-def test_serve_detects_port_and_stops(srv):
-    r = srv.serve({"cmd": "python3 -m http.server 8781", "port": 8781,
+def test_serve_detects_port_and_stops(srv, port):
+    r = srv.serve({"cmd": f"python3 -m http.server {port}", "port": port,
                    "wait_s": 2, "ttl_s": 9999})
-    assert r["ok"] and r["url"] == "http://localhost:8781" and r["pid"]
+    assert r["ok"] and r["url"] == f"http://localhost:{port}" and r["pid"]
     assert srv.list_services()["services"][0]["alive"]
     assert srv.stop_service({"pid": r["pid"]})["ok"]
     time.sleep(0.4)
@@ -39,14 +58,15 @@ def test_serve_crash_on_startup(srv):
     assert r["ok"] is False and "exited on startup" in r["error"]
 
 
-def test_serve_default_ttl(srv):
-    r = srv.serve({"cmd": "python3 -m http.server 8782", "port": 8782, "wait_s": 1})
+def test_serve_default_ttl(srv, port):
+    r = srv.serve({"cmd": f"python3 -m http.server {port}", "port": port,
+                   "wait_s": 1})
     assert r["ttl_s"] == 1800.0          # default 30 min
     srv.stop_service({"pid": r["pid"]})
 
 
-def test_serve_ttl_auto_cleanup(srv):
-    r = srv.serve({"cmd": "python3 -m http.server 8783", "port": 8783,
+def test_serve_ttl_auto_cleanup(srv, port):
+    r = srv.serve({"cmd": f"python3 -m http.server {port}", "port": port,
                    "wait_s": 1, "ttl_s": 4})
     pid = r["pid"]
     assert _alive(pid)

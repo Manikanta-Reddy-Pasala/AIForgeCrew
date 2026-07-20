@@ -40,6 +40,17 @@ def _patch_grader(monkeypatch, complete):
     monkeypatch.setattr(_client, "complete", complete)
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_structured(monkeypatch):
+    """STALE-TEST FIX: ``_grade`` moved from ``client.complete`` to
+    ``structured_complete``, whose default ``auto`` mode tries the instructor
+    adapter FIRST — that talks to the resolved endpoint directly and so ignores
+    a patched ``client.complete``, letting these tests hit a live LLM. Pin the
+    fallback path (the one layered over ``client.complete``) so patching that
+    seam is authoritative and no test can reach the network."""
+    monkeypatch.setenv("AIFORGE_STRUCTURED_MODE", "fallback")
+
+
 # ── picks the highest-scored attempt + right shape ───────────────────────────
 def test_picks_highest_score(tmp_path, monkeypatch):
     _patch_grader(monkeypatch, _grader({"bestof-0": 10, "bestof-1": 90,

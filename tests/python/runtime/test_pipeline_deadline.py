@@ -36,17 +36,26 @@ def test_deadline_zero_disables(monkeypatch):
     assert r._pipeline_deadline_s() == 0.0
 
 
-@pytest.mark.asyncio
-async def test_asyncio_timeout_cancels_a_hung_run():
+def test_asyncio_timeout_cancels_a_hung_run():
     """The exact backstop the runner uses: a never-resolving async-for is
     cancelled by asyncio.timeout and surfaces as TimeoutError — which the
-    runner catches to return partial state instead of hanging."""
+    runner catches to return partial state instead of hanging.
+
+    WHY a sync test driving asyncio.run: pytest-asyncio is NOT a dependency of
+    this repo, so the former ``@pytest.mark.asyncio`` coroutine was silently
+    collected and then errored ("async def functions are not natively
+    supported"). Driving the coroutine ourselves keeps the assertion real
+    without adding a plugin.
+    """
     async def _never_ends():
         while True:
             await asyncio.sleep(3600)
             yield 1
 
-    with pytest.raises(TimeoutError):
+    async def _body():
         async with asyncio.timeout(0.05):
             async for _ in _never_ends():
                 pass
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(_body())
