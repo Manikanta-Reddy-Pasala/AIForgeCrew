@@ -15,6 +15,8 @@ import re
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
+from aiforge_core.api.routes._sse import sse_response
+
 from aiforge_core.config.env import LM_STUDIO_BASE_URL, LOG_DIR
 from aiforge_core.tickets import store as tickets_mod
 
@@ -121,7 +123,7 @@ def stream_role_log(role: str):
         except asyncio.CancelledError:
             return
 
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    return sse_response(gen())
 
 
 # ─────────────────────────── Ticket trace SSE ───────────────────────────
@@ -227,7 +229,7 @@ def stream_ticket_trace(identifier: str):
             for t in tasks:
                 t.cancel()
 
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    return sse_response(gen())
 
 
 # ─────────────────────────── LLM call trace ─────────────────────────────
@@ -283,7 +285,7 @@ def stream_llm_trace(identifier: str):
                 await proc.wait()   # reap — don't leak a zombie
             except Exception: pass
 
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    return sse_response(gen())
 
 
 @router.get("/api/llm-trace/{identifier}")
@@ -364,4 +366,4 @@ def workflow_stream(ticket: str | None = None,
             yield f"data: {json.dumps(snap)}\n\n"
             _t.sleep(interval)
 
-    return StreamingResponse(_gen(), media_type="text/event-stream")
+    return sse_response(_gen())

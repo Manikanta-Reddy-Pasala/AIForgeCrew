@@ -17,6 +17,8 @@ import threading
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
+
+from aiforge_core.api.routes._sse import sse_response
 from pydantic import BaseModel, Field
 
 from aiforge_core.config import agent_config as _acfg
@@ -141,7 +143,7 @@ def chat_agent(body: _ChatAgentBody) -> StreamingResponse:
             yield f"data: {json.dumps({'type': 'error', 'text': str(exc)})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
-    return StreamingResponse(_gen(), media_type="text/event-stream")
+    return sse_response(_gen())
 
 
 class _NewSessionBody(BaseModel):
@@ -1892,7 +1894,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         for ev in chat_runs.iter_subscription(run, q):
             yield f"data: {json.dumps(ev)}\n\n"
 
-    return StreamingResponse(_stream(), media_type="text/event-stream")
+    return sse_response(_stream())
 
 
 @router.get("/api/chat/sessions/{session_id}/attach")
@@ -1923,7 +1925,7 @@ def chat_session_attach(session_id: int) -> StreamingResponse:
         for ev in chat_runs.iter_subscription(run, q):
             yield f"data: {json.dumps(ev)}\n\n"
 
-    return StreamingResponse(_gen(), media_type="text/event-stream")
+    return sse_response(_gen())
 
 
 @router.post("/api/chat/sessions/{session_id}/stop")
