@@ -162,13 +162,46 @@ def _rank_by_query(nodes: list, query: str, top_k: int,
     return nodes[:top_k]
 
 
+def _shared(local: list[dict], query: str, max_view: int) -> tuple[list, list]:
+    """``(local minus what the view already states, the view nodes to render)``.
+
+    ``okf.tiers`` owns which directory the view is, what counts as usable content
+    in it and what "already stated" means; this only ranks. Soft-fail: an
+    unreadable view degrades recall to purely local knowledge rather than losing
+    the prompt.
+    """
+    try:
+        from . import tiers
+
+        view = _rank_by_query(tiers.view_nodes(), query, max_view)
+        # Drop the locally-authored notes the fold already carries, so a fact
+        # held both in okf/ and in view/ is rendered exactly once.
+        return (tiers.unrepresented(local, view) if view else local), view
+    except Exception:  # noqa: BLE001 — a bad view must never break recall
+        return local, []
+
+
+def _shared_entry(d: dict, chars: int) -> str:
+    m = d.get("meta") or {}
+    head = str(m.get("title") or d.get("id") or "").strip()
+    return (f"## {head}\n" if head else "") + _cap(d.get("body") or "", chars)
+
+
 def _scoped_block(repo: str | None, *, query: str = "", max_global: int = 8,
-                  max_repo_learn: int = 10, max_repo_sol: int = 6) -> str:
-    """SCOPE- AND QUERY-aware memory: the global rules + THIS repo's learnings
-    and solutions that are most RELEVANT to ``query`` — not every document in the
-    scope, and nothing from OTHER projects. Scope stops cross-project leakage;
-    the query ranking stops dumping the whole bundle when only a few notes
-    matter."""
+                  max_repo_learn: int = 10, max_repo_sol: int = 6,
+                  max_view: int = 3, view_chars: int = 1200) -> str:
+    """SCOPE- AND QUERY-aware memory: the global rules + the mesh's distilled
+    knowledge + THIS repo's learnings and solutions that are most RELEVANT to
+    ``query`` — not every document in the scope, and nothing from OTHER projects.
+    Scope stops cross-project leakage; the query ranking stops dumping the whole
+    bundle when only a few notes matter.
+
+    This is the one place ``view/`` is read. It is the peer-to-peer feature's
+    only consumer, so without it knowledge replicates, folds and reaches no
+    agent. ``mesh/`` and ``peers/`` stay unread here — they are inputs to the
+    fold, and the local nodes the fold already carries are dropped below so one
+    fact cannot arrive twice.
+    """
     try:
         from . import store
     except Exception:  # noqa: BLE001
@@ -185,10 +218,15 @@ def _scoped_block(repo: str | None, *, query: str = "", max_global: int = 8,
 
     parts: list[str] = []
     gl = [d for d in store.load_all("global") if d.get("type") == "learning"]
+    gl, shared = _shared(gl, query, max_view)
     gl = _rank_by_query(gl, query, max_global)
     if gl:
         parts.append("<GLOBAL_RULES>\n"
                      + "\n".join(_line(d) for d in gl) + "\n</GLOBAL_RULES>")
+    if shared:
+        parts.append("<SHARED_KNOWLEDGE>\n"
+                     + "\n\n".join(_shared_entry(d, view_chars) for d in shared)
+                     + "\n</SHARED_KNOWLEDGE>")
     if repo:
         proj = store.load_all(repo)
         # the repo CARD first — the hub: how to build/test/run, structure, etc.

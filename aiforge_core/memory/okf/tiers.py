@@ -549,6 +549,31 @@ def build_view(*, role: str = _ROLE) -> dict:
     return {**result, "inputs": len(inputs)}
 
 
+# ── the read side: what agents get from tier 2 ────────────────────────────
+
+def view_nodes() -> list[dict]:
+    """The working view, parsed — the *only* way retrieval reaches folded mesh
+    knowledge (spec §"What agents read": ``okf/`` plus ``view/``).
+
+    ``mesh/`` and ``peers/`` are deliberately absent. They are inputs to the
+    fold, and reading them here as well would surface the same content twice —
+    once raw and once distilled — in the agent's context.
+    """
+    from aiforge_core.memory.sync import paths
+
+    return _usable(_load((paths.view_dir(),)))
+
+
+def unrepresented(local: list[dict], view: list[dict]) -> list[dict]:
+    """``local`` nodes the view does not already carry.
+
+    The recall-side half of the no-double-surfacing rule, and the same
+    comparison tier 2 uses to pick its own inputs: a node whose every claim is
+    already inside the fold would otherwise be rendered twice into one prompt.
+    """
+    return _unrepresented(local, view) if view else list(local)
+
+
 # ── the one entry point the sync cycle calls ──────────────────────────────
 
 def run_after_sync(*, role: str = _ROLE) -> dict:
@@ -567,4 +592,5 @@ def run_after_sync(*, role: str = _ROLE) -> dict:
     return out
 
 
-__all__ = ["MESH", "VIEW", "distil_mesh", "build_view", "run_after_sync"]
+__all__ = ["MESH", "VIEW", "distil_mesh", "build_view", "run_after_sync",
+           "view_nodes", "unrepresented"]
