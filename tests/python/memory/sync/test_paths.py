@@ -101,7 +101,7 @@ def test_target_for_a_mesh_marked_node_lands_in_mesh_not_in_the_inbox(
     entry = {"kind": "B", "origin": "air", "key": "M-sync",
              "derived": "mesh", "path": "mesh/M-sync.md"}
 
-    assert paths.target_for(entry).as_posix().endswith("md/mesh/M-sync.md")
+    assert paths.target_for(entry).as_posix().endswith("md/mesh/air/M-sync.md")
 
 
 def test_a_hostile_key_on_a_mesh_node_cannot_climb_the_tree(monkeypatch, tmp_path):
@@ -117,7 +117,7 @@ def test_a_hostile_key_on_a_mesh_node_cannot_climb_the_tree(monkeypatch, tmp_pat
                                    "derived": "mesh", "path": "x"})
         if target is not None:              # unaddressable keys are refused
             assert root in target.resolve().parents
-        assert root in paths.mesh_node_path(key).resolve().parents
+        assert root in paths.mesh_node_path("air", key).resolve().parents
 
 
 def test_a_held_identity_is_not_relocated_by_a_mesh_marker(monkeypatch, tmp_path):

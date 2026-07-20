@@ -19,6 +19,24 @@ def _first_url(peer: dict) -> str:
     return urls[0] if urls else ""
 
 
+def _ingest(entries) -> list[dict]:
+    """Normalise a peer's manifest into the form the merge compares in.
+
+    Only the hash needs it: the local side is a ``hexdigest`` and is therefore
+    lowercase, so a peer emitting uppercase hex matches nothing we hold. Every
+    round it produces the same unresolvable conflict, and the entry can never be
+    applied — the two spellings never become equal on their own.
+    """
+    out: list[dict] = []
+    for e in entries or []:
+        if not isinstance(e, dict):
+            continue          # a peer may send anything; a non-record is not one
+        row = dict(e)
+        row["hash"] = str(row.get("hash") or "").strip().lower()
+        out.append(row)
+    return out
+
+
 def sync_with(peer: dict) -> dict:
     """Run one cycle against a single peer.
 
@@ -37,23 +55,40 @@ def sync_with(peer: dict) -> dict:
         return result
     result["ok"] = True
 
+    token = str(peer.get("token") or "")
     local = manifest.build()
-    plan = merge.plan_sync(local, remote.get("manifest") or [])
+    plan = merge.plan_sync(local, _ingest(remote.get("manifest") or []))
 
+    # A conflicting remote entry that also appears in `want` is the winner, so
+    # the local copy is what is about to be lost; otherwise the local copy stays
+    # and the remote's text is the version nothing else preserves.
+    winning = {str(e.get("hash") or "") for e in plan["want"]}
     for pair in plan["conflict"]:
-        if apply.keep_conflict(pair["local"]):
+        losing_body = None
+        if str(pair["remote"].get("hash") or "") not in winning:
+            losing_body = transport.fetch_blob(base, str(pair["remote"].get("hash") or ""),
+                                               token)
+            if losing_body is None:
+                continue      # nothing fetched, nothing to preserve
+        if apply.keep_conflict(pair["local"], losing_body):
             result["conflicts"] += 1
 
     for entry in plan["want"]:
-        body = transport.fetch_blob(base, str(entry.get("hash") or ""),
-                                    str(peer.get("token") or ""))
+        body = transport.fetch_blob(base, str(entry.get("hash") or ""), token)
         if body is None:
             result["rejected"] += 1
             continue
-        if apply.apply_blob(entry, body):
-            result["applied"] += 1
-        else:
-            result["rejected"] += 1
+        try:
+            applied = apply.apply_blob(entry, body)
+        except OSError as exc:
+            # One unwritable record — a 400-character key is "File name too
+            # long" — used to abort the cycle: every later entry was discarded
+            # and `peers.touch` never ran, so the peer's last_seen froze, it
+            # dropped out of the election, and the same entry killed the next
+            # cycle too. It is re-advertised forever, so this must be per-entry.
+            _log.warning("sync: could not apply %s: %s", entry.get("path"), exc)
+            applied = False
+        result["applied" if applied else "rejected"] += 1
 
     peers.merge_roster(remote.get("roster") or [])
     peers.touch(str(peer.get("id") or ""))

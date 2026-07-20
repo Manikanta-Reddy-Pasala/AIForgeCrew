@@ -29,13 +29,29 @@ _CACHE: dict[tuple, list[dict]] = {}
 
 def _class_a() -> list[dict]:
     out: list[dict] = []
-    for sub in ("captures", "compacted"):
-        for p in _io.iter_syncable(_io.root() / sub, "*.md"):
+    for directory, pattern in paths.class_a_scans():
+        for p in _io.iter_syncable(directory, pattern):
             try:
                 out.append({"path": _io.rel(p), "hash": _io.sha256_file(p), "kind": "A"})
             except OSError:  # a file vanishing mid-scan is not fatal
                 _log.warning("sync: unreadable capture %s", p)
     return out
+
+
+def fields_of(meta: dict) -> dict:
+    """The four identity fields of a class B record, coerced the one way.
+
+    Reads a node's frontmatter (``id``), a tombstone's JSON record (``key``) or
+    a manifest entry (``key``) — the three shapes the same identity travels in.
+    Public because ``apply`` re-derives these from the *fetched body* to check
+    them against what the peer advertised, and two coercion rules would be two
+    answers to "which version is this".
+    """
+    origin = str(meta.get("origin") or "")
+    return {"origin": origin,
+            "key": str(meta.get("id") or meta.get("key") or ""),
+            "rev": merge.as_rev(meta.get("rev")),
+            "updated_by": str(meta.get("updated_by") or origin)}
 
 
 def _class_b_entry(p: Path, meta: dict, *, tomb: bool = False) -> dict | None:
@@ -45,8 +61,9 @@ def _class_b_entry(p: Path, meta: dict, *, tomb: bool = False) -> dict | None:
     kind of mutable record applies to all of them. ``meta`` is frontmatter for a
     node (``id``) and the JSON record for a tombstone (``key``).
     """
-    key = str(meta.get("id") or meta.get("key") or "")
-    origin = str(meta.get("origin") or "")
+    fields = fields_of(meta)
+    key = fields["key"]
+    origin = fields["origin"]
     if not key:
         return None
 
@@ -62,15 +79,8 @@ def _class_b_entry(p: Path, meta: dict, *, tomb: bool = False) -> dict | None:
         return None
 
     try:
-        entry = {
-            "path": _io.rel(p),
-            "hash": _io.sha256_file(p),
-            "kind": "B",
-            "origin": origin,
-            "key": key,
-            "rev": merge.as_rev(meta.get("rev")),
-            "updated_by": str(meta.get("updated_by") or origin),
-        }
+        entry = {"path": _io.rel(p), "hash": _io.sha256_file(p), "kind": "B",
+                 **fields}
     except Exception:  # noqa: BLE001 — a bad record is dropped, the manifest survives
         _log.warning("sync: could not describe %s, skipping", p)
         return None
@@ -144,9 +154,8 @@ def _class_b() -> list[dict]:
 
 def _scans() -> tuple[tuple[Path, str], ...]:
     """Every (directory, glob) pair ``build`` reads. Used to fingerprint it."""
-    root = _io.root()
-    return ((root / "captures", "*.md"), (root / "compacted", "*.md"),
-            *paths.node_scans(), (paths.tomb_dir(), "**/*.json"))
+    return (*paths.class_a_scans(), *paths.node_scans(),
+            (paths.tomb_dir(), "**/*.json"))
 
 
 def _fingerprint() -> tuple:
@@ -217,4 +226,4 @@ def path_for_hash(digest: str) -> Path | None:
     return None
 
 
-__all__ = ["build", "path_for_hash"]
+__all__ = ["build", "fields_of", "path_for_hash"]
