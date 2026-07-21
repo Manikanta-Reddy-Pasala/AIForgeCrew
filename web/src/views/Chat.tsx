@@ -44,6 +44,7 @@ export default function Chat() {
   const [media, setMedia] = useState<ChatMedia[]>([]);
   const [mediaVision, setMediaVision] = useState(false);
   const [uploadingMedia, setUploadingMedia] = useState(false);
+  const [uploadingName, setUploadingName] = useState('');
   const mediaInputRef = useRef<HTMLInputElement | null>(null);
 
   async function loadMedia(id: number) {
@@ -66,14 +67,21 @@ export default function Chat() {
     if (sid === null) { sid = await createSession(); if (sid === null) return; }
     setUploadingMedia(true);
     try {
-      for (const f of list) await chatMediaUpload(sid, f);
+      for (let i = 0; i < list.length; i++) {
+        const f = list[i];
+        // Show WHICH file + progress so a slow big-doc upload (PDF/Word ->
+        // extract + OCR + summary happens server-side before the POST returns)
+        // is visibly in-flight, not a silent hang.
+        setUploadingName(list.length === 1 ? f.name : `${f.name} (${i + 1}/${list.length})`);
+        await chatMediaUpload(sid, f);
+      }
       await loadMedia(sid);
       toast.success(list.length === 1
         ? `Attached: ${list[0].name}`
         : `${list.length} files attached`);
     } catch (e: any) {
       toast.error(`Upload failed: ${e.message}`);
-    } finally { setUploadingMedia(false); }
+    } finally { setUploadingMedia(false); setUploadingName(''); }
   }
 
   // Paste an image straight into the composer (Cmd/Ctrl+V). Clipboard images
@@ -1689,6 +1697,14 @@ export default function Chat() {
               </div>
             )}
 
+            {uploadingMedia && (
+              <div className="upload-banner" role="status" aria-live="polite">
+                <span className="af-spin"><Icon.Refresh size={14} /></span>
+                <span>Uploading &amp; analyzing{uploadingName ? ` ${uploadingName}` : ''}…</span>
+                <span className="muted" style={{ fontWeight: 400 }}>large PDFs / Word docs may take a moment</span>
+              </div>
+            )}
+
             <MediaStrip media={media} vision={mediaVision}
                         onDescribe={async (id, d) => {
                           try { await chatMediaDescribe(id, d); if (activeId !== null) loadMedia(activeId); }
@@ -1735,9 +1751,11 @@ export default function Chat() {
                   style={{ flex: 1, resize: 'vertical', minHeight: busy ? 34 : 64 }}
                 />
                 <button onClick={() => mediaInputRef.current?.click()} disabled={uploadingMedia}
-                        title="Attach a file — image, PDF, Word, Excel, text — queryable all session"
+                        title={uploadingMedia ? 'Uploading & analyzing…' : 'Attach a file — image, PDF, Word, Excel, text — queryable all session'}
                         style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center' }}>
-                  {uploadingMedia ? '…' : <Icon.Paperclip size={15} />}
+                  {uploadingMedia
+                    ? <span className="af-spin"><Icon.Refresh size={15} /></span>
+                    : <Icon.Paperclip size={15} />}
                 </button>
                 {busy && (
                   <button onClick={stopRun} className="danger"

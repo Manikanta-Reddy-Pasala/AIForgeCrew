@@ -984,6 +984,27 @@ button.icon:hover:not(:disabled) { color: var(--fg-0); background: var(--bg-3); 
   30% { transform: translateY(-4px); opacity: 1; }
 }
 
+/* Spinning icon (file-upload progress, etc.) */
+@keyframes af-spin { to { transform: rotate(360deg); } }
+.af-spin { display: inline-flex; animation: af-spin .8s linear infinite; }
+
+/* Prominent, hard-to-miss banner while an attachment is uploading/analyzing. */
+.upload-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-0);
+  background: var(--bg-2);
+  border: 1px solid var(--accent, var(--border-1));
+  border-left: 3px solid var(--accent, var(--border-1));
+  border-radius: 8px;
+}
+.upload-banner .muted { font-size: 11px; }
+
 .chat-drawer {
   background: var(--bg-2);
   border: 1px solid var(--border-0);
