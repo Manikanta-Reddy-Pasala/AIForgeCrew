@@ -140,11 +140,19 @@ def summarize_text(text: str, role: str = "chat") -> str:
     return summary + truncated_note
 
 
-def summarize_document(path: str, role: str = "chat", mime: str = "") -> str:
-    """Extract a document's full text (bounded by ``chat_media`` doc budget)
-    then map-reduce it into a summary. Best-effort — "" when nothing readable."""
-    from aiforge_core.runtime import chat_media
-    text = chat_media.extract_text(path, mime)
+def summarize_document(path: str, role: str = "chat", mime: str = "",
+                       pages: str | None = None) -> str:
+    """Extract a document's text then map-reduce it into a summary.
+
+    ``pages`` selects a page range (e.g. ``"10-20"``, ``"3,5,7-9"``) — only those
+    pages are extracted and summarised, so a 400-page report can be summarised
+    section-by-section without reading the whole thing. None → the whole doc.
+    Best-effort — "" when nothing readable / the range selects nothing."""
+    from aiforge_core.runtime import doc_extract
+    if pages:
+        text = doc_extract.extract_pages(path, mime, pages)
+    else:
+        text = doc_extract.extract_text(path, mime)
     return summarize_text(text, role)
 
 

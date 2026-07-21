@@ -49,39 +49,20 @@ def _safe_name(name: str) -> str:
 _MAX_FILE_BYTES = 50 * 1024 * 1024     # docs can be bigger than images
 _DESC_CAP = 6000                       # extracted-text excerpt cap per doc
 
-
-def _int_env(name: str, default: int) -> int:
-    try:
-        return int(os.environ.get(name, "") or default)
-    except ValueError:
-        return default
-
-
-# A 100+-page PDF must extract fully, but page-by-page and bounded so a giant
-# file can't blow memory or the model's context. We walk pages SEQUENTIALLY,
-# accumulating text until either the page cap OR the char budget is hit, then
-# stop with a marker. Both are env-tunable for very large docs.
-def _pdf_page_cap() -> int:
-    return _int_env("AIFORGE_DOC_MAX_PAGES", 500)
-
-
-def _doc_char_budget() -> int:
-    # ~2k chars/page → 1M chars ≈ 500 pages of extractable text.
-    return _int_env("AIFORGE_DOC_MAX_CHARS", 1_000_000)
-
-_EXT_MIME = {
-    ".pdf": "application/pdf",
-    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ".xls": "application/vnd.ms-excel",
-    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".csv": "text/csv", ".txt": "text/plain", ".md": "text/markdown",
-    ".json": "application/json", ".log": "text/plain", ".yaml": "text/yaml",
-    ".yml": "text/yaml", ".py": "text/x-python", ".js": "text/javascript",
-    ".ts": "text/plain", ".java": "text/x-java", ".go": "text/x-go",
-}
-_TEXT_EXTS = {".txt", ".md", ".csv", ".json", ".log", ".yaml", ".yml",
-              ".py", ".js", ".ts", ".java", ".go", ".sh", ".sql", ".html",
-              ".xml", ".toml", ".ini", ".cfg"}
+# Document → text extraction (pdf/docx/xlsx text, tables, page segmentation)
+# lives in its own module; this file keeps storage + vision + OCR. Re-exported
+# so existing callers keep using ``chat_media.extract_text`` / config unchanged.
+from .doc_extract import (  # noqa: E402
+    _EXT_MIME,
+    _TEXT_EXTS,
+    _doc_char_budget,
+    _int_env,
+    _pdf_page_cap,
+    document_pages,
+    extract_pages,
+    extract_text,
+    page_count,
+)
 
 
 def _kind_for(mime: str, ext: str) -> str:
@@ -116,147 +97,6 @@ def save_file(session_id: int, filename: str, raw: bytes) -> dict:
 
 # Back-compat alias (older callers).
 save_image = save_file
-
-
-def extract_text(path: str, mime: str = "") -> str:
-    """Pull readable text from a document so the agent can analyse it. Handles
-    pdf / xlsx / docx / plain-text. Best-effort, capped, never raises."""
-    ext = os.path.splitext(path)[1].lower()
-    try:
-        if ext == ".pdf" or mime == "application/pdf":
-            return _pdf_text(path)
-        if ext == ".xlsx" or "spreadsheet" in mime:
-            from openpyxl import load_workbook
-            wb = load_workbook(path, read_only=True, data_only=True)
-            out: list[str] = []
-            for ws in wb.worksheets[:5]:
-                out.append(f"# sheet: {ws.title}")
-                for i, row in enumerate(ws.iter_rows(values_only=True)):
-                    if i >= 200:
-                        out.append("… (more rows)")
-                        break
-                    out.append(", ".join("" if c is None else str(c) for c in row))
-            return "\n".join(out)
-        if ext == ".docx" or "wordprocessing" in mime:
-            return _docx_text(path)
-        if mime.startswith("text/") or ext in _TEXT_EXTS:
-            return Path(path).read_text(encoding="utf-8", errors="ignore")
-    except Exception:  # noqa: BLE001
-        return ""
-    return ""
-
-
-def _pdf_tables(path: str, page_cap: int) -> dict[int, list[str]]:
-    """Structured tables per page via pdfplumber (optional dep). Returns
-    ``{page_index: ["a | b", …]}``. Empty when pdfplumber isn't installed or
-    the PDF has no detectable tables — pypdf's flat text still carries the
-    numbers, this just restores the grid. Best-effort, never raises."""
-    try:
-        import pdfplumber
-    except Exception:  # noqa: BLE001 — optional; flat text is the fallback
-        return {}
-    tables: dict[int, list[str]] = {}
-    try:
-        with pdfplumber.open(path) as pdf:
-            for i, page in enumerate(pdf.pages[:page_cap]):
-                rows: list[str] = []
-                for tbl in (page.extract_tables() or []):
-                    for row in tbl:
-                        cells = ["" if c is None else str(c).replace("\n", " ")
-                                 for c in row]
-                        rows.append(" | ".join(cells))
-                if rows:
-                    tables[i] = rows
-    except Exception:  # noqa: BLE001
-        return tables
-    return tables
-
-
-def _pdf_text(path: str) -> str:
-    """PDF → text: per-page extracted text PLUS structured tables (pdfplumber
-    when available), walked SEQUENTIALLY under a page cap + char budget so a
-    400-page file folds without blowing memory. Embedded images are captioned
-    separately (``_embedded_image_captions``) where a vision role is known."""
-    from pypdf import PdfReader
-    r = PdfReader(path)
-    page_cap = _pdf_page_cap()
-    budget = _doc_char_budget()
-    tables = _pdf_tables(path, page_cap)
-    out: list[str] = []
-    used = 0
-    total = len(r.pages)
-    for i, p in enumerate(r.pages[:page_cap]):
-        t = p.extract_text() or ""
-        out.append(t)
-        used += len(t)
-        if i in tables:
-            block = f"[tables on page {i + 1}]\n" + "\n".join(tables[i])
-            out.append(block)
-            used += len(block)
-        if used >= budget:
-            out.append(f"… (truncated at page {i + 1} of {total}, "
-                       f"{budget} char budget reached)")
-            break
-    else:
-        if total > page_cap:
-            out.append(f"… ({total - page_cap} more pages not shown; "
-                       f"page cap {page_cap})")
-    return "\n".join(out)
-
-
-def _docx_text(path: str) -> str:
-    """Full-fidelity docx → text: paragraphs AND tables, walked in document
-    order (python-docx keeps the two in separate collections, so a naïve
-    ``.paragraphs`` pass silently drops every table). Embedded images are
-    marked with an ``[embedded image N]`` placeholder so the reader knows one
-    sits there; the actual picture is captioned separately (see
-    ``_docx_image_captions``) where a vision role is available."""
-    import docx
-    from docx.document import Document as _DocT
-    from docx.oxml.table import CT_Tbl
-    from docx.oxml.text.paragraph import CT_P
-    from docx.table import Table
-    from docx.text.paragraph import Paragraph
-
-    doc = docx.Document(path)
-    budget = _doc_char_budget()
-    out: list[str] = []
-    used = 0
-    img_n = 0
-
-    def _add(line: str) -> bool:
-        """Append a line; return False once the char budget is spent."""
-        nonlocal used
-        out.append(line)
-        used += len(line)
-        return used < budget
-
-    for child in doc.element.body.iterchildren():
-        if isinstance(child, CT_P):
-            para = Paragraph(child, doc)
-            if para.text.strip() and not _add(para.text):
-                break
-            # a drawing/pict anywhere in the run tree = an inline image
-            if child.findall(".//" + _DRAWING) or child.findall(".//" + _PICT):
-                img_n += 1
-                out.append(f"[embedded image {img_n}]")
-        elif isinstance(child, CT_Tbl):
-            table = Table(child, doc)
-            stop = False
-            for row in table.rows:
-                cells = [c.text.strip().replace("\n", " ") for c in row.cells]
-                if not _add(" | ".join(cells)):
-                    stop = True
-                    break
-            if stop:
-                break
-    if used >= budget:
-        out.append(f"… (truncated, {budget} char budget reached)")
-    return "\n".join(out)
-
-
-_DRAWING = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}drawing"
-_PICT = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pict"
 
 
 def _docx_images(path: str) -> list[tuple[str, bytes]]:

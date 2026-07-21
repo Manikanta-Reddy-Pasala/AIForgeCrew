@@ -102,6 +102,7 @@ from ._code import (
     _t_codegraph_explore,
     _t_read_lines,
     _t_rename_symbol,
+    _t_summarize_doc,
 )
 from ._skills import (
     _t_skill_search,

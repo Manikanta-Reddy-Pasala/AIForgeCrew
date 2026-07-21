@@ -24,6 +24,7 @@ ARGS_JSON: <a single-line JSON object of the tool's arguments>
 
 Tool arguments:
 - file_read    {{"path": "rel/or/abs"}}
+- summarize_doc {{"path": "report.pdf", "pages": "10-20"}}   (summarize an ATTACHED document — pdf/docx/xlsx — reading tables, images, and OCR'ing scanned PDFs. "pages" is OPTIONAL: a range like "10-20" or "3,5,7-9" summarizes ONLY those pages/sections; omit for the whole doc. Use this for large docs instead of file_read.)
 - read_files   {{"paths": ["a.java", "b.java", "c.java"]}}   (read MANY files in ONE call — ALWAYS use this instead of many file_read calls when you need several files; reading one at a time over many turns loses track and stalls)
 - file_write   {{"path": "...", "content": "..."}}      (creates/overwrites; code is syntax-checked before it lands — pass "force": true to override)
 - file_patch   {{"path": "...", "old_text": "...", "new_text": "..."}}   (syntax-checked result; "force": true overrides)

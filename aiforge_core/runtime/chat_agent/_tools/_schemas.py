@@ -53,6 +53,12 @@ CATALOG: dict = {
              ("pattern",)),
     "read_lines": ("Read a line range from a file.",
                    {"path": "s", "start": "i", "end": "i"}, ("path",)),
+    "summarize_doc": ("Summarize an attached/loaded document (pdf/docx/xlsx). "
+                      "Give the file name/path. Optional `pages` selects a page "
+                      "range to summarize ONLY those pages/sections — e.g. "
+                      "\"10-20\" or \"3,5,7-9\"; omit for the whole document. "
+                      "Handles tables, embedded images, and OCRs scanned PDFs.",
+                      {"path": "s", "pages": "s"}, ("path",)),
     "format": ("Auto-format a file.", {"path": "s"}, ()),
     "rename_symbol": ("Rename a symbol across the project.",
                       {"path": "s", "old_name": "s", "new_name": "s"}, ()),

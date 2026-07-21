@@ -207,8 +207,7 @@ def test_pdf_page_cap_and_budget_env(monkeypatch):
 
 def test_pdf_tables_formats_rows(monkeypatch):
     """pdfplumber tables render as `a | b` rows, None cells blanked."""
-    import types
-    from aiforge_core.runtime import chat_media
+    from aiforge_core.runtime import doc_extract
 
     class _Page:
         def extract_tables(self):
@@ -220,23 +219,26 @@ def test_pdf_tables_formats_rows(monkeypatch):
         def __exit__(self, *a): return False
 
     monkeypatch.setattr("pdfplumber.open", lambda p: _PDF())
-    tbl = chat_media._pdf_tables("x.pdf", 10)
+    tbl = doc_extract._pdf_tables("x.pdf", 10)
     assert tbl[0] == ["h1 | h2", "v1 | "]
 
 
-def test_pdf_text_interleaves_page_text_and_tables(monkeypatch):
+def test_pdf_text_pages_and_tables_with_markers(monkeypatch):
+    """extract_text tags each PDF page with a `--- page N ---` marker and
+    interleaves its structured tables."""
     import types
-    from aiforge_core.runtime import chat_media
-    pages = [types.SimpleNamespace(extract_text=lambda: "page one text", images=[]),
-             types.SimpleNamespace(extract_text=lambda: "page two text", images=[])]
+    from aiforge_core.runtime import doc_extract
+    pages = [types.SimpleNamespace(extract_text=lambda: "page one text"),
+             types.SimpleNamespace(extract_text=lambda: "page two text")]
     monkeypatch.setattr("pypdf.PdfReader",
                         lambda p: types.SimpleNamespace(pages=pages))
-    monkeypatch.setattr(chat_media, "_pdf_tables",
+    monkeypatch.setattr(doc_extract, "_pdf_tables",
                         lambda path, cap: {0: ["a | b", "c | d"]})
-    txt = chat_media._pdf_text("x.pdf")
-    assert "page one text" in txt and "page two text" in txt   # text
-    assert "tables on page 1" in txt and "a | b" in txt        # interleaved table
-    assert txt.index("page one") < txt.index("a | b") < txt.index("page two")
+    txt = doc_extract.extract_text("x.pdf", "application/pdf")
+    assert "--- page 1 ---" in txt and "--- page 2 ---" in txt   # page markers
+    assert "page one text" in txt and "page two text" in txt     # per-page text
+    assert "a | b" in txt                                        # table restored
+    assert txt.index("page 1") < txt.index("a | b") < txt.index("page 2")
 
 
 def test_pdf_images_extracted_and_dispatched(monkeypatch):

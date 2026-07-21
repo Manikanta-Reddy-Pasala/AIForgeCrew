@@ -48,6 +48,48 @@ def _t_read_lines(args: dict, cwd: str) -> dict:
             "text": "".join(lines[s - 1:e][:5000])[:60000]}
 
 
+def _resolve_doc(path: str, cwd: str) -> str | None:
+    """Locate a document to summarise — an absolute path, a path relative to the
+    chat workspace, or (most common) an attachment by name in the session's
+    media folder (``<cwd>/.aiforge/media``). Fuzzy basename match as a fallback."""
+    import os as _os
+    base = _os.path.basename(path)
+    media = _os.path.join(cwd or ".", ".aiforge", "media")
+    for c in (path, _os.path.join(cwd or ".", path), _os.path.join(media, base)):
+        if c and _os.path.isfile(c):
+            return c
+    if _os.path.isdir(media):
+        low = base.lower()
+        for f in sorted(_os.listdir(media)):
+            if low in f.lower():
+                return _os.path.join(media, f)
+    return None
+
+
+def _t_summarize_doc(args: dict, cwd: str) -> dict:
+    """Summarise an attached/loaded document (pdf / docx / xlsx). Optional
+    ``pages`` (e.g. "10-20", "3,5,7-9") summarises ONLY those pages/sections via
+    the map-reduce summariser, so a 400-page report can be read section by
+    section. No ``pages`` → the whole document."""
+    import os as _os
+    path = str(args.get("path") or args.get("file") or args.get("filename") or "").strip()
+    pages = str(args.get("pages") or "").strip() or None
+    role = str(args.get("role") or "chat").strip() or "chat"
+    if not path:
+        return {"ok": False, "error": "need a file path/name"}
+    fp = _resolve_doc(path, cwd)
+    if not fp:
+        return {"ok": False, "error": f"file not found: {path}"}
+    from aiforge_core.runtime import doc_extract, doc_summarize
+    total = doc_extract.page_count(fp, "")
+    summary = doc_summarize.summarize_document(fp, role=role, pages=pages)
+    if not summary:
+        scope = f" for pages {pages}" if pages else ""
+        return {"ok": False, "error": f"nothing readable{scope} in {_os.path.basename(fp)}"}
+    return {"ok": True, "file": _os.path.basename(fp), "page_count": total,
+            "pages": pages or "all", "summary": summary}
+
+
 def _t_rename_symbol(args: dict, cwd: str) -> dict:
     import os as _os
     import re as _re
