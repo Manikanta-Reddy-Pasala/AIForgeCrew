@@ -55,11 +55,11 @@ export default function Chat() {
   async function uploadMedia(files: FileList | File[] | null) {
     const list = files ? Array.from(files) : [];
     if (!list.length) return;
-    // Pre-flight size guard (server cap is 25MB) — fail fast with a clear
+    // Pre-flight size guard (server cap is 50MB) — fail fast with a clear
     // message instead of spinning on a doomed multi-MB POST.
-    const MAX = 25 * 1024 * 1024;
+    const MAX = 50 * 1024 * 1024;
     const tooBig = list.find(f => f.size > MAX);
-    if (tooBig) { toast.error(`${tooBig.name} is too large (max 25 MB)`); return; }
+    if (tooBig) { toast.error(`${tooBig.name} is too large (max 50 MB)`); return; }
     // Attach works even on a brand-new chat: create the session first so the
     // file has somewhere to live (mirrors send()).
     let sid = activeId;

@@ -46,8 +46,28 @@ def _safe_name(name: str) -> str:
     return "".join(ch for ch in base if ch.isalnum() or ch in "._-") or "image"
 
 
-_MAX_FILE_BYTES = 25 * 1024 * 1024     # docs can be bigger than images
+_MAX_FILE_BYTES = 50 * 1024 * 1024     # docs can be bigger than images
 _DESC_CAP = 6000                       # extracted-text excerpt cap per doc
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+# A 100+-page PDF must extract fully, but page-by-page and bounded so a giant
+# file can't blow memory or the model's context. We walk pages SEQUENTIALLY,
+# accumulating text until either the page cap OR the char budget is hit, then
+# stop with a marker. Both are env-tunable for very large docs.
+def _pdf_page_cap() -> int:
+    return _int_env("AIFORGE_DOC_MAX_PAGES", 500)
+
+
+def _doc_char_budget() -> int:
+    # ~2k chars/page → 1M chars ≈ 500 pages of extractable text.
+    return _int_env("AIFORGE_DOC_MAX_CHARS", 1_000_000)
 
 _EXT_MIME = {
     ".pdf": "application/pdf",
@@ -106,7 +126,24 @@ def extract_text(path: str, mime: str = "") -> str:
         if ext == ".pdf" or mime == "application/pdf":
             from pypdf import PdfReader
             r = PdfReader(path)
-            return "\n".join((p.extract_text() or "") for p in r.pages[:30])
+            page_cap = _pdf_page_cap()
+            budget = _doc_char_budget()
+            out: list[str] = []
+            used = 0
+            total = len(r.pages)
+            for i, p in enumerate(r.pages[:page_cap]):
+                t = p.extract_text() or ""
+                out.append(t)
+                used += len(t)
+                if used >= budget:
+                    out.append(f"… (truncated at page {i + 1} of {total}, "
+                               f"{budget} char budget reached)")
+                    break
+            else:
+                if total > page_cap:
+                    out.append(f"… ({total - page_cap} more pages not shown; "
+                               f"page cap {page_cap})")
+            return "\n".join(out)
         if ext == ".xlsx" or "spreadsheet" in mime:
             from openpyxl import load_workbook
             wb = load_workbook(path, read_only=True, data_only=True)
@@ -120,8 +157,7 @@ def extract_text(path: str, mime: str = "") -> str:
                     out.append(", ".join("" if c is None else str(c) for c in row))
             return "\n".join(out)
         if ext == ".docx" or "wordprocessing" in mime:
-            import docx
-            return "\n".join(p.text for p in docx.Document(path).paragraphs)
+            return _docx_text(path)
         if mime.startswith("text/") or ext in _TEXT_EXTS:
             return Path(path).read_text(encoding="utf-8", errors="ignore")
     except Exception:  # noqa: BLE001
@@ -129,17 +165,138 @@ def extract_text(path: str, mime: str = "") -> str:
     return ""
 
 
+def _docx_text(path: str) -> str:
+    """Full-fidelity docx → text: paragraphs AND tables, walked in document
+    order (python-docx keeps the two in separate collections, so a naïve
+    ``.paragraphs`` pass silently drops every table). Embedded images are
+    marked with an ``[embedded image N]`` placeholder so the reader knows one
+    sits there; the actual picture is captioned separately (see
+    ``_docx_image_captions``) where a vision role is available."""
+    import docx
+    from docx.document import Document as _DocT
+    from docx.oxml.table import CT_Tbl
+    from docx.oxml.text.paragraph import CT_P
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    doc = docx.Document(path)
+    budget = _doc_char_budget()
+    out: list[str] = []
+    used = 0
+    img_n = 0
+
+    def _add(line: str) -> bool:
+        """Append a line; return False once the char budget is spent."""
+        nonlocal used
+        out.append(line)
+        used += len(line)
+        return used < budget
+
+    for child in doc.element.body.iterchildren():
+        if isinstance(child, CT_P):
+            para = Paragraph(child, doc)
+            if para.text.strip() and not _add(para.text):
+                break
+            # a drawing/pict anywhere in the run tree = an inline image
+            if child.findall(".//" + _DRAWING) or child.findall(".//" + _PICT):
+                img_n += 1
+                out.append(f"[embedded image {img_n}]")
+        elif isinstance(child, CT_Tbl):
+            table = Table(child, doc)
+            stop = False
+            for row in table.rows:
+                cells = [c.text.strip().replace("\n", " ") for c in row.cells]
+                if not _add(" | ".join(cells)):
+                    stop = True
+                    break
+            if stop:
+                break
+    if used >= budget:
+        out.append(f"… (truncated, {budget} char budget reached)")
+    return "\n".join(out)
+
+
+_DRAWING = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}drawing"
+_PICT = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pict"
+
+
+def _docx_images(path: str) -> list[tuple[str, bytes]]:
+    """Embedded image parts (name, bytes) from a docx, in package order."""
+    import docx
+    doc = docx.Document(path)
+    out: list[tuple[str, bytes]] = []
+    for rel in doc.part.rels.values():
+        if "image" in rel.reltype and not rel.is_external:
+            part = rel.target_part
+            out.append((os.path.basename(part.partname), part.blob))
+    return out
+
+
+_MAX_DOC_IMAGES = 8       # cap vision calls per document
+
+
+def _docx_image_captions(path: str, role: str) -> str:
+    """Caption every embedded image in a docx via the vision model. Returns a
+    block appended to the extracted text, or "" (no images / no vision / all
+    failed). Best-effort, never raises."""
+    try:
+        imgs = _docx_images(path)
+    except Exception:  # noqa: BLE001
+        return ""
+    if not imgs:
+        return ""
+    caps: list[str] = []
+    for i, (name, blob) in enumerate(imgs[:_MAX_DOC_IMAGES], 1):
+        cap = describe_bytes(blob, role).strip()
+        if cap:
+            caps.append(f"[embedded image {i}: {name}] {cap}")
+    if not caps:
+        return ""
+    return "EMBEDDED IMAGES:\n" + "\n".join(caps)
+
+
+def _with_doc_images(path: str, mime: str, txt: str, role: str) -> str:
+    """Append vision captions of a docx's embedded images to its text excerpt.
+    No-op for non-docx or when no vision model is reachable."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext != ".docx" and "wordprocessing" not in (mime or ""):
+        return txt
+    caps = _docx_image_captions(path, role)
+    return f"{txt}\n\n{caps}" if caps else txt
+
+
+def _summarize_or_excerpt(full: str, role: str) -> str:
+    """Auto-select by document size — the strategy escalates with length:
+
+      • small  (≤ _DESC_CAP)         → raw text, verbatim (no LLM cost)
+      • large  (> _DESC_CAP)         → map-reduce SUMMARY (doc_summarize picks
+                                        single-shot vs windowed internally, so a
+                                        400-page doc folds without blowing ctx)
+
+    Falls back to a plain truncated excerpt when summarisation is disabled or
+    the model is unreachable."""
+    full = (full or "").strip()
+    if len(full) <= _DESC_CAP:
+        return full
+    from aiforge_core.runtime import doc_summarize
+    summary = doc_summarize.summarize_text(full, role).strip()
+    if summary and summary != full[:len(summary)]:
+        return (f"SUMMARY (auto-generated from {len(full)} chars of extracted "
+                f"text):\n{summary}")
+    return full[:_DESC_CAP] + "\n… (truncated)"
+
+
 def describe_upload(path: str, filename: str, mime: str, role: str = "chat") -> str:
     """The text that makes an attachment queryable: a vision caption for an
-    image, or an extracted-text excerpt for a document."""
+    image, or — for a document — a size-selected excerpt/summary (small doc:
+    raw text; large doc: map-reduce summary). docx image captions appended when
+    a vision model is reachable."""
     if mime.startswith("image/"):
         return describe_image(path, role)
-    txt = extract_text(path, mime).strip()
-    if not txt:
-        return ""
-    if len(txt) > _DESC_CAP:
-        txt = txt[:_DESC_CAP] + "\n… (truncated)"
-    return txt
+    full = extract_text(path, mime).strip()
+    body = _summarize_or_excerpt(full, role)
+    body = _with_doc_images(path, mime, body, role)
+    return body.strip()
 
 
 # Vision-capability detection lives in its own module (probe / cache /
@@ -250,9 +407,9 @@ def analyze_attachment(filename: str, raw: bytes, role: str = "doer",
         with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as f:
             f.write(raw)
             tmp = f.name
-        txt = extract_text(tmp, mime).strip()
-        if len(txt) > _DESC_CAP:
-            txt = txt[:_DESC_CAP] + "\n… (truncated)"
+        full = extract_text(tmp, mime).strip()
+        txt = _summarize_or_excerpt(full, role)
+        txt = _with_doc_images(tmp, mime, txt, role).strip()
         return {"filename": filename, "description": txt}
     except Exception:  # noqa: BLE001
         return {"filename": filename, "description": ""}

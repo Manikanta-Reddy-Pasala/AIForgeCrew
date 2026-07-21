@@ -159,3 +159,47 @@ def test_analyze_attachment_handles_image_and_document(app_client):
     assert chat_media.supported_attachment("application/pdf", "a.pdf")
     assert chat_media.supported_attachment("", "a.docx")
     assert not chat_media.supported_attachment("video/mp4", "a.mp4")
+
+
+def test_docx_extracts_paragraphs_and_tables(tmp_path):
+    """docx extraction pulls BOTH paragraphs and tables, in document order —
+    a plain ``.paragraphs`` pass silently drops every table."""
+    docx = pytest.importorskip("docx")
+    from aiforge_core.runtime import chat_media
+    d = docx.Document()
+    d.add_paragraph("intro para")
+    t = d.add_table(rows=2, cols=2)
+    t.rows[0].cells[0].text = "h1"; t.rows[0].cells[1].text = "h2"
+    t.rows[1].cells[0].text = "v1"; t.rows[1].cells[1].text = "v2"
+    d.add_paragraph("outro para")
+    p = tmp_path / "doc.docx"
+    d.save(str(p))
+    txt = chat_media.extract_text(str(p))
+    assert "intro para" in txt and "outro para" in txt      # paragraphs
+    assert "h1 | h2" in txt and "v1 | v2" in txt             # table rows
+    assert txt.index("intro") < txt.index("h1 | h2") < txt.index("outro")  # order
+
+
+def test_docx_char_budget_truncates(tmp_path, monkeypatch):
+    """A huge docx stops at the char budget instead of loading unbounded text."""
+    docx = pytest.importorskip("docx")
+    from aiforge_core.runtime import chat_media
+    monkeypatch.setenv("AIFORGE_DOC_MAX_CHARS", "200")
+    d = docx.Document()
+    for i in range(500):
+        d.add_paragraph(f"paragraph number {i} with filler content")
+    p = tmp_path / "big.docx"
+    d.save(str(p))
+    txt = chat_media.extract_text(str(p))
+    assert "budget reached" in txt
+    assert len(txt) < 2000        # bounded, nowhere near the full 500 paras
+
+
+def test_pdf_page_cap_and_budget_env(monkeypatch):
+    """PDF page cap + char budget are env-tunable for very large (100+ page)
+    docs — defaults are generous, overrides are honoured."""
+    from aiforge_core.runtime import chat_media
+    monkeypatch.setenv("AIFORGE_DOC_MAX_PAGES", "150")
+    monkeypatch.setenv("AIFORGE_DOC_MAX_CHARS", "999")
+    assert chat_media._pdf_page_cap() == 150
+    assert chat_media._doc_char_budget() == 999
