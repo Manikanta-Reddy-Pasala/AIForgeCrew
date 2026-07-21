@@ -277,9 +277,9 @@ _MAX_DOC_IMAGES = 8       # cap vision calls per document
 def _pdf_images(path: str) -> list[tuple[str, bytes]]:
     """Embedded raster images (name, bytes) from a PDF via pypdf's per-page
     ``.images`` (Pillow-backed). Bounded to the page cap and _MAX_DOC_IMAGES.
-    Best-effort — "" list when pypdf/Pillow can't decode. Note: this pulls
-    images the PDF *embeds*; it does NOT rasterise vector pages or OCR a
-    scanned page (that needs a rasteriser + tesseract, not wired here)."""
+    Best-effort — "" list when pypdf/Pillow can't decode. For a *scanned* PDF
+    each page is itself a full-page image, so this also feeds the vision-model
+    OCR pass (``_pdf_ocr``) — no OCR engine / new dependency needed."""
     out: list[tuple[str, bytes]] = []
     try:
         from pypdf import PdfReader
@@ -331,6 +331,60 @@ def _with_doc_images(path: str, mime: str, txt: str, role: str) -> str:
     return f"{txt}\n\n{caps}" if caps else txt
 
 
+def _is_pdf(path: str, mime: str) -> bool:
+    return os.path.splitext(path)[1].lower() == ".pdf" \
+        or (mime or "") == "application/pdf"
+
+
+def _pdf_is_scanned(path: str, mime: str, extracted: str) -> bool:
+    """A scanned/image-only PDF yields almost no extractable text. Treat a PDF
+    with a near-empty text layer as scanned → OCR it via the vision model."""
+    return _is_pdf(path, mime) and len((extracted or "").strip()) < 200
+
+
+def _pdf_ocr(path: str, role: str) -> str:
+    """OCR a scanned PDF using the wired VISION model — no OCR engine, no new
+    dependency. Each scanned page is a full-page image (``pypdf`` ``.images``);
+    we transcribe pages that have NO extractable text. Bounded by
+    ``AIFORGE_PDF_OCR_MAX_PAGES`` (default 30 — vision OCR is one LLM call per
+    page) and the shared char budget. Best-effort, never raises."""
+    try:
+        from pypdf import PdfReader
+        r = PdfReader(path)
+    except Exception:  # noqa: BLE001
+        return ""
+    cap = _int_env("AIFORGE_PDF_OCR_MAX_PAGES", 30)
+    budget = _doc_char_budget()
+    out: list[str] = []
+    used = 0
+    done = 0
+    for i, p in enumerate(r.pages[:_pdf_page_cap()]):
+        try:
+            if (p.extract_text() or "").strip():
+                continue                      # real text layer → no OCR needed
+            blobs = [im.data for im in p.images]
+        except Exception:  # noqa: BLE001
+            continue
+        if not blobs:
+            continue
+        if done >= cap:
+            out.append(f"… (OCR stopped at {cap} pages)")
+            break
+        page_img = max(blobs, key=len)        # the page scan = largest image
+        txt = describe_bytes(page_img, role, prompt=_OCR_PROMPT,
+                             max_tokens=1500).strip()
+        done += 1
+        if not txt:
+            continue
+        block = f"[OCR page {i + 1}]\n{txt}"
+        out.append(block)
+        used += len(block)
+        if used >= budget:
+            out.append(f"… (OCR char budget {budget} reached)")
+            break
+    return "\n\n".join(out)
+
+
 def _summarize_or_excerpt(full: str, role: str) -> str:
     """Auto-select by document size — the strategy escalates with length:
 
@@ -360,8 +414,14 @@ def describe_upload(path: str, filename: str, mime: str, role: str = "chat") -> 
     if mime.startswith("image/"):
         return describe_image(path, role)
     full = extract_text(path, mime).strip()
+    scanned = _pdf_is_scanned(path, mime, full)
+    if scanned:                               # image-only PDF → vision-model OCR
+        ocr = _pdf_ocr(path, role)
+        if ocr:
+            full = ocr
     body = _summarize_or_excerpt(full, role)
-    body = _with_doc_images(path, mime, body, role)
+    if not scanned:                           # figure captions (skip for scans)
+        body = _with_doc_images(path, mime, body, role)
     return body.strip()
 
 
@@ -399,32 +459,43 @@ def _vision_role(role: str) -> str | None:
     return None
 
 
-def describe_image(path: str, role: str = "chat") -> str:
-    """Auto-caption an image with a vision model. Uses the role's model when it's
-    vision-capable, else a dedicated vision model (see ``_vision_role``).
-    Best-effort — returns "" when NO vision model is reachable or the call fails
-    (caller falls back to a user-typed caption)."""
+_CAPTION_PROMPT = (
+    "Describe this image concisely (1-2 sentences) so it can be referenced "
+    "later in the conversation. Note any visible text, UI, chart, or code.")
+
+_OCR_PROMPT = (
+    "Transcribe ALL text in this image exactly, preserving reading order and "
+    "line breaks. Output only the transcribed text — no commentary, no "
+    "description. If there is no readable text, output nothing.")
+
+
+def describe_image(path: str, role: str = "chat", *,
+                   prompt: str = _CAPTION_PROMPT, max_tokens: int = 200) -> str:
+    """Run a vision model over an image. Default prompt = a short caption; pass
+    ``prompt=_OCR_PROMPT`` (and a larger ``max_tokens``) to transcribe a scanned
+    page instead. Uses the role's model when vision-capable, else a dedicated
+    vision model (see ``_vision_role``). Best-effort — "" when no vision model
+    is reachable or the call fails."""
     vrole = _vision_role(role)
     if not vrole:
         return ""
-    content = vision.attach_image(
-        "Describe this image concisely (1-2 sentences) so it can be referenced "
-        "later in the conversation. Note any visible text, UI, chart, or code.",
-        path)
+    content = vision.attach_image(prompt, path)
     if isinstance(content, dict):        # soft-error from attach_image
         return ""
     try:
         from aiforge_core.llm.client import complete
         out = complete(vrole, [{"role": "user", "content": content}],
-                       max_tokens=200)
+                       max_tokens=max_tokens)
         return (out or "").strip()
     except Exception:  # noqa: BLE001
         return ""
 
 
-def describe_bytes(raw: bytes, role: str = "doer") -> str:
-    """Auto-caption raw image bytes (e.g. a Jira/Confluence attachment) via the
-    vision model. "" when not an image, vision is off, or the call fails."""
+def describe_bytes(raw: bytes, role: str = "doer", *,
+                   prompt: str = _CAPTION_PROMPT, max_tokens: int = 200) -> str:
+    """Vision model over raw image bytes (e.g. a Jira/Confluence attachment or a
+    PDF page scan). Default = caption; pass ``prompt=_OCR_PROMPT`` to OCR. "" when
+    not an image, vision is off, or the call fails."""
     import tempfile
     if vision._detect_mime(raw) is None:
         return ""
@@ -433,7 +504,7 @@ def describe_bytes(raw: bytes, role: str = "doer") -> str:
         with tempfile.NamedTemporaryFile(suffix=".img", delete=False) as f:
             f.write(raw)
             tmp = f.name
-        return describe_image(tmp, role)
+        return describe_image(tmp, role, prompt=prompt, max_tokens=max_tokens)
     except Exception:  # noqa: BLE001
         return ""
     finally:
@@ -474,9 +545,15 @@ def analyze_attachment(filename: str, raw: bytes, role: str = "doer",
             f.write(raw)
             tmp = f.name
         full = extract_text(tmp, mime).strip()
+        scanned = _pdf_is_scanned(tmp, mime, full)
+        if scanned:                           # image-only PDF → vision-model OCR
+            ocr = _pdf_ocr(tmp, role)
+            if ocr:
+                full = ocr
         txt = _summarize_or_excerpt(full, role)
-        txt = _with_doc_images(tmp, mime, txt, role).strip()
-        return {"filename": filename, "description": txt}
+        if not scanned:
+            txt = _with_doc_images(tmp, mime, txt, role)
+        return {"filename": filename, "description": txt.strip()}
     except Exception:  # noqa: BLE001
         return {"filename": filename, "description": ""}
     finally:

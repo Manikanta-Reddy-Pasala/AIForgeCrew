@@ -258,6 +258,53 @@ def test_pdf_image_captions_wired(monkeypatch):
     from aiforge_core.runtime import chat_media
     monkeypatch.setattr(chat_media, "_pdf_images", lambda p: [("pic.png", b"X")])
     monkeypatch.setattr(chat_media, "describe_bytes",
-                        lambda raw, role="doer": "a bar chart")
+                        lambda raw, role="doer", **kw: "a bar chart")
     out = chat_media._with_doc_images("r.pdf", "application/pdf", "body text", "chat")
     assert "EMBEDDED IMAGES:" in out and "a bar chart" in out
+
+
+def test_pdf_scanned_detection():
+    from aiforge_core.runtime import chat_media
+    assert chat_media._pdf_is_scanned("s.pdf", "application/pdf", "")           # empty
+    assert chat_media._pdf_is_scanned("s.pdf", "", "  \n ")                     # blank
+    assert not chat_media._pdf_is_scanned("s.pdf", "", "x" * 500)              # has text
+    assert not chat_media._pdf_is_scanned("d.docx", "", "")                    # not pdf
+
+
+def test_pdf_ocr_transcribes_textless_pages(monkeypatch):
+    """OCR only pages that have NO text layer but DO have an image; each is
+    transcribed via the vision model (OCR prompt), page-marked."""
+    import types
+    from aiforge_core.runtime import chat_media
+    # page 0: real text → skipped; page 1: no text + image → OCR'd.
+    p0 = types.SimpleNamespace(extract_text=lambda: "already has text",
+                               images=[types.SimpleNamespace(data=b"IMG0")])
+    p1 = types.SimpleNamespace(extract_text=lambda: "   ",
+                               images=[types.SimpleNamespace(data=b"IMG1BIG")])
+    monkeypatch.setattr("pypdf.PdfReader",
+                        lambda p: types.SimpleNamespace(pages=[p0, p1]))
+    seen = {}
+    def _fake_bytes(raw, role="doer", *, prompt="", max_tokens=200):
+        seen["prompt"] = prompt
+        return "transcribed line A\ntranscribed line B"
+    monkeypatch.setattr(chat_media, "describe_bytes", _fake_bytes)
+    out = chat_media._pdf_ocr("scan.pdf", "chat")
+    assert "OCR page 2" in out                       # only the text-less page
+    assert "transcribed line A" in out
+    assert "OCR page 1" not in out                   # page with text skipped
+    assert "Transcribe ALL text" in seen["prompt"]   # OCR prompt, not caption
+
+
+def test_pdf_ocr_page_cap(monkeypatch):
+    import types
+    from aiforge_core.runtime import chat_media
+    monkeypatch.setenv("AIFORGE_PDF_OCR_MAX_PAGES", "2")
+    pages = [types.SimpleNamespace(extract_text=lambda: "",
+                                   images=[types.SimpleNamespace(data=b"IMG")])
+             for _ in range(6)]
+    monkeypatch.setattr("pypdf.PdfReader",
+                        lambda p: types.SimpleNamespace(pages=pages))
+    monkeypatch.setattr(chat_media, "describe_bytes",
+                        lambda raw, role="doer", **kw: "text")
+    out = chat_media._pdf_ocr("scan.pdf", "chat")
+    assert "OCR stopped at 2 pages" in out
