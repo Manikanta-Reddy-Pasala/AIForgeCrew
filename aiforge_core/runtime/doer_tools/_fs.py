@@ -212,7 +212,8 @@ def list_dir(path: str = "") -> dict:
 def run_shell(cmd: str) -> dict:
     """Run a shell command inside the repo root.
 
-    Hard timeout 90s; output truncated to 8 KB per stream so a runaway
+    Timeout AIFORGE_SHELL_TIMEOUT (default 600s); output truncated to 8 KB
+    per stream so a runaway
     test suite cannot blow up session state.
 
     Refuses DANGEROUS commands (rm -rf /, fork bombs, disk wipes, …) even in
@@ -233,10 +234,24 @@ def run_shell(cmd: str) -> dict:
         if os.environ.get("AIFORGE_RISK_GATE_FAIL_OPEN", "0") not in ("1", "true", "yes"):
             return {"ok": False, "error": "risk_check_failed",
                     "reason": f"safety classifier error: {exc}", "returncode": -1}
+    # Login shell (bash -lc) so the operator's version managers — sdkman,
+    # nvm, pyenv, rbenv, cargo — are on PATH; a bare `sh -c` sees only the
+    # system defaults (e.g. an old JDK) and builds fail on version mismatch.
+    # Generous, env-tunable timeout: an install (sdk/nvm/pyenv/apt) plus a
+    # full build does not fit in 90s. Override with AIFORGE_SHELL_TIMEOUT.
+    try:
+        _sh_timeout = int(os.environ.get("AIFORGE_SHELL_TIMEOUT", "600") or "600")
+    except ValueError:
+        _sh_timeout = 600
+    # Run under bash (not the /bin/sh default) so the doer can `source` a
+    # version manager (sdkman/nvm/pyenv) and chain `&&` when it provisions a
+    # missing/mismatched toolchain itself. We do NOT auto-activate any manager
+    # here — the doer owns toolchain setup via its own commands (see doer prompt).
+    _argv = ["bash", "-c", cmd] if shutil.which("bash") else cmd
     try:
         proc = subprocess.run(
-            cmd, shell=True, cwd=root(),
-            capture_output=True, timeout=90,
+            _argv, shell=not isinstance(_argv, list), cwd=root(),
+            capture_output=True, timeout=_sh_timeout,
         )
     except subprocess.TimeoutExpired as exc:
         _to_out = (exc.stdout or b"").decode("utf-8", "replace")
