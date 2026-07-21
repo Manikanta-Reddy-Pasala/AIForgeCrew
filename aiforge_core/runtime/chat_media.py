@@ -124,26 +124,7 @@ def extract_text(path: str, mime: str = "") -> str:
     ext = os.path.splitext(path)[1].lower()
     try:
         if ext == ".pdf" or mime == "application/pdf":
-            from pypdf import PdfReader
-            r = PdfReader(path)
-            page_cap = _pdf_page_cap()
-            budget = _doc_char_budget()
-            out: list[str] = []
-            used = 0
-            total = len(r.pages)
-            for i, p in enumerate(r.pages[:page_cap]):
-                t = p.extract_text() or ""
-                out.append(t)
-                used += len(t)
-                if used >= budget:
-                    out.append(f"… (truncated at page {i + 1} of {total}, "
-                               f"{budget} char budget reached)")
-                    break
-            else:
-                if total > page_cap:
-                    out.append(f"… ({total - page_cap} more pages not shown; "
-                               f"page cap {page_cap})")
-            return "\n".join(out)
+            return _pdf_text(path)
         if ext == ".xlsx" or "spreadsheet" in mime:
             from openpyxl import load_workbook
             wb = load_workbook(path, read_only=True, data_only=True)
@@ -163,6 +144,64 @@ def extract_text(path: str, mime: str = "") -> str:
     except Exception:  # noqa: BLE001
         return ""
     return ""
+
+
+def _pdf_tables(path: str, page_cap: int) -> dict[int, list[str]]:
+    """Structured tables per page via pdfplumber (optional dep). Returns
+    ``{page_index: ["a | b", …]}``. Empty when pdfplumber isn't installed or
+    the PDF has no detectable tables — pypdf's flat text still carries the
+    numbers, this just restores the grid. Best-effort, never raises."""
+    try:
+        import pdfplumber
+    except Exception:  # noqa: BLE001 — optional; flat text is the fallback
+        return {}
+    tables: dict[int, list[str]] = {}
+    try:
+        with pdfplumber.open(path) as pdf:
+            for i, page in enumerate(pdf.pages[:page_cap]):
+                rows: list[str] = []
+                for tbl in (page.extract_tables() or []):
+                    for row in tbl:
+                        cells = ["" if c is None else str(c).replace("\n", " ")
+                                 for c in row]
+                        rows.append(" | ".join(cells))
+                if rows:
+                    tables[i] = rows
+    except Exception:  # noqa: BLE001
+        return tables
+    return tables
+
+
+def _pdf_text(path: str) -> str:
+    """PDF → text: per-page extracted text PLUS structured tables (pdfplumber
+    when available), walked SEQUENTIALLY under a page cap + char budget so a
+    400-page file folds without blowing memory. Embedded images are captioned
+    separately (``_embedded_image_captions``) where a vision role is known."""
+    from pypdf import PdfReader
+    r = PdfReader(path)
+    page_cap = _pdf_page_cap()
+    budget = _doc_char_budget()
+    tables = _pdf_tables(path, page_cap)
+    out: list[str] = []
+    used = 0
+    total = len(r.pages)
+    for i, p in enumerate(r.pages[:page_cap]):
+        t = p.extract_text() or ""
+        out.append(t)
+        used += len(t)
+        if i in tables:
+            block = f"[tables on page {i + 1}]\n" + "\n".join(tables[i])
+            out.append(block)
+            used += len(block)
+        if used >= budget:
+            out.append(f"… (truncated at page {i + 1} of {total}, "
+                       f"{budget} char budget reached)")
+            break
+    else:
+        if total > page_cap:
+            out.append(f"… ({total - page_cap} more pages not shown; "
+                       f"page cap {page_cap})")
+    return "\n".join(out)
 
 
 def _docx_text(path: str) -> str:
@@ -235,12 +274,42 @@ def _docx_images(path: str) -> list[tuple[str, bytes]]:
 _MAX_DOC_IMAGES = 8       # cap vision calls per document
 
 
-def _docx_image_captions(path: str, role: str) -> str:
-    """Caption every embedded image in a docx via the vision model. Returns a
-    block appended to the extracted text, or "" (no images / no vision / all
+def _pdf_images(path: str) -> list[tuple[str, bytes]]:
+    """Embedded raster images (name, bytes) from a PDF via pypdf's per-page
+    ``.images`` (Pillow-backed). Bounded to the page cap and _MAX_DOC_IMAGES.
+    Best-effort — "" list when pypdf/Pillow can't decode. Note: this pulls
+    images the PDF *embeds*; it does NOT rasterise vector pages or OCR a
+    scanned page (that needs a rasteriser + tesseract, not wired here)."""
+    out: list[tuple[str, bytes]] = []
+    try:
+        from pypdf import PdfReader
+        r = PdfReader(path)
+        for p in r.pages[:_pdf_page_cap()]:
+            for img in p.images:
+                out.append((img.name or f"img{len(out)}", img.data))
+                if len(out) >= _MAX_DOC_IMAGES:
+                    return out
+    except Exception:  # noqa: BLE001
+        return out
+    return out
+
+
+def _embedded_images(path: str, mime: str) -> list[tuple[str, bytes]]:
+    """Embedded images for a doc, dispatched by type (docx / pdf). [] otherwise."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".docx" or "wordprocessing" in (mime or ""):
+        return _docx_images(path)
+    if ext == ".pdf" or (mime or "") == "application/pdf":
+        return _pdf_images(path)
+    return []
+
+
+def _embedded_image_captions(path: str, mime: str, role: str) -> str:
+    """Caption a document's embedded images via the vision model. Returns a
+    block to append to the extracted text, or "" (no images / no vision / all
     failed). Best-effort, never raises."""
     try:
-        imgs = _docx_images(path)
+        imgs = _embedded_images(path, mime)
     except Exception:  # noqa: BLE001
         return ""
     if not imgs:
@@ -256,12 +325,9 @@ def _docx_image_captions(path: str, role: str) -> str:
 
 
 def _with_doc_images(path: str, mime: str, txt: str, role: str) -> str:
-    """Append vision captions of a docx's embedded images to its text excerpt.
-    No-op for non-docx or when no vision model is reachable."""
-    ext = os.path.splitext(path)[1].lower()
-    if ext != ".docx" and "wordprocessing" not in (mime or ""):
-        return txt
-    caps = _docx_image_captions(path, role)
+    """Append vision captions of a document's embedded images (docx / pdf) to
+    its text excerpt. No-op when no vision model is reachable or no images."""
+    caps = _embedded_image_captions(path, mime, role)
     return f"{txt}\n\n{caps}" if caps else txt
 
 

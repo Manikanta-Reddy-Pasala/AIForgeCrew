@@ -203,3 +203,61 @@ def test_pdf_page_cap_and_budget_env(monkeypatch):
     monkeypatch.setenv("AIFORGE_DOC_MAX_CHARS", "999")
     assert chat_media._pdf_page_cap() == 150
     assert chat_media._doc_char_budget() == 999
+
+
+def test_pdf_tables_formats_rows(monkeypatch):
+    """pdfplumber tables render as `a | b` rows, None cells blanked."""
+    import types
+    from aiforge_core.runtime import chat_media
+
+    class _Page:
+        def extract_tables(self):
+            return [[["h1", "h2"], ["v1", None]]]
+
+    class _PDF:
+        pages = [_Page()]
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr("pdfplumber.open", lambda p: _PDF())
+    tbl = chat_media._pdf_tables("x.pdf", 10)
+    assert tbl[0] == ["h1 | h2", "v1 | "]
+
+
+def test_pdf_text_interleaves_page_text_and_tables(monkeypatch):
+    import types
+    from aiforge_core.runtime import chat_media
+    pages = [types.SimpleNamespace(extract_text=lambda: "page one text", images=[]),
+             types.SimpleNamespace(extract_text=lambda: "page two text", images=[])]
+    monkeypatch.setattr("pypdf.PdfReader",
+                        lambda p: types.SimpleNamespace(pages=pages))
+    monkeypatch.setattr(chat_media, "_pdf_tables",
+                        lambda path, cap: {0: ["a | b", "c | d"]})
+    txt = chat_media._pdf_text("x.pdf")
+    assert "page one text" in txt and "page two text" in txt   # text
+    assert "tables on page 1" in txt and "a | b" in txt        # interleaved table
+    assert txt.index("page one") < txt.index("a | b") < txt.index("page two")
+
+
+def test_pdf_images_extracted_and_dispatched(monkeypatch):
+    import types
+    from aiforge_core.runtime import chat_media
+    img = types.SimpleNamespace(name="im.png", data=b"IMGBYTES")
+    page = types.SimpleNamespace(images=[img])
+    monkeypatch.setattr("pypdf.PdfReader",
+                        lambda p: types.SimpleNamespace(pages=[page]))
+    assert chat_media._pdf_images("x.pdf") == [("im.png", b"IMGBYTES")]
+    # dispatch routes .pdf / application/pdf to the pdf extractor
+    assert chat_media._embedded_images("f.pdf", "") == [("im.png", b"IMGBYTES")]
+    assert chat_media._embedded_images(
+        "f.pdf", "application/pdf") == [("im.png", b"IMGBYTES")]
+
+
+def test_pdf_image_captions_wired(monkeypatch):
+    """PDF embedded images flow through the same vision-caption path as docx."""
+    from aiforge_core.runtime import chat_media
+    monkeypatch.setattr(chat_media, "_pdf_images", lambda p: [("pic.png", b"X")])
+    monkeypatch.setattr(chat_media, "describe_bytes",
+                        lambda raw, role="doer": "a bar chart")
+    out = chat_media._with_doc_images("r.pdf", "application/pdf", "body text", "chat")
+    assert "EMBEDDED IMAGES:" in out and "a bar chart" in out
