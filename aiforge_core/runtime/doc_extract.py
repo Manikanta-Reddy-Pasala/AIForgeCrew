@@ -65,7 +65,9 @@ def _doc_char_budget() -> int:
 
 
 def _approx_page_chars() -> int:
-    return _int_env("AIFORGE_APPROX_PAGE_CHARS", 1800)
+    # ~one printed page of prose ≈ 3000 chars (≈500 words). Used to estimate
+    # docx/text page numbers when the file carries no reliable page breaks.
+    return _int_env("AIFORGE_APPROX_PAGE_CHARS", 3000)
 
 
 def _is_pdf(path: str, mime: str) -> bool:
@@ -203,33 +205,64 @@ def _approx_pages(text: str, size: int) -> list[str]:
     return pages or [text]
 
 
-def document_pages(path: str, mime: str = "") -> list[str]:
-    """The document as a list of page texts (page 1 = index 0). PDF → real
-    pages; docx → break-segmented (char-approx when no breaks); xlsx → sheets;
-    text → char-approx when large. [] when nothing readable. Never raises."""
+def _docx_paginate(path: str) -> tuple[list[str], str]:
+    """docx → (pages, kind). Trust Word's rendered page breaks ONLY when they
+    are dense enough to represent real pages: Word writes ``lastRenderedPageBreak``
+    sporadically, so a 70-page report can carry ~10 markers → trusting them
+    under-counts pages massively and makes a high page number (e.g. 68) fall out
+    of range and select nothing. When breaks are sparse/absent we fall back to
+    char-approx pagination that spans the whole document so every page number
+    resolves. Kind is "exact" (break-segmented) or "approx" (char-estimated)."""
+    import math
+    pages = _docx_pages(path)
+    whole = "\n".join(pages).strip()
+    nonempty = [p for p in pages if p.strip()]
+    approx_n = max(1, math.ceil(len(whole) / _approx_page_chars()))
+    # Breaks are reliable only if they yield at least ~60% of the char-estimated
+    # page count (and more than one page). Otherwise estimate from length.
+    if len(nonempty) >= 2 and len(pages) >= approx_n * 0.6:
+        return pages, "exact"
+    if not whole:
+        return [], "none"
+    if len(whole) > _approx_page_chars():
+        return _approx_pages(whole, _approx_page_chars()), "approx"
+    return [whole], "approx"
+
+
+def paginate(path: str, mime: str = "") -> tuple[list[str], str]:
+    """(pages, kind) for a document. kind ∈ {exact, approx, sheets, none}.
+    PDF → real pages ("exact"); docx → break-segmented when dense enough else
+    char-approx; xlsx → per-sheet ("sheets"); text → char-approx when large.
+    Never raises → ([], "none") on any failure."""
     ext = os.path.splitext(path)[1].lower()
     try:
         if _is_pdf(path, mime):
-            return _pdf_pages(path)
+            return _pdf_pages(path), "exact"
         if ext == ".xlsx" or "spreadsheet" in (mime or ""):
-            return _xlsx_pages(path)
+            return _xlsx_pages(path), "sheets"
         if _is_docx(path, mime):
-            pages = _docx_pages(path)
-            single = [p for p in pages if p.strip()]
-            if len(single) <= 1:                 # no real page breaks in the file
-                whole = "\n".join(pages).strip()
-                if len(whole) > _approx_page_chars() * 1.5:
-                    return _approx_pages(whole, _approx_page_chars())
-                return [whole] if whole else []
-            return pages
+            return _docx_paginate(path)
         if (mime or "").startswith("text/") or ext in _TEXT_EXTS:
             txt = Path(path).read_text(encoding="utf-8", errors="ignore")
-            if len(txt) > _approx_page_chars() * 1.5:
-                return _approx_pages(txt, _approx_page_chars())
-            return [txt] if txt else []
+            if len(txt) > _approx_page_chars():
+                return _approx_pages(txt, _approx_page_chars()), "approx"
+            return ([txt], "exact") if txt else ([], "none")
     except Exception:  # noqa: BLE001
-        return []
-    return []
+        return [], "none"
+    return [], "none"
+
+
+def document_pages(path: str, mime: str = "") -> list[str]:
+    """The document as a list of page texts (page 1 = index 0). [] when nothing
+    readable. Never raises. See :func:`paginate` for the exact/approx kind."""
+    return paginate(path, mime)[0]
+
+
+def pagination_kind(path: str, mime: str = "") -> str:
+    """How page numbers were derived: "exact" (PDF pages / dense docx breaks),
+    "approx" (char-estimated — may not match a Word viewer's printed pages),
+    "sheets" (xlsx), or "none"."""
+    return paginate(path, mime)[1]
 
 
 def _join_pages(pages: list[str], budget: int, *,
@@ -312,4 +345,4 @@ def page_count(path: str, mime: str = "") -> int:
 
 
 __all__ = ["extract_text", "extract_pages", "document_pages", "page_count",
-           "parse_page_spec"]
+           "parse_page_spec", "paginate", "pagination_kind"]

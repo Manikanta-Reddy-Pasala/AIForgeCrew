@@ -185,6 +185,7 @@ def test_docx_char_budget_truncates(tmp_path, monkeypatch):
     docx = pytest.importorskip("docx")
     from aiforge_core.runtime import chat_media
     monkeypatch.setenv("AIFORGE_DOC_MAX_CHARS", "200")
+    monkeypatch.setenv("AIFORGE_APPROX_PAGE_CHARS", "800")
     d = docx.Document()
     for i in range(500):
         d.add_paragraph(f"paragraph number {i} with filler content")
@@ -192,7 +193,9 @@ def test_docx_char_budget_truncates(tmp_path, monkeypatch):
     d.save(str(p))
     txt = chat_media.extract_text(str(p))
     assert "budget reached" in txt
-    assert len(txt) < 2000        # bounded, nowhere near the full 500 paras
+    # ~20k chars of text; the 200-char budget stops after the first ~800-char
+    # page — bounded, nowhere near the full doc.
+    assert len(txt) < 2000
 
 
 def test_pdf_page_cap_and_budget_env(monkeypatch):

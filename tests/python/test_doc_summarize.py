@@ -123,6 +123,56 @@ def test_extract_pages_selects_range(tmp_path):
     assert "content of page 1" not in out and "content of page 5" not in out
 
 
+def test_docx_sparse_breaks_fall_back_to_approx(tmp_path):
+    """A long docx with only a FEW rendered page breaks must NOT be trusted as
+    that few pages (Word writes them sporadically) — it falls back to char-approx
+    so a high page number still resolves instead of selecting nothing.
+    Regression: session-29 'summarize pages 68-70' returned empty."""
+    docx = pytest.importorskip("docx")
+    from aiforge_core.runtime import doc_extract as de
+    d = docx.Document()
+    for i in range(1, 1400):                       # ~220k chars ≈ 70 printed pages
+        d.add_paragraph(f"Para {i}. " + "word " * 30)
+        if i % 140 == 0:                           # only ~10 manual breaks
+            d.add_page_break()
+    p = tmp_path / "long.docx"
+    d.save(str(p))
+    pages, kind = de.paginate(str(p), "")
+    assert kind == "approx"                        # sparse breaks not trusted
+    assert len(pages) > 60                         # spans the whole doc, not ~10
+    out = de.extract_pages(str(p), "", "68-70")
+    assert out and "--- page 68 ---" in out and "--- page 70 ---" in out
+
+
+def test_docx_dense_breaks_stay_exact(tmp_path):
+    docx = pytest.importorskip("docx")
+    from aiforge_core.runtime import doc_extract as de
+    d = docx.Document()
+    for i in range(1, 40):
+        d.add_paragraph(f"Page-{i} " + "word " * 200)   # ~1 page of prose each
+        d.add_page_break()
+    p = tmp_path / "dense.docx"
+    d.save(str(p))
+    _pages, kind = de.paginate(str(p), "")
+    assert kind == "exact"
+
+
+def test_summarize_doc_tool_out_of_range(monkeypatch, tmp_path):
+    """The chat tool reports the real page count on an out-of-range request
+    instead of returning empty (which made the model fumble)."""
+    docx = pytest.importorskip("docx")
+    from aiforge_core.runtime.chat_agent._tools._code import _t_summarize_doc
+    import os
+    d = docx.Document()
+    d.add_paragraph("only a little content here")
+    media = tmp_path / ".aiforge" / "media"
+    media.mkdir(parents=True)
+    d.save(str(media / "small.docx"))
+    r = _t_summarize_doc({"path": "small.docx", "pages": "68-70"}, str(tmp_path))
+    assert r["ok"] is False
+    assert "out of range" in r["error"] and str(r["page_count"]) in r["error"]
+
+
 def test_summarize_document_page_range(monkeypatch, tmp_path):
     """summarize_document(pages=...) extracts ONLY the range, then summarises."""
     docx = pytest.importorskip("docx")

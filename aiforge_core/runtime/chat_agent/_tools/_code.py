@@ -81,13 +81,32 @@ def _t_summarize_doc(args: dict, cwd: str) -> dict:
     if not fp:
         return {"ok": False, "error": f"file not found: {path}"}
     from aiforge_core.runtime import doc_extract, doc_summarize
-    total = doc_extract.page_count(fp, "")
+    name = _os.path.basename(fp)
+    _pages, kind = doc_extract.paginate(fp, "")
+    total = len(_pages)
+    note = ("page numbers are APPROXIMATE (char-estimated — this file has no "
+            "reliable page breaks, so they may not match a Word viewer's "
+            "printed pages)") if kind == "approx" else None
+    # Out-of-range page request → don't fail silently; tell the model the real
+    # page count so it can relay that instead of retrying blindly.
+    if pages:
+        idx = doc_extract.parse_page_spec(pages, total)
+        if not idx:
+            return {"ok": False, "file": name, "page_count": total,
+                    "pagination": kind, "note": note,
+                    "error": f"requested pages {pages!r} are out of range — "
+                             f"{name} has {total} page(s)"
+                             + (f" ({note})" if note else "")}
     summary = doc_summarize.summarize_document(fp, role=role, pages=pages)
     if not summary:
         scope = f" for pages {pages}" if pages else ""
-        return {"ok": False, "error": f"nothing readable{scope} in {_os.path.basename(fp)}"}
-    return {"ok": True, "file": _os.path.basename(fp), "page_count": total,
-            "pages": pages or "all", "summary": summary}
+        return {"ok": False, "file": name, "page_count": total,
+                "error": f"nothing readable{scope} in {name}"}
+    out = {"ok": True, "file": name, "page_count": total, "pagination": kind,
+           "pages": pages or "all", "summary": summary}
+    if note:
+        out["note"] = note
+    return out
 
 
 def _t_rename_symbol(args: dict, cwd: str) -> dict:
