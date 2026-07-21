@@ -205,25 +205,75 @@ def _approx_pages(text: str, size: int) -> list[str]:
     return pages or [text]
 
 
+def _docx_reported_pages(path: str) -> int | None:
+    """Word's OWN page count, read from ``docProps/app.xml`` inside the docx zip
+    (the ``<Pages>`` element Word writes on save). This is the authoritative
+    total — no renderer needed. None when absent (e.g. a docx never saved by
+    Word) or unreadable. stdlib only (zipfile + ElementTree)."""
+    import xml.etree.ElementTree as ET
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as z:
+            with z.open("docProps/app.xml") as f:
+                root = ET.parse(f).getroot()
+    except Exception:  # noqa: BLE001 — no app.xml / not a zip / malformed
+        return None
+    for el in root.iter():
+        if el.tag.rsplit("}", 1)[-1] == "Pages":
+            try:
+                n = int((el.text or "").strip())
+                return n if n > 0 else None
+            except (ValueError, TypeError):
+                return None
+    return None
+
+
+def _split_into_n(text: str, n: int) -> list[str]:
+    """Split text into EXACTLY ``n`` char-proportional pages, to honour Word's
+    own page count. Each line is assigned to a page by its character position
+    (``pos/total * n``) so the page count is precise regardless of line length;
+    with far fewer lines than pages we fall back to a raw char slice so every
+    page still carries content."""
+    if n <= 1:
+        return [text]
+    lines = text.splitlines()
+    total = max(1, len(text))
+    if len(lines) < n:                       # too few lines to fill n pages
+        size = total / n
+        return [text[round(i * size):round((i + 1) * size)] for i in range(n)]
+    buckets: list[list[str]] = [[] for _ in range(n)]
+    pos = 0
+    for ln in lines:
+        idx = min(n - 1, int(pos * n / total))
+        buckets[idx].append(ln)
+        pos += len(ln) + 1
+    return ["\n".join(b) for b in buckets]
+
+
 def _docx_paginate(path: str) -> tuple[list[str], str]:
-    """docx → (pages, kind). Trust Word's rendered page breaks ONLY when they
-    are dense enough to represent real pages: Word writes ``lastRenderedPageBreak``
-    sporadically, so a 70-page report can carry ~10 markers → trusting them
-    under-counts pages massively and makes a high page number (e.g. 68) fall out
-    of range and select nothing. When breaks are sparse/absent we fall back to
-    char-approx pagination that spans the whole document so every page number
-    resolves. Kind is "exact" (break-segmented) or "approx" (char-estimated)."""
+    """docx → (pages, kind). Page count, best source first:
+
+      1. Word's own ``<Pages>`` from docProps/app.xml — authoritative TOTAL;
+         text is mapped to that many pages proportionally (kind "word": count is
+         exact, per-page content is an approximate slice).
+      2. Rendered page breaks (``lastRenderedPageBreak``) when DENSE enough to
+         be real pages — Word writes them sporadically, so a 300-page report can
+         carry ~10 markers; trusting sparse markers under-counts massively and
+         makes a high page number fall out of range (kind "exact").
+      3. Char-approx pagination spanning the whole doc (kind "approx").
+    """
     import math
-    pages = _docx_pages(path)
-    whole = "\n".join(pages).strip()
-    nonempty = [p for p in pages if p.strip()]
-    approx_n = max(1, math.ceil(len(whole) / _approx_page_chars()))
-    # Breaks are reliable only if they yield at least ~60% of the char-estimated
-    # page count (and more than one page). Otherwise estimate from length.
-    if len(nonempty) >= 2 and len(pages) >= approx_n * 0.6:
-        return pages, "exact"
+    breakpages = _docx_pages(path)
+    whole = "\n".join(breakpages).strip()
     if not whole:
         return [], "none"
+    reported = _docx_reported_pages(path)
+    if reported and reported > 1:
+        return _split_into_n(whole, reported), "word"
+    nonempty = [p for p in breakpages if p.strip()]
+    approx_n = max(1, math.ceil(len(whole) / _approx_page_chars()))
+    if len(nonempty) >= 2 and len(breakpages) >= approx_n * 0.6:
+        return breakpages, "exact"
     if len(whole) > _approx_page_chars():
         return _approx_pages(whole, _approx_page_chars()), "approx"
     return [whole], "approx"
@@ -260,8 +310,8 @@ def document_pages(path: str, mime: str = "") -> list[str]:
 
 def pagination_kind(path: str, mime: str = "") -> str:
     """How page numbers were derived: "exact" (PDF pages / dense docx breaks),
-    "approx" (char-estimated — may not match a Word viewer's printed pages),
-    "sheets" (xlsx), or "none"."""
+    "word" (docx total is Word's own count; per-page content mapped
+    proportionally), "approx" (char-estimated), "sheets" (xlsx), or "none"."""
     return paginate(path, mime)[1]
 
 

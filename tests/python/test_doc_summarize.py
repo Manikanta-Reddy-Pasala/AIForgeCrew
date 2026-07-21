@@ -144,6 +144,45 @@ def test_docx_sparse_breaks_fall_back_to_approx(tmp_path):
     assert out and "--- page 68 ---" in out and "--- page 70 ---" in out
 
 
+def _docx_with_reported_pages(docx, tmp_path, n_paras, reported):
+    """Build a docx then inject Word's own <Pages> into docProps/app.xml."""
+    import zipfile
+    d = docx.Document()
+    for i in range(1, n_paras):
+        d.add_paragraph(f"Para {i}. " + "word " * 30)
+    src = tmp_path / "src.docx"
+    d.save(str(src))
+    app = ('<?xml version="1.0"?><Properties xmlns="http://schemas.openxmlformats'
+           f'.org/officeDocument/2006/extended-properties"><Pages>{reported}</Pages></Properties>')
+    dst = tmp_path / "reported.docx"
+    with zipfile.ZipFile(src) as zi, zipfile.ZipFile(dst, "w") as zo:
+        for it in zi.namelist():
+            zo.writestr(it, app if it == "docProps/app.xml" else zi.read(it))
+    return str(dst)
+
+
+def test_docx_honours_word_reported_page_count(tmp_path):
+    """docx page count comes from Word's own docProps/app.xml <Pages> — the
+    authoritative total. Regression: a 321-page doc was reported as 264."""
+    docx = pytest.importorskip("docx")
+    from aiforge_core.runtime import doc_extract as de
+    p = _docx_with_reported_pages(docx, tmp_path, 900, 321)
+    assert de._docx_reported_pages(p) == 321
+    pages, kind = de.paginate(p, "")
+    assert len(pages) == 321          # EXACT match to Word's count
+    assert kind == "word"
+    out = de.extract_pages(p, "", "68-70")
+    assert "--- page 68 ---" in out and "--- page 70 ---" in out
+
+
+def test_split_into_n_exact_count():
+    from aiforge_core.runtime import doc_extract as de
+    text = "\n".join(f"line {i} " + "x" * 40 for i in range(500))
+    assert len(de._split_into_n(text, 321)) == 321      # many lines
+    assert len(de._split_into_n("one\ntwo\nthree", 10)) == 10   # few lines
+    assert de._split_into_n("solo", 1) == ["solo"]
+
+
 def test_docx_dense_breaks_stay_exact(tmp_path):
     docx = pytest.importorskip("docx")
     from aiforge_core.runtime import doc_extract as de

@@ -84,9 +84,16 @@ def _t_summarize_doc(args: dict, cwd: str) -> dict:
     name = _os.path.basename(fp)
     _pages, kind = doc_extract.paginate(fp, "")
     total = len(_pages)
-    note = ("page numbers are APPROXIMATE (char-estimated — this file has no "
-            "reliable page breaks, so they may not match a Word viewer's "
-            "printed pages)") if kind == "approx" else None
+    if kind == "approx":
+        note = ("page numbers are APPROXIMATE (char-estimated — this file has no "
+                "reliable page breaks, so they may not match a Word viewer's "
+                "printed pages)")
+    elif kind == "word":
+        note = ("total page count is Word's own; the text mapped to each page is "
+                "an approximate slice, so a specific page's content may be "
+                "slightly off")
+    else:
+        note = None
     # Out-of-range page request → don't fail silently; tell the model the real
     # page count so it can relay that instead of retrying blindly.
     if pages:
