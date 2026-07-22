@@ -409,14 +409,25 @@ def _parse(out: str) -> dict:
             txt = ""
             if isinstance(fargs, dict):
                 txt = str(fargs.get("text") or fargs.get("answer")
-                          or fargs.get("response") or fargs.get("content") or "")
-            # No JSON args — the answer is the plain text the model wrote AFTER
-            # the `ACTION: FINAL` marker (its reasoning sits ABOVE the marker).
+                          or fargs.get("response") or fargs.get("content")
+                          or fargs.get("output") or fargs.get("message")
+                          or fargs.get("result") or fargs.get("summary") or "")
+                # Unrecognized key (model invented an arg name) — take the
+                # longest string value rather than leak the raw ARGS_JSON blob.
+                if not txt.strip():
+                    strs = [v for v in fargs.values() if isinstance(v, str) and v.strip()]
+                    if strs:
+                        txt = max(strs, key=len)
+            # No usable JSON args — the answer is the plain text the model wrote
+            # AFTER the `ACTION: FINAL` marker (its reasoning sits ABOVE it).
             # Fall back to that slice, NOT the whole turn, or the thought +
             # marker leak into the answer and break a skill's "nothing else"
             # format. Only use the whole turn as a last resort (marker at EOF).
+            # Strip any ARGS_JSON {...} blob from the slice so a fumbled/unknown
+            # args shape never surfaces raw protocol to the user.
             if not txt.strip():
-                after = out[act.end():].strip()
+                after = re.sub(r"(?is)ARGS_JSON\s*:?\s*\{.*\}", "",
+                               out[act.end():]).strip()
                 txt = after or out.strip()
             return {"kind": "final", "text": _strip_protocol_noise(txt) or txt.strip()}
         # Args = first balanced {...} after the ARGS_JSON marker if present,
