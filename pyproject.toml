@@ -6,7 +6,9 @@ build-backend = "setuptools.build_meta"
 name = "aiforgecrew"
 version = "0.1.1"
 description = "AIForgeCrew — autonomous AI dev team orchestrator (single-Postgres runtime)"
-requires-python = ">=3.11"
+# Capped below 3.14: scipy/numpy (and other native deps) ship no 3.14 wheels
+# yet, so a 3.14 interpreter forces a from-source build that fails (meson).
+requires-python = ">=3.11,<3.14"
 dependencies = [
   # Core runtime — required for the new aiforge_agents pipeline + UI.
   "psycopg[binary]>=3.2",

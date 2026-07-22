@@ -411,9 +411,15 @@ fi
 # and can leave broken venv scripts. Force copy mode for a portable venv.
 export UV_LINK_MODE="${UV_LINK_MODE:-copy}"
 
+# Pin the interpreter. Left to itself, `uv venv` grabs the NEWEST python on the
+# machine — on a fresh mac that is now 3.14, for which scipy/numpy ship no
+# wheels, so `uv pip install` falls back to a source build that dies (meson:
+# "Failed to build scipy"). Pin a version every dep has wheels for; uv
+# auto-downloads a managed CPython when it is absent. Override: AIFORGE_PYTHON.
+AIFORGE_PYTHON="${AIFORGE_PYTHON:-3.12}"
 if [[ ! -d .venv ]]; then
-  echo "==> creating .venv"
-  uv venv .venv
+  echo "==> creating .venv (python $AIFORGE_PYTHON)"
+  uv venv --python "$AIFORGE_PYTHON" .venv
 fi
 # Put the venv's bin on PATH for THIS process and every child shell it spawns —
 # job/Doer shells (tmux/run_shell) need `aiforge-tool`, `aiforge-maint`, etc. to
@@ -432,7 +438,7 @@ echo "==> installing python deps (editable)"
 # place, so on ANY install failure we nuke and rebuild it from scratch.
 if ! uv pip install --python .venv/bin/python -e . >/dev/null 2>&1; then
   echo "==> deps install failed — rebuilding .venv from scratch (corrupt/partial venv; common on WSL /mnt/c)"
-  rm -rf .venv && uv venv .venv
+  rm -rf .venv && uv venv --python "$AIFORGE_PYTHON" .venv
   uv pip install --python .venv/bin/python -e . >/dev/null
 fi
 
@@ -449,7 +455,7 @@ if [[ "${AIFORGE_SKIP_SMOKE:-0}" != "1" ]]; then
       urllib3 requests charset_normalizer certifi idna >/dev/null 2>&1 || true
     if ! .venv/bin/python -c "$_smoke" >/dev/null 2>&1; then
       echo "==> still broken — rebuilding .venv from scratch"
-      rm -rf .venv && uv venv .venv
+      rm -rf .venv && uv venv --python "$AIFORGE_PYTHON" .venv
       uv pip install --python .venv/bin/python -e . >/dev/null 2>&1 || true
     fi
     if .venv/bin/python -c "$_smoke" >/dev/null 2>&1; then
@@ -576,7 +582,7 @@ if ! .venv/bin/python -c "import pydantic_core" >/dev/null 2>&1; then
   uv pip install --python .venv/bin/python --reinstall -e . >/dev/null 2>&1 || true
   if ! .venv/bin/python -c "import pydantic_core" >/dev/null 2>&1; then
     echo "==> rebuilding .venv from scratch"
-    rm -rf .venv && uv venv .venv && uv pip install --python .venv/bin/python -e . >/dev/null
+    rm -rf .venv && uv venv --python "$AIFORGE_PYTHON" .venv && uv pip install --python .venv/bin/python -e . >/dev/null
   fi
 fi
 
