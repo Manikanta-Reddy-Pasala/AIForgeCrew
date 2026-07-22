@@ -300,6 +300,12 @@ export default function Chat() {
   // Aborts the in-flight chat stream (Stop button + cleanup on
   // unmount / session switch so a half-streamed turn doesn't leak).
   const abortRef = useRef<AbortController | null>(null);
+  // Bounded auto-reconnect: a long run's SSE can drop client-side (browser tab
+  // throttle, a proxy idle cap) even though the run keeps going server-side and
+  // is fully replayable via /attach. On such a drop we re-attach instead of
+  // showing "network error"; this caps the retries so a genuinely dead run
+  // still surfaces the error rather than looping.
+  const reconnectRef = useRef<number>(0);
 
   function stopRun() {
     // Tell the server to halt the run (agents + sub-agents + subprocesses)
@@ -856,6 +862,7 @@ export default function Chat() {
       // attach owns abortRef now) AND still on this session — otherwise we'd
       // stomp the newer run or a switched-to session.
       if (abortRef.current === ctrl && activeIdRef.current === sessionId) {
+        reconnectRef.current = 0;   // resumed + reconciled — reset the budget
         if (timerRef.current !== null) { clearInterval(timerRef.current); timerRef.current = null; }
         await loadSession(sessionId);
         setLiveTurn(null);
@@ -863,8 +870,14 @@ export default function Chat() {
       }
     } catch (e: any) {
       // Abort (navigated away / session switch / superseded by send) is
-      // expected — not an error.
-      if (e?.name !== 'AbortError') { /* attach is best-effort; ignore */ }
+      // expected — not an error. A mid-stream drop of a run that's still live
+      // server-side is retried (bounded) so a flaky connection resumes rather
+      // than leaving a spinner that never resolves.
+      if (e?.name !== 'AbortError' && abortRef.current === ctrl
+          && activeIdRef.current === sessionId && reconnectRef.current < 3) {
+        reconnectRef.current += 1;
+        setTimeout(() => { if (activeIdRef.current === sessionId) attachToRun(sessionId); }, 900);
+      }
     } finally {
       // Only clear shared state if this attach is still the active stream — a
       // send() that took over must not have its busy/abortRef cleared by us.
@@ -942,6 +955,10 @@ export default function Chat() {
 
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+    // True once the run's SSE has opened (POST returned ok). A failure AFTER
+    // this is a mid-stream drop of a run that's alive server-side → reattach.
+    // A failure BEFORE (a non-ok POST) is a real start error → show it.
+    let streamOpened = false;
     try {
       const res = await fetch(chatSessionMessageURL(sessionId), {
         method: 'POST',
@@ -959,7 +976,9 @@ export default function Chat() {
         throw new Error(`${res.status} ${res.statusText}${detail ? ` — ${detail}` : ''}`);
       }
 
+      streamOpened = true;
       await pumpStream(res, sessionId);
+      reconnectRef.current = 0;   // clean completion — reset the retry budget
 
       // Ensure streaming is cleared; freeze the elapsed timer
       if (timerRef.current !== null) {
@@ -993,7 +1012,17 @@ export default function Chat() {
       // User pressed Stop (or navigated away) — not an error.
       if (e?.name === 'AbortError') {
         setLiveTurn(prev => prev ? { ...prev, streaming: false } : null);
+      } else if (streamOpened && sessionId != null && reconnectRef.current < 3) {
+        // The SSE dropped mid-run but the run is alive + replayable server-side.
+        // Re-attach instead of surfacing a spurious "network error". Bounded so a
+        // genuinely dead run still falls through to the error below. Done after
+        // this function's finally (which clears busy/abortRef) so attachToRun's
+        // busy guard passes.
+        reconnectRef.current += 1;
+        setLiveTurn(prev => prev ? { ...prev, streaming: true } : prev);
+        setTimeout(() => { if (activeIdRef.current === sessionId) attachToRun(sessionId); }, 900);
       } else {
+        reconnectRef.current = 0;
         const finalElapsed = Math.floor((Date.now() - sendStartRef.current) / 1000);
         setElapsedSec(finalElapsed);
         // Render a PERSISTENT error turn — even when the failure happened before
