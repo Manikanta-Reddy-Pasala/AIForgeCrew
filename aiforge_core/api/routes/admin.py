@@ -64,6 +64,10 @@ def _new_nonce() -> str:
 
 class _AddPeerBody(BaseModel):
     url: str
+    # Optional shared bearer token for the peer. Lets you add a peer by IP with
+    # NO AIFORGE_MESH_KEY set: supply the token the peer accepts (its mesh key /
+    # API token) and it is stored + used as that peer's bearer for sync.
+    token: str | None = None
 
 
 def _require_loopback(request: Request) -> None:
@@ -237,9 +241,13 @@ def admin_add_peer(request: Request, body: _AddPeerBody) -> dict:
          roster advertises it), and approve it — the challenge already proved
          membership, so no second round-trip.
 
-    Requires AIFORGE_MESH_KEY: without it there is no shared secret to verify a
-    typed address against, so this falls back to the manual token model (edit
-    peers.json). Reachability failures are surfaced, not swallowed."""
+    Two ways to authorise the add:
+      • AIFORGE_MESH_KEY set → the challenge above verifies the address holds
+        the shared key, then the key doubles as the bearer.
+      • No mesh key → supply the peer's shared token in ``body.token``; it is
+        stored as that peer's bearer and used for sync (``mesh_key() or
+        peer["token"]``), so no env key is needed. Wrong token/host → 502.
+    Reachability failures are surfaced, not swallowed."""
     _require_loopback(request)
     import hmac
 
@@ -251,23 +259,37 @@ def admin_add_peer(request: Request, body: _AddPeerBody) -> dict:
         raise HTTPException(400, "url must be like http://<host>:<port>")
 
     key = _peers.mesh_key()
-    if not key:
+    manual_token = (body.token or "").strip()
+    if not key and not manual_token:
         raise HTTPException(
             400, "set AIFORGE_MESH_KEY to add a peer by IP (it verifies the "
-            "address holds the shared key); without it, add the peer to "
-            "peers.json with a token by hand")
+            "address holds the shared key), OR supply the peer's shared token "
+            "in the Token field — it is stored as that peer's bearer and used "
+            "for sync (no env key needed).")
 
-    # 1. Prove the address holds the key WITHOUT sending ours — a typo'd IP
-    #    pointing at a hostile host must not be handed the secret.
-    nonce = _new_nonce()
-    proof = _transport.membership_proof(url, nonce)
-    if not proof or not hmac.compare_digest(proof, _peers.mesh_proof(nonce)):
+    if key:
+        # Mesh-key path: prove the address holds the key WITHOUT sending ours —
+        # a typo'd IP pointing at a hostile host must not be handed the secret.
+        nonce = _new_nonce()
+        proof = _transport.membership_proof(url, nonce)
+        if not proof or not hmac.compare_digest(proof, _peers.mesh_proof(nonce)):
+            raise HTTPException(
+                502, f"the peer at {url} did not prove the shared mesh key — "
+                "unreachable, wrong key, or not an AIForge peer")
+        _auth_token = key
+    else:
+        # Manual-token path (no mesh key): the supplied token IS the shared
+        # secret. Authenticating with it below both proves the address is a real
+        # AIForge peer that accepts the token and learns its id in one round —
+        # a wrong token / host yields a 502 (no manifest), leaking nothing.
+        _auth_token = manual_token
+
+    # Safe to authenticate now: learn the peer's own id from its manifest.
+    remote = _transport.fetch_manifest(url, _auth_token)
+    if not remote:
         raise HTTPException(
-            502, f"the peer at {url} did not prove the shared mesh key — "
-            "unreachable, wrong key, or not an AIForge peer")
-
-    # 2. Safe to authenticate now: learn the peer's own id from its manifest.
-    remote = _transport.fetch_manifest(url, key)
+            502, f"the peer at {url} did not answer with a manifest — "
+            "unreachable, wrong token, or not an AIForge peer")
     roster = (remote or {}).get("roster") or []
     # roster is coerced to a list by transport but its ELEMENTS are not typed:
     # a peer on another build (or a hostile one that holds the key) can send
@@ -280,6 +302,10 @@ def admin_add_peer(request: Request, body: _AddPeerBody) -> dict:
 
     # 3. Register + approve (membership already proven above).
     _peers.merge_roster([{"id": rid, "urls": [url]}])
+    # Manual path: persist the shared token as this peer's bearer so the sync
+    # loop (``mesh_key() or peer["token"]``) can auth with no env key set.
+    if not key and manual_token:
+        _peers.set_token(rid, manual_token)
     _peers.promote(rid, url)
     return {"ok": True, "id": rid, "url": url, "state": _peers.STATE_APPROVED}
 
@@ -348,7 +374,9 @@ border-radius:6px;padding:3px 8px;min-width:220px}
 <div class="sub"><span id="age">loading…</span> · <button id="refresh">Refresh</button></div>
 <div class="add">
   <input id="peerurl" type="text" placeholder="http://192.168.1.50:8799"
-    title="Seed a peer by URL when SSDP can't reach it. It must hold the shared mesh key.">
+    title="Seed a peer by URL when SSDP can't reach it (e.g. across a tunnel).">
+  <input id="peertoken" type="password" placeholder="shared token (if no mesh key)"
+    title="Optional. With AIFORGE_MESH_KEY set, leave blank. Without it, paste the peer's shared token — it is stored as that peer's bearer and used for sync.">
   <button id="addpeer">Add peer by IP</button>
   <span id="addmsg" class="msg"></span>
 </div>
@@ -362,8 +390,8 @@ border-radius:6px;padding:3px 8px;min-width:220px}
 urls came from gossip or SSDP, so contacting one would make this page fetch whatever
 a stranger named. With <span class="mono">AIFORGE_MESH_KEY</span> set they are
 promoted automatically once they prove the shared key; otherwise approve one by
-adding its token to <span class="mono">peers.json</span> and setting its state to
-<span class="mono">approved</span>.</div>
+adding it above with its shared token in the <b>Token</b> field (no mesh key
+needed) — or by hand in <span class="mono">peers.json</span>.</div>
 <script>
 var last = 0;
 function ago(s){ if(!s) return '—';
@@ -420,19 +448,23 @@ function tick(){ document.getElementById('age').textContent = last
 document.getElementById('refresh').onclick = load;
 function addPeer(){
   var inp = document.getElementById('peerurl');
+  var tok = document.getElementById('peertoken');
   var msg = document.getElementById('addmsg');
   var url = inp.value.trim();
   if (!url){ inp.focus(); return; }
+  var payload = {url: url};
+  var token = tok.value.trim();
+  if (token) payload.token = token;
   msg.className = 'msg'; msg.textContent = 'verifying…';
   fetch('/api/admin/peers', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({url: url})
+    body: JSON.stringify(payload)
   }).then(function(r){ return r.json().then(function(d){ return {ok: r.ok, d: d}; }); })
     .then(function(res){
       if (res.ok){
         msg.className = 'msg ok';
         msg.textContent = 'added ' + esc(res.d.id) + ' (' + esc(res.d.state) + ')';
-        inp.value = ''; load();
+        inp.value = ''; tok.value = ''; load();
       } else {
         msg.className = 'msg bad';
         msg.textContent = esc((res.d && res.d.detail) || 'failed');
@@ -441,6 +473,9 @@ function addPeer(){
 }
 document.getElementById('addpeer').onclick = addPeer;
 document.getElementById('peerurl').addEventListener('keydown', function(e){
+  if (e.key === 'Enter') addPeer();
+});
+document.getElementById('peertoken').addEventListener('keydown', function(e){
   if (e.key === 'Enter') addPeer();
 });
 render(__BOOT__);        // local state, painted with no network round-trip

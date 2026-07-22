@@ -282,6 +282,33 @@ def merge_roster(entries: list[dict]) -> dict:
     return save(data)
 
 
+def set_token(peer_id: str, token: str) -> bool:
+    """Store a per-peer bearer token from OUT-OF-BAND admin config.
+
+    A token can NEVER arrive over the wire (``merge_roster`` drops it); the only
+    way to set one is a local, loopback-authenticated admin action — a human who
+    already knows the peer's shared token (its mesh key / API token) and types
+    it in. The sync loop uses it as the fallback bearer when no mesh key is set
+    (``mesh_key() or peer["token"]``), so a manual add-by-IP works with no shared
+    env key. Returns True when a row was updated.
+    """
+    pid = normalise_id(peer_id)
+    tok = (token or "").strip()
+    if not pid or not tok:
+        return False
+    data = load()
+    changed = False
+    for p in data["peers"]:
+        if isinstance(p, dict) and normalise_id(p.get("id")) == pid:
+            if p.get("token") != tok:
+                p["token"] = tok
+                changed = True
+            break
+    if changed:
+        save(data)
+    return changed
+
+
 def touch(peer_id: str) -> None:
     """Record a successful contact so a peer ages out of the roster only when dead."""
     now = int(time.time())
@@ -304,5 +331,5 @@ def touch(peer_id: str) -> None:
 
 __all__ = ["load", "save", "approved", "roster", "merge_roster", "touch",
            "as_epoch", "normalise_id", "mesh_key", "mesh_proof", "candidates",
-           "promote", "MAX_PEERS", "MAX_NEW_PER_MERGE", "STATE_APPROVED",
-           "STATE_CANDIDATE"]
+           "promote", "set_token", "MAX_PEERS", "MAX_NEW_PER_MERGE",
+           "STATE_APPROVED", "STATE_CANDIDATE"]
