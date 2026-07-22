@@ -437,13 +437,52 @@ def test_add_peer_unreachable_is_502(monkeypatch, tmp_path):
     assert r.status_code == 502
 
 
-def test_add_peer_without_a_mesh_key_is_refused_with_guidance(monkeypatch, tmp_path):
+def test_add_peer_zero_config_unauthenticated_peer_is_approved(monkeypatch, tmp_path):
+    # No mesh key, no token: on a token-less mesh the peer serves its manifest
+    # unauthenticated, so an IP alone is enough — no key/token to enter.
     api, admin = _fresh_api(monkeypatch, tmp_path)
     monkeypatch.delenv("AIFORGE_MESH_KEY", raising=False)
+    sent = _stub_seed_transport(monkeypatch, server_key=None)   # no challenge
+    r = TestClient(api.app, client=LOOPBACK).post(
+        "/api/admin/peers", json={"url": "http://10.0.0.5:8799/"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["id"] == "mac" and body["state"] == "approved"
+    assert _peer_state(tmp_path, "mac") == "approved"
+    assert sent["manifest_token"] == ""           # fetched UNauthenticated
+
+
+def test_add_peer_zero_config_protected_peer_is_502_with_guidance(monkeypatch, tmp_path):
+    # No key/token AND the peer is token-protected → no manifest for an empty
+    # token → a 502 that tells the operator how to authorise (no leak).
+    api, admin = _fresh_api(monkeypatch, tmp_path)
+    monkeypatch.delenv("AIFORGE_MESH_KEY", raising=False)
+
+    def _protected_manifest(base_url, token=""):
+        return {} if not token else {"roster": [{"id": "mac", "urls": [base_url]}]}
+    monkeypatch.setattr(
+        "aiforge_core.memory.sync.transport.fetch_manifest", _protected_manifest)
     r = TestClient(api.app, client=LOOPBACK).post(
         "/api/admin/peers", json={"url": "http://10.0.0.5:8799"})
-    assert r.status_code == 400
-    assert "AIFORGE_MESH_KEY" in r.json()["detail"]
+    assert r.status_code == 502
+    detail = r.json()["detail"]
+    assert "AIFORGE_MESH_KEY" in detail and "Token" in detail
+
+
+def test_add_peer_with_a_token_stores_it_as_the_peer_bearer(monkeypatch, tmp_path):
+    # No mesh key, but a shared token supplied → authenticate with it, approve,
+    # and persist it as the peer's bearer so the sync loop can auth with no env.
+    import json as _json
+    api, admin = _fresh_api(monkeypatch, tmp_path)
+    monkeypatch.delenv("AIFORGE_MESH_KEY", raising=False)
+    sent = _stub_seed_transport(monkeypatch, server_key=None)
+    r = TestClient(api.app, client=LOOPBACK).post(
+        "/api/admin/peers", json={"url": "http://10.0.0.5:8799", "token": "sekret"})
+    assert r.status_code == 200, r.text
+    assert sent["manifest_token"] == "sekret"     # authed with the supplied token
+    peers = _json.loads((tmp_path / "cfg" / "peers.json").read_text())["peers"]
+    row = next(p for p in peers if p.get("id") == "mac")
+    assert row.get("token") == "sekret" and row.get("state") == "approved"
 
 
 def test_add_peer_rejects_a_non_http_url(monkeypatch, tmp_path):

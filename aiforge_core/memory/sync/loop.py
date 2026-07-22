@@ -188,7 +188,15 @@ def _ssdp_sweep() -> None:
         return
     from aiforge_core.memory.sync import discovery_ssdp, peers
 
-    bind = os.environ.get("AIFORGE_SYNC_SSDP_HOST", "")
+    # Auto-detect the LAN interface when not pinned, so SSDP works with just
+    # AIFORGE_SYNC_SSDP=1 (no host to hand-set). An explicit env value still wins.
+    bind = os.environ.get("AIFORGE_SYNC_SSDP_HOST", "").strip() \
+        or discovery_ssdp.default_bind_host()
+    if not bind:
+        _log.warning("sync: ssdp enabled but no LAN interface found — set "
+                     "AIFORGE_SYNC_SSDP_HOST to this machine's LAN IP")
+        return
+    _log.info("sync: ssdp sweep on interface %s", bind)
     try:
         found = discovery_ssdp.discover(bind)
     except ValueError as exc:
@@ -338,13 +346,19 @@ def _start_ssdp_responder() -> None:
         return
     from aiforge_core.memory.sync import discovery_ssdp, identity, peers
 
-    bind = os.environ.get("AIFORGE_SYNC_SSDP_HOST", "")
+    bind = os.environ.get("AIFORGE_SYNC_SSDP_HOST", "").strip() \
+        or discovery_ssdp.default_bind_host()
+    if not bind:
+        _log.warning("sync: ssdp responder not started — no LAN interface found "
+                     "(set AIFORGE_SYNC_SSDP_HOST to this machine's LAN IP)")
+        return
     me = peers.load()["self"]
     peer_id = str(me.get("id") or "").strip() or identity.self_id()
     urls = [u for u in (me.get("urls") or []) if u]
     if not urls:
         _log.info("sync: ssdp responder not started: no self url in peers.json")
         return
+    _log.info("sync: ssdp responder starting on %s (peer %s)", bind, peer_id)
     try:
         discovery_ssdp.serve_in_background(bind, peer_id, str(urls[0]))
     except Exception as exc:  # noqa: BLE001 — discovery is best-effort by nature

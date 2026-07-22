@@ -109,6 +109,37 @@ def parse(raw: bytes) -> dict | None:
     return {"id": peer_id, "urls": [location]}
 
 
+def default_bind_host() -> str:
+    """Best-guess primary LAN IPv4 for this host, or "" if none found.
+
+    Lets SSDP work with just ``AIFORGE_SYNC_SSDP=1`` — no ``AIFORGE_SYNC_SSDP_HOST``
+    to hand-set. The connect() to a public address sends NOTHING (UDP), it only
+    makes the kernel pick the outbound interface, whose local address we read
+    back. Falls back to the hostname's resolved address. Never raises; a "" here
+    just means the caller stays disabled (same as an unset host), never a crash.
+    """
+    s = None
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("192.0.2.1", 9))            # TEST-NET-1, unroutable; no packet sent
+        ip = s.getsockname()[0]
+        if ip and not ip.startswith("127."):
+            return ip
+    except OSError:
+        pass
+    finally:
+        if s is not None:
+            with contextlib.suppress(OSError):
+                s.close()
+    try:
+        ip = socket.gethostbyname(socket.gethostname())
+        if ip and not ip.startswith("127."):
+            return ip
+    except OSError:
+        pass
+    return ""
+
+
 def _require_host(bind_host: str) -> None:
     """Refuse a wildcard interface address.
 
@@ -149,6 +180,8 @@ def discover(bind_host: str, timeout: float = 3.0) -> list[dict]:
     try:
         sock.settimeout(timeout)
         sock.sendto(build_search(), (MCAST_ADDR, MCAST_PORT))
+        _log.info("sync: ssdp M-SEARCH sent from %s to %s:%d for %s",
+                  bind_host, MCAST_ADDR, MCAST_PORT, SERVICE_TYPE)
         while True:
             try:
                 raw, _addr = sock.recvfrom(4096)
@@ -157,11 +190,17 @@ def discover(bind_host: str, timeout: float = 3.0) -> list[dict]:
             entry = parse(raw)
             if entry:
                 found[entry["id"]] = entry
+                _log.info("sync: ssdp reply from %s → peer %s at %s",
+                          _addr[0], entry["id"], entry["urls"])
+            else:
+                _log.debug("sync: ssdp non-matching datagram from %s (%d bytes)",
+                           _addr[0], len(raw))
     except OSError as exc:  # e.g. ENETUNREACH is normal, not an error
         _log.info("sync: ssdp send/recv error on %s: %s", bind_host, exc)
         return []
     finally:
         sock.close()
+    _log.info("sync: ssdp sweep on %s found %d peer(s)", bind_host, len(found))
     return list(found.values())
 
 
@@ -173,6 +212,8 @@ def announce(bind_host: str, peer_id: str, url: str) -> bool:
         return False
     try:
         sock.sendto(build_announce(peer_id, url), (MCAST_ADDR, MCAST_PORT))
+        _log.info("sync: ssdp NOTIFY (announce) sent from %s: peer %s at %s",
+                  bind_host, peer_id, url)
         return True
     except OSError as exc:  # e.g. ENETUNREACH is normal, not an error
         _log.info("sync: ssdp announce send error on %s: %s", bind_host, exc)
@@ -311,6 +352,8 @@ def respond_forever(bind_host: str, peer_id: str, url: str, *,
             try:
                 if _should_reply(_headers(raw), addr[0], bind_host, peer_id, limiter):
                     sock.sendto(reply, addr)
+                    _log.info("sync: ssdp M-SEARCH from %s → replied (peer %s at %s)",
+                              addr[0], peer_id, url)
             except Exception as exc:  # noqa: BLE001 — a bad datagram must not end the loop
                 _log.debug("sync: ssdp responder skipped a datagram: %s", exc)
     finally:
@@ -335,4 +378,4 @@ def serve_in_background(bind_host: str, peer_id: str, url: str) -> threading.Eve
 
 __all__ = ["build_search", "build_announce", "build_reply", "parse", "discover",
            "announce", "respond_forever", "serve_in_background",
-           "SERVICE_TYPE", "MCAST_ADDR", "MCAST_PORT"]
+           "default_bind_host", "SERVICE_TYPE", "MCAST_ADDR", "MCAST_PORT"]

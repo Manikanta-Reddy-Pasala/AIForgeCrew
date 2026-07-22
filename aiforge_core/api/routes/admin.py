@@ -241,12 +241,14 @@ def admin_add_peer(request: Request, body: _AddPeerBody) -> dict:
          roster advertises it), and approve it — the challenge already proved
          membership, so no second round-trip.
 
-    Two ways to authorise the add:
+    Three ways to authorise the add, in precedence order:
       • AIFORGE_MESH_KEY set → the challenge above verifies the address holds
         the shared key, then the key doubles as the bearer.
-      • No mesh key → supply the peer's shared token in ``body.token``; it is
-        stored as that peer's bearer and used for sync (``mesh_key() or
-        peer["token"]``), so no env key is needed. Wrong token/host → 502.
+      • ``body.token`` given → that shared token is stored as the peer's bearer
+        and used for sync (``mesh_key() or peer["token"]``).
+      • Neither → zero-config: on a token-less mesh the peer serves its manifest
+        unauthenticated, so an IP alone works. A protected peer returns no
+        manifest and the caller is told a key/token is needed. Nothing leaks.
     Reachability failures are surfaced, not swallowed."""
     _require_loopback(request)
     import hmac
@@ -260,12 +262,6 @@ def admin_add_peer(request: Request, body: _AddPeerBody) -> dict:
 
     key = _peers.mesh_key()
     manual_token = (body.token or "").strip()
-    if not key and not manual_token:
-        raise HTTPException(
-            400, "set AIFORGE_MESH_KEY to add a peer by IP (it verifies the "
-            "address holds the shared key), OR supply the peer's shared token "
-            "in the Token field — it is stored as that peer's bearer and used "
-            "for sync (no env key needed).")
 
     if key:
         # Mesh-key path: prove the address holds the key WITHOUT sending ours —
@@ -277,16 +273,29 @@ def admin_add_peer(request: Request, body: _AddPeerBody) -> dict:
                 502, f"the peer at {url} did not prove the shared mesh key — "
                 "unreachable, wrong key, or not an AIForge peer")
         _auth_token = key
-    else:
-        # Manual-token path (no mesh key): the supplied token IS the shared
-        # secret. Authenticating with it below both proves the address is a real
-        # AIForge peer that accepts the token and learns its id in one round —
-        # a wrong token / host yields a 502 (no manifest), leaking nothing.
+    elif manual_token:
+        # Manual-token path: the supplied token IS the shared secret.
+        # Authenticating with it below both proves the address is a real AIForge
+        # peer that accepts the token and learns its id in one round.
         _auth_token = manual_token
+    else:
+        # Zero-config path: no mesh key and no token. On a token-less mesh (no
+        # AIFORGE_MESH_KEY / API token set anywhere — a trusted LAN or private
+        # tunnel), the peer serves its manifest UNAUTHENTICATED, so an IP alone
+        # is enough: authenticating with an empty token both reaches the peer and
+        # learns its id. If the peer IS protected, the fetch below comes back
+        # empty and we tell the user a token/key is needed — nothing leaks.
+        _auth_token = ""
 
     # Safe to authenticate now: learn the peer's own id from its manifest.
     remote = _transport.fetch_manifest(url, _auth_token)
     if not remote:
+        if not key and not manual_token:
+            raise HTTPException(
+                502, f"the peer at {url} did not answer with a manifest — it is "
+                "unreachable, or it is token-protected. If protected, set the "
+                "SAME AIFORGE_MESH_KEY on both machines (then just add the IP), "
+                "or paste the peer's token in the Token field.")
         raise HTTPException(
             502, f"the peer at {url} did not answer with a manifest — "
             "unreachable, wrong token, or not an AIForge peer")
@@ -375,8 +384,8 @@ border-radius:6px;padding:3px 8px;min-width:220px}
 <div class="add">
   <input id="peerurl" type="text" placeholder="http://192.168.1.50:8799"
     title="Seed a peer by URL when SSDP can't reach it (e.g. across a tunnel).">
-  <input id="peertoken" type="password" placeholder="shared token (if no mesh key)"
-    title="Optional. With AIFORGE_MESH_KEY set, leave blank. Without it, paste the peer's shared token — it is stored as that peer's bearer and used for sync.">
+  <input id="peertoken" type="password" placeholder="token (optional — only if peer is protected)"
+    title="Usually leave blank: an IP alone works on a token-less mesh, or with the same AIFORGE_MESH_KEY on both machines. Only paste a token if the peer is token-protected and you're not sharing a mesh key.">
   <button id="addpeer">Add peer by IP</button>
   <span id="addmsg" class="msg"></span>
 </div>
