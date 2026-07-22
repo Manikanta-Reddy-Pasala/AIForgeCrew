@@ -1635,6 +1635,23 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         emitted_done = False   # forwarded a terminal `done` yet?
         try:
             for ev in _events():
+                # Never surface leaked protocol scaffolding to the user. A local
+                # model in native-FC mode sometimes emits a fumbled tool call as
+                # plain content ("ARGS_JSON: {}", a bare "ACTION:") — that reached
+                # the chat as a message bubble. Strip marker-only noise from any
+                # non-ASK message text; if nothing real remains, drop the event so
+                # it neither streams nor persists as the answer. This is the single
+                # choke point for both the client publish and the persisted
+                # final_text below.
+                if ev.get("type") == "message" and not ev.get("awaiting_input"):
+                    from aiforge_core.runtime.chat_agent._prompt import (
+                        _strip_protocol_noise,
+                    )
+                    _clean = _strip_protocol_noise(ev.get("text") or "")
+                    if not _clean:
+                        continue
+                    if _clean != ev.get("text"):
+                        ev = {**ev, "text": _clean}
                 # Stamp per-turn wall-clock on the terminal event so the UI shows
                 # time-taken for EVERY turn in ALL three modes (simple/plan/team),
                 # server-authoritative (the client timer is live-only).
