@@ -144,6 +144,12 @@ When you are done and ready to reply to the user:
 THOUGHT: <reasoning>
 FINAL: <your full natural-language answer>
 
+Format the FINAL answer as GitHub-flavored Markdown — the UI renders it. Put \
+every shell command / code / config in a fenced block with a language tag \
+(```bash, ```json, ```yaml, …), use `inline code` for file paths, flags and \
+identifiers, **bold** for key terms, and `-`/`1.` lists or `##` headings for \
+structure. Always CLOSE a fence with a matching ``` on its own line.
+
 When the request is ambiguous, you're missing information, or you'd \
 otherwise have to guess or keep retrying the same thing, ASK the user \
 instead of circling:
