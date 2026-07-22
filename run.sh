@@ -126,6 +126,12 @@ export AIFORGE_LLM_SSL_VERIFY="${AIFORGE_LLM_SSL_VERIFY:-true}"
 # require approval for ssh again.
 export AIFORGE_ALLOW_SSH="${AIFORGE_ALLOW_SSH:-1}"
 
+# Zero-config peer discovery ON by default: the LAN interface is auto-detected
+# (no AIFORGE_SYNC_SSDP_HOST to set), and SSDP is link-local + unauthenticated
+# so it only ever adds SAME-SEGMENT peers as untrusted candidates — it confers
+# no trust and can't cross a routed tunnel. Set AIFORGE_SYNC_SSDP=0 to disable.
+export AIFORGE_SYNC_SSDP="${AIFORGE_SYNC_SSDP:-1}"
+
 PORT=8799
 HOST=127.0.0.1
 DEV=0
