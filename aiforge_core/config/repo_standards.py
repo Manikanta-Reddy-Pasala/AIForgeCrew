@@ -331,9 +331,9 @@ def toolchain_brief(worktree: str | None) -> str:
     missing = check_toolchain(worktree, lang)
     banner = ""
     if missing:
-        banner = ("⚠ MISSING TOOLCHAIN — the host cannot build/test this repo "
-                  "until these are installed (ask the operator; do NOT fake a "
-                  "green compile):\n"
+        banner = ("⚠ MISSING TOOLCHAIN — install these yourself via the host's "
+                  "version/package manager (sdkman/nvm/pyenv/apt/brew) and set "
+                  "the default, then build; do NOT fake a green compile:\n"
                   + "\n".join(f"- {m}" for m in missing) + "\n\n")
     tc = resolve_toolchain(lang, worktree)
     if not tc and not banner:
