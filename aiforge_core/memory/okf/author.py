@@ -155,7 +155,19 @@ def extract_and_save(session_text: str, *, active_kr: str | None = None,
             meta["scope"] = f"repo:{repo}"
             meta["workspace"] = repo
         elif low in ("global", "") or (low == "repo" and not repo):
-            meta["scope"] = "global"
+            # Global is injected into EVERY turn of EVERY repo as a mandatory
+            # rule, so it must be earned, not defaulted into. An empty scope is
+            # missing information, and `repo` scope with no repo name is a
+            # project fact whose project we failed to resolve — neither is
+            # evidence of a universal truth. Only an explicit `global` verdict
+            # on text that names no concrete artifact keeps the scope.
+            from ..scope_guard import UNSCOPED, may_be_global
+            if low == "global" and may_be_global(ln.rule or ""):
+                meta["scope"] = "global"
+            else:
+                meta["scope"] = f"repo:{repo}" if repo else UNSCOPED
+                if repo:
+                    meta["workspace"] = repo
         else:
             oid = title_to_oid.get(_slug(sc)) or _existing_objective_by_title(g, sc)
             meta["scope"] = [oid] if oid else "global"

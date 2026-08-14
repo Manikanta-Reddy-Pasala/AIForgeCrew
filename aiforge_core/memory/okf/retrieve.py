@@ -136,7 +136,7 @@ def _fuzzy_score(q: set, nt: set) -> float:
 
 
 def _rank_by_query(nodes: list, query: str, top_k: int,
-                   recent_key=None) -> list:
+                   recent_key=None, *, require_match: bool = False) -> list:
     """Return the ``top_k`` nodes most RELEVANT to ``query`` via a fallback
     LADDER: (1) EXACT token overlap; (2) if nothing matched exactly, a FUZZY
     pass (shared prefix / edit-distance, so a typo or a stem still finds the
@@ -156,7 +156,14 @@ def _rank_by_query(nodes: list, query: str, top_k: int,
                        reverse=True)
         if _fuzzy_score(q, _node_tokens(fuzzy[0])) > 0:
             return [d for d in fuzzy if _fuzzy_score(q, _node_tokens(d)) > 0][:top_k]
-    # tier 3 — no query / nothing matched → recency (or original) order
+    # tier 3 — no query / nothing matched → recency (or original) order.
+    # ``require_match`` opts OUT of this: "context is never empty" is right for
+    # a repo card the agent needs regardless, and wrong for MANDATORY rules.
+    # Without it, a query matching no global rule still got the most recent
+    # eight injected as orders — which is how `calc.py` conventions ended up in
+    # front of a Jira question. For rules, nothing relevant means inject nothing.
+    if require_match and query.strip():
+        return []
     if recent_key:
         nodes = sorted(nodes, key=recent_key, reverse=True)
     return nodes[:top_k]
@@ -219,7 +226,7 @@ def _scoped_block(repo: str | None, *, query: str = "", max_global: int = 8,
     parts: list[str] = []
     gl = [d for d in store.load_all("global") if d.get("type") == "learning"]
     gl, shared = _shared(gl, query, max_view)
-    gl = _rank_by_query(gl, query, max_global)
+    gl = _rank_by_query(gl, query, max_global, require_match=True)
     if gl:
         parts.append("<GLOBAL_RULES>\n"
                      + "\n".join(_line(d) for d in gl) + "\n</GLOBAL_RULES>")

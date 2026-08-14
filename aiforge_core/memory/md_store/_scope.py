@@ -2,9 +2,12 @@
 and the topic-slug snapper. Depends only on `_base`."""
 from __future__ import annotations
 
+import logging
 import os
 
 from ._base import _CAPTURE_SIG_RE, _slug, iter_briefs
+
+log = logging.getLogger("aiforge.md_store.scope")
 
 
 
@@ -53,7 +56,13 @@ def classify_scope(text: str, *, hint_repo: str | None = None,
             return {"scope": "project", "repo": hint_repo, "topic": None}
         if hint_topic:
             return {"scope": "topic", "repo": None, "topic": _slug(hint_topic)}
-        return {"scope": "global", "repo": None, "topic": None}
+        # NO hints and no model verdict is not evidence of a universal truth —
+        # it is absence of evidence. This branch used to return `global`, which
+        # made the cheapest path award the highest-privilege scope: an eval run
+        # capturing without a repo hint put `calc.py` rules in front of every
+        # future turn. Unattributed knowledge is project-scoped-but-unnamed:
+        # still recalled by relevance, never injected as a mandatory rule.
+        return {"scope": "project", "repo": None, "topic": None}
 
     body = (text or "").strip()
     if not body or os.environ.get("AIFORGE_OKR_SCOPE_LLM", "1") == "0":
@@ -81,6 +90,14 @@ def classify_scope(text: str, *, hint_repo: str | None = None,
         return _fallback()
 
     if scope == "global":
+        # Enforce the classifier's OWN rule rather than trusting it: a fact
+        # naming a concrete file/path/symbol is about one codebase, whatever
+        # the model said. Demote to the repo hint when we have one.
+        from ..scope_guard import demote_reason
+        why = demote_reason(body)
+        if why:
+            log.debug("scope: refusing global (%s)", why)
+            return {"scope": "project", "repo": hint_repo, "topic": None}
         return {"scope": "global", "repo": None, "topic": None}
     if scope == "project":
         # An explicit PROJECT verdict is NOT global even when the model names no

@@ -42,12 +42,32 @@ def test_fallback_topic_when_only_topic_hint(no_llm):
     assert d["repo"] is None
 
 
-def test_fallback_global_when_no_hints(no_llm):
+def test_fallback_does_not_mint_global_when_no_hints(no_llm):
+    # Global is injected into every turn of every repo as a mandatory rule, so
+    # it must be EARNED. With no hints and no model verdict there is no
+    # evidence of a universal truth — only absence of evidence. This branch
+    # used to return `global`, which is how eval runs (which capture with no
+    # repo hint) put `calc.py` conventions in front of every later turn.
     from aiforge_core.memory.md_store import classify_scope
     d = classify_scope("use && not ; to gate deploy commands")
-    assert d["scope"] == "global"
+    assert d["scope"] != "global"
     assert d["repo"] is None
     assert d["topic"] is None
+
+
+def test_llm_global_verdict_is_refused_when_it_names_an_artifact(monkeypatch):
+    # The classifier's own spec forbids a global rule that names a file; the
+    # guard enforces it rather than trusting the model to remember.
+    monkeypatch.setenv("AIFORGE_OKR_SCOPE_LLM", "1")
+
+    class _R:
+        scope, repo, topic = "global", "", ""
+
+    monkeypatch.setattr("aiforge_core.llm.structured.structured_complete",
+                        lambda *a, **k: _R())
+    from aiforge_core.memory.md_store import classify_scope
+    d = classify_scope("calc.py must handle division by zero", hint_repo="demo")
+    assert d["scope"] == "project" and d["repo"] == "demo"
 
 
 def test_llm_promotes_repo_hint_to_global(monkeypatch):

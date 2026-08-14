@@ -908,13 +908,20 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
     # ── Phase 4: fold near-duplicate topics (runs INSIDE compaction so the
     # vocabulary self-heals every pass — there is no manual cleanup step).
     # Deterministic, lock-safe, and a no-op on the repo/kind axes.
-    merged = {}
+    merged, healed = {}, {}
     if group_by == "topic":
         try:
             from ._graph import merge_similar_topics
             merged = merge_similar_topics()
         except Exception as exc:  # noqa: BLE001 — a merge failure must never
             _log.debug("topic merge skipped: %s", exc)   # lose the compaction
+        # Repair data written before the scope/topic guards existed: demote
+        # stored "global" rules that name a file, and re-topic a bounded batch
+        # of facts out of magnet briefs. Bounded so a compaction never becomes
+        # a migration; runs here so auto-compact and compact-all both heal.
+        from . import _selfheal
+        healed = _selfheal.run_all(model_role=model_role,
+                                   summarize=bool(summarize))
 
     return {
         "ok": True, "dry_run": False, "group_by": group_by,
@@ -922,6 +929,7 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
         "files_in": moved, "files_out": len(out_files),
         "compacted": out_files, "summarized": summarized_files,
         "merged_topics": merged.get("merged", 0),
+        "selfheal": healed,
         "archive": str(archive),
     }
 
