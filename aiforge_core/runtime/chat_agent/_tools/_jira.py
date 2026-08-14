@@ -81,6 +81,11 @@ def _t_jira_update(args: dict, cwd: str) -> dict:
     return jira.jira_update(args, cwd)
 
 
+def _t_jira_comments(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import jira
+    return jira.jira_comments(args, cwd)
+
+
 def _t_jira_comment(args: dict, cwd: str) -> dict:
     from aiforge_core.runtime.tools import jira
     return jira.jira_comment(args, cwd)

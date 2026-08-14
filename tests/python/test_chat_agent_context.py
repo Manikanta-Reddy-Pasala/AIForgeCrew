@@ -63,6 +63,13 @@ def test_repo_context_starter_then_persisted(tmp_path, monkeypatch):
 
 
 def test_rule_book_persists_and_injects(tmp_path, monkeypatch):
+    # NB: remember_rule EXPANDS the one-liner into a rule document via the
+    # learner model, so the stored body is not the input string. Asserting on
+    # the raw phrase only ever passed because the operator's real ~/.aiforge
+    # already held a rule of that name from earlier hand use — the suite was
+    # reading (and writing) production state. Assert on the rule IDENTITY
+    # (name) instead, which is what dedup actually keys on.
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "mem"))
     monkeypatch.setenv("AIFORGE_MEMORY_BACKEND", "sqlite")
     monkeypatch.setenv("AIFORGE_MEMORY_DB_PATH", str(tmp_path / "m.db"))
@@ -70,15 +77,15 @@ def test_rule_book_persists_and_injects(tmp_path, monkeypatch):
 
     from aiforge_core.memory import md_store
     importlib.reload(md_store)
-    from aiforge_core.runtime import chat_agent
+    from aiforge_core.runtime import chat_agent, repo_rules
     d = str(tmp_path)
     assert chat_agent._t_remember_rule({"text": "always use yarn", "scope": "global"}, d)["ok"]
     assert chat_agent._t_remember_rule({"text": "controllers in src/api", "scope": "repo"}, d)["ok"]
     chat_agent._t_remember_rule({"text": "always use yarn", "scope": "global"}, d)  # dedup
-    ctx = chat_agent._rules_context(d)
-    assert "RULES" in ctx
-    assert ctx.count("always use yarn") == 1          # deduped
-    assert "controllers in src/api" in ctx            # repo rule present
+    names = [r.name for r in repo_rules.load_rules(d)]
+    assert names.count("always use yarn") == 1        # deduped
+    assert "controllers in src/api" in names          # repo rule present
+    assert "RULES" in chat_agent._rules_context(d)    # and they reach the prompt
 
 
 def test_session_start_directive_in_prompt(tmp_path):

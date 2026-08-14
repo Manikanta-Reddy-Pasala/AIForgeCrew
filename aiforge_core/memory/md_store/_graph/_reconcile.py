@@ -360,6 +360,41 @@ def dedupe_global_copies() -> dict:
     return {"removed": removed, "briefs": touched}
 
 
+def _same_subject(a: str, b: str, cache: dict) -> bool:
+    """True when two topic slugs cover the SAME subject by content similarity.
+
+    Complements the lexical rules: those catch spelling families
+    (``gpsd``/``gpsd-config``), this catches synonym families
+    (``calc``/``calculator``/``math-expression-engine``) that share no
+    characters. Cutoff is deliberately high (env
+    ``AIFORGE_TOPIC_MERGE_COSINE``, default 0.86) — a wrong merge silently
+    fuses two subjects, which is worse than leaving two files. Returns False
+    whenever embedding is unavailable, so the lexical behaviour is unchanged
+    on a box with no embed backend.
+    """
+    import os
+    try:
+        cut = float(os.environ.get("AIFORGE_TOPIC_MERGE_COSINE", "0.86"))
+    except (TypeError, ValueError):
+        cut = 0.86
+    if cut > 1:                       # operator disabled it
+        return False
+    try:
+        from .. import _topics
+        from ... import local_embed
+        if not _topics.semantic_ready():
+            return False
+        for k in (a, b):
+            if k not in cache:
+                cache[k] = _topics._vec(_topics._topic_text(k))
+        va, vb = cache.get(a), cache.get(b)
+        if va is None or vb is None:
+            return False
+        return float(local_embed.cosine(va, vb)) >= cut
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _topic_clusters(keys: list[str]) -> list[list[str]]:
     """Group topic keys that are the SAME subject: prefix-family (one extends
     another at a word boundary — gpsd / gpsd-config / gpsd-configuration) OR
@@ -384,6 +419,11 @@ def _topic_clusters(keys: list[str]) -> list[list[str]]:
 
     ratio = _topic_merge_ratio()
     families = _merge_families()
+    # Similarity over each topic's slug + brief head — the signal no amount of
+    # string distance can supply. `calc` / `math-expression-engine` share no
+    # characters yet cover one subject; embeddings union them, lexical rules
+    # never will. Cache the vectors: one embed per topic, not one per pair.
+    sim: dict = {}
     for i, a in enumerate(keys):
         for b in keys[i + 1:]:
             shared = _shared_prefix(a, b)
@@ -392,7 +432,8 @@ def _topic_clusters(keys: list[str]) -> list[list[str]]:
                     or shared >= 2                               # wifi-device-* siblings
                     or (families and shared >= 1)                # windows-* whole family
                     or _typo_sibling(a, b)                       # windows-ntp / -npt
-                    or difflib.SequenceMatcher(None, a, b).ratio() >= ratio):
+                    or difflib.SequenceMatcher(None, a, b).ratio() >= ratio
+                    or _same_subject(a, b, sim)):                # calc / calculator
                 union(a, b)
     groups: dict[str, list[str]] = {}
     for k in keys:
@@ -418,8 +459,15 @@ def merge_similar_topics() -> dict:
         protected |= {_slug(r) for r in (_discover_repos() or [])}
     except Exception:  # noqa: BLE001
         pass
+    # Split OVERFLOW parts (compacted-<topic>-2.md …) are pages of ONE brief,
+    # not separate topics. They look like a prefix family to the clusterer, so
+    # without this the merge folds a split topic back into a single oversized
+    # file the very compaction that split it.
+    import re as _re
+    _part = _re.compile(r"-\d+$")
     keys = [p.stem[len("compacted-"):] for p in iter_briefs()
             if not _CAPTURE_SIG_RE.search(p.name)
+            and not _part.search(p.stem)
             and p.stem[len("compacted-"):] not in protected]
     clusters = _topic_clusters(keys)
     merged = 0

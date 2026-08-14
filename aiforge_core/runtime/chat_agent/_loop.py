@@ -108,6 +108,14 @@ def run_chat_agent(
     rules = _rules_context(cwd, last_user)
     prefs = _preferences_context(cwd)
     sys_msg = _SYSTEM.format(cwd=cwd)
+    # Advertise only integrations this install can reach. Same principle as the
+    # CodeGraph gate below: a tool the model is told about but that always
+    # answers `*_not_configured` costs prompt budget and invites a wrong pick.
+    try:
+        from ._catalog_gate import gate_catalog
+        sys_msg, _ungated = gate_catalog(sys_msg)
+    except Exception:  # noqa: BLE001 — never let gating break a turn
+        pass
     # CodeGraph tools are advertised ONLY when actually usable on this run — the
     # single shared gate (binary + real index for THIS repo + not env-disabled +
     # not opted out per-ticket). Otherwise the model would be told to call a tool

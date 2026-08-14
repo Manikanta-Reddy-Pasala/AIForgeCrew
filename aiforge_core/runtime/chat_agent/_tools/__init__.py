@@ -57,6 +57,7 @@ from ._jira import (
     _t_jira_create,
     _t_jira_update,
     _t_jira_comment,
+    _t_jira_comments,
     _t_jira_transitions,
     _t_jira_transition,
     _t_jira_assign,

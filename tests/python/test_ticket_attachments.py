@@ -14,6 +14,13 @@ from aiforge_core.api import api as api_mod
 
 @pytest.fixture()
 def repo_root(tmp_path, monkeypatch):
+    # _ticket_files_base() resolves AIFORGE_TICKET_FILES_DIR, then
+    # AIFORGE_CONFIG_DIR, then AIFORGE_REPO_ROOT. This test covers the
+    # repo-root branch, so the two higher-precedence vars must be absent —
+    # otherwise it silently exercises a different branch (and, before the
+    # suite was isolated, wrote into the operator's real ~/.aiforge).
+    monkeypatch.delenv("AIFORGE_TICKET_FILES_DIR", raising=False)
+    monkeypatch.delenv("AIFORGE_CONFIG_DIR", raising=False)
     monkeypatch.setenv("AIFORGE_REPO_ROOT", str(tmp_path))
     return tmp_path
 

@@ -338,8 +338,47 @@ def jira_update(args: dict, cwd: str | None = None) -> dict:
             "transitioned": bool(transitioned), "written": written}
 
 
+def jira_comments(args: dict, cwd: str | None = None) -> dict:
+    """READ every comment on an issue by ``key`` — author, body, timestamps.
+
+    Exists because the only comment tool used to be the WRITE one
+    (``jira_comment``), so "show me the comments on ENG-123" had no matching
+    read tool and the model reached for the poster instead. Paginated newest
+    call-order; ``limit`` caps the page (default 50).
+    """
+    key = (args.get("key") or args.get("id") or "").strip()
+    if not key:
+        return {"ok": False, "error": "missing 'key'"}
+    try:
+        limit = max(1, min(100, int(args.get("limit", 50))))
+    except (TypeError, ValueError):
+        limit = 50
+    r = _request("GET", f"/rest/api/2/issue/{urllib.parse.quote(key)}/comment",
+                 params={"maxResults": limit})
+    if not r["ok"]:
+        return r
+    data = r["data"] if isinstance(r["data"], dict) else {}
+    rows = []
+    for c in (data.get("comments") or []):
+        rows.append({
+            "id": c.get("id"),
+            "author": ((c.get("author") or {}) or {}).get("displayName"),
+            "created": c.get("created"),
+            "updated": c.get("updated"),
+            "body": (c.get("body") or "")[:4000],
+        })
+    total = data.get("total")
+    return {"ok": True, "key": key, "comments": rows, "count": len(rows),
+            "total": total,
+            "truncated": isinstance(total, int) and total > len(rows),
+            "url": _issue_url(key)}
+
+
 def jira_comment(args: dict, cwd: str | None = None) -> dict:
-    """Add a comment to an issue. Required: ``key``, ``body``."""
+    """WRITE a NEW comment onto an issue. Required: ``key``, ``body``.
+
+    To READ existing comments use ``jira_comments`` (plural) — this posts.
+    """
     key = (args.get("key") or args.get("id") or "").strip()
     if not key:
         return {"ok": False, "error": "missing 'key'"}
@@ -476,5 +515,5 @@ def jira_test() -> dict:
 
 
 __all__ = ["jira_search", "jira_read", "jira_create", "jira_update",
-           "jira_comment", "jira_link_issues", "jira_transitions", "jira_transition",
+           "jira_comment", "jira_comments", "jira_link_issues", "jira_transitions", "jira_transition",
            "jira_assign", "jira_test"]

@@ -112,7 +112,7 @@ def test_compact_min_group_1_folds_a_lone_note(cfg):
     assert any(n.startswith("compacted-") for n in live)   # topic brief made
 
 
-def test_session_notes_fold_into_topic_not_repo(cfg):
+def test_session_notes_fold_into_topic_not_repo(cfg, monkeypatch):
     # Per-session transcripts (kind="session") were EXCLUDED from both brief
     # axes, so they lingered forever + compaction said "nothing to compact".
     # They now belong to the TOPIC axis (memory by topic); REPO stays curated.
@@ -126,9 +126,32 @@ def test_session_notes_fold_into_topic_not_repo(cfg):
     # REPO axis still excludes raw sessions
     rr = m.compact(group_by="repo", min_group=1, summarize=False, dry_run=True)
     assert rr["files_in"] == 0
-    # TOPIC axis now includes them (no model → they group under "session")
+    # TOPIC axis now includes them. The new-topic floor is relaxed here: these
+    # are two unrelated one-off sessions, which the floor correctly refuses
+    # their own topic files (see test_new_topic_needs_the_floor below) — this
+    # test is about the AXIS, not about admission.
+    monkeypatch.setenv("AIFORGE_TOPIC_MIN_FACTS", "1")
     rt = m.compact(group_by="topic", min_group=1, summarize=False, dry_run=True)
     assert rt["files_in"] == 2
+
+
+def test_new_topic_needs_the_floor(cfg, monkeypatch):
+    # Topic sprawl guard: a MODEL-INVENTED topic with too few notes must not
+    # mint its own brief (that is how 142 briefs appeared, a third holding one
+    # fact, which then poisoned recall). An EXPLICIT caller topic is intentional
+    # and always allowed through.
+    from aiforge_core.memory import md_store as m
+    monkeypatch.setenv("AIFORGE_TOPIC_MIN_FACTS", "3")
+    m.upsert_section(source="chat-session:9", title="one off session",
+                     section_title="t", section_body="did Z", kind="session",
+                     tags=["chat"])
+    r = m.compact(group_by="topic", min_group=1, summarize=False, dry_run=True)
+    assert r["groups"] == {}                       # refused: not enough to earn a file
+
+    m.capture("topic_learning", "billing: invoices post nightly",
+              repo="svc", topic="billing-pipeline")
+    r2 = m.compact(group_by="topic", min_group=1, summarize=False, dry_run=True)
+    assert r2["groups"].get("billing-pipeline") == 1   # explicit topic passes
 
 
 def test_writetime_brief_is_fresh_immediately(cfg):

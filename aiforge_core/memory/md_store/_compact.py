@@ -210,13 +210,65 @@ def _summarize_notes(blocks: list[str], role: str) -> str | None:
 
 
 def _topic_labels(files: list[dict], role: str) -> dict:
-    """Ask an LLM to cluster notes into a few COHERENT topics (better than one
-    blob per kind). Returns {file_name: topic-slug}. Empty on any failure — the
-    caller then falls back to kind grouping. Cheap: one call over titles only."""
-    if len(files) < 2:
+    """Map ``{file_name: topic-slug}`` for a compaction pass.
+
+    Deterministic FIRST: each note is scored against the topic briefs already
+    on disk and snapped to the nearest one over the cutoff — no LLM, no drift,
+    and the vocabulary stays stable across runs. Only the notes with no home
+    reach the model, and it sees just those titles plus a shortlist of the
+    nearest existing topics (never all ~140), because handing the model the
+    whole vocabulary is itself a drift source.
+
+    Every slug — snapped or invented — then passes admission control
+    (:func:`_topics.admit`), so generic magnets (``code``/``data``/``tmp``) and
+    junk (``m``/``na2``) never mint a file. Returns ``{}`` on total failure;
+    the caller falls back to kind grouping.
+    """
+    if not files:
+        return {}
+    from . import _topics
+    from ._scope import _snap_topic
+
+    known = _topics.existing_topics()
+    labels: dict = {}
+    leftover: list[dict] = []
+    shortlist: list[str] = []
+    vec_cache: dict = {}
+
+    for d in files:
+        text = (d.get("title") or "") + "\n" + (d.get("body") or "")[:400]
+        hit, near = _topics.snap_by_similarity(text, known, _cache=vec_cache)
+        if not shortlist and near:
+            shortlist = near
+        if hit:
+            labels[d["file"]] = hit
+        else:
+            leftover.append(d)
+
+    if leftover:
+        for f, slug in _llm_topic_labels(leftover, role, shortlist).items():
+            labels[f] = slug
+
+    out: dict = {}
+    for f, slug in labels.items():
+        ok = _topics.admit(slug, _snap_topic)
+        if ok:
+            out[f] = ok
+    return out
+
+
+def _llm_topic_labels(files: list[dict], role: str,
+                      shortlist: list[str]) -> dict:
+    """Ask the model to theme ONLY the notes the deterministic snap could not
+    place, choosing from ``shortlist`` when one fits. Small payload by design:
+    the leftover titles and at most a dozen candidate topics. Empty on any
+    failure — those notes then stay in their repo/shared brief."""
+    if len(files) < 1:
         return {}
     listing = "\n".join(f"{i}: {(d.get('title') or d.get('file') or '')[:80]}"
                         for i, d in enumerate(files))
+    known = ("\nEXISTING TOPICS (prefer one of these): "
+             + ", ".join(shortlist)) if shortlist else ""
     try:
         from pydantic import RootModel
 
@@ -227,12 +279,15 @@ def _topic_labels(files: list[dict], role: str) -> dict:
 
         raw = structured_complete(role, [
             {"role": "system", "content":
-             "Cluster these memory-note titles into 3-10 COHERENT topics (by "
-             "subject/feature area). Reply ONLY a JSON object mapping each index "
-             "(as a string) to a short kebab-case topic slug, e.g. "
-             '{"0":"data-sync","1":"chat-ui"}. Every index must appear once.'},
-            {"role": "user", "content": listing[:6000]},
-        ], _Topics, max_tokens=800, max_retries=1, temperature=0.0).root
+             "Assign each memory-note title a SUBJECT topic. Reuse an existing "
+             "topic whenever it fits; only invent a slug when none does. A new "
+             "slug must name a real subject (2-4 words, kebab-case) — never a "
+             "generic word like code/data/file/test/build and never an "
+             "abbreviation. Reply ONLY a JSON object mapping each index (as a "
+             'string) to its topic slug, e.g. {"0":"data-sync"}. '
+             "Every index must appear once." + known},
+            {"role": "user", "content": listing[:4000]},
+        ], _Topics, max_tokens=600, max_retries=1, temperature=0.0).root
     except Exception:  # noqa: BLE001
         return {}
     if not isinstance(raw, dict):
@@ -591,6 +646,23 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
         # form a topic file — they already live in their repo/shared brief.
         if group_by == "topic":
             groups.pop(_NO_TOPIC, None)
+            # A brand-new MODEL-INVENTED topic must earn its file: below the
+            # floor its notes stay in their repo/shared brief instead of minting
+            # a one-fact magnet (the `compacted-isprime-function.md` class of
+            # junk). Topics that already exist keep receiving regardless, and a
+            # topic the CALLER named explicitly is intentional — never gated.
+            from . import _topics
+            _floor = _topics.min_facts_for_new_topic()
+            if _floor > 1:
+                _keep = set(_topics.existing_topics())
+                for _d in live:
+                    _explicit = _d.get("topic") or next(
+                        (t.split(":", 1)[1] for t in (_d.get("tags") or [])
+                         if t.startswith("topic:")), None)
+                    if _explicit:
+                        _keep.add(_explicit)
+                groups = {k: v for k, v in groups.items()
+                          if k in _keep or len(v) >= _floor}
         result = {k: v for k, v in groups.items() if len(v) >= min_group}
         if force:
             # re-consolidate every EXISTING brief too (recheck all files) — add
@@ -833,11 +905,23 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                 except Exception:  # noqa: BLE001
                     pass
 
+    # ── Phase 4: fold near-duplicate topics (runs INSIDE compaction so the
+    # vocabulary self-heals every pass — there is no manual cleanup step).
+    # Deterministic, lock-safe, and a no-op on the repo/kind axes.
+    merged = {}
+    if group_by == "topic":
+        try:
+            from ._graph import merge_similar_topics
+            merged = merge_similar_topics()
+        except Exception as exc:  # noqa: BLE001 — a merge failure must never
+            _log.debug("topic merge skipped: %s", exc)   # lose the compaction
+
     return {
         "ok": True, "dry_run": False, "group_by": group_by,
         "groups": {k: len(v) for k, v in sorted(planned.items())},
         "files_in": moved, "files_out": len(out_files),
         "compacted": out_files, "summarized": summarized_files,
+        "merged_topics": merged.get("merged", 0),
         "archive": str(archive),
     }
 
