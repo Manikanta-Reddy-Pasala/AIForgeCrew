@@ -161,8 +161,17 @@ def accept(peer_id: str, entry: dict, body: bytes) -> bool:
 def downstream() -> list[dict]:
     """What this machine serves to spokes: what it merged, and nothing else.
 
-    Only class B nodes carrying the mesh marker AND our own origin — the tier-1
-    merge across everybody's knowledge.
+    Two shapes, both minted here:
+
+    * class B nodes carrying the mesh marker — the tier-1 merge across
+      everybody's knowledge;
+    * our own **tombstones**. A tombstone is JSON and carries no ``derived``
+      marker, so a marker-only filter never advertised one — and then
+      ``tiers._retire_own_mesh``, whose entire purpose is that "its tombstone
+      propagates the removal instead of letting the next pull bounce the node
+      back", could not propagate anything: move the admin from A to B and every
+      spoke keeps ``mesh/<A>/`` on disk forever. Only ours travel, so this
+      cannot become a way to relay somebody else's deletion.
 
     Nothing else travels down. ``captures/`` and ``compacted/`` are each
     machine's own raw text and its own briefs: every machine runs its own
@@ -180,8 +189,8 @@ def downstream() -> list[dict]:
 
     me = paths.fold(identity.self_id())
     return [e for e in manifest.build()
-            if str(e.get("derived") or "") == tiers.MESH
-            and paths.fold(str(e.get("origin") or "")) == me]
+            if paths.fold(str(e.get("origin") or "")) == me
+            and (str(e.get("derived") or "") == tiers.MESH or e.get("tomb"))]
 
 
 __all__ = ["wanted", "accept", "downstream", "seen", "roll",

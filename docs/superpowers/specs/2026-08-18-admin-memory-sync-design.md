@@ -132,6 +132,7 @@ halves share one `CYCLE_BUDGET`.
 | `okf/` (own origin) | ✅ the only thing that travels | ❌ |
 | tombstones (own origin) | ✅ | ❌ |
 | `mesh/<admin>/` (`derived: mesh`) | ❌ refused at the door | ✅ the point of the whole thing |
+| the admin's own tombstones | — | ✅ or a retired fold could never be removed from a spoke |
 | `captures/` | ❌ each machine compacts its own | ❌ |
 | `compacted/` briefs | ❌ ditto — shipping them would duplicate work already done | ❌ |
 | `view/` | never | never |
@@ -187,8 +188,10 @@ That is a deliberate choice for this deployment — the admin sits on a LAN or a
 WireGuard address, and spokes should need no secret to keep in step. Three
 things bound what that opens:
 
-- **It is scoped.** `AIFORGE_SYNC_AUTH=1` closes it again, and either way the
-  control plane — the routes that run shells and write config — still demands
+- **It is scoped.** `AIFORGE_SYNC_AUTH=1` closes it again — on the admin *and*
+  on every spoke, which then present `AIFORGE_API_TOKEN` on every request
+  (`transport._token`) — and either way the control plane — the routes that run
+  shells and write config — still demands
   `AIFORGE_API_TOKEN` from every non-loopback caller. An open sync surface is
   never an open shell.
 - **What a spoke may write is bounded by content, not by credential**
@@ -200,11 +203,17 @@ things bound what that opens:
   that list — so another machine's raw notes cannot be read back out of the
   admin by anyone who learns a digest.
 
-What this does *not* defend against: a machine on the same network claiming to
-be a spoke it is not. The peer id is self-asserted, so the origin rule is a
-consistency check (it stops a misconfigured spoke clobbering another's nodes),
-not an authentication boundary. Bind the admin to a trusted interface. Signed
-manifests remain the real fix and are still out of scope.
+What this does *not* defend against, and it is worth stating plainly: **anything
+that can reach an open admin's port can write memory.** The peer id is
+self-asserted, so the origin rule is a consistency check (it stops a
+misconfigured spoke clobbering another's nodes), not an authentication boundary.
+A pushed node lands in the inbox, the merge folds it, and the fold is re-stamped
+under the admin's own origin — so it passes every spoke's trust check and
+reaches `view/`, the text agents read. **Bind the admin to a trusted interface**
+(a LAN or WireGuard address), not to `0.0.0.0` on a network you do not control;
+the boot log warns when it is open and bound wide. `AIFORGE_SYNC_AUTH=1` is the
+switch when that is not enough. Signed manifests remain the real fix and are
+still out of scope.
 
 ## What was deleted
 

@@ -130,3 +130,53 @@ def test_a_conversion_that_explodes_does_not_kill_the_cycle(mem, monkeypatch):
 
     assert out["briefs"]["ok"] is False
     assert "mesh" in out and "view" in out, "the tiers still ran"
+
+
+def test_a_topic_that_outgrows_the_cap_still_converges(mem):
+    """The node body is capped. Cutting it mid-line left a PARTIAL fact in the
+    body, which never matched the whole fact in the brief — so every cycle saw
+    it as new, rewrote the node, bumped ``rev``, re-pushed it and re-triggered
+    the admin's LLM fold. Forever, on any topic that outgrew the cap."""
+    from aiforge_core.memory.okf import author
+    from aiforge_core.memory.sync import merge
+
+    facts = [f"fact number {i:03d} " + "x" * 80 for i in range(80)]
+    _brief("redis", facts)
+
+    first = author.sync_briefs_to_nodes()
+    assert first["created"] == 1
+    assert first["dropped"] > 0, "this test needs a topic that exceeds the cap"
+    rev_after_first = merge.as_rev((_learnings()[0].get("meta") or {}).get("rev"))
+    body = _learnings()[0]["body"]
+
+    second = author.sync_briefs_to_nodes()
+    third = author.sync_briefs_to_nodes()
+
+    assert (second["updated"], third["updated"]) == (0, 0)
+    assert merge.as_rev((_learnings()[0].get("meta") or {}).get("rev")) == rev_after_first
+    assert _learnings()[0]["body"] == body
+    # …and every line that IS carried is a whole fact, not a truncated one.
+    for line in body.splitlines():
+        assert line.removeprefix("- ") in facts
+
+
+def test_a_wrapped_or_oddly_spaced_fact_converges_too(mem):
+    """A fact is written back as ONE bullet and read back a line at a time, so
+    anything whose whitespace does not survive that round trip — a wrapped line,
+    a double space, a tab — was un-matchable against itself: new every cycle,
+    rewritten every cycle, ``rev`` climbing forever. Both sides normalise
+    whitespace now, so the comparison is stable whatever the brief looked like."""
+    from aiforge_core.memory.okf import author
+    from aiforge_core.memory.sync import merge
+
+    _brief("redis", ["evictions   need\tmaxmemory-policy  allkeys-lru "])
+
+    first = author.sync_briefs_to_nodes()
+    rev = merge.as_rev((_learnings()[0].get("meta") or {}).get("rev"))
+    second = author.sync_briefs_to_nodes()
+    third = author.sync_briefs_to_nodes()
+
+    assert first["created"] == 1
+    assert (second["updated"], third["updated"]) == (0, 0)
+    assert merge.as_rev((_learnings()[0].get("meta") or {}).get("rev")) == rev
+    assert "evictions need maxmemory-policy allkeys-lru" in _learnings()[0]["body"]

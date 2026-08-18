@@ -69,6 +69,25 @@ def _headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
+def _token() -> str:
+    """The credential this machine presents to the admin, or "".
+
+    ``AIFORGE_SYNC_AUTH=1`` on the admin closes the sync surface and makes it
+    demand the ordinary API token — and the docs, the run.sh banner and the
+    admin page all name that flag as the way to close an open hub. It was
+    documented on the server and unimplemented here: every request sent an empty
+    bearer, so an operator who followed the advice got 401 on every offer, push,
+    manifest and blob, logged at INFO, and the fleet silently stopped syncing.
+
+    Read per call rather than cached: the env is the configuration, and a daemon
+    that has to be restarted to notice a rotated token is a worse failure than
+    one extra dict lookup per request.
+    """
+    import os
+
+    return (os.environ.get("AIFORGE_API_TOKEN") or "").strip()
+
+
 def _stream(client, url: str, token: str, limit: int, started: float,
             *, method: str = "GET", payload: bytes | None = None) -> bytes:
     """The request itself: connect, send, read headers, stream the body.
@@ -171,7 +190,7 @@ def offer(base_url: str, entries: list[dict]) -> list[dict] | None:
 
     body = json.dumps({"peer": _self_id(), "entries": entries}).encode()
     try:
-        raw = _fetch(f"{base_url.rstrip('/')}/api/memory/sync/offer", "",
+        raw = _fetch(f"{base_url.rstrip('/')}/api/memory/sync/offer", _token(),
                      MAX_MANIFEST_BYTES, method="POST", payload=body)
         data = json.loads(raw)
     except Exception as exc:  # noqa: BLE001 — an unreachable admin is expected
@@ -205,7 +224,7 @@ def push_blob(base_url: str, entry: dict, body: bytes) -> bool:
     payload = json.dumps({"peer": _self_id(), "entry": entry,
                           "body": base64.b64encode(body).decode()}).encode()
     try:
-        raw = _fetch(f"{base_url.rstrip('/')}/api/memory/sync/push", "",
+        raw = _fetch(f"{base_url.rstrip('/')}/api/memory/sync/push", _token(),
                      MAX_MANIFEST_BYTES, method="POST", payload=payload)
         data = json.loads(raw)
     except Exception as exc:  # noqa: BLE001 — retried on the next cycle
@@ -223,12 +242,16 @@ def _self_id() -> str:
 
 
 def fetch_manifest(base_url: str, token: str = "") -> dict:
-    """GET a peer's manifest. Returns {} when the peer is unreachable or absurd."""
+    """GET the admin's manifest. Returns {} when it is unreachable or absurd.
+
+    ``token`` defaults to whatever this machine is configured with (``_token``);
+    pass one explicitly only to override that.
+    """
     import json
 
     try:
         body = _fetch(f"{base_url.rstrip('/')}/api/memory/sync/manifest",
-                      token, MAX_MANIFEST_BYTES)
+                      token or _token(), MAX_MANIFEST_BYTES)
         data = json.loads(body)
     except Exception as exc:  # noqa: BLE001 — an unreachable peer is expected, not exceptional
         _log.info("sync: peer %s unreachable: %s", base_url, exc)
@@ -257,7 +280,7 @@ def fetch_blob(base_url: str, digest: str, token: str = "") -> bytes | None:
     """GET one blob by hash. Returns None on any failure; retried next cycle."""
     try:
         return _fetch(f"{base_url.rstrip('/')}/api/memory/sync/blob/{digest}",
-                      token, MAX_BLOB_BYTES)
+                      token or _token(), MAX_BLOB_BYTES)
     except Exception as exc:  # noqa: BLE001 — retried on the next cycle
         _log.info("sync: blob %s from %s failed: %s", digest[:8], base_url, exc)
         return None

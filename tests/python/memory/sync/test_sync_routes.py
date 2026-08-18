@@ -175,3 +175,65 @@ def test_sync_auth_1_closes_the_surface_again(monkeypatch, tmp_path):
     ok = client.get("/api/memory/sync/manifest",
                     headers={"Authorization": "Bearer s3cret"})
     assert ok.status_code == 200
+
+
+def test_our_own_tombstone_is_advertised_downstream(monkeypatch, tmp_path):
+    """A tombstone is JSON and carries no ``derived`` marker, so a marker-only
+    filter never served one — and ``tiers._retire_own_mesh``, whose whole point
+    is that "its tombstone propagates the removal", could not propagate: move
+    the admin and every spoke keeps the old fold on disk forever."""
+    api = _fresh_api(monkeypatch, tmp_path)
+    rec = (b'{"origin":"book","key":"M-01","rev":9,'
+           b'"updated_by":"book","tomb":true}')
+    d = tmp_path / "md" / "okf" / ".tomb" / "book"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "M-01.json").write_bytes(rec)
+
+    body = TestClient(api.app).get("/api/memory/sync/manifest").json()
+
+    tombs = [e for e in body["manifest"] if e.get("tomb")]
+    assert [e["key"] for e in tombs] == ["M-01"]
+    # …and its bytes are actually servable, or the spoke could never apply it.
+    blob = TestClient(api.app).get(f"/api/memory/sync/blob/{tombs[0]['hash']}")
+    assert blob.status_code == 200 and blob.content == rec
+
+
+def test_another_machines_tombstone_is_not_relayed(monkeypatch, tmp_path):
+    """Only OUR deletions travel down. Relaying somebody else's is exactly the
+    forgery ``apply._accept_class_b`` refuses on the way in."""
+    api = _fresh_api(monkeypatch, tmp_path)
+    d = tmp_path / "md" / "okf" / ".tomb" / "studio"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "L-09.json").write_bytes(
+        b'{"origin":"studio","key":"L-09","rev":3,'
+        b'"updated_by":"studio","tomb":true}')
+
+    body = TestClient(api.app).get("/api/memory/sync/manifest").json()
+
+    assert [e for e in body["manifest"] if e.get("tomb")] == []
+
+
+def test_an_oversized_body_is_refused_before_it_is_parsed(monkeypatch, tmp_path):
+    """The cap used to sit INSIDE the handler, after FastAPI had already read
+    and parsed the whole body into Python objects — dead code on a surface that
+    takes no credential."""
+    import aiforge_core.api.routes.sync as _sync
+
+    api = _fresh_api(monkeypatch, tmp_path)
+    monkeypatch.setattr(_sync, "MAX_BODY_BYTES", 256)
+    huge = "x" * 4096
+
+    r = TestClient(api.app).post("/api/memory/sync/push", json={
+        "peer": "studio", "entry": {}, "body": huge})
+
+    assert r.status_code == 413
+
+
+def test_a_body_that_is_not_json_is_a_400(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+
+    r = TestClient(api.app).post(
+        "/api/memory/sync/offer", content=b"not json",
+        headers={"content-type": "application/json"})
+
+    assert r.status_code == 400

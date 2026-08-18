@@ -120,6 +120,10 @@ def _pull(base_url: str, result: dict, deadline: float | None = None) -> None:
         if apply.keep_conflict(pair["local"], losing_body):
             result["conflicts"] += 1
 
+    # Counted locally, not off `result`: `result["rejected"]` already carries
+    # the PUSH phase's rejections, so using it here under-reported (and could
+    # negate) how many entries the pull still owes the next cycle.
+    got = 0
     for entry in plan["want"]:
         if _spent(deadline):
             # The budget has to be re-checked *inside* this loop, not only
@@ -130,8 +134,9 @@ def _pull(base_url: str, result: dict, deadline: float | None = None) -> None:
             # advertised next cycle.
             _log.warning("sync: cycle budget spent part-way through the pull — "
                          "%d entries left for the next cycle",
-                         len(plan["want"]) - result["applied"] - result["rejected"])
+                         len(plan["want"]) - got)
             break
+        got += 1
         body = transport.fetch_blob(base_url, str(entry.get("hash") or ""))
         if body is None:
             result["rejected"] += 1

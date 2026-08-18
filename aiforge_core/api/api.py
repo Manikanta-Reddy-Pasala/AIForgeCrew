@@ -646,11 +646,22 @@ def _security_boot_guard(hosts: list[str] | None = None) -> None:
 
     if _sync_open():
         # Not a refusal — it is the documented default (see ``_sync_open``) —
-        # but an operator who exposes this box to a network they do not control
-        # must know that memory sync answers strangers there.
-        boot_log.info("memory sync is OPEN (no credential) on "
-                      "/api/memory/sync/* — set AIFORGE_SYNC_AUTH=1 to require "
-                      "AIFORGE_API_TOKEN on it too.")
+        # but the severity depends entirely on what this box is bound to, so the
+        # line says which case it is rather than stating the setting and leaving
+        # the operator to work it out.
+        _bound = _bind_host()
+        if _is_loopback_host(_bound):
+            boot_log.info("memory sync is open (no credential) on "
+                          "/api/memory/sync/* — reachable from this machine "
+                          "only, since the bind host is %s.", _bound)
+        else:
+            boot_log.warning(
+                "memory sync is OPEN (no credential) on /api/memory/sync/* AND "
+                "bound to %s. Anything that can reach this port can WRITE "
+                "memory that the merge folds into every machine's working "
+                "knowledge. Keep this on a trusted interface (LAN/WireGuard), "
+                "or set AIFORGE_SYNC_AUTH=1 here and AIFORGE_API_TOKEN on every "
+                "machine.", _bound)
 
     observed = _observed_bind_hosts() if hosts is None else list(hosts)
     if observed:

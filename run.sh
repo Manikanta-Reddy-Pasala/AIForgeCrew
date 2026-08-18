@@ -227,7 +227,12 @@ _write_role() {                       # $1 = value, or "" to only remove the lin
   local want="$1" f="$_env_role_file"
   if [[ -f "$f" ]]; then
     cp -p "$f" "$f.tmp" || return 1
-    grep -vE '^[[:space:]]*AIFORGE_ROLE=' "$f" > "$f.tmp" || true
+    # Exit 1 is "no lines selected" and is fine. Exit 2 is a real failure — a
+    # full disk, a quota — and the redirection has ALREADY truncated the tmp
+    # file, so moving it over .env would replace the operator's API keys with
+    # nothing. Narrowed to 1, and the tmp file is cleaned up either way.
+    grep -vE '^[[:space:]]*AIFORGE_ROLE=' "$f" > "$f.tmp" || [[ $? -eq 1 ]] \
+      || { rm -f "$f.tmp"; return 1; }
     mv "$f.tmp" "$f" || { rm -f "$f.tmp"; return 1; }
   fi
   [[ -n "$want" ]] && printf 'AIFORGE_ROLE=%s\n' "$want" >> "$f"

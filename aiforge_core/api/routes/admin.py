@@ -81,9 +81,17 @@ def _probe_admin(base_url: str) -> dict:
     if not base_url:
         return {"reachable": False, "latency_ms": None, "entries": None,
                 "error": None, "probed": False}
+    from aiforge_core.memory.sync import transport as _transport
+
     started = time.monotonic()
     try:
+        # Presents the same credential the sync loop does. Without it, an
+        # operator who closes the surface with AIFORGE_SYNC_AUTH=1 — which this
+        # very page tells them to do — sees a perfectly healthy admin reported
+        # as "down: HTTPStatusError 401" forever, indistinguishable from a real
+        # outage.
         r = httpx.get(f"{base_url.rstrip('/')}/api/memory/sync/manifest",
+                      headers=_transport._headers(_transport._token()),
                       timeout=PROBE_TIMEOUT)
         r.raise_for_status()
         data = r.json() or {}

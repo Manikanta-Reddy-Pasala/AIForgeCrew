@@ -162,3 +162,27 @@ def test_the_admin_makes_no_outbound_call(monkeypatch, tmp_path):
     monkeypatch.setattr("aiforge_core.memory.sync.transport.offer", _boom)
 
     assert loop.run_once() == []
+
+
+def test_a_retirement_reaches_the_spokes(monkeypatch, tmp_path):
+    """End to end for the tombstone half: the admin drops a merged node and the
+    spoke's copy goes with it. Without tombstones travelling down, the spoke's
+    next pull simply keeps what it already has — forever."""
+    from aiforge_core.memory.sync import tombstone
+
+    admin = _hub.node(monkeypatch, tmp_path, "hub")
+    _mesh_node(admin, "M-01", "the distilled answer", origin="hub")
+    spoke = _hub.node(monkeypatch, tmp_path, "book", admin_url="http://hub")
+
+    _hub.cycle(monkeypatch, spoke, admin)
+    landed = spoke["home"] / "md" / "mesh" / "hub" / "M-01.md"
+    assert landed.is_file()
+
+    # The admin retires that node the way tiers._retire_own_mesh does.
+    _hub.activate(monkeypatch, admin)
+    (admin["home"] / "md" / "mesh" / "hub" / "M-01.md").unlink()
+    assert tombstone.mark_deleted("hub", "M-01", 3) is not False
+
+    _hub.cycle(monkeypatch, spoke, admin)
+
+    assert not landed.exists(), "the deletion never reached the spoke"

@@ -19,9 +19,9 @@ before it is read, so an open endpoint cannot be turned into a memory bomb.
 from __future__ import annotations
 
 import base64
+import json
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel
 
 router = APIRouter()
 
@@ -32,24 +32,19 @@ router = APIRouter()
 MAX_BODY_BYTES = 12 * 1024 * 1024
 
 
-class OfferIn(BaseModel):
-    peer: str = ""
-    entries: list[dict] = []
+async def _read_json(request: Request) -> dict:
+    """Read and parse a bounded request body.
 
+    The routes take a raw ``Request`` and do this by hand rather than declaring
+    a pydantic body model, because FastAPI resolves a body parameter — reading
+    and parsing the WHOLE request — before the handler runs. A cap checked
+    inside the handler is therefore dead code: the bytes are already buffered
+    and already parsed into Python objects by the time it looks. This surface
+    takes no credential by default, so the bound has to be real.
 
-class PushIn(BaseModel):
-    peer: str = ""
-    entry: dict = {}
-    body: str = ""          # base64
-
-
-async def _guard(request: Request) -> None:
-    """Refuse an oversized body before Starlette buffers it into memory.
-
-    ``content-length`` is a claim, so this is a cheap early exit rather than the
-    enforcement: the real bound is ``inbox.MAX_BLOB_BYTES`` on the decoded bytes
-    and ``inbox.MAX_OFFER_ENTRIES`` on the parsed rows. Both are needed — a
-    chunked request declares no length at all.
+    ``content-length`` is refused first when it is honest, and the running total
+    is what enforces the cap when it is absent or a lie (a chunked request
+    declares no length at all). Neither half is sufficient alone.
     """
     try:
         declared = int(request.headers.get("content-length") or 0)
@@ -57,6 +52,20 @@ async def _guard(request: Request) -> None:
         declared = 0
     if declared > MAX_BODY_BYTES:
         raise HTTPException(413, f"body over {MAX_BODY_BYTES} bytes")
+
+    total = 0
+    chunks: list[bytes] = []
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > MAX_BODY_BYTES:
+            # Abandoned mid-stream: the rest is never read, let alone kept.
+            raise HTTPException(413, f"body over {MAX_BODY_BYTES} bytes")
+        chunks.append(chunk)
+    try:
+        payload = json.loads(b"".join(chunks) or b"{}")
+    except ValueError:
+        raise HTTPException(400, "body is not valid JSON") from None
+    return payload if isinstance(payload, dict) else {}
 
 
 @router.get("/api/memory/sync/manifest")
@@ -89,23 +98,26 @@ def sync_blob(digest: str) -> Response:
 
 
 @router.post("/api/memory/sync/offer")
-async def sync_offer(payload: OfferIn, request: Request) -> dict:
+async def sync_offer(request: Request) -> dict:
     """A spoke offers its manifest; we answer with what we do not hold."""
-    await _guard(request)
+    payload = await _read_json(request)
     from aiforge_core.memory.sync import inbox
 
-    inbox.seen(payload.peer or "")
-    return {"want": inbox.wanted(payload.entries or [])}
+    entries = payload.get("entries")
+    inbox.seen(str(payload.get("peer") or ""))
+    return {"want": inbox.wanted(entries if isinstance(entries, list) else [])}
 
 
 @router.post("/api/memory/sync/push")
-async def sync_push(payload: PushIn, request: Request) -> dict:
+async def sync_push(request: Request) -> dict:
     """A spoke sends one record we asked for. ``applied`` says whether it stuck."""
-    await _guard(request)
+    payload = await _read_json(request)
     from aiforge_core.memory.sync import inbox
 
     try:
-        body = base64.b64decode(payload.body or "", validate=True)
+        body = base64.b64decode(str(payload.get("body") or ""), validate=True)
     except Exception:  # noqa: BLE001 — undecodable bytes are a refused record
         raise HTTPException(400, "body is not valid base64") from None
-    return {"applied": inbox.accept(payload.peer or "", payload.entry or {}, body)}
+    entry = payload.get("entry")
+    return {"applied": inbox.accept(str(payload.get("peer") or ""),
+                                    entry if isinstance(entry, dict) else {}, body)}
