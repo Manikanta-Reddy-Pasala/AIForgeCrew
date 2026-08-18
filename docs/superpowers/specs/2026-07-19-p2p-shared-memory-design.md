@@ -1,7 +1,10 @@
 # P2P Shared Memory — Design
 
 **Date:** 2026-07-19
-**Status:** Implemented and validated on two machines — see "Live validation" at the end
+**Status:** SUPERSEDED (2026-08-18) by [2026-08-18-admin-memory-sync-design.md](2026-08-18-admin-memory-sync-design.md).
+The mesh, its discovery, its shared key and its election are gone; one named admin
+receives every machine's knowledge and folds it. The record classes, identity scheme
+and merge rule below still describe what runs.
 **Topology:** Full mesh, pull-only, no master for replication
 
 ## Problem
@@ -554,7 +557,8 @@ now in the code:
    per-peer token copy. (Peers on segments SSDP cannot cross still learn each
    other by gossip once any one pair is connected.)
 4. Nothing else changes locally: browsing the UI from the machine itself and
-   `./run.sh --admin` are loopback and keep working with no token at all.
+   `./run.sh --admin-page` are loopback and keep working with no token at all.
+   (`--admin` now *claims the admin role*; see the 2026-08-18 spec.)
 
 Without `AIFORGE_MESH_KEY`, the older manual model still applies: paste a
 per-peer bearer token into each `peers.json` row by hand.

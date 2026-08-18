@@ -1,27 +1,23 @@
 """The sync daemon's schedule.
 
-Nothing schedules leadership: the compaction leader is elected from the peer
-registry on demand (``election.py``), so this loop only pulls. These cover the
-wiring, not the sync mechanics (see test_two_peer).
+Nothing schedules leadership: which machine folds is configuration
+(``role.py``), so this loop only syncs. These cover the wiring, not the sync
+mechanics (see test_hub_cycle).
 """
 from __future__ import annotations
 
 import contextlib
 
 
-def _env(monkeypatch, tmp_path, peer_id: str = "nuc"):
+def _env(monkeypatch, tmp_path, peer_id: str = "nuc", admin: str = ""):
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
     monkeypatch.setenv("AIFORGE_PEER_ID", peer_id)
-
-
-def _approve(peer_id: str = "book") -> None:
-    from aiforge_core.memory.sync import peers
-
-    data = peers.load()
-    data["peers"] = [{"id": peer_id, "urls": ["http://10.0.0.9:8799"],
-                      "state": peers.STATE_APPROVED, "last_seen": 0}]
-    peers.save(data)
+    monkeypatch.delenv("AIFORGE_ROLE", raising=False)
+    if admin:
+        monkeypatch.setenv("AIFORGE_ADMIN_URL", admin)
+    else:
+        monkeypatch.delenv("AIFORGE_ADMIN_URL", raising=False)
 
 
 def test_default_interval_is_thirty_minutes():
@@ -32,7 +28,8 @@ def test_default_interval_is_thirty_minutes():
 
 def test_an_unconfigured_cycle_does_no_network_and_returns_immediately(
         monkeypatch, tmp_path):
-    """No approved peers → no transport call, no manifest build, no blocking."""
+    """No admin url → we ARE the admin → no transport call, no manifest build,
+    no blocking. An admin answers requests; it never makes them."""
     _env(monkeypatch, tmp_path)
     from aiforge_core.memory.sync import loop, manifest, transport
 
@@ -48,11 +45,10 @@ def test_an_unconfigured_cycle_does_no_network_and_returns_immediately(
 
 def test_run_forever_only_runs_cycles_and_holds_no_leadership_record(
         monkeypatch, tmp_path):
-    """The old design claimed a lease here, on a background timer. There is now
-    no record to write and no thread to leak — leadership is derived, not held.
+    """An older design claimed a lease here, on a background timer. There is now
+    no record to write and no thread to leak — the admin is named, not elected.
     """
-    _env(monkeypatch, tmp_path)
-    _approve()
+    _env(monkeypatch, tmp_path, admin="http://10.0.0.9:8799")
     from aiforge_core.memory.sync import loop
 
     class _Stop(BaseException):
@@ -76,3 +72,33 @@ def test_run_forever_only_runs_cycles_and_holds_no_leadership_record(
 
     assert cycles == [1]
     assert list((tmp_path / "md").rglob("*.json")) == []
+
+
+def test_the_admin_role_beats_a_stale_admin_url(monkeypatch, tmp_path):
+    """``run.sh --admin`` refuses to start when a url is set, but the env is not
+    the only way in (a persisted role plus a url added later, a hand-edited
+    file) — and a box that is the admin AND points at another admin would push
+    its own knowledge upstream while serving as an admin itself, with two
+    machines stamping ``derived: mesh``. The role is checked first."""
+    _env(monkeypatch, tmp_path, admin="http://someone-else:8799")
+    monkeypatch.setenv("AIFORGE_ROLE", "admin")
+    from aiforge_core.memory.sync import loop, transport
+
+    def _boom(*a, **k):  # pragma: no cover — the point is that it never runs
+        raise AssertionError("an admin must not sync outward")
+
+    monkeypatch.setattr(transport, "fetch_manifest", _boom)
+    monkeypatch.setattr(transport, "offer", _boom)
+
+    assert loop.run_once() == []
+
+
+def test_a_spoke_with_no_admin_named_does_nothing_quietly(monkeypatch, tmp_path):
+    """AIFORGE_ROLE=spoke with no url is a half-configured machine. It must not
+    sync (there is nowhere to sync to) and must not raise — the admin page is
+    where the missing url is surfaced, not a traceback every 30 minutes."""
+    _env(monkeypatch, tmp_path)
+    monkeypatch.setenv("AIFORGE_ROLE", "spoke")
+    from aiforge_core.memory.sync import loop
+
+    assert loop.run_once() == []

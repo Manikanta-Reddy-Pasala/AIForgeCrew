@@ -1,12 +1,13 @@
-"""Fetching from one peer over HTTP. Knows nothing about disk.
+"""Talking to the admin over HTTP. Knows nothing about disk.
 
-An unreachable peer is normal operation, not an error: pull-only means nothing
-is queued for it and nothing blocks on it, so every failure here degrades to
-"nothing new this cycle" and is retried on the next one.
+An unreachable admin is normal operation, not an error: nothing is queued for
+it and nothing blocks on it, so every failure here degrades to "nothing this
+cycle" and is retried on the next one. The offer is recomputed from the tree
+each cycle, so a missed push needs no outbox.
 
-A *reachable* peer is not trusted either. Everything below is bounded before it
-is buffered: a peer is a machine somebody else administers, and an unbounded
-read makes "how much memory does this daemon use" that peer's decision. Bodies
+A *reachable* admin is not trusted either. Everything below is bounded before it
+is buffered: the admin is a machine somebody else may administer, and an
+unbounded read makes "how much memory does this daemon use" its decision. Bodies
 are streamed and abandoned the moment they pass the cap, so a multi-GB blob
 costs one chunk, not one allocation of its full size.
 """
@@ -36,7 +37,7 @@ TIMEOUT = 20.0
 #
 # 60 s against the 8 MiB blob cap asks a peer for ~140 KiB/s, which any link
 # worth syncing over beats by orders of magnitude, while keeping a handful of
-# sick peers comfortably inside one cycle's budget (see ``loop.CYCLE_BUDGET``).
+# a sick admin comfortably inside one cycle's budget (see ``loop.CYCLE_BUDGET``).
 #
 # It bounds the WHOLE request, not just the body. Checking it only inside the
 # ``iter_bytes`` loop bounded nothing that mattered: connect, request send and
@@ -44,8 +45,8 @@ TIMEOUT = 20.0
 # TIMEOUT is per read, so a peer dribbling one header byte per second resets
 # the read timer forever, never completes its headers, and never lets the loop
 # start. Measured at production constants: one such peer held ``run_once`` past
-# 90 s with zero rows produced, two healthy peers never contacted, and
-# compaction — which rides the same loop — never run.
+# 90 s with zero rows produced and compaction — which rides the same loop —
+# never run.
 REQUEST_DEADLINE = 60.0
 
 
@@ -68,17 +69,45 @@ def _headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
-def _stream(client, url: str, token: str, limit: int, started: float) -> bytes:
+def _token() -> str:
+    """The credential this machine presents to the admin, or "".
+
+    ``AIFORGE_SYNC_AUTH=1`` on the admin closes the sync surface and makes it
+    demand the ordinary API token — and the docs, the run.sh banner and the
+    admin page all name that flag as the way to close an open hub. It was
+    documented on the server and unimplemented here: every request sent an empty
+    bearer, so an operator who followed the advice got 401 on every offer, push,
+    manifest and blob, logged at INFO, and the fleet silently stopped syncing.
+
+    Read per call rather than cached: the env is the configuration, and a daemon
+    that has to be restarted to notice a rotated token is a worse failure than
+    one extra dict lookup per request.
+    """
+    import os
+
+    return (os.environ.get("AIFORGE_API_TOKEN") or "").strip()
+
+
+def _stream(client, url: str, token: str, limit: int, started: float,
+            *, method: str = "GET", payload: bytes | None = None) -> bytes:
     """The request itself: connect, send, read headers, stream the body.
 
     Every phase here can block, which is why it does not run on the caller's
     thread — see ``_fetch``. The in-loop deadline check stays so that a request
     which is merely slow ends itself cleanly, closing the response on the way
     out, rather than being abandoned by the watchdog.
+
+    ``method``/``payload`` carry the spoke's half of the hub protocol. The
+    response is streamed and capped identically whichever verb sent it: an
+    admin answering an offer is as untrusted as a peer answering a manifest,
+    and a POST is not a reason to buffer without a bound.
     """
     total = 0
     chunks: list[bytes] = []
-    with client.stream("GET", url, headers=_headers(token)) as r:
+    headers = _headers(token)
+    if payload is not None:
+        headers["content-type"] = "application/json"
+    with client.stream(method, url, headers=headers, content=payload) as r:
         r.raise_for_status()
         declared = 0
         try:
@@ -101,7 +130,8 @@ def _stream(client, url: str, token: str, limit: int, started: float) -> bytes:
     return b"".join(chunks)
 
 
-def _fetch(url: str, token: str, limit: int) -> bytes | None:
+def _fetch(url: str, token: str, limit: int, *, method: str = "GET",
+           payload: bytes | None = None) -> bytes | None:
     """GET ``url``, refusing anything over ``limit`` bytes. None on any failure.
 
     Streamed rather than buffered: ``Content-Length`` is a claim, so it is used
@@ -128,7 +158,8 @@ def _fetch(url: str, token: str, limit: int) -> bytes | None:
 
     def _run() -> None:
         try:
-            out["body"] = _stream(client, url, token, limit, started)
+            out["body"] = _stream(client, url, token, limit, started,
+                                  method=method, payload=payload)
         except BaseException as exc:   # noqa: BLE001 — re-raised on the caller's thread
             out["error"] = exc
 
@@ -147,36 +178,80 @@ def _fetch(url: str, token: str, limit: int) -> bytes | None:
     return out.get("body")
 
 
-def membership_proof(base_url: str, nonce: str) -> str:
-    """Ask a candidate to prove it holds the shared mesh key over ``nonce``.
+def offer(base_url: str, entries: list[dict]) -> list[dict] | None:
+    """POST our manifest to the admin; return the entries it wants.
 
-    Returns the peer's ``HMAC(mesh_key, nonce)`` hex, or "" on any failure.
-    Sends NO credential: the auto-join probe must never hand our key to an
-    unverified URL that arrived over SSDP/gossip (that would leak the shared
-    secret to any host that can get itself listed as a candidate). The peer
-    proves possession; we verify against our own key locally.
+    ``None`` means the admin could not be reached or answered nonsense — the
+    caller sends nothing and retries next cycle. An empty list means the admin
+    is reachable and already holds everything, which is the steady state and
+    must be distinguishable from a failure.
+    """
+    import json
+
+    body = json.dumps({"peer": _self_id(), "entries": entries}).encode()
+    try:
+        raw = _fetch(f"{base_url.rstrip('/')}/api/memory/sync/offer", _token(),
+                     MAX_MANIFEST_BYTES, method="POST", payload=body)
+        data = json.loads(raw)
+    except Exception as exc:  # noqa: BLE001 — an unreachable admin is expected
+        _log.info("sync: admin %s did not accept the offer: %s", base_url, exc)
+        return None
+    want = data.get("want") if isinstance(data, dict) else None
+    if not isinstance(want, list):
+        return None
+    rows = [e for e in want if isinstance(e, dict)]
+    if len(rows) > MAX_MANIFEST_ENTRIES:
+        # The admin only ever asks for entries we offered it, so a larger list
+        # is a broken or hostile admin rather than a big tree. Refused whole:
+        # half a push is a sync that silently never completes.
+        _log.warning("sync: admin %s asked for %d entries (cap %d) — refused",
+                     base_url, len(rows), MAX_MANIFEST_ENTRIES)
+        return None
+    return rows
+
+
+def push_blob(base_url: str, entry: dict, body: bytes) -> bool:
+    """POST one record the admin asked for. False on any failure.
+
+    The bytes travel base64 inside JSON rather than as a raw body with the entry
+    in headers: the entry is a dict with six fields, and a header-encoded
+    identity is one more encoding for ``origin``/``key`` to disagree over. The
+    cost is the ~33% base64 expansion, which the blob cap already accounts for.
+    """
+    import base64
+    import json
+
+    payload = json.dumps({"peer": _self_id(), "entry": entry,
+                          "body": base64.b64encode(body).decode()}).encode()
+    try:
+        raw = _fetch(f"{base_url.rstrip('/')}/api/memory/sync/push", _token(),
+                     MAX_MANIFEST_BYTES, method="POST", payload=payload)
+        data = json.loads(raw)
+    except Exception as exc:  # noqa: BLE001 — retried on the next cycle
+        _log.info("sync: push of %s to %s failed: %s", entry.get("path"),
+                  base_url, exc)
+        return False
+    return bool(isinstance(data, dict) and data.get("applied"))
+
+
+def _self_id() -> str:
+    """Who we say we are. The admin believes it — see ``inbox`` on why."""
+    from aiforge_core.memory.sync import identity
+
+    return identity.self_id()
+
+
+def fetch_manifest(base_url: str, token: str = "") -> dict:
+    """GET the admin's manifest. Returns {} when it is unreachable or absurd.
+
+    ``token`` defaults to whatever this machine is configured with (``_token``);
+    pass one explicitly only to override that.
     """
     import json
 
     try:
-        body = _fetch(
-            f"{base_url.rstrip('/')}/api/memory/sync/challenge?nonce={nonce}",
-            "", MAX_MANIFEST_BYTES)
-        data = json.loads(body)
-    except Exception as exc:  # noqa: BLE001 — an unreachable peer is expected, not exceptional
-        _log.info("sync: peer %s challenge unreachable: %s", base_url, exc)
-        return ""
-    proof = data.get("proof") if isinstance(data, dict) else None
-    return proof if isinstance(proof, str) else ""
-
-
-def fetch_manifest(base_url: str, token: str = "") -> dict:
-    """GET a peer's manifest. Returns {} when the peer is unreachable or absurd."""
-    import json
-
-    try:
         body = _fetch(f"{base_url.rstrip('/')}/api/memory/sync/manifest",
-                      token, MAX_MANIFEST_BYTES)
+                      token or _token(), MAX_MANIFEST_BYTES)
         data = json.loads(body)
     except Exception as exc:  # noqa: BLE001 — an unreachable peer is expected, not exceptional
         _log.info("sync: peer %s unreachable: %s", base_url, exc)
@@ -195,9 +270,8 @@ def fetch_manifest(base_url: str, token: str = "") -> dict:
         # Coerced here, once, rather than re-checked by every caller: a peer on
         # a different build sent {"manifest": {...}, "roster": "nope"} and the
         # caller's ``roster`` iteration raised *after* the blobs had been
-        # applied, skipping peers.touch — the peer's last_seen froze, it aged
-        # out of the election, and its whole result row vanished from the cycle
-        # output. A wrong-shaped field must mean "nothing to sync", not that.
+        # applied, and the whole result row vanished from the cycle output. A
+        # wrong-shaped field must mean "nothing to sync", not that.
         data[field] = rows if isinstance(rows, list) else []
     return data
 
@@ -206,12 +280,12 @@ def fetch_blob(base_url: str, digest: str, token: str = "") -> bytes | None:
     """GET one blob by hash. Returns None on any failure; retried next cycle."""
     try:
         return _fetch(f"{base_url.rstrip('/')}/api/memory/sync/blob/{digest}",
-                      token, MAX_BLOB_BYTES)
+                      token or _token(), MAX_BLOB_BYTES)
     except Exception as exc:  # noqa: BLE001 — retried on the next cycle
         _log.info("sync: blob %s from %s failed: %s", digest[:8], base_url, exc)
         return None
 
 
-__all__ = ["fetch_manifest", "fetch_blob", "membership_proof", "TIMEOUT",
+__all__ = ["fetch_manifest", "fetch_blob", "offer", "push_blob", "TIMEOUT",
            "REQUEST_DEADLINE", "MAX_BLOB_BYTES", "MAX_MANIFEST_BYTES",
            "MAX_MANIFEST_ENTRIES"]

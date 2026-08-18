@@ -7,6 +7,7 @@ actually means.
 """
 from __future__ import annotations
 
+import base64
 import contextlib
 import json
 import threading
@@ -32,6 +33,10 @@ def _serve(handler):
             # The client hanging up mid-flood is the point of these tests.
             with contextlib.suppress(Exception):
                 handler(self, state)
+
+        # The push half of the protocol is POST, and it is bounded by the same
+        # caps — so it is driven against the same hostile server.
+        do_POST = do_GET               # noqa: N815 — mirrors the API above
 
     srv = ThreadingHTTPServer(("127.0.0.1", 0), _H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -131,30 +136,58 @@ def test_an_ordinary_peer_still_syncs(peer):
     assert transport.fetch_manifest(base, "t")["manifest"][0]["key"] == "O-01"
 
 
-def test_membership_proof_reads_the_challenge_and_sends_no_credential(peer):
-    """The auto-join probe returns the peer's proof hex and — the security
-    point — carries no Authorization/token header, so a hostile candidate url
-    never receives our key."""
+def test_offer_posts_our_manifest_and_returns_what_the_admin_wants(peer):
+    """The push half of the protocol: a POST body the admin can read back, and
+    a wanted-list that is refused rather than truncated when it is absurd."""
     from aiforge_core.memory.sync import transport
 
     seen = {}
 
-    def _challenge(h, _s):
-        seen["auth"] = h.headers.get("Authorization")
-        seen["tok"] = h.headers.get("X-AIForge-Token")
-        body = json.dumps({"proof": "abc123"}).encode()
-        _json_body(h, body)
+    def _offer(h, _s):
+        length = int(h.headers.get("Content-Length") or 0)
+        seen["method"] = h.command
+        seen["body"] = json.loads(h.rfile.read(length))
+        _json_body(h, json.dumps({"want": [{"hash": "ab", "kind": "A"}]}).encode())
 
-    base, _state = peer(_challenge)
-    assert transport.membership_proof(base, "nonce-xyz") == "abc123"
-    assert seen["auth"] is None and seen["tok"] is None
+    base, _state = peer(_offer)
+    want = transport.offer(base, [{"hash": "ab", "kind": "A", "path": "captures/a.md"}])
 
-    # A 404 (peer runs no mesh key) yields "" rather than raising.
-    def _no_key(h, _s):
-        h.send_response(404)
-        h.end_headers()
-    base2, _s2 = peer(_no_key)
-    assert transport.membership_proof(base2, "n") == ""
+    assert want == [{"hash": "ab", "kind": "A"}]
+    assert seen["method"] == "POST"
+    assert seen["body"]["entries"][0]["path"] == "captures/a.md"
+    assert seen["body"]["peer"]                      # we say who we are
+
+    # An admin that answers with something else means "send nothing", not
+    # "send everything" — None is distinguishable from an empty want list.
+    def _junk(h, _s):
+        _json_body(h, b'{"want": "nope"}')
+
+    base2, _s2 = peer(_junk)
+    assert transport.offer(base2, []) is None
+
+
+def test_push_blob_reports_whether_the_admin_applied_it(peer):
+    from aiforge_core.memory.sync import transport
+
+    seen = {}
+
+    def _push(h, _s):
+        length = int(h.headers.get("Content-Length") or 0)
+        seen["body"] = json.loads(h.rfile.read(length))
+        _json_body(h, b'{"applied": true}')
+
+    base, _state = peer(_push)
+    entry = {"hash": "ab", "kind": "A", "path": "captures/a.md"}
+    assert transport.push_blob(base, entry, b"hello") is True
+    assert base64.b64decode(seen["body"]["body"]) == b"hello"
+
+    # A refusal is a normal answer, not an exception: the record is simply
+    # offered again next cycle.
+    def _refused(h, _s):
+        _json_body(h, b'{"applied": false}')
+
+    base2, _s2 = peer(_refused)
+    assert transport.push_blob(base2, entry, b"hello") is False
 
 
 def test_a_blob_within_the_cap_arrives_whole(peer):

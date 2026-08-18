@@ -50,15 +50,11 @@ def _write_node(directory, node_id: str, body: str, *, topic: str = "sync",
     return p
 
 
-def _approve(peer_id: str, *, ago: int = 60) -> None:
-    """An approved peer we reached ``ago`` seconds ago."""
-    from aiforge_core.memory.sync import peers
-
-    data = peers.load()
-    data["peers"] = [{"id": peer_id, "urls": [f"http://{peer_id}:8799"],
-                      "state": peers.STATE_APPROVED,
-                      "last_seen": int(time.time()) - ago}]
-    peers.save(data)
+def _spoke_of(monkeypatch, admin_id: str) -> None:
+    """Make this machine a spoke of ``admin_id``: it stops folding, and that
+    machine's ``derived: mesh`` nodes become the ones it trusts."""
+    monkeypatch.setenv("AIFORGE_ADMIN_URL", f"http://{admin_id}:8799")
+    monkeypatch.setenv("AIFORGE_ADMIN_ID", admin_id)
 
 
 def _read(path):
@@ -101,17 +97,17 @@ def test_the_leader_folds_every_inbox_and_its_own_okf_into_the_mesh(mem, folds):
         assert claim in node["body"]
 
 
-def test_a_follower_leaves_the_mesh_alone(mem, folds):
-    """'air' sorts below 'nuc', so it leads and we do not fold."""
+def test_a_spoke_leaves_the_mesh_alone(mem, folds, monkeypatch):
+    """The admin folds for everybody; a spoke spends no tokens on it."""
     from aiforge_core.memory.okf import tiers
     from aiforge_core.memory.sync import paths
 
-    _approve("air")
+    _spoke_of(monkeypatch, "air")
     _write_node(mem / "peers" / "air", "L-01", "air knowledge", origin="air")
 
     out = tiers.distil_mesh()
 
-    assert out["skipped"] == "not-leader" and out["leader"] == "air"
+    assert out["skipped"] == "not-admin" and out["admin"] == "air"
     assert not list(paths.mesh_dir().rglob("*.md"))
     assert folds == []
 
@@ -227,22 +223,24 @@ def test_an_unchanged_okf_and_mesh_cost_no_merge(mem, folds, monkeypatch):
     assert tiers.build_view() == {"ok": True, "skipped": "unchanged"}
 
 
-def test_a_mesh_node_received_into_the_inbox_is_still_recognised(mem, folds):
-    """Tolerance kept on purpose: a peer on a build older than the mesh routing
-    files its copy under peers/, and so did every node received before it.
+def test_a_mesh_node_received_into_the_inbox_is_still_recognised(mem, folds,
+                                                                 monkeypatch):
+    """Tolerance kept on purpose: a build older than the mesh routing filed its
+    copy under peers/, and so did every node received before it.
 
-    'air' is approved and alive, so it is the elected leader — a mesh marker is
-    only honoured from the peer the election names (see the hostile-peer test).
+    Read through ``view_nodes`` rather than by building a view: tier 2 is
+    admin-only now, and on a spoke the mesh IS the view (see ``view_nodes``).
+    A mesh marker is only honoured from the admin (see the hostile-peer test).
     """
     from aiforge_core.memory.okf import tiers
-    from aiforge_core.memory.sync import paths
 
-    _approve("air")
+    _spoke_of(monkeypatch, "air")
     _write_node(mem / "peers" / "air", "M-sync", "the mesh says mtu 1380",
                 origin="air", derived="mesh")
 
-    assert tiers.build_view()["inputs"] == 1
-    assert "mtu 1380" in _read(_node(paths.view_dir(), "V"))["body"]
+    bodies = [n["body"] for n in tiers.view_nodes()]
+    assert len(bodies) == 1
+    assert "mtu 1380" in bodies[0]
 
 
 def test_a_corrupt_mesh_leaves_a_good_view_standing(mem, folds):

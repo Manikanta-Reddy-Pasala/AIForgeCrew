@@ -166,14 +166,14 @@ def test_a_group_collision_fails_loudly(mem, folds, monkeypatch):
         tiers.distil_mesh()
 
 
-# ── 4. a mesh marker is only honoured from the elected leader ─────────────
+# ── 4. a mesh marker is only honoured from the admin ──────────────────────
 
 def test_a_self_declared_mesh_node_never_reaches_the_view(mem, folds):
     """Demonstrated: a hostile peer advertised a node marked ``derived: mesh``
     carrying an instruction to run a remote script. It landed in the fold and
     then in view/ — the working knowledge agents read — and was re-advertised
-    onward. Trust-on-election, not cryptography: signed manifests remain the
-    real fix."""
+    onward. Trust-by-configuration, not cryptography: signed manifests remain
+    the real fix."""
     from aiforge_core.memory.okf import tiers
     from aiforge_core.memory.sync import paths
 
@@ -191,16 +191,14 @@ def test_a_self_declared_mesh_node_never_reaches_the_view(mem, folds):
     assert "attacker.sh" not in view
 
 
-def test_the_elected_leaders_mesh_is_still_honoured(mem, folds):
-    """The other half: gating on the election must not reject the real fold."""
+def test_the_admins_mesh_is_still_honoured(mem, folds, monkeypatch):
+    """The other half: trusting only the admin's origin must not reject the real
+    merge. A spoke still folds it into its own local view."""
     from aiforge_core.memory.okf import tiers
-    from aiforge_core.memory.sync import paths, peers
+    from aiforge_core.memory.sync import paths
 
-    data = peers.load()
-    data["peers"] = [{"id": "air", "urls": ["http://air:8799"],
-                      "state": peers.STATE_APPROVED,
-                      "last_seen": int(time.time()) - 60}]
-    peers.save(data)
+    monkeypatch.setenv("AIFORGE_ADMIN_URL", "http://air:8799")
+    monkeypatch.setenv("AIFORGE_ADMIN_ID", "air")
     _write_node(paths.mesh_dir() / "air", "M-sync", "the mesh says mtu 1380",
                 origin="air", derived="mesh")
 
@@ -255,10 +253,16 @@ class _Peer:
 
 
 @contextlib.contextmanager
-def _as(monkeypatch, peer):
+def _as(monkeypatch, peer, admin: str = ""):
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(peer.md))
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(peer.cfg))
     monkeypatch.setenv("AIFORGE_PEER_ID", peer.name)
+    if admin and admin != peer.name:
+        monkeypatch.setenv("AIFORGE_ADMIN_URL", f"http://{admin}:8799")
+        monkeypatch.setenv("AIFORGE_ADMIN_ID", admin)
+    else:
+        monkeypatch.delenv("AIFORGE_ADMIN_URL", raising=False)
+        monkeypatch.delenv("AIFORGE_ADMIN_ID", raising=False)
     yield peer
 
 
@@ -273,21 +277,22 @@ def _copy(src, dst) -> None:
     dst.write_bytes(body)
 
 
-def _sync(monkeypatch, everyone, leader) -> None:
-    """A pull round: authored nodes into every inbox, the leader's fold down.
+def _sync(everyone, admin) -> None:
+    """A hub round: every spoke's authored nodes UP to the admin's inbox, the
+    admin's fold back DOWN. Nothing moves spoke-to-spoke — that is the topology
+    being asserted, not an omission.
 
     Mirrors ``paths.peer_node_path`` / ``paths.mesh_node_path`` — the layout
     those two own is exactly what this simulation has to reproduce.
     """
-    for src in everyone:
-        for dst in everyone:
-            if src is dst:
-                continue
-            for p in sorted((src.md / "okf").rglob("*.md")):
-                _copy(p, dst.md / "peers" / src.name / p.name)
-            if src.name == leader:
-                for p in sorted((src.md / "mesh" / src.name).glob("*.md")):
-                    _copy(p, dst.md / "mesh" / src.name / p.name)
+    hub = next(p for p in everyone if p.name == admin)
+    for peer in everyone:
+        if peer is hub:
+            continue
+        for p in sorted((peer.md / "okf").rglob("*.md")):
+            _copy(p, hub.md / "peers" / peer.name / p.name)
+        for p in sorted((hub.md / "mesh" / hub.name).glob("*.md")):
+            _copy(p, peer.md / "mesh" / hub.name / p.name)
 
 
 def _sizes(peer) -> dict:
@@ -298,54 +303,50 @@ def _sizes(peer) -> dict:
     return out
 
 
-def test_three_peers_stay_byte_stable_and_fold_each_fact_once(
+def test_three_machines_stay_byte_stable_and_fold_each_fact_once(
         monkeypatch, tmp_path, folds):
     """Sync → tier 1 → sync → tier 2, repeatedly. Nothing may grow.
 
     The amplification guard: tier-2 output never travels and tier 1 refuses
     already-distilled input, so the directories must go flat and stay flat once
-    the mesh has propagated — and the leader's fold must hold each peer's fact
+    the fold has propagated — and the admin's fold must hold each machine's fact
     exactly once, not once per round.
     """
     from aiforge_core.memory.okf import tiers
-    from aiforge_core.memory.sync import peers
 
     everyone = [_Peer(n, tmp_path) for n in ("air", "ms", "nuc")]
-    leader = "air"                      # lexicographically smallest live id
+    admin = "air"
     facts = {"air": "air knows the tunnel mtu is 1380",
              "ms": "ms knows the retry backoff is 5s",
              "nuc": "nuc knows the lock timeout is 600s"}
 
     for peer in everyone:
-        with _as(monkeypatch, peer):
-            data = peers.load()
-            data["peers"] = [{"id": other.name, "urls": [f"http://{other.name}"],
-                              "state": peers.STATE_APPROVED,
-                              "last_seen": int(time.time()) - 60}
-                             for other in everyone if other is not peer]
-            peers.save(data)
+        with _as(monkeypatch, peer, admin):
             _write_node(_learnings(), "L-01", facts[peer.name])
 
     rounds = []
     for _ in range(6):
-        _sync(monkeypatch, everyone, leader)
+        _sync(everyone, admin)
         for peer in everyone:
-            with _as(monkeypatch, peer):
+            with _as(monkeypatch, peer, admin):
                 tiers.run_after_sync()
-        _sync(monkeypatch, everyone, leader)
+        _sync(everyone, admin)
         for peer in everyone:
-            with _as(monkeypatch, peer):
+            with _as(monkeypatch, peer, admin):
                 tiers.build_view()
         rounds.append({p.name: _sizes(p) for p in everyone})
 
     print("\n".join(f"round {i}: {r}" for i, r in enumerate(rounds, 1)))
     assert rounds[1:] == [rounds[1]] * (len(rounds) - 1), rounds
 
-    fold = _bodies(everyone[0].md / "mesh" / leader)
+    fold = _bodies(everyone[0].md / "mesh" / admin)
     for fact in facts.values():
         assert fold.count(fact) == 1, fold
+    # Every machine READS every fact: the admin through its own view/, a spoke
+    # straight off the fold it pulled (``tiers.view_nodes``).
     for peer in everyone:
-        view = _bodies(peer.md / "view")
+        with _as(monkeypatch, peer, admin):
+            seen = " ".join(n["body"] for n in tiers.view_nodes())
         for fact in facts.values():
-            assert fact in view
-            assert view.count(fact) == 1, (peer.name, view)
+            assert fact in seen, (peer.name, fact)
+            assert seen.count(fact) == 1, (peer.name, seen)

@@ -9,10 +9,13 @@ is best-effort background work.
 """
 from __future__ import annotations
 
+import logging
 import os
 
 from . import graph as _graph
 from . import store as _store
+
+_log = logging.getLogger("aiforge.okf")
 
 
 def _slug(s: str) -> str:
@@ -636,7 +639,156 @@ def migrate_from_briefs() -> dict:
     return {"ok": True, "migrated": made, "topics": len(facts_by_topic)}
 
 
+def _brief_facts_by_topic() -> dict[str, list[str]]:
+    """Every locally-compacted brief's Facts, grouped by topic. Deterministic —
+    no model, no network: it reads the files md_store already wrote."""
+    import re
+
+    from aiforge_core.memory import md_store
+    from aiforge_core.runtime import work_notes
+
+    out: dict[str, list[str]] = {}
+    for p in md_store.iter_briefs():
+        base = p.stem[len("compacted-"):]
+        topic = re.sub(r"-\d+$", "", base)
+        try:
+            parsed = work_notes.parse_note(
+                p.read_text(encoding="utf-8", errors="replace"))
+        except Exception:  # noqa: BLE001 — one unreadable brief, not a dead pass
+            continue
+        if (parsed["frontmatter"] or {}).get("kind") != "knowledge":
+            continue
+        for raw in parsed["sections"].get("facts") or []:
+            # Flattened to ONE line. A fact is written back as a single "- …"
+            # bullet and read back a line at a time, so a fact containing a
+            # newline would never match itself on the next pass: it would look
+            # new every cycle, rewrite the node, bump `rev`, and re-trigger the
+            # admin's LLM fold — forever.
+            fact = " ".join(str(raw).split()).strip()
+            if fact and fact not in out.setdefault(topic, []):
+                out[topic].append(fact)
+    return out
+
+
+def _fact_lines(body: str) -> list[str]:
+    """The bullet lines of a learning node's body, as plain facts.
+
+    Whitespace-normalised the same way ``_brief_facts_by_topic`` normalises what
+    it reads out of a brief, so the two halves of "is this fact already held?"
+    compare in one form.
+    """
+    lines = []
+    for raw in (body or "").splitlines():
+        line = " ".join(raw.split()).strip()
+        if line.startswith("- "):
+            line = line[2:].strip()
+        if line:
+            lines.append(line)
+    return lines
+
+
+# How much of a topic's fact list one node carries. The cap exists because a
+# node is a file an LLM later reads whole; what matters here is that it is
+# applied at a LINE boundary. Cutting mid-line left a partial fact in the body,
+# which then never matched the whole fact in the brief — so every cycle saw it
+# as new, rewrote the node, bumped `rev`, re-pushed it, and re-triggered the
+# admin's fold. Non-convergence, forever, on any topic that outgrew the cap.
+_BODY_CHARS = 4000
+
+
+def _body_for(facts: list[str]) -> tuple[str, list[str]]:
+    """Render facts as bullets within the cap, and say which ones fitted.
+
+    Returns ``(body, kept)``. Whole lines only — see ``_BODY_CHARS``.
+    """
+    kept: list[str] = []
+    size = 0
+    for fact in facts:
+        line = f"- {fact}"
+        cost = len(line) + (1 if kept else 0)
+        if size + cost > _BODY_CHARS:
+            break
+        kept.append(fact)
+        size += cost
+    return "\n".join(f"- {f}" for f in kept), kept
+
+
+def sync_briefs_to_nodes() -> dict:
+    """Turn this machine's compacted briefs into OKF nodes, and keep them current.
+
+    **This is what makes local compaction reach the other machines.** Briefs are
+    class A files that stay local by design (each machine compacts its own), so
+    the only thing that travels is OKF knowledge — and a fact that never became
+    a node never leaves this box. Running this on every cycle closes that gap.
+
+    Deterministic and idempotent: one global learning node per brief topic,
+    body = the union of that topic's facts, newest appended. A topic already
+    represented is UPDATED rather than skipped — the one-shot
+    :func:`migrate_from_briefs` skips it, which is right for a migration and
+    wrong for a cycle, because every fact added after the first run would be
+    invisible forever.
+
+    No LLM is involved: the distillation already happened when the brief was
+    written, and re-summarising here would be a second, non-deterministic fold
+    of the same text on every machine.
+    """
+    facts_by_topic = _brief_facts_by_topic()
+    if not facts_by_topic:
+        return {"ok": True, "created": 0, "updated": 0, "topics": 0}
+
+    g = _graph.build(force=True)
+    existing = {}
+    for nid, node in g.nodes.items():
+        if node.get("type") != "learning":
+            continue
+        cat = str((node.get("meta") or {}).get("category") or "").lower()
+        if cat:
+            existing.setdefault(cat, (nid, node))
+
+    created = updated = 0
+    dropped = 0
+    for topic, facts in facts_by_topic.items():
+        held = existing.get(topic.lower())
+        if held is None:
+            body, kept = _body_for(facts)
+            dropped += len(facts) - len(kept)
+            if _store.save_node("learning", None,
+                                {"scope": "global", "category": topic,
+                                 "title": f"{topic} knowledge",
+                                 "tags": [f"topic:{topic}"]},
+                                body, reindex=False).get("ok"):
+                created += 1
+            continue
+        nid, node = held
+        have = _fact_lines(node.get("body") or "")
+        fresh = [f for f in facts if f not in have]
+        if not fresh:
+            continue          # unchanged: no write, no rev bump, nothing to sync
+        body, kept = _body_for(have + fresh)
+        dropped += len(have) + len(fresh) - len(kept)
+        if _fact_lines(body) == have:
+            # The node is full: every fresh fact fell off the end, so writing
+            # would produce byte-identical content at a higher rev — and would
+            # do so on EVERY cycle. Say so once and leave it alone.
+            _log.info("okf: %s knowledge is at the %d-char cap — %d newer "
+                      "fact(s) not carried", topic, _BODY_CHARS, len(fresh))
+            continue
+        meta = dict(node.get("meta") or {})
+        meta.setdefault("scope", "global")
+        meta.setdefault("category", topic)
+        if _store.save_node("learning", nid, meta, body, reindex=False).get("ok"):
+            updated += 1
+
+    if created or updated:
+        _store._write_index()          # one rewrite for the whole pass
+    _log.info("okf: briefs → nodes created=%d updated=%d dropped=%d over %d topic(s)",
+              created, updated, dropped, len(facts_by_topic))
+    return {"ok": True, "created": created, "updated": updated,
+            "dropped": dropped, "topics": len(facts_by_topic)}
+
+
 __all__ = ["extract_and_save", "write_session_node", "migrate_from_briefs",
+           "sync_briefs_to_nodes",
            "record_solution", "reclassify_global_learnings",
            "record_repo_profile", "record_script", "record_task",
            "build_repo_profiles"]

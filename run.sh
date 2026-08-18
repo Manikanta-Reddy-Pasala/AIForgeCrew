@@ -50,8 +50,13 @@
 #   --port N     listen port (default 8799)
 #   --host H     bind host (default 127.0.0.1)
 #   --dev        uvicorn --reload (hot reload)
-#   --admin      open the loopback-only P2P sync admin page (/admin) in a
-#                browser once the server is up (the URL is printed either way)
+#   --admin      run this machine as THE memory admin: it receives every other
+#                machine's OKF nodes and runs the one cross-machine merge over
+#                them. Exactly one box in a fleet takes this flag. It also opens
+#                the loopback-only sync admin page (the URL is printed anyway).
+#   --admin-page open that page without claiming the role (any machine)
+#   --spoke      give up the admin role: drops the persisted AIFORGE_ROLE so
+#                AIFORGE_ADMIN_URL decides again (how you MOVE the admin)
 #   --skip-web   don't (re)build the web UI
 #   --test       probe the configured model endpoint (OK/FAIL), then exit
 #   --reset-config  wipe ~/.aiforge/agent_config.json (backed up) so stale
@@ -90,10 +95,12 @@ cd "$(dirname "$0")"
 # Source a committed-out `.env` / `aiforge.env` if present so `./run.sh`
 # applies the operator's model base_url + SSL settings with NO manual
 # `export`. `set -a` auto-exports every assignment in the file.
+ENV_FILE=""            # the file that was actually sourced, for writers below
 for _envf in .env aiforge.env; do
   if [[ -f "$_envf" ]]; then
     echo "==> loading env from $_envf"
     set -a; . "./$_envf"; set +a
+    ENV_FILE="$_envf"
     break
   fi
 done
@@ -126,16 +133,30 @@ export AIFORGE_LLM_SSL_VERIFY="${AIFORGE_LLM_SSL_VERIFY:-true}"
 # require approval for ssh again.
 export AIFORGE_ALLOW_SSH="${AIFORGE_ALLOW_SSH:-1}"
 
-# Zero-config peer discovery ON by default: the LAN interface is auto-detected
-# (no AIFORGE_SYNC_SSDP_HOST to set), and SSDP is link-local + unauthenticated
-# so it only ever adds SAME-SEGMENT peers as untrusted candidates — it confers
-# no trust and can't cross a routed tunnel. Set AIFORGE_SYNC_SSDP=0 to disable.
-export AIFORGE_SYNC_SSDP="${AIFORGE_SYNC_SSDP:-1}"
+# Memory sync is hub-and-spoke. Every machine compacts its own memory locally;
+# one machine is the ADMIN, and it additionally runs the single CROSS-machine
+# merge over everybody's knowledge and serves the result back. Leave
+# AIFORGE_ADMIN_URL unset and this box IS the admin (which is also what a
+# standalone install is, so nothing to configure). On every other machine set it
+# in .env:
+#
+#     AIFORGE_ADMIN_URL=http://<admin-host>:8799
+#
+# The sync surface answers with NO credential by default, so a spoke needs
+# nothing else; set AIFORGE_SYNC_AUTH=1 (plus AIFORGE_API_TOKEN on both ends) to
+# require the API token on /api/memory/sync/* too. Bind the admin to a trusted
+# interface — a LAN address or a WireGuard one — not to 0.0.0.0 on a hostile
+# network.
+[[ -n "${AIFORGE_ADMIN_URL:-}" ]] && export AIFORGE_ADMIN_URL
+[[ -n "${AIFORGE_ROLE:-}" ]] && export AIFORGE_ROLE
+# The role itself is decided AFTER the flags are parsed — see "--admin: the role".
 
 PORT=8799
 HOST=127.0.0.1
 DEV=0
-ADMIN=0
+ADMIN=0                 # this machine IS the memory admin (--admin)
+ADMIN_PAGE=0            # just open /admin in a browser (--admin-page)
+UNADMIN=0               # give up a persisted admin role (--spoke)
 SKIP_WEB=0
 TEST=0
 # Default mode is config-driven: AIFORGE_MODE (from .env / the service env) →
@@ -160,7 +181,9 @@ while [[ $# -gt 0 ]]; do
     --purge-code) MAINT=purge ;;      # drop code-as-learnings from a bad drain, then exit
     --install-model2vec|--install-semantic) INSTALL_MODEL2VEC=1 ;;  # install semantic memory (model2vec, ~30MB, NO torch). --install-semantic kept as an alias.
     --dev) DEV=1 ;;
-    --admin) ADMIN=1 ;;           # open the loopback-only sync admin page once up
+    --admin) ADMIN=1; ADMIN_PAGE=1 ;;  # this box is THE memory admin (+ open its page)
+    --admin-page) ADMIN_PAGE=1 ;;      # open the sync admin page, claim nothing
+    --spoke) UNADMIN=1 ;;              # drop a persisted admin role
     --skip-web) SKIP_WEB=1 ;;
     --test) TEST=1 ;;             # model probe runs in the venv, no stack
     --with-graphify) WITH_GRAPHIFY=1 ;;
@@ -169,11 +192,119 @@ while [[ $# -gt 0 ]]; do
     --reset-config) RESET_CONFIG=1 ;;
     --port) PORT="$2"; shift ;;
     --host) HOST="$2"; shift ;;
-    -h|--help) sed -n '2,76p' "$0"; exit 0 ;;
+    # End-anchored, not a hardcoded line number: the header grows, and a fixed
+    # range silently drops the newest flags from --help (it already had).
+    -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift
 done
+
+# ── --admin / --spoke: the memory role ────────────────────────────────
+# Exactly ONE machine in a fleet runs with --admin. That box receives every
+# other machine's OKF nodes and runs the single cross-machine merge over them;
+# every other machine names it with AIFORGE_ADMIN_URL and is a spoke. Local
+# compaction is unaffected either way — every machine distils its own memory.
+#
+# The role is PERSISTED to the env file, not just exported for this process. It
+# has to be: the shipped unit (scripts/runtime/nuc/aiforge-api.service) starts
+# run.sh with no --admin, so a reboot or `systemctl restart` would otherwise
+# bring the admin back as a plain machine — and a machine that stops being the
+# admin retires its own mesh fold (okf/tiers._retire_own_mesh), i.e. the fleet's
+# merged knowledge would be deleted by a restart.
+#
+# Because it persists, there has to be a way OUT: --spoke drops the line, which
+# is how you move the admin from one box to another.
+
+_env_role_file="${ENV_FILE:-.env}"
+
+# Rewrite the env file's AIFORGE_ROLE line, preserving the file's mode and owner.
+# `cp -p` first, then truncate THAT copy: a plain `> tmp` creates a fresh file
+# under the umask, so a .env kept at 0600 (it holds AIFORGE_LM_API_KEY — see
+# .env.example) came back 0644 and world-readable. grep exiting 1 is "nothing
+# matched", not a failure, so it must not abort the rewrite under `set -e`.
+_write_role() {                       # $1 = value, or "" to only remove the line
+  local want="$1" f="$_env_role_file"
+  if [[ -f "$f" ]]; then
+    cp -p "$f" "$f.tmp" || return 1
+    # Exit 1 is "no lines selected" and is fine. Exit 2 is a real failure — a
+    # full disk, a quota — and the redirection has ALREADY truncated the tmp
+    # file, so moving it over .env would replace the operator's API keys with
+    # nothing. Narrowed to 1, and the tmp file is cleaned up either way.
+    grep -vE '^[[:space:]]*AIFORGE_ROLE=' "$f" > "$f.tmp" || [[ $? -eq 1 ]] \
+      || { rm -f "$f.tmp"; return 1; }
+    mv "$f.tmp" "$f" || { rm -f "$f.tmp"; return 1; }
+  fi
+  [[ -n "$want" ]] && printf 'AIFORGE_ROLE=%s\n' "$want" >> "$f"
+  return 0
+}
+
+if [[ $ADMIN -eq 1 && $UNADMIN -eq 1 ]]; then
+  echo "error: --admin and --spoke are opposites; pass one." >&2
+  exit 2
+fi
+if [[ $ADMIN -eq 1 && "$MODE" == "docker" ]]; then
+  # The container image does not run the sync loop at all (docker/entrypoint.sh),
+  # and docker-compose.yml forwards neither AIFORGE_ROLE nor AIFORGE_ADMIN_URL,
+  # so claiming a role here would be a statement about a process that never syncs.
+  echo "error: --admin has no meaning in --docker mode: the container does not" >&2
+  echo "       run the memory sync loop. Run the admin on the host." >&2
+  exit 2
+fi
+if [[ $ADMIN -eq 1 && -n "${AIFORGE_ADMIN_URL:-}" ]]; then
+  # REFUSED, not overridden. --admin used to mean only "open the /admin page",
+  # so an operator on a SPOKE may still type it out of habit; silently promoting
+  # that machine gives the fleet two admins, both stamping `derived: mesh`.
+  echo "error: --admin, but AIFORGE_ADMIN_URL=$AIFORGE_ADMIN_URL says this box is a spoke." >&2
+  echo "       A machine cannot be both. To just open the sync page: ./run.sh --admin-page" >&2
+  echo "       To make THIS box the admin: remove AIFORGE_ADMIN_URL from ${ENV_FILE:-.env} first." >&2
+  exit 2
+fi
+
+if [[ $UNADMIN -eq 1 ]]; then
+  unset AIFORGE_ROLE
+  if _write_role ""; then
+    echo "  memory: dropped the persisted admin role from $_env_role_file"
+  else
+    echo "  memory: WARNING — could not rewrite $_env_role_file; remove the" >&2
+    echo "          AIFORGE_ROLE line by hand or this box stays the admin" >&2
+  fi
+fi
+
+if [[ $ADMIN -eq 1 ]]; then
+  export AIFORGE_ROLE=admin
+  if ! grep -qE '^[[:space:]]*AIFORGE_ROLE=admin[[:space:]]*$' "$_env_role_file" 2>/dev/null; then
+    if _write_role admin; then
+      echo "  memory: recorded AIFORGE_ROLE=admin in $_env_role_file (survives a restart)"
+    else
+      echo "  memory: WARNING — could not persist the role to $_env_role_file. A" >&2
+      echo "          restart will bring this box back as a NON-admin, which" >&2
+      echo "          retires its merged fold. Add AIFORGE_ROLE=admin by hand." >&2
+    fi
+  fi
+fi
+
+if [[ "$MODE" != "docker" ]]; then
+  if [[ "${AIFORGE_ROLE:-}" == "admin" ]]; then
+    echo "  memory: ADMIN — merges every machine's knowledge and serves the result back"
+    if [[ -n "${AIFORGE_ADMIN_URL:-}" ]]; then
+      # The persisted role wins over the url (role.role()), so this box ignores
+      # an admin it appears to be configured to follow. Almost always a half-
+      # finished handover: the successor was set up, this box never stood down.
+      echo "  memory: WARNING — AIFORGE_ADMIN_URL=$AIFORGE_ADMIN_URL is IGNORED while"
+      echo "          this box holds the admin role. Moving the admin? Run"
+      echo "          ./run.sh --spoke here once, then --admin on the new box."
+    fi
+  elif [[ -n "${AIFORGE_ADMIN_URL:-}" ]]; then
+    echo "  memory: spoke of $AIFORGE_ADMIN_URL"
+  elif [[ "${AIFORGE_ROLE:-}" == "spoke" ]]; then
+    echo "  memory: WARNING — AIFORGE_ROLE=spoke but no AIFORGE_ADMIN_URL: this box"
+    echo "          neither syncs nor merges. Set the url, or drop the role."
+  else
+    echo "  memory: standalone — no --admin and no AIFORGE_ADMIN_URL, so this box"
+    echo "          merges only its own knowledge (fine for a single machine)"
+  fi
+fi
 
 # ── Stop the langfuse stack (--stop-langfuse) ─────────────────────────
 # Tears the trace-server containers down. Data is EPHEMERAL by design — the
@@ -805,7 +936,7 @@ export AIFORGE_BIND_HOST="$HOST"
 # and only try to open it when a launcher actually exists. The opener waits for
 # the port in the BACKGROUND so uvicorn still runs in the foreground below.
 ADMIN_URL="http://127.0.0.1:$PORT/admin"
-if [[ $ADMIN -eq 1 ]]; then
+if [[ $ADMIN_PAGE -eq 1 ]]; then
   echo "  admin: $ADMIN_URL  (loopback-only; tunnel with ssh -L $PORT:127.0.0.1:$PORT)"
   (
     for _ in $(seq 1 60); do

@@ -26,6 +26,9 @@ from fastapi.testclient import TestClient
 TOKEN = "sh4red-t0ken"
 LOOPBACK = ("127.0.0.1", 51000)
 SYNC = "/api/memory/sync/manifest"
+# A control-plane route: the sync surface is open by default now (see
+# api._sync_open), so it is the wrong probe for "is loopback trusted".
+CONTROL = "/api/config/agents"
 ADMIN_PATHS = ("/admin", "/api/admin/sync-status")
 
 
@@ -70,8 +73,9 @@ def test_trust_loopback_off_makes_a_local_caller_present_the_token(
     api = _fresh_api(monkeypatch, tmp_path, trust="0")
     client = TestClient(api.app, client=LOOPBACK)
 
-    assert client.get(SYNC).status_code == 401
-    assert client.get(SYNC, headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 200
+    assert client.get(CONTROL).status_code == 401
+    assert client.get(CONTROL,
+                      headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 200
     # …and health stays open, so a fronted deployment is still probeable.
     assert client.get("/api/health").status_code == 200
 
