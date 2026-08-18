@@ -389,6 +389,26 @@ class _SessionMsgBody(BaseModel):
     review_edits: bool = Field(False, description="Hold every file-mutating tool call for human Approve/Reject (with diff) before it lands, in simple/plan mode. Default OFF — file writes/patches auto-apply. Opt in per-request here, or globally with AIFORGE_CHAT_REVIEW_EDITS=1.")
     edit_from_message_id: int | None = Field(None, description="Edit-and-resend: truncate history at this user message (restoring the workspace to that turn's checkpoint) before running this new content")
     builder: str | None = Field(None, description="task builder charter: job|skill|workflow|rule — runs an interactive single-agent builder that ends by calling the matching finalize tool (bypasses the enhancer/team pipeline)")
+    quick: bool = Field(False, description="Quick mode: one doer, a hard step cap (AIFORGE_CHAT_QUICK_STEPS, default 6) instead of an open-ended ReAct loop. For small asks — a rename, a one-line fix, a question — where the agent's own exploration costs more than the change.")
+
+
+def _quick_step_cap(quick: bool) -> int | None:
+    """Hard step cap for a quick turn, or None for the normal open loop.
+
+    The chat agent normally runs until it decides it is done (a stuck-loop
+    detector bounds it, not a step count) — right for real work, and the reason
+    a one-line ask can still cost minutes of exploration. Quick mode trades that
+    thoroughness for latency: the agent gets a handful of steps, and if it needs
+    more the user can simply ask again without the toggle.
+    """
+    import os as _os
+
+    if not quick:
+        return None
+    try:
+        return max(1, int(_os.environ.get("AIFORGE_CHAT_QUICK_STEPS", "6")))
+    except ValueError:
+        return 6
 
 
 def _chat_workspace_root() -> str:
@@ -1372,7 +1392,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             # finished turn with no plan.
             _pending_done = None
             for _ev in run_chat_agent(_enriched_history, cwd=cwd, role=role,
-                                      session_id=session_id, mode="plan"):
+                                      session_id=session_id, mode="plan",
+                                      max_steps=_quick_step_cap(body.quick)):
                 if _ev.get("type") == "done":
                     _pending_done = _ev
                     continue
@@ -1427,7 +1448,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         _single_mode = "analyze" if _doc_task and agent_mode != "plan" else agent_mode
         _turn_awaiting = False
         for _ev in run_chat_agent(_enriched_history, cwd=cwd, role=role,
-                                  session_id=session_id, mode=_single_mode):
+                                  session_id=session_id, mode=_single_mode,
+                                  max_steps=_quick_step_cap(body.quick)):
             if _ev.get("type") == "message" and _ev.get("awaiting_input"):
                 _turn_awaiting = True
             yield _ev
