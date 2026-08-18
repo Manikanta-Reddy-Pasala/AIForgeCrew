@@ -161,3 +161,58 @@ def test_split_state_round_trips_every_item(small_window):
     assert C._sections_chars(sent) <= 2000
     for k in ("facts", "learnings"):
         assert sorted(sent[k] + held[k]) == sorted(state[k])
+
+
+# ── choosing the slice, not just truncating it ────────────────────────────
+
+def test_the_slice_prefers_items_the_chunk_could_duplicate(small_window, monkeypatch):
+    """Dumping the newest N items is not the same as showing the useful ones.
+    A duplicate almost always shares vocabulary with what it duplicates, so the
+    slice leads with the items that overlap the incoming text."""
+    state = {"objective": "", "key_results": [], "links": [], "learnings": [],
+             "facts": [f"unrelated filler item {i}" for i in range(60)]
+                      + ["redis evictions need maxmemory-policy allkeys-lru"]}
+
+    sent, held = C._split_state(state, 400, focus="what about redis evictions?")
+
+    assert any("redis evictions" in f for f in sent["facts"]), \
+        "the one relevant fact was not shown to the model"
+
+
+def test_rotation_eventually_shows_every_item(small_window):
+    """A fixed newest-first cut showed the same tail on every chunk, so old
+    state was never re-examined and a near-duplicate of something ancient could
+    survive forever. Across successive turns the window must move."""
+    state = {"objective": "", "key_results": [], "links": [], "learnings": [],
+             "facts": [f"fact number {i:03d}" for i in range(40)]}
+
+    seen = set()
+    for turn in range(40):
+        sent, _ = C._split_state(state, 120, turn=turn)
+        seen.update(sent["facts"])
+
+    missing = [f for f in state["facts"] if f not in seen]
+    assert not missing, f"{len(missing)} item(s) were never shown across 40 turns"
+
+
+def test_the_slice_keeps_the_notes_own_order(small_window):
+    """The prompt reads as a note. Handing the model a shuffled one invites it
+    to 'fix' the order, which churns the brief on every fold."""
+    state = {"objective": "", "key_results": [], "links": [], "learnings": [],
+             "facts": [f"fact {i}" for i in range(20)]}
+
+    sent, held = C._split_state(state, 200, focus="fact 17", turn=3)
+
+    for half in (sent["facts"], held["facts"]):
+        idx = [state["facts"].index(f) for f in half]
+        assert idx == sorted(idx), "items came back out of order"
+
+
+def test_the_budget_is_still_respected_with_relevance_on(small_window):
+    state = {"objective": "", "key_results": [], "links": [], "learnings": [],
+             "facts": [f"redis fact {i} " + "x" * 60 for i in range(200)]}
+
+    sent, held = C._split_state(state, 1000, focus="redis")
+
+    assert C._sections_chars(sent) <= 1600
+    assert sorted(sent["facts"] + held["facts"]) == sorted(state["facts"])

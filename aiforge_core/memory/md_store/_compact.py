@@ -149,21 +149,51 @@ _SUMMARY_SYS = (
     "filler. Do not invent anything. Output ONLY the markdown body — no preamble, "
     "no surrounding code fence."
 )
-_SUMMARY_INPUT_CAP = 28_000     # chars of notes per LLM call (map-reduce above)
+# Upper bound on the notes sent to ONE summarize call. A ceiling, not the
+# budget: the real limit is whatever the role's context window leaves after the
+# completion (``_summary_input_cap``). A bare constant is a guess about a
+# window rather than a reading of it — too small for a 262k model (needless
+# map-reduce passes over text that would fit in one) and too large the moment
+# a role points at a 32k one, which is how a fold ends up 400ing on length.
+_SUMMARY_INPUT_CAP = 28_000
 _COMPACT_BODY_CAP = 60_000      # max chars of a deterministic-merge consolidated
                                 # file (bounds growth when no model is reachable)
+
+
+_SUMMARY_OUT_TOKENS = 4096      # a brief, not a book
+
+
+def _summary_input_cap(role: str) -> int:
+    """Chars of notes one summarize call may carry, for THIS role's window.
+
+    Shares the rule with the OKR fold (``work_notes._consolidate``) rather than
+    keeping a second constant that drifts against it.
+    """
+    try:
+        from aiforge_core.runtime.work_notes._consolidate import input_char_budget
+        return max(4000, min(_SUMMARY_INPUT_CAP,
+                             input_char_budget(role, output_tokens=_SUMMARY_OUT_TOKENS)))
+    except Exception:  # noqa: BLE001 — budgeting must never break compaction
+        return _SUMMARY_INPUT_CAP
 
 
 def _summarize_block(text: str, role: str) -> str | None:
     """One LLM consolidation call. Returns markdown, or None on any failure
     (model down / unknown role / empty) so the caller falls back to merge."""
+    cap = _summary_input_cap(role)
+    if len(text) > cap:
+        # Refused rather than sent: an oversized block is what produces a
+        # context-length 400, and a 400 fails the WHOLE compaction (this
+        # function returning None bails the entire op to a deterministic
+        # merge). The caller splits and retries instead.
+        return None
     try:
         from aiforge_core.llm.client import complete
         out = complete(
             role,
             [{"role": "system", "content": _SUMMARY_SYS},
              {"role": "user", "content": text}],
-            temperature=0.2, max_tokens=4096,
+            temperature=0.2, max_tokens=_SUMMARY_OUT_TOKENS,
         )
     except Exception:  # noqa: BLE001 — any failure → deterministic merge
         return None
@@ -181,12 +211,31 @@ def _summarize_notes(blocks: list[str], role: str) -> str | None:
     batch. Returns markdown or None (→ caller merges deterministically)."""
     if not blocks:
         return None
+    cap = _summary_input_cap(role)
+    # A single block can exceed the cap on its own — one enormous capture, a
+    # pasted log. Batching alone never split it, so it went to the model whole
+    # and 400'd on length, bailing the whole compaction. Split it on line
+    # boundaries first, so every batch below is under the cap by construction.
+    sized: list[str] = []
+    for b in blocks:
+        if len(b) <= cap:
+            sized.append(b)
+            continue
+        buf, used = [], 0
+        for line in (b or "").splitlines(keepends=True):
+            if used and used + len(line) > cap:
+                sized.append("".join(buf))
+                buf, used = [], 0
+            buf.append(line)
+            used += len(line)
+        if buf:
+            sized.append("".join(buf))
     # Greedily batch blocks under the input cap.
     batches: list[str] = []
     cur: list[str] = []
     cur_len = 0
-    for b in blocks:
-        if cur and cur_len + len(b) > _SUMMARY_INPUT_CAP:
+    for b in sized:
+        if cur and cur_len + len(b) > cap:
             batches.append("\n\n".join(cur))
             cur, cur_len = [], 0
         cur.append(b)
@@ -204,7 +253,7 @@ def _summarize_notes(blocks: list[str], role: str) -> str | None:
         return partials[0]
     # reduce step — combine the partial summaries
     combined = "\n\n---\n\n".join(partials)
-    if len(combined) <= _SUMMARY_INPUT_CAP:
+    if len(combined) <= cap:
         return _summarize_block(combined, role) or combined
     return combined          # already summarized; accept as-is if still huge
 
