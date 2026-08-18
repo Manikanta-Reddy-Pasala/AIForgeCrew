@@ -2,22 +2,24 @@
 
 ``docs/superpowers/specs/2026-07-20-two-tier-knowledge-compaction.md``.
 
-**Tier 1 — the leader, once per mesh.** Every peer's authored knowledge arrives
-by ordinary sync and lands in ``peers/<origin>/``. The elected leader folds that
-inbox together with its own ``okf/`` into its own subtree of ``mesh/``: one node
-per topic/repo group, each marked ``derived: mesh``. That result is advertised,
-so it syncs out to everyone. One subtree per fold, so two leaders across a
-partition are two identities rather than one silently overwritten file — and so
-each peer prunes only what it owns.
+**Tier 1 — the admin, once for everybody.** Every spoke pushes what it authored
+to the admin, where it lands in ``peers/<origin>/``. The admin folds that inbox
+together with its own ``okf/`` into its own subtree of ``mesh/``: one node per
+topic/repo group, each marked ``derived: mesh``. That result is what spokes pull.
+One subtree per fold, keyed on the folding machine, so a role change leaves two
+identities rather than one silently overwritten file — and so each machine
+prunes only what it owns.
 
-**Tier 2 — every peer, locally.** Each machine folds its own ``okf/`` together
-with the mesh result into ``view/``, its working view. ``view/`` is regenerated
-from scratch, never merged into, and is safe to delete at any moment.
+**Tier 2 — every machine, locally.** Each machine folds its own ``okf/``
+together with the merged result into ``view/``, its working view. ``view/`` is
+regenerated from scratch, never merged into, and is safe to delete at any
+moment. It stays local because it is shaped by that machine's own context — and
+because a synced view would amplify (see below).
 
 Two rules break the amplification loop, and both are load-bearing:
 
 * ``view/`` is not in ``paths.node_roots()``, so tier-2 output is never
-  advertised and can never travel. Were it synced, the leader would fold it into
+  advertised and can never travel. Were it synced, the admin would fold it into
   ``mesh/``, it would come back down, and every round would re-merge knowledge
   that is already distilled — a drift that reads fine for days.
 * Tier 1 ignores any input node carrying a ``derived`` marker. A peer that
@@ -162,7 +164,7 @@ def _authored(nodes_in: list[dict]) -> list[dict]:
 
     The anti-amplification filter. Anything already distilled (``derived: mesh``
     in the inbox, because a peer republished it) is dropped here rather than
-    re-folded, so mesh knowledge cannot round-trip through the leader and grow.
+    re-folded, so mesh knowledge cannot round-trip through the admin and grow.
     """
     return [n for n in nodes_in if not _derived(n)]
 
@@ -181,66 +183,43 @@ def _origin(node: dict) -> str:
 
 
 def _trusted_origin() -> str:
-    """The one peer whose ``derived: mesh`` nodes this machine will fold.
+    """The one machine whose ``derived: mesh`` nodes this one will fold.
 
-    Trust-on-election, NOT cryptography: ``derived: mesh`` is ordinary
-    frontmatter, so any peer can stamp it on a node it advertises. Unchecked,
+    Trust-by-configuration, NOT cryptography: ``derived: mesh`` is ordinary
+    frontmatter, so anything that can push could stamp it on a node. Unchecked,
     that node landed in ``mesh/`` and was folded straight into ``view/`` — the
-    working knowledge agents read — and was then re-advertised onward by the
-    victim, i.e. an LLM-instruction injection channel with mesh-wide reach.
-    Signed manifests are the real fix and are out of scope here.
+    working knowledge agents read — i.e. an LLM-instruction injection channel
+    with hub-wide reach. Signed manifests are the real fix and are out of scope
+    here; the admin additionally refuses a pushed node carrying the marker at
+    all (``sync.inbox.accept``), so the two halves meet in the middle.
 
-    The *effective* leader, not the elected one: when the elected leader is
-    reachable but never folds, ``election.effective_leader`` promotes the next
-    candidate, and the view must trust that peer's fold — otherwise the fallback
-    folder writes ``mesh/<self>/`` and its own view rejects it (origin ≠ trusted)
-    and stays empty, defeating the fallback.
+    That machine is the admin: ``role.admin_id()`` on a spoke (learned from the
+    admin's manifest response), and our own id on the admin itself.
 
-    Falls back to our own id when the election cannot be computed: a view built
-    from our own fold alone is a far smaller loss than one built from whatever a
-    peer asked us to believe.
+    Falls back to our own id when the admin is not known yet — a view built from
+    our own fold alone is a far smaller loss than one built from whatever
+    somebody else asked us to believe.
     """
-    from aiforge_core.memory.sync import election, identity, paths
+    from aiforge_core.memory.sync import identity, paths, role
 
     try:
-        return paths.fold(election.effective_leader())
-    except Exception as exc:  # noqa: BLE001 — an unreadable roster must not widen trust
-        _log.info("tiers: cannot name the leader (%s) — trusting only our own fold", exc)
+        return paths.fold(role.admin_id()) or paths.fold(identity.self_id())
+    except Exception as exc:  # noqa: BLE001 — unreadable config must not widen trust
+        _log.info("tiers: cannot name the admin (%s) — trusting only our own fold", exc)
         return paths.fold(identity.self_id())
-
-
-def leader_has_mesh_output(leader: str) -> bool:
-    """Whether the elected leader's fold is visible here — the passive-leader
-    liveness signal ``election.effective_leader`` reads.
-
-    True when ``mesh/<leader>/`` holds at least one *usable* node. A leader that
-    is reachable (it answers /manifest, so the election keeps electing it) but
-    never runs the fold — a peer serving ``aiforge-api`` without the sync loop —
-    produces no such node, so every follower deferring to it keeps an empty view
-    forever. This read is what lets the election notice a leader that will never
-    fold and hand over to the next candidate.
-
-    Read-only: it inspects the tree, never folds. An empty or truncated fold is
-    *not* output (``_usable`` drops it), so a leader that wrote a blank node
-    still counts as passive.
-    """
-    from aiforge_core.memory.sync import paths
-
-    own = paths.mesh_dir() / paths.fold(leader)
-    return bool(_usable(_load((own,))))
 
 
 def _mesh_nodes() -> list[dict]:
     """The tier-1 result as it is visible here.
 
     A mesh node is identified by its ``derived: mesh`` marker plus an ``origin``
-    naming the current leader, not by the folder it sits in.
+    naming the admin, not by the folder it sits in.
     ``paths.target_for`` routes an arriving mesh node to ``mesh/``, so that is
     where it normally lives on a follower too — but the inbox is still read,
-    because a peer running a build from before that routing (or a node received
-    before it) left its copy in ``peers/``. One marker, either folder — and a
-    node from anyone but the leader is left to be treated as an ordinary foreign
-    node, which ``_authored`` then discards from the fold.
+    because a build from before that routing (or a node received before it) left
+    its copy in ``peers/``. One marker, either folder — and a node from anyone
+    but the admin is left to be treated as an ordinary foreign node, which
+    ``_authored`` then discards from the fold.
 
     Both folders key on the minting peer (``mesh/<origin>/`` and
     ``peers/<origin>/``), so a node received from the network carries a *second*
@@ -248,7 +227,7 @@ def _mesh_nodes() -> list[dict]:
     only accepts a node whose ``origin`` is the peer that served it. Requiring
     the two to agree is defence in depth for what is already on disk: a node
     planted before that check existed — ``peers/nuc/M-99.md`` whose frontmatter
-    claims ``origin: <leader>`` — would otherwise still be folded into
+    claims ``origin: <admin>`` — would otherwise still be folded into
     ``view/``, the only thing retrieval surfaces to agents.
 
     A node sitting directly in ``mesh/`` or ``peers/`` carries no such second
@@ -259,16 +238,16 @@ def _mesh_nodes() -> list[dict]:
     """
     from aiforge_core.memory.sync import paths
 
-    leader = _trusted_origin()
+    admin = _trusted_origin()
     seen: set[Path] = set()
     out: list[dict] = []
     for root in (paths.mesh_dir(), paths.peers_root()):
         for n in _load((root,)):
-            if _derived(n) != MESH or _origin(n) != leader or n["path"] in seen:
+            if _derived(n) != MESH or _origin(n) != admin or n["path"] in seen:
                 continue
             owner = n["path"].relative_to(root).parts[:-1]
-            if owner and paths.fold(owner[0]) != leader:
-                _log.warning("tiers: mesh node %s claims the leader's origin but "
+            if owner and paths.fold(owner[0]) != admin:
+                _log.warning("tiers: mesh node %s claims the admin's origin but "
                              "was filed under %s — not folding it into the view",
                              n["path"].name, owner[0])
                 continue
@@ -341,10 +320,10 @@ def _own_mesh_dir() -> Path:
     """Where *our* fold is written: this peer's own subtree of ``mesh/``.
 
     Derived from ``paths.mesh_node_path`` — that function owns the
-    ``mesh/<origin>/<key>.md`` shape, and the leader must write exactly where a
-    follower will file the same node — rather than spelling the layout again
+    ``mesh/<origin>/<key>.md`` shape, and the admin must write exactly where a
+    spoke will file the same node — rather than spelling the layout again
     here. Owning a whole subtree is what makes the prune safe: everything under
-    it is ours to delete, and another leader's fold is not.
+    it is ours to delete, and another machine's fold is not.
     """
     from aiforge_core.memory.sync import identity, paths
 
@@ -355,9 +334,9 @@ def _tier1_dirs() -> tuple[Path, ...]:
     """Tier 1's staleness key: its inputs *and* its output.
 
     ``mesh/`` is in here because the fold is the only thing that repairs it. Key
-    on the inputs alone and a mesh destroyed from outside — a peer tombstoning
-    what its frontmatter called its node, a hand-deleted directory — stays
-    destroyed on every peer until somebody happens to author a new note.
+    on the inputs alone and a mesh destroyed from outside — a hand-deleted
+    directory, a tombstone for what its frontmatter called its node — stays
+    destroyed everywhere until somebody happens to author a new note.
     """
     from aiforge_core.memory.sync import paths
 
@@ -368,8 +347,8 @@ def _view_dirs() -> tuple[Path, ...]:
     """Everything tier 2 reads — its staleness key.
 
     ``okf/`` is in here because it is an input: keying on the mesh alone meant a
-    note authored locally stayed out of the local view until the leader
-    published again — a full cycle away, or forever while the leader is down.
+    note authored locally stayed out of the local view until the fold ran
+    again — a full cycle away.
     """
     from aiforge_core.memory.sync import paths
 
@@ -573,16 +552,17 @@ def _run_tier(*, directory: Path, prefix: str, derived: str,
 def distil_mesh(*, role: str = _ROLE) -> dict:
     """Fold every peer's authored knowledge, plus our own, into ``mesh/``.
 
-    Leader-only: the merge is LLM-expensive and non-deterministic, so two peers
-    folding the same inbox produce two different answers. ``election.may_distil``
-    owns that policy *and* its soft-fail direction (OPEN — a duplicate mesh is
-    content-addressed and the next dedupe pass folds it, while losing compaction
-    entirely is unrecoverable), so neither is restated here.
+    Admin-only — the one step that is: the merge is LLM-expensive and
+    non-deterministic, so two machines folding the same inbox produce two
+    different answers. ``role.may_merge`` owns that policy *and* its soft-fail
+    direction (OPEN — a machine with no admin configured IS the admin and must
+    keep merging), so neither is restated here. Everything else about compaction
+    stays local: see :func:`build_view` and ``md_store.compact``.
     """
-    from aiforge_core.memory.sync import election, paths
+    from aiforge_core.memory.sync import paths, role as _role
 
-    if not election.may_distil():
-        return {"ok": True, "skipped": "not-leader", "leader": election.leader_name()}
+    if not _role.may_merge():
+        return {"ok": True, "skipped": "not-admin", "admin": _role.admin_id()}
 
     sources = (paths.okf_dir(), paths.peers_root())
     if _read_state().get("mesh") == _fingerprint(_tier1_dirs()):
@@ -608,7 +588,7 @@ def distil_mesh(*, role: str = _ROLE) -> dict:
     inputs = _usable(_authored(_load(sources)))
     if not inputs:
         # Nothing authored anywhere. Returning before the fold also means the
-        # prune never runs: a leader that momentarily reads an empty tree must
+        # prune never runs: an admin that momentarily reads an empty tree must
         # not answer by deleting the mesh everyone else is using.
         _save_state("mesh", _stamp())
         return {"ok": True, "skipped": "no-inputs", "inputs": 0}
@@ -623,13 +603,17 @@ def distil_mesh(*, role: str = _ROLE) -> dict:
 # ── tier 2 ────────────────────────────────────────────────────────────────
 
 def build_view(*, role: str = _ROLE) -> dict:
-    """Rebuild ``view/`` from this machine's ``okf/`` plus the mesh result.
+    """Rebuild ``view/`` from this machine's ``okf/`` plus the merged result.
 
-    Runs on every peer, the leader included. Skipped unless one of its inputs —
-    the mesh or our own ``okf/`` — actually changed, so a cycle where nothing
-    arrived and nothing was authored costs no tokens. A mesh that is missing,
-    empty or unreadable leaves the previous view exactly where it is: a bad mesh
-    must never destroy a good local view.
+    Runs on EVERY machine, admin included. It is the cheap half — its input is
+    one machine's own knowledge plus a mesh that is already distilled — and its
+    output is shaped by that machine's own context, which is the whole reason it
+    is not centralised.
+
+    Skipped unless one of its inputs — the mesh or our own ``okf/`` — actually
+    changed, so a cycle where nothing arrived and nothing was authored costs no
+    tokens. A mesh that is missing, empty or unreadable leaves the previous view
+    exactly where it is: a bad mesh must never destroy a good local view.
     """
     from aiforge_core.memory.sync import paths
 
@@ -655,16 +639,24 @@ def build_view(*, role: str = _ROLE) -> dict:
 # ── the read side: what agents get from tier 2 ────────────────────────────
 
 def view_nodes() -> list[dict]:
-    """The working view, parsed — the *only* way retrieval reaches folded mesh
+    """The working view, parsed — the only way retrieval reaches folded
     knowledge (spec §"What agents read": ``okf/`` plus ``view/``).
 
-    ``mesh/`` and ``peers/`` are deliberately absent. They are inputs to the
-    fold, and reading them here as well would surface the same content twice —
-    once raw and once distilled — in the agent's context.
+    ``peers/`` is deliberately absent: it is an input to the fold, and reading
+    it here as well would surface the same content twice — once raw and once
+    distilled — in the agent's context.
+
+    ``mesh/`` is the fallback, and only ever a fallback: a machine that has
+    pulled a fresh merge but not yet folded it would otherwise read purely local
+    memory while a perfectly good merge sat on disk. Once ``view/`` exists this
+    never fires — which matters, because the two must not both be read at once:
+    ``view/`` IS the mesh folded with our own notes, so returning both would
+    double every fact.
     """
     from aiforge_core.memory.sync import paths
 
-    return _usable(_load((paths.view_dir(),)))
+    view = _usable(_load((paths.view_dir(),)))
+    return view if view else _usable(_mesh_nodes())
 
 
 def unrepresented(local: list[dict], view: list[dict]) -> list[dict]:
@@ -677,40 +669,40 @@ def unrepresented(local: list[dict], view: list[dict]) -> list[dict]:
     return _unrepresented(local, view) if view else list(local)
 
 
-# ── retiring a demoted leader's own fold ──────────────────────────────────
+# ── retiring a demoted admin's own fold ───────────────────────────────────
 
 def _retire_own_mesh() -> dict:
-    """Tombstone this peer's own ``mesh/<id>/`` fold once it no longer leads.
+    """Tombstone this machine's own ``mesh/<id>/`` fold once it is not the admin.
 
     A fold is a class B node like any other: advertised, replicated, and keyed
-    on its minting origin (``mesh/<origin>/``). So a demoted leader's subtree
-    otherwise rides every future sync out to every peer and every NEW peer,
-    forever — one dead subtree per leadership change — and the tier-1 prune never
-    reaches it (``_prune`` only ever touches the *current* leader's own dir, and
-    ``_mesh_nodes`` ignores non-leader origins).
+    on its minting origin (``mesh/<origin>/``). So the subtree of a machine that
+    used to be the admin otherwise rides every future sync out to every spoke
+    and every NEW spoke, forever — one dead subtree per role change — and the
+    tier-1 prune never reaches it (``_prune`` only ever touches the *current*
+    fold's own dir, and ``_mesh_nodes`` ignores non-admin origins).
 
-    No *other* peer can clean it up: a foreign mesh node deleted locally is
+    Nobody else can clean it up: a foreign mesh node deleted locally is
     re-fetched on the next pull, and forging a tombstone for another origin is
-    exactly what ``apply._accept_class_b`` refuses (it would delete that peer's
-    nodes mesh-wide). The retiring owner is the only peer allowed to remove its
-    own identity — and it does so through the self-origin-guarded
+    exactly what ``apply._accept_class_b`` refuses (it would delete that
+    machine's nodes everywhere). The retiring owner is the only one allowed to
+    remove its own identity — and it does so through the self-origin-guarded
     ``tombstone.mark_deleted``, whose tombstone propagates the removal instead of
     letting the next pull bounce the node back.
 
-    A *dead* ex-leader cannot run this, so its subtree lingers until it returns
-    and retires — the unavoidable price of never forging another peer's deletion.
+    A machine that is switched off at the moment it is demoted cannot run this,
+    so its subtree lingers until it comes back and retires — the unavoidable
+    price of never forging somebody else's deletion.
     """
     from aiforge_core.memory.okf import nodes
-    from aiforge_core.memory.sync import (election, identity, merge, paths,
-                                          tombstone)
+    from aiforge_core.memory.sync import identity, merge, paths, role as _role
+    from aiforge_core.memory.sync import tombstone
 
-    me = paths.fold(identity.self_id())
     try:
-        if election.effective_leader() == me:
-            return {"retired": 0, "skipped": "still-leading"}
-    except Exception as exc:  # noqa: BLE001 — unsure who leads → never delete a fold
-        _log.info("okf: cannot resolve the leader (%s) — keeping our mesh fold", exc)
-        return {"retired": 0, "skipped": "no-election"}
+        if _role.is_admin():
+            return {"retired": 0, "skipped": "still-admin"}
+    except Exception as exc:  # noqa: BLE001 — unsure of the role → never delete a fold
+        _log.info("okf: cannot resolve the role (%s) — keeping our mesh fold", exc)
+        return {"retired": 0, "skipped": "no-role"}
 
     own = _own_mesh_dir()
     if not own.is_dir():
@@ -742,7 +734,8 @@ def _retire_own_mesh() -> dict:
     except OSError:
         pass
     if retired:
-        _log.info("okf: retired %d stale mesh node(s) after losing leadership", retired)
+        _log.info("okf: retired %d stale mesh node(s) after ceasing to be the "
+                  "admin", retired)
     return {"retired": retired}
 
 
@@ -754,10 +747,16 @@ def run_after_sync(*, role: str = _ROLE) -> dict:
     Each step soft-fails independently: compaction is upkeep, and a fold that
     raises must cost a cycle rather than the daemon that would have retried it.
 
-    Retirement runs first: a peer that has lost leadership must retract its own
-    now-stale mesh fold before anything else, or it stays advertised to the whole
-    mesh forever (see :func:`_retire_own_mesh`). It runs unconditionally, so a
-    demoted peer whose inputs are otherwise unchanged still retracts.
+    Retirement runs first: a machine that is no longer the admin must retract
+    its own now-stale mesh fold before anything else, or it stays advertised
+    forever (see :func:`_retire_own_mesh`). It runs unconditionally, so a demoted
+    machine whose inputs are otherwise unchanged still retracts.
+
+    Then the brief→node conversion, before either tier: briefs are local files
+    that never travel, so a fact only reaches the other machines once it is an
+    OKF node (``okf.author.sync_briefs_to_nodes``). Running it here means this
+    cycle's own compaction output is in ``okf/`` in time for this cycle's fold
+    and the next push.
     """
     out: dict = {}
     try:
@@ -765,6 +764,13 @@ def run_after_sync(*, role: str = _ROLE) -> dict:
     except Exception as exc:  # noqa: BLE001 — see docstring: never kill the loop
         _log.warning("tiers: mesh retirement failed (%s)", exc)
         out["retire"] = {"ok": False, "error": str(exc)}
+    try:
+        from aiforge_core.memory.okf import author
+
+        out["briefs"] = author.sync_briefs_to_nodes()
+    except Exception as exc:  # noqa: BLE001 — see docstring: never kill the loop
+        _log.warning("tiers: brief→node conversion failed (%s)", exc)
+        out["briefs"] = {"ok": False, "error": str(exc)}
     for name, fn in (("mesh", distil_mesh), ("view", build_view)):
         try:
             out[name] = fn(role=role)
@@ -775,4 +781,4 @@ def run_after_sync(*, role: str = _ROLE) -> dict:
 
 
 __all__ = ["MESH", "VIEW", "distil_mesh", "build_view", "run_after_sync",
-           "leader_has_mesh_output", "view_nodes", "unrepresented"]
+           "view_nodes", "unrepresented"]

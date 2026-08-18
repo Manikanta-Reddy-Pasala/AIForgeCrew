@@ -1,11 +1,11 @@
-"""What one cycle may cost, and who is allowed to spend it.
+"""What one cycle may cost.
 
-Per-request deadlines bound a single request; they never bounded their sum.
-MAX_PEERS is 64 and one peer costs a manifest plus up to MAX_MANIFEST_ENTRIES
-(20 000) blob fetches, so "check the budget after each peer returns" is not a
-budget: it cannot preempt the peer that is actually spending it. Everything
-here drives a peer whose own cost exceeds the whole budget — a stub that
-finishes inside the budget proves only that the budget stops *starting* peers.
+Per-request deadlines bound a single request; they never bounded their sum. One
+manifest may advertise MAX_MANIFEST_ENTRIES (20 000) blobs and one offer may
+come back asking for as many, so "check the budget when the pull is done" is not
+a budget: it cannot preempt the loop that is actually spending it. Everything
+here drives an admin whose own cost exceeds the whole budget — a stub that
+finishes inside the budget proves only that the budget stops *starting* work.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import time
 import pytest
 
 BLOB_DELAY = 0.25
-ENTRIES = 20                 # one peer alone: 20 x 0.25s = 5.0s
+ENTRIES = 20                 # 20 x 0.25s = 5.0s, against a 1.0s budget
 BUDGET = 1.0
 
 
@@ -22,21 +22,17 @@ def _env(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
     monkeypatch.setenv("AIFORGE_PEER_ID", "book")
+    monkeypatch.setenv("AIFORGE_ADMIN_URL", "http://stub")
+    monkeypatch.delenv("AIFORGE_ROLE", raising=False)
 
 
-def _approve(n: int):
-    from aiforge_core.memory.sync import peers
-
-    peers.save({"self": {"id": "book", "urls": []},
-                "peers": [{"id": f"p{i}", "urls": [f"http://stub{i}"],
-                           "state": peers.STATE_APPROVED, "last_seen": 0}
-                          for i in range(n)]})
+def _entries():
+    return [{"kind": "A", "path": f"captures/{i:03d}.md", "hash": f"{i:064x}"}
+            for i in range(ENTRIES)]
 
 
 def _fat_manifest(*_a, **_k):
-    return {"manifest": [{"kind": "A", "path": f"captures/{i:03d}.md",
-                          "hash": f"{i:064x}"} for i in range(ENTRIES)],
-            "roster": []}
+    return {"manifest": _entries(), "admin": "hub"}
 
 
 def _slow_blob(*_a, **_k):
@@ -45,73 +41,73 @@ def _slow_blob(*_a, **_k):
 
 
 @pytest.fixture
-def sick_peers(monkeypatch, tmp_path):
+def sick_admin(monkeypatch, tmp_path):
     _env(monkeypatch, tmp_path)
     from aiforge_core.memory.sync import loop, transport
 
-    _approve(3)
     monkeypatch.setattr(transport, "fetch_manifest", _fat_manifest)
     monkeypatch.setattr(transport, "fetch_blob", _slow_blob)
+    monkeypatch.setattr(transport, "offer", lambda *_a, **_k: [])
     monkeypatch.setattr(loop, "CYCLE_BUDGET", BUDGET)
     return loop
 
 
-def test_one_peer_cannot_run_the_cycle_past_the_budget(sick_peers):
-    """The first peer's own work is 5x the entire budget. Sampling the budget
-    only after ``sync_with`` returns cannot stop it: the worst case was the
-    budget plus one peer's full cost, and a full cost is 20 000 blobs."""
+def test_a_slow_admin_cannot_run_the_cycle_past_the_budget(sick_admin):
+    """The pull's own work is 5x the entire budget. Sampling the budget only
+    after ``sync_with`` returns cannot stop it, and the fold rides the same
+    loop — so an overrun costs compaction too."""
     started = time.monotonic()
-    rows = sick_peers.run_once()
+    sick_admin.run_once()
     elapsed = time.monotonic() - started
 
     assert elapsed < BUDGET + 2.0, (
-        f"cycle ran {elapsed:.1f}s on a {BUDGET}s budget — one peer alone "
+        f"cycle ran {elapsed:.1f}s on a {BUDGET}s budget — the pull alone "
         f"costs {ENTRIES * BLOB_DELAY:.1f}s")
 
 
-def test_the_budget_preempts_a_peer_part_way_through_its_manifest(sick_peers):
-    """Preemption has to happen *inside* the blob loop. Checking only between
-    peers means a peer that passes the pre-flight check by a millisecond still
-    gets to spend an unbounded amount of the cycle."""
-    rows = sick_peers.run_once()
+def test_the_budget_preempts_the_pull_part_way_through_the_manifest(sick_admin):
+    """Preemption has to happen *inside* the blob loop: a cycle that passes the
+    pre-flight check by a millisecond must not then spend an unbounded amount
+    of it. The remaining entries are still advertised next cycle."""
+    rows = sick_admin.run_once()
 
     assert rows[0]["rejected"] < ENTRIES, (
-        "the first peer fetched its whole manifest despite the budget "
+        "the whole manifest was fetched despite the budget "
         f"({rows[0]['rejected']}/{ENTRIES} entries)")
     assert rows[0]["rejected"] > 0, "it should still have made progress"
 
 
-def test_peers_dropped_for_budget_are_reported_not_silently_absent(sick_peers):
-    """A peer that never got its turn must appear in the cycle output; the
-    admin page cannot distinguish 'skipped' from 'never configured' otherwise."""
-    rows = sick_peers.run_once()
-
-    assert [r["peer"] for r in rows] == ["p0", "p1", "p2"]
-    assert not rows[0].get("skipped")
-    assert all(r.get("skipped") for r in rows[1:])
-
-
-def test_a_slow_discovery_sweep_is_charged_to_the_cycle_budget(
-        monkeypatch, tmp_path):
-    """``started`` used to be sampled *after* ``_ssdp_sweep``, so a multicast
-    wait that ate the whole interval still handed the peers a full budget and
-    the cycle overran by the sweep's entire cost."""
+def test_the_push_is_bounded_by_the_same_budget(monkeypatch, tmp_path):
+    """Push runs first, so an unbounded push starves the pull *and* the fold
+    behind it. The offer is recomputed every cycle, so the leftovers are simply
+    sent next time — nothing is queued and nothing is lost."""
     _env(monkeypatch, tmp_path)
-    monkeypatch.setenv("AIFORGE_SYNC_SSDP", "1")
-    monkeypatch.setenv("AIFORGE_SYNC_SSDP_HOST", "127.0.0.1")
-    from aiforge_core.memory.sync import discovery_ssdp, loop, transport
+    from aiforge_core.memory.sync import loop, push, transport
 
-    _approve(3)
-    monkeypatch.setattr(discovery_ssdp, "discover",
-                        lambda *_a, **_k: (time.sleep(BUDGET + 0.5), [])[1])
-    monkeypatch.setattr(transport, "fetch_manifest", _fat_manifest)
-    monkeypatch.setattr(transport, "fetch_blob", _slow_blob)
+    # Class B nodes we minted — the only thing a spoke pushes.
+    d = tmp_path / "md" / "okf" / "global" / "learnings"
+    d.mkdir(parents=True, exist_ok=True)
+    for i in range(ENTRIES):
+        (d / f"L-{i:03d}.md").write_text(
+            f'---\ntype: learning\nid: "L-{i:03d}"\norigin: "book"\nrev: 1\n'
+            f'updated_by: "book"\n---\n\nbody {i}\n', encoding="utf-8")
+
+    sent: list = []
+
+    def _slow_push(_base, entry, _body):
+        time.sleep(BLOB_DELAY)
+        sent.append(entry)
+        return True
+
+    monkeypatch.setattr(transport, "offer",
+                        lambda _base, entries: list(entries))
+    monkeypatch.setattr(transport, "push_blob", _slow_push)
     monkeypatch.setattr(loop, "CYCLE_BUDGET", BUDGET)
 
     started = time.monotonic()
-    rows = loop.run_once()
+    res = push.run_once("http://stub", time.monotonic() + BUDGET)
     elapsed = time.monotonic() - started
 
-    assert all(r.get("skipped") for r in rows), (
-        "the sweep spent the whole budget, so no peer should have been started")
-    assert elapsed < BUDGET + 2.0, f"cycle ran {elapsed:.1f}s"
+    assert 0 < len(sent) < ENTRIES, f"pushed {len(sent)}/{ENTRIES} on a budget"
+    assert res["pushed"] == len(sent)
+    assert elapsed < BUDGET + 2.0, f"push ran {elapsed:.1f}s"

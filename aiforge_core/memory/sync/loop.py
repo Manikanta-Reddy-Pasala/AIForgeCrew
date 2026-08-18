@@ -1,8 +1,14 @@
 """One sync cycle, and the scheduler that repeats it.
 
-Pull only, never push. A peer that is down is a request that returns nothing
-this cycle; nothing blocks on it and nothing is queued for it. Every node
-pulling from every other node is sufficient for the whole mesh to converge.
+Hub and spoke. A spoke pushes what it authored to the admin and pulls what the
+admin distilled; the admin talks to nobody — it only answers. There is no
+registry to read, no discovery to run and no election to compute: which machine
+is the admin is configuration (``role``), not something derived from replicated
+state.
+
+The admin's cycle is therefore just the fold. It still runs on this loop rather
+than a schedule of its own — one moving part — and skips when its inputs are
+unchanged, so an idle hub costs a directory walk and no tokens.
 """
 from __future__ import annotations
 
@@ -13,14 +19,12 @@ _log = logging.getLogger("aiforge.sync")
 
 DEFAULT_INTERVAL = 1800  # 30 minutes
 
-# How long one cycle may spend on peers before it stops starting new ones.
-# Per-request deadlines bound a single peer (``transport.REQUEST_DEADLINE``);
-# they do not bound their sum, and MAX_PEERS is 64, each costing a manifest plus
-# N blobs. A handful of dead or dribbling peers could therefore push one cycle
-# past DEFAULT_INTERVAL, and since this daemon is strictly sequential that also
-# stops the compaction pass that runs after it. A third of the interval leaves
-# two thirds for compaction and the sleep; the skipped peers are simply pulled
-# on the next cycle, which is what an unreachable peer costs anyway.
+# How long one cycle may spend talking to the admin before it stops starting new
+# requests. Per-request deadlines bound a single request
+# (``transport.REQUEST_DEADLINE``); they do not bound their sum, and one cycle
+# may push or fetch up to MAX_MANIFEST_ENTRIES blobs. A third of the interval
+# leaves two thirds for compaction and the sleep; whatever is left over is
+# offered again next cycle, which is what an unreachable admin costs anyway.
 CYCLE_BUDGET = DEFAULT_INTERVAL // 3
 
 # How many consecutive failed cycles before the log says so. A cycle that fails
@@ -31,87 +35,71 @@ CYCLE_BUDGET = DEFAULT_INTERVAL // 3
 REPEATED_FAILURES = 5
 
 
-def _first_url(peer: dict) -> str:
-    urls = [u for u in (peer.get("urls") or []) if u]
-    return urls[0] if urls else ""
-
-
-def _peer_id(peer) -> str:
-    """The id of a registry row that may be anything at all.
-
-    peers.json is hand-editable and is also fed by gossip, so a row can be a
-    string, ``null``, or a nested list. Reading an id must never be the thing
-    that raises — see ``run_once``. The ``try`` is not paranoia about ``dict``:
-    this is called from the handler that logs a failed peer, so a row whose
-    ``get`` misbehaves would raise *out of the except clause* and take the
-    cycle down at the one point built to survive it.
-    """
-    try:
-        return str(peer.get("id") or "") if isinstance(peer, dict) else ""
-    except Exception:  # noqa: BLE001 — an unreadable id is "", never a crash
-        return ""
-
-
 def _ingest(entries) -> list[dict]:
-    """Normalise a peer's manifest into the form the merge compares in.
+    """Normalise the admin's manifest into the form the merge compares in.
 
     Only the hash needs it: the local side is a ``hexdigest`` and is therefore
-    lowercase, so a peer emitting uppercase hex matches nothing we hold. Every
+    lowercase, so an admin emitting uppercase hex matches nothing we hold. Every
     round it produces the same unresolvable conflict, and the entry can never be
     applied — the two spellings never become equal on their own.
     """
     out: list[dict] = []
     for e in entries or []:
         if not isinstance(e, dict):
-            continue          # a peer may send anything; a non-record is not one
+            continue          # the admin may send anything; a non-record is not one
         row = dict(e)
         row["hash"] = str(row.get("hash") or "").strip().lower()
         out.append(row)
     return out
 
 
-def sync_with(peer: dict, deadline: float | None = None) -> dict:
-    """Run one cycle against a single peer.
-
-    ``deadline`` is a ``time.monotonic`` stamp after which this peer stops
-    fetching — see ``run_once``. Optional so that a caller syncing one peer on
-    purpose (the admin page) is not forced to invent a budget.
-
-    Returns ``{ok, applied, rejected, conflicts}``. Never raises, and the counts
-    survive a failure part-way through: under a global ENOSPC the per-entry
-    applies were correctly counted as rejected and then the bookkeeping below
-    raised, so the whole row was discarded and one WARNING was the only trace
-    the peer had been tried at all.
-    """
-    result = {"ok": False, "applied": 0, "rejected": 0, "conflicts": 0}
-    try:
-        _pull(peer, result, deadline)
-    except Exception as exc:  # noqa: BLE001 — a misbehaving peer is not our death
-        _log.warning("sync: peer %s failed mid-cycle: %s", _peer_id(peer), exc)
-    return result
-
-
 def _spent(deadline: float | None) -> bool:
     return deadline is not None and time.monotonic() >= deadline
 
 
-def _pull(peer: dict, result: dict, deadline: float | None = None) -> None:
-    """One peer's manifest, blobs and bookkeeping, accumulated into ``result``."""
-    from aiforge_core.memory.sync import apply, manifest, merge, peers, transport
+def sync_with(base_url: str, deadline: float | None = None) -> dict:
+    """Run one cycle against the admin: push first, then pull.
 
-    base = _first_url(peer)
-    if not base:
-        return
+    ``deadline`` is a ``time.monotonic`` stamp after which the cycle stops
+    starting requests — see ``run_once``. Optional so that a caller syncing on
+    purpose (the admin page's "sync now") is not forced to invent a budget.
 
-    # The shared mesh key, when configured, is the bearer for EVERY peer
-    # (replacing the per-peer, human-copied token); the per-peer token is the
-    # fallback for the older, no-mesh-key deployment.
-    token = peers.mesh_key() or str(peer.get("token") or "")
+    Push first so the fold that runs on the admin at the end of *its* cycle sees
+    what we just authored, rather than always folding a cycle behind.
 
-    remote = transport.fetch_manifest(base, token)
+    Returns ``{ok, pushed, applied, rejected, conflicts}``. Never raises, and the
+    counts survive a failure part-way through: under a global ENOSPC the
+    per-entry applies were correctly counted as rejected and then the
+    bookkeeping raised, so the whole row was discarded and one WARNING was the
+    only trace the cycle had run at all.
+    """
+    from aiforge_core.memory.sync import push
+
+    result = {"ok": False, "pushed": 0, "applied": 0, "rejected": 0, "conflicts": 0}
+    try:
+        up = push.run_once(base_url, deadline)
+        result["pushed"] = up["pushed"]
+        result["rejected"] += up["rejected"]
+        result["ok"] = up["ok"]
+        _pull(base_url, result, deadline)
+    except Exception as exc:  # noqa: BLE001 — a misbehaving admin is not our death
+        _log.warning("sync: admin %s failed mid-cycle: %s", base_url, exc)
+    return result
+
+
+def _pull(base_url: str, result: dict, deadline: float | None = None) -> None:
+    """The admin's manifest, blobs and bookkeeping, accumulated into ``result``."""
+    from aiforge_core.memory.sync import apply, manifest, merge, role, transport
+
+    remote = transport.fetch_manifest(base_url)
     if not remote:
         return
     result["ok"] = True
+
+    # The admin states its own id in every manifest response, so a spoke learns
+    # whose fold to trust (``okf.tiers._trusted_origin``) without the operator
+    # configuring the same fact twice.
+    admin = role.remember_admin_id(str(remote.get("admin") or ""))
 
     local = manifest.build()
     plan = merge.plan_sync(local, _ingest(remote.get("manifest") or []))
@@ -125,8 +113,8 @@ def _pull(peer: dict, result: dict, deadline: float | None = None) -> None:
             break
         losing_body = None
         if str(pair["remote"].get("hash") or "") not in winning:
-            losing_body = transport.fetch_blob(base, str(pair["remote"].get("hash") or ""),
-                                               token)
+            losing_body = transport.fetch_blob(base_url,
+                                               str(pair["remote"].get("hash") or ""))
             if losing_body is None:
                 continue      # nothing fetched, nothing to preserve
         if apply.keep_conflict(pair["local"], losing_body):
@@ -135,246 +123,70 @@ def _pull(peer: dict, result: dict, deadline: float | None = None) -> None:
     for entry in plan["want"]:
         if _spent(deadline):
             # The budget has to be re-checked *inside* this loop, not only
-            # between peers: one manifest may advertise MAX_MANIFEST_ENTRIES
-            # (20 000) blobs, so a single peer that passes the pre-flight check
-            # by a millisecond could otherwise spend hours here while every
-            # other peer and the compaction pass behind it wait their turn. The
-            # remaining entries are still advertised next cycle.
-            _log.warning("sync: cycle budget spent part-way through peer %s — "
-                         "%d entries left for the next cycle", _peer_id(peer),
+            # around it: one manifest may advertise MAX_MANIFEST_ENTRIES
+            # (20 000) blobs, so a cycle that passed the pre-flight check by a
+            # millisecond could otherwise spend hours here while the compaction
+            # pass behind it waits its turn. The remaining entries are still
+            # advertised next cycle.
+            _log.warning("sync: cycle budget spent part-way through the pull — "
+                         "%d entries left for the next cycle",
                          len(plan["want"]) - result["applied"] - result["rejected"])
             break
-        body = transport.fetch_blob(base, str(entry.get("hash") or ""), token)
+        body = transport.fetch_blob(base_url, str(entry.get("hash") or ""))
         if body is None:
             result["rejected"] += 1
             continue
         try:
-            # peer_id is load-bearing, not bookkeeping: apply refuses any class
-            # B entry whose `origin` is not this peer, so dropping it here would
-            # let `nuc` forge `ms`'s nodes and tombstones again.
-            applied = apply.apply_blob(entry, body, peer_id=_peer_id(peer))
+            # admin is load-bearing, not bookkeeping: apply refuses any class B
+            # entry whose `origin` is not the machine that served it, so
+            # dropping it here would let the admin forge a spoke's nodes and
+            # tombstones. It also means an admin whose id we have not learned
+            # yet applies nothing this cycle rather than everything.
+            applied = apply.apply_blob(entry, body, peer_id=admin)
         except OSError as exc:
             # One unwritable record — a 400-character key is "File name too
-            # long" — used to abort the cycle: every later entry was discarded
-            # and `peers.touch` never ran, so the peer's last_seen froze, it
-            # dropped out of the election, and the same entry killed the next
-            # cycle too. It is re-advertised forever, so this must be per-entry.
+            # long" — used to abort the cycle: every later entry was discarded,
+            # and it is re-advertised forever, so this must be per-entry.
             _log.warning("sync: could not apply %s: %s", entry.get("path"), exc)
             applied = False
         result["applied" if applied else "rejected"] += 1
 
-    # ``roster`` is already coerced to a list by transport, so a peer on another
-    # build cannot make this the line that ends the cycle.
-    peers.merge_roster(remote.get("roster") or [])
-    peers.touch(_peer_id(peer))
-
-    _log.info("sync: %s applied=%d rejected=%d conflicts=%d", _peer_id(peer),
-              result["applied"], result["rejected"], result["conflicts"])
-
-
-def _ssdp_sweep() -> None:
-    """Fold any locally-announced peers into the registry as candidates.
-
-    Off unless ``AIFORGE_SYNC_SSDP=1``: multicast is useless across WireGuard
-    and the internet, so it is opt-in for operators who genuinely have peers
-    on the same physical segment. Discovered peers are folded through
-    ``peers.merge_roster`` exactly like gossiped ones — this function does not
-    (and must not) decide trust; a wildcard bind host is refused by
-    ``discover`` itself, not re-checked here, so that guard lives in one place.
-    """
-    import os
-
-    if os.environ.get("AIFORGE_SYNC_SSDP", "0") != "1":
-        return
-    from aiforge_core.memory.sync import discovery_ssdp, peers
-
-    # Auto-detect the LAN interface when not pinned, so SSDP works with just
-    # AIFORGE_SYNC_SSDP=1 (no host to hand-set). An explicit env value still wins.
-    bind = os.environ.get("AIFORGE_SYNC_SSDP_HOST", "").strip() \
-        or discovery_ssdp.default_bind_host()
-    if not bind:
-        _log.warning("sync: ssdp enabled but no LAN interface found — set "
-                     "AIFORGE_SYNC_SSDP_HOST to this machine's LAN IP")
-        return
-    _log.info("sync: ssdp sweep on interface %s", bind)
-    try:
-        found = discovery_ssdp.discover(bind)
-    except ValueError as exc:
-        # discover() refuses a wildcard/empty bind (DDoS-amplification guard).
-        # That means SSDP is enabled without AIFORGE_SYNC_SSDP_HOST set to a
-        # real interface address — a misconfiguration the operator needs to
-        # see, not an ordinary "no peers on this segment" result, so it is
-        # logged at a distinct level rather than folded into the info-level
-        # best-effort case below.
-        _log.warning("sync: ssdp enabled but misconfigured: %s "
-                      "(set AIFORGE_SYNC_SSDP_HOST to a real interface address)", exc)
-        return
-    except Exception as exc:  # noqa: BLE001 — discovery is best-effort by nature
-        _log.info("sync: ssdp sweep failed: %s", exc)
-        return
-    if found:
-        peers.merge_roster(found)
-
-
-def _auto_promote(deadline: float | None = None) -> None:
-    """Shared-key auto-join: promote every candidate that PROVES it holds the key.
-
-    A candidate — discovered by SSDP or learned by gossip — is challenged with a
-    fresh random nonce; if its ``HMAC(mesh_key, nonce)`` matches ours, it holds
-    the shared secret, and holding the secret IS mesh membership, so it is
-    promoted to approved with no human step. Without a mesh key configured this
-    is a no-op and approval stays the out-of-band human token copy.
-
-    The proof is challenge-response, NOT "send the candidate our key and see if
-    it works": a candidate url arrives over untrusted SSDP/gossip, so handing it
-    our bearer key would leak the shared secret to any host that can get itself
-    listed. Here neither side transmits the key — only an HMAC over a nonce we
-    chose, so a replayed proof for an old nonce is worthless.
-
-    Bounded by the cycle deadline like everything else: probing candidates is a
-    network request each (each already bounded by ``REQUEST_DEADLINE``), and a
-    segment full of candidates must not spend the whole cycle here and starve
-    the pull. The unprobed ones are simply retried next cycle.
-    """
-    import hmac
-    import secrets
-
-    from aiforge_core.memory.sync import peers, transport
-
-    if not peers.mesh_key():
-        return
-    for cand in peers.candidates():
-        if _spent(deadline):
-            break
-        base = _first_url(cand)
-        if not base:
-            continue
-        nonce = secrets.token_hex(16)
-        proof = transport.membership_proof(base, nonce)
-        if proof and hmac.compare_digest(proof, peers.mesh_proof(nonce)):
-            if peers.promote(_peer_id(cand), base):
-                _log.info("sync: auto-joined peer %s (proved shared mesh key)",
-                          _peer_id(cand))
-
-
-def _skipped(peer) -> dict:
-    """A peer the cycle ran out of budget for — reported, not silently absent."""
-    return {"peer": _peer_id(peer), "ok": False, "applied": 0, "rejected": 0,
-            "conflicts": 0, "skipped": True}
+    _log.info("sync: admin=%s pushed=%d applied=%d rejected=%d conflicts=%d",
+              admin or "?", result["pushed"], result["applied"],
+              result["rejected"], result["conflicts"])
 
 
 def run_once() -> list[dict]:
-    """One cycle across every approved peer. Never raises.
+    """One cycle. Never raises.
 
-    Reading the registry used to be outside every ``try``: a hand-edited or
-    half-written peers.json (``{"peers": "beta"}``) raised out of here, out of
-    ``run_forever``, and killed the process — which the supervisor restarted
-    into the same file thirty seconds later, forever. Compaction rides this same
-    loop, so it stopped too, from a cause no log connected to a peer file.
+    Returns one row for the admin we synced with, or no rows at all on the admin
+    itself — it answers requests, it does not make them. The list shape is kept
+    (rather than a bare dict) because the CLI, the tests and the admin page all
+    iterate it, and "nothing to do" is naturally an empty list.
     """
-    out: list[dict] = []
-    # Started before discovery, not after: the SSDP sweep is a multicast wait
-    # and its cost is cycle time like any other. Timing from after it let a slow
-    # sweep spend the whole interval and still hand the peers a full budget.
+    from aiforge_core.memory.sync import role
+
+    base = role.admin_url()
+    if not base:
+        return []
     deadline = time.monotonic() + CYCLE_BUDGET
-
-    # Discovery is best-effort and is deliberately *outside* the registry read's
-    # try. Sharing one meant a sweep that raised (its merge_roster hitting
-    # ENOSPC) was indistinguishable from an unreadable peers.json, and cost the
-    # cycle every healthy peer — for a step whose entire output is candidates
-    # that this cycle will not pull from anyway.
+    row = {"admin": base}
     try:
-        _ssdp_sweep()
-    except Exception as exc:  # noqa: BLE001 — discovery must never cost the peers
-        _log.warning("sync: discovery sweep failed, syncing anyway: %s", exc)
-
-    # Between discovery and the pull: a candidate that proves it holds the
-    # shared mesh key is promoted to approved now, so it is in `roster` below
-    # and syncs this same cycle. Best-effort like discovery — a probe that
-    # raises must not cost the peers.
-    try:
-        _auto_promote(deadline)
-    except Exception as exc:  # noqa: BLE001 — auto-join must never cost the peers
-        _log.warning("sync: auto-join failed, syncing anyway: %s", exc)
-
-    try:
-        from aiforge_core.memory.sync import peers
-
-        roster = list(peers.approved())
-    except Exception as exc:  # noqa: BLE001 — bad state is data, not a crash
-        _log.warning("sync: cycle could not read the peer registry: %s", exc)
-        return out
-
-    announced = False
-    for peer in roster:
-        try:
-            # Checked *before* starting the peer, not only after it returns.
-            # Sampling it afterwards cannot preempt the peer that is stuck, so
-            # the real bound was CYCLE_BUDGET plus one peer's full cost — a
-            # manifest plus up to MAX_MANIFEST_ENTRIES blobs.
-            if _spent(deadline):
-                if not announced:
-                    _log.warning("sync: cycle budget of %ss spent — skipping the "
-                                 "rest of this cycle, starting at peer %s",
-                                 CYCLE_BUDGET, _peer_id(peer))
-                    announced = True
-                out.append(_skipped(peer))
-                continue
-            row = {"peer": _peer_id(peer)}
-            try:
-                row.update(sync_with(peer, deadline))
-            finally:
-                # Appended whatever happened: a row with partial counts is the
-                # only evidence on the admin page that the peer was tried.
-                out.append(row)
-        except Exception as exc:  # noqa: BLE001 — one bad peer must not stop the rest
-            _log.warning("sync: cycle failed for %s: %s", _peer_id(peer), exc)
-    return out
-
-
-def _start_ssdp_responder() -> None:
-    """Answer other peers' searches for as long as this process runs.
-
-    Same gate and same bind address as ``_ssdp_sweep``; started only from
-    ``run_forever`` because ``run_once`` is a single-shot cycle and must not
-    leave a thread behind. The SSDP message itself is built in
-    ``discovery_ssdp`` — this only supplies who we are and where to reach us.
-    """
-    import os
-
-    if os.environ.get("AIFORGE_SYNC_SSDP", "0") != "1":
-        return
-    from aiforge_core.memory.sync import discovery_ssdp, identity, peers
-
-    bind = os.environ.get("AIFORGE_SYNC_SSDP_HOST", "").strip() \
-        or discovery_ssdp.default_bind_host()
-    if not bind:
-        _log.warning("sync: ssdp responder not started — no LAN interface found "
-                     "(set AIFORGE_SYNC_SSDP_HOST to this machine's LAN IP)")
-        return
-    me = peers.load()["self"]
-    peer_id = str(me.get("id") or "").strip() or identity.self_id()
-    urls = [u for u in (me.get("urls") or []) if u]
-    if not urls:
-        _log.info("sync: ssdp responder not started: no self url in peers.json")
-        return
-    _log.info("sync: ssdp responder starting on %s (peer %s)", bind, peer_id)
-    try:
-        discovery_ssdp.serve_in_background(bind, peer_id, str(urls[0]))
-    except Exception as exc:  # noqa: BLE001 — discovery is best-effort by nature
-        _log.info("sync: ssdp responder failed to start: %s", exc)
+        row.update(sync_with(base, deadline))
+    except Exception as exc:  # noqa: BLE001 — a bad cycle is data, not a crash
+        _log.warning("sync: cycle failed for %s: %s", base, exc)
+    return [row]
 
 
 def run_forever(interval: int = DEFAULT_INTERVAL) -> None:
     """Sync every ``interval`` seconds for as long as this process lives.
 
-    Nothing here drives leadership: the compaction leader is *elected* from the
-    peer registry each time somebody asks (``election.py``), so there is no
-    record to claim and no heartbeat to keep alive.
+    Nothing here decides who folds: ``role`` reads it from configuration, so
+    there is no record to claim and no heartbeat to keep alive.
 
     Knowledge compaction rides this cycle rather than owning a schedule of its
-    own — one moving part. It runs *after* the sync pass so a cycle folds the
-    data that cycle just pulled, and it can never take the daemon down: both
+    own — one moving part. It runs *after* the sync pass so the admin folds the
+    data that cycle just received, and it can never take the daemon down: both
     tiers skip when their inputs are unchanged and soft-fail when they are not.
 
     Only a ``BaseException`` — a signal, a ``SystemExit`` — ends this loop. Any
@@ -382,15 +194,14 @@ def run_forever(interval: int = DEFAULT_INTERVAL) -> None:
     """
     from aiforge_core.memory.okf import tiers
 
-    # Rejected here, before the responder thread exists, because there is no
-    # recovering from it later: ``interval=0`` turns the blanket except below
-    # into an unthrottled traceback firehose, and a negative one raises out of
-    # ``time.sleep`` — the single line the try cannot cover — killing a daemon
-    # whose whole design is to outlive its own failures.
+    # Rejected here rather than later, because there is no recovering from it:
+    # ``interval=0`` turns the blanket except below into an unthrottled
+    # traceback firehose, and a negative one raises out of ``time.sleep`` — the
+    # single line the try cannot cover — killing a daemon whose whole design is
+    # to outlive its own failures.
     if interval <= 0:
         raise ValueError(f"sync interval must be positive, got {interval}")
 
-    _start_ssdp_responder()
     failures = 0
     while True:
         try:
@@ -399,7 +210,7 @@ def run_forever(interval: int = DEFAULT_INTERVAL) -> None:
         except Exception as exc:  # noqa: BLE001 — outliving a bad cycle is the point
             # The daemon surviving one bad cycle is the entire reason this loop
             # exists: whatever broke (disk full, a state file somebody edited,
-            # a peer nobody anticipated) is almost always transient or fixable
+            # an admin nobody anticipated) is almost always transient or fixable
             # while we keep running, whereas exiting means the supervisor
             # restarts us straight back into it and compaction never runs again.
             failures += 1
@@ -420,7 +231,9 @@ def run_forever(interval: int = DEFAULT_INTERVAL) -> None:
 def main() -> None:
     import argparse
 
-    ap = argparse.ArgumentParser(description="AIForge peer memory sync")
+    from aiforge_core.memory.sync import role
+
+    ap = argparse.ArgumentParser(description="AIForge memory sync (hub and spoke)")
     ap.add_argument("--once", action="store_true", help="run a single cycle and exit")
     ap.add_argument("--interval", type=int, default=DEFAULT_INTERVAL)
     args = ap.parse_args()
@@ -431,6 +244,7 @@ def main() -> None:
         # the value actually arrives at.
         ap.error("--interval must be a positive number of seconds")
     logging.basicConfig(level=logging.INFO)
+    _log.info("sync: role=%s admin=%s", role.role(), role.admin_url() or "this machine")
     if args.once:
         for row in run_once():
             print(row)

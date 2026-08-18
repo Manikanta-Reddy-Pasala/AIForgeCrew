@@ -461,24 +461,15 @@ def dedupe_nodes() -> dict:
     learner produced over repeated runs — collapse to a single file, restoring
     OKF 'one concept = one file'. Returns {ok, removed, kept}. Soft-fail.
 
-    Leader-only in a mesh, by the SAME election as compaction (one policy, one
-    place): a near-duplicate merge is non-deterministic, so two peers each run
-    by hand would fold the same shared knowledge two different ways and diverge.
-    A single machine (no approved peers) is always the leader, so nothing
-    changes there. The skip is returned AND logged because this one is typed by
-    an operator, who would otherwise read a silent no-op as a broken command."""
+    Local work on local files, on every machine: it only ever collapses nodes
+    this machine minted — ``tombstone.mark_deleted`` refuses another origin — so
+    there is nothing here for the admin to arbitrate. The cross-machine merge is
+    the separate, admin-only step (``okf.tiers.distil_mesh``)."""
     import difflib
     import os
 
-    from aiforge_core.memory.sync import election  # lazy: heavy sync package
-    from aiforge_core.memory.sync import tombstone as _tomb
+    from aiforge_core.memory.sync import tombstone as _tomb  # lazy: heavy package
 
-    if not election.may_distil():                   # soft-fails OPEN (see there)
-        chief = election.leader_name()
-        _log.info("dedupe_nodes: skipped — %s is the elected leader "
-                  "(node dedupe runs there, not here)", chief)
-        return {"ok": True, "removed": 0, "kept": 0,
-                "skipped": "not-leader", "leader": chief}
     try:
         threshold = float(os.environ.get("AIFORGE_OKF_CONCEPT_SIMILARITY", "0.86"))
     except (TypeError, ValueError):

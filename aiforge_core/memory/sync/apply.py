@@ -165,15 +165,13 @@ def _accept_class_b(entry: dict, body: bytes, peer_id: str = "") -> bool:
         #     retrieval surfaces to agents — i.e. prompt injection with mesh-wide
         #     reach, re-advertised onward by every victim.
         #
-        # RELAY IS DELIBERATELY NOT SUPPORTED. A third party's node can only be
-        # obtained from that third party. Nothing authenticates an entry's
-        # origin (the manifest is unsigned frontmatter), so a relayed record is
-        # indistinguishable from a forged one, and admitting it for convenience
-        # re-opens every attack above. Every peer pulls from every approved peer
-        # (``loop.run_once``), so a fully-approved mesh converges without relay;
-        # a peer that is not approved here is one whose knowledge this node has
-        # not been told to trust, and that is the correct outcome rather than a
-        # gap to paper over. Signed manifests are what would make relay safe.
+        # RELAY IS DELIBERATELY NOT SUPPORTED, and the hub does not need it:
+        # a spoke's raw node goes UP to the admin, the admin folds it into
+        # knowledge it authors under its own origin, and that fold is what comes
+        # back DOWN (``inbox.downstream``). Nothing authenticates an entry's
+        # origin (the manifest is unsigned frontmatter), so a relayed record
+        # would be indistinguishable from a forged one and would re-open every
+        # attack above. Signed manifests are what would make relay safe.
         _log.warning("sync: entry %s claims origin %s but was served by %s, "
                      "refusing", entry.get("path"), declared["origin"],
                      peer_id or "<unattributed>")

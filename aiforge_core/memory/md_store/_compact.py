@@ -499,19 +499,6 @@ def _consolidate_brief_content(key: str, path, blocks: list[str], title: str,
         links=links, learnings=learnings, body_md="", tags=all_tags)
 
 
-def _may_distil() -> bool:
-    """May we run the LLM fold right now? The sync election decides; we only ask.
-
-    ``election.may_distil`` owns the policy AND its soft-fail direction (OPEN —
-    losing distillation is worse than duplicating it), so there is no second
-    copy of either here. The import is lazy: the sync package is heavy and a
-    single machine never needs it on the hot path.
-    """
-    from aiforge_core.memory.sync import election
-
-    return election.may_distil()
-
-
 # How many consumed capture stems a brief carries. Provenance is a hand-off
 # note, not an archive: only a peer that has NOT yet archived a capture cares,
 # and it sees the claim within a cycle or two. The cap keeps a long-lived brief
@@ -528,9 +515,9 @@ def _fold_sources(prior: list[str], consumed: list[str]) -> list[str]:
 def archive_covered_captures() -> dict:
     """Archive local captures that an ARRIVED brief already claims to have eaten.
 
-    Housekeeping is EVERY peer's job — only distillation is leader-only. Without
-    this a non-leader's ``captures/`` grows forever, because the leader archives
-    its own copies and replication only ever adds files.
+    Ordinarily a machine archives the captures its OWN fold just consumed. This
+    is the other half: a brief that arrived from elsewhere, claiming captures we
+    also hold, lets us tidy them up without re-distilling them.
 
     Soft-fails CLOSED, the opposite of the distillation gate, and deliberately:
     archiving a capture no brief covers destroys an un-distilled memory and
@@ -596,15 +583,6 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
     import, or to re-run the LLM pass over everything.
     """
     import shutil
-    # dry_run is a read-only preview and costs no tokens — only the real,
-    # LLM-expensive run needs to be the elected leader. A non-leader still does
-    # its HOUSEKEEPING: distillation is leader-only, tidying up after it is not.
-    if not dry_run and not _may_distil():
-        return {"ok": True, "dry_run": False, "group_by": group_by,
-                "groups": {}, "files_in": 0, "files_out": 0,
-                "skipped": "not-leader",
-                "note": "another peer is the elected compaction leader",
-                **archive_covered_captures()}
     if force:
         summarize = True
         min_group = 1

@@ -126,11 +126,22 @@ export AIFORGE_LLM_SSL_VERIFY="${AIFORGE_LLM_SSL_VERIFY:-true}"
 # require approval for ssh again.
 export AIFORGE_ALLOW_SSH="${AIFORGE_ALLOW_SSH:-1}"
 
-# Zero-config peer discovery ON by default: the LAN interface is auto-detected
-# (no AIFORGE_SYNC_SSDP_HOST to set), and SSDP is link-local + unauthenticated
-# so it only ever adds SAME-SEGMENT peers as untrusted candidates — it confers
-# no trust and can't cross a routed tunnel. Set AIFORGE_SYNC_SSDP=0 to disable.
-export AIFORGE_SYNC_SSDP="${AIFORGE_SYNC_SSDP:-1}"
+# Memory sync is hub-and-spoke. Every machine compacts its own memory locally;
+# one machine is the ADMIN, and it additionally runs the single CROSS-machine
+# merge over everybody's knowledge and serves the result back. Leave
+# AIFORGE_ADMIN_URL unset and this box IS the admin (which is also what a
+# standalone install is, so nothing to configure). On every other machine set it
+# in .env:
+#
+#     AIFORGE_ADMIN_URL=http://<admin-host>:8799
+#
+# The sync surface answers with NO credential by default, so a spoke needs
+# nothing else; set AIFORGE_SYNC_AUTH=1 (plus AIFORGE_API_TOKEN on both ends) to
+# require the API token on /api/memory/sync/* too. Bind the admin to a trusted
+# interface — a LAN address or a WireGuard one — not to 0.0.0.0 on a hostile
+# network.
+[[ -n "${AIFORGE_ADMIN_URL:-}" ]] && export AIFORGE_ADMIN_URL
+[[ -n "${AIFORGE_ROLE:-}" ]] && export AIFORGE_ROLE
 
 PORT=8799
 HOST=127.0.0.1

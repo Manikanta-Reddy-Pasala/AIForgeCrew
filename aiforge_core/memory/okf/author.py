@@ -9,10 +9,13 @@ is best-effort background work.
 """
 from __future__ import annotations
 
+import logging
 import os
 
 from . import graph as _graph
 from . import store as _store
+
+_log = logging.getLogger("aiforge.okf")
 
 
 def _slug(s: str) -> str:
@@ -636,7 +639,110 @@ def migrate_from_briefs() -> dict:
     return {"ok": True, "migrated": made, "topics": len(facts_by_topic)}
 
 
+def _brief_facts_by_topic() -> dict[str, list[str]]:
+    """Every locally-compacted brief's Facts, grouped by topic. Deterministic —
+    no model, no network: it reads the files md_store already wrote."""
+    import re
+
+    from aiforge_core.memory import md_store
+    from aiforge_core.runtime import work_notes
+
+    out: dict[str, list[str]] = {}
+    for p in md_store.iter_briefs():
+        base = p.stem[len("compacted-"):]
+        topic = re.sub(r"-\d+$", "", base)
+        try:
+            parsed = work_notes.parse_note(
+                p.read_text(encoding="utf-8", errors="replace"))
+        except Exception:  # noqa: BLE001 — one unreadable brief, not a dead pass
+            continue
+        if (parsed["frontmatter"] or {}).get("kind") != "knowledge":
+            continue
+        for fact in parsed["sections"].get("facts") or []:
+            fact = str(fact).strip()
+            if fact and fact not in out.setdefault(topic, []):
+                out[topic].append(fact)
+    return out
+
+
+def _fact_lines(body: str) -> list[str]:
+    """The bullet lines of a learning node's body, as plain facts."""
+    lines = []
+    for raw in (body or "").splitlines():
+        line = raw.strip()
+        if line.startswith("- "):
+            line = line[2:].strip()
+        if line:
+            lines.append(line)
+    return lines
+
+
+def sync_briefs_to_nodes() -> dict:
+    """Turn this machine's compacted briefs into OKF nodes, and keep them current.
+
+    **This is what makes local compaction reach the other machines.** Briefs are
+    class A files that stay local by design (each machine compacts its own), so
+    the only thing that travels is OKF knowledge — and a fact that never became
+    a node never leaves this box. Running this on every cycle closes that gap.
+
+    Deterministic and idempotent: one global learning node per brief topic,
+    body = the union of that topic's facts, newest appended. A topic already
+    represented is UPDATED rather than skipped — the one-shot
+    :func:`migrate_from_briefs` skips it, which is right for a migration and
+    wrong for a cycle, because every fact added after the first run would be
+    invisible forever.
+
+    No LLM is involved: the distillation already happened when the brief was
+    written, and re-summarising here would be a second, non-deterministic fold
+    of the same text on every machine.
+    """
+    facts_by_topic = _brief_facts_by_topic()
+    if not facts_by_topic:
+        return {"ok": True, "created": 0, "updated": 0, "topics": 0}
+
+    g = _graph.build(force=True)
+    existing = {}
+    for nid, node in g.nodes.items():
+        if node.get("type") != "learning":
+            continue
+        cat = str((node.get("meta") or {}).get("category") or "").lower()
+        if cat:
+            existing.setdefault(cat, (nid, node))
+
+    created = updated = 0
+    for topic, facts in facts_by_topic.items():
+        held = existing.get(topic.lower())
+        if held is None:
+            body = "\n".join(f"- {f}" for f in facts)[:4000]
+            if _store.save_node("learning", None,
+                                {"scope": "global", "category": topic,
+                                 "title": f"{topic} knowledge",
+                                 "tags": [f"topic:{topic}"]},
+                                body, reindex=False).get("ok"):
+                created += 1
+            continue
+        nid, node = held
+        have = _fact_lines(node.get("body") or "")
+        fresh = [f for f in facts if f not in have]
+        if not fresh:
+            continue          # unchanged: no write, no rev bump, nothing to sync
+        body = "\n".join(f"- {f}" for f in have + fresh)[:4000]
+        meta = dict(node.get("meta") or {})
+        meta.setdefault("scope", "global")
+        meta.setdefault("category", topic)
+        if _store.save_node("learning", nid, meta, body, reindex=False).get("ok"):
+            updated += 1
+
+    if created or updated:
+        _store._write_index()          # one rewrite for the whole pass
+    _log.info("okf: briefs → nodes created=%d updated=%d over %d topic(s)",
+              created, updated, len(facts_by_topic))
+    return {"ok": True, "created": created, "updated": updated,
+            "topics": len(facts_by_topic)}
+
+
 __all__ = ["extract_and_save", "write_session_node", "migrate_from_briefs",
+           "sync_briefs_to_nodes",
            "record_solution", "reclassify_global_learnings",
            "record_repo_profile", "record_script", "record_task",
            "build_repo_profiles"]

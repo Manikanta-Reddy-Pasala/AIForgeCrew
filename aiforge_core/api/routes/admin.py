@@ -1,4 +1,4 @@
-"""Operator admin surface for P2P memory sync (/admin + /api/admin/*).
+"""Operator admin surface for hub memory sync (/admin + /api/admin/*).
 
 Read-only, and reachable on **loopback OR a valid token** — the same rule
 ``api._require_token`` applies to everything else; this surface is not special
@@ -9,8 +9,8 @@ admin page from another machine.
 An earlier revision demanded the token here regardless of peer address, on the
 reasoning that the highest-value surface should not rest on the weakest signal.
 It was reverted (``11f5778``): a browser navigation cannot send an
-``Authorization`` header, so the day a token existed — the day you add one
-remote peer — this page stopped opening in a browser at all.
+``Authorization`` header, so the day a token existed this page stopped opening
+in a browser at all.
 
 The weak signal is real: a same-host reverse proxy makes every request on earth
 arrive from ``127.0.0.1``. **``AIFORGE_TRUST_LOOPBACK=0`` is the only thing
@@ -18,8 +18,8 @@ that closes that**, and a fronted deployment must set it for the rest of the
 API regardless. Do not re-add a special case here instead — it charges every
 correctly-configured operator for a hole that flag already shuts.
 
-This module is a thin adapter over ``memory.sync`` — ``peers``, ``election``
-and ``manifest`` own the data, this file only shapes it for a screen.
+This module is a thin adapter over ``memory.sync`` — ``role``, ``inbox`` and
+``manifest`` own the data, this file only shapes it for a screen.
 """
 from __future__ import annotations
 
@@ -27,7 +27,6 @@ import logging
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
 
 router = APIRouter()
 
@@ -37,37 +36,13 @@ _af_log = logging.getLogger("aiforge")
 # v4-mapped-in-v6 form appear depending on how the socket was bound.
 _LOOPBACK = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
 
-# A peer that is down is the common case, so the probe must fail fast: this
+# An admin that is down is the common case, so the probe must fail fast: this
 # runs inline in a page load. transport.fetch_manifest is deliberately NOT
 # reused — its 20s TIMEOUT is right for the sync loop (which has all cycle to
 # wait) and wrong for a UI, and it swallows the exception, so there would be
 # no error string and no latency to show. Changing transport's timeout would
 # degrade the sync loop to serve this page, so httpx is used directly instead.
 PROBE_TIMEOUT = 3.0
-
-# Bounds on one page load. The registry is grown by gossip and SSDP, i.e. by
-# whoever can reach us, so its size and contents are attacker-influenced: an
-# unbounded fan-out turns a page load into a minutes-long hang, and probing
-# unapproved entries turns it into a port scanner (reachability, latency and
-# the exception text of arbitrary internal urls, fetched by this host). So:
-# approved peers only, at most this many, and never longer than this in total.
-PROBE_MAX_PEERS = 16
-PROBE_FANOUT = 8
-PROBE_BUDGET = 8.0
-
-
-def _new_nonce() -> str:
-    """A fresh random challenge nonce (kept here so the one caller stays terse)."""
-    import secrets
-    return secrets.token_hex(16)
-
-
-class _AddPeerBody(BaseModel):
-    url: str
-    # Optional shared bearer token for the peer. Lets you add a peer by IP with
-    # NO AIFORGE_MESH_KEY set: supply the token the peer accepts (its mesh key /
-    # API token) and it is stored + used as that peer's bearer for sync.
-    token: str | None = None
 
 
 def _require_loopback(request: Request) -> None:
@@ -92,72 +67,36 @@ def _require_loopback(request: Request) -> None:
         )
 
 
-def _probe_peer(peer: dict) -> dict:
-    """Live reachability for one peer. Never raises — down is normal."""
+def _probe_admin(base_url: str) -> dict:
+    """Live reachability of the one machine we sync with. Never raises.
+
+    One fixed address, taken from this machine's own configuration — not a
+    roster somebody else can grow — so there is no fan-out to bound and no
+    request-forgery surface to worry about the way the old peer table had.
+    """
     import time
 
     import httpx
 
-    urls = [u for u in (peer.get("urls") or []) if u]
-    if not urls:
-        return {"reachable": False, "latency_ms": None, "their_entries": None,
-                "error": "no url configured", "probed": True}
-    token = str(peer.get("token") or "")
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    if not base_url:
+        return {"reachable": False, "latency_ms": None, "entries": None,
+                "error": None, "probed": False}
     started = time.monotonic()
     try:
-        r = httpx.get(f"{urls[0].rstrip('/')}/api/memory/sync/manifest",
-                      headers=headers, timeout=PROBE_TIMEOUT)
+        r = httpx.get(f"{base_url.rstrip('/')}/api/memory/sync/manifest",
+                      timeout=PROBE_TIMEOUT)
         r.raise_for_status()
-        entries = (r.json() or {}).get("manifest") or []
+        data = r.json() or {}
         return {"reachable": True,
                 "latency_ms": int((time.monotonic() - started) * 1000),
-                "their_entries": len(entries), "error": None, "probed": True}
-    except Exception as exc:  # noqa: BLE001 — an unreachable peer is a datum, not a failure
+                "entries": len(data.get("manifest") or []),
+                "id": str(data.get("admin") or ""),
+                "error": None, "probed": True}
+    except Exception as exc:  # noqa: BLE001 — an unreachable admin is a datum, not a failure
         return {"reachable": False,
                 "latency_ms": int((time.monotonic() - started) * 1000),
-                "their_entries": None, "error": f"{type(exc).__name__}: {exc}"[:200],
-                "probed": True}
-
-
-def _unprobed(error: str | None = None) -> dict:
-    """The result for a peer we deliberately did not contact."""
-    return {"reachable": False, "latency_ms": None, "their_entries": None,
-            "error": error, "probed": False}
-
-
-def _probe_all(peers: list[dict]) -> list[dict]:
-    """Probe the APPROVED peers concurrently, bounded, aligned with ``peers``.
-
-    Only approved entries are contacted: a candidate's url arrived over gossip
-    or SSDP, neither of which confers trust, and fetching one on behalf of an
-    operator viewing a page is a server-side request forgery with the result
-    rendered back. Candidates keep their slot in the list (the page still shows
-    them, labelled unprobed). The fan-out and the wall-clock budget are capped
-    so no roster, however long, can make this page hang.
-    """
-    import time
-    from concurrent.futures import ThreadPoolExecutor
-    from concurrent.futures import TimeoutError as _FuturesTimeout
-
-    results = [_unprobed() for _ in peers]
-    targets = [(i, p) for i, p in enumerate(peers)
-               if str(p.get("state") or "") == "approved"][:PROBE_MAX_PEERS]
-    if not targets:
-        return results
-    deadline = time.monotonic() + PROBE_BUDGET
-    pool = ThreadPoolExecutor(max_workers=min(PROBE_FANOUT, len(targets)))
-    try:
-        futures = {pool.submit(_probe_peer, p): i for i, p in targets}
-        for fut, i in futures.items():
-            try:
-                results[i] = fut.result(timeout=max(0.0, deadline - time.monotonic()))
-            except _FuturesTimeout:
-                results[i] = _unprobed("probe budget exceeded")
-    finally:
-        # Do not join: a straggler must not hold the page open past the budget.
-        pool.shutdown(wait=False, cancel_futures=True)
-    return results
+                "entries": None,
+                "error": f"{type(exc).__name__}: {exc}"[:200], "probed": True}
 
 
 def _md_count(directory) -> int:
@@ -181,142 +120,39 @@ def _local_counts() -> dict:
             "mesh": _md_count(_paths.mesh_dir()), "view": _md_count(_paths.view_dir())}
 
 
-def _leader_view() -> dict:
-    """Who distils — the elected leader, and whether that is us.
+def _role_view() -> dict:
+    """Which machine runs the cross-machine merge, and whether that is us.
 
-    There is nothing to read from disk: every peer derives the same answer from
-    its peer registry (see ``memory.sync.election``).
+    Configuration, not an election: ``role`` reads ``AIFORGE_ADMIN_URL`` /
+    ``AIFORGE_ROLE`` and answers immediately, so there is nothing to probe and
+    nothing to age out (see ``memory.sync.role``).
     """
-    from aiforge_core.memory.sync import election as _election
     from aiforge_core.memory.sync import identity as _identity
+    from aiforge_core.memory.sync import role as _role
 
-    name = _election.leader_name()
-    return {"leader": name, "is_us": name == _identity.self_id()}
+    return {"role": _role.role(), "is_admin": _role.is_admin(),
+            "admin_url": _role.admin_url(), "admin_id": _role.admin_id(),
+            "self": _identity.self_id()}
 
 
 @router.get("/api/admin/sync-status")
 def sync_status(request: Request, probe: int = Query(1)) -> dict:
     _require_loopback(request)
-    from aiforge_core.memory.sync import identity as _identity
-    from aiforge_core.memory.sync import peers as _peers
+    from aiforge_core.memory.sync import inbox as _inbox
 
-    data = _peers.load()
-    raw = list(data.get("peers") or [])
-    probes = _probe_all(raw) if probe else [{} for _ in raw]
-
-    out = []
-    for p, pr in zip(raw, probes, strict=False):
-        # NOTE: fields are listed explicitly — p may carry a token and this
-        # response must never echo one.
-        out.append({"id": str(p.get("id") or ""), "state": str(p.get("state") or ""),
-                    "urls": [str(u) for u in (p.get("urls") or [])],
-                    "last_seen": int(p.get("last_seen") or 0),
-                    "reachable": pr.get("reachable", False),
-                    "latency_ms": pr.get("latency_ms"),
-                    "their_entries": pr.get("their_entries"),
-                    # Per-peer, because a candidate is never probed even on a
-                    # probed request — the page must not read that as "down".
-                    "probed": bool(pr.get("probed")),
-                    "error": pr.get("error")})
-
-    me = data.get("self") or {}
-    return {"self": {"id": _identity.self_id(),
-                     "urls": [str(u) for u in (me.get("urls") or [])]},
-            "leader": _leader_view(),
+    role = _role_view()
+    admin = (_probe_admin(role["admin_url"]) if probe and not role["is_admin"]
+             else {"reachable": False, "latency_ms": None, "entries": None,
+                   "error": None, "probed": False})
+    return {"self": {"id": role["self"]},
+            "role": role,
             "local": _local_counts(),
-            "peers": out,
+            # Only meaningful on the admin — a spoke has an empty roll, which
+            # the page renders as the "you are a spoke" case rather than as
+            # "nobody is syncing".
+            "spokes": _inbox.roll() if role["is_admin"] else [],
+            "admin": admin,
             "probed": bool(probe)}
-
-
-@router.post("/api/admin/peers")
-def admin_add_peer(request: Request, body: _AddPeerBody) -> dict:
-    """Seed a peer by URL — the manual fallback for when SSDP can't reach it
-    (a flaky segment, a different VLAN). Loopback-only, like the rest of admin.
-
-    Keeps the shared-key model intact and leaks nothing on a typo:
-      1. Challenge the URL for the mesh key FIRST (HMAC over a nonce, our key
-         never sent). A mistyped address that does not hold the key is refused
-         here, before any credential leaves this host.
-      2. Only then authenticate to learn the peer's own id (its manifest's
-         roster advertises it), and approve it — the challenge already proved
-         membership, so no second round-trip.
-
-    Three ways to authorise the add, in precedence order:
-      • AIFORGE_MESH_KEY set → the challenge above verifies the address holds
-        the shared key, then the key doubles as the bearer.
-      • ``body.token`` given → that shared token is stored as the peer's bearer
-        and used for sync (``mesh_key() or peer["token"]``).
-      • Neither → zero-config: on a token-less mesh the peer serves its manifest
-        unauthenticated, so an IP alone works. A protected peer returns no
-        manifest and the caller is told a key/token is needed. Nothing leaks.
-    Reachability failures are surfaced, not swallowed."""
-    _require_loopback(request)
-    import hmac
-
-    from aiforge_core.memory.sync import peers as _peers
-    from aiforge_core.memory.sync import transport as _transport
-
-    url = str(body.url or "").strip().rstrip("/")
-    if not url.startswith(("http://", "https://")):
-        raise HTTPException(400, "url must be like http://<host>:<port>")
-
-    key = _peers.mesh_key()
-    manual_token = (body.token or "").strip()
-
-    if key:
-        # Mesh-key path: prove the address holds the key WITHOUT sending ours —
-        # a typo'd IP pointing at a hostile host must not be handed the secret.
-        nonce = _new_nonce()
-        proof = _transport.membership_proof(url, nonce)
-        if not proof or not hmac.compare_digest(proof, _peers.mesh_proof(nonce)):
-            raise HTTPException(
-                502, f"the peer at {url} did not prove the shared mesh key — "
-                "unreachable, wrong key, or not an AIForge peer")
-        _auth_token = key
-    elif manual_token:
-        # Manual-token path: the supplied token IS the shared secret.
-        # Authenticating with it below both proves the address is a real AIForge
-        # peer that accepts the token and learns its id in one round.
-        _auth_token = manual_token
-    else:
-        # Zero-config path: no mesh key and no token. On a token-less mesh (no
-        # AIFORGE_MESH_KEY / API token set anywhere — a trusted LAN or private
-        # tunnel), the peer serves its manifest UNAUTHENTICATED, so an IP alone
-        # is enough: authenticating with an empty token both reaches the peer and
-        # learns its id. If the peer IS protected, the fetch below comes back
-        # empty and we tell the user a token/key is needed — nothing leaks.
-        _auth_token = ""
-
-    # Safe to authenticate now: learn the peer's own id from its manifest.
-    remote = _transport.fetch_manifest(url, _auth_token)
-    if not remote:
-        if not key and not manual_token:
-            raise HTTPException(
-                502, f"the peer at {url} did not answer with a manifest — it is "
-                "unreachable, or it is token-protected. If protected, set the "
-                "SAME AIFORGE_MESH_KEY on both machines (then just add the IP), "
-                "or paste the peer's token in the Token field.")
-        raise HTTPException(
-            502, f"the peer at {url} did not answer with a manifest — "
-            "unreachable, wrong token, or not an AIForge peer")
-    roster = (remote or {}).get("roster") or []
-    # roster is coerced to a list by transport but its ELEMENTS are not typed:
-    # a peer on another build (or a hostile one that holds the key) can send
-    # ``roster: ["a string"]``, and ``"a string".get("id")`` would 500. Take the
-    # first dict, or nothing.
-    first = roster[0] if roster and isinstance(roster[0], dict) else {}
-    rid = _peers.normalise_id(first.get("id"))
-    if not rid:
-        raise HTTPException(502, f"the peer at {url} did not advertise an id")
-
-    # 3. Register + approve (membership already proven above).
-    _peers.merge_roster([{"id": rid, "urls": [url]}])
-    # Manual path: persist the shared token as this peer's bearer so the sync
-    # loop (``mesh_key() or peer["token"]``) can auth with no env key set.
-    if not key and manual_token:
-        _peers.set_token(rid, manual_token)
-    _peers.promote(rid, url)
-    return {"ok": True, "id": rid, "url": url, "state": _peers.STATE_APPROVED}
 
 
 @router.get("/admin", response_class=HTMLResponse)
@@ -328,8 +164,7 @@ def admin_page(request: Request) -> HTMLResponse:
 
     # Boot payload is the UNPROBED status: the page paints real local state
     # immediately with no network wait, then the first fetch below fills in
-    # peer reachability. Same shaping function, so it carries no tokens either.
-    # "<" is escaped so a peer id or url can never close the <script> block.
+    # reachability. "<" is escaped so an id or url can never close the <script>.
     boot = json.dumps(sync_status(request, probe=0)).replace("<", "\\u003c")
     return HTMLResponse(_PAGE.replace("__BOOT__", boot))
 
@@ -359,10 +194,8 @@ td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 tr:last-child td{border-bottom:0}
 .num{font-variant-numeric:tabular-nums;text-align:right}
 .pill{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;
-font-weight:600;border:1px solid transparent}
-.pill.approved{background:var(--okbg);color:var(--ok);border-color:var(--ok)}
-.pill.candidate{background:var(--warnbg);color:var(--warn);border-style:dashed;
-border-color:var(--warn)}
+font-weight:600;border:1px solid var(--ok);background:var(--okbg);color:var(--ok)}
+.pill.spoke{border-color:var(--warn);background:var(--warnbg);color:var(--warn)}
 .dot{display:inline-block;width:9px;height:9px;margin-right:5px;background:var(--ok);
 border-radius:50%}
 .dot.down{background:var(--bad);border-radius:1px;transform:rotate(45deg)}
@@ -373,34 +206,15 @@ border-radius:50%}
 border-radius:6px;padding:8px 10px;font-size:12px;margin-top:12px}
 button{font:inherit;background:var(--card);color:var(--fg);border:1px solid var(--line);
 border-radius:6px;padding:3px 10px;cursor:pointer}
-input{font:inherit;background:var(--card);color:var(--fg);border:1px solid var(--line);
-border-radius:6px;padding:3px 8px;min-width:220px}
-.add{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0 14px}
-.add .msg{font-size:12px}
-.add .msg.ok{color:var(--ok)} .add .msg.bad{color:var(--bad)}
 </style>
 <h1>Memory sync status</h1>
 <div class="sub"><span id="age">loading…</span> · <button id="refresh">Refresh</button></div>
-<div class="add">
-  <input id="peerurl" type="text" placeholder="http://192.168.1.50:8799"
-    title="Seed a peer by URL when SSDP can't reach it (e.g. across a tunnel).">
-  <input id="peertoken" type="password" placeholder="token (optional — only if peer is protected)"
-    title="Usually leave blank: an IP alone works on a token-less mesh, or with the same AIFORGE_MESH_KEY on both machines. Only paste a token if the peer is token-protected and you're not sharing a mesh key.">
-  <button id="addpeer">Add peer by IP</button>
-  <span id="addmsg" class="msg"></span>
-</div>
 <div id="err" class="note" style="display:none"></div>
 <div class="cards" id="cards"></div>
-<table><thead><tr><th>Peer</th><th>State</th><th>Reachable</th><th class="num">Latency</th>
-<th class="num">Entries</th><th class="num">Last seen</th><th>URLs</th></tr></thead>
+<table><thead><tr><th id="th1">Machine</th><th>State</th><th class="num">Latency</th>
+<th class="num">Entries</th><th class="num">Last seen</th></tr></thead>
 <tbody id="rows"></tbody></table>
-<div id="cand" class="note" style="display:none">Candidate peers were
-<b>discovered, not trusted</b>. They are never pulled from, and never probed — their
-urls came from gossip or SSDP, so contacting one would make this page fetch whatever
-a stranger named. With <span class="mono">AIFORGE_MESH_KEY</span> set they are
-promoted automatically once they prove the shared key; otherwise approve one by
-adding it above with its shared token in the <b>Token</b> field (no mesh key
-needed) — or by hand in <span class="mono">peers.json</span>.</div>
+<div id="hint" class="note" style="display:none"></div>
 <script>
 var last = 0;
 function ago(s){ if(!s) return '—';
@@ -411,33 +225,54 @@ function esc(v){ return String(v == null ? '' : v)
   .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function card(l, v){ return '<div class="card"><b>' + esc(v) + '</b><span>' + l + '</span></div>'; }
 function render(d){
-  var L = d.leader, C = d.local;
+  var R = d.role, C = d.local;
   document.getElementById('cards').innerHTML =
-    card('this peer', d.self.id) +
-    card('compaction leader', L.is_us ? L.leader + ' (us)' : L.leader) +
+    card('this machine', d.self.id) +
+    card('role', R.is_admin ? 'admin (merges for everyone)' : 'spoke') +
+    card('admin', R.is_admin ? 'this machine' : (R.admin_id || R.admin_url || '—')) +
     card('class A', C.class_a) + card('class B', C.class_b) +
     card('tombstones', C.tombstones) + card('conflicts', C.conflicts) +
     // one card per directory: each has a different writer, so this says where
-    // knowledge actually is — mine, received, the mesh result, my local view.
+    // knowledge actually is — mine, received, the fold, my local view.
     card('okf/ (mine)', C.okf) + card('peers/ (inbox)', C.peers) +
-    card('mesh/', C.mesh) + card('view/ (local)', C.view) +
-    card('known peers', d.peers.length);
-  document.getElementById('rows').innerHTML = d.peers.map(function(p){
-    var reach = (d.probed && p.probed)
-      ? (p.reachable ? '<span class="dot"></span>up'
+    card('mesh/', C.mesh) + card('view/ (local)', C.view);
+  var rows;
+  if (R.is_admin){
+    document.getElementById('th1').textContent = 'Spoke';
+    rows = (d.spokes || []).map(function(s){
+      return '<tr><td class="mono">' + esc(s.id) + '</td>'
+        + '<td><span class="pill spoke">spoke</span></td>'
+        + '<td class="num">—</td><td class="num">—</td>'
+        + '<td class="num">' + ago(s.last_seen) + '</td></tr>';
+    }).join('') || '<tr><td colspan="5" class="dim">No spoke has pushed yet.</td></tr>';
+  } else {
+    document.getElementById('th1').textContent = 'Admin';
+    var A = d.admin || {};
+    var state = A.probed
+      ? (A.reachable ? '<span class="dot"></span>up'
                      : '<span class="dot down"></span><span class="bad">down</span>'
-                       + (p.error ? ' <span class="dim mono">' + esc(p.error) + '</span>' : ''))
+                       + (A.error ? ' <span class="dim mono">' + esc(A.error) + '</span>' : ''))
       : '<span class="dim">not probed</span>';
-    return '<tr><td class="mono">' + esc(p.id) + '</td>'
-      + '<td><span class="pill ' + esc(p.state) + '">' + esc(p.state) + '</span></td>'
-      + '<td>' + reach + '</td>'
-      + '<td class="num">' + (p.latency_ms == null ? '—' : p.latency_ms + ' ms') + '</td>'
-      + '<td class="num">' + (p.their_entries == null ? '—' : p.their_entries) + '</td>'
-      + '<td class="num">' + ago(p.last_seen) + '</td>'
-      + '<td class="mono dim">' + esc((p.urls || []).join(' ')) + '</td></tr>';
-  }).join('') || '<tr><td colspan="7" class="dim">No peers configured.</td></tr>';
-  document.getElementById('cand').style.display =
-    d.peers.some(function(p){ return p.state === 'candidate'; }) ? 'block' : 'none';
+    rows = '<tr><td class="mono">' + esc(R.admin_url) + '</td>'
+      + '<td>' + state + '</td>'
+      + '<td class="num">' + (A.latency_ms == null ? '—' : A.latency_ms + ' ms') + '</td>'
+      + '<td class="num">' + (A.entries == null ? '—' : A.entries) + '</td>'
+      + '<td class="num">—</td></tr>';
+  }
+  document.getElementById('rows').innerHTML = rows;
+  var hint = document.getElementById('hint');
+  if (R.is_admin){
+    hint.style.display = 'block';
+    hint.innerHTML = 'This machine is the <b>admin</b>: it receives every spoke\\'s '
+      + 'notes, runs the compaction for all of them, and serves the result back. '
+      + 'Point a spoke here by setting <span class="mono">AIFORGE_ADMIN_URL</span> '
+      + 'on it. Sync answers with no credential unless '
+      + '<span class="mono">AIFORGE_SYNC_AUTH=1</span> is set.';
+  } else if (!R.admin_url){
+    hint.style.display = 'block';
+    hint.innerHTML = 'No <span class="mono">AIFORGE_ADMIN_URL</span> is set, so '
+      + 'this machine merges only its own knowledge.';
+  } else { hint.style.display = 'none'; }
 }
 function load(){
   fetch('/api/admin/sync-status').then(function(r){
@@ -455,38 +290,6 @@ function load(){
 function tick(){ document.getElementById('age').textContent = last
   ? 'updated ' + Math.round((Date.now() - last)/1000) + 's ago' : 'never updated'; }
 document.getElementById('refresh').onclick = load;
-function addPeer(){
-  var inp = document.getElementById('peerurl');
-  var tok = document.getElementById('peertoken');
-  var msg = document.getElementById('addmsg');
-  var url = inp.value.trim();
-  if (!url){ inp.focus(); return; }
-  var payload = {url: url};
-  var token = tok.value.trim();
-  if (token) payload.token = token;
-  msg.className = 'msg'; msg.textContent = 'verifying…';
-  fetch('/api/admin/peers', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(payload)
-  }).then(function(r){ return r.json().then(function(d){ return {ok: r.ok, d: d}; }); })
-    .then(function(res){
-      if (res.ok){
-        msg.className = 'msg ok';
-        msg.textContent = 'added ' + esc(res.d.id) + ' (' + esc(res.d.state) + ')';
-        inp.value = ''; tok.value = ''; load();
-      } else {
-        msg.className = 'msg bad';
-        msg.textContent = esc((res.d && res.d.detail) || 'failed');
-      }
-    }).catch(function(e){ msg.className = 'msg bad'; msg.textContent = e.message; });
-}
-document.getElementById('addpeer').onclick = addPeer;
-document.getElementById('peerurl').addEventListener('keydown', function(e){
-  if (e.key === 'Enter') addPeer();
-});
-document.getElementById('peertoken').addEventListener('keydown', function(e){
-  if (e.key === 'Enter') addPeer();
-});
 render(__BOOT__);        // local state, painted with no network round-trip
 setInterval(load, 10000); setInterval(tick, 1000); load();
 </script>

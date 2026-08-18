@@ -1,13 +1,12 @@
-"""compact() asks the sync election two questions, with opposite bias.
+"""Local compaction is local, on every machine — admin and spoke alike.
 
-"May I distil?" fails OPEN — a duplicate brief is cheap. "Which captures does an
-arrived brief already cover?" fails CLOSED — an archived capture no brief covers
-is unrecoverable. Single-machine behaviour must be byte-for-byte what it was
-before the mesh existed: no peers configured, no gate.
+Turning captures into briefs is work on one machine's own files, so nothing
+about the hub gates it: only the CROSS-machine merge is admin-only (see
+``test_okf_tiers``). What compact() does still ask is "which captures does a
+brief already cover?", and that fails CLOSED — an archived capture no brief
+covers is unrecoverable.
 """
 from __future__ import annotations
-
-import time
 
 import pytest
 
@@ -19,18 +18,16 @@ def mem(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_MEMORY_BACKEND", "sqlite")
     monkeypatch.setenv("AIFORGE_MEMORY_DB_PATH", str(tmp_path / "m.db"))
     monkeypatch.setenv("AIFORGE_PEER_ID", "nuc")
+    monkeypatch.delenv("AIFORGE_ADMIN_URL", raising=False)
+    monkeypatch.delenv("AIFORGE_ROLE", raising=False)
     return tmp_path
 
 
-def _approve(peer_id: str = "air", *, ago: int = 60) -> None:
-    """An approved peer we reached ``ago`` seconds back. 'air' < 'nuc'."""
-    from aiforge_core.memory.sync import peers
-
-    data = peers.load()
-    data["peers"] = [{"id": peer_id, "urls": ["http://10.0.0.9:8799"],
-                      "state": peers.STATE_APPROVED,
-                      "last_seen": int(time.time()) - ago}]
-    peers.save(data)
+@pytest.fixture()
+def spoke(mem, monkeypatch):
+    """This machine is a spoke: an admin is named. Compaction is unaffected."""
+    monkeypatch.setenv("AIFORGE_ADMIN_URL", "http://10.0.0.9:8799")
+    return mem
 
 
 def _capture(tmp_path, stem: str, *, repo: str = "notes") -> None:
@@ -66,20 +63,20 @@ def _captures(tmp_path) -> set[str]:
     return {p.stem for p in md_store.captures_dir().glob("*.md")}
 
 
-# ── distillation: leader-only ────────────────────────────────────────────
-def test_distillation_is_skipped_on_a_non_leader(mem):
-    _approve()
-    _capture(mem, "one")
-    _capture(mem, "two")
+# ── distillation: everywhere ─────────────────────────────────────────────
+def test_distillation_runs_on_a_spoke_too(spoke):
+    """A spoke is not a thin client: it distils its own captures with its own
+    context, and the briefs stay on it."""
+    _capture(spoke, "one")
+    _capture(spoke, "two")
 
     out = _compact()
 
-    assert out["skipped"] == "not-leader"
-    assert out["files_out"] == 0
+    assert "skipped" not in out
+    assert out["files_out"] >= 1
 
 
-def test_distillation_runs_when_we_are_the_leader(mem):
-    _approve("zed")            # 'nuc' < 'zed', so we lead
+def test_distillation_runs_on_the_admin(mem):
     _capture(mem, "one")
     _capture(mem, "two")
 
@@ -87,83 +84,85 @@ def test_distillation_runs_when_we_are_the_leader(mem):
 
 
 def test_distillation_runs_on_a_single_machine(mem):
-    """No approved peers = no mesh = nothing to defer to. Unchanged behaviour."""
+    """No admin url = we are the admin = nothing to defer to. Unchanged."""
     _capture(mem, "one")
     _capture(mem, "two")
 
     assert "skipped" not in _compact()
 
 
-def test_an_election_that_explodes_makes_us_distil_anyway(mem, monkeypatch):
-    """Losing compaction to an unreadable registry is worse than duplicating it."""
-    from aiforge_core.memory.sync import election
-    _approve()
+def test_a_garbage_role_still_lets_us_distil(mem, monkeypatch):
+    """Nothing about the role reaches local compaction — not even a broken one."""
     _capture(mem, "one")
     _capture(mem, "two")
-    monkeypatch.setattr(election, "is_leader",
-                        lambda: (_ for _ in ()).throw(OSError("config gone")))
+    monkeypatch.setenv("AIFORGE_ROLE", "leader")
 
     assert "skipped" not in _compact()
 
 
-def test_a_dry_run_preview_is_never_gated(mem):
-    """It reads, costs no tokens, and an operator asking "what would happen"
-    deserves an answer even on a follower."""
-    _approve()
-    _capture(mem, "one")
-    _capture(mem, "two")
+def test_a_dry_run_preview_is_a_preview_everywhere(spoke):
+    """It reads and costs no tokens, so it never writes — on any machine."""
+    _capture(spoke, "one")
+    _capture(spoke, "two")
 
     out = _compact(dry_run=True)
 
     assert out["dry_run"] is True and "skipped" not in out
+    assert _captures(spoke) == {"one", "two"}
 
 
-# ── housekeeping: everybody's job ────────────────────────────────────────
-def test_a_non_leader_archives_exactly_what_an_arrived_brief_covers(mem):
-    _approve()
+# ── housekeeping: a brief that arrived claims captures we also hold ───────
+def test_an_arrived_brief_lets_us_archive_exactly_what_it_covers(spoke):
+    """``archive_covered_captures`` reached directly: the normal path archives
+    what OUR OWN fold just consumed, and this is the other half."""
+    from aiforge_core.memory.md_store import archive_covered_captures
+
     for stem in ("cap-x", "cap-y", "cap-z"):
-        _capture(mem, stem)
-    _brief(mem, "shared", ["cap-x", "cap-y"])
+        _capture(spoke, stem)
+    _brief(spoke, "shared", ["cap-x", "cap-y"])
 
-    out = _compact()
+    out = archive_covered_captures()
 
-    assert out["skipped"] == "not-leader"
     assert out["archived"] == 2
-    assert _captures(mem) == {"cap-z"}, "an uncovered capture must survive"
+    assert _captures(spoke) == {"cap-z"}, "an uncovered capture must survive"
 
 
-def test_a_brief_with_no_provenance_archives_nothing(mem):
+def test_a_brief_with_no_provenance_archives_nothing(spoke):
     """Briefs written before provenance existed claim nothing — and guessing
     which captures they ate would delete un-distilled memory."""
-    _approve()
+    from aiforge_core.memory.md_store import archive_covered_captures
+
+    mem = spoke
     for stem in ("cap-x", "cap-y"):
         _capture(mem, stem)
     _brief(mem, "shared", [])
 
-    out = _compact()
+    out = archive_covered_captures()
 
     assert out["archived"] == 0
     assert _captures(mem) == {"cap-x", "cap-y"}
 
 
-def test_a_provenance_check_that_explodes_archives_nothing(mem, monkeypatch):
-    """Soft-fail CLOSED — the opposite of the distillation gate, on purpose."""
+def test_a_provenance_check_that_explodes_archives_nothing(spoke, monkeypatch):
+    """Soft-fail CLOSED: any doubt at all → move nothing."""
     from aiforge_core.memory.md_store import _compact as _c
-    _approve()
+    from aiforge_core.memory.md_store import archive_covered_captures
+
+    mem = spoke
     for stem in ("cap-x", "cap-y"):
         _capture(mem, stem)
     _brief(mem, "shared", ["cap-x", "cap-y"])
     monkeypatch.setattr(_c, "brief_source_stems",
                         lambda: (_ for _ in ()).throw(OSError("disk gone")))
 
-    out = _compact()
+    out = archive_covered_captures()
 
     assert out["archived"] == 0
     assert out["housekeeping"] == "provenance-unreadable"
     assert _captures(mem) == {"cap-x", "cap-y"}
 
 
-def test_the_leader_still_archives_by_distilling_not_by_housekeeping(mem):
+def test_the_admin_still_archives_by_distilling_not_by_housekeeping(mem):
     _capture(mem, "cap-x")
     _capture(mem, "cap-y")
 

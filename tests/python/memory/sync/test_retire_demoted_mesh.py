@@ -1,40 +1,32 @@
-"""Finding 7: a demoted leader's own mesh/<id>/ fold must not be immortal.
+"""A machine that stops being the admin must not leave an immortal fold.
 
 A fold is a class B node — advertised, replicated, keyed on its minting origin
-(mesh/<origin>/). So after a handover the old leader's subtree otherwise rides
-every future sync to every peer and every NEW peer forever, one dead subtree per
-leadership change: ``_prune`` only touches the *current* leader's own dir, and
-no other peer may delete a foreign mesh node (the next pull refetches it, and
+(mesh/<origin>/). So after the role moves, the old admin's subtree otherwise
+rides every future sync to every spoke and every NEW spoke forever, one dead
+subtree per role change: ``_prune`` only touches the *current* fold's own dir,
+and nobody else may delete a foreign mesh node (the next pull refetches it, and
 forging a tombstone for another origin is what ``apply`` refuses).
 
 The remedy is that the retiring owner tombstones its OWN fold through the
 self-origin-guarded ``tombstone.mark_deleted``, and that tombstone propagates
-the removal. A *dead* ex-leader cannot run this (that would need another peer to
-forge its deletion), so this covers the alive-demotion handover — a smaller-id
-peer joining — which is the common case.
+the removal. A machine switched off at the moment it is demoted cannot run this
+(that would need somebody else to forge its deletion), so this covers the
+alive-demotion case — an operator pointing the box at a new admin.
 """
 from __future__ import annotations
-
-import time
 
 import pytest
 
 
-def _env(monkeypatch, tmp_path, peer_id: str):
+def _env(monkeypatch, tmp_path, peer_id: str, admin: str = ""):
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
     monkeypatch.setenv("AIFORGE_PEER_ID", peer_id)
-
-
-def _approve(*entries: tuple[str, int]) -> None:
-    from aiforge_core.memory.sync import peers
-
-    now = int(time.time())
-    data = peers.load()
-    data["peers"] = [{"id": pid, "urls": [f"http://{pid}:8799"],
-                      "state": peers.STATE_APPROVED, "last_seen": now - ago}
-                     for pid, ago in entries]
-    peers.save(data)
+    monkeypatch.delenv("AIFORGE_ROLE", raising=False)
+    if admin:
+        monkeypatch.setenv("AIFORGE_ADMIN_URL", admin)
+    else:
+        monkeypatch.delenv("AIFORGE_ADMIN_URL", raising=False)
 
 
 @pytest.fixture()
@@ -60,25 +52,24 @@ def _write_okf(peer_id: str, node_id: str, body: str) -> None:
         nodes.render_node("learning", node_id, meta, body), encoding="utf-8")
 
 
-def test_a_demoted_leader_tombstones_its_own_stale_fold(monkeypatch, tmp_path, folds):
-    """``air`` leads and folds, then a smaller-id peer ``aa`` joins alive: air is
-    demoted and must retract its own mesh subtree, leaving a tombstone."""
+def test_a_demoted_admin_tombstones_its_own_stale_fold(monkeypatch, tmp_path, folds):
+    """``air`` is the admin and folds, then the operator points it at a new
+    admin: air must retract its own mesh subtree, leaving a tombstone."""
     _env(monkeypatch, tmp_path, "air")
     from aiforge_core.memory.okf import tiers
     from aiforge_core.memory.sync import paths
 
     _write_okf("air", "L-01", "air knows a fact")
-    tiers.run_after_sync()          # air is the lone leader → folds mesh/air/
+    tiers.run_after_sync()          # air is the admin → folds mesh/air/
     mesh_air = paths.mesh_dir() / "air"
     folded = list(mesh_air.glob("*.md"))
-    assert folded, "the leader never wrote its own fold"
+    assert folded, "the admin never wrote its own fold"
     key = folded[0].stem
 
-    # A lexicographically-smaller peer appears, alive → air is no longer leader.
-    _approve(("aa", 60))
-    from aiforge_core.memory.sync import election
-    assert election.leader() == "aa"
-    assert election.effective_leader() == "aa"
+    # The operator names a different admin → air is a spoke from now on.
+    monkeypatch.setenv("AIFORGE_ADMIN_URL", "http://aa:8799")
+    from aiforge_core.memory.sync import role
+    assert role.is_admin() is False
 
     tiers.run_after_sync()          # air demoted → retires its own fold
 
@@ -90,11 +81,12 @@ def test_a_demoted_leader_tombstones_its_own_stale_fold(monkeypatch, tmp_path, f
     assert rec.get("tomb") is True and rec.get("origin") == "air"
 
 
-def test_the_retirement_tombstone_removes_the_fold_on_another_peer(
+def test_the_retirement_tombstone_removes_the_fold_elsewhere(
         monkeypatch, tmp_path, folds):
-    """The retraction must *propagate*: air's tombstone, applied on a peer still
-    holding air's fold, removes it — otherwise the next pull refetches it."""
-    from aiforge_core.memory.sync import apply, manifest, merge, paths
+    """The retraction must *propagate*: air's tombstone, applied on a machine
+    still holding air's fold, removes it — otherwise the next pull refetches
+    it."""
+    from aiforge_core.memory.sync import apply, manifest, paths
 
     # 1) air folds, is demoted, and retires — producing the tombstone.
     _env(monkeypatch, tmp_path, "air")
@@ -102,7 +94,7 @@ def test_the_retirement_tombstone_removes_the_fold_on_another_peer(
     _write_okf("air", "L-01", "air knows a fact")
     tiers.run_after_sync()
     key = list((paths.mesh_dir() / "air").glob("*.md"))[0].stem
-    _approve(("aa", 60))
+    monkeypatch.setenv("AIFORGE_ADMIN_URL", "http://aa:8799")
     tiers.run_after_sync()
 
     manifest._CACHE.clear()
@@ -110,7 +102,7 @@ def test_the_retirement_tombstone_removes_the_fold_on_another_peer(
                       if e.get("tomb") and e.get("key") == key)
     tomb_body = manifest.path_for_hash(tomb_entry["hash"]).read_bytes()
 
-    # 2) a second peer 'ms' still holds air's fold at mesh/air/<key>.md.
+    # 2) a second machine 'ms' still holds air's fold at mesh/air/<key>.md.
     _env(monkeypatch, tmp_path / "ms", "ms")
     from aiforge_core.memory.okf import nodes
     held = paths.mesh_dir() / "air"

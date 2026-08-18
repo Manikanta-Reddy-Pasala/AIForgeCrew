@@ -1,7 +1,10 @@
 # P2P Shared Memory — Design
 
 **Date:** 2026-07-19
-**Status:** Implemented and validated on two machines — see "Live validation" at the end
+**Status:** SUPERSEDED (2026-08-18) by [2026-08-18-admin-memory-sync-design.md](2026-08-18-admin-memory-sync-design.md).
+The mesh, its discovery, its shared key and its election are gone; one named admin
+receives every machine's knowledge and folds it. The record classes, identity scheme
+and merge rule below still describe what runs.
 **Topology:** Full mesh, pull-only, no master for replication
 
 ## Problem

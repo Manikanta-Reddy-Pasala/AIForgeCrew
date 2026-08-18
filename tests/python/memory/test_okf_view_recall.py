@@ -1,9 +1,10 @@
-"""``view/`` has to reach an agent, or the whole peer-to-peer feature is inert.
+"""The fold has to reach an agent, or the whole sync feature is inert.
 
-Knowledge replicates into ``peers/``, the leader folds it into ``mesh/`` and
-tier 2 folds that into ``view/`` — and none of it matters until a retrieval path
-reads the result. The spec names exactly one shape for that: agents read
-``okf/`` plus ``view/``, and never the same fact twice.
+Knowledge is pushed into the admin's ``peers/``, the admin folds it into
+``mesh/`` and tier 2 folds that into ``view/`` — and none of it matters until a
+retrieval path reads the result. The spec names exactly one shape for that:
+agents read ``okf/`` plus ``view/``, and never the same fact twice. On a spoke,
+which runs no tier 2, ``mesh/`` stands in for the view — never alongside it.
 """
 from __future__ import annotations
 
@@ -77,11 +78,8 @@ def test_a_local_note_the_view_does_not_carry_still_surfaces(mem):
     assert _FACT in out
 
 
-def test_the_view_is_read_but_the_mesh_inbox_is_not(mem):
-    """``mesh/`` is an input to the view, not a second retrieval source: reading
-    both surfaces the same content raw *and* distilled."""
+def _mesh_node(mem, body: str):
     from aiforge_core.memory.okf import nodes
-    from aiforge_core.memory.okf.retrieve import context_block
 
     d = mem / "mesh" / "nuc"
     d.mkdir(parents=True, exist_ok=True)
@@ -89,8 +87,31 @@ def test_the_view_is_read_but_the_mesh_inbox_is_not(mem):
         nodes.render_node("learning", "M-sync-abc12345",
                           {"title": "M", "scope": "global", "derived": "mesh",
                            "origin": "nuc", "rev": 1, "updated_by": "nuc"},
-                          "redis evictions raw mesh text"), encoding="utf-8")
+                          body), encoding="utf-8")
+
+
+def test_the_mesh_is_never_read_beside_the_view(mem):
+    """``mesh/`` is an INPUT to the view, not a second retrieval source: reading
+    both surfaces the same content raw *and* distilled."""
+    from aiforge_core.memory.okf.retrieve import context_block
+
+    _mesh_node(mem, "redis evictions raw mesh text")
+    _view_node(mem, "V-sync-abc12345", _FACT)
 
     out = context_block(repo=None, query="redis evictions")
 
+    assert _FACT in out
     assert "raw mesh text" not in out
+
+
+def test_with_no_view_the_mesh_itself_reaches_the_agent(mem):
+    """A spoke runs no tier 2 — the admin already did the distilling — so its
+    ``view/`` stays empty. Returning nothing there would leave every spoke's
+    agents on purely local memory while the fold sat unread on disk."""
+    from aiforge_core.memory.okf.retrieve import context_block
+
+    _mesh_node(mem, "redis evictions need maxmemory-policy allkeys-lru")
+
+    out = context_block(repo=None, query="redis evictions")
+
+    assert "maxmemory-policy allkeys-lru" in out

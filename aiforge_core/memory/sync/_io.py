@@ -43,7 +43,16 @@ def root() -> Path:
 
 
 def sha256_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return sha256_bytes(path.read_bytes())
+
+
+def sha256_bytes(body: bytes) -> str:
+    """The manifest hash of bytes already in hand.
+
+    Shared with ``sha256_file`` so a body re-read before a push is hashed the
+    one way the manifest, the applier and the admin all compare in.
+    """
+    return hashlib.sha256(body).hexdigest()
 
 
 def rel(path: Path) -> str:
@@ -166,6 +175,6 @@ def read_node_meta(path: Path) -> dict:
     return meta if isinstance(meta, dict) else {}
 
 
-__all__ = ["root", "sha256_file", "rel", "safe_target", "is_syncable",
+__all__ = ["root", "sha256_file", "sha256_bytes", "rel", "safe_target", "is_syncable",
            "iter_syncable", "write_atomic", "read_json", "write_json",
            "read_node_meta"]

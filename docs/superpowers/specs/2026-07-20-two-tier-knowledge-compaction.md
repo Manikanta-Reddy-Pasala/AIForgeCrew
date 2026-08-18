@@ -1,7 +1,11 @@
 # Two-Tier Knowledge Compaction — Design
 
 **Date:** 2026-07-20
-**Status:** Implemented — see commits 77aae97, 22ad7e9, fb17e7d
+**Status:** Implemented; the leader-election half SUPERSEDED (2026-08-18) by
+[2026-08-18-admin-memory-sync-design.md](2026-08-18-admin-memory-sync-design.md) —
+the folding machine is now named by ``AIFORGE_ADMIN_URL`` rather than elected, and
+tier 2 runs on that machine only (a spoke reads ``mesh/`` as its view). The two-tier
+shape, the folder layout and the amplification rules below are unchanged.
 **Supersedes:** the `okf/peers/<origin>/` layout in
 `2026-07-19-p2p-shared-memory-design.md` (schema change 1)
 
