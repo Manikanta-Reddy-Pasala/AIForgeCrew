@@ -130,9 +130,19 @@ def _role_view() -> dict:
     from aiforge_core.memory.sync import identity as _identity
     from aiforge_core.memory.sync import role as _role
 
-    return {"role": _role.role(), "is_admin": _role.is_admin(),
-            "admin_url": _role.admin_url(), "admin_id": _role.admin_id(),
-            "self": _identity.self_id()}
+    is_admin = _role.is_admin()
+    url = _role.admin_url()
+    return {"role": _role.role(), "is_admin": is_admin,
+            "admin_url": url, "admin_id": _role.admin_id(),
+            "self": _identity.self_id(),
+            # A spoke with no admin named neither syncs nor merges, and used to
+            # render as "merges only its own knowledge" — the opposite of what
+            # happens. Surfaced as its own state rather than inferred in the
+            # template, so the JSON says it too.
+            "stranded": bool(not is_admin and not url),
+            # An admin that still carries a url is a misconfiguration the page
+            # would otherwise hide behind "admin: this machine".
+            "stale_url": url if (is_admin and url) else ""}
 
 
 @router.get("/api/admin/sync-status")
@@ -229,7 +239,10 @@ function render(d){
   document.getElementById('cards').innerHTML =
     card('this machine', d.self.id) +
     card('role', R.is_admin ? 'admin (merges for everyone)' : 'spoke') +
-    card('admin', R.is_admin ? 'this machine' : (R.admin_id || R.admin_url || '—')) +
+    card('admin', R.is_admin
+                    ? (R.stale_url ? 'this machine (stale url: ' + R.stale_url + ')'
+                                   : 'this machine')
+                    : (R.admin_id || R.admin_url || '—')) +
     card('class A', C.class_a) + card('class B', C.class_b) +
     card('tombstones', C.tombstones) + card('conflicts', C.conflicts) +
     // one card per directory: each has a different writer, so this says where
@@ -268,10 +281,13 @@ function render(d){
       + 'Point a spoke here by setting <span class="mono">AIFORGE_ADMIN_URL</span> '
       + 'on it. Sync answers with no credential unless '
       + '<span class="mono">AIFORGE_SYNC_AUTH=1</span> is set.';
-  } else if (!R.admin_url){
+  } else if (R.stranded){
     hint.style.display = 'block';
-    hint.innerHTML = 'No <span class="mono">AIFORGE_ADMIN_URL</span> is set, so '
-      + 'this machine merges only its own knowledge.';
+    hint.innerHTML = '<b>This machine neither syncs nor merges.</b> It is a spoke '
+      + '(<span class="mono">AIFORGE_ROLE=spoke</span>) with no '
+      + '<span class="mono">AIFORGE_ADMIN_URL</span> to sync with, so the '
+      + 'cross-machine merge is skipped and nothing arrives. Set the url, or '
+      + 'start this box with <span class="mono">./run.sh --admin</span>.';
   } else { hint.style.display = 'none'; }
 }
 function load(){

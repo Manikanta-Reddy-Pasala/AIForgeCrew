@@ -255,7 +255,17 @@ def main() -> None:
         # the value actually arrives at.
         ap.error("--interval must be a positive number of seconds")
     logging.basicConfig(level=logging.INFO)
-    _log.info("sync: role=%s admin=%s", role.role(), role.admin_url() or "this machine")
+    # Reads the ROLE first, like run_once does. Logging the url unconditionally
+    # made the one diagnostic line an operator sees say "role=admin
+    # admin=http://someone-else" — the exact configuration this line is read to
+    # debug.
+    if role.is_admin():
+        _log.info("sync: role=admin — this machine merges; it makes no outbound call")
+    elif role.admin_url():
+        _log.info("sync: role=spoke admin=%s", role.admin_url())
+    else:
+        _log.warning("sync: role=spoke but no AIFORGE_ADMIN_URL is set — this "
+                     "machine will neither sync nor merge")
     if args.once:
         for row in run_once():
             print(row)

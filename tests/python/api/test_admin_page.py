@@ -79,7 +79,8 @@ def test_sync_status_shape_on_the_admin(monkeypatch, tmp_path):
     assert body["self"]["id"] == "nuc"
     # Configuration, not an election: the role answers immediately and names
     # itself as the admin.
-    assert set(body["role"]) == {"role", "is_admin", "admin_url", "admin_id", "self"}
+    assert set(body["role"]) == {"role", "is_admin", "admin_url", "admin_id",
+                                 "self", "stranded", "stale_url"}
     assert body["role"]["role"] == "admin"
     assert body["role"]["is_admin"] is True
     assert body["role"]["admin_id"] == "nuc"
@@ -89,6 +90,33 @@ def test_sync_status_shape_on_the_admin(monkeypatch, tmp_path):
     assert [s["id"] for s in body["spokes"]] == ["laptop", "mac"]   # newest first
     # An admin has nothing upstream to probe, so the probe is never entered.
     assert body["admin"]["probed"] is False
+
+
+def test_a_spoke_with_no_admin_named_is_reported_as_stranded(monkeypatch, tmp_path):
+    """It neither syncs (nowhere to sync to) nor merges (not the admin). The
+    page used to render that state as "merges only its own knowledge"."""
+    api, _admin = _fresh_api(monkeypatch, tmp_path)
+    monkeypatch.setenv("AIFORGE_ROLE", "spoke")
+    c = TestClient(api.app, client=LOOPBACK)
+
+    body = c.get("/api/admin/sync-status").json()
+
+    assert body["role"]["stranded"] is True
+    assert "neither syncs nor merges" in c.get("/admin").text
+
+
+def test_an_admin_carrying_a_stale_url_shows_it(monkeypatch, tmp_path):
+    """Otherwise the page renders "admin: this machine" and hides the very
+    setting that would make a restart demote the box."""
+    api, _admin = _fresh_api(monkeypatch, tmp_path,
+                             admin_url="http://someone-else:8799")
+    monkeypatch.setenv("AIFORGE_ROLE", "admin")
+    c = TestClient(api.app, client=LOOPBACK)
+
+    role = c.get("/api/admin/sync-status").json()["role"]
+
+    assert role["is_admin"] is True
+    assert role["stale_url"] == "http://someone-else:8799"
 
 
 def test_sync_status_shape_on_a_spoke(monkeypatch, tmp_path):

@@ -93,10 +93,12 @@ cd "$(dirname "$0")"
 # Source a committed-out `.env` / `aiforge.env` if present so `./run.sh`
 # applies the operator's model base_url + SSL settings with NO manual
 # `export`. `set -a` auto-exports every assignment in the file.
+ENV_FILE=""            # the file that was actually sourced, for writers below
 for _envf in .env aiforge.env; do
   if [[ -f "$_envf" ]]; then
     echo "==> loading env from $_envf"
     set -a; . "./$_envf"; set +a
+    ENV_FILE="$_envf"
     break
   fi
 done
@@ -186,7 +188,9 @@ while [[ $# -gt 0 ]]; do
     --reset-config) RESET_CONFIG=1 ;;
     --port) PORT="$2"; shift ;;
     --host) HOST="$2"; shift ;;
-    -h|--help) sed -n '2,76p' "$0"; exit 0 ;;
+    # End-anchored, not a hardcoded line number: the header grows, and a fixed
+    # range silently drops the newest flags from --help (it already had).
+    -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift
@@ -197,21 +201,60 @@ done
 # other machine's OKF nodes and runs the single cross-machine merge over them;
 # every other machine names it with AIFORGE_ADMIN_URL and is a spoke. Local
 # compaction is unaffected either way — every machine distils its own memory.
+#
+# The role is PERSISTED to .env, not just exported for this process. It has to
+# be: the shipped unit (scripts/runtime/nuc/aiforge-api.service) starts run.sh
+# with no --admin, so a reboot or `systemctl restart` would otherwise bring the
+# admin back as a plain machine — and a box that stops being the admin RETIRES
+# its own mesh fold (okf/tiers._retire_own_mesh), i.e. the fleet's merged
+# knowledge would be deleted by a restart.
+if [[ $ADMIN -eq 1 && "$MODE" == "docker" ]]; then
+  # The container image does not run the sync loop at all (docker/entrypoint.sh),
+  # and docker-compose.yml forwards neither AIFORGE_ROLE nor AIFORGE_ADMIN_URL,
+  # so printing a role here would be a claim about a process that never syncs.
+  echo "error: --admin has no meaning in --docker mode: the container does not" >&2
+  echo "       run the memory sync loop. Run the admin on the host." >&2
+  exit 2
+fi
+if [[ $ADMIN -eq 1 && -n "${AIFORGE_ADMIN_URL:-}" ]]; then
+  # REFUSED, not overridden. --admin used to mean only "open the /admin page",
+  # so an operator on a SPOKE may still type it out of habit; silently promoting
+  # that machine gives the fleet two admins, both stamping `derived: mesh`.
+  echo "error: --admin, but AIFORGE_ADMIN_URL=$AIFORGE_ADMIN_URL says this box is a spoke." >&2
+  echo "       A machine cannot be both. To just open the sync page: ./run.sh --admin-page" >&2
+  echo "       To make THIS box the admin: remove AIFORGE_ADMIN_URL from .env first." >&2
+  exit 2
+fi
 if [[ $ADMIN -eq 1 ]]; then
   export AIFORGE_ROLE=admin
-  if [[ -n "${AIFORGE_ADMIN_URL:-}" ]]; then
-    # A machine cannot be both. --admin is the deliberate, typed-now statement,
-    # so it wins over a value left in .env — and the url is cleared as well as
-    # overridden, so nothing downstream reads it as "there is an upstream".
-    echo "  note: --admin overrides AIFORGE_ADMIN_URL=$AIFORGE_ADMIN_URL — this box is the admin"
-    unset AIFORGE_ADMIN_URL
+  # Persist it, idempotently, in the file run.sh sources on every start. Named
+  # from ENV_FILE rather than the loop variable, which holds the LAST candidate
+  # tried (aiforge.env) when no env file exists at all — writing the role into a
+  # file that is only read when .env is absent would lose it the moment one
+  # appeared.
+  _envf_out="${ENV_FILE:-.env}"
+  if ! grep -qE '^[[:space:]]*AIFORGE_ROLE=admin[[:space:]]*$' "$_envf_out" 2>/dev/null; then
+    # Drop any other AIFORGE_ROLE line first so the file never holds two.
+    if [[ -f "$_envf_out" ]]; then
+      grep -vE '^[[:space:]]*AIFORGE_ROLE=' "$_envf_out" > "$_envf_out.tmp" \
+        && mv "$_envf_out.tmp" "$_envf_out"
+    fi
+    echo "AIFORGE_ROLE=admin" >> "$_envf_out"
+    echo "  memory: recorded AIFORGE_ROLE=admin in $_envf_out (survives a restart)"
   fi
-  echo "  memory: ADMIN — merges every machine's knowledge and serves the result back"
-elif [[ -n "${AIFORGE_ADMIN_URL:-}" ]]; then
-  echo "  memory: spoke of $AIFORGE_ADMIN_URL"
-else
-  echo "  memory: standalone — no --admin and no AIFORGE_ADMIN_URL, so this box"
-  echo "          merges only its own knowledge (fine for a single machine)"
+fi
+if [[ "$MODE" != "docker" ]]; then
+  if [[ "${AIFORGE_ROLE:-}" == "admin" ]]; then
+    echo "  memory: ADMIN — merges every machine's knowledge and serves the result back"
+  elif [[ -n "${AIFORGE_ADMIN_URL:-}" ]]; then
+    echo "  memory: spoke of $AIFORGE_ADMIN_URL"
+  elif [[ "${AIFORGE_ROLE:-}" == "spoke" ]]; then
+    echo "  memory: WARNING — AIFORGE_ROLE=spoke but no AIFORGE_ADMIN_URL: this box"
+    echo "          neither syncs nor merges. Set the url, or drop the role."
+  else
+    echo "  memory: standalone — no --admin and no AIFORGE_ADMIN_URL, so this box"
+    echo "          merges only its own knowledge (fine for a single machine)"
+  fi
 fi
 
 # ── Stop the langfuse stack (--stop-langfuse) ─────────────────────────

@@ -71,6 +71,25 @@ knowledge crossing in both directions.
 `--admin` also opens the loopback-only sync page; `--admin-page` opens it
 without claiming the role.
 
+**The role is persisted, not just exported.** `--admin` writes
+`AIFORGE_ROLE=admin` into the `.env` run.sh sources on every start, because the
+shipped service unit (`scripts/runtime/nuc/aiforge-api.service`) starts run.sh
+with no flags: without persistence a reboot would bring the admin back as a
+plain machine, and a machine that stops being the admin retires its own fold —
+a restart would delete the fleet's merged knowledge.
+
+**`--admin` is refused, not silently obeyed, when `AIFORGE_ADMIN_URL` is set.**
+The flag used to mean only "open the page", so an operator on a spoke may type
+it out of habit; promoting that machine would give the fleet two admins, both
+stamping `derived: mesh`. It is also refused in `--docker` mode, where the
+container never runs the sync loop at all.
+
+**Retirement needs a successor.** `tiers._retire_own_mesh` deletes and tombstones
+this machine's own `mesh/<id>/` only once *another* machine is known to be the
+admin (`role.admin_id()`). Losing the role by accident — an unset flag, an edited
+env — must not delete knowledge that cannot be recovered by putting the flag
+back, since the tombstones propagate to every spoke on its next pull.
+
 The admin's *id* is learned, not configured: the admin states it in every
 manifest response and the spoke caches it in `$AIFORGE_CONFIG_DIR/admin.json`.
 That id is what `okf.tiers` trusts `derived: mesh` nodes from. `AIFORGE_ADMIN_ID`

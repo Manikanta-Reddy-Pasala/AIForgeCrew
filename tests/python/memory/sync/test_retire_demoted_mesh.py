@@ -66,8 +66,10 @@ def test_a_demoted_admin_tombstones_its_own_stale_fold(monkeypatch, tmp_path, fo
     assert folded, "the admin never wrote its own fold"
     key = folded[0].stem
 
-    # The operator names a different admin → air is a spoke from now on.
+    # The operator names a different admin, and that machine answers, so its id
+    # is known — retirement needs a successor, not just the loss of the role.
     monkeypatch.setenv("AIFORGE_ADMIN_URL", "http://aa:8799")
+    monkeypatch.setenv("AIFORGE_ADMIN_ID", "aa")
     from aiforge_core.memory.sync import role
     assert role.is_admin() is False
 
@@ -95,6 +97,7 @@ def test_the_retirement_tombstone_removes_the_fold_elsewhere(
     tiers.run_after_sync()
     key = list((paths.mesh_dir() / "air").glob("*.md"))[0].stem
     monkeypatch.setenv("AIFORGE_ADMIN_URL", "http://aa:8799")
+    monkeypatch.setenv("AIFORGE_ADMIN_ID", "aa")
     tiers.run_after_sync()
 
     manifest._CACHE.clear()
@@ -118,3 +121,28 @@ def test_the_retirement_tombstone_removes_the_fold_elsewhere(
     ok = apply.apply_blob(tomb_entry, tomb_body, peer_id="air")
     assert ok is True
     assert not (held / f"{key}.md").is_file(), "tombstone did not remove the fold"
+
+
+def test_a_role_lost_by_accident_keeps_the_fold(monkeypatch, tmp_path, folds):
+    """The failure this guard exists for: the shipped service unit restarts
+    run.sh WITHOUT --admin, so the admin comes back as a plain machine. Deleting
+    the fleet's merged knowledge because of a missing flag is unrecoverable —
+    the tombstones reach every spoke on its next pull — so retirement waits
+    until another machine is actually known to be folding."""
+    _env(monkeypatch, tmp_path, "air")
+    from aiforge_core.memory.okf import tiers
+    from aiforge_core.memory.sync import paths
+
+    _write_okf("air", "L-01", "air knows a fact")
+    tiers.run_after_sync()                      # air is the admin → folds
+    mesh_air = paths.mesh_dir() / "air"
+    assert list(mesh_air.glob("*.md"))
+
+    # Restarted as a spoke, with no admin reached yet: no successor is known.
+    monkeypatch.setenv("AIFORGE_ROLE", "spoke")
+
+    out = tiers.run_after_sync()
+
+    assert out["retire"] == {"retired": 0, "skipped": "no-successor"}
+    assert list(mesh_air.glob("*.md")), "the fold was deleted with no successor"
+    assert not list((paths.tomb_dir()).rglob("*.json")), "and nothing was tombstoned"

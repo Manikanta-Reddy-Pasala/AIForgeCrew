@@ -692,17 +692,35 @@ def _retire_own_mesh() -> dict:
     A machine that is switched off at the moment it is demoted cannot run this,
     so its subtree lingers until it comes back and retires — the unavoidable
     price of never forging somebody else's deletion.
+
+    **Retirement needs a SUCCESSOR, not merely the absence of our own role.**
+    Being a spoke is not enough: a box can lose the role by accident — a service
+    unit that restarts ``run.sh`` without ``--admin``, an env file edited by
+    hand — and deleting the fleet's merged knowledge because of a missing flag
+    is not recoverable by putting the flag back, since the tombstones propagate
+    to every spoke on its next pull. So we retire only once another machine is
+    actually known to be the admin (``role.admin_id()``, learned from its
+    manifest), and never while that answer is empty or is still us. A stale
+    subtree is untidy; a deleted one is gone.
     """
     from aiforge_core.memory.okf import nodes
     from aiforge_core.memory.sync import identity, merge, paths, role as _role
     from aiforge_core.memory.sync import tombstone
 
+    me = paths.fold(identity.self_id())
     try:
         if _role.is_admin():
             return {"retired": 0, "skipped": "still-admin"}
+        successor = _role.admin_id()
     except Exception as exc:  # noqa: BLE001 — unsure of the role → never delete a fold
         _log.info("okf: cannot resolve the role (%s) — keeping our mesh fold", exc)
         return {"retired": 0, "skipped": "no-role"}
+    if not successor or successor == me:
+        # A spoke that has never reached its admin (or has none configured) has
+        # no evidence anybody else is folding. See the docstring.
+        _log.info("okf: no other machine is known to be the admin — keeping our "
+                  "mesh fold rather than deleting it")
+        return {"retired": 0, "skipped": "no-successor"}
 
     own = _own_mesh_dir()
     if not own.is_dir():

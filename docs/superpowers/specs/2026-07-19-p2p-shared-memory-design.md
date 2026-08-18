@@ -557,7 +557,8 @@ now in the code:
    per-peer token copy. (Peers on segments SSDP cannot cross still learn each
    other by gossip once any one pair is connected.)
 4. Nothing else changes locally: browsing the UI from the machine itself and
-   `./run.sh --admin` are loopback and keep working with no token at all.
+   `./run.sh --admin-page` are loopback and keep working with no token at all.
+   (`--admin` now *claims the admin role*; see the 2026-08-18 spec.)
 
 Without `AIFORGE_MESH_KEY`, the older manual model still applies: paste a
 per-peer bearer token into each `peers.json` row by hand.
