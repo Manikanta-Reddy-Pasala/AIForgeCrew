@@ -59,7 +59,7 @@ once.
 
 | How it is started | Role |
 |---|---|
-| `./run.sh --admin` | **admin** — exports `AIFORGE_ROLE=admin` and clears any `AIFORGE_ADMIN_URL` left in the .env, because a machine cannot be both |
+| `./run.sh --admin` | **admin** — exports `AIFORGE_ROLE=admin` and persists that line to the env file. Refused if `AIFORGE_ADMIN_URL` is set (a machine cannot be both) |
 | `AIFORGE_ADMIN_URL=http://rig:8799 ./run.sh` | **spoke** |
 | neither | **admin**, i.e. a standalone install: nothing to sync with, and it keeps merging its own knowledge. Defaulting the other way would leave a lone machine with no merge at all |
 
@@ -83,6 +83,12 @@ The flag used to mean only "open the page", so an operator on a spoke may type
 it out of habit; promoting that machine would give the fleet two admins, both
 stamping `derived: mesh`. It is also refused in `--docker` mode, where the
 container never runs the sync loop at all.
+
+**Moving the admin** is `./run.sh --spoke` on the old box, then `./run.sh
+--admin` on the new one. The persisted role beats the url, so without that step
+the old admin would ignore the new one forever: it would stop syncing, keep
+stamping `derived: mesh`, and never retire its fold. run.sh warns whenever a box
+holds the role and also names an upstream.
 
 **Retirement needs a successor.** `tiers._retire_own_mesh` deletes and tombstones
 this machine's own `mesh/<id>/` only once *another* machine is known to be the

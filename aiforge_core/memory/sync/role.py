@@ -14,9 +14,15 @@ the step whose input is everybody's knowledge at once.
 How a machine ends up in one role or the other:
 
 * **``./run.sh --admin``** — the deliberate statement, and the one an operator
-  actually types. It exports ``AIFORGE_ROLE=admin`` and clears any
-  ``AIFORGE_ADMIN_URL`` left in the .env, because a machine cannot be both.
-  Exactly one box in a fleet is started this way.
+  actually types. It exports ``AIFORGE_ROLE=admin`` and PERSISTS that line to
+  the env file, so a restart cannot silently demote the box. It is *refused*
+  when ``AIFORGE_ADMIN_URL`` is set, rather than overriding it: a machine cannot
+  be both, and the flag used to mean something else, so a spoke could otherwise
+  be promoted by habit. Exactly one box in a fleet is started this way.
+* **``./run.sh --spoke``** — the way back. It drops the persisted line so the
+  url decides again; this is how the admin is MOVED to another machine. Without
+  it, ``AIFORGE_ROLE`` (which wins over the url) would make the first admin
+  permanent: it would stop syncing, keep merging, and never retire its fold.
 * **``AIFORGE_ADMIN_URL=http://rig:8799``** — every other machine. It names the
   admin and is therefore a spoke.
 * **neither** — a standalone install: nothing to sync with, and it keeps merging
@@ -25,7 +31,9 @@ How a machine ends up in one role or the other:
   lone machine with no merge at all.
 
 ``AIFORGE_ROLE`` is the explicit override that ``--admin`` sets, and an operator
-may set it by hand for the same reason.
+may set it by hand for the same reason. It beats ``AIFORGE_ADMIN_URL`` — which
+is why run.sh warns when a box holds the admin role *and* names an upstream:
+that url is being ignored.
 
 Why no election. The elected-leader design this replaces computed leadership
 from a replicated peer registry, which needed discovery to populate the

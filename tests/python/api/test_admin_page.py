@@ -102,7 +102,10 @@ def test_a_spoke_with_no_admin_named_is_reported_as_stranded(monkeypatch, tmp_pa
     body = c.get("/api/admin/sync-status").json()
 
     assert body["role"]["stranded"] is True
-    assert "neither syncs nor merges" in c.get("/admin").text
+    # Asserted on the BOOT payload, not on the template: "neither syncs nor
+    # merges" is a constant inside _PAGE, so matching it would pass even if the
+    # branch that renders it were deleted.
+    assert '"stranded": true' in c.get("/admin").text
 
 
 def test_an_admin_carrying_a_stale_url_shows_it(monkeypatch, tmp_path):

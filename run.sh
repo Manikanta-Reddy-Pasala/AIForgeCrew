@@ -55,6 +55,8 @@
 #                them. Exactly one box in a fleet takes this flag. It also opens
 #                the loopback-only sync admin page (the URL is printed anyway).
 #   --admin-page open that page without claiming the role (any machine)
+#   --spoke      give up the admin role: drops the persisted AIFORGE_ROLE so
+#                AIFORGE_ADMIN_URL decides again (how you MOVE the admin)
 #   --skip-web   don't (re)build the web UI
 #   --test       probe the configured model endpoint (OK/FAIL), then exit
 #   --reset-config  wipe ~/.aiforge/agent_config.json (backed up) so stale
@@ -154,6 +156,7 @@ HOST=127.0.0.1
 DEV=0
 ADMIN=0                 # this machine IS the memory admin (--admin)
 ADMIN_PAGE=0            # just open /admin in a browser (--admin-page)
+UNADMIN=0               # give up a persisted admin role (--spoke)
 SKIP_WEB=0
 TEST=0
 # Default mode is config-driven: AIFORGE_MODE (from .env / the service env) →
@@ -180,6 +183,7 @@ while [[ $# -gt 0 ]]; do
     --dev) DEV=1 ;;
     --admin) ADMIN=1; ADMIN_PAGE=1 ;;  # this box is THE memory admin (+ open its page)
     --admin-page) ADMIN_PAGE=1 ;;      # open the sync admin page, claim nothing
+    --spoke) UNADMIN=1 ;;              # drop a persisted admin role
     --skip-web) SKIP_WEB=1 ;;
     --test) TEST=1 ;;             # model probe runs in the venv, no stack
     --with-graphify) WITH_GRAPHIFY=1 ;;
@@ -196,22 +200,48 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-# ── --admin: the memory role ──────────────────────────────────────────
+# ── --admin / --spoke: the memory role ────────────────────────────────
 # Exactly ONE machine in a fleet runs with --admin. That box receives every
 # other machine's OKF nodes and runs the single cross-machine merge over them;
 # every other machine names it with AIFORGE_ADMIN_URL and is a spoke. Local
 # compaction is unaffected either way — every machine distils its own memory.
 #
-# The role is PERSISTED to .env, not just exported for this process. It has to
-# be: the shipped unit (scripts/runtime/nuc/aiforge-api.service) starts run.sh
-# with no --admin, so a reboot or `systemctl restart` would otherwise bring the
-# admin back as a plain machine — and a box that stops being the admin RETIRES
-# its own mesh fold (okf/tiers._retire_own_mesh), i.e. the fleet's merged
-# knowledge would be deleted by a restart.
+# The role is PERSISTED to the env file, not just exported for this process. It
+# has to be: the shipped unit (scripts/runtime/nuc/aiforge-api.service) starts
+# run.sh with no --admin, so a reboot or `systemctl restart` would otherwise
+# bring the admin back as a plain machine — and a machine that stops being the
+# admin retires its own mesh fold (okf/tiers._retire_own_mesh), i.e. the fleet's
+# merged knowledge would be deleted by a restart.
+#
+# Because it persists, there has to be a way OUT: --spoke drops the line, which
+# is how you move the admin from one box to another.
+
+_env_role_file="${ENV_FILE:-.env}"
+
+# Rewrite the env file's AIFORGE_ROLE line, preserving the file's mode and owner.
+# `cp -p` first, then truncate THAT copy: a plain `> tmp` creates a fresh file
+# under the umask, so a .env kept at 0600 (it holds AIFORGE_LM_API_KEY — see
+# .env.example) came back 0644 and world-readable. grep exiting 1 is "nothing
+# matched", not a failure, so it must not abort the rewrite under `set -e`.
+_write_role() {                       # $1 = value, or "" to only remove the line
+  local want="$1" f="$_env_role_file"
+  if [[ -f "$f" ]]; then
+    cp -p "$f" "$f.tmp" || return 1
+    grep -vE '^[[:space:]]*AIFORGE_ROLE=' "$f" > "$f.tmp" || true
+    mv "$f.tmp" "$f" || { rm -f "$f.tmp"; return 1; }
+  fi
+  [[ -n "$want" ]] && printf 'AIFORGE_ROLE=%s\n' "$want" >> "$f"
+  return 0
+}
+
+if [[ $ADMIN -eq 1 && $UNADMIN -eq 1 ]]; then
+  echo "error: --admin and --spoke are opposites; pass one." >&2
+  exit 2
+fi
 if [[ $ADMIN -eq 1 && "$MODE" == "docker" ]]; then
   # The container image does not run the sync loop at all (docker/entrypoint.sh),
   # and docker-compose.yml forwards neither AIFORGE_ROLE nor AIFORGE_ADMIN_URL,
-  # so printing a role here would be a claim about a process that never syncs.
+  # so claiming a role here would be a statement about a process that never syncs.
   echo "error: --admin has no meaning in --docker mode: the container does not" >&2
   echo "       run the memory sync loop. Run the admin on the host." >&2
   exit 2
@@ -222,30 +252,44 @@ if [[ $ADMIN -eq 1 && -n "${AIFORGE_ADMIN_URL:-}" ]]; then
   # that machine gives the fleet two admins, both stamping `derived: mesh`.
   echo "error: --admin, but AIFORGE_ADMIN_URL=$AIFORGE_ADMIN_URL says this box is a spoke." >&2
   echo "       A machine cannot be both. To just open the sync page: ./run.sh --admin-page" >&2
-  echo "       To make THIS box the admin: remove AIFORGE_ADMIN_URL from .env first." >&2
+  echo "       To make THIS box the admin: remove AIFORGE_ADMIN_URL from ${ENV_FILE:-.env} first." >&2
   exit 2
 fi
-if [[ $ADMIN -eq 1 ]]; then
-  export AIFORGE_ROLE=admin
-  # Persist it, idempotently, in the file run.sh sources on every start. Named
-  # from ENV_FILE rather than the loop variable, which holds the LAST candidate
-  # tried (aiforge.env) when no env file exists at all — writing the role into a
-  # file that is only read when .env is absent would lose it the moment one
-  # appeared.
-  _envf_out="${ENV_FILE:-.env}"
-  if ! grep -qE '^[[:space:]]*AIFORGE_ROLE=admin[[:space:]]*$' "$_envf_out" 2>/dev/null; then
-    # Drop any other AIFORGE_ROLE line first so the file never holds two.
-    if [[ -f "$_envf_out" ]]; then
-      grep -vE '^[[:space:]]*AIFORGE_ROLE=' "$_envf_out" > "$_envf_out.tmp" \
-        && mv "$_envf_out.tmp" "$_envf_out"
-    fi
-    echo "AIFORGE_ROLE=admin" >> "$_envf_out"
-    echo "  memory: recorded AIFORGE_ROLE=admin in $_envf_out (survives a restart)"
+
+if [[ $UNADMIN -eq 1 ]]; then
+  unset AIFORGE_ROLE
+  if _write_role ""; then
+    echo "  memory: dropped the persisted admin role from $_env_role_file"
+  else
+    echo "  memory: WARNING — could not rewrite $_env_role_file; remove the" >&2
+    echo "          AIFORGE_ROLE line by hand or this box stays the admin" >&2
   fi
 fi
+
+if [[ $ADMIN -eq 1 ]]; then
+  export AIFORGE_ROLE=admin
+  if ! grep -qE '^[[:space:]]*AIFORGE_ROLE=admin[[:space:]]*$' "$_env_role_file" 2>/dev/null; then
+    if _write_role admin; then
+      echo "  memory: recorded AIFORGE_ROLE=admin in $_env_role_file (survives a restart)"
+    else
+      echo "  memory: WARNING — could not persist the role to $_env_role_file. A" >&2
+      echo "          restart will bring this box back as a NON-admin, which" >&2
+      echo "          retires its merged fold. Add AIFORGE_ROLE=admin by hand." >&2
+    fi
+  fi
+fi
+
 if [[ "$MODE" != "docker" ]]; then
   if [[ "${AIFORGE_ROLE:-}" == "admin" ]]; then
     echo "  memory: ADMIN — merges every machine's knowledge and serves the result back"
+    if [[ -n "${AIFORGE_ADMIN_URL:-}" ]]; then
+      # The persisted role wins over the url (role.role()), so this box ignores
+      # an admin it appears to be configured to follow. Almost always a half-
+      # finished handover: the successor was set up, this box never stood down.
+      echo "  memory: WARNING — AIFORGE_ADMIN_URL=$AIFORGE_ADMIN_URL is IGNORED while"
+      echo "          this box holds the admin role. Moving the admin? Run"
+      echo "          ./run.sh --spoke here once, then --admin on the new box."
+    fi
   elif [[ -n "${AIFORGE_ADMIN_URL:-}" ]]; then
     echo "  memory: spoke of $AIFORGE_ADMIN_URL"
   elif [[ "${AIFORGE_ROLE:-}" == "spoke" ]]; then

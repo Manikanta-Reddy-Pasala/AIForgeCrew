@@ -75,8 +75,9 @@ def test_run_forever_only_runs_cycles_and_holds_no_leadership_record(
 
 
 def test_the_admin_role_beats_a_stale_admin_url(monkeypatch, tmp_path):
-    """``run.sh --admin`` clears AIFORGE_ADMIN_URL, but the env is not the only
-    way in — and a box that is the admin AND points at another admin would push
+    """``run.sh --admin`` refuses to start when a url is set, but the env is not
+    the only way in (a persisted role plus a url added later, a hand-edited
+    file) — and a box that is the admin AND points at another admin would push
     its own knowledge upstream while serving as an admin itself, with two
     machines stamping ``derived: mesh``. The role is checked first."""
     _env(monkeypatch, tmp_path, admin="http://someone-else:8799")
