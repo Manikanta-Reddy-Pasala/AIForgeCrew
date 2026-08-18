@@ -50,8 +50,11 @@
 #   --port N     listen port (default 8799)
 #   --host H     bind host (default 127.0.0.1)
 #   --dev        uvicorn --reload (hot reload)
-#   --admin      open the loopback-only P2P sync admin page (/admin) in a
-#                browser once the server is up (the URL is printed either way)
+#   --admin      run this machine as THE memory admin: it receives every other
+#                machine's OKF nodes and runs the one cross-machine merge over
+#                them. Exactly one box in a fleet takes this flag. It also opens
+#                the loopback-only sync admin page (the URL is printed anyway).
+#   --admin-page open that page without claiming the role (any machine)
 #   --skip-web   don't (re)build the web UI
 #   --test       probe the configured model endpoint (OK/FAIL), then exit
 #   --reset-config  wipe ~/.aiforge/agent_config.json (backed up) so stale
@@ -142,11 +145,13 @@ export AIFORGE_ALLOW_SSH="${AIFORGE_ALLOW_SSH:-1}"
 # network.
 [[ -n "${AIFORGE_ADMIN_URL:-}" ]] && export AIFORGE_ADMIN_URL
 [[ -n "${AIFORGE_ROLE:-}" ]] && export AIFORGE_ROLE
+# The role itself is decided AFTER the flags are parsed — see "--admin: the role".
 
 PORT=8799
 HOST=127.0.0.1
 DEV=0
-ADMIN=0
+ADMIN=0                 # this machine IS the memory admin (--admin)
+ADMIN_PAGE=0            # just open /admin in a browser (--admin-page)
 SKIP_WEB=0
 TEST=0
 # Default mode is config-driven: AIFORGE_MODE (from .env / the service env) →
@@ -171,7 +176,8 @@ while [[ $# -gt 0 ]]; do
     --purge-code) MAINT=purge ;;      # drop code-as-learnings from a bad drain, then exit
     --install-model2vec|--install-semantic) INSTALL_MODEL2VEC=1 ;;  # install semantic memory (model2vec, ~30MB, NO torch). --install-semantic kept as an alias.
     --dev) DEV=1 ;;
-    --admin) ADMIN=1 ;;           # open the loopback-only sync admin page once up
+    --admin) ADMIN=1; ADMIN_PAGE=1 ;;  # this box is THE memory admin (+ open its page)
+    --admin-page) ADMIN_PAGE=1 ;;      # open the sync admin page, claim nothing
     --skip-web) SKIP_WEB=1 ;;
     --test) TEST=1 ;;             # model probe runs in the venv, no stack
     --with-graphify) WITH_GRAPHIFY=1 ;;
@@ -185,6 +191,28 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+# ── --admin: the memory role ──────────────────────────────────────────
+# Exactly ONE machine in a fleet runs with --admin. That box receives every
+# other machine's OKF nodes and runs the single cross-machine merge over them;
+# every other machine names it with AIFORGE_ADMIN_URL and is a spoke. Local
+# compaction is unaffected either way — every machine distils its own memory.
+if [[ $ADMIN -eq 1 ]]; then
+  export AIFORGE_ROLE=admin
+  if [[ -n "${AIFORGE_ADMIN_URL:-}" ]]; then
+    # A machine cannot be both. --admin is the deliberate, typed-now statement,
+    # so it wins over a value left in .env — and the url is cleared as well as
+    # overridden, so nothing downstream reads it as "there is an upstream".
+    echo "  note: --admin overrides AIFORGE_ADMIN_URL=$AIFORGE_ADMIN_URL — this box is the admin"
+    unset AIFORGE_ADMIN_URL
+  fi
+  echo "  memory: ADMIN — merges every machine's knowledge and serves the result back"
+elif [[ -n "${AIFORGE_ADMIN_URL:-}" ]]; then
+  echo "  memory: spoke of $AIFORGE_ADMIN_URL"
+else
+  echo "  memory: standalone — no --admin and no AIFORGE_ADMIN_URL, so this box"
+  echo "          merges only its own knowledge (fine for a single machine)"
+fi
 
 # ── Stop the langfuse stack (--stop-langfuse) ─────────────────────────
 # Tears the trace-server containers down. Data is EPHEMERAL by design — the
@@ -816,7 +844,7 @@ export AIFORGE_BIND_HOST="$HOST"
 # and only try to open it when a launcher actually exists. The opener waits for
 # the port in the BACKGROUND so uvicorn still runs in the foreground below.
 ADMIN_URL="http://127.0.0.1:$PORT/admin"
-if [[ $ADMIN -eq 1 ]]; then
+if [[ $ADMIN_PAGE -eq 1 ]]; then
   echo "  admin: $ADMIN_URL  (loopback-only; tunnel with ssh -L $PORT:127.0.0.1:$PORT)"
   (
     for _ in $(seq 1 60); do

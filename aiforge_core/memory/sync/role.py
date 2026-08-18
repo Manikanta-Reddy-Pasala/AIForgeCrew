@@ -11,12 +11,21 @@ local work on local files, and they stay local — a spoke is not a thin client.
 The one thing only the admin does is the *cross-machine* merge, because that is
 the step whose input is everybody's knowledge at once.
 
-The rule is one line: **``AIFORGE_ADMIN_URL`` decides.** A machine with no admin
-url configured *is* the admin — which is also what a single, standalone install
-is, so it keeps folding its own knowledge exactly as before with nothing to set.
-A machine that names an admin is a spoke. ``AIFORGE_ROLE`` overrides both when
-an operator wants to be explicit (an admin that also points at another host for
-some other purpose, a spoke deliberately parked with no url).
+How a machine ends up in one role or the other:
+
+* **``./run.sh --admin``** — the deliberate statement, and the one an operator
+  actually types. It exports ``AIFORGE_ROLE=admin`` and clears any
+  ``AIFORGE_ADMIN_URL`` left in the .env, because a machine cannot be both.
+  Exactly one box in a fleet is started this way.
+* **``AIFORGE_ADMIN_URL=http://rig:8799``** — every other machine. It names the
+  admin and is therefore a spoke.
+* **neither** — a standalone install: nothing to sync with, and it keeps merging
+  its own knowledge exactly as it did before any of this existed. This is why
+  the default is admin rather than spoke; defaulting the other way would leave a
+  lone machine with no merge at all.
+
+``AIFORGE_ROLE`` is the explicit override that ``--admin`` sets, and an operator
+may set it by hand for the same reason.
 
 Why no election. The elected-leader design this replaces computed leadership
 from a replicated peer registry, which needed discovery to populate the

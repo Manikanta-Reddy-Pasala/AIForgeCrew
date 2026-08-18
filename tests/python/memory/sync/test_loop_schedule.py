@@ -72,3 +72,32 @@ def test_run_forever_only_runs_cycles_and_holds_no_leadership_record(
 
     assert cycles == [1]
     assert list((tmp_path / "md").rglob("*.json")) == []
+
+
+def test_the_admin_role_beats_a_stale_admin_url(monkeypatch, tmp_path):
+    """``run.sh --admin`` clears AIFORGE_ADMIN_URL, but the env is not the only
+    way in — and a box that is the admin AND points at another admin would push
+    its own knowledge upstream while serving as an admin itself, with two
+    machines stamping ``derived: mesh``. The role is checked first."""
+    _env(monkeypatch, tmp_path, admin="http://someone-else:8799")
+    monkeypatch.setenv("AIFORGE_ROLE", "admin")
+    from aiforge_core.memory.sync import loop, transport
+
+    def _boom(*a, **k):  # pragma: no cover — the point is that it never runs
+        raise AssertionError("an admin must not sync outward")
+
+    monkeypatch.setattr(transport, "fetch_manifest", _boom)
+    monkeypatch.setattr(transport, "offer", _boom)
+
+    assert loop.run_once() == []
+
+
+def test_a_spoke_with_no_admin_named_does_nothing_quietly(monkeypatch, tmp_path):
+    """AIFORGE_ROLE=spoke with no url is a half-configured machine. It must not
+    sync (there is nowhere to sync to) and must not raise — the admin page is
+    where the missing url is surfaced, not a traceback every 30 minutes."""
+    _env(monkeypatch, tmp_path)
+    monkeypatch.setenv("AIFORGE_ROLE", "spoke")
+    from aiforge_core.memory.sync import loop
+
+    assert loop.run_once() == []

@@ -163,11 +163,22 @@ def run_once() -> list[dict]:
     itself — it answers requests, it does not make them. The list shape is kept
     (rather than a bare dict) because the CLI, the tests and the admin page all
     iterate it, and "nothing to do" is naturally an empty list.
+
+    The role is checked BEFORE the url, not just the url: a box started with
+    ``run.sh --admin`` that also has a stale ``AIFORGE_ADMIN_URL`` in its .env
+    would otherwise push its own knowledge to somebody else's admin while
+    serving as an admin itself — knowledge crossing in both directions, and two
+    machines both stamping ``derived: mesh``.
     """
     from aiforge_core.memory.sync import role
 
+    if role.is_admin():
+        return []
     base = role.admin_url()
     if not base:
+        # A spoke with nowhere to sync: explicitly configured (AIFORGE_ROLE=spoke)
+        # with no admin named. Nothing to do, and nothing to warn about every
+        # cycle — the admin page shows the missing url.
         return []
     deadline = time.monotonic() + CYCLE_BUDGET
     row = {"admin": base}

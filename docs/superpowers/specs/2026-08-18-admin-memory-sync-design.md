@@ -54,13 +54,22 @@ once.
 
 ### Who is the admin
 
-`AIFORGE_ADMIN_URL` decides (`memory/sync/role.py`):
+**`./run.sh --admin`** — exactly one box in a fleet is started that way
+(`memory/sync/role.py`):
 
-| Config | Role |
+| How it is started | Role |
 |---|---|
-| unset | **admin** — which is also what a standalone install is, so a single machine keeps folding with nothing to set |
-| `http://rig:8799` | **spoke** |
-| `AIFORGE_ROLE=admin\|spoke` | explicit override, for the deployment that needs one |
+| `./run.sh --admin` | **admin** — exports `AIFORGE_ROLE=admin` and clears any `AIFORGE_ADMIN_URL` left in the .env, because a machine cannot be both |
+| `AIFORGE_ADMIN_URL=http://rig:8799 ./run.sh` | **spoke** |
+| neither | **admin**, i.e. a standalone install: nothing to sync with, and it keeps merging its own knowledge. Defaulting the other way would leave a lone machine with no merge at all |
+
+The role is checked *before* the url everywhere it matters (`loop.run_once`), so
+a box that is the admin and still has a stale url in its environment does not
+also push upstream — that would be two machines stamping `derived: mesh` and
+knowledge crossing in both directions.
+
+`--admin` also opens the loopback-only sync page; `--admin-page` opens it
+without claiming the role.
 
 The admin's *id* is learned, not configured: the admin states it in every
 manifest response and the spoke caches it in `$AIFORGE_CONFIG_DIR/admin.json`.
