@@ -185,6 +185,19 @@ def _ctx_window(role: str) -> int:
         return 32768
 
 
+def input_char_budget(role: str, *, output_tokens: int = _MIN_OUTPUT_TOKENS) -> int:
+    """Chars of prompt ``role`` can take while still leaving room to answer.
+
+    Public because the brief summariser in ``md_store`` needs the SAME rule.
+    It used to carry its own 28,000-char constant, which is a guess about a
+    window rather than a reading of it: too small for a 262k model (needless
+    map-reduce passes) and too large the moment someone points a role at a 32k
+    one.
+    """
+    window = _ctx_window(role)
+    return max(4000, (window - output_tokens - _CTX_SLACK_TOKENS) * _CHARS_PER_TOKEN)
+
+
 def _est_tokens(text: str) -> int:
     return max(1, len(text or "") // _CHARS_PER_TOKEN)
 
@@ -193,22 +206,68 @@ def _sections_chars(sections: dict) -> int:
     return len(json.dumps(sections, ensure_ascii=False))
 
 
-def _split_state(sections: dict, budget_chars: int) -> tuple[dict, dict]:
+def _overlap(item: str, focus_words: set) -> int:
+    """Cheap lexical overlap between one item and the incoming text.
+
+    Word-set intersection, no model and no embedding: this runs per item per
+    fold, and the job is only to order the slice — being roughly right is worth
+    far more here than being slowly precise.
+    """
+    if not focus_words:
+        return 0
+    words = {w for w in re.findall(r"[a-z0-9]{4,}", item.lower())}
+    return len(words & focus_words)
+
+
+def _split_state(sections: dict, budget_chars: int, *, focus: str = "",
+                 turn: int = 0) -> tuple[dict, dict]:
     """Split accumulated sections into (sent, held) under ``budget_chars``.
 
     The model needs the accumulated state to dedupe against, but it does not
     need ALL of it to fold one chunk — and sending all of it is what blew the
-    window. Items are kept newest-first (the tail of each list is what the most
-    recent folds added, i.e. what the next chunk is most likely to duplicate);
-    everything beyond the budget is held back and re-unioned by the caller, so
-    this bounds the CALL without dropping a single fact.
+    window. What it does need is the part that THIS chunk is likely to collide
+    with, so the slice is chosen rather than merely truncated:
+
+    1. items that share vocabulary with the incoming chunk (``focus``) first —
+       a duplicate almost always shares words with what it duplicates;
+    2. then the rest, entered at a ROTATING offset derived from ``turn``.
+
+    The rotation is what stops the slice being the same items every time. A
+    plain newest-first cut showed the model the tail on every chunk, so genuinely
+    old state was never re-examined and a near-duplicate of something ancient
+    could survive forever. Rotating means that across a group's chunks every
+    item eventually gets its turn in front of the model, while any one call
+    stays bounded.
+
+    Whatever does not fit is held back and re-unioned by the caller, so this
+    bounds the CALL without dropping a single item.
     """
     sent = {"objective": sections.get("objective") or "",
             "key_results": [], "facts": [], "links": [], "learnings": []}
     held = {"key_results": [], "facts": [], "links": [], "learnings": []}
     used = len(sent["objective"])
+    focus_words = {w for w in re.findall(r"[a-z0-9]{4,}", (focus or "").lower())}
+
+    pools = {}
+    for k in held:
+        items = list(sections.get(k) or [])
+        if not items:
+            pools[k] = []
+            continue
+        scored = [(i, _overlap(str(it), focus_words)) for i, it in enumerate(items)]
+        relevant = [i for i, sc in scored if sc > 0]
+        relevant.sort(key=lambda i: (-dict(scored)[i], -i))   # best match, then newest
+        rest = [i for i, sc in scored if sc == 0]
+        if rest:
+            # Rotate the entry point so successive folds start elsewhere in the
+            # list; newest-first within the rotation, since recent items are the
+            # likeliest collisions after the relevant ones.
+            off = turn % len(rest)
+            rest = list(reversed(rest[off:] + rest[:off]))
+        pools[k] = [items[i] for i in relevant + rest]
+
+    order = {k: [] for k in held}
     # Round-robin across sections so one huge list cannot starve the others.
-    pools = {k: list(reversed(sections.get(k) or [])) for k in held}
     while any(pools.values()):
         for k in ("facts", "learnings", "key_results", "links"):
             if not pools[k]:
@@ -218,11 +277,16 @@ def _split_state(sections: dict, budget_chars: int) -> tuple[dict, dict]:
             if used + cost > budget_chars:
                 held[k].append(item)
             else:
-                sent[k].append(item)
+                order[k].append(item)
                 used += cost
+
+    # Emit the slice in the sections' own order, not selection order: the prompt
+    # reads as a note, and a shuffled one invites the model to "fix" the order.
     for k in held:
-        sent[k].reverse()          # restore chronological order for the prompt
-        held[k].reverse()
+        chosen = set(map(str, order[k]))
+        sent[k] = [it for it in (sections.get(k) or []) if str(it) in chosen]
+        held_set = set(map(str, held[k]))
+        held[k] = [it for it in (sections.get(k) or []) if str(it) in held_set]
     return sent, held
 
 
@@ -402,7 +466,10 @@ def consolidate(existing: dict, new_content: str, *, role: str = "learner",
         # union it into the answer. Without this the accumulator grew with every
         # chunk until the prompt no longer fit — the later chunks of a big group
         # could never succeed, so the whole fold degraded.
-        sent, held = _split_state(cur, state_chars)
+        # `ch` is the focus: show the model the accumulated items most likely
+        # to collide with THIS chunk. `_ci` rotates the rest so coverage is
+        # fair across the group's chunks rather than always the same tail.
+        sent, held = _split_state(cur, state_chars, focus=ch, turn=_ci - 1)
         if any(held.get(k) for k in ("facts", "learnings", "key_results", "links")):
             _log.info("consolidate: state %d chars over the %d-char call budget "
                       "— folding against a slice, merging the rest locally",
