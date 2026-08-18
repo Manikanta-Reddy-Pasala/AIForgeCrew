@@ -248,6 +248,15 @@ export default function Chat() {
   // gate back can force it server-side with AIFORGE_CHAT_REVIEW_EDITS=1.
   // (Team/parallel runs never hold edits regardless.)
   const reviewEdits = false;
+  // Quick mode: cap the agent at a handful of steps for small asks. Persisted
+  // like the mode itself, because someone who wants it usually wants it for a
+  // run of small edits, not for one message.
+  const [quickMode, setQuickMode] = useState<boolean>(() => {
+    try { return localStorage.getItem('aiforge.chat.quick') === '1'; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('aiforge.chat.quick', quickMode ? '1' : '0'); } catch { /* ignore */ }
+  }, [quickMode]);
   // Cave mode (lean context) is now AUTO-enabled for small model windows
   // (≤48K) server-side, so the per-chat toggle was removed — it's the
   // default for local models. Advanced operators can still force it on/off
@@ -964,6 +973,9 @@ export default function Chat() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: q, mode: builder ? 'simple' : runMode, review_edits: reviewEdits,
+                               // Quick only applies to the single-agent modes;
+                               // Team runs its own pipeline and ignores it.
+                               quick: runMode !== 'team' ? quickMode : false,
                                ...(builder ? { builder } : {}),
                                ...(editFrom != null ? { edit_from_message_id: editFrom } : {}) }),
         signal: ctrl.signal,
@@ -1322,6 +1334,28 @@ export default function Chat() {
                 Team (full flow)
               </button>
             </div>
+
+            {/* Quick: one doer, hard step cap. Hidden in Team, which runs the
+                full pipeline and has nothing to cap. */}
+            {chatMode !== 'team' && (
+              <button
+                type="button"
+                onClick={() => setQuickMode(v => !v)}
+                disabled={busy}
+                title={quickMode
+                  ? 'Quick ON — a single doer with a hard step cap. Best for a rename, a one-line fix or a question, where the agent\'s own exploration costs more than the change. Click to turn OFF.'
+                  : 'Quick OFF — the agent works until it is done (normal). Turn ON for small asks that should not take minutes.'}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-xs)',
+                  padding: '2px 8px', borderRadius: 999, cursor: 'pointer',
+                  border: `1px solid ${quickMode ? 'var(--accent,#2f81f7)' : 'var(--border-1)'}`,
+                  background: quickMode ? 'rgba(47,129,247,0.10)' : 'transparent',
+                  color: quickMode ? 'var(--accent,#2f81f7)' : 'var(--fg-2)',
+                }}
+              >
+                {quickMode ? '⚡' : '🐢'} Quick {quickMode ? 'on' : 'off'}
+              </button>
+            )}
 
             {/* Per-mode approval toggle — pause for Approve/Reject in this mode */}
             <button

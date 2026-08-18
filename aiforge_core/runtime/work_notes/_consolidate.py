@@ -133,6 +133,131 @@ def _deterministic_merge(existing: dict, new_content: str) -> dict:
     return out
 
 
+
+# ── context budgeting ─────────────────────────────────────────────────────
+#
+# A fold sends {current_sections, new_information} and asks for the WHOLE
+# consolidated note back. Both halves grow: `current_sections` accumulates every
+# fact kept so far, and the output request was sized from that same payload. On
+# a 2,163-node mesh fold this reached 229,377 input tokens with 32,768 output
+# requested against a 262,144 window — 262,145 total, over by ONE token, and
+# every retry failed identically because nothing shrank.
+#
+# So both sides are budgeted here, against the real window:
+#   * what we SEND is capped, and whatever does not fit is held back and merged
+#     deterministically afterwards — bounded call, no lost facts;
+#   * what we ASK FOR is whatever the window has left, never a fixed ceiling.
+
+# Chars per token. Deliberately pessimistic (real English is ~4): a fold that
+# under-estimates its prompt gets a 400 and loses the whole group, while one
+# that over-estimates just does an extra chunk.
+_CHARS_PER_TOKEN = 3
+
+# Leave room for the system prompt, the JSON scaffolding and tokeniser
+# disagreement. The failure above was a ONE-token overshoot, so the slack is
+# what stops arithmetic that is merely almost right.
+_CTX_SLACK_TOKENS = 2048
+
+# Smallest useful completion. Below this the model cannot return even a trimmed
+# note, so the caller must shrink the input instead of making a doomed call.
+_MIN_OUTPUT_TOKENS = 1024
+
+
+def _ctx_window(role: str) -> int:
+    """Context window for ``role``, in tokens.
+
+    Asks the router, which already resolves per-role env → runtime settings →
+    default, so the operator's configured window is honoured rather than a
+    second constant drifting alongside it.
+    """
+    import os as _os
+
+    raw = (_os.environ.get("AIFORGE_CONSOLIDATE_CTX_TOKENS") or "").strip()
+    if raw:
+        try:
+            return max(8192, int(raw))
+        except ValueError:
+            pass
+    try:
+        from aiforge_core.llm.router import _local_ctx_window
+        return max(8192, int(_local_ctx_window(role)))
+    except Exception:  # noqa: BLE001 — a missing router must not stop compaction
+        return 32768
+
+
+def _est_tokens(text: str) -> int:
+    return max(1, len(text or "") // _CHARS_PER_TOKEN)
+
+
+def _sections_chars(sections: dict) -> int:
+    return len(json.dumps(sections, ensure_ascii=False))
+
+
+def _split_state(sections: dict, budget_chars: int) -> tuple[dict, dict]:
+    """Split accumulated sections into (sent, held) under ``budget_chars``.
+
+    The model needs the accumulated state to dedupe against, but it does not
+    need ALL of it to fold one chunk — and sending all of it is what blew the
+    window. Items are kept newest-first (the tail of each list is what the most
+    recent folds added, i.e. what the next chunk is most likely to duplicate);
+    everything beyond the budget is held back and re-unioned by the caller, so
+    this bounds the CALL without dropping a single fact.
+    """
+    sent = {"objective": sections.get("objective") or "",
+            "key_results": [], "facts": [], "links": [], "learnings": []}
+    held = {"key_results": [], "facts": [], "links": [], "learnings": []}
+    used = len(sent["objective"])
+    # Round-robin across sections so one huge list cannot starve the others.
+    pools = {k: list(reversed(sections.get(k) or [])) for k in held}
+    while any(pools.values()):
+        for k in ("facts", "learnings", "key_results", "links"):
+            if not pools[k]:
+                continue
+            item = pools[k].pop(0)
+            cost = len(str(item)) + 4
+            if used + cost > budget_chars:
+                held[k].append(item)
+            else:
+                sent[k].append(item)
+                used += cost
+    for k in held:
+        sent[k].reverse()          # restore chronological order for the prompt
+        held[k].reverse()
+    return sent, held
+
+
+def _union_exact(first, second) -> list[str]:
+    """``first`` then whatever of ``second`` it does not already contain.
+
+    Exact (case/space-insensitive) keys only — deliberately NOT ``_dedupe_ci``.
+    That one also drops a short item CONTAINED in a longer one, which is right
+    when distilling a section but wrong here: this runs over items that were
+    already deduped once, and re-applying containment across the join silently
+    ate survivors ("a" vanishing because "brand new fact" contains an "a").
+    Merging back what the model never saw must add, never subtract.
+    """
+    out = list(first or [])
+    seen = {_ci_key(str(x)) for x in out}
+    for item in (second or []):
+        k = _ci_key(str(item))
+        if k and k not in seen:
+            seen.add(k)
+            out.append(item)
+    return out
+
+
+def _union_sections(a: dict, b: dict) -> dict:
+    """Union of two section dicts, ``a`` first, adding only what ``b`` uniquely
+    holds. See :func:`_union_exact` for why this does not re-dedupe."""
+    return {
+        "objective": (a.get("objective") or b.get("objective") or "").strip(),
+        "key_results": _union_exact(a.get("key_results"), b.get("key_results")),
+        "facts": _union_exact(a.get("facts"), b.get("facts")),
+        "links": _union_exact(a.get("links"), b.get("links")),
+        "learnings": _union_exact(a.get("learnings"), b.get("learnings")),
+    }
+
+
 def _consolidate_once(existing: dict, new_content: str, role: str) -> dict:
     """One structured LLM fold: (existing sections + new_content) → consolidated
     sections. Returns the deterministic merge on ANY failure."""
@@ -158,6 +283,21 @@ def _consolidate_once(existing: dict, new_content: str, role: str) -> dict:
         # AIFORGE_CONSOLIDATE_MAX_TOKENS.
         _cap = int(_os.environ.get("AIFORGE_CONSOLIDATE_MAX_TOKENS", "32768"))
         _mt = max(4096, min(_cap, len(payload) // 3 + 1024))
+        # …and then cut to what the WINDOW actually has left. Sizing the output
+        # from the payload alone is what produced a 229,377-token prompt asking
+        # for 32,768 more against a 262,144 window: correct arithmetic about the
+        # wrong quantity. input + output must fit, so output is what remains.
+        _window = _ctx_window(role)
+        _room = _window - _est_tokens(payload) - _CTX_SLACK_TOKENS
+        if _room < _MIN_OUTPUT_TOKENS:
+            # The prompt itself does not leave room for a usable answer. Folding
+            # it would 400 every time, so fall back deterministically instead of
+            # burning a call and a retry to learn that.
+            _log.warning("consolidate: %d-token prompt leaves no room in a "
+                         "%d-token window — deterministic merge for this chunk",
+                         _est_tokens(payload), _window)
+            return _deterministic_merge(existing, new_content)
+        _mt = max(_MIN_OUTPUT_TOKENS, min(_mt, _room))
         # Inject the supersede directive at call time (env is live) so the
         # contradiction policy (archive vs keep) is honoured per run.
         sys_prompt = _CONSOLIDATE_SYS + "\n- " + _supersede_directive()
@@ -208,8 +348,20 @@ def consolidate(existing: dict, new_content: str, *, role: str = "learner",
                 "links": _dedupe_ci(cur["links"]),
                 "learnings": _dedupe_ci(cur["learnings"])}
 
-    # Budget the per-call input: reserve room for the existing sections JSON.
-    reserve = len(json.dumps(cur, ensure_ascii=False))
+    # Budget the per-call input against the REAL window, not just the configured
+    # char cap. `max_input_chars` bounds one chunk; the window bounds
+    # chunk + accumulated state + system prompt together, and it is that sum
+    # which was overflowing.
+    window_chars = max(0, (_ctx_window(role) - _CTX_SLACK_TOKENS
+                           - _MIN_OUTPUT_TOKENS)) * _CHARS_PER_TOKEN
+    max_input_chars = min(max_input_chars, window_chars) or max_input_chars
+    # How much of the accumulated state may ride along on each call. The rest is
+    # held back and merged deterministically, so this bounds the request without
+    # dropping facts. Half the window by default: enough context to dedupe
+    # against, never so much that the state alone fills the prompt.
+    state_chars = int(_os.environ.get("AIFORGE_CONSOLIDATE_STATE_CHARS",
+                                      str(max(8000, max_input_chars // 2))))
+    reserve = min(_sections_chars(cur), state_chars)
     # Never collapse to a sliver: a big existing brief must still get a usable
     # chunk budget (else 25k of new text becomes 27 folds). Floor at 8k.
     budget = max(8000, max_input_chars - reserve)
@@ -246,7 +398,16 @@ def consolidate(existing: dict, new_content: str, *, role: str = "learner",
     for _ci, ch in enumerate(chunks, 1):
         if len(chunks) > 1:
             _log.info("consolidate: chunk %d/%d (%d chars)…", _ci, len(chunks), len(ch))
-        cur = _consolidate_once(cur, ch, role)
+        # Send a BOUNDED slice of what we have so far; hold the rest back and
+        # union it into the answer. Without this the accumulator grew with every
+        # chunk until the prompt no longer fit — the later chunks of a big group
+        # could never succeed, so the whole fold degraded.
+        sent, held = _split_state(cur, state_chars)
+        if any(held.get(k) for k in ("facts", "learnings", "key_results", "links")):
+            _log.info("consolidate: state %d chars over the %d-char call budget "
+                      "— folding against a slice, merging the rest locally",
+                      _sections_chars(cur), state_chars)
+        cur = _union_sections(_consolidate_once(sent, ch, role), held)
     return cur
 
 
