@@ -439,3 +439,52 @@ def test_boot_grace_is_short_enough_for_a_short_lived_process(monkeypatch,
                 for n in ("daily-compact", "chat-compact", "recompact-all",
                           "graph-maintain", "memory-dedup", "reindex"))
     assert worst < 120.0
+
+
+def test_interval_tasks_keep_firing(monkeypatch, tmp_path):
+    """The in-flight guard must not strand an every_s task: clearing _busy only
+    in the daily wrapper made reindex (and the whole AIFORGE_COMPACT_AT_HOUR=off
+    schedule) run exactly ONCE per process."""
+    from aiforge_core.runtime import periodic as p
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(p, "_TASKS", [])
+    runs = []
+    t = p._Task("interval", lambda: runs.append(1), every_s=0.01, debounce_s=0.0)
+    for _ in range(4):
+        p._fire(t)
+        for _ in range(50):
+            if not t._busy[0]:
+                break
+            time.sleep(0.02)
+    assert len(runs) == 4
+    assert t._busy[0] is False
+
+
+def test_a_skipped_slot_does_not_busy_spin(monkeypatch, tmp_path):
+    """A task still running must not leave _next_after pinned at 0.0 — the loop
+    floors at a 1s sleep and would log ~86k lines a day."""
+    from aiforge_core.runtime import periodic as p
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(p, "_TASKS", [])
+    t = p._Task("busy", lambda: None, every_s=60, debounce_s=0.0)
+    t._busy[0] = True
+    p._fire(t)                                   # skipped — but stamps _last
+    assert t._next_after(time.monotonic(), datetime.now()) > 1.0
+
+
+def test_the_retry_cap_is_an_actual_small_number(monkeypatch, tmp_path):
+    """Asserting behaviour against the constant itself lets the constant be
+    raised to 99 with a green suite — which restores the hourly cadence the cap
+    exists to prevent."""
+    from aiforge_core.runtime import periodic as p
+    assert 1 <= p._MAX_FAILS <= 3
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    now = datetime.now().replace(hour=18, minute=0, second=0, microsecond=0)
+    fires = 0
+    t = _task(p)
+    for hour in range(18, 24):                   # a whole evening of retries
+        when = now.replace(hour=hour)
+        if t._next_after(_mono(p), when) == 0.0:
+            fires += 1
+            _ran(p, t, when, ok=False, fails=t._record(when)["fails"] + 1)
+    assert fires <= 3                            # not "hourly, forever"

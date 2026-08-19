@@ -505,8 +505,13 @@ def _start_daily_reindex() -> None:
         # loses nothing — tomorrow's pass picks up the turns added after this
         # one. The two-scan idle handshake can't work on a once-a-day cadence
         # (it would defer every session by a full day).
-        if os.environ.get("AIFORGE_SESSION_COMPACT", "idle") != "idle":
+        mode = os.environ.get("AIFORGE_SESSION_COMPACT", "idle")
+        if mode in ("off", "0", "false", "no"):
             return True                      # off by config, not a failure
+        if idle_only and mode != "idle":
+            return True                      # the idle daemon only runs for 'idle'
+        # The DAILY pass folds for every other mode too: it IS the trigger, and
+        # 'turns'/'explicit' with no idle daemon left would mean nothing folds.
         try:
             from aiforge_core.runtime import chat_okr, chat_store
             from aiforge_core.runtime.chat_agent import _chat_repo_key
@@ -523,7 +528,11 @@ def _start_daily_reindex() -> None:
                 count = len(chat_store.get_messages(sid) or [])
             except Exception:  # noqa: BLE001
                 continue
+            stamp = str((s or {}).get("created_at") or (s or {}).get("started_at")
+                        or "")
             prev = _session_scan_state.get(sid)
+            if prev is not None and prev.get("stamp") != stamp:
+                prev = None          # id reused after a reset — not the same chat
             due = (count > 0 and prev is not None
                    and prev.get("count") == count and not prev.get("done")) \
                 if idle_only else (count > 0 and ((prev or {}).get("count") != count
@@ -543,8 +552,21 @@ def _start_daily_reindex() -> None:
                         r = chat_okr.compact_session(sid, repo=repo)
                         _af_log.info("session compact sid=%s: %s", sid, r)
                         r = r or {}
-                        if not r.get("ok") or r.get("skipped"):
-                            break            # nothing moved (model down / no new)
+                        skipped = r.get("skipped")
+                        if skipped in ("no_new", "too_short", "disabled"):
+                            drained = True   # nothing left to fold for this session
+                            break
+                        if skipped:
+                            # extract_failed / capture_failed / reset: the turns
+                            # are still pending. This is what a provider outage
+                            # looks like — the pass must NOT report success, or
+                            # the whole retry budget never engages.
+                            failed = failed or skipped in ("extract_failed",
+                                                           "capture_failed")
+                            break
+                        if not r.get("ok"):
+                            failed = True
+                            break
                         if not r.get("remaining"):
                             drained = True   # backlog fully folded
                             break
@@ -555,10 +577,11 @@ def _start_daily_reindex() -> None:
                 # down, error): tomorrow's pass must revisit the session even if
                 # no new message arrived, or the tail of a long day is folded by
                 # nobody, ever.
-                _session_scan_state[sid] = {"count": count,
+                _session_scan_state[sid] = {"count": count, "stamp": stamp,
                                             "done": drained or idle_only}
             elif prev is None or prev.get("count") != count:
-                _session_scan_state[sid] = {"count": count, "done": False}
+                _session_scan_state[sid] = {"count": count, "stamp": stamp,
+                                            "done": False}
         live = {(s or {}).get("id") for s in sessions}
         for sid in list(_session_scan_state):
             if sid not in live:

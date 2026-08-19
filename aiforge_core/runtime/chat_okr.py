@@ -281,6 +281,11 @@ def clear_all_markers() -> None:
 # so a poison window — an output the model always truncates on, a content
 # filter, a per-message size limit — cannot wedge a session forever.
 _MAX_WINDOW_FAILS = 3
+# …and two failures closer together than this count as ONE. The counter is
+# durable and every caller bumps it (the daily pass, a chat switch, the explicit
+# endpoint), so three clicks during a two-minute provider hiccup would otherwise
+# discard a window of turns that nothing was ever wrong with.
+_WINDOW_FAIL_SPACING_S = 3600
 
 
 def _entry(marker: dict, session_id) -> dict:
@@ -299,10 +304,12 @@ def _entry(marker: dict, session_id) -> dict:
         v = raw.get(key, 0)
         return v if isinstance(v, int) and v >= 0 else 0
 
-    return {"offset": _n("offset"), "part": _n("part"), "fails": _n("fails")}
+    return {"offset": _n("offset"), "part": _n("part"), "fails": _n("fails"),
+            "fail_at": _n("fail_at")}          # epoch seconds of the last failure
 
 
 def _put_entry(marker: dict, session_id, entry: dict) -> None:
+    entry.setdefault("fail_at", 0)
     if entry["part"] or entry["fails"]:
         marker[str(session_id)] = entry
     else:               # the common shape stays a bare int (older readers cope)
@@ -373,6 +380,7 @@ def compact_session(session_id, *, repo: str | None = None,
             marker = _load_marker()
             entry = _entry(marker, session_id)
         last, part, fails = entry["offset"], entry["part"], entry["fails"]
+        fail_at = entry["fail_at"]
         if len(turns) <= last:
             return {"ok": True, "skipped": "no_new", "captured": 0}
         new_turns = turns[last:]
@@ -386,7 +394,11 @@ def compact_session(session_id, *, repo: str | None = None,
             # the failure: a window the model can never answer (truncated output,
             # a filter, a size limit) is deterministic, so without a bound the
             # same window is retried every pass, forever, capturing nothing.
-            fails += 1
+            import time as _time
+            now_s = int(_time.time())
+            if now_s - fail_at >= _WINDOW_FAIL_SPACING_S:
+                fails += 1                    # a burst of failures counts once
+                fail_at = now_s
             give_up = fails >= _MAX_WINDOW_FAILS
             if give_up:
                 log.warning("chat_okr: session=%s window at offset %d failed %d "
@@ -398,7 +410,8 @@ def compact_session(session_id, *, repo: str | None = None,
                     _put_entry(marker, session_id,
                                {"offset": (last + max(1, taken)) if give_up else last,
                                 "part": 0 if give_up else part,
-                                "fails": 0 if give_up else fails})
+                                "fails": 0 if give_up else fails,
+                                "fail_at": 0 if give_up else fail_at})
                     _save_marker(marker)
             return {"ok": True, "skipped": "extract_failed", "captured": 0,
                     "remaining": len(new_turns)}
@@ -429,6 +442,18 @@ def compact_session(session_id, *, repo: str | None = None,
         # (clear_all_markers) ran while we did the slow LLM work, our offset is
         # stale — writing it would resurrect a cleared entry and make a reused
         # session id under-fold; skip the write-back in that case.
+        if rows and captured == 0:
+            # The model answered but NOTHING was stored (md_store/sqlite down,
+            # disk full). Advancing here would mark the window folded with zero
+            # captures — the same loss the None-on-extract-failure guard exists
+            # to prevent, from the write side instead of the read side.
+            log.warning("chat_okr: session=%s captured 0 of %d items — offset held",
+                        session_id, len(rows))
+            return {"ok": True, "skipped": "capture_failed", "captured": 0,
+                    "remaining": len(new_turns)}
+        if captured < len(rows):
+            log.warning("chat_okr: session=%s captured %d of %d items",
+                        session_id, captured, len(rows))
         with _MARKER_LOCK:
             if _RESET_EPOCH != epoch0:
                 return {"ok": True, "captured": captured, "skipped": "reset"}
@@ -438,7 +463,7 @@ def compact_session(session_id, *, repo: str | None = None,
             else:
                 offset = min(last + max(1, taken), len(turns))
             _put_entry(marker, session_id, {"offset": offset, "part": next_part,
-                                            "fails": 0})
+                                            "fails": 0, "fail_at": 0})
             _save_marker(marker)
     remaining = max(0, len(turns) - offset) if not next_part \
         else max(1, len(turns) - offset)

@@ -36,12 +36,33 @@ def _repo_for(session_id: int) -> str | None:
         return None
 
 
+def _max_windows() -> int:
+    try:
+        return max(1, int(os.environ.get("AIFORGE_SESSION_COMPACT_MAX_WINDOWS", "20")))
+    except (TypeError, ValueError):
+        return 20
+
+
 def fold_sync(session_id: int) -> dict:
-    """Fold one session NOW (blocking). Used by the delete path, which must
-    fold before the rows are removed. Never raises."""
+    """Fold one session NOW (blocking), walking its WHOLE backlog. Never raises.
+
+    Used by the delete path, which must fold before the rows are removed. One
+    ``compact_session`` only distils the turns that fit in one window, so a
+    single call would delete the rest of a long chat unfolded — and since
+    compaction moved to one pass a day that backlog is a day's worth, not the
+    ≤30 minutes the old idle daemon left.
+    """
     try:
         from aiforge_core.runtime import chat_okr
-        return chat_okr.compact_session(session_id, repo=_repo_for(session_id))
+        repo = _repo_for(session_id)
+        out: dict = {}
+        captured = 0
+        for _ in range(_max_windows()):
+            out = chat_okr.compact_session(session_id, repo=repo) or {}
+            captured += int(out.get("captured") or 0)
+            if out.get("skipped") or not out.get("ok") or not out.get("remaining"):
+                break
+        return dict(out, captured=captured)
     except Exception as exc:  # noqa: BLE001 — a fold must never break the turn
         # WARNING (not debug): a fold runs in a daemon thread whose exceptions
         # are otherwise invisible, so a persistently broken fold must be

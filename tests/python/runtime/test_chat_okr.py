@@ -451,11 +451,61 @@ def test_a_window_the_model_can_never_answer_is_skipped_eventually(monkeypatch,
         raise RuntimeError("always truncates")
 
     monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _boom)
-    for _ in range(chat_okr._MAX_WINDOW_FAILS):
+    monkeypatch.setattr(chat_okr, "_WINDOW_FAIL_SPACING_S", 0)   # failures a day apart
+    assert chat_okr._MAX_WINDOW_FAILS <= 5                       # bounded, not "eventually"
+    for n in range(chat_okr._MAX_WINDOW_FAILS):
         r = chat_okr.compact_session("stuck", repo="svc")
         assert r["skipped"] == "extract_failed"
-    # after _MAX_WINDOW_FAILS the poison window is skipped and the walk moves on
+        if n < chat_okr._MAX_WINDOW_FAILS - 1:       # still holding the turns
+            assert chat_okr._entry(chat_okr._load_marker(), "stuck")["offset"] == 0
+    # on the _MAX_WINDOW_FAILS-th failure the poison window is skipped
     assert chat_okr._entry(chat_okr._load_marker(), "stuck")["offset"] > 0
+
+
+def test_a_burst_of_failures_counts_as_one(monkeypatch, mem):
+    """Three chat switches inside one two-minute provider hiccup must not
+    discard a window of turns that nothing is wrong with."""
+    monkeypatch.setenv("AIFORGE_SESSION_COMPACT_CHARS", "500")
+    from aiforge_core.runtime import chat_okr
+    turns = [{"role": "user", "content": f"turn {i} " + "y" * 100} for i in range(6)]
+    monkeypatch.setattr("aiforge_core.runtime.chat_store.get_messages",
+                        lambda sid: turns)
+
+    def _boom(*a, **k):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _boom)
+    for _ in range(chat_okr._MAX_WINDOW_FAILS + 3):
+        chat_okr.compact_session("hiccup", repo="svc")
+    e = chat_okr._entry(chat_okr._load_marker(), "hiccup")
+    assert e["fails"] == 1 and e["offset"] == 0      # one hiccup, nothing skipped
+
+
+def test_a_window_whose_captures_all_fail_does_not_advance(monkeypatch, mem):
+    """The store being down must not mark a window folded with zero captures —
+    the write-side twin of the extract-failure guard."""
+    from aiforge_core.memory import md_store
+    from aiforge_core.runtime import chat_okr
+    monkeypatch.setattr("aiforge_core.runtime.chat_store.get_messages",
+                        lambda sid: _MSGS)
+
+    def _fake(role, messages, model, *a, **k):
+        return types.SimpleNamespace(items=[
+            types.SimpleNamespace(text="a durable fact", kind="learning")])
+
+    def _down(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _fake)
+    monkeypatch.setattr(md_store, "capture", _down)
+    r = chat_okr.compact_session("wfail", repo="svc")
+    assert r["skipped"] == "capture_failed" and r["captured"] == 0
+    assert chat_okr._entry(chat_okr._load_marker(), "wfail")["offset"] == 0
+
+    captured: list = []
+    monkeypatch.setattr(md_store, "capture",
+                        lambda *a, **k: captured.append(a) or None)
+    assert chat_okr.compact_session("wfail", repo="svc")["captured"] == 1
 
 
 def test_scope_failure_does_not_abort_the_fold(monkeypatch, mem):

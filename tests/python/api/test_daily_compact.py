@@ -193,8 +193,9 @@ def test_session_walk_stops_when_the_model_is_down(monkeypatch, tmp_path):
         monkeypatch.setattr(md_store, name, lambda *a, **k: {})
     monkeypatch.setattr(migrations, "force_recompact_all", lambda *a, **k: {})
     tasks = _registered(monkeypatch, tmp_path)
-    tasks["daily-compact"].fn()
-    assert len(folds) == 1
+    with pytest.raises(RuntimeError):        # an outage is NOT a successful pass
+        tasks["daily-compact"].fn()
+    assert len(folds) == 1                   # and it doesn't hammer the dead model
 
 
 def test_a_session_whose_walk_stopped_short_is_revisited_next_pass(monkeypatch,
@@ -309,3 +310,109 @@ def test_a_retry_does_not_re_run_the_stages_that_already_succeeded(monkeypatch,
             tasks["daily-compact"].fn()
     assert ran.count("recompact") == 1       # heavy stages ran ONCE, not 3x
     assert ran.count("briefs") == 2          # md_store.compact = repo + topic axis
+
+
+def test_the_pass_fails_when_the_learner_is_down(monkeypatch, tmp_path):
+    """A provider outage is the most likely real failure and it does NOT raise
+    out of compact_session — so the stage has to notice, or the whole retry
+    budget (_MAX_FAILS / _RETRY_S / _hold) never engages."""
+    import aiforge_core.runtime.chat_okr as chat_okr
+    import aiforge_core.runtime.chat_store as chat_store
+    from aiforge_core.memory import md_store, migrations
+    monkeypatch.setattr(chat_store, "list_sessions",
+                        lambda *a, **k: [{"id": 1, "cwd": None}])
+    monkeypatch.setattr(chat_store, "get_messages", lambda sid, *a, **k: [{"x": 1}] * 4)
+    monkeypatch.setattr(chat_okr, "compact_session", lambda *a, **k: {
+        "ok": True, "skipped": "extract_failed", "captured": 0, "remaining": 4})
+    for name in ("compact", "sweep_stale_captures", "sweep_empty_briefs",
+                 "finalize_briefs"):
+        monkeypatch.setattr(md_store, name, lambda *a, **k: {})
+    monkeypatch.setattr(migrations, "force_recompact_all", lambda *a, **k: {})
+    tasks = _registered(monkeypatch, tmp_path)
+    with pytest.raises(RuntimeError):
+        tasks["daily-compact"].fn()
+
+
+def test_a_drained_session_reports_no_new_and_is_not_reprobed(monkeypatch,
+                                                              tmp_path):
+    """After a restart every session is "due" again; the first call returns
+    no_new, which must count as DRAINED — otherwise every session is re-probed
+    on every pass, forever."""
+    import aiforge_core.runtime.chat_okr as chat_okr
+    import aiforge_core.runtime.chat_store as chat_store
+    from aiforge_core.memory import md_store, migrations
+    folds: list = []
+    monkeypatch.setattr(chat_store, "list_sessions",
+                        lambda *a, **k: [{"id": 1, "cwd": None, "created_at": "t0"}])
+    monkeypatch.setattr(chat_store, "get_messages", lambda sid, *a, **k: [{"x": 1}] * 4)
+    monkeypatch.setattr(chat_okr, "compact_session", lambda *a, **k: folds.append(1) or {
+        "ok": True, "skipped": "no_new", "captured": 0})
+    for name in ("compact", "sweep_stale_captures", "sweep_empty_briefs",
+                 "finalize_briefs"):
+        monkeypatch.setattr(md_store, name, lambda *a, **k: {})
+    monkeypatch.setattr(migrations, "force_recompact_all", lambda *a, **k: {})
+    tasks = _registered(monkeypatch, tmp_path)
+    import aiforge_core.api.api as api
+    day = [date(2026, 8, 19)]
+    monkeypatch.setattr(api, "_date", type("D", (), {"today": staticmethod(
+        lambda: day[0])}))
+    tasks["daily-compact"].fn()
+    day[0] = date(2026, 8, 20)
+    tasks["daily-compact"].fn()
+    assert len(folds) == 1
+
+
+def test_a_reused_session_id_is_not_suppressed_by_stale_scan_state(monkeypatch,
+                                                                   tmp_path):
+    """Session ids restart at 1 after a bulk reset; a leftover done=True entry
+    would silence the new chat's fold."""
+    import aiforge_core.runtime.chat_okr as chat_okr
+    import aiforge_core.runtime.chat_store as chat_store
+    from aiforge_core.memory import md_store, migrations
+    folds: list = []
+    sess = [{"id": 1, "cwd": None, "created_at": "t0"}]
+    monkeypatch.setattr(chat_store, "list_sessions", lambda *a, **k: sess)
+    monkeypatch.setattr(chat_store, "get_messages", lambda sid, *a, **k: [{"x": 1}] * 4)
+    monkeypatch.setattr(chat_okr, "compact_session", lambda *a, **k: folds.append(1) or {
+        "ok": True, "remaining": 0, "captured": 1})
+    for name in ("compact", "sweep_stale_captures", "sweep_empty_briefs",
+                 "finalize_briefs"):
+        monkeypatch.setattr(md_store, name, lambda *a, **k: {})
+    monkeypatch.setattr(migrations, "force_recompact_all", lambda *a, **k: {})
+    tasks = _registered(monkeypatch, tmp_path)
+    import aiforge_core.api.api as api
+    day = [date(2026, 8, 19)]
+    monkeypatch.setattr(api, "_date", type("D", (), {"today": staticmethod(
+        lambda: day[0])}))
+    tasks["daily-compact"].fn()
+    assert len(folds) == 1
+    sess[0] = {"id": 1, "cwd": None, "created_at": "t1"}    # same id, NEW chat
+    day[0] = date(2026, 8, 20)
+    tasks["daily-compact"].fn()
+    assert len(folds) == 2
+
+
+def test_session_folding_is_not_silently_off_for_other_trigger_modes(monkeypatch,
+                                                                     tmp_path):
+    """AIFORGE_SESSION_COMPACT picks the DAEMON trigger; with the daily pass on
+    there is no daemon, so anything but 'off' must still fold."""
+    import aiforge_core.runtime.chat_okr as chat_okr
+    import aiforge_core.runtime.chat_store as chat_store
+    from aiforge_core.memory import md_store, migrations
+    folds: list = []
+    monkeypatch.setattr(chat_store, "list_sessions",
+                        lambda *a, **k: [{"id": 1, "cwd": None}])
+    monkeypatch.setattr(chat_store, "get_messages", lambda sid, *a, **k: [{"x": 1}] * 4)
+    monkeypatch.setattr(chat_okr, "compact_session",
+                        lambda *a, **k: folds.append(1) or {"ok": True, "remaining": 0})
+    for name in ("compact", "sweep_stale_captures", "sweep_empty_briefs",
+                 "finalize_briefs"):
+        monkeypatch.setattr(md_store, name, lambda *a, **k: {})
+    monkeypatch.setattr(migrations, "force_recompact_all", lambda *a, **k: {})
+    tasks = _registered(monkeypatch, tmp_path, AIFORGE_SESSION_COMPACT="explicit")
+    tasks["daily-compact"].fn()
+    assert folds == [1]
+    folds.clear()
+    tasks2 = _registered(monkeypatch, tmp_path, AIFORGE_SESSION_COMPACT="off")
+    tasks2["daily-compact"].fn()
+    assert folds == []                        # 'off' still means off
