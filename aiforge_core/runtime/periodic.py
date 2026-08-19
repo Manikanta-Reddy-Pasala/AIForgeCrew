@@ -15,8 +15,8 @@ instant would be skipped whenever a sleep overshoots it (sleep never returns
 early), and never run at all on a machine asleep at the hour. So:
 
 * fires the first time the loop wakes at/after the hour on a day it has not run
-* a whole day with no run (``_CATCHUP_S``) makes it due at the next wake,
-  whatever the hour — then it drifts back to its hour on the next day it is up
+* a missed slot (yesterday's hour came and went with no run) makes it due at
+  the next wake, whatever the hour — then it drifts back to its hour on the next day it is up
 * never twice within ``_MIN_GAP_S``; a run that RAISES retries after
   ``_RETRY_S``, at most ``_MAX_FAILS`` times a day
 * the record (last attempt, whether it finished, retries, first-seen) lives in
@@ -61,9 +61,6 @@ _RETRY_S = 3600.0
 # time (one bad brief in the memory fold) turns "once a day" back into hourly —
 # exactly the cadence the daily schedule exists to remove.
 _MAX_FAILS = 2
-# A whole day with no run makes a daily task due at the next wake, whatever the
-# hour: a machine that is off/asleep at 18:00 must not simply stop compacting.
-_CATCHUP_S = 24 * 3600.0
 
 
 # _save_entry read-modify-writes a SHARED file, and the failure record is
@@ -282,12 +279,15 @@ def _fire(t: _Task, now_dt: "datetime | None" = None) -> None:
     if now - t._last[0] < t.debounce_s:
         return
     if t._busy[0]:
-        # A pass slower than its own period (the first memory fold after an
-        # upgrade can be) must not be re-entered by the next slot.
+        # A run slower than its own period (the first memory fold after an
+        # upgrade can be) must not be re-entered by the next slot. Stamp _last
+        # anyway: without it an every_s task stays due at 0.0, so the loop wakes
+        # on its 1s floor and logs this line ~86k times a day.
+        t._last[0] = now
         log.info("periodic %s still running — skipping this slot", t.name)
         return
     t._last[0] = now
-    fn = t.fn
+    inner = t.fn
     if t.at_hour is not None:
         # Recorded BEFORE the work runs (the run is slow and off-thread), so a
         # restart mid-run can't double-fire it. ``now_dt`` comes from the loop's
@@ -300,7 +300,7 @@ def _fire(t: _Task, now_dt: "datetime | None" = None) -> None:
         rec.update(at=stamp, ok=True, fails=rec["fails"] if same_day else 0)
         t._persist()
 
-        def fn(_fn=t.fn, _t=t, _stamp=stamp):   # noqa: ANN001
+        def inner(_fn=t.fn, _t=t, _stamp=stamp):   # noqa: ANN001
             try:
                 _fn()
             except BaseException:
@@ -309,8 +309,16 @@ def _fire(t: _Task, now_dt: "datetime | None" = None) -> None:
                 _t._persist()
                 _t._hold[0] = time.monotonic() + _RETRY_S  # last: it is the signal
                 raise
-            finally:
-                _t._busy[0] = False
+
+    def fn(_fn=inner, _t=t):   # noqa: ANN001
+        # The busy flag is cleared for EVERY kind of task. Clearing it only in
+        # the at_hour wrapper left every interval task (reindex, and the whole
+        # AIFORGE_COMPACT_AT_HOUR=off schedule) running exactly once per process.
+        try:
+            _fn()
+        finally:
+            _t._busy[0] = False
+
     from aiforge_core.runtime import background as _bg
     t._busy[0] = True
     if _bg.spawn(fn, name=f"periodic:{t.name}") is None:

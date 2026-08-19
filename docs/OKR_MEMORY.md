@@ -68,6 +68,10 @@
 > warning — a deterministic failure at temperature 0 repeats forever otherwise.
 > A batched scope verdict the model never gave is marked `fallback: True`, and
 > `cleanup_reheal` (which DELETES non-global facts) skips those.
+> A pass that ends with turns still pending (the learner unreachable, a write
+> failing) reports FAILURE, so the scheduler's retry actually engages; deleting a
+> chat folds its whole backlog, not one window. `AIFORGE_SESSION_COMPACT` only
+> selects the DAEMON trigger — with the daily pass on, anything but `off` folds.
 > `AIFORGE_COMPACT_AT_HOUR=off` — or an explicit positive
 > `AIFORGE_COMPACT_EVERY_H` — restores hourly compaction, the idle-session
 > daemon (`AIFORGE_SESSION_IDLE_MIN`) and the nightly `AIFORGE_RECOMPACT_HOUR`
