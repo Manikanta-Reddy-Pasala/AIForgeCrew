@@ -50,7 +50,11 @@ def test_agent_job_runs_chat_agent_and_marks_ok(monkeypatch):
                         fake_run_chat_agent)
     job = _make_agent_job()
     assert scheduler._fire_agent(job) is True         # dispatched
-    assert _wait_until(lambda: store.get(job["id"]).get("last_error") is None)
+    # Wait on the AGENT having run, not on last_error being None — that is
+    # already true before the background thread starts, so under load the
+    # assertions below raced the dispatch (flaky in full-suite runs).
+    assert _wait_until(lambda: "prompt" in captured)
+    assert store.get(job["id"]).get("last_error") is None
     assert captured["prompt"] == "read JIRA-1 and email me a summary"
     assert captured["role"] == "chat"          # chat agent, full tools
     assert captured["session_id"] is None      # autonomous
