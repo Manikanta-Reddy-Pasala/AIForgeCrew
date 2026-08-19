@@ -28,7 +28,7 @@ import logging
 import os
 import re
 import threading
-from datetime import UTC
+from datetime import UTC, date as _date
 from typing import Any
 
 import psycopg
@@ -291,6 +291,46 @@ def _start_jobs_scheduler() -> None:
         pass
 
 
+def _compact_at_hour() -> "int | None":
+    """Local hour for the single daily memory-compaction pass, or None to keep
+    the old hourly/idle/nightly schedule.
+
+    Default 18 (evening): every fold costs learner-LLM calls, so re-folding the
+    same briefs all day buys little over one pass once the day's work is in.
+    ``AIFORGE_COMPACT_AT_HOUR=off`` (or an explicit ``AIFORGE_COMPACT_EVERY_H``,
+    which only means anything on the hourly schedule) restores the old cadence.
+    """
+    raw = os.environ.get("AIFORGE_COMPACT_AT_HOUR")
+    if raw is None:
+        # An explicit, USABLE hourly interval opts out of the daily default.
+        # Tested on the PARSED value: "0" and "abc" are truthy strings but mean
+        # nothing as an interval, and reading them as "keep hourly" would flip
+        # the schedule the opposite way from what the operator asked.
+        try:
+            if int(os.environ.get("AIFORGE_COMPACT_EVERY_H", "")) > 0:
+                return None
+        except (TypeError, ValueError):
+            pass
+    raw = (raw if raw is not None else "18").strip().lower()
+    if raw in ("", "off", "none", "false", "no"):
+        return None
+    try:
+        hour = int(raw)
+    except ValueError:
+        _af_log.warning("AIFORGE_COMPACT_AT_HOUR=%r is not an hour — using 18", raw)
+        return 18
+    if hour <= 0:
+        # 0 is OFF, not midnight — every sibling knob here (AIFORGE_REINDEX_DAILY,
+        # AIFORGE_RECOMPACT_DAILY) reads =0 as the off switch, and an at_hour of 0
+        # is "due all day", so reading it as midnight would hand anyone who typed
+        # =0 to disable a heavy pass shortly after every start. Midnight is 24.
+        return None
+    if hour > 24:
+        _af_log.warning("AIFORGE_COMPACT_AT_HOUR=%r out of range — using 23", raw)
+        return 23
+    return hour % 24                               # 24 = midnight
+
+
 @app.on_event("startup")
 def _start_daily_reindex() -> None:
     """Once a day, re-index EVERY registered repo/docs source so semantic
@@ -322,7 +362,7 @@ def _start_daily_reindex() -> None:
     # summary, archives originals) so the memory folder stays bounded + legible.
     # Was manual-only (POST /api/memory/files/compact); now scheduled hourly
     # (AIFORGE_COMPACT_EVERY_H) so memory stays organized-by-topic within the hour.
-    def _compact_chat_md() -> None:
+    def _compact_chat_md() -> bool:
         # Two axes, both kept (overlap intended): per-REPO → the project brief
         # you load when opening a repo; per-TOPIC → cross-repo theme notes.
         try:
@@ -359,15 +399,25 @@ def _start_daily_reindex() -> None:
             r_rules = md_store.finalize_briefs(role="learner", recent_only=True)
             _af_log.info("md brief: repo=%s topic=%s sweep=%s empty=%s rules=%s",
                          r_repo, r_topic, r_sweep, r_empty, r_rules)
+            return True
         except Exception as exc:  # noqa: BLE001
             _af_log.warning("md compaction failed: %s", exc)
+            return False
 
-    try:
-        _compact_every_h = max(1, int(os.environ.get("AIFORGE_COMPACT_EVERY_H", "1")))
-    except (TypeError, ValueError):
-        _compact_every_h = 1
-    _pd.register("chat-compact", _compact_chat_md,
-                 every_s=_compact_every_h * 3600)   # hourly by default
+    # ONE COMPACTION A DAY, IN THE EVENING (default). Every local fold is
+    # LLM-heavy, and running them hourly / per idle session spends tokens all
+    # day re-folding briefs that barely moved. AIFORGE_COMPACT_AT_HOUR (local,
+    # default 18) collapses chat-compact + the session OKR fold + the full
+    # recompact into ONE evening pass; set it to "off" to go back to the old
+    # hourly/idle/nightly schedule.
+    _daily_hour = _compact_at_hour()
+    if _daily_hour is None:
+        try:
+            _compact_every_h = max(1, int(os.environ.get("AIFORGE_COMPACT_EVERY_H", "1")))
+        except (TypeError, ValueError):
+            _compact_every_h = 1
+        _pd.register("chat-compact", _compact_chat_md,
+                     every_s=_compact_every_h * 3600)   # hourly by default
 
     # Daily GRAPH MAINTENANCE (Neo4j only) — AFM decay + per-repo digest/dedupe;
     # no-op on the embedded backend. Best-effort.
@@ -412,13 +462,15 @@ def _start_daily_reindex() -> None:
     # reingest. Heavy (LLM per brief) → daily, off-peak, opt-out via
     # AIFORGE_RECOMPACT_DAILY=0. Serializes against manual compact-all on
     # _COMPACT_LOCK, so overlap is safe.
-    def _recompact_all() -> None:
+    def _recompact_all() -> bool:
         try:
             from aiforge_core.memory import migrations
             r = migrations.force_recompact_all()
             _af_log.info("daily recompact-all: %s", r)
+            return True
         except Exception as exc:  # noqa: BLE001
             _af_log.warning("daily recompact-all failed: %s", exc)
+            return False
 
     # Fires at a NIGHT local hour (AIFORGE_RECOMPACT_HOUR, default 02:00 local) —
     # a dedicated knob, NOT tied to the reindex hour, so the heavy nightly
@@ -428,7 +480,8 @@ def _start_daily_reindex() -> None:
             os.environ.get("AIFORGE_RECOMPACT_HOUR", "2"))))
     except (TypeError, ValueError):
         _recompact_hour = 2
-    if os.environ.get("AIFORGE_RECOMPACT_DAILY", "1") != "0":
+    _recompact_on = os.environ.get("AIFORGE_RECOMPACT_DAILY", "1") != "0"
+    if _recompact_on and _daily_hour is None:
         _pd.register("recompact-all", _recompact_all,
                      at_hour=_recompact_hour)
 
@@ -440,17 +493,28 @@ def _start_daily_reindex() -> None:
     # in-process (resets on restart, which is fine — an active session just waits
     # one more idle window).
     _session_scan_state: dict = {}
+    try:
+        _max_windows = max(1, int(os.environ.get(
+            "AIFORGE_SESSION_COMPACT_MAX_WINDOWS", "20")))
+    except (TypeError, ValueError):
+        _max_windows = 20
 
-    def _compact_idle_sessions() -> None:
+    def _compact_idle_sessions(idle_only: bool = True) -> bool:
+        # idle_only=False (the daily pass): fold EVERY session that has new
+        # turns. compact_session is offset-based, so a session still in flight
+        # loses nothing — tomorrow's pass picks up the turns added after this
+        # one. The two-scan idle handshake can't work on a once-a-day cadence
+        # (it would defer every session by a full day).
         if os.environ.get("AIFORGE_SESSION_COMPACT", "idle") != "idle":
-            return
+            return True                      # off by config, not a failure
         try:
             from aiforge_core.runtime import chat_okr, chat_store
             from aiforge_core.runtime.chat_agent import _chat_repo_key
             sessions = chat_store.list_sessions() or []
         except Exception as exc:  # noqa: BLE001
-            _af_log.debug("session-okr scan setup failed: %s", exc)
-            return
+            _af_log.warning("session-okr scan setup failed: %s", exc)
+            return False
+        failed = False
         for s in sessions:
             sid = (s or {}).get("id")
             if sid is None:
@@ -460,29 +524,94 @@ def _start_daily_reindex() -> None:
             except Exception:  # noqa: BLE001
                 continue
             prev = _session_scan_state.get(sid)
-            if count > 0 and prev is not None \
-                    and prev.get("count") == count and not prev.get("done"):
+            due = (count > 0 and prev is not None
+                   and prev.get("count") == count and not prev.get("done")) \
+                if idle_only else (count > 0 and ((prev or {}).get("count") != count
+                                                  or not (prev or {}).get("done")))
+            if due:
                 cwd = (s or {}).get("cwd")
                 repo = _chat_repo_key(cwd) if cwd else None
+                drained = False
                 try:
-                    r = chat_okr.compact_session(sid, repo=repo)
-                    _af_log.info("idle session compact sid=%s: %s", sid, r)
+                    # WALK the whole backlog on the daily pass. One fold only
+                    # distils the turns that fit in AIFORGE_SESSION_COMPACT_CHARS
+                    # and advances the offset by exactly those, so a day's chat
+                    # needs several windows — folding once would leave the rest
+                    # to a 30-min-idle daemon that no longer runs. Bounded so a
+                    # runaway session can't hold the pass forever.
+                    for _ in range(1 if idle_only else _max_windows):
+                        r = chat_okr.compact_session(sid, repo=repo)
+                        _af_log.info("session compact sid=%s: %s", sid, r)
+                        r = r or {}
+                        if not r.get("ok") or r.get("skipped"):
+                            break            # nothing moved (model down / no new)
+                        if not r.get("remaining"):
+                            drained = True   # backlog fully folded
+                            break
                 except Exception as exc:  # noqa: BLE001
-                    _af_log.warning("idle session compact sid=%s failed: %s", sid, exc)
-                _session_scan_state[sid] = {"count": count, "done": True}
+                    _af_log.warning("session compact sid=%s failed: %s", sid, exc)
+                    failed = True
+                # done=False when the walk STOPPED SHORT (window cap, model
+                # down, error): tomorrow's pass must revisit the session even if
+                # no new message arrived, or the tail of a long day is folded by
+                # nobody, ever.
+                _session_scan_state[sid] = {"count": count,
+                                            "done": drained or idle_only}
             elif prev is None or prev.get("count") != count:
                 _session_scan_state[sid] = {"count": count, "done": False}
         live = {(s or {}).get("id") for s in sessions}
         for sid in list(_session_scan_state):
             if sid not in live:
                 _session_scan_state.pop(sid, None)
+        return not failed
 
-    try:
-        _idle_min = max(1, int(os.environ.get("AIFORGE_SESSION_IDLE_MIN", "30")))
-    except (TypeError, ValueError):
-        _idle_min = 30
-    _pd.register("session-okr-compact", _compact_idle_sessions,
-                 every_s=max(300, _idle_min * 60))
+    if _daily_hour is None:
+        try:
+            _idle_min = max(1, int(os.environ.get("AIFORGE_SESSION_IDLE_MIN", "30")))
+        except (TypeError, ValueError):
+            _idle_min = 30
+        _pd.register("session-okr-compact", _compact_idle_sessions,
+                     every_s=max(300, _idle_min * 60))
+    else:
+        # THE one evening pass. Order matters: sessions → captures first, then
+        # captures → briefs, then the full re-fold of every brief, so a day's
+        # chat reaches its brief in the SAME pass instead of waiting a day.
+        # Which stages already succeeded TODAY. The pass raises so a failure
+        # is retried — but the retry must not re-run the heavy stages that
+        # worked (one broken session fold otherwise costs a second full
+        # recompact), which the three separate tasks could never do.
+        _pass_done: dict = {"day": None, "stages": set()}
+
+        def _daily_compact() -> None:
+            today = _date.today()
+            if _pass_done["day"] != today:
+                _pass_done.update(day=today, stages=set())
+            ok = True
+            # Each stage is isolated: as three separately registered tasks one
+            # could not cancel the others, and folding them into one function
+            # must not quietly reintroduce that coupling.
+            for stage, run in (("sessions",
+                                lambda: _compact_idle_sessions(idle_only=False)),
+                               ("briefs", _compact_chat_md),
+                               ("recompact", _recompact_all if _recompact_on
+                                else lambda: True)):
+                if stage in _pass_done["stages"]:
+                    continue                 # already done today — skip on retry
+                try:
+                    if run():
+                        _pass_done["stages"].add(stage)
+                    else:
+                        ok = False
+                except Exception as exc:  # noqa: BLE001
+                    _af_log.warning("daily compaction stage %s failed: %s",
+                                    stage, exc)
+                    ok = False
+            if not ok:
+                # RAISE so the scheduler retries (bounded) instead of counting a
+                # pass that did nothing as today's compaction.
+                raise RuntimeError("daily compaction pass failed — see warnings")
+
+        _pd.register("daily-compact", _daily_compact, at_hour=_daily_hour)
     _pd.start()
 
 

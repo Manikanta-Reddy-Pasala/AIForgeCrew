@@ -18,7 +18,7 @@ from .._base import (
 )
 from .._capture import capture
 from .._render import _fact_body
-from .._scope import classify_scope
+from .._scope import classify_scope, classify_scopes
 from ._map import _live_briefs
 
 
@@ -126,12 +126,13 @@ def reheal_scopes(*, role: str = "learner", max_per_brief: int = 60) -> dict:
             if not facts:
                 continue
             moved_facts: list[str] = []
-            for f in facts[:max_per_brief]:
-                try:
-                    sc = classify_scope(f, hint_repo=key, role=role)
-                except Exception:  # noqa: BLE001
-                    continue
-                if sc["scope"] != "global":
+            batch = facts[:max_per_brief]
+            try:                       # ONE call for the brief, not one per fact
+                verdicts = classify_scopes(batch, hint_repo=key, role=role)
+            except Exception:  # noqa: BLE001
+                continue
+            for f, sc in zip(batch, verdicts):
+                if sc.get("fallback") or sc["scope"] != "global":
                     continue
                 try:                              # → shared brief via capture
                     capture("learning", f, repo=None, classify=False,
@@ -192,11 +193,21 @@ def cleanup_reheal(*, role: str = "learner") -> dict:
     remove_keys: set[str] = set()
     remove_paths: list = []
     checked = 0
-    for r in reheal:
+    try:      # judged on their own merit, but in ONE call per batch of facts
+        verdicts = classify_scopes([r["fact"] for r in reheal], role=role)
+    except Exception:  # noqa: BLE001
+        verdicts = []
+    # zip() would silently truncate — and this loop DELETES, so a short list
+    # must skip the tail explicitly, never shorten the work without saying so.
+    if len(verdicts) != len(reheal):
+        _log.warning("cleanup_reheal: %d verdicts for %d facts — skipping the rest",
+                     len(verdicts), len(reheal))
+    for r, sc in zip(reheal, verdicts):
         checked += 1
-        try:
-            sc = classify_scope(r["fact"], role=role)   # judged on its own merit
-        except Exception:  # noqa: BLE001
+        if sc.get("fallback"):
+            # No model verdict (batch failed / no entry). "Not global" is then
+            # absence of evidence, and acting on it here DELETES the fact from
+            # the shared brief and unlinks its capture file.
             continue
         if sc["scope"] != "global":
             remove_keys.add(work_notes._ci_key(_fact_body(r["fact"])))

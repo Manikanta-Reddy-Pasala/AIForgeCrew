@@ -15,8 +15,12 @@ WHEN to call it. Soft-fail everywhere: background upkeep must never raise.
 
 Env:
   AIFORGE_SESSION_COMPACT        idle (default) | turns | explicit | off
-  AIFORGE_SESSION_COMPACT_CHARS  transcript char cap (default 8000)
-  AIFORGE_SESSION_COMPACT_MAX_TOKENS  extraction reply cap (default 1500)
+  AIFORGE_SESSION_COMPACT_CHARS  transcript chars per extraction window.
+      Unset = sized from the ROLE'S context (see _window_chars), capped at
+      _WINDOW_CEILING; a longer session is walked window by window.
+  AIFORGE_SESSION_COMPACT_MAX_TOKENS  extraction reply cap (default 2000)
+  AIFORGE_CONSOLIDATE_CTX_TOKENS  (shared with work_notes) overrides the role
+      context the window is derived from.
 """
 from __future__ import annotations
 
@@ -126,22 +130,92 @@ def _int_env(key: str, default: int) -> int:
         return default
 
 
-def _transcript(turns: list[dict], limit: int) -> str:
-    """Compact ``ROLE: content`` transcript, keeping the LAST ``limit`` chars
-    (the tail carries the outcome/decisions)."""
-    lines = []
-    for m in turns:
+# Ceiling on ONE extraction window. Not a context limit — a quality/latency one:
+# beyond ~30 items per call the model starts dropping items rather than listing
+# them, and a failed window costs the whole slice.
+_WINDOW_CEILING = 24000
+
+
+def _window_chars(role: str) -> int:
+    """Chars of transcript per extraction call.
+
+    Sized from the ROLE'S OWN WINDOW rather than a flat 8000: the learner has a
+    16k-token context, so an 8k-char window (~2k tokens) spent 5 calls where one
+    would do. An explicit AIFORGE_SESSION_COMPACT_CHARS still wins.
+    """
+    raw = os.environ.get("AIFORGE_SESSION_COMPACT_CHARS")
+    if raw:
+        return max(500, _int_env("AIFORGE_SESSION_COMPACT_CHARS", 8000))
+    try:
+        from aiforge_core.runtime.work_notes._consolidate import input_char_budget
+        out_tokens = _int_env("AIFORGE_SESSION_COMPACT_MAX_TOKENS", 2000)
+        budget = input_char_budget(role, output_tokens=out_tokens)
+        room = budget - len(_EXTRACT_SYS) - 512
+        # CLAMP, don't floor: input_char_budget floors at 4000 chars, so a large
+        # MAX_TOKENS against a small role window would hand back more room than
+        # exists and every call would 400 — which, being deterministic, is the
+        # one failure the window walk cannot retry its way out of.
+        return max(500, min(_WINDOW_CEILING, room))
+    except Exception:  # noqa: BLE001 — unknown window → the old flat default
+        return 8000
+
+
+def _transcript(turns: list[dict], limit: int,
+                start_char: int = 0) -> "tuple[str, int, int]":
+    """Compact ``ROLE: content`` transcript of the OLDEST turns that fit in
+    ``limit`` chars → ``(text, turns_consumed, part_offset)``.
+
+    Head-first, not tail-first. The tail carries the outcome, but the durable
+    offset then jumps past every turn — so a cut head is folded by nobody, ever
+    (worst on a long single-chat day: one 8k window over ~110k chars of
+    transcript). Taking the oldest turns lets the caller fold the rest in the
+    next window instead of losing it.
+
+    A turn BIGGER than one window (a tool dump, a long answer) is walked in
+    slices: ``start_char`` is where to resume inside it and the returned
+    ``part_offset`` is where the next window resumes — 0 once the turn is fully
+    consumed. Clipping it once and marking it folded would drop most of it.
+    """
+    lines: list[str] = []
+    used = 0
+    taken = 0
+    part = 0
+    for n, m in enumerate(turns):
         role = (m.get("role") or "user").strip().upper()
         content = (m.get("content") or "").strip()
-        if content:
-            lines.append(f"{role}: {content}")
-    text = "\n\n".join(lines)
-    return text[-limit:] if len(text) > limit else text
+        if n == 0 and start_char:
+            content = content[start_char:]
+        if not content:
+            taken += 1                      # empty turn: consumed, nothing to say
+            continue
+        line = f"{role}: {content}"
+        sep = 2 if lines else 0
+        if lines and used + sep + len(line) > limit:
+            break
+        if not lines and len(line) > limit:
+            # OVERSIZED TURN — emit a slice and remember where to resume; the
+            # turn is not consumed until its last slice has been sent.
+            head = f"{role}: "
+            body_room = max(1, limit - len(head))
+            line = head + content[:body_room]
+            lines.append(line)
+            part = (start_char or 0) + body_room
+            return "\n\n".join(lines), 0, part
+        lines.append(line)
+        used += sep + len(line)
+        taken += 1
+    return "\n\n".join(lines), taken, 0
 
 
-def _extract(transcript: str, role: str) -> list:
-    """LLM → list of items (each ``.text`` + ``.kind``). Empty on any failure —
-    this is also the MEANINGFUL-input filter (the prompt drops chit-chat)."""
+def _extract(transcript: str, role: str) -> "list | None":
+    """LLM → list of items (each ``.text`` + ``.kind``); **None on failure**.
+
+    The empty list means "nothing durable in these turns" (this is also the
+    MEANINGFUL-input filter — the prompt drops chit-chat); None means the model
+    never answered. The caller must not advance the durable offset on None, or
+    one provider hiccup silently marks a whole window as folded with zero
+    captures.
+    """
     try:
         from pydantic import BaseModel
 
@@ -157,14 +231,17 @@ def _extract(transcript: str, role: str) -> list:
         res = structured_complete(
             role,
             [{"role": "system", "content": _EXTRACT_SYS},
-             {"role": "user", "content": transcript[:12000]}],
+             # NO extra truncation here: the caller sized the window and the
+             # durable offset advances over exactly those turns, so a second,
+             # smaller cap would mark turns folded that the model never saw.
+             {"role": "user", "content": transcript}],
             SessionItems,
-            max_tokens=_int_env("AIFORGE_SESSION_COMPACT_MAX_TOKENS", 1500),
+            max_tokens=_int_env("AIFORGE_SESSION_COMPACT_MAX_TOKENS", 2000),
             max_retries=1, temperature=0.0)
         return list(getattr(res, "items", None) or [])
-    except Exception as exc:  # noqa: BLE001 — model down → nothing this pass
-        log.debug("chat_okr extract failed: %s", exc)
-        return []
+    except Exception as exc:  # noqa: BLE001 — model down → retry next pass
+        log.warning("chat_okr extract failed (offset not advanced): %s", exc)
+        return None
 
 
 def _marker_path():
@@ -198,6 +275,38 @@ def clear_all_markers() -> None:
             _save_marker({})
     except Exception as exc:  # noqa: BLE001
         log.debug("clear_all_markers failed: %s", exc)
+
+
+# A window that fails to extract this many times in a row is SKIPPED (logged),
+# so a poison window — an output the model always truncates on, a content
+# filter, a per-message size limit — cannot wedge a session forever.
+_MAX_WINDOW_FAILS = 3
+
+
+def _entry(marker: dict, session_id) -> dict:
+    """One session's marker entry → ``{offset, part, fails}``.
+
+    Back-compatible with the old bare int (the turn offset). ``part`` is the
+    character offset INSIDE the next turn, used when a single turn is larger
+    than one window."""
+    raw = marker.get(str(session_id), 0)
+    if isinstance(raw, int):
+        raw = {"offset": raw}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    def _n(key):
+        v = raw.get(key, 0)
+        return v if isinstance(v, int) and v >= 0 else 0
+
+    return {"offset": _n("offset"), "part": _n("part"), "fails": _n("fails")}
+
+
+def _put_entry(marker: dict, session_id, entry: dict) -> None:
+    if entry["part"] or entry["fails"]:
+        marker[str(session_id)] = entry
+    else:               # the common shape stays a bare int (older readers cope)
+        marker[str(session_id)] = entry["offset"]
 
 
 def _load_marker() -> dict:
@@ -262,24 +371,54 @@ def compact_session(session_id, *, repo: str | None = None,
         # file (lost update) — but is released before the slow LLM work.
         with _MARKER_LOCK:
             marker = _load_marker()
-            last = marker.get(str(session_id), 0)
-            if not isinstance(last, int) or last < 0:
-                last = 0
+            entry = _entry(marker, session_id)
+        last, part, fails = entry["offset"], entry["part"], entry["fails"]
         if len(turns) <= last:
             return {"ok": True, "skipped": "no_new", "captured": 0}
         new_turns = turns[last:]
 
-        transcript = _transcript(new_turns,
-                                 _int_env("AIFORGE_SESSION_COMPACT_CHARS", 8000))
+        transcript, taken, next_part = _transcript(new_turns, _window_chars(role),
+                                                   start_char=part)
         items = _extract(transcript, role)
+        if items is None:
+            # Model down — soft-fail (callers treat a RAISE as a real error) and
+            # do NOT advance: these turns are folded on the next pass. But count
+            # the failure: a window the model can never answer (truncated output,
+            # a filter, a size limit) is deterministic, so without a bound the
+            # same window is retried every pass, forever, capturing nothing.
+            fails += 1
+            give_up = fails >= _MAX_WINDOW_FAILS
+            if give_up:
+                log.warning("chat_okr: session=%s window at offset %d failed %d "
+                            "times — skipping it to keep the session moving",
+                            session_id, last, fails)
+            with _MARKER_LOCK:
+                if _RESET_EPOCH == epoch0:
+                    marker = _load_marker()
+                    _put_entry(marker, session_id,
+                               {"offset": (last + max(1, taken)) if give_up else last,
+                                "part": 0 if give_up else part,
+                                "fails": 0 if give_up else fails})
+                    _save_marker(marker)
+            return {"ok": True, "skipped": "extract_failed", "captured": 0,
+                    "remaining": len(new_turns)}
         captured = 0
-        for it in items:
-            text = (getattr(it, "text", "") or "").strip()
-            if not text:
-                continue
-            kind = (getattr(it, "kind", "") or "learning").strip()
+        rows = [((getattr(it, "text", "") or "").strip(),
+                 (getattr(it, "kind", "") or "learning").strip()) for it in items]
+        rows = [r for r in rows if r[0]]
+        # ONE scope call for the whole window, not one per item: per-item calls
+        # re-sent the classifier's rule prompt for every fact and made scoping
+        # ~90% of a fold's LLM traffic. Guarded because this function must never
+        # raise, and a scope failure must not cost the whole window's items.
+        try:
+            scopes = md_store.classify_scopes([t for t, _ in rows], hint_repo=repo,
+                                              role=role)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("chat_okr scope classification failed: %s", exc)
+            scopes = [{"scope": "project", "repo": repo, "topic": None}
+                      for _ in rows]
+        for (text, kind), sc in zip(rows, scopes):
             try:
-                sc = md_store.classify_scope(text, hint_repo=repo, role=role)
                 md_store.capture(kind, text, repo=sc["repo"], topic=sc["topic"],
                                  classify=False, source=f"chat-session:{session_id}")
                 captured += 1
@@ -294,11 +433,19 @@ def compact_session(session_id, *, repo: str | None = None,
             if _RESET_EPOCH != epoch0:
                 return {"ok": True, "captured": captured, "skipped": "reset"}
             marker = _load_marker()
-            marker[str(session_id)] = len(turns)
+            if next_part:                    # mid-way through an oversized turn
+                offset = last
+            else:
+                offset = min(last + max(1, taken), len(turns))
+            _put_entry(marker, session_id, {"offset": offset, "part": next_part,
+                                            "fails": 0})
             _save_marker(marker)
-    log.info("chat_okr: session=%s repo=%s captured=%d (offset→%d)",
-             session_id, repo, captured, len(turns))
-    return {"ok": True, "captured": captured}
+    remaining = max(0, len(turns) - offset) if not next_part \
+        else max(1, len(turns) - offset)
+    log.info("chat_okr: session=%s repo=%s captured=%d (offset→%d part=%d, "
+             "remaining=%d)", session_id, repo, captured, offset, next_part,
+             remaining)
+    return {"ok": True, "captured": captured, "remaining": remaining}
 
 
 def previous_session_id(exclude_session_id):
