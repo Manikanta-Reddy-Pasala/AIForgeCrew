@@ -38,6 +38,14 @@ _SCOPE_SYS = (
     "the repo slug, for topic a short kebab-case topic slug."
 )
 
+# Appended when several items are classified in ONE call (see classify_scopes).
+_BATCH_SYS = (
+    "\n\nYou are given SEVERAL items, each on its own line as `[n] text`. "
+    "Classify EACH independently and return one entry per item with its `index` "
+    "= n. Judge every item on its own merit; do not let one item's scope decide "
+    "another's. Return an entry for every index, in any order."
+)
+
 
 def classify_scope(text: str, *, hint_repo: str | None = None,
                    hint_topic: str | None = None, role: str = "learner") -> dict:
@@ -89,6 +97,12 @@ def classify_scope(text: str, *, hint_repo: str | None = None,
     except Exception:  # noqa: BLE001 — model down / bad JSON → honour hints
         return _fallback()
 
+    return _verdict(scope, repo, topic, body, hint_repo, hint_topic, _fallback)
+
+
+def _verdict(scope, repo, topic, body, hint_repo, hint_topic, fallback) -> dict:
+    """One model verdict → the scope dict, with the guards applied. Shared by
+    the single-item and the batched classifier so they cannot drift."""
     if scope == "global":
         # Enforce the classifier's OWN rule rather than trusting it: a fact
         # naming a concrete file/path/symbol is about one codebase, whatever
@@ -109,7 +123,126 @@ def classify_scope(text: str, *, hint_repo: str | None = None,
         t = topic or hint_topic
         return {"scope": "topic", "repo": None,
                 "topic": _snap_topic(_slug(t)) if t else None}
-    return _fallback()   # only an empty/unknown scope falls back to the hints
+    return fallback()   # only an empty/unknown scope falls back to the hints
+
+
+# How many items go in ONE batched classification, and the char budget for
+# their combined body. One call per item re-sent the ~1.4k-char rule prompt
+# every time: a single chat day (10 windows x 8 items) cost 80 calls and 89k
+# chars of prompt, ~90% of the whole fold. Batching makes that 10 calls.
+_BATCH_MAX = 20
+_BATCH_CHARS = 8000
+# Same per-item clip as the single-item classifier (body[:2000]) so batching
+# cannot change a verdict just by showing the model less of the item.
+_BATCH_ITEM_CHARS = 2000
+
+
+def classify_scopes(texts: "list[str]", *, hint_repo: str | None = None,
+                    hint_topic: str | None = None,
+                    role: str = "learner") -> "list[dict]":
+    """Scope MANY items with one call per batch → a dict per input, in order.
+
+    Same rules, same guards, same fallbacks as :func:`classify_scope` — only
+    the transport differs. Any batch the model fails on falls back per item to
+    the hints (never to a single-item call storm)."""
+    items = [(t or "").strip() for t in (texts or [])]
+    if not items:
+        return []
+    if os.environ.get("AIFORGE_OKR_SCOPE_LLM", "1") == "0":
+        return [classify_scope(t, hint_repo=hint_repo, hint_topic=hint_topic,
+                               role=role) for t in items]     # deterministic
+    out: "list[dict | None]" = [None] * len(items)
+    batch: list = []
+    used = 0
+    for idx, body in enumerate(items):
+        if not body:
+            out[idx] = classify_scope("", hint_repo=hint_repo,
+                                      hint_topic=hint_topic, role=role)
+            continue
+        # ONE LINE PER ITEM: the listing is `[n] text`, so an embedded newline
+        # would look like the start of an unnumbered item and slide the model's
+        # indices — the wrong item's scope, silently.
+        clipped = " ⏎ ".join(body[:_BATCH_ITEM_CHARS].splitlines())
+        if batch and (len(batch) >= _BATCH_MAX or used + len(clipped) > _BATCH_CHARS):
+            _run_batch(batch, out, items, hint_repo, hint_topic, role)
+            batch, used = [], 0
+        batch.append((idx, clipped))
+        used += len(clipped)
+    if batch:
+        _run_batch(batch, out, items, hint_repo, hint_topic, role)
+    # Every slot is filled by _run_batch; this is belt-and-braces for a future
+    # early return — and it uses the SAME fallback as everything else, so the
+    # three paths cannot disagree about what a hintless item scopes to.
+    return [o if o is not None
+            else dict(_hint_scope(hint_repo, hint_topic), fallback=True)
+            for o in out]
+
+
+def _run_batch(batch, out, items, hint_repo, hint_topic, role) -> None:
+    """One LLM call for ``batch`` = [(index, clipped body)]. Never raises."""
+    verdicts: dict = {}
+    try:
+        from pydantic import BaseModel
+
+        from aiforge_core.llm.structured import structured_complete
+
+        class ScopeItem(BaseModel):
+            index: int = -1
+            scope: str = ""
+            repo: str = ""
+            topic: str = ""
+
+        class ScopeDecisions(BaseModel):
+            items: "list[ScopeItem]" = []
+
+        hint = f"hint_repo={hint_repo or '-'} hint_topic={hint_topic or '-'}"
+        listing = "\n".join(f"[{n}] {body}" for n, (_, body) in enumerate(batch))
+        res = structured_complete(
+            role,
+            [{"role": "system", "content": _SCOPE_SYS + _BATCH_SYS},
+             {"role": "user", "content": f"{hint}\n\nITEMS:\n{listing}"}],
+            ScopeDecisions, max_tokens=60 * len(batch) + 120, max_retries=1,
+            temperature=0.0)
+        entries = list(getattr(res, "items", None) or [])
+    except Exception as exc:  # noqa: BLE001 — model down / bad JSON → hints
+        log.debug("batched scope classification failed: %s", exc)
+        entries = []
+    for it in entries:
+        try:
+            n = int(getattr(it, "index", -1))
+        except Exception:  # noqa: BLE001 — one unusable entry, not the batch
+            continue
+        if 0 <= n < len(batch) and n not in verdicts:
+            verdicts[n] = it        # FIRST answer for an index wins; a repeated
+            # or out-of-range index is dropped rather than overwriting a good one
+
+    for n, (idx, _clipped) in enumerate(batch):
+        it = verdicts.get(n)
+        body = items[idx]
+        if it is None:
+            # No verdict for this item: honour the hints, exactly as the
+            # single-item classifier does when the model is unreachable — but
+            # SAY SO. One failed batch used to read as 20 confident "project"
+            # verdicts, and cleanup_reheal DELETES what isn't global.
+            out[idx] = dict(_hint_scope(hint_repo, hint_topic), fallback=True)
+            continue
+        try:
+            out[idx] = _verdict((getattr(it, "scope", "") or "").strip().lower(),
+                                (getattr(it, "repo", "") or "").strip() or None,
+                                (getattr(it, "topic", "") or "").strip() or None,
+                                body, hint_repo, hint_topic,
+                                lambda: _hint_scope(hint_repo, hint_topic))
+        except Exception as exc:  # noqa: BLE001 — a guard blew up on ONE item
+            log.debug("scope verdict failed: %s", exc)
+            out[idx] = dict(_hint_scope(hint_repo, hint_topic), fallback=True)
+
+
+def _hint_scope(hint_repo, hint_topic) -> dict:
+    if hint_repo:
+        return {"scope": "project", "repo": hint_repo, "topic": None}
+    if hint_topic:
+        return {"scope": "topic", "repo": None, "topic": _slug(hint_topic)}
+    return {"scope": "project", "repo": None, "topic": None}
 def _snap_topic(slug: str) -> str:
     """Snap a freshly-minted topic slug to an EXISTING topic brief when they're
     near-identical (fuzzy) — stops the classifier proliferating

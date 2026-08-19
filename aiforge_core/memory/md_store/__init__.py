@@ -120,7 +120,8 @@ from ._render import (
     migrate_to_okr,
     seed_memory_block,
 )
-from ._scope import _SCOPE_SYS, _snap_topic, classify_scope
+from ._scope import (_SCOPE_SYS, _snap_topic, classify_scope,
+                     classify_scopes)
 
 __all__ = [
     "append_bullet",
@@ -132,6 +133,7 @@ __all__ = [
     "capture",
     "captures_dir",
     "classify_scope",
+    "classify_scopes",
     "cleanup_legacy_compacted",
     "cleanup_reheal",
     "compact",

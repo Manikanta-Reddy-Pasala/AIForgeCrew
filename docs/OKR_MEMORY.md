@@ -30,13 +30,58 @@
 > facts (`recent`) + **link expansion** (follows a hit brief's Links to sibling
 > briefs). `/api/memory/search` splits results into **vector** vs **md** groups.
 > A **seed TOC** of all briefs is injected into the chat prompt (so the model
-> knows what to recall). Housekeeping: hourly compaction + nightly (02:00 local)
-> full recompact — consolidate, **contradiction-resolve** (newer fact overwrites
+> knows what to recall). Housekeeping: ONE evening pass (18:00 local, see below)
+> — compact + full recompact — consolidate, **contradiction-resolve** (newer fact overwrites
 > a stale contradicting one across repo/global), cross-scope link **map**, and a
 > graph-health **lint** (dangling links / orphans).
 >
+> **Housekeeping runs ONCE A DAY, in the evening** (`AIFORGE_COMPACT_AT_HOUR`,
+> default 18 local): one pass folds **every** session with new turns, then
+> captures→briefs, then the full recompact. Every fold is LLM-heavy, so the old
+> hourly + per-idle-session cadence spent tokens all day re-folding briefs that
+> barely moved. Scheduling rules: fires the first time the daemon is awake
+> **at or after** the hour; if a whole day passed with no run (a laptop that is
+> never up at 18:00) it fires at the next wake whatever the hour; at most once
+> per local day and never twice within 12h; the run — including a FAILED
+> attempt and its retry count — is remembered in `~/.aiforge/periodic_state.json`,
+> so a restart neither re-runs a finished pass nor buys a failing one extra
+> attempts; a pass that fails retries after an hour, at most twice a day, and
+> each of its three stages is isolated so one failure can't cancel the others.
+> `AIFORGE_COMPACT_AT_HOUR=0` means OFF (as with the sibling `*_DAILY=0`
+> knobs) — midnight is `24`. Session folds walk the backlog
+> window by window (`AIFORGE_SESSION_COMPACT_CHARS` per window, at most
+> `AIFORGE_SESSION_COMPACT_MAX_WINDOWS`, default 20, per session per pass); a
+> session whose walk stopped short (window cap, model down, error) is revisited
+> by the next pass even if no new message arrived, and a pass never overlaps
+> itself. A retry skips the stages that already succeeded that day, so one
+> broken session fold can't buy a second full recompact.
+>
+> **Scope classification is BATCHED** (`md_store.classify_scopes`): one call per
+> window of items, not one per item. It was ~90% of a fold's traffic — a
+> 72k-char chat day cost 90 LLM calls / 172k prompt chars, now 20 / 98k — because
+> every item re-sent the classifier's rule prompt. `AIFORGE_SESSION_COMPACT_CHARS`
+> is the ONLY transcript cap now; the extractor no longer re-truncates at 12k
+> (which would have marked turns folded that the model never saw). The per-session
+> marker carries `{offset, part, fails}` (a bare int still reads): `part` walks a
+> single turn BIGGER than one window in slices instead of clipping it, and after
+> `_MAX_WINDOW_FAILS` (3) failures on the same window it is skipped with a
+> warning — a deterministic failure at temperature 0 repeats forever otherwise.
+> A batched scope verdict the model never gave is marked `fallback: True`, and
+> `cleanup_reheal` (which DELETES non-global facts) skips those.
+> `AIFORGE_COMPACT_AT_HOUR=off` — or an explicit positive
+> `AIFORGE_COMPACT_EVERY_H` — restores hourly compaction, the idle-session
+> daemon (`AIFORGE_SESSION_IDLE_MIN`) and the nightly `AIFORGE_RECOMPACT_HOUR`
+> recompact as three separate jobs.
+>
+> ⚠️ **`at_hour` never actually fired before 2026-08-19** — the due calculation
+> always pointed at the *next* occurrence, which a sleep can only overshoot, so
+> the documented "nightly 02:00 recompact" (and the Neo4j graph maintenance and
+> the sqlite dedupe) had never run on a schedule. They do now: expect the daily
+> pass to cost MORE per day than the old hourly compaction did, not less.
+>
 > Env knobs: `AIFORGE_SEED_TOC`, `AIFORGE_UMEM_RECENT`, `AIFORGE_UMEM_LINK_EXPAND`,
-> `AIFORGE_OKR_CONTRADICT`, `AIFORGE_RECOMPACT_HOUR` (default 2), `AIFORGE_OKR_DAG`.
+> `AIFORGE_OKR_CONTRADICT`, `AIFORGE_COMPACT_AT_HOUR` (default 18),
+> `AIFORGE_RECOMPACT_HOUR` (default 2, only off the daily pass), `AIFORGE_OKR_DAG`.
 
 ---
 
@@ -156,7 +201,10 @@ populated; no new sections.**
   distils a transcript into atomic durable items (decisions, learnings,
   **meaningful user inputs only** — chit-chat dropped) and routes each to its
   scope via `capture`. Trigger `AIFORGE_SESSION_COMPACT` = `idle` (default) |
-  `turns` | `explicit` | `off`; the idle daemon compacts sessions gone quiet for
+  `turns` | `explicit` | `off`; on the daily pass (`AIFORGE_COMPACT_AT_HOUR`)
+  EVERY session with new turns is folded — `compact_session` is offset-based, so
+  a session still in flight loses nothing, tomorrow's pass takes the rest. Off
+  the daily pass the idle daemon compacts sessions gone quiet for
   `AIFORGE_SESSION_IDLE_MIN` (default 30) min; explicit via
   `POST /api/chat/sessions/{id}/compact`.
 - **Previous-session continuity** — at session start the chat agent injects

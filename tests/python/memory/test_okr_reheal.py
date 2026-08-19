@@ -6,6 +6,7 @@ a reheal pass. Gated on AIFORGE_OKR_SCOPE_LLM. Deterministic-off → no-op.
 """
 from __future__ import annotations
 
+import re
 import types
 
 import pytest
@@ -36,9 +37,14 @@ def test_reheal_moves_global_fact_to_shared(monkeypatch, mem):
                  ["always run tests before commit", "OrderController maps /orders"])
 
     def _fake(role, messages, model, *a, **k):
-        c = messages[-1]["content"]
-        scope = "global" if "tests" in c else "project"
-        return types.SimpleNamespace(scope=scope, repo="", topic="")
+        # batched classifier: one entry per "[n] item" line
+        lines = [ln for ln in messages[-1]["content"].splitlines()
+                 if re.match(r"^\[\d+\] ", ln)]
+        return types.SimpleNamespace(items=[
+            types.SimpleNamespace(index=int(re.match(r"^\[(\d+)\] ", ln).group(1)),
+                                  scope=("global" if "tests" in ln else "project"),
+                                  repo="", topic="")
+            for ln in lines])
 
     monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _fake)
     res = md_store.reheal_scopes()
