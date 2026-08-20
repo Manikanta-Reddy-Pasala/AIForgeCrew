@@ -745,7 +745,19 @@ export default function Chat() {
       // M3: context-window usage — keep the latest on the live turn for the
       // footer meter.
       if (evt.type === 'usage') {
-        setLiveTurn(prev => prev ? { ...prev, usage: { pct: evt.pct, chars: evt.context_chars, budget: evt.budget_chars, tokens: evt.context_tokens, windowTokens: evt.window_tokens } } : prev);
+        // MERGE, never replace: the end-of-turn event carries only the settled
+        // request counts, and overwriting would blank the context meter with it.
+        setLiveTurn(prev => prev ? { ...prev, usage: {
+          ...(prev.usage || { pct: 0, chars: 0, budget: 0 }),
+          ...(evt.pct !== undefined ? {
+            pct: evt.pct, chars: evt.context_chars, budget: evt.budget_chars,
+            tokens: evt.context_tokens, windowTokens: evt.window_tokens,
+          } : {}),
+          ...(evt.llm_turn !== undefined ? {
+            llmTurn: evt.llm_turn, llmSession: evt.llm_session,
+            llmPerMin: evt.llm_per_min,
+          } : {}),
+        } } : prev);
         return;
       }
 
@@ -1622,6 +1634,28 @@ export default function Chat() {
                         color: 'var(--accent, #2563eb)',
                       }}>
                         ❓ Waiting for your reply — answer below to continue.
+                      </div>
+                    )}
+                    {/* Requests actually sent to the LLM. One question is
+                        rarely one call — every ReAct step, retry and condense
+                        is a request — and that surprise is what people report
+                        as "request overload". Stays visible after the turn
+                        ends, unlike the context meter. */}
+                    {liveTurn.usage?.llmTurn !== undefined && (
+                      <div className="xs muted" style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 6 }}
+                           title={`${liveTurn.usage.llmTurn} request(s) to the model for this message · `
+                                  + `${liveTurn.usage.llmSession ?? 0} in this chat since the server started · `
+                                  + `${liveTurn.usage.llmPerMin ?? 0}/min across all chats right now. `
+                                  + `Counted at the wire, so retries count too.`}>
+                        <span>⚡ {liveTurn.usage.llmTurn} LLM {liveTurn.usage.llmTurn === 1 ? 'request' : 'requests'}</span>
+                        {(liveTurn.usage.llmSession ?? 0) > (liveTurn.usage.llmTurn ?? 0) && (
+                          <span>· {liveTurn.usage.llmSession} this chat</span>
+                        )}
+                        {(liveTurn.usage.llmPerMin ?? 0) > 0 && (
+                          <span style={{ color: (liveTurn.usage.llmPerMin ?? 0) > 60 ? 'var(--err,#e5534b)' : undefined }}>
+                            · {liveTurn.usage.llmPerMin}/min
+                          </span>
+                        )}
                       </div>
                     )}
                     {/* M3: context-window fill meter while streaming */}

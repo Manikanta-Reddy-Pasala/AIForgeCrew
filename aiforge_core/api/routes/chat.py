@@ -569,6 +569,19 @@ def chat_session_trace(session_id: int) -> dict:
     return {"session_id": session_id, "count": len(turns), "turns": turns}
 
 
+@router.get("/api/chat/sessions/{session_id}/llm-usage")
+def chat_session_llm_usage(session_id: int) -> dict:
+    """How many requests this chat has sent to the LLM.
+
+    ``turn`` = since the current/most recent turn started, ``session`` = since
+    the API started, ``per_minute`` = machine-wide rate over the last 60s (what
+    a rate-limited provider — and the user's fan — actually feels). Counted at
+    the wire, so retries and fallbacks count, and reset on API restart.
+    """
+    from aiforge_core.llm import call_meter
+    return {"session_id": session_id, **call_meter.snapshot(session_id)}
+
+
 @router.get("/api/chat/sessions/{session_id}/spec")
 def chat_session_spec(session_id: int) -> dict:
     """The planner's SPEC.md (requirements + subtask breakdown) for this
@@ -1721,6 +1734,20 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                         if _s.get("status") not in _TERMINAL:
                             _s["status"] = "failed"
                     break
+            # FINAL request count. The in-loop `usage` events fire BEFORE each
+            # model call, so the last one always under-reports by at least the
+            # answer's own call (plus any retry it needed). Emit the settled
+            # numbers once the run is over, so the count the user is left
+            # looking at is the true one.
+            try:
+                from aiforge_core.llm import call_meter as _meter
+                _calls = _meter.snapshot(session_id)
+                run.publish({"type": "usage", "llm_turn": _calls["turn"],
+                             "llm_session": _calls["session"],
+                             "llm_per_min": _calls["per_minute"],
+                             "final": True})
+            except Exception:  # noqa: BLE001 — metering must never break a turn
+                pass
             # Persist the final subtask panel as a step so reload restores it.
             if _subtasks:
                 steps.insert(0, {"type": "subtasks", "items": _subtasks})
