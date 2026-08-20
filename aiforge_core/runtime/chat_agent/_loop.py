@@ -694,6 +694,18 @@ def run_chat_agent(
                 _retries = max(0, int(os.environ.get("AIFORGE_CHAT_LLM_RETRIES", "5")))
             except ValueError:
                 _retries = 5
+            # A read timeout means the model RECEIVED this prompt and is
+            # still generating it. Re-issuing the identical completion leaves
+            # that generation running and starts another on a box that already
+            # could not finish one — five more times, by default. The transport
+            # marks the exception; honour it here, or the layer below's
+            # "do not re-POST" rule is undone one call up.
+            try:
+                from aiforge_core.llm.client import shipped_timeout as _st
+                if _st(exc):
+                    _retries = 0
+            except Exception:  # noqa: BLE001
+                pass
             out = None
             _last = exc
             for _rn in range(_retries):

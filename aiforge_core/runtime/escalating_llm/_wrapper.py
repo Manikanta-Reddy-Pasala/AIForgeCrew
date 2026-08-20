@@ -22,6 +22,24 @@ from ._policy import (
 from ._builder import _build_one, _mirror_to_langfuse
 
 
+def _meter_record(role: str, model_name) -> None:
+    """Count one PIPELINE request in the toolbar meter.
+
+    ADK agents reach the endpoint through LiteLlm/httpx, never through
+    ``llm.client._post`` where the meter lives — so team mode, the single
+    highest-volume path, read ZERO on a meter whose route docstring and UI copy
+    both promise "chat, pipeline, jobs, memory". Same reasoning (and the same
+    place) as the Langfuse mirror right below: what does not come through the
+    client has to be mirrored here. Never raises.
+    """
+    try:
+        from aiforge_core.llm import call_meter as _meter
+        _meter.record(role=role, provider="openai_compatible",
+                      model=str(model_name or ""))
+    except Exception:  # noqa: BLE001 — metering must never break a call
+        pass
+
+
 class EscalatingLlm(BaseLlm):
     """Primary ADK model + ordered cloud fallback chain.
 
@@ -88,6 +106,7 @@ class EscalatingLlm(BaseLlm):
         # Streaming path: trust primary, no retry magic.
         if stream:
             assert self.primary_model is not None
+            _meter_record(self.role, getattr(self.primary_model, "model", None))
             async for r in self.primary_model.generate_content_async(
                 llm_request, stream=True,
             ):
@@ -152,6 +171,7 @@ class EscalatingLlm(BaseLlm):
                 for _t in range(_tries):
                     try:
                         buffered = []
+                        _meter_record(self.role, target_model)
                         async for r in model.generate_content_async(
                             req_for_attempt, stream=False,
                         ):

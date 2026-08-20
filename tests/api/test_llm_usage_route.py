@@ -55,3 +55,25 @@ def test_unknown_session_reports_zeros_not_a_leak(app_client):
     call_meter.reset_all()
     body = app_client.get("/api/chat/sessions/987654321/llm-usage").json()
     assert body["turn"] == 0 and body["session"] == 0 and body["by_role"] == {}
+
+
+def test_global_llm_usage_route_reports_every_window(app_client):
+    """The toolbar meter's endpoint: machine-wide, not per chat."""
+    from aiforge_core.llm import call_meter
+    call_meter.reset_all()
+    for _ in range(3):
+        call_meter.record("learner", provider="openai_compatible")
+    call_meter.record("triage", session_id=7, provider="openai_compatible")
+
+    r = app_client.get("/api/llm/usage")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["per_minute"] >= 4
+    assert body["last_15m"] >= 4 and body["last_60m"] >= 4
+    assert body["by_role"]["learner"] >= 3
+    assert body["by_provider"]["openai_compatible"] >= 4
+    assert len(body["series_60m"]) == 60
+    # The sparkline is expensive to build and nothing draws it when the panel
+    # is shut, so the UI can ask for it to be left out.
+    assert "series_60m" not in app_client.get("/api/llm/usage?series=false").json()
+    call_meter.reset_all()

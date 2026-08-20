@@ -1734,3 +1734,63 @@ button.icon:hover:not(:disabled) { color: var(--fg-0); background: var(--bg-3); 
   color: var(--fg-2);
   line-height: 1.5;
 }
+
+/* ---------- toolbar LLM request meter ---------- */
+.llm-meter { position: relative; }
+.llm-meter-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 10px;
+  border-radius: var(--r-full);
+  background: var(--bg-2);
+  border: 1px solid var(--border-0);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  color: var(--fg-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.llm-meter-pill:hover { background: var(--bg-3); color: var(--fg-1); }
+.llm-meter-bolt { font-size: 11px; line-height: 1; }
+.llm-meter-sep { opacity: .4; }
+
+.llm-meter-panel {
+  position: absolute; top: calc(100% + 8px); right: 0;
+  z-index: 40;
+  width: 320px;
+  padding: var(--s-4);
+  border-radius: var(--r-md, 10px);
+  background: var(--bg-1);
+  border: 1px solid var(--border-1, var(--border-0));
+  box-shadow: 0 12px 32px rgba(0,0,0,.28);
+  display: flex; flex-direction: column; gap: var(--s-3);
+}
+.llm-meter-head b { font-size: var(--fs-sm); color: var(--fg-0); }
+.llm-meter-sub { display: block; font-size: 10px; color: var(--fg-2); margin-top: 2px; }
+.llm-meter-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--s-2); }
+.llm-meter-stats > div {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  padding: 6px 8px;
+  background: var(--bg-2);
+  border-radius: var(--r-sm, 6px);
+}
+.llm-meter-stats span { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--fg-0); }
+.llm-meter-stats small { font-size: 9px; color: var(--fg-2); }
+.llm-meter-spark {
+  display: flex; align-items: flex-end; gap: 1px;
+  height: 30px;
+  padding: 0 1px;
+}
+.llm-meter-spark > span { flex: 1; border-radius: 1px; min-width: 2px; }
+.llm-meter-label { font-size: 9px; color: var(--fg-2); text-transform: uppercase; letter-spacing: .04em; }
+.llm-meter-rows { display: flex; flex-direction: column; gap: 2px; }
+.llm-meter-row {
+  display: flex; justify-content: space-between; gap: var(--s-2);
+  font-size: var(--fs-xs); color: var(--fg-1);
+  font-family: var(--font-mono);
+}
+/* An mlx-lm model id is a full filesystem path; the panel is a fixed 320px. */
+.llm-meter-row > span {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.llm-meter-row > b { flex: none; }
+.llm-meter-note { font-size: 10px; color: var(--warn); }

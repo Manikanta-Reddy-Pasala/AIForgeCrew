@@ -78,6 +78,29 @@ _EXTRA_LOG_ROLES = {"intent", "publish", "integration", "adk_runner",
                     "enhancer", "architect", "verifier"}
 
 
+# ────────────────────── LLM request meter ───────────────────────────────
+@router.get("/api/llm/usage")
+def llm_usage(series: bool = True) -> dict:
+    """Machine-wide LLM request meter — what the toolbar badge shows.
+
+    Every HTTP attempt this process has sent to a model, whoever asked for it:
+    chat turns, the pipeline, jobs, and the background memory daemon (whose
+    folds and scope calls are invisible in the chat footer yet are exactly what
+    makes an interactive turn feel slow).
+
+    ``per_minute`` is an exact sliding 60s window. ``last_15m`` / ``last_60m``
+    are rolling too, but MINUTE-ALIGNED (they sum whole-minute buckets, so
+    "last 15 min" covers 14–15 minutes) — the trade that keeps a read O(60)
+    instead of a scan of the hour under the same lock every LLM call takes.
+    ``series_60m`` is one count per minute for the last hour, oldest first, for
+    the sparkline; ``by_model`` is the axis that actually distinguishes
+    endpoints when one provider class serves all of them. In-process and reset
+    on restart — a live meter, not billing.
+    """
+    from aiforge_core.llm import call_meter
+    return call_meter.global_snapshot(series=bool(series))
+
+
 @router.get("/api/logs/{role}/stream")
 def stream_role_log(role: str):
     # Accept any role (sanitised) — an unknown role just tails an empty file

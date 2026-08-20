@@ -8,6 +8,7 @@ import { Toaster } from 'sonner';
 import './styles.css';
 import { Icon } from './icons';
 import { ErrorBoundary } from './ErrorBoundary';
+import LlmMeter from './components/LlmMeter';
 
 // Dashboard is the biggest view (pulls recharts). Lazy-load so the
 // main bundle stays small and other pages load instantly.
@@ -159,6 +160,7 @@ function TopBar({ onToggleSidebar, collapsed }: { onToggleSidebar: () => void; c
         <div className="topbar-title">{title}</div>
       </div>
       <div className="topbar-spacer" />
+      <LlmMeter />
       <ThemeToggle />
     </div>
   );

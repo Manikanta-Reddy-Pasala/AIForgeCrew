@@ -1,7 +1,7 @@
 import { j, apiFetch } from './core';
 import type {
   RegistryModel, ModelInput, LlmSettings, LlmSettingsInput,
-  AgentRole, AgentRoleConfig, AgentRoleConfigInput, ProviderCatalog,
+  AgentRole, AgentRoleConfig, AgentRoleConfigInput, ProviderCatalog, LlmUsage,
 } from './agents';
 import type { MemorySource, MemoryOverview } from './memory';
 import type { WorkflowSpec, RoutePreview } from './workflows';
@@ -9,6 +9,10 @@ import type { JobPreview, JobDraft, Job } from './jobs';
 
 export const api = {
   health:   () => j<any>('/health'),
+  // Machine-wide LLM request meter for the toolbar badge. `series=false` skips
+  // the 60-bucket sparkline when the panel is closed and nothing draws it.
+  llmUsage: (series = true) =>
+    j<LlmUsage>(`/llm/usage?series=${series ? 'true' : 'false'}`),
   agents:   () => j<any[]>('/agents'),
   // ── Model registry (simplified Settings) ────────────────────────
   models: () => j<{ models: RegistryModel[] }>('/agents/models'),
