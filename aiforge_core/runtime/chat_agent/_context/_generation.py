@@ -120,6 +120,12 @@ def _complete_cancellable(complete_fn, role, convo, session_id):
 
     box: dict = {}
     ev = _th.Event()             # per-call abort signal for the client HTTP layer
+    # A new thread starts with an EMPTY context, so the request context the
+    # turn bound (session id, role) would be invisible to the LLM client —
+    # which is what attributes a request to this chat in the call meter (and
+    # the Langfuse session trace). Carry it over explicitly.
+    import contextvars as _cv
+    _ctx = _cv.copy_context()
 
     def _call():
         # Bind the cancel token on THIS thread so the LLM client's HTTP layer
@@ -138,7 +144,7 @@ def _complete_cancellable(complete_fn, role, convo, session_id):
         finally:
             sem.release()        # free the slot when the call REALLY finishes
 
-    t = _th.Thread(target=_call, daemon=True)
+    t = _th.Thread(target=lambda: _ctx.run(_call), daemon=True)
     t.start()
     while t.is_alive():
         if chat_cancel.is_cancelled(session_id):

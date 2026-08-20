@@ -186,6 +186,15 @@ def _post_cancellable(ep: Endpoint, payload: bytes, timeout_s: int,
 
 
 def _post(ep: Endpoint, payload: bytes, timeout_s: int) -> dict:
+    # Count the REQUEST here — one per HTTP attempt, so retries, fallbacks and
+    # escalations each count, exactly as the provider's rate limiter counts
+    # them. This is the number the chat UI shows when someone asks why a single
+    # question turned into forty calls.
+    try:
+        from aiforge_core.llm import call_meter as _meter
+        _meter.record()
+    except Exception:  # noqa: BLE001 — metering must never break a call
+        pass
     # Rate-limit acquire BEFORE the post — blocks until budget allows.
     prov = _providers.get(ep.provider)
     declared = prov.rate_limits() if prov is not None else None

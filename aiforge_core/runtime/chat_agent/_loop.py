@@ -469,6 +469,14 @@ def run_chat_agent(
     # read before.
     _reads_new = 0
     _progress_mark = (0, 0)   # (new reads, edits) at the last extension
+    # Per-TURN request counter: every ReAct step is a request to the model, and
+    # so is every retry and every condense. Start this turn at zero; the
+    # session total keeps climbing.
+    try:
+        from aiforge_core.llm import call_meter as _meter
+        _meter.turn_reset(session_id)
+    except Exception:  # noqa: BLE001 — metering must never break a turn
+        _meter = None
     _builder_nudged = False
     _builder_finalized = False
     _builder_final_tries = 0
@@ -639,11 +647,17 @@ def run_chat_agent(
             # pct so the UI can show "120k / 256k" not just a bare percentage.
             _ctx_tokens = _ctx_chars // 4
             _win_tokens = _ctx_budget // 4
+            _calls = _meter.snapshot(session_id) if _meter is not None else {}
             yield {"type": "usage", "context_chars": _ctx_chars,
                    "budget_chars": _ctx_budget,
                    "context_tokens": _ctx_tokens,
                    "window_tokens": _win_tokens,
-                   "pct": min(100, round(_ctx_chars * 100 / _ctx_budget))}
+                   "pct": min(100, round(_ctx_chars * 100 / _ctx_budget)),
+                   # Requests actually sent to the LLM — this turn, this chat,
+                   # and the machine-wide rate. "Why is one question 40 calls?"
+                   "llm_turn": _calls.get("turn", 0),
+                   "llm_session": _calls.get("session", 0),
+                   "llm_per_min": _calls.get("per_minute", 0)}
         try:
             out = _complete_cancellable(complete_fn, role, convo, session_id)
         except Exception as exc:  # noqa: BLE001
