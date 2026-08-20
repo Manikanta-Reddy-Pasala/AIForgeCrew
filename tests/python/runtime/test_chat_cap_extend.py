@@ -210,8 +210,8 @@ def test_deadline_stop_banner_points_at_the_setting(tmp_path, monkeypatch):
 def test_limits_default_env_and_store(monkeypatch, tmp_path):
     monkeypatch.delenv("AIFORGE_CHAT_SAFETY_CAP", raising=False)
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
-    assert _limits._safety_cap() == 2000
-    assert _limits._turn_deadline_s() == 3600.0
+    assert _limits._safety_cap() == 0        # no cap by default
+    assert _limits._turn_deadline_s() == 0.0  # no deadline by default
     assert _limits._cap_extensions() == 2
 
     monkeypatch.setenv("AIFORGE_CHAT_SAFETY_CAP", "50")
@@ -230,7 +230,7 @@ def test_limits_clamp_a_bad_env_value(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CHAT_SAFETY_CAP", "0")
     assert _limits._safety_cap() == 0
     monkeypatch.setenv("AIFORGE_CHAT_SAFETY_CAP", "-5")
-    assert _limits._safety_cap() == 2000
+    assert _limits._safety_cap() == 2000      # a typo never means "no cap"
     monkeypatch.setenv("AIFORGE_CHAT_CAP_EXTENSIONS", "-3")
     assert _limits._cap_extensions() == 0
     monkeypatch.setenv("AIFORGE_CHAT_TURN_DEADLINE_S", "not-a-number")
@@ -298,7 +298,7 @@ def test_settings_unset_restores_the_env_override(monkeypatch, tmp_path):
     rs.unset(["chat_safety_cap"])
     assert _limits._safety_cap() == 50               # env is live again
     monkeypatch.delenv("AIFORGE_CHAT_SAFETY_CAP")
-    assert _limits._safety_cap() == 2000             # …then the default
+    assert _limits._safety_cap() == 0                 # …then the default (no cap)
 
 
 def test_re_reads_after_a_condense_are_not_new_knowledge(tmp_path, monkeypatch):

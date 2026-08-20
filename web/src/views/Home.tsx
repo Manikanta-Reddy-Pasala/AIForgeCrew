@@ -699,10 +699,10 @@ function AgentLimitsCard() {
       </div>
       <div className="row" style={{ gap: 24, flexWrap: 'wrap', alignItems: 'flex-start' }}>
         {field('chat_safety_cap', 'Step cap',
-               'Tool/model steps in one turn before the runaway guard fires. 0 = no limit. Default 2000.',
+               'Tool/model steps in one turn before the runaway guard fires. 0 = no limit, which is the DEFAULT.',
                0, 1_000_000)}
         {field('chat_turn_deadline_s', 'Turn deadline (seconds)',
-               'Wall clock for one turn. 0 = no deadline. Default 3600.',
+               'Wall clock for one turn. 0 = no deadline, which is the DEFAULT.',
                0, 86_400)}
         {field('chat_cap_extensions', 'Auto-extensions',
                'How many times a turn still making progress may extend the cap / deadline. 0 = stop hard. Default 2.',

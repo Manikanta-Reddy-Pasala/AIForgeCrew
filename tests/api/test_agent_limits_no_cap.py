@@ -42,14 +42,18 @@ def test_no_limits_saves_both_guards_and_the_runtime_agrees(client):
     assert _limits._turn_deadline_s() == 0.0
 
 
-def test_reset_brings_the_guards_back(client):
+def test_reset_restores_the_defaults(client):
+    """Which are now 0/0 — an interactive turn is unguarded unless the
+    operator opts back in. The background cap is what does NOT reset to 0."""
     assert client.put("/api/runtime/llm-settings",
-                      json={"chat_safety_cap": 0}).status_code == 200
+                      json={"chat_safety_cap": 500}).status_code == 200
     r = client.put("/api/runtime/llm-settings",
                    json={"unset": ["chat_safety_cap", "chat_turn_deadline_s",
                                    "chat_cap_extensions"]})
     assert r.status_code == 200
-    assert r.json()["chat_safety_cap"] == 2000
+    assert r.json()["chat_safety_cap"] == 0
+    assert r.json()["chat_turn_deadline_s"] == 0
+    assert r.json()["chat_unattended_cap"] == 2000
 
 
 def test_a_negative_cap_is_still_refused(client):
