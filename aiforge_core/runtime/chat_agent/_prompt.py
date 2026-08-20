@@ -42,12 +42,16 @@ Tool arguments:
 - watch_until  {{"cmd": "curl -sf localhost:8080/health", "until": "exit_zero", "interval_s": 30, "max_checks": 20}}
                 (KEEP RE-RUNNING one command until a condition holds — use this
                 whenever the user wants something WATCHED, POLLED, or repeated
-                "until it's done/ready/green/finished". ONE tool call covers the
-                whole watch, so a 20-check watch costs one model call, not
-                twenty: never hand-roll a poll loop by calling run_command over
-                and over. until: exit_zero (default) | exit_nonzero |
-                contains:TEXT | not_contains:TEXT | regex:PATTERN. Bounded by
-                max_checks and timeout_s, and Stop interrupts it mid-wait.)
+                "until it's done/ready/green/finished". The loop is CODE, not
+                you: ONE tool call covers the whole watch, so a 40-check watch
+                costs one model call, not forty. Never hand-roll a poll loop by
+                calling run_command over and over.
+                DERIVE the numbers from what the user said and PASS them — the
+                defaults (20 checks / 30s / 5min total) are not a guess at their
+                intent: "monitor for 10 minutes, check every 15 seconds" is
+                {{"interval_s": 15, "max_checks": 40, "timeout_s": 600}}.
+                until: exit_zero (default) | exit_nonzero | contains:TEXT |
+                not_contains:TEXT | regex:PATTERN. Stop interrupts it mid-wait.)
 - schedule_task {{"action": "create", "name": "nightly smoke", "instruction": "run the smoke suite and report failures", "cron": "0 2 * * *"}}
                 (Do this LATER and REPEATEDLY — anything the user wants to
                 happen on a schedule rather than now. `cron` (5-field) or
