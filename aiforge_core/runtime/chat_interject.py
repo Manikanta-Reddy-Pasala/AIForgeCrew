@@ -14,7 +14,8 @@ Usage:
     chat_interject.push(session_id, "actually, also handle the empty case")
     ...                                   # from the /steer endpoint
     for text in chat_interject.drain(session_id):   # in the run loop
-        convo.append({"role": "user", "content": f"[steer] {text}"})
+        convo.append({"role": "user",
+                      "content": chat_steer.steer_directive(text)})
     ...
     chat_interject.clear(session_id)      # alongside chat_cancel.finish
 """
@@ -60,10 +61,19 @@ def is_steerable(session_id: int) -> bool:
         return session_id in _STEERABLE
 
 
-def push(session_id: int, text: str, *, require_steerable: bool = False) -> bool:
-    """Queue a steer message for ``session_id``. Empty/blank text is a no-op.
+def push(session_id: int, text: str, *, require_steerable: bool = False,
+         kind: str = "steer") -> bool:
+    """Queue a message for ``session_id``. Empty/blank text is a no-op.
 
     Returns True if the message was queued.
+
+    ``kind`` is what the consumer needs to know to phrase it correctly. Two
+    very different things arrive here: a message the user TYPED mid-run
+    (``steer`` — their latest instruction, which may replace the request), and
+    the guidance they typed on an approval card when REJECTING one tool call
+    (``reject`` — a correction to that action, never a new task). Wrapping the
+    second in the first's wording told an agent to abandon a half-finished
+    build because someone said "use tmp/ instead".
 
     When ``require_steerable`` is True the steerability check and the enqueue
     happen under the SAME lock acquisition — an atomic test-and-set. This closes
@@ -82,20 +92,32 @@ def push(session_id: int, text: str, *, require_steerable: bool = False) -> bool
     with _LOCK:
         if require_steerable and session_id not in _STEERABLE:
             return False
-        _QUEUES.setdefault(session_id, []).append(text)
+        _QUEUES.setdefault(session_id, []).append((str(kind or "steer"), text))
     return True
 
 
 def drain(session_id: int) -> list[str]:
-    """Return + remove all pending steer messages for ``session_id`` (FIFO).
+    """Return + remove all pending message TEXTS for ``session_id`` (FIFO).
 
-    Returns an empty list when nothing is pending.
+    Kind-blind, for consumers that treat every entry the same (the parallel
+    runner folds them into SPEC.md, where both kinds read as instructions).
+    Use :func:`drain_items` when the wording depends on the kind.
     """
+    return [text for _kind, text in drain_items(session_id)]
+
+
+def drain_items(session_id: int) -> "list[tuple[str, str]]":
+    """Return + remove all pending ``(kind, text)`` pairs (FIFO)."""
     if session_id is None:
         return []
     with _LOCK:
         msgs = _QUEUES.pop(session_id, None)
-    return list(msgs) if msgs else []
+    out: list = []
+    for m in (msgs or []):
+        # Tolerate a bare string: an older process (or a test) may have queued
+        # one before the kind existed.
+        out.append(m if isinstance(m, tuple) else ("steer", str(m)))
+    return out
 
 
 def pending(session_id: int) -> bool:

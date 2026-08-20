@@ -204,7 +204,10 @@ def make_approval_gate_callback():
                 if _guidance:
                     try:
                         from aiforge_core.runtime import chat_interject
-                        chat_interject.push(sid, _guidance)
+                        # NOT a steer: this is a correction to the rejected
+                        # action, not a new instruction that may replace the
+                        # whole request (see chat_interject.push).
+                        chat_interject.push(sid, _guidance, kind="reject")
                     except Exception:  # noqa: BLE001 — best-effort steer
                         pass
                     return {"ok": False, "rejected": True,

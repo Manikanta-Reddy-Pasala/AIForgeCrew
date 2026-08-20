@@ -169,14 +169,24 @@ def _collect(steps) -> dict:
     attempted: list = []    # a write whose outcome we cannot read
     commands: list = []
     errors: list = []
+    steers: list = []       # what the user redirected the turn to, mid-run
     subtasks: dict = {}
     if not isinstance(steps, list):
         return {"landed": [], "attempted": [], "commands": [], "errors": [],
-                "subtasks": {}}
+                "steers": [], "subtasks": {}}
     for s in steps:
         if not isinstance(s, dict):
             continue
         stype = s.get("type")
+        if stype == "thought" and s.get("role") == "steer":
+            # A steer can REPLACE the request (see chat_steer.steer_directive),
+            # and resume re-sends the ORIGINAL words — so without this the
+            # brief lists postgres files as landed under a prompt that still
+            # says MySQL, and the agent dutifully reverts them.
+            t = _txt(s.get("text"))
+            if t:
+                steers.append(t[:300])
+            continue
         if stype == "error":
             t = _txt(s.get("text"))
             if t:
@@ -221,7 +231,7 @@ def _collect(steps) -> dict:
             if cmd and cmd not in commands:
                 commands.append(cmd[:120])
     return {"landed": landed, "attempted": attempted, "commands": commands,
-            "errors": errors, "subtasks": subtasks}
+            "errors": errors, "steers": steers, "subtasks": subtasks}
 
 
 def build_brief(row: dict, cwd: str = "") -> str:
@@ -237,7 +247,7 @@ def build_brief(row: dict, cwd: str = "") -> str:
     done = [v["what"] for v in got["subtasks"].values()
             if v["status"] in _DONE_STATUSES]
     if not (got["landed"] or got["attempted"] or got["commands"]
-            or pending or done or got["errors"]):
+            or pending or done or got["errors"] or got["steers"]):
         return ""
 
     head = ("[RESUME] Your previous attempt at this same request was "
@@ -248,6 +258,11 @@ def build_brief(row: dict, cwd: str = "") -> str:
     # from the end deleted exactly these on the big runs that need them most,
     # so the LISTS are what gets trimmed, never the framing.
     tail_bits = []
+    if got["steers"]:
+        tail_bits.append("MID-RUN REDIRECTION — the user changed the request "
+                         "while that attempt was running, and these still "
+                         "apply (they override the words above):")
+        tail_bits += [f"  - {t}" for t in got["steers"][-_MAX_ERRORS:]]
     if got["errors"]:
         tail_bits.append("It failed with:")
         tail_bits += [f"  - {e}" for e in got["errors"][:_MAX_ERRORS]]

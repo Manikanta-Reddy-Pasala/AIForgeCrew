@@ -55,16 +55,18 @@ def make_steer_before_model_callback(role: str = "doer"):
         if session_id is None or llm_request is None:
             return None
         try:
-            from aiforge_core.runtime import chat_interject
-            steers = chat_interject.drain(session_id)
-            if not steers:
+            from aiforge_core.runtime import chat_interject, chat_steer
+            items = chat_interject.drain_items(session_id)
+            steers = [t for _k, t in items]
+            if not items:
                 return None
             from google.genai import types as gtypes
             contents = list(getattr(llm_request, "contents", None) or [])
-            for steer in steers:
+            for _kind, steer in items:
                 contents.append(gtypes.Content(
                     role="user", parts=[gtypes.Part(text=
-                        f"[mid-run instruction — follow this now]: {steer}")]))
+                        chat_steer.steer_directive(steer) if _kind != "reject"
+                        else chat_steer.reject_note(steer))]))
             llm_request.contents = contents
             chat_interject.mark_applied(session_id, steers)
             log.info("chat_steer[%s]: folded %d steer(s) session=%s",

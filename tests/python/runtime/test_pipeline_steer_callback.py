@@ -122,10 +122,12 @@ def test_steer_pushed_mid_run_reaches_next_executor_call(_stub_pipeline):
     asyncio.run(asyncio.wait_for(_go(), timeout=120))
 
     assert calls.count("doer") == 2, f"expected 2 doer iterations, got: {calls}"
-    STEER_MARK = "[mid-run instruction — follow this now]: focus on error handling"
+    # Same directive the ReAct loop folds — one wording for every mode.
+    STEER_MARK = "focus on error handling"
     # doer's FIRST call was already in flight (barrier-held) before the push
     # — it must never see it.
     assert STEER_MARK not in " ".join(doer_contents[0])
+    assert "takes PRIORITY" in " ".join(refiner_contents[0])
     # refiner runs immediately after doer1 completes — the very next model
     # call after the push — so it's the one that actually drains it.
     assert STEER_MARK in " ".join(refiner_contents[0])

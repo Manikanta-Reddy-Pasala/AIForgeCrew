@@ -1324,6 +1324,14 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 from aiforge_core.runtime import best_of_n as _bon
                 _af_log.info("parallel decompose <2 subtasks — best-of-N route")
                 _path["parallel"] = True
+                # Best-of-N never drains the steer queue (nothing in
+                # best_of_n.py touches chat_interject), so mark the run
+                # UNSTEERABLE before dispatching. Without this the /steer
+                # endpoint answered {"queued": true}, the UI rendered the
+                # steer as accepted, and the message was silently dropped at
+                # end of turn — the endpoint's own docstring promises it
+                # reports "unsupported" instead.
+                _chat_interject.set_steerable(session_id, False)
                 yield from _bon.stream_best_of_n(_with_resume(_spec), cwd,
                                                  session_id=session_id)
                 # stream_best_of_n emits no terminal `done`; synthesize one so a
