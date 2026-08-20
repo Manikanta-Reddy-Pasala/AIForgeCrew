@@ -66,7 +66,7 @@ export function SubtaskProgress(
               borderRadius: 4, padding: '1px 4px',
             }}>{s.status}</span>
             <span className="mono muted" style={{ flexShrink: 0, fontSize: 11 }}>{s.slug}</span>
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.goal}</span>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.goal || s.title || s.slug}</span>
           </div>
         ))}
       </div>

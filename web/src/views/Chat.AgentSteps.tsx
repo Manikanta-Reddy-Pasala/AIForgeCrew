@@ -32,11 +32,16 @@ function AgentBadge({ role }: { role?: string }) {
 // their whole "Thinking Process…") is collapsed to one line so each
 // agent reads as a clean structured step; click to expand the full text.
 function ThoughtRow({ step }: { step: Extract<AgentStep, { kind: 'thought' }> }) {
-  const long = step.text.length > 180;
+  // The PERSISTED path defaults this (Chat.helpers.toAgentStep), the live SSE
+  // path does not — it copies evt.text straight off an `any`. That asymmetry
+  // is exactly the state the subtask label was in before it took the chat view
+  // down, and it throws the same sentence.
+  const text = String(step.text ?? '');
+  const long = text.length > 180;
   const [open, setOpen] = useState(!long);
   const preview = long && !open
-    ? step.text.replace(/\s+/g, ' ').slice(0, 140) + '…'
-    : step.text;
+    ? text.replace(/\s+/g, ' ').slice(0, 140) + '…'
+    : text;
   return (
     <div style={{
       display: 'flex', gap: 6, alignItems: 'flex-start',

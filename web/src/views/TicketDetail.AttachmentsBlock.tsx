@@ -102,7 +102,7 @@ export function AttachmentsBlock({
                   border: '1px solid var(--border-1)', borderRadius: 4,
                   fontSize: 12, color: 'var(--muted)',
                 }}>
-                  {(f.name.split('.').pop() || 'file').slice(0, 4).toUpperCase()}
+                  {(String(f?.name || '').split('.').pop() || 'file').slice(0, 4).toUpperCase()}
                 </div>
               )}
               <div className="stack" style={{ gap: 4, minWidth: 0, flex: 1 }}>

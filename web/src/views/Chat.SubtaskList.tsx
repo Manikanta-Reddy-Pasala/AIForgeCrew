@@ -49,17 +49,24 @@ export function SubtaskList({ items, onViewSpec }: { items: SubtaskItem[]; onVie
       <div style={{ display: open ? 'flex' : 'none', height: 5, borderRadius: 3, overflow: 'hidden', background: 'var(--bg-2,#222)', marginBottom: 8 }}>
         {order.map(k => counts[k] ? <div key={k} style={{ width: `${(counts[k] / items.length) * 100}%`, background: SUBTASK_COLORS[k] }} /> : null)}
       </div>
-      {open && items.map((s, i) => (
+      {open && items.map((s, i) => {
+        // Producers disagree on the field name (goal vs title), and a subtask
+        // may legitimately have neither — the slug is always there. Reading
+        // one key blind is what took the whole chat view down when the panel
+        // was expanded.
+        const label = String(s.goal || s.title || s.slug || '');
+        return (
         <div key={s.slug || i} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, padding: '2px 0' }}>
           <span style={{ flexShrink: 0, width: 58, textAlign: 'center', fontSize: 10, fontWeight: 600,
             color: SUBTASK_COLORS[s.status] || SUBTASK_COLORS.pending,
             border: `1px solid ${SUBTASK_COLORS[s.status] || SUBTASK_COLORS.pending}`, borderRadius: 4, padding: '1px 3px' }}>{s.status}</span>
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
             <span style={{ color: '#8892a0', fontFamily: 'monospace', marginRight: 6 }}>{s.slug}</span>
-            <span style={{ color: '#8892a0' }}>{s.goal.length > 60 ? s.goal.slice(0, 60) + '…' : s.goal}</span>
+            <span style={{ color: '#8892a0' }}>{label.length > 60 ? label.slice(0, 60) + '…' : label}</span>
           </span>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

@@ -5,6 +5,7 @@
 // operator can swap overlay without URL editing.
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { j } from '../api/core';
 
 type CtxSkill = { name: string; why?: string };
 type CtxRule = { name: string; source?: string };
@@ -113,22 +114,36 @@ export default function WorkflowGraph() {
     const url = `/api/workflow/stream${qs}`;
     let es: EventSource | null = null;
     let cancelled = false;
+    // The SSE stream's fallback. It used to be a bare fetch with no status
+    // check: a 401 or a 500 returns a JSON error BODY, which parses fine and
+    // became the topology — then `topo.edges.forEach` threw during render and
+    // the view died, with `.catch` never firing because nothing rejected.
+    // EventSource cannot send an Authorization header, so a UI opened from
+    // another host (see api/core.ts) 401s here every time. Going through `j`
+    // turns a non-2xx into a throw, which the error state already handles.
+    const loadFallback = () => {
+      j<any>(`/workflow/topology${qs}`)
+        .then(d => { if (!cancelled && d && Array.isArray(d.nodes)) setTopo(d); })
+        .catch(e => !cancelled && setErr(String(e)));
+    };
     try {
       es = new EventSource(url);
       es.onmessage = (ev) => {
-        try { if (!cancelled) setTopo(JSON.parse(ev.data)); }
-        catch (e) { setErr(String(e)); }
+        try {
+          const d = JSON.parse(ev.data);
+          // Shape-check before it reaches render: everything below indexes
+          // nodes/edges directly, so a payload without them is a crash, not a
+          // display glitch.
+          if (!cancelled && d && Array.isArray(d.nodes)) setTopo(d);
+          else if (!cancelled) setErr('workflow topology: unexpected payload');
+        } catch (e) { setErr(String(e)); }
       };
       es.onerror = () => {
         es?.close();
-        const fallback = `/api/workflow/topology${qs}`;
-        fetch(fallback).then(r => r.json()).then(d => !cancelled && setTopo(d))
-          .catch(e => !cancelled && setErr(String(e)));
+        loadFallback();
       };
     } catch (e) {
-      const fallback = `/api/workflow/topology${qs}`;
-      fetch(fallback).then(r => r.json()).then(d => !cancelled && setTopo(d))
-        .catch(e2 => !cancelled && setErr(String(e2)));
+      loadFallback();
     }
     return () => { cancelled = true; es?.close(); };
   }, [ticket]);
@@ -252,7 +267,7 @@ export default function WorkflowGraph() {
         </div>
       </div>
       <div className="small muted" style={{ marginBottom: 6 }}>
-        {topo.nodes.length} nodes · {topo.edges.length} edges · live
+        {(topo.nodes?.length ?? 0)} nodes · {(topo.edges?.length ?? 0)} edges · live
       </div>
       {/* Flow caption — names the stages so the layers (orchestrator, the
           parallel context fan-out, the build loop) are obvious. */}

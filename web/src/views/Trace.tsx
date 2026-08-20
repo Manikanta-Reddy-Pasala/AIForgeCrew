@@ -103,7 +103,7 @@ export default function Trace() {
                 {s.tokens && ` · ${s.tokens}`}
               </div>
             </div>
-            {s.lines.length > 0 && (
+            {(s.lines?.length ?? 0) > 0 && (
               <pre className="small" style={{
                 background: 'var(--bg-code)',
                 padding: 8,
