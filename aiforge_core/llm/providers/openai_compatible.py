@@ -29,14 +29,18 @@ _NO_TOKEN = "not-needed"
 
 
 def _user_agent() -> str:
-    """User-Agent for outbound LLM HTTP.
+    """User-Agent for outbound LLM HTTP — one definition, shared.
 
-    Some self-hosted reverse proxies / WAFs in front of the model endpoint
-    reject the stdlib default ``Python-urllib/x.y``. Default to a curl-like
-    UA; override with ``AIFORGE_LLM_USER_AGENT`` (e.g. a proxy may require a
-    specific ``curl/8.5.0 (user)`` audit string).
+    This is the provider's model-listing/probe traffic; the completions
+    themselves go through llm.client and the ADK builder. All three used to
+    carry their own copy of a curl-like string, so changing the agent meant
+    finding three places (and the probes would have kept lying while the
+    completions told the truth). ``AIFORGE_LLM_USER_AGENT`` still overrides,
+    for a proxy/WAF that insists on something specific — the reason the
+    curl-like default existed at all.
     """
-    return os.environ.get("AIFORGE_LLM_USER_AGENT", "curl/8.5.0 (aiforge)")
+    from aiforge_core.llm.user_agent import user_agent
+    return user_agent()
 
 
 def _ensure_v1(url: str) -> str:

@@ -119,9 +119,11 @@ def _build_one(cfg: dict[str, Any]) -> BaseLlm:
             _read_to, connect=min(_connect_to, _read_to))
     except Exception:  # noqa: BLE001 — fall back to the scalar if httpx absent
         kwargs["timeout"] = _read_to
-    kwargs["extra_headers"] = {
-        "User-Agent": _os.environ.get("AIFORGE_LLM_USER_AGENT", "curl/8.5.0 (aiforge)"),
-    }
+    # Same agent as the direct client: the pipeline is the higher-volume path,
+    # so a gateway that only saw the client's header would have been reading
+    # the smaller half of the traffic.
+    from aiforge_core.llm.user_agent import user_agent as _ua
+    kwargs["extra_headers"] = {"User-Agent": _ua()}
     # ADK's LiteLlm hardcodes ``stream_options={"include_usage": True}`` on
     # every streaming completion. Strict OpenAI-compatible proxies (e.g. a
     # self-hosted gateway that buffers and drops ``stream:true``) then reject

@@ -29,7 +29,9 @@ log = logging.getLogger("aiforge.lm_health")
 def _probe(url: str, timeout: float = 3.0) -> bool:
     try:
         models_url = url + "/v1/models"
-        req = urllib.request.Request(models_url)
+        from aiforge_core.llm.user_agent import user_agent as _ua
+        req = urllib.request.Request(models_url,
+                                      headers={"User-Agent": _ua()})
         with urllib.request.urlopen(
             req, timeout=timeout, context=_ssl_context_for(models_url)
         ) as resp:
