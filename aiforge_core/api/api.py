@@ -299,36 +299,12 @@ def _compact_at_hour() -> "int | None":
     same briefs all day buys little over one pass once the day's work is in.
     ``AIFORGE_COMPACT_AT_HOUR=off`` (or an explicit ``AIFORGE_COMPACT_EVERY_H``,
     which only means anything on the hourly schedule) restores the old cadence.
+
+    Parsing lives in ``runtime.compact_window`` so the opportunistic chat folds
+    read the SAME window as this scheduled pass.
     """
-    raw = os.environ.get("AIFORGE_COMPACT_AT_HOUR")
-    if raw is None:
-        # An explicit, USABLE hourly interval opts out of the daily default.
-        # Tested on the PARSED value: "0" and "abc" are truthy strings but mean
-        # nothing as an interval, and reading them as "keep hourly" would flip
-        # the schedule the opposite way from what the operator asked.
-        try:
-            if int(os.environ.get("AIFORGE_COMPACT_EVERY_H", "")) > 0:
-                return None
-        except (TypeError, ValueError):
-            pass
-    raw = (raw if raw is not None else "18").strip().lower()
-    if raw in ("", "off", "none", "false", "no"):
-        return None
-    try:
-        hour = int(raw)
-    except ValueError:
-        _af_log.warning("AIFORGE_COMPACT_AT_HOUR=%r is not an hour — using 18", raw)
-        return 18
-    if hour <= 0:
-        # 0 is OFF, not midnight — every sibling knob here (AIFORGE_REINDEX_DAILY,
-        # AIFORGE_RECOMPACT_DAILY) reads =0 as the off switch, and an at_hour of 0
-        # is "due all day", so reading it as midnight would hand anyone who typed
-        # =0 to disable a heavy pass shortly after every start. Midnight is 24.
-        return None
-    if hour > 24:
-        _af_log.warning("AIFORGE_COMPACT_AT_HOUR=%r out of range — using 23", raw)
-        return 23
-    return hour % 24                               # 24 = midnight
+    from aiforge_core.runtime import compact_window
+    return compact_window.at_hour()
 
 
 @app.on_event("startup")
@@ -634,7 +610,16 @@ def _start_daily_reindex() -> None:
                 # pass that did nothing as today's compaction.
                 raise RuntimeError("daily compaction pass failed — see warnings")
 
-        _pd.register("daily-compact", _daily_compact, at_hour=_daily_hour)
+        # STRICT hour: the missed-slot catch-up must NOT drag this pass into
+        # the working day. The whole point of the evening slot is that the
+        # LLM-heavy fold happens when the operator is done — a laptop that was
+        # asleep at 18:00 yesterday would otherwise start compacting at 09:00
+        # the next morning, which is exactly the intrusion the schedule exists
+        # to remove. It simply waits for today's 18:00 instead.
+        # AIFORGE_COMPACT_CATCH_UP=1 restores the run-at-next-wake behaviour.
+        _strict = os.environ.get("AIFORGE_COMPACT_CATCH_UP", "0") not in ("1", "true", "yes")
+        _pd.register("daily-compact", _daily_compact, at_hour=_daily_hour,
+                     strict_hour=_strict)
     _pd.start()
 
 

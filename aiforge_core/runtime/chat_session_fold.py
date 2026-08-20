@@ -46,7 +46,9 @@ def _max_windows() -> int:
 def fold_sync(session_id: int) -> dict:
     """Fold one session NOW (blocking), walking its WHOLE backlog. Never raises.
 
-    Used by the delete path, which must fold before the rows are removed. One
+    Used by the delete path, which must fold before the rows are removed —
+    that caller is NOT window-gated (the turns are about to be destroyed, so
+    "wait until 18:00" would mean "lose it"). One
     ``compact_session`` only distils the turns that fit in one window, so a
     single call would delete the rest of a long chat unfolded — and since
     compaction moved to one pass a day that backlog is a day's worth, not the
@@ -72,9 +74,21 @@ def fold_sync(session_id: int) -> dict:
 
 
 def fold_async(session_id: int | None) -> None:
-    """Best-effort background fold — returns immediately. No-op when disabled or
-    no session id."""
+    """Best-effort background fold — returns immediately. No-op when disabled,
+    when there is no session id, or OUTSIDE the compaction window.
+
+    The window matters: this fires whenever the user opens a new chat, so
+    without it the LLM-heavy fold runs at 09:00 on a machine whose operator
+    pinned compaction to 18:00. Nothing is lost by waiting — the daily pass
+    walks every session with new turns, and ``compact_session`` is
+    offset-based, so the evening pass picks up exactly what this skipped.
+    """
     if session_id is None or not _enabled():
+        return
+    from aiforge_core.runtime import compact_window
+    if not compact_window.open_now():
+        log.info("fold for session %s deferred to the compaction window (%02d:00)",
+                 session_id, compact_window.at_hour() or 0)
         return
     threading.Thread(
         target=fold_sync, args=(session_id,),

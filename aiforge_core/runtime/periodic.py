@@ -17,6 +17,10 @@ early), and never run at all on a machine asleep at the hour. So:
 * fires the first time the loop wakes at/after the hour on a day it has not run
 * a missed slot (yesterday's hour came and went with no run) makes it due at
   the next wake, whatever the hour — then it drifts back to its hour on the next day it is up
+* ``strict_hour=True`` turns that catch-up OFF *before* the hour: a missed slot
+  still runs at the next wake, but never earlier in the day than ``at_hour``.
+  For a task the operator scheduled to stay out of working hours (the evening
+  memory compaction), catching up at 09:00 is the very thing they asked against
 * never twice within ``_MIN_GAP_S``; a run that RAISES retries after
   ``_RETRY_S``, at most ``_MAX_FAILS`` times a day
 * the record (last attempt, whether it finished, retries, first-seen) lives in
@@ -149,6 +153,9 @@ class _Task:
     fn: "Callable[[], object]"
     every_s: "float | None" = None      # fixed interval
     at_hour: "int | None" = None        # daily at-or-after local hour [0-23]
+    # NEVER run before at_hour, not even to catch up a missed day. The task
+    # simply waits for today's slot instead.
+    strict_hour: bool = False
     debounce_s: float = 60.0
     _last: list = field(default_factory=lambda: [0.0])   # monotonic ts
     _rec: list = field(default_factory=lambda: [None])   # run record (see _record)
@@ -230,10 +237,15 @@ class _Task:
         gap = (now_dt - last).total_seconds() if last is not None else None
 
         if last is not None and not ok and fails < _MAX_FAILS \
-                and last.date() == now_dt.date():
+                and last.date() == now_dt.date() \
+                and not (self.strict_hour and now_dt.hour < self.at_hour):
             # A failed pass retries within the hour, then gives up until its
             # next slot. SAME DAY only: a retry that crossed midnight would eat
-            # the new day's slot and walk the task around the clock.
+            # the new day's slot and walk the task around the clock. A
+            # strict_hour task never retries BEFORE its hour either — a state
+            # file written by an older build (or a clock change) can hold a
+            # failed morning attempt, and retrying it is the same intrusion the
+            # flag exists to stop.
             return self._delay(now_mono) if gap >= _RETRY_S else _RETRY_S - gap
 
         if last is not None and (last.date() == now_dt.date() or gap < _MIN_GAP_S):
@@ -247,8 +259,11 @@ class _Task:
         # run a day at its first wake instead.
         prev_slot = (now_dt - timedelta(days=1)).replace(
             hour=self.at_hour, minute=0, second=0, microsecond=0)
-        if (last or rec["seen"]) < prev_slot:
+        if (last or rec["seen"]) < prev_slot and not self.strict_hour:
             return self._delay(now_mono)
+        # strict_hour: a missed day does NOT buy a run at 09:00. The operator
+        # picked the hour to keep this work out of their day; the pass waits
+        # for today's slot (and the machine only has to be up at/after it).
         return self._wait_for_hour(now_mono, now_dt)
 
     def _wait_for_hour(self, now_mono: float, now_dt: datetime) -> float:
@@ -265,13 +280,17 @@ _lock = threading.Lock()
 
 def register(name: str, fn: "Callable[[], object]", *,
              every_s: "float | None" = None, at_hour: "int | None" = None,
-             debounce_s: float = 60.0) -> None:
-    """Register a recurring task. Give EITHER ``every_s`` OR ``at_hour``."""
+             strict_hour: bool = False, debounce_s: float = 60.0) -> None:
+    """Register a recurring task. Give EITHER ``every_s`` OR ``at_hour``.
+
+    ``strict_hour`` (at_hour only): never fire before the hour, even when a day
+    was missed — the missed-slot catch-up then waits for today's slot instead of
+    running at the next wake."""
     with _lock:
         if any(t.name == name for t in _TASKS):
             return
         _TASKS.append(_Task(name=name, fn=fn, every_s=every_s, at_hour=at_hour,
-                            debounce_s=debounce_s))
+                            strict_hour=strict_hour, debounce_s=debounce_s))
 
 
 def _fire(t: _Task, now_dt: "datetime | None" = None) -> None:
