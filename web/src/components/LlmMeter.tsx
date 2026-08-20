@@ -164,10 +164,23 @@ function LlmMeterInner() {
 
 
 /** The meter lives in the toolbar, OUTSIDE the route ErrorBoundary — a throw
- *  here would blank the whole app on every page. It gets its own. */
+ *  here would blank the whole app on every page. It gets its own.
+ *
+ *  The fallback is VISIBLE on purpose. Rendering null made a crashed meter
+ *  indistinguishable from a meter that was never deployed, which is exactly
+ *  the question someone asks when they cannot find it ("I pulled, I rebuilt,
+ *  it still is not there"). A broken meter should say it is broken. */
 export default class LlmMeter extends React.Component<{}, { failed: boolean }> {
   state = { failed: false };
   static getDerivedStateFromError() { return { failed: true }; }
   componentDidCatch(err: unknown) { console.error('LlmMeter crashed', err); }
-  render() { return this.state.failed ? null : <LlmMeterInner />; }
+  render() {
+    if (!this.state.failed) return <LlmMeterInner />;
+    return (
+      <span className="llm-meter-pill" style={{ cursor: 'default' }}
+            title="The LLM request meter failed to render — see the browser console.">
+        ⚡ n/a
+      </span>
+    );
+  }
 }
