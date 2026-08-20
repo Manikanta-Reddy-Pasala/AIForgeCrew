@@ -147,7 +147,10 @@ def test_caller_max_steps_is_never_extended(tmp_path, monkeypatch):
         [{"role": "user", "content": "quick"}], cwd=str(tmp_path),
         complete_fn=fn, max_steps=2, session_id=_SID))
     assert calls["n"] == 2
-    assert "runaway safety cap" in _msgs(evs)
+    # The banner names the budget that ACTUALLY stopped it — Quick mode's own,
+    # not a Settings cap that had no say (and may itself be 0 = no limit).
+    assert "Quick mode" in _msgs(evs)
+    assert "AIFORGE_CHAT_QUICK_STEPS" in _msgs(evs)
 
 
 # ── wall-clock deadline ─────────────────────────────────────────────────
@@ -221,8 +224,13 @@ def test_limits_default_env_and_store(monkeypatch, tmp_path):
 
 def test_limits_clamp_a_bad_env_value(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
-    monkeypatch.setenv("AIFORGE_CHAT_SAFETY_CAP", "0")     # would stop every turn
-    assert _limits._safety_cap() == 1
+    # 0 is now a REAL value — "no step cap" — not a typo to clamp away. A
+    # NEGATIVE one is still a typo, and clamping it toward 0 would disable the
+    # guard on a `$((N-1))` underflow: fall back to the default instead.
+    monkeypatch.setenv("AIFORGE_CHAT_SAFETY_CAP", "0")
+    assert _limits._safety_cap() == 0
+    monkeypatch.setenv("AIFORGE_CHAT_SAFETY_CAP", "-5")
+    assert _limits._safety_cap() == 2000
     monkeypatch.setenv("AIFORGE_CHAT_CAP_EXTENSIONS", "-3")
     assert _limits._cap_extensions() == 0
     monkeypatch.setenv("AIFORGE_CHAT_TURN_DEADLINE_S", "not-a-number")
@@ -400,3 +408,129 @@ def test_max_steps_zero_falls_back_to_the_default_cap(tmp_path, monkeypatch):
                            cwd=str(tmp_path), complete_fn=fn, max_steps=0,
                            session_id=_SID))
     assert calls["n"] == 2
+
+
+# ── no limits (cap 0) ───────────────────────────────────────────────────
+
+def _answers_on(step: int, tmp_path):
+    """Reads a new file each step, then finally ANSWERS on ``step``."""
+    for i in range(step + 2):
+        (tmp_path / f"g{i}.txt").write_text(f"contents {i}")
+    calls = {"n": 0}
+
+    def fn(role, messages, **kw):
+        calls["n"] += 1
+        if calls["n"] >= step:
+            return "all done"
+        return ('ACTION: file_read\nARGS_JSON: '
+                f'{{"path": "g{calls["n"]}.txt"}}')
+    return fn, calls
+
+
+def test_step_cap_zero_means_no_cap(tmp_path, monkeypatch):
+    """0 = no limit, the same convention the turn deadline already uses. The
+    turn ends because the AGENT finished, not because a guard fired."""
+    monkeypatch.setenv("AIFORGE_CHAT_SAFETY_CAP", "0")
+    monkeypatch.setenv("AIFORGE_CHAT_CAP_EXTENSIONS", "0")
+    monkeypatch.setenv("AIFORGE_CHAT_TURN_DEADLINE_S", "0")
+    fn, calls = _answers_on(6, tmp_path)
+    evs = list(ca.run_chat_agent(
+        [{"role": "user", "content": "long job"}], cwd=str(tmp_path),
+        complete_fn=fn, session_id=_SID))
+    assert calls["n"] == 6
+    assert "runaway safety cap" not in _msgs(evs)
+    assert "extended the step budget" not in _msgs(evs, "thought")
+    assert evs[-1] == {"type": "done"}
+
+    # The control: the SAME agent under a finite cap of 3 is stopped at 3. That
+    # is what makes the assertion above mean "no cap" rather than "some cap
+    # this agent happened not to reach".
+    monkeypatch.setenv("AIFORGE_CHAT_SAFETY_CAP", "3")
+    fn2, calls2 = _answers_on(6, tmp_path)
+    evs2 = list(ca.run_chat_agent(
+        [{"role": "user", "content": "long job"}], cwd=str(tmp_path),
+        complete_fn=fn2, session_id=_SID))
+    assert calls2["n"] == 3
+    assert "runaway safety cap" in _msgs(evs2)
+
+
+def test_quick_mode_still_wins_over_no_limits(tmp_path, monkeypatch):
+    """`max_steps` is a per-message choice (Quick mode). "No limits" is the
+    operator default — it must not silently un-cap a turn the caller capped."""
+    monkeypatch.setenv("AIFORGE_CHAT_SAFETY_CAP", "0")
+    monkeypatch.setenv("AIFORGE_CHAT_CAP_EXTENSIONS", "0")
+    fn, calls = _churner()
+    evs = list(ca.run_chat_agent(
+        [{"role": "user", "content": "spin"}], cwd=str(tmp_path),
+        complete_fn=fn, session_id=_SID, max_steps=3))
+    assert calls["n"] == 3
+    assert "Quick mode" in _msgs(evs)
+
+
+def test_zero_cap_is_storable(monkeypatch, tmp_path):
+    """Store level. The ROUTE is the layer that actually rejected 0 — see
+    tests/api/test_agent_limits_no_cap.py, which is where the regression was."""
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg2"))
+    from aiforge_core.config import _filecache, runtime_settings as rs
+    _filecache.clear()
+    rs.set_many({"chat_safety_cap": 0})
+    assert rs.get("chat_safety_cap") == 0
+    assert _limits._safety_cap() == 0
+
+
+def test_an_unattended_run_keeps_its_cap(tmp_path, monkeypatch):
+    """"No limits" is a promise to someone who can press Stop. The cancel check
+    is gated on a session id, so a run without one (jobs scheduler, analysis
+    fan-out, subtask runners) would have NO brake at all."""
+    monkeypatch.setenv("AIFORGE_CHAT_SAFETY_CAP", "0")
+    monkeypatch.setenv("AIFORGE_CHAT_UNATTENDED_CAP", "3")
+    monkeypatch.setenv("AIFORGE_CHAT_TURN_DEADLINE_S", "0")
+    fn, calls = _churner()
+    evs = list(ca.run_chat_agent(
+        [{"role": "user", "content": "spin"}], cwd=str(tmp_path),
+        complete_fn=fn, session_id=None))
+    assert calls["n"] == 3
+    # …and it points at the knob that stopped it. Saying "raise the step cap"
+    # here would send the operator to a setting they had already zeroed.
+    assert "nobody watching" in _msgs(evs)
+    assert "AIFORGE_CHAT_UNATTENDED_CAP" in _msgs(evs)
+
+
+def test_no_step_cap_still_lets_the_deadline_extend(monkeypatch, tmp_path):
+    """Turning the STEP cap off must not make a turn stop SOONER.
+
+    Gating both axes on the step cap did exactly that: with cap 0 the turn kept
+    its 1h deadline but lost every extension of it, so asking for fewer limits
+    produced a harsher stop than the default. The absolute 24h ceiling is
+    enforced by the _MAX_TURN_SECONDS trim, which needs no help from the step
+    cap."""
+    monkeypatch.setenv("AIFORGE_CHAT_CAP_EXTENSIONS", "2")
+    assert _limits._extension_budget(0, 3600) == 2      # deadline can still grow
+    assert _limits._extension_budget(2000, 3600) == 2
+    monkeypatch.setenv("AIFORGE_CHAT_CAP_EXTENSIONS", "0")
+    assert _limits._extension_budget(0, 3600) == 0      # operator said never
+
+
+def test_an_unattended_cap_of_zero_is_a_typo_not_a_request(monkeypatch):
+    """0 means "no cap" everywhere else — but a background run has no Stop
+    button, so 0 here would be a fleet of unstoppable jobs. The first cut
+    clamped it to 1 instead, which turned every scheduled job into a one-step
+    turn."""
+    monkeypatch.setenv("AIFORGE_CHAT_UNATTENDED_CAP", "0")
+    assert _limits._unattended_cap() == 2000
+    monkeypatch.setenv("AIFORGE_CHAT_UNATTENDED_CAP", "-5")
+    assert _limits._unattended_cap() == 2000
+    monkeypatch.setenv("AIFORGE_CHAT_UNATTENDED_CAP", "40")
+    assert _limits._unattended_cap() == 40
+
+
+def test_a_fractional_negative_cap_does_not_disable_the_guard(monkeypatch):
+    """int(float(x)) truncates TOWARD ZERO, so -0.5 reached the sign check as
+    0 — the one value that means "no cap". A unit file computing the cap with
+    an expression that underflows must not silently remove the guard."""
+    monkeypatch.setenv("AIFORGE_CHAT_SAFETY_CAP", "-0.5")
+    assert _limits._safety_cap() == 2000
+    monkeypatch.setenv("AIFORGE_CHAT_SAFETY_CAP", "-0.9")
+    assert _limits._safety_cap() == 2000
+    monkeypatch.setenv("AIFORGE_CHAT_SAFETY_CAP", "0.0")
+    assert _limits._safety_cap() == 0        # an explicit 0 still means 0

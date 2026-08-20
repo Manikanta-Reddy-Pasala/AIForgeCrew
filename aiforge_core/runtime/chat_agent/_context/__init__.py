@@ -13,6 +13,7 @@ from ._generation import (
 from ._limits import (
     _extension_budget,
     _safety_cap,
+    _unattended_cap,
     _turn_deadline_s,
     _cap_extensions,
 )

@@ -13,7 +13,13 @@ from ._tools import (_ROOT_SCOPED_TOOLS, _chat_repo_key, _preferences_context, _
 from ._registry import (TOOLS, _ANALYZE_BANNER, _BUILDER_FINALIZE_TOOL, _BUILDER_NUDGE_AFTER, _FINALIZE_TOOLS, _PLAN_BANNER, _READONLY_TOOLS, _is_mutating, _perf_family)
 from ._preview import (_diff_preview)
 from ._prompt import (_SYSTEM, _parse, _strip_reasoning_prefix)
-from ._context import (_CANCELLED, _EDIT_TOOL_NAMES, _LOOP_REPEAT, _OUTPUT_REPEAT, _WEB_LOOKUP_DIRECTIVE, _cap_system_prompt, _cave_mode, _chat_session_recall, _claims_file_edits, _compact_convo, _complete_cancellable, _compress_prompt, _ctx_budget_chars, _ctx_on, _edit_claim_disclaimer, _edit_claim_guard_enabled, _edit_claim_nudge, _fire_stop, _has_web_intent, _post_edit_syntax_error, _progress_recap, _extension_budget, _repo_name, _stuck_recovery_max, _run_project_verify, _safety_cap, _split_asks, _sys_prompt_budget_chars, _text_of, _turn_deadline_s, _verify_fix_message, _verify_max_rounds, _verify_on_final_enabled, _worktree_fingerprint)
+from ._context import (_CANCELLED, _EDIT_TOOL_NAMES, _LOOP_REPEAT, _OUTPUT_REPEAT, _WEB_LOOKUP_DIRECTIVE, _cap_system_prompt, _cave_mode, _chat_session_recall, _claims_file_edits, _compact_convo, _complete_cancellable, _compress_prompt, _ctx_budget_chars, _ctx_on, _edit_claim_disclaimer, _edit_claim_guard_enabled, _edit_claim_nudge, _fire_stop, _has_web_intent, _post_edit_syntax_error, _progress_recap, _extension_budget, _repo_name, _stuck_recovery_max, _run_project_verify, _safety_cap, _split_asks, _sys_prompt_budget_chars, _unattended_cap, _text_of, _turn_deadline_s, _verify_fix_message, _verify_max_rounds, _verify_on_final_enabled, _worktree_fingerprint)
+
+# Cap on the per-turn signature tables (the action-strike table and the
+# "files this turn has ever read" set). Both were bounded in practice by the
+# 2000-step safety cap; an uncapped turn removes that ceiling.
+_ACTION_SIG_MAX = 5000
+
 
 def run_chat_agent(
     messages: list[dict], *,
@@ -82,7 +88,19 @@ def run_chat_agent(
     # Only a POSITIVE max_steps is a caller's budget. 0 keeps its historical
     # meaning — "unset, use the default" — rather than becoming a one-step turn.
     _caller_cap = max_steps if isinstance(max_steps, int) and max_steps > 0 else None
+    # 0 = NO step cap (Settings → Agent limits, or AIFORGE_CHAT_SAFETY_CAP=0).
+    # The turn then ends the way a turn normally ends: the agent finishes, a
+    # stall guard fires, the wall-clock deadline hits, or the user hits Stop.
+    #
+    # …but Stop is gated on a session id (see the cancel check below), so an
+    # UNATTENDED run — the jobs scheduler, the analysis fan-out, the subtask
+    # runners, text_doer — has no brake at all once the cap is off. "No limits"
+    # is a promise to someone sitting in front of a chat; those runs keep a cap.
+    _unattended = _cap_base <= 0 and _caller_cap is None and session_id is None
+    if _unattended:
+        _cap_base = _unattended_cap()
     safety = _caller_cap or _cap_base
+    _capped = safety > 0
     # Wall-clock turn backstop. The 2000-step cap is not a real stopping
     # point on a slow local model — 2000 steps × seconds-to-minutes each is
     # effectively "forever" from the user's chair. This deadline bounds the
@@ -412,7 +430,9 @@ def run_chat_agent(
                                  *_img_blocks]
                 break
 
-    action_counts: dict[str, int] = {}
+    # OrderedDict, not dict: the prune below needs least-recently-SEEN order,
+    # which only move_to_end can maintain (see its call site).
+    action_counts: "collections.OrderedDict[str, int]" = collections.OrderedDict()
     recent_outputs: collections.deque = collections.deque(maxlen=_OUTPUT_REPEAT)
     condensed_notified = False
     continue_nudges = 0   # consecutive "narrated but didn't act" re-prompts
@@ -424,7 +444,11 @@ def run_chat_agent(
     # different question — "has this turn learned anything it did not know" —
     # and re-reading a file after a condense is not new knowledge. Conflating
     # the two handed a pure re-read loop the whole extension budget.
-    read_sigs_ever: set = set()
+    # Bounded like action_counts, and for the same reason: an uncapped turn has
+    # no step ceiling to hold it down. Losing the oldest entries only means an
+    # ancient read can count as "new knowledge" a second time — the failure
+    # direction that grants an extension, never one that hides a runaway.
+    read_sigs_ever: "collections.OrderedDict[str, bool]" = collections.OrderedDict()
     _long_chain_help = _stuck_recovery_max() > 0   # 0 → full legacy behaviour
 
     # Mid-run steering (simple mode): let the user type WHILE the agent works —
@@ -548,7 +572,7 @@ def run_chat_agent(
                "text": f"🔌 native tool-calling active ({_ntools} tools)"}
     while True:
         n += 1
-        if n > safety:
+        if _capped and n > safety:
             # Runaway step cap. Before giving up, offer an extension to a turn
             # that is still producing new work — condense the history first so
             # the extra steps run in a clean window rather than a bloated one.
@@ -568,10 +592,28 @@ def run_chat_agent(
                                f"({_extensions_used}/{_ext_budget})"}
             else:
                 _fire_stop("cap", cwd)
-                yield {"type": "message",
-                       "text": "(stopped: hit the runaway safety cap — raise "
-                               "the step cap in Settings → Agent limits (or "
-                               "AIFORGE_CHAT_SAFETY_CAP) if this was real work)"}
+                # Name the knob that ACTUALLY stopped this run. A Quick-mode
+                # turn is bounded by its caller's max_steps, so pointing the
+                # user at the Settings cap sends them to a number that had no
+                # say — and with the cap set to 0 that number is already off.
+                if _caller_cap is not None:
+                    _why = (f"(stopped: used up Quick mode's {safety}-step "
+                            "budget — send it again with Quick off, or raise "
+                            "AIFORGE_CHAT_QUICK_STEPS)")
+                elif _unattended:
+                    # The operator may have set the step cap to 0; saying
+                    # "raise the step cap" would send them to a knob that is
+                    # already off and had no say in this stop.
+                    _why = (f"(stopped: hit the {safety}-step cap for runs with "
+                            "nobody watching — raise the background step cap in "
+                            "Settings → Agent limits, or "
+                            "AIFORGE_CHAT_UNATTENDED_CAP)")
+                else:
+                    _why = ("(stopped: hit the runaway safety cap — raise the "
+                            "step cap in Settings → Agent limits, or "
+                            "AIFORGE_CHAT_SAFETY_CAP; 0 = no limit — if this "
+                            "was real work)")
+                yield {"type": "message", "text": _why}
                 yield {"type": "done"}
                 return
         if session_id is not None and chat_cancel.is_cancelled(session_id):
@@ -968,7 +1010,21 @@ def run_chat_agent(
                 + "Read a DIFFERENT file you have not read yet, or if you have "
                 "enough, WRITE your output now (file_write) or emit FINAL."})
             continue
+        # Bounded, LEAST-RECENTLY-USED first. An uncapped turn (cap 0) removes
+        # the 2000-step ceiling that used to bound this table in practice, and
+        # nothing else prunes it (convo is condensed, recent_outputs is a maxlen
+        # deque, read_sigs_seen is cleared on compaction).
+        #
+        # The order matters more than the bound: a plain dict is ordered by
+        # FIRST insert, so dropping "the oldest half" would evict exactly the
+        # signatures that have been repeating longest — the ones accumulating
+        # strikes — and the stall guard would never fire on the very runaway
+        # this table exists to catch. move_to_end on each touch makes the
+        # eviction least-recently-SEEN instead.
         action_counts[sig] = action_counts.get(sig, 0) + 1
+        action_counts.move_to_end(sig)
+        while len(action_counts) > _ACTION_SIG_MAX:
+            action_counts.popitem(last=False)
         if action_counts[sig] >= _LOOP_REPEAT:
             # A local model on a long chain re-issues an action it already ran —
             # most often re-reading a file it read earlier (it lost track over the
@@ -1321,7 +1377,9 @@ def run_chat_agent(
             # it (a read-only research turn would never extend on that box).
             if sig not in read_sigs_ever:
                 _reads_new += 1        # real progress: knowledge it did not have
-                read_sigs_ever.add(sig)
+                read_sigs_ever[sig] = True
+                while len(read_sigs_ever) > _ACTION_SIG_MAX:
+                    read_sigs_ever.popitem(last=False)
             if _long_chain_help:
                 read_sigs_seen.add(sig)
         if name in _EDIT_TOOL_NAMES and not (

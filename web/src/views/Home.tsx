@@ -583,11 +583,32 @@ function AgentLimitsCard() {
       .catch(() => { /* older build without the endpoint — card stays inert */ });
   }, []);
 
+  // One click for "stop guarding me": both runaway guards to 0. Typing
+  // 1000000 in one field and 0 in the other is the same intent expressed
+  // badly, and a step cap has no obvious "off" number to guess at.
+  async function noLimits() {
+    setBusy(true);
+    try {
+      const next = await api.setLlmSettings({
+        chat_safety_cap: 0, chat_turn_deadline_s: 0,
+      } as LlmSettingsInput);
+      setVals(next);
+      setNonce(x => x + 1);
+      toast.success('Agent limits off — a turn now runs until it finishes or you press Stop');
+    } catch (e: any) {
+      toast.error(`Save failed: ${e?.message || 'unknown'}`);
+      setNonce(x => x + 1);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function resetAll() {
     setBusy(true);
     try {
       const next = await api.setLlmSettings({
-        unset: ['chat_safety_cap', 'chat_turn_deadline_s', 'chat_cap_extensions'],
+        unset: ['chat_safety_cap', 'chat_turn_deadline_s', 'chat_cap_extensions',
+                'chat_unattended_cap'],
       });
       setVals(next);
       setNonce(x => x + 1);
@@ -602,7 +623,7 @@ function AgentLimitsCard() {
   async function commit(key: keyof LlmSettings, raw: string, lo: number, hi: number) {
     // An EMPTY field is "I did not mean to change this", never 0 — a browser
     // reports '' for anything it cannot parse, and Number('') is 0, which for
-    // the two lo=0 knobs would silently disable the guard and report success.
+    // the three lo=0 knobs would silently disable the guard and report success.
     if (raw.trim() === '') { setNonce(x => x + 1); return; }
     const n = Number(raw);
     if (!Number.isFinite(n) || !Number.isInteger(n) || n < lo || n > hi) {
@@ -650,28 +671,42 @@ function AgentLimitsCard() {
     <div className="card" style={{ marginTop: 16 }}>
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
         <h2 style={{ fontSize: 14 }}>Agent limits</h2>
+        <div className="row" style={{ gap: 8 }}>
+        <button className="ghost sm" onClick={noLimits} disabled={!loaded || busy}
+                title="Step cap and turn deadline both to 0 — nothing stops a turn but the agent itself, a stall, or Stop">
+          ∞ No limits
+        </button>
         <button className="ghost sm" onClick={resetAll} disabled={!loaded || busy}
                 title="Forget the saved values so the env vars / built-in defaults apply again">
           ↺ Reset to defaults
         </button>
+        </div>
       </div>
       <div className="subtitle" style={{ marginTop: 6, marginBottom: 10 }}>
         Runaway guards for a single chat turn. When a turn hits one but is still
         producing new work — it edited a file, or read something it had not read
         before — it condenses its history and extends itself instead of stopping.
-        A turn that is only spinning is stopped either way. Saving here overrides
-        the matching env var; “Reset to defaults” hands control back to it.
+        A turn that is only spinning is stopped either way. 0 in either field
+        removes that guard entirely — with both off, only the agent finishing or
+        your Stop reliably ends a turn (the stall guards catch exact repeats
+        only, so an agent that keeps varying its arguments will run until you
+        stop it). Background runs nobody is watching keep a cap regardless.
+        Saving here overrides the matching env var; “Reset to defaults” hands
+        control back to it.
       </div>
       <div className="row" style={{ gap: 24, flexWrap: 'wrap', alignItems: 'flex-start' }}>
         {field('chat_safety_cap', 'Step cap',
-               'Tool/model steps in one turn before the runaway guard fires. Default 2000.',
-               1, 1_000_000)}
+               'Tool/model steps in one turn before the runaway guard fires. 0 = no limit. Default 2000.',
+               0, 1_000_000)}
         {field('chat_turn_deadline_s', 'Turn deadline (seconds)',
                'Wall clock for one turn. 0 = no deadline. Default 3600.',
                0, 86_400)}
         {field('chat_cap_extensions', 'Auto-extensions',
                'How many times a turn still making progress may extend the cap / deadline. 0 = stop hard. Default 2.',
                0, 50)}
+        {field('chat_unattended_cap', 'Background step cap',
+               'Steps for runs with nobody watching (scheduled jobs, analysis fan-out, subtasks). These have no Stop button, so this one cannot be 0. Default 2000.',
+               1, 1_000_000)}
       </div>
     </div>
   );

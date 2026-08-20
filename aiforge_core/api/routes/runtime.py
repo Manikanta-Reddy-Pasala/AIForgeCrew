@@ -282,9 +282,14 @@ class _RuntimeSettingsBody(BaseModel):
     ctx_no_summary: int | None = Field(None, ge=0, le=1)
     # Per-turn chat budget guards. Runaway guards, not task budgets — a turn
     # still making progress extends them chat_cap_extensions times.
-    chat_safety_cap: int | None = Field(None, ge=1, le=1_000_000)
+    # ge=0 — 0 means NO step cap, the same convention the deadline below uses.
+    # This validator is the ONLY write path for the setting, so a floor of 1
+    # here made the store's own lower bound irrelevant: the UI 422'd.
+    chat_safety_cap: int | None = Field(None, ge=0, le=1_000_000)
     chat_turn_deadline_s: int | None = Field(None, ge=0, le=86_400)
     chat_cap_extensions: int | None = Field(None, ge=0, le=50)
+    # ge=1: a background run has no Stop button, so it is never uncapped.
+    chat_unattended_cap: int | None = Field(None, ge=1, le=1_000_000)
     # Names to FORGET, so those knobs fall back to env / built-in default
     # (the store otherwise shadows the documented env var forever).
     unset: list[str] | None = None
