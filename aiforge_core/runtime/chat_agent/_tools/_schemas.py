@@ -70,10 +70,12 @@ CATALOG: dict = {
                     {"cmd": "s", "timeout": "i"}, ("cmd",)),
     "watch_until": (
         "Re-run one command until a condition holds — polling, monitoring, "
-        "'wait until it's ready/done/green'. ONE call covers the whole watch "
-        "(do NOT hand-roll a poll loop with run_command). until: exit_zero "
-        "(default) | exit_nonzero | contains:TEXT | not_contains:TEXT | "
-        "regex:PATTERN.",
+        "'wait until it's ready/done/green'. The loop is code: ONE call covers "
+        "the whole watch (do NOT hand-roll a poll loop with run_command). "
+        "Derive interval_s/max_checks/timeout_s from what the user asked for — "
+        "'monitor for 10 minutes every 15 seconds' is interval_s=15, "
+        "max_checks=40, timeout_s=600. until: exit_zero (default) | "
+        "exit_nonzero | contains:TEXT | not_contains:TEXT | regex:PATTERN.",
         {"cmd": "s", "until": "s", "interval_s": "i", "max_checks": "i",
          "timeout_s": "i", "cmd_timeout": "i"}, ("cmd",)),
     "schedule_task": (
