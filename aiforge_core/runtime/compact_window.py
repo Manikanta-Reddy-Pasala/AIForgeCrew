@@ -46,18 +46,46 @@ def at_hour() -> "int | None":
     return hour % 24                               # 24 = midnight
 
 
+def daily_pass_registered() -> bool:
+    """Will the scheduled evening pass actually run on this install?
+
+    Deferring an opportunistic fold to "the daily pass" is only safe if that
+    pass exists. It does NOT when the periodic engine is off, when jobs are
+    disabled, or when AIFORGE_REINDEX_DAILY=0 short-circuits the startup
+    handler that registers it (``api._start_daily_reindex``) — in those
+    configurations the on-switch fold is the ONLY compaction there is, and
+    gating it would mean nothing ever folds.
+    """
+    if os.environ.get("AIFORGE_PERIODIC_DISABLE", "") in ("1", "true", "yes"):
+        return False
+    if os.environ.get("AIFORGE_JOBS_DISABLE", "") in ("1", "true", "yes"):
+        return False
+    if os.environ.get("AIFORGE_REINDEX_DAILY", "1") in ("0", "false", "no"):
+        return False
+    return at_hour() is not None
+
+
+def catch_up_enabled() -> bool:
+    """Operator opted back into "run it whenever you next wake" (the pre-window
+    behaviour). Opens the opportunistic gate too — the same escape hatch has to
+    move both halves, or setting it fixes the scheduler and leaves the fold
+    dead 18 hours a day."""
+    return os.environ.get("AIFORGE_COMPACT_CATCH_UP", "0") in ("1", "true", "yes")
+
+
 def open_now(now: "datetime | None" = None) -> bool:
     """May an OPPORTUNISTIC fold run right now?
 
-    True when no daily hour is configured (the old always-on cadence), or when
-    the local clock is at/after that hour. Before the hour the fold is skipped:
-    the daily pass walks every session anyway, so nothing is lost — it just
-    happens in the evening, which is what the operator asked for.
+    True when no daily hour is configured (the old always-on cadence), when the
+    daily pass would not run at all on this install, when the operator asked
+    for catch-up, or when the local clock is at/after the hour. Otherwise the
+    fold is skipped: the daily pass walks every session anyway, so nothing is
+    lost — it just happens in the evening, which is what the operator asked for.
     """
     hour = at_hour()
-    if hour is None:
+    if hour is None or not daily_pass_registered() or catch_up_enabled():
         return True
     return (now or datetime.now()).hour >= hour
 
 
-__all__ = ["at_hour", "open_now"]
+__all__ = ["at_hour", "open_now", "daily_pass_registered", "catch_up_enabled"]

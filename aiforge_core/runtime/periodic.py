@@ -20,7 +20,10 @@ early), and never run at all on a machine asleep at the hour. So:
 * ``strict_hour=True`` turns that catch-up OFF *before* the hour: a missed slot
   still runs at the next wake, but never earlier in the day than ``at_hour``.
   For a task the operator scheduled to stay out of working hours (the evening
-  memory compaction), catching up at 09:00 is the very thing they asked against
+  memory compaction), catching up at 09:00 is the very thing they asked against.
+  A machine never awake at the hour would then never run the task at all, so
+  the block has a FLOOR: after ``strict_max_skip_days`` missed days the
+  catch-up fires anyway, whatever the hour — "quiet" must not become "never"
 * never twice within ``_MIN_GAP_S``; a run that RAISES retries after
   ``_RETRY_S``, at most ``_MAX_FAILS`` times a day
 * the record (last attempt, whether it finished, retries, first-seen) lives in
@@ -154,8 +157,11 @@ class _Task:
     every_s: "float | None" = None      # fixed interval
     at_hour: "int | None" = None        # daily at-or-after local hour [0-23]
     # NEVER run before at_hour, not even to catch up a missed day. The task
-    # simply waits for today's slot instead.
+    # simply waits for today's slot instead — until strict_max_skip_days have
+    # gone by with no run, at which point the catch-up fires anyway (a laptop
+    # never awake in the evening must not starve forever).
     strict_hour: bool = False
+    strict_max_skip_days: int = 3
     debounce_s: float = 60.0
     _last: list = field(default_factory=lambda: [0.0])   # monotonic ts
     _rec: list = field(default_factory=lambda: [None])   # run record (see _record)
@@ -259,11 +265,24 @@ class _Task:
         # run a day at its first wake instead.
         prev_slot = (now_dt - timedelta(days=1)).replace(
             hour=self.at_hour, minute=0, second=0, microsecond=0)
-        if (last or rec["seen"]) < prev_slot and not self.strict_hour:
+        _missed = (last or rec["seen"]) < prev_slot
+        if _missed and not self.strict_hour:
             return self._delay(now_mono)
         # strict_hour: a missed day does NOT buy a run at 09:00. The operator
         # picked the hour to keep this work out of their day; the pass waits
         # for today's slot (and the machine only has to be up at/after it).
+        # FLOOR: a machine that is never awake at the hour would otherwise
+        # never run this task again — and for the memory pass that means
+        # captures/ grows without bound and the eventual recovery fold gets
+        # heavier every day. After strict_max_skip_days without a run, take the
+        # catch-up whatever the hour.
+        if _missed and self.strict_hour and self.strict_max_skip_days > 0:
+            floor = now_dt - timedelta(days=self.strict_max_skip_days)
+            if (last or rec["seen"]) < floor:
+                log.info("periodic %s: %d+ days without a run — taking the "
+                         "catch-up outside its %02d:00 window",
+                         self.name, self.strict_max_skip_days, self.at_hour)
+                return self._delay(now_mono)
         return self._wait_for_hour(now_mono, now_dt)
 
     def _wait_for_hour(self, now_mono: float, now_dt: datetime) -> float:
@@ -280,17 +299,22 @@ _lock = threading.Lock()
 
 def register(name: str, fn: "Callable[[], object]", *,
              every_s: "float | None" = None, at_hour: "int | None" = None,
-             strict_hour: bool = False, debounce_s: float = 60.0) -> None:
+             strict_hour: bool = False, strict_max_skip_days: int = 3,
+             debounce_s: float = 60.0) -> None:
     """Register a recurring task. Give EITHER ``every_s`` OR ``at_hour``.
 
     ``strict_hour`` (at_hour only): never fire before the hour, even when a day
     was missed — the missed-slot catch-up then waits for today's slot instead of
-    running at the next wake."""
+    running at the next wake. ``strict_max_skip_days`` is the floor on that: a
+    task with no run for that many days catches up whatever the hour (0 = no
+    floor, i.e. it may starve forever). Ignored without ``at_hour``."""
     with _lock:
         if any(t.name == name for t in _TASKS):
             return
         _TASKS.append(_Task(name=name, fn=fn, every_s=every_s, at_hour=at_hour,
-                            strict_hour=strict_hour, debounce_s=debounce_s))
+                            strict_hour=strict_hour,
+                            strict_max_skip_days=strict_max_skip_days,
+                            debounce_s=debounce_s))
 
 
 def _fire(t: _Task, now_dt: "datetime | None" = None) -> None:
