@@ -80,3 +80,21 @@ export interface AgentRoleConfigInput {
   api_key?: string | null;
   insecure_tls?: boolean;
 }
+
+/** Machine-wide LLM request meter (GET /api/llm/usage).
+ *  Rolling windows, NOT cumulative buckets: `last_60m` counts calls in the
+ *  last hour, `total` counts every call since the API process started. */
+export interface LlmUsage {
+  total: number;
+  per_minute: number;
+  last_15m: number;
+  last_60m: number;
+  by_role: Record<string, number>;
+  by_provider: Record<string, number>;
+  by_model: Record<string, number>;
+  uptime_s: number;
+  /** the 60s rate buffer overflowed WITHIN the last minute — `per_minute` is
+   *  a floor. The wider windows come from minute buckets and stay exact. */
+  rate_capped: boolean;
+  series_60m?: number[];
+}

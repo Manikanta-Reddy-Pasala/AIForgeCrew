@@ -45,6 +45,23 @@ def set_cancel_event(ev) -> None:
     _CANCEL.set(ev)
 
 
+# Marker attribute set on an exception whose prompt REACHED the model and was
+# abandoned on a read timeout. Callers above the transport (the chat loop's own
+# retry sweep) must not re-issue that completion: each attempt leaves another
+# generation running on a box that already could not finish the first.
+TIMEOUT_SHIPPED_ATTR = "aiforge_llm_timeout_shipped"
+
+
+def shipped_timeout(exc: BaseException) -> bool:
+    """True when ``exc`` came from a request the model actually received."""
+    return bool(getattr(exc, TIMEOUT_SHIPPED_ATTR, False))
+
+
+# Floor under the retry budget, so the deadline rule only ever bites callers
+# whose per-attempt timeout is ALREADY long. A 1s health probe failing on a
+# refused connection still gets its (free, instant) retries.
+_RETRY_MIN_BUDGET_S = 10.0
+
 # Endpoint.extras keys that are transport/routing control — never sent as
 # OpenAI chat-completion body params (strict servers 400 on unknown keys).
 _NON_BODY_EXTRA_KEYS = frozenset({"insecure_tls"})
@@ -129,12 +146,10 @@ def _post_ctx(ep: Endpoint):
 
 
 def _post_cancellable(ep: Endpoint, payload: bytes, timeout_s: int,
-                      cancel) -> dict:
+                      cancel, sent: "list | None" = None) -> dict:
     """POST via http.client so a watcher thread can close the connection the
     instant ``cancel`` fires — interrupting an otherwise-blocking generation.
     Used only when a cancel token is bound for this thread."""
-    if not cancel.is_set():
-        _preflight(ep.base_url)   # skip if already cancelled → abort below
     import http.client
     from urllib.parse import urlparse
     url = f"{ep.base_url.rstrip('/')}/chat/completions"
@@ -163,6 +178,13 @@ def _post_cancellable(ep: Endpoint, payload: bytes, timeout_s: int,
         if cancel.is_set():
             raise _LLMCancelled("cancelled before request")
         conn.request("POST", path, body=payload, headers=_post_headers(ep))
+        # The prompt is now the SERVER's problem — everything after this point
+        # is waiting for it to answer, and a retry would duplicate work it is
+        # already doing. Everything BEFORE it (connect, TLS handshake, send)
+        # cost the server nothing, so those failures stay retryable even when
+        # they surface as a bare TimeoutError from http.client.
+        if sent is not None:
+            sent[0] = True
         resp = conn.getresponse()
         data = resp.read()
         if resp.status >= 400:
@@ -185,35 +207,62 @@ def _post_cancellable(ep: Endpoint, payload: bytes, timeout_s: int,
             pass
 
 
-def _record_request() -> None:
+def _record_request(role: str | None = None, provider: str | None = None,
+                    model: str | None = None) -> None:
     """Count one request to the model. Called at the moment we are actually
     about to send — AFTER the rate-limit wait and the preflight, so an attempt
     that never reached the network is not reported as provider traffic (the
     meter exists to answer "why did one question cost forty calls", and a
-    sleeping local box must not manufacture forty)."""
+    sleeping local box must not manufacture forty).
+
+    ``role`` is threaded down from _post_with_retry rather than left to the
+    request context: the background daemon (compaction, folds, jobs) has no
+    request context at all, and its calls are precisely the ones the toolbar
+    meter exists to make visible."""
     try:
         from aiforge_core.llm import call_meter as _meter
-        _meter.record()
+        _meter.record(role=role, provider=provider, model=model)
     except Exception:  # noqa: BLE001 — metering must never break a call
         pass
 
 
-def _post(ep: Endpoint, payload: bytes, timeout_s: int) -> dict:
+def _post(ep: Endpoint, payload: bytes, timeout_s: int,
+          *, role: str | None = None, sent: "list | None" = None,
+          max_wait_s: float | None = None) -> dict:
     # Rate-limit acquire BEFORE the post — blocks until budget allows.
     prov = _providers.get(ep.provider)
     declared = prov.rate_limits() if prov is not None else None
+    # The rate-limit wait is time the CALLER spends inside this attempt, so it
+    # is bounded by whatever is left of the caller's budget. Sizing it only by
+    # AIFORGE_LLM_MAX_WAIT_S (120s) meant a 15s classifier could legitimately
+    # block for over two minutes inside a chain the log called a 25s budget.
+    _wait_cap = float(_int_env("AIFORGE_LLM_MAX_WAIT_S", 120))
+    if max_wait_s is not None:
+        _wait_cap = max(1.0, min(_wait_cap, max_wait_s))
     _rl.acquire(
         ep.provider,
         declared=declared,
         tokens_estimate=_estimate_tokens(payload),
-        max_wait_s=float(_int_env("AIFORGE_LLM_MAX_WAIT_S", 120)),
+        max_wait_s=_wait_cap,
     )
     cancel = _CANCEL.get()
+    # ONE preflight for both paths, BEFORE the meter. It used to sit inside
+    # _post_cancellable, so the cancellable path (which is every chat
+    # generation) counted a request that the preflight then proved could not
+    # be sent: against a sleeping box the toolbar read "18 requests · 18/min"
+    # with zero bytes on the wire — the meter inventing the overload it exists
+    # to diagnose, in the one situation someone is staring at it.
+    if cancel is None or not cancel.is_set():
+        _preflight(ep.base_url)
     if cancel is not None:
-        _record_request()
-        return _post_cancellable(ep, payload, timeout_s, cancel)
-    _preflight(ep.base_url)
-    _record_request()
+        _record_request(role, ep.provider, ep.model)
+        return _post_cancellable(ep, payload, timeout_s, cancel, sent)
+    _record_request(role, ep.provider, ep.model)
+    # urllib wraps connect/handshake/send failures in URLError, so a bare
+    # TimeoutError out of urlopen is a READ timeout — the server has the
+    # prompt. Marking here is therefore exact for this path.
+    if sent is not None:
+        sent[0] = True
     req = urllib.request.Request(
         f"{ep.base_url.rstrip('/')}/chat/completions",
         data=payload,
@@ -265,20 +314,111 @@ def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
       AIFORGE_LLM_RETRY_MAX     — total attempts per endpoint (default 3)
       AIFORGE_LLM_RETRY_BASE_S  — base backoff seconds (default 0.5)
       AIFORGE_LLM_RETRY_CAP_S   — backoff cap seconds (default 8.0)
+      AIFORGE_LLM_RETRY_BUDGET  — retries must fit timeout_s x THIS (default
+                                  1.5); 0 disables the budget entirely
+      AIFORGE_LLM_RETRY_TIMEOUT_MAX — attempts allowed when the failure is a
+                                  READ TIMEOUT (default 1 = do not re-POST)
 
     On 429 with Retry-After, honour the header (capped to retry_cap).
-    Permanent (4xx non-429) errors bubble immediately."""
+    Permanent (4xx non-429) errors bubble immediately.
+
+    A READ TIMEOUT IS NOT RETRIED by default — but only a real one. It is the
+    single transient failure meaning the server ACCEPTED the request and is
+    still working on it: re-POSTing leaves the first generation running and
+    adds a second, so the retry worsens the overload it is retrying on. The
+    rule is gated on the request having actually SHIPPED (``sent``), because a
+    bare TimeoutError also comes out of the client-side rate limiter giving up
+    and out of a stalled connect/TLS handshake — neither of which cost the
+    server anything, and both of which must keep their retries. Set
+    ``AIFORGE_LLM_RETRY_TIMEOUT_MAX`` above 1 to re-POST anyway.
+
+    Be aware of what does NOT stand behind this: in the default self-hosted
+    setup ``router._CLOUD_PROVIDERS`` is empty and ``fallback()`` has no second
+    provider to offer, so a read timeout ends ``complete()`` with
+    ``llm.exhausted`` rather than falling through to another endpoint. That is
+    the deliberate trade — one abandoned generation beats three.
+
+    THE BUDGET. ``timeout_s`` is the caller's deadline, not one attempt's: a
+    20s route classifier retrying three read-timeouts blocks its caller for a
+    full minute. So the chain is bounded by ``timeout_s * budget_mult``
+    (floored at +10s so short-timeout callers keep their cheap retries) and a
+    retry is made only when a FULL attempt still fits inside what is left —
+    never a stub with a few seconds on it, which would manufacture exactly the
+    abandoned generation this is written to avoid. The bound is per CHAIN;
+    ``client.complete``'s empty-response loop can start several."""
     max_attempts = max(1, _int_env("AIFORGE_LLM_RETRY_MAX", 3))
     base = _float_env("AIFORGE_LLM_RETRY_BASE_S", 0.5)
     cap = _float_env("AIFORGE_LLM_RETRY_CAP_S", 8.0)
+    budget_mult = _float_env("AIFORGE_LLM_RETRY_BUDGET", 1.5)
+    timeout_max = max(1, _int_env("AIFORGE_LLM_RETRY_TIMEOUT_MAX", 1))
+    started = time.monotonic()
+    budget_s = max(max(1.0, timeout_s) * budget_mult,
+                   timeout_s + _RETRY_MIN_BUDGET_S)
+    deadline = started + budget_s if budget_mult > 0 else None
     last: Exception | None = None
     for attempt in range(1, max_attempts + 1):
+        # Did THIS attempt get the prompt onto the wire? Decides whether a
+        # timeout means "the server is working on it" or "we never reached it".
+        sent = [False]
         try:
-            return _post(ep, payload, timeout_s)
+            _left = (deadline - time.monotonic()) if deadline is not None else None
+            return _post(ep, payload, timeout_s, role=role, sent=sent,
+                         max_wait_s=_left)
         except Exception as exc:  # noqa: BLE001 — classifier handles
             retry, label = _is_transient_exc(exc)
             last = exc
-            if not retry or attempt >= max_attempts:
+            # Cost the NEXT attempt before deciding to make it — the backoff is
+            # part of the caller's deadline too, and a 429 Retry-After can be
+            # minutes on its own.
+            sleep_s = min(cap, base * (2 ** (attempt - 1)))
+            ra: str | None = None
+            if isinstance(exc, urllib.error.HTTPError):
+                try:
+                    ra = exc.headers.get("Retry-After") if exc.headers else None
+                except Exception:  # noqa: BLE001
+                    ra = None
+            if ra:
+                try:
+                    sleep_s = min(cap, max(0.1, float(ra)))
+                except ValueError:
+                    pass
+            # Add jitter to avoid thundering herd against shared providers.
+            sleep_s += random.uniform(0, 0.25)
+            budget_out = False
+            if (retry and label == "timeout" and sent[0]
+                    and attempt < max_attempts and attempt >= timeout_max):
+                budget_out = True
+                _log.info(
+                    "llm.timeout_not_retried provider=%s attempt=%d "
+                    "timeout=%ds — the server already has this request",
+                    ep.provider, attempt, timeout_s,
+                    extra={"aiforge": {"role": role, "provider": ep.provider,
+                                       "source": source, "attempt": attempt,
+                                       "label": label,
+                                       "error": str(exc)[:200]}},
+                )
+            if (not budget_out and retry and deadline is not None
+                    and attempt < max_attempts):
+                # A retry gets the FULL per-attempt timeout or it is not made.
+                if time.monotonic() + sleep_s + float(timeout_s) > deadline:
+                    budget_out = True
+                    _log.info(
+                        "llm.retry_budget_exhausted provider=%s label=%s "
+                        "attempt=%d elapsed=%.1fs budget=%.1fs — not retrying",
+                        ep.provider, label, attempt,
+                        time.monotonic() - started, budget_s,
+                        extra={"aiforge": {"role": role, "provider": ep.provider,
+                                           "source": source, "attempt": attempt,
+                                           "label": label,
+                                           "sleep_s": round(sleep_s, 3),
+                                           "error": str(exc)[:200]}},
+                    )
+            if not retry or budget_out or attempt >= max_attempts:
+                if label == "timeout" and sent[0]:
+                    try:
+                        setattr(exc, TIMEOUT_SHIPPED_ATTR, True)
+                    except Exception:  # noqa: BLE001 — never break on a marker
+                        pass
                 _body = _http_err_body(exc)
                 _log.warning(
                     "llm.transport_error role=%s provider=%s model=%s "
@@ -291,24 +431,10 @@ def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
                                        "model": ep.model, "source": source,
                                        "attempt": attempt, "label": label,
                                        "fatal": not retry,
+                                       "budget_exhausted": budget_out,
                                        "error": (str(exc) + " " + _body)[:300]}},
                 )
                 raise
-            # Honour Retry-After header for 429 if present + parseable.
-            sleep_s = min(cap, base * (2 ** (attempt - 1)))
-            ra: str | None = None
-            if isinstance(exc, urllib.error.HTTPError):
-                try:
-                    ra = exc.headers.get("Retry-After") if exc.headers else None
-                except Exception:
-                    ra = None
-            if ra:
-                try:
-                    sleep_s = min(cap, max(0.1, float(ra)))
-                except ValueError:
-                    pass
-            # Add jitter to avoid thundering herd against shared providers.
-            sleep_s += random.uniform(0, 0.25)
             _log.info(
                 "llm.transport_retry provider=%s url=%s label=%s attempt=%d "
                 "sleep=%.2fs err=%s",

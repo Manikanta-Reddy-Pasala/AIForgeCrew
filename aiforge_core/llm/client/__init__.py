@@ -52,6 +52,9 @@ from .._ssl import context_for as _ssl_context_for
 from .._ssl import insecure_context as _ssl_insecure
 from ..router import escalate, fallback, resolve
 from ..types import Endpoint
+from ._http import TIMEOUT_SHIPPED_ATTR as _TIMEOUT_SHIPPED_ATTR
+from ._http import shipped_timeout as _shipped_timeout
+from ._http import shipped_timeout  # re-export: callers above the transport
 from ._errors import (
     _http_err_body,
     _is_transient_exc,
@@ -110,7 +113,8 @@ def _is_fast_role(role: str) -> bool:
 def _try_post(ep: Endpoint, messages: list[dict],
               *, temperature, max_tokens, top_p, extras,
               timeout_s: int, role: str,
-              source: str) -> tuple[str, dict] | None:
+              source: str,
+              shipped: dict | None = None) -> tuple[str, dict] | None:
     """Attempt against ``ep``. Returns (text, raw_body) on success (text
     passing :func:`_is_garbage`), or ``None`` on transport error or persistent
     garbage. Caller decides whether to escalate / fall back.
@@ -152,12 +156,22 @@ def _try_post(ep: Endpoint, messages: list[dict],
         except _LLMCancelled:
             raise
         except (urllib.error.URLError, urllib.error.HTTPError,
-                OSError, TimeoutError, ValueError):
+                OSError, TimeoutError, ValueError) as _texc:
             # ValueError covers a non-JSON 200 (proxy HTML error page,
             # truncated / streaming body) so a malformed response falls back to
             # the next provider instead of crashing complete(). Transport
             # errors are NOT retried here — _post_with_retry already exhausted
             # its own transport retries; escalate to the next provider instead.
+            #
+            # Remember whether the prompt REACHED the model, though: this
+            # returns None, and the exhausted-path RuntimeError below used to
+            # discard the cause entirely, so the chat loop's own retry sweep
+            # (AIFORGE_CHAT_LLM_RETRIES, default 5) re-issued the identical
+            # completion five more times — six abandoned generations on a box
+            # that could not finish one, which is the storm this whole change
+            # is about.
+            if shipped is not None and _shipped_timeout(_texc):
+                shipped["timeout"] = True
             return None
         _record_usage(role, body)
         text = _extract_text(body)
@@ -331,7 +345,8 @@ def _complete_impl(role: str, messages: list[dict], *,
         primary = escalated
 
     # Attempt 1 — primary
-    out = _try_post(primary, messages,
+    _shipped: dict = {}
+    out = _try_post(primary, messages, shipped=_shipped,
                     temperature=temperature, max_tokens=max_tokens,
                     top_p=top_p, extras=extras,
                     timeout_s=timeout_s, role=role, source="primary")
@@ -341,7 +356,7 @@ def _complete_impl(role: str, messages: list[dict], *,
     # Attempt 2 — fallback() (different provider, same role)
     fb = fallback(role)
     if fb is not None and fb.provider != primary.provider:
-        out = _try_post(fb, messages,
+        out = _try_post(fb, messages, shipped=_shipped,
                         temperature=temperature, max_tokens=max_tokens,
                         top_p=top_p, extras=extras,
                         timeout_s=timeout_s, role=role, source="fallback")
@@ -351,7 +366,7 @@ def _complete_impl(role: str, messages: list[dict], *,
     # Attempt 3 — escalate on quality (forces cloud regardless of ctx)
     cloud = escalate(role, reason="quality")
     if cloud is not None and cloud.provider != primary.provider:
-        out = _try_post(cloud, messages,
+        out = _try_post(cloud, messages, shipped=_shipped,
                         temperature=temperature, max_tokens=max_tokens,
                         top_p=top_p, extras=extras,
                         timeout_s=timeout_s, role=role,
@@ -359,7 +374,7 @@ def _complete_impl(role: str, messages: list[dict], *,
         if out is not None:
             return out[0]
 
-    raise RuntimeError(
+    _exhausted = RuntimeError(
         f"llm.exhausted role={role} primary={primary.provider}"
         f"@{primary.base_url} model={primary.model} "
         f"fallback={fb.provider if fb else 'none'} "
@@ -367,3 +382,7 @@ def _complete_impl(role: str, messages: list[dict], *,
         f"— all providers returned transport error or empty content "
         f"(see the llm.transport_error line above for the underlying cause)"
     )
+    if _shipped.get("timeout"):
+        # The prompt DID reach the model — callers above must not re-issue it.
+        setattr(_exhausted, _TIMEOUT_SHIPPED_ATTR, True)
+    raise _exhausted
