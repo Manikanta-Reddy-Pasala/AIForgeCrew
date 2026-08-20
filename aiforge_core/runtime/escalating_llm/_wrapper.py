@@ -5,6 +5,7 @@ Split out of the former single-module ``escalating_llm``; behaviour identical.
 from __future__ import annotations
 
 import asyncio
+import os as _os
 from typing import Any, AsyncGenerator
 
 from google.adk.models.base_llm import BaseLlm
@@ -20,6 +21,30 @@ from ._policy import (
     _is_transient_llm_error,
 )
 from ._builder import _build_one, _mirror_to_langfuse
+
+
+async def _throttle_global() -> None:
+    """Obey the operator's calls-per-minute ceiling on the PIPELINE path too.
+
+    ADK agents never touch llm.client, so a ceiling enforced only there would
+    throttle chat while team mode — the highest-volume path — sailed past it.
+    The limiter is blocking, so it runs in a worker thread: sleeping on the
+    event loop would stall every other agent in the same run, including the
+    ones that are not waiting on budget.
+    """
+    try:
+        from aiforge_core.llm import rate_limiter as _rl
+        if _rl.global_rpm() <= 0:
+            return
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, lambda: _rl.acquire_global(
+            max_wait_s=float(_os.environ.get("AIFORGE_LLM_MAX_WAIT_S", "120"))))
+    except Exception:  # noqa: BLE001 — a throttle must never break a call
+        # Including the limiter giving up: acquire_global lets the call through
+        # rather than raising, and even if that changes, one throttled call
+        # must not fail a whole pipeline run (each candidate would re-throttle,
+        # so a raise here costs 120s per candidate and then llm.exhausted).
+        return
 
 
 def _meter_record(role: str, model_name) -> None:
@@ -106,6 +131,10 @@ class EscalatingLlm(BaseLlm):
         # Streaming path: trust primary, no retry magic.
         if stream:
             assert self.primary_model is not None
+            try:
+                await _throttle_global()
+            except Exception:  # noqa: BLE001 — nothing here may break a stream
+                pass
             _meter_record(self.role, getattr(self.primary_model, "model", None))
             async for r in self.primary_model.generate_content_async(
                 llm_request, stream=True,
@@ -171,6 +200,7 @@ class EscalatingLlm(BaseLlm):
                 for _t in range(_tries):
                     try:
                         buffered = []
+                        await _throttle_global()
                         _meter_record(self.role, target_model)
                         async for r in model.generate_content_async(
                             req_for_attempt, stream=False,
@@ -216,6 +246,11 @@ class EscalatingLlm(BaseLlm):
                         if recovered:
                             buffered = []
                             try:
+                                # Gated like the two paths above: a recovery
+                                # retry is a real request to the model and must
+                                # be both throttled and counted.
+                                await _throttle_global()
+                                _meter_record(self.role, target_model)
                                 async for r in model.generate_content_async(
                                     req_for_attempt, stream=False,
                                 ):

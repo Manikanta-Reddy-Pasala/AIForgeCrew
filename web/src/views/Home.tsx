@@ -590,11 +590,14 @@ function AgentLimitsCard() {
     setBusy(true);
     try {
       const next = await api.setLlmSettings({
-        chat_safety_cap: 0, chat_turn_deadline_s: 0,
+        // The rate ceiling too: it is the likeliest reason a turn LOOKS stuck,
+        // so a button whose tooltip says "nothing stops a turn but you" cannot
+        // leave a 5/min throttle in force.
+        chat_safety_cap: 0, chat_turn_deadline_s: 0, llm_max_rpm: 0,
       } as LlmSettingsInput);
       setVals(next);
       setNonce(x => x + 1);
-      toast.success('Agent limits off — a turn now runs until it finishes or you press Stop');
+      toast.success('Agent limits off — no step cap, no deadline, no rate ceiling');
     } catch (e: any) {
       toast.error(`Save failed: ${e?.message || 'unknown'}`);
       setNonce(x => x + 1);
@@ -608,7 +611,7 @@ function AgentLimitsCard() {
     try {
       const next = await api.setLlmSettings({
         unset: ['chat_safety_cap', 'chat_turn_deadline_s', 'chat_cap_extensions',
-                'chat_unattended_cap'],
+                'chat_unattended_cap', 'llm_max_rpm'],
       });
       setVals(next);
       setNonce(x => x + 1);
@@ -704,6 +707,9 @@ function AgentLimitsCard() {
         {field('chat_cap_extensions', 'Auto-extensions',
                'How many times a turn still making progress may extend the cap / deadline. 0 = stop hard. Default 2.',
                0, 50)}
+        {field('llm_max_rpm', 'LLM calls per minute',
+               'Ceiling on model requests per minute for this API process — chat, the routers, jobs and the team pipeline (not embeddings or the memory daemon, which is its own process). 0 = no ceiling. One agent turn is routinely 10-40 calls, so at 5/min a single message queues for minutes. Calls WAIT, they are never failed; the toolbar meter shows ⏳ while any are parked.',
+               0, 100_000)}
         {field('chat_unattended_cap', 'Background step cap',
                'Steps for runs with nobody watching (scheduled jobs, analysis fan-out, subtasks). These have no Stop button, so this one cannot be 0. Default 2000.',
                1, 1_000_000)}

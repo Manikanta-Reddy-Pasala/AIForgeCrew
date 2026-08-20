@@ -80,6 +80,18 @@ _SPEC: dict[str, tuple[str, int]] = {
     # runners): Stop is gated on a session id, so these cannot be interrupted.
     # Deliberately NOT zeroable — see _limits._unattended_cap.
     "chat_unattended_cap": ("AIFORGE_CHAT_UNATTENDED_CAP", 2000),
+    # Operator ceiling on model requests per minute. 0 = no ceiling.
+    #
+    # Covers everything that goes through the LLM client (chat, the routers and
+    # classifiers, jobs, direct callers) and the ADK/team pipeline. It does NOT
+    # cover embeddings/rerank, the instructor-backed structured path, or the
+    # memory daemon — that runs in its OWN process, and this bucket is
+    # per-process, so the ceiling is per API process, not per machine.
+    #
+    # A throttle, not a guard: one agent turn is routinely 10-40 calls, so a
+    # low value queues ordinary work rather than preventing it. It never fails
+    # a call — past AIFORGE_LLM_MAX_WAIT_S it warns and lets it through.
+    "llm_max_rpm": ("AIFORGE_LLM_MAX_RPM", 5),
 }
 
 # Sanity bounds — reject obviously-bad values from the API/UI so a typo
@@ -103,6 +115,7 @@ _BOUNDS: dict[str, tuple[int, int]] = {
     "chat_turn_deadline_s": (0, 86_400),
     "chat_cap_extensions": (0, 50),
     "chat_unattended_cap": (1, 1_000_000),
+    "llm_max_rpm": (0, 100_000),
 }
 
 

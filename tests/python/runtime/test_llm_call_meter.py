@@ -155,7 +155,8 @@ def _timeout_post(calls, *, shipped: bool):
     """A _post that times out, either AFTER the prompt reached the server
     (shipped) or BEFORE it ever did (the rate limiter giving up, a stalled
     TLS handshake) — the distinction the retry rule turns on."""
-    def fn(_ep, _payload, _timeout, *, role=None, sent=None, max_wait_s=None):
+    def fn(_ep, _payload, _timeout, *, role=None, sent=None, max_wait_s=None,
+           throttled=None):
         calls["n"] += 1
         if shipped and sent is not None:
             sent[0] = True

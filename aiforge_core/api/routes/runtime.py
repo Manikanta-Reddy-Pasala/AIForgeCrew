@@ -290,6 +290,8 @@ class _RuntimeSettingsBody(BaseModel):
     chat_cap_extensions: int | None = Field(None, ge=0, le=50)
     # ge=1: a background run has no Stop button, so it is never uncapped.
     chat_unattended_cap: int | None = Field(None, ge=1, le=1_000_000)
+    # 0 = no ceiling.
+    llm_max_rpm: int | None = Field(None, ge=0, le=100_000)
     # Names to FORGET, so those knobs fall back to env / built-in default
     # (the store otherwise shadows the documented env var forever).
     unset: list[str] | None = None
