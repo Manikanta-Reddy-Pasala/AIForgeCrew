@@ -667,17 +667,36 @@ def run_chat_agent(
         # agent adjusts course without a Stop + new turn. Surface it so the UI
         # shows the steer was applied.
         if session_id is not None:
-            for steer in chat_interject.drain(session_id):
+            _items = chat_interject.drain_items(session_id)
+            if _items:
+                from aiforge_core.runtime import chat_steer
+                _steers = [t for k, t in _items if k != "reject"]
+                _rejects = [t for k, t in _items if k == "reject"]
+                # ONE block for everything that drained together, so three
+                # queued messages cannot each claim to be the latest.
+                _parts = ([chat_steer.steer_block(_steers)] if _steers else [])
+                _parts += [chat_steer.reject_note(g) for g in _rejects]
+                _directive = "\n\n".join(p for p in _parts if p)
                 # If the last turn is already a user message (e.g. the
                 # OBSERVATION we just appended after a tool step), MERGE the
                 # steer into it — two consecutive user turns break some
                 # providers (claude_local). Otherwise append a fresh user turn.
-                if convo and convo[-1].get("role") == "user":
-                    convo[-1]["content"] += f"\n\n[steer] {steer}"
+                _last = convo[-1] if convo else None
+                if _last is not None and _last.get("role") == "user":
+                    _c = _last.get("content")
+                    if isinstance(_c, list):
+                        # A VISION turn's content is a list of parts. `+=` on a
+                        # list extends it with the string's CHARACTERS: one
+                        # steer became 364 single-character parts, invisible to
+                        # _text_of (so the condenser and the context meter both
+                        # missed it) while still being sent.
+                        _c.append({"type": "text", "text": _directive})
+                    else:
+                        _last["content"] = f"{_c or ''}\n\n{_directive}"
                 else:
-                    convo.append({"role": "user", "content": f"[steer] {steer}"})
-                from aiforge_core.runtime import chat_steer
-                yield chat_steer.steer_event(steer)
+                    convo.append({"role": "user", "content": _directive})
+                for _k, _t in _items:
+                    yield chat_steer.steer_event(_t)
         # Auto-condense the running history before the call so a long session
         # can't overflow the model's context window (MUST). Tell the user it
         # happened (one-time per condense) for transparency.

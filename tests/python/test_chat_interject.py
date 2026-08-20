@@ -164,13 +164,18 @@ def test_steer_merges_into_trailing_user_turn(tmp_path):
     # The steer landed folded into the OBSERVATION user turn.
     merged = [m for m in msgs if m.get("role") == "user"
               and "OBSERVATION" in (m.get("content") or "")
-              and "[steer] go faster" in (m.get("content") or "")]
+              and "go faster" in (m.get("content") or "")
+              and "takes PRIORITY" in (m.get("content") or "")]
     assert merged, msgs
 
 
 def test_run_chat_agent_injects_drained_steer(tmp_path):
     """A steer pushed mid-run is drained at the next step, folded into the
-    working convo as a '[steer] ...' user turn, and echoed as a steer thought."""
+    working convo as a PRIORITY instruction, and echoed as a steer thought.
+
+    The wording is the feature: a bare "[steer] …" tag read as a footnote to
+    the request already in context, and the model kept answering the old
+    question."""
     seen = {"convo_has_steer": False}
     calls = {"n": 0}
 
@@ -185,7 +190,9 @@ def test_run_chat_agent_injects_drained_steer(tmp_path):
         # MERGED into the trailing user turn (the OBSERVATION we just appended)
         # rather than added as a second consecutive user message (M1).
         seen["convo_has_steer"] = any(
-            "[steer] go faster" in (m.get("content") or "") for m in messages)
+            "go faster" in (m.get("content") or "")
+            and "takes PRIORITY" in (m.get("content") or "")
+            for m in messages)
         return "FINAL: done"
 
     evs = list(ca.run_chat_agent(
