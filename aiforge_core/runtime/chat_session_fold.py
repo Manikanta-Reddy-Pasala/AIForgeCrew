@@ -48,7 +48,10 @@ def fold_sync(session_id: int) -> dict:
 
     Used by the delete path, which must fold before the rows are removed —
     that caller is NOT window-gated (the turns are about to be destroyed, so
-    "wait until 18:00" would mean "lose it"). One
+    "wait until 18:00" would mean "lose it"). It walks at most
+    ``_max_windows()``; with the on-switch fold now deferred to the evening,
+    a very long session deleted mid-day can exceed that and lose its tail —
+    raise AIFORGE_SESSION_COMPACT_MAX_WINDOWS if that matters to you. One
     ``compact_session`` only distils the turns that fit in one window, so a
     single call would delete the rest of a long chat unfolded — and since
     compaction moved to one pass a day that backlog is a day's worth, not the
@@ -86,9 +89,10 @@ def fold_async(session_id: int | None) -> None:
     if session_id is None or not _enabled():
         return
     from aiforge_core.runtime import compact_window
+    _hour = compact_window.at_hour()
     if not compact_window.open_now():
         log.info("fold for session %s deferred to the compaction window (%02d:00)",
-                 session_id, compact_window.at_hour() or 0)
+                 session_id, _hour or 0)
         return
     threading.Thread(
         target=fold_sync, args=(session_id,),

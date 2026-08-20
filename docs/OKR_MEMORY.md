@@ -40,15 +40,30 @@
 > captures→briefs, then the full recompact. Every fold is LLM-heavy, so the old
 > hourly + per-idle-session cadence spent tokens all day re-folding briefs that
 > barely moved. Scheduling rules: fires the first time the daemon is awake
-> **at or after** the hour; if a whole day passed with no run (a laptop that is
-> never up at 18:00) it fires at the next wake whatever the hour; at most once
+> **at or after** the hour, and NEVER before it — a laptop asleep at 18:00 waits
+> for tonight's slot rather than compacting at 09:00 the next morning (that
+> catch-up was the intrusion the evening slot exists to remove). The floor on
+> that: after `AIFORGE_COMPACT_MAX_SKIP_DAYS` (default 3) days with no run it
+> catches up whatever the hour, so "quiet" never becomes "never".
+> `AIFORGE_COMPACT_CATCH_UP=1` restores the old run-at-the-next-wake behaviour
+> — for the scheduled pass AND for the on-chat-switch fold. At most once
 > per local day and never twice within 12h; the run — including a FAILED
 > attempt and its retry count — is remembered in `~/.aiforge/periodic_state.json`,
 > so a restart neither re-runs a finished pass nor buys a failing one extra
 > attempts; a pass that fails retries after an hour, at most twice a day, and
 > each of its three stages is isolated so one failure can't cancel the others.
 > `AIFORGE_COMPACT_AT_HOUR=0` means OFF (as with the sibling `*_DAILY=0`
-> knobs) — midnight is `24`. Session folds walk the backlog
+> knobs) — midnight is `24`. Note `24` normalises to hour 0, which is "due all
+> day": both the strict-hour block and the fold gate are then open at every
+> hour. Pick a real evening hour if you want the window to bite.
+>
+> **The same window gates the two off-schedule folds**: the LLM fold fired when
+> you open a new chat (`chat_session_fold.fold_async`) and the boot-time
+> compaction in `run_startup_migrations` — which used to run one learner call
+> per brief on EVERY API start, i.e. every morning the lid opens. Outside the
+> window the startup pass still folds structurally, just without the model
+> (`AIFORGE_STARTUP_COMPACT=always|window|off`). Deleting a session still folds
+> immediately at any hour: those turns are about to be destroyed. Session folds walk the backlog
 > window by window (`AIFORGE_SESSION_COMPACT_CHARS` per window, at most
 > `AIFORGE_SESSION_COMPACT_MAX_WINDOWS`, default 20, per session per pass); a
 > session whose walk stopped short (window cap, model down, error) is revisited

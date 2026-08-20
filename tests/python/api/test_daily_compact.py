@@ -416,3 +416,18 @@ def test_session_folding_is_not_silently_off_for_other_trigger_modes(monkeypatch
     tasks2 = _registered(monkeypatch, tmp_path, AIFORGE_SESSION_COMPACT="off")
     tasks2["daily-compact"].fn()
     assert folds == []                        # 'off' still means off
+
+
+def test_api_delegates_the_hour_parse_to_compact_window(monkeypatch):
+    """One parser, not two — the scheduled pass and the opportunistic chat
+    folds must not disagree about when the window opens."""
+    from aiforge_core.api import api
+    from aiforge_core.runtime import compact_window
+    for raw in ("18", "off", "0", "24", "99", "nonsense"):
+        monkeypatch.setenv("AIFORGE_COMPACT_AT_HOUR", raw)
+        assert api._compact_at_hour() == compact_window.at_hour()
+    # The branch that could actually diverge: hour unset, hourly interval set.
+    monkeypatch.delenv("AIFORGE_COMPACT_AT_HOUR")
+    monkeypatch.setenv("AIFORGE_COMPACT_EVERY_H", "2")
+    assert api._compact_at_hour() is None
+    assert compact_window.at_hour() is None

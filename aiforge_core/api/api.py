@@ -617,9 +617,15 @@ def _start_daily_reindex() -> None:
         # the next morning, which is exactly the intrusion the schedule exists
         # to remove. It simply waits for today's 18:00 instead.
         # AIFORGE_COMPACT_CATCH_UP=1 restores the run-at-next-wake behaviour.
-        _strict = os.environ.get("AIFORGE_COMPACT_CATCH_UP", "0") not in ("1", "true", "yes")
+        from aiforge_core.runtime import compact_window as _cw
+        _strict = not _cw.catch_up_enabled()
+        try:
+            _skip_days = max(0, int(os.environ.get(
+                "AIFORGE_COMPACT_MAX_SKIP_DAYS", "3")))
+        except (TypeError, ValueError):
+            _skip_days = 3
         _pd.register("daily-compact", _daily_compact, at_hour=_daily_hour,
-                     strict_hour=_strict)
+                     strict_hour=_strict, strict_max_skip_days=_skip_days)
     _pd.start()
 
 

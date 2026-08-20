@@ -434,19 +434,43 @@ def run_startup_migrations() -> dict:
         out["briefs_folder"] = {"ok": False, "error": str(exc)}
 
     # ── compact FIRST: fold old-format per-note .md files into their topic/repo
-    # briefs + retire masquerading captures NOW (don't wait for the hourly job),
-    # so the brief→OKR step below sees consolidated briefs. Same passes as the
-    # hourly _compact_chat_md. Idempotent; safe every boot.
+    # briefs + retire masquerading captures NOW, so the brief→OKR step below
+    # sees consolidated briefs. Idempotent; safe every boot.
+    #
+    # BUT: `summarize=True, model_role="learner"` is one LLM call per brief, and
+    # this runs on EVERY API boot — which on a laptop means every morning the
+    # lid opens. That is the same "compaction is running in my working day"
+    # intrusion the evening window exists to remove, arriving by a path the
+    # scheduler never sees. Outside the window the structural fold still runs
+    # (files move, captures are swept, the migration completes) with the model
+    # left out of it; the evening pass re-folds every brief through the learner
+    # anyway (force_recompact_all), so nothing is permanently un-summarised.
+    # AIFORGE_STARTUP_COMPACT=always restores the old boot-time LLM fold; =off
+    # skips this block entirely.
     try:
         from aiforge_core.memory import md_store
-        r_repo = md_store.compact(group_by="repo", min_group=1, summarize=True,
-                                  model_role="learner", archive_sources=False)
-        r_topic = md_store.compact(group_by="topic", min_group=1, summarize=True,
-                                   model_role="learner", archive_sources=True)
-        r_sweep = md_store.sweep_stale_captures(archive=True)
-        out["compact"] = {"repo_in": r_repo.get("files_in"),
-                          "topic_in": r_topic.get("files_in"),
-                          "swept": r_sweep.get("swept")}
+        from aiforge_core.runtime import compact_window
+        mode = (os.environ.get("AIFORGE_STARTUP_COMPACT", "window")
+                .strip().lower())
+        if mode in ("off", "0", "false", "no"):
+            out["compact"] = {"skipped": "disabled"}
+        else:
+            _llm = mode == "always" or compact_window.open_now()
+            r_repo = md_store.compact(group_by="repo", min_group=1,
+                                      summarize=_llm, model_role="learner",
+                                      archive_sources=False)
+            r_topic = md_store.compact(group_by="topic", min_group=1,
+                                       summarize=_llm, model_role="learner",
+                                       archive_sources=True)
+            r_sweep = md_store.sweep_stale_captures(archive=True)
+            out["compact"] = {"repo_in": r_repo.get("files_in"),
+                              "topic_in": r_topic.get("files_in"),
+                              "swept": r_sweep.get("swept"),
+                              "summarized": _llm}
+            if not _llm:
+                log.info("startup compaction: structural only — the learner "
+                         "fold waits for the %02d:00 window",
+                         compact_window.at_hour() or 0)
     except Exception as exc:  # noqa: BLE001
         out["compact"] = {"ok": False, "error": str(exc)}
 
