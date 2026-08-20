@@ -82,7 +82,9 @@ def is_alive(api_base: str) -> bool:
     url = api_base.rstrip("/") + "/models"
     alive = False
     try:
-        req = urllib.request.Request(url, method="GET")
+        from aiforge_core.llm.user_agent import user_agent as _ua
+        req = urllib.request.Request(url, method="GET",
+                                     headers={"User-Agent": _ua()})
         with urllib.request.urlopen(
             req, timeout=_timeout(), context=_ssl_context_for(url)
         ) as resp:

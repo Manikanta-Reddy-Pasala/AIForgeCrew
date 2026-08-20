@@ -25,6 +25,7 @@ import urllib.request
 from dataclasses import dataclass
 
 from .types import Endpoint
+from .user_agent import user_agent as _user_agent
 from . import providers as _providers
 from ._ssl import context_for as _ssl_context_for
 
@@ -80,7 +81,8 @@ def _probe(ep: Endpoint) -> HealthState:
     url = f"{ep.base_url.rstrip('/')}/models"
     req = urllib.request.Request(
         url, method="GET",
-        headers={"Authorization": f"Bearer {ep.api_key or 'na'}"},
+        headers={"Authorization": f"Bearer {ep.api_key or 'na'}",
+                 "User-Agent": _user_agent()},
     )
     ctx = _ssl_context_for(ep.base_url)
     try:
@@ -188,7 +190,8 @@ def _probe_ctx_window(base_url: str, api_key: str = "") -> int | None:
     url = f"{base_url.rstrip('/')}/models"
     req = urllib.request.Request(
         url, method="GET",
-        headers={"Authorization": f"Bearer {api_key or 'na'}"})
+        headers={"Authorization": f"Bearer {api_key or 'na'}",
+                 "User-Agent": _user_agent()})
     ctx = _ssl_context_for(base_url)
     try:
         with urllib.request.urlopen(req, timeout=_ctx_timeout(), context=ctx) as resp:

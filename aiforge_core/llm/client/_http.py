@@ -9,7 +9,6 @@ from __future__ import annotations
 import contextvars
 import io
 import json
-import os
 import random
 import threading
 import time
@@ -23,6 +22,7 @@ from .._ssl import auto_relax_internal as _ssl_auto_relax
 from .._ssl import context_for as _ssl_context_for
 from .._ssl import insecure_context as _ssl_insecure
 from ..types import Endpoint
+from ..user_agent import user_agent as _user_agent
 from ._errors import (
     _http_err_body,
     _is_transient_exc,
@@ -125,9 +125,12 @@ def _post_headers(ep: Endpoint) -> dict:
     return {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {ep.api_key}",
-        # Some proxies/WAFs reject the stdlib Python-urllib UA.
-        "User-Agent": os.environ.get(
-            "AIFORGE_LLM_USER_AGENT", "curl/8.5.0 (aiforge)"),
+        # Identifies the client, the build and the person — "curl/8.5.0
+        # (aiforge)" identified none of them, and gateway logs could not tell
+        # one user's traffic from another's. AIFORGE_LLM_USER_AGENT still
+        # overrides for a proxy that insists on something specific (which is
+        # the only reason the curl string existed).
+        "User-Agent": _user_agent(),
     }
 
 

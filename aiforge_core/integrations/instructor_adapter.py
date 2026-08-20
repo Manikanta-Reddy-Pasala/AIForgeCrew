@@ -39,8 +39,14 @@ def structured(*, base_url: str, api_key: str, model: str,
     try:
         import httpx
         from aiforge_core.net.ssl import httpx_verify
+        from aiforge_core.llm.user_agent import user_agent
+        # Same endpoint, same credentials, same completions — but through the
+        # OpenAI SDK, so without this the gateway files this traffic under
+        # "OpenAI/Python" and an operator counting a user's calls silently
+        # misses every structured extraction.
         _http = httpx.Client(verify=httpx_verify(base_url),
-                             timeout=timeout_s or 120)
+                             timeout=timeout_s or 120,
+                             headers={"User-Agent": user_agent()})
     except Exception:  # noqa: BLE001 — fall back to the SDK default client
         _http = None
     _oai_kwargs = {"base_url": base_url, "api_key": api_key or "not-needed",

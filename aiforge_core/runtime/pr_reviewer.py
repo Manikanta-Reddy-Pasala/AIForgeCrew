@@ -90,9 +90,11 @@ def _llm_review(prompt: str) -> dict[str, Any]:
     base = os.environ.get("AIFORGE_LM_BASE_URL", "http://127.0.0.1:1234/v1")
     api_key = os.environ.get("AIFORGE_LM_API_KEY", "lm-studio")
     try:
+        from aiforge_core.llm.user_agent import user_agent
         resp = litellm.completion(
             model=model,
             api_base=base, api_key=api_key,
+            extra_headers={"User-Agent": user_agent()},
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1, timeout=120,
         )
