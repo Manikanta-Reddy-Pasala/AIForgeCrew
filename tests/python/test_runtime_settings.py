@@ -102,3 +102,23 @@ def test_router_reads_context_window(rs):
     rs.set_many({"context_window": 222222})
     import aiforge_core.llm.router as router
     assert router._local_ctx_window("doer") == 222222
+
+
+def test_stored_ignores_env_and_defaults(rs, monkeypatch):
+    """`stored` answers "did the operator save this in the UI", which is a
+    different question from `explicit` — the chat turn deadline parses its own
+    (fractional) env var and must not have it collapsed to an int on the way."""
+    monkeypatch.setenv("AIFORGE_CHAT_TURN_DEADLINE_S", "1800.5")
+    assert rs.stored("chat_turn_deadline_s") is None      # env is not "stored"
+    assert rs.get("chat_turn_deadline_s") == 1800         # …but is readable
+    rs.set_many({"chat_turn_deadline_s": 60})
+    assert rs.stored("chat_turn_deadline_s") == 60
+
+
+def test_unset_forgets_only_known_saved_knobs(rs):
+    rs.set_many({"chat_safety_cap": 77, "context_window": 200000})
+    out = rs.unset(["chat_safety_cap", "not_a_knob"])
+    assert out["chat_safety_cap"] == 2000                 # back to the default
+    assert out["context_window"] == 200000                # untouched
+    assert "chat_safety_cap" not in rs._read_store()
+    rs.unset(["chat_safety_cap"])                         # idempotent

@@ -299,11 +299,21 @@ def llm_settings_get() -> dict:
 @router.put("/api/runtime/llm-settings")
 def llm_settings_set(body: _RuntimeSettingsBody) -> dict:
     from aiforge_core.config import runtime_settings as _rs
+
     data = body.model_dump()
     drop = data.pop("unset", None) or []
     vals = {k: v for k, v in data.items() if v is not None}
     if not vals and not drop:
         raise HTTPException(400, "no settings provided")
+    both = sorted(set(drop) & set(vals))
+    if both:
+        # Writing a value and forgetting it in the same request is a
+        # contradiction; answering 200 to it hides which half won.
+        raise HTTPException(400, "cannot set and unset the same knob: "
+                                 + ", ".join(both))
+    unknown = sorted(n for n in drop if n not in _rs._SPEC)
+    if unknown:
+        raise HTTPException(400, "unknown setting(s): " + ", ".join(unknown))
     try:
         out = _rs.set_many(vals) if vals else _rs.all_settings()
         return _rs.unset(drop) if drop else out

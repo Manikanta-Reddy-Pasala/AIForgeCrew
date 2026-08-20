@@ -416,3 +416,18 @@ def test_session_folding_is_not_silently_off_for_other_trigger_modes(monkeypatch
     tasks2 = _registered(monkeypatch, tmp_path, AIFORGE_SESSION_COMPACT="off")
     tasks2["daily-compact"].fn()
     assert folds == []                        # 'off' still means off
+
+
+def test_llm_settings_rejects_a_contradictory_put(monkeypatch, tmp_path):
+    """Setting and unsetting the same knob in one request hides which half won."""
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    from aiforge_core.api import api
+    client = TestClient(api.app)
+    r = client.put("/api/runtime/llm-settings",
+                   json={"chat_safety_cap": 99, "unset": ["chat_safety_cap"]})
+    assert r.status_code == 400 and "same knob" in r.text
+    r = client.put("/api/runtime/llm-settings", json={"unset": ["bogus_knob"]})
+    assert r.status_code == 400 and "unknown setting" in r.text
+    r = client.put("/api/runtime/llm-settings", json={"unset": ["chat_safety_cap"]})
+    assert r.status_code == 200
