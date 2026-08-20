@@ -207,10 +207,18 @@ def _finalize_subtasks(items: list[dict] | None, run_ok: bool,
 def stream_chat_pipeline(prompt: str, *, cwd: str,
                          session_id: int | None = None,
                          history: list[dict] | None = None,
-                         started_at: float | None = None) -> Iterator[dict]:
+                         started_at: float | None = None,
+                         resume_brief: str = "") -> Iterator[dict]:
     q: queue.Queue = queue.Queue()
     from aiforge_core.runtime import chat_cancel
     raw_prompt = prompt   # the user's actual request (before context augmentation)
+    # A resume brief is CONTEXT, not the request. Folding it into `prompt`
+    # before this line would make it the "user's actual request": raw_prompt is
+    # what gets persisted as the turn's request, written into long-term memory
+    # (chat_persist: "**Request:** …"), and used as the RECALL QUERY for rules /
+    # skills / memory. A short ask would be stored and retrieved as mostly
+    # "[RESUME] Your previous attempt…" boilerplate. It joins the planner-facing
+    # prompt below instead, with the context blocks.
     # Build a context-rich prompt: project summary + prior conversation +
     # the current request, so the team pipeline isn't clueless on follow-ups.
     # ONE shared context bundle — same source-selection/scoping/gating as single
@@ -238,6 +246,8 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
     parts = [p for p in (*bundle.blocks(), img_ctx, convo) if p]
     prompt = ("\n\n".join(parts) + f"\n\nCURRENT REQUEST:\n{prompt}"
               if parts else prompt)
+    if resume_brief:
+        prompt = f"{prompt}\n\n{resume_brief}"
     # ALSO expose these as pipeline STATE keys — many graph nodes run
     # include_contents='none' and read the {rules_md?}/{memory_brief_md?}/
     # {user_prefs_md?} placeholders, NOT the seed prose above.

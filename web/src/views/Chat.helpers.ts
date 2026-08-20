@@ -139,3 +139,23 @@ export const FLAG_LABEL: Record<string, string> = {
   commit_auto_approve: 'commits auto-approved',
   allow_delete: 'deletes auto-approved',
 };
+
+/** Did this assistant turn END on a stop rather than an answer?
+ *
+ *  Reads the STRUCTURAL marker the server stamps on a stopped turn (same shape
+ *  as the `awaiting` marker above), because prose is wrong in both directions:
+ *  "stopped by user" is literally what run_command returns when cancelled, so
+ *  an agent quoting its own tool output looked like a stop — while a real Stop
+ *  press leaves no banner at all (the loop emits an error step, and only
+ *  `final_text` becomes the message content), so the case the button exists
+ *  for was the one it missed. The "(stopped" prefix stays as a fallback for
+ *  turns persisted before the marker existed.
+ */
+export function isStoppedTurn(msg?: any): boolean {
+  if (!msg) return false;
+  const m = typeof msg === 'string' ? { content: msg } : msg;
+  const steps: any[] = Array.isArray(m.steps) ? m.steps : [];
+  if (steps.some(s => s && typeof s === 'object' &&
+                 (s.type === 'stopped' || s.stopped === true))) return true;
+  return String(m.content ?? m.text ?? '').trim().startsWith('(stopped');
+}

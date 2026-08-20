@@ -54,6 +54,33 @@ def persist_turn(*, session_id: int, cwd: str, prompt: str,
     # step the frontend's msgAwaiting() already recognises.
     if awaiting:
         steps = list(steps) + [{"type": "awaiting", "awaiting_input": True}]
+    # STOP marker, same trick as `awaiting` above and for the same reason: the
+    # fact that a turn was stopped rather than finished lives in local state
+    # (`cancelled`, or the loop's banner) and is otherwise lost the moment the
+    # turn is written. Resume needs to key on something structural — matching
+    # the banner PROSE is both a false positive (an agent quoting "stopped by
+    # user", which is literally what run_command returns on cancel) and a false
+    # negative (a user Stop leaves no banner at all, just an error step).
+    def _stop_event(step) -> bool:
+        # The loop's OWN cancel event — {"type": "error", "text": "stopped by
+        # user"} — which is all a Stop press leaves behind when the route's
+        # cancelled flag did not survive the path (the fallback runner, a
+        # re-armed cancel). An agent quoting the same words lands in a tool
+        # RESULT, not in an error step, so this stays structural.
+        return (isinstance(step, dict) and step.get("type") == "error"
+                and str(step.get("text") or "").strip().lower()
+                .startswith("stopped by user"))
+
+    # Only mark a turn that is actually being WRITTEN. An immediate Stop with
+    # no output persists nothing at all (no blank assistant bubble), and a
+    # marker would have been "something" — resurrecting the empty turn.
+    _stopped = (final_text.strip() or steps) and (
+        bool(cancelled)
+        or final_text.strip().startswith("(stopped")
+        or any(_stop_event(s) for s in (steps or [])))
+    if _stopped:
+        steps = list(steps) + [{"type": "stopped",
+                                "reason": "cancelled" if cancelled else "guard"}]
     # Skip an empty, content-less turn (e.g. an immediate Stop before any
     # output) — don't leave a blank assistant bubble.
     if final_text.strip() or steps:

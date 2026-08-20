@@ -390,6 +390,7 @@ class _SessionMsgBody(BaseModel):
     edit_from_message_id: int | None = Field(None, description="Edit-and-resend: truncate history at this user message (restoring the workspace to that turn's checkpoint) before running this new content")
     builder: str | None = Field(None, description="task builder charter: job|skill|workflow|rule — runs an interactive single-agent builder that ends by calling the matching finalize tool (bypasses the enhancer/team pipeline)")
     quick: bool = Field(False, description="Quick mode: one doer, a hard step cap (AIFORGE_CHAT_QUICK_STEPS, default 6) instead of an open-ended ReAct loop. For small asks — a rename, a one-line fix, a question — where the agent's own exploration costs more than the change.")
+    resume: bool | None = Field(None, description="Resume the previous STOPPED turn instead of redoing it: prepends a brief of what already landed and what is still pending. null = decide automatically (re-sending the same words after a stopped turn resumes); true = resume even though the wording changed; false = FORCE a clean rerun and ignore the partial work.")
 
 
 def _quick_step_cap(quick: bool) -> int | None:
@@ -887,12 +888,42 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     # Fold each assistant turn's tool digest into history + keep did-work-but-
     # blank turns + merge same-role runs, so the agent remembers what it DID
     # (not just what it said) on follow-ups.
-    history = _chat_history_for_agent(chat_store.get_messages(session_id))
+    _rows = chat_store.get_messages(session_id)
+    history = _chat_history_for_agent(_rows)
     cwd = session.get("cwd") or _default_cwd()
     team = body.mode == "team"
     from aiforge_core.runtime import parallel_subtasks as _psub
     agent_mode = "plan" if body.mode == "plan" else "act"
     prompt = body.content.strip()
+
+    # RESUME. A retry after a STOPPED turn used to re-run the request from
+    # nothing: the agent re-read what it had read and re-wrote what it had
+    # written, then usually died in the same place. The failed attempt's work
+    # is on disk — this hands the model the inventory of it (what landed, what
+    # is still pending, what it failed on) so the retry finishes the remainder
+    # instead of repeating the whole job. Automatic when the same words are
+    # re-sent (what the Retry button does); `resume: true` forces it when the
+    # user rephrased. Empty string when the last turn finished normally, so a
+    # normal follow-up is untouched.
+    _resume_brief = ""
+    try:
+        from aiforge_core.runtime import chat_resume as _resmod
+        _resume_brief = _resmod.resume_preamble(
+            _rows, prompt, cwd, forced=getattr(body, "resume", None))
+    except Exception as _rexc:  # noqa: BLE001 — never break a turn over this
+        _af_log.debug("resume brief skipped: %s", _rexc)
+    if _resume_brief:
+        # Into `history` ONLY — never into `prompt`. `prompt` is read by the
+        # task/turn routers, the trivial-prompt short-circuit, the rule-capture
+        # classifier, the title generator and the trace: prepending 4k of
+        # inventory there would re-route the turn, spend an LLM classify on it,
+        # and risk capturing "Rules for this run:" as a user preference. The
+        # single-agent path sends `history`; the team pipeline gets the brief
+        # explicitly at its call site (search: _resume_brief).
+        for _hm in reversed(history):
+            if _hm.get("role") == "user":
+                _hm["content"] = f"{_hm.get('content') or ''}\n\n---\n{_resume_brief}"
+                break
 
     # Context-keyed workspace: if this chat is about a durable context (a Jira
     # ticket key like PROJ-42, or a Confluence page) and the session is still on
@@ -1002,6 +1033,16 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     # persists + cleans up inline here.
     _path = {"parallel": False, "driver": False}
 
+    def _with_resume(text: str) -> str:
+        """Attach the resume brief to a PLANNER-facing prompt/spec.
+
+        Every dispatch path plans from its own string — the enhanced spec, or
+        the raw prompt for the analysis fan-out — and `history` reaches most of
+        them as mere conversation context the planner is free to ignore. A
+        brief that only rides in `history` is a resume that works in one mode.
+        """
+        return f"{text}\n\n---\n{_resume_brief}" if _resume_brief else text
+
     def _events():
         # Built-in /help (or /commands): answer inline with the command listing
         # and finish — no model call, works with zero user command files.
@@ -1025,6 +1066,13 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                                           session_id=session_id, mode="act",
                                           builder=body.builder)
                 return
+        # Resuming a stopped turn — say so, or the run looks identical to the
+        # one that just failed and the user cannot tell whether the retry is
+        # repeating itself.
+        if _resume_brief:
+            yield {"type": "thought", "role": "system",
+                   "text": "↻ Resuming the stopped turn — carrying over what "
+                           "already landed and finishing only what is pending."}
         # A user command expanded — a small notice so the user sees WHY their
         # "/deploy …" turned into a longer prompt (the agent runs on the
         # expanded template below, unchanged).
@@ -1194,7 +1242,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             # cwd, silently dropping the other repos.
             if _fan:
                 yield from _ap.stream_analysis_team(
-                    prompt, cwd=cwd, session_id=session_id,
+                    _with_resume(prompt), cwd=cwd, session_id=session_id,
                     repos=_ana_repos, topics=_ana_topics)
                 return
             # Single repo but the task names MANY real files → PLAN it into
@@ -1215,7 +1263,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                                 "synthesize), one explore agent each, so a local "
                                 "model never faces a flat multi-file sweep.")}
                 yield from _ap.stream_analysis_planned(
-                    prompt, cwd=cwd, session_id=session_id,
+                    _with_resume(prompt), cwd=cwd, session_id=session_id,
                     groups=_ana_groups, topics=_ana_topics2)
                 return
             yield {"type": "thought", "role": "router",
@@ -1243,7 +1291,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 else _pp._decompose(_spec)          # 3. split (per file, or plan)
             if len(_subs) >= 2:
                 _path["parallel"] = True
-                yield from _pp.stream_parallel_team(_spec, cwd=cwd, subtasks=_subs,
+                yield from _pp.stream_parallel_team(_with_resume(_spec), cwd=cwd,
+                                                    subtasks=_subs,
                                                     enhanced=True, session_id=session_id)
                 # stream_parallel_team emits no terminal `done`; synthesize one
                 # so a UI waiting on `done` doesn't hang (exactly one — the
@@ -1275,7 +1324,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 from aiforge_core.runtime import best_of_n as _bon
                 _af_log.info("parallel decompose <2 subtasks — best-of-N route")
                 _path["parallel"] = True
-                yield from _bon.stream_best_of_n(_spec, cwd,
+                yield from _bon.stream_best_of_n(_with_resume(_spec), cwd,
                                                  session_id=session_id)
                 # stream_best_of_n emits no terminal `done`; synthesize one so a
                 # UI waiting on `done` doesn't hang (exactly one).
@@ -1290,8 +1339,15 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             # A DOC/ANALYSIS task falls through to the single research agent
             # below (not this code pipeline), even in team mode.
             _path["driver"] = True
-            yield from stream_chat_pipeline(prompt, cwd=cwd, session_id=session_id,
-                                            history=history, started_at=_turn_t0)
+            # The brief goes in as its OWN argument, not folded into the
+            # prompt: the pipeline keeps `raw_prompt` as the user's actual
+            # request for persistence, memory and recall, and appends the brief
+            # only to what the planner reads.
+            yield from stream_chat_pipeline(prompt, cwd=cwd,
+                                            session_id=session_id,
+                                            history=history,
+                                            started_at=_turn_t0,
+                                            resume_brief=_resume_brief)
             return
         # SIMPLE and PLAN modes — the Enhancer is MANDATORY on the FIRST turn
         # of a session (fresh context, referents to resolve, no memory pulled
@@ -1357,11 +1413,21 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 # enhancement no longer silently becomes the request (the raw
                 # ask is right there). If _enhance no-ops, skip the block.
                 _raw = (_m.get("content") or "").strip()
+                # Keep the resume brief LAST. The enhancer's restatement is a
+                # restatement of the WHOLE job, so leaving it after the brief
+                # made the final thing the model reads "here is everything to
+                # build" — directly after "do ONLY what is still missing".
+                _brief_tail = ""
+                if _resume_brief and _raw.endswith(_resume_brief):
+                    _raw = _raw[:-len(_resume_brief)].rstrip().rstrip("-").rstrip()
+                    _brief_tail = f"\n\n---\n{_resume_brief}"
                 if _enriched and _enriched.strip() and _enriched.strip() != _raw:
                     _m["content"] = (
                         f"{_raw}\n\n---\n[Interpreted request — a context-enriched "
                         f"restatement; if it conflicts with my words above, my "
-                        f"words win:]\n{_enriched}")
+                        f"words win:]\n{_enriched}{_brief_tail}")
+                elif _brief_tail:
+                    _m["content"] = f"{_raw}{_brief_tail}"
                 # DRAFT-ONLY for a doc/analysis task: the deliverable is the
                 # written analysis/document as markdown in the final answer. Do
                 # NOT publish to Confluence/Jira (no confluence_create/update,
