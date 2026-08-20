@@ -93,6 +93,13 @@ def test_multiask_tracked_as_subtasks(tmp_path):
     docks = [e for e in evs if e["type"] == "subtasks"]
     assert docks and len(docks[0]["items"]) == 3
     assert docks[0]["items"][0]["slug"] == "part-1"
+    # EVERY item carries `goal`. The UI's Tasks dock reads that field, and this
+    # path used to emit `title` alone — so expanding the dock threw "Cannot
+    # read properties of undefined (reading 'length')" and the error boundary
+    # replaced the whole chat view. Five of the six producers use `goal`; this
+    # was the one that drifted.
+    for it in docks[0]["items"]:
+        assert it.get("goal"), f"subtask without a goal: {it}"
     ups = [(e["slug"], e["status"]) for e in evs if e["type"] == "subtask_update"]
     assert ("part-1", "done") in ups          # agent flipped it via the tool
     # FINAL closes out the rest so nothing lingers pending

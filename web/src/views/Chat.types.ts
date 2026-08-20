@@ -11,7 +11,10 @@ export type AgentStep =
   | { kind: 'error'; text: string; role?: string }
   | { kind: 'changes'; files: ChangeFile[]; summary: { files: number; additions: number; deletions: number } };
 
-export type SubtaskItem = { slug: string; goal: string; status: string };
+// `slug` and `status` are the only fields every producer sets. The label is
+// `goal` for most of them and `title` for the simple-mode split-asks path, so
+// both are optional and callers must fall back (see Chat.SubtaskList).
+export type SubtaskItem = { slug: string; status: string; goal?: string; title?: string };
 
 // A captured Rule / Memory / Feedback (deterministic capture pass). Rendered
 // as an inline pill with change-scope / undo affordances.

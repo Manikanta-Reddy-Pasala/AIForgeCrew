@@ -319,7 +319,7 @@ export default function Tickets() {
                   }
                 }}
               />
-              {draft.attached_files.length > 0 && (
+              {(draft.attached_files?.length ?? 0) > 0 && (
                 <div className="row" style={{
                   gap: 6, flexWrap: 'wrap', marginTop: 8,
                   padding: 8,
@@ -407,11 +407,11 @@ export default function Tickets() {
                       {preview.chosen.rationale}
                     </div>
                   )}
-                  {preview.candidates.length > 1 && (
+                  {(preview.candidates?.length ?? 0) > 1 && (
                     <details style={{ marginTop: 4 }}>
-                      <summary>{preview.candidates.length} candidates</summary>
+                      <summary>{preview.candidates!.length} candidates</summary>
                       <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
-                        {preview.candidates.map(c => (
+                        {preview.candidates!.map(c => (
                           <li key={c.workflow_id}>
                             <code>{c.workflow_id}</code> — {c.score.toFixed(2)}{' '}
                             {c.above_threshold ? '✓' : '⚠'} (
@@ -432,10 +432,10 @@ export default function Tickets() {
                     style={{ marginTop: 8, padding: 8, fontSize: 12, opacity: 0.9 }}>
                     <div><strong>{spec.label}</strong></div>
                     <div style={{ opacity: 0.7, marginTop: 4 }}>{spec.description}</div>
-                    {spec.required_attachments.length > 0 && (
+                    {(spec.required_attachments?.length ?? 0) > 0 && (
                       <div style={{ marginTop: 4 }}>
                         Required attachments:{' '}
-                        {spec.required_attachments.map(a =>
+                        {spec.required_attachments!.map(a =>
                           <code key={a} style={{ marginRight: 4 }}>{a}</code>)}
                       </div>
                     )}

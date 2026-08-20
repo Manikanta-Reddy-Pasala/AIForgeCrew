@@ -472,7 +472,12 @@ def run_chat_agent(
     # parts get worked live — the agent flips them via plan_progress.
     if _asks:
         yield {"type": "subtasks", "items": [
-            {"slug": f"part-{i + 1}", "title": a, "status": "pending"}
+            # `goal` is the field name every other producer uses and the one
+            # the UI's Tasks panel reads. This path emitted `title` alone, so
+            # expanding that panel on a split-asks turn threw "Cannot read
+            # properties of undefined (reading 'length')" and the view died.
+            # Both keys go out: `title` is kept for anything already reading it.
+            {"slug": f"part-{i + 1}", "goal": a, "title": a, "status": "pending"}
             for i, a in enumerate(_asks)]}
 
     n = 0

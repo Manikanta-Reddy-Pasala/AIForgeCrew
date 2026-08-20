@@ -5,6 +5,12 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   base: '/ui/',
   plugins: [react()],
+  // React builds a component stack from Function.name, and esbuild mangles
+  // every function name in a production build — so the ErrorBoundary's
+  // "in: …" block would read "at Bs / at As", which is exactly as
+  // unactionable as the bare message it was added to replace. This is the
+  // shipped path (Dockerfile runs `npm run build`; the API serves web/dist).
+  esbuild: { keepNames: true },
   server: {
     proxy: {
       '/api': {

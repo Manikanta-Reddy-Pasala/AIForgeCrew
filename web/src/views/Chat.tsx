@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { api, chatApi, chatSessionMessageURL, chatSessionAttachURL, chatSessionStop, chatSessionSteer, chatKillAll, chatMediaUpload, chatMediaList, chatMediaDescribe, chatMediaDelete, ChatMedia, chatSessionSpec, rules as fetchRules, ruleFlags, CapturedRule, GateFlags, ChatSession, ChatMsg, ChatModelEntry } from '../api';
 import { Icon } from '../icons';
 import { MdLite, copyText as mdCopyText } from '../mdlite';
+import { ErrorBoundary } from '../ErrorBoundary';
 import { AgentStep, SubtaskItem, RuleState, RuleStateCtx, LiveTurn, ChatMode, BuilderKind, PendingApproval } from './Chat.types';
 import { menuBtn, menuItem, LS_SESSION_KEY, LS_MODEL_KEY, LS_MODE_KEY, BUILDER_KINDS, BUILDER_LABELS, LS_BUILDER_KEY, relTime, dateTimeLabel, toAgentStep, msgAwaiting, getDismissedPlans, addDismissedPlan, isStoppedTurn } from './Chat.helpers';
 import { SubtaskList } from './Chat.SubtaskList';
@@ -1794,7 +1795,19 @@ export default function Chat() {
                 background: 'var(--bg-0,#0d1017)',
                 padding: '6px 10px', maxHeight: 180, overflowY: 'auto',
               }}>
-                <SubtaskList items={dockSubtasks} onViewSpec={openSpec} />
+                {/* Its OWN boundary. This dock is fed by six different
+                    producers' event payloads, and a single bad field in one of
+                    them took the ENTIRE chat view down — messages, composer
+                    and all — because the only boundary is around the whole
+                    route. A panel should degrade to a panel. */}
+                <ErrorBoundary fallback={(e, reset) => (
+                  <div className="small muted" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <span>Tasks panel failed to render ({String(e.message).slice(0, 80)})</span>
+                    <button className="ghost xs" onClick={reset}>retry</button>
+                  </div>
+                )}>
+                  <SubtaskList items={dockSubtasks} onViewSpec={openSpec} />
+                </ErrorBoundary>
               </div>
             )}
 
