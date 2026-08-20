@@ -610,7 +610,9 @@ function AgentLimitsCard() {
       setNonce(x => x + 1);            // snap the field back to the stored value
       return;
     }
-    if (n === vals[key]) return;
+    // Same value, different spelling ("02000", "2000.0") — nothing to save,
+    // but the field must still snap back to the stored form.
+    if (n === vals[key]) { setNonce(x => x + 1); return; }
     setBusy(true);
     try {
       const next = await api.setLlmSettings({ [key]: n } as LlmSettingsInput);

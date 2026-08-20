@@ -431,3 +431,18 @@ def test_api_delegates_the_hour_parse_to_compact_window(monkeypatch):
     monkeypatch.setenv("AIFORGE_COMPACT_EVERY_H", "2")
     assert api._compact_at_hour() is None
     assert compact_window.at_hour() is None
+
+
+def test_llm_settings_rejects_a_contradictory_put(monkeypatch, tmp_path):
+    """Setting and unsetting the same knob in one request hides which half won."""
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    from aiforge_core.api import api
+    client = TestClient(api.app)
+    r = client.put("/api/runtime/llm-settings",
+                   json={"chat_safety_cap": 99, "unset": ["chat_safety_cap"]})
+    assert r.status_code == 400 and "same knob" in r.text
+    r = client.put("/api/runtime/llm-settings", json={"unset": ["bogus_knob"]})
+    assert r.status_code == 400 and "unknown setting" in r.text
+    r = client.put("/api/runtime/llm-settings", json={"unset": ["chat_safety_cap"]})
+    assert r.status_code == 200

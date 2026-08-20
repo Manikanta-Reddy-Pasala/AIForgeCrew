@@ -79,10 +79,9 @@ def run_chat_agent(
     # operator-level cap (Settings → env → default) is extendable, and only on
     # an interactive turn (see _ext_budget below).
     _cap_base = _safety_cap()
-    # `max_steps=0` is a caller asking for "no budget", not for the default —
-    # treat any explicit int as the caller's choice and only fall back when it
-    # is None. (Kept >=1 so the loop can still emit its stop banner.)
-    _caller_cap = max(1, max_steps) if isinstance(max_steps, int) else None
+    # Only a POSITIVE max_steps is a caller's budget. 0 keeps its historical
+    # meaning — "unset, use the default" — rather than becoming a one-step turn.
+    _caller_cap = max_steps if isinstance(max_steps, int) and max_steps > 0 else None
     safety = _caller_cap or _cap_base
     # Wall-clock turn backstop. The 2000-step cap is not a real stopping
     # point on a slow local model — 2000 steps × seconds-to-minutes each is
@@ -419,6 +418,13 @@ def run_chat_agent(
     continue_nudges = 0   # consecutive "narrated but didn't act" re-prompts
     stuck_recoveries = 0  # progress-recap nudges spent recovering a repeated step
     read_sigs_seen: set = set()   # read tool+args already executed this run
+    # SEPARATE from read_sigs_seen, and never cleared: read_sigs_seen exists to
+    # short-circuit a duplicate read while its RESULT is still in the window, so
+    # a condense (which drops those results) must clear it. Progress is a
+    # different question — "has this turn learned anything it did not know" —
+    # and re-reading a file after a condense is not new knowledge. Conflating
+    # the two handed a pure re-read loop the whole extension budget.
+    read_sigs_ever: set = set()
     _long_chain_help = _stuck_recovery_max() > 0   # 0 → full legacy behaviour
 
     # Mid-run steering (simple mode): let the user type WHILE the agent works —
@@ -461,6 +467,7 @@ def run_chat_agent(
     _ext_budget = (_extension_budget(_cap_base, _turn_budget_s)
                    if (_caller_cap is None and session_id is not None) else 0)
     _extensions_used = 0
+    _granted_at_step = -1     # step whose extension is already paid for
     # Progress is NEW WORK, not novel tool arguments: an agent that varies its
     # args mints a new action signature every step — that is the very churn the
     # deadline exists to stop, so counting distinct actions would hand every
@@ -468,7 +475,6 @@ def run_chat_agent(
     # agent's knowledge: file edits that landed, and reads of something not
     # read before.
     _reads_new = 0
-    _progress_mark = (0, 0)   # (new reads, edits) at the last extension
     # Per-TURN request counter: every ReAct step is a request to the model, and
     # so is every retry and every condense. Start this turn at zero; the
     # session total keeps climbing.
@@ -494,6 +500,10 @@ def run_chat_agent(
     # Skip the git call entirely when the guard is off.
     _wt_fp0 = _worktree_fingerprint(cwd) if _edit_claim_guard_enabled() else ""
     _edit_claim_nudges = 0
+    # Progress mark at the last extension: (new reads, landed edits, worktree
+    # fingerprint). Seeded with the turn's OWN baseline so an unchanged tree
+    # does not read as a change on the first check.
+    _progress_mark = (0, 0, _wt_fp0)
 
     def _may_extend() -> bool:
         """True when this turn EARNED another budget: extensions remain and it
@@ -503,14 +513,26 @@ def run_chat_agent(
         `run_command` args that read and change nothing) leaves the mark
         unchanged and is stopped for real. Consumes one extension when it
         returns True."""
-        nonlocal _extensions_used, _progress_mark
+        nonlocal _extensions_used, _progress_mark, _granted_at_step
+        if _granted_at_step == n:
+            # Both guards can expire on the same iteration. The second one is
+            # not a new failure — it is the same moment — so it rides the grant
+            # the first already paid for instead of hard-stopping the turn with
+            # extensions unspent.
+            return True
         if _extensions_used >= _ext_budget:
             return False
-        mark = (_reads_new, _edits_made)
+        # The worktree fingerprint catches work done by tools we do not count:
+        # a `sed -i`, a build that writes artifacts, `git apply`. Without it a
+        # turn whose whole job is shell work scores zero forever. Measured only
+        # here — once per exhausted budget, not per step.
+        _fp = _worktree_fingerprint(cwd) if _wt_fp0 else ""
+        mark = (_reads_new, _edits_made, _fp)
         if mark == _progress_mark:
             return False
         _extensions_used += 1
         _progress_mark = mark
+        _granted_at_step = n
         return True
 
     # One-time visibility: confirm native tool-calling is driving this run (every
@@ -1279,11 +1301,17 @@ def run_chat_agent(
         # Loop-engineering bookkeeping: count edits that actually LANDED (gates
         # the verify-on-final loop — a 0-edit Q&A turn is never test-gated).
         # Remember a successful read so a later identical re-read short-circuits.
-        if (_long_chain_help and name in _READ_OBS_TOOLS and not (
+        if (name in _READ_OBS_TOOLS and not (
                 isinstance(result, dict) and result.get("ok") is False)):
-            if sig not in read_sigs_seen:
+            # F2: counted OUTSIDE the _long_chain_help gate —
+            # AIFORGE_CHAT_STUCK_RECOVERIES=0 turns off the duplicate-read
+            # NUDGE, and must not silently delete half the progress signal with
+            # it (a read-only research turn would never extend on that box).
+            if sig not in read_sigs_ever:
                 _reads_new += 1        # real progress: knowledge it did not have
-            read_sigs_seen.add(sig)
+                read_sigs_ever.add(sig)
+            if _long_chain_help:
+                read_sigs_seen.add(sig)
         if name in _EDIT_TOOL_NAMES and not (
                 isinstance(result, dict) and result.get("ok") is False):
             _edits_made += 1

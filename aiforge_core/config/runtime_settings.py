@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +94,14 @@ _BOUNDS: dict[str, tuple[int, int]] = {
 }
 
 
+# set_many/unset READ-MODIFY-WRITE a shared file. _fc.write_json is atomic per
+# write, not per transaction, so two overlapping writers lose one side — and the
+# Reset button makes that a one-click path next to a normal save. This
+# serialises writers in THIS process (the UI and the API share it); a second
+# process editing the same file concurrently is still last-writer-wins.
+_WRITE_LOCK = threading.Lock()
+
+
 def _path() -> Path:
     root = Path(os.environ.get("AIFORGE_CONFIG_DIR",
                                os.path.expanduser("~/.aiforge")))
@@ -132,7 +141,12 @@ def get(name: str) -> int:
     raw = os.environ.get(env_var)
     if raw:
         try:
-            return int(raw)
+            # int(float(...)): an env var written as "1800.5" or "7200.0" is a
+            # perfectly ordinary thing to find in a unit file. Reading it as
+            # "unparseable → default" made the UI report a number the runtime
+            # was not using, and "confirming" that field then overwrote the
+            # operator's own env value.
+            return int(float(raw))
         except ValueError:
             pass
     return default
@@ -155,9 +169,26 @@ def explicit(name: str) -> int | None:
     raw = os.environ.get(env_var)
     if raw:
         try:
-            return int(raw)
+            return int(float(raw))
         except ValueError:
             pass
+    return None
+
+
+def stored(name: str) -> "int | None":
+    """The value SAVED in the store (UI), ignoring env and defaults.
+
+    Callers that parse the env var themselves — the chat turn deadline accepts
+    fractions, which this integer store cannot hold — need to know whether the
+    operator's UI choice should win, without ``explicit()`` collapsing their
+    env value to an int on the way past."""
+    if name not in _SPEC:
+        raise KeyError(name)
+    val = _read_store().get(name)
+    if isinstance(val, int):
+        lo, hi = _BOUNDS.get(name, (None, None))
+        if lo is None or (lo <= val <= hi):
+            return val
     return None
 
 
@@ -170,6 +201,11 @@ def set_many(values: dict[str, Any]) -> dict[str, int]:
     """Persist the given knobs (only recognised, in-bounds keys). Returns
     the full resolved settings afterwards. Raises ValueError on a bad
     value so the API can surface a 400."""
+    with _WRITE_LOCK:
+        return _set_many_locked(values)
+
+
+def _set_many_locked(values: dict[str, Any]) -> dict[str, int]:
     store = _read_store()
     for name, val in values.items():
         if name not in _SPEC:
@@ -200,6 +236,11 @@ def unset(names: "list[str] | tuple[str, ...]") -> dict[str, int]:
     the moment someone touches the UI — and nothing in the UI could bring it
     back. Unknown names are ignored. Returns the resolved settings afterwards.
     """
+    with _WRITE_LOCK:
+        return _unset_locked(names)
+
+
+def _unset_locked(names) -> dict[str, int]:
     store = _read_store()
     changed = False
     for name in names or ():
@@ -238,4 +279,4 @@ def _migrate_stale_cave_default() -> None:
 _migrate_stale_cave_default()
 
 
-__all__ = ["get", "explicit", "all_settings", "set_many", "unset"]
+__all__ = ["get", "explicit", "stored", "all_settings", "set_many", "unset"]

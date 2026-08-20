@@ -58,14 +58,16 @@ def _turn_deadline_s() -> float:
     """Wall-clock backstop for one chat turn, seconds; 0 disables
     (``AIFORGE_CHAT_TURN_DEADLINE_S``, default 3600).
 
-    FRACTIONAL env values are honoured. The settings store is integer-only, so
-    routing the env var through it would silently turn ``7200.5`` — a perfectly
-    ordinary thing to have in a unit file, and what a sub-second test harness
-    needs — into the 3600 default. A stored (UI) value still wins.
+    FRACTIONAL env values are honoured: the settings store is integer-only, so
+    the env var is parsed here rather than through it — ``7200.5`` is a
+    perfectly ordinary thing to have in a unit file, and a sub-second value is
+    what a test harness needs. A stored (UI) value still wins, and the store
+    reads a float env var as its integer part so the card cannot display a
+    number the runtime is not using.
     """
     try:
         from aiforge_core.config import runtime_settings as _rs
-        stored = _rs.explicit("chat_turn_deadline_s")
+        stored = _rs.stored("chat_turn_deadline_s")
     except Exception:  # noqa: BLE001 — settings must never break a turn
         stored = None
     if stored is None:
@@ -77,7 +79,13 @@ def _turn_deadline_s() -> float:
                 log.warning("AIFORGE_CHAT_TURN_DEADLINE_S=%r is not a number — "
                             "using the 3600s default", raw)
     val = float(3600 if stored is None else stored)
-    return max(0.0, min(float(_MAX_TURN_SECONDS), val))
+    if val < 0:
+        # 0 means "no deadline", so clamping a negative toward 0 would DISABLE
+        # the runaway guard on a typo. Clamp toward safety instead.
+        log.warning("chat turn deadline %r is negative — using the 3600s "
+                    "default", val)
+        val = 3600.0
+    return min(float(_MAX_TURN_SECONDS), val)
 
 
 def _extension_budget(cap_base: int, turn_budget_s: float) -> int:
@@ -91,6 +99,8 @@ def _extension_budget(cap_base: int, turn_budget_s: float) -> int:
         ext = min(ext, max(0, (_MAX_TURN_STEPS // cap_base) - 1))
     if turn_budget_s > 0:
         ext = min(ext, max(0, int(_MAX_TURN_SECONDS // turn_budget_s) - 1))
+    # With the deadline disabled (0) there is no wall clock to bound — the
+    # operator removed that guard deliberately; the step ceiling still applies.
     return ext
 
 

@@ -14,6 +14,14 @@ from aiforge_core.runtime.chat_agent._context import _limits
 _SID = 991_001
 
 
+@pytest.fixture(autouse=True)
+def _isolated_settings(monkeypatch, tmp_path):
+    """These tests drive the knobs through env vars, and a STORED value beats
+    env. conftest only setdefaults AIFORGE_CONFIG_DIR, so a box that exports it
+    (docker-compose does) would run them against a real store."""
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+
+
 def _churner():
     """The RUNAWAY: novel tool args every step, but it reads nothing new and
     changes nothing. Distinct-action counting would call this "progress" — it
@@ -22,7 +30,7 @@ def _churner():
 
     def fn(role, messages, **kw):
         calls["n"] += 1
-        return f'ACTION: run_command\nARGS_JSON: {{"command": "echo {calls["n"]}"}}'
+        return f'ACTION: run_command\nARGS_JSON: {{"cmd": "echo {calls["n"]}"}}'
     return fn, calls
 
 
@@ -283,3 +291,112 @@ def test_settings_unset_restores_the_env_override(monkeypatch, tmp_path):
     assert _limits._safety_cap() == 50               # env is live again
     monkeypatch.delenv("AIFORGE_CHAT_SAFETY_CAP")
     assert _limits._safety_cap() == 2000             # …then the default
+
+
+def test_re_reads_after_a_condense_are_not_new_knowledge(tmp_path, monkeypatch):
+    """The condense clears the duplicate-read memory (its results are gone), so
+    the same three files look "new" on every extension. Counting progress off
+    that set handed a pure re-read loop the whole budget."""
+    monkeypatch.setenv("AIFORGE_CHAT_SAFETY_CAP", "20")
+    monkeypatch.setenv("AIFORGE_CHAT_CAP_EXTENSIONS", "5")
+    for i in range(3):
+        (tmp_path / f"f{i}.txt").write_text("x" * 4000)
+    calls = {"n": 0}
+
+    def fn(role, messages, **kw):
+        calls["n"] += 1
+        return ('ACTION: file_read\nARGS_JSON: '
+                f'{{"path": "f{calls["n"] % 3}.txt"}}')
+
+    evs = list(ca.run_chat_agent(
+        [{"role": "user", "content": "read them forever"}], cwd=str(tmp_path),
+        complete_fn=fn, session_id=_SID))
+    # 3 files = 3 new reads = ONE earned extension, not five.
+    assert calls["n"] == 40                      # 20 + one 20-step extension
+    assert len([e for e in evs if "extended the step budget"
+                in e.get("text", "")]) == 1
+    assert "runaway safety cap" in _msgs(evs)
+
+
+def test_progress_counting_survives_stuck_recoveries_off(tmp_path, monkeypatch):
+    """AIFORGE_CHAT_STUCK_RECOVERIES=0 turns off the duplicate-read NUDGE. It
+    must not also delete half the progress signal — a read-only research turn
+    on that box would never extend."""
+    monkeypatch.setenv("AIFORGE_CHAT_SAFETY_CAP", "3")
+    monkeypatch.setenv("AIFORGE_CHAT_CAP_EXTENSIONS", "2")
+    monkeypatch.setenv("AIFORGE_CHAT_STUCK_RECOVERIES", "0")
+    fn, calls = _reader(tmp_path)
+    evs = list(ca.run_chat_agent(
+        [{"role": "user", "content": "research"}], cwd=str(tmp_path),
+        complete_fn=fn, session_id=_SID))
+    assert calls["n"] == 9                        # 3 + two 3-step extensions
+    assert "extended the step budget" in _msgs(evs, "thought")
+
+
+def test_shell_work_that_changes_the_tree_counts_as_progress(tmp_path, monkeypatch):
+    """`run_command` is neither a counted read nor a counted edit, so a turn
+    doing its work through the shell (sed -i, a build, git apply) scored zero.
+    The worktree fingerprint catches it."""
+    import subprocess
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    monkeypatch.setenv("AIFORGE_CHAT_SAFETY_CAP", "2")
+    monkeypatch.setenv("AIFORGE_CHAT_CAP_EXTENSIONS", "1")
+    calls = {"n": 0}
+
+    def fn(role, messages, **kw):
+        calls["n"] += 1
+        return ('ACTION: run_command\nARGS_JSON: '
+                f'{{"cmd": "echo {calls["n"]} > out{calls["n"]}.txt"}}')
+
+    evs = list(ca.run_chat_agent(
+        [{"role": "user", "content": "write files via the shell"}],
+        cwd=str(tmp_path), complete_fn=fn, session_id=_SID))
+    assert "extended the step budget" in _msgs(evs, "thought")
+    assert calls["n"] == 4                        # 2 + one 2-step extension
+
+
+def test_both_guards_expiring_together_spend_one_extension(tmp_path, monkeypatch):
+    """The cap and the deadline can expire on the same iteration. The second is
+    the same moment, not a second failure — it must not hard-stop the turn with
+    extensions still unspent."""
+    monkeypatch.setenv("AIFORGE_CHAT_SAFETY_CAP", "2")
+    monkeypatch.setenv("AIFORGE_CHAT_TURN_DEADLINE_S", "20")
+    monkeypatch.setenv("AIFORGE_CHAT_CAP_EXTENSIONS", "3")
+    # 8s per clock read: the 2-step cap and the 20s deadline both expire on the
+    # third iteration.
+    _clock(monkeypatch, step_s=8.0)
+    fn, calls = _reader(tmp_path)
+    evs = list(ca.run_chat_agent(
+        [{"role": "user", "content": "work"}], cwd=str(tmp_path),
+        complete_fn=fn, session_id=_SID))
+    thoughts = _msgs(evs, "thought")
+    assert "extended the step budget" in thoughts
+    # The deadline rode the SAME grant instead of hard-stopping the turn.
+    assert "extended the turn" in thoughts
+    assert "turn time budget" not in _msgs(evs) or calls["n"] > 2
+
+
+def test_negative_deadline_does_not_disable_the_guard(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("AIFORGE_CHAT_TURN_DEADLINE_S", "-1")
+    assert _limits._turn_deadline_s() == 3600.0   # NOT 0 (= no deadline)
+
+
+def test_settings_get_reports_a_float_env_var_as_its_integer_part(monkeypatch, tmp_path):
+    """The card must not display 3600 for a box actually running 1800.5."""
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("AIFORGE_CHAT_TURN_DEADLINE_S", "1800.5")
+    from aiforge_core.config import runtime_settings as rs
+    assert rs.get("chat_turn_deadline_s") == 1800
+    assert _limits._turn_deadline_s() == 1800.5   # the runtime keeps precision
+
+
+def test_max_steps_zero_falls_back_to_the_default_cap(tmp_path, monkeypatch):
+    """0 has always meant "unset"; it must not become a one-step turn."""
+    monkeypatch.setenv("AIFORGE_CHAT_SAFETY_CAP", "2")
+    monkeypatch.setenv("AIFORGE_CHAT_CAP_EXTENSIONS", "0")
+    fn, calls = _reader(tmp_path)
+    list(ca.run_chat_agent([{"role": "user", "content": "x"}],
+                           cwd=str(tmp_path), complete_fn=fn, max_steps=0,
+                           session_id=_SID))
+    assert calls["n"] == 2
