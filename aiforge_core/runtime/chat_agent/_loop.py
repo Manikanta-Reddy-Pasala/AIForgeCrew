@@ -980,28 +980,69 @@ def run_chat_agent(
             return
 
         if step["kind"] == "continue":
-            # The model narrated a next step (THOUGHT) but emitted no ACTION —
-            # usually a truncated turn or a dropped protocol line. Surface the
-            # thought and nudge it to actually act, instead of ending the run.
+            # Two shapes land here. (a) The model narrated a next step
+            # (THOUGHT) but emitted no ACTION — truncated turn or dropped
+            # protocol line. (b) reason="empty_final": it SIGNALLED completion
+            # and wrote no answer, which used to publish the marker itself as
+            # the reply ("ACTION: FINAL" in the chat). Both are nudged; the
+            # wording differs because the missing thing differs.
+            _empty_final = step.get("reason") == "empty_final"
             if step.get("thought"):
                 yield {"type": "thought", "text": step["thought"]}
             continue_nudges += 1
             if continue_nudges > 2:
-                # It keeps describing without acting — stop cleanly rather than
-                # loop to the safety cap; hand back what it was thinking.
+                # It keeps not delivering — stop cleanly rather than loop to
+                # the safety cap.
                 _fire_stop("no_action", cwd)
-                yield {"type": "message",
-                       "text": (step.get("thought") or "").strip()
-                       or "I described a next step but couldn't complete the "
-                          "action. Could you rephrase or narrow the request?"}
+                if _empty_final:
+                    # Deliberately NOT "I finished the work": zero tools may
+                    # have run, and text_doer / analysis_pipeline treat a
+                    # message that does NOT start with "(stopped:" as a clean
+                    # outcome — so claiming completion here would poison the
+                    # pipeline's own quality record. Deliberately no
+                    # _progress_recap either: that is model-facing text, and it
+                    # tallies the FINAL markers themselves.
+                    yield {"type": "message", "text":
+                           "(stopped: I signalled I was done but never wrote "
+                           "the reply. Ask me to summarise what happened and "
+                           "I'll write it up.)"}
+                else:
+                    yield {"type": "message",
+                           "text": (step.get("thought") or "").strip()
+                           or "I described a next step but couldn't complete the "
+                              "action. Could you rephrase or narrow the request?"}
                 yield {"type": "done"}
                 return
-            convo.append({"role": "user",
-                          "content": "You described your next step but did NOT "
-                          "emit an ACTION. Continue now — output the next ACTION "
-                          "(tool call) to make progress, or `FINAL: <answer>` if "
-                          "you are genuinely done. Do not just narrate."})
-            n += 1
+            if _empty_final and builder:
+                # A builder session's "answer" is an ARTIFACT: it must call its
+                # finalize tool. Telling it "reply with FINAL, do not emit
+                # ACTION" is the exact opposite instruction, and the turn would
+                # end claiming success with nothing created.
+                _fin = _BUILDER_FINALIZE_TOOL.get(builder, "the finalize tool")
+                convo.append({"role": "user", "content":
+                              f"You signalled you were finished but never called "
+                              f"`{_fin}`, so nothing was created. Call `{_fin}` NOW "
+                              f"with the values you have collected."})
+            elif _empty_final:
+                # The work is done; what is missing is the reply. "Emit an
+                # ACTION" is the wrong instruction for that.
+                convo.append({"role": "user", "content":
+                              "You signalled you were finished but wrote no "
+                              "answer — the user saw nothing. Reply now with "
+                              "`FINAL: <answer>` where <answer> tells them what "
+                              "you did and what it means for their request, in "
+                              "plain prose. Do not emit ACTION, THOUGHT or any "
+                              "other marker."})
+            else:
+                convo.append({"role": "user",
+                              "content": "You described your next step but did NOT "
+                              "emit an ACTION. Continue now — output the next ACTION "
+                              "(tool call) to make progress, or `FINAL: <answer>` if "
+                              "you are genuinely done. Do not just narrate."})
+            # NOT `n += 1`: the loop head already counted this iteration, and
+            # the sibling implicit-final nudge does not double-charge either.
+            # On a 6-step Quick turn the double charge turned one nudge into a
+            # "used up Quick mode's step budget" stop.
             continue
 
         continue_nudges = 0   # a real action resets the narration guard

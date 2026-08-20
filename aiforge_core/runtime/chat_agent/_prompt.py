@@ -400,6 +400,22 @@ _PROTOCOL_NOISE_RE = re.compile(
     r"[ \t]*:?[ \t]*(?:null|none|\{\s*\})?[ \t]*$")
 
 
+# The completion pseudo-tool line itself (`ACTION: FINAL`). _PROTOCOL_NOISE_RE
+# deliberately KEEPS an `ACTION: <name>` line, because a name is content — but
+# inside the completion branch that name IS the marker, so the line is noise
+# there and nowhere else.
+_COMPLETION_MARKER_RE = re.compile(
+    r"(?im)^[ \t>#*_`]*action[ \t]*:?[ \t]*"
+    r"(?:final|finish|done|complete|final_answer)[ \t.,:;!*_`]*\r?$")
+
+
+# A labelled reasoning line, for the single-line `REASONING:` spelling that
+# _THOUGHT_RE (THOUGHT-only, DOTALL) does not cover. Both are applied ONLY to
+# the whole-turn fallback — never to text the model wrote after the marker,
+# which is the answer itself.
+_REASONING_LINE_RE = re.compile(r"(?im)^[ \t]*reasoning[ \t]*:.*$")
+
+
 def _strip_protocol_noise(text: str) -> str:
     """Remove leaked protocol marker-only lines from a would-be final answer."""
     return _PROTOCOL_NOISE_RE.sub("", text or "").strip()
@@ -440,11 +456,51 @@ def _parse(out: str) -> dict:
             # format. Only use the whole turn as a last resort (marker at EOF).
             # Strip any ARGS_JSON {...} blob from the slice so a fumbled/unknown
             # args shape never surfaces raw protocol to the user.
+            whole_turn = False
             if not txt.strip():
                 after = re.sub(r"(?is)ARGS_JSON\s*:?\s*\{.*\}", "",
                                out[act.end():]).strip()
-                txt = after or out.strip()
-            return {"kind": "final", "text": _strip_protocol_noise(txt) or txt.strip()}
+                txt = after
+                if not txt:
+                    txt, whole_turn = out.strip(), True
+            # Strip the marker and the model's THOUGHT lines ONLY when we fell
+            # back to the whole turn — that is the only slice that contains
+            # them. The after-the-marker slice is the user's answer verbatim,
+            # and running these over it ate `thought:` / `action: done` lines
+            # out of a YAML block the answer was quoting.
+            if whole_turn:
+                # Same ARGS_JSON removal the after-slice gets: a completion
+                # whose args carried no usable text (`{"text": ""}`) otherwise
+                # published the raw args blob as the answer.
+                body = re.sub(r"(?is)ARGS_JSON\s*:?\s*\{.*\}", "", txt)
+                body = _COMPLETION_MARKER_RE.sub("", body)
+                # Whole BLOCK, not the first line: a multi-line thought left
+                # its tail behind, which is the model's private reasoning
+                # published as the reply — the very bug being fixed.
+                body = _THOUGHT_RE.sub("", body)
+                body = _REASONING_LINE_RE.sub("", body)
+            else:
+                body = txt
+            cleaned = _strip_protocol_noise(body) if whole_turn else body.strip()
+            # What survives a dressed-up marker is its dressing: `**ACTION:
+            # FINAL**` leaves `**` in the after-slice, `ACTION: FINAL.` leaves
+            # `.`. An answer with no letter or digit anywhere in it is not an
+            # answer — whichever slice it came from.
+            if cleaned and not re.search(r"\w", cleaned):
+                cleaned = ""
+            if cleaned:
+                return {"kind": "final", "text": cleaned}
+            # NOTHING but protocol. `or txt.strip()` used to hand the marker
+            # itself back as the answer, so a model that emitted a bare
+            # `ACTION: FINAL` ended the turn with the literal words
+            # "ACTION: FINAL" in the chat — after doing all the work. Worse,
+            # `THOUGHT: …\nACTION: FINAL` published the model's private
+            # reasoning as the reply. An empty completion is not an answer:
+            # fall through to the nudge, exactly as a bare `FINAL:` already
+            # does a few lines below.
+            tho0 = _THOUGHT_RE.search(out)
+            return {"kind": "continue", "reason": "empty_final",
+                    "thought": tho0.group(1).strip() if tho0 else ""}
         # Args = first balanced {...} after the ARGS_JSON marker if present,
         # else after the ACTION line. Handles ```json fenced args.
         m = re.search(r"ARGS_JSON\s*:?", out, re.IGNORECASE)
@@ -468,6 +524,9 @@ def _parse(out: str) -> dict:
             return {"kind": "final", "text": txt}
         # `FINAL:` present but only scaffolding after it (e.g. `FINAL:\nARGS_JSON:
         # null`) → don't answer with garbage; fall through to the continue-nudge.
+        tho0 = _THOUGHT_RE.search(out)
+        return {"kind": "continue", "reason": "empty_final",
+                "thought": tho0.group(1).strip() if tho0 else ""}
     # No FINAL/ASK/ACTION marker. If the model was mid-reasoning — it emitted a
     # THOUGHT (intent to act) but no ACTION — it almost certainly got truncated
     # or forgot to emit the ACTION line. Treating that as the final answer stops

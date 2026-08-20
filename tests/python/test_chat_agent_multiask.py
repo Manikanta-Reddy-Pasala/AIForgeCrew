@@ -156,3 +156,105 @@ def test_cancellable_complete_passes_through_empty():
         assert ca._complete_cancellable(lambda r, m, **k: "", "doer", [], sid) == ""
     finally:
         chat_cancel.finish(sid)
+
+
+# ── an empty completion is not an answer ────────────────────────────────
+
+def test_bare_action_final_is_not_the_answer(tmp_path):
+    """A model that emits `ACTION: FINAL` with nothing after it has signalled
+    completion without writing one. The parser used to hand the MARKER back as
+    the final text, so the chat ended with the literal words "ACTION: FINAL"
+    after the agent had done all the work."""
+    from aiforge_core.runtime.chat_agent._prompt import _parse
+    assert _parse("ACTION: FINAL")["kind"] == "continue"
+    assert _parse("ACTION: final\nARGS_JSON: {}")["kind"] == "continue"
+    # …and the model's private reasoning is not an answer either.
+    p = _parse("THOUGHT: done\nACTION: FINAL")
+    assert p["kind"] == "continue" and p["thought"] == "done"
+    # Real answers still pass through, in both spellings.
+    assert _parse("FINAL: shipped it")["text"] == "shipped it"
+    assert _parse("ACTION: FINAL\nShipped it.")["text"] == "Shipped it."
+    assert _parse('ACTION: final\nARGS_JSON: {"text": "Shipped it."}'
+                  )["text"] == "Shipped it."
+
+
+def test_the_answer_after_the_marker_is_never_edited():
+    """The marker/THOUGHT stripping applies ONLY to the whole-turn fallback —
+    the slice AFTER the marker is the user's answer verbatim. Running the
+    filters over it ate `thought:` and `action: done` lines out of a YAML block
+    the answer was quoting."""
+    from aiforge_core.runtime.chat_agent._prompt import _parse
+    answer = ("Here is the config:\n```yaml\nthought: keep\naction: done\n"
+              "```\nAll set.")
+    assert _parse(f"ACTION: FINAL\n{answer}")["text"] == answer
+    # A code block is a legitimate whole answer, too.
+    assert _parse("ACTION: FINAL\n```bash\nls\n```")["text"] == "```bash\nls\n```"
+
+
+def test_an_empty_completion_is_nudged_into_a_real_answer(tmp_path):
+    """End to end: the turn does NOT end on the marker — the loop asks for the
+    answer, and the answer is what the user gets."""
+    fn = _scripted([
+        'ACTION: file_write\nARGS_JSON: {"path": "a.txt", "content": "hi"}',
+        "ACTION: FINAL",                       # signalled done, wrote nothing
+        "FINAL: Patched the script and verified it runs.",
+    ])
+    evs = _collect(ca.run_chat_agent(
+        [{"role": "user", "content": "patch the script"}],
+        cwd=str(tmp_path), complete_fn=fn))
+    msgs = [e["text"] for e in evs if e["type"] == "message"]
+    assert msgs, "the turn produced no answer at all"
+    assert "ACTION: FINAL" not in " ".join(msgs)
+    assert "Patched the script and verified it runs." in " ".join(msgs)
+
+
+def test_an_empty_completion_does_not_double_charge_the_step_budget(tmp_path):
+    """The loop head already counts the iteration. Charging again made one
+    nudge cost two steps, so a 6-step Quick turn hit its cap and reported a
+    stop instead of the answer."""
+    fn = _scripted([
+        'ACTION: file_read\nARGS_JSON: {"path": "a.txt"}',
+        "ACTION: FINAL",                       # nudge #1
+        "FINAL: Read it — it says hi.",
+    ])
+    (tmp_path / "a.txt").write_text("hi")
+    evs = _collect(ca.run_chat_agent(
+        [{"role": "user", "content": "what does a.txt say"}],
+        cwd=str(tmp_path), complete_fn=fn, max_steps=3, session_id=None))
+    msgs = " ".join(e["text"] for e in evs if e["type"] == "message")
+    assert "Read it — it says hi." in msgs
+    assert "step budget" not in msgs and "safety cap" not in msgs
+
+
+def test_a_builder_is_pushed_at_its_finalize_tool_not_away_from_it(tmp_path):
+    """A builder's answer is an ARTIFACT. The generic nudge says "reply with
+    FINAL, do not emit ACTION" — the exact opposite of what it must do, and
+    the turn ended claiming success with nothing created."""
+    seen: list = []
+
+    def fn(role, messages, **kw):
+        seen.append(messages)
+        return "ACTION: FINAL"
+
+    list(ca.run_chat_agent([{"role": "user", "content": "make a skill"}],
+                           cwd=str(tmp_path), complete_fn=fn,
+                           builder="skill", session_id=None))
+    nudges = "\n".join(m.get("content") or "" for msgs in seen for m in msgs
+                       if m.get("role") == "user")
+    assert "learn_skill" in nudges
+    assert "Do not emit ACTION" not in nudges
+
+
+def test_the_give_up_line_does_not_claim_the_work_is_done(tmp_path):
+    """`text_doer` and `analysis_pipeline` treat a final message that does not
+    start with "(stopped:" as a CLEAN outcome, so claiming completion here
+    would write a false success into the pipeline's record — and the recap it
+    used to carry tallied the FINAL markers themselves."""
+    fn = _scripted(["ACTION: FINAL"] * 6)
+    evs = _collect(ca.run_chat_agent(
+        [{"role": "user", "content": "do it"}], cwd=str(tmp_path),
+        complete_fn=fn, session_id=None))
+    msgs = " ".join(e["text"] for e in evs if e["type"] == "message")
+    assert msgs.strip().startswith("(stopped:")
+    assert "finished the work" not in msgs
+    assert "FINAL×" not in msgs and "ACTION: FINAL" not in msgs
