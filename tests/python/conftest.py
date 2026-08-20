@@ -21,6 +21,12 @@ os.environ.setdefault("AIFORGE_AUTODETECT_CTX", "0")
 # Production leaves it unset → classify_scope's own default "1" → LLM on.
 os.environ.setdefault("AIFORGE_OKR_SCOPE_LLM", "0")
 
+# The operator's calls-per-minute ceiling (llm_max_rpm, default 5) is a real
+# throttle: a suite that drives the transport more than five times a minute
+# would sit in the limiter's queue for the rest of the run. Off in tests; the
+# ceiling's own tests set it explicitly.
+os.environ.setdefault("AIFORGE_LLM_MAX_RPM", "0")
+
 # Recall map→summarize (recall_summary.summarize_hits) makes one learner-role
 # LLM call when a query returns many hits. Off by default in the suite so recall
 # paths don't attempt the network (callers fall back to the raw ranked list);

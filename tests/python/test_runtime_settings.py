@@ -16,7 +16,11 @@ def rs(monkeypatch, tmp_path):
     return importlib.reload(mod)
 
 
-def test_defaults(rs):
+def test_defaults(rs, monkeypatch):
+    # The suite turns the calls-per-minute ceiling OFF via env (see
+    # tests/conftest.py) so a throttle does not park the whole run in a queue.
+    # This test is about the BUILT-IN defaults, so drop that override.
+    monkeypatch.delenv("AIFORGE_LLM_MAX_RPM", raising=False)
     # LOCAL-FIRST defaults: a generation cap that fits any window + a 32K
     # window (the common small-local case). Operators raise both via env.
     assert rs.get("max_output_tokens") == 8192
@@ -32,7 +36,8 @@ def test_defaults(rs):
         # 2 self-extensions while the turn is still producing new work.
         "chat_safety_cap": 2000, "chat_turn_deadline_s": 3600,
         "chat_cap_extensions": 2,
-        "chat_unattended_cap": 2000}
+        "chat_unattended_cap": 2000,
+        "llm_max_rpm": 5}
 
 
 def test_stale_cave_zero_migrated_to_default(rs, monkeypatch):

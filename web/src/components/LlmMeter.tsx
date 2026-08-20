@@ -126,6 +126,11 @@ function LlmMeterInner() {
         <span style={{ color: u && !stale ? rateTone(perMin) : 'var(--fg-2)' }}>{n(perMin)}/min</span>
         <span className="llm-meter-sep">·</span>
         <span>{n(hour)} 1h</span>
+        {!!u && !stale && u.queued > 0 && (
+          // Being throttled is not the same as being slow. Say so, or a capped
+          // box reads as a broken one.
+          <span style={{ color: 'var(--warn)' }}>· ⏳ {u.queued}</span>
+        )}
       </button>
 
       {open && (
@@ -147,6 +152,12 @@ function LlmMeterInner() {
             <div className="llm-meter-label">per minute, last 60 min</div>
           </>}
 
+          {!!u?.limit_rpm && (
+            <div className="llm-meter-note" style={{ color: 'var(--fg-2)' }}>
+              capped at {u.limit_rpm}/min{u.queued > 0
+                ? ` · ${u.queued} call(s) waiting` : ''} — Settings → Agent limits
+            </div>
+          )}
           <Rows title="by role (last hour)" data={u?.by_role || {}} />
           <Rows title="by model (last hour)" data={u?.by_model || {}} />
 

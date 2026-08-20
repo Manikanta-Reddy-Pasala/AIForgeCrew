@@ -228,7 +228,8 @@ def _record_request(role: str | None = None, provider: str | None = None,
 
 def _post(ep: Endpoint, payload: bytes, timeout_s: int,
           *, role: str | None = None, sent: "list | None" = None,
-          max_wait_s: float | None = None) -> dict:
+          max_wait_s: float | None = None,
+          throttled: "list | None" = None) -> dict:
     # Rate-limit acquire BEFORE the post — blocks until budget allows.
     prov = _providers.get(ep.provider)
     declared = prov.rate_limits() if prov is not None else None
@@ -254,6 +255,18 @@ def _post(ep: Endpoint, payload: bytes, timeout_s: int,
     # to diagnose, in the one situation someone is staring at it.
     if cancel is None or not cancel.is_set():
         _preflight(ep.base_url)
+    # The OPERATOR's ceiling waits HERE — after the cancel check and the
+    # preflight, immediately before the request is counted and sent. Waiting
+    # earlier spent the ceiling's budget on calls that never left the box (a
+    # sleeping endpoint drained the whole minute), made Stop unable to
+    # interrupt a parked call, and delayed the preflight whose entire job is to
+    # fail an unreachable endpoint fast. Its wait is deliberately NOT bounded
+    # by the caller's retry budget — a queue is not a failure, and charging it
+    # there turned "you are throttled" into "your classifier errored".
+    _throttled = _rl.acquire_global(
+        max_wait_s=float(_int_env("AIFORGE_LLM_MAX_WAIT_S", 120)))
+    if throttled is not None:
+        throttled[0] = _throttled
     if cancel is not None:
         _record_request(role, ep.provider, ep.model)
         return _post_cancellable(ep, payload, timeout_s, cancel, sent)
@@ -362,11 +375,18 @@ def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
         sent = [False]
         try:
             _left = (deadline - time.monotonic()) if deadline is not None else None
+            _throttled = [0.0]
             return _post(ep, payload, timeout_s, role=role, sent=sent,
-                         max_wait_s=_left)
+                         max_wait_s=_left, throttled=_throttled)
         except Exception as exc:  # noqa: BLE001 — classifier handles
             retry, label = _is_transient_exc(exc)
             last = exc
+            # Time spent QUEUED on the operator's ceiling is not time this
+            # attempt spent failing, so it must not eat the retry budget: a
+            # throttled call would otherwise arrive at the retry check with its
+            # deadline already gone and lose retries it used to get for free.
+            if deadline is not None and _throttled[0] > 0:
+                deadline += _throttled[0]
             # Cost the NEXT attempt before deciding to make it — the backoff is
             # part of the caller's deadline too, and a 429 Retry-After can be
             # minutes on its own.

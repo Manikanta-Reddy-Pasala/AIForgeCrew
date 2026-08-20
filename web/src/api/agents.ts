@@ -44,6 +44,7 @@ export interface LlmSettings {
   chat_turn_deadline_s: number;
   chat_cap_extensions: number;
   chat_unattended_cap: number;
+  llm_max_rpm: number;
 }
 
 // PUT body: any subset of the knobs, plus names to FORGET so they fall back to
@@ -97,5 +98,8 @@ export interface LlmUsage {
   /** the 60s rate buffer overflowed WITHIN the last minute — `per_minute` is
    *  a floor. The wider windows come from minute buckets and stay exact. */
   rate_capped: boolean;
+  /** operator ceiling on requests/min (0 = none) and callers waiting on it */
+  limit_rpm: number;
+  queued: number;
   series_60m?: number[];
 }

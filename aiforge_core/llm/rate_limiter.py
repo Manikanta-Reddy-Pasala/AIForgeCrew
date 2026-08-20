@@ -19,9 +19,12 @@ Local providers (mlx-lm) opt out by returning ``rate_limits=None``;
 """
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
+
+log = logging.getLogger("aiforge.rate_limiter")
 from dataclasses import dataclass
 from typing import Optional
 
@@ -53,6 +56,9 @@ class _Bucket:
 # Locks keyed by provider name so concurrent doer/feedback/learner
 # calls don't trample each other's bucket math.
 _LOCKS: dict[str, threading.Lock] = {}
+# Callers currently parked on the global ceiling.
+_WAIT_LOCK = threading.Lock()
+_waiting = 0
 _RPM_BUCKETS: dict[str, _Bucket] = {}
 _TPM_BUCKETS: dict[str, _Bucket] = {}
 
@@ -88,6 +94,87 @@ def _resolved_limits(provider: str,
         or declared.get("tpm", 0)
     )
     return rpm, tpm
+
+
+# The operator's OWN ceiling, across every provider and every caller: chat,
+# the team pipeline, jobs and the memory daemon share one bucket. The
+# per-provider limits above are what a PROVIDER declares it will serve; this is
+# what the person running the box is willing to send.
+_GLOBAL = "__aiforge_global__"
+
+
+def global_rpm() -> float:
+    """Operator-set ceiling on model requests per minute; 0 = no ceiling.
+
+    Resolves stored setting → env → default, like every other runtime knob.
+    """
+    try:
+        from aiforge_core.config import runtime_settings as _rs
+        return max(0.0, float(_rs.get("llm_max_rpm")))
+    except Exception:  # noqa: BLE001 — never let a settings read block a call
+        raw = os.environ.get("AIFORGE_LLM_MAX_RPM")
+        try:
+            return max(0.0, float(raw)) if raw else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+
+def waiting() -> int:
+    """How many callers are queued on the global ceiling right now — the
+    number that turns "why is this slow" into "you capped it"."""
+    with _WAIT_LOCK:
+        return _waiting
+
+
+def acquire_global(*, max_wait_s: float = 120.0) -> float:
+    """Block until the operator's global rate ceiling allows one more request.
+
+    Returns the seconds spent waiting (0 when uncapped).
+
+    THIS ONE DELAYS, IT NEVER FAILS. The per-provider :func:`acquire` raises
+    when it gives up, because a provider limit is the provider's rule and
+    exceeding it earns a 429. This ceiling is the operator's own preference,
+    and raising on it turned every short-deadline caller into a guaranteed
+    failure: the routers and classifiers run with 15-30s budgets, so at a low
+    ceiling they would have failed 100% of the time after the first minute —
+    and one throttled call would have failed a whole pipeline run. So the wait
+    is bounded by ``max_wait_s``, and reaching that bound lets the call through
+    with a warning instead of killing it. A ceiling that stops the product is
+    not a throttle, it is an outage.
+    """
+    global _waiting
+    rpm = global_rpm()
+    if rpm <= 0:
+        return 0.0
+    lock = _LOCKS.setdefault(_GLOBAL, threading.Lock())
+    waited = 0.0
+    with _WAIT_LOCK:
+        _waiting += 1
+    try:
+        while True:
+            with lock:
+                b = _bucket(_RPM_BUCKETS, _GLOBAL, rpm)
+                # The ceiling is live: an operator who raises it mid-run should
+                # not wait out a bucket sized by the old value.
+                if b.capacity != rpm:
+                    b.capacity = rpm
+                    b.rate = rpm / 60.0
+                    b.tokens = min(b.tokens, rpm)
+                sleep_s = b.take(1.0)
+                if sleep_s == 0.0:
+                    return waited
+            if waited + sleep_s > max_wait_s:
+                log.warning(
+                    "llm.rate_ceiling_overrun: waited %.1fs of a %.1fs budget "
+                    "at llm_max_rpm=%g — letting this call through rather than "
+                    "failing it. Raise the ceiling in Settings → Agent limits "
+                    "if this is common.", waited, max_wait_s, rpm)
+                return waited
+            time.sleep(min(sleep_s, 5.0))
+            waited += min(sleep_s, 5.0)
+    finally:
+        with _WAIT_LOCK:
+            _waiting -= 1
 
 
 def acquire(provider: str, *,

@@ -310,6 +310,11 @@ def global_snapshot(*, series: bool = True) -> dict:
     cumulative buckets: each counts the calls whose age is within it, so a
     quiet hour reads 0 even when ``total`` is large.
     """
+    # Read the ceiling BEFORE taking the lock: it resolves a setting, which
+    # stats (and mkdirs) the config dir. Doing that under the lock put two
+    # filesystem syscalls in front of every `record()` — on the LLM hot path,
+    # on a config dir that may be network-mounted.
+    _limits = _limit_state()
     with _lock:
         now = time.monotonic()
         _prune_buckets_locked(now)
@@ -323,6 +328,10 @@ def global_snapshot(*, series: bool = True) -> dict:
             "by_provider": by_provider,
             "by_model": by_model,
             "uptime_s": round(now - _started, 1),
+            # The operator's ceiling and how many callers are parked on it.
+            # Without these a throttled box looks broken rather than capped —
+            # the meter is where someone goes to ask "why is this slow".
+            **_limits,
             # An ACTUAL loss, and only within the window it can affect: the
             # 60s ring evicted calls that would otherwise be in `per_minute`.
             "rate_capped": (now - _dropped_at) < _WINDOW_S if _dropped_at else False,
@@ -330,6 +339,14 @@ def global_snapshot(*, series: bool = True) -> dict:
         if series:
             out["series_60m"] = _series_locked(now)
     return out
+
+
+def _limit_state() -> dict:
+    try:
+        from aiforge_core.llm import rate_limiter as _rl
+        return {"limit_rpm": int(_rl.global_rpm()), "queued": _rl.waiting()}
+    except Exception:  # noqa: BLE001 — the meter must never raise
+        return {"limit_rpm": 0, "queued": 0}
 
 
 def reset_all() -> None:
