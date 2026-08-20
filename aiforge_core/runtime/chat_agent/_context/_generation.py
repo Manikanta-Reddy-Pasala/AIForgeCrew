@@ -128,6 +128,14 @@ def _complete_cancellable(complete_fn, role, convo, session_id):
     _ctx = _cv.copy_context()
 
     def _call():
+        # The role this generation runs as — so the meter's by_role breakdown
+        # ("which agent is burning the calls") is not permanently empty.
+        # request_context.set_role has no other caller.
+        try:
+            from aiforge_core.runtime import request_context as _rc
+            _rc.set_role(role)
+        except Exception:  # noqa: BLE001
+            pass
         # Bind the cancel token on THIS thread so the LLM client's HTTP layer
         # aborts the in-flight request the instant Stop fires (true model-
         # reclaim, not just abandoning the thread). Best-effort — a stub

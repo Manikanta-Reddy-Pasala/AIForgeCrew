@@ -469,12 +469,12 @@ def run_chat_agent(
     # read before.
     _reads_new = 0
     _progress_mark = (0, 0)   # (new reads, edits) at the last extension
-    # Per-TURN request counter: every ReAct step is a request to the model, and
-    # so is every retry and every condense. Start this turn at zero; the
-    # session total keeps climbing.
+    # Request meter: READ ONLY here. The turn boundary belongs to the route
+    # (chat.py `_produce`), which owns the whole turn — including the enhancer
+    # and classifier calls that happen before this loop, and team mode, which
+    # never enters this function at all.
     try:
         from aiforge_core.llm import call_meter as _meter
-        _meter.turn_reset(session_id)
     except Exception:  # noqa: BLE001 — metering must never break a turn
         _meter = None
     _builder_nudged = False

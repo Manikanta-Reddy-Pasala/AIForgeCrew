@@ -1609,6 +1609,17 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         os.environ["AIFORGE_CURRENT_SESSION"] = str(session_id)
         from aiforge_core.runtime import request_context as _reqctx
         _sess_token = _reqctx.set_session_id(session_id)
+        # THE turn boundary for the request meter. Here, not inside the ReAct
+        # loop: the enhancer / team-downgrade classifier / capture probes below
+        # are requests this message caused, and resetting after them erased
+        # them from the count. Team mode never enters run_chat_agent at all, so
+        # a reset in the loop left its per-turn number cumulative for the whole
+        # session — a lifetime total presented as one message's cost.
+        try:
+            from aiforge_core.llm import call_meter as _meter
+            _meter_token = _meter.bind_turn(_meter.turn_reset(session_id))
+        except Exception:  # noqa: BLE001 — metering must never break a turn
+            _meter, _meter_token = None, None
         # Bind the repo root to the turn's cwd so the codegraph gate (which some
         # Doer-side call sites resolve via request_context.get_repo_root() with
         # NO cwd) sees the SAME repo the tools run against. Without this, simple
@@ -1740,12 +1751,23 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             # numbers once the run is over, so the count the user is left
             # looking at is the true one.
             try:
-                from aiforge_core.llm import call_meter as _meter
-                _calls = _meter.snapshot(session_id)
+                from aiforge_core.llm import call_meter as _cm
+                _calls = _cm.snapshot(session_id)
                 run.publish({"type": "usage", "llm_turn": _calls["turn"],
                              "llm_session": _calls["session"],
                              "llm_per_min": _calls["per_minute"],
                              "final": True})
+                # …and PERSIST it as a step. The live badge dies with liveTurn
+                # a few hundred ms later (loadSession + setLiveTurn(null)), and
+                # usage events are not persisted — so without this the settled
+                # number the user is meant to be left looking at is gone from
+                # the transcript and from any later reload.
+                if _calls["turn"]:
+                    steps.append({"type": "thought", "role": "system",
+                                  "text": f"⚡ {_calls['turn']} LLM "
+                                          f"{'request' if _calls['turn'] == 1 else 'requests'} "
+                                          f"for this message "
+                                          f"({_calls['session']} in this chat)"})
             except Exception:  # noqa: BLE001 — metering must never break a turn
                 pass
             # Persist the final subtask panel as a step so reload restores it.
@@ -1780,6 +1802,11 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                         comment="cancelled" if cancelled else "completed",
                         metadata={"mode": _turn_mode})
             except Exception:  # noqa: BLE001 — tracing must never break a turn
+                pass
+            try:
+                if _meter is not None:
+                    _meter.reset_turn(_meter_token)
+            except Exception:  # noqa: BLE001
                 pass
             try:
                 _reqctx.reset_session_id(_sess_token)

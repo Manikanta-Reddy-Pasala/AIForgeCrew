@@ -142,6 +142,21 @@ def reset_session_id(token) -> None:
         _SESSION_ID.set(None)
 
 
+def context_session_id() -> "str | None":
+    """Session id bound to THIS context only — no env fallback.
+
+    :func:`get_session_id` also reads ``AIFORGE_CURRENT_SESSION``, a
+    process-global the chat route sets and never clears; anything running on a
+    bare thread therefore reads whichever chat last ran a turn. That is fine
+    for best-effort tracing and wrong for attribution (billing a background
+    fold's LLM calls to an innocent chat), so attribution callers use this.
+    """
+    try:
+        return _SESSION_ID.get() or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def get_session_id() -> "str | None":
     """Active session id: contextvar first, then ``AIFORGE_CURRENT_SESSION``
     env, else None. Never raises."""
@@ -176,6 +191,7 @@ def get_role() -> "str | None":
 
 
 __all__ = [
+    "context_session_id",
     "set_repo_root", "reset_repo_root", "get_repo_root",
     "set_workspace_dir", "reset_workspace_dir", "get_workspace_dir",
     "get_delegation_depth", "enter_delegation", "reset_delegation",

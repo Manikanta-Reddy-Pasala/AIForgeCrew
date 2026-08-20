@@ -185,16 +185,20 @@ def _post_cancellable(ep: Endpoint, payload: bytes, timeout_s: int,
             pass
 
 
-def _post(ep: Endpoint, payload: bytes, timeout_s: int) -> dict:
-    # Count the REQUEST here — one per HTTP attempt, so retries, fallbacks and
-    # escalations each count, exactly as the provider's rate limiter counts
-    # them. This is the number the chat UI shows when someone asks why a single
-    # question turned into forty calls.
+def _record_request() -> None:
+    """Count one request to the model. Called at the moment we are actually
+    about to send — AFTER the rate-limit wait and the preflight, so an attempt
+    that never reached the network is not reported as provider traffic (the
+    meter exists to answer "why did one question cost forty calls", and a
+    sleeping local box must not manufacture forty)."""
     try:
         from aiforge_core.llm import call_meter as _meter
         _meter.record()
     except Exception:  # noqa: BLE001 — metering must never break a call
         pass
+
+
+def _post(ep: Endpoint, payload: bytes, timeout_s: int) -> dict:
     # Rate-limit acquire BEFORE the post — blocks until budget allows.
     prov = _providers.get(ep.provider)
     declared = prov.rate_limits() if prov is not None else None
@@ -206,8 +210,10 @@ def _post(ep: Endpoint, payload: bytes, timeout_s: int) -> dict:
     )
     cancel = _CANCEL.get()
     if cancel is not None:
+        _record_request()
         return _post_cancellable(ep, payload, timeout_s, cancel)
     _preflight(ep.base_url)
+    _record_request()
     req = urllib.request.Request(
         f"{ep.base_url.rstrip('/')}/chat/completions",
         data=payload,
