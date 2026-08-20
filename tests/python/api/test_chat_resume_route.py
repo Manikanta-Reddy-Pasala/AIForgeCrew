@@ -24,6 +24,16 @@ def app_client(monkeypatch, tmp_path):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("AIFORGE_PARALLEL_SUBTASKS", "0")
     monkeypatch.delenv("AIFORGE_BEST_OF_N", raising=False)
+    # Quiet the per-turn background work. These fire threads that write the
+    # same SQLite store the assertions read, and under a loaded full-suite run
+    # one of them could still be mid-write when the next request builds its
+    # history — which is how this file failed once in CI-scale runs while
+    # passing every time in isolation. None of it is under test here.
+    monkeypatch.setenv("AIFORGE_CHAT_AUTO_MEMORY", "0")
+    monkeypatch.setenv("AIFORGE_CHAT_TITLE", "0")
+    monkeypatch.setenv("AIFORGE_CHAT_SUMMARY", "0")
+    monkeypatch.setenv("AIFORGE_CHAT_LEARNER", "0")
+    monkeypatch.setenv("AIFORGE_LLM_MAX_RPM", "0")
     import aiforge_core.config.env as envmod
     importlib.reload(envmod)
     import aiforge_core.tickets.backend_factory as bf
@@ -60,6 +70,17 @@ def _capture(monkeypatch):
 
 def _last_user(history):
     return next(m["content"] for m in reversed(history) if m["role"] == "user")
+
+
+def _assert_stopped_turn_persisted(sid):
+    """The brief is built from the PERSISTED turn, so a test that asserts on
+    the brief is really asserting two things. Check the precondition
+    separately: a failure then says which half broke."""
+    from aiforge_core.runtime import chat_store
+    from aiforge_core.runtime import chat_resume
+    rows = chat_store.get_messages(sid)
+    assert chat_resume.last_stopped_turn(rows) is not None, \
+        f"the stopped turn was not persisted: {rows}"
 
 
 def test_retry_after_a_stopped_turn_carries_the_resume_brief(app_client, monkeypatch):
@@ -141,6 +162,7 @@ def test_resume_flag_forces_it_after_a_rephrase(app_client, monkeypatch):
     sid = client.post("/api/chat/sessions", json={"title": "t"}).json()["id"]
     assert client.post(f"/api/chat/sessions/{sid}/message",
                        json={"content": "build the parser"}).status_code == 200
+    _assert_stopped_turn_persisted(sid)
     assert client.post(f"/api/chat/sessions/{sid}/message",
                        json={"content": "carry on with it",
                              "resume": True}).status_code == 200
