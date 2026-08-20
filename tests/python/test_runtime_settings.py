@@ -32,9 +32,10 @@ def test_defaults(rs, monkeypatch):
         "vision_capable": 0, "cave_mode": 1, "compact_llm": 0,
         "ctx_no_recall": 0, "ctx_no_mentions": 0, "ctx_no_skills": 0,
         "ctx_no_workflows": 0, "ctx_no_repomap": 0, "ctx_no_summary": 0,
-        # Per-turn chat budget guards: 2000 steps / 1h wall clock, and up to
-        # 2 self-extensions while the turn is still producing new work.
-        "chat_safety_cap": 2000, "chat_turn_deadline_s": 3600,
+        # Per-turn chat budgets are OFF by default — an interactive turn runs
+        # until it finishes or the user stops it. Runs nobody is watching keep
+        # chat_unattended_cap, which has no Stop button behind it.
+        "chat_safety_cap": 0, "chat_turn_deadline_s": 0,
         "chat_cap_extensions": 2,
         "chat_unattended_cap": 2000,
         "llm_max_rpm": 5}
@@ -124,7 +125,7 @@ def test_stored_ignores_env_and_defaults(rs, monkeypatch):
 def test_unset_forgets_only_known_saved_knobs(rs):
     rs.set_many({"chat_safety_cap": 77, "context_window": 200000})
     out = rs.unset(["chat_safety_cap", "not_a_knob"])
-    assert out["chat_safety_cap"] == 2000                 # back to the default
+    assert out["chat_safety_cap"] == 0                    # back to the default
     assert out["context_window"] == 200000                # untouched
     assert "chat_safety_cap" not in rs._read_store()
     rs.unset(["chat_safety_cap"])                         # idempotent

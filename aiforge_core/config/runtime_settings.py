@@ -69,11 +69,13 @@ _SPEC: dict[str, tuple[str, int]] = {
     # Per-turn chat budget guards (see runtime/chat_agent/_context/_limits.py).
     # These are RUNAWAY guards, not task budgets — a turn that is still making
     # progress extends them chat_cap_extensions times before it is stopped.
-    # 0 = NO step cap (the turn runs until it is done, stalls, hits the
-    # deadline, or the user presses Stop).
-    "chat_safety_cap": ("AIFORGE_CHAT_SAFETY_CAP", 2000),
+    # BOTH DEFAULT TO 0 = no guard. An interactive turn runs until the agent
+    # finishes it or the user presses Stop; the operator opts back IN to a
+    # ceiling here. (Runs with nobody watching keep chat_unattended_cap — Stop
+    # is gated on a session id, so those have no brake of their own.)
+    "chat_safety_cap": ("AIFORGE_CHAT_SAFETY_CAP", 0),
     # Seconds of wall clock for ONE turn; 0 = no deadline.
-    "chat_turn_deadline_s": ("AIFORGE_CHAT_TURN_DEADLINE_S", 3600),
+    "chat_turn_deadline_s": ("AIFORGE_CHAT_TURN_DEADLINE_S", 0),
     # 0 = never auto-extend (hard stop at the cap/deadline, the old behaviour).
     "chat_cap_extensions": ("AIFORGE_CHAT_CAP_EXTENSIONS", 2),
     # Step cap for runs with NOBODY watching (jobs, analysis fan-out, subtask

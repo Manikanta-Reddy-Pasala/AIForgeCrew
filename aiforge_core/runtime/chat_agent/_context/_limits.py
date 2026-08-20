@@ -31,6 +31,13 @@ log = logging.getLogger("aiforge.chat_limits")
 _MAX_TURN_STEPS = 1_000_000
 _MAX_TURN_SECONDS = 24 * 3600
 
+# What a TYPO falls back to. Deliberately not "the default": the defaults are
+# now 0 (= no guard), so treating a negative as "use the default" would turn
+# the typo the sign check exists to catch into the very thing it guards
+# against. A malformed value gets a real, finite budget instead.
+_TYPO_STEPS = 2000
+_TYPO_SECONDS = 3600.0
+
 
 def _setting(name: str, env: str, default: int, *, lo: int, hi: int) -> int:
     """Stored setting → env var → default, clamped into [lo, hi].
@@ -65,10 +72,10 @@ def _safety_cap() -> int:
     the default — the same rule ``_turn_deadline_s`` already applies."""
     raw = _explicit_float("chat_safety_cap", "AIFORGE_CHAT_SAFETY_CAP")
     if raw is not None and raw < 0:
-        log.warning("chat_safety_cap=%r is negative — using the 2000 default. "
-                    "Use 0 for no cap.", raw)
-        return 2000
-    return _setting("chat_safety_cap", "AIFORGE_CHAT_SAFETY_CAP", 2000,
+        log.warning("chat_safety_cap=%r is negative — using %d steps. "
+                    "Use 0 for no cap.", raw, _TYPO_STEPS)
+        return _TYPO_STEPS
+    return _setting("chat_safety_cap", "AIFORGE_CHAT_SAFETY_CAP", 0,
                     lo=0, hi=1_000_000)
 
 
@@ -99,7 +106,7 @@ def _explicit_float(name: str, env: str) -> "float | None":
 
 def _turn_deadline_s() -> float:
     """Wall-clock backstop for one chat turn, seconds; 0 disables
-    (``AIFORGE_CHAT_TURN_DEADLINE_S``, default 3600).
+    (``AIFORGE_CHAT_TURN_DEADLINE_S``, DEFAULT 0 = no deadline).
 
     FRACTIONAL env values are honoured: the settings store is integer-only, so
     the env var is parsed here rather than through it — ``7200.5`` is a
@@ -120,14 +127,15 @@ def _turn_deadline_s() -> float:
                 stored = float(raw)
             except (TypeError, ValueError):
                 log.warning("AIFORGE_CHAT_TURN_DEADLINE_S=%r is not a number — "
-                            "using the 3600s default", raw)
-    val = float(3600 if stored is None else stored)
+                            "using %ss", raw, _TYPO_SECONDS)
+                stored = _TYPO_SECONDS
+    val = float(0 if stored is None else stored)
     if val < 0:
         # 0 means "no deadline", so clamping a negative toward 0 would DISABLE
         # the runaway guard on a typo. Clamp toward safety instead.
-        log.warning("chat turn deadline %r is negative — using the 3600s "
-                    "default", val)
-        val = 3600.0
+        log.warning("chat turn deadline %r is negative — using %ss instead",
+                    val, _TYPO_SECONDS)
+        val = _TYPO_SECONDS
     return min(float(_MAX_TURN_SECONDS), val)
 
 
