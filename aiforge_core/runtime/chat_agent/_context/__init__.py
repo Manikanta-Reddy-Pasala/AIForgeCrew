@@ -10,6 +10,12 @@ from ._generation import (
     _progress_recap,
     _stuck_recovery_max,
 )
+from ._limits import (
+    _extension_budget,
+    _safety_cap,
+    _turn_deadline_s,
+    _cap_extensions,
+)
 from ._recall import (
     _WEB_INTENT_STRONG_RE,
     _WEB_INTENT_WEAK_RE,

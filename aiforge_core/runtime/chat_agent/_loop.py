@@ -13,7 +13,7 @@ from ._tools import (_ROOT_SCOPED_TOOLS, _chat_repo_key, _preferences_context, _
 from ._registry import (TOOLS, _ANALYZE_BANNER, _BUILDER_FINALIZE_TOOL, _BUILDER_NUDGE_AFTER, _FINALIZE_TOOLS, _PLAN_BANNER, _READONLY_TOOLS, _is_mutating, _perf_family)
 from ._preview import (_diff_preview)
 from ._prompt import (_SYSTEM, _parse, _strip_reasoning_prefix)
-from ._context import (_CANCELLED, _EDIT_TOOL_NAMES, _LOOP_REPEAT, _OUTPUT_REPEAT, _WEB_LOOKUP_DIRECTIVE, _cap_system_prompt, _cave_mode, _chat_session_recall, _claims_file_edits, _compact_convo, _complete_cancellable, _compress_prompt, _ctx_budget_chars, _ctx_on, _edit_claim_disclaimer, _edit_claim_guard_enabled, _edit_claim_nudge, _fire_stop, _has_web_intent, _post_edit_syntax_error, _progress_recap, _repo_name, _stuck_recovery_max, _run_project_verify, _split_asks, _sys_prompt_budget_chars, _text_of, _verify_fix_message, _verify_max_rounds, _verify_on_final_enabled, _worktree_fingerprint)
+from ._context import (_CANCELLED, _EDIT_TOOL_NAMES, _LOOP_REPEAT, _OUTPUT_REPEAT, _WEB_LOOKUP_DIRECTIVE, _cap_system_prompt, _cave_mode, _chat_session_recall, _claims_file_edits, _compact_convo, _complete_cancellable, _compress_prompt, _ctx_budget_chars, _ctx_on, _edit_claim_disclaimer, _edit_claim_guard_enabled, _edit_claim_nudge, _fire_stop, _has_web_intent, _post_edit_syntax_error, _progress_recap, _extension_budget, _repo_name, _stuck_recovery_max, _run_project_verify, _safety_cap, _split_asks, _sys_prompt_budget_chars, _text_of, _turn_deadline_s, _verify_fix_message, _verify_max_rounds, _verify_on_final_enabled, _worktree_fingerprint)
 
 def run_chat_agent(
     messages: list[dict], *,
@@ -74,18 +74,25 @@ def run_chat_agent(
                     if isinstance(g, str) and g]
 
     import collections
-    safety = max_steps or int(os.environ.get("AIFORGE_CHAT_SAFETY_CAP", "2000"))
+    # Caller-supplied max_steps (chat Quick mode, tests) is a DELIBERATE small
+    # budget — honour it exactly and never auto-extend it. Only the
+    # operator-level cap (Settings → env → default) is extendable, and only on
+    # an interactive turn (see _ext_budget below).
+    _cap_base = _safety_cap()
+    # `max_steps=0` is a caller asking for "no budget", not for the default —
+    # treat any explicit int as the caller's choice and only fall back when it
+    # is None. (Kept >=1 so the loop can still emit its stop banner.)
+    _caller_cap = max(1, max_steps) if isinstance(max_steps, int) else None
+    safety = _caller_cap or _cap_base
     # Wall-clock turn backstop. The 2000-step cap is not a real stopping
     # point on a slow local model — 2000 steps × seconds-to-minutes each is
     # effectively "forever" from the user's chair. This deadline bounds the
     # WHOLE turn regardless of step count, so a wandering or churning agent
     # (evades the exact-repeat stall guards below by varying its args) can't
     # run for hours. Generous default (1h) so it's a backstop, not a normal
-    # limit; 0 disables. Tunable via AIFORGE_CHAT_TURN_DEADLINE_S.
-    try:
-        _turn_budget_s = float(os.environ.get("AIFORGE_CHAT_TURN_DEADLINE_S", "3600"))
-    except (TypeError, ValueError):
-        _turn_budget_s = 3600.0
+    # limit; 0 disables. Set in Settings → Agent limits (or
+    # AIFORGE_CHAT_TURN_DEADLINE_S).
+    _turn_budget_s = _turn_deadline_s()
     _turn_deadline = (time.monotonic() + _turn_budget_s) if _turn_budget_s > 0 else None
 
     # Latest user message drives mentions (#4) + skill triggers (#6) +
@@ -439,6 +446,29 @@ def run_chat_agent(
             for i, a in enumerate(_asks)]}
 
     n = 0
+    # ── Budget extensions ────────────────────────────────────────────────
+    # The step cap and the turn deadline are RUNAWAY guards, not task budgets.
+    # A turn that is still producing NEW work earns another budget instead of
+    # being killed with its work thrown away; a turn that is only spinning is
+    # stopped exactly as before. Caller-set max_steps is never extended.
+    # Only an INTERACTIVE turn extends. The unattended callers (text_doer,
+    # parallel_subtasks, the analysis fan-out) pass no max_steps and have no
+    # one watching — tripling their ceiling is spend nobody asked for. They
+    # keep the old hard stop.
+    # _extension_budget also bounds the PRODUCT (cap × (1+extensions), in steps
+    # AND in wall clock) — each settings field validates in isolation, so the
+    # multiplication is where an innocent-looking pair becomes a multi-day turn.
+    _ext_budget = (_extension_budget(_cap_base, _turn_budget_s)
+                   if (_caller_cap is None and session_id is not None) else 0)
+    _extensions_used = 0
+    # Progress is NEW WORK, not novel tool arguments: an agent that varies its
+    # args mints a new action signature every step — that is the very churn the
+    # deadline exists to stop, so counting distinct actions would hand every
+    # extension to the runaway. Count what actually changes the world or the
+    # agent's knowledge: file edits that landed, and reads of something not
+    # read before.
+    _reads_new = 0
+    _progress_mark = (0, 0)   # (new reads, edits) at the last extension
     _builder_nudged = False
     _builder_finalized = False
     _builder_final_tries = 0
@@ -456,6 +486,25 @@ def run_chat_agent(
     # Skip the git call entirely when the guard is off.
     _wt_fp0 = _worktree_fingerprint(cwd) if _edit_claim_guard_enabled() else ""
     _edit_claim_nudges = 0
+
+    def _may_extend() -> bool:
+        """True when this turn EARNED another budget: extensions remain and it
+        produced NEW work since the last one — a file edit that landed, or a
+        read of something it had not read before. Both counters are monotonic,
+        so an agent spinning (repeating itself, or emitting endless novel
+        `run_command` args that read and change nothing) leaves the mark
+        unchanged and is stopped for real. Consumes one extension when it
+        returns True."""
+        nonlocal _extensions_used, _progress_mark
+        if _extensions_used >= _ext_budget:
+            return False
+        mark = (_reads_new, _edits_made)
+        if mark == _progress_mark:
+            return False
+        _extensions_used += 1
+        _progress_mark = mark
+        return True
+
     # One-time visibility: confirm native tool-calling is driving this run (every
     # tool call goes through native OpenAI function-calling, not the text
     # ACTION/ARGS_JSON protocol). Opt out of the banner: AIFORGE_CHAT_NATIVE_BANNER=0.
@@ -467,8 +516,34 @@ def run_chat_agent(
             _ntools = 0
         yield {"type": "thought", "role": "system",
                "text": f"🔌 native tool-calling active ({_ntools} tools)"}
-    while n < safety:
+    while True:
         n += 1
+        if n > safety:
+            # Runaway step cap. Before giving up, offer an extension to a turn
+            # that is still producing new work — condense the history first so
+            # the extra steps run in a clean window rather than a bloated one.
+            if _may_extend():
+                safety += _cap_base
+                _before_ext = len(convo)
+                convo = _compact_convo(convo, keep_recent=8, role=role,
+                                       complete_fn=complete_fn,
+                                       session_id=session_id, force=True)
+                if len(convo) < _before_ext:
+                    read_sigs_seen.clear()   # results dropped → re-reads are valid
+                _did = ("condensed the history and " if len(convo) < _before_ext
+                        else "")
+                yield {"type": "thought", "role": "system",
+                       "text": f"⏳ still making progress — {_did}extended the "
+                               f"step budget to {safety} "
+                               f"({_extensions_used}/{_ext_budget})"}
+            else:
+                _fire_stop("cap", cwd)
+                yield {"type": "message",
+                       "text": "(stopped: hit the runaway safety cap — raise "
+                               "the step cap in Settings → Agent limits (or "
+                               "AIFORGE_CHAT_SAFETY_CAP) if this was real work)"}
+                yield {"type": "done"}
+                return
         if session_id is not None and chat_cancel.is_cancelled(session_id):
             yield {"type": "error", "text": "stopped by user"}
             yield {"type": "done"}
@@ -489,13 +564,32 @@ def run_chat_agent(
         # the race and append an UNGUARDED user turn, creating two consecutive
         # user turns (breaks claude_local) — removed.
         if _turn_deadline is not None and time.monotonic() > _turn_deadline:
-            _fire_stop("deadline", cwd)
-            yield {"type": "message",
-                   "text": f"(stopped: hit the {int(_turn_budget_s)}s turn "
-                           "time budget — raise AIFORGE_CHAT_TURN_DEADLINE_S "
-                           "if this was real long-running work)"}
-            yield {"type": "done"}
-            return
+            # Same deal as the step cap: a turn still landing new work buys
+            # another slice of wall clock instead of losing everything.
+            if _may_extend():
+                _turn_deadline = time.monotonic() + _turn_budget_s
+                _before_ext = len(convo)
+                convo = _compact_convo(convo, keep_recent=8, role=role,
+                                       complete_fn=complete_fn,
+                                       session_id=session_id, force=True)
+                if len(convo) < _before_ext:
+                    read_sigs_seen.clear()
+                _did = ("condensed the history and " if len(convo) < _before_ext
+                        else "")
+                yield {"type": "thought", "role": "system",
+                       "text": f"⏳ still making progress — {_did}extended the "
+                               f"turn by {int(_turn_budget_s)}s "
+                               f"({_extensions_used}/{_ext_budget})"}
+            else:
+                _fire_stop("deadline", cwd)
+                yield {"type": "message",
+                       "text": f"(stopped: hit the {int(_turn_budget_s)}s turn "
+                               "time budget — raise the turn deadline in "
+                               "Settings → Agent limits (or "
+                               "AIFORGE_CHAT_TURN_DEADLINE_S) if this was real "
+                               "long-running work)"}
+                yield {"type": "done"}
+                return
         # Mid-run steering (Gap A): fold any user-injected guidance into the
         # working context as a user turn BEFORE the next model call, so the
         # agent adjusts course without a Stop + new turn. Surface it so the UI
@@ -518,6 +612,13 @@ def run_chat_agent(
         _before = len(convo)
         convo = _compact_convo(convo, role=role, complete_fn=complete_fn,
                                session_id=session_id)
+        if len(convo) < _before:
+            # The dropped turns took their tool RESULTS with them, so a read
+            # whose output is no longer in the window is no longer a duplicate.
+            # Without this the guard tells the model "you already ran this, its
+            # result is above" about content the condense just deleted — and the
+            # turn can never recover the file it is being refused.
+            read_sigs_seen.clear()
         if len(convo) < _before and not condensed_notified:
             condensed_notified = True   # notify ONCE, not every over-budget turn
             yield {"type": "thought", "role": "system",
@@ -1166,6 +1267,8 @@ def run_chat_agent(
         # Remember a successful read so a later identical re-read short-circuits.
         if (_long_chain_help and name in _READ_OBS_TOOLS and not (
                 isinstance(result, dict) and result.get("ok") is False)):
+            if sig not in read_sigs_seen:
+                _reads_new += 1        # real progress: knowledge it did not have
             read_sigs_seen.add(sig)
         if name in _EDIT_TOOL_NAMES and not (
                 isinstance(result, dict) and result.get("ok") is False):
@@ -1213,8 +1316,4 @@ def run_chat_agent(
                  "specify.") if _bundle.skills_md else ""
         convo.append({"role": "user", "content": f"OBSERVATION: {obs}{_tail}"})
 
-    _fire_stop("cap", cwd)
-    yield {"type": "message",
-           "text": "(stopped: hit the runaway safety cap — "
-                   "raise AIFORGE_CHAT_SAFETY_CAP if this was real work)"}
-    yield {"type": "done"}
+

@@ -164,3 +164,20 @@ def test_condense_tail_capped_by_size_not_count(monkeypatch):
     huge = [{"role": "system", "content": ""}] + [
         {"role": "user", "content": "z" * 99999} for _ in range(10)]
     assert _recent_tail_count(huge, budget=1000, ceiling=18, floor=4) == 4
+
+
+def test_force_condenses_a_history_that_still_fits(monkeypatch):
+    """The runaway-cap extension wants a FRESH window, not merely a safe one:
+    ``force=True`` folds the middle even though the history is under budget."""
+    from aiforge_core.runtime import chat_agent as ca
+    monkeypatch.setenv("AIFORGE_CHAT_CONTEXT_BUDGET_CHARS", "100000")
+    convo = [{"role": "system", "content": "S" * 100}]
+    for _i in range(30):
+        convo.append({"role": "assistant",
+                      "content": "THOUGHT: t\nACTION: file_read\nARGS_JSON: {}"})
+        convo.append({"role": "user", "content": "OBSERVATION: " + "x" * 50})
+    assert ca._compact_convo(list(convo), keep_recent=8) == convo   # fits → untouched
+    out = ca._compact_convo(list(convo), keep_recent=8, force=True)
+    assert len(out) < len(convo)
+    assert "auto-condensed" in out[0]["content"]
+    assert out[0]["role"] == "system" and out[-1]["role"] == "user"

@@ -280,6 +280,14 @@ class _RuntimeSettingsBody(BaseModel):
     ctx_no_workflows: int | None = Field(None, ge=0, le=1)
     ctx_no_repomap: int | None = Field(None, ge=0, le=1)
     ctx_no_summary: int | None = Field(None, ge=0, le=1)
+    # Per-turn chat budget guards. Runaway guards, not task budgets — a turn
+    # still making progress extends them chat_cap_extensions times.
+    chat_safety_cap: int | None = Field(None, ge=1, le=1_000_000)
+    chat_turn_deadline_s: int | None = Field(None, ge=0, le=86_400)
+    chat_cap_extensions: int | None = Field(None, ge=0, le=50)
+    # Names to FORGET, so those knobs fall back to env / built-in default
+    # (the store otherwise shadows the documented env var forever).
+    unset: list[str] | None = None
 
 
 @router.get("/api/runtime/llm-settings")
@@ -291,11 +299,14 @@ def llm_settings_get() -> dict:
 @router.put("/api/runtime/llm-settings")
 def llm_settings_set(body: _RuntimeSettingsBody) -> dict:
     from aiforge_core.config import runtime_settings as _rs
-    vals = {k: v for k, v in body.model_dump().items() if v is not None}
-    if not vals:
+    data = body.model_dump()
+    drop = data.pop("unset", None) or []
+    vals = {k: v for k, v in data.items() if v is not None}
+    if not vals and not drop:
         raise HTTPException(400, "no settings provided")
     try:
-        return _rs.set_many(vals)
+        out = _rs.set_many(vals) if vals else _rs.all_settings()
+        return _rs.unset(drop) if drop else out
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 

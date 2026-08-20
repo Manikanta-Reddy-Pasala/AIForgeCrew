@@ -141,13 +141,14 @@ def _recent_tail_count(convo: list[dict], budget: int, *,
 
 
 def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None = None,
-                   complete_fn=None, session_id=None) -> list[dict]:
+                   complete_fn=None, session_id=None, force: bool = False) -> list[dict]:
     """Auto-condense a long chat history so the context can't overflow.
 
     Keeps the system message + the last ``keep_recent`` turns verbatim and
     collapses everything in between into ONE breadcrumb note (count of omitted
     messages + the tools used so far). Structural only — no extra LLM call, so
-    it's cheap and runs every turn. The agent can re-read files / ask the user
+    it's cheap and runs every turn. ``force=True`` condenses regardless of the
+    budget (the caller wants a fresh window, not just a safe one). The agent can re-read files / ask the user
     if it needs detail from before the condense point."""
     # M1: reserve the ACTUAL system-prompt size (convo[0]) rather than the fixed
     # 14K estimate, and DON'T re-count it in the over-budget sum below (it's
@@ -165,7 +166,11 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
     keep_recent = _recent_tail_count(convo, budget, ceiling=keep_recent)
     if len(convo) <= keep_recent + 2:
         return convo
-    if sum(len(_text_of(m)) for m in convo[1:]) <= budget:
+    # ``force`` condenses even when the history still FITS — used when the loop
+    # grants a runaway-cap extension: the next slice of work should start from a
+    # summary, not from thousands of accumulated turns that merely happened to
+    # be under budget.
+    if not force and sum(len(_text_of(m)) for m in convo[1:]) <= budget:
         return convo
     tail = convo[-keep_recent:]
     middle = convo[1:-keep_recent]

@@ -63,6 +63,14 @@ _SPEC: dict[str, tuple[str, int]] = {
     "ctx_no_workflows": ("AIFORGE_CTX_NO_WORKFLOWS", 0),
     "ctx_no_repomap": ("AIFORGE_CTX_NO_REPOMAP", 0),
     "ctx_no_summary": ("AIFORGE_CTX_NO_SUMMARY", 0),
+    # Per-turn chat budget guards (see runtime/chat_agent/_context/_limits.py).
+    # These are RUNAWAY guards, not task budgets — a turn that is still making
+    # progress extends them chat_cap_extensions times before it is stopped.
+    "chat_safety_cap": ("AIFORGE_CHAT_SAFETY_CAP", 2000),
+    # Seconds of wall clock for ONE turn; 0 = no deadline.
+    "chat_turn_deadline_s": ("AIFORGE_CHAT_TURN_DEADLINE_S", 3600),
+    # 0 = never auto-extend (hard stop at the cap/deadline, the old behaviour).
+    "chat_cap_extensions": ("AIFORGE_CHAT_CAP_EXTENSIONS", 2),
 }
 
 # Sanity bounds — reject obviously-bad values from the API/UI so a typo
@@ -79,6 +87,9 @@ _BOUNDS: dict[str, tuple[int, int]] = {
     "ctx_no_workflows": (0, 1),
     "ctx_no_repomap": (0, 1),
     "ctx_no_summary": (0, 1),
+    "chat_safety_cap": (1, 1_000_000),
+    "chat_turn_deadline_s": (0, 86_400),
+    "chat_cap_extensions": (0, 50),
 }
 
 
@@ -181,6 +192,25 @@ def set_many(values: dict[str, Any]) -> dict[str, int]:
     return all_settings()
 
 
+def unset(names: "list[str] | tuple[str, ...]") -> dict[str, int]:
+    """Forget stored values so a knob falls back to its env var / default.
+
+    Without this the store is a one-way door: ``get`` prefers any in-bounds
+    stored value, so the documented env override goes permanently dead on a box
+    the moment someone touches the UI — and nothing in the UI could bring it
+    back. Unknown names are ignored. Returns the resolved settings afterwards.
+    """
+    store = _read_store()
+    changed = False
+    for name in names or ():
+        if name in _SPEC and name in store:
+            store.pop(name, None)
+            changed = True
+    if changed:
+        _fc.write_json(_path(), store)
+    return all_settings()
+
+
 def _migrate_stale_cave_default() -> None:
     """One-time: the ``cave_mode`` default flipped 0→1 (cave is now standard
     across all models). A store seeded with the OLD default 0 — or written by an
@@ -208,4 +238,4 @@ def _migrate_stale_cave_default() -> None:
 _migrate_stale_cave_default()
 
 
-__all__ = ["get", "explicit", "all_settings", "set_many"]
+__all__ = ["get", "explicit", "all_settings", "set_many", "unset"]

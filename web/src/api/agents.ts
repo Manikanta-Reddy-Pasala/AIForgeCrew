@@ -39,7 +39,15 @@ export interface LlmSettings {
   ctx_no_workflows: number;
   ctx_no_repomap: number;
   ctx_no_summary: number;
+  // Per-turn chat budget guards (runaway guards, not task budgets).
+  chat_safety_cap: number;
+  chat_turn_deadline_s: number;
+  chat_cap_extensions: number;
 }
+
+// PUT body: any subset of the knobs, plus names to FORGET so they fall back to
+// the env var / built-in default.
+export type LlmSettingsInput = Partial<LlmSettings> & { unset?: string[] };
 
 export interface RegistryModel {
   id: string;
