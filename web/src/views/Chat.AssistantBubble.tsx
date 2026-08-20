@@ -17,6 +17,8 @@ export function AssistantBubble({
   subtasks,
   captured,
   onRegenerate,
+  stopped,
+  onRerunFresh,
 }: {
   text: string;
   steps: AgentStep[];
@@ -25,6 +27,10 @@ export function AssistantBubble({
   subtasks?: SubtaskItem[];
   captured?: CapturedItem[];
   onRegenerate?: () => void;
+  /** the turn ended on a stop — offer Resume instead of Regenerate */
+  stopped?: boolean;
+  /** discard the partial work and run the request again from nothing */
+  onRerunFresh?: () => void;
 }) {
   // Agent steps collapse by default once the turn is done (keeps the chat
   // clean — the plan/subtasks + final answer are what matter); auto-expanded
@@ -99,10 +105,25 @@ export function AssistantBubble({
           </button>
         )}
         {!streaming && onRegenerate && (
-          <button className="ghost xs" title="Re-run the previous request"
+          // A turn that was STOPPED (runaway cap, deadline, Stop button) is not
+          // re-run, it is CONTINUED: the server carries over what already
+          // landed and asks only for the remainder. Say which one this is, or
+          // the user cannot tell the retry from a repeat.
+          <button className="ghost xs"
+                  title={stopped
+                    ? 'Continue the stopped run — keeps the work that already landed and finishes what is pending'
+                    : 'Re-run the previous request'}
                   style={{ padding: '0 4px', cursor: 'pointer' }}
                   onClick={onRegenerate}>
-            ↻ Regenerate
+            {stopped ? '▸ Resume' : '↻ Regenerate'}
+          </button>
+        )}
+        {!streaming && onRerunFresh && (
+          <button className="ghost xs"
+                  title="Ignore what the stopped run produced and start this request over"
+                  style={{ padding: '0 4px', cursor: 'pointer' }}
+                  onClick={onRerunFresh}>
+            ↻ Start over
           </button>
         )}
       </div>

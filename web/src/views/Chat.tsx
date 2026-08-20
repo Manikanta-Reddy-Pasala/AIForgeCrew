@@ -5,7 +5,7 @@ import { api, chatApi, chatSessionMessageURL, chatSessionAttachURL, chatSessionS
 import { Icon } from '../icons';
 import { MdLite, copyText as mdCopyText } from '../mdlite';
 import { AgentStep, SubtaskItem, RuleState, RuleStateCtx, LiveTurn, ChatMode, BuilderKind, PendingApproval } from './Chat.types';
-import { menuBtn, menuItem, LS_SESSION_KEY, LS_MODEL_KEY, LS_MODE_KEY, BUILDER_KINDS, BUILDER_LABELS, LS_BUILDER_KEY, relTime, dateTimeLabel, toAgentStep, msgAwaiting, getDismissedPlans, addDismissedPlan } from './Chat.helpers';
+import { menuBtn, menuItem, LS_SESSION_KEY, LS_MODEL_KEY, LS_MODE_KEY, BUILDER_KINDS, BUILDER_LABELS, LS_BUILDER_KEY, relTime, dateTimeLabel, toAgentStep, msgAwaiting, getDismissedPlans, addDismissedPlan, isStoppedTurn } from './Chat.helpers';
 import { SubtaskList } from './Chat.SubtaskList';
 import { ModeBadge } from './Chat.ModeBadge';
 import { CtxReload } from './Chat.CtxReload';
@@ -914,7 +914,8 @@ export default function Chat() {
 
   // ── SSE streaming send ────────────────────────────────────────────────────
 
-  async function send(overrideContent?: string, overrideMode?: ChatMode) {
+  async function send(overrideContent?: string, overrideMode?: ChatMode,
+                      opts?: { resume?: boolean }) {
     const q = (overrideContent ?? input).trim();
     if (!q || busy) return;
     // Abort any in-flight attach probe on this session first — an unresolved
@@ -991,6 +992,10 @@ export default function Chat() {
                                // Quick only applies to the single-agent modes;
                                // Team runs its own pipeline and ignores it.
                                quick: runMode !== 'team' ? quickMode : false,
+                               // Resume a stopped turn rather than redo it. The
+                               // server also infers this when the same words are
+                               // re-sent; the flag covers a rephrase.
+                               ...(opts?.resume ? { resume: true } : {}),
                                ...(builder ? { builder } : {}),
                                ...(editFrom != null ? { edit_from_message_id: editFrom } : {}) }),
         signal: ctrl.signal,
@@ -1116,10 +1121,21 @@ export default function Chat() {
   // reply, and not while an approval gate is open.
   const lastAssistantMsg = [...messages].reverse().find(m => m.role === 'assistant') || null;
   const lastUserMsg = [...messages].reverse().find(m => m.role === 'user') || null;
-  // M2: re-run the last request (re-asks; appends a fresh turn).
+  // A turn the server stopped (runaway cap / turn deadline / Stop) leaves its
+  // banner as the assistant text. Retrying one is a RESUME, not a re-ask.
+  const lastTurnStopped = isStoppedTurn(lastAssistantMsg);
+  // M2: re-run the last request. After a stopped turn the server prepends a
+  // brief of what already landed + what is still pending, so this finishes the
+  // job instead of starting it again.
   function regenerate() {
     if (busy || !lastUserMsg?.content) return;
-    send(lastUserMsg.content);
+    send(lastUserMsg.content, undefined, { resume: lastTurnStopped });
+  }
+  // The escape hatch: the partial work may be junk the user wants abandoned.
+  // Without this, every route back to "run this again" meant "continue this".
+  function rerunFresh() {
+    if (busy || !lastUserMsg?.content) return;
+    send(lastUserMsg.content, undefined, { resume: false });
   }
   // M2: pull the last user message back into the composer to edit + resend.
   function editLastUser() {
@@ -1581,6 +1597,9 @@ export default function Chat() {
                             repo: s.repo, gate_intent: s.gate_intent,
                           }))}
                           onRegenerate={msg === lastAssistantMsg && !busy ? regenerate : undefined}
+                          stopped={msg === lastAssistantMsg && lastTurnStopped}
+                          onRerunFresh={msg === lastAssistantMsg && !busy && lastTurnStopped
+                                          ? rerunFresh : undefined}
                         />
                         {/* FE1: awaiting affordance survives loadSession — shown
                             on the last assistant turn when it ended awaiting. */}
