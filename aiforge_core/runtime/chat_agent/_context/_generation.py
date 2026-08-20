@@ -7,7 +7,8 @@ import os
 # the agent finishes. We stop only when it's clearly STUCK: the same
 # tool+args repeated this many times, or identical model output N times
 # in a row. ``_SAFETY_CAP`` is a last-resort runaway guard (very high;
-# tune with AIFORGE_CHAT_SAFETY_CAP), not a normal stopping point.
+# tune in Settings → Agent limits, or AIFORGE_CHAT_SAFETY_CAP), not a normal
+# stopping point. A turn still making progress extends it — see _limits.py.
 _LOOP_REPEAT = 4
 _OUTPUT_REPEAT = 3
 

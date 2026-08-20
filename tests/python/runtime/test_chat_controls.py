@@ -193,24 +193,25 @@ def test_turn_deadline_stops_a_churning_agent(tmp_path, monkeypatch):
         # A distinct command each step — evades varied-args stall detection.
         return f'ACTION: run_command\nARGS_JSON: {{"command": "echo {calls["n"]}"}}'
 
-    # Deadline is computed once at start from monotonic(); make the clock
-    # jump past it on the first loop-top check so the test is instant.
-    real = time.monotonic
-    seq = iter([1000.0])                      # init: deadline = 1010
+    # Clock ADVANCES 4s per read (init: deadline = 1010), so the agent really
+    # runs a couple of steps before the deadline trips — the churn has to be
+    # rejected on its own merits, not because the clock blew before step 1.
+    state = {"t": 1000.0}
 
     def fake_monotonic():
-        try:
-            return next(seq)
-        except StopIteration:
-            return 1_000_000.0               # every subsequent check: way past
+        state["t"] += 4.0
+        return state["t"]
     monkeypatch.setattr(ca.time, "monotonic", fake_monotonic)
 
     evs = list(ca.run_chat_agent(
         [{"role": "user", "content": "do endless work"}], cwd=str(tmp_path),
-        complete_fn=fn))
+        complete_fn=fn, session_id=77_001))
     msgs = " ".join(e.get("text", "") for e in evs if e["type"] == "message")
     assert "turn time budget" in msgs
-    assert calls["n"] <= 2                    # stopped almost immediately, not 2000
+    # Novel `run_command` args are NOT progress (nothing read, nothing edited),
+    # so the turn buys no extension even though extensions are enabled.
+    assert not [e for e in evs if "extended the turn" in e.get("text", "")]
+    assert calls["n"] <= 3                    # stopped almost immediately, not 2000
     assert evs[-1]["type"] == "done"
 
 

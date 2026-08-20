@@ -1,6 +1,6 @@
 import { j, apiFetch } from './core';
 import type {
-  RegistryModel, ModelInput, LlmSettings,
+  RegistryModel, ModelInput, LlmSettings, LlmSettingsInput,
   AgentRole, AgentRoleConfig, AgentRoleConfigInput, ProviderCatalog,
 } from './agents';
 import type { MemorySource, MemoryOverview } from './memory';
@@ -51,7 +51,7 @@ export const api = {
 
   llmSettings: () =>
     j<LlmSettings>('/runtime/llm-settings'),
-  setLlmSettings: (vals: Partial<LlmSettings>) =>
+  setLlmSettings: (vals: LlmSettingsInput) =>
     j<LlmSettings>('/runtime/llm-settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },

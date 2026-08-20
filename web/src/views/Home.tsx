@@ -8,6 +8,8 @@ import {
   ProviderCatalog,
   ProviderId,
   ProviderModel,
+  LlmSettings,
+  LlmSettingsInput,
 } from '../api';
 import { Icon } from '../icons';
 import { JiraCard, ConfluenceCard, GitlabCard, EmailCard } from '../components/Integrations';
@@ -447,6 +449,7 @@ export default function Home() {
         {/* Simplified: add models once — the system auto-decides everything
             (agent→model by capability, token limits, context window). */}
         <AgentSettings />
+        <AgentLimitsCard />
       </>)}
 
     </>
@@ -557,6 +560,118 @@ function OrchestratorModelCard() {
   );
 }
 
-// ── Global LLM token knobs ───────────────────────────────────────────────────
-// Operator-chosen, no hardcoded constant wins over an explicit value.
-// max_output_tokens = generation cap (the doer's file-write budget — too low
+// ── Per-turn agent limits ────────────────────────────────────────────────────
+// The step cap and the turn deadline are RUNAWAY guards, not task budgets. A
+// turn that keeps producing new work extends them by itself (auto-extensions)
+// instead of dying with its work thrown away — these knobs let the operator
+// size all three. Persisted via /runtime/llm-settings (~/.aiforge/
+// runtime_settings.json); the matching env vars still work headless.
+function AgentLimitsCard() {
+  const [vals, setVals] = useState<Partial<LlmSettings>>({});
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  // Bumped to force the uncontrolled inputs to remount — after a rejected edit
+  // they must snap back to what the server actually holds, not keep showing the
+  // value it refused.
+  const [nonce, setNonce] = useState(0);
+
+  useEffect(() => {
+    api.llmSettings()
+      // loaded ONLY on success: a failed load leaves the fields empty, and an
+      // empty ENABLED field is one stray blur away from writing a 0.
+      .then(s => { setVals(s); setLoaded(true); })
+      .catch(() => { /* older build without the endpoint — card stays inert */ });
+  }, []);
+
+  async function resetAll() {
+    setBusy(true);
+    try {
+      const next = await api.setLlmSettings({
+        unset: ['chat_safety_cap', 'chat_turn_deadline_s', 'chat_cap_extensions'],
+      });
+      setVals(next);
+      setNonce(x => x + 1);
+      toast.success('Agent limits reset to defaults');
+    } catch (e: any) {
+      toast.error(`Reset failed: ${e?.message || 'unknown'}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function commit(key: keyof LlmSettings, raw: string, lo: number, hi: number) {
+    // An EMPTY field is "I did not mean to change this", never 0 — a browser
+    // reports '' for anything it cannot parse, and Number('') is 0, which for
+    // the two lo=0 knobs would silently disable the guard and report success.
+    if (raw.trim() === '') { setNonce(x => x + 1); return; }
+    const n = Number(raw);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n < lo || n > hi) {
+      toast.error(`${key} must be a whole number between ${lo} and ${hi}`);
+      setNonce(x => x + 1);            // snap the field back to the stored value
+      return;
+    }
+    if (n === vals[key]) return;
+    setBusy(true);
+    try {
+      const next = await api.setLlmSettings({ [key]: n } as LlmSettingsInput);
+      setVals(next);
+      setNonce(x => x + 1);
+      toast.success('Agent limits saved');
+    } catch (e: any) {
+      toast.error(`Save failed: ${e?.message || 'unknown'}`);
+      setNonce(x => x + 1);            // server state is unchanged — show that
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const field = (
+    key: keyof LlmSettings, label: string, hint: string, lo: number, hi: number,
+  ) => (
+    <label className="small" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <span>{label}</span>
+      <input
+        type="number" min={lo} max={hi} step={1}
+        defaultValue={vals[key] ?? ''}
+        key={`${String(key)}-${nonce}-${vals[key] ?? ''}`}
+        disabled={!loaded || busy}
+        onBlur={e => commit(key, e.target.value, lo, hi)}
+        onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+        style={{ width: 140 }}
+        aria-label={label}
+      />
+      <span className="xs muted" style={{ maxWidth: 260 }}>{hint}</span>
+    </label>
+  );
+
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+        <h2 style={{ fontSize: 14 }}>Agent limits</h2>
+        <button className="ghost sm" onClick={resetAll} disabled={!loaded || busy}
+                title="Forget the saved values so the env vars / built-in defaults apply again">
+          ↺ Reset to defaults
+        </button>
+      </div>
+      <div className="subtitle" style={{ marginTop: 6, marginBottom: 10 }}>
+        Runaway guards for a single chat turn. When a turn hits one but is still
+        producing new work — it edited a file, or read something it had not read
+        before — it condenses its history and extends itself instead of stopping.
+        A turn that is only spinning is stopped either way. Saving here overrides
+        the matching env var; “Reset to defaults” hands control back to it.
+      </div>
+      <div className="row" style={{ gap: 24, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        {field('chat_safety_cap', 'Step cap',
+               'Tool/model steps in one turn before the runaway guard fires. Default 2000.',
+               1, 1_000_000)}
+        {field('chat_turn_deadline_s', 'Turn deadline (seconds)',
+               'Wall clock for one turn. 0 = no deadline. Default 3600.',
+               0, 86_400)}
+        {field('chat_cap_extensions', 'Auto-extensions',
+               'How many times a turn still making progress may extend the cap / deadline. 0 = stop hard. Default 2.',
+               0, 50)}
+      </div>
+    </div>
+  );
+}
+

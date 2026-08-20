@@ -27,7 +27,11 @@ def test_defaults(rs):
         "max_output_tokens": 8192, "context_window": 131072,
         "vision_capable": 0, "cave_mode": 1, "compact_llm": 0,
         "ctx_no_recall": 0, "ctx_no_mentions": 0, "ctx_no_skills": 0,
-        "ctx_no_workflows": 0, "ctx_no_repomap": 0, "ctx_no_summary": 0}
+        "ctx_no_workflows": 0, "ctx_no_repomap": 0, "ctx_no_summary": 0,
+        # Per-turn chat budget guards: 2000 steps / 1h wall clock, and up to
+        # 2 self-extensions while the turn is still producing new work.
+        "chat_safety_cap": 2000, "chat_turn_deadline_s": 3600,
+        "chat_cap_extensions": 2}
 
 
 def test_stale_cave_zero_migrated_to_default(rs, monkeypatch):
