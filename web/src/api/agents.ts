@@ -43,6 +43,7 @@ export interface LlmSettings {
   chat_safety_cap: number;
   chat_turn_deadline_s: number;
   chat_cap_extensions: number;
+  chat_unattended_cap: number;
 }
 
 // PUT body: any subset of the knobs, plus names to FORGET so they fall back to

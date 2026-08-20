@@ -56,8 +56,10 @@ _SPEC: dict[str, tuple[str, int]] = {
     # instead of the cheap heuristic breadcrumb. Swappable model: AIFORGE_COMPACT_ROLE.
     "compact_llm": ("AIFORGE_COMPACT_LLM", 0),
     # Dynamic-context injection knobs — each 0/1 DISABLE flag (default 0 = the
-    # block is injected every turn). Modelled as disable-flags because the store
-    # treats a stored 0 as "unset", so a default-ON toggle couldn't be turned off.
+    # block is injected every turn). Modelled as disable-flags historically,
+    # when a stored 0 was discarded as "unset"; `get()` has honoured an
+    # explicitly stored 0 since, which is what lets chat_safety_cap use 0 to
+    # mean "no cap".
     "ctx_no_recall": ("AIFORGE_CTX_NO_RECALL", 0),
     "ctx_no_mentions": ("AIFORGE_CTX_NO_MENTIONS", 0),
     "ctx_no_skills": ("AIFORGE_CTX_NO_SKILLS", 0),
@@ -67,11 +69,17 @@ _SPEC: dict[str, tuple[str, int]] = {
     # Per-turn chat budget guards (see runtime/chat_agent/_context/_limits.py).
     # These are RUNAWAY guards, not task budgets — a turn that is still making
     # progress extends them chat_cap_extensions times before it is stopped.
+    # 0 = NO step cap (the turn runs until it is done, stalls, hits the
+    # deadline, or the user presses Stop).
     "chat_safety_cap": ("AIFORGE_CHAT_SAFETY_CAP", 2000),
     # Seconds of wall clock for ONE turn; 0 = no deadline.
     "chat_turn_deadline_s": ("AIFORGE_CHAT_TURN_DEADLINE_S", 3600),
     # 0 = never auto-extend (hard stop at the cap/deadline, the old behaviour).
     "chat_cap_extensions": ("AIFORGE_CHAT_CAP_EXTENSIONS", 2),
+    # Step cap for runs with NOBODY watching (jobs, analysis fan-out, subtask
+    # runners): Stop is gated on a session id, so these cannot be interrupted.
+    # Deliberately NOT zeroable — see _limits._unattended_cap.
+    "chat_unattended_cap": ("AIFORGE_CHAT_UNATTENDED_CAP", 2000),
 }
 
 # Sanity bounds — reject obviously-bad values from the API/UI so a typo
@@ -88,9 +96,13 @@ _BOUNDS: dict[str, tuple[int, int]] = {
     "ctx_no_workflows": (0, 1),
     "ctx_no_repomap": (0, 1),
     "ctx_no_summary": (0, 1),
-    "chat_safety_cap": (1, 1_000_000),
+    # lo=0 is deliberate: 0 means "no cap", the same way it already does for
+    # the turn deadline. An operator who wants an unbounded turn should not
+    # have to type 1000000 and hope.
+    "chat_safety_cap": (0, 1_000_000),
     "chat_turn_deadline_s": (0, 86_400),
     "chat_cap_extensions": (0, 50),
+    "chat_unattended_cap": (1, 1_000_000),
 }
 
 

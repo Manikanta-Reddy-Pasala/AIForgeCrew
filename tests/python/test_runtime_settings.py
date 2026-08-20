@@ -31,7 +31,8 @@ def test_defaults(rs):
         # Per-turn chat budget guards: 2000 steps / 1h wall clock, and up to
         # 2 self-extensions while the turn is still producing new work.
         "chat_safety_cap": 2000, "chat_turn_deadline_s": 3600,
-        "chat_cap_extensions": 2}
+        "chat_cap_extensions": 2,
+        "chat_unattended_cap": 2000}
 
 
 def test_stale_cave_zero_migrated_to_default(rs, monkeypatch):
