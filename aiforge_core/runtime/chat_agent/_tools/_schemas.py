@@ -68,6 +68,21 @@ CATALOG: dict = {
     # ── run / build / test ───────────────────────────────────────────────
     "run_command": ("Run a shell command (timeout SECONDS, default 600).",
                     {"cmd": "s", "timeout": "i"}, ("cmd",)),
+    "watch_until": (
+        "Re-run one command until a condition holds — polling, monitoring, "
+        "'wait until it's ready/done/green'. ONE call covers the whole watch "
+        "(do NOT hand-roll a poll loop with run_command). until: exit_zero "
+        "(default) | exit_nonzero | contains:TEXT | not_contains:TEXT | "
+        "regex:PATTERN.",
+        {"cmd": "s", "until": "s", "interval_s": "i", "max_checks": "i",
+         "timeout_s": "i", "cmd_timeout": "i"}, ("cmd",)),
+    "schedule_task": (
+        "Run an instruction LATER and REPEATEDLY on a schedule (it outlives "
+        "this chat; each run files a ticket). action: create | list | cancel. "
+        "Give `cron` (5-field) or `every_minutes`. For waiting on something "
+        "NOW, use watch_until instead.",
+        {"action": "s", "name": "s", "instruction": "s", "cron": "s",
+         "every_minutes": "i", "job_id": "i", "project": "s"}, ()),
     "project": ("Detect + build/test/run the project.", {"action": "s"},
                 ("action",)),
     "ensure_runtime": ("Install + verify missing toolchain binaries.",

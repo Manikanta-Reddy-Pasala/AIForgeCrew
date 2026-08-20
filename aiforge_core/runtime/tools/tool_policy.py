@@ -33,7 +33,14 @@ _VALID = {ALLOW, ASK, DENY}
 # arbitrary command as a background process, so it must be risk-assessed too —
 # else `serve {"cmd": "curl … | sh"}` runs unassessed while the same command via
 # run_command/bash escalates to ASK.
-_CMD_TOOLS = {"run_command", "bash", "shell", "run_shell", "serve"}
+# ``watch_until`` carries a shell command under the same ``cmd`` key and runs
+# it up to max_checks times, so it must be risk-assessed exactly like the
+# others — otherwise it is a hole straight through the approval gate, the
+# operator's run_command=deny policy, and any PreToolUse hook matching
+# run_command: `watch_until {"cmd": "git push --force …"}` would have executed
+# twenty times, unattended.
+_CMD_TOOLS = {"run_command", "bash", "shell", "run_shell", "serve",
+              "watch_until"}
 _CMD_ARG_KEYS = ("cmd", "command", "input")
 
 # Tools that mutate something external/durable → default to ASK (human
@@ -74,7 +81,12 @@ _DEFAULT_ASK = {"confluence_create", "confluence_update",
                 "execute_ipython_cell",
                 # Installs a RECURRING host shell job (writes a script + cron) —
                 # a durable, self-executing action; confirm before it lands.
-                "create_job_script"}
+                "create_job_script",
+                # Same shape: schedules recurring autonomous work that outlives
+                # the chat (each run files a ticket the pipeline builds), and
+                # `cancel` deletes a job row for good — including one the
+                # operator created in the Jobs UI.
+                "schedule_task"}
 
 
 def _parse_map(raw: str) -> dict[str, str]:

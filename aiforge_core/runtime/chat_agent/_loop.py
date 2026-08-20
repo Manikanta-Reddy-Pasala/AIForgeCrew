@@ -1185,7 +1185,8 @@ def run_chat_agent(
         # push; allow_delete auto-confirms a destructive delete — for the scope
         # (session → repo precedence; autonomous runs ignore chat-set flags).
         _auto_commit = False
-        if name in ("run_command", "bash", "run_shell", "shell", "serve"):
+        if name in ("run_command", "bash", "run_shell", "shell", "serve",
+                    "watch_until"):
             _cmd = args.get("cmd") or args.get("command") or ""
             try:
                 from aiforge_core.runtime.tools import delete_guard
@@ -1267,7 +1268,7 @@ def run_chat_agent(
                 # force-push in worktree-isolated autonomous runs).
                 _danger = bool(_destructive_del)
                 if not _danger and name in ("run_command", "run_shell", "serve",
-                                            "bash", "shell"):
+                                            "bash", "shell", "watch_until"):
                     try:
                         from aiforge_core.runtime.tools import command_risk
                         _lvl = command_risk.assess(
