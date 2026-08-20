@@ -748,6 +748,9 @@ export default function Chat() {
         // MERGE, never replace: the end-of-turn event carries only the settled
         // request counts, and overwriting would blank the context meter with it.
         setLiveTurn(prev => prev ? { ...prev, usage: {
+          // budget 0 marks "no context reading yet" — the context bar is
+          // guarded on it, so a count-only event (Stop before the first
+          // in-loop usage) cannot render an empty "0k / 0k (0%)" meter.
           ...(prev.usage || { pct: 0, chars: 0, budget: 0 }),
           ...(evt.pct !== undefined ? {
             pct: evt.pct, chars: evt.context_chars, budget: evt.budget_chars,
@@ -1659,7 +1662,8 @@ export default function Chat() {
                       </div>
                     )}
                     {/* M3: context-window fill meter while streaming */}
-                    {liveTurn.streaming && liveTurn.usage && (
+                    {liveTurn.streaming && liveTurn.usage
+                      && (liveTurn.usage.budget ?? 0) > 0 && (
                       <div className="xs muted" style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 6 }}
                            title={`~${Math.round((liveTurn.usage.tokens ?? liveTurn.usage.chars / 4) / 1000)}k / ${Math.round((liveTurn.usage.windowTokens ?? liveTurn.usage.budget / 4) / 1000)}k tokens before auto-condense`}>
                         <span style={{ width: 60, height: 4, background: 'var(--bg-2,#222)', borderRadius: 2, overflow: 'hidden' }}>
