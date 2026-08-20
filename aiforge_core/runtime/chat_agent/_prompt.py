@@ -39,6 +39,22 @@ Tool arguments:
                 — not the whole suite; a full suite often exceeds any limit. A
                 timeout returns PARTIAL output, not a failure — narrow or raise
                 the timeout, never revert your edits over it.)
+- watch_until  {{"cmd": "curl -sf localhost:8080/health", "until": "exit_zero", "interval_s": 30, "max_checks": 20}}
+                (KEEP RE-RUNNING one command until a condition holds — use this
+                whenever the user wants something WATCHED, POLLED, or repeated
+                "until it's done/ready/green/finished". ONE tool call covers the
+                whole watch, so a 20-check watch costs one model call, not
+                twenty: never hand-roll a poll loop by calling run_command over
+                and over. until: exit_zero (default) | exit_nonzero |
+                contains:TEXT | not_contains:TEXT | regex:PATTERN. Bounded by
+                max_checks and timeout_s, and Stop interrupts it mid-wait.)
+- schedule_task {{"action": "create", "name": "nightly smoke", "instruction": "run the smoke suite and report failures", "cron": "0 2 * * *"}}
+                (Do this LATER and REPEATEDLY — anything the user wants to
+                happen on a schedule rather than now. `cron` (5-field) or
+                `every_minutes`. action: create | list | cancel {{"job_id": N}}.
+                Each run files a ticket carrying the instruction, so it keeps
+                working after this chat ends. Use watch_until instead when the
+                user wants to WAIT for something now.)
 - ensure_runtime {{"tools": ["java", "mvn"]}}    (install+verify missing tools)
 - project        {{"action": "build"}}    (detect+install+build/test/run:
                   maven, gradle, node/react/next/vite, python, go, rust)
