@@ -21,6 +21,24 @@ from ._context import (_CANCELLED, _EDIT_TOOL_NAMES, _LOOP_REPEAT, _OUTPUT_REPEA
 _ACTION_SIG_MAX = 5000
 
 
+def _max_gen_per_step() -> int:
+    """Total model generations one ReAct step may cost, across every retry
+    layer (transport retry, empty-answer re-post, this loop's own sweep).
+
+    Retrying a call that is failing for a structural reason does not produce a
+    better answer, it produces the same non-answer again at full price — and
+    the layers multiply: 3 transport attempts x 4 empty re-posts x 5 sweeps is
+    sixty generations for one step. This is the ceiling on that product.
+    Generous enough that a genuinely flaky local model still recovers; 0
+    disables the ceiling and restores the old per-layer behaviour.
+    """
+    try:
+        return max(0, int(os.environ.get("AIFORGE_CHAT_MAX_GENERATIONS_PER_STEP",
+                                         "6")))
+    except ValueError:
+        return 6
+
+
 def run_chat_agent(
     messages: list[dict], *,
     cwd: str,
@@ -752,6 +770,14 @@ def run_chat_agent(
                    # thorough turn.
                    "llm_turn_failed": _calls.get("turn_failed", 0),
                    "llm_failed_per_min": _calls.get("failed_per_minute", 0)}
+        # Requests this turn had spent BEFORE this step — the baseline the
+        # per-step generation budget is measured from.
+        _step_calls0 = 0
+        if _meter is not None and session_id is not None:
+            try:
+                _step_calls0 = int(_meter.snapshot(session_id).get("turn") or 0)
+            except Exception:  # noqa: BLE001
+                _step_calls0 = 0
         try:
             out = _complete_cancellable(complete_fn, role, convo, session_id)
         except Exception as exc:  # noqa: BLE001
@@ -766,6 +792,24 @@ def run_chat_agent(
                 _retries = max(0, int(os.environ.get("AIFORGE_CHAT_LLM_RETRIES", "5")))
             except ValueError:
                 _retries = 5
+            # BOUND THE PRODUCT, not this layer alone. Below this sweep the
+            # client already re-posts an empty answer (AIFORGE_LLM_EMPTY_RETRIES,
+            # default 3 → 4 posts) and the transport retries a broken one
+            # (AIFORGE_LLM_RETRY_MAX, default 3), so five more sweeps here is up
+            # to twenty full generations for ONE step — every one of them
+            # shipping the whole prompt and generating an answer nobody reads.
+            # The meter already counts what this turn has actually sent, so
+            # spend the remaining budget instead of a fixed count.
+            _spent = 0
+            if _meter is not None and session_id is not None:
+                try:
+                    _spent = max(0, int(_meter.snapshot(session_id).get("turn") or 0)
+                                 - _step_calls0)
+                except Exception:  # noqa: BLE001 — a budget must not break a turn
+                    _spent = 0
+            _budget = _max_gen_per_step()
+            if _budget > 0:      # 0 = ceiling disabled, not "no retries"
+                _retries = min(_retries, max(0, _budget - _spent))
             # A read timeout means the model RECEIVED this prompt and is
             # still generating it. Re-issuing the identical completion leaves
             # that generation running and starts another on a box that already
