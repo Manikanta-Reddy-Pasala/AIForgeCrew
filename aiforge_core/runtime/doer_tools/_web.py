@@ -5,9 +5,12 @@ Split out of the former ``doer_tools`` module — moved verbatim.
 """
 from __future__ import annotations
 
+import logging
 import os
 import urllib.error
 import urllib.request
+
+_log = logging.getLogger("aiforge.web")
 
 
 _FETCH_MAX_BYTES = 256 * 1024
@@ -42,14 +45,33 @@ def _do_fetch(url: str) -> dict:
     except SSRFBlocked as exc:
         if exc.kind != "dns":
             return {"ok": False, "error": f"blocked (ssrf): {exc}"}
+    from aiforge_core.net.ssl import (insecure_context, is_cert_error,
+                                      web_tls_fallback_enabled)
+    _unverified = False
     try:
         req = urllib.request.Request(
             url, headers={"User-Agent": "AIForgeCrew-Doer/1.0"},
         )
-        # Public/arbitrary web fetch — keep stdlib default TLS verification
+        # Public/arbitrary web fetch — stdlib default TLS verification,
         # regardless of AIFORGE_LLM_SSL_VERIFY (that toggle is scoped to
         # AIForge's own self-hosted endpoints, see aiforge_core.net.ssl).
-        with urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT_S) as resp:
+        #
+        # One exception, and only after the verified attempt has FAILED with a
+        # certificate error: a network that inspects TLS re-signs every
+        # response with a CA this process does not trust, which otherwise makes
+        # the whole web unreadable. The retry is reported (`tls_verified:
+        # False`), never silent, and AIFORGE_WEB_INSECURE_TLS=0 forbids it.
+        try:
+            resp_cm = urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT_S)
+        except Exception as _exc:  # noqa: BLE001 — classified right here
+            if not (is_cert_error(_exc) and web_tls_fallback_enabled()):
+                raise
+            _log.warning("web.tls_unverified url=%s err=%s — refetching "
+                         "without verification", url, str(_exc)[:160])
+            _unverified = True
+            resp_cm = urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT_S,
+                                             context=insecure_context())
+        with resp_cm as resp:
             # Re-guard the final URL after any redirect hops — a public URL
             # can 30x to a private/metadata target; refuse to return its body.
             final = getattr(resp, "url", None)
@@ -80,6 +102,9 @@ def _do_fetch(url: str) -> dict:
         "body": body,
         "bytes": len(raw),
         "truncated": truncated,
+        # Stated only when the answer is "no" — an ordinary verified fetch
+        # should not carry a reassurance the model then repeats forever.
+        **({"tls_verified": False} if _unverified else {}),
     }
 
 
