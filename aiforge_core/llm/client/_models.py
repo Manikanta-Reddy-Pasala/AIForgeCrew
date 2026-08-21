@@ -98,6 +98,36 @@ def reset_cache() -> None:
         _cache.clear()
 
 
+def pick_substitute(model: str, served: "list[str]") -> "str | None":
+    """Which of the endpoint's own models should stand in for ``model``?
+
+    The configured id is the best statement of intent available, so the pick is
+    the one that shares the most of it: ``qwen/qwen3.6-27b`` prefers
+    ``qwen/qwen3-coder-next`` over an unrelated ``llama-3``. Deterministic —
+    the same box picks the same stand-in every call, because a substitution
+    that moves around is worse than one that is merely imperfect: nobody can
+    reproduce a bug that ran on a different model each time.
+
+    Returns None when there is nothing to pick.
+    """
+    if not served:
+        return None
+    want = str(model or "").lower()
+
+    def _shared(cand: str) -> tuple:
+        c = cand.lower()
+        n = 0
+        for a, b in zip(want, c):
+            if a != b:
+                break
+            n += 1
+        # Prefix length first, then a stable tiebreak (shorter id, then
+        # alphabetical) so the choice never depends on dict/list order.
+        return (n, -len(c), [-ord(ch) for ch in c])
+
+    return max(served, key=_shared)
+
+
 # Marker set on the exhausted-call error when the endpoint does not serve the
 # configured model. Callers ABOVE the client (the chat loop's own retry sweep)
 # read it the way they read TIMEOUT_SHIPPED_ATTR: a fix at this layer is undone
@@ -110,5 +140,5 @@ def model_missing(exc: BaseException) -> bool:
     return bool(getattr(exc, MODEL_MISSING_ATTR, False))
 
 
-__all__ = ["served_models", "model_is_missing", "reset_cache",
-           "MODEL_MISSING_ATTR", "model_missing"]
+__all__ = ["served_models", "model_is_missing", "pick_substitute",
+           "reset_cache", "MODEL_MISSING_ATTR", "model_missing"]

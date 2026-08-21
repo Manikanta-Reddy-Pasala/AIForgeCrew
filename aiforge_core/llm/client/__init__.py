@@ -32,6 +32,8 @@ is identical to before.
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import contextvars
 import io
 import json
@@ -122,6 +124,20 @@ def _record_empty(token) -> None:
         _meter.record_failure(token, "empty")
     except Exception:  # noqa: BLE001 — metering must never break a call
         pass
+
+
+def _autofallback_enabled() -> bool:
+    """Stand in for a missing model with one the endpoint serves.
+
+    On by default: a box that serves SOMETHING can usually still do the work,
+    and the alternative is every role failing until a human edits a config
+    file. ``AIFORGE_LLM_MODEL_AUTOFALLBACK=0`` turns it off for an operator who
+    would rather a wrong model be a hard failure — a fair position when the
+    model choice is the experiment.
+    """
+    import os as _os
+    return _os.environ.get("AIFORGE_LLM_MODEL_AUTOFALLBACK", "1") not in (
+        "0", "false", "no")
 
 
 def _looks_like_a_model_error(shipped: dict) -> bool:
@@ -443,6 +459,38 @@ def _complete_impl(role: str, messages: list[dict], *,
                             primary.api_key or "")
         except Exception:  # noqa: BLE001 — a diagnostic must never mask the error
             _missing = None
+    if _missing:
+        # The box told us what it DOES serve — so use it rather than failing a
+        # whole run over one stale line of config. One retry, against the
+        # closest id the endpoint actually has. This is a rescue, not a
+        # routing decision: it is logged loudly at WARNING every time, because
+        # a silent substitution means the operator never learns their config
+        # is wrong and quietly gets a different model than they think.
+        _sub = None
+        if _autofallback_enabled():
+            try:
+                from ._models import pick_substitute as _pick
+                _sub = _pick(primary.model, _missing)
+            except Exception:  # noqa: BLE001
+                _sub = None
+        if _sub:
+            _log.warning(
+                "llm.model_substituted role=%s configured=%s served=%s "
+                "using=%s endpoint=%s — the configured model is not served "
+                "here; fix the role config or load it",
+                role, primary.model, ",".join(_missing[:8]), _sub,
+                primary.base_url,
+                extra={"aiforge": {"role": role, "configured": primary.model,
+                                   "using": _sub, "available": _missing,
+                                   "endpoint": primary.base_url}},
+            )
+            _subbed = replace(primary, model=_sub)
+            out = _try_post(_subbed, messages, shipped={},
+                            temperature=temperature, max_tokens=max_tokens,
+                            top_p=top_p, extras=extras, timeout_s=timeout_s,
+                            role=role, source="model_substitute")
+            if out is not None:
+                return out[0]
     if _missing is not None:
         _have = ", ".join(_missing[:8]) if _missing else "none loaded"
         _exhausted = RuntimeError(

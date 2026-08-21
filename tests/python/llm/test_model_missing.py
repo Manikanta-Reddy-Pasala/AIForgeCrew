@@ -194,3 +194,88 @@ def test_an_unreachable_box_is_not_probed(monkeypatch):
         c.complete("learner", [{"role": "user", "content": "hi"}])
     assert "llm.exhausted" in str(ei.value)
     assert probed["n"] == 0
+
+
+# ── standing in for a model the box does not have ────────────────────────
+
+
+def test_the_substitute_is_the_closest_id_the_box_serves():
+    from aiforge_core.llm.client._models import pick_substitute as pick
+    served = ["llama-3.3-70b", "qwen/qwen3-coder-next", "mistral-small"]
+    assert pick("qwen/qwen3.6-27b", served) == "qwen/qwen3-coder-next"
+    assert pick("anything", []) is None
+
+
+def test_the_substitute_is_deterministic():
+    """A stand-in that moves around is worse than one that is imperfect —
+    nobody can reproduce a bug that ran on a different model each time."""
+    from aiforge_core.llm.client._models import pick_substitute as pick
+    served = ["qwen/a-1", "qwen/a-2", "qwen/b-1"]
+    picks = {pick("qwen/a-9", list(reversed(served))) for _ in range(5)}
+    picks |= {pick("qwen/a-9", served) for _ in range(5)}
+    assert len(picks) == 1
+
+
+def test_a_missing_model_falls_back_to_one_that_is_served(monkeypatch):
+    monkeypatch.delenv("AIFORGE_LLM_MODEL_AUTOFALLBACK", raising=False)
+    monkeypatch.setattr(_models.urllib.request, "urlopen",
+                        _served(["qwen/qwen3-coder-next"]))
+    monkeypatch.setattr(c, "resolve", lambda role: _endpoint())
+    monkeypatch.setattr(c, "escalate", lambda *a, **k: None)
+    monkeypatch.setattr(c, "fallback", lambda *a, **k: None)
+
+    seen: list = []
+    fail = _fails_with(_http_400())
+
+    def _post(ep, messages, **kw):
+        seen.append((ep.model, kw.get("source")))
+        if ep.model == "qwen/qwen3-coder-next":
+            return ("rescued", {})
+        return fail(ep, messages, **kw)
+
+    monkeypatch.setattr(c, "_try_post", _post)
+    assert c.complete("learner", [{"role": "user", "content": "hi"}]) == "rescued"
+    assert ("qwen/qwen3-coder-next", "model_substitute") in seen
+
+
+def test_the_fallback_can_be_turned_off(monkeypatch):
+    """An operator whose model choice IS the experiment wants a wrong model to
+    be a hard failure, not a quiet substitution."""
+    monkeypatch.setenv("AIFORGE_LLM_MODEL_AUTOFALLBACK", "0")
+    monkeypatch.setattr(_models.urllib.request, "urlopen",
+                        _served(["qwen/qwen3-coder-next"]))
+    monkeypatch.setattr(c, "resolve", lambda role: _endpoint())
+    monkeypatch.setattr(c, "escalate", lambda *a, **k: None)
+    monkeypatch.setattr(c, "fallback", lambda *a, **k: None)
+    monkeypatch.setattr(c, "_try_post", _fails_with(_http_400()))
+    with pytest.raises(RuntimeError) as ei:
+        c.complete("learner", [{"role": "user", "content": "hi"}])
+    assert "llm.model_missing" in str(ei.value)
+
+
+def test_a_substitute_that_also_fails_still_names_the_real_problem(monkeypatch):
+    """The rescue is best-effort. When it does not work the operator must still
+    be told which model was configured and what the box actually has."""
+    monkeypatch.delenv("AIFORGE_LLM_MODEL_AUTOFALLBACK", raising=False)
+    monkeypatch.setattr(_models.urllib.request, "urlopen",
+                        _served(["qwen/qwen3-coder-next"]))
+    monkeypatch.setattr(c, "resolve", lambda role: _endpoint())
+    monkeypatch.setattr(c, "escalate", lambda *a, **k: None)
+    monkeypatch.setattr(c, "fallback", lambda *a, **k: None)
+    monkeypatch.setattr(c, "_try_post", _fails_with(_http_400()))
+    with pytest.raises(RuntimeError) as ei:
+        c.complete("learner", [{"role": "user", "content": "hi"}])
+    msg = str(ei.value)
+    assert "llm.model_missing" in msg and "qwen/qwen3-coder-next" in msg
+
+
+def test_an_empty_served_list_is_not_a_substitution(monkeypatch):
+    """"The box serves nothing" is not a menu to pick from."""
+    monkeypatch.setattr(_models.urllib.request, "urlopen", _served([]))
+    monkeypatch.setattr(c, "resolve", lambda role: _endpoint())
+    monkeypatch.setattr(c, "escalate", lambda *a, **k: None)
+    monkeypatch.setattr(c, "fallback", lambda *a, **k: None)
+    monkeypatch.setattr(c, "_try_post", _fails_with(_http_400()))
+    with pytest.raises(RuntimeError) as ei:
+        c.complete("learner", [{"role": "user", "content": "hi"}])
+    assert "none loaded" in str(ei.value)
