@@ -61,6 +61,26 @@ def _is_transient_llm_error(exc: Exception) -> bool:
     return any(m in s for m in _TRANSIENT_MARKERS)
 
 
+# What a server says when the requested model id is not one it serves. LM
+# Studio answers an unknown id with the same "no models loaded" wording it uses
+# for an idle-unloaded one, and a strict server answers 404 / "model not found".
+_MODEL_MISSING_MARKERS = (
+    "no models loaded",
+    "model not found",
+    "does not exist",
+    "unknown model",
+    "invalid model",
+)
+
+
+def _looks_like_missing_model(exc: BaseException) -> bool:
+    """Does this failure say the MODEL is wrong (rather than the box being
+    down)? String-matched on purpose: the pipeline reaches the endpoint through
+    LiteLlm, which flattens the provider's error into a message."""
+    s = (type(exc).__name__ + " " + str(exc)).lower()
+    return any(m in s for m in _MODEL_MISSING_MARKERS)
+
+
 def _api_base_of(model: Any) -> str:
     """Best-effort endpoint URL for a built model. ADK's LiteLlm doesn't expose
     ``api_base`` directly — it lives in ``_additional_args`` — so ``getattr``

@@ -661,3 +661,71 @@ def test_a_think_only_stream_is_not_a_healthy_request(_meter) -> None:
     g = _meter.global_snapshot(series=False)
     assert g["total"] == 1 and g["failed"] == 1
     assert g["by_fail_reason"] == {"empty": 1}
+
+
+def test_team_mode_falls_back_to_a_model_the_box_serves(monkeypatch, _meter):
+    """The rescue mirrored onto the ADK path. Without it team mode is the one
+    path that still dies on a stale line of config while simple chat recovers —
+    and it is the expensive path to lose."""
+    from aiforge_core.llm.client import _models
+    import json as _json
+
+    class _Resp:
+        def read(self):
+            return _json.dumps(
+                {"data": [{"id": "qwen/qwen3-coder-next"}]}).encode()
+        def __enter__(self):
+            return self
+        def __exit__(self, *_a):
+            return False
+
+    _models.reset_cache()
+    monkeypatch.setattr(_models.urllib.request, "urlopen",
+                        lambda *_a, **_k: _Resp())
+
+    class _MissingThenServed(BaseLlm):
+        api_base: str = "http://127.0.0.1:1234/v1"
+        seen: list = []
+
+        async def generate_content_async(self, llm_request, stream=False):
+            self.seen.append(llm_request.model)
+            if llm_request.model != "qwen/qwen3-coder-next":
+                raise RuntimeError(
+                    "litellm.BadRequestError - No models loaded. Please load a "
+                    "model in the developer page")
+            yield _resp("rescued by the stand-in")
+
+        @classmethod
+        def supported_models(cls):
+            return []
+
+    primary = _MissingThenServed(model="qwen/qwen3.6-27b", seen=[])
+    e = EscalatingLlm(model="qwen/qwen3.6-27b", role="doer",
+                      primary_model=primary, chain_models=[],
+                      chain_labels=[])
+    out = _drive(e)
+    assert out[0].content.parts[0].text == "rescued by the stand-in"
+    assert primary.seen[-1] == "qwen/qwen3-coder-next"
+    _models.reset_cache()
+
+
+def test_a_box_that_is_simply_down_is_not_substituted(monkeypatch, _meter):
+    """"Connection refused" says nothing about the model id. Probing on every
+    failure would send an outbound request from every dead-endpoint run."""
+    from aiforge_core.llm.client import _models
+
+    _models.reset_cache()
+    probed = {"n": 0}
+
+    def _boom(*_a, **_k):
+        probed["n"] += 1
+        raise OSError("refused")
+
+    monkeypatch.setattr(_models.urllib.request, "urlopen", _boom)
+    primary = _StubModel(model="qwen/x", error=ConnectionError("refused"))
+    cloud = _StubModel(model="cloud", script=[_resp("cloud answer")])
+    e = EscalatingLlm(model="qwen/x", role="doer", primary_model=primary,
+                      chain_models=[cloud], chain_labels=["cloud"])
+    assert _drive(e)[0].content.parts[0].text == "cloud answer"
+    assert probed["n"] == 0
+    _models.reset_cache()
