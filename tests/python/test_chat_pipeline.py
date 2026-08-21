@@ -107,3 +107,16 @@ def test_finalize_marks_failed_on_cancel():
 def test_finalize_noop_without_items():
     assert _finalize_subtasks(None, True, False) == []
     assert _finalize_subtasks([], True, False) == []
+
+
+def test_the_pipeline_error_marker_is_the_one_resume_reads():
+    """Team mode's failure used to emit an error step and nothing else, and an
+    error step is NOT a stop: `chat_resume` read the turn as finished, so Retry
+    re-ran the whole pipeline from nothing. The marker the worker now emits
+    alongside the error is the one `chat_resume` keys on."""
+    from aiforge_core.runtime import chat_resume
+
+    err = {"type": "error", "text": "pipeline: llm.exhausted role=doer"}
+    assert not chat_resume._is_stopped({"content": "", "steps": [err]})
+    assert chat_resume._is_stopped({"content": "", "steps": [
+        err, {"type": "stopped", "reason": "pipeline_error"}]})
