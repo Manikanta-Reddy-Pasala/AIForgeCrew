@@ -94,6 +94,7 @@ def web_crawl(args: dict, cwd: str | None = None) -> dict:
     engine = "crawl4ai"
     title = ""
     text = ""
+    tls_verified = True
     prefer = os.environ.get("AIFORGE_WEB_CRAWLER", "auto").strip().lower()
     if prefer != "fallback":
         try:
@@ -111,6 +112,12 @@ def web_crawl(args: dict, cwd: str | None = None) -> dict:
             return r
         text = r.get("text") or ""
         title = r.get("title") or title
+        # Carry the TLS downgrade through. This dossier is written so LATER
+        # SESSIONS reuse it, so a page fetched over an unverified connection
+        # that records nothing about it is the dangerous direction: the
+        # provenance is gone by the time anyone reads the note.
+        if r.get("tls_verified") is False:
+            tls_verified = False
     if not text.strip():
         return {"ok": False, "error": "page fetched but no readable text"}
 
@@ -126,17 +133,21 @@ def web_crawl(args: dict, cwd: str | None = None) -> dict:
     note = work_notes.render_note(
         "web", slug, title=title or safe_url, source_url=safe_url,
         facts=[f"title: {title or safe_url}", f"chars: {len(text)}",
-               f"engine: {engine}"],
+               f"engine: {engine}"]
+              + ([] if tls_verified else
+                 ["tls: NOT VERIFIED (certificate could not be checked)"]),
         links=[safe_url], body_md=text)
     try:
         _atomic.write_text(page_path, note)
         _atomic.write_text(meta_path, json.dumps(
             {"url": safe_url, "title": title, "engine": engine,
-             "fetched_at": int(time.time()), "chars": len(text)}, indent=1))
+             "fetched_at": int(time.time()), "chars": len(text),
+             **({} if tls_verified else {"tls_verified": False})}, indent=1))
     except OSError as exc:
         return {"ok": False, "error": f"saved nothing: {exc}"}
     return {"ok": True, "path": page_path, "url": safe_url, "title": title,
             "engine": engine, "chars": len(text),
+            **({} if tls_verified else {"tls_verified": False}),
             "preview": text[:max_chars],
             "note": "full page saved — file_read the path for more; "
                     "memory_write key take-aways you want recalled later"}

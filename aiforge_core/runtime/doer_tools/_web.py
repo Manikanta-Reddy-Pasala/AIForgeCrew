@@ -46,7 +46,8 @@ def _do_fetch(url: str) -> dict:
         if exc.kind != "dns":
             return {"ok": False, "error": f"blocked (ssrf): {exc}"}
     from aiforge_core.net.ssl import (insecure_context, is_cert_error,
-                                      web_tls_fallback_enabled)
+                                      public_verifying_context,
+                                      web_tls_fallback_allowed_for)
     _unverified = False
     try:
         req = urllib.request.Request(
@@ -62,9 +63,14 @@ def _do_fetch(url: str) -> dict:
         # the whole web unreadable. The retry is reported (`tls_verified:
         # False`), never silent, and AIFORGE_WEB_INSECURE_TLS=0 forbids it.
         try:
-            resp_cm = urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT_S)
+            # Honour AIFORGE_LLM_CA_BUNDLE on the VERIFIED attempt. Without it
+            # the operator's fix for a TLS-inspecting network (install its CA)
+            # did nothing on this path and every page came back through the
+            # unverified fallback instead.
+            resp_cm = urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT_S,
+                                             context=public_verifying_context())
         except Exception as _exc:  # noqa: BLE001 — classified right here
-            if not (is_cert_error(_exc) and web_tls_fallback_enabled()):
+            if not (is_cert_error(_exc) and web_tls_fallback_allowed_for(url)):
                 raise
             _log.warning("web.tls_unverified url=%s err=%s — refetching "
                          "without verification", url, str(_exc)[:160])
