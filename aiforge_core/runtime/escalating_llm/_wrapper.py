@@ -19,6 +19,7 @@ from ._policy import (
     _demote_after,
     _is_empty,
     _is_transient_llm_error,
+    _looks_like_missing_model,
 )
 from ._builder import _build_one, _mirror_to_langfuse
 
@@ -150,6 +151,51 @@ class EscalatingLlm(BaseLlm):
         if self.primary_fail_streak >= _demote_after():
             self.primary_demoted = True
 
+    async def _substitute_model(self, exc, model, req, label):
+        """Re-issue ONE attempt against a model this endpoint actually serves.
+
+        Yields the responses when the stand-in worked and nothing when it did
+        not — the caller then falls through to the cloud chain exactly as
+        before. LiteLlm picks ``llm_request.model`` before its own, so the
+        substitution is a stamped request, not a rebuilt model object.
+        """
+        if not _looks_like_missing_model(exc):
+            return
+        base = _api_base_of(model)
+        if not base:
+            return
+        try:
+            from aiforge_core.llm.client._models import (
+                model_is_missing, pick_substitute)
+            served = model_is_missing(base, getattr(model, "model", "") or "")
+            sub = pick_substitute(getattr(model, "model", "") or "", served or [])
+        except Exception:  # noqa: BLE001 — a rescue must never add a failure
+            return
+        if not sub:
+            return
+        log.warning(
+            "llm.model_substituted role=%s attempt=%s configured=%s using=%s "
+            "api_base=%s — the configured model is not served here; fix the "
+            "role config or load it", self.role, label,
+            getattr(model, "model", "?"), sub, base)
+        try:
+            await _throttle_global()
+            _tok = _meter_record(self.role, sub)
+            out = []
+            async for r in model.generate_content_async(
+                    req.model_copy(update={"model": sub}), stream=False):
+                out.append(r)
+        except Exception as sub_exc:  # noqa: BLE001
+            _meter_fail(_tok, sub_exc)
+            log.warning("llm.model_substitute_failed role=%s err=%.200s",
+                        self.role, str(sub_exc))
+            return
+        if not out or all(_is_empty(r) for r in out):
+            _meter_fail(_tok, reason="empty")
+            return
+        for r in out:
+            yield r
+
     async def generate_content_async(
         self, llm_request: LlmRequest, stream: bool = False,
     ) -> AsyncGenerator[LlmResponse, None]:
@@ -273,6 +319,23 @@ class EscalatingLlm(BaseLlm):
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 err_str = str(exc)
+                # The model id is wrong, not the box. Same rescue the direct
+                # client path does, mirrored here because ADK agents never
+                # touch llm.client — without it team mode is the one path that
+                # still dies on a stale line of config while chat recovers.
+                _sub_out = None
+                async for _r in self._substitute_model(
+                        exc, model, req_for_attempt, label):
+                    _sub_out = _sub_out or []
+                    _sub_out.append(_r)
+                if _sub_out:
+                    _mirror_to_langfuse(
+                        self.role, req_for_attempt, _sub_out,
+                        getattr(model, "model", "") or label,
+                        int((_time.monotonic() - _t0) * 1000))
+                    for _r in _sub_out:
+                        yield _r
+                    return
                 log.warning(
                     "llm.attempt_failed role=%s attempt=%s model=%s "
                     "api_base=%s errtype=%s err=%s",
