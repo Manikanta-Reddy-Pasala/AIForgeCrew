@@ -124,6 +124,31 @@ def _record_empty(token) -> None:
         pass
 
 
+def _looks_like_a_model_error(shipped: dict) -> bool:
+    """Is it worth asking the endpoint which models it serves?
+
+    Only when the box ANSWERED and its answer was about the model: a 4xx (LM
+    Studio's "No models loaded", a 404 for an unknown id) or the reloading
+    exception that wording raises. Two exclusions, both load-bearing:
+
+    * A SHIPPED read timeout proves the model exists — it accepted the prompt
+      and is still generating. Calling that a missing model would rename the
+      one failure the whole no-re-POST rule is built around.
+    * A refused connection, a DNS failure or an unreachable host says nothing
+      about model configuration, and probing on every such failure means an
+      outbound request from code paths (including tests) that never asked for
+      one.
+    """
+    if shipped.get("timeout"):
+        return False
+    exc = shipped.get("exc")
+    if exc is None:
+        return False
+    if isinstance(exc, _ModelReloading):
+        return True
+    return isinstance(exc, urllib.error.HTTPError) and 400 <= exc.code < 500
+
+
 def _try_post(ep: Endpoint, messages: list[dict],
               *, temperature, max_tokens, top_p, extras,
               timeout_s: int, role: str,
@@ -188,6 +213,13 @@ def _try_post(ep: Endpoint, messages: list[dict],
             # is about.
             if shipped is not None and _shipped_timeout(_texc):
                 shipped["timeout"] = True
+            if shipped is not None:
+                # Keep the LAST transport failure. What killed the chain
+                # decides which diagnosis is even worth making: only a
+                # model-lifecycle 4xx ("no models loaded", "model not found")
+                # says anything about the configured model. A refused
+                # connection or a read timeout does not.
+                shipped["exc"] = _texc
             return None
         _record_usage(role, body)
         text = _extract_text(body)
@@ -404,11 +436,13 @@ def _complete_impl(role: str, messages: list[dict], *,
     # model didn't respond", naming neither the model nor the endpoint. One
     # cheap GET turns that into the sentence that fixes it.
     _missing = None
-    try:
-        from ._models import model_is_missing as _mim
-        _missing = _mim(primary.base_url, primary.model, primary.api_key or "")
-    except Exception:  # noqa: BLE001 — a diagnostic must never mask the error
-        _missing = None
+    if _looks_like_a_model_error(_shipped):
+        try:
+            from ._models import model_is_missing as _mim
+            _missing = _mim(primary.base_url, primary.model,
+                            primary.api_key or "")
+        except Exception:  # noqa: BLE001 — a diagnostic must never mask the error
+            _missing = None
     if _missing is not None:
         _have = ", ".join(_missing[:8]) if _missing else "none loaded"
         _exhausted = RuntimeError(
