@@ -776,7 +776,7 @@ def run_chat_agent(
         # Requests this turn had spent BEFORE this step — the baseline the
         # per-step generation budget is measured from.
         _step_calls0 = 0
-        if _meter is not None and session_id is not None:
+        if _meter is not None and session_id is not None and _max_gen_per_step() > 0:
             try:
                 _step_calls0 = int(_meter.snapshot(session_id).get("turn") or 0)
             except Exception:  # noqa: BLE001
@@ -813,6 +813,24 @@ def run_chat_agent(
             _budget = _max_gen_per_step()
             if _budget > 0:      # 0 = ceiling disabled, not "no retries"
                 _retries = min(_retries, max(0, _budget - _spent))
+
+            def _over_budget() -> bool:
+                """Has this STEP spent its generation budget yet?
+
+                Re-read every sweep, because one sweep is not one generation:
+                below this loop the client re-posts an empty answer and the
+                transport re-attempts a broken one, so a single sweep can burn
+                four or twelve. Extrapolating the whole step from the first
+                sample let a declared ceiling of 6 spend 12 — the very
+                multiplication this exists to stop."""
+                if _budget <= 0 or _meter is None or session_id is None:
+                    return False
+                try:
+                    _now_spent = int(
+                        _meter.snapshot(session_id).get("turn") or 0) - _step_calls0
+                except Exception:  # noqa: BLE001
+                    return False
+                return _now_spent >= _budget
             # A read timeout means the model RECEIVED this prompt and is
             # still generating it. Re-issuing the identical completion leaves
             # that generation running and starts another on a box that already
@@ -842,6 +860,8 @@ def run_chat_agent(
             _last = exc
             for _rn in range(_retries):
                 if session_id is not None and chat_cancel.is_cancelled(session_id):
+                    break
+                if _over_budget():
                     break
                 yield {"type": "thought", "role": "system",
                        "text": f"⟳ model didn't respond — retrying ({_rn + 1}/{_retries})…"}

@@ -362,8 +362,15 @@ def complete_raw(role: str, messages: list[dict], *,
         ex["tool_choice"] = tool_choice
     ep: Endpoint = resolve(role)
     payload = _build_body(ep, messages, temperature, max_tokens, top_p, ex)
-    body = _post_with_retry(ep, payload, timeout_s, role=role, source="native")
-    _record_usage(role, body)
+    # The meter token, threaded exactly as `_try_post` does it. Without it the
+    # tokens land machine-wide but on NO turn — and this is the DEFAULT chat
+    # path (AIFORGE_CHAT_TOOL_PROTOCOL=native), so "how much did this message
+    # write" read 0 for almost every real message while the session total
+    # climbed. A per-turn number that is always zero is worse than none.
+    _meter_tok: list = [None]
+    body = _post_with_retry(ep, payload, timeout_s, role=role, source="native",
+                            meter=_meter_tok)
+    _record_usage(role, body, _meter_tok[0])
     try:
         msg = body["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as exc:
