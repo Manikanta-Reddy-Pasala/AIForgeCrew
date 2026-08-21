@@ -126,6 +126,63 @@ def _record_empty(token) -> None:
         pass
 
 
+def _model_chain_enabled() -> bool:
+    """Try the operator's other configured models when the chosen one fails.
+
+    On by default — four models were configured precisely so that one of them
+    answering is enough. ``AIFORGE_LLM_MODEL_CHAIN=0`` restores "the selected
+    model or nothing", which is the right setting when a run must be
+    attributable to one exact model.
+    """
+    import os as _os
+    return _os.environ.get("AIFORGE_LLM_MODEL_CHAIN", "1") not in (
+        "0", "false", "no")
+
+
+def _try_model_chain(role: str, primary: Endpoint, messages: list[dict], *,
+                     temperature, max_tokens, top_p, extras,
+                     timeout_s: int) -> "str | None":
+    """One attempt against each OTHER configured model, in registry order.
+
+    A row may carry its own base_url/key (a second host); when it does not, it
+    is the same endpoint with a different model id — which is the common case
+    for several models loaded on one local server.
+    """
+    if not _model_chain_enabled():
+        return None
+    try:
+        from aiforge_core.config import model_registry
+        rows = model_registry.chain_after(primary.model)
+    except Exception:  # noqa: BLE001 — the registry is optional
+        return None
+    for row in rows:
+        mid = (row.get("model") or "").strip()
+        if not mid:
+            continue
+        ep = replace(
+            primary,
+            model=mid,
+            base_url=(row.get("base_url") or "").strip() or primary.base_url,
+            api_key=(row.get("api_key") or "") or primary.api_key,
+        )
+        _log.warning(
+            "llm.model_chain_try role=%s failed=%s trying=%s endpoint=%s — "
+            "the selected model did not answer; falling through to the next "
+            "configured model",
+            role, primary.model, mid, ep.base_url,
+            extra={"aiforge": {"role": role, "failed": primary.model,
+                               "trying": mid, "endpoint": ep.base_url}},
+        )
+        out = _try_post(ep, messages, shipped={}, temperature=temperature,
+                        max_tokens=max_tokens, top_p=top_p, extras=extras,
+                        timeout_s=timeout_s, role=role, source="model_chain")
+        if out is not None:
+            _log.warning("llm.model_chain_used role=%s model=%s (selected %s "
+                         "did not answer)", role, mid, primary.model)
+            return out[0]
+    return None
+
+
 def _autofallback_enabled() -> bool:
     """Stand in for a missing model with one the endpoint serves.
 
@@ -453,6 +510,22 @@ def _complete_impl(role: str, messages: list[dict], *,
                         source="quality_escalation")
         if out is not None:
             return out[0]
+
+    # THE OTHER MODELS THE OPERATOR CONFIGURED. "I added four models; when the
+    # one chat picked stops answering it should try the others" — until now the
+    # registry was a selection list only, and the provider fallback chain is
+    # for CLOUD escalation (empty without a cloud key), so on a single-provider
+    # install a dead model was simply the end.
+    #
+    # Deliberately AFTER the same-provider fallback and the quality escalation,
+    # and one attempt per model: this is a rescue, not a routing policy. Each
+    # switch is logged, because an answer that silently came from a different
+    # model than the operator selected is worse than a clear failure.
+    out = _try_model_chain(role, primary, messages, temperature=temperature,
+                           max_tokens=max_tokens, top_p=top_p, extras=extras,
+                           timeout_s=timeout_s)
+    if out is not None:
+        return out
 
     # Before blaming the network: is the configured model even served here? A
     # role pointed at a model id the box does not have fails with model-

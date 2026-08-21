@@ -106,6 +106,32 @@ def list_models() -> list[dict]:
     return [_public(r) for r in _load()]
 
 
+def chain_after(model: str) -> list[dict]:
+    """The OTHER configured models, in registry order, as raw rows.
+
+    "I added four models; when the one chat picked stops answering it should
+    try the others" — the registry was only ever a selection list, so a dead
+    model was the end of the road on a single-provider install: the provider
+    fallback chain is for CLOUD escalation and is empty when there is no cloud
+    key, so nothing had anywhere to go.
+
+    Raw rows (api_key included) because the caller builds an Endpoint from
+    them. Rows without a usable model id are dropped, and the model already in
+    hand is never offered back to itself — retrying the same id is what just
+    failed.
+    """
+    want = (model or "").strip().lower()
+    out: list[dict] = []
+    for r in _load():
+        mid = (r.get("model") or "").strip()
+        if not mid or mid.lower() == want:
+            continue
+        if "embed" in mid.lower():        # not chat-capable
+            continue
+        out.append(dict(r))
+    return out
+
+
 def get_model(model_id: str) -> dict | None:
     for r in _load():
         if r.get("id") == model_id:
@@ -430,6 +456,6 @@ def auto_assign(roles: list) -> dict:
     return {"assignments": plan, "results": results}
 
 
-__all__ = ["list_models", "get_model", "add_model", "update_model",
-           "remove_model", "vision_for", "apply_to_roles",
+__all__ = ["list_models", "get_model", "chain_after", "add_model",
+           "update_model", "remove_model", "vision_for", "apply_to_roles",
            "detect_capability", "suggest_assignments", "auto_assign"]
