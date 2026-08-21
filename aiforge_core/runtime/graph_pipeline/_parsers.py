@@ -28,6 +28,12 @@ from ._config import (
 import re
 
 
+# Ceiling on subtasks INFERRED from numbered markdown (never on a structured
+# plan, which is a real decomposition). 8 x ITERS_PER_SUBTASK still clears the
+# moderate tier, so a genuinely large prose plan is not punished.
+_MAX_INFERRED_SUBTASKS = 8
+
+
 def _plan_subtask_count(state: Any) -> int:
     """How many subtasks/phases the Planner decomposed the ticket into — the
     driver for the DYNAMIC iteration budget. Tries the structured extractor
@@ -44,7 +50,14 @@ def _plan_subtask_count(state: Any) -> int:
         pass
     if isinstance(plan, str) and plan:
         try:
-            return len(_NUMBERED_LINE_RE.findall(plan))
+            # A numbered LINE is not a subtask. Acceptance criteria, risks and
+            # notes are numbered too, so a wordy plan for a trivial ticket
+            # counted 41 "subtasks" and bought the 200-iteration ceiling —
+            # the triage verdict became irrelevant the moment the plan was
+            # verbose. Cap the inferred count: past this many numbered lines
+            # the number says more about the writing than the work.
+            return min(len(_NUMBERED_LINE_RE.findall(plan)),
+                       _MAX_INFERRED_SUBTASKS)
         except Exception:  # noqa: BLE001
             return 0
     return 0
