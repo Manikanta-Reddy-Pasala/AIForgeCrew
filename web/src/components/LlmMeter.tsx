@@ -30,12 +30,11 @@ function rateTone(perMin: number): string {
  *  second chart — and a bar that is entirely red (every attempt in that minute
  *  failed) cannot be mistaken for a busy one. */
 function Sparkline({ data, fails }: { data: number[]; fails?: number[] }) {
-  // Scale on whatever HAPPENED in a minute, sends or failures. A minute can
-  // hold more failures than sends (a failure is charged to the minute of its
-  // SEND, and a late one past retention is re-stamped to now), and the backend
-  // creates a bucket for a minute that is nothing but failures — the most
-  // important minute the meter can show. Scaling on sends alone drew that
-  // minute at the idle-grey height: identical to nothing happening.
+  // Scale on whatever HAPPENED in a minute, sends or failures. The backend
+  // creates a bucket for a minute that is nothing but failures — a minute whose
+  // only event was a call giving up is the most important one the meter can
+  // show — and scaling on sends alone drew it at the idle-grey height:
+  // identical to nothing happening at all.
   const at = (i: number) => Math.max(0, fails?.[i] ?? 0);
   const max = Math.max(1, ...data.map((v, i) => Math.max(v, at(i))));
   return (
