@@ -72,6 +72,30 @@ def _last_user(history):
     return next(m["content"] for m in reversed(history) if m["role"] == "user")
 
 
+def _wait_for_turns(sid, n, timeout_s: float = 15.0):
+    """Block until ``n`` assistant turns are on disk.
+
+    The route returns as soon as the stream is consumed, but the turn is
+    PERSISTED by a background thread. The next message builds its history from
+    whatever has landed — so under a loaded full-suite run turn 2 could read a
+    transcript with no assistant turn in it, find nothing to resume, and fail
+    an assertion about the brief. In isolation the write always won that race,
+    which is why this file passed alone and failed a DIFFERENT test on most
+    full-suite runs.
+    """
+    import time as _t
+    from aiforge_core.runtime import chat_store
+    deadline = _t.monotonic() + timeout_s
+    while _t.monotonic() < deadline:
+        rows = chat_store.get_messages(sid)
+        if sum(1 for r in rows if r.get("role") == "assistant") >= n:
+            return rows
+        _t.sleep(0.05)
+    raise AssertionError(
+        f"assistant turn {n} never persisted for session {sid}: "
+        f"{chat_store.get_messages(sid)}")
+
+
 def _assert_stopped_turn_persisted(sid):
     """The brief is built from the PERSISTED turn, so a test that asserts on
     the brief is really asserting two things. Check the precondition
@@ -91,6 +115,7 @@ def test_retry_after_a_stopped_turn_carries_the_resume_brief(app_client, monkeyp
     # Turn 1 stops after an edit that DID land.
     assert client.post(f"/api/chat/sessions/{sid}/message",
                        json={"content": "build the parser"}).status_code == 200
+    _wait_for_turns(sid, 1)
 
     # Turn 2 = the same words again (what Retry sends).
     assert client.post(f"/api/chat/sessions/{sid}/message",
@@ -106,6 +131,7 @@ def test_a_normal_follow_up_is_untouched(app_client, monkeypatch):
     sid = client.post("/api/chat/sessions", json={"title": "t"}).json()["id"]
     assert client.post(f"/api/chat/sessions/{sid}/message",
                        json={"content": "build the parser"}).status_code == 200
+    _wait_for_turns(sid, 1)
     # DIFFERENT words → a follow-up, not a retry: no brief, no "finish only
     # what is pending" instruction hijacking a fresh request.
     assert client.post(f"/api/chat/sessions/{sid}/message",
@@ -120,6 +146,7 @@ def test_start_over_forces_a_clean_rerun(app_client, monkeypatch):
     sid = client.post("/api/chat/sessions", json={"title": "t"}).json()["id"]
     assert client.post(f"/api/chat/sessions/{sid}/message",
                        json={"content": "build the parser"}).status_code == 200
+    _wait_for_turns(sid, 1)
     assert client.post(f"/api/chat/sessions/{sid}/message",
                        json={"content": "build the parser",
                              "resume": False}).status_code == 200
@@ -162,6 +189,7 @@ def test_resume_flag_forces_it_after_a_rephrase(app_client, monkeypatch):
     sid = client.post("/api/chat/sessions", json={"title": "t"}).json()["id"]
     assert client.post(f"/api/chat/sessions/{sid}/message",
                        json={"content": "build the parser"}).status_code == 200
+    _wait_for_turns(sid, 1)
     _assert_stopped_turn_persisted(sid)
     assert client.post(f"/api/chat/sessions/{sid}/message",
                        json={"content": "carry on with it",
@@ -201,6 +229,7 @@ def test_a_turn_that_died_on_an_llm_error_is_resumable(app_client, monkeypatch):
     sid = client.post("/api/chat/sessions", json={"title": "t"}).json()["id"]
     assert client.post(f"/api/chat/sessions/{sid}/message",
                        json={"content": "build the parser"}).status_code == 200
+    _wait_for_turns(sid, 1)
     _assert_stopped_turn_persisted(sid)
 
     assert client.post(f"/api/chat/sessions/{sid}/message",
