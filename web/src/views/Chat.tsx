@@ -760,6 +760,11 @@ export default function Chat() {
           ...(evt.llm_turn !== undefined ? {
             llmTurn: evt.llm_turn, llmSession: evt.llm_session,
             llmPerMin: evt.llm_per_min,
+            // `?? 0`, not the raw value: an API that predates these fields
+            // would otherwise leave the previous event's failure count
+            // standing on a turn that never reported one.
+            llmTurnFailed: evt.llm_turn_failed ?? 0,
+            llmFailedPerMin: evt.llm_failed_per_min ?? 0,
           } : {}),
         } } : prev);
         return;
@@ -1669,8 +1674,20 @@ export default function Chat() {
                            title={`${liveTurn.usage.llmTurn} request(s) to the model for this message · `
                                   + `${liveTurn.usage.llmSession ?? 0} in this chat since the server started · `
                                   + `${liveTurn.usage.llmPerMin ?? 0}/min across all chats right now. `
+                                  + ((liveTurn.usage.llmTurnFailed ?? 0) > 0
+                                      ? `${liveTurn.usage.llmTurnFailed} of this message's requests came back `
+                                        + `with no answer (timeout, error or empty) and were retried. `
+                                      : '')
                                   + `Counted at the wire, so retries count too.`}>
                         <span>⚡ {liveTurn.usage.llmTurn} LLM {liveTurn.usage.llmTurn === 1 ? 'request' : 'requests'}</span>
+                        {(liveTurn.usage.llmTurnFailed ?? 0) > 0 && (
+                          // Named, not netted out: "12 requests, 7 failed" is a
+                          // retry storm; "12 requests" alone reads as a
+                          // thorough turn.
+                          <span style={{ color: 'var(--err,#e5534b)' }}>
+                            · {liveTurn.usage.llmTurnFailed} failed
+                          </span>
+                        )}
                         {(liveTurn.usage.llmSession ?? 0) > (liveTurn.usage.llmTurn ?? 0) && (
                           <span>· {liveTurn.usage.llmSession} this chat</span>
                         )}

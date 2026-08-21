@@ -80,7 +80,7 @@ def test_try_post_retries_same_endpoint_until_real_answer(monkeypatch):
     ])
     calls = {"n": 0}
 
-    def fake_post_with_retry(ep, payload, timeout_s, *, role, source):
+    def fake_post_with_retry(ep, payload, timeout_s, *, role, source, **_kw):
         calls["n"] += 1
         return next(seq)
 
@@ -101,7 +101,7 @@ def test_try_post_gives_up_after_all_retries_garbage(monkeypatch):
     monkeypatch.setattr(c.time, "sleep", lambda *_: None)
     calls = {"n": 0}
 
-    def fake_post_with_retry(ep, payload, timeout_s, *, role, source):
+    def fake_post_with_retry(ep, payload, timeout_s, *, role, source, **_kw):
         calls["n"] += 1
         return _msg_body("<think>never answers</think>")
 

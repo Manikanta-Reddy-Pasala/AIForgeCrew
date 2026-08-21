@@ -96,6 +96,15 @@ def llm_usage(series: bool = True) -> dict:
     the sparkline; ``by_model`` is the axis that actually distinguishes
     endpoints when one provider class serves all of them. In-process and reset
     on restart — a live meter, not billing.
+
+    FAILURES are reported alongside every one of those windows
+    (``failed_per_minute`` / ``failed_15m`` / ``failed_60m`` / ``failed``,
+    ``by_fail_reason``, ``series_fail_60m``) and are a SUBSET of them, never a
+    separate population: a request that failed still went out, still cost the
+    endpoint and still counted against its rate limit, so subtracting failures
+    from the rate would make the meter read its quietest exactly when the box
+    is drowning in retries. Each failure is charged to the minute of its SEND,
+    so a 600s timeout lands in the minute whose traffic it actually was.
     """
     from aiforge_core.llm import call_meter
     return call_meter.global_snapshot(series=bool(series))

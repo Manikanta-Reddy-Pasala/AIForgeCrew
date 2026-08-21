@@ -1780,7 +1780,14 @@ button.icon:hover:not(:disabled) { color: var(--fg-0); background: var(--bg-3); 
   height: 30px;
   padding: 0 1px;
 }
-.llm-meter-spark > span { flex: 1; border-radius: 1px; min-width: 2px; }
+.llm-meter-spark > span { flex: 1; border-radius: 1px; min-width: 2px; position: relative; }
+/* The failed share of a minute, painted from the BASE of that minute's bar —
+   same bar, not a second series, because a failure is one of the requests the
+   bar already counts. */
+.llm-meter-spark > span > i {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  border-radius: 1px;
+}
 .llm-meter-label { font-size: 9px; color: var(--fg-2); text-transform: uppercase; letter-spacing: .04em; }
 .llm-meter-rows { display: flex; flex-direction: column; gap: 2px; }
 .llm-meter-row {

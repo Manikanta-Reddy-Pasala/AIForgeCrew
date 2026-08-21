@@ -25,34 +25,73 @@ function rateTone(perMin: number): string {
   return 'var(--fg-2)';
 }
 
-function Sparkline({ data }: { data: number[] }) {
-  const max = Math.max(1, ...data);
+/** One bar per minute. A minute's FAILED share is drawn in the error colour at
+ *  the base of its own bar, so a wall of red is legible at a glance without a
+ *  second chart — and a bar that is entirely red (every attempt in that minute
+ *  failed) cannot be mistaken for a busy one. */
+function Sparkline({ data, fails }: { data: number[]; fails?: number[] }) {
+  // Scale on whatever HAPPENED in a minute, sends or failures. The backend
+  // creates a bucket for a minute that is nothing but failures — a minute whose
+  // only event was a call giving up is the most important one the meter can
+  // show — and scaling on sends alone drew it at the idle-grey height:
+  // identical to nothing happening at all.
+  const at = (i: number) => Math.max(0, fails?.[i] ?? 0);
+  const max = Math.max(1, ...data.map((v, i) => Math.max(v, at(i))));
   return (
     <div className="llm-meter-spark" aria-hidden="true">
-      {data.map((v, i) => (
-        <span
-          key={i}
-          style={{
-            height: `${Math.max(v > 0 ? 2 : 1, Math.round((v / max) * 28))}px`,
-            background: v > 0 ? 'var(--accent)' : 'var(--border-0)',
-          }}
-        />
-      ))}
+      {data.map((v, i) => {
+        const f = at(i);
+        const tot = Math.max(v, f);
+        const h = Math.max(tot > 0 ? 2 : 1, Math.round((tot / max) * 28));
+        const fh = f > 0 ? Math.max(1, Math.round((Math.min(f, tot) / Math.max(1, tot)) * h)) : 0;
+        return (
+          <span
+            key={i}
+            style={{
+              height: `${h}px`,
+              background: tot > 0 ? 'var(--accent)' : 'var(--border-0)',
+            }}
+          >
+            {fh > 0 && <i style={{ height: `${fh}px`, background: 'var(--err)' }} />}
+          </span>
+        );
+      })}
     </div>
   );
 }
 
-function Rows({ title, data }: { title: string; data: Record<string, number> }) {
+function Rows({ title, data, tone }: {
+  title: string; data: Record<string, number>; tone?: string;
+}) {
   const rows = Object.entries(data || {}).sort((a, b) => b[1] - a[1]).slice(0, 8);
   if (!rows.length) return null;
   return (
     <div className="llm-meter-rows">
       <div className="llm-meter-label">{title}</div>
       {rows.map(([k, v]) => (
-        <div key={k} className="llm-meter-row">
+        <div key={k} className="llm-meter-row" style={tone ? { color: tone } : undefined}>
           <span>{k}</span><b>{v}</b>
         </div>
       ))}
+    </div>
+  );
+}
+
+/** One window's number, with the failed share underneath it. The failed count
+ *  is a SUBSET of the number above, so it is shown as "of which", never
+ *  subtracted — the requests were sent either way. */
+function Stat({ n, failed, label, show }: {
+  n: string; failed: number; label: string; show: boolean;
+}) {
+  return (
+    <div>
+      <span>{n}</span>
+      <small>
+        {label}
+        {show && failed > 0 && (
+          <b style={{ color: 'var(--err)', fontWeight: 600 }}> · {failed} failed</b>
+        )}
+      </small>
     </div>
   );
 }
@@ -106,8 +145,14 @@ function LlmMeterInner() {
   const down = stale || (!u && !q.isLoading);
   const perMin = u?.per_minute ?? 0;
   const hour = u?.last_60m ?? 0;
+  // `?? 0` throughout: a browser can be polling an API that predates the
+  // failure fields, and an undefined must read as "no failures reported", not
+  // render "NaN failed".
+  const failMin = u?.failed_per_minute ?? 0;
+  const failHour = u?.failed_60m ?? 0;
   const n = (v: number) => (u && !stale ? String(v) : '—');
   const series = Array.isArray(u?.series_60m) ? u!.series_60m! : null;
+  const failSeries = Array.isArray(u?.series_fail_60m) ? u!.series_fail_60m! : undefined;
 
   return (
     <div className="llm-meter" ref={box}>
@@ -118,6 +163,10 @@ function LlmMeterInner() {
         title={u && !stale
           ? `${perMin} LLM request(s) in the last minute · ${u.last_15m} in 15 min · `
             + `${hour} in the last hour · ${u.total} since the API started. `
+            + (failHour
+                ? `${failMin} of the last minute and ${failHour} of the last hour `
+                  + 'came back with no answer (still counted — they went out). '
+                : '')
             + 'Counted at the wire, retries included. Click for the breakdown.'
           : down ? 'LLM meter unreachable — this is not "no requests"'
                  : 'LLM requests sent by AIForge'}
@@ -126,6 +175,14 @@ function LlmMeterInner() {
         <span style={{ color: u && !stale ? rateTone(perMin) : 'var(--fg-2)' }}>{n(perMin)}/min</span>
         <span className="llm-meter-sep">·</span>
         <span>{n(hour)} 1h</span>
+        {!!u && !stale && failMin > 0 && (
+          // Failures are shown NEXT TO the rate, never subtracted from it: the
+          // requests were sent. "40/min · ✕38" is the reading that says retry
+          // storm; a rate with the failures quietly removed would read 2.
+          <span style={{ color: 'var(--err)' }} title={`${failMin} failed in the last minute`}>
+            · ✕{failMin}
+          </span>
+        )}
         {!!u && !stale && u.queued > 0 && (
           // Being throttled is not the same as being slow. Say so, or a capped
           // box reads as a broken one.
@@ -141,15 +198,19 @@ function LlmMeterInner() {
           </div>
 
           <div className="llm-meter-stats">
-            <div><span>{n(perMin)}</span><small>last min</small></div>
-            <div><span>{n(u?.last_15m ?? 0)}</span><small>last 15 min</small></div>
-            <div><span>{n(hour)}</span><small>last hour</small></div>
-            <div><span>{n(u?.total ?? 0)}</span><small>since start</small></div>
+            <Stat n={n(perMin)} failed={failMin} label="last min" show={!!u && !stale} />
+            <Stat n={n(u?.last_15m ?? 0)} failed={u?.failed_15m ?? 0}
+                  label="last 15 min" show={!!u && !stale} />
+            <Stat n={n(hour)} failed={failHour} label="last hour" show={!!u && !stale} />
+            <Stat n={n(u?.total ?? 0)} failed={u?.failed ?? 0}
+                  label="since start" show={!!u && !stale} />
           </div>
 
           {series && <>
-            <Sparkline data={series} />
-            <div className="llm-meter-label">per minute, last 60 min</div>
+            <Sparkline data={series} fails={failSeries} />
+            <div className="llm-meter-label">
+              per minute, last 60 min{failHour ? ' — red = no answer' : ''}
+            </div>
           </>}
 
           {!!u?.limit_rpm && (
@@ -160,6 +221,8 @@ function LlmMeterInner() {
           )}
           <Rows title="by role (last hour)" data={u?.by_role || {}} />
           <Rows title="by model (last hour)" data={u?.by_model || {}} />
+          <Rows title="failed (last hour)" data={u?.by_fail_reason || {}}
+                tone="var(--err)" />
 
           {u?.rate_capped && (
             <div className="llm-meter-note">

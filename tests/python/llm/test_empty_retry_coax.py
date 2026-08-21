@@ -21,7 +21,7 @@ def _body(content):
 def test_empty_then_coaxed_retry(monkeypatch):
     posts: list[dict] = []
 
-    def _fake_post(ep, payload, timeout_s, *, role, source):
+    def _fake_post(ep, payload, timeout_s, *, role, source, **_kw):
         posts.append(json.loads(payload.decode()))
         # first post → empty (reasoning-only); second → real answer
         return _body("" if len(posts) == 1 else "System log tickets are tracked…")
@@ -51,7 +51,7 @@ def test_fast_role_coaxes_no_think_from_first_attempt(monkeypatch):
     attempt 0 — pre-empting the empty instead of discovering it on retry."""
     posts: list = []
 
-    def _fake_post(ep, payload, timeout_s, *, role, source):
+    def _fake_post(ep, payload, timeout_s, *, role, source, **_kw):
         posts.append(json.loads(payload.decode()))
         return _body("distilled fact")
     monkeypatch.setattr(c, "_post_with_retry", _fake_post)
@@ -68,7 +68,7 @@ def test_thinking_role_keeps_reasoning_on_first_attempt(monkeypatch):
     """A THINKING role (planner) must NOT be coaxed — it needs the reasoning."""
     posts: list = []
 
-    def _fake_post(ep, payload, timeout_s, *, role, source):
+    def _fake_post(ep, payload, timeout_s, *, role, source, **_kw):
         posts.append(json.loads(payload.decode()))
         return _body("a plan")
     monkeypatch.setattr(c, "_post_with_retry", _fake_post)
@@ -112,7 +112,7 @@ def test_learner_empty_list_returns_first_attempt(monkeypatch):
     """A model that answers '[]' must NOT trigger the 3× empty-retry loop."""
     posts: list = []
 
-    def _fake_post(ep, payload, timeout_s, *, role, source):
+    def _fake_post(ep, payload, timeout_s, *, role, source, **_kw):
         posts.append(1)
         return _body("[]")
     monkeypatch.setattr(c, "_post_with_retry", _fake_post)
@@ -130,7 +130,7 @@ def test_empty_retry_widens_max_tokens_progressively(monkeypatch):
     so we keep trying to get a real answer instead of giving up."""
     posts: list[dict] = []
 
-    def _fake_post(ep, payload, timeout_s, *, role, source):
+    def _fake_post(ep, payload, timeout_s, *, role, source, **_kw):
         posts.append(json.loads(payload.decode()))
         return _body("")                     # always empty → exhaust retries
     monkeypatch.setattr(c, "_post_with_retry", _fake_post)
