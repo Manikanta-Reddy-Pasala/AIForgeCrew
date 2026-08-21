@@ -60,3 +60,24 @@ def test_the_ceiling_can_be_lifted(monkeypatch):
 def test_a_bad_ceiling_value_falls_back_to_the_default(monkeypatch):
     monkeypatch.setenv("AIFORGE_CHAT_MAX_GENERATIONS_PER_STEP", "not-a-number")
     assert _loop._max_gen_per_step() == 6
+
+
+def test_the_ceiling_bounds_the_PRODUCT_not_the_sweep_count(monkeypatch):
+    """One sweep is not one generation: below this loop the client re-posts an
+    empty answer and the transport re-attempts a broken one, so a sweep can
+    burn four. Sampling the spend once and extrapolating let a declared ceiling
+    of 6 spend 12 — the exact multiplication the ceiling exists to stop."""
+    monkeypatch.setenv("AIFORGE_CHAT_LLM_RETRIES", "5")
+    monkeypatch.setenv("AIFORGE_CHAT_MAX_GENERATIONS_PER_STEP", "6")
+    sid = 91
+    gens = {"n": 0}
+
+    def _complete(*_a, **_k):
+        for _ in range(4):            # what one call really costs
+            gens["n"] += 1
+            call_meter.record("chat", session_id=sid)
+        raise RuntimeError("llm.exhausted role=chat")
+
+    list(_loop.run_chat_agent([{"role": "user", "content": "hi"}],
+                              session_id=sid, cwd=".", complete_fn=_complete))
+    assert gens["n"] <= 8, f"{gens['n']} generations against a ceiling of 6"

@@ -279,6 +279,15 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
             # LIVE subtask_update event onto this stream (real-time status in
             # the pinned dock), not just persist it to the ticket store.
             os.environ["AIFORGE_CURRENT_SESSION"] = str(session_id)
+            # …and bind it to THIS thread's context, which is what the request
+            # meter reads. The env var is deliberately not trusted there (it is
+            # process-global and never cleared, so it bills a background
+            # thread's work to whichever chat ran last), and the driver runs in
+            # a bare Thread that inherits no context — so a team turn had no
+            # session at all: no per-turn request count, no tokens, and the
+            # chat footer's usage line suppressed entirely.
+            from aiforge_core.runtime import request_context as _rc
+            _rc.set_session_id(session_id)
         # Serialize the AIFORGE_REPO_ROOT mutation across concurrent team runs.
         # Acquire CANCELLABLY + with feedback so a 2nd concurrent team run
         # doesn't stall its client silently behind a long-running first run.

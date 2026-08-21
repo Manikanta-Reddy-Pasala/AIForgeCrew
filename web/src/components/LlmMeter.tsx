@@ -16,12 +16,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { api } from '../api/client';
 import type { LlmUsage } from '../api/agents';
-
-/** 6120 → "6.1k". Token counts are read for magnitude, not for digits. */
-function fmtK(n: number): string {
-  if (!Number.isFinite(n) || n <= 0) return '0';
-  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n));
-}
+import { fmtTokens as fmtK } from '../views/Chat.helpers';
 
 /** Rate colour: neutral up to 20/min, amber to 60, red above — 60/min being
  *  the threshold the chat footer already flags. */

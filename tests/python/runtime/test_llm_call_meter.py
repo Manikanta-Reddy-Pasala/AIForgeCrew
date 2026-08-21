@@ -991,3 +991,34 @@ def test_record_tokens_never_raises_on_junk():
     call_meter.record_tokens("chat", completion_tokens=7, token="junk")
     g = call_meter.global_snapshot(series=False)
     assert g["tokens_out"] == 7      # only the real one, and it still landed
+
+
+def test_the_native_chat_path_bills_tokens_to_the_turn(monkeypatch):
+    """`complete_raw` is the DEFAULT chat path (AIFORGE_CHAT_TOOL_PROTOCOL=
+    native). It recorded usage without the meter token, so the tokens landed
+    machine-wide and on NO turn: the chat badge and the persisted "⚡ N
+    requests" line both read zero tokens for almost every real message while
+    the session total climbed."""
+    from aiforge_core.llm import client as c
+    from aiforge_core.llm.types import Endpoint
+
+    sid = 55
+    tok = call_meter.turn_reset(sid)
+    cv = call_meter.bind_turn(tok)
+    monkeypatch.setattr(c, "resolve", lambda role: Endpoint(
+        base_url="http://x/v1", api_key="", model="m", provider="p",
+        role=role, extras={}))
+
+    def _fake(ep, payload, timeout_s, *, role, source, meter=None):
+        if meter is not None:
+            meter[0] = call_meter.record(role, session_id=sid)
+        return {"choices": [{"message": {"role": "assistant", "content": "hi"}}],
+                "usage": {"prompt_tokens": 800, "completion_tokens": 250}}
+
+    monkeypatch.setattr(c, "_post_with_retry", _fake)
+    try:
+        c.complete_raw("chat", [{"role": "user", "content": "q"}])
+    finally:
+        call_meter.reset_turn(cv)
+    snap = call_meter.snapshot(sid)
+    assert snap["turn_tokens_out"] == 250 and snap["turn_tokens_in"] == 800

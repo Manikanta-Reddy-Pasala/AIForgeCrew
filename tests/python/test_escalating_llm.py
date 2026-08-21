@@ -729,3 +729,131 @@ def test_a_box_that_is_simply_down_is_not_substituted(monkeypatch, _meter):
     assert _drive(e)[0].content.parts[0].text == "cloud answer"
     assert probed["n"] == 0
     _models.reset_cache()
+
+
+def _missing_model_stub(base_url="http://127.0.0.1:1234/v1"):
+    # NOTE: the parameter cannot be called `api_base` — assigning to that name
+    # inside the class body makes the RHS lookup local to it, and the default
+    # raises NameError before a single test runs.
+    class _MissingThenServed(BaseLlm):
+        api_base: str = base_url
+        seen: list = []
+
+        async def generate_content_async(self, llm_request, stream=False):
+            self.seen.append(llm_request.model)
+            if llm_request.model != "qwen/qwen3-coder-next":
+                raise RuntimeError(
+                    "litellm.BadRequestError - No models loaded.")
+            yield _resp("stand-in answer")
+
+        @classmethod
+        def supported_models(cls):
+            return []
+    return _MissingThenServed
+
+
+def _probe(monkeypatch, ids=("qwen/qwen3-coder-next",), seen=None):
+    from aiforge_core.llm.client import _models
+    import json as _json
+    _models.reset_cache()
+
+    class _R:
+        def read(self):
+            return _json.dumps({"data": [{"id": i} for i in ids]}).encode()
+        def __enter__(self):
+            return self
+        def __exit__(self, *_a):
+            return False
+
+    def _open(req, timeout=None):
+        if seen is not None:
+            seen.append(req)
+        return _R()
+
+    monkeypatch.setattr(_models.urllib.request, "urlopen", _open)
+    return _models
+
+
+def test_the_kill_switch_stops_the_team_substitution_too(monkeypatch, _meter):
+    """The operator who sets AUTOFALLBACK=0 wants a wrong model to be a hard
+    failure. Honouring that in chat and ignoring it in team mode is the silent
+    substitution the flag exists to prevent, on the path that runs a whole
+    ticket."""
+    monkeypatch.setenv("AIFORGE_LLM_MODEL_AUTOFALLBACK", "0")
+    _models = _probe(monkeypatch)
+    primary = _missing_model_stub()(model="qwen/qwen3.6-27b", seen=[])
+    e = EscalatingLlm(model="qwen/qwen3.6-27b", role="doer",
+                      primary_model=primary, chain_models=[], chain_labels=[])
+    with pytest.raises(RuntimeError):
+        _drive(e)
+    assert "qwen/qwen3-coder-next" not in primary.seen
+    _models.reset_cache()
+
+
+def test_the_probe_carries_the_endpoint_key(monkeypatch, _meter):
+    """/v1/models is authenticated on most hosted endpoints. An unauthenticated
+    probe 401s, concludes nothing, and the rescue silently never fires."""
+    monkeypatch.delenv("AIFORGE_LLM_MODEL_AUTOFALLBACK", raising=False)
+    reqs: list = []
+    _models = _probe(monkeypatch, seen=reqs)
+    # LiteLlm keeps the key in `_additional_args`, which is exactly why
+    # `_api_key_of` looks there — a pydantic BaseLlm rejects a stray attribute.
+    cls = _missing_model_stub()
+    primary = cls(model="qwen/qwen3.6-27b", seen=[])
+    object.__setattr__(primary, "_additional_args", {"api_key": "sk-secret"})
+    e = EscalatingLlm(model="qwen/qwen3.6-27b", role="doer",
+                      primary_model=primary, chain_models=[], chain_labels=[])
+    _drive(e)
+    assert reqs and reqs[0].get_header("Authorization") == "Bearer sk-secret"
+    _models.reset_cache()
+
+
+def test_a_cloud_candidate_is_never_substituted(monkeypatch, _meter):
+    """A cloud 404 for a decommissioned id must not be re-issued against
+    whatever a proxy happens to serve — that is a billed generation on a model
+    nobody chose. Only the primary is rescued."""
+    monkeypatch.delenv("AIFORGE_LLM_MODEL_AUTOFALLBACK", raising=False)
+    _models = _probe(monkeypatch)
+    primary = _StubModel(model="local", error=RuntimeError("boom"))
+    cloud = _missing_model_stub("https://api.example.com/v1")(
+        model="gpt-old", seen=[])
+    e = EscalatingLlm(model="local", role="doer", primary_model=primary,
+                      chain_models=[cloud], chain_labels=["cloud"])
+    with pytest.raises(RuntimeError):
+        _drive(e)
+    assert "qwen/qwen3-coder-next" not in cloud.seen
+    _models.reset_cache()
+
+
+def test_a_rescued_team_response_is_counted_with_its_tokens(monkeypatch, _meter):
+    """The substitution path used to yield and return before the accounting
+    block, so a rescued run counted a request and zero tokens — on the meter
+    added precisely because team mode is the highest-volume writer."""
+    monkeypatch.delenv("AIFORGE_LLM_MODEL_AUTOFALLBACK", raising=False)
+    _models = _probe(monkeypatch)
+
+    class _Usage:
+        prompt_token_count = 400
+        candidates_token_count = 150
+
+    class _WithUsage(BaseLlm):
+        api_base: str = "http://127.0.0.1:1234/v1"
+
+        async def generate_content_async(self, llm_request, stream=False):
+            if llm_request.model != "qwen/qwen3-coder-next":
+                raise RuntimeError("litellm.BadRequestError - No models loaded.")
+            r = _resp("stand-in answer")
+            r.usage_metadata = _Usage()      # type: ignore[attr-defined]
+            yield r
+
+        @classmethod
+        def supported_models(cls):
+            return []
+
+    e = EscalatingLlm(model="qwen/qwen3.6-27b", role="doer",
+                      primary_model=_WithUsage(model="qwen/qwen3.6-27b"),
+                      chain_models=[], chain_labels=[])
+    assert _drive(e)[0].content.parts[0].text == "stand-in answer"
+    g = _meter.global_snapshot(series=False)
+    assert g["tokens_out"] == 150 and g["tokens_in"] == 400
+    _models.reset_cache()

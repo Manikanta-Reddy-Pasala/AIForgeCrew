@@ -91,6 +91,30 @@ def _meter_fail(token, exc: "BaseException | None" = None,
         pass
 
 
+def _api_key_of(model) -> str:
+    """Best-effort API key for a built model — same shape as `_api_base_of`:
+    ADK's LiteLlm keeps it in ``_additional_args``."""
+    key = getattr(model, "api_key", None)
+    if not key:
+        extra = getattr(model, "_additional_args", None)
+        if isinstance(extra, dict):
+            key = extra.get("api_key")
+    return str(key or "")
+
+
+def _usage_of(responses: list) -> "tuple[int, int]":
+    """(prompt, completion) tokens across ADK responses, as the provider
+    reported them. Missing usage is 0, never a guess."""
+    in_t = out_t = 0
+    for r in responses or []:
+        usage = getattr(r, "usage_metadata", None)
+        if usage is None:
+            continue
+        in_t += int(getattr(usage, "prompt_token_count", 0) or 0)
+        out_t += int(getattr(usage, "candidates_token_count", 0) or 0)
+    return in_t, out_t
+
+
 def _meter_tokens(role: str, in_t: int, out_t: int, token=None) -> None:
     """Provider-reported tokens for one PIPELINE response. Never raises."""
     try:
@@ -136,6 +160,10 @@ class EscalatingLlm(BaseLlm):
     # storm; with the cap, we get one free recovery per ticket and
     # subsequent crashes fall through to the cloud chain as normal.
     lm_recovery_tried: bool = False
+    # Which model a rescue actually used, and the meter token of that call —
+    # the caller needs both to account for the response it is about to yield.
+    _last_substitute: "str | None" = None
+    _last_substitute_token: Any = None
 
     @classmethod
     def build(cls, role: str, primary_cfg: dict[str, Any],
@@ -161,7 +189,7 @@ class EscalatingLlm(BaseLlm):
         if self.primary_fail_streak >= _demote_after():
             self.primary_demoted = True
 
-    async def _substitute_model(self, exc, model, req, label):
+    async def _substitute_model(self, exc, model, req, label):  # noqa: C901
         """Re-issue ONE attempt against a model this endpoint actually serves.
 
         Yields the responses when the stand-in worked and nothing when it did
@@ -171,13 +199,29 @@ class EscalatingLlm(BaseLlm):
         """
         if not _looks_like_missing_model(exc):
             return
+        # The operator's kill switch applies HERE too. The direct-client rescue
+        # is gated on it and documents why: someone comparing models wants a
+        # wrong id to be a hard failure. Honouring it in chat and ignoring it in
+        # team mode is the same silent substitution the flag exists to prevent,
+        # on the path that runs a whole ticket.
+        try:
+            from aiforge_core.llm.client import _autofallback_enabled
+            if not _autofallback_enabled():
+                return
+        except Exception:  # noqa: BLE001
+            pass
         base = _api_base_of(model)
         if not base:
             return
         try:
             from aiforge_core.llm.client._models import (
                 model_is_missing, pick_substitute)
-            served = model_is_missing(base, getattr(model, "model", "") or "")
+            # WITH the key: /v1/models is authenticated on most hosted
+            # endpoints, and an unauthenticated probe 401s, returns "no answer",
+            # and the rescue silently never fires — team mode dying on the exact
+            # config line chat recovers from, which is what this is for.
+            served = model_is_missing(base, getattr(model, "model", "") or "",
+                                      _api_key_of(model))
             sub = pick_substitute(getattr(model, "model", "") or "", served or [])
         except Exception:  # noqa: BLE001 — a rescue must never add a failure
             return
@@ -188,9 +232,12 @@ class EscalatingLlm(BaseLlm):
             "api_base=%s — the configured model is not served here; fix the "
             "role config or load it", self.role, label,
             getattr(model, "model", "?"), sub, base)
+        self._last_substitute = sub
+        self._last_substitute_token = None
         try:
             await _throttle_global()
             _tok = _meter_record(self.role, sub)
+            self._last_substitute_token = _tok
             out = []
             async for r in model.generate_content_async(
                     req.model_copy(update={"model": sub}), stream=False):
@@ -333,15 +380,46 @@ class EscalatingLlm(BaseLlm):
                 # client path does, mirrored here because ADK agents never
                 # touch llm.client — without it team mode is the one path that
                 # still dies on a stale line of config while chat recovers.
+                # PRIMARY only, like the LM-crash recovery below and like the
+                # client-side rescue, which only ever substitutes the primary.
+                # A cloud candidate's 404 for a decommissioned id must not be
+                # silently re-issued against whatever a proxy happens to serve:
+                # that is a billed generation on a model nobody chose.
                 _sub_out = None
-                async for _r in self._substitute_model(
-                        exc, model, req_for_attempt, label):
-                    _sub_out = _sub_out or []
-                    _sub_out.append(_r)
+                _sub_used = None
+                if label in ("primary", "primary_retry"):
+                    async for _r in self._substitute_model(
+                            exc, model, req_for_attempt, label):
+                        if _sub_out is None:
+                            _sub_out = []
+                        _sub_out.append(_r)
+                    _sub_used = self._last_substitute
                 if _sub_out:
+                    # The stand-in produced the answer, so the accounting names
+                    # IT: tokens, budget and the Langfuse trace all used to
+                    # short-circuit here, leaving a rescued team run counted as
+                    # a request with zero tokens and traced against the model
+                    # that generated nothing.
+                    _in_t, _out_t = _usage_of(_sub_out)
+                    if _in_t or _out_t:
+                        _meter_tokens(self.role, _in_t, _out_t,
+                                      self._last_substitute_token)
+                        try:
+                            from aiforge_core.runtime.budget import tracker
+                            tracker.record(role=self.role,
+                                           model=_sub_used or label,
+                                           input_tokens=_in_t,
+                                           output_tokens=_out_t)
+                        except Exception as _bexc:  # noqa: BLE001
+                            log.debug("budget.record failed: %s", _bexc)
+                    # A rescue that worked clears the demotion the failure would
+                    # otherwise leave behind — else every later call re-walks
+                    # the whole cloud chain before reaching the same rescue.
+                    if label in ("primary", "primary_retry"):
+                        self.primary_demoted = False
                     _mirror_to_langfuse(
                         self.role, req_for_attempt, _sub_out,
-                        getattr(model, "model", "") or label,
+                        _sub_used or getattr(model, "model", "") or label,
                         int((_time.monotonic() - _t0) * 1000))
                     for _r in _sub_out:
                         yield _r
@@ -461,18 +539,7 @@ class EscalatingLlm(BaseLlm):
             # plugin in a follow-up.
             try:
                 from aiforge_core.runtime.budget import tracker
-                in_t = 0
-                out_t = 0
-                for r in buffered:
-                    usage = getattr(r, "usage_metadata", None)
-                    if usage is None:
-                        continue
-                    in_t += int(
-                        getattr(usage, "prompt_token_count", 0) or 0,
-                    )
-                    out_t += int(
-                        getattr(usage, "candidates_token_count", 0) or 0,
-                    )
+                in_t, out_t = _usage_of(buffered)
                 if in_t or out_t:
                     tracker.record(
                         role=self.role,
