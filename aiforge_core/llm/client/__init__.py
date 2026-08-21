@@ -53,6 +53,7 @@ from .._ssl import insecure_context as _ssl_insecure
 from ..router import escalate, fallback, resolve
 from ..types import Endpoint
 from ._http import TIMEOUT_SHIPPED_ATTR as _TIMEOUT_SHIPPED_ATTR
+from ._models import MODEL_MISSING_ATTR, model_missing
 from ._http import shipped_timeout as _shipped_timeout
 from ._http import shipped_timeout  # re-export: callers above the transport
 from ._errors import (
@@ -94,6 +95,7 @@ __all__ = [
     "resolve",
     "escalate",
     "fallback",
+    "model_missing",
     "Endpoint",
 ]
 
@@ -395,6 +397,36 @@ def _complete_impl(role: str, messages: list[dict], *,
         if out is not None:
             return out[0]
 
+    # Before blaming the network: is the configured model even served here? A
+    # role pointed at a model id the box does not have fails with model-
+    # lifecycle wording ("No models loaded"), which reads as transient, so
+    # every layer retries a permanent config error — and the user is told "the
+    # model didn't respond", naming neither the model nor the endpoint. One
+    # cheap GET turns that into the sentence that fixes it.
+    _missing = None
+    try:
+        from ._models import model_is_missing as _mim
+        _missing = _mim(primary.base_url, primary.model, primary.api_key or "")
+    except Exception:  # noqa: BLE001 — a diagnostic must never mask the error
+        _missing = None
+    if _missing is not None:
+        _have = ", ".join(_missing[:8]) if _missing else "none loaded"
+        _exhausted = RuntimeError(
+            f"llm.model_missing role={role} model={primary.model} "
+            f"endpoint={primary.base_url} — that model is NOT served here "
+            f"(available: {_have}). This is configuration, not a transport "
+            f"failure: point the role at one of the models above, or load it "
+            f"on the endpoint. Retrying cannot fix it."
+        )
+        setattr(_exhausted, MODEL_MISSING_ATTR, True)
+        _log.error(
+            "llm.model_missing role=%s model=%s endpoint=%s available=%s",
+            role, primary.model, primary.base_url, _have,
+            extra={"aiforge": {"role": role, "model": primary.model,
+                               "endpoint": primary.base_url,
+                               "available": _missing}},
+        )
+        raise _exhausted
     _exhausted = RuntimeError(
         f"llm.exhausted role={role} primary={primary.provider}"
         f"@{primary.base_url} model={primary.model} "
