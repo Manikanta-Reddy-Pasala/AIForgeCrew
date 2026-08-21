@@ -10,6 +10,8 @@ twentieth try.
 """
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from aiforge_core.llm import call_meter
@@ -81,3 +83,86 @@ def test_the_ceiling_bounds_the_PRODUCT_not_the_sweep_count(monkeypatch):
     list(_loop.run_chat_agent([{"role": "user", "content": "hi"}],
                               session_id=sid, cwd=".", complete_fn=_complete))
     assert gens["n"] <= 8, f"{gens['n']} generations against a ceiling of 6"
+
+
+def _run_unattended(gens_per_call=3, **_kw):
+    """The same failing step, with NO session — jobs, text_doer, the analysis
+    fan-out and parallel subtasks all call the loop this way."""
+    calls = {"n": 0}
+
+    def _complete(*_a, **_k):
+        for _ in range(gens_per_call):
+            calls["n"] += 1
+            call_meter.record("doer")          # no session, like the real thing
+        raise RuntimeError("llm.exhausted role=doer")
+
+    list(_loop.run_chat_agent([{"role": "user", "content": "hi"}],
+                              session_id=None, cwd=".", complete_fn=_complete))
+    return calls["n"]
+
+
+def test_the_ceiling_holds_for_callers_with_no_session(monkeypatch):
+    """The budget was measured as a delta of the SESSION's per-turn request
+    count, so it was inert for every unattended caller — the paths where a
+    retry storm has nobody watching it. One step could spend 72 generations
+    against a declared ceiling of 6."""
+    monkeypatch.setenv("AIFORGE_CHAT_LLM_RETRIES", "5")
+    monkeypatch.setenv("AIFORGE_CHAT_MAX_GENERATIONS_PER_STEP", "6")
+    assert _run_unattended(gens_per_call=3) <= 8
+
+
+def test_a_new_message_mid_step_does_not_refund_the_budget(monkeypatch):
+    """The sweep sleeps between retries. Measured against the session's turn
+    counter, a `turn_reset` from the user's NEXT message drove the spend
+    negative and switched the abandoned step's ceiling off entirely."""
+    monkeypatch.setenv("AIFORGE_CHAT_LLM_RETRIES", "5")
+    monkeypatch.setenv("AIFORGE_CHAT_MAX_GENERATIONS_PER_STEP", "4")
+    sid = 92
+    calls = {"n": 0}
+
+    def _complete(*_a, **_k):
+        calls["n"] += 1
+        call_meter.record("chat", session_id=sid)
+        if calls["n"] == 2:
+            call_meter.turn_reset(sid)         # the user sent another message
+        raise RuntimeError("llm.exhausted role=chat")
+
+    list(_loop.run_chat_agent([{"role": "user", "content": "hi"}],
+                              session_id=sid, cwd=".", complete_fn=_complete))
+    assert calls["n"] <= 4
+
+
+def test_unrelated_session_traffic_does_not_spend_the_step(monkeypatch):
+    """A background fold billed to the same chat used to eat the step's
+    generation budget: the sweep gave up after two tries because something
+    else ran."""
+    monkeypatch.setenv("AIFORGE_CHAT_LLM_RETRIES", "5")
+    monkeypatch.setenv("AIFORGE_CHAT_MAX_GENERATIONS_PER_STEP", "6")
+    sid = 93
+    calls = {"n": 0}
+
+    def _fold():
+        # A REAL background fold runs on its own thread, so it inherits no step
+        # context — which is exactly why the step counter is immune to it and
+        # the old session-counter measure was not.
+        for _ in range(2):
+            call_meter.record("learner", session_id=sid)
+
+    def _complete(*_a, **_k):
+        calls["n"] += 1
+        call_meter.record("chat", session_id=sid)
+        t = threading.Thread(target=_fold)
+        t.start()
+        t.join()
+        raise RuntimeError("llm.exhausted role=chat")
+
+    list(_loop.run_chat_agent([{"role": "user", "content": "hi"}],
+                              session_id=sid, cwd=".", complete_fn=_complete))
+    assert calls["n"] == 6, f"the step got {calls['n']} of its 6 generations"
+
+
+def test_a_negative_ceiling_is_not_read_as_no_ceiling(monkeypatch):
+    """-1 reads as "tighter than 0", but 0 means DISABLED — clamping a
+    negative to 0 removed the bound the operator was trying to tighten."""
+    monkeypatch.setenv("AIFORGE_CHAT_MAX_GENERATIONS_PER_STEP", "-1")
+    assert _loop._max_gen_per_step() == 6

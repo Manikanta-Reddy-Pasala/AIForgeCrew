@@ -722,7 +722,22 @@ def test_a_box_that_is_simply_down_is_not_substituted(monkeypatch, _meter):
         raise OSError("refused")
 
     monkeypatch.setattr(_models.urllib.request, "urlopen", _boom)
-    primary = _StubModel(model="qwen/x", error=ConnectionError("refused"))
+    # The stub MUST carry an api_base. Without one `_substitute_model` returns
+    # at the "no endpoint" guard before it ever reaches the probe, so the test
+    # passed no matter what the rule under test did — deleting
+    # `_looks_like_missing_model` changed nothing.
+    class _Down(BaseLlm):
+        api_base: str = "http://127.0.0.1:1234/v1"
+
+        async def generate_content_async(self, llm_request, stream=False):
+            raise ConnectionError("refused")
+            yield  # pragma: no cover — makes this an async generator
+
+        @classmethod
+        def supported_models(cls):
+            return []
+
+    primary = _Down(model="qwen/x")
     cloud = _StubModel(model="cloud", script=[_resp("cloud answer")])
     e = EscalatingLlm(model="qwen/x", role="doer", primary_model=primary,
                       chain_models=[cloud], chain_labels=["cloud"])

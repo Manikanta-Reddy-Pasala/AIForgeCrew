@@ -61,8 +61,9 @@ function Sparkline({ data, fails }: { data: number[]; fails?: number[] }) {
   );
 }
 
-function Rows({ title, data, tone }: {
+function Rows({ title, data, tone, fmt }: {
   title: string; data: Record<string, number>; tone?: string;
+  fmt?: (n: number) => string;
 }) {
   const rows = Object.entries(data || {}).sort((a, b) => b[1] - a[1]).slice(0, 8);
   if (!rows.length) return null;
@@ -71,7 +72,7 @@ function Rows({ title, data, tone }: {
       <div className="llm-meter-label">{title}</div>
       {rows.map(([k, v]) => (
         <div key={k} className="llm-meter-row" style={tone ? { color: tone } : undefined}>
-          <span>{k}</span><b>{v}</b>
+          <span>{k}</span><b>{fmt ? fmt(v) : v}</b>
         </div>
       ))}
     </div>
@@ -226,8 +227,10 @@ function LlmMeterInner() {
               &nbsp;(last hour, as the provider counted them)
             </div>
           )}
+          {/* Same quantity as the line above, so the same units: raw
+              integers here read as a third, unrelated "chat" row. */}
           <Rows title="tokens written (last hour)"
-                data={u?.tokens_out_by_role || {}} />
+                data={u?.tokens_out_by_role || {}} fmt={fmtK} />
           <Rows title="by role (last hour)" data={u?.by_role || {}} />
           <Rows title="by model (last hour)" data={u?.by_model || {}} />
           <Rows title="failed (last hour)" data={u?.by_fail_reason || {}}

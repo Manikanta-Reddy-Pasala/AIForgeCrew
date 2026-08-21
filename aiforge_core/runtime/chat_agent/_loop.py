@@ -33,10 +33,14 @@ def _max_gen_per_step() -> int:
     disables the ceiling and restores the old per-layer behaviour.
     """
     try:
-        return max(0, int(os.environ.get("AIFORGE_CHAT_MAX_GENERATIONS_PER_STEP",
-                                         "6")))
+        _v = int(os.environ.get("AIFORGE_CHAT_MAX_GENERATIONS_PER_STEP", "6"))
     except ValueError:
         return 6
+    # A NEGATIVE value reads as "tighter than zero" and used to clamp to 0,
+    # which means DISABLED — the opposite of what the operator typed. Only an
+    # explicit 0 turns the ceiling off; anything else nonsensical falls back to
+    # the default rather than silently removing the bound.
+    return _v if _v >= 0 else 6
 
 
 def run_chat_agent(
@@ -773,14 +777,20 @@ def run_chat_agent(
                    # Tokens the model has WRITTEN for this message so far,
                    # as the provider reported them.
                    "llm_turn_tokens_out": _calls.get("turn_tokens_out", 0)}
-        # Requests this turn had spent BEFORE this step — the baseline the
-        # per-step generation budget is measured from.
-        _step_calls0 = 0
-        if _meter is not None and session_id is not None and _max_gen_per_step() > 0:
+        # This STEP's own send counter, bound for the duration of the step.
+        # Not a delta of the session's turn count: that was inert for every
+        # caller without a session (jobs, text_doer, the analysis fan-out —
+        # the unattended paths where a storm has nobody watching), refundable
+        # by a concurrent turn_reset, and spendable by unrelated same-session
+        # traffic.
+        _step_calls = None
+        _step_tok = None
+        if _meter is not None and _max_gen_per_step() > 0:
             try:
-                _step_calls0 = int(_meter.snapshot(session_id).get("turn") or 0)
+                _step_calls = _meter.step_begin()
+                _step_tok = _meter.step_bind(_step_calls)
             except Exception:  # noqa: BLE001
-                _step_calls0 = 0
+                _step_calls, _step_tok = None, None
         try:
             out = _complete_cancellable(complete_fn, role, convo, session_id)
         except Exception as exc:  # noqa: BLE001
@@ -803,13 +813,7 @@ def run_chat_agent(
             # shipping the whole prompt and generating an answer nobody reads.
             # The meter already counts what this turn has actually sent, so
             # spend the remaining budget instead of a fixed count.
-            _spent = 0
-            if _meter is not None and session_id is not None:
-                try:
-                    _spent = max(0, int(_meter.snapshot(session_id).get("turn") or 0)
-                                 - _step_calls0)
-                except Exception:  # noqa: BLE001 — a budget must not break a turn
-                    _spent = 0
+            _spent = int((_step_calls or {}).get("n") or 0)
             _budget = _max_gen_per_step()
             if _budget > 0:      # 0 = ceiling disabled, not "no retries"
                 _retries = min(_retries, max(0, _budget - _spent))
@@ -823,14 +827,9 @@ def run_chat_agent(
                 four or twelve. Extrapolating the whole step from the first
                 sample let a declared ceiling of 6 spend 12 — the very
                 multiplication this exists to stop."""
-                if _budget <= 0 or _meter is None or session_id is None:
+                if _budget <= 0 or _step_calls is None:
                     return False
-                try:
-                    _now_spent = int(
-                        _meter.snapshot(session_id).get("turn") or 0) - _step_calls0
-                except Exception:  # noqa: BLE001
-                    return False
-                return _now_spent >= _budget
+                return int(_step_calls.get("n") or 0) >= _budget
             # A read timeout means the model RECEIVED this prompt and is
             # still generating it. Re-issuing the identical completion leaves
             # that generation running and starts another on a box that already
@@ -888,7 +887,16 @@ def run_chat_agent(
                 # exact case a resume exists for, and the one it was missing.
                 yield {"type": "stopped", "reason": "llm_unavailable"}
                 yield {"type": "done"}
+                if _meter is not None:
+                    _meter.step_reset(_step_tok)
                 return
+        # The step's sends are counted; unbind before the next one binds its
+        # own (a step that leaves its counter bound would have the NEXT step's
+        # calls spend a budget that is already exhausted).
+        if _meter is not None:
+            _meter.step_reset(_step_tok)
+            _step_tok = None
+
         # H1: Stop pressed DURING generation — the cancellable wrapper returned
         # the sentinel (the abandoned LLM call finishes in the background,
         # ignored). Distinct from a legitimately-empty completion below.

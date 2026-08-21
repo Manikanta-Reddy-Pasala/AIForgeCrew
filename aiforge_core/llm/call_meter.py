@@ -84,6 +84,19 @@ _lock = threading.Lock()
 # thread), so a cancelled turn's abandoned retries cannot land on the next one.
 _TURN_EPOCH: "contextvars.ContextVar[int | None]" = contextvars.ContextVar(
     "aiforge_turn_epoch", default=None)
+# A STEP's own send counter. A dict, not an int, on purpose: a generation may
+# run in a copied context (the cancellable path copies it into a worker
+# thread), and a copied context shares the same OBJECT — an int would be
+# rebound in the copy and the parent would never see the count.
+#
+# Why this exists at all: the per-step generation ceiling first measured spend
+# as a delta of the session's per-TURN request count, which made it inert for
+# every caller without a session (jobs, text_doer, the analysis fan-out,
+# parallel subtasks — precisely the unattended paths where a retry storm has
+# nobody watching), refundable by a concurrent turn_reset, and spendable by any
+# unrelated same-session traffic. A step counter is none of those things.
+_STEP_CALLS: "contextvars.ContextVar[dict | None]" = contextvars.ContextVar(
+    "aiforge_step_calls", default=None)
 _total = 0
 _fail_total = 0
 _tokens_in_total = 0
@@ -172,6 +185,12 @@ def record(role: str | None = None, session_id=None, *,
             epoch = _TURN_EPOCH.get()
         except Exception:  # noqa: BLE001
             epoch = None
+        try:
+            _step = _STEP_CALLS.get()
+            if isinstance(_step, dict):
+                _step["n"] = int(_step.get("n") or 0) + 1
+        except Exception:  # noqa: BLE001
+            pass
         with _lock:
             # Stamped INSIDE the lock: two threads racing between "read clock"
             # and "append" can invert the deque, and the trim below stops at
@@ -282,6 +301,29 @@ def record_failure(token=None, reason: str | None = None, *,
         pass
 
 
+def step_begin() -> dict:
+    """Start counting the sends of ONE step. Returns the counter dict; read
+    ``["n"]`` for how many requests have gone out since. Bind it with
+    :func:`step_bind` so calls made in copied contexts count too."""
+    return {"n": 0}
+
+
+def step_bind(counter: dict):
+    try:
+        return _STEP_CALLS.set(counter if isinstance(counter, dict) else None)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def step_reset(token) -> None:
+    if token is None:
+        return
+    try:
+        _STEP_CALLS.reset(token)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def record_tokens(role: str | None = None, *, prompt_tokens: int = 0,
                   completion_tokens: int = 0, token=None, session_id=None,
                   now: float | None = None) -> None:
@@ -310,13 +352,11 @@ def record_tokens(role: str | None = None, *, prompt_tokens: int = 0,
             ts, sid, epoch = token
         if session_id is not None:
             sid = _key(session_id)
-        elif sid is None:
-            try:
-                from aiforge_core.runtime import request_context
-                sid = _key(request_context.context_session_id())
-                role = role or request_context.get_role()
-            except Exception:  # noqa: BLE001
-                pass
+        # NO ambient-context fallback, for the reason record_failure documents:
+        # re-reading the context at SETTLE time bills a background fold's
+        # tokens to whatever chat the thread has been rebound to since. A
+        # fold's 4000 written tokens landing on a chat that sent one request is
+        # not a better guess than "unattributed" — it is a wrong one.
         with _lock:
             _now = time.monotonic() if now is None else now
             if not isinstance(ts, (int, float)) or ts > _now:
@@ -643,6 +683,9 @@ def global_snapshot(*, series: bool = True) -> dict:
         if series:
             out["series_60m"] = _series_locked(now)
             out["series_fail_60m"] = _series_locked(now, "f")
+            # Tokens per minute, same 60 slots and indexes — so a reader (or a
+            # test) can say WHICH minute wrote them, not just how many.
+            out["series_token_out_60m"] = _series_locked(now, "to")
     return out
 
 
@@ -676,5 +719,5 @@ def reset_all() -> None:
 
 
 __all__ = ["record", "record_failure", "record_tokens", "turn_reset",
-           "bind_turn", "reset_turn", "snapshot", "global_snapshot",
-           "reset_all", "WINDOWS"]
+           "bind_turn", "reset_turn", "step_begin", "step_bind", "step_reset",
+           "snapshot", "global_snapshot", "reset_all", "WINDOWS"]
