@@ -560,6 +560,13 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                 q.put(_ev)
         except Exception as exc:  # noqa: BLE001
             q.put({"type": "error", "text": f"pipeline: {exc}"})
+            # The turn ended with no answer, and whatever the run had already
+            # written is on disk. Same structural marker a Stop leaves, for the
+            # same reason: without it `chat_resume` reads this as a turn that
+            # finished normally, and Retry re-runs the whole pipeline from
+            # nothing — re-doing every edit the dead run made. Team mode is the
+            # expensive path to repeat.
+            q.put({"type": "stopped", "reason": "pipeline_error"})
         finally:
             # The repo-root contextvar is thread-local to THIS run, so reset it
             # unconditionally (no cross-run contamination like the shared env).
