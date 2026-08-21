@@ -235,6 +235,55 @@ def insecure_context() -> ssl.SSLContext:
     return ctx
 
 
+# ───────────────────── web fetch: the broken-chain case ─────────────────
+# A corporate network that inspects TLS (a Fortinet/Zscaler-style appliance)
+# re-signs every response with a CA the process does not trust, so an ordinary
+# public page fails with CERTIFICATE_VERIFY_FAILED and the agent is simply
+# blind to the web. The operator asked for that to stop being a wall.
+#
+# The rule is verify FIRST and fall back only on a certificate failure, never
+# to skip verification up front: a page that can be fetched securely always is,
+# and the downgrade is reported to the caller (``tls_verified: false``) rather
+# than hidden. A connection refused, a 404 or a timeout is not a cert problem
+# and is never retried this way.
+#
+# AIFORGE_WEB_INSECURE_TLS=0 forbids the fallback outright, for an operator who
+# would rather see the failure. Supplying AIFORGE_LLM_CA_BUNDLE (the appliance's
+# CA) is strictly better than either: verification keeps working.
+
+
+def web_tls_fallback_enabled() -> bool:
+    raw = os.environ.get("AIFORGE_WEB_INSECURE_TLS")
+    if raw is None:
+        return True
+    return raw.strip().lower() not in _FALSEY
+
+
+def is_cert_error(exc: BaseException) -> bool:
+    """Is this failure specifically about certificate verification?
+
+    Matched on the exception type where possible (``ssl.SSLCertVerificationError``
+    survives being wrapped in URLError as ``.reason``) and on the message only
+    as a fallback — the message is the one thing every wrapper layer preserves.
+    """
+    seen = exc
+    for _ in range(4):                      # URLError(reason=SSLError(...))
+        if isinstance(seen, ssl.SSLCertVerificationError):
+            return True
+        nxt = getattr(seen, "reason", None) or getattr(seen, "__cause__", None)
+        if nxt is None or nxt is seen:
+            break
+        seen = nxt
+    text = str(exc).lower()
+    return ("certificate verify failed" in text
+            or "certificate_verify_failed" in text
+            or "self signed certificate" in text
+            or "self-signed certificate" in text
+            or "unable to get local issuer" in text
+            or "hostname mismatch" in text
+            or "certificate has expired" in text)
+
+
 # ─────────────────────────── SSRF guard ─────────────────────────────────
 # Shared guard for the two ungated public-fetch paths (the researcher's
 # ``web_read`` and the ``kind=url`` memory ingest) plus the Doer browser

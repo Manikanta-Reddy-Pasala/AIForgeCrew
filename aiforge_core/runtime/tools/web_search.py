@@ -19,6 +19,7 @@ raises into the agent loop.
 from __future__ import annotations
 
 import html
+import logging
 import os
 import re
 import urllib.error
@@ -26,6 +27,8 @@ import urllib.parse
 import urllib.request
 
 from aiforge_core.net.ssl import context_for as _ssl_context_for
+
+_log = logging.getLogger("aiforge.web")
 
 _DDG_HTML = "https://html.duckduckgo.com/html/"
 _DDG_LITE = "https://lite.duckduckgo.com/lite/"   # simpler markup — fallback
@@ -67,17 +70,49 @@ _NET_ERRORS = (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
                OSError, ValueError)
 
 
-def _get(url: str, *, data: bytes | None = None) -> str:
-    req = urllib.request.Request(
-        url, data=data,
-        headers={"User-Agent": _UA, "Accept": "text/html,application/xhtml+xml",
-                 "Accept-Language": "en-US,en;q=0.9"},
-        method="POST" if data is not None else "GET")
-    with urllib.request.urlopen(
-            req, timeout=_timeout(), context=_ssl_context_for(url)) as r:
-        raw = r.read(_FETCH_CAP + 1)
-    # honour the response charset loosely; default utf-8
-    return raw[:_FETCH_CAP].decode("utf-8", "replace")
+def _get(url: str, *, data: bytes | None = None,
+         verified: "list | None" = None) -> str:
+    """GET a page. On a CERTIFICATE failure — and only that — retry once
+    without verification.
+
+    A network that inspects TLS re-signs every response with a CA this process
+    does not trust, so an ordinary public page dies with
+    CERTIFICATE_VERIFY_FAILED and the agent is blind to the web. Verify first,
+    so a page that CAN be fetched securely always is; fall back only on a cert
+    error, and tell the caller through ``verified`` so the downgrade is
+    reported rather than hidden. A refused connection or a timeout is not a
+    cert problem and is never retried this way.
+    """
+    def _fetch(ctx) -> str:
+        req = urllib.request.Request(
+            url, data=data,
+            headers={"User-Agent": _UA,
+                     "Accept": "text/html,application/xhtml+xml",
+                     "Accept-Language": "en-US,en;q=0.9"},
+            method="POST" if data is not None else "GET")
+        with urllib.request.urlopen(req, timeout=_timeout(), context=ctx) as r:
+            raw = r.read(_FETCH_CAP + 1)
+        # honour the response charset loosely; default utf-8
+        return raw[:_FETCH_CAP].decode("utf-8", "replace")
+
+    if verified is not None:
+        verified.append(True)
+    try:
+        return _fetch(_ssl_context_for(url))
+    except Exception as exc:  # noqa: BLE001 — classified immediately below
+        from aiforge_core.net.ssl import (insecure_context, is_cert_error,
+                                          web_tls_fallback_enabled)
+        if not (is_cert_error(exc) and web_tls_fallback_enabled()):
+            raise
+        _log.warning(
+            "web.tls_unverified url=%s — the certificate could not be "
+            "verified (%s); refetching WITHOUT verification. Set "
+            "AIFORGE_LLM_CA_BUNDLE to your network's CA to keep verifying, "
+            "or AIFORGE_WEB_INSECURE_TLS=0 to fail instead.",
+            url, str(exc)[:160])
+        if verified is not None:
+            verified[:] = [False]
+        return _fetch(insecure_context())
 
 
 def _get_retry(url: str, *, data: bytes | None = None, tries: int = 2) -> str:
@@ -262,8 +297,9 @@ def _fetch_readable(url: str, max_chars: int) -> dict:
     """Gate-FREE readable-text fetch — the shared engine behind web_fetch and
     web_ingest's fallback (the researcher's sanctioned path must not re-hit
     the AIFORGE_ALLOW_WEB_FETCH gate web_fetch applies)."""
+    _verified: list = []
     try:
-        raw = _get(url)
+        raw = _get(url, verified=_verified)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
             OSError, ValueError) as exc:
         return {"ok": False, "error": str(exc)}
@@ -276,8 +312,14 @@ def _fetch_readable(url: str, max_chars: int) -> dict:
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n\s*\n\s*\n+", "\n\n", text).strip()
     truncated = len(text) > max_chars
-    return {"ok": True, "url": url, "title": title,
-            "text": text[:max_chars], "truncated": truncated}
+    out = {"ok": True, "url": url, "title": title,
+           "text": text[:max_chars], "truncated": truncated}
+    # Only ever stated when it is FALSE. A "tls_verified: true" on every
+    # ordinary fetch is noise the model would carry in its context forever;
+    # the exception is the thing worth knowing.
+    if _verified and _verified[0] is False:
+        out["tls_verified"] = False
+    return out
 
 
 __all__ = ["web_search", "web_fetch"]
