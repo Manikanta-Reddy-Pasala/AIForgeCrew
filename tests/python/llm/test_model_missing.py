@@ -81,6 +81,24 @@ def _endpoint(model="qwen/nope"):
                     extras={})
 
 
+def _fails_with(exc):
+    """A _try_post that fails the way `exc` says, recording it like the real one
+    (the diagnosis is gated on WHAT killed the chain)."""
+    def fn(*_a, shipped=None, **_k):
+        if shipped is not None:
+            shipped["exc"] = exc
+        return None
+    return fn
+
+
+def _http_400():
+    import io
+    import urllib.error
+    return urllib.error.HTTPError(
+        "http://x/v1/chat/completions", 400, "Bad Request", None,
+        io.BytesIO(b'{"error": {"message": "No models loaded."}}'))
+
+
 def test_an_exhausted_call_names_the_model_the_endpoint_and_the_alternatives(
         monkeypatch):
     monkeypatch.setattr(_models.urllib.request, "urlopen",
@@ -88,7 +106,7 @@ def test_an_exhausted_call_names_the_model_the_endpoint_and_the_alternatives(
     monkeypatch.setattr(c, "resolve", lambda role: _endpoint())
     monkeypatch.setattr(c, "escalate", lambda *a, **k: None)
     monkeypatch.setattr(c, "fallback", lambda *a, **k: None)
-    monkeypatch.setattr(c, "_try_post", lambda *a, **k: None)   # every attempt fails
+    monkeypatch.setattr(c, "_try_post", _fails_with(_http_400()))
 
     with pytest.raises(RuntimeError) as ei:
         c.complete("learner", [{"role": "user", "content": "hi"}])
@@ -107,7 +125,7 @@ def test_a_real_transport_failure_still_reads_as_exhausted(monkeypatch):
     monkeypatch.setattr(c, "resolve", lambda role: _endpoint())
     monkeypatch.setattr(c, "escalate", lambda *a, **k: None)
     monkeypatch.setattr(c, "fallback", lambda *a, **k: None)
-    monkeypatch.setattr(c, "_try_post", lambda *a, **k: None)
+    monkeypatch.setattr(c, "_try_post", _fails_with(_http_400()))
 
     with pytest.raises(RuntimeError) as ei:
         c.complete("learner", [{"role": "user", "content": "hi"}])
@@ -120,9 +138,59 @@ def test_an_unreachable_endpoint_is_not_called_a_config_error(monkeypatch):
     monkeypatch.setattr(c, "resolve", lambda role: _endpoint())
     monkeypatch.setattr(c, "escalate", lambda *a, **k: None)
     monkeypatch.setattr(c, "fallback", lambda *a, **k: None)
-    monkeypatch.setattr(c, "_try_post", lambda *a, **k: None)
+    monkeypatch.setattr(c, "_try_post", _fails_with(_http_400()))
 
     with pytest.raises(RuntimeError) as ei:
         c.complete("learner", [{"role": "user", "content": "hi"}])
     assert "llm.exhausted" in str(ei.value)
     assert c.model_missing(ei.value) is False
+
+
+def test_a_shipped_timeout_is_never_renamed_a_missing_model(monkeypatch):
+    """A read timeout means the box ACCEPTED the prompt and is still
+    generating — proof the model exists. Renaming it "your config is wrong"
+    buries the one failure the no-re-POST rule is built around, and the marker
+    that stops the layer above from re-issuing it."""
+    probed = {"n": 0}
+
+    def _count(*_a, **_k):
+        probed["n"] += 1
+        raise AssertionError("must not probe")
+
+    monkeypatch.setattr(_models.urllib.request, "urlopen", _count)
+    monkeypatch.setattr(c, "resolve", lambda role: _endpoint())
+    monkeypatch.setattr(c, "escalate", lambda *a, **k: None)
+    monkeypatch.setattr(c, "fallback", lambda *a, **k: None)
+
+    def _timeout(*_a, shipped=None, **_k):
+        if shipped is not None:
+            shipped["timeout"] = True
+            shipped["exc"] = TimeoutError("read timed out")
+        return None
+
+    monkeypatch.setattr(c, "_try_post", _timeout)
+    with pytest.raises(RuntimeError) as ei:
+        c.complete("learner", [{"role": "user", "content": "hi"}])
+    assert "llm.exhausted" in str(ei.value)
+    assert probed["n"] == 0
+
+
+def test_an_unreachable_box_is_not_probed(monkeypatch):
+    """A refused connection says nothing about model configuration, and the
+    diagnosis must not send an outbound request on every unrelated failure."""
+    probed = {"n": 0}
+
+    def _count(*_a, **_k):
+        probed["n"] += 1
+        raise AssertionError("must not probe")
+
+    monkeypatch.setattr(_models.urllib.request, "urlopen", _count)
+    monkeypatch.setattr(c, "resolve", lambda role: _endpoint())
+    monkeypatch.setattr(c, "escalate", lambda *a, **k: None)
+    monkeypatch.setattr(c, "fallback", lambda *a, **k: None)
+    monkeypatch.setattr(c, "_try_post",
+                        _fails_with(ConnectionRefusedError("nope")))
+    with pytest.raises(RuntimeError) as ei:
+        c.complete("learner", [{"role": "user", "content": "hi"}])
+    assert "llm.exhausted" in str(ei.value)
+    assert probed["n"] == 0
