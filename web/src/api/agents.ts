@@ -125,4 +125,6 @@ export interface LlmUsage {
   series_60m?: number[];
   /** failures per minute, same 60 slots and same indexes as `series_60m` */
   series_fail_60m?: number[];
+  /** tokens WRITTEN per minute, same 60 slots and indexes as `series_60m` */
+  series_token_out_60m?: number[];
 }

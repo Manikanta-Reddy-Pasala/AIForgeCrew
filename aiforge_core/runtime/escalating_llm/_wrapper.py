@@ -160,10 +160,6 @@ class EscalatingLlm(BaseLlm):
     # storm; with the cap, we get one free recovery per ticket and
     # subsequent crashes fall through to the cloud chain as normal.
     lm_recovery_tried: bool = False
-    # Which model a rescue actually used, and the meter token of that call —
-    # the caller needs both to account for the response it is about to yield.
-    _last_substitute: "str | None" = None
-    _last_substitute_token: Any = None
 
     @classmethod
     def build(cls, role: str, primary_cfg: dict[str, Any],
@@ -189,7 +185,7 @@ class EscalatingLlm(BaseLlm):
         if self.primary_fail_streak >= _demote_after():
             self.primary_demoted = True
 
-    async def _substitute_model(self, exc, model, req, label):  # noqa: C901
+    async def _substitute_model(self, exc, model, req, label, meta: dict):  # noqa: C901
         """Re-issue ONE attempt against a model this endpoint actually serves.
 
         Yields the responses when the stand-in worked and nothing when it did
@@ -232,12 +228,15 @@ class EscalatingLlm(BaseLlm):
             "api_base=%s — the configured model is not served here; fix the "
             "role config or load it", self.role, label,
             getattr(model, "model", "?"), sub, base)
-        self._last_substitute = sub
-        self._last_substitute_token = None
+        # PER-CALL, via the caller's dict. Stored on the instance it would be
+        # cross-attributed the moment two calls share this EscalatingLlm (it is
+        # built once per role per ticket), billing one call's tokens to the
+        # other's model.
+        meta["model"] = sub
         try:
             await _throttle_global()
             _tok = _meter_record(self.role, sub)
-            self._last_substitute_token = _tok
+            meta["token"] = _tok
             out = []
             async for r in model.generate_content_async(
                     req.model_copy(update={"model": sub}), stream=False):
@@ -386,14 +385,14 @@ class EscalatingLlm(BaseLlm):
                 # silently re-issued against whatever a proxy happens to serve:
                 # that is a billed generation on a model nobody chose.
                 _sub_out = None
-                _sub_used = None
+                _sub_meta: dict = {}
                 if label in ("primary", "primary_retry"):
                     async for _r in self._substitute_model(
-                            exc, model, req_for_attempt, label):
+                            exc, model, req_for_attempt, label, _sub_meta):
                         if _sub_out is None:
                             _sub_out = []
                         _sub_out.append(_r)
-                    _sub_used = self._last_substitute
+                _sub_used = _sub_meta.get("model")
                 if _sub_out:
                     # The stand-in produced the answer, so the accounting names
                     # IT: tokens, budget and the Langfuse trace all used to
@@ -403,7 +402,7 @@ class EscalatingLlm(BaseLlm):
                     _in_t, _out_t = _usage_of(_sub_out)
                     if _in_t or _out_t:
                         _meter_tokens(self.role, _in_t, _out_t,
-                                      self._last_substitute_token)
+                                      _sub_meta.get("token"))
                         try:
                             from aiforge_core.runtime.budget import tracker
                             tracker.record(role=self.role,
@@ -478,6 +477,23 @@ class EscalatingLlm(BaseLlm):
                                 # the normal path.
                                 _meter_fail(_rtok, reason="empty")
                             else:
+                                # A recovered response is a real one: count what
+                                # it WROTE and record its spend. This branch
+                                # yielded and returned before ever reaching the
+                                # accounting block, so a crash-and-recover box
+                                # reported traffic with no tokens behind it.
+                                _rin, _rout = _usage_of(buffered)
+                                if _rin or _rout:
+                                    _meter_tokens(self.role, _rin, _rout, _rtok)
+                                    try:
+                                        from aiforge_core.runtime.budget import (
+                                            tracker as _tr)
+                                        _tr.record(role=self.role,
+                                                   model=target_model or label,
+                                                   input_tokens=_rin,
+                                                   output_tokens=_rout)
+                                    except Exception as _bx:  # noqa: BLE001
+                                        log.debug("budget.record failed: %s", _bx)
                                 log.info(
                                     "llm.recovered role=%s after_lm_reload",
                                     self.role,

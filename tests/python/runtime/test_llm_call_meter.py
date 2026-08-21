@@ -963,8 +963,12 @@ def test_tokens_are_billed_to_the_minute_of_the_send(monkeypatch):
     monkeypatch.setattr(call_meter.time, "monotonic", lambda: 1000.0 + 401)
     g = call_meter.global_snapshot()
     assert g["tokens_out_60m"] == 900
-    i = [n for n, v in enumerate(g["series_60m"]) if v]
-    assert i, "the send should still be inside the hour"
+    # Assert WHICH minute, not merely "some minute": settling 400s later is
+    # still inside the same hour, so a total alone passes whether the tokens
+    # land on the send's minute or the settle's.
+    sent_at = [n for n, v in enumerate(g["series_60m"]) if v]
+    tokens_at = [n for n, v in enumerate(g["series_token_out_60m"]) if v]
+    assert sent_at and tokens_at == sent_at
 
 
 def test_a_response_with_no_usage_block_records_nothing():
