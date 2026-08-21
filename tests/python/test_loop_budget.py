@@ -146,15 +146,45 @@ def test_loc_for_turn_uses_content_when_loc_field_missing():
     assert state["loc_history"] == [4]
 
 
-def test_loc_for_turn_counts_no_content_patches_as_one():
-    """A patch entry without explicit content/loc still registers as
-    motion (count=1), so a no-op turn (file_diffs=[]) differs from a
-    no-content patch turn."""
+def test_an_unmeasurable_turn_is_not_recorded_as_a_stall(monkeypatch):
+    """The Doer's prompt contract emits {path, action} — no content, no loc —
+    so counting entries measured FILES TOUCHED (1-6), and "three deltas under
+    50 lines" was then true of every possible turn. That turned the progress
+    watchdog into a 10-minute timer that shipped productive work as partial.
+
+    When git cannot measure the turn either, the correct answer is "no
+    judgement", not "no progress"."""
+    monkeypatch.setattr(loop_budget, "_worktree_loc", lambda: None)
+    state: dict = {
+        "doer_outcome": {"file_diffs": [{"path": "a.py", "action": "patch"}]}
+    }
+    assert loop_budget.evaluate_plateau(state, now=0.0) is False
+    assert "loc_history" not in state
+
+
+def test_the_real_line_count_comes_from_git(monkeypatch):
+    """What the model chose to report is not the progress signal; what changed
+    on disk is."""
+    monkeypatch.setattr(loop_budget, "_worktree_loc", lambda: 412)
     state: dict = {
         "doer_outcome": {"file_diffs": [{"path": "a.py", "action": "patch"}]}
     }
     loop_budget.evaluate_plateau(state, now=0.0)
-    assert state["loc_history"] == [1]
+    assert state["loc_history"] == [412]
+
+
+def test_a_productive_loop_is_not_killed(monkeypatch):
+    """14 new files across four turns used to read as a plateau."""
+    monkeypatch.setattr(loop_budget, "_worktree_loc",
+                        lambda: _growing.pop(0))
+    state: dict = {"doer_outcome": {"file_diffs": [{"path": "a.py",
+                                                    "action": "write"}]}}
+    for turn, t in enumerate((0.0, 300.0, 600.0, 900.0)):
+        loop_budget.evaluate_plateau(state, now=t)
+        assert not state.get("loop_budget_kill"), f"killed on turn {turn}"
+
+
+_growing = [120, 380, 700, 1150]
 
 
 # ─── env-knob plumbing ────────────────────────────────────────────────

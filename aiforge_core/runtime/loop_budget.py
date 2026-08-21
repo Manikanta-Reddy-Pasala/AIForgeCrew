@@ -94,14 +94,55 @@ def _coerce_doer_outcome(value: Any) -> dict | None:
     return None
 
 
-def _loc_for_turn(state: dict) -> int:
-    """Compute a cumulative LOC count for the most recent Doer turn.
+def _worktree_loc() -> "int | None":
+    """Lines changed in the working tree, from git. ``None`` when git cannot
+    answer (no repo, no binary, an error).
 
-    Strategy: sum line counts of every file_diffs entry's content.
-    The Doer's prompt contract emits ``file_diffs: [{path, action,
-    content?}, ...]`` — when ``content`` isn't there (e.g. action=
-    ``patch`` reporting a delta) we fall back to counting unique
-    paths so a no-content patch turn still differs from a no-op turn.
+    This is the REAL progress signal. The fallback below counts file_diffs
+    entries, and the Doer's own prompt contract emits
+    ``{path, action}`` — no ``content``, no ``loc`` — so that count was the
+    number of FILES TOUCHED, typically 1-6. The plateau rule ("three
+    consecutive deltas under 50 lines") is then true of every possible turn,
+    which turned a progress watchdog into a plain 10-minute timer that shipped
+    productive work as ``partial``: 14 new files across four turns read as a
+    stall.
+    """
+    import subprocess
+    root = (os.environ.get("AIFORGE_REPO_ROOT") or "").strip()
+    if not root:
+        try:
+            from aiforge_core.runtime import request_context
+            root = request_context.get_repo_root() or ""
+        except Exception:  # noqa: BLE001
+            root = ""
+    if not root or not os.path.isdir(root):
+        return None
+    try:
+        out = subprocess.run(                      # noqa: S603 — fixed argv
+            ["git", "diff", "--numstat", "HEAD"],
+            cwd=root, capture_output=True, text=True, timeout=10)
+        if out.returncode != 0:
+            return None
+        total = 0
+        for line in (out.stdout or "").splitlines():
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+            for n in parts[:2]:
+                if n.isdigit():                    # "-" for binary files
+                    total += int(n)
+        return total
+    except Exception:  # noqa: BLE001 — a watchdog must never break the run
+        return None
+
+
+def _loc_for_turn(state: dict) -> "int | None":
+    """Cumulative LOC for the most recent Doer turn, or ``None`` when it
+    cannot be measured.
+
+    ``None`` matters: a watchdog that cannot see progress must not conclude
+    there is none. Before, an unmeasurable turn counted as "1" and three of
+    them looked exactly like a stall.
     """
     outcome = _coerce_doer_outcome(state.get("doer_outcome"))
     if not outcome:
@@ -109,6 +150,15 @@ def _loc_for_turn(state: dict) -> int:
     diffs = outcome.get("file_diffs") or []
     if not isinstance(diffs, list):
         return 0
+    # Ask GIT first — it knows what actually changed, whatever the model chose
+    # to report. Only when git cannot answer do we fall back to the model's
+    # own accounting.
+    if any(isinstance(e, dict) and not isinstance(e.get("loc"), int)
+           and not isinstance(e.get("content"), str) for e in diffs):
+        wt = _worktree_loc()
+        if wt is not None:
+            return wt
+        return None            # unmeasurable — NOT "no progress"
     total = 0
     for entry in diffs:
         if not isinstance(entry, dict):
@@ -193,6 +243,13 @@ def evaluate_plateau(
         return False  # already killed; idempotent
 
     loc = _loc_for_turn(state)
+    if loc is None:
+        # Progress could not be MEASURED this turn. A watchdog that cannot see
+        # progress must not rule that there was none: recording a placeholder
+        # made three unmeasurable turns indistinguishable from a stall, which
+        # is how productive work got shipped as `partial`.
+        log.debug("loop_budget: turn not measurable — no plateau judgement")
+        return False
     _record_history(state, loc, now=now)
     history = state["loc_history"]
 

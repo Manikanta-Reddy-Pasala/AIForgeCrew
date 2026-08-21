@@ -83,14 +83,22 @@ async def _loop_gate(ctx):  # type: ignore[no-untyped-def]
         elif (now - float(start)) > DOER_MAX_WALL_S:
             wall_kill = True
     max_iters = _effective_max_iters(state)
-    if _feedback_passed(state) or kill or wall_kill or iters >= max_iters:
-        if (kill or wall_kill) and not _feedback_passed(state):
+    cap_out = iters >= max_iters
+    if _feedback_passed(state) or kill or wall_kill or cap_out:
+        if (kill or wall_kill or cap_out) and not _feedback_passed(state):
             # Progress stalled / budget spent but work exists. Mark the
             # verdict ``partial`` so the runner ships the partial diff as a
             # PR (status review) instead of replaying the
             # whole pipeline. (Was the LoopAgent before-callback's job;
             # the migration moved the exit here but dropped the verdict.)
+            # The ceiling is spent work too. Leaving THIS branch's verdict as
+            # a plain `fail` meant the validator's "don't replan a stalled
+            # loop" guard did not fire, so the whole pipeline re-ran and hit
+            # the same ceiling again — double the iterations for the same
+            # result, on the exhaustion path that is by far the most common
+            # when iterations are fast.
             reason = ("wall-clock budget" if wall_kill
+                      else f"iteration ceiling ({max_iters})" if cap_out
                       else str(state.get("loop_budget_reason", "loc plateau")))
             state["feedback_verdict"] = f"partial loop_budget_kill: {reason}"
         ctx.route = ROUTE_EXIT
@@ -104,7 +112,22 @@ async def _loop_gate(ctx):  # type: ignore[no-untyped-def]
         # re-ran the tests) sail through. Mirrors the validator replan
         # reset (see _validator_gate). NOT cleared on the exit branch —
         # the Validator needs the final pass's values.
-        _clear_state(state, ("tests_ok", "typecheck_ok", "lint_ok"))
+        _clear_state(state, (
+            "tests_ok", "typecheck_ok", "lint_ok",
+            # `doer_incomplete` is written when a Doer turn stops early or
+            # lands zero edits, and the Feedback quality gate turns it into a
+            # hard fail. Nothing ever cleared it, so ONE bad turn made the
+            # pass-exit unreachable for the rest of the run AND for the
+            # replanned attempt: the loop then ground to its ceiling with a
+            # green tree and a model saying "pass" every iteration.
+            "doer_incomplete",
+            # The repeat guard counts identical (tool, args) calls for the
+            # whole RUN. `run_tests` with byte-identical args is the normal
+            # case once per iteration, so from iteration 4 the guard
+            # short-circuited it — and ADK still fires the after-tool
+            # callback, which recorded the green suite as tests_ok=False.
+            "_repeat_counts",
+        ))
         ctx.route = ROUTE_LOOP
 
 
@@ -137,6 +160,9 @@ async def _validator_gate(ctx):  # type: ignore[no-untyped-def]
         _clear_state(state, (
             "feedback_verdict", "loop_budget_kill", "loop_budget_reason",
             "doer_loop_started_at",
+            # Both are run-scoped and both make a pass unreachable; a
+            # replanned attempt that inherits them is spent before it starts.
+            "doer_incomplete", "_repeat_counts",
             "loc_history", "loc_first_seen", "doer_outcome",
             "verifier_verdict", "verify_correctness", "verify_scope",
             "verify_risk", "verify_replan_count",
@@ -238,6 +264,22 @@ async def _plan_promote(ctx):  # type: ignore[no-untyped-def]
             return
     if not isinstance(obj, dict):
         return
+    # Does the plan DECLARE a test bar? `tests_declared` is what
+    # AIFORGE_STRICT_TEST_GATE keys on — and nothing in the codebase ever
+    # wrote it, so that gate was inert: an operator could switch it on and get
+    # no strictness at all. The plan is the one place the bar is stated.
+    try:
+        _decl = obj.get("tests_declared")
+        if _decl is None:
+            _acc = json.dumps(obj.get("acceptance") or obj.get(
+                "acceptance_criteria") or "")
+            _decl = ("test" in _acc.lower()
+                     or any("test" in str(st.get("acceptance", "")).lower()
+                            for st in (obj.get("subtickets") or [])
+                            if isinstance(st, dict)))
+        state["tests_declared"] = bool(_decl)
+    except Exception:  # noqa: BLE001 — never let this break plan promotion
+        pass
     globs: list[str] = []
     top = obj.get("scope_allowlist_globs")
     if isinstance(top, list):
