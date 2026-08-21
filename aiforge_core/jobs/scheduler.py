@@ -160,6 +160,14 @@ def _fire_agent(job: dict) -> bool:
     prompt = (job.get("ticket_body") or job.get("ticket_title") or "").strip()
 
     def _run() -> None:
+        # Hold the machine awake for the run. A scheduled job is the case that
+        # needs it most: it fires while nobody is at the keyboard, so the box is
+        # idling toward sleep the whole time it works. Screen lock is untouched.
+        from aiforge_core.runtime.keep_awake import keep_awake
+        with keep_awake(f"job {job.get('id')}"):
+            _run_job()
+
+    def _run_job() -> None:
         try:
             import os
             import tempfile

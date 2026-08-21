@@ -630,7 +630,17 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                 chat_interject.clear(session_id)
             q.put(_SENTINEL)
 
-    t = threading.Thread(target=lambda: _run_async_in_thread(_drive), daemon=True)
+    def _drive_awake() -> None:
+        # A team run is minutes of work. Locking the screen and walking away
+        # used to let the box idle into sleep mid-run, which suspends the whole
+        # process: the model socket dies and everything already done waits to
+        # be re-done. The assertion lives in a child process, so it goes away
+        # with this run even if the API is killed outright.
+        from aiforge_core.runtime.keep_awake import keep_awake
+        with keep_awake(f"team run session={session_id}"):
+            _run_async_in_thread(_drive)
+
+    t = threading.Thread(target=_drive_awake, daemon=True)
     t.start()
     errored = False
     stopped = False
