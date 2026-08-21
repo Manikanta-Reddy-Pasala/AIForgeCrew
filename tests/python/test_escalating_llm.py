@@ -872,3 +872,73 @@ def test_a_rescued_team_response_is_counted_with_its_tokens(monkeypatch, _meter)
     g = _meter.global_snapshot(series=False)
     assert g["tokens_out"] == 150 and g["tokens_in"] == 400
     _models.reset_cache()
+
+
+def test_team_mode_uses_the_operators_configured_models(monkeypatch, _meter):
+    """"I added four models; use the others when one dies" has to mean the same
+    thing in team mode. The pipeline path only ever substituted a model the
+    endpoint reported as SERVED, which is a different (and narrower) question
+    than "what did the operator configure"."""
+    from aiforge_core.config import model_registry
+
+    monkeypatch.delenv("AIFORGE_LLM_MODEL_AUTOFALLBACK", raising=False)
+    monkeypatch.setattr(model_registry, "_load", lambda: [
+        {"id": "a", "model": "qwen/dead", "base_url": "", "api_key": ""},
+        {"id": "b", "model": "qwen/alive", "base_url": "", "api_key": ""},
+    ])
+
+    class _DeadThenAlive(BaseLlm):
+        api_base: str = "http://127.0.0.1:1234/v1"
+        seen: list = []
+
+        async def generate_content_async(self, llm_request, stream=False):
+            self.seen.append(llm_request.model)
+            if llm_request.model != "qwen/alive":
+                # SERVED, just not answering — not a "missing model" error.
+                raise RuntimeError("litellm.APIConnectionError: read timeout")
+            yield _resp("answered by the configured fallback")
+
+        @classmethod
+        def supported_models(cls):
+            return []
+
+    primary = _DeadThenAlive(model="qwen/dead", seen=[])
+    e = EscalatingLlm(model="qwen/dead", role="doer", primary_model=primary,
+                      chain_models=[], chain_labels=[])
+    out = _drive(e)
+    assert out[0].content.parts[0].text == "answered by the configured fallback"
+    assert primary.seen[-1] == "qwen/alive"
+
+
+def test_a_registry_row_on_ANOTHER_host_is_skipped_in_team_mode(monkeypatch, _meter):
+    """The ADK request is bound to this agent's own client, so a row pointing
+    at a different endpoint cannot be honoured here — sending its model id to
+    THIS host would just be a second wrong model."""
+    from aiforge_core.config import model_registry
+
+    monkeypatch.delenv("AIFORGE_LLM_MODEL_AUTOFALLBACK", raising=False)
+    monkeypatch.setattr(model_registry, "_load", lambda: [
+        {"id": "a", "model": "qwen/dead", "base_url": "", "api_key": ""},
+        {"id": "b", "model": "cloud/only", "base_url": "https://api.other/v1",
+         "api_key": "sk-x"},
+    ])
+
+    class _AlwaysDead(BaseLlm):
+        api_base: str = "http://127.0.0.1:1234/v1"
+        seen: list = []
+
+        async def generate_content_async(self, llm_request, stream=False):
+            self.seen.append(llm_request.model)
+            raise RuntimeError("litellm.APIConnectionError: read timeout")
+            yield  # pragma: no cover
+
+        @classmethod
+        def supported_models(cls):
+            return []
+
+    primary = _AlwaysDead(model="qwen/dead", seen=[])
+    cloud = _StubModel(model="cloud", script=[_resp("cloud answer")])
+    e = EscalatingLlm(model="qwen/dead", role="doer", primary_model=primary,
+                      chain_models=[cloud], chain_labels=["cloud"])
+    assert _drive(e)[0].content.parts[0].text == "cloud answer"
+    assert "cloud/only" not in primary.seen

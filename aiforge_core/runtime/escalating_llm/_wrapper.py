@@ -193,7 +193,20 @@ class EscalatingLlm(BaseLlm):
         before. LiteLlm picks ``llm_request.model`` before its own, so the
         substitution is a stamped request, not a rebuilt model object.
         """
-        if not _looks_like_missing_model(exc):
+        # WHICH models to stand in with, in order:
+        #   1. the operator's OTHER configured models (the registry) — the
+        #      same chain the chat path walks, so "I added four models, use
+        #      the others when one dies" means the same thing in team mode;
+        #   2. failing that, whatever this endpoint reports as served, which
+        #      is the only option when the failure is "that model is not
+        #      loaded here".
+        # Trigger differs by source: a MISSING model is a config error and
+        # every candidate is worth trying, while a model that is served but
+        # not answering only justifies the registry chain — re-rolling through
+        # every id the box happens to have loaded turns one dead model into a
+        # sweep of the whole host.
+        _missing = _looks_like_missing_model(exc)
+        if not (_missing or _is_transient_llm_error(exc)):
             return
         # The operator's kill switch applies HERE too. The direct-client rescue
         # is gated on it and documents why: someone comparing models wants a
@@ -209,18 +222,35 @@ class EscalatingLlm(BaseLlm):
         base = _api_base_of(model)
         if not base:
             return
+        _mid = getattr(model, "model", "") or ""
+        sub = ""
         try:
-            from aiforge_core.llm.client._models import (
-                model_is_missing, pick_substitute)
-            # WITH the key: /v1/models is authenticated on most hosted
-            # endpoints, and an unauthenticated probe 401s, returns "no answer",
-            # and the rescue silently never fires — team mode dying on the exact
-            # config line chat recovers from, which is what this is for.
-            served = model_is_missing(base, getattr(model, "model", "") or "",
-                                      _api_key_of(model))
-            sub = pick_substitute(getattr(model, "model", "") or "", served or [])
-        except Exception:  # noqa: BLE001 — a rescue must never add a failure
-            return
+            from aiforge_core.config import model_registry as _mr
+            for _row in _mr.chain_after(_mid, base):
+                if isinstance(_row, dict) and str(_row.get("model") or "").strip():
+                    # Registry rows that name ANOTHER host are for the text
+                    # path, which can rebuild the endpoint. Here the request is
+                    # bound to this agent's own client, so only a different
+                    # model on THIS endpoint is usable.
+                    _u = str(_row.get("base_url") or "").strip().rstrip("/")
+                    if _u and _u != (base or "").rstrip("/"):
+                        continue
+                    sub = str(_row["model"]).strip()
+                    break
+        except Exception:  # noqa: BLE001 — the registry is optional
+            sub = ""
+        if not sub and _missing:
+            try:
+                from aiforge_core.llm.client._models import (
+                    model_is_missing, pick_substitute)
+                # WITH the key: /v1/models is authenticated on most hosted
+                # endpoints, and an unauthenticated probe 401s, returns "no
+                # answer", and the rescue silently never fires — team mode
+                # dying on the exact config line chat recovers from.
+                served = model_is_missing(base, _mid, _api_key_of(model))
+                sub = pick_substitute(_mid, served or [])
+            except Exception:  # noqa: BLE001 — a rescue must never add a failure
+                return
         if not sub:
             return
         log.warning(
