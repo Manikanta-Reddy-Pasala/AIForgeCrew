@@ -1830,6 +1830,9 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 run.publish({"type": "usage", "llm_turn": _calls["turn"],
                              "llm_session": _calls["session"],
                              "llm_per_min": _calls["per_minute"],
+                             "llm_turn_failed": _calls.get("turn_failed", 0),
+                             "llm_failed_per_min":
+                                 _calls.get("failed_per_minute", 0),
                              "final": True})
                 # …and PERSIST it as a step. The live badge dies with liveTurn
                 # a few hundred ms later (loadSession + setLiveTurn(null)), and
@@ -1837,11 +1840,18 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 # number the user is meant to be left looking at is gone from
                 # the transcript and from any later reload.
                 if _calls["turn"]:
+                    # Failed attempts are named in the same line, not netted
+                    # out of it: 12 requests of which 7 failed is a retry
+                    # storm, and a bare "12 requests" reads like a thorough
+                    # turn. Silent when nothing failed.
+                    _failed = int(_calls.get("turn_failed") or 0)
                     steps.append({"type": "thought", "role": "system",
                                   "text": f"⚡ {_calls['turn']} LLM "
                                           f"{'request' if _calls['turn'] == 1 else 'requests'} "
                                           f"for this message "
-                                          f"({_calls['session']} in this chat)"})
+                                          f"({_calls['session']} in this chat"
+                                          + (f", {_failed} failed" if _failed else "")
+                                          + ")"})
             except Exception:  # noqa: BLE001 — metering must never break a turn
                 pass
             # Persist the final subtask panel as a step so reload restores it.

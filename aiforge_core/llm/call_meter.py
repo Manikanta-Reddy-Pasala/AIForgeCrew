@@ -13,12 +13,26 @@ are exactly the ones that make an interactive turn feel slow. ``global_snapshot`
 serves the whole process over three rolling windows — the last minute, 15
 minutes and hour — which is what the toolbar meter shows.
 
+A request that FAILED is still a request — the provider counted it, the retry
+storm it belongs to is exactly what the meter exists to make visible, and a
+rate that quietly dropped failures would read low precisely when the box is in
+trouble. So ``per_minute`` stays "attempts at the wire" and the failures are
+counted ALONGSIDE it (``failed_per_minute``, ``by_fail_reason``): "40/min, 38
+of them failing" is the reading that names the problem, and neither half of it
+can be recovered from the other.
+
+A failure is billed to the minute (and the chat turn) of its SEND, not of the
+moment it surfaced — a 600s timeout that fails now was traffic ten minutes ago,
+and charging it to the current minute would invent a burst that never happened
+while leaving its own minute looking clean.
+
 Deliberately in-process and bounded: this is a live meter for the UI, not
 billing. Counters reset when the API restarts, and only the most recent
 ``_MAX_SESSIONS`` sessions and ``_RECENT_MAX`` calls are kept.
 """
 from __future__ import annotations
 
+import bisect
 import contextvars
 import threading
 import time
@@ -64,8 +78,18 @@ _lock = threading.Lock()
 _TURN_EPOCH: "contextvars.ContextVar[int | None]" = contextvars.ContextVar(
     "aiforge_turn_epoch", default=None)
 _total = 0
+_fail_total = 0
 _recent: deque = deque(maxlen=_RECENT_MAX)
-# minute index -> {"n": int, "roles": {...}, "provs": {...}, "models": {...}}
+# Failure timestamps for the exact 60s window. A LIST kept sorted, not a deque:
+# a failure carries the timestamp of its SEND, so failures arrive out of order
+# (a 600s timeout settles long after a 5s one that started later) and appending
+# an older stamp behind a newer one would park it where the popleft-trim stops
+# — freezing the whole trim, which is the one bug `_recent`'s comments warn
+# about. Failures are rare and the window is a minute, so the insort memmove is
+# over a handful of floats.
+_recent_fail: "list[float]" = []
+# minute index -> {"n": int, "f": int, "roles": {...}, "provs": {...},
+#                  "models": {...}, "fails": {reason: int}}
 _buckets: "OrderedDict[int, dict]" = OrderedDict()
 # When the 60s ring last had to evict a call it had not yet counted. A
 # timestamp, not a counter: a drop at 09:00 says nothing about the rate at
@@ -84,7 +108,8 @@ def _key(session_id) -> "str | None":
 def _slot(sid: str) -> dict:
     slot = _sessions.get(sid)
     if slot is None:
-        slot = {"total": 0, "turn": 0, "by_role": {}, "epoch": 0}
+        slot = {"total": 0, "turn": 0, "by_role": {}, "epoch": 0,
+                "failed": 0, "turn_failed": 0}
         _sessions[sid] = slot
         while len(_sessions) > _MAX_SESSIONS:
             _sessions.popitem(last=False)     # oldest out
@@ -95,8 +120,15 @@ def _slot(sid: str) -> dict:
 
 def record(role: str | None = None, session_id=None, *,
            provider: str | None = None, model: str | None = None,
-           now: float | None = None) -> None:
+           now: float | None = None):
     """One request went out. Never raises — metering must not break a call.
+
+    Returns an opaque TOKEN to hand to :func:`record_failure` if this request
+    turns out to have failed, or ``None`` if nothing could be recorded. The
+    token carries the send timestamp, session and turn epoch, so the failure
+    lands on the minute and the message that actually paid for it however long
+    the call took to give up. Callers that ignore the return value keep the
+    old behaviour exactly.
 
     ``now`` is a test seam. Production always passes ``None`` and gets
     ``time.monotonic()``, which never goes backwards; the 60s ring's trim
@@ -152,8 +184,89 @@ def record(role: str | None = None, session_id=None, *,
                 # outside any turn, e.g. a background fold).
                 if epoch is None or epoch == slot["epoch"]:
                     slot["turn"] += 1
+                    # Stamp the token with the turn this call was COUNTED
+                    # against. Carrying the caller's bare None instead meant a
+                    # failure resolved `epoch is None` at settle time and
+                    # landed on whatever turn was current THEN — the exact
+                    # thing the token exists to prevent, and visible as
+                    # "0 requests · 1 failed" on a message that sent nothing.
+                    epoch = slot["epoch"]
                 if role:
                     slot["by_role"][role] = slot["by_role"].get(role, 0) + 1
+        return (_ts, sid, epoch)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def record_failure(token=None, reason: str | None = None, *,
+                   session_id=None, now: float | None = None) -> None:
+    """One request that :func:`record` counted did NOT come back with an
+    answer. Never raises.
+
+    ``token`` is what ``record`` returned for that very request, and it is
+    REQUIRED: without one this is a no-op. That is what makes "failures are a
+    subset of requests" structural rather than a promise — ``record`` returns
+    None only when it could not count the send, and counting a failure for an
+    uncounted send puts ``failed`` above ``total``, paints a sparkline minute
+    with nothing to scale it against, and lets a broken meter report traffic
+    the box never sent. The token also carries the minute, chat and turn of
+    the SEND, which is what the failure is billed to.
+
+    ``reason`` is a short label (``http_500``, ``timeout``, ``cancelled``,
+    ``empty``…). It is clipped and the per-minute label set is capped, because
+    an unbounded reason (a stringified exception) would ship an exception novel
+    to every polling browser.
+    """
+    global _fail_total
+    try:
+        if not (isinstance(token, tuple) and len(token) == 3):
+            return          # no counted send → nothing to mark as failed
+        ts, sid, epoch = token
+        if session_id is not None:
+            sid = _key(session_id)
+        # NOTE: no ambient-context fallback for the session. The token already
+        # answers the question, and re-reading the context at SETTLE time would
+        # attribute a fold's timeout to whatever chat the thread has been
+        # rebound to since — a different chat, not a better guess.
+        with _lock:
+            _now = time.monotonic() if now is None else now
+            if not isinstance(ts, (int, float)) or ts > _now:
+                # No usable stamp, or one from the future (a clock seam, or a
+                # hand-fed `now` in a test): treat it as happening now.
+                ts = _now
+            _fail_total += 1
+            # A send older than the reported history has NO minute left to be
+            # charged to. It is counted in the lifetime total (it happened) and
+            # left out of every window — the send it belongs to is outside
+            # those windows too. Re-stamping it to the current minute instead
+            # would report a burst that never happened AND put `failed_60m`
+            # above `last_60m`: the meter's one invariant, and the reason the
+            # token is mandatory, broken at window level. The windows read 59
+            # whole minutes back (`_bucket_sum_locked`), not `_RETAIN_S`, so
+            # the cutoff has to match them or a 59-to-60-minute-old failure
+            # lands in a bucket nothing reports.
+            if _mkey(ts) < _mkey(_now) - (_BUCKETS - 1):
+                return
+            if _now - ts < _WINDOW_S:
+                # Only stamps inside the exact window matter to the rate; the
+                # rest would be trimmed on the next read anyway, and keeping
+                # them out bounds the insort.
+                bisect.insort(_recent_fail, ts)
+                del _recent_fail[:max(0, len(_recent_fail) - _RECENT_MAX)]
+            _bump_fail_bucket_locked(ts, reason)
+            if sid is not None and sid in _sessions:
+                # Only a session the meter already knows: a failure must not
+                # mint a slot (and evict a live one) for a chat that never sent
+                # anything through this process.
+                slot = _slot(sid)
+                slot["failed"] = int(slot.get("failed") or 0) + 1
+                # A REAL epoch match only. `record` stamps the token with the
+                # turn it counted the send against, so an unstamped failure is
+                # one whose turn is unknown — and guessing "the current one"
+                # can put `turn_failed` above a `turn` that never included the
+                # send. Undercounting one turn beats billing an innocent one.
+                if epoch is not None and epoch == slot["epoch"]:
+                    slot["turn_failed"] = int(slot.get("turn_failed") or 0) + 1
     except Exception:  # noqa: BLE001
         pass
 
@@ -172,6 +285,7 @@ def turn_reset(session_id):
     with _lock:
         slot = _slot(sid)
         slot["turn"] = 0
+        slot["turn_failed"] = 0
         slot["epoch"] += 1
         return (sid, slot["epoch"])
 
@@ -202,17 +316,26 @@ def _trim_recent_locked(now: float) -> None:
     cutoff = now - _WINDOW_S
     while _recent and _recent[0] < cutoff:
         _recent.popleft()
+    # Same window, sorted list (see `_recent_fail`): drop the aged-out head.
+    i = bisect.bisect_left(_recent_fail, cutoff)
+    if i:
+        del _recent_fail[:i]
 
 
 def _mkey(ts: float) -> int:
     return int(ts // _MINUTE_S)
 
 
+def _new_bucket() -> dict:
+    return {"n": 0, "f": 0, "roles": {}, "provs": {}, "models": {},
+            "fails": {}}
+
+
 def _bump_bucket_locked(ts: float, role, provider, model) -> None:
     key = _mkey(ts)
     b = _buckets.get(key)
     if b is None:
-        b = {"n": 0, "roles": {}, "provs": {}, "models": {}}
+        b = _new_bucket()
         _buckets[key] = b
         # Drop everything older than the hour. Bounded by construction: at
         # most _BUCKETS + 1 slots, whatever the call rate. Evict by minute KEY,
@@ -234,6 +357,26 @@ def _bump_bucket_locked(ts: float, role, provider, model) -> None:
             slot["…other"] = slot.get("…other", 0) + 1
 
 
+def _bump_fail_bucket_locked(ts: float, reason) -> None:
+    """Charge one failure to the minute of its SEND. Creates the bucket if the
+    minute has no successful send in it (a minute in which every attempt failed
+    is the most important minute the meter can show)."""
+    key = _mkey(ts)
+    b = _buckets.get(key)
+    if b is None:
+        b = _new_bucket()
+        _buckets[key] = b
+        while len(_buckets) > _BUCKETS + 1:
+            _buckets.pop(min(_buckets), None)
+    b["f"] = int(b.get("f") or 0) + 1
+    v = str(reason or "").strip()[:_LABEL_MAX] or "error"
+    fails = b.setdefault("fails", {})
+    if v in fails or len(fails) < _LABELS_PER_BUCKET:
+        fails[v] = fails.get(v, 0) + 1
+    else:
+        fails["…other"] = fails.get("…other", 0) + 1
+
+
 def _prune_buckets_locked(now: float) -> None:
     """Forget minutes that have aged out — a process idle for a day must not
     report yesterday's burst as "the last hour"."""
@@ -248,6 +391,23 @@ def _bucket_sum_locked(now: float, minutes: int) -> int:
     and 15 minutes of wall clock — the honest cost of an O(60) read."""
     first = _mkey(now) - (minutes - 1)
     return sum(b["n"] for k, b in _buckets.items() if k >= first)
+
+
+def _fail_sum_locked(now: float, minutes: int) -> int:
+    """Failures over the same window as :func:`_bucket_sum_locked`."""
+    first = _mkey(now) - (minutes - 1)
+    return sum(int(b.get("f") or 0) for k, b in _buckets.items() if k >= first)
+
+
+def _fail_reasons_locked(now: float, minutes: int) -> dict:
+    first = _mkey(now) - (minutes - 1)
+    out: dict = {}
+    for k, b in _buckets.items():
+        if k < first:
+            continue
+        for name, n in (b.get("fails") or {}).items():
+            out[name] = out.get(name, 0) + n
+    return out
 
 
 def _breakdown_locked(now: float, minutes: int) -> "tuple[dict, dict, dict]":
@@ -266,17 +426,23 @@ def _breakdown_locked(now: float, minutes: int) -> "tuple[dict, dict, dict]":
     return roles, provs, models
 
 
-def _series_locked(now: float) -> list:
-    """Requests per minute for the last hour, oldest → newest."""
+def _series_locked(now: float, field: str = "n") -> list:
+    """Requests (``n``) or failures (``f``) per minute for the last hour,
+    oldest → newest. Same index in both series is the same minute."""
     newest = _mkey(now)
     first = newest - (_BUCKETS - 1)
-    return [(_buckets.get(k) or {}).get("n", 0)
+    return [int((_buckets.get(k) or {}).get(field) or 0)
             for k in range(first, newest + 1)]
 
 
 def _per_minute_locked(now: float) -> int:
     _trim_recent_locked(now)
     return len(_recent)
+
+
+def _fail_per_minute_locked(now: float) -> int:
+    _trim_recent_locked(now)      # trims both rings
+    return len(_recent_fail)
 
 
 def snapshot(session_id=None) -> dict:
@@ -299,6 +465,13 @@ def snapshot(session_id=None) -> dict:
             "last_15m": _bucket_sum_locked(now, 15),
             "last_60m": _bucket_sum_locked(now, _BUCKETS),
             "by_role": dict((slot or {}).get("by_role") or {}),
+            # Failures are a SUBSET of the counts above, never a separate
+            # population: `turn` is every attempt this message made and
+            # `turn_failed` is how many of them came back with nothing.
+            "turn_failed": int((slot or {}).get("turn_failed") or 0),
+            "session_failed": int((slot or {}).get("failed") or 0),
+            "failed": _fail_total,
+            "failed_per_minute": _fail_per_minute_locked(now),
         }
 
 
@@ -324,6 +497,14 @@ def global_snapshot(*, series: bool = True) -> dict:
             "per_minute": _per_minute_locked(now),
             "last_15m": _bucket_sum_locked(now, 15),
             "last_60m": _bucket_sum_locked(now, _BUCKETS),
+            # How many of those attempts failed, over the SAME windows — a
+            # subset of the numbers above, not a second population. A rate that
+            # hid them would read lowest exactly when the box is in trouble.
+            "failed": _fail_total,
+            "failed_per_minute": _fail_per_minute_locked(now),
+            "failed_15m": _fail_sum_locked(now, 15),
+            "failed_60m": _fail_sum_locked(now, _BUCKETS),
+            "by_fail_reason": _fail_reasons_locked(now, _BUCKETS),
             "by_role": by_role,
             "by_provider": by_provider,
             "by_model": by_model,
@@ -338,6 +519,7 @@ def global_snapshot(*, series: bool = True) -> dict:
         }
         if series:
             out["series_60m"] = _series_locked(now)
+            out["series_fail_60m"] = _series_locked(now, "f")
     return out
 
 
@@ -351,15 +533,21 @@ def _limit_state() -> dict:
 
 def reset_all() -> None:
     """Test helper — drop every counter."""
-    global _total, _started, _dropped
+    # `_dropped_at` was NOT in this global list (and `_dropped`, which was, does
+    # not exist): the assignment below bound a local and left the real flag set,
+    # so one test that overflowed the ring left every later `global_snapshot`
+    # claiming `rate_capped` for the rest of the process.
+    global _total, _fail_total, _started, _dropped_at
     with _lock:
         _total = 0
+        _fail_total = 0
         _dropped_at = 0.0
         _started = time.monotonic()
         _recent.clear()
+        _recent_fail.clear()
         _buckets.clear()
         _sessions.clear()
 
 
-__all__ = ["record", "turn_reset", "bind_turn", "reset_turn", "snapshot",
-           "global_snapshot", "reset_all", "WINDOWS"]
+__all__ = ["record", "record_failure", "turn_reset", "bind_turn", "reset_turn",
+           "snapshot", "global_snapshot", "reset_all", "WINDOWS"]

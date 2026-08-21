@@ -110,6 +110,18 @@ def _is_fast_role(role: str) -> bool:
         return False
 
 
+def _record_empty(token) -> None:
+    """One counted request answered with nothing. Never raises; a falsy token
+    means the send itself was never counted, so the failure must not be."""
+    if not token:
+        return
+    try:
+        from aiforge_core.llm import call_meter as _meter
+        _meter.record_failure(token, "empty")
+    except Exception:  # noqa: BLE001 — metering must never break a call
+        pass
+
+
 def _try_post(ep: Endpoint, messages: list[dict],
               *, temperature, max_tokens, top_p, extras,
               timeout_s: int, role: str,
@@ -150,9 +162,11 @@ def _try_post(ep: Endpoint, messages: list[dict],
             _mt = min(int((max_tokens or 4096) * (attempt + 1)), 32768)
             payload = _build_body(ep, _append_no_think(messages), temperature,
                                   _mt, top_p, extras)
+        _meter_tok: list = [None]
         try:
             body = _post_with_retry(ep, payload, timeout_s,
-                                    role=role, source=source)
+                                    role=role, source=source,
+                                    meter=_meter_tok)
         except _LLMCancelled:
             raise
         except (urllib.error.URLError, urllib.error.HTTPError,
@@ -179,6 +193,13 @@ def _try_post(ep: Endpoint, messages: list[dict],
         # etc.), never for conversational chat/doer output.
         if not _is_garbage(text, allow_empty_json=fast_role):
             return text, body
+        # A 200-OK that carries no usable content is a FAILED request: it cost
+        # a generation, it is about to be re-posted, and this loop is the
+        # documented-common failure on self-hosted reasoning models. It raises
+        # nothing, so the transport could not count it — count it here, with
+        # the same `empty` label the ADK path uses (escalating_llm/_wrapper),
+        # or the two meters give opposite verdicts about the same endpoint.
+        _record_empty(_meter_tok[0])
         _log.warning(
             "llm.empty_response",
             extra={"aiforge": {"role": role, "provider": ep.provider,
