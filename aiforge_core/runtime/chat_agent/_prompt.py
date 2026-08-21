@@ -27,6 +27,12 @@ Tool arguments:
 - summarize_doc {{"path": "report.pdf", "pages": "10-20"}}   (summarize an ATTACHED document — pdf/docx/xlsx — reading tables, images, and OCR'ing scanned PDFs. "pages" is OPTIONAL: a range like "10-20" or "3,5,7-9" summarizes ONLY those pages/sections; omit for the whole doc. Use this for large docs instead of file_read.)
 - read_files   {{"paths": ["a.java", "b.java", "c.java"]}}   (read MANY files in ONE call — ALWAYS use this instead of many file_read calls when you need several files; reading one at a time over many turns loses track and stalls)
 - file_write   {{"path": "...", "content": "..."}}      (creates/overwrites; code is syntax-checked before it lands — pass "force": true to override)
+               ONLY for a NEW file, or when you are genuinely replacing the whole
+               of a small one. To change an EXISTING file use file_patch /
+               multi_edit: rewriting a 600-line file to change 3 lines means
+               generating those 600 lines token by token — slow, expensive, and
+               the most common way an agent silently drops code it did not mean
+               to touch.
 - file_patch   {{"path": "...", "old_text": "...", "new_text": "..."}}   (syntax-checked result; "force": true overrides)
 - multi_edit   {{"edits": [{{"path":"a.py","old_str":"foo","new_str":"bar"}}, {{"path":"b.py","old_str":"x","new_str":"y","replace_all":true}}]}}
                 (apply several find/replace edits across one or MANY files in ONE call — validated first, then all-or-nothing)
