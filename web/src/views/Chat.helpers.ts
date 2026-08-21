@@ -159,3 +159,12 @@ export function isStoppedTurn(msg?: any): boolean {
                  (s.type === 'stopped' || s.stopped === true))) return true;
   return String(m.content ?? m.text ?? '').trim().startsWith('(stopped');
 }
+
+
+// ── token counts ──────────────────────────────────────────────────────────────
+/** 940 → "940", 6120 → "6.1k". Tokens are shown next to a request count, so
+ *  the eye needs the magnitude, not the digits. */
+export function fmtTokens(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0';
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n));
+}

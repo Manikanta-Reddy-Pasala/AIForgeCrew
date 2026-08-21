@@ -26,6 +26,13 @@ moment it surfaced — a 600s timeout that fails now was traffic ten minutes ago
 and charging it to the current minute would invent a burst that never happened
 while leaving its own minute looking clean.
 
+TOKENS are counted the same way, from what the provider reports in each
+response (``usage.prompt_tokens`` / ``completion_tokens``). Requests answer
+"how many calls did that cost"; tokens answer "how much did the model WRITE",
+which is the question a prompt asking for shorter answers is meant to move —
+and until this existed the answer was thrown away (``_record_usage`` was a
+``pass``), so every claim about verbosity was a guess.
+
 Deliberately in-process and bounded: this is a live meter for the UI, not
 billing. Counters reset when the API restarts, and only the most recent
 ``_MAX_SESSIONS`` sessions and ``_RECENT_MAX`` calls are kept.
@@ -79,6 +86,8 @@ _TURN_EPOCH: "contextvars.ContextVar[int | None]" = contextvars.ContextVar(
     "aiforge_turn_epoch", default=None)
 _total = 0
 _fail_total = 0
+_tokens_in_total = 0
+_tokens_out_total = 0
 _recent: deque = deque(maxlen=_RECENT_MAX)
 # Failure timestamps for the exact 60s window. A LIST kept sorted, not a deque:
 # a failure carries the timestamp of its SEND, so failures arrive out of order
@@ -109,7 +118,9 @@ def _slot(sid: str) -> dict:
     slot = _sessions.get(sid)
     if slot is None:
         slot = {"total": 0, "turn": 0, "by_role": {}, "epoch": 0,
-                "failed": 0, "turn_failed": 0}
+                "failed": 0, "turn_failed": 0,
+                "tokens_out": 0, "turn_tokens_out": 0,
+                "tokens_in": 0, "turn_tokens_in": 0}
         _sessions[sid] = slot
         while len(_sessions) > _MAX_SESSIONS:
             _sessions.popitem(last=False)     # oldest out
@@ -271,6 +282,77 @@ def record_failure(token=None, reason: str | None = None, *,
         pass
 
 
+def record_tokens(role: str | None = None, *, prompt_tokens: int = 0,
+                  completion_tokens: int = 0, token=None, session_id=None,
+                  now: float | None = None) -> None:
+    """What the provider says this response actually cost, in tokens.
+
+    Taken from the response body, never estimated: an estimate cannot tell you
+    whether asking the model for shorter answers worked, which is the only
+    reason to count this at all.
+
+    ``token`` (from :func:`record`) attributes the tokens to the minute and
+    turn of the SEND, exactly as failures are. Without one the tokens still
+    count machine-wide — a response IS evidence a request happened, so unlike a
+    failure there is no subset invariant to break — but they land on the
+    current minute and on no turn. Never raises.
+    """
+    global _tokens_in_total, _tokens_out_total
+    try:
+        pt = max(0, int(prompt_tokens or 0))
+        ct = max(0, int(completion_tokens or 0))
+        if not pt and not ct:
+            return
+        ts = None
+        sid = None
+        epoch = None
+        if isinstance(token, tuple) and len(token) == 3:
+            ts, sid, epoch = token
+        if session_id is not None:
+            sid = _key(session_id)
+        elif sid is None:
+            try:
+                from aiforge_core.runtime import request_context
+                sid = _key(request_context.context_session_id())
+                role = role or request_context.get_role()
+            except Exception:  # noqa: BLE001
+                pass
+        with _lock:
+            _now = time.monotonic() if now is None else now
+            if not isinstance(ts, (int, float)) or ts > _now:
+                ts = _now
+            _tokens_in_total += pt
+            _tokens_out_total += ct
+            if _mkey(ts) >= _mkey(_now) - (_BUCKETS - 1):
+                key = _mkey(ts)
+                b = _buckets.get(key)
+                if b is None:
+                    b = _new_bucket()
+                    _buckets[key] = b
+                    while len(_buckets) > _BUCKETS + 1:
+                        _buckets.pop(min(_buckets), None)
+                b["ti"] = int(b.get("ti") or 0) + pt
+                b["to"] = int(b.get("to") or 0) + ct
+                r = str(role or "").strip()[:_LABEL_MAX]
+                if r and ct:
+                    outs = b.setdefault("outs", {})
+                    if r in outs or len(outs) < _LABELS_PER_BUCKET:
+                        outs[r] = outs.get(r, 0) + ct
+                    else:
+                        outs["…other"] = outs.get("…other", 0) + ct
+            if sid is not None and sid in _sessions:
+                slot = _slot(sid)
+                slot["tokens_in"] = int(slot.get("tokens_in") or 0) + pt
+                slot["tokens_out"] = int(slot.get("tokens_out") or 0) + ct
+                if epoch is not None and epoch == slot["epoch"]:
+                    slot["turn_tokens_in"] = int(
+                        slot.get("turn_tokens_in") or 0) + pt
+                    slot["turn_tokens_out"] = int(
+                        slot.get("turn_tokens_out") or 0) + ct
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def turn_reset(session_id):
     """Start a new turn for this session — the per-turn counter goes back to 0
     while the session total keeps climbing.
@@ -286,6 +368,8 @@ def turn_reset(session_id):
         slot = _slot(sid)
         slot["turn"] = 0
         slot["turn_failed"] = 0
+        slot["turn_tokens_out"] = 0
+        slot["turn_tokens_in"] = 0
         slot["epoch"] += 1
         return (sid, slot["epoch"])
 
@@ -327,8 +411,10 @@ def _mkey(ts: float) -> int:
 
 
 def _new_bucket() -> dict:
-    return {"n": 0, "f": 0, "roles": {}, "provs": {}, "models": {},
-            "fails": {}}
+    # `ti`/`to` = tokens in / out for the minute; `outs` = out-tokens by role,
+    # which is the breakdown that names WHICH agent is writing an essay.
+    return {"n": 0, "f": 0, "ti": 0, "to": 0, "roles": {}, "provs": {},
+            "models": {}, "fails": {}, "outs": {}}
 
 
 def _bump_bucket_locked(ts: float, role, provider, model) -> None:
@@ -397,6 +483,28 @@ def _fail_sum_locked(now: float, minutes: int) -> int:
     """Failures over the same window as :func:`_bucket_sum_locked`."""
     first = _mkey(now) - (minutes - 1)
     return sum(int(b.get("f") or 0) for k, b in _buckets.items() if k >= first)
+
+
+def _token_sums_locked(now: float, minutes: int) -> "tuple[int, int]":
+    first = _mkey(now) - (minutes - 1)
+    ti = to = 0
+    for k, b in _buckets.items():
+        if k < first:
+            continue
+        ti += int(b.get("ti") or 0)
+        to += int(b.get("to") or 0)
+    return ti, to
+
+
+def _tokens_by_role_locked(now: float, minutes: int) -> dict:
+    first = _mkey(now) - (minutes - 1)
+    out: dict = {}
+    for k, b in _buckets.items():
+        if k < first:
+            continue
+        for name, n in (b.get("outs") or {}).items():
+            out[name] = out.get(name, 0) + n
+    return out
 
 
 def _fail_reasons_locked(now: float, minutes: int) -> dict:
@@ -472,6 +580,14 @@ def snapshot(session_id=None) -> dict:
             "session_failed": int((slot or {}).get("failed") or 0),
             "failed": _fail_total,
             "failed_per_minute": _fail_per_minute_locked(now),
+            # What the model actually WROTE for this message and this chat —
+            # the number a "be brief" instruction is meant to move, and the
+            # one the request count cannot show (40 one-line steps and one
+            # 6000-token essay are both "41 requests").
+            "turn_tokens_out": int((slot or {}).get("turn_tokens_out") or 0),
+            "session_tokens_out": int((slot or {}).get("tokens_out") or 0),
+            "turn_tokens_in": int((slot or {}).get("turn_tokens_in") or 0),
+            "session_tokens_in": int((slot or {}).get("tokens_in") or 0),
         }
 
 
@@ -505,6 +621,13 @@ def global_snapshot(*, series: bool = True) -> dict:
             "failed_15m": _fail_sum_locked(now, 15),
             "failed_60m": _fail_sum_locked(now, _BUCKETS),
             "by_fail_reason": _fail_reasons_locked(now, _BUCKETS),
+            # Tokens as REPORTED by the provider, over the same windows.
+            "tokens_in": _tokens_in_total,
+            "tokens_out": _tokens_out_total,
+            "tokens_out_15m": _token_sums_locked(now, 15)[1],
+            "tokens_out_60m": _token_sums_locked(now, _BUCKETS)[1],
+            "tokens_in_60m": _token_sums_locked(now, _BUCKETS)[0],
+            "tokens_out_by_role": _tokens_by_role_locked(now, _BUCKETS),
             "by_role": by_role,
             "by_provider": by_provider,
             "by_model": by_model,
@@ -538,9 +661,12 @@ def reset_all() -> None:
     # so one test that overflowed the ring left every later `global_snapshot`
     # claiming `rate_capped` for the rest of the process.
     global _total, _fail_total, _started, _dropped_at
+    global _tokens_in_total, _tokens_out_total
     with _lock:
         _total = 0
         _fail_total = 0
+        _tokens_in_total = 0
+        _tokens_out_total = 0
         _dropped_at = 0.0
         _started = time.monotonic()
         _recent.clear()
@@ -549,5 +675,6 @@ def reset_all() -> None:
         _sessions.clear()
 
 
-__all__ = ["record", "record_failure", "turn_reset", "bind_turn", "reset_turn",
-           "snapshot", "global_snapshot", "reset_all", "WINDOWS"]
+__all__ = ["record", "record_failure", "record_tokens", "turn_reset",
+           "bind_turn", "reset_turn", "snapshot", "global_snapshot",
+           "reset_all", "WINDOWS"]

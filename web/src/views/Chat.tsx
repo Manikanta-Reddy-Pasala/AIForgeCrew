@@ -6,7 +6,7 @@ import { Icon } from '../icons';
 import { MdLite, copyText as mdCopyText } from '../mdlite';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { AgentStep, SubtaskItem, RuleState, RuleStateCtx, LiveTurn, ChatMode, BuilderKind, PendingApproval } from './Chat.types';
-import { menuBtn, menuItem, LS_SESSION_KEY, LS_MODEL_KEY, LS_MODE_KEY, BUILDER_KINDS, BUILDER_LABELS, LS_BUILDER_KEY, relTime, dateTimeLabel, toAgentStep, msgAwaiting, getDismissedPlans, addDismissedPlan, isStoppedTurn } from './Chat.helpers';
+import { menuBtn, menuItem, LS_SESSION_KEY, LS_MODEL_KEY, LS_MODE_KEY, BUILDER_KINDS, BUILDER_LABELS, LS_BUILDER_KEY, relTime, dateTimeLabel, toAgentStep, msgAwaiting, getDismissedPlans, addDismissedPlan, isStoppedTurn, fmtTokens } from './Chat.helpers';
 import { SubtaskList } from './Chat.SubtaskList';
 import { ModeBadge } from './Chat.ModeBadge';
 import { CtxReload } from './Chat.CtxReload';
@@ -765,6 +765,7 @@ export default function Chat() {
             // standing on a turn that never reported one.
             llmTurnFailed: evt.llm_turn_failed ?? 0,
             llmFailedPerMin: evt.llm_failed_per_min ?? 0,
+            llmTurnTokensOut: evt.llm_turn_tokens_out ?? 0,
           } : {}),
         } } : prev);
         return;
@@ -1680,6 +1681,12 @@ export default function Chat() {
                                       : '')
                                   + `Counted at the wire, so retries count too.`}>
                         <span>⚡ {liveTurn.usage.llmTurn} LLM {liveTurn.usage.llmTurn === 1 ? 'request' : 'requests'}</span>
+                        {(liveTurn.usage.llmTurnTokensOut ?? 0) > 0 && (
+                          // What the model WROTE. The request count cannot say
+                          // it: 40 one-line steps and one 6000-token essay are
+                          // both "41 requests".
+                          <span>· {fmtTokens(liveTurn.usage.llmTurnTokensOut ?? 0)} written</span>
+                        )}
                         {(liveTurn.usage.llmTurnFailed ?? 0) > 0 && (
                           // Named, not netted out: "12 requests, 7 failed" is a
                           // retry storm; "12 requests" alone reads as a

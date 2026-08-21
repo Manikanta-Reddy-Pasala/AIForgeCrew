@@ -90,6 +90,16 @@ def _meter_fail(token, exc: "BaseException | None" = None,
         pass
 
 
+def _meter_tokens(role: str, in_t: int, out_t: int, token=None) -> None:
+    """Provider-reported tokens for one PIPELINE response. Never raises."""
+    try:
+        from aiforge_core.llm import call_meter as _meter
+        _meter.record_tokens(role, prompt_tokens=in_t, completion_tokens=out_t,
+                             token=token)
+    except Exception:  # noqa: BLE001 — accounting must never break a call
+        pass
+
+
 class EscalatingLlm(BaseLlm):
     """Primary ADK model + ordered cloud fallback chain.
 
@@ -406,6 +416,12 @@ class EscalatingLlm(BaseLlm):
                         model=getattr(model, "model", "") or label,
                         input_tokens=in_t, output_tokens=out_t,
                     )
+                    # …and into the live meter, mirrored here for the same
+                    # reason the request count and the failure count are: this
+                    # path never touches llm.client, and a token meter blind to
+                    # team mode is blind to the highest-volume writer in the
+                    # system.
+                    _meter_tokens(self.role, in_t, out_t, _tok)
             except Exception as exc:  # noqa: BLE001 — accounting is best-effort
                 log.debug("budget.record failed: %s", exc)
             _mirror_to_langfuse(

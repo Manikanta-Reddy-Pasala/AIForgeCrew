@@ -916,3 +916,78 @@ def test_a_call_stopped_before_it_is_sent_counts_nothing(monkeypatch):
         _http._CANCEL.reset(token)
     g = call_meter.global_snapshot(series=False)
     assert g["total"] == 0 and g["failed"] == 0
+
+
+# ───────────────────────────── tokens ────────────────────────────────────
+# Requests answer "how many calls did that cost". They cannot answer "how much
+# did the model WRITE" — 40 one-line ReAct steps and one 6000-token essay are
+# both "41 requests" — and that second question is the one a prompt asking for
+# shorter answers is meant to move. Provider-reported, never estimated.
+
+
+def test_tokens_are_counted_per_turn_chat_and_machine(monkeypatch):
+    tok = call_meter.turn_reset(8)
+    cv = call_meter.bind_turn(tok)
+    t = call_meter.record("chat", session_id=8, now=1000.0)
+    call_meter.record_tokens("chat", prompt_tokens=1200, completion_tokens=340,
+                             token=t, now=1000.0)
+    call_meter.reset_turn(cv)
+    monkeypatch.setattr(call_meter.time, "monotonic", lambda: 1001.0)
+
+    snap = call_meter.snapshot(8)
+    assert snap["turn_tokens_out"] == 340 and snap["turn_tokens_in"] == 1200
+    assert snap["session_tokens_out"] == 340
+    g = call_meter.global_snapshot(series=False)
+    assert g["tokens_out"] == 340 and g["tokens_in"] == 1200
+    assert g["tokens_out_60m"] == 340 and g["tokens_in_60m"] == 1200
+    assert g["tokens_out_by_role"] == {"chat": 340}
+
+
+def test_a_new_message_starts_its_token_count_from_zero():
+    call_meter.turn_reset(9)
+    t = call_meter.record("chat", session_id=9)
+    call_meter.record_tokens("chat", completion_tokens=500, token=t)
+    assert call_meter.snapshot(9)["turn_tokens_out"] == 500
+    call_meter.turn_reset(9)
+    snap = call_meter.snapshot(9)
+    assert snap["turn_tokens_out"] == 0        # this message has written none…
+    assert snap["session_tokens_out"] == 500   # …the chat still paid for it
+
+
+def test_tokens_are_billed_to_the_minute_of_the_send(monkeypatch):
+    """A long generation reports its tokens when it finishes; they belong to
+    the minute whose traffic it was, exactly as a failure does."""
+    t = call_meter.record("chat", now=1000.0)
+    call_meter.record_tokens("chat", completion_tokens=900, token=t,
+                             now=1000.0 + 400)
+    monkeypatch.setattr(call_meter.time, "monotonic", lambda: 1000.0 + 401)
+    g = call_meter.global_snapshot()
+    assert g["tokens_out_60m"] == 900
+    i = [n for n, v in enumerate(g["series_60m"]) if v]
+    assert i, "the send should still be inside the hour"
+
+
+def test_a_response_with_no_usage_block_records_nothing():
+    """Not every server reports usage. A zero must not be counted as a fact —
+    "0 tokens written" is a claim, and a wrong one."""
+    from aiforge_core.llm.client._helpers import _record_usage
+    _record_usage("chat", {"choices": []})
+    _record_usage("chat", {"usage": {}})
+    _record_usage("chat", "not a dict")
+    assert call_meter.global_snapshot(series=False)["tokens_out"] == 0
+
+
+def test_usage_is_read_off_the_response_body():
+    from aiforge_core.llm.client._helpers import _record_usage
+    _record_usage("learner", {"usage": {"prompt_tokens": 90,
+                                        "completion_tokens": 12}})
+    g = call_meter.global_snapshot(series=False)
+    assert g["tokens_in"] == 90 and g["tokens_out"] == 12
+
+
+def test_record_tokens_never_raises_on_junk():
+    call_meter.record_tokens("chat", prompt_tokens="x", completion_tokens=None)
+    call_meter.record_tokens(None, prompt_tokens=-5, completion_tokens=-5)
+    call_meter.record_tokens("chat", completion_tokens=7, token="junk")
+    g = call_meter.global_snapshot(series=False)
+    assert g["tokens_out"] == 7      # only the real one, and it still landed

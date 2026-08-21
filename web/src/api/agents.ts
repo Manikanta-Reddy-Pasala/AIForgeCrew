@@ -106,6 +106,15 @@ export interface LlmUsage {
   /** failure label -> count over the last hour (http_500, timeout, cancelled,
    *  empty, …) */
   by_fail_reason: Record<string, number>;
+  /** Tokens as the PROVIDER reported them, never estimated. `tokens_out` is
+   *  what the model wrote — the number a "be brief" instruction moves and the
+   *  request count cannot show. */
+  tokens_in: number;
+  tokens_out: number;
+  tokens_out_15m: number;
+  tokens_out_60m: number;
+  tokens_in_60m: number;
+  tokens_out_by_role: Record<string, number>;
   uptime_s: number;
   /** the 60s rate buffer overflowed WITHIN the last minute — `per_minute` is
    *  a floor. The wider windows come from minute buckets and stay exact. */

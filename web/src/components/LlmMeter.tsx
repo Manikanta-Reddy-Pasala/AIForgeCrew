@@ -17,6 +17,12 @@ import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { api } from '../api/client';
 import type { LlmUsage } from '../api/agents';
 
+/** 6120 → "6.1k". Token counts are read for magnitude, not for digits. */
+function fmtK(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0';
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n));
+}
+
 /** Rate colour: neutral up to 20/min, amber to 60, red above — 60/min being
  *  the threshold the chat footer already flags. */
 function rateTone(perMin: number): string {
@@ -219,6 +225,14 @@ function LlmMeterInner() {
                 ? ` · ${u.queued} call(s) waiting` : ''} — Settings → Agent limits
             </div>
           )}
+          {!!(u?.tokens_out_60m ?? 0) && (
+            <div className="llm-meter-note" style={{ color: 'var(--fg-2)' }}>
+              {fmtK(u!.tokens_out_60m)} tokens written · {fmtK(u!.tokens_in_60m)} sent
+              &nbsp;(last hour, as the provider counted them)
+            </div>
+          )}
+          <Rows title="tokens written (last hour)"
+                data={u?.tokens_out_by_role || {}} />
           <Rows title="by role (last hour)" data={u?.by_role || {}} />
           <Rows title="by model (last hour)" data={u?.by_model || {}} />
           <Rows title="failed (last hour)" data={u?.by_fail_reason || {}}
