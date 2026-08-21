@@ -1792,7 +1792,13 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                     # persisted final_text — persist it as a step instead.
                     final_text = ev.get("text", "")
                     awaiting = bool(ev.get("awaiting_input"))
-                elif ev.get("type") == "message" and ev.get("supplementary") or ev.get("type") in ("thought", "tool", "error", "changes"):
+                elif ev.get("type") == "message" and ev.get("supplementary") or ev.get("type") in ("thought", "tool", "error", "changes", "stopped"):
+                    # "stopped" is a MARKER, not a rendered step (the frontend's
+                    # toAgentStep drops it, isStoppedTurn reads it): it is how a
+                    # turn that ended without an answer tells Retry there is
+                    # work on disk to resume. Dropped here, the marker never
+                    # reached the transcript and the resume it exists for
+                    # silently did not happen.
                     steps.append(ev)
                 elif ev.get("type") == "subtasks":
                     _subtasks = list(ev.get("items") or [])

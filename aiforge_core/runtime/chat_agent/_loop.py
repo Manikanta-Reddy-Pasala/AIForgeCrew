@@ -772,6 +772,19 @@ def run_chat_agent(
                     _retries = 0
             except Exception:  # noqa: BLE001
                 pass
+            # A model the endpoint does not serve is CONFIGURATION. Retrying it
+            # cannot work — five more full-prompt round trips, each answered
+            # with the same 400, then the same useless "didn't respond" line.
+            # Say what is wrong instead; the exception already names the model,
+            # the endpoint and what that box does serve.
+            _cfg_error = ""
+            try:
+                from aiforge_core.llm.client import model_missing as _mm
+                if _mm(exc):
+                    _retries = 0
+                    _cfg_error = str(exc).split(" — ", 1)[-1].strip()
+            except Exception:  # noqa: BLE001
+                pass
             out = None
             _last = exc
             for _rn in range(_retries):
@@ -789,10 +802,18 @@ def run_chat_agent(
                 except Exception as exc2:  # noqa: BLE001
                     _last = exc2
             if _last is not None:
-                yield {"type": "message", "text":
-                       "⚠️ The model didn't respond (it may be loading, busy, or the "
-                       "request was rejected). Nothing was changed — please try again "
-                       "in a moment. If it keeps happening, check the model endpoint."}
+                yield {"type": "message", "text": (
+                    f"⚠️ {_cfg_error}" if _cfg_error else
+                    "⚠️ The model didn't respond (it may be loading, busy, or the "
+                    "request was rejected). Nothing was changed — please try again "
+                    "in a moment. If it keeps happening, check the model endpoint.")}
+                # STRUCTURAL marker, the same one a Stop leaves: this turn ended
+                # without an answer, and whatever it had already read or written
+                # is on disk. Without it `chat_resume` sees a turn that "ended
+                # normally" with a warning as its answer, so Retry starts from
+                # nothing and re-does every edit the dead attempt made — the
+                # exact case a resume exists for, and the one it was missing.
+                yield {"type": "stopped", "reason": "llm_unavailable"}
                 yield {"type": "done"}
                 return
         # H1: Stop pressed DURING generation — the cancellable wrapper returned

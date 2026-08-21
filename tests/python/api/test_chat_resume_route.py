@@ -167,3 +167,44 @@ def test_resume_flag_forces_it_after_a_rephrase(app_client, monkeypatch):
                        json={"content": "carry on with it",
                              "resume": True}).status_code == 200
     assert "[RESUME]" in _last_user(seen[-1])
+
+
+def test_a_turn_that_died_on_an_llm_error_is_resumable(app_client, monkeypatch):
+    """The case that actually happens: the endpoint is down or misconfigured,
+    the turn ends with "⚠️ the model didn't respond", and the edits it already
+    made are on disk. Without a marker that turn reads as "finished normally
+    with a warning for an answer", so Retry starts from nothing and re-does
+    every one of them — a resume that never fires for the failure people hit
+    most."""
+    from aiforge_core.runtime import chat_agent
+    from aiforge_core.runtime import parallel_subtasks as pp
+    seen: list = []
+
+    def fake_enhance(prompt, *, history=None, cwd=None, repo=None):
+        return prompt
+
+    def fake_run(history, session_id=None, **kw):
+        seen.append(history)
+        yield {"type": "tool", "name": "file_write",
+               "args": {"path": "parser.py"}, "result": {"ok": True}}
+        # exactly what _loop yields when the model cannot be reached
+        yield {"type": "message", "text":
+               "⚠️ The model didn't respond (it may be loading, busy, or the "
+               "request was rejected)."}
+        yield {"type": "stopped", "reason": "llm_unavailable"}
+        yield {"type": "done"}
+
+    monkeypatch.setattr(pp, "_enhance", fake_enhance)
+    monkeypatch.setattr(chat_agent, "run_chat_agent", fake_run)
+
+    client = app_client
+    sid = client.post("/api/chat/sessions", json={"title": "t"}).json()["id"]
+    assert client.post(f"/api/chat/sessions/{sid}/message",
+                       json={"content": "build the parser"}).status_code == 200
+    _assert_stopped_turn_persisted(sid)
+
+    assert client.post(f"/api/chat/sessions/{sid}/message",
+                       json={"content": "build the parser"}).status_code == 200
+    brief = _last_user(seen[-1])
+    assert "[RESUME]" in brief
+    assert "parser.py" in brief
