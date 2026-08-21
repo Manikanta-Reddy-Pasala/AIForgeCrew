@@ -1839,6 +1839,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                              "llm_turn_failed": _calls.get("turn_failed", 0),
                              "llm_failed_per_min":
                                  _calls.get("failed_per_minute", 0),
+                             "llm_turn_tokens_out":
+                                 _calls.get("turn_tokens_out", 0),
                              "final": True})
                 # …and PERSIST it as a step. The live badge dies with liveTurn
                 # a few hundred ms later (loadSession + setLiveTurn(null)), and
@@ -1851,12 +1853,20 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                     # storm, and a bare "12 requests" reads like a thorough
                     # turn. Silent when nothing failed.
                     _failed = int(_calls.get("turn_failed") or 0)
+                    # Tokens WRITTEN, next to the call count: 40 one-line
+                    # steps and one 6000-token essay are both "41 requests",
+                    # and only one of them is the thing worth shortening.
+                    _out_tok = int(_calls.get("turn_tokens_out") or 0)
+                    _tok_txt = (f", {_out_tok / 1000:.1f}k tokens written"
+                                if _out_tok >= 1000 else
+                                f", {_out_tok} tokens written" if _out_tok else "")
                     steps.append({"type": "thought", "role": "system",
                                   "text": f"⚡ {_calls['turn']} LLM "
                                           f"{'request' if _calls['turn'] == 1 else 'requests'} "
                                           f"for this message "
                                           f"({_calls['session']} in this chat"
                                           + (f", {_failed} failed" if _failed else "")
+                                          + _tok_txt
                                           + ")"})
             except Exception:  # noqa: BLE001 — metering must never break a turn
                 pass

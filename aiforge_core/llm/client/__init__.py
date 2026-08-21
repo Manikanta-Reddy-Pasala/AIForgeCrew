@@ -237,7 +237,9 @@ def _try_post(ep: Endpoint, messages: list[dict],
                 # connection or a read timeout does not.
                 shipped["exc"] = _texc
             return None
-        _record_usage(role, body)
+        # The token from THIS attempt, so the cost lands on the minute and
+        # turn that paid for it (same rule as a failure).
+        _record_usage(role, body, _meter_tok[0])
         text = _extract_text(body)
         # "[]"/"{}" is a valid answer only for fast/structured roles (learner
         # etc.), never for conversational chat/doer output.

@@ -57,7 +57,9 @@ export type LiveTurn = {
             // …and how many of them came back with nothing. A SUBSET of
             // llmTurn / llmPerMin, not a separate count: the requests were
             // still sent.
-            llmTurnFailed?: number; llmFailedPerMin?: number };
+            llmTurnFailed?: number; llmFailedPerMin?: number;
+            // Tokens the model WROTE for this message (provider-reported).
+            llmTurnTokensOut?: number };
 };
 
 export type ChatMode = 'simple' | 'plan' | 'team';

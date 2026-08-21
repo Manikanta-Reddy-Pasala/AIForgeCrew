@@ -751,7 +751,10 @@ def run_chat_agent(
                    # is a retry storm, "12 requests" alone looks like a
                    # thorough turn.
                    "llm_turn_failed": _calls.get("turn_failed", 0),
-                   "llm_failed_per_min": _calls.get("failed_per_minute", 0)}
+                   "llm_failed_per_min": _calls.get("failed_per_minute", 0),
+                   # Tokens the model has WRITTEN for this message so far,
+                   # as the provider reported them.
+                   "llm_turn_tokens_out": _calls.get("turn_tokens_out", 0)}
         try:
             out = _complete_cancellable(complete_fn, role, convo, session_id)
         except Exception as exc:  # noqa: BLE001
