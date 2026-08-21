@@ -38,7 +38,7 @@ def test_web_search_falls_back_to_lite_when_html_empty(monkeypatch):
     monkeypatch.setattr(ws, "_api_search", lambda q, k: None)
     calls = {"html": 0, "lite": 0}
 
-    def fake_get_retry(url, *, data=None, tries=2):
+    def fake_get_retry(url, *, data=None, tries=2, verified=None):
         if url == ws._DDG_HTML:
             calls["html"] += 1
             return "<html>no results here</html>"      # parses to []
@@ -54,7 +54,7 @@ def test_web_search_lite_fallback_on_html_error(monkeypatch):
     monkeypatch.delenv("AIFORGE_WEB_SEARCH_DISABLE", raising=False)
     monkeypatch.setattr(ws, "_api_search", lambda q, k: None)
 
-    def fake_get_retry(url, *, data=None, tries=2):
+    def fake_get_retry(url, *, data=None, tries=2, verified=None):
         if url == ws._DDG_HTML:
             raise urllib.error.URLError("boom")
         return _LITE_BODY
@@ -67,7 +67,7 @@ def test_web_search_reports_error_only_when_both_fail(monkeypatch):
     monkeypatch.delenv("AIFORGE_WEB_SEARCH_DISABLE", raising=False)
     monkeypatch.setattr(ws, "_api_search", lambda q, k: None)
 
-    def boom(url, *, data=None, tries=2):
+    def boom(url, *, data=None, tries=2, verified=None):
         raise urllib.error.URLError("down")
     monkeypatch.setattr(ws, "_get_retry", boom)
     r = ws.web_search({"query": "x"})
@@ -77,7 +77,7 @@ def test_web_search_reports_error_only_when_both_fail(monkeypatch):
 def test_get_retry_recovers_on_second_try(monkeypatch):
     seq = [urllib.error.URLError("transient"), "OK BODY"]
 
-    def flaky(url, *, data=None):
+    def flaky(url, *, data=None, verified=None):
         v = seq.pop(0)
         if isinstance(v, Exception):
             raise v

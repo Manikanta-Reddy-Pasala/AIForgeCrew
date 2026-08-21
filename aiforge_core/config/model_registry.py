@@ -106,7 +106,7 @@ def list_models() -> list[dict]:
     return [_public(r) for r in _load()]
 
 
-def chain_after(model: str) -> list[dict]:
+def chain_after(model: str, base_url: str = "") -> list[dict]:
     """The OTHER configured models, in registry order, as raw rows.
 
     "I added four models; when the one chat picked stops answering it should
@@ -121,12 +121,31 @@ def chain_after(model: str) -> list[dict]:
     failed.
     """
     want = (model or "").strip().lower()
+    want_host = (base_url or "").strip().rstrip("/").lower()
     out: list[dict] = []
     for r in _load():
-        mid = (r.get("model") or "").strip()
-        if not mid or mid.lower() == want:
+        # A hand-edited registry can hold anything. One malformed row must not
+        # take every other model down with it — the caller's blanket except
+        # turned an AttributeError here into "the chain is silently off".
+        if not isinstance(r, dict):
             continue
-        if "embed" in mid.lower():        # not chat-capable
+        mid = str(r.get("model") or "").strip()
+        if not mid:
+            continue
+        # Exclude by CONNECTION, not by model id. The same model served on a
+        # second box is the textbook redundancy setup and the best fallback
+        # there is — excluding it by name threw away the healthy copy along
+        # with the dead one. Only the row that IS the failed endpoint is
+        # skipped; a row with no base_url resolves to the failed host, so it
+        # is the same endpoint and is skipped too.
+        row_host = str(r.get("base_url") or "").strip().rstrip("/").lower() or want_host
+        if mid.lower() == want and row_host == want_host:
+            continue
+        # The real non-generative test, which already exists in this module:
+        # a substring check for "embed" let bge-reranker / gte-* / e5-* rows
+        # through, and each burns a full round trip to be told it cannot
+        # generate.
+        if not _is_generative(mid):
             continue
         out.append(dict(r))
     return out

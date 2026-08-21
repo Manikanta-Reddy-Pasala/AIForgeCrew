@@ -101,8 +101,8 @@ def _get(url: str, *, data: bytes | None = None,
         return _fetch(_ssl_context_for(url))
     except Exception as exc:  # noqa: BLE001 — classified immediately below
         from aiforge_core.net.ssl import (insecure_context, is_cert_error,
-                                          web_tls_fallback_enabled)
-        if not (is_cert_error(exc) and web_tls_fallback_enabled()):
+                                          web_tls_fallback_allowed_for)
+        if not (is_cert_error(exc) and web_tls_fallback_allowed_for(url)):
             raise
         _log.warning(
             "web.tls_unverified url=%s — the certificate could not be "
@@ -115,14 +115,20 @@ def _get(url: str, *, data: bytes | None = None,
         return _fetch(insecure_context())
 
 
-def _get_retry(url: str, *, data: bytes | None = None, tries: int = 2) -> str:
+def _get_retry(url: str, *, data: bytes | None = None, tries: int = 2,
+               verified: "list | None" = None) -> str:
     """`_get` with a small retry — DDG's HTML endpoint intermittently 202s /
     rate-limits / drops the connection; one immediate retry recovers most of
     those transient misses. Raises the last error only after all tries fail."""
     last: Exception | None = None
+    # ONE unverified refetch per chain, not one per attempt: `tries` x the
+    # per-call fallback would re-send the same body unverified several times
+    # over for a single logical request.
+    _seen: list = verified if verified is not None else []
     for _ in range(max(1, tries)):
         try:
-            return _get(url, data=data)
+            return _get(url, data=data,
+                        verified=None if _seen and _seen[0] is False else _seen)
         except _NET_ERRORS as exc:
             last = exc
     raise last if last else RuntimeError("request failed")
@@ -256,17 +262,24 @@ def web_search(args: dict, cwd: str | None = None) -> dict:
     # failure when BOTH endpoints come up empty/error.
     err: str | None = None
     for url, is_lite in ((_DDG_HTML, False), (_DDG_LITE, True)):
+        _verified: list = []
         try:
             body = _get_retry(url, data=urllib.parse.urlencode(
-                {"q": query, "kl": "us-en"}).encode())
+                {"q": query, "kl": "us-en"}).encode(), verified=_verified)
         except _NET_ERRORS as exc:
             err = str(exc)
             continue
         results = _parse_lite(body, limit) if is_lite \
             else _parse_html(body, limit)
         if results:
+            # Say it when the RESULT LIST itself came over an unverified
+            # connection. These urls are what the agent fetches next, so an
+            # attacker-substitutable result set reported as an ordinary success
+            # is the worst place for this to be silent.
             return {"ok": True, "query": query, "results": results,
-                    "provider": "ddg-lite" if is_lite else "ddg"}
+                    "provider": "ddg-lite" if is_lite else "ddg",
+                    **({} if not (_verified and _verified[0] is False)
+                       else {"tls_verified": False})}
     if err:
         return {"ok": False, "error": err, "query": query}
     return {"ok": True, "results": [], "provider": "ddg",
@@ -297,6 +310,17 @@ def _fetch_readable(url: str, max_chars: int) -> dict:
     """Gate-FREE readable-text fetch — the shared engine behind web_fetch and
     web_ingest's fallback (the researcher's sanctioned path must not re-hit
     the AIFORGE_ALLOW_WEB_FETCH gate web_fetch applies)."""
+    # SSRF guard, matching web_ingest. This path took a model-supplied URL
+    # straight to urlopen: it could reach cloud metadata, loopback services and
+    # the private LAN. Adding the TLS fallback made that materially worse — an
+    # internal HTTPS service used to fail closed on its self-signed cert — so
+    # the guard belongs here regardless of the fallback's own host rule.
+    from aiforge_core.net.ssl import SSRFBlocked, guard_public_url
+    try:
+        guard_public_url(url)
+    except SSRFBlocked as exc:
+        if exc.kind != "dns":       # a DNS failure is a normal network error
+            return {"ok": False, "error": f"blocked (ssrf): {exc}"}
     _verified: list = []
     try:
         raw = _get(url, verified=_verified)

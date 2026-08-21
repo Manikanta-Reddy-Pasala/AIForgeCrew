@@ -17,10 +17,16 @@ suffixes, and the explicit hosts of the configured AIForge service
 base-URLs. For a genuinely public host (``api.github.com``, an arbitrary
 doc URL) it returns the default *verifying* context no matter what the
 env says, so the toggle can never silently strip TLS verification from
-external traffic. As a second layer, the public-web call sites
-(``doer_tools.fetch_url``, ``docs_index._fetch``, ``memory_ingest``,
-the GitHub ``resolver``) do not call this helper at all and keep stdlib
-default verification.
+external traffic. As a second layer, the public-web call sites (``doer_tools.fetch_url``,
+``docs_index._fetch``, ``memory_ingest``, the GitHub ``resolver``) do not
+call this helper for their normal traffic and keep stdlib default
+verification. ONE narrow exception, added deliberately: after a fetch has
+already FAILED with a certificate error, ``web_tls_fallback_enabled`` allows
+one unverified refetch of that page (see ``is_cert_error`` below), because a
+TLS-inspecting corporate appliance otherwise makes the whole web unreadable.
+It never applies to an internal host — a self-signed LAN service must stay
+unreachable to a model-supplied URL rather than become readable — and the
+result carries ``tls_verified: false``.
 
 Env knobs (highest priority first):
 
@@ -45,6 +51,7 @@ import ssl
 from urllib.parse import urlsplit
 
 _FALSEY = {"0", "false", "no", "off", ""}
+_MISSING = object()
 
 # Hostname suffixes that denote operator-controlled internal services.
 _PRIVATE_SUFFIXES = (".local", ".lan", ".internal", ".intranet", ".home", ".corp")
@@ -259,6 +266,42 @@ def web_tls_fallback_enabled() -> bool:
     return raw.strip().lower() not in _FALSEY
 
 
+def public_verifying_context() -> "ssl.SSLContext | None":
+    """A VERIFYING context for arbitrary public-web traffic, honouring the
+    operator's CA bundle.
+
+    The doer/researcher fetch used the stdlib default, which never consults
+    ``AIFORGE_LLM_CA_BUNDLE`` — so installing the inspecting appliance's CA,
+    the remedy this module and the fetch's own log line both recommend, fixed
+    nothing there and every page still came back through the unverified
+    fallback. Returns None when no bundle is configured (the stdlib default is
+    then exactly right), and NEVER relaxes verification: this is the verified
+    attempt.
+    """
+    bundle = _ca_bundle()
+    if not bundle:
+        return None
+    try:
+        return ssl.create_default_context(cafile=bundle)
+    except Exception:  # noqa: BLE001 — a bad path must not break the fetch
+        return None
+
+
+def web_tls_fallback_allowed_for(url: str) -> bool:
+    """May THIS url's certificate failure be retried without verification?
+
+    Never for an intrinsically-internal host. The fallback exists for the
+    public web behind an inspecting appliance; a self-signed LAN service is
+    the opposite case — it fails closed today, and "helpfully" stripping
+    verification would turn a model-supplied ``https://192.168.x.x/`` or
+    ``https://vault.internal/`` from unreachable into readable. That is a
+    reachability change, not a convenience.
+    """
+    if not web_tls_fallback_enabled():
+        return False
+    return not _is_intrinsically_internal_host(_host_of(url))
+
+
 def is_cert_error(exc: BaseException) -> bool:
     """Is this failure specifically about certificate verification?
 
@@ -266,14 +309,31 @@ def is_cert_error(exc: BaseException) -> bool:
     survives being wrapped in URLError as ``.reason``) and on the message only
     as a fallback — the message is the one thing every wrapper layer preserves.
     """
+    import urllib.error
+    # An HTTP STATUS means the TLS handshake already SUCCEEDED, so this can
+    # never be a certificate-verification failure — and HTTPError.__str__ is
+    # "HTTP Error {code}: {reason}", where the reason phrase is copied verbatim
+    # from the server's status line. Without this, any server (or an on-path
+    # attacker who can inject a plain HTTP response but cannot forge a
+    # certificate) could answer `502 certificate verify failed` and talk the
+    # client into retrying with verification switched off.
+    if isinstance(exc, urllib.error.HTTPError):
+        return False
     seen = exc
     for _ in range(4):                      # URLError(reason=SSLError(...))
         if isinstance(seen, ssl.SSLCertVerificationError):
             return True
-        nxt = getattr(seen, "reason", None) or getattr(seen, "__cause__", None)
+        nxt = getattr(seen, "reason", _MISSING)
+        if nxt is _MISSING or nxt is None:
+            nxt = getattr(seen, "__cause__", None)
         if nxt is None or nxt is seen:
             break
         seen = nxt
+    # The message fallback applies ONLY to transport-level failures. Anything
+    # else reaching here (a ValueError from a parser, an application error)
+    # must not be able to spell its way into an unverified refetch.
+    if not isinstance(exc, (ssl.SSLError, urllib.error.URLError, OSError)):
+        return False
     text = str(exc).lower()
     return ("certificate verify failed" in text
             or "certificate_verify_failed" in text

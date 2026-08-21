@@ -139,32 +139,71 @@ def _model_chain_enabled() -> bool:
         "0", "false", "no")
 
 
+def _has_non_text_content(messages: list[dict]) -> bool:
+    """Does this request carry image / multimodal parts?
+
+    A vision call reached its role BECAUSE that model can see. Falling through
+    to the operator's other models re-uploads multi-MB base64 to text-only
+    endpoints, and the dangerous outcome is not the waste: a server that
+    silently drops an unrecognised image block answers with a plausible
+    caption of an image it never saw.
+    """
+    for m in messages or []:
+        if isinstance(m.get("content"), list):
+            return True
+    return False
+
+
 def _try_model_chain(role: str, primary: Endpoint, messages: list[dict], *,
                      temperature, max_tokens, top_p, extras,
-                     timeout_s: int) -> "str | None":
+                     timeout_s: int, shipped: dict | None = None,
+                     tried: list | None = None) -> "str | None":
     """One attempt against each OTHER configured model, in registry order.
 
-    A row may carry its own base_url/key (a second host); when it does not, it
-    is the same endpoint with a different model id — which is the common case
-    for several models loaded on one local server.
+    A row that names its own base_url is a DIFFERENT CONNECTION and is taken
+    whole — its own key, its own TLS setting. Inheriting the primary's would
+    put one endpoint's credential on another host's wire (and, through
+    ``extras``, strip TLS verification from a public endpoint because a LAN box
+    was marked insecure). A row without a base_url is the same endpoint with a
+    different model id, which is the common case for several models loaded on
+    one local server.
     """
     if not _model_chain_enabled():
         return None
+    if shipped and shipped.get("timeout"):
+        # The prompt REACHED a model and was abandoned on a read timeout. Every
+        # layer in this stack refuses to re-issue that; the chain must not be
+        # the one place that does it N more times.
+        return None
+    if _has_non_text_content(messages):
+        return None
     try:
         from aiforge_core.config import model_registry
-        rows = model_registry.chain_after(primary.model)
+        rows = model_registry.chain_after(primary.model, primary.base_url)
     except Exception:  # noqa: BLE001 — the registry is optional
         return None
     for row in rows:
-        mid = (row.get("model") or "").strip()
+        if not isinstance(row, dict):
+            continue                     # one malformed row is not a reason to
+        mid = str(row.get("model") or "").strip()   # abandon every other model
         if not mid:
             continue
-        ep = replace(
-            primary,
-            model=mid,
-            base_url=(row.get("base_url") or "").strip() or primary.base_url,
-            api_key=(row.get("api_key") or "") or primary.api_key,
-        )
+        # str() first: a hand-edited registry can hold a number here, and
+        # `.strip()` on it raised an AttributeError from inside the LLM client
+        # in place of the informative llm.exhausted the caller expects.
+        _row_url = str(row.get("base_url") or "").strip()
+        if _row_url and _row_url.rstrip("/") != (primary.base_url or "").rstrip("/"):
+            # Another host: take the connection whole. An empty key stays
+            # EMPTY — a keyed primary must not lend its credential — and the
+            # row's own insecure_tls decides its TLS, not the primary's.
+            _ex = dict(primary.extras or {})
+            _ex.pop("insecure_tls", None)
+            if row.get("insecure_tls"):
+                _ex["insecure_tls"] = True
+            ep = replace(primary, model=mid, base_url=_row_url,
+                         api_key=str(row.get("api_key") or ""), extras=_ex)
+        else:
+            ep = replace(primary, model=mid)
         _log.warning(
             "llm.model_chain_try role=%s failed=%s trying=%s endpoint=%s — "
             "the selected model did not answer; falling through to the next "
@@ -173,13 +212,75 @@ def _try_model_chain(role: str, primary: Endpoint, messages: list[dict], *,
             extra={"aiforge": {"role": role, "failed": primary.model,
                                "trying": mid, "endpoint": ep.base_url}},
         )
-        out = _try_post(ep, messages, shipped={}, temperature=temperature,
+        if tried is not None:
+            tried.append(mid)
+        # ONE post per chain model. The empty-retry ladder is for the model
+        # the operator CHOSE; multiplying it across the chain turned one
+        # message into 16+ full generations (4 models x 4 posts), and the
+        # chat loop then re-issues the whole call up to five more times.
+        out = _try_post(ep, messages, shipped=(shipped if shipped is not None else {}),
+                        empty_retries=0,
+                        temperature=temperature,
                         max_tokens=max_tokens, top_p=top_p, extras=extras,
                         timeout_s=timeout_s, role=role, source="model_chain")
         if out is not None:
             _log.warning("llm.model_chain_used role=%s model=%s (selected %s "
                          "did not answer)", role, mid, primary.model)
             return out[0]
+    return None
+
+
+def _native_model_chain(role: str, ep: Endpoint, payload: bytes,
+                        timeout_s: int, *, meter: list) -> "dict | None":
+    """The model chain for the NATIVE tool-calling path.
+
+    Same rule as the text path — one attempt per configured model, own key and
+    own TLS for a row that names its own host — but it rewrites the model id
+    inside the already-built JSON body rather than rebuilding it, so the tool
+    definitions and every other parameter travel unchanged.
+    """
+    if not _model_chain_enabled():
+        return None
+    try:
+        from aiforge_core.config import model_registry
+        rows = model_registry.chain_after(ep.model, ep.base_url)
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        body_obj = json.loads(payload.decode())
+    except Exception:  # noqa: BLE001
+        return None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        mid = str(row.get("model") or "").strip()
+        if not mid:
+            continue
+        _row_url = str(row.get("base_url") or "").strip()
+        if _row_url and _row_url.rstrip("/") != (ep.base_url or "").rstrip("/"):
+            _ex = dict(ep.extras or {})
+            _ex.pop("insecure_tls", None)
+            if row.get("insecure_tls"):
+                _ex["insecure_tls"] = True
+            alt = replace(ep, model=mid, base_url=_row_url,
+                          api_key=str(row.get("api_key") or ""), extras=_ex)
+        else:
+            alt = replace(ep, model=mid)
+        body_obj["model"] = mid
+        _log.warning(
+            "llm.model_chain_try role=%s failed=%s trying=%s endpoint=%s "
+            "(native tool path)", role, ep.model, mid, alt.base_url)
+        try:
+            out = _post_with_retry(alt, json.dumps(body_obj).encode(),
+                                   timeout_s, role=role,
+                                   source="model_chain_native", meter=meter)
+        except _LLMCancelled:
+            raise
+        except Exception:  # noqa: BLE001 — try the next configured model
+            continue
+        _log.warning("llm.model_chain_used role=%s model=%s (selected %s did "
+                     "not answer)", role, mid, ep.model)
+        return out
     return None
 
 
@@ -226,6 +327,7 @@ def _try_post(ep: Endpoint, messages: list[dict],
               *, temperature, max_tokens, top_p, extras,
               timeout_s: int, role: str,
               source: str,
+              empty_retries: int | None = None,
               shipped: dict | None = None) -> tuple[str, dict] | None:
     """Attempt against ``ep``. Returns (text, raw_body) on success (text
     passing :func:`_is_garbage`), or ``None`` on transport error or persistent
@@ -239,7 +341,8 @@ def _try_post(ep: Endpoint, messages: list[dict],
     stalled generation back into a real answer. Retry count is
     AIFORGE_LLM_EMPTY_RETRIES (default 2 → up to 3 total posts).
     """
-    empty_retries = max(0, _int_env("AIFORGE_LLM_EMPTY_RETRIES", 3))
+    empty_retries = (max(0, _int_env("AIFORGE_LLM_EMPTY_RETRIES", 3))
+                     if empty_retries is None else max(0, empty_retries))
     # Fast/direct-output roles (learner/enhancer/triage/…) want a plain answer,
     # not a reasoning trace — if the configured model is a reasoning one it
     # returns EMPTY. Pre-empt that: coax /no_think from the FIRST attempt so
@@ -425,8 +528,21 @@ def complete_raw(role: str, messages: list[dict], *,
     # write" read 0 for almost every real message while the session total
     # climbed. A per-turn number that is always zero is worse than none.
     _meter_tok: list = [None]
-    body = _post_with_retry(ep, payload, timeout_s, role=role, source="native",
-                            meter=_meter_tok)
+    try:
+        body = _post_with_retry(ep, payload, timeout_s, role=role,
+                                source="native", meter=_meter_tok)
+    except _LLMCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001 — chain first, then re-raise
+        # THE DEFAULT CHAT PATH. AIFORGE_CHAT_TOOL_PROTOCOL defaults to
+        # "native", so simple chat comes through HERE, not through complete().
+        # A fallback chain that only existed on the other path was a fallback
+        # the user could never actually reach: "chat picks one model and if it
+        # fails it should go to the others" is exactly this function.
+        body = _native_model_chain(role, ep, payload, timeout_s,
+                                   meter=_meter_tok)
+        if body is None:
+            raise exc
     _record_usage(role, body, _meter_tok[0])
     try:
         msg = body["choices"][0]["message"]
@@ -460,6 +576,9 @@ def _complete_impl(role: str, messages: list[dict], *,
         timeout_s = _int_env("AIFORGE_LLM_TIMEOUT_S", 900)
 
     primary: Endpoint = resolve(role)
+    # The role's OWN endpoint, kept before any escalation rebinds `primary`.
+    _chain_base = primary
+    _escalated_for_overflow = False
 
     # Pre-flight escalation — if we can estimate token weight before
     # spending an LLM round-trip, do it. The estimator uses the same
@@ -480,6 +599,7 @@ def _complete_impl(role: str, messages: list[dict], *,
                                "reason": "context_overflow"}},
         )
         primary = escalated
+        _escalated_for_overflow = True
 
     # Attempt 1 — primary
     _shipped: dict = {}
@@ -521,9 +641,45 @@ def _complete_impl(role: str, messages: list[dict], *,
     # and one attempt per model: this is a rescue, not a routing policy. Each
     # switch is logged, because an answer that silently came from a different
     # model than the operator selected is worse than a clear failure.
-    out = _try_model_chain(role, primary, messages, temperature=temperature,
-                           max_tokens=max_tokens, top_p=top_p, extras=extras,
-                           timeout_s=timeout_s)
+    # Chain off the endpoint the ROLE is configured with, not off `primary`:
+    # a context_overflow escalation rebinds `primary` to the cloud, and
+    # chaining from there would offer the failed local model back to itself,
+    # send local model ids (with the cloud key) to the vendor, and re-send a
+    # prompt that was escalated precisely because it does not fit locally.
+    # DIAGNOSE FIRST, rescue second. Run before the chain so a role pointed at
+    # a model id the endpoint does not serve is REPORTED even when another
+    # configured model then answers: otherwise every turn is quietly served by
+    # a model the operator did not select, at WARNING level only, forever.
+    _missing_now = None
+    if _looks_like_a_model_error(_shipped):
+        try:
+            from ._models import model_is_missing as _mim0
+            _missing_now = _mim0(_chain_base.base_url, _chain_base.model,
+                                 _chain_base.api_key or "")
+        except Exception:  # noqa: BLE001
+            _missing_now = None
+    if _missing_now:
+        _log.error(
+            "llm.model_missing role=%s model=%s endpoint=%s available=%s — "
+            "CONFIGURATION: that model is not served here. Fix the role's "
+            "model or load it; a fallback answering in its place is a rescue, "
+            "not a fix.",
+            role, _chain_base.model, _chain_base.base_url,
+            ", ".join(_missing_now[:8]),
+            extra={"aiforge": {"role": role, "model": _chain_base.model,
+                               "endpoint": _chain_base.base_url,
+                               "available": _missing_now}},
+        )
+    _chain_tried = 0
+    if _escalated_for_overflow:
+        out = None
+    else:
+        _tried: list = []
+        out = _try_model_chain(role, _chain_base, messages,
+                               temperature=temperature, max_tokens=max_tokens,
+                               top_p=top_p, extras=extras, timeout_s=timeout_s,
+                               shipped=_shipped, tried=_tried)
+        _chain_tried = len(_tried)
     if out is not None:
         return out
 
@@ -598,6 +754,8 @@ def _complete_impl(role: str, messages: list[dict], *,
         f"cloud={cloud.provider if cloud else 'none'} "
         f"— all providers returned transport error or empty content "
         f"(see the llm.transport_error line above for the underlying cause)"
+        + (f"; also tried {_chain_tried} configured model(s) from the registry"
+           if _chain_tried else "")
     )
     if _shipped.get("timeout"):
         # The prompt DID reach the model — callers above must not re-issue it.
