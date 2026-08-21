@@ -1681,6 +1681,14 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # _drive re-sets the env in its own thread). Env for cross-thread /
         # subprocess reach; contextvar for concurrency-correct in-thread reads.
         os.environ["AIFORGE_CURRENT_SESSION"] = str(session_id)
+        # Hold the machine awake for the WHOLE turn, every mode. Team runs and
+        # jobs already do it for themselves; doing it here as well means the
+        # answer to "will my work survive me locking the screen" is yes for
+        # anything the user can start, not just the two slowest paths. The
+        # refcount makes the overlap free — nested holders share one child.
+        from aiforge_core.runtime.keep_awake import acquire as _awake_acquire
+        from aiforge_core.runtime.keep_awake import release as _awake_release
+        _awake_acquire()
         from aiforge_core.runtime import request_context as _reqctx
         _sess_token = _reqctx.set_session_id(session_id)
         # THE turn boundary for the request meter. Here, not inside the ReAct
@@ -2073,6 +2081,10 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             # may have already replaced it in the registry). Done LAST so a
             # re-attach during persistence still tails live.
             run.finish()
+            try:
+                _awake_release()
+            except Exception:  # noqa: BLE001 — power policy never fails a turn
+                pass
             try:
                 _PRODUCE_SEM.release()
             except (ValueError, RuntimeError):   # never over-release
