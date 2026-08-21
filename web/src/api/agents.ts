@@ -94,6 +94,18 @@ export interface LlmUsage {
   by_role: Record<string, number>;
   by_provider: Record<string, number>;
   by_model: Record<string, number>;
+  /** How many of the requests in each window came back with NO answer —
+   *  a subset of the counts above, never a separate population. A failed
+   *  request still went out and still counted against the provider's rate
+   *  limit, so `per_minute` keeps it; this says how much of that rate is a
+   *  retry storm rather than work. */
+  failed: number;
+  failed_per_minute: number;
+  failed_15m: number;
+  failed_60m: number;
+  /** failure label -> count over the last hour (http_500, timeout, cancelled,
+   *  empty, …) */
+  by_fail_reason: Record<string, number>;
   uptime_s: number;
   /** the 60s rate buffer overflowed WITHIN the last minute — `per_minute` is
    *  a floor. The wider windows come from minute buckets and stay exact. */
@@ -102,4 +114,6 @@ export interface LlmUsage {
   limit_rpm: number;
   queued: number;
   series_60m?: number[];
+  /** failures per minute, same 60 slots and same indexes as `series_60m` */
+  series_fail_60m?: number[];
 }

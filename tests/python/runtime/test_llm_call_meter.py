@@ -156,7 +156,7 @@ def _timeout_post(calls, *, shipped: bool):
     (shipped) or BEFORE it ever did (the rate limiter giving up, a stalled
     TLS handshake) — the distinction the retry rule turns on."""
     def fn(_ep, _payload, _timeout, *, role=None, sent=None, max_wait_s=None,
-           throttled=None):
+           throttled=None, **_kw):
         calls["n"] += 1
         if shipped and sent is not None:
             sent[0] = True
@@ -603,3 +603,316 @@ def test_an_unreachable_endpoint_counts_zero_requests(monkeypatch):
     _http._CANCEL.set(None)
     assert call_meter.global_snapshot(series=False)["total"] == 0
     call_meter.reset_all()
+
+
+# ─────────────────────── failed requests ────────────────────────────────
+# A failed request is still a request: the provider counted it and rate-limited
+# on it, and the retry storm it belongs to is the thing the meter exists to
+# expose. So failures are counted ALONGSIDE the rate, never subtracted from it.
+
+
+def test_failures_are_counted_beside_the_rate_not_out_of_it(monkeypatch):
+    toks = [call_meter.record("doer", session_id=3, now=1000.0)
+            for _ in range(3)]
+    call_meter.record_failure(toks[0], "http_500", now=1000.1)
+    call_meter.record_failure(toks[1], "timeout", now=1000.2)
+    monkeypatch.setattr(call_meter.time, "monotonic", lambda: 1001.0)
+
+    snap = call_meter.snapshot(3)
+    assert snap["per_minute"] == 3            # every attempt went out…
+    assert snap["failed_per_minute"] == 2     # …two of them answered nothing
+    assert snap["turn_failed"] == 2 and snap["session_failed"] == 2
+    assert snap["failed"] == 2 and snap["total"] == 3
+
+    g = call_meter.global_snapshot()
+    assert g["per_minute"] == 3 and g["failed_per_minute"] == 2
+    assert g["last_60m"] == 3 and g["failed_60m"] == 2
+    assert g["by_fail_reason"] == {"http_500": 1, "timeout": 1}
+    assert len(g["series_fail_60m"]) == len(g["series_60m"]) == 60
+    assert sum(g["series_fail_60m"]) == 2
+
+
+def test_a_failure_is_billed_to_the_minute_of_its_send(monkeypatch):
+    """A 600s read timeout that gives up now was traffic ten minutes ago.
+    Charging it to the current minute invents a burst that never happened and
+    leaves the minute it belongs to looking clean."""
+    tok = call_meter.record("doer", now=1000.0)
+    call_meter.record_failure(tok, "timeout", now=1000.0 + 600)
+    monkeypatch.setattr(call_meter.time, "monotonic", lambda: 1000.0 + 601)
+
+    g = call_meter.global_snapshot()
+    # 10 minutes on, neither the send nor its failure is in the last minute…
+    assert g["per_minute"] == 0 and g["failed_per_minute"] == 0
+    # …and inside the hour they sit in the SAME minute slot.
+    assert g["last_60m"] == 1 and g["failed_60m"] == 1
+    i = [n for n, v in enumerate(g["series_60m"]) if v]
+    assert i and [n for n, v in enumerate(g["series_fail_60m"]) if v] == i
+
+
+def test_a_failure_older_than_the_history_counts_but_reports_no_window(monkeypatch):
+    """Beyond the reported hour there is no send-minute left to charge. It
+    counts in the lifetime total — it happened — and in NO window, because the
+    send it belongs to is outside those windows too. Re-stamping it to the
+    current minute would report a burst that never happened and, worse, put
+    `failed_60m` above `last_60m`: failures are a subset of requests, and the
+    window numbers have to hold that too."""
+    tok = call_meter.record("doer", now=1000.0)
+    late = 1000.0 + call_meter._RETAIN_S + 300
+    call_meter.record_failure(tok, "timeout", now=late)
+    monkeypatch.setattr(call_meter.time, "monotonic", lambda: late + 1)
+
+    g = call_meter.global_snapshot()
+    assert g["failed"] == 1                       # lifetime: it happened
+    assert g["failed_per_minute"] == 0 and g["failed_60m"] == 0
+    assert g["last_60m"] == 0 and sum(g["series_fail_60m"]) == 0
+
+
+def test_the_window_cutoff_matches_the_window_the_meter_reports(monkeypatch):
+    """`_RETAIN_S` is 60 minutes but the windows sum 59 whole minutes back, so
+    a cutoff written against retention drops a 59-minute-old failure into a
+    bucket that exists and that nothing reports: `failed` up, every window
+    flat."""
+    tok = call_meter.record("doer", now=1000.0)
+    call_meter.record_failure(tok, "timeout", now=1000.0 + 3599)
+    monkeypatch.setattr(call_meter.time, "monotonic", lambda: 1000.0 + 3600)
+    g = call_meter.global_snapshot()
+    # Either it is inside the reported hour or it is not — but the failure and
+    # its send must agree, and no failure may sit in a limbo bucket.
+    assert g["failed_60m"] == g["last_60m"]
+    assert sum(g["series_fail_60m"]) == g["failed_60m"]
+
+
+def test_failures_never_outnumber_sends_in_any_window(monkeypatch):
+    """The invariant the UI prints ("N failed" under a window's own count):
+    for every reported window, failures <= requests."""
+    toks = [call_meter.record("doer", now=1000.0 + i) for i in range(5)]
+    for i, t in enumerate(toks):
+        call_meter.record_failure(t, "timeout", now=1000.0 + 4000 + i)
+    monkeypatch.setattr(call_meter.time, "monotonic", lambda: 1000.0 + 4010)
+    g = call_meter.global_snapshot()
+    assert g["failed_per_minute"] <= g["per_minute"]
+    assert g["failed_15m"] <= g["last_15m"]
+    assert g["failed_60m"] <= g["last_60m"]
+    assert all(f <= n for f, n in zip(g["series_fail_60m"], g["series_60m"]))
+
+
+def test_out_of_order_failures_do_not_freeze_the_minute_window(monkeypatch):
+    """Failures arrive in the order calls GIVE UP, not the order they were
+    sent, so an older stamp lands after a newer one. In a popleft-trimmed deque
+    that parks a stale entry at the head and the window never empties again."""
+    old_tok = call_meter.record("doer", now=1000.0)
+    new_tok = call_meter.record("doer", now=1030.0)
+    call_meter.record_failure(new_tok, "http_500", now=1031.0)   # newer FIRST
+    call_meter.record_failure(old_tok, "timeout", now=1032.0)
+
+    monkeypatch.setattr(call_meter.time, "monotonic", lambda: 1035.0)
+    assert call_meter.global_snapshot()["failed_per_minute"] == 2
+    monkeypatch.setattr(call_meter.time, "monotonic", lambda: 1075.0)
+    # 1000.0 has aged out of the 60s window; 1030.0 has not.
+    assert call_meter.global_snapshot()["failed_per_minute"] == 1
+    monkeypatch.setattr(call_meter.time, "monotonic", lambda: 1200.0)
+    assert call_meter.global_snapshot()["failed_per_minute"] == 0
+    assert not call_meter._recent_fail
+
+
+def test_turn_failures_reset_with_the_turn_and_zombies_do_not_land():
+    tok = call_meter.turn_reset(21)
+    cv = call_meter.bind_turn(tok)
+    t = call_meter.record("doer", session_id=21)
+    call_meter.record_failure(t, "http_500")
+    assert call_meter.snapshot(21)["turn_failed"] == 1
+
+    call_meter.turn_reset(21)                       # the user sent a new message
+    assert call_meter.snapshot(21)["turn_failed"] == 0
+    # The abandoned generation's retry finally fails, still stamped with the
+    # OLD turn: it belongs to the message that made it, not to this one.
+    zombie = call_meter.record("doer", session_id=21)
+    call_meter.record_failure(zombie, "timeout")
+    call_meter.reset_turn(cv)
+    snap = call_meter.snapshot(21)
+    assert snap["turn_failed"] == 0
+    assert snap["session_failed"] == 2              # the chat still paid for it
+
+
+def test_a_failure_never_mints_a_session(monkeypatch):
+    """The session was evicted (or the API restarted) between send and
+    failure. Charge the machine, never mint a slot — minting one evicts a live
+    chat's counters to make room for a dead one."""
+    monkeypatch.delenv("AIFORGE_CURRENT_SESSION", raising=False)
+    tok = (call_meter.time.monotonic(), "999", 0)   # a token record() would give
+    call_meter.record_failure(tok, "timeout")
+    assert "999" not in call_meter._sessions
+    assert call_meter.global_snapshot()["failed"] == 1
+
+
+def test_a_failure_with_no_token_is_not_counted():
+    """`record` returns None ONLY when it could not count the send. Counting
+    the failure anyway put `failed` above `total` — a meter reporting traffic
+    the process never sent, and a sparkline minute with no bar to colour."""
+    for junk in (None, "nope", (1, 2), object(), (1, 2, 3, 4), 0, ""):
+        call_meter.record_failure(junk, "timeout")
+    g = call_meter.global_snapshot(series=False)
+    assert g["failed"] == 0 and g["total"] == 0
+
+
+def test_failures_never_exceed_requests_on_the_wire_path(monkeypatch):
+    """The invariant end to end: whatever `record` could not count, the
+    failure path must not count either."""
+    from aiforge_core.llm.client import _http
+
+    monkeypatch.setattr(_http, "_record_request", lambda *_a, **_k: None)
+    _http._record_failure(None, RuntimeError("boom"))
+    g = call_meter.global_snapshot(series=False)
+    assert g["failed"] == 0 and g["total"] == 0
+
+
+def test_a_failure_can_never_outnumber_its_turn(monkeypatch):
+    """`turn_failed` must stay <= `turn` for the turn on screen. The failure
+    of a request sent BEFORE the current message belongs to the message that
+    sent it, whatever the meter knows about turns."""
+    call_meter.turn_reset(31)
+    tok = call_meter.record("doer", session_id=31)   # counted against turn 1
+    call_meter.turn_reset(31)                        # new message
+    call_meter.record_failure(tok, "timeout")
+    snap = call_meter.snapshot(31)
+    assert snap["turn"] == 0 and snap["turn_failed"] == 0
+    assert snap["session_failed"] == 1
+
+
+def test_fail_reason_labels_are_bounded():
+    for i in range(call_meter._LABELS_PER_BUCKET + 25):
+        call_meter.record_failure(None, f"reason_{i}" + "x" * 200)
+    reasons = call_meter.global_snapshot()["by_fail_reason"]
+    assert len(reasons) <= call_meter._LABELS_PER_BUCKET + 1   # +"…other"
+    assert all(len(k) <= call_meter._LABEL_MAX for k in reasons)
+
+
+def test_reset_all_clears_the_rate_capped_flag():
+    """`_dropped_at` was missing from reset_all's `global` line, so the
+    assignment bound a local and one overflowing test left every later snapshot
+    claiming the per-minute figure was a floor."""
+    call_meter._dropped_at = call_meter.time.monotonic()
+    assert call_meter.global_snapshot(series=False)["rate_capped"] is True
+    call_meter.reset_all()
+    assert call_meter.global_snapshot(series=False)["rate_capped"] is False
+
+
+def test_every_failed_http_attempt_is_counted_at_the_wire(monkeypatch):
+    """The wire path, end to end: three attempts made, three counted, three
+    counted as failed, with the label the retry classifier used."""
+    from aiforge_core.llm.client import _http
+
+    monkeypatch.setenv("AIFORGE_LLM_RETRY_MAX", "3")
+    monkeypatch.setenv("AIFORGE_LLM_RETRY_BASE_S", "0")
+    monkeypatch.setattr(_http._rl, "acquire", lambda *a, **k: None)
+    monkeypatch.setattr(_http._rl, "acquire_global", lambda *a, **k: 0.0)
+    monkeypatch.setattr(_http, "_preflight", lambda *_a: None)
+    monkeypatch.setattr(_http, "_estimate_tokens", lambda *_a: 1)
+    monkeypatch.setattr(_http.urllib.request, "urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            ConnectionRefusedError("transient")))
+    monkeypatch.setattr(_http.time, "sleep", lambda *_a: None)
+    with pytest.raises(ConnectionRefusedError):
+        _http._post_with_retry(_endpoint(), b"{}", 1, role="doer",
+                               source="test")
+    g = call_meter.global_snapshot(series=False)
+    assert g["total"] == 3 and g["failed"] == 3
+    assert g["by_fail_reason"] == {"os_error": 3}
+
+
+def test_a_successful_wire_call_is_not_counted_as_failed(monkeypatch):
+    from aiforge_core.llm.client import _http
+
+    class _Resp:
+        def read(self):
+            return b'{"choices": [{"message": {"content": "hi"}}]}'
+        def __enter__(self):
+            return self
+        def __exit__(self, *_a):
+            return False
+
+    monkeypatch.setattr(_http._rl, "acquire", lambda *a, **k: None)
+    monkeypatch.setattr(_http._rl, "acquire_global", lambda *a, **k: 0.0)
+    monkeypatch.setattr(_http, "_preflight", lambda *_a: None)
+    monkeypatch.setattr(_http, "_estimate_tokens", lambda *_a: 1)
+    monkeypatch.setattr(_http.urllib.request, "urlopen",
+                        lambda *a, **k: _Resp())
+    _http._post(_endpoint(), b"{}", 1, role="doer")
+    g = call_meter.global_snapshot(series=False)
+    assert g["total"] == 1 and g["failed"] == 0
+
+
+def test_a_token_that_says_no_session_is_not_second_guessed(monkeypatch):
+    """A background fold's request is unattributed. By the time its failure
+    surfaces the thread may have been rebound to a chat — reading the context
+    THEN would bill a fold's timeout to whoever happens to be typing."""
+    monkeypatch.delenv("AIFORGE_CURRENT_SESSION", raising=False)
+    tok = call_meter.record("learner")          # no session bound
+    token_ctx = request_context.set_session_id(77)
+    try:
+        call_meter.record_failure(tok, "timeout")
+    finally:
+        request_context.reset_session_id(token_ctx)
+    assert call_meter.snapshot(77)["session_failed"] == 0
+    assert call_meter.global_snapshot(series=False)["failed"] == 1
+
+
+def test_an_empty_200_counts_as_a_failure_on_the_client_path(monkeypatch):
+    """A 200-OK whose content is empty/think-only raises nothing, so the
+    transport cannot see it — but it cost a generation and is about to be
+    re-posted. Left uncounted, a wedged local model read "16 requests, 0
+    failed" in chat while the pipeline meter, on the same box, read 75%
+    failing."""
+    from aiforge_core.llm import client as c
+    import types as _types
+
+    posts = {"n": 0}
+
+    def _fake_post(ep, payload, timeout_s, *, role, source, meter=None):
+        posts["n"] += 1
+        if meter is not None:                      # count the send ourselves…
+            meter[0] = call_meter.record(role, provider="x", model="m")
+        # …then answer with nothing, twice, then for real.
+        text = "" if posts["n"] < 3 else "the answer"
+        return {"choices": [{"message": {"content": text}}]}
+
+    monkeypatch.setattr(c, "_post_with_retry", _fake_post)
+    monkeypatch.setattr(c, "_record_usage", lambda *a, **k: None)
+    monkeypatch.setattr(c.time, "sleep", lambda *_a: None)
+    ep = _types.SimpleNamespace(model="m", provider="x", extras={},
+                                base_url="http://x/v1")
+    out = c._try_post(ep, [{"role": "user", "content": "q"}],
+                      temperature=0.0, max_tokens=256, top_p=None, extras=None,
+                      timeout_s=30, role="chat", source="primary")
+    assert out is not None and out[0] == "the answer"
+    g = call_meter.global_snapshot(series=False)
+    assert g["total"] == 3          # three generations paid for…
+    assert g["failed"] == 2         # …two of which answered nothing
+    assert g["by_fail_reason"] == {"empty": 2}
+
+
+def test_a_call_stopped_before_it_is_sent_counts_nothing(monkeypatch):
+    """Stop pressed while the request is still queued: nothing reaches the
+    endpoint, so the meter must show neither a request nor a failure. Counting
+    it would have the meter invent the traffic it exists to measure — and
+    counting the `cancelled` exception without the send would put `failed`
+    above `total`."""
+    import threading
+    from aiforge_core.llm.client import _http
+    from aiforge_core.llm.client._errors import _LLMCancelled
+
+    monkeypatch.setattr(_http._rl, "acquire", lambda *a, **k: None)
+    monkeypatch.setattr(_http._rl, "acquire_global", lambda *a, **k: 0.0)
+    monkeypatch.setattr(_http, "_preflight", lambda *_a: None)
+    monkeypatch.setattr(_http, "_estimate_tokens", lambda *_a: 1)
+
+    ev = threading.Event()
+    ev.set()                                   # already stopped
+    token = _http._CANCEL.set(ev)
+    try:
+        with pytest.raises(_LLMCancelled):
+            _http._post(_endpoint(), b"{}", 1, role="doer")
+    finally:
+        _http._CANCEL.reset(token)
+    g = call_meter.global_snapshot(series=False)
+    assert g["total"] == 0 and g["failed"] == 0

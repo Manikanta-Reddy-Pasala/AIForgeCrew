@@ -53,7 +53,11 @@ export type LiveTurn = {
   usage?: { pct: number; chars: number; budget: number; tokens?: number; windowTokens?: number;
             // Requests actually sent to the LLM: this turn, this chat, and the
             // machine-wide rate over the last minute.
-            llmTurn?: number; llmSession?: number; llmPerMin?: number };
+            llmTurn?: number; llmSession?: number; llmPerMin?: number;
+            // …and how many of them came back with nothing. A SUBSET of
+            // llmTurn / llmPerMin, not a separate count: the requests were
+            // still sent.
+            llmTurnFailed?: number; llmFailedPerMin?: number };
 };
 
 export type ChatMode = 'simple' | 'plan' | 'team';

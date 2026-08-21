@@ -494,3 +494,170 @@ def test_cloud_default_for_local_skips_none_default(monkeypatch):
     monkeypatch.delenv("OLLAMA_CLOUD_API_KEY", raising=False)
     # openai_compatible skipped (no default model), no ollama key → None, no crash
     assert ac.cloud_default_for_local("doer") is None
+
+
+# ─── the meter mirror: the ADK path never touches llm.client ──────────
+# Anything counted or enforced at llm.client has to be mirrored here or the
+# highest-volume path (team mode) reports zero. That is true of the FAILURE
+# count too: a failure rate blind to the pipeline says "all healthy" while
+# every agent in a run is retrying.
+
+
+@pytest.fixture()
+def _meter():
+    from aiforge_core.llm import call_meter
+    call_meter.reset_all()
+    yield call_meter
+    call_meter.reset_all()
+
+
+def test_pipeline_failures_are_counted_beside_pipeline_requests(_meter) -> None:
+    primary = _StubModel(model="primary", error=RuntimeError("local down"))
+    cloud = _StubModel(model="cloud", script=[_resp("rescued")])
+    e = EscalatingLlm(model="primary", role="doer",
+                      primary_model=primary, chain_models=[cloud],
+                      chain_labels=["cloud"])
+    assert _drive(e)[0].content.parts[0].text == "rescued"
+
+    g = _meter.global_snapshot(series=False)
+    assert g["total"] == 2                # both attempts went out…
+    assert g["failed"] == 1               # …one of them answered nothing
+    assert g["by_fail_reason"] == {"RuntimeError": 1}
+
+
+def test_an_empty_pipeline_answer_counts_as_a_failure(_meter) -> None:
+    """The pipeline treats an empty response as a failed attempt — it demotes
+    on it and escalates. A meter that called it a success would show a model
+    returning nothing all day as perfectly healthy."""
+    primary = _StubModel(model="primary", script=[_resp("")])
+    cloud = _StubModel(model="cloud", script=[_resp("rescued")])
+    e = EscalatingLlm(model="primary", role="doer",
+                      primary_model=primary, chain_models=[cloud],
+                      chain_labels=["cloud"])
+    _drive(e)
+    g = _meter.global_snapshot(series=False)
+    assert g["total"] == 2 and g["failed"] == 1
+    assert g["by_fail_reason"] == {"empty": 1}
+
+
+def test_a_healthy_pipeline_call_reports_no_failures(_meter) -> None:
+    primary = _StubModel(model="primary", script=[_resp("hello")])
+    e = EscalatingLlm(model="primary", role="doer",
+                      primary_model=primary, chain_models=[],
+                      chain_labels=[])
+    _drive(e)
+    g = _meter.global_snapshot(series=False)
+    assert g["total"] == 1 and g["failed"] == 0
+    assert g["failed_per_minute"] == 0
+
+
+def test_a_failed_stream_is_counted(_meter) -> None:
+    primary = _StubModel(model="primary", error=RuntimeError("stream down"))
+    e = EscalatingLlm(model="primary", role="doer",
+                      primary_model=primary, chain_models=[],
+                      chain_labels=[])
+    with pytest.raises(RuntimeError):
+        _drive(e, stream=True)
+    g = _meter.global_snapshot(series=False)
+    assert g["total"] == 1 and g["failed"] == 1
+
+
+def test_abandoning_a_stream_is_not_a_failure(_meter) -> None:
+    """A consumer that stops iterating throws GeneratorExit into the wrapper.
+    The model answered; walking away from the rest is not a failed request."""
+    primary = _StubModel(model="primary",
+                         script=[_resp("one"), _resp("two"), _resp("three")])
+    e = EscalatingLlm(model="primary", role="doer",
+                      primary_model=primary, chain_models=[],
+                      chain_labels=[])
+
+    async def _go():
+        agen = e.generate_content_async(LlmRequest(model="primary"), stream=True)
+        async for _r in agen:
+            break                      # take one, walk away
+        await agen.aclose()            # → GeneratorExit inside the wrapper
+
+    asyncio.run(_go())
+    g = _meter.global_snapshot(series=False)
+    assert g["total"] == 1 and g["failed"] == 0
+
+
+def test_the_lm_crash_recovery_retry_is_counted_too(monkeypatch, _meter) -> None:
+    """The recovery retry is a real request to the model. Every meter call on
+    that path was invisible to the tests: deleting the record, the failure, or
+    both left the suite green while a crash-loop-and-recover box under-reported
+    its traffic."""
+    from aiforge_core.runtime import local_starter as ls
+    ls.reset()
+    monkeypatch.setattr(ls, "try_recover", lambda api_base: True)
+
+    class _CrashThenRecover(BaseLlm):
+        api_base: str = "http://127.0.0.1:1234/v1"
+        calls: int = 0
+
+        async def generate_content_async(self, llm_request, stream=False):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError(
+                    "litellm.BadRequestError - The model has crashed "
+                    "without additional information. (Exit code: null)")
+            yield _resp("recovered output")
+
+        @classmethod
+        def supported_models(cls):
+            return []
+
+    e = EscalatingLlm(model="local-mlx", role="doer",
+                      primary_model=_CrashThenRecover(model="local-mlx"),
+                      chain_models=[], chain_labels=[])
+    assert _drive(e)[0].content.parts[0].text == "recovered output"
+
+    g = _meter.global_snapshot(series=False)
+    assert g["total"] == 2          # the crashed attempt AND the recovery retry
+    assert g["failed"] == 1         # the crash
+    assert g["by_fail_reason"] == {"RuntimeError": 1}
+
+
+def test_a_recovery_retry_that_answers_nothing_is_counted_as_empty(
+        monkeypatch, _meter) -> None:
+    from aiforge_core.runtime import local_starter as ls
+    ls.reset()
+    monkeypatch.setattr(ls, "try_recover", lambda api_base: True)
+
+    class _CrashThenEmpty(BaseLlm):
+        api_base: str = "http://127.0.0.1:1234/v1"
+        calls: int = 0
+
+        async def generate_content_async(self, llm_request, stream=False):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("The model has crashed (Exit code: null)")
+            yield _resp("")          # recovered, still answering nothing
+
+        @classmethod
+        def supported_models(cls):
+            return []
+
+    e = EscalatingLlm(model="local-mlx", role="doer",
+                      primary_model=_CrashThenEmpty(model="local-mlx"),
+                      chain_models=[_StubModel(model="cloud",
+                                               script=[_resp("rescued")])],
+                      chain_labels=["cloud"])
+    _drive(e)
+    g = _meter.global_snapshot(series=False)
+    assert g["failed"] == 2 and g["by_fail_reason"].get("empty") == 1
+
+
+def test_a_think_only_stream_is_not_a_healthy_request(_meter) -> None:
+    """Chunk-counting called a think-only stream healthy while the
+    non-streaming path called the identical reply `empty` — and think-only
+    output is the documented-common local-model failure."""
+    primary = _StubModel(model="primary",
+                         script=[_resp("<think>never answers</think>")])
+    e = EscalatingLlm(model="primary", role="doer",
+                      primary_model=primary, chain_models=[],
+                      chain_labels=[])
+    _drive(e, stream=True)
+    g = _meter.global_snapshot(series=False)
+    assert g["total"] == 1 and g["failed"] == 1
+    assert g["by_fail_reason"] == {"empty": 1}

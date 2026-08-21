@@ -47,7 +47,7 @@ async def _throttle_global() -> None:
         return
 
 
-def _meter_record(role: str, model_name) -> None:
+def _meter_record(role: str, model_name):
     """Count one PIPELINE request in the toolbar meter.
 
     ADK agents reach the endpoint through LiteLlm/httpx, never through
@@ -56,11 +56,36 @@ def _meter_record(role: str, model_name) -> None:
     both promise "chat, pipeline, jobs, memory". Same reasoning (and the same
     place) as the Langfuse mirror right below: what does not come through the
     client has to be mirrored here. Never raises.
+
+    Returns the meter token for :func:`_meter_fail`.
     """
     try:
         from aiforge_core.llm import call_meter as _meter
-        _meter.record(role=role, provider="openai_compatible",
-                      model=str(model_name or ""))
+        return _meter.record(role=role, provider="openai_compatible",
+                             model=str(model_name or ""))
+    except Exception:  # noqa: BLE001 — metering must never break a call
+        return None
+
+
+def _meter_fail(token, exc: "BaseException | None" = None,
+                reason: str | None = None) -> None:
+    """Mark a counted PIPELINE request as having produced no answer.
+
+    Mirrored here for the same reason the count is: the ADK path never reaches
+    ``llm.client``, and a failure rate that reads zero for the highest-volume
+    path is worse than no failure rate at all. An EMPTY response counts too —
+    the pipeline treats it as a failed attempt and escalates to the next
+    candidate, so the meter must not call it a success. Never raises.
+    """
+    if not token:
+        # `record` returns None only when it could not count the send; counting
+        # the failure then would put `failed` above `total`.
+        return
+    try:
+        from aiforge_core.llm import call_meter as _meter
+        if not reason:
+            reason = type(exc).__name__ if exc is not None else "error"
+        _meter.record_failure(token, str(reason)[:64])
     except Exception:  # noqa: BLE001 — metering must never break a call
         pass
 
@@ -135,11 +160,34 @@ class EscalatingLlm(BaseLlm):
                 await _throttle_global()
             except Exception:  # noqa: BLE001 — nothing here may break a stream
                 pass
-            _meter_record(self.role, getattr(self.primary_model, "model", None))
-            async for r in self.primary_model.generate_content_async(
-                llm_request, stream=True,
-            ):
-                yield r
+            _tok = _meter_record(
+                self.role, getattr(self.primary_model, "model", None))
+            # Track CONTENT, not chunk count: `_is_empty` strips <think>
+            # blocks, so a reasoning model that streams a think-only reply
+            # yields plenty of chunks and answers nothing. Counting chunks let
+            # exactly that — the local-model failure this codebase documents as
+            # the common one — read healthy on the streaming path while the
+            # non-streaming path called the identical reply `empty`.
+            _answered = False
+            try:
+                async for r in self.primary_model.generate_content_async(
+                    llm_request, stream=True,
+                ):
+                    if not _answered and not _is_empty(r):
+                        _answered = True
+                    yield r
+            except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001
+                # NOT bare BaseException: a consumer that stops iterating
+                # throws GeneratorExit in here, and abandoning a stream the
+                # model answered fine is not a failed request.
+                _meter_fail(_tok, exc)
+                raise
+            if not _answered:
+                # A stream that ends having yielded nothing is the same
+                # outcome the non-streaming path calls `empty` — counting it
+                # as a success would let a wedged model look healthy on the
+                # one path with no retry behind it.
+                _meter_fail(_tok, reason="empty")
             return
 
         # Non-streaming: collect primary's responses, judge, retry on fail.
@@ -197,17 +245,23 @@ class EscalatingLlm(BaseLlm):
                 # BEFORE falling through to the next candidate — so a proxy
                 # blip doesn't surface as an "agent error" in the UI.
                 _tries = _attempt_retries()
+                _tok = None
                 for _t in range(_tries):
                     try:
                         buffered = []
                         await _throttle_global()
-                        _meter_record(self.role, target_model)
+                        _tok = _meter_record(self.role, target_model)
                         async for r in model.generate_content_async(
                             req_for_attempt, stream=False,
                         ):
                             buffered.append(r)
                         break
                     except Exception as _ie:  # noqa: BLE001
+                        # Every try is its own counted request, so every try
+                        # that dies is its own counted failure — including the
+                        # ones this loop swallows by retrying, which are
+                        # precisely the invisible calls the meter exists for.
+                        _meter_fail(_tok, _ie)
                         if _t + 1 < _tries and _is_transient_llm_error(_ie):
                             log.warning(
                                 "llm.attempt_retry role=%s attempt=%s "
@@ -245,17 +299,19 @@ class EscalatingLlm(BaseLlm):
                         )
                         if recovered:
                             buffered = []
+                            _rtok = None
                             try:
                                 # Gated like the two paths above: a recovery
                                 # retry is a real request to the model and must
                                 # be both throttled and counted.
                                 await _throttle_global()
-                                _meter_record(self.role, target_model)
+                                _rtok = _meter_record(self.role, target_model)
                                 async for r in model.generate_content_async(
                                     req_for_attempt, stream=False,
                                 ):
                                     buffered.append(r)
                             except Exception as retry_exc:  # noqa: BLE001
+                                _meter_fail(_rtok, retry_exc)
                                 last_exc = retry_exc
                                 log.warning(
                                     "llm.recovery_retry_failed role=%s "
@@ -265,7 +321,12 @@ class EscalatingLlm(BaseLlm):
                                 if label == "primary":
                                     self._record_primary_failure()
                                 continue
-                            if buffered and not all(_is_empty(r) for r in buffered):
+                            if not buffered or all(_is_empty(r) for r in buffered):
+                                # Counted, answered nothing — the same failure
+                                # the `attempt_empty` branch below records for
+                                # the normal path.
+                                _meter_fail(_rtok, reason="empty")
+                            else:
                                 log.info(
                                     "llm.recovered role=%s after_lm_reload",
                                     self.role,
@@ -282,6 +343,11 @@ class EscalatingLlm(BaseLlm):
                 continue
 
             if not buffered or all(_is_empty(r) for r in buffered):
+                # A counted request that answered nothing. The pipeline treats
+                # it as a failed attempt (it demotes on it and escalates to the
+                # next candidate) and so must the meter — an endpoint returning
+                # empties looks perfectly healthy on a success-blind rate.
+                _meter_fail(_tok, reason="empty")
                 log.warning(
                     "llm.attempt_empty role=%s attempt=%s model=%s "
                     "responses=%d", self.role, label,

@@ -745,7 +745,13 @@ def run_chat_agent(
                    # and the machine-wide rate. "Why is one question 40 calls?"
                    "llm_turn": _calls.get("turn", 0),
                    "llm_session": _calls.get("session", 0),
-                   "llm_per_min": _calls.get("per_minute", 0)}
+                   "llm_per_min": _calls.get("per_minute", 0),
+                   # How many of those requests came back with nothing. A
+                   # subset of llm_turn, not an extra: "12 requests, 7 failing"
+                   # is a retry storm, "12 requests" alone looks like a
+                   # thorough turn.
+                   "llm_turn_failed": _calls.get("turn_failed", 0),
+                   "llm_failed_per_min": _calls.get("failed_per_minute", 0)}
         try:
             out = _complete_cancellable(complete_fn, role, convo, session_id)
         except Exception as exc:  # noqa: BLE001

@@ -211,7 +211,7 @@ def _post_cancellable(ep: Endpoint, payload: bytes, timeout_s: int,
 
 
 def _record_request(role: str | None = None, provider: str | None = None,
-                    model: str | None = None) -> None:
+                    model: str | None = None):
     """Count one request to the model. Called at the moment we are actually
     about to send — AFTER the rate-limit wait and the preflight, so an attempt
     that never reached the network is not reported as provider traffic (the
@@ -221,10 +221,43 @@ def _record_request(role: str | None = None, provider: str | None = None,
     ``role`` is threaded down from _post_with_retry rather than left to the
     request context: the background daemon (compaction, folds, jobs) has no
     request context at all, and its calls are precisely the ones the toolbar
-    meter exists to make visible."""
+    meter exists to make visible.
+
+    Returns the meter's token for this request — hand it to
+    ``_record_failure`` if the attempt does not come back with an answer, so
+    the failure is charged to the minute and the chat turn that SENT it rather
+    than to whenever it finally gave up (a 600s read timeout is ten minutes
+    late)."""
     try:
         from aiforge_core.llm import call_meter as _meter
-        _meter.record(role=role, provider=provider, model=model)
+        return _meter.record(role=role, provider=provider, model=model)
+    except Exception:  # noqa: BLE001 — metering must never break a call
+        return None
+
+
+def _record_failure(token, exc: BaseException) -> None:
+    """That request came back with no answer. Counted SEPARATELY from, not
+    instead of, the request itself: the attempt was real traffic (the provider
+    billed and rate-limited it, the retry storm it belongs to is the thing the
+    meter exists to expose), and a rate that dropped failures would read its
+    lowest exactly when the endpoint is down. What the reader needs is both
+    numbers — "40/min, 38 failing" — plus the label saying which failure.
+
+    Never raises, and never lets the classifier's own failure escape into the
+    caller's error path."""
+    if not token:
+        # `record` returns None only when it could not count the SEND. Counting
+        # the failure anyway would put `failed` above `total` and paint a
+        # failed-only minute the sparkline has no send to scale against.
+        return
+    try:
+        from aiforge_core.llm import call_meter as _meter
+        try:
+            reason = _is_transient_exc(exc)[1] if isinstance(exc, Exception) \
+                else exc.__class__.__name__
+        except Exception:  # noqa: BLE001
+            reason = exc.__class__.__name__
+        _meter.record_failure(token, reason)
     except Exception:  # noqa: BLE001 — metering must never break a call
         pass
 
@@ -232,7 +265,8 @@ def _record_request(role: str | None = None, provider: str | None = None,
 def _post(ep: Endpoint, payload: bytes, timeout_s: int,
           *, role: str | None = None, sent: "list | None" = None,
           max_wait_s: float | None = None,
-          throttled: "list | None" = None) -> dict:
+          throttled: "list | None" = None,
+          meter: "list | None" = None) -> dict:
     # Rate-limit acquire BEFORE the post — blocks until budget allows.
     prov = _providers.get(ep.provider)
     declared = prov.rate_limits() if prov is not None else None
@@ -270,26 +304,50 @@ def _post(ep: Endpoint, payload: bytes, timeout_s: int,
         max_wait_s=float(_int_env("AIFORGE_LLM_MAX_WAIT_S", 120)))
     if throttled is not None:
         throttled[0] = _throttled
-    if cancel is not None:
-        _record_request(role, ep.provider, ep.model)
-        return _post_cancellable(ep, payload, timeout_s, cancel, sent)
-    _record_request(role, ep.provider, ep.model)
-    # urllib wraps connect/handshake/send failures in URLError, so a bare
-    # TimeoutError out of urlopen is a READ timeout — the server has the
-    # prompt. Marking here is therefore exact for this path.
-    if sent is not None:
-        sent[0] = True
-    req = urllib.request.Request(
-        f"{ep.base_url.rstrip('/')}/chat/completions",
-        data=payload,
-        headers=_post_headers(ep),
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=timeout_s,
-                                context=_post_ctx(ep)) as resp:
-        _body = json.loads(resp.read())
-        _raise_if_model_dropped(_body)   # 200-OK error body → transient
-        return _body
+    # ONE meter token for BOTH paths, and the failure counted here rather than
+    # in _post_with_retry: this function is what counts an attempt, so this is
+    # the only place where sends and failures cannot drift apart (the retry
+    # wrapper sees a chain, and the callers above it — client.complete's
+    # empty-response loop, the pipeline — start several chains per answer).
+    # Already stopped? Then nothing is going out, and counting a request here
+    # would have the meter invent traffic for a box that sent none — the same
+    # phantom the preflight ordering above exists to prevent. _post_cancellable
+    # raises this on its own first line; raising it here only skips the count.
+    if cancel is not None and cancel.is_set():
+        raise _LLMCancelled("cancelled before request")
+    _tok = _record_request(role, ep.provider, ep.model)
+    if meter is not None:
+        # Hand the token UP. A 200-OK whose content is empty/think-only is a
+        # failed request that raises nothing, so this function cannot see it —
+        # only the caller reading the body can, and it needs this exact
+        # request's token to charge the failure to the right minute and turn.
+        meter[0] = _tok
+    try:
+        if cancel is not None:
+            return _post_cancellable(ep, payload, timeout_s, cancel, sent)
+        # urllib wraps connect/handshake/send failures in URLError, so a bare
+        # TimeoutError out of urlopen is a READ timeout — the server has the
+        # prompt. Marking here is therefore exact for this path.
+        if sent is not None:
+            sent[0] = True
+        req = urllib.request.Request(
+            f"{ep.base_url.rstrip('/')}/chat/completions",
+            data=payload,
+            headers=_post_headers(ep),
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout_s,
+                                    context=_post_ctx(ep)) as resp:
+            _body = json.loads(resp.read())
+            _raise_if_model_dropped(_body)   # 200-OK error body → transient
+            return _body
+    except Exception as exc:  # noqa: BLE001 — count it, then re-raise unchanged
+        # A cancelled generation lands here too (_LLMCancelled is an
+        # Exception): a request the user stopped is still a request that cost
+        # the endpoint and produced no answer, and it carries its own
+        # "cancelled" label so it is distinguishable from a broken endpoint.
+        _record_failure(_tok, exc)
+        raise
 
 
 def _preflight(base_url: str) -> None:
@@ -323,7 +381,8 @@ def _preflight(base_url: str) -> None:
 
 
 def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
-                     *, role: str, source: str) -> dict:
+                     *, role: str, source: str,
+                     meter: "list | None" = None) -> dict:
     """Wrap _post with bounded exponential backoff on transient errors.
 
     Knobs:
@@ -379,8 +438,12 @@ def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
         try:
             _left = (deadline - time.monotonic()) if deadline is not None else None
             _throttled = [0.0]
+            # `meter` forwarded only when a caller asked for the token: a
+            # test that fakes `_post` with the old signature stays valid, and
+            # the kwarg appears exactly where someone needs the token back.
+            _extra = {"meter": meter} if meter is not None else {}
             return _post(ep, payload, timeout_s, role=role, sent=sent,
-                         max_wait_s=_left, throttled=_throttled)
+                         max_wait_s=_left, throttled=_throttled, **_extra)
         except Exception as exc:  # noqa: BLE001 — classifier handles
             retry, label = _is_transient_exc(exc)
             last = exc
