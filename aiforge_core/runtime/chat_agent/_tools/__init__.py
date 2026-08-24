@@ -87,6 +87,9 @@ from ._gitlab import (
     _t_gitlab_comment,
     _t_gitlab_mr_create,
     _t_gitlab_mr_comment,
+    _t_gitlab_pipeline,
+    _t_gitlab_pipeline_watch,
+    _t_gitlab_pipelines,
     _t_github_pr,
 )
 from ._git import (

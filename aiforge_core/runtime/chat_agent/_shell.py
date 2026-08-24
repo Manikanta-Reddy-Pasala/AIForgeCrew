@@ -33,6 +33,10 @@ _READ_OBS_TOOLS = frozenset({
     "jira_boards", "jira_sprints", "jira_sprint_issues", "jira_dashboards",
     "jira_dashboard_read", "jira_myself", "file_read", "read_files", "read_lines",
     "gitlab_read", "web_fetch", "web_crawl", "email_read",
+    # A CI pipeline's answer is a job log tail. Under the blunt 6k cap the
+    # `jobs` array alone pushed it out of the observation — at 14 jobs,
+    # measured — so the model read truncated JSON and no failure reason.
+    "gitlab_pipeline", "gitlab_pipelines", "gitlab_pipeline_watch",
 })
 
 

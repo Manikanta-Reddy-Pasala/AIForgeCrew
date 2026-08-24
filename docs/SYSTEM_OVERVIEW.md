@@ -95,7 +95,7 @@ agent gets what) is **[TOOLS.md](TOOLS.md)**.
 | Git / PR | targeted git via shell, `github_pr`, `gitlab_mr_create` / comment |
 | Jira | search/read + create/update/comment, transitions, worklog + `log_work`, boards/sprints/projects, dashboards, remote links (`runtime/tools/jira.py`) |
 | Confluence | read/create/update, spaces, page-by-title, labels, comments, descendants (`runtime/tools/confluence.py`) |
-| GitLab | issues + MRs (`runtime/tools/gitlab.py`) |
+| GitLab | issues + MRs, and CI pipelines: list / read one with failed-job logs / watch one to completion (`runtime/tools/gitlab.py`) |
 | Email | `email_send` (approval-gated) / `email_read` (`runtime/tools/email_tool.py`) |
 | Web | `web_search`, `web_fetch`, `web_crawl` → markdown dossier in `work/web/` (`runtime/tools/web_search.py`, `web_ingest.py`) |
 | Memory / learning | `memory_lookup`, `memory_write`, `remember_rule`, skill + workflow search/learn |

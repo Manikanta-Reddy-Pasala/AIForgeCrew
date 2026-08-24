@@ -38,6 +38,21 @@ def _t_gitlab_mr_comment(args: dict, cwd: str) -> dict:
     return gitlab.gitlab_mr_comment(args, cwd)
 
 
+def _t_gitlab_pipelines(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import gitlab
+    return gitlab.gitlab_pipelines(args, cwd)
+
+
+def _t_gitlab_pipeline(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import gitlab
+    return gitlab.gitlab_pipeline(args, cwd)
+
+
+def _t_gitlab_pipeline_watch(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import gitlab
+    return gitlab.gitlab_pipeline_watch(args, cwd)
+
+
 def _t_github_pr(args: dict, cwd: str) -> dict:
     """Open a GitHub pull request from the current branch via the ``gh`` CLI.
     Args: title (req), body, base (default 'main'), head (default current

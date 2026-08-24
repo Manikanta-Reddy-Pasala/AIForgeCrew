@@ -143,6 +143,9 @@ Tool arguments:
 - gitlab_comment{{"project": "group/proj", "iid": 42, "body": "comment text"}}            (add a comment — needs your Approve)
 - gitlab_mr_create {{"project": "group/proj", "source_branch": "feat/x", "target_branch": "main", "title": "...", "description": "..."}}   (open a merge request — needs your Approve)
 - gitlab_mr_comment{{"project": "group/proj", "iid": 7, "body": "..."}}                    (comment on an MR — needs your Approve)
+- gitlab_pipelines{{"project": "group/proj", "ref": "main", "limit": 10}}                  (recent CI pipelines)
+- gitlab_pipeline{{"project": "group/proj", "ref": "main"}}                                (one pipeline + jobs + failed-job logs)
+- gitlab_pipeline_watch{{"project": "group/proj", "ref": "main", "timeout_s": 900}}        (wait for it to FINISH — one call, not a poll loop)
 - github_pr     {{"title": "...", "body": "...", "base": "main", "draft": false}}          (open a GitHub PR from the current branch via gh CLI — needs your Approve)
 After any Confluence/Jira/GitLab create/update/comment SUCCEEDS, show the user a \
 short AFTER preview of what was written (the `written` field in the result) plus \

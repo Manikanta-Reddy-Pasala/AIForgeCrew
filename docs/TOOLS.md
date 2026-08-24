@@ -115,6 +115,25 @@ Plan mode blocks everything not RO (`chat_agent._READONLY_TOOLS`, ~line 2000).
 | `gitlab_search` / `gitlab_read` | `{query, project, state}` / `{project, iid}` | find / read issues | RO |
 | `gitlab_create` / `gitlab_update` / `gitlab_comment` | `{project, …}` | write ops | ASK |
 
+### GitLab CI pipelines
+
+| Tool | Args | Does | Gate |
+|---|---|---|---|
+| `gitlab_pipelines` | `{project, ref, status, sha, limit}` | list recent pipelines, newest first | RO |
+| `gitlab_pipeline` | `{project, pipeline_id \| ref \| sha, logs, log_chars}` | one pipeline: status, jobs, log tail of what failed | RO |
+| `gitlab_pipeline_watch` | `{project, …, interval_s, timeout_s, max_checks}` | poll until it finishes — ONE call covers the whole watch | RO |
+
+`ok` says the read/watch worked; `passed` says the pipeline was green — they are
+deliberately separate. A watch that runs out of budget returns `timed_out: true`
+with the last status it saw rather than inventing an outcome; if it never
+managed to read the pipeline at all it returns `ok: false` and no `passed` key,
+because it observed nothing. `manual` is reported as finished-but-blocked, an
+unknown status keeps the watch going, and `allow_failure` jobs are never blamed.
+The watch budget is clamped to ~180s only where nothing can Stop it (the jobs
+runner, `/api/chat/agent`); team mode and subtask runs re-bind the session so
+Stop reaches them and the full `timeout_s` applies. When the clamp bites, the
+effective value comes back as `unattended_budget_s`.
+
 ### Email & web
 
 | Tool | Args | Does | Gate |

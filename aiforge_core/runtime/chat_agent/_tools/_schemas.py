@@ -249,6 +249,30 @@ CATALOG: dict = {
     "gitlab_mr_comment": ("WRITE: post a NEW comment onto a GitLab MR.",
                           {"project": "s", "iid": "i", "body": "s"},
                           ("project", "iid", "body")),
+    "gitlab_pipelines": (
+        "READ: list recent GitLab CI pipelines for a project (newest first). "
+        "Use to answer 'is the build green', 'what ran on this branch'.",
+        {"project": "s", "ref": "s", "status": "s", "sha": "s", "limit": "i"},
+        ()),
+    "gitlab_pipeline": (
+        "READ one GitLab CI pipeline: status, every job, and the log tail of "
+        "whatever failed. Address it by pipeline_id, or by ref/branch (latest "
+        "on that branch), or by sha — or omit all three for the project's "
+        "latest. This is a SNAPSHOT: if the pipeline is still running and the "
+        "user wants the outcome, use gitlab_pipeline_watch instead.",
+        {"project": "s", "pipeline_id": "i", "ref": "s", "sha": "s",
+         "logs": "b", "log_chars": "i"},
+        ()),
+    "gitlab_pipeline_watch": (
+        "READ (long-running): watch a GitLab CI pipeline until it FINISHES, "
+        "then report whether it "
+        "passed and why it failed. Same addressing as gitlab_pipeline. Use "
+        "this whenever the user wants the OUTCOME of a pipeline that is still "
+        "running ('tell me when the build finishes', 'did my push pass'). ONE "
+        "call covers the whole watch — do NOT poll gitlab_pipeline in a loop.",
+        {"project": "s", "pipeline_id": "i", "ref": "s", "sha": "s",
+         "interval_s": "i", "timeout_s": "i", "max_checks": "i"},
+        ()),
     # ── email ────────────────────────────────────────────────────────────
     "email_send": ("Send an email via SMTP.",
                    {"to": "s", "subject": "s", "body": "s", "cc": "s",

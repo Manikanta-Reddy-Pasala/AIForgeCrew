@@ -236,6 +236,50 @@ def gitlab_read(project: str, iid: str) -> dict:
     return _g.gitlab_read({"project": project, "iid": iid}, str(root()))
 
 
+def gitlab_pipelines(project: str = "", ref: str = "", status: str = "",
+                     sha: str = "", limit: int = 20) -> dict:
+    """List recent GitLab CI pipelines, newest first. ``ref`` = branch/tag.
+    Read-only, soft-fails."""
+    from aiforge_core.runtime.tools import gitlab as _g
+    return _g.gitlab_pipelines({"project": project, "ref": ref, "sha": sha,
+                                "status": status, "limit": limit}, str(root()))
+
+
+def gitlab_pipeline(project: str = "", pipeline_id: int = 0, ref: str = "",
+                    sha: str = "", logs: bool = True,
+                    log_chars: int = 3000) -> dict:
+    """One GitLab CI pipeline: status, jobs, and the log tail of what failed.
+    Give ``pipeline_id``, or ``ref`` (latest on that branch), or ``sha`` — or
+    none of them for the project's latest. A SNAPSHOT; to wait for the outcome
+    use ``gitlab_pipeline_watch``."""
+    from aiforge_core.runtime.tools import gitlab as _g
+    return _g.gitlab_pipeline({"project": project, "pipeline_id": pipeline_id,
+                               "ref": ref, "sha": sha, "logs": logs,
+                               "log_chars": log_chars}, str(root()))
+
+
+def gitlab_pipeline_watch(project: str = "", pipeline_id: int = 0,
+                          ref: str = "", sha: str = "", timeout_s: int = 600,
+                          interval_s: int = 20, max_checks: int = 60) -> dict:
+    """Watch a GitLab CI pipeline until it finishes, then report whether it
+    passed and why it failed. ONE call covers the whole watch — never poll
+    ``gitlab_pipeline`` in a loop.
+
+    The budget is clamped to ~180s / 10 checks ONLY when nothing can interrupt
+    the watch (the jobs runner, ``/api/chat/agent``). Team mode and subtask
+    runs re-bind the session in their driver thread — ``chat_cancel.set_active``
+    — precisely so Stop reaches the tools they run, so there the full
+    ``timeout_s`` applies. When the clamp did apply, the effective value comes
+    back as ``unattended_budget_s``; a build longer than the budget returns
+    ``timed_out`` with the last status seen, never an invented outcome."""
+    from aiforge_core.runtime.tools import gitlab as _g
+    return _g.gitlab_pipeline_watch(
+        {"project": project, "pipeline_id": pipeline_id, "ref": ref,
+         "sha": sha, "timeout_s": timeout_s, "interval_s": interval_s,
+         "max_checks": max_checks},
+        str(root()))
+
+
 def gitlab_create(project: str, title: str, description: str = "",
                   labels: str = "") -> dict:
     """Create a GitLab issue. ``labels`` = comma-separated."""
