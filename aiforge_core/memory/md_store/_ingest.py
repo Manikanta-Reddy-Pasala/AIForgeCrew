@@ -194,80 +194,104 @@ def append_bullet(*, source: str, title: str, bullet: str,
     return d
 
 
+def _purge_stale_brief_rows() -> None:
+    """Reclaim compacted-brief rows stranded under repo='notes' before briefs
+    were ingested under their real scope — else they linger as duplicates
+    forever."""
+    try:
+        from aiforge_core.memory import backend_select as _bsel
+        if not _bsel.embedded():
+            return
+        from aiforge_core.memory import sqlite_memory as _sqlmem
+        purged = _sqlmem.delete_stale_compacted_notes()
+        if purged:
+            _log.info("ingest_dir: purged %d stale repo=notes brief rows", purged)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _brief_scope_key(stem: str) -> str:
+    """The scope a compacted brief belongs to.
+
+    A ``-N`` split-part suffix is stripped ONLY when the primary
+    compacted-<base>.md exists — else a real slug ending in a number (log4j-2,
+    s3-bucket-1) would be mangled to the wrong key.
+    """
+    base = stem[len("compacted-"):]
+    m = re.match(r"^(.*)-\d+$", base)
+    if m and (_resolve_md("compacted-" + m.group(1)) is not None):
+        base = m.group(1)
+    return base or "notes"
+
+
+def _brief_unit(p, d: dict) -> tuple[dict, str, str, str, str, bool]:
+    """A consolidated brief, ingested EXACTLY as compact()'s Phase-3 does —
+    same kind ("knowledge") AND source ("compacted:<stem>") — so the two ingest
+    paths reclaim ONE row instead of storing the same brief twice. The
+    mechanical 'compacted' kind used to show up as the label in search/UI, and
+    the compacted-<key> stem as the title; both are replaced here. Envelope
+    stripped so recall vectors carry knowledge, not boilerplate.
+    """
+    repo = _brief_scope_key(p.stem)
+    body = d["body"]
+    try:
+        from aiforge_core.runtime import work_notes
+        body = work_notes.knowledge_text(d["body"])
+    except Exception:  # noqa: BLE001
+        pass
+    return ({**d, "title": _brief_title(repo)}, body, "knowledge",
+            f"compacted:{p.stem}", repo, True)     # replace → reclaim the row
+
+
+def _ingest_one_md(p) -> str | None:
+    """Ingest one md file; returns the source it was stored under."""
+    d = _parse(p)
+    if p.stem.startswith("compacted-"):
+        d, body, kind, source, repo, replace = _brief_unit(p, d)
+    else:
+        body, kind = d["body"], d["kind"]
+        source, repo, replace = f"md:{p.stem}", (d.get("repo") or "notes"), False
+    _ingest_unit(title=d["title"], body=body, kind=kind, tags=d["tags"],
+                 source=source, repo=repo, replace=replace)
+    return source
+
+
+def _prune_deleted(present_sources: set) -> int:
+    """RECONCILE: md is the source of truth — prune index rows whose md file was
+    DELETED or archived (create/update is already handled by the ingest)."""
+    try:
+        from aiforge_core.memory import backend_select as _bsel
+        if not _bsel.embedded():
+            return 0
+        from aiforge_core.memory import sqlite_memory as _sqlmem
+        pruned = _sqlmem.prune_missing_file_rows(present_sources)
+        if pruned:
+            _log.info("ingest_dir: pruned %d orphan rows (md deleted)", pruned)
+        return pruned
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def ingest_dir() -> dict:
     """(Re)ingest every md file in the memory dir into the backend.
 
     For files dropped in by hand. Dedup is handled by the backend's own
     content hashing, so re-running is safe.
     """
+    _purge_stale_brief_rows()
     n = 0
     present_sources: set[str] = set()   # sources of files on disk → for reconcile
-    # Reclaim compacted-brief rows stranded under repo='notes' before briefs were
-    # ingested under their real scope (else they linger as duplicates forever).
-    try:
-        from aiforge_core.memory import backend_select as _bsel
-        if _bsel.embedded():
-            from aiforge_core.memory import sqlite_memory as _sqlmem
-            _purged = _sqlmem.delete_stale_compacted_notes()
-            if _purged:
-                _log.info("ingest_dir: purged %d stale repo=notes brief rows", _purged)
-    except Exception:  # noqa: BLE001
-        pass
     for p in _all_md_files():
         try:
-            d = _parse(p)
-            body, repo, replace = d["body"], "notes", False
-            kind, source = d["kind"], f"md:{p.stem}"
-            if p.stem.startswith("compacted-"):
-                # a consolidated brief: ingest EXACTLY as compact()'s Phase-3
-                # does — same kind ("compacted") AND source ("compacted:<stem>")
-                # — so the two ingest paths reclaim ONE row instead of storing
-                # the same brief twice (once kind=knowledge/md:, once
-                # kind=compacted/compacted:). Scope = repo / 'shared' / topic
-                # (best-effort from the name), envelope stripped.
-                base = p.stem[len("compacted-"):]
-                # Only strip a `-N` split-part suffix when the primary
-                # compacted-<base>.md exists — else a real slug ending in a
-                # number (log4j-2, s3-bucket-1) would be mangled to the wrong key.
-                m = re.match(r"^(.*)-\d+$", base)
-                if m and (_resolve_md("compacted-" + m.group(1)) is not None):
-                    base = m.group(1)
-                repo = base or "notes"
-                # kind = the brief's REAL kind ('knowledge'), not the mechanical
-                # 'compacted' (that showed up as the label in search/UI); a clean
-                # human title, not the compacted-<key> stem. Source stays
-                # compacted:<stem> so the two ingest paths still reclaim one row.
-                kind, source = "knowledge", f"compacted:{p.stem}"
-                d = {**d, "title": _brief_title(base)}
-                replace = True                      # reclaim the prior brief row
-                try:
-                    from aiforge_core.runtime import work_notes
-                    body = work_notes.knowledge_text(d["body"])
-                except Exception:  # noqa: BLE001
-                    pass
-            else:
-                repo = d.get("repo") or "notes"
-            _ingest_unit(title=d["title"], body=body, kind=kind,
-                         tags=d["tags"], source=source, repo=repo,
-                         replace=replace)
-            present_sources.add(source)
-            n += 1
+            source = _ingest_one_md(p)
         except Exception:  # noqa: BLE001
             continue
-    # RECONCILE: md is the source of truth — prune index rows whose md file was
-    # DELETED or archived (create/update already handled by the ingest above).
-    pruned = 0
-    try:
-        from aiforge_core.memory import backend_select as _bsel
-        if _bsel.embedded():
-            from aiforge_core.memory import sqlite_memory as _sqlmem
-            pruned = _sqlmem.prune_missing_file_rows(present_sources)
-            if pruned:
-                _log.info("ingest_dir: pruned %d orphan rows (md deleted)", pruned)
-    except Exception:  # noqa: BLE001
-        pass
-    return {"ok": True, "ingested": n, "pruned": pruned,
+        present_sources.add(source)
+        n += 1
+    return {"ok": True, "ingested": n, "pruned": _prune_deleted(present_sources),
             "dir": str(memory_dir())}
+
+
 def delete_file(name: str) -> bool:
     p = _resolve_md(name)
     if p and p.is_file():
