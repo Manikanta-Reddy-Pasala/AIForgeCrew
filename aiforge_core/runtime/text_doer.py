@@ -247,6 +247,31 @@ def _codegraph_mandate() -> str:
         return ""
 
 
+def _budgeted_seed(state: dict, parts: list[str], remaining: int) -> str:
+    """The high-priority sections in full, then the bulky ones sharing what is
+    left — an even split so BOTH briefs survive (truncated) rather than the
+    first eating the whole pool."""
+    for key in _SEED_HIGH:
+        remaining = _emit_section(parts, remaining, key,
+                                  _present_text(state, key))
+    low = [(k, t) for k, t in
+           ((k, _present_text(state, k)) for k in _SEED_LOW) if t]
+    for i, (key, text) in enumerate(low):
+        left = len(low) - i
+        share = remaining // left if left else remaining
+        remaining = _emit_section(parts, remaining, key, text, cap=share)
+    return "".join(parts)
+
+
+def _unbudgeted_seed(state: dict, parts: list[str]) -> str:
+    """The original plain concatenation — the fallback when budgeting fails."""
+    for key, label in _SEED_VARS:
+        text = _present_text(state, key)
+        if text:
+            parts.append(f"\n--- {label} ---\n{text}")
+    return "".join(parts)
+
+
 def _build_seed(state: dict) -> str:
     """Fold the present, non-empty state vars into one BUDGETED seed message.
 
@@ -259,29 +284,103 @@ def _build_seed(state: dict) -> str:
     Soft-fail: on ANY error, fall back to the original un-budgeted
     concatenation so a budgeting slip can never crash the Doer."""
     mandate = _codegraph_mandate()
+    head = [mandate, _SEED_HEADER] if mandate else [_SEED_HEADER]
     try:
-        budget = _seed_budget_chars()
-        parts = [mandate, _SEED_HEADER] if mandate else [_SEED_HEADER]
-        remaining = budget - len(_SEED_HEADER) - len(mandate)
-        for key in _SEED_HIGH:
-            remaining = _emit_section(parts, remaining, key,
-                                      _present_text(state, key))
-        low = [(k, _present_text(state, k)) for k in _SEED_LOW]
-        low = [(k, t) for k, t in low if t]
-        n = len(low)
-        for i, (key, text) in enumerate(low):
-            # Even split of the remaining pool so BOTH bulky briefs survive
-            # (truncated) rather than the first eating it all.
-            share = remaining // (n - i) if (n - i) else remaining
-            remaining = _emit_section(parts, remaining, key, text, cap=share)
-        return "".join(parts)
+        remaining = _seed_budget_chars() - len(_SEED_HEADER) - len(mandate)
+        return _budgeted_seed(state, list(head), remaining)
     except Exception:  # noqa: BLE001
-        parts = [mandate, _SEED_HEADER] if mandate else [_SEED_HEADER]
-        for key, label in _SEED_VARS:
-            text = _present_text(state, key)
-            if text:
-                parts.append(f"\n--- {label} ---\n{text}")
-        return "".join(parts)
+        return _unbudgeted_seed(state, list(head))
+
+
+class _PassOutcome:
+    """What one ReAct pass produced: the texts, the quality signals, the edits."""
+
+    __slots__ = ("last_msg", "err_text", "signals", "edits")
+
+    def __init__(self) -> None:
+        self.last_msg = ""
+        self.err_text = ""
+        self.signals: dict[str, bool] = {}
+        self.edits = 0
+
+    def text(self) -> str:
+        return self.last_msg or self.err_text or ""
+
+
+def _scope_globs(state: dict) -> list[str]:
+    """Scope allowlist enforcement (Fix 3): the native Doer had a scope_guard
+    before_tool_callback, which a FunctionNode can't carry — so on this LOCAL
+    text path scope_allowlist_globs was NEVER enforced (only the worktree
+    jail). Threading the ticket's globs into the chat loop refuses an
+    out-of-scope file write/patch before it lands. Empty/absent globs => no
+    restriction (back-compat)."""
+    raw = state.get("scope_allowlist_globs") or []
+    if isinstance(raw, str):
+        raw = [p.strip() for p in raw.split(",") if p.strip()]
+    return [g for g in raw if isinstance(g, str) and g]
+
+
+def _absorb_tool_event(ev: dict, out: _PassOutcome) -> None:
+    name = ev.get("name") or ""
+    res = ev.get("result")
+    # count only edits that actually landed (ok is not False)
+    if name in _EDIT_TOOLS and not (isinstance(res, dict)
+                                    and res.get("ok") is False):
+        out.edits += 1
+    key = _TOOL_SIGNAL_KEYS.get(name)
+    if key and isinstance(res, dict) and isinstance(res.get("ok"), bool):
+        out.signals[key] = res["ok"]
+
+
+def _one_pass(seed_msg: str, *, cwd: str, role: str, max_steps, complete_fn,
+              scope_globs: list[str], out: _PassOutcome) -> None:
+    """Drive one full chat ReAct loop, folding its events into ``out``."""
+    from aiforge_core.runtime import chat_agent
+    for ev in chat_agent.run_chat_agent(
+        [{"role": "user", "content": seed_msg}],
+        cwd=cwd, role=role, max_steps=max_steps,
+        complete_fn=complete_fn, session_id=None, mode="act",
+        scope_globs=scope_globs or None, strict_finish=True,
+    ):
+        etype = ev.get("type")
+        if etype == "tool":
+            _absorb_tool_event(ev, out)
+        elif etype == "message" and ev.get("text"):
+            out.last_msg = ev["text"]        # last FINAL / message text wins
+        elif etype == "error" and ev.get("text"):
+            out.err_text = ev["text"]        # fallback outcome if no message
+        elif etype == "done":
+            return
+
+
+def _min_edit_retries() -> int:
+    try:
+        return int(os.environ.get("AIFORGE_DOER_MIN_EDIT_RETRIES", "1"))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _no_edit_verdict(outcome: str, total_edits: int) -> dict:
+    """The stopped/incomplete flags and, when nothing was written, a corrected
+    outcome line.
+
+    chat_agent emits a plain "(stopped: ..." banner when it hits the runaway
+    safety cap / turn deadline WITHOUT finishing (Fix 3a). Harvesting that as
+    the outcome must not read as a clean pass. And zero edits after the
+    corrective retry means the Doer never implemented anything (it hallucinated
+    "already done") — also not a clean pass, so the quality gate / feedback
+    downgrade the model's self-reported success (belt-and-braces with the
+    runner's empty-diff → blocked demotion).
+    """
+    stopped = _is_stopped_outcome(outcome)
+    no_edits = total_edits == 0
+    verdict = {"stopped": stopped, "incomplete": stopped or no_edits}
+    if no_edits and not stopped:
+        verdict["doer_outcome"] = (
+            "INCOMPLETE: the Doer made ZERO file edits — no change was "
+            "implemented (likely assumed the feature already existed). "
+            + outcome[:400])
+    return verdict
 
 
 def run_text_doer(
@@ -305,62 +404,12 @@ def run_text_doer(
     result: dict = {"doer_outcome": "", "tests_ok": None,
                     "typecheck_ok": None, "lint_ok": None}
     try:
-        from aiforge_core.runtime import chat_agent
-
         seed = _build_seed(state)
-        # Scope allowlist enforcement (Fix 3): the native Doer had a
-        # scope_guard before_tool_callback, which a FunctionNode can't carry —
-        # so on this LOCAL text path scope_allowlist_globs was NEVER enforced
-        # (only the worktree jail). Thread the ticket's globs into the chat
-        # loop so an out-of-scope file write/patch is refused before it lands.
-        # Empty/absent globs => no restriction (back-compat).
-        scope_raw = state.get("scope_allowlist_globs") or []
-        if isinstance(scope_raw, str):
-            scope_raw = [p.strip() for p in scope_raw.split(",") if p.strip()]
-        scope_globs = [g for g in scope_raw if isinstance(g, str) and g]
-        signals: dict[str, bool] = {}
-        last_msg = ""
-        err_text = ""
-
-        def _one_pass(seed_msg: str) -> int:
-            """Drive one full chat ReAct loop; update last_msg/err_text/signals
-            in the enclosing scope; return the number of EDIT-tool calls it
-            made (file_write/file_patch/editor/…)."""
-            nonlocal last_msg, err_text
-            edits = 0
-            for ev in chat_agent.run_chat_agent(
-                [{"role": "user", "content": seed_msg}],
-                cwd=cwd, role=role, max_steps=max_steps,
-                complete_fn=complete_fn, session_id=None, mode="act",
-                scope_globs=scope_globs or None, strict_finish=True,
-            ):
-                etype = ev.get("type")
-                if etype == "tool":
-                    name = ev.get("name") or ""
-                    if name in _EDIT_TOOLS:
-                        res = ev.get("result")
-                        # count only edits that actually landed (ok is not False)
-                        if not (isinstance(res, dict) and res.get("ok") is False):
-                            edits += 1
-                    key = _TOOL_SIGNAL_KEYS.get(name)
-                    res = ev.get("result")
-                    if key and isinstance(res, dict):
-                        ok = res.get("ok")
-                        if isinstance(ok, bool):
-                            signals[key] = ok
-                elif etype == "message":
-                    txt = ev.get("text")
-                    if txt:
-                        last_msg = txt        # last FINAL / message text wins
-                elif etype == "error":
-                    txt = ev.get("text")
-                    if txt:
-                        err_text = txt        # fallback outcome if no message
-                elif etype == "done":
-                    break
-            return edits
-
-        total_edits = _one_pass(seed)
+        out = _PassOutcome()
+        kw = {"cwd": cwd, "role": role, "max_steps": max_steps,
+              "complete_fn": complete_fn, "scope_globs": _scope_globs(state),
+              "out": out}
+        _one_pass(seed, **kw)
         # No-edit guard: a local model routinely HALLUCINATES that the change
         # "already exists", runs only a compile, and declares success WITHOUT
         # writing a single file (trace: ACTION run_command mvnw compile, 0
@@ -368,44 +417,22 @@ def run_text_doer(
         # a corrective pass that DEMANDS a real edit. Bounded; opt-out via
         # AIFORGE_DOER_MIN_EDIT_RETRIES=0. Only fires when the last pass finished
         # cleanly (not a stop/deadline banner) with zero edits.
-        try:
-            _retries = int(os.environ.get("AIFORGE_DOER_MIN_EDIT_RETRIES", "1"))
-        except (TypeError, ValueError):
-            _retries = 1
-        _attempt = 0
-        while (total_edits == 0 and _attempt < _retries
-               and not _is_stopped_outcome(last_msg or err_text or "")):
-            _attempt += 1
+        retries = _min_edit_retries()
+        attempt = 0
+        while (out.edits == 0 and attempt < retries
+               and not _is_stopped_outcome(out.text())):
+            attempt += 1
             # Drop pass-1's quality signals: they were measured on the UNEDITED
             # tree (the hallucinated "already done" pass). A stale typecheck_ok/
             # tests_ok=True must not survive to vouch for pass-2's real edit if
             # the model forgets to re-verify. The corrective pass re-populates.
-            signals.clear()
-            more = _one_pass(seed + _NO_EDIT_CORRECTION)
-            total_edits += more
-        result["edit_count"] = total_edits
-        outcome = (last_msg or err_text or "text-doer produced no final output")
+            out.signals.clear()
+            _one_pass(seed + _NO_EDIT_CORRECTION, **kw)
+        outcome = out.text() or "text-doer produced no final output"
+        result["edit_count"] = out.edits
         result["doer_outcome"] = outcome
-        result.update(signals)
-        # Fix 3a: chat_agent emits a plain "(stopped: ..." banner when it hits
-        # the runaway safety cap / turn deadline WITHOUT finishing. Harvesting
-        # that as the outcome (as we do) must not read as a clean pass — flag
-        # the run incomplete so the quality gate downgrades a model ``pass``.
-        # Mirrors parallel_subtasks' ``.startswith("(stopped:")`` detection.
-        stopped = _is_stopped_outcome(outcome)
-        # Zero edits after the corrective retry = the Doer never implemented
-        # anything (hallucinated "already done"). That is NOT a clean pass —
-        # flag incomplete so the quality gate / feedback downgrade the model's
-        # self-reported success (belt-and-suspenders with the runner's
-        # empty-diff → blocked demotion).
-        no_edits = total_edits == 0
-        result["stopped"] = stopped
-        result["incomplete"] = stopped or no_edits
-        if no_edits and not stopped:
-            result["doer_outcome"] = (
-                "INCOMPLETE: the Doer made ZERO file edits — no change was "
-                "implemented (likely assumed the feature already existed). "
-                + outcome[:400])
+        result.update(out.signals)
+        result.update(_no_edit_verdict(outcome, out.edits))
     except Exception as exc:  # noqa: BLE001 — never crash the pipeline
         result["doer_outcome"] = f"text-doer error: {exc}"
     return result
