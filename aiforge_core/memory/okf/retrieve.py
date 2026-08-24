@@ -33,6 +33,42 @@ def _first_para(body: str, n: int) -> str:
     return _cap((body or "").lstrip("#").strip(), n)
 
 
+def _kr_view(kr: dict, kr_id: str, kr_chars: int) -> dict:
+    m = kr.get("meta") or {}
+    return {"id": kr_id, "title": m.get("title") or kr_id,
+            "status": m.get("status"), "metrics": m.get("metrics"),
+            "body": _cap(kr.get("body") or "", kr_chars)}
+
+
+def _objective_view(o: dict, o_id: str, obj_ctx_chars: int) -> dict:
+    m = o.get("meta") or {}
+    return {"id": o_id, "title": m.get("title") or o_id,
+            "status": m.get("status"),
+            "context": _first_para(o.get("body") or "", obj_ctx_chars)}
+
+
+def _learning_views(g, o_id, learn_chars: int) -> list[dict]:
+    out = []
+    for lid in g.learnings_for(o_id):
+        ln = g.get(lid)
+        if ln:
+            out.append({"id": lid,
+                        "category": (ln.get("meta") or {}).get("category"),
+                        "rule": _cap(ln.get("body") or "", learn_chars)})
+    return out
+
+
+def _session_views(g, kr_id, recent_sessions: int, session_chars: int) -> list[dict]:
+    out = []
+    for sid in g.sessions_of(kr_id, limit=max(0, recent_sessions)):
+        s = g.get(sid)
+        if s:
+            out.append({"id": sid,
+                        "date": (s.get("meta") or {}).get("date") or sid,
+                        "log": _cap(s.get("body") or "", session_chars)})
+    return out
+
+
 def retrieve(kr_id: str | None = None, *, recent_sessions: int = 2,
              graph: "_graph.Graph | None" = None,
              obj_ctx_chars: int = 600, kr_chars: int = 1600,
@@ -47,31 +83,13 @@ def retrieve(kr_id: str | None = None, *, recent_sessions: int = 2,
         return out
     kr = g.get(kr_id)
     if kr:
-        m = kr.get("meta") or {}
-        out["active_kr"] = {
-            "id": kr_id, "title": m.get("title") or kr_id,
-            "status": m.get("status"), "metrics": m.get("metrics"),
-            "body": _cap(kr.get("body") or "", kr_chars)}
+        out["active_kr"] = _kr_view(kr, kr_id, kr_chars)
     o_id = g.objective_of(kr_id)
     o = g.get(o_id) if o_id else None
     if o:
-        om = o.get("meta") or {}
-        out["objective"] = {
-            "id": o_id, "title": om.get("title") or o_id,
-            "status": om.get("status"),
-            "context": _first_para(o.get("body") or "", obj_ctx_chars)}
-    for lid in g.learnings_for(o_id):
-        ln = g.get(lid)
-        if ln:
-            out["learnings"].append({
-                "id": lid, "category": (ln.get("meta") or {}).get("category"),
-                "rule": _cap(ln.get("body") or "", learn_chars)})
-    for sid in g.sessions_of(kr_id, limit=max(0, recent_sessions)):
-        s = g.get(sid)
-        if s:
-            out["sessions"].append({
-                "id": sid, "date": (s.get("meta") or {}).get("date") or sid,
-                "log": _cap(s.get("body") or "", session_chars)})
+        out["objective"] = _objective_view(o, o_id, obj_ctx_chars)
+    out["learnings"] = _learning_views(g, o_id, learn_chars)
+    out["sessions"] = _session_views(g, kr_id, recent_sessions, session_chars)
     return out
 
 
@@ -194,6 +212,77 @@ def _shared_entry(d: dict, chars: int) -> str:
     return (f"## {head}\n" if head else "") + _cap(d.get("body") or "", chars)
 
 
+def _node_line(d: dict) -> str:
+    m = d.get("meta") or {}
+    cat = m.get("category") or m.get("topic")
+    head = (m.get("title") or (d.get("body") or "").strip().split("\n", 1)[0])
+    return f"- {('[' + cat + '] ') if cat else ''}{_cap(head, 160)}"
+
+
+def _recency_key(d):
+    return ((d.get("meta") or {}).get("timestamp") or "", d.get("id") or "")
+
+
+def _script_line(d: dict) -> str:
+    m = d.get("meta") or {}
+    purpose = m.get("purpose")
+    return (f"- {m.get('name')} [{m.get('lang')}]"
+            + (f" — {purpose}" if purpose else ""))
+
+
+def _global_parts(store, query: str, max_global: int, max_view: int,
+                  view_chars: int) -> list[str]:
+    """The global rules + the mesh's distilled knowledge.
+
+    ``view/`` is read here and nowhere else — it is the peer-to-peer feature's
+    only consumer, so without it knowledge replicates, folds and reaches no
+    agent. ``mesh/`` and ``peers/`` stay unread: they are inputs to the fold,
+    and the local nodes the fold already carries are dropped so one fact cannot
+    arrive twice.
+    """
+    parts: list[str] = []
+    gl = [d for d in store.load_all("global") if d.get("type") == "learning"]
+    gl, shared = _shared(gl, query, max_view)
+    gl = _rank_by_query(gl, query, max_global, require_match=True)
+    if gl:
+        parts.append("<GLOBAL_RULES>\n"
+                     + "\n".join(_node_line(d) for d in gl) + "\n</GLOBAL_RULES>")
+    if shared:
+        parts.append("<SHARED_KNOWLEDGE>\n"
+                     + "\n\n".join(_shared_entry(d, view_chars) for d in shared)
+                     + "\n</SHARED_KNOWLEDGE>")
+    return parts
+
+
+def _project_body(proj: list, query: str, max_repo_learn: int,
+                  max_repo_sol: int) -> list[str]:
+    """The repo's own memory: its CARD first (the hub — how to build/test/run,
+    structure), then scripts, task recipes, learnings and solved work."""
+    ranked = {
+        "Scripts": (_rank_by_query([d for d in proj if d.get("type") == "script"],
+                                   query, 6, recent_key=_recency_key),
+                    _script_line),
+        "Task recipes": (_rank_by_query([d for d in proj if d.get("type") == "task"],
+                                        query, 6, recent_key=_recency_key),
+                         _node_line),
+        "Learnings": (_rank_by_query(
+            [d for d in proj if d.get("type") == "learning"], query,
+            max_repo_learn, recent_key=_recency_key), _node_line),
+        "Recently solved": (_rank_by_query(
+            [d for d in proj if d.get("type") == "solution"], query,
+            max_repo_sol, recent_key=_recency_key), _node_line),
+    }
+    body: list[str] = []
+    card = next((d for d in proj if d.get("type") == "repo"), None)
+    if card:
+        body.append("Profile:\n" + _repo_card(card))
+    for heading, (items, render) in ranked.items():
+        if items:
+            body.append(f"{heading}:\n"
+                        + "\n".join(render(d) for d in items))
+    return body
+
+
 def _scoped_block(repo: str | None, *, query: str = "", max_global: int = 8,
                   max_repo_learn: int = 10, max_repo_sol: int = 6,
                   max_view: int = 3, view_chars: int = 1200) -> str:
@@ -202,65 +291,15 @@ def _scoped_block(repo: str | None, *, query: str = "", max_global: int = 8,
     ``query`` — not every document in the scope, and nothing from OTHER projects.
     Scope stops cross-project leakage; the query ranking stops dumping the whole
     bundle when only a few notes matter.
-
-    This is the one place ``view/`` is read. It is the peer-to-peer feature's
-    only consumer, so without it knowledge replicates, folds and reaches no
-    agent. ``mesh/`` and ``peers/`` stay unread here — they are inputs to the
-    fold, and the local nodes the fold already carries are dropped below so one
-    fact cannot arrive twice.
     """
     try:
         from . import store
     except Exception:  # noqa: BLE001
         return ""
-
-    def _line(d: dict) -> str:
-        m = d.get("meta") or {}
-        cat = m.get("category") or m.get("topic")
-        head = (m.get("title") or (d.get("body") or "").strip().split("\n", 1)[0])
-        return f"- {('[' + cat + '] ') if cat else ''}{_cap(head, 160)}"
-
-    def _recency(d):
-        return ((d.get("meta") or {}).get("timestamp") or "", d.get("id") or "")
-
-    parts: list[str] = []
-    gl = [d for d in store.load_all("global") if d.get("type") == "learning"]
-    gl, shared = _shared(gl, query, max_view)
-    gl = _rank_by_query(gl, query, max_global, require_match=True)
-    if gl:
-        parts.append("<GLOBAL_RULES>\n"
-                     + "\n".join(_line(d) for d in gl) + "\n</GLOBAL_RULES>")
-    if shared:
-        parts.append("<SHARED_KNOWLEDGE>\n"
-                     + "\n\n".join(_shared_entry(d, view_chars) for d in shared)
-                     + "\n</SHARED_KNOWLEDGE>")
+    parts = _global_parts(store, query, max_global, max_view, view_chars)
     if repo:
-        proj = store.load_all(repo)
-        # the repo CARD first — the hub: how to build/test/run, structure, etc.
-        card = next((d for d in proj if d.get("type") == "repo"), None)
-        rl = _rank_by_query([d for d in proj if d.get("type") == "learning"],
-                            query, max_repo_learn, recent_key=_recency)
-        sols = _rank_by_query([d for d in proj if d.get("type") == "solution"],
-                              query, max_repo_sol, recent_key=_recency)
-        scripts = _rank_by_query([d for d in proj if d.get("type") == "script"],
-                                 query, 6, recent_key=_recency)
-        tasks = _rank_by_query([d for d in proj if d.get("type") == "task"],
-                               query, 6, recent_key=_recency)
-        body: list[str] = []
-        if card:
-            body.append("Profile:\n" + _repo_card(card))
-        if scripts:
-            body.append("Scripts:\n" + "\n".join(
-                f"- {(d.get('meta') or {}).get('name')} "
-                f"[{(d.get('meta') or {}).get('lang')}]"
-                f"{(' — ' + (d.get('meta') or {}).get('purpose')) if (d.get('meta') or {}).get('purpose') else ''}"
-                for d in scripts))
-        if tasks:
-            body.append("Task recipes:\n" + "\n".join(_line(d) for d in tasks))
-        if rl:
-            body.append("Learnings:\n" + "\n".join(_line(d) for d in rl))
-        if sols:
-            body.append("Recently solved:\n" + "\n".join(_line(d) for d in sols))
+        body = _project_body(store.load_all(repo), query, max_repo_learn,
+                             max_repo_sol)
         if body:
             parts.append(f"<PROJECT_MEMORY repo=\"{repo}\">\n"
                          + "\n\n".join(body) + "\n</PROJECT_MEMORY>")
