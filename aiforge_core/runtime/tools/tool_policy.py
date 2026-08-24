@@ -64,6 +64,14 @@ _READONLY_ALWAYS_ALLOW = {
     "jira_dashboard_read", "confluence_children", "confluence_spaces",
     "confluence_page_by_title", "confluence_labels", "confluence_comments",
     "confluence_descendants", "read_lines",
+    # GitLab reads, including CI. `gitlab_search`/`gitlab_read` were missing
+    # from this list too — the sibling comment in _registry._READONLY_TOOLS
+    # says the two classifications must stay in sync, and 24 entries had
+    # drifted. Unknown names default to ALLOW today, so this pins the intent
+    # rather than changing behaviour: without it, any future tightening of the
+    # default would start gating read-only tools.
+    "gitlab_search", "gitlab_read",
+    "gitlab_pipelines", "gitlab_pipeline", "gitlab_pipeline_watch",
 }
 
 _DEFAULT_ASK = {"confluence_create", "confluence_update",

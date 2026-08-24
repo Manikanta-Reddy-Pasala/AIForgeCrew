@@ -79,12 +79,22 @@ def ssl_context(insecure_tls: bool):
 def http_request(method: str, url: str, *, headers: dict,
                  body: dict | None = None, timeout: int = 20,
                  body_cap: int = 200_000, context=None,
-                 capture_headers: tuple[str, ...] = ()) -> dict:
+                 capture_headers: tuple[str, ...] = (),
+                 parse_json: bool = True) -> dict:
     """Issue one JSON request and return the soft-error envelope.
 
     Returns ``{"ok": True, "data": <json|str|{}>}`` on success (an empty body —
     e.g. 204 No Content — yields ``data={}``), or ``{"ok": False, "error": …}``
-    on any HTTP/transport error. On an HTTPError, ``detail`` carries the first
+    on any HTTP/transport error. A non-JSON body that hit ``body_cap`` also
+    carries ``body_cap_hit`` — the CAP that was reached, not a count of dropped
+    bytes: the HEAD was kept and the rest never read, so a caller wanting the
+    END of a file must not pretend it has one.
+
+    ``parse_json=False`` returns the body as text untouched. Endpoints that
+    serve plain text (a CI job log) must use it: the speculative ``json.loads``
+    below turns a log that happens to BE json — ``terraform show -json``,
+    ``kubectl -o json``, any JSON logger — into a dict, and an empty body into
+    ``{}``, so the caller sees "unexpected payload" for a perfectly good log. On an HTTPError, ``detail`` carries the first
     500 chars of the body and any ``capture_headers`` present are surfaced as
     ``denied_reason``. Never raises.
     """
@@ -109,13 +119,29 @@ def http_request(method: str, url: str, *, headers: dict,
         return out
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
         return {"ok": False, "error": str(exc)}
+    # `read(body_cap + 1)` is one byte past the cap precisely so we can tell
+    # "exactly filled it" from "there was more". That extra byte used to be
+    # discarded, which made truncation UNDETECTABLE downstream — a caller that
+    # then took `data[-n:]` believing it had the end of a file got the middle
+    # of it, and had no way to know. Say so instead.
+    truncated = len(raw) > body_cap
     text = raw[:body_cap].decode("utf-8", "replace")
+    out = {"ok": True, "data": text}
+    if truncated:
+        # The CAP, in bytes — the raw read is what was capped. Named for what
+        # it holds: "truncated_bytes" reads as a count of what was dropped,
+        # which is a number nobody here knows.
+        out["body_cap_hit"] = body_cap
+    if not parse_json:
+        return out
     if not text.strip():
-        return {"ok": True, "data": {}}
+        out["data"] = {}
+        return out
     try:
-        return {"ok": True, "data": json.loads(text)}
+        out["data"] = json.loads(text)
     except ValueError:
-        return {"ok": True, "data": text}
+        pass
+    return out
 
 
 class _StripAuthOnCrossHostRedirect(urllib.request.HTTPRedirectHandler):
