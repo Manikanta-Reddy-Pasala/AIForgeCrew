@@ -33,37 +33,43 @@ _af_log = logging.getLogger("aiforge")
 _TERMINAL = {"done", "cancelled"}
 
 
-def _ticket_row_out(r: dict) -> dict:
-    started = r.get("started_at")
-    completed = r.get("completed_at")
-    created = r.get("created_at")
-    status = r.get("status")
-    end = completed if (completed and status in _TERMINAL) else None
+def _as_utc(ts):
+    from datetime import datetime
+    if ts is None:
+        return datetime.now(UTC)
+    return ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts
+
+
+def _duration_s(started, completed, status) -> float | None:
+    """Seconds from start to completion — or to NOW while the run is still
+    going. None until it has started."""
     if started is None:
-        duration_s: float | None = None
-    else:
-        from datetime import datetime
-        end_ts = end or datetime.now(UTC)
-        if started.tzinfo is None:
-            started = started.replace(tzinfo=UTC)
-        if end_ts.tzinfo is None:
-            end_ts = end_ts.replace(tzinfo=UTC)
-        duration_s = max(0.0, (end_ts - started).total_seconds())
-    active_role = r.get("active_role")
+        return None
+    end = completed if (completed and status in _TERMINAL) else None
+    return max(0.0, (_as_utc(end) - _as_utc(started)).total_seconds())
+
+
+def _iso(ts):
+    return ts.isoformat() if ts else None
+
+
+def _ticket_row_out(r: dict) -> dict:
+    started, completed = r.get("started_at"), r.get("completed_at")
     return {
         "id": r["id"], "identifier": r["identifier"], "title": r["title"],
         "body": r["body"], "status": r["status"], "priority": r["priority"],
-        "assignee_role": _cfg.canonical_role(r["assignee_role"]) if r.get("assignee_role") else None,
-        "active_role": active_role,
+        "assignee_role": (_cfg.canonical_role(r["assignee_role"])
+                          if r.get("assignee_role") else None),
+        "active_role": r.get("active_role"),
         "parent_id": r["parent_id"],
         "branch": r["branch"], "project": r["project"],
         "labels": list(r["labels"] or []),
         "metadata": dict(r["metadata"] or {}),
-        "created_at": created.isoformat() if created else None,
-        "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
-        "completed_at": completed.isoformat() if completed else None,
-        "started_at": started.isoformat() if started else None,
-        "duration_s": duration_s,
+        "created_at": _iso(r.get("created_at")),
+        "updated_at": _iso(r["updated_at"]),
+        "completed_at": _iso(completed),
+        "started_at": _iso(started),
+        "duration_s": _duration_s(started, completed, r.get("status")),
         "route": r.get("route") or "code",
         "route_workflow": r.get("route_workflow"),
         "route_source": r.get("route_source") or "auto",
@@ -295,110 +301,76 @@ def _remove_ticket_attachments(
     return removed
 
 
-@router.post("/api/tickets", status_code=201)
-def create_ticket(payload: TicketCreate) -> dict:
-    parent_id = None
-    if payload.parent_identifier:
-        parent = tickets_mod.get(payload.parent_identifier)
-        if parent is None:
-            raise HTTPException(400, f"parent {payload.parent_identifier} not found")
-        parent_id = parent.id
-    md = dict(payload.metadata or {})
-    if payload.max_turns is not None:
-        md["max_turns"] = int(payload.max_turns)
-    # Deploy target — normalize to one of {none, qa, prod}; anything
-    # else is treated as 'none' so a typo can't accidentally arm an
-    # autonomous merge.
-    dt = (payload.deploy_target or "none").lower().strip()
-    if dt not in {"none", "qa", "prod"}:
-        dt = "none"
-    md["deploy_target"] = dt
-    assignee = _cfg.canonical_role(payload.assignee_role) if payload.assignee_role else None
-    # IntentLayer — translate plain language at INGRESS so every
-    # downstream agent (planner, doer) sees enriched body + metadata.
-    # AIFORGE_INTENT_ENRICH=0 disables (offline / debugging).
-    # IntentLayer enrichment was the legacy path. The new
-    # aiforge_agents Understander does its own grounding via
-    # AiForgeMemory at run-time, so we no longer pre-enrich on
-    # ticket create. Tickets store body + title only; the agent
-    # adds context_md + understanding when the run starts.
-    enriched_body = payload.body
-    enrichment_meta: dict = {}
-    # Project resolution priority: explicit POST field > UC-resolved
-    # repo > intent.repo_hint. Was: explicit > repo_hint only (missed
-    # the body-text repo resolver entirely so PosClientBackend
-    # fallback fired).
-    resolved_project = (
-        payload.project
-        or enrichment_meta.get("repo")
-        or enrichment_meta.get("intent", {}).get("repo_hint")
-    )
+def _parent_id_of(parent_identifier) -> int | None:
+    if not parent_identifier:
+        return None
+    parent = tickets_mod.get(parent_identifier)
+    if parent is None:
+        raise HTTPException(400, f"parent {parent_identifier} not found")
+    return parent.id
 
-    # Route resolution. UI may pin route+workflow manually OR ask the
-    # detector to pick. Manual choices flag route_source='manual' so
-    # audits stay clean. Auto picks set route_source='auto'.
-    route = "code"
-    route_workflow: str | None = None
-    route_source = "auto"
-    route_confidence: float | None = None
+
+def _deploy_target(raw) -> str:
+    """Normalize to one of {none, qa, prod}; anything else is treated as 'none'
+    so a typo can't accidentally arm an autonomous merge."""
+    dt = (raw or "none").lower().strip()
+    return dt if dt in {"none", "qa", "prod"} else "none"
+
+
+def _resolve_route(payload, md: dict) -> tuple:
+    """``(route, workflow, source, confidence)``.
+
+    The UI may pin route+workflow manually OR ask the detector to pick. Manual
+    choices flag route_source='manual' so audits stay clean; auto picks set
+    'auto'. The detector must never break a ticket POST.
+    """
     if payload.route in ("code", "workflow"):
-        route = payload.route
-        route_workflow = payload.route_workflow
-        route_source = "manual"
-        route_confidence = 1.0
-        if route == "workflow" and not route_workflow:
+        if payload.route == "workflow" and not payload.route_workflow:
             raise HTTPException(
-                400, "route='workflow' requires route_workflow id",
-            )
-    else:
-        try:
-            from aiforge_core.workflows import detect_route
-            decided = detect_route(
-                title=payload.title, body=payload.body,
-                attachments=payload.attachments,
-                intent=enrichment_meta.get("intent"),
-            )
-            route = decided.kind
-            route_workflow = decided.workflow_id
-            route_confidence = decided.confidence
-            md["route_rationale"] = decided.rationale
-        except Exception as exc:  # detector must never break ticket POST
-            md["route_error"] = str(exc)[:300]
+                400, "route='workflow' requires route_workflow id")
+        return payload.route, payload.route_workflow, "manual", 1.0
+    try:
+        from aiforge_core.workflows import detect_route
+        decided = detect_route(title=payload.title, body=payload.body,
+                               attachments=payload.attachments, intent=None)
+        md["route_rationale"] = decided.rationale
+        return decided.kind, decided.workflow_id, "auto", decided.confidence
+    except Exception as exc:  # noqa: BLE001
+        md["route_error"] = str(exc)[:300]
+        return "code", None, "auto", None
 
-    t = tickets_mod.create(
-        title=payload.title, body=enriched_body,
-        assignee_role=assignee,
-        priority=payload.priority, parent_id=parent_id,
-        project=resolved_project,
-        labels=payload.labels,
-        metadata=md or None,
-        route=route, route_workflow=route_workflow,
-        route_source=route_source, route_confidence=route_confidence,
-    )
-    # Persist any uploaded files into a per-ticket dir under the
-    # workspace and stamp metadata.attached_files. The runner materializes
-    # them into the per-ticket worktree so the Doer can ``file_read`` them
-    # on whatever provider the role is configured for.
-    if payload.attached_files:
-        attach_meta = _persist_ticket_attachments(t.identifier,
-                                                  payload.attached_files)
-        if attach_meta:
-            patched_md = dict(t.metadata or {})
-            patched_md["attached_files"] = attach_meta
-            try:
-                tickets_mod.update_status(
-                    t.id, t.status, role="api",
-                    metadata_patch={"attached_files": attach_meta},
-                )
-                t.metadata = patched_md
-            except Exception:
-                pass
-    if not t.branch:
-        t.branch = _derive_branch(t.identifier, t.title)
-        try:
-            tickets_mod.set_branch(t.id, t.branch)
-        except Exception:
-            pass
+
+def _attach_files(t, attached_files) -> None:
+    """Persist uploaded files into a per-ticket dir under the workspace and
+    stamp metadata.attached_files. The runner materializes them into the
+    per-ticket worktree so the Doer can ``file_read`` them on whatever provider
+    the role is configured for."""
+    if not attached_files:
+        return
+    attach_meta = _persist_ticket_attachments(t.identifier, attached_files)
+    if not attach_meta:
+        return
+    patched_md = dict(t.metadata or {})
+    patched_md["attached_files"] = attach_meta
+    try:
+        tickets_mod.update_status(t.id, t.status, role="api",
+                                  metadata_patch={"attached_files": attach_meta})
+        t.metadata = patched_md
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _ensure_branch(t) -> None:
+    if t.branch:
+        return
+    t.branch = _derive_branch(t.identifier, t.title)
+    try:
+        tickets_mod.set_branch(t.id, t.branch)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _ticket_out(t) -> dict:
     return _ticket_row_out({
         "id": t.id, "identifier": t.identifier, "title": t.title,
         "body": t.body, "status": t.status, "priority": t.priority,
@@ -411,7 +383,70 @@ def create_ticket(payload: TicketCreate) -> dict:
     })
 
 
+@router.post("/api/tickets")
+def create_ticket(payload: TicketCreate) -> dict:
+    parent_id = _parent_id_of(payload.parent_identifier)
+    md = dict(payload.metadata or {})
+    if payload.max_turns is not None:
+        md["max_turns"] = int(payload.max_turns)
+    md["deploy_target"] = _deploy_target(payload.deploy_target)
+    assignee = (_cfg.canonical_role(payload.assignee_role)
+                if payload.assignee_role else None)
+    route, route_workflow, route_source, route_confidence = _resolve_route(
+        payload, md)
+    # IntentLayer enrichment was the legacy path. The new aiforge_agents
+    # Understander does its own grounding via AiForgeMemory at run-time, so we
+    # no longer pre-enrich on ticket create: tickets store body + title only,
+    # and the agent adds context_md + understanding when the run starts.
+    t = tickets_mod.create(
+        title=payload.title, body=payload.body, assignee_role=assignee,
+        priority=payload.priority, parent_id=parent_id,
+        project=payload.project, labels=payload.labels, metadata=md or None,
+        route=route, route_workflow=route_workflow,
+        route_source=route_source, route_confidence=route_confidence)
+    _attach_files(t, payload.attached_files)
+    _ensure_branch(t)
+    return _ticket_out(t)
+
+
 @router.patch("/api/tickets/{identifier}")
+def _edited_attachments(t, payload) -> list:
+    """Remove first, then add, then hand back the recomputed list. jsonb '||'
+    shallow-merge replaces the whole attached_files key, so passing the FULL
+    list is what covers add + remove."""
+    current = list((t.metadata or {}).get("attached_files") or [])
+    if payload.remove_files:
+        removed = set(_remove_ticket_attachments(t.identifier,
+                                                 payload.remove_files))
+        current = [f for f in current
+                   if (f.get("name") if isinstance(f, dict) else None)
+                   not in removed]
+    if payload.attached_files:
+        current.extend(_persist_ticket_attachments(t.identifier,
+                                                   payload.attached_files))
+    return current
+
+
+def _patch_metadata(t, payload) -> dict:
+    md: dict = dict(payload.metadata or {})
+    if payload.max_turns is not None:
+        md["max_turns"] = int(payload.max_turns)
+    if payload.remove_files or payload.attached_files:
+        md["attached_files"] = _edited_attachments(t, payload)
+    return md
+
+
+def _patch_fields(payload) -> dict:
+    fields: dict = {}
+    if payload.assignee_role:
+        fields["assignee_role"] = _cfg.canonical_role(payload.assignee_role)
+    if payload.labels is not None:
+        fields["labels"] = payload.labels
+    if payload.body is not None:
+        fields["body"] = payload.body
+    return fields
+
+
 def patch_ticket(identifier: str, payload: TicketPatch) -> dict:
     t = tickets_mod.get(identifier)
     if t is None:
@@ -420,39 +455,11 @@ def patch_ticket(identifier: str, payload: TicketPatch) -> dict:
         if payload.status not in tickets_mod.VALID_STATUS:
             raise HTTPException(400, f"bad status {payload.status!r}")
         tickets_mod.update_status(t.id, payload.status, role="human")
-    merge_md: dict = {}
-    if payload.metadata:
-        merge_md.update(payload.metadata)
-    if payload.max_turns is not None:
-        merge_md["max_turns"] = int(payload.max_turns)
-    # Attachment editing: remove first, then add, then stamp the
-    # recomputed list. jsonb '||' shallow-merge replaces the whole
-    # attached_files key — so passing the full list covers add + remove.
-    if payload.remove_files or payload.attached_files:
-        current = list((t.metadata or {}).get("attached_files") or [])
-        if payload.remove_files:
-            removed = set(_remove_ticket_attachments(
-                t.identifier, payload.remove_files))
-            current = [
-                f for f in current
-                if (f.get("name") if isinstance(f, dict) else None)
-                not in removed
-            ]
-        if payload.attached_files:
-            current.extend(_persist_ticket_attachments(
-                t.identifier, payload.attached_files))
-        merge_md["attached_files"] = current
-    if (payload.assignee_role or payload.labels is not None
-            or payload.body is not None or merge_md):
+    merge_md = _patch_metadata(t, payload)
+    fields = _patch_fields(payload)
+    if fields or merge_md:
         # Backend-agnostic update (the old raw Postgres SQL — COALESCE/jsonb —
         # broke in SQLite/--lite mode).
-        fields: dict = {}
-        if payload.assignee_role:
-            fields["assignee_role"] = _cfg.canonical_role(payload.assignee_role)
-        if payload.labels is not None:
-            fields["labels"] = payload.labels
-        if payload.body is not None:
-            fields["body"] = payload.body
         tickets_mod.patch_fields(t.id, fields=fields, metadata_patch=merge_md)
     return get_ticket(identifier)
 
@@ -639,6 +646,61 @@ def ticket_answer(identifier: str, body: _TicketAnswerBody) -> dict:
 _TERMINAL_TICKET = {"done", "qa", "qa_failed", "cancelled"}
 
 
+def _sse(payload: dict) -> str:
+    return "data: " + json.dumps(payload) + "\n\n"
+
+
+def _event_payload(e: dict) -> dict:
+    created = e.get("created_at")
+    return {"kind": e.get("kind"), "agent_role": e.get("agent_role"),
+            "body": e.get("body") or "", "metadata": e.get("metadata") or {},
+            "created_at": (created.isoformat()
+                           if hasattr(created, "isoformat") else created)}
+
+
+def _new_events(tid, seen: set):
+    for e in tickets_mod.comments(tid, 1000):
+        eid = e.get("id")
+        if eid not in seen:
+            seen.add(eid)
+            yield _sse(_event_payload(e))
+
+
+def _terminal_line(t) -> str | None:
+    """The closing ``done`` event, or None while the run continues."""
+    if t.status in _TERMINAL_TICKET:
+        return _sse({"kind": "done", "status": t.status})
+    if t.status == "blocked":
+        return _sse({"kind": "done", "status": "blocked"})
+    return None
+
+
+def _ticket_event_stream(identifier: str):
+    import time as _t
+    t0 = tickets_mod.get(identifier)
+    if t0 is None:
+        yield _sse({"kind": "error", "body": "ticket not found"})
+        return
+    seen: set = set()
+    for _ in range(1200):   # ~40 min at 2s
+        t = tickets_mod.get(identifier)
+        if t is None:
+            return
+        yield from _new_events(t0.id, seen)
+        meta = t.metadata or {}
+        awaiting = bool(meta.get("awaiting_input"))
+        yield _sse({"kind": "status", "status": t.status,
+                    "awaiting_input": awaiting,
+                    "clarify_questions": meta.get("clarify_questions") or []})
+        if awaiting:
+            return
+        done = _terminal_line(t)
+        if done:
+            yield done
+            return
+        _t.sleep(2)
+
+
 @router.get("/api/tickets/{identifier}/events/stream")
 def stream_ticket_events(identifier: str) -> StreamingResponse:
     """Live stage updates for a ticket, sourced from ``ticket_events`` in
@@ -647,45 +709,4 @@ def stream_ticket_events(identifier: str) -> StreamingResponse:
     ones; emits the clarification + status when the run pauses awaiting
     the user; closes on a terminal status. Chat Pipeline mode streams
     this."""
-    import time as _t
-
-    def _gen():
-        t0 = tickets_mod.get(identifier)
-        if t0 is None:
-            yield f"data: {json.dumps({'kind': 'error', 'body': 'ticket not found'})}\n\n"
-            return
-        tid = t0.id
-        seen: set = set()
-        for _ in range(1200):   # ~40 min at 2s
-            t = tickets_mod.get(identifier)
-            if t is None:
-                break
-            for e in tickets_mod.comments(tid, 1000):
-                eid = e.get("id")
-                if eid in seen:
-                    continue
-                seen.add(eid)
-                created = e.get("created_at")
-                yield "data: " + json.dumps({
-                    "kind": e.get("kind"), "agent_role": e.get("agent_role"),
-                    "body": e.get("body") or "",
-                    "metadata": e.get("metadata") or {},
-                    "created_at": created.isoformat() if hasattr(created, "isoformat") else created,
-                }) + "\n\n"
-            meta = t.metadata or {}
-            awaiting = bool(meta.get("awaiting_input"))
-            yield "data: " + json.dumps({
-                "kind": "status", "status": t.status, "awaiting_input": awaiting,
-                "clarify_questions": meta.get("clarify_questions") or [],
-            }) + "\n\n"
-            if awaiting:
-                break
-            if t.status in _TERMINAL_TICKET:
-                yield f"data: {json.dumps({'kind': 'done', 'status': t.status})}\n\n"
-                break
-            if t.status == "blocked":
-                yield f"data: {json.dumps({'kind': 'done', 'status': 'blocked'})}\n\n"
-                break
-            _t.sleep(2)
-
-    return sse_response(_gen())
+    return sse_response(_ticket_event_stream(identifier))
