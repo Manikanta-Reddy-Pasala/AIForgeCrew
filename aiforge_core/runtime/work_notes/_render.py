@@ -59,33 +59,64 @@ _KNOWN_KINDS = frozenset({"jira", "confluence", "web", "repo", "knowledge",
                           "note", "dossier"})
 
 
+def _frontmatter_issues(fm: dict) -> list[str]:
+    """OKF requires a non-empty ``type:``; we additionally want ``key`` and a
+    ``timestamp``. parse_note mirrors legacy aliases so an old file (kind /
+    updated_at) still satisfies these."""
+    return [f"missing frontmatter '{r}'" for r in ("type", "key", "timestamp")
+            if not str(fm.get(r) or "").strip()]
+
+
+def _content_issues(sec: dict, body: str) -> list[str]:
+    has_content = bool((sec.get("objective") or "").strip()
+                       or sec.get("facts") or sec.get("key_results")
+                       or sec.get("learnings") or body)
+    if has_content:
+        return []
+    return ["empty note (no Objective/Facts/KR/Learnings/body)"]
+
+
+def _leak_issues(sec: dict) -> list[str]:
+    return [f"scaffolding leaked into {fld}: {it[:40]!r}"
+            for fld in ("facts", "key_results", "learnings")
+            for it in (sec.get(fld) or []) if _is_leak_item(it)]
+
+
 def validate_note(text: str) -> tuple[bool, list[str]]:
     """Re-parse a rendered note and report structure issues (does NOT mutate).
     Used by the write path to log what it repaired and by tests to assert the
     contract. ``ok`` is True when no issues remain."""
-    issues: list[str] = []
     parsed = parse_note(text or "")
-    fm = parsed.get("frontmatter") or {}
-    # OKF requires a non-empty `type:`; we additionally want `key` + a
-    # `timestamp`. parse_note mirrors legacy aliases so an old file (kind/
-    # updated_at) still satisfies these.
-    for req in ("type", "key", "timestamp"):
-        if not str(fm.get(req) or "").strip():
-            issues.append(f"missing frontmatter '{req}'")
+    sec = parsed.get("sections") or {}
+    issues = _frontmatter_issues(parsed.get("frontmatter") or {})
     if not str(parsed.get("title") or "").strip():
         issues.append("missing title")
-    sec = parsed.get("sections") or {}
-    body = (parsed.get("body") or "").strip()
-    has_content = bool((sec.get("objective") or "").strip()
-                       or sec.get("facts") or sec.get("key_results")
-                       or sec.get("learnings") or body)
-    if not has_content:
-        issues.append("empty note (no Objective/Facts/KR/Learnings/body)")
-    for fld in ("facts", "key_results", "learnings"):
-        for it in sec.get(fld) or []:
-            if _is_leak_item(it):
-                issues.append(f"scaffolding leaked into {fld}: {it[:40]!r}")
+    issues += _content_issues(sec, (parsed.get("body") or "").strip())
+    issues += _leak_issues(sec)
     return (not issues), issues
+
+
+def _yaml_list(name: str, values: list, *, empty_ok: bool = True) -> list[str]:
+    """``name:`` block, or ``name: []`` when empty and that form is wanted."""
+    if values:
+        return [f"{name}:"] + [f"  - {_yaml_str(v)}" for v in values]
+    return [f"{name}: []"] if empty_ok else []
+
+
+def _note_frontmatter(kind: str, key: str, res: str, ts: str, desc: str,
+                      norm_tags: list, norm_links: list,
+                      norm_sources: list) -> list[str]:
+    fm = ["---", f"type: {_yaml_str(kind)}", f"key: {_yaml_str(key)}",
+          f"resource: {_yaml_str(res)}", f"timestamp: {_yaml_str(ts)}"]
+    if desc:
+        fm.append(f"description: {_yaml_str(desc)}")
+    fm += _yaml_list("tags", norm_tags)
+    fm += _yaml_list("links", norm_links)
+    # `sources` is emitted only when non-empty, so notes that consume nothing
+    # keep the frontmatter they always had.
+    fm += _yaml_list("sources", norm_sources, empty_ok=False)
+    fm.append("---")
+    return fm
 
 
 def render_note(kind: str, key: str, *, title: str, source_url: str = "",
@@ -115,34 +146,11 @@ def render_note(kind: str, key: str, *, title: str, source_url: str = "",
     # ones over time — don't gate on an allow-list).
     kind = (str(kind or "").strip() or "knowledge")
     norm_links = normalize_links(links, kind, key)
-    norm_tags = normalize_tags(tags)
-    res = (resource or source_url or "").strip()
-    ts = (timestamp or updated_at or _now_iso())
-    fm = [
-        "---",
-        f"type: {_yaml_str(kind)}",
-        f"key: {_yaml_str(key)}",
-        f"resource: {_yaml_str(res)}",
-        f"timestamp: {_yaml_str(ts)}",
-    ]
-    desc = (description or "").strip()
-    if desc:
-        fm.append(f"description: {_yaml_str(desc)}")
-    if norm_tags:
-        fm.append("tags:")
-        fm.extend(f"  - {_yaml_str(t)}" for t in norm_tags)
-    else:
-        fm.append("tags: []")
-    if norm_links:
-        fm.append("links:")
-        fm.extend(f"  - {_yaml_str(lk)}" for lk in norm_links)
-    else:
-        fm.append("links: []")
-    norm_sources = [s for s in (str(x).strip() for x in (sources or [])) if s]
-    if norm_sources:
-        fm.append("sources:")
-        fm.extend(f"  - {_yaml_str(s)}" for s in norm_sources)
-    fm.append("---")
+    fm = _note_frontmatter(
+        kind, key, (resource or source_url or "").strip(),
+        (timestamp or updated_at or _now_iso()), (description or "").strip(),
+        normalize_tags(tags), norm_links,
+        [s for s in (str(x).strip() for x in (sources or [])) if s])
 
     parts = ["\n".join(fm), f"# {str(title or key).strip()}"]
     obj = (objective or "").strip()
@@ -169,6 +177,101 @@ def render_note(kind: str, key: str, *, title: str, source_url: str = "",
     return text
 
 
+def _split_frontmatter(text: str) -> tuple[dict, str]:
+    """``(frontmatter, rest)``. Hand-edited YAML must not explode."""
+    m = _FRONTMATTER_RE.match(text)
+    if not m:
+        return {}, text
+    fm: dict = {}
+    try:
+        import yaml
+        loaded = yaml.safe_load(m.group(1))
+        if isinstance(loaded, dict):
+            fm = _mirror_aliases(loaded)
+    except Exception:  # noqa: BLE001
+        fm = {}
+    return fm, text[m.end():]
+
+
+def _split_body_sentinel(text: str) -> tuple[list[str], str]:
+    """``(head lines, free tail)``. The explicit body sentinel splits managed
+    head from free body exactly; hand-made files without it fall through to the
+    heuristic in the reader (a non-bullet line ends a list section)."""
+    lines = text.splitlines()
+    for i, ln in enumerate(lines):
+        if ln.strip() == _BODY_MARK:
+            return lines[:i], "\n".join(lines[i + 1:]).strip("\n")
+    return lines, ""
+
+
+class _NoteReader:
+    """Walks a note's head lines into the known OKR sections, keeping
+    everything else (prose, unknown ``## Heading`` blocks) in original order so
+    a read-modify-write round-trip preserves it."""
+
+    __slots__ = ("title", "sections", "current", "current_lines", "unknown")
+
+    def __init__(self) -> None:
+        self.title = ""
+        self.sections: dict = {}
+        self.current: str | None = None   # canonical key being read
+        self.current_lines: list[str] = []
+        self.unknown: list[str] = []      # non-section prose / unknown blocks
+
+    def _flush(self) -> None:
+        if self.current is None:
+            return
+        chunk = "\n".join(self.current_lines).strip("\n")
+        if self.current == "objective":
+            self.sections["objective"] = chunk.strip()
+        else:
+            self.sections[self.current] = [
+                re.sub(r"^[-*]\s+", "", ln.strip())
+                for ln in chunk.splitlines() if ln.strip()]
+        self.current, self.current_lines = None, []
+
+    def _take_title(self, line: str) -> bool:
+        if (line.startswith("# ") and not self.title and self.current is None
+                and not any(s.strip() for s in self.unknown)):
+            self.title = line[2:].strip()
+            return True
+        return False
+
+    def _take_heading(self, line: str) -> bool:
+        hm = re.match(r"^##[ \t]+(.+?)[ \t]*$", line)
+        if not hm:
+            return False
+        canon = _SECTION_KEYS.get(hm.group(1).strip().lower())
+        self._flush()
+        if canon:
+            self.current = canon
+        else:
+            self.unknown.append(line)   # unknown ## section → verbatim in body
+        return True
+
+    def _ends_list_section(self, line: str) -> bool:
+        """Heuristic terminator (marker-less hand edits): a non-blank,
+        non-bullet line inside a LIST section means the section is over and
+        free body has begun."""
+        return (self.current is not None and self.current != "objective"
+                and bool(line.strip())
+                and not line.lstrip().startswith(("-", "*")))
+
+    def feed(self, line: str) -> None:
+        if self._take_title(line) or self._take_heading(line):
+            return
+        if self._ends_list_section(line):
+            self._flush()
+            self.unknown.append(line)
+        elif self.current is not None:
+            self.current_lines.append(line)
+        else:
+            self.unknown.append(line)
+
+    def finish(self) -> None:
+        self._flush()
+
+
 def parse_note(text: str) -> dict:
     """Parse a note (tolerantly) into
     ``{"frontmatter", "title", "sections", "body"}``.
@@ -181,85 +284,19 @@ def parse_note(text: str) -> dict:
     Never raises on a str input; a legacy/ad-hoc file simply parses as
     frontmatter={} with everything in body.
     """
-    text = text or ""
-    fm: dict = {}
-    m = _FRONTMATTER_RE.match(text)
-    if m:
-        try:
-            import yaml
-            loaded = yaml.safe_load(m.group(1))
-            if isinstance(loaded, dict):
-                fm = _mirror_aliases(loaded)
-        except Exception:  # noqa: BLE001 — hand-edited YAML must not explode
-            fm = {}
-        text = text[m.end():]
-
-    # The explicit body sentinel splits managed head from free body exactly.
-    # Hand-made files without it fall through to the heuristic below (a
-    # non-bullet line ends a list section).
-    lines = text.splitlines()
-    tail = ""
-    for i, ln in enumerate(lines):
-        if ln.strip() == _BODY_MARK:
-            tail = "\n".join(lines[i + 1:]).strip("\n")
-            lines = lines[:i]
-            break
-
-    title = ""
-    sections: dict = {}
-    body_parts: list[str] = []
-    current: str | None = None      # canonical key of the OKR section being read
-    current_lines: list[str] = []
-    unknown_lines: list[str] = []   # accumulates non-section prose/unknown blocks
-
-    def _flush_section():
-        nonlocal current, current_lines
-        if current is None:
-            return
-        chunk = "\n".join(current_lines).strip("\n")
-        if current == "objective":
-            sections["objective"] = chunk.strip()
-        else:
-            items = [re.sub(r"^[-*]\s+", "", ln.strip())
-                     for ln in chunk.splitlines() if ln.strip()]
-            sections[current] = items
-        current, current_lines = None, []
-
+    fm, rest = _split_frontmatter(text or "")
+    lines, tail = _split_body_sentinel(rest)
+    reader = _NoteReader()
     for line in lines:
-        if line.startswith("# ") and not title and current is None \
-                and not any(s.strip() for s in unknown_lines):
-            title = line[2:].strip()
-            continue
-        hm = re.match(r"^##[ \t]+(.+?)[ \t]*$", line)
-        if hm:
-            canon = _SECTION_KEYS.get(hm.group(1).strip().lower())
-            _flush_section()
-            if canon:
-                current = canon
-                continue
-            # unknown ## section → preserved verbatim in body
-            unknown_lines.append(line)
-            continue
-        # Heuristic terminator (marker-less hand edits): a non-blank,
-        # non-bullet line inside a LIST section means the section is over
-        # and free body has begun.
-        if current is not None and current != "objective" and line.strip() \
-                and not line.lstrip().startswith(("-", "*")):
-            _flush_section()
-            unknown_lines.append(line)
-            continue
-        if current is not None:
-            current_lines.append(line)
-        else:
-            unknown_lines.append(line)
-    _flush_section()
-    if any(s.strip() for s in unknown_lines):
-        body_parts.append("\n".join(unknown_lines).strip("\n"))
+        reader.feed(line)
+    reader.finish()
+    body_parts: list[str] = []
+    if any(s.strip() for s in reader.unknown):
+        body_parts.append("\n".join(reader.unknown).strip("\n"))
     if tail:
         body_parts.append(tail)
-
-    return {"frontmatter": fm, "title": title, "sections": sections,
-            "body": "\n\n".join(body_parts)}
+    return {"frontmatter": fm, "title": reader.title,
+            "sections": reader.sections, "body": "\n\n".join(body_parts)}
 
 
 def update_note(path: str, **section_updates) -> dict:
