@@ -152,6 +152,75 @@ def _get_repomap():
     return _REPOMAP
 
 
+def _tag_tree_root(src: bytes, lang: str):
+    parser = _tag_parser(lang)
+    if parser is None:
+        return None
+    try:
+        return parser.parse(src).root_node
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _def_symbols(tags: list, tree_root, module: str, fpath: Path,
+                 repo: str) -> list:
+    """One SymbolRecord per definition, deduped by (name, line) — aider emits
+    duplicate def tags."""
+    out = []
+    seen: set[tuple[str, int]] = set()
+    for tag in tags:
+        if tag.kind != "def":
+            continue
+        key = (tag.name, tag.line)
+        if key in seen:
+            continue
+        seen.add(key)
+        line1 = tag.line + 1 if tag.line >= 0 else 0
+        out.append(SymbolRecord(
+            fqn=(f"{module}.{tag.name}" if module else tag.name),
+            simple=tag.name,
+            kind=_classify_def(tree_root, tag.name, tag.line),
+            file_path=str(fpath), repo=repo,
+            start_line=line1, end_line=line1))
+    return out
+
+
+def _caller_resolver(tags: list, module: str):
+    """Caller = nearest def whose (0-based) line is <= the ref line (approximate
+    lexical scope); pygments-backfilled refs (line == -1, e.g. cpp/c) and refs
+    before any def use a file-level pseudo."""
+    def_lines = sorted(((t.line, t.name) for t in tags if t.kind == "def"),
+                       key=lambda x: x[0])
+    pseudo = f"{module}.<file>" if module else "<file>"
+
+    def _caller_for(ref_line: int) -> str:
+        best = None
+        if ref_line >= 0:
+            for dline, dname in def_lines:
+                if dline > ref_line:
+                    break
+                best = dname
+        if not best:
+            return pseudo
+        return f"{module}.{best}" if module else best
+    return _caller_for
+
+
+def _call_pairs(tags: list, module: str) -> list:
+    """``(caller_fqn, callee_simple)`` for each reference, deduped."""
+    caller_for = _caller_resolver(tags, module)
+    out = []
+    seen: set[tuple[str, str]] = set()
+    for tag in tags:
+        if tag.kind != "ref" or not tag.name:
+            continue
+        pair = (caller_for(tag.line), tag.name)
+        if pair not in seen:
+            seen.add(pair)
+            out.append(pair)
+    return out
+
+
 def _parse_via_tags(
     fpath: Path,
     src: bytes,
@@ -165,84 +234,22 @@ def _parse_via_tags(
     result (never raises) so a bad file / missing aider / unsupported lang
     degrades the symbol index instead of crashing the repo ingest."""
     text = src.decode("utf-8", errors="replace")
-    loc = text.count("\n") + 1 if text else 0
     module = _module_for(fpath, repo_root)
-    file_rec = FileRecord(
+    result = FileParseResult(file=FileRecord(
         path=str(fpath), repo=repo, sha1=sha1, language=lang or "",
-        package=module, loc=loc,
-    )
-    result = FileParseResult(file=file_rec)
+        package=module, loc=(text.count("\n") + 1 if text else 0)))
 
     rm = _get_repomap()
     if rm is None or not lang:
         return result  # aider unavailable / unknown lang → empty, no crash
-
     try:
         tags = list(rm.get_tags_raw(str(fpath), fpath.name))
     except Exception:  # noqa: BLE001 — parse/query failure on this file
         return result
 
-    tree_root = None
-    parser = _tag_parser(lang)
-    if parser is not None:
-        try:
-            tree_root = parser.parse(src).root_node
-        except Exception:  # noqa: BLE001
-            tree_root = None
-
-    def _fqn(simple: str) -> str:
-        return f"{module}.{simple}" if module else simple
-
-    # DEFINITIONS (dedup by (name, line) — aider emits duplicate def tags).
-    seen_defs: set[tuple[str, int]] = set()
-    for tag in tags:
-        if tag.kind != "def":
-            continue
-        key = (tag.name, tag.line)
-        if key in seen_defs:
-            continue
-        seen_defs.add(key)
-        line1 = tag.line + 1 if tag.line >= 0 else 0
-        result.symbols.append(SymbolRecord(
-            fqn=_fqn(tag.name),
-            simple=tag.name,
-            kind=_classify_def(tree_root, tag.name, tag.line),
-            file_path=str(fpath),
-            repo=repo,
-            start_line=line1,
-            end_line=line1,
-        ))
-
-    # REFERENCES → call_simples. Caller = nearest def whose (0-based) line is
-    # <= the ref line (approximate lexical scope); pygments-backfilled refs
-    # (line == -1, e.g. cpp/c) and refs before any def use a file-level pseudo.
-    def_lines = sorted(((tag.line, tag.name) for tag in tags if tag.kind == "def"),
-                       key=lambda x: x[0])
-    pseudo_caller = f"{module}.<file>" if module else "<file>"
-
-    def _caller_for(ref_line: int) -> str:
-        best = None
-        if ref_line >= 0:
-            for dline, dname in def_lines:
-                if dline <= ref_line:
-                    best = dname
-                else:
-                    break
-        return _fqn(best) if best else pseudo_caller
-
-    seen_calls: set[tuple[str, str]] = set()
-    for tag in tags:
-        if tag.kind != "ref":
-            continue
-        callee = tag.name
-        if not callee:
-            continue
-        pair = (_caller_for(tag.line), callee)
-        if pair in seen_calls:
-            continue
-        seen_calls.add(pair)
-        result.call_simples.append(pair)
-
+    result.symbols = _def_symbols(tags, _tag_tree_root(src, lang), module,
+                                 fpath, repo)
+    result.call_simples = _call_pairs(tags, module)
     result.imports = _scan_imports(text, lang)
     return result
 
@@ -270,6 +277,105 @@ _LANG_SUFFIXES: dict[str, tuple[str, ...]] = {
 }
 
 
+def _walk_suffixes(languages: list[str]) -> tuple:
+    """The union of on-disk suffixes the requested languages contribute."""
+    suffixes: list[str] = []
+    for lg in languages:
+        suffixes.extend(_LANG_SUFFIXES.get(lg, ()))
+    # `.h` is ambiguous C/C++; include it whenever either is requested.
+    if ("cpp" in languages or "c" in languages) and ".h" not in suffixes:
+        suffixes.append(".h")
+    return tuple(dict.fromkeys(suffixes)) or (".java",)
+
+
+def _lang_mapper():
+    try:
+        from grep_ast import filename_to_lang
+        return filename_to_lang
+    except Exception:  # noqa: BLE001 — grep_ast is a declared dep; degrade
+        return None
+
+
+def _parse_one(fpath: Path, data: bytes, sha1: str, repo_name: str,
+               repo_root: Path, to_lang):
+    """The right parser for this file, or None when it can't be parsed.
+
+    ``.java`` goes through the rich walker (with its extends/implements/field
+    edges); every other supported language is parsed by the generic aider
+    tag-query engine, which yields the same shape.
+    """
+    if fpath.suffix.lower() == ".java":
+        if not TREESITTER_AVAILABLE:
+            return None            # java grammar missing → skip java files
+        return _parse_java_file(fpath, data, repo_name, sha1)
+    lang = to_lang(str(fpath)) if to_lang else None
+    if not lang:
+        return None                # engine can't map this file → skip
+    return _parse_via_tags(fpath, data, repo_name, sha1, lang,
+                           repo_root=repo_root)
+
+
+def _ingest_one_file(session, fpath: Path, repo_name: str, repo_root: Path,
+                     to_lang, stats: IngestStats):
+    """Parse + write one file. Returns its result, or None when skipped."""
+    if fpath.stat().st_size > HARD_FILE_BYTE_LIMIT:
+        stats.files_skipped_too_big += 1
+        return None
+    data = fpath.read_bytes()
+    sha1 = _sha1_bytes(data)
+    rec = session.run(_FILE_EXISTING_SHA1, path=str(fpath),
+                      repo=repo_name).single()
+    if rec and rec["sha1"] == sha1:
+        stats.files_skipped_unchanged += 1
+        return None
+    parsed = _parse_one(fpath, data, sha1, repo_name, repo_root, to_lang)
+    if parsed is None:
+        return None
+    _write_file_payload(session, parsed, stats)
+    stats.files_parsed += 1
+    return parsed
+
+
+def _emit_progress(log, stats: IngestStats, repo_name: str) -> None:
+    if stats.files_seen % LOG_EVERY_N_FILES == 0:
+        emit(log, "treesitter.progress",
+             files_seen=stats.files_seen, files_parsed=stats.files_parsed,
+             files_skipped_unchanged=stats.files_skipped_unchanged,
+             symbols_written=stats.symbols_written, repo=repo_name)
+
+
+def _parse_phase(session, repo_root: Path, repo_name: str, suffixes: tuple,
+                 to_lang, stats: IngestStats, log) -> list:
+    """Phase 1: parse files, write :File + :Symbol + :DEFINES eagerly."""
+    parsed_results: list[FileParseResult] = []
+    for fpath in _iter_source_files(repo_root, suffixes):
+        stats.files_seen += 1
+        try:
+            parsed = _ingest_one_file(session, fpath, repo_name, repo_root,
+                                      to_lang, stats)
+            if parsed is not None:
+                parsed_results.append(parsed)
+        except Exception as exc:  # noqa: BLE001 — one bad file never stops the walk
+            stats.files_failed += 1
+            log.warning("treesitter.parse_failed",
+                        extra={"aiforge": {"file": str(fpath), "err": str(exc)}})
+        _emit_progress(log, stats, repo_name)
+    return parsed_results
+
+
+def _edge_phase(session, parsed_results: list, stats: IngestStats, log) -> None:
+    """Phase 2: now that ALL :Symbol nodes for this repo exist, resolve
+    :CALLS / :EXTENDS / :IMPLEMENTS / :IMPORTS edges by simple-name lookup.
+    A second pass means forward-references within the same repo resolve."""
+    for parsed in parsed_results:
+        try:
+            _resolve_edges(session, parsed, stats)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("treesitter.edge_resolve_failed",
+                        extra={"aiforge": {"file": parsed.file.path,
+                                           "err": str(exc)}})
+
+
 def ingest_repo(
     driver,
     repo_root: Path,
@@ -286,88 +392,14 @@ def ingest_repo(
     Unsupported/unknown languages are skipped (never crash the ingest).
     """
     languages = languages or DEFAULT_LANGUAGES
-
-    # Resolve the union of suffixes to walk from the requested languages.
-    suffixes: list[str] = []
-    for lg in languages:
-        suffixes.extend(_LANG_SUFFIXES.get(lg, ()))
-    # `.h` is ambiguous C/C++; include it whenever either is requested.
-    if ("cpp" in languages or "c" in languages) and ".h" not in suffixes:
-        suffixes.append(".h")
-    suffixes_t = tuple(dict.fromkeys(suffixes)) or (".java",)
-
-    try:
-        from grep_ast import filename_to_lang
-    except Exception:  # noqa: BLE001 — grep_ast is a declared dep; degrade
-        filename_to_lang = None  # type: ignore
-
+    suffixes = _walk_suffixes(languages)
+    to_lang = _lang_mapper()
     log = get_logger("treesitter_ingest", ticket=None)
     stats = IngestStats(started_at=time.time())
-    parsed_results: list[FileParseResult] = []
-
-    # Phase 1: parse files, write :File + :Symbol + :DEFINES eagerly.
     with driver.session() as session:
-        for fpath in _iter_source_files(repo_root, suffixes_t):
-            stats.files_seen += 1
-            try:
-                size = fpath.stat().st_size
-                if size > HARD_FILE_BYTE_LIMIT:
-                    stats.files_skipped_too_big += 1
-                    continue
-
-                data = fpath.read_bytes()
-                sha1 = _sha1_bytes(data)
-
-                rec = session.run(
-                    _FILE_EXISTING_SHA1, path=str(fpath), repo=repo_name
-                ).single()
-                if rec and rec["sha1"] == sha1:
-                    stats.files_skipped_unchanged += 1
-                    continue
-
-                if fpath.suffix.lower() == ".java":
-                    if not TREESITTER_AVAILABLE:
-                        continue  # java grammar missing → skip java files
-                    parsed = _parse_java_file(fpath, data, repo_name, sha1)
-                else:
-                    lang = filename_to_lang(str(fpath)) if filename_to_lang else None
-                    if not lang:
-                        continue  # engine can't map this file → skip
-                    parsed = _parse_via_tags(
-                        fpath, data, repo_name, sha1, lang, repo_root=repo_root)
-                _write_file_payload(session, parsed, stats)
-                parsed_results.append(parsed)
-                stats.files_parsed += 1
-            except Exception as exc:
-                stats.files_failed += 1
-                log.warning(
-                    "treesitter.parse_failed",
-                    extra={"aiforge": {"file": str(fpath), "err": str(exc)}},
-                )
-
-            if stats.files_seen % LOG_EVERY_N_FILES == 0:
-                emit(
-                    log, "treesitter.progress",
-                    files_seen=stats.files_seen,
-                    files_parsed=stats.files_parsed,
-                    files_skipped_unchanged=stats.files_skipped_unchanged,
-                    symbols_written=stats.symbols_written,
-                    repo=repo_name,
-                )
-
-        # Phase 2: now that ALL :Symbol nodes for this repo exist, resolve
-        # :CALLS / :EXTENDS / :IMPLEMENTS / :IMPORTS edges by simple-name
-        # lookup. Doing this in a second pass means forward-references
-        # within the same repo resolve correctly.
-        for parsed in parsed_results:
-            try:
-                _resolve_edges(session, parsed, stats)
-            except Exception as exc:
-                log.warning(
-                    "treesitter.edge_resolve_failed",
-                    extra={"aiforge": {"file": parsed.file.path, "err": str(exc)}},
-                )
-
+        parsed_results = _parse_phase(session, repo_root, repo_name, suffixes,
+                                      to_lang, stats, log)
+        _edge_phase(session, parsed_results, stats, log)
     stats.finished_at = time.time()
     emit(log, "treesitter.done", repo=repo_name, **stats.as_dict())
     return stats

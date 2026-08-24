@@ -80,6 +80,91 @@ class AiderMapConfig:
     user_text: str = ""
 
 
+def _mentions(user_text: str, rel_files: list[str]) -> tuple[set, set]:
+    """``(idents, fnames)`` — aider's get_ident_mentions + get_file_mentions.
+
+    Both are pure functions of the user text; this replicates the same
+    word-tokenize + filename match logic as base_coder.py.
+    """
+    user_text = (user_text or "").strip()
+    if not user_text:
+        return set(), set()
+    import re as _re
+    idents = {w for w in _re.split(r"\W+", user_text) if w and len(w) >= 3}
+    words = {w.rstrip(",.!;:?").strip("\"'`*_") for w in user_text.split()}
+    fnames: set[str] = set()
+    by_basename: dict[str, list[str]] = {}
+    for rel in rel_files:
+        if rel in words:
+            fnames.add(rel)
+        bn = os.path.basename(rel)
+        if any(c in bn for c in "/._-"):
+            by_basename.setdefault(bn, []).append(rel)
+    # A basename only resolves when it is UNAMBIGUOUS across the worktree.
+    for bn, rels in by_basename.items():
+        if len(rels) == 1 and bn in words:
+            fnames.add(rels[0])
+    return idents, fnames
+
+
+def _tags_cache_dir(cfg: "AiderMapConfig"):
+    """The tags-cache directory, or None when it cannot be created (read-only
+    FS / permissions) — aider then falls back to its default under root."""
+    cache_dir = cfg.cache_dir or _resolve_cache_dir(cfg.root)
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir
+    except Exception:  # noqa: BLE001
+        return None
+
+
+@contextlib.contextmanager
+def _tags_cache_redirected(RepoMap, cache_dir):
+    """Point aider's hardcoded ``<root>/.aider.tags.cache.v4`` at ``cache_dir``.
+
+    It can't be passed as an argument, so the class attribute is mutated —
+    under a lock, and restored, so parallel callers don't trample each other.
+    """
+    if cache_dir is None:
+        yield
+        return
+    saved = getattr(RepoMap, "TAGS_CACHE_DIR", None)
+    _MAP_LOCK.acquire()
+    try:
+        try:
+            RepoMap.TAGS_CACHE_DIR = str(cache_dir / ".aider.tags.cache.v4")
+        except Exception:  # noqa: BLE001
+            pass
+        yield
+    finally:
+        if saved is not None:
+            try:
+                RepoMap.TAGS_CACHE_DIR = saved
+            except Exception:  # noqa: BLE001
+                pass
+        _MAP_LOCK.release()
+
+
+def _run_repomap(RepoMap, cfg, chat_files, other_files, main_model,
+                 aider_io) -> str:
+    """Build the ranked digest.
+
+    stdout is suppressed: aider internals (and a third-party tree-sitter
+    grammar emitting "language not found" on import) write stray lines there.
+    stderr goes to the per-role launchd log and is fine.
+    """
+    rel_files = [os.path.relpath(p, str(cfg.root))
+                 for p in (chat_files + other_files)]
+    idents, fnames = _mentions(cfg.user_text, rel_files)
+    with contextlib.redirect_stdout(_stdio.StringIO()):
+        rm = RepoMap(map_tokens=cfg.map_tokens, root=str(cfg.root),
+                     main_model=main_model, io=aider_io, verbose=False,
+                     refresh=cfg.refresh)
+        return rm.get_repo_map(chat_files, other_files,
+                               mentioned_fnames=fnames or None,
+                               mentioned_idents=idents or None) or ""
+
+
 def render_repo_map(cfg: AiderMapConfig) -> str:
     """Run Aider's RepoMap and return the ranked text digest.
 
@@ -95,129 +180,29 @@ def render_repo_map(cfg: AiderMapConfig) -> str:
     chat_files = list(cfg.chat_files)
     total = len(chat_files) + len(other_files)
     if total < 5:
-        emit(
-            log,
-            "aider_repomap.skipped",
-            reason="repo_too_small",
-            file_count=total,
-        )
+        emit(log, "aider_repomap.skipped", reason="repo_too_small",
+             file_count=total)
         return ""
-
     try:
         from aider.repomap import RepoMap  # noqa: WPS433 (deliberately lazy)
-    except Exception as exc:
-        emit(
-            log,
-            "aider_repomap.skipped",
-            reason="import_failed",
-            error=str(exc)[:200],
-        )
+    except Exception as exc:  # noqa: BLE001
+        emit(log, "aider_repomap.skipped", reason="import_failed",
+             error=str(exc)[:200])
         return ""
 
-    cache_dir = cfg.cache_dir or _resolve_cache_dir(cfg.root)
-    try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        # Read-only FS / permission issue — let Aider fall back to its
-        # default location relative to root, or warn-and-skip.
-        cache_dir = None  # type: ignore[assignment]
-
     main_model = _StubMainModel()
-    aider_io = _QuietIO()
-
-    # Aider's RepoMap reads/writes its tags cache from
-    # ``<root>/.aider.tags.cache.v4``. We can't pass cache_dir directly —
-    # it's hardcoded — so we redirect it via TAGS_CACHE_DIR mutation if
-    # the override is set. Keep the mutation scoped via try/finally so
-    # parallel callers don't trample.
-    saved_tags_cache_dir = getattr(RepoMap, "TAGS_CACHE_DIR", None)
-    _locked = False
-    if cache_dir is not None:
-        _MAP_LOCK.acquire()          # released in the finally below
-        _locked = True
-        try:
-            RepoMap.TAGS_CACHE_DIR = str(cache_dir / ".aider.tags.cache.v4")
-        except Exception:
-            pass
-
-    digest = ""
     try:
-        # Suppress any stray stdout writes from Aider internals (e.g. a
-        # third-party tree-sitter grammar emitting "language not found"
-        # warnings on import). stderr goes to launchd log per role and
-        # is fine.
-        with contextlib.redirect_stdout(_stdio.StringIO()):
-            rm = RepoMap(
-                map_tokens=cfg.map_tokens,
-                root=str(cfg.root),
-                main_model=main_model,
-                io=aider_io,
-                verbose=False,
-                refresh=cfg.refresh,
-            )
-            # Replicate aider's get_ident_mentions + get_file_mentions
-            # extraction. Both are pure functions of the user text;
-            # we just need the same word-tokenize + filename match
-            # logic as base_coder.py:get_ident_mentions /
-            # get_file_mentions.
-            mentioned_idents: set[str] = set()
-            mentioned_fnames: set[str] = set()
-            user_text = (cfg.user_text or "").strip()
-            if user_text:
-                import re as _re
-                mentioned_idents = set(
-                    w for w in _re.split(r"\W+", user_text)
-                    if w and len(w) >= 3
-                )
-                # Basename match against the worktree's relative files.
-                words = set(
-                    w.rstrip(",.!;:?").strip("\"'`*_")
-                    for w in user_text.split()
-                )
-                rel_files = [
-                    os.path.relpath(p, str(cfg.root))
-                    for p in (chat_files + other_files)
-                ]
-                fname_to_rel: dict[str, list[str]] = {}
-                for rel in rel_files:
-                    if rel in words:
-                        mentioned_fnames.add(rel)
-                    bn = os.path.basename(rel)
-                    if any(c in bn for c in "/._-"):
-                        fname_to_rel.setdefault(bn, []).append(rel)
-                for bn, rels in fname_to_rel.items():
-                    if len(rels) == 1 and bn in words:
-                        mentioned_fnames.add(rels[0])
-            result = rm.get_repo_map(
-                chat_files, other_files,
-                mentioned_fnames=mentioned_fnames or None,
-                mentioned_idents=mentioned_idents or None,
-            )
-        digest = result or ""
-    except Exception as exc:
-        emit(
-            log,
-            "aider_repomap.skipped",
-            reason="render_failed",
-            error=str(exc)[:200],
-        )
+        with _tags_cache_redirected(RepoMap, _tags_cache_dir(cfg)):
+            digest = _run_repomap(RepoMap, cfg, chat_files, other_files,
+                                  main_model, _QuietIO())
+    except Exception as exc:  # noqa: BLE001 — indexing never breaks the prompt
+        emit(log, "aider_repomap.skipped", reason="render_failed",
+             error=str(exc)[:200])
         digest = ""
-    finally:
-        if cache_dir is not None and saved_tags_cache_dir is not None:
-            try:
-                RepoMap.TAGS_CACHE_DIR = saved_tags_cache_dir
-            except Exception:
-                pass
-        if _locked:
-            _MAP_LOCK.release()
 
-    emit(
-        log,
-        "aider_repomap.rendered",
-        token_count=main_model.token_count(digest),
-        file_count=total,
-        digest_chars=len(digest),
-    )
+    emit(log, "aider_repomap.rendered",
+         token_count=main_model.token_count(digest), file_count=total,
+         digest_chars=len(digest))
     return digest
 
 
