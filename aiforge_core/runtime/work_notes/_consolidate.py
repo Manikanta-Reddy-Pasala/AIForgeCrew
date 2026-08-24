@@ -219,6 +219,46 @@ def _overlap(item: str, focus_words: set) -> int:
     return len(words & focus_words)
 
 
+def _ranked_pool(items: list, focus_words: set, turn: int) -> list:
+    """One section's items, ordered by how likely they are to collide with the
+    incoming chunk.
+
+    Items sharing vocabulary with ``focus`` come first (a duplicate almost
+    always shares words with what it duplicates), then the rest entered at a
+    ROTATING offset derived from ``turn`` — newest-first within the rotation,
+    since recent items are the likeliest collisions after the relevant ones.
+    """
+    if not items:
+        return []
+    scored = {i: _overlap(str(it), focus_words) for i, it in enumerate(items)}
+    relevant = sorted((i for i, sc in scored.items() if sc > 0),
+                      key=lambda i: (-scored[i], -i))   # best match, then newest
+    rest = [i for i, sc in scored.items() if sc == 0]
+    if rest:
+        off = turn % len(rest)
+        rest = list(reversed(rest[off:] + rest[:off]))
+    return [items[i] for i in relevant + rest]
+
+
+def _fill_budget(pools: dict, used: int, budget_chars: int) -> tuple[dict, dict]:
+    """Round-robin across sections so one huge list cannot starve the others.
+    ``(chosen, overflow)``."""
+    chosen = {k: [] for k in pools}
+    overflow = {k: [] for k in pools}
+    while any(pools.values()):
+        for k in ("facts", "learnings", "key_results", "links"):
+            if not pools[k]:
+                continue
+            item = pools[k].pop(0)
+            cost = len(str(item)) + 4
+            if used + cost > budget_chars:
+                overflow[k].append(item)
+            else:
+                chosen[k].append(item)
+                used += cost
+    return chosen, overflow
+
+
 def _split_state(sections: dict, budget_chars: int, *, focus: str = "",
                  turn: int = 0) -> tuple[dict, dict]:
     """Split accumulated sections into (sent, held) under ``budget_chars``.
@@ -226,11 +266,8 @@ def _split_state(sections: dict, budget_chars: int, *, focus: str = "",
     The model needs the accumulated state to dedupe against, but it does not
     need ALL of it to fold one chunk — and sending all of it is what blew the
     window. What it does need is the part that THIS chunk is likely to collide
-    with, so the slice is chosen rather than merely truncated:
-
-    1. items that share vocabulary with the incoming chunk (``focus``) first —
-       a duplicate almost always shares words with what it duplicates;
-    2. then the rest, entered at a ROTATING offset derived from ``turn``.
+    with, so the slice is CHOSEN rather than merely truncated (see
+    :func:`_ranked_pool`).
 
     The rotation is what stops the slice being the same items every time. A
     plain newest-first cut showed the model the tail on every chunk, so genuinely
@@ -242,51 +279,22 @@ def _split_state(sections: dict, budget_chars: int, *, focus: str = "",
     Whatever does not fit is held back and re-unioned by the caller, so this
     bounds the CALL without dropping a single item.
     """
-    sent = {"objective": sections.get("objective") or "",
-            "key_results": [], "facts": [], "links": [], "learnings": []}
-    held = {"key_results": [], "facts": [], "links": [], "learnings": []}
-    used = len(sent["objective"])
-    focus_words = {w for w in re.findall(r"[a-z0-9]{4,}", (focus or "").lower())}
-
-    pools = {}
-    for k in held:
-        items = list(sections.get(k) or [])
-        if not items:
-            pools[k] = []
-            continue
-        scored = [(i, _overlap(str(it), focus_words)) for i, it in enumerate(items)]
-        relevant = [i for i, sc in scored if sc > 0]
-        relevant.sort(key=lambda i: (-dict(scored)[i], -i))   # best match, then newest
-        rest = [i for i, sc in scored if sc == 0]
-        if rest:
-            # Rotate the entry point so successive folds start elsewhere in the
-            # list; newest-first within the rotation, since recent items are the
-            # likeliest collisions after the relevant ones.
-            off = turn % len(rest)
-            rest = list(reversed(rest[off:] + rest[:off]))
-        pools[k] = [items[i] for i in relevant + rest]
-
-    order = {k: [] for k in held}
-    # Round-robin across sections so one huge list cannot starve the others.
-    while any(pools.values()):
-        for k in ("facts", "learnings", "key_results", "links"):
-            if not pools[k]:
-                continue
-            item = pools[k].pop(0)
-            cost = len(str(item)) + 4
-            if used + cost > budget_chars:
-                held[k].append(item)
-            else:
-                order[k].append(item)
-                used += cost
+    objective = sections.get("objective") or ""
+    focus_words = set(re.findall(r"[a-z0-9]{4,}", (focus or "").lower()))
+    keys = ("key_results", "facts", "links", "learnings")
+    pools = {k: _ranked_pool(list(sections.get(k) or []), focus_words, turn)
+             for k in keys}
+    chosen, overflow = _fill_budget(pools, len(objective), budget_chars)
 
     # Emit the slice in the sections' own order, not selection order: the prompt
     # reads as a note, and a shuffled one invites the model to "fix" the order.
-    for k in held:
-        chosen = set(map(str, order[k]))
-        sent[k] = [it for it in (sections.get(k) or []) if str(it) in chosen]
-        held_set = set(map(str, held[k]))
-        held[k] = [it for it in (sections.get(k) or []) if str(it) in held_set]
+    sent = {"objective": objective}
+    held = {}
+    for k in keys:
+        picked = set(map(str, chosen[k]))
+        over = set(map(str, overflow[k]))
+        sent[k] = [it for it in (sections.get(k) or []) if str(it) in picked]
+        held[k] = [it for it in (sections.get(k) or []) if str(it) in over]
     return sent, held
 
 
@@ -380,6 +388,85 @@ def _consolidate_once(existing: dict, new_content: str, role: str) -> dict:
         return _deterministic_merge(existing, new_content)
 
 
+def _call_budget(role: str, max_input_chars: int) -> tuple[int, int]:
+    """``(chunk budget, state budget)`` in chars.
+
+    The per-call input is budgeted against the REAL window, not just the
+    configured char cap: ``max_input_chars`` bounds ONE chunk, while the window
+    bounds chunk + accumulated state + system prompt together, and it was that
+    sum which overflowed.
+
+    ``state_chars`` is how much accumulated state may ride along on each call;
+    the rest is held back and merged deterministically, so this bounds the
+    request without dropping facts. Half the window by default: enough context
+    to dedupe against, never so much that the state alone fills the prompt.
+    """
+    import os as _os
+    window_chars = max(0, (_ctx_window(role) - _CTX_SLACK_TOKENS
+                           - _MIN_OUTPUT_TOKENS)) * _CHARS_PER_TOKEN
+    max_input_chars = min(max_input_chars, window_chars) or max_input_chars
+    state_chars = int(_os.environ.get("AIFORGE_CONSOLIDATE_STATE_CHARS",
+                                      str(max(8000, max_input_chars // 2))))
+    return max_input_chars, state_chars
+
+
+def _chunk_for_fold(text: str, budget: int) -> list[str]:
+    """``text`` cut into pieces under ``budget``, on STRUCTURE boundaries when
+    chonkie is available and on plain slices when it is not."""
+    if len(text) <= budget:
+        return [text]
+    try:
+        from aiforge_core.integrations import chonkie_text_adapter as _ck
+        if not _ck.available():
+            raise RuntimeError("chunker unavailable")
+        chunks, buf, used = [], [], 0
+        for part in _ck.chunk_text(text, chunk_tokens=max(64, budget // 8)):
+            if used and used + len(part) > budget:
+                chunks.append("".join(buf))
+                buf, used = [], 0
+            buf.append(part)
+            used += len(part)
+        if buf:
+            chunks.append("".join(buf))
+        return chunks
+    except Exception:  # noqa: BLE001 — chunker down → plain slices
+        return [text[i:i + budget] for i in range(0, len(text), budget)]
+
+
+def _normalized(cur: dict) -> dict:
+    """Nothing new — just normalize/dedupe the existing sections (no LLM)."""
+    return {"objective": cur["objective"],
+            "key_results": _dedupe_ci(cur["key_results"]),
+            "facts": _dedupe_ci(cur["facts"]),
+            "links": _dedupe_ci(cur["links"]),
+            "learnings": _dedupe_ci(cur["learnings"])}
+
+
+def _fold_chunks(cur: dict, chunks: list[str], role: str,
+                 state_chars: int) -> dict:
+    """Fold each chunk into the accumulator.
+
+    Each call sends a BOUNDED slice of what we have so far and unions the rest
+    back locally. Without that the accumulator grew with every chunk until the
+    prompt no longer fit — the later chunks of a big group could never succeed,
+    so the whole fold degraded. The chunk is the FOCUS: the model sees the
+    accumulated items most likely to collide with THIS chunk, and the turn index
+    rotates the rest so coverage is fair across the group.
+    """
+    for i, ch in enumerate(chunks, 1):
+        if len(chunks) > 1:
+            _log.info("consolidate: chunk %d/%d (%d chars)…", i, len(chunks),
+                      len(ch))
+        sent, held = _split_state(cur, state_chars, focus=ch, turn=i - 1)
+        if any(held.get(k) for k in ("facts", "learnings", "key_results",
+                                     "links")):
+            _log.info("consolidate: state %d chars over the %d-char call budget "
+                      "— folding against a slice, merging the rest locally",
+                      _sections_chars(cur), state_chars)
+        cur = _union_sections(_consolidate_once(sent, ch, role), held)
+    return cur
+
+
 def consolidate(existing: dict, new_content: str, *, role: str = "learner",
                 max_input_chars: int | None = None, label: str | None = None) -> dict:
     """Fold ``new_content`` into ``existing`` OKR sections via an LLM that
@@ -405,53 +492,12 @@ def consolidate(existing: dict, new_content: str, *, role: str = "learner",
         if existing else _sections_dict()
     text = (new_content or "").strip()
     if not text:
-        # nothing new — just normalize/dedupe the existing sections (no LLM)
-        return {"objective": cur["objective"],
-                "key_results": _dedupe_ci(cur["key_results"]),
-                "facts": _dedupe_ci(cur["facts"]),
-                "links": _dedupe_ci(cur["links"]),
-                "learnings": _dedupe_ci(cur["learnings"])}
-
-    # Budget the per-call input against the REAL window, not just the configured
-    # char cap. `max_input_chars` bounds one chunk; the window bounds
-    # chunk + accumulated state + system prompt together, and it is that sum
-    # which was overflowing.
-    window_chars = max(0, (_ctx_window(role) - _CTX_SLACK_TOKENS
-                           - _MIN_OUTPUT_TOKENS)) * _CHARS_PER_TOKEN
-    max_input_chars = min(max_input_chars, window_chars) or max_input_chars
-    # How much of the accumulated state may ride along on each call. The rest is
-    # held back and merged deterministically, so this bounds the request without
-    # dropping facts. Half the window by default: enough context to dedupe
-    # against, never so much that the state alone fills the prompt.
-    state_chars = int(_os.environ.get("AIFORGE_CONSOLIDATE_STATE_CHARS",
-                                      str(max(8000, max_input_chars // 2))))
-    reserve = min(_sections_chars(cur), state_chars)
+        return _normalized(cur)
+    max_input_chars, state_chars = _call_budget(role, max_input_chars)
     # Never collapse to a sliver: a big existing brief must still get a usable
     # chunk budget (else 25k of new text becomes 27 folds). Floor at 8k.
-    budget = max(8000, max_input_chars - reserve)
-    chunks: list[str]
-    if len(text) <= budget:
-        chunks = [text]
-    else:
-        try:
-            from aiforge_core.integrations import chonkie_text_adapter as _ck
-            if _ck.available():
-                # structure-aware chunks under budget; fold each in turn
-                chunks = []
-                buf, used = [], 0
-                for part in _ck.chunk_text(text, chunk_tokens=max(64, budget // 8)):
-                    if used and used + len(part) > budget:
-                        chunks.append("".join(buf))
-                        buf, used = [], 0
-                    buf.append(part)
-                    used += len(part)
-                if buf:
-                    chunks.append("".join(buf))
-            else:
-                chunks = [text[i:i + budget] for i in range(0, len(text), budget)]
-        except Exception:  # noqa: BLE001 — chunker down → plain slices
-            chunks = [text[i:i + budget] for i in range(0, len(text), budget)]
-
+    budget = max(8000, max_input_chars - min(_sections_chars(cur), state_chars))
+    chunks = _chunk_for_fold(text, budget)
     # One-line visibility into every compaction: which scope, how many source
     # chars, how many chonkie chunks it was folded through, into one brief.
     _log.info("compact %s: %d chars → %d chunk(s) → 1 brief",
@@ -459,23 +505,7 @@ def consolidate(existing: dict, new_content: str, *, role: str = "learner",
     if len(chunks) > 1:
         _log.info("consolidate: folding %d chunk(s) (%d chars) via LLM…",
                   len(chunks), len(text))
-    for _ci, ch in enumerate(chunks, 1):
-        if len(chunks) > 1:
-            _log.info("consolidate: chunk %d/%d (%d chars)…", _ci, len(chunks), len(ch))
-        # Send a BOUNDED slice of what we have so far; hold the rest back and
-        # union it into the answer. Without this the accumulator grew with every
-        # chunk until the prompt no longer fit — the later chunks of a big group
-        # could never succeed, so the whole fold degraded.
-        # `ch` is the focus: show the model the accumulated items most likely
-        # to collide with THIS chunk. `_ci` rotates the rest so coverage is
-        # fair across the group's chunks rather than always the same tail.
-        sent, held = _split_state(cur, state_chars, focus=ch, turn=_ci - 1)
-        if any(held.get(k) for k in ("facts", "learnings", "key_results", "links")):
-            _log.info("consolidate: state %d chars over the %d-char call budget "
-                      "— folding against a slice, merging the rest locally",
-                      _sections_chars(cur), state_chars)
-        cur = _union_sections(_consolidate_once(sent, ch, role), held)
-    return cur
+    return _fold_chunks(cur, chunks, role, state_chars)
 
 
 def consolidate_note(path: str, new_content: str, *, role: str = "learner",
