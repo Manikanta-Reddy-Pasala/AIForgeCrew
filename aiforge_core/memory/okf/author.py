@@ -69,6 +69,123 @@ def _topic_slug(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", (s or "").strip().lower()).strip("-")[:40]
 
 
+def _extract_okr(text: str):
+    """One structured call: objectives, key results, learnings. Raises on a
+    missing model / bad JSON — the caller turns that into a soft failure."""
+    from pydantic import BaseModel
+
+    from aiforge_core.llm.structured import structured_complete
+
+    class _Obj(BaseModel):
+        title: str
+        context: str = ""
+
+    class _KR(BaseModel):
+        title: str
+        objective_title: str = ""
+        metrics: str = ""
+
+    class _Learn(BaseModel):
+        rule: str
+        scope: str = "global"        # 'global' | 'repo' | an objective title
+        topic: str = ""              # theme slug (cross-repo axis)
+
+    class _Extract(BaseModel):
+        objectives: list[_Obj] = []
+        key_results: list[_KR] = []
+        learnings: list[_Learn] = []
+
+    return structured_complete(
+        "learner",
+        [{"role": "system", "content": _EXTRACT_SYS},
+         {"role": "user", "content": text[:8000]}],
+        _Extract, max_retries=1, max_tokens=1500, temperature=0.1)
+
+
+def _save_objectives(objectives, g, title_to_oid: dict) -> list:
+    made = []
+    for o in objectives:
+        if not o.title.strip():
+            continue
+        oid = (_existing_objective_by_title(g, o.title)
+               or title_to_oid.get(_slug(o.title)))
+        if not oid:
+            r = _store.save_node("objective", None,
+                                 {"title": o.title.strip(), "status": "active"},
+                                 o.context.strip(), reindex=False)
+            oid = r.get("id")
+            made.append(oid)
+        title_to_oid[_slug(o.title)] = oid
+    return made
+
+
+def _save_key_results(key_results, g, title_to_oid: dict) -> list:
+    made = []
+    for kr in key_results:
+        if not kr.title.strip():
+            continue
+        oid = (title_to_oid.get(_slug(kr.objective_title))
+               or _existing_objective_by_title(g, kr.objective_title))
+        meta = {"title": kr.title.strip(), "status": "in-progress"}
+        if oid:
+            meta["parent_objective"] = oid
+        if kr.metrics.strip():
+            meta["metrics"] = kr.metrics.strip()
+        # REUSE the same-concept KR file (same scope + same title) instead of
+        # minting a fresh KR-NN each run — OKF 'one concept = one file'.
+        krid = _store.find_by_concept("key_result", meta, kr.title.strip())
+        r = _store.save_node("key_result", krid, meta, "", reindex=False)
+        made.append(r.get("id"))
+    return made
+
+
+def _learning_scope(scope: str, rule: str, repo, g, title_to_oid: dict) -> dict:
+    """The scope/workspace meta for one learning.
+
+    Global is injected into EVERY turn of EVERY repo as a mandatory rule, so it
+    must be EARNED, not defaulted into. An empty scope is missing information,
+    and `repo` scope with no repo name is a project fact whose project we failed
+    to resolve — neither is evidence of a universal truth. Only an explicit
+    `global` verdict on text that names no concrete artifact keeps the scope.
+    """
+    low = scope.strip().lower()
+    if low == "repo" and repo:
+        # project-specific → segregates into projects/<repo>/ (workspace is
+        # what store._scope_of keys on).
+        return {"scope": f"repo:{repo}", "workspace": repo}
+    if low in ("global", "") or (low == "repo" and not repo):
+        from ..scope_guard import UNSCOPED, may_be_global
+        if low == "global" and may_be_global(rule or ""):
+            return {"scope": "global"}
+        if repo:
+            return {"scope": f"repo:{repo}", "workspace": repo}
+        return {"scope": UNSCOPED}
+    oid = (title_to_oid.get(_slug(scope))
+           or _existing_objective_by_title(g, scope))
+    return {"scope": [oid] if oid else "global"}
+
+
+def _save_learnings(learnings, g, title_to_oid: dict, repo) -> list:
+    made = []
+    for ln in learnings:
+        if not ln.rule.strip():
+            continue
+        meta = _learning_scope(ln.scope, ln.rule, repo, g, title_to_oid)
+        topic = _topic_slug((getattr(ln, "topic", "") or "").strip())
+        if topic:                                # theme axis (orthogonal)
+            meta["category"] = topic
+            meta["tags"] = [f"topic:{topic}"]
+        # REUSE the same-concept learning file (same scope + same/near rule
+        # text) instead of minting a fresh L-NN each run — this is the primary
+        # fix for 'multiple files for the same topic': the learner ran twice
+        # over similar work and produced L-01, L-07, L-13… for one rule.
+        lid = _store.find_by_concept("learning", meta, ln.rule.strip())
+        r = _store.save_node("learning", lid, meta, ln.rule.strip(),
+                             reindex=False)
+        made.append(r.get("id"))
+    return made
+
+
 def extract_and_save(session_text: str, *, active_kr: str | None = None,
                      repo: str | None = None) -> dict:
     """LLM-extract objectives/KRs/learnings from ``session_text`` and save them
@@ -84,110 +201,17 @@ def extract_and_save(session_text: str, *, active_kr: str | None = None,
     if len(text) < 40:
         return {"ok": True, "skipped": "too_short"}
     try:
-        from pydantic import BaseModel
-
-        from aiforge_core.llm.structured import structured_complete
-
-        class _Obj(BaseModel):
-            title: str
-            context: str = ""
-
-        class _KR(BaseModel):
-            title: str
-            objective_title: str = ""
-            metrics: str = ""
-
-        class _Learn(BaseModel):
-            rule: str
-            scope: str = "global"        # 'global' | 'repo' | an objective title
-            topic: str = ""              # theme slug (cross-repo axis)
-
-        class _Extract(BaseModel):
-            objectives: list[_Obj] = []
-            key_results: list[_KR] = []
-            learnings: list[_Learn] = []
-
-        res = structured_complete(
-            "learner",
-            [{"role": "system", "content": _EXTRACT_SYS},
-             {"role": "user", "content": text[:8000]}],
-            _Extract, max_retries=1, max_tokens=1500, temperature=0.1)
+        res = _extract_okr(text)
     except Exception as exc:  # noqa: BLE001 — no model / bad json
         return {"ok": False, "error": str(exc)}
 
     g = _graph.build(force=True)
     title_to_oid: dict[str, str] = {}
-    made = {"objectives": [], "key_results": [], "learnings": []}
-    for o in res.objectives:
-        if not o.title.strip():
-            continue
-        oid = _existing_objective_by_title(g, o.title) or title_to_oid.get(_slug(o.title))
-        if not oid:
-            r = _store.save_node("objective", None,
-                                 {"title": o.title.strip(), "status": "active"},
-                                 o.context.strip(), reindex=False)
-            oid = r.get("id")
-            made["objectives"].append(oid)
-        title_to_oid[_slug(o.title)] = oid
+    made = {"objectives": _save_objectives(res.objectives, g, title_to_oid)}
     # refresh so KRs/learnings can resolve just-created objectives
     g = _graph.build(force=True)
-    for kr in res.key_results:
-        if not kr.title.strip():
-            continue
-        oid = title_to_oid.get(_slug(kr.objective_title)) \
-            or _existing_objective_by_title(g, kr.objective_title)
-        meta = {"title": kr.title.strip(), "status": "in-progress"}
-        if oid:
-            meta["parent_objective"] = oid
-        if kr.metrics.strip():
-            meta["metrics"] = kr.metrics.strip()
-        # REUSE the same-concept KR file (same scope + same title) instead of
-        # minting a fresh KR-NN each run — OKF 'one concept = one file'.
-        krid = _store.find_by_concept("key_result", meta, kr.title.strip())
-        r = _store.save_node("key_result", krid, meta, "", reindex=False)
-        made["key_results"].append(r.get("id"))
-    for ln in res.learnings:
-        if not ln.rule.strip():
-            continue
-        sc = ln.scope.strip()
-        low = sc.lower()
-        meta: dict = {}
-        if low == "repo" and repo:
-            # project-specific → segregates into projects/<repo>/ (workspace is
-            # what store._scope_of keys on).
-            meta["scope"] = f"repo:{repo}"
-            meta["workspace"] = repo
-        elif low in ("global", "") or (low == "repo" and not repo):
-            # Global is injected into EVERY turn of EVERY repo as a mandatory
-            # rule, so it must be earned, not defaulted into. An empty scope is
-            # missing information, and `repo` scope with no repo name is a
-            # project fact whose project we failed to resolve — neither is
-            # evidence of a universal truth. Only an explicit `global` verdict
-            # on text that names no concrete artifact keeps the scope.
-            from ..scope_guard import UNSCOPED, may_be_global
-            if low == "global" and may_be_global(ln.rule or ""):
-                meta["scope"] = "global"
-            else:
-                meta["scope"] = f"repo:{repo}" if repo else UNSCOPED
-                if repo:
-                    meta["workspace"] = repo
-        else:
-            oid = title_to_oid.get(_slug(sc)) or _existing_objective_by_title(g, sc)
-            meta["scope"] = [oid] if oid else "global"
-        _topic = (getattr(ln, "topic", "") or "").strip()   # theme axis (orthogonal)
-        if _topic:
-            tp = _topic_slug(_topic)
-            if tp:
-                meta["category"] = tp
-                meta["tags"] = [f"topic:{tp}"]
-        # REUSE the same-concept learning file (same scope + same/near rule
-        # text) instead of minting a fresh L-NN each run — this is the primary
-        # fix for 'multiple files for the same topic': the learner ran twice
-        # over similar work and produced L-01, L-07, L-13… for one rule.
-        lid = _store.find_by_concept("learning", meta, ln.rule.strip())
-        r = _store.save_node("learning", lid, meta, ln.rule.strip(),
-                             reindex=False)
-        made["learnings"].append(r.get("id"))
+    made["key_results"] = _save_key_results(res.key_results, g, title_to_oid)
+    made["learnings"] = _save_learnings(res.learnings, g, title_to_oid, repo)
     if made["objectives"] or made["key_results"] or made["learnings"]:
         _store._write_index()          # one index rewrite for the whole batch
     made["ok"] = True
@@ -213,6 +237,76 @@ def write_session_node(*, title: str, body: str,
     return _store.save_node("session", None, meta, body)
 
 
+def _existing_solution(ticket: str, kind: str, norm: str) -> dict | None:
+    """A solution node already recorded for this work.
+
+    DEDUP: never write a second solution node for the same fix. Matches on
+    (ticket + kind) or a normalized summary already recorded — so re-runs of
+    the learner on the same work don't pile up duplicate S-NN nodes.
+    """
+    for d in _store.load_all():
+        if d.get("type") != "solution":
+            continue
+        m = d.get("meta") or {}
+        by_ticket = ticket and m.get("ticket") == ticket and m.get("kind") == kind
+        by_summary = norm and _dedup_key(
+            m.get("description") or m.get("title") or "") == norm
+        if by_ticket or by_summary:
+            return d
+    return None
+
+
+def _clean_list(values, limit: int | None = None) -> list[str]:
+    out = [str(v).strip() for v in (values or []) if str(v).strip()]
+    return out[:limit] if limit else out
+
+
+def _solution_meta(*, kind: str, title: str, summary: str, workspace: str,
+                   topic: str, tables, services, files, about, ticket: str,
+                   date: str) -> dict:
+    meta: dict = {"kind": kind, "title": title,
+                  "description": (summary or "").strip()[:200]}
+    if workspace:
+        meta["workspace"] = workspace
+        meta["resource"] = f"repo:{workspace}"     # OKF `resource` URI
+    for key, value in (("topic", topic), ("ticket", ticket),
+                       ("timestamp", date)):
+        if value:
+            meta[key] = value
+    for key, values, limit in (("tables", tables, None),
+                               ("services", services, None),
+                               ("files", files, 20)):
+        cleaned = _clean_list(values, limit)
+        if cleaned:
+            meta[key] = cleaned
+    # about → OKF links (the symbols/paths/tickets this solution relates to)
+    meta["about"] = list(about or [])
+    return meta
+
+
+def _append_solution_log(*, kind: str, title: str, node_id, workspace: str,
+                         tables, services, date: str) -> None:
+    """The dated audit trail (reserved OKF log.md, newest-first)."""
+    try:
+        import os as _os
+
+        from aiforge_core.memory import okf
+        extra = []
+        if workspace:
+            extra.append(f"workspace:{workspace}")
+        if tables:
+            extra.append(f"tables:{','.join(tables[:6])}")
+        if services:
+            extra.append(f"services:{','.join(services[:6])}")
+        entry = (f"[{kind}] {title}"
+                 + (f" ({'; '.join(extra)})" if extra else "")
+                 + f" · {node_id}")
+        okf.append_log(_os.path.join(_store.okf_root(), "log.md"),
+                       entry, date=date)
+    except Exception:  # noqa: BLE001 — log is best-effort
+        pass
+
+
 def record_solution(*, kind: str, summary: str, workspace: str = "",
                     topic: str = "", tables: "list[str] | None" = None,
                     services: "list[str] | None" = None,
@@ -230,58 +324,20 @@ def record_solution(*, kind: str, summary: str, workspace: str = "",
     try:
         kind = "fix" if str(kind).lower().startswith(("fix", "bug")) else "feature"
         title = (summary or "").strip().split("\n", 1)[0][:90] or f"{kind}"
-        # DEDUP: never write a second solution node for the same fix. Match on
-        # (ticket + kind) or a normalized summary already recorded — so re-runs
-        # of the learner on the same work don't pile up duplicate S-NN nodes.
-        _norm = _dedup_key(summary)
-        for _d in _store.load_all():
-            if _d.get("type") != "solution":
-                continue
-            _m = _d.get("meta") or {}
-            if (ticket and _m.get("ticket") == ticket and _m.get("kind") == kind) \
-               or (_norm and _dedup_key(_m.get("description") or _m.get("title")
-                                        or "") == _norm):
-                return {"ok": True, "id": _d.get("id"), "path": _d.get("path"),
-                        "deduped": True}
-        meta: dict = {"kind": kind, "title": title,
-                      "description": (summary or "").strip()[:200]}
-        if workspace:
-            meta["workspace"] = workspace
-            meta["resource"] = f"repo:{workspace}"     # OKF `resource` URI
-        if topic:
-            meta["topic"] = topic
-        if tables:
-            meta["tables"] = [str(t).strip() for t in tables if str(t).strip()]
-        if services:
-            meta["services"] = [str(s).strip() for s in services if str(s).strip()]
-        if files:
-            meta["files"] = [str(f).strip() for f in files if str(f).strip()][:20]
-        if ticket:
-            meta["ticket"] = ticket
-        if date:
-            meta["timestamp"] = date
-        # about → OKF links (the symbols/paths/tickets this solution relates to)
-        meta["about"] = list(about or [])
-        r = _store.save_node("solution", None, meta, body or (summary or "").strip())
-        # dated audit trail (reserved OKF log.md, newest-first)
+        dup = _existing_solution(ticket, kind, _dedup_key(summary))
+        if dup is not None:
+            return {"ok": True, "id": dup.get("id"), "path": dup.get("path"),
+                    "deduped": True}
+        meta = _solution_meta(kind=kind, title=title, summary=summary,
+                              workspace=workspace, topic=topic, tables=tables,
+                              services=services, files=files, about=about,
+                              ticket=ticket, date=date)
+        r = _store.save_node("solution", None, meta,
+                             body or (summary or "").strip())
         if date and r.get("ok"):
-            try:
-                from aiforge_core.memory import okf
-                import os as _os
-                extra = []
-                if workspace:
-                    extra.append(f"workspace:{workspace}")
-                if tables:
-                    extra.append(f"tables:{','.join(tables[:6])}")
-                if services:
-                    extra.append(f"services:{','.join(services[:6])}")
-                entry = (f"[{kind}] {title}"
-                         + (f" ({'; '.join(extra)})" if extra else "")
-                         + (f" · {r.get('id')}"))
-                okf.append_log(_os.path.join(_store.okf_root(), "log.md"),
-                               entry, date=date)
-            except Exception:  # noqa: BLE001 — log is best-effort
-                pass
+            _append_solution_log(kind=kind, title=title, node_id=r.get("id"),
+                                 workspace=workspace, tables=tables,
+                                 services=services, date=date)
         return r
     except Exception as exc:  # noqa: BLE001 — never break the learner path
         return {"ok": False, "error": str(exc)}
@@ -306,31 +362,25 @@ _RECLASSIFY_SYS = (
 )
 
 
-def reclassify_global_learnings(repos: "list[str]", *, dry_run: bool = False) -> dict:
-    """Triage the learnings currently in ``global/``: an LLM decides each is a
-    real GLOBAL rule (keep), PROJECT-specific (→ move to projects/<repo>/ by
-    setting workspace), or NOISE (a transient test-session artifact → delete).
-    ``repos`` is the known-repo whitelist the classifier maps to. ``dry_run``
-    returns the plan without touching disk. Soft-fail; never raises."""
-    try:
-        from pydantic import BaseModel
+_RECLASSIFY_USER_PREAMBLE = (
+    "For each learning below, if its text names a class / service / package / "
+    "module, MAP it to the repo that owns that name (match by name similarity "
+    "to a repo, e.g. a 'CacheLayer' fact → CacheLayer, a 'SagaTransaction'/saga "
+    "fact → the server backend, a 'ChartOfAccounts' cache → the cache repo). "
+    "Only 'noise' for scratch/test-session junk.\n\nLEARNINGS:\n")
 
-        from aiforge_core.llm.structured import structured_complete
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": f"import: {exc}"}
 
-    glob = [d for d in _store.load_all("global") if d.get("type") == "learning"]
-    if not glob:
-        return {"ok": True, "moved": 0, "deleted": 0, "kept": 0, "note": "no global learnings"}
-    repo_set = {r.strip() for r in repos if r.strip()}
+def _reclassify_decisions(items: list[dict], repo_list: str) -> list:
+    """Ask the model to triage the catalogue, in SMALL batches.
 
-    # compact catalogue for the model: id · category · first line
-    items = []
-    for d in glob:
-        m = d.get("meta") or {}
-        head = (d.get("body") or "").strip().split("\n", 1)[0][:160]
-        items.append({"id": d.get("id"), "category": m.get("category") or "",
-                      "text": head})
+    A local model reasons far better over ~8 items than 40 — a big JSON blob
+    made it skip every project mapping. A bad batch just leaves those global.
+    """
+    import json as _json
+
+    from pydantic import BaseModel
+
+    from aiforge_core.llm.structured import structured_complete
 
     class _Decision(BaseModel):
         id: str
@@ -340,52 +390,40 @@ def reclassify_global_learnings(repos: "list[str]", *, dry_run: bool = False) ->
     class _Out(BaseModel):
         decisions: "list[_Decision]" = []
 
-    import json as _json
-    repo_list = ", ".join(sorted(repo_set))
-    # Small batches: a local model reasons far better over ~8 items than 40 —
-    # a big JSON blob made it skip every project mapping. Chunk + accumulate.
-    all_dec = []
+    out = []
     for i in range(0, len(items), 8):
-        batch = items[i:i + 8]
         try:
             res = structured_complete(
                 "learner",
                 [{"role": "system", "content": _RECLASSIFY_SYS},
                  {"role": "user", "content":
-                     "REPOS: " + repo_list + "\n\n"
-                     "For each learning below, if its text names a class / "
-                     "service / package / module, MAP it to the repo that owns "
-                     "that name (match by name similarity to a repo, e.g. a "
-                     "'CacheLayer' fact → CacheLayer, a 'SagaTransaction'/saga "
-                     "fact → the server backend, a 'ChartOfAccounts' cache → the "
-                     "cache repo). Only 'noise' for scratch/test-session junk.\n\n"
-                     "LEARNINGS:\n" + _json.dumps(batch, ensure_ascii=False)}],
+                     "REPOS: " + repo_list + "\n\n" + _RECLASSIFY_USER_PREAMBLE
+                     + _json.dumps(items[i:i + 8], ensure_ascii=False)}],
                 _Out, max_retries=1, max_tokens=1200, temperature=0.0)
-            all_dec.extend(res.decisions)
-        except Exception:  # noqa: BLE001 — a bad batch just keeps those global
+            out.extend(res.decisions)
+        except Exception:  # noqa: BLE001
             continue
+    return out
 
-    by_id = {d.get("id"): d for d in glob}
-    plan = {"move": [], "delete": [], "keep": []}
-    decided = {}
-    for dec in all_dec:
-        if dec.id in by_id:
-            decided[dec.id] = dec
-    # DETERMINISTIC repo-name assist: a local model reliably marks noise but
-    # rarely maps to a repo. For anything it left global, if a repo NAME appears
-    # verbatim in the learning's category/body (token ≥5 chars, so 'Cache' alone
-    # won't false-hit), move it there — generic name matching, no hardcoded
-    # service→repo table.
-    def _name_match(node) -> str:
-        m = node.get("meta") or {}
-        hay = (str(m.get("category") or "") + " "
-               + (node.get("body") or "")).lower().replace("-", "")
-        best = ""
-        for rp in repo_set:
-            key = rp.lower().replace("-", "")
-            if len(key) >= 5 and key in hay and len(key) > len(best):
-                best = rp
-        return best
+
+def _repo_name_match(node: dict, repo_set: set) -> str:
+    """DETERMINISTIC repo-name assist: a local model reliably marks noise but
+    rarely maps to a repo. If a repo NAME appears verbatim in the learning's
+    category/body (token ≥5 chars, so 'Cache' alone won't false-hit), that is
+    the owner — generic name matching, no hardcoded service→repo table."""
+    m = node.get("meta") or {}
+    hay = (str(m.get("category") or "") + " "
+           + (node.get("body") or "")).lower().replace("-", "")
+    best = ""
+    for rp in repo_set:
+        key = rp.lower().replace("-", "")
+        if len(key) >= 5 and key in hay and len(key) > len(best):
+            best = rp
+    return best
+
+
+def _reclassify_plan(by_id: dict, decided: dict, repo_set: set) -> dict:
+    plan: dict = {"move": [], "delete": [], "keep": []}
     for nid, node in by_id.items():
         dec = decided.get(nid)
         if dec and dec.decision == "noise":
@@ -394,41 +432,44 @@ def reclassify_global_learnings(repos: "list[str]", *, dry_run: bool = False) ->
         if dec and dec.decision == "project" and dec.repo.strip() in repo_set:
             plan["move"].append((nid, dec.repo.strip()))
             continue
-        hit = _name_match(node)                # LLM said global/none → try name
+        hit = _repo_name_match(node, repo_set)  # LLM said global/none → try name
         if hit:
             plan["move"].append((nid, hit))
         else:
             plan["keep"].append(nid)
-    if dry_run:
-        return {"ok": True, "dry_run": True,
-                "move": plan["move"], "delete": plan["delete"],
-                "keep": len(plan["keep"])}
+    return plan
 
-    import os as _os
-    import shutil as _sh
-    moved = deleted = 0
-    for nid, repo in plan["move"]:
+
+def _apply_moves(moves: list, by_id: dict) -> int:
+    moved = 0
+    for nid, repo in moves:
         node = by_id[nid]
         meta = dict(node.get("meta") or {})
         meta["scope"] = f"repo:{repo}"
         meta["workspace"] = repo               # → projects/<repo>/ via _scope_of
-        r = _store.save_node("learning", nid, meta, node.get("body") or "",
-                             reindex=False)
-        if r.get("ok"):
+        if _store.save_node("learning", nid, meta, node.get("body") or "",
+                            reindex=False).get("ok"):
             moved += 1
-    # LOCALLY REVERSIBLE delete: noise nodes MOVE to okf/.trash/ (not unlink) so
-    # a mis-classified learning can be restored *on this machine* — put the file
-    # back and retrieval sees it again. It does NOT come back mesh-wide: the
-    # tombstone below travels at rev+1, so the restored file (still at the old
-    # rev) is no longer the advertised version of its identity. Re-publishing a
-    # restored node means re-authoring it, which stamps a fresh rev.
-    # ``.trash`` is a dot-directory, so ``_io.iter_syncable`` never advertises,
-    # serves or folds what lands there.
+    return moved
+
+
+def _trash_noise(ids: list, by_id: dict) -> int:
+    """LOCALLY REVERSIBLE delete: noise nodes MOVE to okf/.trash/ (not unlink)
+    so a mis-classified learning can be restored *on this machine* — put the
+    file back and retrieval sees it again. It does NOT come back mesh-wide: the
+    tombstone travels at rev+1, so the restored file (still at the old rev) is
+    no longer the advertised version of its identity. Re-publishing a restored
+    node means re-authoring it, which stamps a fresh rev. ``.trash`` is a
+    dot-directory, so ``_io.iter_syncable`` never advertises, serves or folds
+    what lands there."""
     import contextlib as _cl
+    import os as _os
+    import shutil as _sh
 
     from aiforge_core.memory.sync import tombstone as _tomb
     trash = _os.path.join(_store.okf_root(), ".trash")
-    for nid in plan["delete"]:
+    deleted = 0
+    for nid in ids:
         meta = by_id[nid].get("meta") or {}
         with _cl.suppress(OSError):
             _os.makedirs(trash, exist_ok=True)
@@ -437,10 +478,61 @@ def reclassify_global_learnings(repos: "list[str]", *, dry_run: bool = False) ->
             # Removal has to be expressible to the mesh: without this the next
             # pull from any peer re-plants the node we just called noise.
             _tomb.mark_deleted(meta.get("origin"), nid, meta.get("rev"))
+    return deleted
+
+
+def reclassify_global_learnings(repos: "list[str]", *, dry_run: bool = False) -> dict:
+    """Triage the learnings currently in ``global/``: an LLM decides each is a
+    real GLOBAL rule (keep), PROJECT-specific (→ move to projects/<repo>/ by
+    setting workspace), or NOISE (a transient test-session artifact → delete).
+    ``repos`` is the known-repo whitelist the classifier maps to. ``dry_run``
+    returns the plan without touching disk. Soft-fail; never raises."""
+    glob = [d for d in _store.load_all("global") if d.get("type") == "learning"]
+    if not glob:
+        return {"ok": True, "moved": 0, "deleted": 0, "kept": 0,
+                "note": "no global learnings"}
+    repo_set = {r.strip() for r in repos if r.strip()}
+    # compact catalogue for the model: id · category · first line
+    items = [{"id": d.get("id"),
+              "category": (d.get("meta") or {}).get("category") or "",
+              "text": (d.get("body") or "").strip().split("\n", 1)[0][:160]}
+             for d in glob]
+    try:
+        decisions = _reclassify_decisions(items, ", ".join(sorted(repo_set)))
+    except Exception as exc:  # noqa: BLE001 — no model / bad import
+        return {"ok": False, "error": f"import: {exc}"}
+
+    by_id = {d.get("id"): d for d in glob}
+    decided = {d.id: d for d in decisions if d.id in by_id}
+    plan = _reclassify_plan(by_id, decided, repo_set)
+    if dry_run:
+        return {"ok": True, "dry_run": True, "move": plan["move"],
+                "delete": plan["delete"], "keep": len(plan["keep"])}
+    moved = _apply_moves(plan["move"], by_id)
+    deleted = _trash_noise(plan["delete"], by_id)
     _store._invalidate()       # nodes moved to .trash → drop stale parse cache
     _store._write_index()
     return {"ok": True, "moved": moved, "deleted_to_trash": deleted,
             "kept": len(plan["keep"]), "scopes": _store.okr_scopes()}
+
+
+def _set_scalars(meta: dict, pairs) -> None:
+    """Scalars OVERWRITE when provided, and are left alone when blank."""
+    for k, v in pairs:
+        if v and str(v).strip():
+            meta[k] = str(v).strip()
+
+
+def _union_into(meta: dict, key: str, new, cap: int = 30) -> None:
+    """List fields UNION so the card accretes knowledge across sessions instead
+    of churning."""
+    cur = list(meta.get(key) or [])
+    for x in (new or []):
+        x = str(x).strip()
+        if x and x not in cur:
+            cur.append(x)
+    if cur:
+        meta[key] = cur[:cap]
 
 
 def record_repo_profile(workspace: str, *, stack: str = "", build: str = "",
@@ -466,32 +558,41 @@ def record_repo_profile(workspace: str, *, stack: str = "", build: str = "",
         meta["workspace"] = ws
         meta["scope"] = f"repo:{ws}"
         meta.setdefault("title", ws)
-        for k, v in (("stack", stack), ("build", build), ("test", test),
-                     ("run", run), ("structure", structure), ("deploy", deploy)):
-            if v and str(v).strip():
-                meta[k] = str(v).strip()
-
-        def _union(key, new):
-            cur = list(meta.get(key) or [])
-            for x in (new or []):
-                x = str(x).strip()
-                if x and x not in cur:
-                    cur.append(x)
-            if cur:
-                meta[key] = cur[:30]
-        _union("entry_points", entry_points)
-        _union("services", services)
-        _union("tables", tables)
-        _union("gotchas", gotchas)
-        _union("conventions", conventions)
-        _union("scripts", scripts)
-        _union("workflows", workflows)
-        if date:
-            meta["timestamp"] = date
+        _set_scalars(meta, (("stack", stack), ("build", build), ("test", test),
+                            ("run", run), ("structure", structure),
+                            ("deploy", deploy), ("timestamp", date)))
+        for key, values in (("entry_points", entry_points),
+                            ("services", services), ("tables", tables),
+                            ("gotchas", gotchas), ("conventions", conventions),
+                            ("scripts", scripts), ("workflows", workflows)):
+            _union_into(meta, key, values)
         newbody = (body or "").strip() or (existing or {}).get("body") or ""
         return _store.save_node("repo", nid, meta, newbody)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
+
+
+def _existing_node(node_type: str, workspace: str, match) -> dict | None:
+    """The node of ``node_type`` in ``workspace`` that ``match`` accepts."""
+    for d in _store.load_all(workspace or None):
+        if d.get("type") != node_type:
+            continue
+        m = d.get("meta") or {}
+        if (m.get("workspace") or "") == (workspace or "") and match(m):
+            return d
+    return None
+
+
+def _scoped_meta(workspace: str, date: str, about, base: dict) -> dict:
+    """``base`` plus the repo scope and timestamp every record_* node carries."""
+    meta = dict(base)
+    if workspace:
+        meta["workspace"] = workspace
+        meta["scope"] = f"repo:{workspace}"
+    meta["about"] = list(about or [])
+    if date:
+        meta["timestamp"] = date
+    return meta
 
 
 def record_script(*, name: str, lang: str, purpose: str = "", path: str = "",
@@ -504,25 +605,15 @@ def record_script(*, name: str, lang: str, purpose: str = "", path: str = "",
         if not name:
             return {"ok": False, "error": "no name"}
         lang = "python" if "py" in (lang or "").lower() else "shell"
-        for d in _store.load_all(workspace or None):
-            if d.get("type") == "script":
-                m = d.get("meta") or {}
-                if m.get("name") == name and (m.get("workspace") or "") == (workspace or ""):
-                    return {"ok": True, "id": d.get("id"), "deduped": True}
-        meta: dict = {"name": name, "lang": lang,
-                      "title": f"{name} ({lang})"}
+        dup = _existing_node("script", workspace, lambda m: m.get("name") == name)
+        if dup is not None:
+            return {"ok": True, "id": dup.get("id"), "deduped": True}
+        meta = _scoped_meta(workspace, date, about,
+                            {"name": name, "lang": lang,
+                             "title": f"{name} ({lang})"})
+        _set_scalars(meta, (("path", path), ("run", run)))
         if purpose:
             meta["purpose"] = purpose.strip()[:200]
-        if path:
-            meta["path"] = path
-        if run:
-            meta["run"] = run
-        if workspace:
-            meta["workspace"] = workspace
-            meta["scope"] = f"repo:{workspace}"
-        meta["about"] = list(about or [])
-        if date:
-            meta["timestamp"] = date
         return _store.save_node("script", None, meta, body or purpose)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
@@ -537,24 +628,37 @@ def record_task(*, title: str, workspace: str = "", about=None, body: str = "",
         if not title:
             return {"ok": False, "error": "no title"}
         key = _dedup_key(title)
-        for d in _store.load_all(workspace or None):
-            if d.get("type") == "task":
-                m = d.get("meta") or {}
-                if _dedup_key(m.get("title") or "") == key \
-                        and (m.get("workspace") or "") == (workspace or ""):
-                    return {"ok": True, "id": d.get("id"), "deduped": True}
-        meta: dict = {"title": title}
-        if workspace:
-            meta["workspace"] = workspace
-            meta["scope"] = f"repo:{workspace}"
-        meta["about"] = list(about or [])
+        dup = _existing_node(
+            "task", workspace, lambda m: _dedup_key(m.get("title") or "") == key)
+        if dup is not None:
+            return {"ok": True, "id": dup.get("id"), "deduped": True}
+        meta = _scoped_meta(workspace, date, about, {"title": title})
         if tags:
             meta["tags"] = list(tags)
-        if date:
-            meta["timestamp"] = date
         return _store.save_node("task", None, meta, body or title)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
+
+
+def _fact_buckets(learns: list[dict]) -> dict[str, list[str]]:
+    buckets: dict[str, list[str]] = {}
+    for d in learns:
+        cat = str((d.get("meta") or {}).get("category") or "notes").lower()
+        buckets.setdefault(cat, []).append(
+            (d.get("body") or "").strip().lstrip("- ").strip())
+    return buckets
+
+
+def _structure_note(buckets: dict[str, list[str]]) -> str:
+    """A repo's learnings are FACTS, not clean commands — so don't guess a
+    build/test COMMAND from them (that mislabels 'sync retries…' as a test cmd).
+    Only a genuine structure note is lifted; build/test/run fill in properly via
+    the learner hook when a real command (topic: build/testing) is discovered."""
+    for cat, facts in buckets.items():
+        if facts and ("structure" in cat or "architecture" in cat
+                      or "layout" in cat):
+            return facts[0][:200]
+    return ""
 
 
 def build_repo_profiles() -> dict:
@@ -567,31 +671,37 @@ def build_repo_profiles() -> dict:
         learns = [d for d in _store.load_all(ws) if d.get("type") == "learning"]
         if not learns:
             continue
-        buckets: dict[str, list[str]] = {}
-        for d in learns:
-            cat = str((d.get("meta") or {}).get("category") or "notes").lower()
-            buckets.setdefault(cat, []).append(
-                (d.get("body") or "").strip().lstrip("- ").strip())
-
-        # A repo's learnings are FACTS, not clean commands — so don't guess a
-        # build/test COMMAND from them (that mislabels 'sync retries…' as a test
-        # cmd). Only lift a genuine structure note; collect everything as gotchas.
-        # build/test/run fill in properly via the learner hook when a real
-        # command (topic: build/testing) is discovered.
-        structure = ""
-        for cat, facts in buckets.items():
-            if ("structure" in cat or "architecture" in cat or "layout" in cat) \
-                    and facts:
-                structure = facts[0][:200]
-                break
-        gotchas = [f for facts in buckets.values() for f in facts if f][:12]
+        buckets = _fact_buckets(learns)
         r = record_repo_profile(
-            ws, structure=structure, gotchas=gotchas,
+            ws, structure=_structure_note(buckets),
+            gotchas=[f for facts in buckets.values() for f in facts if f][:12],
             body="Auto-built from this repo's learnings; build/test/run fill in "
                  "as they're discovered.")
         if r.get("ok"):
             made += 1
     return {"ok": True, "profiles": made}
+
+
+def _brief_facts_by_topic() -> dict[str, list[str]]:
+    """Every knowledge brief's Facts, keyed by topic (split parts folded back)."""
+    import re
+
+    from aiforge_core.memory import md_store
+    from aiforge_core.runtime import work_notes
+    out: dict[str, list[str]] = {}
+    for p in md_store.iter_briefs():
+        topic = re.sub(r"-\d+$", "", p.stem[len("compacted-"):])
+        try:
+            parsed = work_notes.parse_note(
+                p.read_text(encoding="utf-8", errors="replace"))
+        except Exception:  # noqa: BLE001
+            continue
+        if (parsed["frontmatter"] or {}).get("kind") != "knowledge":
+            continue
+        facts = parsed["sections"].get("facts") or []
+        if facts:
+            out.setdefault(topic, []).extend(facts)
+    return out
 
 
 def migrate_from_briefs() -> dict:
@@ -603,26 +713,10 @@ def migrate_from_briefs() -> dict:
     chain's LLM ``classify`` step (which has the real repo list) sorts these
     global learnings into projects/noise afterwards, with consistent casing.
     Idempotent — a category already migrated is skipped. Soft-fail."""
-    import re
-
-    from aiforge_core.memory import md_store
-    from aiforge_core.runtime import work_notes
     g = _graph.build(force=True)
     have = {str((n.get("meta") or {}).get("category") or "").lower()
             for n in g.nodes.values() if n.get("type") == "learning"}
-    facts_by_topic: dict[str, list[str]] = {}
-    for p in md_store.iter_briefs():
-        base = p.stem[len("compacted-"):]
-        topic = re.sub(r"-\d+$", "", base)
-        try:
-            parsed = work_notes.parse_note(p.read_text(encoding="utf-8", errors="replace"))
-        except Exception:  # noqa: BLE001
-            continue
-        if (parsed["frontmatter"] or {}).get("kind") != "knowledge":
-            continue
-        facts = parsed["sections"].get("facts") or []
-        if facts:
-            facts_by_topic.setdefault(topic, []).extend(facts)
+    facts_by_topic = _brief_facts_by_topic()
     made = 0
     for topic, facts in facts_by_topic.items():
         if topic.lower() in have or not facts:
@@ -713,6 +807,52 @@ def _body_for(facts: list[str]) -> tuple[str, list[str]]:
     return "\n".join(f"- {f}" for f in kept), kept
 
 
+def _learning_by_topic(g) -> dict:
+    """``{topic: (id, node)}`` for the existing global learning nodes."""
+    out: dict = {}
+    for nid, node in g.nodes.items():
+        if node.get("type") != "learning":
+            continue
+        cat = str((node.get("meta") or {}).get("category") or "").lower()
+        if cat:
+            out.setdefault(cat, (nid, node))
+    return out
+
+
+def _create_topic_node(topic: str, facts: list) -> tuple[int, int]:
+    """``(created, dropped)`` for a topic no node holds yet."""
+    body, kept = _body_for(facts)
+    ok = _store.save_node("learning", None,
+                          {"scope": "global", "category": topic,
+                           "title": f"{topic} knowledge",
+                           "tags": [f"topic:{topic}"]},
+                          body, reindex=False).get("ok")
+    return (1 if ok else 0), len(facts) - len(kept)
+
+
+def _update_topic_node(topic: str, facts: list, held) -> tuple[int, int]:
+    """``(updated, dropped)`` for a topic that already has a node."""
+    nid, node = held
+    have = _fact_lines(node.get("body") or "")
+    fresh = [f for f in facts if f not in have]
+    if not fresh:
+        return 0, 0       # unchanged: no write, no rev bump, nothing to sync
+    body, kept = _body_for(have + fresh)
+    dropped = len(have) + len(fresh) - len(kept)
+    if _fact_lines(body) == have:
+        # The node is full: every fresh fact fell off the end, so writing would
+        # produce byte-identical content at a higher rev — and would do so on
+        # EVERY cycle. Say so once and leave it alone.
+        _log.info("okf: %s knowledge is at the %d-char cap — %d newer "
+                  "fact(s) not carried", topic, _BODY_CHARS, len(fresh))
+        return 0, dropped
+    meta = dict(node.get("meta") or {})
+    meta.setdefault("scope", "global")
+    meta.setdefault("category", topic)
+    ok = _store.save_node("learning", nid, meta, body, reindex=False).get("ok")
+    return (1 if ok else 0), dropped
+
+
 def sync_briefs_to_nodes() -> dict:
     """Turn this machine's compacted briefs into OKF nodes, and keep them current.
 
@@ -736,48 +876,17 @@ def sync_briefs_to_nodes() -> dict:
     if not facts_by_topic:
         return {"ok": True, "created": 0, "updated": 0, "topics": 0}
 
-    g = _graph.build(force=True)
-    existing = {}
-    for nid, node in g.nodes.items():
-        if node.get("type") != "learning":
-            continue
-        cat = str((node.get("meta") or {}).get("category") or "").lower()
-        if cat:
-            existing.setdefault(cat, (nid, node))
-
-    created = updated = 0
-    dropped = 0
+    existing = _learning_by_topic(_graph.build(force=True))
+    created = updated = dropped = 0
     for topic, facts in facts_by_topic.items():
         held = existing.get(topic.lower())
         if held is None:
-            body, kept = _body_for(facts)
-            dropped += len(facts) - len(kept)
-            if _store.save_node("learning", None,
-                                {"scope": "global", "category": topic,
-                                 "title": f"{topic} knowledge",
-                                 "tags": [f"topic:{topic}"]},
-                                body, reindex=False).get("ok"):
-                created += 1
-            continue
-        nid, node = held
-        have = _fact_lines(node.get("body") or "")
-        fresh = [f for f in facts if f not in have]
-        if not fresh:
-            continue          # unchanged: no write, no rev bump, nothing to sync
-        body, kept = _body_for(have + fresh)
-        dropped += len(have) + len(fresh) - len(kept)
-        if _fact_lines(body) == have:
-            # The node is full: every fresh fact fell off the end, so writing
-            # would produce byte-identical content at a higher rev — and would
-            # do so on EVERY cycle. Say so once and leave it alone.
-            _log.info("okf: %s knowledge is at the %d-char cap — %d newer "
-                      "fact(s) not carried", topic, _BODY_CHARS, len(fresh))
-            continue
-        meta = dict(node.get("meta") or {})
-        meta.setdefault("scope", "global")
-        meta.setdefault("category", topic)
-        if _store.save_node("learning", nid, meta, body, reindex=False).get("ok"):
-            updated += 1
+            n, d = _create_topic_node(topic, facts)
+            created += n
+        else:
+            n, d = _update_topic_node(topic, facts, held)
+            updated += n
+        dropped += d
 
     if created or updated:
         _store._write_index()          # one rewrite for the whole pass

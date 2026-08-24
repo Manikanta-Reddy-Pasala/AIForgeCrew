@@ -88,82 +88,97 @@ def _defaults() -> dict[str, dict[str, Any]]:
     }
 
 
+def _host_of(url: "str | None") -> str:
+    try:
+        import urllib.parse as _up
+        return (_up.urlsplit(url or "").hostname or "").lower()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _is_bare_local(row: dict) -> bool:
+    """A leftover "bare local" row — provider=local, no base_url, no api_key.
+
+    Left behind by an old profile-apply or auto-discovery. A configured
+    NON-LOCAL global default (cloud / internal endpoint) must win over one,
+    or you set your endpoint (e.g. https://chat.ai.internal/...) and triage
+    keeps hitting 127.0.0.1:1234 on the old default model.
+    """
+    return ((row.get("provider") or "local") == "local"
+            and not row.get("base_url") and not row.get("api_key"))
+
+
+def _merged_row(seed: dict, row: dict) -> dict:
+    """``seed`` (the global-default row) overlaid with a per-role ``row``.
+
+    A row that OMITS base_url / api_key / insecure_tls INHERITS them from the
+    seed rather than nulling them. Without this, applying a profile (or a
+    per-role Save) writes rows with base_url=None, which then shadow the
+    operator's global endpoint and silently send every role back to
+    http://127.0.0.1:1234 — the "I set one URL but it probes localhost" bug.
+    An explicit per-role base_url still wins (lets us run mlx-lm on per-role
+    ports); the endpoint is inherited only when the provider matches the seed
+    (don't paste a cloud URL onto a local row).
+    """
+    provider = row.get("provider") or seed["provider"]
+    same_provider = provider == seed["provider"]
+    row_base = row.get("base_url")
+    # Only inherit the seed's key when the row points at the SAME host (a
+    # different base_url is a different trust domain — don't leak the global
+    # cloud token to it). Since openai_compatible is the only provider,
+    # same_provider is always True, so the host check is what actually gates
+    # it. Compare HOSTNAMES (not the raw URL) so a trailing slash / case /
+    # explicit-port difference for the same endpoint doesn't wrongly drop it.
+    same_host = (not row_base) or (_host_of(row_base)
+                                   == _host_of(seed.get("base_url")))
+    return {
+        "provider": provider,
+        "model": row.get("model") or seed["model"],
+        "base_url": row_base or (seed.get("base_url") if same_provider else None),
+        "api_key": row.get("api_key") or (
+            seed.get("api_key") if (same_provider and same_host) else None),
+        # Respect an EXPLICIT per-role insecure_tls (incl. a deliberate
+        # ``false`` to keep strict TLS) — only inherit when the row omits it.
+        "insecure_tls": (bool(row["insecure_tls"])
+                         if row.get("insecure_tls") is not None
+                         else (same_provider and bool(seed.get("insecure_tls")))),
+    }
+
+
+def _apply_disk_rows(cfg: dict, disk: dict, gd: dict | None) -> None:
+    non_local_default = bool(gd and gd.get("provider")
+                             and gd["provider"] != "local")
+    for role, row in disk.items():
+        if role not in _ROLES or not isinstance(row, dict):
+            continue
+        if non_local_default and _is_bare_local(row):
+            continue                  # cfg[role] already = global default
+        cfg[role] = _merged_row(cfg[role], row)
+
+
+def _apply_env_overrides(cfg: dict) -> None:
+    """AIFORGE_<ROLE>_MODEL / _PROVIDER / _BASE_URL / _API_KEY. Always wins
+    over persisted JSON — the ops escape hatch."""
+    fields = {"model": "MODEL", "provider": "PROVIDER",
+              "base_url": "BASE_URL", "api_key": "API_KEY"}
+    for role in _ROLES:
+        cfg[role].setdefault("api_key", None)
+        for key, suffix in fields.items():
+            value = os.environ.get(f"AIFORGE_{role.upper()}_{suffix}")
+            if value:
+                cfg[role][key] = value
+
+
 def load_all() -> dict[str, dict[str, Any]]:
     """Read the full per-role map, merging defaults for missing keys."""
-    p = _path()
     cfg: dict[str, dict[str, Any]] = {k: dict(v)
                                       for k, v in _defaults().items()}
-    gd = _global_default_row()
+    p = _path()
     if p.exists():
         try:
             disk = _fc.read_json(p)
             if isinstance(disk, dict):
-                for role, row in disk.items():
-                    if role in _ROLES and isinstance(row, dict):
-                        # A configured NON-LOCAL global default (cloud /
-                        # internal endpoint) must win over a STALE "bare local"
-                        # per-role row — provider=local with no base_url and no
-                        # api_key, i.e. a leftover from an old profile-apply or
-                        # auto-discovery. Without this, you set your endpoint
-                        # (e.g. https://chat.ai.internal/...) but triage keeps
-                        # hitting 127.0.0.1:1234 on the old default model. Keep
-                        # the seed (= the global default) for such rows.
-                        if gd and gd.get("provider") and gd["provider"] != "local":
-                            row_prov = row.get("provider") or "local"
-                            if (row_prov == "local"
-                                    and not row.get("base_url")
-                                    and not row.get("api_key")):
-                                continue   # cfg[role] already = global default
-                        # ``cfg[role]`` is the global-default seed (or local
-                        # fallback). A per-role row overlays it — but a row
-                        # that OMITS base_url / api_key / insecure_tls must
-                        # INHERIT them from the seed rather than null them.
-                        # Without this, applying a profile (or a per-role
-                        # Save) writes rows with base_url=None, which then
-                        # shadow the operator's global endpoint and silently
-                        # send every role back to http://127.0.0.1:1234 —
-                        # the "I set one URL but it probes localhost" bug.
-                        # An explicit per-role base_url still wins (lets us
-                        # run mlx-lm on per-role ports). Inheritance of the
-                        # endpoint only applies when the provider matches the
-                        # seed (don't paste a cloud URL onto a local row).
-                        seed = cfg[role]
-                        provider = row.get("provider") or seed["provider"]
-                        same_provider = provider == seed["provider"]
-                        row_base = row.get("base_url")
-                        row_key = row.get("api_key")
-                        # Only inherit the seed's key when the row points at the
-                        # SAME host (a different base_url is a different trust
-                        # domain — don't leak the global cloud token to it). Since
-                        # openai_compatible is the only provider, same_provider is
-                        # always True, so the host check is what actually gates it.
-                        # Compare HOSTNAMES (not the raw URL) so a trailing slash /
-                        # case / explicit-port difference for the same endpoint
-                        # doesn't wrongly drop the inherited key.
-                        def _host(u: "str | None") -> "str | None":
-                            try:
-                                import urllib.parse as _up
-                                return (_up.urlsplit(u or "").hostname or "").lower()
-                            except Exception:  # noqa: BLE001
-                                return None
-                        _same_host = (not row_base) or (
-                            _host(row_base) == _host(seed.get("base_url")))
-                        cfg[role] = {
-                            "provider": provider,
-                            "model": row.get("model") or seed["model"],
-                            "base_url": row_base or (
-                                seed.get("base_url") if same_provider else None),
-                            "api_key": row_key or (
-                                seed.get("api_key") if (same_provider and _same_host) else None),
-                            # Respect an EXPLICIT per-role insecure_tls (incl.
-                            # a deliberate ``false`` to keep strict TLS) — only
-                            # inherit the seed's flag when the row omits it.
-                            "insecure_tls": (
-                                bool(row["insecure_tls"])
-                                if row.get("insecure_tls") is not None
-                                else (same_provider
-                                      and bool(seed.get("insecure_tls")))),
-                        }
+                _apply_disk_rows(cfg, disk, _global_default_row())
         except Exception as exc:  # noqa: BLE001
             # Corrupt / truncated agent_config.json → fall back to defaults,
             # but say so once (silent fallback made "my config vanished"
@@ -171,23 +186,7 @@ def load_all() -> dict[str, dict[str, Any]]:
             logging.getLogger("aiforge.agent_config").warning(
                 "agent_config.json unreadable (%s) — using defaults; "
                 "fix or reset the file (run.sh --reset-config).", exc)
-    # Env override: AIFORGE_<ROLE>_MODEL / AIFORGE_<ROLE>_PROVIDER /
-    # AIFORGE_<ROLE>_BASE_URL / AIFORGE_<ROLE>_API_KEY. Always wins over
-    # persisted JSON — ops escape hatch.
-    for role in _ROLES:
-        cfg[role].setdefault("api_key", None)
-        env_model = os.environ.get(f"AIFORGE_{role.upper()}_MODEL")
-        env_prov = os.environ.get(f"AIFORGE_{role.upper()}_PROVIDER")
-        env_base = os.environ.get(f"AIFORGE_{role.upper()}_BASE_URL")
-        env_key = os.environ.get(f"AIFORGE_{role.upper()}_API_KEY")
-        if env_model:
-            cfg[role]["model"] = env_model
-        if env_prov:
-            cfg[role]["provider"] = env_prov
-        if env_base:
-            cfg[role]["base_url"] = env_base
-        if env_key:
-            cfg[role]["api_key"] = env_key
+    _apply_env_overrides(cfg)
     return cfg
 
 

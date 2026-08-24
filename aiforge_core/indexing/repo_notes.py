@@ -64,31 +64,37 @@ def _rg(pattern: str, path: str, extra: list[str] | None = None) -> list[str]:
         return []
 
 
+def _readme_lead(text: str) -> str:
+    """The first paragraph after the H1 — the repo's own one-line purpose.
+
+    Blank lines end the paragraph once it has started; heading lines are
+    skipped before it and end it after.
+    """
+    head: list[str] = []
+    for raw in text.splitlines()[:80]:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            # Before the paragraph starts these are the H1 and its padding;
+            # once it has started, either one ends it.
+            if head:
+                break
+            continue
+        head.append(line)
+        if len(" ".join(head)) > 600:
+            break
+    return " ".join(head)[:1200]
+
+
 def _sniff_purpose(worktree: str) -> str:
     for fn in ("README.md", "Readme.md", "readme.md"):
         p = os.path.join(worktree, fn)
-        if os.path.isfile(p):
-            try:
-                txt = Path(p).read_text(encoding="utf-8", errors="replace")
-            except Exception:
-                continue
-            # First ## or first paragraph after H1.
-            lines = [l.rstrip() for l in txt.splitlines()][:80]
-            head = []
-            for l in lines:
-                s = l.strip()
-                if not s:
-                    if head:
-                        break
-                    continue
-                if s.startswith("#"):
-                    if not head:
-                        continue
-                    break
-                head.append(s)
-                if len(" ".join(head)) > 600:
-                    break
-            return " ".join(head)[:1200]
+        if not os.path.isfile(p):
+            continue
+        try:
+            txt = Path(p).read_text(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            continue
+        return _readme_lead(txt)
     return "(no README found)"
 
 
@@ -110,43 +116,38 @@ def _layout(worktree: str) -> list[str]:
     return rows
 
 
+_CLASS_MAPPING_RE = re.compile(
+    r'@RequestMapping\s*\(\s*(?:value\s*=\s*)?["]([^"]+)["]')
+_METHOD_MAPPING_RE = re.compile(
+    r'@(Get|Post|Put|Delete|Patch)Mapping\s*\(\s*(?:value\s*=\s*)?["]([^"]+)["]')
+
+
+def _controller_endpoints(content: str, cls_path: str) -> list[str]:
+    """``VERB /full/path`` for each @*Mapping method, under the class path."""
+    return [f"{m.group(1).upper()} "
+            f"{(cls_path + m.group(2)).replace('//', '/')}"
+            for m in _METHOD_MAPPING_RE.finditer(content)]
+
+
 def _controllers(worktree: str) -> list[dict]:
     """Find @RestController / @Controller classes + their @*Mapping paths."""
     out: list[dict] = []
     seen_paths: set[str] = set()
     for ln in _rg(r"@(?:Rest)?Controller\b", worktree):
-        try:
-            path, lineno, _ = ln.split(":", 2)
-        except ValueError:
-            continue
-        if path in seen_paths:
+        path = ln.split(":", 2)[0] if ln.count(":") >= 2 else ""
+        if not path or path in seen_paths:
             continue
         seen_paths.add(path)
         try:
             content = Path(path).read_text(encoding="utf-8", errors="replace")
-        except Exception:
+        except Exception:  # noqa: BLE001
             continue
-        # Class-level @RequestMapping
-        cls_path = ""
-        m = re.search(
-            r'@RequestMapping\s*\(\s*(?:value\s*=\s*)?["]([^"]+)["]',
-            content,
-        )
-        if m:
-            cls_path = m.group(1)
-        # Per-method @*Mapping
-        endpoints: list[str] = []
-        for em in re.finditer(
-            r'@(Get|Post|Put|Delete|Patch)Mapping\s*\(\s*'
-            r'(?:value\s*=\s*)?["]([^"]+)["]',
-            content,
-        ):
-            endpoints.append(f"{em.group(1).upper()} "
-                             f"{(cls_path + em.group(2)).replace('//','/')}")
+        m = _CLASS_MAPPING_RE.search(content)
+        cls_path = m.group(1) if m else ""
         out.append({
             "file": os.path.relpath(path, worktree),
             "class_path": cls_path,
-            "endpoints": endpoints[:20],
+            "endpoints": _controller_endpoints(content, cls_path)[:20],
         })
         if len(out) >= 30:
             break
@@ -294,35 +295,33 @@ def _commands(repo: str, worktree: str) -> dict[str, str]:
         return {}
 
 
+def _sibling_repos(base: str, repo: str) -> list[str]:
+    try:
+        return [d for d in os.listdir(base)
+                if os.path.isdir(os.path.join(base, d))
+                and not d.startswith(".") and d != repo]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _relations(notes: RepoNotes) -> dict[str, list[str]]:
     """Best-effort cross-repo relation list. Pulls Kafka topics +
     NATS subjects (these are the cross-repo contracts) + outbound
     HTTP URLs that mention other known service names."""
     rel: dict[str, list[str]] = defaultdict(list)
     base = os.environ.get("AIFORGE_REPOS_BASE", os.path.expanduser("~/codeRepo"))
-    sibling_repos = []
-    try:
-        sibling_repos = [
-            d for d in os.listdir(base)
-            if os.path.isdir(os.path.join(base, d))
-            and not d.startswith(".") and d != notes.repo
-        ]
-    except Exception:
-        pass
     # HTTP relations — base URL contains a sibling repo name.
+    siblings = _sibling_repos(base, notes.repo)
     for url in notes.http_clients:
-        for sib in sibling_repos:
+        for sib in siblings:
             if sib.lower() in url.lower():
                 rel[sib].append(f"HTTP {url}")
     # Kafka / NATS — assume same broker; topics are shared contracts.
-    for topic in (notes.kafka_topics.get("publish") or []):
-        rel["__shared_kafka_publish"].append(topic)
-    for topic in (notes.kafka_topics.get("subscribe") or []):
-        rel["__shared_kafka_subscribe"].append(topic)
-    for subj in (notes.nats_subjects.get("publish") or []):
-        rel["__shared_nats_publish"].append(subj)
-    for subj in (notes.nats_subjects.get("subscribe") or []):
-        rel["__shared_nats_subscribe"].append(subj)
+    for channels, prefix in ((notes.kafka_topics, "kafka"),
+                             (notes.nats_subjects, "nats")):
+        for direction in ("publish", "subscribe"):
+            for name in (channels.get(direction) or []):
+                rel[f"__shared_{prefix}_{direction}"].append(name)
     return dict(rel)
 
 
@@ -354,118 +353,110 @@ def _okr_facts(n: RepoNotes) -> list[str]:
     return f
 
 
+def _section(title: str, lines: list[str]) -> list[str]:
+    """A ``## title`` block, or nothing when the section has no lines.
+
+    Sections are separated by ONE blank line — a block whose lines already end
+    with one (the pub/sub groups do) does not get a second.
+    """
+    if not lines:
+        return []
+    body = lines[:-1] if lines[-1] == "" else lines
+    return [f"## {title}", "", *body, ""]
+
+
+def _bullets(items, fmt=lambda v: f"- `{v}`") -> list[str]:
+    return [fmt(v) for v in items]
+
+
+def _controller_lines(controllers: list[dict]) -> list[str]:
+    out: list[str] = []
+    for c in controllers[:25]:
+        out.append(f"- **{os.path.basename(c['file'])}** (`{c['file']}`)")
+        if c.get("class_path"):
+            out.append(f"  - base path: `{c['class_path']}`")
+        out.extend(f"  - `{ep}`" for ep in (c.get("endpoints") or []))
+    return out
+
+
+def _service_lines(services: list[dict]) -> list[str]:
+    out: list[str] = []
+    for s in services[:30]:
+        line = f"- **{s['name']}**"
+        if s.get("interface"):
+            line += f"  — interface: `{s['interface']}`"
+        if s.get("impl"):
+            line += f"  — impl: `{s['impl']}`"
+        out.append(line)
+    return out
+
+
+def _pubsub_lines(channels: dict, sub_label: str) -> list[str]:
+    """The consumes/publishes pair for one messaging surface."""
+    out: list[str] = []
+    for key, label in (("subscribe", sub_label), ("publish", "**Publishes:**")):
+        values = channels.get(key)
+        if values:
+            out.append(label)
+            out.extend(f"  - `{v}`" for v in values)
+            out.append("")
+    return out
+
+
+def _relation_lines(relations: dict) -> list[str]:
+    out: list[str] = []
+    for k, vals in relations.items():
+        if not vals:
+            continue
+        out.append(f"**{k.replace('__shared_', 'shared ')}**:")
+        out.extend(f"  - `{v}`" for v in vals[:15])
+        out.append("")
+    return out
+
+
+def _notes_body(n: RepoNotes) -> str:
+    """The structured reference — one section per surface, each omitted when
+    the scan found nothing for it."""
+    out = [f"# {n.repo} — repo notes", "",
+           "Auto-generated by `aiforge-maint repo notes "
+           f"{n.repo}`. KISS: ripgrep + tree-sitter, no LLM. "
+           "Re-run after structural changes.", "",
+           "## Purpose", n.purpose or "_(unknown)_", ""]
+    if n.layout:
+        out += ["## Top-level layout", "```", *n.layout, "```", ""]
+    out += _section(f"Controllers ({len(n.controllers)})",
+                    _controller_lines(n.controllers))
+    out += _section(f"Services ({len(n.services)})",
+                    _service_lines(n.services))
+    out += _section(f"Repositories ({len(n.repositories)})",
+                    _bullets(n.repositories[:30]))
+    out += _section(f"Configuration classes ({len(n.configs)})",
+                    _bullets(n.configs[:20]))
+    out += _section("Kafka", _pubsub_lines(n.kafka_topics, "**Consumes:**"))
+    out += _section("NATS / JetStream",
+                    _pubsub_lines(n.nats_subjects, "**Subscribes:**"))
+    if n.mongo_collections:
+        out += ["## MongoDB collections referenced", "",
+                ", ".join(f"`{c}`" for c in n.mongo_collections), ""]
+    out += _section("Outbound HTTP", _bullets(n.http_clients[:25]))
+    if n.commands:
+        # The header goes in whenever commands were DETECTED, even if every
+        # value came back empty — an empty section says "we looked".
+        out += ["## Build / test commands", "",
+                *[f"- **{k}**: `{v}`" for k, v in n.commands.items() if v], ""]
+    if n.relations:
+        # Same rule as the commands section: the header records that the
+        # relation scan RAN, even when every bucket came back empty.
+        out += ["## Cross-repo / shared contracts", "",
+                *_relation_lines(n.relations)]
+    return "\n".join(out).strip("\n")
+
+
 def render_markdown(n: RepoNotes) -> str:
     """Render the repo-notes body (the structured reference), then wrap it in
     the standard OKR note envelope (work_notes) so a repo-notes file carries
     the SAME frontmatter/Objective/Facts head as every other managed md —
     ``updated_at`` for staleness, deduped links, one parser everywhere."""
-    out: list[str] = []
-    out.append(f"# {n.repo} — repo notes")
-    out.append("")
-    out.append("Auto-generated by `aiforge-maint repo notes "
-               f"{n.repo}`. KISS: ripgrep + tree-sitter, no LLM. "
-               "Re-run after structural changes.")
-    out.append("")
-    out.append("## Purpose")
-    out.append(n.purpose or "_(unknown)_")
-    out.append("")
-    if n.layout:
-        out.append("## Top-level layout")
-        out.append("```")
-        out.extend(n.layout)
-        out.append("```")
-        out.append("")
-    if n.controllers:
-        out.append(f"## Controllers ({len(n.controllers)})")
-        out.append("")
-        for c in n.controllers[:25]:
-            out.append(f"- **{os.path.basename(c['file'])}** "
-                       f"(`{c['file']}`)")
-            if c.get("class_path"):
-                out.append(f"  - base path: `{c['class_path']}`")
-            for ep in c.get("endpoints") or []:
-                out.append(f"  - `{ep}`")
-        out.append("")
-    if n.services:
-        out.append(f"## Services ({len(n.services)})")
-        out.append("")
-        for s in n.services[:30]:
-            line = f"- **{s['name']}**"
-            if s.get("interface"):
-                line += f"  — interface: `{s['interface']}`"
-            if s.get("impl"):
-                line += f"  — impl: `{s['impl']}`"
-            out.append(line)
-        out.append("")
-    if n.repositories:
-        out.append(f"## Repositories ({len(n.repositories)})")
-        out.append("")
-        for r in n.repositories[:30]:
-            out.append(f"- `{r}`")
-        out.append("")
-    if n.configs:
-        out.append(f"## Configuration classes ({len(n.configs)})")
-        out.append("")
-        for c in n.configs[:20]:
-            out.append(f"- `{c}`")
-        out.append("")
-    if n.kafka_topics.get("subscribe") or n.kafka_topics.get("publish"):
-        out.append("## Kafka")
-        out.append("")
-        if n.kafka_topics.get("subscribe"):
-            out.append("**Consumes:**")
-            for t in n.kafka_topics["subscribe"]:
-                out.append(f"  - `{t}`")
-            out.append("")
-        if n.kafka_topics.get("publish"):
-            out.append("**Publishes:**")
-            for t in n.kafka_topics["publish"]:
-                out.append(f"  - `{t}`")
-            out.append("")
-    if n.nats_subjects.get("subscribe") or n.nats_subjects.get("publish"):
-        out.append("## NATS / JetStream")
-        out.append("")
-        if n.nats_subjects.get("subscribe"):
-            out.append("**Subscribes:**")
-            for s in n.nats_subjects["subscribe"]:
-                out.append(f"  - `{s}`")
-            out.append("")
-        if n.nats_subjects.get("publish"):
-            out.append("**Publishes:**")
-            for s in n.nats_subjects["publish"]:
-                out.append(f"  - `{s}`")
-            out.append("")
-    if n.mongo_collections:
-        out.append("## MongoDB collections referenced")
-        out.append("")
-        out.append(", ".join(f"`{c}`" for c in n.mongo_collections))
-        out.append("")
-    if n.http_clients:
-        out.append("## Outbound HTTP")
-        out.append("")
-        for u in n.http_clients[:25]:
-            out.append(f"- `{u}`")
-        out.append("")
-    if n.commands:
-        out.append("## Build / test commands")
-        out.append("")
-        for k, v in n.commands.items():
-            if v:
-                out.append(f"- **{k}**: `{v}`")
-        out.append("")
-    if n.relations:
-        out.append("## Cross-repo / shared contracts")
-        out.append("")
-        for k, vals in n.relations.items():
-            if not vals:
-                continue
-            label = k.replace("__shared_", "shared ")
-            out.append(f"**{label}**:")
-            for v in vals[:15]:
-                out.append(f"  - `{v}`")
-            out.append("")
-    body = "\n".join(out).strip("\n")
-
     # REPO_NOTES.md lives at <repo>/.aiforge/, OUTSIDE the work/<kind>/<key>/
     # tree, so a relative cross-ref md link would not resolve from here — the
     # cross-repo relations stay in the body's "Cross-repo / shared contracts"
@@ -478,7 +469,7 @@ def render_markdown(n: RepoNotes) -> str:
                    "controllers, services, event surface and cross-repo "
                    "contracts — without an LLM scan each time."),
         key_results=_okr_facts(n),
-        body_md=body)
+        body_md=_notes_body(n))
 
 
 def generate_repo_notes(repo: str, *, write: bool = True) -> str:

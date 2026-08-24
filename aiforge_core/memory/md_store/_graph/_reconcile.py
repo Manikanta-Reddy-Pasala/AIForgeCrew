@@ -5,6 +5,7 @@ scope briefs and folds near-duplicate topic briefs into one. Part of the
 from __future__ import annotations
 
 import os
+import re
 
 from .._base import (
     _CAPTURE_SIG_RE,
@@ -131,40 +132,31 @@ _RECONCILE_SYS = (
 )
 
 
-def reconcile_briefs(*, role: str = "learner", max_facts: int = 400) -> dict:
-    """CROSS-brief semantic cleanup: an LLM finds duplicate/contradictory facts
-    that scattered across different scope briefs (the compaction consolidate only
-    dedupes WITHIN a brief) and removes the redundant/stale copies, keeping one
-    canonical version in the broadest scope. Feasible only at a bounded fact
-    count (skips above ``max_facts`` so it stays a single call). Gated on
-    ``AIFORGE_OKR_SCOPE_LLM``; ``AIFORGE_OKR_RECONCILE=0`` disables. Never raises."""
-    # OPT-IN (default OFF): an LLM removing facts across briefs unsupervised can
-    # be over-aggressive (it dropped ~24% on a stress run) and is inconsistent —
-    # too risky for the automatic pipeline. Enable AIFORGE_OKR_RECONCILE=1 to run
-    # it (manually or in recompact) when you want an aggressive cross-scope pass.
-    if os.environ.get("AIFORGE_OKR_SCOPE_LLM", "1") == "0" \
-            or os.environ.get("AIFORGE_OKR_RECONCILE", "0") != "1":
-        return {"removed": 0, "skipped": "disabled"}
+def _collect_brief_facts() -> tuple[dict, dict, int]:
+    """``(facts_by_scope, updated_by_scope, total)`` across every brief."""
     from aiforge_core.runtime import work_notes
-    briefs: dict = {}          # key -> [facts]
+    briefs: dict = {}
+    updated: dict = {}         # key -> updated_at (recency tiebreaker)
     total = 0
     for p in iter_briefs():
         if _CAPTURE_SIG_RE.search(p.name):
             continue
-        key = p.stem[len("compacted-"):]
         try:
-            facts = work_notes.parse_note(
-                p.read_text(encoding="utf-8"))["sections"].get("facts") or []
+            parsed = work_notes.parse_note(p.read_text(encoding="utf-8"))
         except OSError:
             continue
-        if facts:
-            briefs[key] = facts
-            total += len(facts)
-    if total < 2 or total > max_facts:
-        return {"removed": 0, "skipped": f"facts={total}"}
+        facts = parsed["sections"].get("facts") or []
+        if not facts:
+            continue
+        key = p.stem[len("compacted-"):]
+        briefs[key] = facts
+        updated[key] = (parsed.get("frontmatter") or {}).get("updated_at") or ""
+        total += len(facts)
+    return briefs, updated, total
 
-    listing = "\n".join(f"{k} :: {_fact_body(f)}"
-                        for k, fs in briefs.items() for f in fs)
+
+def _ask_for_removals(role: str, system_prompt: str, listing: str) -> list | None:
+    """One bounded structured call asking which facts to drop. None on failure."""
     try:
         from pydantic import BaseModel
 
@@ -179,21 +171,30 @@ def reconcile_briefs(*, role: str = "learner", max_facts: int = 400) -> dict:
 
         res = structured_complete(
             role,
-            [{"role": "system", "content": _RECONCILE_SYS},
+            [{"role": "system", "content": system_prompt},
              {"role": "user", "content": listing[:24000]}],
             _Removes, max_tokens=2000, max_retries=1, temperature=0.0)
-        removes = getattr(res, "removes", None) or []
+        return getattr(res, "removes", None) or []
     except Exception as exc:  # noqa: BLE001
-        _log.debug("reconcile_briefs LLM failed: %s", exc)
-        return {"removed": 0, "error": "llm_unreachable"}
+        _log.debug("brief-removal LLM failed: %s", exc)
+        return None
 
-    # group removals by scope key → ci-keys to drop
+
+def _removals_by_scope(removes: list, briefs: dict) -> dict:
+    """``{scope: {ci-key, …}}`` for the removals that name a scope we hold."""
+    from aiforge_core.runtime import work_notes
     drop: dict = {}
     for r in removes:
         k = (getattr(r, "scope", "") or "").strip()
         f = (getattr(r, "fact", "") or "").strip()
         if k in briefs and f:
             drop.setdefault(k, set()).add(work_notes._ci_key(f))
+    return drop
+
+
+def _apply_removals(drop: dict, *, reindex: bool) -> int:
+    """Rewrite each brief without its dropped facts; returns how many went."""
+    from aiforge_core.runtime import work_notes
     removed = 0
     with _WRITE_LOCK:
         for k, dks in drop.items():
@@ -205,10 +206,57 @@ def reconcile_briefs(*, role: str = "learner", max_facts: int = 400) -> dict:
             facts = parsed["sections"].get("facts") or []
             kept = [f for f in facts
                     if work_notes._ci_key(_fact_body(f)) not in dks]
-            if len(kept) != len(facts):
-                removed += len(facts) - len(kept)
-                work_notes.update_note(str(p), facts=kept, kind="knowledge", key=k)
-    return {"removed": removed, "scopes": len(drop)}
+            if len(kept) == len(facts):
+                continue
+            if reindex:
+                # reconcile the search index too, so the stale contradicted fact
+                # stops surfacing before the next full reingest.
+                _reconcile_dropped_index([f for f in facts if f not in kept], k)
+            removed += len(facts) - len(kept)
+            work_notes.update_note(str(p), facts=kept, kind="knowledge", key=k)
+    return removed
+
+
+def _llm_fact_removal_pass(*, role: str, max_facts: int, system_prompt: str,
+                           label: bool, reindex: bool) -> dict:
+    """The shared body of the two cross-brief removal passes: collect facts,
+    ask ONE model call which to drop, apply. ``label`` puts each scope's updated
+    date in the listing (the recency tiebreaker the contradiction prompt needs)."""
+    briefs, updated, total = _collect_brief_facts()
+    if total < 2 or total > max_facts:
+        return {"removed": 0, "skipped": f"facts={total}"}
+    if label:
+        listing = "\n".join(
+            f"{k} (updated {updated.get(k) or '?'}) :: {_fact_body(f)}"
+            for k, fs in briefs.items() for f in fs)
+    else:
+        listing = "\n".join(f"{k} :: {_fact_body(f)}"
+                            for k, fs in briefs.items() for f in fs)
+    removes = _ask_for_removals(role, system_prompt, listing)
+    if removes is None:
+        return {"removed": 0, "error": "llm_unreachable"}
+    drop = _removals_by_scope(removes, briefs)
+    return {"removed": _apply_removals(drop, reindex=reindex),
+            "scopes": len(drop)}
+
+
+def reconcile_briefs(*, role: str = "learner", max_facts: int = 400) -> dict:
+    """CROSS-brief semantic cleanup: an LLM finds duplicate/contradictory facts
+    that scattered across different scope briefs (the compaction consolidate only
+    dedupes WITHIN a brief) and removes the redundant/stale copies, keeping one
+    canonical version in the broadest scope. Feasible only at a bounded fact
+    count (skips above ``max_facts`` so it stays a single call). Gated on
+    ``AIFORGE_OKR_SCOPE_LLM``; ``AIFORGE_OKR_RECONCILE=0`` disables. Never raises."""
+    # OPT-IN (default OFF): an LLM removing facts across briefs unsupervised can
+    # be over-aggressive (it dropped ~24% on a stress run) and is inconsistent —
+    # too risky for the automatic pipeline. Enable AIFORGE_OKR_RECONCILE=1 to run
+    # it (manually or in recompact) when you want an aggressive cross-scope pass.
+    if os.environ.get("AIFORGE_OKR_SCOPE_LLM", "1") == "0" \
+            or os.environ.get("AIFORGE_OKR_RECONCILE", "0") != "1":
+        return {"removed": 0, "skipped": "disabled"}
+    return _llm_fact_removal_pass(role=role, max_facts=max_facts,
+                                  system_prompt=_RECONCILE_SYS,
+                                  label=False, reindex=False)
 
 
 _CONTRADICT_SYS = (
@@ -249,76 +297,9 @@ def resolve_contradictions(*, role: str = "learner", max_facts: int = 400) -> di
     if os.environ.get("AIFORGE_OKR_SCOPE_LLM", "1") == "0" \
             or os.environ.get("AIFORGE_OKR_CONTRADICT", "1") == "0":
         return {"removed": 0, "skipped": "disabled"}
-    from aiforge_core.runtime import work_notes
-    briefs: dict = {}          # key -> [facts]
-    updated: dict = {}         # key -> updated_at (recency tiebreaker)
-    total = 0
-    for p in iter_briefs():
-        if _CAPTURE_SIG_RE.search(p.name):
-            continue
-        key = p.stem[len("compacted-"):]
-        try:
-            parsed = work_notes.parse_note(p.read_text(encoding="utf-8"))
-            facts = parsed["sections"].get("facts") or []
-        except OSError:
-            continue
-        if facts:
-            briefs[key] = facts
-            updated[key] = (parsed.get("frontmatter") or {}).get("updated_at") or ""
-            total += len(facts)
-    if total < 2 or total > max_facts:
-        return {"removed": 0, "skipped": f"facts={total}"}
-
-    # scope label carries the brief's updated date so the model picks the STALE
-    # (older) side of a contradiction — recency = truth.
-    listing = "\n".join(f"{k} (updated {updated.get(k) or '?'}) :: {_fact_body(f)}"
-                        for k, fs in briefs.items() for f in fs)
-    try:
-        from pydantic import BaseModel
-
-        from aiforge_core.llm.structured import structured_complete
-
-        class _Rm(BaseModel):
-            scope: str = ""
-            fact: str = ""
-
-        class _Removes(BaseModel):
-            removes: list[_Rm] = []
-
-        res = structured_complete(
-            role,
-            [{"role": "system", "content": _CONTRADICT_SYS},
-             {"role": "user", "content": listing[:24000]}],
-            _Removes, max_tokens=2000, max_retries=1, temperature=0.0)
-        removes = getattr(res, "removes", None) or []
-    except Exception as exc:  # noqa: BLE001
-        _log.debug("resolve_contradictions LLM failed: %s", exc)
-        return {"removed": 0, "error": "llm_unreachable"}
-
-    drop: dict = {}
-    for r in removes:
-        k = (getattr(r, "scope", "") or "").strip()
-        f = (getattr(r, "fact", "") or "").strip()
-        if k in briefs and f:
-            drop.setdefault(k, set()).add(work_notes._ci_key(f))
-    removed = 0
-    with _WRITE_LOCK:
-        for k, dks in drop.items():
-            p = brief_path(k)
-            try:
-                parsed = work_notes.parse_note(p.read_text(encoding="utf-8"))
-            except OSError:
-                continue
-            facts = parsed["sections"].get("facts") or []
-            kept = [f for f in facts
-                    if work_notes._ci_key(_fact_body(f)) not in dks]
-            if len(kept) != len(facts):
-                # reconcile the search index too, so the stale contradicted fact
-                # stops surfacing before the next full reingest.
-                _reconcile_dropped_index([f for f in facts if f not in kept], k)
-                removed += len(facts) - len(kept)
-                work_notes.update_note(str(p), facts=kept, kind="knowledge", key=k)
-    return {"removed": removed, "scopes": len(drop)}
+    return _llm_fact_removal_pass(role=role, max_facts=max_facts,
+                                  system_prompt=_CONTRADICT_SYS,
+                                  label=True, reindex=True)
 
 
 def dedupe_global_copies() -> dict:
@@ -441,6 +422,123 @@ def _topic_clusters(keys: list[str]) -> list[list[str]]:
     return [sorted(v, key=len) for v in groups.values() if len(v) > 1]
 
 
+_EMPTY_BRIEF = {"facts": [], "learnings": [], "links": [], "key_results": [],
+                "body": "", "title": ""}
+
+
+def _protected_topics() -> set:
+    """Names that must never fold into another brief: the global ``shared``
+    brief and every discovered repo's brief."""
+    protected = {"shared"}
+    try:
+        from aiforge_core.memory.migrations import _discover_repos
+        protected |= {_slug(r) for r in (_discover_repos() or [])}
+    except Exception:  # noqa: BLE001
+        pass
+    return protected
+
+
+def _mergeable_topic_keys(protected: set) -> list[str]:
+    """Topic names eligible for clustering.
+
+    Split OVERFLOW parts (compacted-<topic>-2.md …) are pages of ONE brief, not
+    separate topics. They look like a prefix family to the clusterer, so without
+    excluding them the merge folds a split topic back into a single oversized
+    file — undoing the very compaction that split it.
+    """
+    part = re.compile(r"-\d+$")
+    return [p.stem[len("compacted-"):] for p in iter_briefs()
+            if not _CAPTURE_SIG_RE.search(p.name)
+            and not part.search(p.stem)
+            and p.stem[len("compacted-"):] not in protected]
+
+
+def _canonical_name(cluster: list[str], protected: set) -> str:
+    """The family's COMMON WORD PREFIX when there is one (windows-ntp +
+    windows-cpu-mode → "windows"), so a family folds into one broad topic rather
+    than into whichever member happened to be shortest. Fuzzy/typo clusters with
+    no shared first word fall back to the shortest member. Never a protected
+    name."""
+    prefix = _common_token_prefix(cluster)
+    return prefix if (prefix and prefix not in protected) else cluster[0]
+
+
+def _load_brief(path) -> dict | None:
+    """A parsed brief, an empty one when the file does not exist yet, or None
+    when it cannot be read."""
+    if not path.exists():
+        return dict(_EMPTY_BRIEF)
+    try:
+        return _parse_brief(path.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+
+
+def _absorb(into: dict, other: dict) -> None:
+    """Union ``other``'s sections into ``into``. Facts dedupe on their BODY, so
+    the same fact recorded with different metadata is not carried twice."""
+    bodies = {_fact_body(x) for x in into["facts"]}
+    for f in other["facts"]:
+        if f not in into["facts"] and _fact_body(f) not in bodies:
+            into["facts"].append(f)
+            bodies.add(_fact_body(f))
+    for section in ("learnings", "links", "key_results"):
+        for item in (other.get(section) or []):
+            if item not in into[section]:
+                into[section].append(item)
+    if other["body"] and other["body"] not in into["body"]:
+        into["body"] = ((into["body"] + "\n\n" + other["body"]).strip()
+                        if into["body"] else other["body"])
+
+
+def _drop_brief(path, topic: str, facts: list) -> None:
+    """Remove a folded duplicate: its index rows, its vectors, then the file."""
+    _reconcile_dropped_index(facts, topic)
+    try:
+        from aiforge_core.memory import backend_select, sqlite_memory
+        if backend_select.embedded():
+            sqlite_memory.delete_by_source(f"compacted:compacted-{topic}")
+            sqlite_memory.delete_by_source(f"md:compacted-{topic}")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _merge_cluster(cluster: list[str], protected: set) -> int:
+    """Fold one cluster into its canonical brief; returns how many were folded."""
+    canonical = _canonical_name(cluster, protected)
+    cpath = brief_path(canonical)
+    # Seed from the canonical's existing brief, or from empty when the canonical
+    # is a NEW broader name no member currently owns.
+    acc = _load_brief(cpath)
+    if acc is None:
+        return 0
+    acc = {**acc, "facts": list(acc["facts"]), "learnings": list(acc["learnings"]),
+           "links": list(acc.get("links") or []),
+           "key_results": list(acc["key_results"])}
+    merged = 0
+    for other in [m for m in cluster if m != canonical]:
+        opath = brief_path(other)
+        if not opath.exists():
+            continue
+        ob = _load_brief(opath)
+        if ob is None:
+            continue
+        _absorb(acc, ob)
+        _drop_brief(opath, other, ob["facts"])
+        merged += 1
+    if merged:
+        cpath.write_text(
+            _render_brief(canonical, facts=acc["facts"], body_md=acc["body"],
+                          learnings=acc["learnings"], title=acc["title"],
+                          key_results=acc["key_results"], links=acc["links"]),
+            encoding="utf-8")
+    return merged
+
+
 def merge_similar_topics() -> dict:
     """Consolidate near-duplicate TOPIC briefs into ONE — kills the
     ``gpsd`` / ``gpsd-config`` / ``gpsd-configuration`` (and ``note`` / ``notes``)
@@ -452,93 +550,15 @@ def merge_similar_topics() -> dict:
     (``AIFORGE_OKR_TOPIC_MERGE``); never raises. Returns ``{merged, groups}``."""
     if os.environ.get("AIFORGE_OKR_TOPIC_MERGE", "1") == "0":
         return {"merged": 0, "skipped": "disabled"}
-    # protect repo briefs: a discovered repo's brief must never fold into another
-    protected = {"shared"}
-    try:
-        from aiforge_core.memory.migrations import _discover_repos
-        protected |= {_slug(r) for r in (_discover_repos() or [])}
-    except Exception:  # noqa: BLE001
-        pass
-    # Split OVERFLOW parts (compacted-<topic>-2.md …) are pages of ONE brief,
-    # not separate topics. They look like a prefix family to the clusterer, so
-    # without this the merge folds a split topic back into a single oversized
-    # file the very compaction that split it.
-    import re as _re
-    _part = _re.compile(r"-\d+$")
-    keys = [p.stem[len("compacted-"):] for p in iter_briefs()
-            if not _CAPTURE_SIG_RE.search(p.name)
-            and not _part.search(p.stem)
-            and p.stem[len("compacted-"):] not in protected]
-    clusters = _topic_clusters(keys)
+    protected = _protected_topics()
+    clusters = _topic_clusters(_mergeable_topic_keys(protected))
     merged = 0
     done: list[list[str]] = []
     with _WRITE_LOCK:
         for cluster in clusters:
-            # The canonical name is the family's COMMON WORD PREFIX when there is
-            # one (windows-ntp + windows-cpu-mode → "windows"), so a family folds
-            # into one broad topic rather than into whichever member happened to
-            # be shortest. Fuzzy/typo clusters with no shared first word fall back
-            # to the shortest member. Never collapse onto a protected name.
-            prefix = _common_token_prefix(cluster)
-            canonical = prefix if (prefix and prefix not in protected) else cluster[0]
-            cpath = brief_path(canonical)
-            # Seed from the canonical's existing brief, or from empty when the
-            # canonical is a NEW broader name no member currently owns.
-            if cpath.exists():
-                try:
-                    cb = _parse_brief(cpath.read_text(encoding="utf-8"))
-                except OSError:
-                    continue
-            else:
-                cb = {"facts": [], "learnings": [], "links": [], "key_results": [],
-                      "body": "", "title": ""}
-            facts = list(cb["facts"]); learns = list(cb["learnings"])
-            links = list(cb.get("links") or []); krs = list(cb["key_results"])
-            body = cb["body"]; title = cb["title"]
-            moved_any = False
-            for other in [m for m in cluster if m != canonical]:
-                op = brief_path(other)
-                if not op.exists():
-                    continue
-                try:
-                    ob = _parse_brief(op.read_text(encoding="utf-8"))
-                except OSError:
-                    continue
-                for f in ob["facts"]:
-                    if f not in facts and _fact_body(f) not in {_fact_body(x) for x in facts}:
-                        facts.append(f)
-                for l in ob["learnings"]:
-                    if l not in learns:
-                        learns.append(l)
-                for lk in (ob.get("links") or []):
-                    if lk not in links:
-                        links.append(lk)
-                for kr in ob["key_results"]:
-                    if kr not in krs:
-                        krs.append(kr)
-                if ob["body"] and ob["body"] not in body:
-                    body = (body + "\n\n" + ob["body"]).strip() if body else ob["body"]
-                # remove the duplicate brief + its index rows
-                _reconcile_dropped_index(ob["facts"], other)
-                try:
-                    from aiforge_core.memory import backend_select, sqlite_memory
-                    if backend_select.embedded():
-                        sqlite_memory.delete_by_source(f"compacted:compacted-{other}")
-                        sqlite_memory.delete_by_source(f"md:compacted-{other}")
-                except Exception:  # noqa: BLE001
-                    pass
-                try:
-                    op.unlink()
-                except OSError:
-                    pass
-                moved_any = True
-                merged += 1
-            if moved_any:
-                cpath.write_text(
-                    _render_brief(canonical, facts=facts, body_md=body,
-                                  learnings=learns, title=title, key_results=krs,
-                                  links=links),
-                    encoding="utf-8")
+            n = _merge_cluster(cluster, protected)
+            if n:
+                merged += n
                 done.append(cluster)
     return {"merged": merged, "groups": done}
 
@@ -556,53 +576,26 @@ def _fold_kind_briefs(*, dry_run: bool) -> int:
     if dry_run:
         return len(kind_paths)
     sp = brief_path("shared")
-    try:
-        sb = _parse_brief(sp.read_text(encoding="utf-8")) if sp.exists() else {
-            "facts": [], "learnings": [], "links": [], "key_results": [],
-            "body": "", "title": ""}
-    except OSError:
+    acc = _load_brief(sp)
+    if acc is None:
         return 0
-    facts = list(sb["facts"]); learns = list(sb["learnings"])
-    links = list(sb.get("links") or []); krs = list(sb["key_results"])
-    body = sb["body"]; title = sb["title"] or "shared"
+    acc = {**acc, "facts": list(acc["facts"]), "learnings": list(acc["learnings"]),
+           "links": list(acc.get("links") or []),
+           "key_results": list(acc["key_results"]),
+           "title": acc["title"] or "shared"}
     folded = 0
     for p in kind_paths:
-        try:
-            kb = _parse_brief(p.read_text(encoding="utf-8"))
-        except OSError:
+        kb = _load_brief(p)
+        if kb is None:
             continue
-        seen = {_fact_body(x) for x in facts}
-        for f in kb["facts"]:
-            if f not in facts and _fact_body(f) not in seen:
-                facts.append(f); seen.add(_fact_body(f))
-        for l in kb["learnings"]:
-            if l not in learns:
-                learns.append(l)
-        for lk in (kb.get("links") or []):
-            if lk not in links:
-                links.append(lk)
-        for kr in kb["key_results"]:
-            if kr not in krs:
-                krs.append(kr)
-        if kb["body"] and kb["body"] not in body:
-            body = (body + "\n\n" + kb["body"]).strip() if body else kb["body"]
-        _reconcile_dropped_index(kb["facts"], p.stem[len("compacted-"):])
-        try:
-            from aiforge_core.memory import backend_select, sqlite_memory
-            if backend_select.embedded():
-                sqlite_memory.delete_by_source(f"compacted:{p.stem}")
-                sqlite_memory.delete_by_source(f"md:{p.stem}")
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            p.unlink()
-        except OSError:
-            pass
+        _absorb(acc, kb)
+        _drop_brief(p, p.stem[len("compacted-"):], kb["facts"])
         folded += 1
     if folded:
         sp.write_text(
-            _render_brief("shared", facts=facts, body_md=body, learnings=learns,
-                          title=title, key_results=krs, links=links),
+            _render_brief("shared", facts=acc["facts"], body_md=acc["body"],
+                          learnings=acc["learnings"], title=acc["title"],
+                          key_results=acc["key_results"], links=acc["links"]),
             encoding="utf-8")
     return folded
 

@@ -383,10 +383,8 @@ def _preflight(base_url: str) -> None:
             f"connect budget: {exc}") from exc
 
 
-def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
-                     *, role: str, source: str,
-                     meter: "list | None" = None) -> dict:
-    """Wrap _post with bounded exponential backoff on transient errors.
+class _RetryCfg:
+    """The knobs and the deadline for one retry chain.
 
     Knobs:
       AIFORGE_LLM_RETRY_MAX     — total attempts per endpoint (default 3)
@@ -396,9 +394,129 @@ def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
                                   1.5); 0 disables the budget entirely
       AIFORGE_LLM_RETRY_TIMEOUT_MAX — attempts allowed when the failure is a
                                   READ TIMEOUT (default 1 = do not re-POST)
+    """
+
+    __slots__ = ("max_attempts", "base", "cap", "timeout_max", "timeout_s",
+                 "started", "budget_s", "deadline")
+
+    def __init__(self, timeout_s: int) -> None:
+        self.max_attempts = max(1, _int_env("AIFORGE_LLM_RETRY_MAX", 3))
+        self.base = _float_env("AIFORGE_LLM_RETRY_BASE_S", 0.5)
+        self.cap = _float_env("AIFORGE_LLM_RETRY_CAP_S", 8.0)
+        self.timeout_max = max(1, _int_env("AIFORGE_LLM_RETRY_TIMEOUT_MAX", 1))
+        self.timeout_s = timeout_s
+        self.started = time.monotonic()
+        budget_mult = _float_env("AIFORGE_LLM_RETRY_BUDGET", 1.5)
+        self.budget_s = max(max(1.0, timeout_s) * budget_mult,
+                            timeout_s + _RETRY_MIN_BUDGET_S)
+        self.deadline = self.started + self.budget_s if budget_mult > 0 else None
+
+    def left(self) -> float | None:
+        return (self.deadline - time.monotonic()) if self.deadline is not None else None
+
+    def extend(self, seconds: float) -> None:
+        """Give back time spent QUEUED on the operator's ceiling.
+
+        That is not time this attempt spent failing, so it must not eat the
+        retry budget: a throttled call would otherwise arrive at the retry check
+        with its deadline already gone and lose retries it used to get for free.
+        """
+        if self.deadline is not None and seconds > 0:
+            self.deadline += seconds
+
+
+def _retry_after_s(exc) -> float | None:
+    """The response's ``Retry-After`` in seconds, or None if it has none, or is
+    unparseable."""
+    if not isinstance(exc, urllib.error.HTTPError):
+        return None
+    try:
+        raw = exc.headers.get("Retry-After") if exc.headers else None
+    except Exception:  # noqa: BLE001
+        return None
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _rate_limited_sleep(sleep_s: float, ra: float | None, provider: str) -> float:
+    """Backoff for a 429, and the hint to the limiter that produced it.
+
+    The provider is counting a MINUTE; a 0.5s backoff just re-earns the same
+    rejection and burns another request doing it. And the rejection is the only
+    ground truth we ever get about what the server is actually counting — our
+    ceiling is per-process and cannot see the memory daemon — so it must reach
+    the limiter whether or not THIS caller can afford to wait.
+
+    BOUNDED. Without a cap of our own, ``Retry-After: 3600`` is two hours of
+    blocking sleep on this thread from one header — and AIFORGE_LLM_RETRY_BUDGET=0
+    (a documented knob) removes the deadline that would otherwise refuse it. A
+    hostile or simply misconfigured gateway must not own the process. Stored
+    setting -> env -> default, so Settings -> Agent limits actually moves these
+    (a knob the UI cannot change is worse than one it never offered).
+    """
+    ra_f = max(0.0, ra) if ra is not None else 0.0
+    try:
+        _rl.note_rate_limited(ra_f, provider=provider)
+    except Exception:  # noqa: BLE001 — never break on a hint
+        pass
+    rl_cap = _rl._setting("llm_rate_limit_cap_s",
+                          "AIFORGE_LLM_RATE_LIMIT_CAP_S", 60.0)
+    rl_back = _rl._setting("llm_rate_limit_backoff_s",
+                           "AIFORGE_LLM_RATE_LIMIT_BACKOFF_S", 20.0)
+    return min(max(1.0, rl_cap), max(sleep_s, ra_f or rl_back))
+
+
+def _next_sleep(cfg: _RetryCfg, attempt: int, exc: Exception,
+                label: str, provider: str) -> float:
+    """Cost the NEXT attempt before deciding to make it — the backoff is part of
+    the caller's deadline too, and a 429 Retry-After can be minutes on its own."""
+    ra = _retry_after_s(exc)
+    sleep_s = (min(cfg.cap, max(0.1, ra)) if ra is not None
+               else min(cfg.cap, cfg.base * (2 ** (attempt - 1))))
+    if label == "rate_limited":
+        sleep_s = _rate_limited_sleep(sleep_s, ra, provider)
+    # Jitter, to avoid a thundering herd against shared providers.
+    sleep_s += random.uniform(0, 0.25)
+    if label == "rate_limited" and cfg.deadline is not None:
+        # Spend what this caller ACTUALLY has, not a flat 20s. The budget check
+        # refuses any retry that does not leave room for a full attempt, and
+        # 20s + timeout_s never fits a caller with a 15-30s budget — so the
+        # routers and classifiers, the very callers acquire_global's docstring
+        # names, got the flat backoff computed for them and then no retry at
+        # all. Clamping to the room that is left buys them a shorter real wait
+        # instead of none. (The 0.05 keeps the strict > comparison in
+        # _budget_exhausted from rejecting a value that fits exactly.)
+        sleep_s = max(0.0, min(
+            sleep_s, cfg.deadline - time.monotonic() - float(cfg.timeout_s) - 0.05))
+    return sleep_s
+
+
+def _timeout_already_shipped(cfg: _RetryCfg, attempt: int, label: str,
+                             retry: bool, sent: bool) -> bool:
+    """The server has the request and is working on it — do not re-POST."""
+    return (retry and label == "timeout" and sent
+            and attempt < cfg.max_attempts and attempt >= cfg.timeout_max)
+
+
+def _budget_exhausted(cfg: _RetryCfg, attempt: int, retry: bool,
+                      sleep_s: float) -> bool:
+    """A retry gets the FULL per-attempt timeout or it is not made."""
+    return (retry and cfg.deadline is not None and attempt < cfg.max_attempts
+            and time.monotonic() + sleep_s + float(cfg.timeout_s) > cfg.deadline)
+
+
+def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
+                     *, role: str, source: str,
+                     meter: "list | None" = None) -> dict:
+    """Wrap _post with bounded exponential backoff on transient errors.
 
     On 429 with Retry-After, honour the header (capped to retry_cap).
-    Permanent (4xx non-429) errors bubble immediately.
+    Permanent (4xx non-429) errors bubble immediately. See :class:`_RetryCfg`
+    for the env knobs.
 
     A READ TIMEOUT IS NOT RETRIED by default — but only a real one. It is the
     single transient failure meaning the server ACCEPTED the request and is
@@ -424,164 +542,106 @@ def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
     never a stub with a few seconds on it, which would manufacture exactly the
     abandoned generation this is written to avoid. The bound is per CHAIN;
     ``client.complete``'s empty-response loop can start several."""
-    max_attempts = max(1, _int_env("AIFORGE_LLM_RETRY_MAX", 3))
-    base = _float_env("AIFORGE_LLM_RETRY_BASE_S", 0.5)
-    cap = _float_env("AIFORGE_LLM_RETRY_CAP_S", 8.0)
-    budget_mult = _float_env("AIFORGE_LLM_RETRY_BUDGET", 1.5)
-    timeout_max = max(1, _int_env("AIFORGE_LLM_RETRY_TIMEOUT_MAX", 1))
-    started = time.monotonic()
-    budget_s = max(max(1.0, timeout_s) * budget_mult,
-                   timeout_s + _RETRY_MIN_BUDGET_S)
-    deadline = started + budget_s if budget_mult > 0 else None
+    cfg = _RetryCfg(timeout_s)
     last: Exception | None = None
-    for attempt in range(1, max_attempts + 1):
+    for attempt in range(1, cfg.max_attempts + 1):
         # Did THIS attempt get the prompt onto the wire? Decides whether a
         # timeout means "the server is working on it" or "we never reached it".
         sent = [False]
+        throttled = [0.0]
         try:
-            _left = (deadline - time.monotonic()) if deadline is not None else None
-            _throttled = [0.0]
             # `meter` forwarded only when a caller asked for the token: a
             # test that fakes `_post` with the old signature stays valid, and
             # the kwarg appears exactly where someone needs the token back.
-            _extra = {"meter": meter} if meter is not None else {}
+            extra = {"meter": meter} if meter is not None else {}
             return _post(ep, payload, timeout_s, role=role, sent=sent,
-                         max_wait_s=_left, throttled=_throttled, **_extra)
+                         max_wait_s=cfg.left(), throttled=throttled, **extra)
         except Exception as exc:  # noqa: BLE001 — classifier handles
             retry, label = _is_transient_exc(exc)
             last = exc
-            # Time spent QUEUED on the operator's ceiling is not time this
-            # attempt spent failing, so it must not eat the retry budget: a
-            # throttled call would otherwise arrive at the retry check with its
-            # deadline already gone and lose retries it used to get for free.
-            if deadline is not None and _throttled[0] > 0:
-                deadline += _throttled[0]
-            # Cost the NEXT attempt before deciding to make it — the backoff is
-            # part of the caller's deadline too, and a 429 Retry-After can be
-            # minutes on its own.
-            sleep_s = min(cap, base * (2 ** (attempt - 1)))
-            ra: str | None = None
-            if isinstance(exc, urllib.error.HTTPError):
-                try:
-                    ra = exc.headers.get("Retry-After") if exc.headers else None
-                except Exception:  # noqa: BLE001
-                    ra = None
-            if ra:
-                try:
-                    sleep_s = min(cap, max(0.1, float(ra)))
-                except ValueError:
-                    pass
-            if label == "rate_limited":
-                # The provider is counting a MINUTE; a 0.5s backoff just
-                # re-earns the same rejection and burns another request doing
-                # it. And the rejection is the only ground truth we ever get
-                # about what the server is actually counting — our ceiling is
-                # per-process and cannot see the memory daemon — so it must
-                # reach the limiter whether or not THIS caller can afford to
-                # wait.
-                _ra_f = 0.0
-                if ra:
-                    try:
-                        _ra_f = max(0.0, float(ra))
-                    except ValueError:
-                        _ra_f = 0.0
-                try:
-                    _rl.note_rate_limited(_ra_f, provider=ep.provider)
-                except Exception:  # noqa: BLE001 — never break on a hint
-                    pass
-                # BOUNDED. Without a cap of our own, `Retry-After: 3600` is
-                # two hours of blocking sleep on this thread from one header —
-                # and AIFORGE_LLM_RETRY_BUDGET=0 (a documented knob) removes
-                # the deadline that would otherwise refuse it. A hostile or
-                # simply misconfigured gateway must not own the process.
-                # Stored setting -> env -> default, so Settings -> Agent
-                # limits actually moves these (a knob the UI cannot change is
-                # worse than one it never offered).
-                _rl_cap = _rl._setting("llm_rate_limit_cap_s",
-                                       "AIFORGE_LLM_RATE_LIMIT_CAP_S", 60.0)
-                _rl_back = _rl._setting("llm_rate_limit_backoff_s",
-                                        "AIFORGE_LLM_RATE_LIMIT_BACKOFF_S", 20.0)
-                sleep_s = min(max(1.0, _rl_cap),
-                              max(sleep_s, _ra_f or _rl_back))
-            # Add jitter to avoid thundering herd against shared providers.
-            sleep_s += random.uniform(0, 0.25)
-            if label == "rate_limited" and deadline is not None:
-                # Spend what this caller ACTUALLY has, not a flat 20s. The
-                # budget check below refuses any retry that does not leave room
-                # for a full attempt, and 20s + timeout_s never fits a caller
-                # with a 15-30s budget — so the routers and classifiers, the
-                # very callers acquire_global's docstring names, got the flat
-                # backoff computed for them and then no retry at all, exactly
-                # as before this existed. Clamping to the room that is left
-                # buys them a shorter real wait instead of none. (The 0.05
-                # keeps the strict > comparison below from rejecting a value
-                # that fits exactly.)
-                sleep_s = max(0.0, min(
-                    sleep_s,
-                    deadline - time.monotonic() - float(timeout_s) - 0.05))
-            budget_out = False
-            if (retry and label == "timeout" and sent[0]
-                    and attempt < max_attempts and attempt >= timeout_max):
+            cfg.extend(throttled[0])
+            sleep_s = _next_sleep(cfg, attempt, exc, label, ep.provider)
+            budget_out = _timeout_already_shipped(cfg, attempt, label, retry, sent[0])
+            if budget_out:
+                _log_timeout_not_retried(cfg, ep, attempt, label, exc, role, source)
+            elif _budget_exhausted(cfg, attempt, retry, sleep_s):
                 budget_out = True
-                _log.info(
-                    "llm.timeout_not_retried provider=%s attempt=%d "
-                    "timeout=%ds — the server already has this request",
-                    ep.provider, attempt, timeout_s,
-                    extra={"aiforge": {"role": role, "provider": ep.provider,
-                                       "source": source, "attempt": attempt,
-                                       "label": label,
-                                       "error": str(exc)[:200]}},
-                )
-            if (not budget_out and retry and deadline is not None
-                    and attempt < max_attempts):
-                # A retry gets the FULL per-attempt timeout or it is not made.
-                if time.monotonic() + sleep_s + float(timeout_s) > deadline:
-                    budget_out = True
-                    _log.info(
-                        "llm.retry_budget_exhausted provider=%s label=%s "
-                        "attempt=%d elapsed=%.1fs budget=%.1fs — not retrying",
-                        ep.provider, label, attempt,
-                        time.monotonic() - started, budget_s,
-                        extra={"aiforge": {"role": role, "provider": ep.provider,
-                                           "source": source, "attempt": attempt,
-                                           "label": label,
-                                           "sleep_s": round(sleep_s, 3),
-                                           "error": str(exc)[:200]}},
-                    )
-            if not retry or budget_out or attempt >= max_attempts:
-                if label == "timeout" and sent[0]:
-                    try:
-                        setattr(exc, TIMEOUT_SHIPPED_ATTR, True)
-                    except Exception:  # noqa: BLE001 — never break on a marker
-                        pass
-                _body = _http_err_body(exc)
-                _log.warning(
-                    "llm.transport_error role=%s provider=%s model=%s "
-                    "url=%s/chat/completions label=%s attempt=%d err=%s%s",
-                    role, ep.provider, ep.model,
-                    str(ep.base_url).rstrip("/"), label, attempt,
-                    str(exc)[:300],
-                    f" body={_body}" if _body else "",
-                    extra={"aiforge": {"role": role, "provider": ep.provider,
-                                       "model": ep.model, "source": source,
-                                       "attempt": attempt, "label": label,
-                                       "fatal": not retry,
-                                       "budget_exhausted": budget_out,
-                                       "error": (str(exc) + " " + _body)[:300]}},
-                )
+                _log_budget_exhausted(cfg, ep, attempt, label, sleep_s, exc,
+                                      role, source)
+            if not retry or budget_out or attempt >= cfg.max_attempts:
+                _mark_shipped_timeout(exc, label, sent[0])
+                _log_transport_error(ep, attempt, label, retry, budget_out, exc,
+                                     role, source)
                 raise
-            _log.info(
-                "llm.transport_retry provider=%s url=%s label=%s attempt=%d "
-                "sleep=%.2fs err=%s",
-                ep.provider, str(ep.base_url).rstrip("/"), label, attempt,
-                sleep_s, str(exc)[:300],
-                extra={"aiforge": {"role": role, "provider": ep.provider,
-                                   "source": source, "attempt": attempt,
-                                   "label": label,
-                                   "sleep_s": round(sleep_s, 3),
-                                   "error": str(exc)[:200]}},
-            )
+            _log_transport_retry(ep, attempt, label, sleep_s, exc, role, source)
             time.sleep(sleep_s)
     # Defensive — loop above always either returns or raises.
     assert last is not None
     raise last
+
+
+def _mark_shipped_timeout(exc: Exception, label: str, sent: bool) -> None:
+    if label != "timeout" or not sent:
+        return
+    try:
+        setattr(exc, TIMEOUT_SHIPPED_ATTR, True)
+    except Exception:  # noqa: BLE001 — never break on a marker
+        pass
+
+
+def _log_timeout_not_retried(cfg: _RetryCfg, ep: Endpoint, attempt: int,
+                             label: str, exc: Exception, role: str,
+                             source: str) -> None:
+    _log.info(
+        "llm.timeout_not_retried provider=%s attempt=%d "
+        "timeout=%ds — the server already has this request",
+        ep.provider, attempt, cfg.timeout_s,
+        extra={"aiforge": {"role": role, "provider": ep.provider,
+                           "source": source, "attempt": attempt,
+                           "label": label, "error": str(exc)[:200]}},
+    )
+
+
+def _log_budget_exhausted(cfg: _RetryCfg, ep: Endpoint, attempt: int,
+                          label: str, sleep_s: float, exc: Exception,
+                          role: str, source: str) -> None:
+    _log.info(
+        "llm.retry_budget_exhausted provider=%s label=%s "
+        "attempt=%d elapsed=%.1fs budget=%.1fs — not retrying",
+        ep.provider, label, attempt, time.monotonic() - cfg.started, cfg.budget_s,
+        extra={"aiforge": {"role": role, "provider": ep.provider,
+                           "source": source, "attempt": attempt,
+                           "label": label, "sleep_s": round(sleep_s, 3),
+                           "error": str(exc)[:200]}},
+    )
+
+
+def _log_transport_error(ep: Endpoint, attempt: int, label: str, retry: bool,
+                         budget_out: bool, exc: Exception, role: str,
+                         source: str) -> None:
+    body = _http_err_body(exc)
+    _log.warning(
+        "llm.transport_error role=%s provider=%s model=%s "
+        "url=%s/chat/completions label=%s attempt=%d err=%s%s",
+        role, ep.provider, ep.model, str(ep.base_url).rstrip("/"), label,
+        attempt, str(exc)[:300], f" body={body}" if body else "",
+        extra={"aiforge": {"role": role, "provider": ep.provider,
+                           "model": ep.model, "source": source,
+                           "attempt": attempt, "label": label,
+                           "fatal": not retry, "budget_exhausted": budget_out,
+                           "error": (str(exc) + " " + body)[:300]}},
+    )
+
+
+def _log_transport_retry(ep: Endpoint, attempt: int, label: str, sleep_s: float,
+                         exc: Exception, role: str, source: str) -> None:
+    _log.info(
+        "llm.transport_retry provider=%s url=%s label=%s attempt=%d "
+        "sleep=%.2fs err=%s",
+        ep.provider, str(ep.base_url).rstrip("/"), label, attempt, sleep_s,
+        str(exc)[:300],
+        extra={"aiforge": {"role": role, "provider": ep.provider,
+                           "source": source, "attempt": attempt,
+                           "label": label, "sleep_s": round(sleep_s, 3),
+                           "error": str(exc)[:200]}},
+    )
