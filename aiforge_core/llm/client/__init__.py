@@ -552,6 +552,136 @@ def complete_raw(role: str, messages: list[dict], *,
     return dict(msg) if isinstance(msg, dict) else {"role": "assistant", "content": str(msg)}
 
 
+def _preflight_escalate(role: str, primary: Endpoint, messages: list[dict],
+                        temperature, max_tokens, top_p, extras):
+    """Escalate BEFORE spending a round-trip when the estimated token weight
+    exceeds the local context window. The estimator uses the same
+    4-chars-per-token rule as the rate limiter. Returns the (possibly new)
+    endpoint and whether it changed."""
+    est_tokens = _estimate_tokens(_build_body(
+        primary, messages, temperature, max_tokens, top_p, extras))
+    escalated = escalate(role, reason="context_overflow", est_tokens=est_tokens)
+    if escalated is None:
+        return primary, False
+    _log.info("llm.escalated",
+              extra={"aiforge": {"role": role, "from": primary.provider,
+                                 "to": escalated.provider,
+                                 "est_tokens": est_tokens,
+                                 "reason": "context_overflow"}})
+    return escalated, True
+
+
+def _diagnose_missing(shipped: dict, ep: Endpoint):
+    """The endpoint's served models when the failure LOOKS like a model error,
+    else None. A diagnostic must never mask the error."""
+    if not _looks_like_a_model_error(shipped):
+        return None
+    try:
+        from ._models import model_is_missing as _mim
+        return _mim(ep.base_url, ep.model, ep.api_key or "")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _log_model_missing(role: str, ep: Endpoint, missing: list) -> None:
+    _log.error(
+        "llm.model_missing role=%s model=%s endpoint=%s available=%s — "
+        "CONFIGURATION: that model is not served here. Fix the role's model or "
+        "load it; a fallback answering in its place is a rescue, not a fix.",
+        role, ep.model, ep.base_url, ", ".join(missing[:8]),
+        extra={"aiforge": {"role": role, "model": ep.model,
+                           "endpoint": ep.base_url, "available": missing}})
+
+
+def _substitute_attempt(role: str, primary: Endpoint, missing: list,
+                        messages, temperature, max_tokens, top_p, extras,
+                        timeout_s):
+    """The box told us what it DOES serve — use it rather than failing a whole
+    run over one stale line of config. ONE retry, against the closest id the
+    endpoint actually has. A rescue, not a routing decision: logged loudly at
+    WARNING every time, because a silent substitution means the operator never
+    learns their config is wrong and quietly gets a different model."""
+    if not _autofallback_enabled():
+        return None
+    try:
+        from ._models import pick_substitute as _pick
+        sub = _pick(primary.model, missing)
+    except Exception:  # noqa: BLE001
+        return None
+    if not sub:
+        return None
+    _log.warning(
+        "llm.model_substituted role=%s configured=%s served=%s using=%s "
+        "endpoint=%s — the configured model is not served here; fix the role "
+        "config or load it",
+        role, primary.model, ",".join(missing[:8]), sub, primary.base_url,
+        extra={"aiforge": {"role": role, "configured": primary.model,
+                           "using": sub, "available": missing,
+                           "endpoint": primary.base_url}})
+    out = _try_post(replace(primary, model=sub), messages, shipped={},
+                    temperature=temperature, max_tokens=max_tokens,
+                    top_p=top_p, extras=extras, timeout_s=timeout_s,
+                    role=role, source="model_substitute")
+    return out[0] if out is not None else None
+
+
+def _model_missing_error(role: str, primary: Endpoint, missing: list):
+    have = ", ".join(missing[:8]) if missing else "none loaded"
+    exhausted = RuntimeError(
+        f"llm.model_missing role={role} model={primary.model} "
+        f"endpoint={primary.base_url} — that model is NOT served here "
+        f"(available: {have}). This is configuration, not a transport "
+        f"failure: point the role at one of the models above, or load it "
+        f"on the endpoint. Retrying cannot fix it.")
+    setattr(exhausted, MODEL_MISSING_ATTR, True)
+    _log.error("llm.model_missing role=%s model=%s endpoint=%s available=%s",
+               role, primary.model, primary.base_url, have,
+               extra={"aiforge": {"role": role, "model": primary.model,
+                                  "endpoint": primary.base_url,
+                                  "available": missing}})
+    return exhausted
+
+
+def _exhausted_error(role: str, primary: Endpoint, fb, cloud,
+                     chain_tried: int, shipped: dict):
+    exhausted = RuntimeError(
+        f"llm.exhausted role={role} primary={primary.provider}"
+        f"@{primary.base_url} model={primary.model} "
+        f"fallback={fb.provider if fb else 'none'} "
+        f"cloud={cloud.provider if cloud else 'none'} "
+        f"— all providers returned transport error or empty content "
+        f"(see the llm.transport_error line above for the underlying cause)"
+        + (f"; also tried {chain_tried} configured model(s) from the registry"
+           if chain_tried else ""))
+    if shipped.get("timeout"):
+        # The prompt DID reach the model — callers above must not re-issue it.
+        setattr(exhausted, _TIMEOUT_SHIPPED_ATTR, True)
+    return exhausted
+
+
+def _provider_chain(role: str, primary: Endpoint, messages: list[dict],
+                    shipped: dict, post: dict):
+    """The three provider attempts, in order: primary, then fallback() (a
+    different provider for the same role), then escalate on quality (forces
+    cloud regardless of ctx). Returns ``(text_or_None, fb, cloud)`` — the two
+    endpoints are handed back for the exhausted-error message."""
+    out = _try_post(primary, messages, shipped=shipped, source="primary", **post)
+    if out is not None:
+        return out[0], None, None
+    fb = fallback(role)
+    if fb is not None and fb.provider != primary.provider:
+        out = _try_post(fb, messages, shipped=shipped, source="fallback", **post)
+        if out is not None:
+            return out[0], fb, None
+    cloud = escalate(role, reason="quality")
+    if cloud is not None and cloud.provider != primary.provider:
+        out = _try_post(cloud, messages, shipped=shipped,
+                        source="quality_escalation", **post)
+        if out is not None:
+            return out[0], fb, cloud
+    return None, fb, cloud
+
+
 def _complete_impl(role: str, messages: list[dict], *,
                    temperature: float | None = None,
                    max_tokens: int | None = None,
@@ -566,7 +696,8 @@ def _complete_impl(role: str, messages: list[dict], *,
       2. POST primary (or escalated) endpoint. Success returns text.
       3. On transport error OR garbage 200-OK: try fallback() once.
       4. On fallback transport error too: try escalate(reason='quality').
-      5. Exhausted: raise the original transport error if there was one,
+      5. The other models the operator configured, one attempt each.
+      6. Exhausted: raise the original transport error if there was one,
          else RuntimeError("llm.exhausted").
     """
     # Default request timeout. Self-hosted reasoning models (e.g. 122B with
@@ -575,190 +706,65 @@ def _complete_impl(role: str, messages: list[dict], *,
     # Generous default (15 min), tunable via AIFORGE_LLM_TIMEOUT_S.
     if timeout_s is None:
         timeout_s = _int_env("AIFORGE_LLM_TIMEOUT_S", 900)
-
     primary: Endpoint = resolve(role)
     # The role's OWN endpoint, kept before any escalation rebinds `primary`.
-    _chain_base = primary
-    _escalated_for_overflow = False
+    chain_base = primary
+    primary, escalated_for_overflow = _preflight_escalate(
+        role, primary, messages, temperature, max_tokens, top_p, extras)
 
-    # Pre-flight escalation — if we can estimate token weight before
-    # spending an LLM round-trip, do it. The estimator uses the same
-    # 4-chars-per-token rule as the rate limiter.
-    rough_payload = _build_body(
-        primary, messages, temperature, max_tokens, top_p, extras,
-    )
-    est_tokens = _estimate_tokens(rough_payload)
-    escalated = escalate(role, reason="context_overflow",
-                         est_tokens=est_tokens)
-    if escalated is not None:
-        _log.info(
-            "llm.escalated",
-            extra={"aiforge": {"role": role,
-                               "from": primary.provider,
-                               "to": escalated.provider,
-                               "est_tokens": est_tokens,
-                               "reason": "context_overflow"}},
-        )
-        primary = escalated
-        _escalated_for_overflow = True
+    post = {"temperature": temperature, "max_tokens": max_tokens,
+            "top_p": top_p, "extras": extras, "timeout_s": timeout_s,
+            "role": role}
+    shipped: dict = {}
+    text, fb, cloud = _provider_chain(role, primary, messages, shipped, post)
+    if text is not None:
+        return text
 
-    # Attempt 1 — primary
-    _shipped: dict = {}
-    out = _try_post(primary, messages, shipped=_shipped,
-                    temperature=temperature, max_tokens=max_tokens,
-                    top_p=top_p, extras=extras,
-                    timeout_s=timeout_s, role=role, source="primary")
-    if out is not None:
-        return out[0]
-
-    # Attempt 2 — fallback() (different provider, same role)
-    fb = fallback(role)
-    if fb is not None and fb.provider != primary.provider:
-        out = _try_post(fb, messages, shipped=_shipped,
-                        temperature=temperature, max_tokens=max_tokens,
-                        top_p=top_p, extras=extras,
-                        timeout_s=timeout_s, role=role, source="fallback")
-        if out is not None:
-            return out[0]
-
-    # Attempt 3 — escalate on quality (forces cloud regardless of ctx)
-    cloud = escalate(role, reason="quality")
-    if cloud is not None and cloud.provider != primary.provider:
-        out = _try_post(cloud, messages, shipped=_shipped,
-                        temperature=temperature, max_tokens=max_tokens,
-                        top_p=top_p, extras=extras,
-                        timeout_s=timeout_s, role=role,
-                        source="quality_escalation")
-        if out is not None:
-            return out[0]
+    # DIAGNOSE FIRST, rescue second. Run before the registry chain so a role
+    # pointed at a model id the endpoint does not serve is REPORTED even when
+    # another configured model then answers: otherwise every turn is quietly
+    # served by a model the operator did not select, at WARNING level only,
+    # forever.
+    missing_now = _diagnose_missing(shipped, chain_base)
+    if missing_now:
+        _log_model_missing(role, chain_base, missing_now)
 
     # THE OTHER MODELS THE OPERATOR CONFIGURED. "I added four models; when the
     # one chat picked stops answering it should try the others" — until now the
-    # registry was a selection list only, and the provider fallback chain is
-    # for CLOUD escalation (empty without a cloud key), so on a single-provider
+    # registry was a selection list only, and the provider fallback chain is for
+    # CLOUD escalation (empty without a cloud key), so on a single-provider
     # install a dead model was simply the end.
     #
     # Deliberately AFTER the same-provider fallback and the quality escalation,
-    # and one attempt per model: this is a rescue, not a routing policy. Each
-    # switch is logged, because an answer that silently came from a different
-    # model than the operator selected is worse than a clear failure.
-    # Chain off the endpoint the ROLE is configured with, not off `primary`:
-    # a context_overflow escalation rebinds `primary` to the cloud, and
-    # chaining from there would offer the failed local model back to itself,
-    # send local model ids (with the cloud key) to the vendor, and re-send a
-    # prompt that was escalated precisely because it does not fit locally.
-    # DIAGNOSE FIRST, rescue second. Run before the chain so a role pointed at
-    # a model id the endpoint does not serve is REPORTED even when another
-    # configured model then answers: otherwise every turn is quietly served by
-    # a model the operator did not select, at WARNING level only, forever.
-    _missing_now = None
-    if _looks_like_a_model_error(_shipped):
-        try:
-            from ._models import model_is_missing as _mim0
-            _missing_now = _mim0(_chain_base.base_url, _chain_base.model,
-                                 _chain_base.api_key or "")
-        except Exception:  # noqa: BLE001
-            _missing_now = None
-    if _missing_now:
-        _log.error(
-            "llm.model_missing role=%s model=%s endpoint=%s available=%s — "
-            "CONFIGURATION: that model is not served here. Fix the role's "
-            "model or load it; a fallback answering in its place is a rescue, "
-            "not a fix.",
-            role, _chain_base.model, _chain_base.base_url,
-            ", ".join(_missing_now[:8]),
-            extra={"aiforge": {"role": role, "model": _chain_base.model,
-                               "endpoint": _chain_base.base_url,
-                               "available": _missing_now}},
-        )
-    _chain_tried = 0
-    if _escalated_for_overflow:
-        out = None
-    else:
-        _tried: list = []
-        out = _try_model_chain(role, _chain_base, messages,
+    # and one attempt per model: this is a rescue, not a routing policy. Chained
+    # off the endpoint the ROLE is configured with, not off `primary`: a
+    # context_overflow escalation rebinds `primary` to the cloud, and chaining
+    # from there would offer the failed local model back to itself, send local
+    # model ids (with the cloud key) to the vendor, and re-send a prompt that
+    # was escalated precisely because it does not fit locally.
+    chain_tried = 0
+    if not escalated_for_overflow:
+        tried: list = []
+        out = _try_model_chain(role, chain_base, messages,
                                temperature=temperature, max_tokens=max_tokens,
                                top_p=top_p, extras=extras, timeout_s=timeout_s,
-                               shipped=_shipped, tried=_tried)
-        _chain_tried = len(_tried)
-    if out is not None:
-        return out
+                               shipped=shipped, tried=tried)
+        chain_tried = len(tried)
+        if out is not None:
+            return out
 
     # Before blaming the network: is the configured model even served here? A
     # role pointed at a model id the box does not have fails with model-
-    # lifecycle wording ("No models loaded"), which reads as transient, so
-    # every layer retries a permanent config error — and the user is told "the
-    # model didn't respond", naming neither the model nor the endpoint. One
-    # cheap GET turns that into the sentence that fixes it.
-    _missing = None
-    if _looks_like_a_model_error(_shipped):
-        try:
-            from ._models import model_is_missing as _mim
-            _missing = _mim(primary.base_url, primary.model,
-                            primary.api_key or "")
-        except Exception:  # noqa: BLE001 — a diagnostic must never mask the error
-            _missing = None
-    if _missing:
-        # The box told us what it DOES serve — so use it rather than failing a
-        # whole run over one stale line of config. One retry, against the
-        # closest id the endpoint actually has. This is a rescue, not a
-        # routing decision: it is logged loudly at WARNING every time, because
-        # a silent substitution means the operator never learns their config
-        # is wrong and quietly gets a different model than they think.
-        _sub = None
-        if _autofallback_enabled():
-            try:
-                from ._models import pick_substitute as _pick
-                _sub = _pick(primary.model, _missing)
-            except Exception:  # noqa: BLE001
-                _sub = None
-        if _sub:
-            _log.warning(
-                "llm.model_substituted role=%s configured=%s served=%s "
-                "using=%s endpoint=%s — the configured model is not served "
-                "here; fix the role config or load it",
-                role, primary.model, ",".join(_missing[:8]), _sub,
-                primary.base_url,
-                extra={"aiforge": {"role": role, "configured": primary.model,
-                                   "using": _sub, "available": _missing,
-                                   "endpoint": primary.base_url}},
-            )
-            _subbed = replace(primary, model=_sub)
-            out = _try_post(_subbed, messages, shipped={},
-                            temperature=temperature, max_tokens=max_tokens,
-                            top_p=top_p, extras=extras, timeout_s=timeout_s,
-                            role=role, source="model_substitute")
-            if out is not None:
-                return out[0]
-    if _missing is not None:
-        _have = ", ".join(_missing[:8]) if _missing else "none loaded"
-        _exhausted = RuntimeError(
-            f"llm.model_missing role={role} model={primary.model} "
-            f"endpoint={primary.base_url} — that model is NOT served here "
-            f"(available: {_have}). This is configuration, not a transport "
-            f"failure: point the role at one of the models above, or load it "
-            f"on the endpoint. Retrying cannot fix it."
-        )
-        setattr(_exhausted, MODEL_MISSING_ATTR, True)
-        _log.error(
-            "llm.model_missing role=%s model=%s endpoint=%s available=%s",
-            role, primary.model, primary.base_url, _have,
-            extra={"aiforge": {"role": role, "model": primary.model,
-                               "endpoint": primary.base_url,
-                               "available": _missing}},
-        )
-        raise _exhausted
-    _exhausted = RuntimeError(
-        f"llm.exhausted role={role} primary={primary.provider}"
-        f"@{primary.base_url} model={primary.model} "
-        f"fallback={fb.provider if fb else 'none'} "
-        f"cloud={cloud.provider if cloud else 'none'} "
-        f"— all providers returned transport error or empty content "
-        f"(see the llm.transport_error line above for the underlying cause)"
-        + (f"; also tried {_chain_tried} configured model(s) from the registry"
-           if _chain_tried else "")
-    )
-    if _shipped.get("timeout"):
-        # The prompt DID reach the model — callers above must not re-issue it.
-        setattr(_exhausted, _TIMEOUT_SHIPPED_ATTR, True)
-    raise _exhausted
+    # lifecycle wording ("No models loaded"), which reads as transient, so every
+    # layer retries a permanent config error — and the user is told "the model
+    # didn't respond", naming neither the model nor the endpoint. One cheap GET
+    # turns that into the sentence that fixes it.
+    missing = _diagnose_missing(shipped, primary)
+    if missing:
+        out = _substitute_attempt(role, primary, missing, messages, temperature,
+                                  max_tokens, top_p, extras, timeout_s)
+        if out is not None:
+            return out
+    if missing is not None:
+        raise _model_missing_error(role, primary, missing)
+    raise _exhausted_error(role, primary, fb, cloud, chain_tried, shipped)

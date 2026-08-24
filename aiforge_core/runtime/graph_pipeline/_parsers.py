@@ -113,6 +113,28 @@ def _is_trivial(complexity: Any) -> bool:
     return token in _TRIVIAL_SYNONYMS
 
 
+def _json_or_embedded(text: str, raw: Any):
+    """A parsed object from ``text``, falling back to a brace-balanced
+    extraction over ``raw`` (which survives ``prose {json} prose``)."""
+    try:
+        return json.loads(text)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from ..rule_capture import _extract_json
+        return _extract_json(raw)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _complexity_from_str(raw: str) -> str:
+    obj = _json_or_embedded(_unfence(raw), raw)
+    if isinstance(obj, dict) and obj.get("complexity") is not None:
+        return _normalize_complexity(obj["complexity"]) or "moderate"
+    # No JSON at all → treat the raw text as a bare verdict token.
+    return _coerce_complexity_token(raw)
+
+
 def _read_complexity(state: Any) -> str:
     """Pull the triage complexity verdict from state if present.
 
@@ -131,26 +153,46 @@ def _read_complexity(state: Any) -> str:
             return _normalize_complexity(
                 raw.get("complexity", "moderate")) or "moderate"
         if isinstance(raw, str) and raw.strip():
-            text = raw.strip().strip("`")
-            if text[:4].lower() == "json":
-                text = text[4:]
-            obj: Any = None
-            try:
-                obj = json.loads(text)
-            except Exception:
-                # prose {json} prose — brace-balanced fallback
-                try:
-                    from ..rule_capture import _extract_json
-                    obj = _extract_json(raw)
-                except Exception:
-                    obj = None
-            if isinstance(obj, dict) and obj.get("complexity") is not None:
-                return _normalize_complexity(obj["complexity"]) or "moderate"
-            # No JSON at all → treat the raw text as a bare verdict token.
-            return _coerce_complexity_token(raw)
-    except Exception:
+            return _complexity_from_str(raw)
+    except Exception:  # noqa: BLE001
         pass
     return "moderate"
+
+
+def _unfence(text: str) -> str:
+    """Strip a ``` fence and a leading ``json`` marker."""
+    text = text.strip().strip("`")
+    return text[4:] if text[:4].lower() == "json" else text
+
+
+def _verdict_from_json(text: str, raw: Any) -> str | None:
+    """The ``verdict`` field, from a clean parse or from a brace-balanced
+    extraction that survives ``prose {json} prose``."""
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict) and obj.get("verdict") is not None:
+            return str(obj["verdict"]).lower()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from ..rule_capture import _extract_json
+        obj = _extract_json(raw)
+        if isinstance(obj, dict) and obj.get("verdict") is not None:
+            return str(obj["verdict"]).lower()
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _verdict_token_scan(text: str) -> str | None:
+    """A KNOWN verdict word ANYWHERE in the text — not just the first token.
+    Negatives win over positives so an ambiguous verdict fails safe (→ replan),
+    never ships."""
+    low = text.lower()
+    for tok in (*_VERDICT_NEGATIVE, *_VERDICT_POSITIVE):
+        if re.search(rf"\b{tok}\b", low):
+            return tok
+    return None
 
 
 def _parse_verdict(raw: Any) -> str | None:
@@ -160,43 +202,18 @@ def _parse_verdict(raw: Any) -> str | None:
     (``I reject this because {"verdict":"reject"}``): after a clean
     ``json.loads`` fails we brace-balance-extract an embedded object
     (same helper ``parallel_stages._coerce_verdict`` uses), then scan for
-    a KNOWN verdict word ANYWHERE in the text — not just the first token.
-    A genuinely unparseable string returns ``None`` (the documented
-    default: callers treat None as neither pass nor fail — ``_feedback_
-    passed`` → False, ``_validator_failed`` → False)."""
+    a KNOWN verdict word ANYWHERE in the text. A genuinely unparseable string
+    returns ``None`` (the documented default: callers treat None as neither
+    pass nor fail — ``_feedback_passed`` → False, ``_validator_failed`` →
+    False)."""
     try:
         if isinstance(raw, dict):
             v = raw.get("verdict")
             return str(v).lower() if v is not None else None
         if isinstance(raw, str) and raw.strip():
-            text = raw.strip().strip("`")
-            if text[:4].lower() == "json":
-                text = text[4:]
-            # 1. clean parse (fenced or bare JSON object).
-            try:
-                obj = json.loads(text)
-                if isinstance(obj, dict) and obj.get("verdict") is not None:
-                    return str(obj["verdict"]).lower()
-            except Exception:
-                pass
-            # 2. brace-balanced extraction — survives ``prose {json} prose``.
-            try:
-                from ..rule_capture import _extract_json
-                obj = _extract_json(raw)
-                if isinstance(obj, dict) and obj.get("verdict") is not None:
-                    return str(obj["verdict"]).lower()
-            except Exception:
-                pass
-            # 3. bare-token scan anywhere. Negatives win over positives so
-            #    an ambiguous verdict fails safe (→ replan), never ships.
-            low = text.lower()
-            for tok in _VERDICT_NEGATIVE:
-                if re.search(rf"\b{tok}\b", low):
-                    return tok
-            for tok in _VERDICT_POSITIVE:
-                if re.search(rf"\b{tok}\b", low):
-                    return tok
-    except Exception:
+            text = _unfence(raw)
+            return _verdict_from_json(text, raw) or _verdict_token_scan(text)
+    except Exception:  # noqa: BLE001
         pass
     return None
 
