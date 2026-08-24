@@ -107,6 +107,49 @@ def _version_of(tool: str) -> str | None:
         return None
 
 
+def _present_result(tool: str, installed_now: bool) -> dict:
+    return {"present": True, "installed_now": installed_now,
+            "version": _version_of(tool), "error": None}
+
+
+def _missing_result(error: str) -> dict:
+    return {"present": False, "installed_now": False, "version": None,
+            "error": error}
+
+
+def _run_install(mgr: str, pkg: str) -> str | None:
+    """Run the package manager's install commands. Returns the last error, or
+    None when every command succeeded."""
+    err = None
+    for cmd in _install_cmds(mgr, pkg):
+        if cmd[:1] == ["sudo"] and not _sudo_install_allowed():
+            return ("privileged install blocked — set "
+                    "AIFORGE_ALLOW_SUDO_INSTALL=1 to allow sudo installs")
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+            if p.returncode != 0:
+                err = (p.stderr or p.stdout or "").strip()[-300:]
+        except Exception as exc:  # noqa: BLE001
+            err = str(exc)[:300]
+    return err
+
+
+def _ensure_one(tool: str, mgr: str | None) -> dict:
+    """Make ``tool`` available, installing it when allowed."""
+    if shutil.which(tool):
+        return _present_result(tool, installed_now=False)
+    if not _allow_install():
+        return _missing_result("missing and AIFORGE_ALLOW_INSTALL=0")
+    if mgr is None:
+        return _missing_result("no supported package manager found")
+    pkg = (_BREW if mgr == "brew" else _APT).get(tool, tool)
+    install_err = _run_install(mgr, pkg)
+    if shutil.which(tool) is not None:
+        return _present_result(tool, installed_now=True)
+    return _missing_result(
+        install_err or f"install via {mgr} did not put {tool} on PATH")
+
+
 def ensure_runtime(tools: list[str]) -> dict:
     """Ensure each named runtime / build tool is installed; install if not.
 
@@ -125,54 +168,9 @@ def ensure_runtime(tools: list[str]) -> dict:
     if isinstance(tools, str):
         tools = [tools]
     tools = [t.strip() for t in (tools or []) if t and t.strip()]
-    if not tools:
-        return {"ok": True, "results": {}, "package_manager": _pkg_manager()}
-
     mgr = _pkg_manager()
-    results: dict[str, dict] = {}
-    overall_ok = True
-
-    for tool in tools:
-        if shutil.which(tool):
-            results[tool] = {"present": True, "installed_now": False,
-                             "version": _version_of(tool), "error": None}
-            continue
-        # Missing — try to install.
-        if not _allow_install():
-            results[tool] = {"present": False, "installed_now": False,
-                             "version": None,
-                             "error": "missing and AIFORGE_ALLOW_INSTALL=0"}
-            overall_ok = False
-            continue
-        if mgr is None:
-            results[tool] = {"present": False, "installed_now": False,
-                             "version": None,
-                             "error": "no supported package manager found"}
-            overall_ok = False
-            continue
-        pkg_map = _BREW if mgr == "brew" else _APT
-        pkg = pkg_map.get(tool, tool)
-        install_err = None
-        for cmd in _install_cmds(mgr, pkg):
-            if cmd[:1] == ["sudo"] and not _sudo_install_allowed():
-                install_err = ("privileged install blocked — set "
-                               "AIFORGE_ALLOW_SUDO_INSTALL=1 to allow sudo installs")
-                break
-            try:
-                p = subprocess.run(cmd, capture_output=True, text=True,
-                                   timeout=900)
-                if p.returncode != 0:
-                    install_err = (p.stderr or p.stdout or "").strip()[-300:]
-            except Exception as exc:  # noqa: BLE001
-                install_err = str(exc)[:300]
-        present = shutil.which(tool) is not None
-        results[tool] = {
-            "present": present, "installed_now": present,
-            "version": _version_of(tool) if present else None,
-            "error": None if present else (
-                install_err or f"install via {mgr} did not put {tool} on PATH"),
-        }
-        if not present:
-            overall_ok = False
-
-    return {"ok": overall_ok, "results": results, "package_manager": mgr}
+    if not tools:
+        return {"ok": True, "results": {}, "package_manager": mgr}
+    results = {tool: _ensure_one(tool, mgr) for tool in tools}
+    return {"ok": all(r["present"] for r in results.values()),
+            "results": results, "package_manager": mgr}
