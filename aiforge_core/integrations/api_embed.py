@@ -53,16 +53,22 @@ def _model() -> str:
 
 
 def _ctx():
-    # internal HTTPS hosts are often self-signed; default to NOT verifying unless
-    # AIFORGE_LLM_SSL_VERIFY is truthy (mirrors the LLM client's TLS policy).
-    verify = str(os.environ.get("AIFORGE_LLM_SSL_VERIFY", "")).strip().lower() \
-        in ("1", "true", "yes", "on")
-    if _endpoint().startswith("https") and not verify:
-        c = ssl.create_default_context()
-        c.check_hostname = False
-        c.verify_mode = ssl.CERT_NONE
-        return c
-    return None
+    """TLS policy for the embeddings endpoint — the SHARED one.
+
+    This used to re-implement the check as
+    ``AIFORGE_LLM_SSL_VERIFY in ("1","true","yes","on")``, which reads an UNSET
+    variable as "do not verify" — so an https embeddings endpoint got an
+    unverified context by default. The comment claimed it mirrored the LLM
+    client's policy; `net.ssl._verify_enabled` returns True when the variable
+    is unset ("secure by default"), so it mirrored the exact opposite.
+
+    Deferring to `net.ssl.context_for` also gets the rest of that policy for
+    free: the CA-bundle support, and the rule that a public SaaS host is never
+    silently un-verified even when the operator has opted out for internal
+    hosts.
+    """
+    from aiforge_core.net.ssl import context_for
+    return context_for(_endpoint())
 
 
 def embed(text: str) -> list[float]:

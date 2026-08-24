@@ -14,7 +14,7 @@ from ._setup import DEFAULT_EXCLUDE_DIRS
 # ─────────────── disk traversal ───────────────
 
 def _sha1_bytes(data: bytes) -> str:
-    return hashlib.sha1(data).hexdigest()
+    return hashlib.sha1(data, usedforsecurity=False).hexdigest()
 
 
 def _iter_java_files(repo_root: Path) -> Iterable[Path]:

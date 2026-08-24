@@ -121,7 +121,7 @@ def _pdf_pages(path: str) -> list[str]:
         except Exception:  # noqa: BLE001
             t = ""
         if i in tables:
-            t = (t + f"\n[tables]\n" + "\n".join(tables[i])).strip()
+            t = (t + "\n[tables]\n" + "\n".join(tables[i])).strip()
         pages.append(t)
     return pages
 

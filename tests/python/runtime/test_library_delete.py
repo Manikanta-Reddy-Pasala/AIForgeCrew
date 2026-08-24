@@ -8,7 +8,7 @@ import tempfile
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def cfg(monkeypatch):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", tempfile.mkdtemp())
     return None
@@ -19,7 +19,8 @@ def test_delete_skill_removes_file(cfg):
     skills.write_skill("temp", "d", "body", ["t"])
     assert any(s.name == "temp" for s in skills.load())
     res = skills.delete_skill("temp")
-    assert res["ok"] and res["removed"]
+    assert res["ok"]
+    assert res["removed"]
     assert not any(s.name == "temp" for s in skills.load())
     # deleting a missing one is a clean error, not a crash
     assert not skills.delete_skill("nope")["ok"]
@@ -33,7 +34,8 @@ def test_clear_workflows(cfg):
     customs = [w for w in workflows.load() if w.source != "builtin"]
     assert len(customs) == 2
     res = workflows.clear_workflows()
-    assert res["ok"] and res["removed"] == 2
+    assert res["ok"]
+    assert res["removed"] == 2
     # clear removes the user's workflows; undeletable builtins remain.
     assert [w for w in workflows.load() if w.source != "builtin"] == []
 

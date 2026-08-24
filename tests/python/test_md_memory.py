@@ -18,12 +18,14 @@ def md(monkeypatch, tmp_path):
 
 def test_write_creates_file_with_frontmatter(md):
     d = md.write("My Title", "the body text", kind="session", tags=["a", "b"])
-    assert d["title"] == "My Title" and d["kind"] == "session"
+    assert d["title"] == "My Title"
+    assert d["kind"] == "session"
     # per-run captures live in the captures/ subfolder, not the memory root —
     # ask the store where instead of hardcoding the layout.
     path = md.captures_dir() / d["file"]
     raw = path.read_text()
-    assert raw.startswith("---") and "title: My Title" in raw
+    assert raw.startswith("---")
+    assert "title: My Title" in raw
     assert "the body text" in raw
 
 
@@ -42,7 +44,8 @@ def test_ingest_dir_picks_up_handwritten(md):
     (md.memory_dir() / "manual.md").write_text(
         "---\ntitle: Hand note\nkind: gotcha\n---\n\nremember this\n")
     out = md.ingest_dir()
-    assert out["ok"] and out["ingested"] >= 1
+    assert out["ok"]
+    assert out["ingested"] >= 1
     assert any(f["title"] == "Hand note" for f in md.list_files())
 
 
@@ -66,8 +69,10 @@ def test_upsert_section_one_file_per_source(md):
     files = list(md.captures_dir().glob("*.md"))
     assert len(files) == 1
     raw = files[0].read_text()
-    assert "## t1" in raw and "## t2" in raw  # both turns appended
-    assert "first" in raw and "second" in raw
+    assert "## t1" in raw
+    assert "## t2" in raw
+    assert "first" in raw
+    assert "second" in raw
 
 
 def test_upsert_distinct_sources_distinct_files(md):
@@ -85,14 +90,17 @@ def test_compact_groups_by_kind(md):
     md.write("Note B", "b note", kind="note")
     md.write("Lonely", "single", kind="rule")
     plan = md.compact(group_by="kind", dry_run=True, summarize=False)
-    assert plan["groups"] == {"note": 2, "session": 3} and plan["files_out"] == 2
+    assert plan["groups"] == {"note": 2, "session": 3}
+    assert plan["files_out"] == 2
     r = md.compact(group_by="kind", summarize=False)
     after = {f["file"] for f in md.list_files()}
-    assert "compacted-session.md" in after and "compacted-note.md" in after
+    assert "compacted-session.md" in after
+    assert "compacted-note.md" in after
     assert not any(f.startswith("session-") for f in after)   # originals archived
     assert any("lonely" in f for f in after)                  # singleton kept
     body = md.read_file("compacted-session.md")["body"]
-    assert body.count("## Session") == 3 and "### Hdr" in body  # heading demoted
+    assert body.count("## Session") == 3
+    assert "### Hdr" in body
 
 
 def test_compact_idempotent_singletons(md):
@@ -124,7 +132,8 @@ def test_compact_summarize_uses_llm(md, monkeypatch):
     assert calls["n"] == 1                                   # one group → one call
     assert r["summarized"] == ["compacted-session.md"]
     body = md.read_file("compacted-session.md")["body"]
-    assert "## Consolidated" in body and "## S0" not in body  # summary, not merge
+    assert "## Consolidated" in body
+    assert "## S0" not in body
 
 
 def test_compact_summarize_falls_back_to_merge(md, monkeypatch):
@@ -135,7 +144,8 @@ def test_compact_summarize_falls_back_to_merge(md, monkeypatch):
     r = md.compact(group_by="kind", summarize=True)
     assert r["summarized"] == []                              # nothing summarized
     body = md.read_file("compacted-note.md")["body"]
-    assert "## N0" in body and "## N1" in body                # deterministic merge
+    assert "## N0" in body
+    assert "## N1" in body
 
 
 def test_compact_rerun_resummarizes_existing(md, monkeypatch):

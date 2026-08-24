@@ -16,6 +16,7 @@ import json
 import os
 import threading
 from pathlib import Path
+from aiforge_core.config.paths import config_dir
 
 _LOCK = threading.Lock()
 _MODES = ("simple", "plan", "team")
@@ -32,7 +33,7 @@ def _canon(mode: str) -> str:
 
 def _path() -> Path:
     root = Path(os.path.expanduser(
-        os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")))
+        str(config_dir())))
     return root / "approval_settings.json"
 
 

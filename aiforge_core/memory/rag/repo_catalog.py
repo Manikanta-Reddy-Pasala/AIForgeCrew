@@ -104,8 +104,11 @@ def _find_spring_boot_main(repo: Path) -> bool:
 
 
 _PARENT_BLOCK_RX = re.compile(r"<parent>(.*?)</parent>", re.S)
-_RELATIVE_PATH_RX = re.compile(r"<relativePath>\s*([^<]+?)\s*</relativePath>")
-_PARENT_ARTIFACT_RX = re.compile(r"<artifactId>\s*([^<]+?)\s*</artifactId>")
+# Trim in Python, not in the pattern: `\s*(lazy)\s*` lets the engine split
+# the whitespace many ways (super-linear). `[^<]*` + .strip() is the same
+# result, unambiguous, and says what it means.
+_RELATIVE_PATH_RX = re.compile(r"<relativePath>([^<]*)</relativePath>")
+_PARENT_ARTIFACT_RX = re.compile(r"<artifactId>([^<]*)</artifactId>")
 
 
 def _resolve_parent_pom(pom_path: Path) -> str:

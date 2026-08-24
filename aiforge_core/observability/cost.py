@@ -125,7 +125,7 @@ def rollup(group_by: str = "day", *, days_back: int = 30) -> list[dict]:
     table doesn't exist yet (cost tracking off / never fired).
     """
     if group_by not in ("day", "role", "model", "ticket"):
-        raise ValueError(f"group_by must be day|role|model|ticket")
+        raise ValueError("group_by must be day|role|model|ticket")
     expr = {
         "day":    "to_char(date_trunc('day', created_at), 'YYYY-MM-DD')",
         "role":   "COALESCE(role, '?')",

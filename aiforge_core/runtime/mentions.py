@@ -86,6 +86,12 @@ def _dir_block(path: str, token: str) -> str:
     return f"@{token} (folder):\n" + "\n".join(entries[:_MAX_DIR]) + more
 
 
+def _url_allowed(tok: str) -> bool:
+    """A @-mention of a URL is a page to READ, not an endpoint we authenticate
+    to, so this is a scheme check — see the note in doer_tools/_web."""
+    return tok.lower().startswith(("http://", "https://"))
+
+
 def _url_block(url: str) -> str:
     # Canonical fetcher (str arg → {ok, body}); falls back to urllib.
     try:
@@ -151,7 +157,7 @@ def expand(text: str, cwd: str) -> tuple[str, list[str]]:
         low = tok.lower()
         if low == "problems":
             block = _problems_block(cwd)
-        elif tok.startswith(("http://", "https://")):
+        elif _url_allowed(tok):
             block = _url_block(tok)
         else:
             p = _resolve_path(cwd, tok.rstrip("/"))

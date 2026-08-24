@@ -25,7 +25,8 @@ def test_progress_recap_lists_read_files_and_tallies_tools():
         {"role": "assistant", "content": 'ACTION: codegraph_query\nARGS_JSON: {"query": "x"}'},
     ]
     recap = _progress_recap(convo)
-    assert "A.java" in recap and "B.java" in recap
+    assert "A.java" in recap
+    assert "B.java" in recap
     assert "Files already read (2)" in recap        # dup de-duped
     assert "codegraph_query×1" in recap
 

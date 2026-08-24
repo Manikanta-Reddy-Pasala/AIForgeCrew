@@ -133,7 +133,8 @@ def test_mouse_click_with_coords(monkeypatch):
     monkeypatch.setattr(br, "_get_context", lambda rid: (MagicMock(), page))
     out = br.browse("mouse_click", x=100, y=200, button="right")
     assert out["ok"]
-    assert out["x"] == 100 and out["y"] == 200
+    assert out["x"] == 100
+    assert out["y"] == 200
     page.mouse.click.assert_called_once_with(100, 200, button="right")
 
 

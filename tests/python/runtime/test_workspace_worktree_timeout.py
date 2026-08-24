@@ -48,7 +48,8 @@ def test_worktree_add_timeout_returns_none(ws, monkeypatch):
 
     def _raise_timeout(cmd, *a, **k):
         # Assert the fix actually passes a timeout to the add.
-        assert "timeout" in k and k["timeout"], "worktree add must have a timeout"
+        assert "timeout" in k, "worktree add must have a timeout"
+        assert k["timeout"], "worktree add must have a timeout"
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=k["timeout"])
 
     monkeypatch.setattr(w.subprocess, "run",

@@ -11,7 +11,9 @@ def test_html_bold_and_code_and_paragraph():
                        "<code>.2</code> IP is used.</p>")
     assert "*Technical Context:*" in out
     assert "{{.2}}" in out
-    assert "<p>" not in out and "<strong>" not in out and "<code>" not in out
+    assert "<p>" not in out
+    assert "<strong>" not in out
+    assert "<code>" not in out
 
 
 def test_html_unordered_list():
@@ -36,7 +38,9 @@ def test_html_headings_links_entities():
 
 def test_html_pre_block_becomes_code_macro():
     out = to_jira_wiki("<pre>line1\nline2</pre>")
-    assert "{code}" in out and "line1" in out and "line2" in out
+    assert "{code}" in out
+    assert "line1" in out
+    assert "line2" in out
 
 
 # ── Markdown → wiki (the normal case) ────────────────────────────────────────
@@ -50,8 +54,11 @@ def test_markdown_headings_bold_inline_code():
 def test_markdown_bullets_and_fence():
     out = to_jira_wiki("- one\n- two\n\n```py\nx=1\n```")
     lines = out.splitlines()
-    assert "* one" in lines and "* two" in lines
-    assert "{code:py}" in out and "x=1" in out and "{code}" in out
+    assert "* one" in lines
+    assert "* two" in lines
+    assert "{code:py}" in out
+    assert "x=1" in out
+    assert "{code}" in out
 
 
 def test_markdown_link():

@@ -36,7 +36,7 @@ def _probe(url: str, timeout: float = 3.0) -> bool:
             req, timeout=timeout, context=_ssl_context_for(models_url)
         ) as resp:
             return resp.status == 200
-    except (urllib.error.URLError, TimeoutError, OSError):
+    except OSError:
         return False
 
 

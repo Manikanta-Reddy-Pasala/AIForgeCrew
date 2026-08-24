@@ -7,7 +7,8 @@ def test_broken_pyproject_detected(tmp_path):
     (tmp_path / "pyproject.toml").write_text(
         '[tool.pytest.ini_options]\naddopts = "-v --cov=.\n')  # unterminated
     err = pp._broken_project_config(str(tmp_path))
-    assert err and err.startswith("pyproject.toml:")
+    assert err
+    assert err.startswith("pyproject.toml:")
 
 
 def test_valid_configs_pass(tmp_path):
@@ -19,4 +20,5 @@ def test_valid_configs_pass(tmp_path):
 def test_broken_package_json_detected(tmp_path):
     (tmp_path / "package.json").write_text('{"name": "x",}')
     err = pp._broken_project_config(str(tmp_path))
-    assert err and err.startswith("package.json:")
+    assert err
+    assert err.startswith("package.json:")

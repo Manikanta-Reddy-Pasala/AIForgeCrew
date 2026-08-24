@@ -23,7 +23,8 @@ def test_normal_body_does_not_raise():
 
 def test_model_reloading_is_transient():
     retry, label = c._is_transient_exc(c._ModelReloading("x"))
-    assert retry is True and label == "model_reloading"
+    assert retry is True
+    assert label == "model_reloading"
 
 
 def test_escalating_markers_include_model_drop():

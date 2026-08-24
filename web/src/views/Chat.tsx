@@ -13,6 +13,7 @@ import { CtxReload } from './Chat.CtxReload';
 import { AutoApprovalsPanel } from './Chat.AutoApprovalsPanel';
 import { MediaStrip } from './Chat.MediaStrip';
 import { AssistantBubble } from './Chat.AssistantBubble';
+import { clickable } from '../a11y';
 
 // Module-level builder-launch guard: epoch-ms of the last ?builder= launch.
 // Lives OUTSIDE the component so a lazy-route/Suspense REMOUNT can't reset it
@@ -1262,7 +1263,7 @@ export default function Chat() {
             <div
               key={s.id}
               className={`chat-session-item ${s.id === activeId ? 'active' : ''}`}
-              onClick={() => { if (!renaming || renaming.id !== s.id) selectSession(s.id); }}
+              {...clickable(() => { if (!renaming || renaming.id !== s.id) selectSession(s.id); })}
             >
               <div className="chat-session-item-body">
                 {renaming && renaming.id === s.id ? (
@@ -1340,7 +1341,7 @@ export default function Chat() {
             )}
             {activeBuilder && (
               <span className="chip ok" title="Click to exit builder mode and chat normally"
-                    onClick={() => activeId !== null && clearBuilderForSession(activeId)}
+                    {...clickable(() => { if (activeId !== null) clearBuilderForSession(activeId); })}
                     style={{ alignSelf: 'flex-start', marginTop: 2, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                 <Icon.Sparkles size={11} /> {BUILDER_LABELS[activeBuilder]} · exit ✕
               </span>
@@ -1837,10 +1838,14 @@ export default function Chat() {
 
             {/* SPEC.md preview modal */}
             {specModal && (
-              <div onClick={() => setSpecModal(null)}
+              <div {...clickable(() => setSpecModal(null))} aria-label="Close"
                    style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
                             display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-                <div onClick={(e) => e.stopPropagation()}
+                <div // Not a control: this panel exists only to stop the overlay's click
+              // from closing the dialog. A matching key handler keeps that
+              // true for keyboard users without announcing it as a button.
+              onClick={(e) => e.stopPropagation()}
+                     onKeyDown={(e) => e.stopPropagation()}
                      style={{ background: 'var(--bg-0,#0d1017)', border: '1px solid var(--border,#2a2f3a)',
                               borderRadius: 8, width: 'min(820px, 92vw)', maxHeight: '85vh', overflowY: 'auto',
                               padding: '18px 22px', boxShadow: '0 12px 40px rgba(0,0,0,0.5)' }}>
@@ -2012,13 +2017,14 @@ export default function Chat() {
         {/* Checkpoints panel (#3) */}
         {checkpoints !== null && (
           <div
-            onClick={() => setCheckpoints(null)}
+            {...clickable(() => setCheckpoints(null))} aria-label="Close"
             style={{
               position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)',
               display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50,
             }}
           >
-            <div onClick={e => e.stopPropagation()} style={{
+            <div onClick={e => e.stopPropagation()}
+                 onKeyDown={e => e.stopPropagation()} style={{
               width: 'min(560px, 92vw)', maxHeight: '70vh', overflow: 'auto',
               background: 'var(--bg-0)', border: '1px solid var(--border-1)',
               borderRadius: 10, padding: 16,

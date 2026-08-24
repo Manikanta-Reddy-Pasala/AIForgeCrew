@@ -53,7 +53,9 @@ def test_repo_context_starter_then_persisted(tmp_path, monkeypatch):
     (tmp_path / "README.md").write_text("# App\nOrders service.")
     # first time → auto starter from stack + README
     starter = chat_agent._repo_context(str(tmp_path))
-    assert "PROJECT SUMMARY" in starter and "maven" in starter and "Orders service" in starter
+    assert "PROJECT SUMMARY" in starter
+    assert "maven" in starter
+    assert "Orders service" in starter
     # after a session writes the per-repo summary → it's injected next time
     repo = chat_agent._repo_name(str(tmp_path))
     md_store.upsert_section(source=f"repo:{repo}", title=f"{repo} memory",

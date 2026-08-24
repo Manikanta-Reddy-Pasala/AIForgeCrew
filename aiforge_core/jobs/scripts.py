@@ -18,13 +18,14 @@ import os
 import re
 import subprocess
 from datetime import datetime
+from aiforge_core.config.paths import config_dir
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
 def jobs_dir() -> str:
     """Absolute local folder holding user job scripts. Created on demand."""
-    cfg = os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")
+    cfg = str(config_dir())
     path = os.path.join(os.path.expanduser(cfg), "jobs")
     os.makedirs(path, exist_ok=True)
     return path
@@ -64,7 +65,10 @@ def write_script(name: str, content: str) -> str:
     path = os.path.join(jobs_dir(), fname)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(body)
-    os.chmod(path, 0o755)
+    # 0o700, not 0o755: this is a generated script run by the SAME user.
+    # World-readable+executable let any local user read what it does and
+    # execute it, and it can carry job arguments.
+    os.chmod(path, 0o700)
     return path
 
 

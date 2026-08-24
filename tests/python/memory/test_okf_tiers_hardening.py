@@ -15,7 +15,7 @@ import time
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def mem(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
@@ -23,7 +23,7 @@ def mem(monkeypatch, tmp_path):
     return tmp_path / "md"
 
 
-@pytest.fixture()
+@pytest.fixture
 def folds(monkeypatch):
     """Keep the LLM out of it: facts are the content lines, verbatim."""
     calls: list[str] = []
@@ -146,7 +146,8 @@ def test_group_names_that_sanitise_alike_stay_separate_nodes(mem, folds):
 
     out = tiers.distil_mesh()
 
-    assert out["groups"] == 3 and len(out["written"]) == 3
+    assert out["groups"] == 3
+    assert len(out["written"]) == 3
     assert len(list(paths.mesh_dir().rglob("*.md"))) == 3
     body = _bodies(paths.mesh_dir())
     for i in range(3):
@@ -238,7 +239,8 @@ def test_a_local_fact_the_mesh_lacks_still_reaches_the_view(mem, folds):
     tiers.build_view()
 
     view = _bodies(paths.view_dir())
-    assert "mtu 1380" in view and "override it to 1280" in view
+    assert "mtu 1380" in view
+    assert "override it to 1280" in view
 
 
 # ── 6. the standing amplification guard ───────────────────────────────────

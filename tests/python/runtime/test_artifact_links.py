@@ -9,7 +9,7 @@ import tempfile
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def rules_dir(monkeypatch):
     d = tempfile.mkdtemp()
     monkeypatch.setenv("AIFORGE_RULES_DIR", d)

@@ -61,7 +61,8 @@ def test_an_unreadable_admin_id_cache_does_not_end_the_cycle(monkeypatch, tmp_pa
     for junk in ("{", "[]", "null", '{"id": ["a"]}'):
         (cfg / "admin.json").write_text(junk, encoding="utf-8")
         rows = loop.run_once()
-        assert len(rows) == 1 and rows[0]["ok"] is True, junk
+        assert len(rows) == 1, junk
+        assert rows[0]["ok"] is True, junk
 
 
 def test_a_push_that_raises_does_not_cost_the_pull(monkeypatch, tmp_path):
@@ -209,7 +210,8 @@ def test_a_wrong_shaped_manifest_response_is_survived(monkeypatch, tmp_path):
 
     rows = loop.run_once()
 
-    assert len(rows) == 1 and rows[0]["admin"] == "http://stub"
+    assert len(rows) == 1
+    assert rows[0]["admin"] == "http://stub"
     assert rows[0]["ok"] is True
 
 

@@ -15,8 +15,10 @@ def test_user_guidance_filters_system_notes():
 
 def test_reject_directive_mentions_tool_and_guidance():
     d = cs.reject_directive("jira_update", "use bullet points")
-    assert "jira_update" in d and "use bullet points" in d
-    assert "adjust" in d.lower() and "not repeat" in d.lower()
+    assert "jira_update" in d
+    assert "use bullet points" in d
+    assert "adjust" in d.lower()
+    assert "not repeat" in d.lower()
 
 
 def test_steer_event_shape():
@@ -26,6 +28,8 @@ def test_steer_event_shape():
 
 def test_applied_event_shape_and_truncates():
     e = cs.applied_event("x" * 300)
-    assert e["type"] == "thought" and e["role"] == "system"
-    assert "Got your message" in e["text"] and "x" * 120 in e["text"]
+    assert e["type"] == "thought"
+    assert e["role"] == "system"
+    assert "Got your message" in e["text"]
+    assert "x" * 120 in e["text"]
     assert len(e["text"]) < 200          # 120-char cap on the echoed text

@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Any
+from aiforge_core.config.paths import config_dir
 
 
 # ─────────────── Aider RepoMap (process-local, hot path) ────────────────
@@ -43,7 +44,7 @@ def _repo_index_dir(root) -> "Path":
         pass
     key = hashlib.sha1(ident.encode()).hexdigest()[:16]
     base = os.environ.get("AIFORGE_REPO_INDEX_DIR") or os.path.join(
-        os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")),
+        str(config_dir()),
         "repo-index")
     d = _P(base) / key
     try:

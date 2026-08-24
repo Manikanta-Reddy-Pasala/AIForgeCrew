@@ -28,13 +28,14 @@ import re
 import threading
 
 from aiforge_core.config import _atomic
+from aiforge_core.config.paths import config_dir
 
 _LOCK = threading.Lock()
 _CATALOG_PATH = os.path.join(os.path.dirname(__file__), "mcp_catalog.json")
 
 
 def _path() -> str:
-    root = os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge"))
+    root = str(config_dir())
     return os.path.join(root, "mcp_servers.json")
 
 
@@ -57,8 +58,9 @@ def _slug(name: str) -> str:
 
 
 def _is_http(transport: str, url: str) -> bool:
+    from aiforge_core.net.url_policy import is_allowed
     return (transport or "http").lower() in ("http", "sse") \
-        and str(url or "").lower().startswith(("http://", "https://"))
+        and is_allowed(url)
 
 
 def _is_stdio(transport: str) -> bool:
@@ -118,6 +120,35 @@ def get_server(server_id: str) -> dict | None:
     return None
 
 
+def _validated_transport(transport: str, url: str, command: str, args, env):
+    """(url, command, args, env) normalised for the transport, or ValueError.
+
+    The two transports are mutually exclusive — an http server has no command,
+    a stdio server has no url — so this returns the CLEARED fields rather than
+    leaving each caller to remember which half to blank.
+    """
+    if transport in ("http", "sse"):
+        from aiforge_core.net.url_policy import check
+        why = check(url) if url else None
+        if why:
+            raise ValueError(why)
+        return url, "", None, None
+    if transport == "stdio":
+        if not command:
+            raise ValueError("stdio server requires a command (e.g. npx)")
+        return "", command, args, env
+    raise ValueError(f"transport not supported: {transport} (http/sse/stdio)")
+
+
+def _unique_id(base: str, taken: set) -> str:
+    """``base``, ``base-2``, ``base-3`` … — the first that is free."""
+    uid, n = base, 2
+    while uid in taken:
+        uid = f"{base}-{n}"
+        n += 1
+    return uid
+
+
 def add_server(*, name: str, url: str = "", transport: str = "http",
                api_key: str | None = None, description: str = "",
                catalog_id: str = "", enabled: bool = True,
@@ -135,24 +166,11 @@ def add_server(*, name: str, url: str = "", transport: str = "http",
     transport = (transport or "http").lower()
     command = (command or "").strip()
     url = (url or "").strip()
-    if transport in ("http", "sse"):
-        if url and not url.lower().startswith(("http://", "https://")):
-            raise ValueError("url must be http(s)")
-        command, args, env = "", None, None
-    elif transport == "stdio":
-        if not command:
-            raise ValueError("stdio server requires a command (e.g. npx)")
-        url = ""
-    else:
-        raise ValueError(f"transport not supported: {transport} (http/sse/stdio)")
+    url, command, args, env = _validated_transport(
+        transport, url, command, args, env)
     with _LOCK:
         rows = _load()
-        base = _slug(name)
-        existing = {r["id"] for r in rows}
-        uid, n = base, 2
-        while uid in existing:
-            uid = f"{base}-{n}"
-            n += 1
+        uid = _unique_id(_slug(name), {r["id"] for r in rows})
         row = {"id": uid, "name": name, "url": url, "transport": transport,
                "command": command, "args": list(args or []),
                "env": dict(env or {}),
@@ -192,26 +210,39 @@ def install_from_catalog(catalog_id: str, *, url: str | None = None,
         catalog_id=catalog_id, enabled=True)
 
 
+# How each updatable field is coerced. A table, because the old chain of ifs
+# was the same shape nine times over and the only real content was the coercion.
+_UPDATABLE = {
+    "name": lambda v: str(v).strip(),
+    "url": lambda v: str(v).strip(),
+    "description": lambda v: str(v).strip(),
+    "command": lambda v: str(v).strip(),
+    "args": list,
+    "env": dict,
+    "enabled": bool,
+}
+
+
+def _apply_updates(row: dict, fields: dict) -> None:
+    """Patch ``row`` in place with the fields that were actually supplied."""
+    for key, coerce in _UPDATABLE.items():
+        if fields.get(key) is not None:
+            row[key] = coerce(fields[key])
+    # api_key is the exception: only a NON-EMPTY value overwrites, so that
+    # saving a form that renders the key blank cannot silently erase it.
+    if fields.get("api_key"):
+        row["api_key"] = fields["api_key"]
+
+
 def update_server(server_id: str, **fields) -> dict | None:
     with _LOCK:
         rows = _load()
-        for r in rows:
-            if r.get("id") != server_id:
-                continue
-            for k in ("name", "url", "description", "command"):
-                if fields.get(k) is not None:
-                    r[k] = str(fields[k]).strip()
-            if fields.get("args") is not None:
-                r["args"] = list(fields["args"])
-            if fields.get("env") is not None:
-                r["env"] = dict(fields["env"])
-            if fields.get("enabled") is not None:
-                r["enabled"] = bool(fields["enabled"])
-            if fields.get("api_key"):   # only overwrite with a non-empty key
-                r["api_key"] = fields["api_key"]
-            _save(rows)
-            return _public(r)
-    return None
+        row = next((r for r in rows if r.get("id") == server_id), None)
+        if row is None:
+            return None
+        _apply_updates(row, fields)
+        _save(rows)
+        return _public(row)
 
 
 def remove_server(server_id: str) -> bool:

@@ -186,7 +186,6 @@ def _prune_offplan_files(cwd: str, subs: list) -> list:
     if not _is_greenfield(cwd):
         return []
     baseline = _baseline_set(cwd)                 # pre-existing files — never delete
-    declared_bases = {os.path.basename(d) for d in declared}
     removed: list = []
     for rel, _content in _gather_sources(cwd):
         r = rel.lstrip("/")

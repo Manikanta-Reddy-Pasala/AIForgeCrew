@@ -198,7 +198,7 @@ def _post_cancellable(ep: Endpoint, payload: bytes, timeout_s: int,
         _body = json.loads(data)
         _raise_if_model_dropped(_body)   # 200-OK error body → transient
         return _body
-    except (http.client.HTTPException, OSError) as exc:
+    except OSError as exc:
         if cancel.is_set():
             raise _LLMCancelled("cancelled mid-request") from exc
         raise

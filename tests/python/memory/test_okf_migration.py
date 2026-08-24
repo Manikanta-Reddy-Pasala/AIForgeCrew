@@ -18,7 +18,8 @@ def test_rewrite_file_frontmatter_renames_legacy_keys(tmp_path):
     assert migrations._rewrite_file_frontmatter_to_okf(p) is True
     txt = p.read_text(encoding="utf-8")
     head = txt.split("\n---", 1)[0]
-    assert "type: knowledge" in head and "resource: https://x/y" in head
+    assert "type: knowledge" in head
+    assert "resource: https://x/y" in head
     assert "timestamp: 2020-01-01" in head
     assert "kind:" not in head and "source_url:" not in head \
         and "updated_at:" not in head
@@ -35,7 +36,8 @@ def test_rewrite_created_at_folds_to_timestamp(tmp_path):
                  encoding="utf-8")
     assert migrations._rewrite_file_frontmatter_to_okf(p) is True
     head = p.read_text(encoding="utf-8").split("\n---", 1)[0]
-    assert "timestamp: 2021-05-05" in head and "created_at:" not in head
+    assert "timestamp: 2021-05-05" in head
+    assert "created_at:" not in head
 
 
 def test_rewrite_skips_when_okf_key_already_present(tmp_path):
@@ -59,9 +61,11 @@ def test_migrate_frontmatter_walks_compacted_and_skips_reserved(
     monkeypatch.setattr("aiforge_core.memory.md_store.memory_dir",
                         lambda: mem)
     r = migrations._migrate_frontmatter_to_okf()
-    assert r["ok"] and r["rewritten"] == 1
+    assert r["ok"]
+    assert r["rewritten"] == 1
     a = (mem / "compacted" / "compacted-a.md").read_text(encoding="utf-8")
-    assert "type: knowledge" in a and "kind:" not in a.split("\n---", 1)[0]
+    assert "type: knowledge" in a
+    assert "kind:" not in a.split("\n---", 1)[0]
     assert (mem / "compacted" / "index.md").read_text(encoding="utf-8") \
         == "# nav\n- a\n"                  # reserved file untouched
 
@@ -84,5 +88,6 @@ def test_rename_moves_okr_when_okf_absent(tmp_path, monkeypatch):
         "---\ntype: learning\nid: L-01\n---\nx\n", encoding="utf-8")
     monkeypatch.setattr("aiforge_core.memory.md_store.memory_dir", lambda: mem)
     r = migrations._rename_okr_dir_to_okf()
-    assert r.get("ok") and not (mem / "okr").exists()
+    assert r.get("ok")
+    assert not (mem / "okr").exists()
     assert (mem / "okf" / "global" / "learnings" / "L-01.md").is_file()

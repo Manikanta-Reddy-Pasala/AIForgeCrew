@@ -12,10 +12,11 @@ import os
 from pathlib import Path
 
 from aiforge_core.config import _atomic
+from aiforge_core.config.paths import config_dir
 
 
 def _path() -> Path:
-    d = Path(os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")))
+    d = Path(str(config_dir()))
     d.mkdir(parents=True, exist_ok=True)
     return d / "integrations.json"
 

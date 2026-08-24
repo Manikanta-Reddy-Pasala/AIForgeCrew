@@ -11,7 +11,7 @@ import importlib
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def sm(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_MEMORY_DB_PATH", str(tmp_path / "m.db"))
     monkeypatch.setenv("AIFORGE_MEMORY_BACKEND", "sqlite")

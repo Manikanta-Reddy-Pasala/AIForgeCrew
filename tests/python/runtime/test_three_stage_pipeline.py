@@ -34,7 +34,8 @@ def test_pipeline_is_workflow_graph_with_core_nodes() -> None:
         assert n in names, (n, names)
     # 3-axis verify fan-out collapsed to ONE verifier call (token win) —
     # the parallel join/merge nodes are gone from the live DAG.
-    assert "verifier_join" not in names and "merge_verdicts" not in names
+    assert "verifier_join" not in names
+    assert "merge_verdicts" not in names
     # live_verifier runs standalone post-PR, not in the graph
     assert "live_verifier" not in names
 

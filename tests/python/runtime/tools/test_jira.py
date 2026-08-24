@@ -57,7 +57,8 @@ def test_search(cfg, monkeypatch):
          "issuetype": {"name": "Task"}, "status": {"name": "Open"},
          "assignee": {"displayName": "Alice"}}}]})
     out = jr.jira_search({"query": "deploy"})
-    assert out["ok"] and out["results"][0]["key"] == "ENG-10"
+    assert out["ok"]
+    assert out["results"][0]["key"] == "ENG-10"
     assert out["results"][0]["status"] == "Open"
     assert "/rest/api/2/search" in seen["url"]
     assert "text" in seen["url"]                       # jql built from query
@@ -90,7 +91,8 @@ def test_search_all_loops_pages_until_exhausted(cfg, monkeypatch):
     out = jr.jira_search({"jql": "sprint = 'BT July-2026' AND type = Bug",
                           "limit": "all"})
     assert out["ok"]
-    assert out["count"] == 99 and out["total"] == 99
+    assert out["count"] == 99
+    assert out["total"] == 99
     assert out["truncated"] is False
     assert len(out["results"]) == 99
     assert len(calls) == 3                               # 40 + 40 + 19
@@ -101,14 +103,16 @@ def test_search_default_limit_reports_truncation(cfg, monkeypatch):
     agent 99 exist so it can re-ask with limit=all."""
     _paged(monkeypatch, 99)
     out = jr.jira_search({"jql": "type = Bug"})
-    assert out["count"] == 50 and out["total"] == 99
+    assert out["count"] == 50
+    assert out["total"] == 99
     assert out["truncated"] is True
 
 
 def test_search_explicit_limit_honoured(cfg, monkeypatch):
     _paged(monkeypatch, 99)
     out = jr.jira_search({"jql": "type = Bug", "limit": 99})
-    assert out["count"] == 99 and out["truncated"] is False
+    assert out["count"] == 99
+    assert out["truncated"] is False
 
 
 def test_read_by_key(cfg, monkeypatch):
@@ -119,7 +123,9 @@ def test_read_by_key(cfg, monkeypatch):
         "comment": {"comments": [{"author": {"displayName": "Bob"},
                                   "body": "hi"}]}}})
     out = jr.jira_read({"key": "ENG-10"})
-    assert out["ok"] and out["description"] == "desc" and out["status"] == "Open"
+    assert out["ok"]
+    assert out["description"] == "desc"
+    assert out["status"] == "Open"
     assert out["labels"] == ["a", "b"]
     assert out["comments"][0]["author"] == "Bob"
     assert out["url"].endswith("/browse/ENG-10")
@@ -134,7 +140,8 @@ def test_create(cfg, monkeypatch):
     out = jr.jira_create({"project": "ENG", "summary": "New",
                           "issuetype": "Bug", "description": "d",
                           "labels": "x, y", "parent": "ENG-1"})
-    assert out["ok"] and out["key"] == "ENG-99"
+    assert out["ok"]
+    assert out["key"] == "ENG-99"
     assert seen["method"] == "POST"
     assert seen["body"]["fields"]["project"]["key"] == "ENG"
     assert seen["body"]["fields"]["issuetype"]["name"] == "Bug"
@@ -147,7 +154,8 @@ def test_update_fields(cfg, monkeypatch):
     seen = _capture(monkeypatch, None)        # PUT → 204 No Content
     out = jr.jira_update({"key": "ENG-10", "summary": "Edited",
                           "labels": ["z"]})
-    assert out["ok"] and out["key"] == "ENG-10"
+    assert out["ok"]
+    assert out["key"] == "ENG-10"
     assert seen["method"] == "PUT"
     assert seen["body"]["fields"]["summary"] == "Edited"
     assert seen["body"]["fields"]["labels"] == ["z"]
@@ -160,7 +168,8 @@ def test_update_requires_fields(cfg):
 def test_comment(cfg, monkeypatch):
     seen = _capture(monkeypatch, {"id": "555"})
     out = jr.jira_comment({"key": "ENG-10", "body": "looks good"})
-    assert out["ok"] and out["id"] == "555"
+    assert out["ok"]
+    assert out["id"] == "555"
     assert seen["method"] == "POST"
     assert "/rest/api/2/issue/ENG-10/comment" in seen["url"]
     assert seen["body"]["body"] == "looks good"
@@ -183,7 +192,8 @@ def test_insecure_tls_builds_unverified_context(monkeypatch):
     seen = _capture(monkeypatch, {"issues": []})
     jr.jira_search({"query": "x"})
     ctx = seen["context"]
-    assert ctx is not None and ctx.verify_mode == ssl.CERT_NONE
+    assert ctx is not None
+    assert ctx.verify_mode == ssl.CERT_NONE
 
 
 def test_reads_stored_config_when_env_absent(tmp_path, monkeypatch):
@@ -241,7 +251,8 @@ def test_read_fetches_and_analyses_image_and_doc_attachments(cfg, monkeypatch):
                         lambda name, raw, role="doer", mime="": {"filename": name,
                                                                  "description": f"desc:{name}"})
     out = jr.jira_read({"key": "ENG-10"})
-    assert out["ok"] and "attachments" in out
+    assert out["ok"]
+    assert "attachments" in out
     # Image + pdf analysed, the unsupported video skipped.
     assert [i["filename"] for i in out["attachments"]] == ["diagram.png", "spec.pdf"]
     assert out["attachments"][1]["description"] == "desc:spec.pdf"

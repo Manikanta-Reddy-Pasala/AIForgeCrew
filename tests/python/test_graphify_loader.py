@@ -86,7 +86,7 @@ class _FakeDriver:
 
 # --- fixtures ------------------------------------------------------------
 
-@pytest.fixture()
+@pytest.fixture
 def synth_graph(tmp_path: Path) -> Path:
     """Synthetic 5-node, 4-edge Graphify graph mirroring the real schema.
 

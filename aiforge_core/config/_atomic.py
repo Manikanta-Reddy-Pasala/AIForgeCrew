@@ -40,16 +40,26 @@ __all__ = ["write_bytes", "write_text"]
 
 
 def _default_mode() -> int:
-    """Permissions a plain ``open(path, "w")`` would have produced.
+    """OWNER-ONLY (0600) for everything this module publishes.
 
-    ``mkstemp`` deliberately creates at 0600; every call site this replaced used
-    a plain open, so honouring the process umask keeps their files exactly as
-    permissive as before. Read once at import — the usual get-and-restore is the
-    only way to read a umask, and doing it here runs it before any writer does.
+    These are the files under AIFORGE_CONFIG_DIR, and `agent_config` persists an
+    `api_key` (see agent_config/_persist.py). The old default was
+    ``0o666 & ~umask`` — 0644 under the usual umask — so on any shared machine
+    every local user could read the operator's API keys. `mkstemp` already
+    creates at 0600; this used to widen it back out to match what a plain
+    `open()` would have done, which is the wrong benchmark for a credential
+    store. ~/.ssh and ~/.aws/credentials are the right comparison.
+
+    AIFORGE_CONFIG_MODE overrides it (octal, e.g. "0640") for a deployment that
+    genuinely needs group reads — but it has to be asked for.
     """
-    cur = os.umask(0o022)
-    os.umask(cur)
-    return 0o666 & ~cur
+    raw = (os.environ.get("AIFORGE_CONFIG_MODE") or "").strip()
+    if raw:
+        try:
+            return int(raw, 8)
+        except ValueError:
+            pass
+    return 0o600
 
 
 _MODE = _default_mode()

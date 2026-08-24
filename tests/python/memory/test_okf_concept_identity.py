@@ -75,7 +75,8 @@ def test_fold_session_scopes_to_global(store):
                     "Always paginate jira_search")
     assert set(store.okr_scopes()) >= {"session-64", "session-65"}
     res = store.fold_session_scopes_to_global()
-    assert res["ok"] and res["moved"] == 2
+    assert res["ok"]
+    assert res["moved"] == 2
     # both folded into global and collapsed to ONE concept file
     gl = [d for d in store.load_all() if d.get("type") == "learning"
           and store._scope_label_from_path(d["path"]) == "Global"]
@@ -93,6 +94,7 @@ def test_dedupe_collapses_fuzzy_duplicates(store):
     store.save_node("learning", "L-20", meta, "Restart the api after deploy")
     assert len(_learnings(store)) == 4
     res = store.dedupe_nodes()
-    assert res["ok"] and res["removed"] == 2            # 3 paraphrases → 1
+    assert res["ok"]
+    assert res["removed"] == 2
     kinds = _learnings(store)
     assert len(kinds) == 2                              # the concept + the unrelated one

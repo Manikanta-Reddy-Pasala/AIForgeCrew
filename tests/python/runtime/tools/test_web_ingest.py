@@ -21,7 +21,8 @@ def test_gated_off_by_default(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("AIFORGE_ALLOW_WEB_FETCH", raising=False)
     r = web_ingest.web_crawl({"url": "https://example.com"}, None)
-    assert not r["ok"] and "AIFORGE_ALLOW_WEB_FETCH" in r["error"]
+    assert not r["ok"]
+    assert "AIFORGE_ALLOW_WEB_FETCH" in r["error"]
 
 
 def test_rejects_bad_urls(workdir):
@@ -40,15 +41,19 @@ def test_fallback_engine_saves_dossier(workdir, monkeypatch):
                                 "truncated": False})
     r = web_ingest.web_crawl(
         {"url": "https://docs.example.com/guide/intro"}, None)
-    assert r["ok"] and r["engine"] == "fetch" and r["title"] == "Doc Title"
+    assert r["ok"]
+    assert r["engine"] == "fetch"
+    assert r["title"] == "Doc Title"
     assert os.path.isfile(r["path"])
     body = open(r["path"], encoding="utf-8").read()
-    assert "hello world" in body and "docs.example.com" in r["path"]
+    assert "hello world" in body
+    assert "docs.example.com" in r["path"]
     # dossier lands under work/web/<slug>/ with a meta.json sibling
     assert f"{os.sep}web{os.sep}" in r["path"]
     meta = json.load(open(os.path.join(os.path.dirname(r["path"]),
                                        "meta.json"), encoding="utf-8"))
-    assert meta["url"].endswith("/guide/intro") and meta["engine"] == "fetch"
+    assert meta["url"].endswith("/guide/intro")
+    assert meta["engine"] == "fetch"
 
 
 def test_fetch_failure_propagates(workdir, monkeypatch):
@@ -57,12 +62,15 @@ def test_fetch_failure_propagates(workdir, monkeypatch):
         "aiforge_core.runtime.tools.web_search._fetch_readable",
         lambda url, max_chars: {"ok": False, "error": "boom"})
     r = web_ingest.web_crawl({"url": "https://example.com"}, None)
-    assert not r["ok"] and r["error"] == "boom"
+    assert not r["ok"]
+    assert r["error"] == "boom"
 
 
 def test_slug_is_filesystem_safe():
     s = web_ingest._slug_for("https://a.b/c/d?x=1#f")
-    assert "/" not in s and "?" not in s and s
+    assert "/" not in s
+    assert "?" not in s
+    assert s
 
 
 def test_slug_distinguishes_query_strings():
@@ -81,11 +89,13 @@ def test_url_credentials_never_persisted(workdir, monkeypatch):
     r = web_ingest.web_crawl(
         {"url": "https://user:s3cret@h.io/doc?api_token=abc123"}, None)
     assert r["ok"]
-    assert "s3cret" not in r["path"] and "s3cret" not in r["url"]
+    assert "s3cret" not in r["path"]
+    assert "s3cret" not in r["url"]
     blob = open(r["path"], encoding="utf-8").read() + \
         open(os.path.join(os.path.dirname(r["path"]), "meta.json"),
              encoding="utf-8").read()
-    assert "s3cret" not in blob and "abc123" not in blob
+    assert "s3cret" not in blob
+    assert "abc123" not in blob
     assert "REDACTED" in blob      # token PARAM kept, value scrubbed
 
 

@@ -331,7 +331,8 @@ def test_no_edit_guard_retries_then_flags_incomplete(monkeypatch):
                          complete_fn=lambda *a, **k: "")
     assert len(passes) == 2                      # original + 1 corrective retry
     assert "CORRECTION" in passes[1]             # retry seed carries the nudge
-    assert r["edit_count"] == 0 and r["incomplete"] is True
+    assert r["edit_count"] == 0
+    assert r["incomplete"] is True
     assert "INCOMPLETE" in r["doer_outcome"]
 
 
@@ -348,7 +349,9 @@ def test_no_edit_guard_noop_when_edit_made(monkeypatch):
         yield {"type": "done"}
     monkeypatch.setattr(ca, "run_chat_agent", fake_edit)
     r = td.run_text_doer({"plan_md": "x"}, "/tmp", complete_fn=lambda *a, **k: "")
-    assert len(passes) == 1 and r["edit_count"] == 1 and r["incomplete"] is False
+    assert len(passes) == 1
+    assert r["edit_count"] == 1
+    assert r["incomplete"] is False
 
 
 def test_seed_prepends_codegraph_mandate_when_available(monkeypatch):
@@ -361,6 +364,7 @@ def test_seed_prepends_codegraph_mandate_when_available(monkeypatch):
     monkeypatch.setattr(cg, "enabled_for_run", lambda cwd=None: True)
     s = td._build_seed({"plan_md": "edit clean_amount"})
     assert s.startswith("MANDATORY — CodeGraph")
-    assert "codegraph_callers" in s and "grep is NOT allowed" in s
+    assert "codegraph_callers" in s
+    assert "grep is NOT allowed" in s
     monkeypatch.setattr(cg, "enabled_for_run", lambda cwd=None: False)
     assert not td._build_seed({"plan_md": "x"}).startswith("MANDATORY")

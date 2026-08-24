@@ -110,7 +110,8 @@ def test_the_override_cannot_inject_a_header(monkeypatch):
                 "aiforge/1.0 (x)\nX: y"):
         monkeypatch.setenv("AIFORGE_LLM_USER_AGENT", bad)
         got = ua.user_agent()
-        assert "\r" not in got and "\n" not in got, bad
+        assert "\r" not in got, bad
+        assert "\n" not in got, bad
     # A NUL cannot reach os.environ (the OS refuses it), so exercise the
     # sanitiser directly rather than pretending the env can carry one.
     assert ua._CTRL.sub("", "aiforge/1.0\x00(x)") == "aiforge/1.0(x)"

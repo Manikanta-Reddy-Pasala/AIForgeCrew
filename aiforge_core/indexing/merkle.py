@@ -31,6 +31,7 @@ from typing import Iterator
 
 
 from aiforge_core.indexing.noise import EXCLUDE_DIRS as _PRUNE  # shared filter
+from aiforge_core.config.paths import config_dir
 
 _ALLOWED_EXTS = frozenset({
     ".java", ".py", ".ts", ".tsx", ".js", ".jsx", ".kt", ".go",
@@ -225,7 +226,7 @@ def _db_path(repo_name: str) -> Path:
     base = Path(os.environ.get(
         "AIFORGE_MERKLE_DIR",
         os.path.join(os.path.expanduser(
-            os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")), "merkle"),
+            str(config_dir())), "merkle"),
     ))
     base.mkdir(parents=True, exist_ok=True)
     return base / f"{repo_name}.db"

@@ -36,7 +36,8 @@ def test_loop_detection_same_action(tmp_path):
         [{"role": "user", "content": "loop"}], cwd=str(tmp_path),
         complete_fn=_fn))
     asks = [e for e in evs if e["type"] == "message" and e.get("awaiting_input")]
-    assert asks and ("clarify" in asks[0]["text"] or "proceed" in asks[0]["text"])
+    assert asks
+    assert "clarify" in asks[0]["text"] or "proceed" in asks[0]["text"]
     # Bounded well below the runaway cap: the stuck guard now RECOVERS
     # (recap + nudge, clearing the strike count) a few times before it gives up,
     # so the ceiling is _LOOP_REPEAT strikes per recovery round — not one round.
@@ -53,7 +54,8 @@ def test_agent_can_ask_a_question(tmp_path):
         [{"role": "user", "content": "run it"}], cwd=str(tmp_path),
         complete_fn=_fn))
     msg = [e for e in evs if e["type"] == "message"]
-    assert msg and msg[0].get("awaiting_input") is True
+    assert msg
+    assert msg[0].get("awaiting_input") is True
     assert "Which port" in msg[0]["text"]
 
 

@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from aiforge_core.config.paths import config_dir
 
 log = logging.getLogger("aiforge.pr_comments_loop")
 
@@ -27,7 +28,7 @@ _STATE_PATH = Path(os.environ.get(
     # persists on the mounted volume — else it's lost on container restart and
     # already-handled PR comments re-emit duplicate tickets.
     os.path.join(
-        os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")),
+        str(config_dir()),
         "pr_comments_seen.json"),
 ))
 

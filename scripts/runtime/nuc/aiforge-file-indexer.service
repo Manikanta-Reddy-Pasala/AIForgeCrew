@@ -4,6 +4,8 @@ Description=AIForge repo file indexer (one-shot)
 [Service]
 Type=oneshot
 WorkingDirectory=%h/AIForgeCrew
-Environment=AIFORGE_DSN=postgresql://aiforge:aiforgepass@127.0.0.1:5432/aiforge
+# The DSN carries a password, so it lives OUTSIDE git in an env file
+# (chmod 600). Inline here, the credential shipped with the repo.
+EnvironmentFile=%h/.aiforge/pg.env
 Environment=HOME=%h
 ExecStart=%h/AIForgeCrew/.venv/bin/python scripts/runtime/file-indexer.py

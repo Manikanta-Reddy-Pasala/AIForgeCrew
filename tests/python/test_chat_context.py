@@ -43,8 +43,10 @@ def test_history_merges_consecutive_same_role():
         {"role": "user", "content": "two"},   # consecutive user → merged
     ]
     h = _chat_history_for_agent(rows)
-    assert len(h) == 1 and h[0]["role"] == "user"
-    assert "one" in h[0]["content"] and "two" in h[0]["content"]
+    assert len(h) == 1
+    assert h[0]["role"] == "user"
+    assert "one" in h[0]["content"]
+    assert "two" in h[0]["content"]
 
 
 def test_compress_prompt_collapses_blanks_and_dupes(monkeypatch):

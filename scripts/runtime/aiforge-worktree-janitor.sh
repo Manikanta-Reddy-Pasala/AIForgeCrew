@@ -1,6 +1,9 @@
 #!/bin/bash
 # Janitor: remove .aiforge-worktrees/ONE-* whose ticket is in a terminal status.
-PGPASS="${AIFORGE_PG_PASSWORD:-aiforgepass}"
+# No default password. Shipping one in git means the fallback IS the
+# credential everywhere the variable is unset, which is everywhere nobody
+# thought to set it.
+PGPASS="${AIFORGE_PG_PASSWORD:?set AIFORGE_PG_PASSWORD (no default is shipped)}"
 ROOT="${AIFORGE_WORKTREE_ROOT:-$HOME/codeRepo}"
 removed=0
 for wt in "$ROOT"/*/.aiforge-worktrees/*; do

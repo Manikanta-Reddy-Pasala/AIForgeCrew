@@ -64,7 +64,8 @@ def test_search_parses_and_decodes_redirect(monkeypatch):
     assert r0["snippet"] == "The answer is 42."
     assert out["results"][1]["url"] == "https://second.example/page"
     assert "duckduckgo.com/html" in seen["url"]
-    assert seen["method"] == "POST" and seen["ua"]           # UA sent
+    assert seen["method"] == "POST"
+    assert seen["ua"]
 
 
 def test_search_limit(monkeypatch):
@@ -80,7 +81,8 @@ def test_search_requires_query():
 def test_search_empty_results(monkeypatch):
     _mock(monkeypatch, "<html>nothing</html>")
     out = ws.web_search({"query": "zzz"})
-    assert out["ok"] and out["results"] == []
+    assert out["ok"]
+    assert out["results"] == []
 
 
 def test_search_disabled(monkeypatch):
@@ -94,15 +96,19 @@ def test_fetch_strips_html_and_scripts(monkeypatch):
             "<p>World text here.</p></body></html>")
     _mock(monkeypatch, page)
     out = ws.web_fetch({"url": "https://ex.com", "max_chars": 1000})
-    assert out["ok"] and out["title"] == "My Page"
-    assert "Hello" in out["text"] and "World text here." in out["text"]
-    assert "evil()" not in out["text"] and ".x{}" not in out["text"]
+    assert out["ok"]
+    assert out["title"] == "My Page"
+    assert "Hello" in out["text"]
+    assert "World text here." in out["text"]
+    assert "evil()" not in out["text"]
+    assert ".x{}" not in out["text"]
 
 
 def test_fetch_truncates(monkeypatch):
     _mock(monkeypatch, "<body>" + ("ab " * 100) + "</body>")
     out = ws.web_fetch({"url": "https://ex.com", "max_chars": 20})
-    assert out["truncated"] and len(out["text"]) == 20
+    assert out["truncated"]
+    assert len(out["text"]) == 20
 
 
 def test_fetch_rejects_non_http():

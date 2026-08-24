@@ -40,6 +40,8 @@ import json
 import logging
 import os
 import random
+
+_jitter = random.SystemRandom()
 import re
 import threading
 import time
@@ -372,8 +374,7 @@ def _try_post(ep: Endpoint, messages: list[dict],
                                     meter=_meter_tok)
         except _LLMCancelled:
             raise
-        except (urllib.error.URLError, urllib.error.HTTPError,
-                OSError, TimeoutError, ValueError) as _texc:
+        except (OSError, ValueError) as _texc:
             # ValueError covers a non-JSON 200 (proxy HTML error page,
             # truncated / streaming body) so a malformed response falls back to
             # the next provider instead of crashing complete(). Transport
@@ -423,7 +424,7 @@ def _try_post(ep: Endpoint, messages: list[dict],
         if attempt < empty_retries:
             # Brief jittered pause so a momentarily-wedged model (mid-reload,
             # KV-cache thrash) gets a beat before the identical re-post.
-            time.sleep(0.4 + random.random() * 0.6)
+            time.sleep(0.4 + _jitter.random() * 0.6)
     return None
 
 

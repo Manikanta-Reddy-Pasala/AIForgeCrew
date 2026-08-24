@@ -80,13 +80,15 @@ def _load_agents() -> dict:
 
 def test_agents_yaml_parses():
     data = _load_agents()
-    assert "agents" in data and "doer" in data["agents"]
+    assert "agents" in data
+    assert "doer" in data["agents"]
 
 
 def test_feedback_contract_describes_text_protocol_not_json():
     fb = _load_agents()["agents"]["feedback"]
     rule = fb["rule"]
-    assert "TEXT" in rule and "NOT JSON" in rule
+    assert "TEXT" in rule
+    assert "NOT JSON" in rule
     # the old "single JSON verdict" / "valid JSON" claim is gone
     assert "single JSON verdict" not in rule
     joined = " ".join(str(x) for x in fb["termination_contract"])

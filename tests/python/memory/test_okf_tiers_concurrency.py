@@ -19,7 +19,7 @@ from __future__ import annotations
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def mem(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
@@ -35,7 +35,7 @@ def _plain(existing, new_content, *, role="learner", label=None, **kw):
             "links": [], "learnings": []}
 
 
-@pytest.fixture()
+@pytest.fixture
 def merge(monkeypatch):
     monkeypatch.setattr("aiforge_core.runtime.work_notes.consolidate", _plain)
 

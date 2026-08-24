@@ -75,7 +75,7 @@ def _dedup(hits: list[dict]) -> list[dict]:
         else:
             text = (h.get("text") or "").strip().lower()
             if text:
-                key = ("txt", hashlib.sha1(text.encode("utf-8")).hexdigest())
+                key = ("txt", hashlib.sha1(text.encode("utf-8"), usedforsecurity=False).hexdigest())
             else:
                 key = ("id", id(h))
         if key not in best:

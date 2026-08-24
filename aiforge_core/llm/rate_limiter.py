@@ -478,15 +478,15 @@ def acquire(provider: str, *,
                 b = _bucket(_RPM_BUCKETS, provider, rpm)
                 s = b.take(1.0)
                 sleeps.append(s)
-                if s == 0.0:
+                if s <= 0.0:
                     deducted.append((b, 1.0))
             if tpm > 0 and tokens_estimate > 0:
                 b = _bucket(_TPM_BUCKETS, provider, tpm)
                 s = b.take(float(tokens_estimate))
                 sleeps.append(s)
-                if s == 0.0:
+                if s <= 0.0:
                     deducted.append((b, float(tokens_estimate)))
-            if all(s == 0.0 for s in sleeps):
+            if all(s <= 0.0 for s in sleeps):
                 return waited
             # One bucket had room and DEDUCTED, but another blocked us → we'll
             # sleep + retry. REFUND the drained bucket(s), else each retry

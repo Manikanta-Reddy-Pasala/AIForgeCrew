@@ -20,7 +20,8 @@ def test_missing_args_soft_error():
 def test_no_binary_soft_error(monkeypatch):
     monkeypatch.setattr(cg, "_bin", lambda: None)
     r = cg.codegraph_callers({"symbol": "Foo"}, "/tmp")
-    assert r["ok"] is False and "not found" in r["error"]
+    assert r["ok"] is False
+    assert "not found" in r["error"]
 
 
 def test_builds_cmd_with_path(monkeypatch):
@@ -38,7 +39,8 @@ def test_builds_cmd_with_path(monkeypatch):
     monkeypatch.setenv("AIFORGE_CODEGRAPH_PATH", "/repo/x")
     monkeypatch.setattr(cg.subprocess, "run", fake_run)
     r = cg.codegraph_callers({"symbol": "Foo"}, "/cwd")
-    assert r["ok"] and "Bar.baz" in r["result"]
+    assert r["ok"]
+    assert "Bar.baz" in r["result"]
     assert seen["cmd"] == ["/usr/bin/codegraph", "callers", "Foo", "--path", "/repo/x"]
 
 

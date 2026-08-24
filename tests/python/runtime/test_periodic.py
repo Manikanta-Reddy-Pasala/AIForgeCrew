@@ -207,7 +207,8 @@ def test_state_from_an_older_bare_stamp_still_reads(monkeypatch, tmp_path):
     today = datetime.now().date().isoformat()
     (tmp_path / "periodic_state.json").write_text(f'{{"evening": "{today}"}}')
     rec = _task(p)._record(datetime.now())
-    assert rec["at"].date().isoformat() == today and rec["ok"] is True
+    assert rec["at"].date().isoformat() == today
+    assert rec["ok"] is True
 
 
 def test_corrupt_state_is_moved_aside(monkeypatch, tmp_path):
@@ -243,7 +244,8 @@ def test_fire_records_the_run_and_a_failure_is_persisted(monkeypatch, tmp_path):
         time.sleep(0.1)
     assert bad._hold[0] > time.monotonic()           # held off, not spinning
     rec = p._load_state()["bad"]
-    assert rec["ok"] is False and rec["fails"] == 1  # the ATTEMPT is on disk
+    assert rec["ok"] is False
+    assert rec["fails"] == 1
 
 
 def test_fire_stamps_the_loop_clock_not_its_own(monkeypatch, tmp_path):

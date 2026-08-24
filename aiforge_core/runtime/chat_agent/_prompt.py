@@ -503,7 +503,7 @@ def _parse(out: str) -> dict:
             # args shape never surfaces raw protocol to the user.
             whole_turn = False
             if not txt.strip():
-                after = re.sub(r"(?is)ARGS_JSON\s*:?\s*\{.*\}", "",
+                after = re.sub(r"(?is)ARGS_JSON\s*+:?\s*+\{.*\}", "",
                                out[act.end():]).strip()
                 txt = after
                 if not txt:
@@ -517,7 +517,7 @@ def _parse(out: str) -> dict:
                 # Same ARGS_JSON removal the after-slice gets: a completion
                 # whose args carried no usable text (`{"text": ""}`) otherwise
                 # published the raw args blob as the answer.
-                body = re.sub(r"(?is)ARGS_JSON\s*:?\s*\{.*\}", "", txt)
+                body = re.sub(r"(?is)ARGS_JSON\s*+:?\s*+\{.*\}", "", txt)
                 body = _COMPLETION_MARKER_RE.sub("", body)
                 # Whole BLOCK, not the first line: a multi-line thought left
                 # its tail behind, which is the model's private reasoning

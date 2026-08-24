@@ -67,7 +67,8 @@ def test_pipeline_mirror_extracts_adk_shapes(monkeypatch):
              contents=[NS(role="user", parts=[NS(text="fix the bug")])])
     resp = [NS(content=NS(parts=[NS(text="FINAL: fixed")]))]
     esc._mirror_to_langfuse("doer", req, resp, "qwen-local", 456)
-    assert seen["role"] == "doer" and seen["model"] == "qwen-local"
+    assert seen["role"] == "doer"
+    assert seen["model"] == "qwen-local"
     assert seen["messages"][0] == {"role": "system",
                                    "content": "you are the doer"}
     assert seen["messages"][1]["content"] == "fix the bug"
@@ -101,9 +102,11 @@ def test_ingestion_payload_shape(monkeypatch):
     trace = batch[0]["body"]
     # input/output mirrored onto the TRACE so the trace header + Sessions view
     # don't show null (the reported bug).
-    assert trace["input"] and trace["output"] == "ok"
+    assert trace["input"]
+    assert trace["output"] == "ok"
     gen = batch[1]["body"]
-    assert gen["name"] == "llm:grader" and gen["model"] == "qwen"
+    assert gen["name"] == "llm:grader"
+    assert gen["model"] == "qwen"
     assert len(gen["input"][0]["content"]) <= 8000       # capped
     assert gen["output"] == "ok"
     assert gen["traceId"] == trace["id"]                 # linked
@@ -146,13 +149,15 @@ def test_memory_recall_and_write_mirrored(monkeypatch, tmp_path):
                      kind="gotcha", repo="demo")
     assert r.get("ok") is not None
     writes = [e for e in seen if e["role"] == "memory.write"]
-    assert writes and writes[0]["metadata"]["path"] == "memory"
+    assert writes
+    assert writes[0]["metadata"]["path"] == "memory"
 
     from aiforge_core.memory import unified_query
     res = unified_query.query("how do sync retries work?", repo="demo")
     assert isinstance(res.get("hits"), list)
     recalls = [e for e in seen if e["role"] == "memory.recall"]
-    assert recalls and recalls[0]["metadata"]["hits"] == len(res["hits"])
+    assert recalls
+    assert recalls[0]["metadata"]["hits"] == len(res["hits"])
     assert "sync retries" in recalls[0]["messages"][0]["content"]
 
 
@@ -178,7 +183,8 @@ def test_score_payload_shape(monkeypatch):
     assert [e["type"] for e in batch] == ["trace-create", "score-create"]
     trace, score = batch[0]["body"], batch[1]["body"]
     assert trace["sessionId"] == "42"
-    assert score["name"] == "turn_completed" and score["value"] == 1.0
+    assert score["name"] == "turn_completed"
+    assert score["value"] == 1.0
     assert score["dataType"] == "NUMERIC"
     assert score["traceId"] == trace["id"]                # linked
     assert score["comment"] == "completed"

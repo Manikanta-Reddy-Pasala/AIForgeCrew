@@ -9,6 +9,7 @@ the endpoints that use them.
 from __future__ import annotations
 
 import logging
+import asyncio
 import os
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
@@ -16,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from aiforge_core.api._shared import _db
 from aiforge_core.runtime.background import spawn as _spawn
+from aiforge_core.config.paths import config_dir
 
 router = APIRouter()
 
@@ -460,13 +462,19 @@ async def memory_sources_upload(file: UploadFile = File(...),
     registered as a ``file`` source (index it with the /index endpoint)."""
     from aiforge_core.runtime import memory_sources as _ms
     dest_dir = os.path.join(
-        os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")),
+        str(config_dir()),
         "memory-files")
     os.makedirs(dest_dir, exist_ok=True)
     safe = os.path.basename(file.filename or "upload.txt")
     dest = os.path.join(dest_dir, safe)
-    with open(dest, "wb") as fh:
-        fh.write(await file.read())
+    payload = await file.read()
+
+    def _write() -> None:
+        with open(dest, "wb") as fh:
+            fh.write(payload)
+    # Off the event loop: an upload can be large, and a blocking write here
+    # stalls every other request the server is handling.
+    await asyncio.to_thread(_write)
     return _ms.create("file", dest, name or safe)
 
 

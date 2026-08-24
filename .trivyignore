@@ -1,0 +1,35 @@
+# Accepted CVEs — every entry needs a REASON and an EXPIRY.
+#
+# Only for findings with NO upstream fix. Anything with a patched release gets
+# upgraded instead; see the [tool.uv] override-dependencies block in
+# pyproject.toml for the ones that needed a pin lifted.
+#
+# Re-check on expiry: `trivy fs --scanners vuln .` and drop any line whose
+# upstream has since shipped a fix.
+
+# ── aider-chat 0.86.2 ────────────────────────────────────────────────
+# 0.86.2 IS the latest release; there is no version to move to. We depend on
+# aider for exactly ONE thing: its bundled tree-sitter tags queries, via
+# `aider.repomap.RepoMap.get_tags_raw` (see indexing/treesitter_ingest). That
+# path parses source files locally and touches none of the code these CVEs are
+# in. Nothing in AIForge invokes aider's editor, its LLM client, or its cache.
+#
+# Code injection in `editor_coder.run` — we never call the editor coder.
+CVE-2026-10175 exp:2026-11-30
+# SSRF via the AWS EC2 metadata endpoint — reached from aider's own model/
+# network stack, which we do not use (AIForge has its own llm.client).
+CVE-2026-10177 exp:2026-11-30
+
+# ── diskcache 5.6.3 ──────────────────────────────────────────────────
+# Transitive, via aider-chat only. No fixed version exists upstream.
+# Arbitrary code execution through insecure pickle deserialisation — reachable
+# only by loading a cache someone else wrote. We never construct aider's cache:
+# `RepoMap(root=tempfile.mkdtemp(...))` points it at a fresh throwaway dir on
+# every process, precisely so no real repo's cache is read or written.
+CVE-2025-69872 exp:2026-11-30
+
+# NOTE. The durable fix for all three is to drop aider-chat and read the
+# tags queries directly (we already depend on tree-sitter-language-pack and
+# grep-ast). That removes these CVEs AND the importlib-metadata override, but
+# it means reimplementing the generic tags engine, so it is a deliberate piece
+# of work rather than a scanner-driven one.

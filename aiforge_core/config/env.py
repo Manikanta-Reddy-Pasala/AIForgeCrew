@@ -7,13 +7,44 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from aiforge_core.config.paths import config_dir
 
 
 # ─────────────────────────────── DSNs ───────────────────────────────
-AIFORGE_DSN = os.environ.get(
-    "AIFORGE_DSN",
-    "postgresql://manikanta@127.0.0.1:5432/aiforge",
-)
+
+def default_pg_dsn() -> str:
+    """The local-dev Postgres DSN, assembled from env parts.
+
+    NOTHING SECRET IS BAKED IN. The literals this replaced shipped a working
+    credential pair in source control — one with a real password
+    (`aiforge:aiforgepass`), one with a developer's own username and NO
+    password at all, which is a database reachable without authentication.
+    Both were the DEFAULT, so they were what ran anywhere the env var was
+    unset.
+
+    The password comes only from the environment; with none set the DSN is
+    user-only, which is what a peer/trust-auth local socket wants and is
+    honest about carrying no secret.
+    """
+    user = os.environ.get("AIFORGE_PG_USER") or os.environ.get("USER") or "aiforge"
+    pwd = os.environ.get("AIFORGE_PG_PASSWORD") or ""
+    host = os.environ.get("AIFORGE_PG_HOST", "127.0.0.1")
+    port = os.environ.get("AIFORGE_PG_PORT", "5432")
+    db = os.environ.get("AIFORGE_PG_DB", "aiforge")
+    if not pwd and host not in ("127.0.0.1", "::1", "localhost"):
+        # Passwordless is only ever defensible over a loopback socket with
+        # peer/trust auth. Silently building a credential-free DSN for a REMOTE
+        # host means either a database open to the network, or a confusing auth
+        # failure at first use — say which, up front.
+        raise RuntimeError(
+            f"AIFORGE_PG_HOST={host!r} is not loopback, so AIFORGE_PG_PASSWORD "
+            "must be set (or pass a full AIFORGE_DSN). Refusing to build a "
+            "password-less DSN for a remote database.")
+    auth = f"{user}:{pwd}" if pwd else user
+    return f"postgresql://{auth}@{host}:{port}/{db}"
+
+
+AIFORGE_DSN = os.environ.get("AIFORGE_DSN") or default_pg_dsn()
 
 # ─────────────────────────── storage backend ───────────────────────────
 # SQLite-ONLY by default (single-mode build). Postgres is OPT-IN: it is used
@@ -30,7 +61,7 @@ _pg_candidate = os.environ.get("AIFORGE_PG_URL") or (
 AIFORGE_PG_URL = _pg_candidate if _KEEP_PG else None
 AIFORGE_DB_PATH = os.environ.get(
     "AIFORGE_DB_PATH",
-    os.path.join(os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")),
+    os.path.join(str(config_dir()),
                  "aiforge.db"),
 )
 AIFORGE_USE_SQLITE = AIFORGE_PG_URL is None
@@ -44,8 +75,13 @@ RERANK_SIDECAR_URL  = os.environ.get("AIFORGE_RERANK_URL", "http://127.0.0.1:876
 
 # ─────────────────────────── Paths ──────────────────────────────────────
 LOG_DIR  = os.environ.get("AIFORGE_LOG_DIR", os.path.join(os.path.expanduser(
-    os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")), "logs"))
-LOCK_DIR = os.environ.get("AIFORGE_LOCK_DIR", "/tmp")
+    str(config_dir())), "logs"))
+# NOT /tmp: it is world-writable, so any local user can pre-create or replace
+# a lock file we then trust. The config dir is ours and already holds the
+# databases these locks guard.
+LOCK_DIR = os.environ.get("AIFORGE_LOCK_DIR") or os.path.join(
+    str(config_dir()),
+    "locks")
 WORKTREE_ROOT = os.environ.get(
     "AIFORGE_WORKTREE_ROOT",
     os.path.expanduser("~/codeRepo"),

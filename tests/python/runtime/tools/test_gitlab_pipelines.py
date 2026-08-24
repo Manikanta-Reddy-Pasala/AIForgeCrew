@@ -117,7 +117,9 @@ def test_pipeline_by_id_reports_jobs_and_verdict(monkeypatch):
         "/jobs": {"ok": True, "data": [_job("build"), _job("test", jid=2)]},
     })
     out = gitlab.gitlab_pipeline({"project": "g/p", "pipeline_id": 101})
-    assert out["ok"] and out["passed"] and out["finished"]
+    assert out["ok"]
+    assert out["passed"]
+    assert out["finished"]
     assert [j["name"] for j in out["jobs"]] == ["build", "test"]
     assert out["failed_jobs"] == []
 
@@ -220,7 +222,8 @@ def test_a_jobs_error_does_not_lose_the_pipeline(monkeypatch):
         "/jobs": {"ok": False, "error": "http 403"},
     })
     out = gitlab.gitlab_pipeline({"project": "g/p", "pipeline_id": 108})
-    assert out["ok"] and out["passed"]
+    assert out["ok"]
+    assert out["passed"]
     assert out["jobs_error"] == "http 403"
 
 
@@ -268,7 +271,8 @@ def test_watch_returns_the_moment_it_finishes(monkeypatch, _clock, _attended):
     })
     out = gitlab.gitlab_pipeline_watch(
         {"project": "g/p", "pipeline_id": 109, "interval_s": 5})
-    assert out["ok"] and out["passed"]
+    assert out["ok"]
+    assert out["passed"]
     assert out["checks"] == 3
     assert "elapsed_s" in out
 
@@ -300,7 +304,8 @@ def test_watch_gives_up_without_calling_it_a_failure(monkeypatch, _clock,
     out = gitlab.gitlab_pipeline_watch(
         {"project": "g/p", "pipeline_id": 111, "interval_s": 5,
          "timeout_s": 20, "max_checks": 50})
-    assert out["ok"] and out["timed_out"] is True
+    assert out["ok"]
+    assert out["timed_out"] is True
     assert out["passed"] is False
     assert out["finished"] is False
     assert "still running" in out["reason"]
@@ -335,7 +340,8 @@ def test_watch_rides_over_a_rate_limit(monkeypatch, _clock, _attended):
     })
     out = gitlab.gitlab_pipeline_watch(
         {"project": "g/p", "pipeline_id": 112, "interval_s": 5})
-    assert out["ok"] and out["passed"]
+    assert out["ok"]
+    assert out["passed"]
     assert out["checks"] == 2
 
 
@@ -515,7 +521,8 @@ def test_a_watch_that_ends_on_a_blip_keeps_the_last_good_data(monkeypatch,
     })
     out = gitlab.gitlab_pipeline_watch(
         {"project": "g/p", "pipeline_id": 116, "interval_s": 5, "timeout_s": 20})
-    assert out["ok"] and out["timed_out"]
+    assert out["ok"]
+    assert out["timed_out"]
     assert out["status"] == "running"
     assert out["passed"] is False
     assert out["stale"] is True
@@ -538,7 +545,8 @@ def test_a_transport_blip_does_not_abort_the_watch(monkeypatch, _clock,
     })
     out = gitlab.gitlab_pipeline_watch(
         {"project": "g/p", "pipeline_id": 117, "interval_s": 5})
-    assert out["ok"] and out["passed"]
+    assert out["ok"]
+    assert out["passed"]
     assert out["checks"] == 2
 
 
@@ -741,7 +749,8 @@ def test_http_request_reports_truncation():
         urllib.request.urlopen = orig
     # The CAP, named for what it holds — "truncated_bytes" reads as a count
     # of dropped bytes, which is a number nothing here knows.
-    assert out["ok"] and out["body_cap_hit"] == 100
+    assert out["ok"]
+    assert out["body_cap_hit"] == 100
     assert len(out["data"]) == 100
 
 
@@ -758,7 +767,8 @@ def test_ansi_and_section_markers_are_stripped(monkeypatch):
     out = gitlab.gitlab_pipeline({"project": "g/p", "pipeline_id": 120})
     got = out["logs"]["t"]
     assert "ERROR: it broke" in got
-    assert "\x1b" not in got and "section_start" not in got
+    assert "\x1b" not in got
+    assert "section_start" not in got
 
 
 def test_an_unreadable_log_says_so_rather_than_vanishing(monkeypatch):
@@ -947,7 +957,8 @@ def test_a_pipeline_that_does_not_exist_yet_is_worth_waiting_for(
     })
     out = gitlab.gitlab_pipeline_watch(
         {"project": "g/p", "ref": "main", "interval_s": 5})
-    assert out["ok"] and out["passed"]
+    assert out["ok"]
+    assert out["passed"]
     assert out["checks"] == 2
 
 

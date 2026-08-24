@@ -65,6 +65,48 @@ dependencies = [
   "pdfplumber>=0.11",
 ]
 
+# ── Security overrides (CVE remediation) ─────────────────────────────
+# aider-chat 0.86.2 EXACT-PINS a cohort of libraries (litellm, aiohttp,
+# starlette, urllib3, pillow, gitpython, requests, idna, soupsieve,
+# python-dotenv). 0.86.2 is the newest release, so there is no upgrade path
+# through it — and those pins hold two CRITICAL litellm CVEs (CVE-2026-35030,
+# CVE-2026-49468) plus ~60 HIGH findings that Trivy reports against uv.lock.
+#
+# We use aider for ONE thing: its bundled tree-sitter tag queries, via
+# `aider.repomap.RepoMap.get_tags_raw` (see treesitter_ingest). That path does
+# not touch litellm or the HTTP stack, so overriding the pins is safe for our
+# use even though it is not something aider itself supports.
+#
+# litellm IS load-bearing for us directly (the ADK/team pipeline reaches the
+# model through LiteLlm), so this is a real upgrade, not a paper one — it is
+# covered by the full test suite.
+[tool.uv]
+override-dependencies = [
+  "litellm>=1.84.0",
+  # starlette <1.0 carried 2 HIGH CVEs and was held by fastapi 0.128's
+  # `starlette<1.0.0` ceiling. fastapi 0.141 dropped that ceiling entirely
+  # (`starlette>=0.46.0`), so the fix is to move fastapi forward rather than
+  # to force starlette past a bound its own framework set.
+  "fastapi>=0.141.1",
+  "starlette>=1.1.0",
+  # The actual blocker: aider pins importlib-metadata==7.2.1 while
+  # litellm>=1.84 needs >=8.0,<9. 7.x -> 8.x is API-stable for the
+  # entry-point/version lookups aider makes, so the pin is over-tight rather
+  # than load-bearing.
+  "importlib-metadata>=8.0.0,<9.0",
+  "aiohttp>=3.14.3",
+  "gitpython>=3.1.49",
+  "urllib3>=2.7.0",
+  "pillow>=12.2.0",
+  "soupsieve>=2.8.4",
+  "requests>=2.33.0",
+  "idna>=3.15",
+  "python-dotenv>=1.2.2",
+  # CVE-2026-4539. Not held by our own constraint — a transitive pin keeps it
+  # back, so the override is the only lever.
+  "pygments>=2.20.0",
+]
+
 [tool.uv.sources]
 # aiforge-memory is vendored in-repo (packages/aiforge_memory/) rather than
 # pulled from its own git repo. uv installs it editable from this path.

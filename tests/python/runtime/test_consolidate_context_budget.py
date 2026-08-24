@@ -19,7 +19,7 @@ import pytest
 from aiforge_core.runtime.work_notes import _consolidate as C
 
 
-@pytest.fixture()
+@pytest.fixture
 def small_window(monkeypatch):
     """A 20k-token window — big enough to be realistic, small enough to trip."""
     monkeypatch.setenv("AIFORGE_CONSOLIDATE_CTX_TOKENS", "20000")

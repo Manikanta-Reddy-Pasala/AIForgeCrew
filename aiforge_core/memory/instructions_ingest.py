@@ -31,7 +31,7 @@ from pathlib import Path
 
 # Section heading: markdown ATX (# … ###). The heading text becomes the topic;
 # the lines under it become one captured fact.
-_HEADING_RE = re.compile(r"^(#{1,3})\s+(.+?)\s*#*\s*$")
+_HEADING_RE = re.compile(r"^(#{1,3})[ \t]+(.+?)[ \t]*#*[ \t]*$")
 # Dirs never worth scanning.
 _SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "dist", "build",
               "__pycache__", "target", ".idea", ".gradle", "vendor"}

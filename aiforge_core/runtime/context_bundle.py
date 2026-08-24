@@ -80,6 +80,50 @@ def _dedup_lines(text: str, seen: set[str]) -> str:
     return "\n".join(out).strip()
 
 
+def _max_linked() -> int:
+    """How many cross-scope links to follow. Bounded so a densely linked axis
+    cannot balloon the window."""
+    import os
+    try:
+        return max(0, int(os.environ.get("AIFORGE_OKR_BRIEF_MAX_LINKED",
+                                         str(_BRIEF_MAX_LINKED))))
+    except (TypeError, ValueError):
+        return _BRIEF_MAX_LINKED
+
+
+def _project_parts(repo: str, slug: str, seen_keys: set, seen_lines: set) -> list:
+    """This repo's brief, plus the sibling briefs it LINKS to.
+
+    Mutates ``seen_keys``/``seen_lines`` — the dedup has to span the whole
+    union, not each part, or a fact repeated across linked briefs is emitted
+    once per brief.
+    """
+    from aiforge_core.memory import md_store
+    seen_keys.add(slug)
+    out: list[str] = []
+    d = md_store.read_file(f"compacted-{slug}")
+    knowledge = _dedup_lines(_brief_knowledge(d), seen_lines)
+    if knowledge:
+        out.append("PROJECT MEMORY (" + repo + "):\n" + knowledge[:6000])
+    # R5/R4: follow this brief's cross-scope links (bounded count).
+    for lk in _linked_brief_keys(d)[:_max_linked()]:
+        if lk in seen_keys:
+            continue
+        seen_keys.add(lk)
+        lk_know = _dedup_lines(
+            _brief_knowledge(md_store.read_file(f"compacted-{lk}")), seen_lines)
+        if lk_know:
+            out.append(f"LINKED MEMORY ({lk}):\n" + lk_know[:2000])
+    return out
+
+
+def _clamp_brief(out: str) -> str:
+    """Hard ceiling, cut on a line boundary — never mid-fact."""
+    if len(out) > _BRIEF_TOTAL_CAP:
+        return out[:_BRIEF_TOTAL_CAP].rsplit("\n", 1)[0]
+    return out
+
+
 def project_brief_text(repo: str) -> str:
     """The compacted brief knowledge for ``repo`` — its ``compacted-<repo>.md``
     UNIONED with the sibling briefs it LINKS to (map_scopes topic/global cross-
@@ -89,41 +133,19 @@ def project_brief_text(repo: str) -> str:
     deduped across the parts, and the whole thing clamped to a hard ceiling so it
     can never balloon the window (esp. on the pipeline path, which has no other
     size guard)."""
-    import os
     from aiforge_core.memory import md_store
-    try:
-        max_linked = max(0, int(os.environ.get("AIFORGE_OKR_BRIEF_MAX_LINKED",
-                                                str(_BRIEF_MAX_LINKED))))
-    except (TypeError, ValueError):
-        max_linked = _BRIEF_MAX_LINKED
-    parts: list[str] = []
     seen_keys: set[str] = {"shared"}      # brief keys already loaded
     seen_lines: set[str] = set()          # normalized fact lines already emitted
+    parts: list[str] = []
     slug = md_store._slug(repo) if repo else ""
     if slug and slug != "shared":
-        seen_keys.add(slug)
-        d = md_store.read_file(f"compacted-{slug}")
-        knowledge = _dedup_lines(_brief_knowledge(d), seen_lines)
-        if knowledge:
-            parts.append("PROJECT MEMORY (" + repo + "):\n" + knowledge[:6000])
-        # R5/R4: follow this brief's cross-scope links (bounded count).
-        for lk in _linked_brief_keys(d)[:max_linked]:
-            if lk in seen_keys:
-                continue
-            seen_keys.add(lk)
-            lk_know = _dedup_lines(
-                _brief_knowledge(md_store.read_file(f"compacted-{lk}")), seen_lines)
-            if lk_know:
-                parts.append(f"LINKED MEMORY ({lk}):\n" + lk_know[:2000])
+        parts += _project_parts(repo, slug, seen_keys, seen_lines)
     # Global compacted brief — unioned into EVERY context.
     gk = _dedup_lines(_brief_knowledge(md_store.read_file("compacted-shared")),
                       seen_lines)
     if gk:
         parts.append("GLOBAL MEMORY:\n" + gk[:3000])
-    out = "\n\n".join(parts)
-    if len(out) > _BRIEF_TOTAL_CAP:      # clamp on a line boundary, not mid-fact
-        out = out[:_BRIEF_TOTAL_CAP].rsplit("\n", 1)[0]
-    return out
+    return _clamp_brief("\n\n".join(parts))
 
 
 def _project_brief(cwd: str) -> str:
@@ -192,6 +214,55 @@ def _safe(fn, default=""):
         return default
 
 
+def _fill_priority(b, cwd, query, _ca, *, want_prefs: bool, want_rules: bool) -> None:
+    """Standing preferences, the rule book, and the compacted project brief.
+
+    Highest priority — these survive a tight window, so they are gathered
+    first and separately from the optional blocks.
+    """
+    if want_prefs:
+        b.preferences_md = _safe(lambda: _ca._preferences_context(cwd))
+    if want_rules:
+        b.rules_md = _safe(lambda: _ca._rules_context(cwd, query))
+    # Consolidated per-repo project memory (compacted brief) — load it whenever
+    # we have a repo, so opening a project brings its accumulated memory.
+    b.project_brief_md = _safe(lambda: _project_brief(cwd))
+
+
+def _fill_playbooks(b, cwd, query, ctx_on, _sk, _wf) -> None:
+    """Relevance-matched workflows and skills.
+
+    Both are static QUALITY context (how to do the task right), NOT the growing
+    history that makes small models drift — so BOTH are built even in cave
+    mode. Dropping skills to save tokens was a quality regression; token safety
+    comes from condensing HISTORY early plus the system-prompt cap, which trims
+    the lowest-priority TAIL first (skills sit above the repo map, so they
+    survive a tight window).
+    """
+    if ctx_on("workflows"):
+        b.workflows_md = _safe(lambda: _wf.auto_context(query, cwd))
+        b.used_workflows = _safe(lambda: _wf.selected_names(query, cwd), default=[])
+    if ctx_on("skills"):
+        b.skills_md = _safe(lambda: _sk.auto_context(query, cwd))
+        b.used_skills = _safe(lambda: _sk.selected_names(query, cwd), default=[])
+
+
+def _fill_repo_context(b, cwd, ctx_on, _ca, *, cave: bool,
+                       want_summary: bool, want_repo_map: bool) -> None:
+    """Repo summary, the structural REPO_NOTES map, and the repo map itself —
+    all of it cheaper and smaller in cave mode."""
+    if want_summary and ctx_on("summary"):
+        b.repo_summary_md = _safe(lambda: _ca._repo_context(cwd))
+        # Structural repo map (REPO_NOTES.md) — deterministic controllers/
+        # services/event-surface reference; loaded with the summary, cheap
+        # (single file read) and skipped in cave mode with the rest of summary.
+        if not cave:
+            b.repo_notes_md = _safe(lambda: _repo_notes(cwd))
+    if want_repo_map and ctx_on("repomap"):
+        b.repo_map_md = _safe(lambda: _ca._build_repo_map(
+            cwd, max_entries=(60 if cave else 160), max_depth=(2 if cave else 3)))
+
+
 def build_bundle(cwd: str, query: str, *, cave: bool = False,
                  ctx_on=None, session_id=None, want_repo_map: bool = True,
                  want_summary: bool = True, want_rules: bool = True,
@@ -208,37 +279,10 @@ def build_bundle(cwd: str, query: str, *, cave: bool = False,
     from aiforge_core.runtime import workflows as _wf
 
     b = ContextBundle()
-    # Standing preferences + rule book — highest priority, always on.
-    if want_prefs:
-        b.preferences_md = _safe(lambda: _ca._preferences_context(cwd))
-    if want_rules:
-        b.rules_md = _safe(lambda: _ca._rules_context(cwd, query))
-    # Consolidated per-repo project memory (compacted brief) — load it whenever
-    # we have a repo, so opening a project brings its accumulated memory.
-    b.project_brief_md = _safe(lambda: _project_brief(cwd))
-    # Relevance-matched playbooks. WORKFLOWS + SKILLS are both static QUALITY
-    # context (how to do the task right), NOT the growing history that makes
-    # small models drift — so BOTH are built even in cave mode. Dropping skills
-    # to save tokens was a quality regression; token safety comes from
-    # condensing HISTORY early + the system-prompt cap (which trims the
-    # lowest-priority TAIL first — skills are ordered above the repo-map, so
-    # they survive a tight window).
-    if ctx_on("workflows"):
-        b.workflows_md = _safe(lambda: _wf.auto_context(query, cwd))
-        b.used_workflows = _safe(lambda: _wf.selected_names(query, cwd), default=[])
-    if ctx_on("skills"):
-        b.skills_md = _safe(lambda: _sk.auto_context(query, cwd))
-        b.used_skills = _safe(lambda: _sk.selected_names(query, cwd), default=[])
-    if want_summary and ctx_on("summary"):
-        b.repo_summary_md = _safe(lambda: _ca._repo_context(cwd))
-        # Structural repo map (REPO_NOTES.md) — deterministic controllers/
-        # services/event-surface reference; loaded with the summary, cheap
-        # (single file read) and skipped in cave mode with the rest of summary.
-        if not cave:
-            b.repo_notes_md = _safe(lambda: _repo_notes(cwd))
-    if want_repo_map and ctx_on("repomap"):
-        b.repo_map_md = _safe(lambda: _ca._build_repo_map(
-            cwd, max_entries=(60 if cave else 160), max_depth=(2 if cave else 3)))
+    _fill_priority(b, cwd, query, _ca, want_prefs=want_prefs, want_rules=want_rules)
+    _fill_playbooks(b, cwd, query, ctx_on, _sk, _wf)
+    _fill_repo_context(b, cwd, ctx_on, _ca, cave=cave,
+                       want_summary=want_summary, want_repo_map=want_repo_map)
     if ctx_on("recall"):
         b.memory_md = _safe(lambda: _ca._memory_recall(
             cwd, query, limit=(3 if cave else 6), session_id=session_id))

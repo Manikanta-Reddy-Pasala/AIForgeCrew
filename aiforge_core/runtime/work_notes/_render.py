@@ -230,7 +230,7 @@ def parse_note(text: str) -> dict:
                 and not any(s.strip() for s in unknown_lines):
             title = line[2:].strip()
             continue
-        hm = re.match(r"^##\s+(.+?)\s*$", line)
+        hm = re.match(r"^##[ \t]+(.+?)[ \t]*$", line)
         if hm:
             canon = _SECTION_KEYS.get(hm.group(1).strip().lower())
             _flush_section()

@@ -28,7 +28,8 @@ def test_args_already_dict_are_handled():
     msg = {"tool_calls": [{"function": {
         "name": "grep", "arguments": {"pattern": "TODO"}}}]}
     parsed = _parse(_native._synth_step(msg))
-    assert parsed["tool"] == "grep" and parsed["args"] == {"pattern": "TODO"}
+    assert parsed["tool"] == "grep"
+    assert parsed["args"] == {"pattern": "TODO"}
 
 
 def test_no_tool_call_returns_content_verbatim():
@@ -53,7 +54,8 @@ def test_legit_empty_args_still_action():
         msg = {"tool_calls": [{"function": {"name": "list_dir",
                                             "arguments": empty}}]}
         parsed = _parse(_native._synth_step(msg))
-        assert parsed["tool"] == "list_dir" and parsed["args"] == {}
+        assert parsed["tool"] == "list_dir"
+        assert parsed["args"] == {}
 
 
 def test_protocol_env_overrides(monkeypatch):
@@ -109,7 +111,8 @@ def test_every_registry_tool_is_native():
     for s in NATIVE_TOOL_SCHEMAS:
         assert s["type"] == "function"
         fn = s["function"]
-        assert fn["name"] and fn["parameters"]["type"] == "object"
+        assert fn["name"]
+        assert fn["parameters"]["type"] == "object"
         # open object so an extra documented key still passes
         assert fn["parameters"].get("additionalProperties") is True
 

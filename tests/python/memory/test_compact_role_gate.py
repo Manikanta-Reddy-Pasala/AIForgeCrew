@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def mem(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "mem"))
@@ -23,7 +23,7 @@ def mem(monkeypatch, tmp_path):
     return tmp_path
 
 
-@pytest.fixture()
+@pytest.fixture
 def spoke(mem, monkeypatch):
     """This machine is a spoke: an admin is named. Compaction is unaffected."""
     monkeypatch.setenv("AIFORGE_ADMIN_URL", "http://10.0.0.9:8799")
@@ -107,7 +107,8 @@ def test_a_dry_run_preview_is_a_preview_everywhere(spoke):
 
     out = _compact(dry_run=True)
 
-    assert out["dry_run"] is True and "skipped" not in out
+    assert out["dry_run"] is True
+    assert "skipped" not in out
     assert _captures(spoke) == {"one", "two"}
 
 
@@ -168,7 +169,8 @@ def test_the_admin_still_archives_by_distilling_not_by_housekeeping(mem):
 
     out = _compact()
 
-    assert out["files_in"] == 2 and _captures(mem) == set()
+    assert out["files_in"] == 2
+    assert _captures(mem) == set()
 
 
 # ── provenance is actually WRITTEN by the fold ───────────────────────────

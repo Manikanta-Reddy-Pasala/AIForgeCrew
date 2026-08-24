@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable
+from aiforge_core.config.paths import config_dir
 
 log = logging.getLogger("aiforge.periodic")
 
@@ -79,7 +80,7 @@ _STATE_LOCK = threading.Lock()
 def _state_path() -> Path:
     """Where the last-fired day of each daily task is remembered."""
     d = Path(os.path.expanduser(
-        os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")))
+        str(config_dir())))
     return d / "periodic_state.json"
 
 

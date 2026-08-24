@@ -103,7 +103,8 @@ def test_simple_mode_question_stays_single_agent(app_client, monkeypatch, tmp_pa
     r = client.post(f"/api/chat/sessions/{sid}/message", json={
         "content": "how do I build a spring boot app with tests?",
         "mode": "simple", "cwd": str(tmp_path)})
-    assert r.status_code == 200 and "answer" in r.text
+    assert r.status_code == 200
+    assert "answer" in r.text
 
 
 def test_doc_word_mention_does_not_veto_a_real_build(app_client, monkeypatch, tmp_path):
@@ -130,7 +131,8 @@ def test_doc_word_mention_does_not_veto_a_real_build(app_client, monkeypatch, tm
                     "module using sqlite, a monthly report module, and the "
                     "cli entrypoint. include unit tests for every module"),
         "mode": "simple", "cwd": str(tmp_path)})
-    assert r.status_code == 200 and called["n"] == 1
+    assert r.status_code == 200
+    assert called["n"] == 1
     # pure DOC tasks still stay off the pipeline
     assert "Multi-file build detected" in r.text
 
@@ -151,4 +153,5 @@ def test_pure_doc_task_still_vetoed(app_client, monkeypatch, tmp_path):
     r = client.post(f"/api/chat/sessions/{sid}/message", json={
         "content": "write a jira ticket describing the rate limiting work",
         "mode": "simple", "cwd": str(tmp_path)})
-    assert r.status_code == 200 and "ok" in r.text
+    assert r.status_code == 200
+    assert "ok" in r.text

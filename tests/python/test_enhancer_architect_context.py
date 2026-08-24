@@ -339,8 +339,10 @@ def test_validate_plan_sanitizes_and_reports():
     paths = [f["path"] for f in clean]
     assert paths == ["app.py", "svc.go", "Main.java"]   # dupe+escape dropped
     joined = " ".join(issues)
-    assert "duplicate" in joined and "escapes" in joined
-    assert "NO test files" in joined and "mixes" in joined
+    assert "duplicate" in joined
+    assert "escapes" in joined
+    assert "NO test files" in joined
+    assert "mixes" in joined
 
 
 def test_architect_reasks_once_on_plan_defects(monkeypatch, tmp_path):
@@ -366,7 +368,8 @@ def test_architect_reasks_once_on_plan_defects(monkeypatch, tmp_path):
                         lambda cwd, query="": "")
     files = pp._architect("build module a", cwd=str(tmp_path))
     assert [f["path"] for f in files] == ["a.py", "tests/test_a.py"]
-    assert len(calls) == 2 and "PREVIOUS PLAN HAD DEFECTS" in calls[1]
+    assert len(calls) == 2
+    assert "PREVIOUS PLAN HAD DEFECTS" in calls[1]
 
 
 def test_adk_enhancer_guard_restores_raw_ask():

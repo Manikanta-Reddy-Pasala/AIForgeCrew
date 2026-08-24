@@ -25,10 +25,16 @@ export default defineConfig({
     chunkSizeWarningLimit: 900,
     rollupOptions: {
       output: {
-        manualChunks: {
-          recharts: ['recharts'],
-          dnd: ['@dnd-kit/core', '@dnd-kit/sortable', '@dnd-kit/utilities'],
-          query: ['@tanstack/react-query'],
+        // Vite 8 bundles with rolldown, which replaced the `manualChunks`
+        // object form with `advancedChunks.groups` (it only accepts
+        // manualChunks as a FUNCTION, so the old object silently became
+        // "manualChunks is not a function" at build time). Same three splits.
+        advancedChunks: {
+          groups: [
+            { name: 'recharts', test: /[\\/]node_modules[\\/]recharts[\\/]/ },
+            { name: 'dnd', test: /[\\/]node_modules[\\/]@dnd-kit[\\/]/ },
+            { name: 'query', test: /[\\/]node_modules[\\/]@tanstack[\\/]react-query[\\/]/ },
+          ],
         },
       },
     },

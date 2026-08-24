@@ -120,4 +120,5 @@ def test_cancelled_best_of_n_one_done_and_no_stuck_rows(app_client, monkeypatch)
               for s in m["steps"] if s.get("type") == "subtasks"]
     assert panels, "subtask panel was persisted"
     statuses = {it["status"] for p in panels for it in p["items"]}
-    assert statuses and statuses <= {"done", "failed", "skipped", "won"}, statuses
+    assert statuses, statuses
+    assert statuses <= {"done", "failed", "skipped", "won"}, statuses

@@ -6,7 +6,7 @@ import pytest
 from aiforge_core.memory.md_store import _selfheal
 
 
-@pytest.fixture()
+@pytest.fixture
 def mem(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "mem"))
@@ -123,4 +123,5 @@ def test_compaction_reports_the_selfheal_result(mem):
     m.capture("topic_learning", "billing: invoices post nightly",
               repo="svc", topic="billing-pipeline")
     r = m.compact(group_by="topic", min_group=1, summarize=False)
-    assert "selfheal" in r and "rescope_globals" in r["selfheal"]
+    assert "selfheal" in r
+    assert "rescope_globals" in r["selfheal"]

@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import { api, MemoryOverview } from '../api';
 import { Icon } from '../icons';
 import { OVERVIEW_STORES } from './Memory.helpers';
+import { clickable } from '../a11y';
 
 export function OverviewPanel() {
   const [ov, setOv] = useState<MemoryOverview | null>(null);
@@ -57,7 +58,7 @@ export function OverviewPanel() {
   return (
     <div className="card">
       <div className="card-header">
-        <h2 onClick={() => setCollapsed(c => !c)}
+        <h2 {...clickable(() => setCollapsed(c => !c))}
             style={{ cursor: 'pointer', userSelect: 'none' }}
             title={collapsed ? 'Expand' : 'Collapse'}>
           {collapsed ? '▸' : '▾'} Memory overview

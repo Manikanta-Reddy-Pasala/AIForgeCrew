@@ -76,7 +76,8 @@ def test_sqlite_search_roundtrip(cs):
     s = cs.create_session(title="Kafka")
     cs.add_message(s["id"], "assistant", "use a dead-letter topic for kafka retries")
     hits = cs.search_messages("kafka retries")
-    assert hits and hits[0]["content"].startswith("use a dead-letter")
+    assert hits
+    assert hits[0]["content"].startswith("use a dead-letter")
 
 
 def test_sqlite_media_roundtrip(cs):

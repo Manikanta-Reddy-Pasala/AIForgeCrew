@@ -4,7 +4,7 @@ import importlib
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def mem(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "mem"))
@@ -52,11 +52,14 @@ def test_merge_similar_topics_consolidates(mem):
     assert r["merged"] == 2                       # 2 folded into gpsd
     briefs = {p.stem[len("compacted-"):] for p in m.iter_briefs()}
     assert "gpsd" in briefs
-    assert "gpsd-config" not in briefs and "gpsd-configuration" not in briefs
+    assert "gpsd-config" not in briefs
+    assert "gpsd-configuration" not in briefs
     # all three facts survive in the canonical brief
     body = work_notes.parse_note(m.brief_path("gpsd").read_text())["sections"]["facts"]
     joined = " ".join(body)
-    assert "systemd" in joined and "/etc/default/gpsd" in joined and "GPSD_OPTIONS" in joined
+    assert "systemd" in joined
+    assert "/etc/default/gpsd" in joined
+    assert "GPSD_OPTIONS" in joined
 
 
 def test_merge_protects_repo_briefs(mem, monkeypatch):
@@ -69,7 +72,8 @@ def test_merge_protects_repo_briefs(mem, monkeypatch):
     r = m.merge_similar_topics()
     assert r["merged"] == 0
     briefs = {p.stem[len("compacted-"):] for p in m.iter_briefs()}
-    assert "gps-tracker" in briefs and "gps-tracker-web" in briefs
+    assert "gps-tracker" in briefs
+    assert "gps-tracker-web" in briefs
 
 
 # ─────────── aggressive family + typo merging (the /admin Topics sprawl) ─────
@@ -80,7 +84,8 @@ def test_family_collapses_single_word_prefix():
             "windows-w32tm-config", "unrelated-thing"]
     clusters = m._topic_clusters(keys)
     fam = next((c for c in clusters if "windows-ntp" in c), None)
-    assert fam is not None and len(fam) == 4          # all four windows-* fuse
+    assert fam is not None
+    assert len(fam) == 4
     assert all("unrelated-thing" not in c for c in clusters)
 
 
@@ -112,7 +117,9 @@ def test_merge_folds_family_into_the_common_prefix_topic(mem):
     assert briefs == {"windows"}                  # one broad topic remains
     # the folded facts survived into the new canonical brief
     body = m.brief_path("windows").read_text(encoding="utf-8")
-    assert "w32time" in body and "peers" in body and "CPU" in body
+    assert "w32time" in body
+    assert "peers" in body
+    assert "CPU" in body
 
 
 def test_family_merge_never_folds_a_protected_repo_or_shared(mem, monkeypatch):

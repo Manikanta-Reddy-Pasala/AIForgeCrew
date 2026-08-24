@@ -44,7 +44,8 @@ def test_classify_strict_json(rc):
                    "canonical": "always use yarn", "confidence": 0.9,
                    "task_present": False})
     c = rc.classify("from now on always use yarn")
-    assert c["category"] == "rule" and c["scope"] == "global"
+    assert c["category"] == "rule"
+    assert c["scope"] == "global"
     assert c["canonical"] == "always use yarn"
     assert c["task_present"] is False
 
@@ -53,7 +54,8 @@ def test_classify_json_with_surrounding_prose(rc):
     _mock_llm(rc, 'Sure! Here:\n{"category":"memory","scope":"project",'
                   '"canonical":"db at db.staging","confidence":0.8}\nthanks')
     c = rc.classify("remember the staging db is db.staging")
-    assert c["category"] == "memory" and c["scope"] == "project"
+    assert c["category"] == "memory"
+    assert c["scope"] == "project"
 
 
 def test_classify_bad_json_falls_open_to_none(rc):
@@ -96,7 +98,8 @@ def test_store_rule_global_md(rc):
     assert out["location"] == "md:rules:global"
     from aiforge_core.memory import md_store
     p = md_store._find_by_source("rules:global")
-    assert p is not None and "always use yarn" in p.read_text()
+    assert p is not None
+    assert "always use yarn" in p.read_text()
 
 
 def test_store_rule_project_writes_repo_rules_and_md(rc, tmp_path):
@@ -107,10 +110,12 @@ def test_store_rule_project_writes_repo_rules_and_md(rc, tmp_path):
     out = rc.store(c, repo="myrepo", repo_root=str(repo_root))
     from aiforge_core.memory import md_store
     p = md_store._find_by_source("rules:myrepo")
-    assert p is not None and "use tabs here" in p.read_text()
+    assert p is not None
+    assert "use tabs here" in p.read_text()
     rules_dir = repo_root / ".aiforge" / "rules"
     files = list(rules_dir.glob("*.md"))
-    assert files and "use tabs here" in files[0].read_text()
+    assert files
+    assert "use tabs here" in files[0].read_text()
     assert out["location"] == "md:rules:myrepo"
 
 
@@ -489,7 +494,8 @@ def test_tool_gate_chained_not_auto_approved(rc, monkeypatch, tmp_path):
         res = asyncio.run(cb(tool=_T(),
                              args={"cmd": "git add . && rm -rf /tmp/zzz"},
                              tool_context=None))
-        assert res is not None and res.get("rejected") is True
+        assert res is not None
+        assert res.get("rejected") is True
         assert any(e.get("type") == "approval" for e in emitted)
         assert not any(e.get("type") == "auto_approved" for e in emitted)
     finally:

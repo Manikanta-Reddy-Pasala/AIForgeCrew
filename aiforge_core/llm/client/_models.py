@@ -69,8 +69,7 @@ def served_models(base_url: str, api_key: str = "",
         if isinstance(data, list):
             ids = [str(m.get("id")) for m in data
                    if isinstance(m, dict) and m.get("id")]
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError,
-            ValueError, TimeoutError) as exc:
+    except (OSError, ValueError) as exc:
         # An endpoint that will not answer /v1/models is not evidence about the
         # configured model — leave `ids` None and let the caller say nothing.
         _log.debug("llm.models_probe_failed url=%s err=%s", url, str(exc)[:200])

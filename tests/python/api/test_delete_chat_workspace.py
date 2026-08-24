@@ -31,7 +31,8 @@ def test_refuses_pinned_user_repo(ws_root, tmp_path):
     repo.mkdir()
     (repo / "important.py").write_text("keep me")
     assert api._delete_chat_workspace(str(repo)) is False
-    assert repo.exists() and (repo / "important.py").exists()
+    assert repo.exists()
+    assert (repo / "important.py").exists()
 
 
 def test_refuses_the_root_itself(ws_root):

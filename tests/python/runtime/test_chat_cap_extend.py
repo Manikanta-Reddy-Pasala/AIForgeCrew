@@ -88,7 +88,8 @@ def test_stop_banner_points_at_the_setting(tmp_path, monkeypatch):
         session_id=_SID))
     text = _msgs(evs)
     assert text.startswith("(stopped:")          # quality_gate's incomplete mark
-    assert "Settings" in text and "AIFORGE_CHAT_SAFETY_CAP" in text
+    assert "Settings" in text
+    assert "AIFORGE_CHAT_SAFETY_CAP" in text
 
 
 def test_a_churning_agent_earns_nothing(tmp_path, monkeypatch):
@@ -202,7 +203,8 @@ def test_deadline_stop_banner_points_at_the_setting(tmp_path, monkeypatch):
         complete_fn=fn, session_id=_SID))
     text = _msgs(evs)
     assert text.startswith("(stopped:")
-    assert "Settings" in text and "AIFORGE_CHAT_TURN_DEADLINE_S" in text
+    assert "Settings" in text
+    assert "AIFORGE_CHAT_TURN_DEADLINE_S" in text
 
 
 # ── knob resolution ─────────────────────────────────────────────────────

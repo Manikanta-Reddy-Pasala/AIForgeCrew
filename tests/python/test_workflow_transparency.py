@@ -6,7 +6,7 @@ import os
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def skills_env(tmp_path, monkeypatch):
     sk = tmp_path / "skills"
     sk.mkdir()
@@ -32,7 +32,8 @@ def test_skills_selected_names_marks_why(skills_env):
 def test_skills_auto_context_unchanged_behaviour(skills_env):
     from aiforge_core.runtime import skills
     block = skills.auto_context("write python code", None)
-    assert "always-one" in block and "match-py" in block
+    assert "always-one" in block
+    assert "match-py" in block
 
 
 def test_workflows_selected_names(tmp_path, monkeypatch):

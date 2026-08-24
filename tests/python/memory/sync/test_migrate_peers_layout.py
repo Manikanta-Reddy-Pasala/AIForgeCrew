@@ -40,7 +40,8 @@ def test_running_it_twice_is_a_no_op(monkeypatch, tmp_path):
     migrations._move_okf_peers_to_inbox()
     second = migrations._move_okf_peers_to_inbox()
 
-    assert second["ok"] and second.get("skipped")
+    assert second["ok"]
+    assert second.get("skipped")
     assert (tmp_path / "md" / "peers" / "nuc" / "L-07.md").exists()
 
 

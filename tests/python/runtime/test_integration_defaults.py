@@ -12,7 +12,7 @@ import tempfile
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def cfg_dir(monkeypatch):
     d = tempfile.mkdtemp()
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", d)

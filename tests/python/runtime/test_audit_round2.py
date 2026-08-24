@@ -217,4 +217,6 @@ def test_context_filter_dedupes_adjacent_seed_echo(monkeypatch) -> None:
     model = _content("model", "reply")
     out = custom([seed, echo, model, other])
     assert len(out) == 3
-    assert out[0] is seed and out[1] is model and out[2] is other
+    assert out[0] is seed
+    assert out[1] is model
+    assert out[2] is other

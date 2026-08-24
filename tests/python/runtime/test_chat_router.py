@@ -43,18 +43,24 @@ def _d(prompt="build a cli app with tests", **kw):
 
 def test_code_build_simple_escalates():
     r = _d(cat="code_build")
-    assert r.is_build_task and r.build_escalate and r.route_pipeline
+    assert r.is_build_task
+    assert r.build_escalate
+    assert r.route_pipeline
     assert "Multi-file build detected" in (r.notice or "")
 
 
 def test_doc_analysis_routes_to_research():
     r = _d(prompt="analyze the repo and write a report", cat="doc_analysis")
-    assert r.doc_task and not r.build_escalate and not r.route_pipeline
+    assert r.doc_task
+    assert not r.build_escalate
+    assert not r.route_pipeline
 
 
 def test_chat_class_no_escalation():
     r = _d(prompt="what does this function do?", cat="chat")
-    assert not r.is_build_task and not r.build_escalate and not r.route_pipeline
+    assert not r.is_build_task
+    assert not r.build_escalate
+    assert not r.route_pipeline
     assert r.notice is None
 
 
@@ -108,7 +114,8 @@ def test_team_approvals_off_uses_parallel():
 # ── fallback + safety ─────────────────────────────────────────────────────
 def test_none_cat_uses_regex_fallback():
     r = _d(prompt="build a flask api with tests", cat=None)
-    assert r.is_build_task and r.build_escalate
+    assert r.is_build_task
+    assert r.build_escalate
 
 
 def test_question_never_escalates_even_if_classed_build():

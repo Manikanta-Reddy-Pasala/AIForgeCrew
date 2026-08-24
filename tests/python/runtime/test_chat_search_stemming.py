@@ -12,7 +12,8 @@ def test_stem_strips_common_inflections():
     # singular actually unify. 'registry' is NOT a substring of 'registries'.
     assert _stem("registries") == "registr"
     # "running" -> strips "ing"; stem differs and stays >= 3 chars
-    assert _stem("running") != "running" and len(_stem("running")) >= 3
+    assert _stem("running") != "running"
+    assert len(_stem("running")) >= 3
     # short words untouched
     assert _stem("api") == "api"
 
@@ -21,8 +22,10 @@ def test_tokens_include_stem_variants():
     toks = _tokens("deployment errors")
     # both the raw token and its stem present so a substring scan matches
     # "deploy"/"deployed" and "error"/"errors"
-    assert "deployment" in toks and "deploy" in toks
-    assert "errors" in toks and "error" in toks
+    assert "deployment" in toks
+    assert "deploy" in toks
+    assert "errors" in toks
+    assert "error" in toks
 
 
 def test_stem_matches_shorter_word_form():
@@ -109,7 +112,8 @@ def test_round11_short_derivational_stem_no_overmatch():
         _row("a", "restart the server"),
     ]
     ranked = _rank_search(rows, _tokens("servers"), 10)
-    assert ranked and ranked[0]["content"] == "restart the server"
+    assert ranked
+    assert ranked[0]["content"] == "restart the server"
 
 
 def test_round11_common_stems_still_unify():
@@ -134,4 +138,5 @@ def test_round12_y_floor_reverted_keeps_singular_plural_symmetry():
                 "content": text, "created_at": "2026-01-01T00:00:00+00:00"}
     rows = [_row("a", "parse the request bodies and response bodies")]
     ranked = _rank_search(rows, _tokens("body"), 10)
-    assert ranked and ranked[0]["content"].startswith("parse the request bodies")
+    assert ranked
+    assert ranked[0]["content"].startswith("parse the request bodies")

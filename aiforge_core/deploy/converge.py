@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from aiforge_core.config.paths import config_dir
 
 log = logging.getLogger("aiforge.deploy.converge")
 
@@ -36,7 +37,7 @@ _SUDO: list | None = None
 
 
 def _config_dir() -> Path:
-    return Path(os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")))
+    return Path(str(config_dir()))
 
 
 def _marker() -> Path:
@@ -89,8 +90,11 @@ def _container_exists(name: str) -> bool:
 
 
 def _pg_url() -> str:
-    return (os.environ.get("AIFORGE_PG_URL")
-            or "postgresql://aiforge:aiforgepass@127.0.0.1:5432/aiforge")
+    # No baked-in credential: see config.env.default_pg_dsn. The literal this
+    # replaced shipped a working password in source control, and it was the
+    # DEFAULT — i.e. what ran wherever AIFORGE_PG_URL was unset.
+    from aiforge_core.config.env import default_pg_dsn
+    return os.environ.get("AIFORGE_PG_URL") or default_pg_dsn()
 
 
 def _migrate_pg_to_sqlite() -> bool:

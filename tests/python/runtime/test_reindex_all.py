@@ -8,7 +8,7 @@ import tempfile
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def cfg(monkeypatch):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", tempfile.mkdtemp())
     monkeypatch.setenv("AIFORGE_SOURCES_DB_PATH", tempfile.mkdtemp() + "/s.db")
@@ -34,10 +34,12 @@ def test_reindex_all_skips_unchanged(cfg, monkeypatch):
     monkeypatch.setattr(mi, "run_index", lambda sid: seen.append(sid))
     # first pass: never-indexed → indexes + records merkle baseline
     r1 = mi.reindex_all()
-    assert r1["indexed"] == 1 and r1["skipped"] == 0
+    assert r1["indexed"] == 1
+    assert r1["skipped"] == 0
     # second pass, nothing changed → skipped (no re-index)
     r2 = mi.reindex_all()
-    assert r2["indexed"] == 0 and r2["skipped"] == 1
+    assert r2["indexed"] == 0
+    assert r2["skipped"] == 1
     assert len(seen) == 1
     # force rebuilds regardless
     r3 = mi.reindex_all(force=True)
@@ -52,7 +54,9 @@ def test_reindex_all_indexes_repo_sources_only(cfg, monkeypatch):
     seen = []
     monkeypatch.setattr(mi, "run_index", lambda sid: seen.append(sid))
     out = mi.reindex_all()
-    assert out["total"] == 1 and out["indexed"] == 1 and out["errors"] == []
+    assert out["total"] == 1
+    assert out["indexed"] == 1
+    assert out["errors"] == []
     assert len(seen) == 1                          # only the repo source
 
 
@@ -67,5 +71,7 @@ def test_reindex_all_soft_fails_per_source(cfg, monkeypatch):
             raise RuntimeError("boom")
     monkeypatch.setattr(mi, "run_index", _run)
     out = mi.reindex_all()
-    assert out["total"] == 2 and out["indexed"] == 1     # the other still ran
-    assert len(out["errors"]) == 1 and out["errors"][0]["id"] == a["id"]
+    assert out["total"] == 2
+    assert out["indexed"] == 1
+    assert len(out["errors"]) == 1
+    assert out["errors"][0]["id"] == a["id"]

@@ -10,7 +10,7 @@ import tempfile
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def cfg(monkeypatch):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", tempfile.mkdtemp())
     monkeypatch.setenv("AIFORGE_MEMORY_BACKEND", "sqlite")
@@ -33,7 +33,8 @@ def test_remember_rule_lands_in_library_store(cfg):
     assert "Always run tests before commit" in names
     rule = next(x for x in rules if x.name == "Always run tests before commit")
     assert rule.description == "run the test suite before every commit"
-    assert "commit" in rule.triggers and "test" in rule.triggers
+    assert "commit" in rule.triggers
+    assert "test" in rule.triggers
     assert rule.scope == "global"
 
 
@@ -77,7 +78,8 @@ def test_builder_elaborates_body_via_llm(cfg, monkeypatch):
                                "scope": "global"}, ".")
     assert r["ok"]
     body = [s for s in skills.load() if s.name == "el-skill"][0].body
-    assert "Elaborated step one" in body and "do the thing" not in body
+    assert "Elaborated step one" in body
+    assert "do the thing" not in body
 
 
 def test_builder_elaborate_fallback_keeps_raw(cfg, monkeypatch):
@@ -117,7 +119,8 @@ def test_repo_rule_overrides_global_in_pipeline(cfg, tmp_path):
     (rdir / "style.md").write_text(
         "---\nname: style\nalwaysApply: true\n---\nREPO body\n")
     bodies = {r.name: r.body for r in repo_rules.load_rules(str(tmp_path))}
-    assert "REPO body" in bodies["style"] and "GLOBAL body" not in bodies["style"]
+    assert "REPO body" in bodies["style"]
+    assert "GLOBAL body" not in bodies["style"]
 
 
 def test_repo_skill_and_workflow_override_global(cfg, tmp_path):
@@ -136,8 +139,10 @@ def test_repo_skill_and_workflow_override_global(cfg, tmp_path):
     # load precedence (what every mode's auto_context uses)
     sk = {s.name: s.body for s in skills.load(str(tmp_path))}
     wf = {w.name: w.body for w in workflows.load(str(tmp_path))}
-    assert "REPO deploy steps" in sk["deploy"] and "GLOBAL" not in sk["deploy"]
-    assert "REPO ship steps" in wf["ship"] and "GLOBAL" not in wf["ship"]
+    assert "REPO deploy steps" in sk["deploy"]
+    assert "GLOBAL" not in sk["deploy"]
+    assert "REPO ship steps" in wf["ship"]
+    assert "GLOBAL" not in wf["ship"]
     # the injected block reflects the override
     assert "REPO deploy steps" in skills.auto_context("please deploy", str(tmp_path))
     assert "REPO ship steps" in workflows.auto_context("please ship", str(tmp_path))

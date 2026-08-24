@@ -56,7 +56,8 @@ def test_extract_text_both_empty_is_garbage():
         "content": "<think>x</think>", "reasoning_content": "",
     }}]}
     txt = c._extract_text(body)
-    assert txt == "" and c._is_garbage(txt)
+    assert txt == ""
+    assert c._is_garbage(txt)
 
 
 def _msg_body(text: str) -> dict:
@@ -92,7 +93,8 @@ def test_try_post_retries_same_endpoint_until_real_answer(monkeypatch):
         temperature=None, max_tokens=None, top_p=None, extras=None,
         timeout_s=5, role="chat", source="primary",
     )
-    assert out is not None and out[0] == "final answer"
+    assert out is not None
+    assert out[0] == "final answer"
     assert calls["n"] == 3   # two garbage retries + the good one
 
 

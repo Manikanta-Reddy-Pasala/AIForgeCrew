@@ -27,13 +27,17 @@ import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import NamedTuple
+from aiforge_core.config.paths import config_dir
 
 try:
     import yaml
 except Exception:  # noqa: BLE001
     yaml = None  # type: ignore
 
-_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
+# `[ \t]*` not `\s*`: `\s` MATCHES the newline, so `---\s*\n` could split a
+# run of blank lines many ways — the super-linear case. What is actually
+# meant is "trailing spaces/tabs on the --- line".
+_FRONTMATTER_RE = re.compile(r"^---[ \t]*\n(.*?)\n---[ \t]*\n?(.*)$", re.DOTALL)
 _REPO_SUBDIRS = (".aiforge/skills", ".claude/skills")
 # Per-skill body budget in the injected block. A skill that carries steps PLUS
 # a strict output format easily exceeds a small cap — and truncating mid-body
@@ -72,7 +76,7 @@ def _global_dir() -> Path:
     # Live under the same config dir as the rest of the app (AIFORGE_CONFIG_DIR)
     # — a raw Path.home() diverges from the operator's configured/mounted dir on
     # docker/hybrid, so skills built via chat landed outside it (looked lost).
-    cfg = os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge"))
+    cfg = str(config_dir())
     return Path(cfg) / "skills"
 
 

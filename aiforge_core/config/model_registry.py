@@ -18,6 +18,7 @@ import threading
 from typing import Any
 
 from aiforge_core.config import _atomic
+from aiforge_core.config.paths import config_dir
 
 _LOCK = threading.Lock()
 _VISION = ("auto", "yes", "no")
@@ -54,7 +55,7 @@ def detect_capability(model_id: str, kind: str) -> bool:
 
 
 def _path() -> str:
-    root = os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge"))
+    root = str(config_dir())
     return os.path.join(root, "model_registry.json")
 
 

@@ -19,6 +19,7 @@ import os
 import time
 from pathlib import Path
 from typing import Any
+from aiforge_core.config.paths import config_dir
 
 
 def trace_dir() -> Path:
@@ -31,7 +32,7 @@ def trace_dir() -> Path:
         # DIFFERENT folder than the operator's configured AIFORGE_CONFIG_DIR
         # (docker/hybrid), so the dir they checked looked empty.
         cfg = os.path.expanduser(
-            os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge"))
+            str(config_dir()))
         base = Path(cfg) / "chat_traces"
     base.mkdir(parents=True, exist_ok=True)
     return base

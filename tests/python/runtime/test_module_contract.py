@@ -77,7 +77,8 @@ def test_hard_coalesce_enforces_python_cap_preserving_symbols(monkeypatch):
     out, removed = _coalesce_code_modules(files)
     code = [f for f in out if f["path"].endswith(".py")
             and "test" not in f["path"]]
-    assert len(code) == 4 and removed == 2          # 6 → 4
+    assert len(code) == 4
+    assert removed == 2
     # every original symbol survives (union of apis across merged modules)
     all_api = [a for f in code for a in f["api"]]
     for i in range(6):
@@ -93,7 +94,8 @@ def test_hard_coalesce_tighter_for_compiled(monkeypatch):
               "api": [f"class M{i}"]} for i in range(6)]
     out, removed = _coalesce_code_modules(files)
     java = [f for f in out if f["path"].endswith(".java")]
-    assert len(java) == 2 and removed == 4          # compiled cap 2
+    assert len(java) == 2
+    assert removed == 4
 
 
 def test_coalesce_folds_helper_into_its_user(monkeypatch):
@@ -119,7 +121,8 @@ def test_coalesce_noop_within_cap():
     files = [{"path": "a.py", "purpose": "x", "api": []},
              {"path": "b.py", "purpose": "y", "api": []}]
     out, removed = _coalesce_code_modules(files)
-    assert removed == 0 and out == files
+    assert removed == 0
+    assert out == files
 
 
 def test_compiled_plan_gets_tighter_cap(monkeypatch):

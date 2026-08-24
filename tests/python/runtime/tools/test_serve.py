@@ -46,7 +46,9 @@ def test_serve_requires_cmd(srv):
 def test_serve_detects_port_and_stops(srv, port):
     r = srv.serve({"cmd": f"python3 -m http.server {port}", "port": port,
                    "wait_s": 2, "ttl_s": 9999})
-    assert r["ok"] and r["url"] == f"http://localhost:{port}" and r["pid"]
+    assert r["ok"]
+    assert r["url"] == f"http://localhost:{port}"
+    assert r["pid"]
     assert srv.list_services()["services"][0]["alive"]
     assert srv.stop_service({"pid": r["pid"]})["ok"]
     time.sleep(0.4)
@@ -55,7 +57,8 @@ def test_serve_detects_port_and_stops(srv, port):
 
 def test_serve_crash_on_startup(srv):
     r = srv.serve({"cmd": "exit 7", "wait_s": 2})
-    assert r["ok"] is False and "exited on startup" in r["error"]
+    assert r["ok"] is False
+    assert "exited on startup" in r["error"]
 
 
 def test_serve_default_ttl(srv, port):
@@ -81,7 +84,8 @@ def test_serve_refuses_destructive_cmd(srv, monkeypatch):
     monkeypatch.delenv("AIFORGE_CHAT_ALLOW_DELETE", raising=False)
     monkeypatch.delenv("AIFORGE_ALLOW_DELETE", raising=False)
     r = srv.serve({"cmd": "rm -rf build && npm run dev"})
-    assert r["ok"] is False and "deletes files" in r["error"]
+    assert r["ok"] is False
+    assert "deletes files" in r["error"]
     # nothing was launched.
     assert srv.list_services()["services"] == []
 

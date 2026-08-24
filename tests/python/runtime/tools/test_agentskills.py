@@ -37,7 +37,8 @@ def test_helpers_work_when_executed(tmp_path, monkeypatch):
     exec(compile(src, "<test>", "exec"), ns)
 
     out = ns["open_file"]("foo.py", line=2, context=1)
-    assert "b" in out and ">>" in out
+    assert "b" in out
+    assert ">>" in out
 
     hits = ns["find_file"]("foo.py")
     assert "foo.py" in hits
@@ -53,7 +54,8 @@ def test_run_cmd_honours_delete_guard(tmp_path, monkeypatch):
     ns: dict = {}
     exec(compile(bootstrap_code(), "<test>", "exec"), ns)
     out = ns["run_cmd"]("rm -rf something")
-    assert out["ok"] is False and out.get("blocked") == "delete"
+    assert out["ok"] is False
+    assert out.get("blocked") == "delete"
     assert ns["run_cmd"]("echo hi")["ok"] is True
 
 
@@ -61,4 +63,5 @@ def test_format_rejects_path_outside_root(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_REPO_ROOT", str(tmp_path))
     from aiforge_core.runtime.tools.format import format as fmt
     out = fmt("../../etc/passwd.py")
-    assert out["ok"] is False and out["error"] == "path_outside_root"
+    assert out["ok"] is False
+    assert out["error"] == "path_outside_root"

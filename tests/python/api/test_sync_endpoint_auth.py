@@ -113,7 +113,8 @@ def test_a_remote_spoke_pushes_with_no_credential(monkeypatch, tmp_path):
     assert offer.status_code == 200
     push = client.post("/api/memory/sync/push", json={
         "peer": "studio", "entry": entry, "body": base64.b64encode(body).decode()})
-    assert push.status_code == 200 and push.json()["applied"] is True
+    assert push.status_code == 200
+    assert push.json()["applied"] is True
 
 
 def test_the_open_sync_surface_does_NOT_open_the_control_plane(monkeypatch, tmp_path):

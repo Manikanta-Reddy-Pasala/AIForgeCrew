@@ -78,7 +78,10 @@ OKF_RULES = (
 # Recommended optional fields, priority order (spec §5).
 RECOMMENDED_FIELDS = ("title", "description", "resource", "tags", "timestamp")
 
-_FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
+# `[ \t]*` not `\s*`: `\s` MATCHES the newline, so `---\s*\n` could split a
+# run of blank lines many ways — the super-linear case. What is actually
+# meant is "trailing spaces/tabs on the --- line".
+_FRONTMATTER_RE = re.compile(r"\A---[ \t]*\n(.*?)\n---[ \t]*\n?", re.DOTALL)
 
 
 def okf_frontmatter(type_: str, *, title: str = "", description: str = "",

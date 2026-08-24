@@ -9,7 +9,8 @@ def test_web_fetch_gated_by_default(monkeypatch):
     called = {"n": 0}
     monkeypatch.setattr(ws, "_get", lambda *a, **k: called.__setitem__("n", 1) or "<html></html>")
     r = ws.web_fetch({"url": "http://example.com"})
-    assert r["ok"] is False and "disabled" in r["error"]
+    assert r["ok"] is False
+    assert "disabled" in r["error"]
     assert called["n"] == 0   # no outbound attempt
 
 

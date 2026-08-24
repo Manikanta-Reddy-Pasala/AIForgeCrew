@@ -13,11 +13,15 @@ def ms(monkeypatch, tmp_path):
 
 def test_create_list_delete(ms):
     s = ms.create("repo", "/some/path", "myrepo")
-    assert s["kind"] == "repo" and s["name"] == "myrepo" and s["status"] == "idle"
+    assert s["kind"] == "repo"
+    assert s["name"] == "myrepo"
+    assert s["status"] == "idle"
     assert len(ms.list_sources()) == 1
     ms.set_status(s["id"], "done", units=42, indexed=True)
     got = ms.get(s["id"])
-    assert got["status"] == "done" and got["units"] == 42 and got["last_indexed"]
+    assert got["status"] == "done"
+    assert got["units"] == 42
+    assert got["last_indexed"]
     assert ms.delete(s["id"]) is True
     assert ms.list_sources() == []
 
@@ -57,7 +61,8 @@ def test_ingest_missing_dir(tmp_path):
     importlib.reload(mi)
     res = mi.ingest_source({"kind": "repo", "name": "x",
                             "location": str(tmp_path / "nope")})
-    assert res["units"] == 0 and "not a directory" in res["error"]
+    assert res["units"] == 0
+    assert "not a directory" in res["error"]
 
 
 def test_run_index_updates_status(monkeypatch, tmp_path):

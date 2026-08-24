@@ -61,7 +61,8 @@ def test_repo_map_empty_repo_fails_gracefully(tmp_path, monkeypatch):
     out = doer_tools.repo_map(focus="anything")
     # no source files → ok False, never raises
     assert out["ok"] is False
-    assert "digest" in out and out["digest"] == ""
+    assert "digest" in out
+    assert out["digest"] == ""
 
 
 def test_repo_map_in_doer_tool_list() -> None:

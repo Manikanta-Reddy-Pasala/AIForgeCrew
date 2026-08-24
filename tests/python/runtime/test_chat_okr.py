@@ -13,7 +13,7 @@ import types
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def mem(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "mem"))
@@ -56,7 +56,8 @@ def test_compact_session_routes_items_to_scoped_briefs(monkeypatch, mem):
 
     monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _fake)
     res = chat_okr.compact_session("s1", repo="svc")
-    assert res["ok"] and res["captured"] == 2
+    assert res["ok"]
+    assert res["captured"] == 2
     # global item promoted to shared, project item under its repo
     assert (md_store.brief_path("shared")).exists()
     assert (md_store.brief_path("svc")).exists()
@@ -67,7 +68,8 @@ def test_compact_session_skips_short(monkeypatch, mem):
     monkeypatch.setattr("aiforge_core.runtime.chat_store.get_messages",
                         lambda sid: [{"role": "user", "content": "hi"}])
     res = chat_okr.compact_session("s1", repo="svc", min_turns=4)
-    assert res["ok"] and res.get("skipped") == "too_short"
+    assert res["ok"]
+    assert res.get("skipped") == "too_short"
 
 
 def test_compact_session_disabled(monkeypatch, mem):
@@ -87,7 +89,8 @@ def test_compact_session_soft_fails_on_llm_error(monkeypatch, mem):
 
     monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _boom)
     res = chat_okr.compact_session("s1", repo="svc")
-    assert res["ok"] and res["captured"] == 0
+    assert res["ok"]
+    assert res["captured"] == 0
 
 
 def test_previous_session_brief_returns_prior(monkeypatch, mem):
@@ -101,7 +104,8 @@ def test_previous_session_brief_returns_prior(monkeypatch, mem):
                       {"role": "assistant", "content": "done"}]
                      if sid == 4 else []))
     out = chat_okr.previous_session_brief(5)
-    assert "SQLite" in out and "4" in out
+    assert "SQLite" in out
+    assert "4" in out
 
 
 def test_previous_session_brief_empty_when_only_current(monkeypatch, mem):
@@ -125,7 +129,8 @@ def test_compact_session_skips_when_no_new_messages(monkeypatch, mem):
     r1 = chat_okr.compact_session("s1", repo="svc")
     assert r1["captured"] == 1
     r2 = chat_okr.compact_session("s1", repo="svc")   # no new messages
-    assert r2.get("skipped") == "no_new" and r2["captured"] == 0
+    assert r2.get("skipped") == "no_new"
+    assert r2["captured"] == 0
 
 
 def test_compact_session_only_new_turns(monkeypatch, mem):
@@ -173,23 +178,31 @@ def test_transcript_takes_the_OLDEST_turns_that_fit(mem):
              {"role": "assistant", "content": "B" * 100},
              {"role": "user", "content": "C" * 100}]
     text, taken, part = chat_okr._transcript(turns, 250)
-    assert taken == 2 and part == 0
-    assert "A" * 100 in text and "C" * 100 not in text
+    assert taken == 2
+    assert part == 0
+    assert "A" * 100 in text
+    assert "C" * 100 not in text
     assert len(text) <= 250
     # a lone OVER-LIMIT turn is SLICED, not clipped-and-consumed: it stays at
     # the same offset with a part marker until every slice has been sent
     big = [{"role": "user", "content": "X" * 500}]
     text, taken, part = chat_okr._transcript(big, 100)
-    assert taken == 0 and part == 94 and len(text) == 100
+    assert taken == 0
+    assert part == 94
+    assert len(text) == 100
     text2, taken2, part2 = chat_okr._transcript(big, 100, start_char=part)
-    assert "X" in text2 and taken2 == 0 and part2 == 188
+    assert "X" in text2
+    assert taken2 == 0
+    assert part2 == 188
     # the slices cover the turn — walk it to the end
     seen, guard = 0, 0
     while part and guard < 20:
         _t, taken_n, part = chat_okr._transcript(big, 100, start_char=part)
         seen += 1
         guard += 1
-    assert taken_n == 1 and part == 0 and guard < 20
+    assert taken_n == 1
+    assert part == 0
+    assert guard < 20
 
 
 def test_compact_session_walks_a_long_session_window_by_window(monkeypatch, mem):
@@ -219,7 +232,8 @@ def test_compact_session_walks_a_long_session_window_by_window(monkeypatch, mem)
         folds += 1
         assert folds < 10
     # every turn reached the model exactly once, oldest first
-    assert "fact 0" in seen[0] and "fact 5" in seen[-1]
+    assert "fact 0" in seen[0]
+    assert "fact 5" in seen[-1]
     assert sum(t["content"] in "\n\n".join(seen) for t in msgs) == len(msgs)
     assert chat_okr.compact_session("walk", repo=None)["skipped"] == "no_new"
 
@@ -235,7 +249,8 @@ def test_llm_failure_does_not_advance_the_offset(monkeypatch, mem):
 
     monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _boom)
     res = chat_okr.compact_session("s9", repo="svc")
-    assert res["skipped"] == "extract_failed" and res["captured"] == 0
+    assert res["skipped"] == "extract_failed"
+    assert res["captured"] == 0
 
     captured: list = []
 
@@ -264,7 +279,9 @@ def test_empty_turns_are_consumed_not_re_walked(mem):
              {"role": "user", "content": ""},
              {"role": "user", "content": "A" * 50}]
     text, taken, part = chat_okr._transcript(turns, 100)
-    assert taken == 3 and part == 0 and "A" * 50 in text
+    assert taken == 3
+    assert part == 0
+    assert "A" * 50 in text
 
 
 def test_extract_failure_reports_the_whole_backlog_as_remaining(monkeypatch, mem):
@@ -362,7 +379,8 @@ def test_batch_scope_is_robust_to_a_confused_index_list(monkeypatch, mem):
     assert out[0]["scope"] == "global"           # FIRST verdict for index 0 wins
     assert not out[0].get("fallback")
     for o in out[1:]:                            # no verdict → hints, MARKED so
-        assert o["scope"] == "project" and o["repo"] == "svc"
+        assert o["scope"] == "project"
+        assert o["repo"] == "svc"
         assert o["fallback"] is True             # cleanup_reheal must not delete
 
 
@@ -478,7 +496,8 @@ def test_a_burst_of_failures_counts_as_one(monkeypatch, mem):
     for _ in range(chat_okr._MAX_WINDOW_FAILS + 3):
         chat_okr.compact_session("hiccup", repo="svc")
     e = chat_okr._entry(chat_okr._load_marker(), "hiccup")
-    assert e["fails"] == 1 and e["offset"] == 0      # one hiccup, nothing skipped
+    assert e["fails"] == 1
+    assert e["offset"] == 0
 
 
 def test_a_window_whose_captures_all_fail_does_not_advance(monkeypatch, mem):
@@ -499,7 +518,8 @@ def test_a_window_whose_captures_all_fail_does_not_advance(monkeypatch, mem):
     monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _fake)
     monkeypatch.setattr(md_store, "capture", _down)
     r = chat_okr.compact_session("wfail", repo="svc")
-    assert r["skipped"] == "capture_failed" and r["captured"] == 0
+    assert r["skipped"] == "capture_failed"
+    assert r["captured"] == 0
     assert chat_okr._entry(chat_okr._load_marker(), "wfail")["offset"] == 0
 
     captured: list = []
@@ -526,7 +546,8 @@ def test_scope_failure_does_not_abort_the_fold(monkeypatch, mem):
     monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _fake)
     monkeypatch.setattr(md_store, "classify_scopes", _boom)
     res = chat_okr.compact_session("scopefail", repo="svc")
-    assert res["ok"] and res["captured"] == 1        # captured under the repo hint
+    assert res["ok"]
+    assert res["captured"] == 1
 
 
 def test_batch_scope_chunks_beyond_the_batch_size(monkeypatch, mem):
@@ -548,5 +569,6 @@ def test_batch_scope_chunks_beyond_the_batch_size(monkeypatch, mem):
 
     monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _fake)
     out = md_store.classify_scopes([f"item-{i} body" for i in range(n)])
-    assert len(out) == n and sum(calls) == n
+    assert len(out) == n
+    assert sum(calls) == n
     assert [o["topic"] for o in out] == [f"item-{i}" for i in range(n)]

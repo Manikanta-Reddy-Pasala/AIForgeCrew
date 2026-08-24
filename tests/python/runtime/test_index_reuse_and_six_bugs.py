@@ -213,7 +213,8 @@ def test_bug2_stemming_unifies_policy_singular_plural_and_ranks_it():
     rows = [_row("x", "unrelated cache invalidation note"),
             _row("y", "the policy enforcement layer rejects the request")]
     ranked = _rank_search(rows, _tokens("policies"), 10)
-    assert ranked and ranked[0]["content"].startswith("the policy enforcement")
+    assert ranked
+    assert ranked[0]["content"].startswith("the policy enforcement")
 
 
 def test_bug3_okr_note_repairs_blank_kind_and_scrubs_scaffolding():
@@ -258,7 +259,8 @@ def test_bug5_native_tool_choice_only_rejection_keeps_native_enabled():
     assert not (_tools_unsupported(exc) and not _rejects_only_tool_choice(exc))
     # contrast: a genuine tools-incapable endpoint IS disabled.
     hard = _http_err(400, "this model does not support function calling tools")
-    assert _tools_unsupported(hard) and not _rejects_only_tool_choice(hard)
+    assert _tools_unsupported(hard)
+    assert not _rejects_only_tool_choice(hard)
 
 
 def test_bug6_codegraph_rebuilds_corrupt_crash_leftover(tmp_path, monkeypatch):

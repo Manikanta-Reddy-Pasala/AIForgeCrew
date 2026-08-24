@@ -17,6 +17,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { logStreamURL } from '../api';
 import { Icon } from '../icons';
+import { clickable } from '../a11y';
 
 const ROLES = [
   'chat', 'adk_runner', 'enhancer', 'architect', 'planner', 'doer',
@@ -262,7 +263,7 @@ export default function Logs() {
               <span className={`chip sm ${levelClass(l.level)}`}>{l.level || 'info'}</span>
               {l.ticket && (
                 <span className="chip sm mono"
-                      onClick={() => setTicketFilter(l.ticket!)}
+                      {...clickable(() => setTicketFilter(l.ticket!))}
                       style={{ cursor: 'pointer' }}
                       title="filter by this ticket">
                   {l.ticket}
@@ -300,7 +301,9 @@ function RoleTab({
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 6,
         padding: '4px 10px',
-        background: highlighted ? colour + '22' : (active ? 'transparent' : 'transparent'),
+        // `active ? 'transparent' : 'transparent'` returned the same value on both
+        // branches — a leftover that read as if `active` still mattered here.
+        background: highlighted ? colour + '22' : 'transparent',
         color: highlighted ? colour : 'var(--fg-2)',
         border: `1px solid ${highlighted ? colour : 'var(--border-1)'}`,
         borderRadius: 6,

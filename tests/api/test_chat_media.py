@@ -46,13 +46,15 @@ def test_upload_list_describe_delete(app_client):
                     files={"file": ("shot.png", _PNG, "image/png")})
     assert r.status_code == 201, r.text
     media = r.json()
-    assert media["filename"].endswith(".png") and media["mime"] == "image/png"
+    assert media["filename"].endswith(".png")
+    assert media["mime"] == "image/png"
     assert media["auto_described"] is False
     mid = media["id"]
 
     # List + vision flag present.
     lst = client.get(f"/api/chat/sessions/{sid}/media").json()
-    assert len(lst["media"]) == 1 and lst["vision"] is False
+    assert len(lst["media"]) == 1
+    assert lst["vision"] is False
 
     # Add a caption → it becomes the queryable description.
     pr = client.patch(f"/api/chat/media/{mid}",
@@ -61,7 +63,8 @@ def test_upload_list_describe_delete(app_client):
 
     # Raw bytes are served.
     raw = client.get(f"/api/chat/media/{mid}/raw")
-    assert raw.status_code == 200 and raw.content[:4] == b"\x89PNG"
+    assert raw.status_code == 200
+    assert raw.content[:4] == b"\x89PNG"
 
     # Delete removes the row + file.
     assert client.delete(f"/api/chat/media/{mid}").status_code == 204
@@ -77,7 +80,8 @@ def test_context_block_carries_description(app_client):
                  json={"description": "UNIQUEMARKER bar chart"})
     from aiforge_core.runtime import chat_media
     block = chat_media.context_block(sid)
-    assert "SESSION FILES" in block and "UNIQUEMARKER bar chart" in block
+    assert "SESSION FILES" in block
+    assert "UNIQUEMARKER bar chart" in block
 
 
 def test_accepts_text_document_and_extracts_text(app_client):
@@ -150,10 +154,12 @@ def test_analyze_attachment_handles_image_and_document(app_client):
     # Document (text) → extracted text becomes the description.
     doc = chat_media.analyze_attachment("readme.txt", b"build then deploy",
                                         mime="text/plain")
-    assert doc["filename"] == "readme.txt" and "build then deploy" in doc["description"]
+    assert doc["filename"] == "readme.txt"
+    assert "build then deploy" in doc["description"]
     # Image → routed to the vision path (no model in test → empty), but no crash.
     img = chat_media.analyze_attachment("p.png", _PNG, mime="image/png")
-    assert img["filename"] == "p.png" and isinstance(img["description"], str)
+    assert img["filename"] == "p.png"
+    assert isinstance(img["description"], str)
     # supported_attachment recognises images + docs, rejects video.
     assert chat_media.supported_attachment("image/png", "a.png")
     assert chat_media.supported_attachment("application/pdf", "a.pdf")
@@ -175,8 +181,10 @@ def test_docx_extracts_paragraphs_and_tables(tmp_path):
     p = tmp_path / "doc.docx"
     d.save(str(p))
     txt = chat_media.extract_text(str(p))
-    assert "intro para" in txt and "outro para" in txt      # paragraphs
-    assert "h1 | h2" in txt and "v1 | v2" in txt             # table rows
+    assert "intro para" in txt
+    assert "outro para" in txt
+    assert "h1 | h2" in txt
+    assert "v1 | v2" in txt
     assert txt.index("intro") < txt.index("h1 | h2") < txt.index("outro")  # order
 
 
@@ -238,8 +246,10 @@ def test_pdf_text_pages_and_tables_with_markers(monkeypatch):
     monkeypatch.setattr(doc_extract, "_pdf_tables",
                         lambda path, cap: {0: ["a | b", "c | d"]})
     txt = doc_extract.extract_text("x.pdf", "application/pdf")
-    assert "--- page 1 ---" in txt and "--- page 2 ---" in txt   # page markers
-    assert "page one text" in txt and "page two text" in txt     # per-page text
+    assert "--- page 1 ---" in txt
+    assert "--- page 2 ---" in txt
+    assert "page one text" in txt
+    assert "page two text" in txt
     assert "a | b" in txt                                        # table restored
     assert txt.index("page 1") < txt.index("a | b") < txt.index("page 2")
 
@@ -265,7 +275,8 @@ def test_pdf_image_captions_wired(monkeypatch):
     monkeypatch.setattr(chat_media, "describe_bytes",
                         lambda raw, role="doer", **kw: "a bar chart")
     out = chat_media._with_doc_images("r.pdf", "application/pdf", "body text", "chat")
-    assert "EMBEDDED IMAGES:" in out and "a bar chart" in out
+    assert "EMBEDDED IMAGES:" in out
+    assert "a bar chart" in out
 
 
 def test_pdf_scanned_detection():

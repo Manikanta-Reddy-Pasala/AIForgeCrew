@@ -24,7 +24,9 @@ def test_counts_per_turn_session_and_total():
     for _ in range(3):
         call_meter.record("doer", session_id=5)
     snap = call_meter.snapshot(5)
-    assert snap["turn"] == 3 and snap["session"] == 3 and snap["total"] == 3
+    assert snap["turn"] == 3
+    assert snap["session"] == 3
+    assert snap["total"] == 3
     assert snap["by_role"] == {"doer": 3}
 
     call_meter.turn_reset(5)                     # next turn
@@ -309,7 +311,9 @@ def test_chat_turn_publishes_the_request_count(tmp_path):
     usage = [e for e in evs if e["type"] == "usage"]
     assert usage, "no usage event emitted"
     last = usage[-1]
-    assert "llm_turn" in last and "llm_session" in last and "llm_per_min" in last
+    assert "llm_turn" in last
+    assert "llm_session" in last
+    assert "llm_per_min" in last
     # The pre-loop call is still part of THIS turn — the loop did not erase it.
     assert last["llm_turn"] >= 2
     assert call_meter.snapshot(sid)["turn"] == call_meter.snapshot(sid)["session"]
@@ -414,7 +418,9 @@ def test_series_buckets_by_minute_oldest_first():
         _time.monotonic = real
 
     assert len(series) == 60
-    assert series[-1] == 1 and series[-2] == 1 and series[-3] == 2
+    assert series[-1] == 1
+    assert series[-2] == 1
+    assert series[-3] == 2
     assert sum(series) == 4
     call_meter.reset_all()
 
@@ -621,12 +627,16 @@ def test_failures_are_counted_beside_the_rate_not_out_of_it(monkeypatch):
     snap = call_meter.snapshot(3)
     assert snap["per_minute"] == 3            # every attempt went out…
     assert snap["failed_per_minute"] == 2     # …two of them answered nothing
-    assert snap["turn_failed"] == 2 and snap["session_failed"] == 2
-    assert snap["failed"] == 2 and snap["total"] == 3
+    assert snap["turn_failed"] == 2
+    assert snap["session_failed"] == 2
+    assert snap["failed"] == 2
+    assert snap["total"] == 3
 
     g = call_meter.global_snapshot()
-    assert g["per_minute"] == 3 and g["failed_per_minute"] == 2
-    assert g["last_60m"] == 3 and g["failed_60m"] == 2
+    assert g["per_minute"] == 3
+    assert g["failed_per_minute"] == 2
+    assert g["last_60m"] == 3
+    assert g["failed_60m"] == 2
     assert g["by_fail_reason"] == {"http_500": 1, "timeout": 1}
     assert len(g["series_fail_60m"]) == len(g["series_60m"]) == 60
     assert sum(g["series_fail_60m"]) == 2
@@ -642,11 +652,14 @@ def test_a_failure_is_billed_to_the_minute_of_its_send(monkeypatch):
 
     g = call_meter.global_snapshot()
     # 10 minutes on, neither the send nor its failure is in the last minute…
-    assert g["per_minute"] == 0 and g["failed_per_minute"] == 0
+    assert g["per_minute"] == 0
+    assert g["failed_per_minute"] == 0
     # …and inside the hour they sit in the SAME minute slot.
-    assert g["last_60m"] == 1 and g["failed_60m"] == 1
+    assert g["last_60m"] == 1
+    assert g["failed_60m"] == 1
     i = [n for n, v in enumerate(g["series_60m"]) if v]
-    assert i and [n for n, v in enumerate(g["series_fail_60m"]) if v] == i
+    assert i
+    assert [n for n, v in enumerate(g["series_fail_60m"]) if v] == i
 
 
 def test_a_failure_older_than_the_history_counts_but_reports_no_window(monkeypatch):
@@ -663,8 +676,10 @@ def test_a_failure_older_than_the_history_counts_but_reports_no_window(monkeypat
 
     g = call_meter.global_snapshot()
     assert g["failed"] == 1                       # lifetime: it happened
-    assert g["failed_per_minute"] == 0 and g["failed_60m"] == 0
-    assert g["last_60m"] == 0 and sum(g["series_fail_60m"]) == 0
+    assert g["failed_per_minute"] == 0
+    assert g["failed_60m"] == 0
+    assert g["last_60m"] == 0
+    assert sum(g["series_fail_60m"]) == 0
 
 
 def test_the_window_cutoff_matches_the_window_the_meter_reports(monkeypatch):
@@ -752,7 +767,8 @@ def test_a_failure_with_no_token_is_not_counted():
     for junk in (None, "nope", (1, 2), object(), (1, 2, 3, 4), 0, ""):
         call_meter.record_failure(junk, "timeout")
     g = call_meter.global_snapshot(series=False)
-    assert g["failed"] == 0 and g["total"] == 0
+    assert g["failed"] == 0
+    assert g["total"] == 0
 
 
 def test_failures_never_exceed_requests_on_the_wire_path(monkeypatch):
@@ -763,7 +779,8 @@ def test_failures_never_exceed_requests_on_the_wire_path(monkeypatch):
     monkeypatch.setattr(_http, "_record_request", lambda *_a, **_k: None)
     _http._record_failure(None, RuntimeError("boom"))
     g = call_meter.global_snapshot(series=False)
-    assert g["failed"] == 0 and g["total"] == 0
+    assert g["failed"] == 0
+    assert g["total"] == 0
 
 
 def test_a_failure_can_never_outnumber_its_turn(monkeypatch):
@@ -775,7 +792,8 @@ def test_a_failure_can_never_outnumber_its_turn(monkeypatch):
     call_meter.turn_reset(31)                        # new message
     call_meter.record_failure(tok, "timeout")
     snap = call_meter.snapshot(31)
-    assert snap["turn"] == 0 and snap["turn_failed"] == 0
+    assert snap["turn"] == 0
+    assert snap["turn_failed"] == 0
     assert snap["session_failed"] == 1
 
 
@@ -816,7 +834,8 @@ def test_every_failed_http_attempt_is_counted_at_the_wire(monkeypatch):
         _http._post_with_retry(_endpoint(), b"{}", 1, role="doer",
                                source="test")
     g = call_meter.global_snapshot(series=False)
-    assert g["total"] == 3 and g["failed"] == 3
+    assert g["total"] == 3
+    assert g["failed"] == 3
     assert g["by_fail_reason"] == {"os_error": 3}
 
 
@@ -839,7 +858,8 @@ def test_a_successful_wire_call_is_not_counted_as_failed(monkeypatch):
                         lambda *a, **k: _Resp())
     _http._post(_endpoint(), b"{}", 1, role="doer")
     g = call_meter.global_snapshot(series=False)
-    assert g["total"] == 1 and g["failed"] == 0
+    assert g["total"] == 1
+    assert g["failed"] == 0
 
 
 def test_a_token_that_says_no_session_is_not_second_guessed(monkeypatch):
@@ -884,7 +904,8 @@ def test_an_empty_200_counts_as_a_failure_on_the_client_path(monkeypatch):
     out = c._try_post(ep, [{"role": "user", "content": "q"}],
                       temperature=0.0, max_tokens=256, top_p=None, extras=None,
                       timeout_s=30, role="chat", source="primary")
-    assert out is not None and out[0] == "the answer"
+    assert out is not None
+    assert out[0] == "the answer"
     g = call_meter.global_snapshot(series=False)
     assert g["total"] == 3          # three generations paid for…
     assert g["failed"] == 2         # …two of which answered nothing
@@ -915,7 +936,8 @@ def test_a_call_stopped_before_it_is_sent_counts_nothing(monkeypatch):
     finally:
         _http._CANCEL.reset(token)
     g = call_meter.global_snapshot(series=False)
-    assert g["total"] == 0 and g["failed"] == 0
+    assert g["total"] == 0
+    assert g["failed"] == 0
 
 
 # ───────────────────────────── tokens ────────────────────────────────────
@@ -935,11 +957,14 @@ def test_tokens_are_counted_per_turn_chat_and_machine(monkeypatch):
     monkeypatch.setattr(call_meter.time, "monotonic", lambda: 1001.0)
 
     snap = call_meter.snapshot(8)
-    assert snap["turn_tokens_out"] == 340 and snap["turn_tokens_in"] == 1200
+    assert snap["turn_tokens_out"] == 340
+    assert snap["turn_tokens_in"] == 1200
     assert snap["session_tokens_out"] == 340
     g = call_meter.global_snapshot(series=False)
-    assert g["tokens_out"] == 340 and g["tokens_in"] == 1200
-    assert g["tokens_out_60m"] == 340 and g["tokens_in_60m"] == 1200
+    assert g["tokens_out"] == 340
+    assert g["tokens_in"] == 1200
+    assert g["tokens_out_60m"] == 340
+    assert g["tokens_in_60m"] == 1200
     assert g["tokens_out_by_role"] == {"chat": 340}
 
 
@@ -968,7 +993,8 @@ def test_tokens_are_billed_to_the_minute_of_the_send(monkeypatch):
     # land on the send's minute or the settle's.
     sent_at = [n for n, v in enumerate(g["series_60m"]) if v]
     tokens_at = [n for n, v in enumerate(g["series_token_out_60m"]) if v]
-    assert sent_at and tokens_at == sent_at
+    assert sent_at
+    assert tokens_at == sent_at
 
 
 def test_a_response_with_no_usage_block_records_nothing():
@@ -986,7 +1012,8 @@ def test_usage_is_read_off_the_response_body():
     _record_usage("learner", {"usage": {"prompt_tokens": 90,
                                         "completion_tokens": 12}})
     g = call_meter.global_snapshot(series=False)
-    assert g["tokens_in"] == 90 and g["tokens_out"] == 12
+    assert g["tokens_in"] == 90
+    assert g["tokens_out"] == 12
 
 
 def test_record_tokens_never_raises_on_junk():
@@ -1025,4 +1052,5 @@ def test_the_native_chat_path_bills_tokens_to_the_turn(monkeypatch):
     finally:
         call_meter.reset_turn(cv)
     snap = call_meter.snapshot(sid)
-    assert snap["turn_tokens_out"] == 250 and snap["turn_tokens_in"] == 800
+    assert snap["turn_tokens_out"] == 250
+    assert snap["turn_tokens_in"] == 800

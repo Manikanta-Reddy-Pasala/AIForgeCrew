@@ -16,7 +16,9 @@ def test_all_prompts_are_nonempty_strings():
 def test_triage_demands_strict_json():
     assert "STRICT JSON" in pe.TRIAGE
     assert "complexity" in pe.TRIAGE
-    assert "trivial" in pe.TRIAGE and "moderate" in pe.TRIAGE and "hard" in pe.TRIAGE
+    assert "trivial" in pe.TRIAGE
+    assert "moderate" in pe.TRIAGE
+    assert "hard" in pe.TRIAGE
 
 
 def test_researcher_lists_read_only_tools():

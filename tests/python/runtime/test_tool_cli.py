@@ -17,7 +17,8 @@ def no_writes(monkeypatch):
 def test_unknown_tool_refused(no_writes, capsys):
     assert tool_cli.main(["definitely_not_a_tool"]) == 3
     out = json.loads(capsys.readouterr().out)
-    assert not out["ok"] and "unknown tool" in out["error"]
+    assert not out["ok"]
+    assert "unknown tool" in out["error"]
 
 
 def test_write_tool_refused_headless(no_writes, capsys):

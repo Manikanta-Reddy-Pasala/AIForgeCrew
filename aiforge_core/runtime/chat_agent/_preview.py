@@ -43,7 +43,7 @@ def _xhtml_to_md(xhtml: str) -> str:
     s = re.sub(r"<code[^>]*>(.*?)</code>", r"`\1`", s, flags=re.I | re.S)
     s = re.sub(r"<(strong|b)[^>]*>(.*?)</\1>", r"**\2**", s, flags=re.I | re.S)
     s = re.sub(r"<(em|i)[^>]*>(.*?)</\1>", r"*\2*", s, flags=re.I | re.S)
-    s = re.sub(r'''<a\b[^>]*href=["']([^"']+)["'][^>]*>(.*?)</a>''', r"[\2](\1)",
+    s = re.sub(r'''<a\b[^>]{0,400}href=["']([^"']{1,2000})["'][^>]{0,400}>(.*?)</a>''', r"[\2](\1)",
                s, flags=re.I | re.S)
     s = re.sub(r"<li[^>]*>(.*?)</li>", r"\n- \1", s, flags=re.I | re.S)
     s = re.sub(r"<br\s*/?>", "\n", s, flags=re.I)

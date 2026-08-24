@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { api } from '../api';
 import { Icon } from '../icons';
 import { MdLite } from '../mdlite';
+import { clickable } from '../a11y';
 
 type Kind = 'skills' | 'workflows' | 'rules';
 
@@ -182,7 +183,7 @@ export default function Library({ kind }: { kind: Kind }) {
             return (
               <div key={it.name + it.source} className="card" style={{ padding: '12px 16px' }}>
                 <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start', cursor: 'pointer' }}
-                  onClick={() => setExpanded(open ? null : it.name)}>
+                  {...clickable(() => setExpanded(open ? null : it.name))}>
                   <div style={{ minWidth: 0 }}>
                     <strong>{it.name}</strong>
                     {it.always && <span className="chip sm" style={{ marginLeft: 6 }}>always-on</span>}

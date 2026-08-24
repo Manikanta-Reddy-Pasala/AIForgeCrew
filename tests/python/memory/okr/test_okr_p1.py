@@ -8,7 +8,7 @@ import pytest
 from aiforge_core.memory import okf as okr
 
 
-@pytest.fixture()
+@pytest.fixture
 def cfg(monkeypatch):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", tempfile.mkdtemp())
 
@@ -19,7 +19,8 @@ def test_render_parse_roundtrip_and_edges():
                           "status": "in-progress", "metrics": {"cagr": "15%"}},
                          body="# Requirements\n- survivorship-bias-free")
     p = okr.parse_node(md)
-    assert p["type"] == "key_result" and p["id"] == "KR-01"
+    assert p["type"] == "key_result"
+    assert p["id"] == "KR-01"
     assert p["meta"]["parent_objective"] == "O-01"
     assert p["meta"]["metrics"]["cagr"] == "15%"
     assert "survivorship-bias-free" in p["body"]
@@ -46,7 +47,8 @@ def test_validate_requires_edges():
 def test_store_save_load_and_id_allocation(cfg):
     r1 = okr.save_node("objective", None, {"title": "Stock engine"}, "context")
     r2 = okr.save_node("objective", None, {"title": "Other"}, "ctx")
-    assert r1["id"] == "O-01" and r2["id"] == "O-02"       # auto-increment
+    assert r1["id"] == "O-01"
+    assert r2["id"] == "O-02"
     kr = okr.save_node("key_result", None, {"parent_objective": "O-01"}, "kr")
     assert kr["id"] == "KR-01"
     all_nodes = {n["id"]: n for n in okr.load_all()}
@@ -56,6 +58,7 @@ def test_store_save_load_and_id_allocation(cfg):
     # a session id is date-based + unique
     s1 = okr.save_node("session", None, {"linked_krs": ["KR-01"]}, "ran x")
     s2 = okr.save_node("session", None, {"linked_krs": ["KR-01"]}, "ran y")
-    assert s1["id"].endswith("-01") and s2["id"].endswith("-02")
+    assert s1["id"].endswith("-01")
+    assert s2["id"].endswith("-02")
     sess = okr.read_node("session", s1["id"])
     assert ("covers", s1["id"], "KR-01") in okr.edges_of(sess)

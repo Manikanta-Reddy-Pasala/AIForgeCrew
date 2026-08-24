@@ -94,7 +94,7 @@ def _probe(ep: Endpoint) -> HealthState:
         # 401/403/404 still proves the server is reachable.
         return HealthState(up=True, checked_at=time.time(),
                            reason=f"http_{exc.code}")
-    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+    except OSError as exc:
         return HealthState(up=False, checked_at=time.time(),
                            reason=f"{type(exc).__name__}: {exc}"[:160])
 

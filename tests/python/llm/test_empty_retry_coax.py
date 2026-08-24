@@ -36,7 +36,8 @@ def test_empty_then_coaxed_retry(monkeypatch):
         temperature=0.0, max_tokens=4096, top_p=None, extras=None,
         timeout_s=30, role="chat", source="primary")
 
-    assert out is not None and "System log tickets" in out[0]
+    assert out is not None
+    assert "System log tickets" in out[0]
     assert len(posts) == 2
     # attempt 1: verbatim, no coaxing
     assert posts[0]["messages"][-1]["content"] == "explain sys logs"
@@ -60,7 +61,8 @@ def test_fast_role_coaxes_no_think_from_first_attempt(monkeypatch):
     out = c._try_post(_ep(), [{"role": "user", "content": "distil"}],
                       temperature=0.0, max_tokens=800, top_p=None, extras=None,
                       timeout_s=30, role="learner", source="primary")
-    assert out is not None and len(posts) == 1
+    assert out is not None
+    assert len(posts) == 1
     assert posts[0]["messages"][-1]["content"].endswith("/no_think")
 
 
@@ -90,9 +92,12 @@ def test_append_no_think_is_idempotent():
 
 def test_is_fast_role_classification():
     from aiforge_core.config.model_registry import is_fast_role
-    assert is_fast_role("learner") and is_fast_role("enhancer")
-    assert is_fast_role("triage") and is_fast_role("ctx_memory")
-    assert not is_fast_role("planner") and not is_fast_role("doer")
+    assert is_fast_role("learner")
+    assert is_fast_role("enhancer")
+    assert is_fast_role("triage")
+    assert is_fast_role("ctx_memory")
+    assert not is_fast_role("planner")
+    assert not is_fast_role("doer")
 
 
 def test_empty_json_container_is_role_gated():
@@ -121,7 +126,8 @@ def test_learner_empty_list_returns_first_attempt(monkeypatch):
         _ep(), [{"role": "user", "content": "distil facts"}],
         temperature=0.0, max_tokens=800, top_p=None, extras=None,
         timeout_s=30, role="learner", source="primary")
-    assert out is not None and out[0] == "[]"
+    assert out is not None
+    assert out[0] == "[]"
     assert len(posts) == 1        # single post, no empty-retry loop
 
 

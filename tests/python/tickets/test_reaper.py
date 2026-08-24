@@ -50,7 +50,8 @@ def _backdate_claimed_at(ticket_id, seconds_ago):
 def test_reap_resets_stale_in_progress_and_bumps_reclaim(store):
     t = store.create(title="stale one", body="x")
     claimed = store.claim_next_any()
-    assert claimed is not None and claimed.status == "in_progress"
+    assert claimed is not None
+    assert claimed.status == "in_progress"
     _backdate_claimed_at(claimed.id, 7200)   # 2h old, lease default 3600s
 
     reset = store.reap_stale_in_progress(3600)
@@ -63,7 +64,8 @@ def test_reap_resets_stale_in_progress_and_bumps_reclaim(store):
 
     # re-claimable now (was NOT before the reaper)
     reclaimed = store.claim_next_any()
-    assert reclaimed is not None and reclaimed.id == claimed.id
+    assert reclaimed is not None
+    assert reclaimed.id == claimed.id
 
 
 def test_reap_leaves_fresh_in_progress_alone(store):

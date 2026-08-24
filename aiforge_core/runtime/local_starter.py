@@ -167,7 +167,7 @@ def try_start(api_base: str) -> bool:
     try:
         proc = subprocess.run(
             ["ssh", "-o", "BatchMode=yes",
-             "-o", f"ConnectTimeout=10",
+             "-o", "ConnectTimeout=10",
              host, remote],
             capture_output=True, text=True, timeout=ssh_timeout,
         )

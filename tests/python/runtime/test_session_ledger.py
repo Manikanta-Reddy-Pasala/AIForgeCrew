@@ -29,7 +29,8 @@ def test_ledger_dedupes_and_tracks_outcome(monkeypatch):
     assert keys == ["cmd:pytest", "write:a.py"]      # deduped, order preserved
     assert items[0]["outcome"] is True               # latest outcome wins
     blk = sl.ledger_block(1)
-    assert "ALREADY EXECUTED" in blk and "✅ ran `pytest`" in blk
+    assert "ALREADY EXECUTED" in blk
+    assert "✅ ran `pytest`" in blk
     assert "wrote `a.py`" in blk
 
 
@@ -77,9 +78,12 @@ def test_capture_working_workflow_verified(monkeypatch):
     assert r["ok"]
     assert seen["name"] == "session-ci-setup"       # LLM-refined name
     assert seen["triggers"] == ["ci"]
-    assert "`npm ci`" in seen["body"] and "`npm test`" in seen["body"]
+    assert "`npm ci`" in seen["body"]
+    assert "`npm test`" in seen["body"]
     assert "flaky" not in seen["body"]
-    assert caps and "repo:myrepo" in caps[0][1] and "workflow" in caps[0][1]
+    assert caps
+    assert "repo:myrepo" in caps[0][1]
+    assert "workflow" in caps[0][1]
 
 
 def test_capture_skips_when_llm_says_not_reusable(monkeypatch):
@@ -115,7 +119,8 @@ def test_capture_falls_back_when_no_model(monkeypatch):
     monkeypatch.setattr(md_store, "capture", lambda *a, **k: {})
     r = sl.capture_working_workflow(3, repo="r")
     assert r["ok"]
-    assert "make build" in seen["body"] and "unverified" in seen["body"]
+    assert "make build" in seen["body"]
+    assert "unverified" in seen["body"]
 
 
 def test_capture_skips_too_few_working(monkeypatch):

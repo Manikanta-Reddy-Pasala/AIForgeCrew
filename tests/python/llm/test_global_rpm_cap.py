@@ -269,7 +269,8 @@ def test_the_ceiling_delays_but_never_fails(monkeypatch):
                         lambda *a, **k: warned.append(a[0] if a else ""))
     waited = rl.acquire_global(max_wait_s=0.001)   # no room at all
     assert waited >= 0.0                           # returned, did not raise
-    assert warned and "rate_ceiling_overrun" in warned[0]
+    assert warned
+    assert "rate_ceiling_overrun" in warned[0]
 
 
 def test_a_short_deadline_caller_is_never_failed_by_the_ceiling(monkeypatch):

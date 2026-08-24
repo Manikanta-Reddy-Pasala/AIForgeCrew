@@ -98,7 +98,7 @@ def cancel(session_id: int) -> bool:
         for sig in (signal.SIGTERM, signal.SIGKILL):
             try:
                 os.killpg(pgid, sig)
-            except (ProcessLookupError, PermissionError, OSError):
+            except OSError:
                 pass
     return True
 

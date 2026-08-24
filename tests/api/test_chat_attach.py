@@ -82,10 +82,12 @@ def test_attach_live_run_replays_buffer_then_tails(app_client):
 
     r = client.get(f"/api/chat/sessions/{sid}/attach")
     evs = _events(r.text)
-    assert evs[0]["type"] == "attached" and evs[0]["running"] is True
+    assert evs[0]["type"] == "attached"
+    assert evs[0]["running"] is True
     assert "started_at" in evs[0]   # true run start → continuous reattach timer
     types = [e["type"] for e in evs]
-    assert "thought" in types and "tool" in types          # buffer replayed
+    assert "thought" in types
+    assert "tool" in types
     assert any(e["type"] == "message" and e["text"] == "all done"
                for e in evs)                                # live tail caught
     assert types[-1] == "done"
@@ -116,7 +118,8 @@ def test_simple_run_persists_from_background_thread(app_client, monkeypatch):
     from aiforge_core.runtime import chat_store
     msgs = chat_store.get_messages(sid)
     assistant = [m for m in msgs if m["role"] == "assistant"]
-    assert assistant and assistant[-1]["content"] == "final answer"
+    assert assistant
+    assert assistant[-1]["content"] == "final answer"
     # And once done, the run is no longer reported as running.
     from aiforge_core.runtime import chat_runs
     assert chat_runs.is_running(sid) is False

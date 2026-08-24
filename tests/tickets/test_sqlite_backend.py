@@ -82,7 +82,8 @@ def test_claim_is_atomic_no_double_claim(be):
     # claim must NOT re-hand the same ticket (audit fix: atomic claim).
     t = _mk(be)
     first = be.claim_oldest(excluded_projects=[])
-    assert first["id"] == t["id"] and first["status"] == "in_progress"
+    assert first["id"] == t["id"]
+    assert first["status"] == "in_progress"
     assert be.claim_oldest(excluded_projects=[]) is None
 
 
@@ -115,7 +116,8 @@ def test_events_all_kinds_oldest_first(be):
     t = _mk(be)
     e1 = be.insert_event(t["id"], "doer", "status_change", "in_progress", {})
     e2 = be.insert_event(t["id"], "doer", "comment", "hi", {"a": 1})
-    assert e1 > 0 and e2 > 0
+    assert e1 > 0
+    assert e2 > 0
     evs = be.fetch_events(t["id"], limit=10)
     # ALL kinds returned, oldest-first, with agent_role key
     assert [e["kind"] for e in evs] == ["status_change", "comment"]

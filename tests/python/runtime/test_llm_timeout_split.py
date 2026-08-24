@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def _capture_litellm(monkeypatch):
     import google.adk.models.lite_llm as ll
     seen: dict = {}

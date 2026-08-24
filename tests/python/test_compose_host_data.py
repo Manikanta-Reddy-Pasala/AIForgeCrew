@@ -27,7 +27,8 @@ def test_app_state_bind_mounts_host():
     # config + sqlite + memory briefs/captures + caches all land under a host
     # dir (AIFORGE_DATA_DIR) so they survive image rebuilds.
     vols = " ".join(_c()["services"]["aiforge"]["volumes"])
-    assert "AIFORGE_DATA_DIR" in vols and ":/data/aiforge" in vols
+    assert "AIFORGE_DATA_DIR" in vols
+    assert ":/data/aiforge" in vols
     assert not any(v.startswith("aiforge_") for v in
                    _c()["services"]["aiforge"]["volumes"])
 
@@ -36,6 +37,7 @@ def test_service_mounts_workspace_and_repo_root():
     svc = _c()["services"]["aiforge"]
     vols = " ".join(svc["volumes"])
     # the agent's workspace is the mounted host filesystem at /host
-    assert ":/host" in vols and "AIFORGE_HOST_ROOT" in vols
+    assert ":/host" in vols
+    assert "AIFORGE_HOST_ROOT" in vols
     # AIFORGE_REPO_ROOT points at that mount
     assert svc["environment"]["AIFORGE_REPO_ROOT"] == "${AIFORGE_REPO_ROOT:-/host}"

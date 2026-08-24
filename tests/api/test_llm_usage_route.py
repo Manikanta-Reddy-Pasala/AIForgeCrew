@@ -34,7 +34,9 @@ def test_llm_usage_reports_this_chats_requests(app_client):
     # machine-wide, so a background probe on session-create may already have
     # bumped it — that is the point of keeping the two numbers apart.
     assert fresh["session_id"] == sid
-    assert fresh["turn"] == 0 and fresh["session"] == 0 and fresh["by_role"] == {}
+    assert fresh["turn"] == 0
+    assert fresh["session"] == 0
+    assert fresh["by_role"] == {}
     base_total = fresh["total"]
 
     call_meter.turn_reset(sid)
@@ -42,7 +44,8 @@ def test_llm_usage_reports_this_chats_requests(app_client):
     call_meter.record("doer", session_id=sid)
     call_meter.record("learner")                     # another chat's / a fold's
     body = app_client.get(f"/api/chat/sessions/{sid}/llm-usage").json()
-    assert body["turn"] == 2 and body["session"] == 2
+    assert body["turn"] == 2
+    assert body["session"] == 2
     # `total` is machine-wide and other threads may add to it between the two
     # requests — assert it MOVED by at least our three, not that it is exact.
     assert body["total"] >= base_total + 3
@@ -54,7 +57,9 @@ def test_unknown_session_reports_zeros_not_a_leak(app_client):
     from aiforge_core.llm import call_meter
     call_meter.reset_all()
     body = app_client.get("/api/chat/sessions/987654321/llm-usage").json()
-    assert body["turn"] == 0 and body["session"] == 0 and body["by_role"] == {}
+    assert body["turn"] == 0
+    assert body["session"] == 0
+    assert body["by_role"] == {}
 
 
 def test_global_llm_usage_route_reports_every_window(app_client):
@@ -69,7 +74,8 @@ def test_global_llm_usage_route_reports_every_window(app_client):
     assert r.status_code == 200
     body = r.json()
     assert body["per_minute"] >= 4
-    assert body["last_15m"] >= 4 and body["last_60m"] >= 4
+    assert body["last_15m"] >= 4
+    assert body["last_60m"] >= 4
     assert body["by_role"]["learner"] >= 3
     assert body["by_provider"]["openai_compatible"] >= 4
     assert len(body["series_60m"]) == 60

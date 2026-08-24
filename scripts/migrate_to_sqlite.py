@@ -3,7 +3,7 @@ switch. Reads via the PG backends, writes via the SQLite backends — both
 instantiated directly so one process spans both. Run with AIFORGE_PG_URL set to
 the source Postgres; the SQLite destinations are the app's default --lite stores.
 
-    AIFORGE_PG_URL=postgresql://aiforge:aiforgepass@127.0.0.1:5432/aiforge \\
+    AIFORGE_PG_URL=postgresql://USER:PASSWORD@127.0.0.1:5432/aiforge \\
         ./.venv/bin/python scripts/migrate_to_sqlite.py
 
 Idempotent-ish: tickets skip a duplicate identifier; chat appends (run once).

@@ -18,7 +18,7 @@ import types
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def no_llm(monkeypatch):
     monkeypatch.setenv("AIFORGE_OKR_SCOPE_LLM", "0")
     return None
@@ -67,7 +67,8 @@ def test_llm_global_verdict_is_refused_when_it_names_an_artifact(monkeypatch):
                         lambda *a, **k: _R())
     from aiforge_core.memory.md_store import classify_scope
     d = classify_scope("calc.py must handle division by zero", hint_repo="demo")
-    assert d["scope"] == "project" and d["repo"] == "demo"
+    assert d["scope"] == "project"
+    assert d["repo"] == "demo"
 
 
 def test_llm_promotes_repo_hint_to_global(monkeypatch):
@@ -114,7 +115,7 @@ def test_llm_assigns_project_from_hint_repo(monkeypatch):
 
 # ── capture() wiring: promote a repo-hinted global fact to the shared brief ───
 
-@pytest.fixture()
+@pytest.fixture
 def mem(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "mem"))

@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from typing import Iterator
 
 from ._helpers import _LOCK, _media_out, _message_out, _session_out
+from aiforge_core.config.paths import config_dir
 
 _SQLITE_DDL = """
 CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -51,7 +52,7 @@ class _SqliteChatStore:
         return os.environ.get(
             "AIFORGE_CHAT_DB_PATH",
             os.path.join(
-                os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")),
+                str(config_dir()),
                 "chat.db",
             ),
         )

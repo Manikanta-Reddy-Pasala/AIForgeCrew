@@ -28,6 +28,7 @@ from pathlib import Path
 
 from aiforge_core.runtime import skills as _sk
 from aiforge_core.runtime.skills import Selection, Skill  # reuse the same types
+from aiforge_core.config.paths import config_dir
 
 _REPO_SUBDIRS = (".aiforge/workflows", ".claude/workflows")
 _FILENAME = "WORKFLOW.md"
@@ -48,7 +49,7 @@ def _global_dir() -> Path:
     # Same config dir as the rest of the app (AIFORGE_CONFIG_DIR) — a raw
     # Path.home() diverges from the operator's configured/mounted dir on
     # docker/hybrid, so workflows built via chat landed outside it.
-    cfg = os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge"))
+    cfg = str(config_dir())
     return Path(cfg) / "workflows"
 
 

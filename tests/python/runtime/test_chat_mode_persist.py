@@ -9,7 +9,7 @@ import tempfile
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def store(monkeypatch):
     d = tempfile.mkdtemp()
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", d)

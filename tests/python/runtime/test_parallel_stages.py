@@ -30,7 +30,8 @@ def test_merge_context_concats_present_briefs() -> None:
     }
     _run(ps.merge_context(_FakeCtx(state)))
     merged = state["context_brief_md"]
-    assert "## Researcher" in merged and "found foo.py" in merged
+    assert "## Researcher" in merged
+    assert "found foo.py" in merged
     assert "## Repo map" in merged
     # memory is injected directly via {memory_brief_md?} (trivial path
     # skips this merge node) — never folded here, or it would double.

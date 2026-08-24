@@ -10,7 +10,7 @@ import tempfile
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def base(monkeypatch):
     root = tempfile.mkdtemp()
     monkeypatch.setenv("AIFORGE_WORKTREE_ROOT", root)

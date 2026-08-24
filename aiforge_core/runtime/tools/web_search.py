@@ -156,7 +156,12 @@ def _ddg_real_url(href: str) -> str:
 
 
 _RESULT_A = re.compile(
-    r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', re.DOTALL)
+        # BOUNDED repetition, not possessive: the leading `[^>]` run must still
+    # backtrack for the attribute after it to match, so `++` would break the
+    # match outright. A bound caps the backtracking instead — and no real tag
+    # attribute list approaches it. Input here is REMOTE HTML.
+    r'<a[^>]{1,400}class="result__a"[^>]{1,400}href="([^"]{1,2000})"[^>]{0,400}>(.*?)</a>',
+    re.DOTALL)
 _SNIPPET = re.compile(
     r'class="result__snippet"[^>]*>(.*?)</a>', re.DOTALL)
 # DDG lite (fallback): result links carry class="result-link".
@@ -324,8 +329,7 @@ def _fetch_readable(url: str, max_chars: int) -> dict:
     _verified: list = []
     try:
         raw = _get(url, verified=_verified)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
-            OSError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         return {"ok": False, "error": str(exc)}
     # Title, then body text with script/style/noscript removed.
     mt = re.search(r"<title[^>]*>(.*?)</title>", raw, re.DOTALL | re.IGNORECASE)
@@ -334,7 +338,10 @@ def _fetch_readable(url: str, max_chars: int) -> dict:
                      flags=re.DOTALL | re.IGNORECASE)
     text = _strip_tags(cleaned)
     text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n\s*\n\s*\n+", "\n\n", text).strip()
+    # `\s` matches `\n`, so `\n\s*\n\s*\n+` can split one run of blank lines
+    # many ways — quadratic on a long run. One unambiguous form: a newline
+    # followed by two-or-more blank-ish lines.
+    text = re.sub(r"\n(?:[ \t]*\n){2,}", "\n\n", text).strip()
     truncated = len(text) > max_chars
     out = {"ok": True, "url": url, "title": title,
            "text": text[:max_chars], "truncated": truncated}

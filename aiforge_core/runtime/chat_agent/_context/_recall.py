@@ -88,6 +88,35 @@ _ASK_LEAD_RE = re.compile(
     re.IGNORECASE)
 
 
+_BULLET_RE = re.compile(r"^(?:[-*•]|\d+[.)])\s+")
+
+
+def _bulleted_asks(t: str) -> list:
+    """Bullets or numbered lines, stripped of their marker. Fewer than two is
+    not a list — fall through to sentence segmentation."""
+    lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
+    bullets = [_BULLET_RE.sub("", ln) for ln in lines if _BULLET_RE.match(ln)]
+    return bullets if len(bullets) >= 2 else []
+
+
+def _sentence_asks(t: str) -> list:
+    """Sentence segments that look like a question or an imperative, also
+    splitting on "also" / "and then" style connectors."""
+    segs: list[str] = []
+    for chunk in re.split(r"(?<=[?.!;])\s+|\n+", t):
+        segs.extend(re.split(
+            r"\s+(?=(?:also|and then|and also|plus|additionally)\b)",
+            chunk, flags=re.IGNORECASE))
+    out: list[str] = []
+    for seg in segs:
+        seg = seg.strip(" .")
+        if len(seg) < 12:
+            continue
+        if seg.endswith("?") or _ASK_LEAD_RE.match(seg):
+            out.append(seg)
+    return out
+
+
 def _split_asks(text: str, cap: int = 8) -> list[str]:
     """Break the user's CURRENT message into its distinct asks so a
     multi-part message ("fix X. also why does Y happen? and add Z") gets a
@@ -99,27 +128,57 @@ def _split_asks(text: str, cap: int = 8) -> list[str]:
     t = (text or "").strip()
     if len(t) < 25:
         return []
-    parts: list[str] = []
-    lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
-    bullets = [re.sub(r"^(?:[-*•]|\d+[.)])\s+", "", ln) for ln in lines
-               if re.match(r"^(?:[-*•]|\d+[.)])\s+", ln)]
-    if len(bullets) >= 2:
-        parts = bullets
-    else:
-        # sentence segmentation + " also "/" and then " connectors
-        segs: list[str] = []
-        for chunk in re.split(r"(?<=[?.!;])\s+|\n+", t):
-            segs.extend(re.split(
-                r"\s+(?=(?:also|and then|and also|plus|additionally)\b)",
-                chunk, flags=re.IGNORECASE))
-        for s in segs:
-            s = s.strip(" .")
-            if len(s) < 12:
-                continue
-            if s.endswith("?") or _ASK_LEAD_RE.match(s):
-                parts.append(s)
+    # An explicit list beats any heuristic: if the user bulleted or numbered
+    # their asks, those ARE the asks.
+    parts = _bulleted_asks(t) or _sentence_asks(t)
     parts = [p[:160] for p in parts if p.strip()][:cap]
     return parts if len(parts) >= 2 else []
+
+
+_RECALL_PREAMBLE = ("RELEVANT MEMORY recalled for this request (prior decisions / "
+                    "gotchas / learnings from earlier sessions — consult before "
+                    "re-deriving):\n")
+
+
+def _recall_hits(cwd: str, q: str, limit: int, session_id) -> list:
+    """Ranked memory hits for this query. Best-effort — never breaks a turn.
+
+    F2/M3: recall under the SAME repo the chat WRITE path files facts under
+    (git-toplevel basename), else sqlite_memory.recall filters them out
+    (WHERE repo=?). M4: exclude the current live session so this turn's own
+    messages don't come back as "prior chat".
+    """
+    try:
+        from aiforge_core.memory import unified_query as _uq
+        res = _uq.query(q, limit=limit, repo=_chat_repo_key(cwd),
+                        exclude_session=session_id,
+                        boost_tags=_tool_tags(q))
+    except Exception:  # noqa: BLE001
+        return []
+    return (res.get("hits", []) or []) if isinstance(res, dict) else []
+
+
+def _summarised(q: str, hits: list) -> str:
+    """One compact briefing over the hits, or "" when the fold is unavailable."""
+    try:
+        from aiforge_core.memory import recall_summary
+        return recall_summary.summarize_hits(q, hits) or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _ranked_lines(hits: list, limit: int) -> str:
+    """The raw ranked list — the fallback when there is no briefing."""
+    lines: list[str] = []
+    for h in hits:
+        txt = (h.get("text") or "").strip().replace("\n", " ")
+        if not txt:
+            continue
+        src = h.get("source") or ""
+        lines.append(f"- {txt[:240]}" + (f"  ({src})" if src else ""))
+        if len(lines) >= limit:
+            break
+    return "\n".join(lines)
 
 
 def _memory_recall(cwd: str, query: str, limit: int = 6,
@@ -131,47 +190,13 @@ def _memory_recall(cwd: str, query: str, limit: int = 6,
     q = (query or "").strip()
     if not q:
         return ""
-    hits: list[dict] = []
-    try:
-        from aiforge_core.memory import unified_query as _uq
-        # F2/M3: recall under the SAME repo the chat WRITE path files facts
-        # under (git-toplevel basename), else sqlite_memory.recall filters
-        # them out (WHERE repo=?). M4: exclude the current live session so
-        # this turn's own messages don't return as "prior chat".
-        _repo = _chat_repo_key(cwd)
-        res = _uq.query(q, limit=limit, repo=_repo,
-                        exclude_session=session_id,
-                        boost_tags=_tool_tags(q))
-        if isinstance(res, dict):
-            hits = res.get("hits", []) or []
-    except Exception:  # noqa: BLE001
-        hits = []
+    hits = _recall_hits(cwd, q, limit, session_id)
     if not hits:
         return ""
-    _preamble = ("RELEVANT MEMORY recalled for this request (prior decisions / "
-                 "gotchas / learnings from earlier sessions — consult before "
-                 "re-deriving):\n")
     # Map→summarize: many scattered hits → ONE compact briefing (LLM). Empty
     # (disabled / too few / model down) falls back to the raw ranked list.
-    try:
-        from aiforge_core.memory import recall_summary
-        brief = recall_summary.summarize_hits(q, hits)
-    except Exception:  # noqa: BLE001
-        brief = ""
-    if brief:
-        return _preamble + brief
-    lines: list[str] = []
-    for h in hits:
-        txt = (h.get("text") or "").strip().replace("\n", " ")
-        if not txt:
-            continue
-        src = h.get("source") or ""
-        lines.append(f"- {txt[:240]}" + (f"  ({src})" if src else ""))
-        if len(lines) >= limit:
-            break
-    if not lines:
-        return ""
-    return _preamble + "\n".join(lines)
+    body = _summarised(q, hits) or _ranked_lines(hits, limit)
+    return (_RECALL_PREAMBLE + body) if body else ""
 
 
 def _chat_session_recall(query: str, session_id: "int | None",
@@ -210,6 +235,44 @@ def _chat_session_recall(query: str, session_id: "int | None",
             "you use them):\n" + "\n".join(lines))
 
 
+def _stored_summary(repo: str) -> str:
+    """The saved PROJECT SUMMARY for this repo, or "" when none exists yet."""
+    try:
+        from aiforge_core.memory import md_store
+        p = _cached_find_by_source(f"repo:{repo}")
+        if p is None:
+            return ""
+        body = md_store._parse(p).get("body", "")
+        if body.strip():
+            return (f"PROJECT SUMMARY — {repo} (what this repo is + what "
+                    f"prior sessions did):\n{body[:1800]}")
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
+def _detected_stacks(base: str) -> list:
+    try:
+        from aiforge_core.runtime.tools.project_runner import detect
+        return detect(base).get("stacks", [])
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _readme_excerpt(base: str, limit: int = 700) -> str:
+    """First README we find, truncated. Case variants because repos disagree."""
+    for rn in ("README.md", "Readme.md", "readme.md", "README.rst", "README.txt"):
+        rp = os.path.join(base, rn)
+        if not os.path.isfile(rp):
+            continue
+        try:
+            with open(rp, encoding="utf-8", errors="ignore") as fh:
+                return fh.read()[:limit]
+        except Exception:  # noqa: BLE001
+            return ""
+    return ""
+
+
 def _repo_context(cwd: str) -> str:
     """The persistent PROJECT SUMMARY for this repo — what it is + what's
     been done — injected every turn so follow-ups have continuity. Read
@@ -218,32 +281,12 @@ def _repo_context(cwd: str) -> str:
     something. The summary is updated at the end of each session run."""
     base = str(_workspace_root() or cwd)
     repo = _repo_name(cwd)
-    try:
-        from aiforge_core.memory import md_store
-        p = _cached_find_by_source(f"repo:{repo}")
-        if p is not None:
-            body = md_store._parse(p).get("body", "")
-            if body.strip():
-                return (f"PROJECT SUMMARY — {repo} (what this repo is + what "
-                        f"prior sessions did):\n{body[:1800]}")
-    except Exception:  # noqa: BLE001
-        pass
+    stored = _stored_summary(repo)
+    if stored:
+        return stored
     # Starter (first time): stack + README excerpt.
-    stacks: list[str] = []
-    try:
-        from aiforge_core.runtime.tools.project_runner import detect
-        stacks = detect(base).get("stacks", [])
-    except Exception:  # noqa: BLE001
-        pass
-    readme = ""
-    for rn in ("README.md", "Readme.md", "readme.md", "README.rst", "README.txt"):
-        rp = os.path.join(base, rn)
-        if os.path.isfile(rp):
-            try:
-                readme = open(rp, encoding="utf-8", errors="ignore").read()[:700]
-            except Exception:  # noqa: BLE001
-                pass
-            break
+    stacks = _detected_stacks(base)
+    readme = _readme_excerpt(base)
     out = f"PROJECT SUMMARY — {repo} (auto-detected; refine as you learn):\n"
     out += f"- Stack(s): {', '.join(stacks) or 'unknown'}\n"
     if readme:

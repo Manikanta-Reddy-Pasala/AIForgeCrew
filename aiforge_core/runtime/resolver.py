@@ -61,8 +61,7 @@ def list_open_bot_issues(
     try:
         path = f"/repos/{repo}/issues?state=open&labels={label}&per_page=20"
         data = _gh_get(path)
-    except (urllib.error.URLError, urllib.error.HTTPError,
-            TimeoutError, OSError) as exc:
+    except OSError as exc:
         log.warning("resolver.list_failed repo=%s label=%s: %s",
                     repo, label, exc)
         return []

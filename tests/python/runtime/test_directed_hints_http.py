@@ -15,26 +15,30 @@ def test_308_trailing_slash_hint():
 
 def test_405_method_hint():
     hints = " ".join(_directed_hints("E assert 405 == 200  405 METHOD NOT ALLOWED")).lower()
-    assert "method" in hints and "methods=" in hints
+    assert "method" in hints
+    assert "methods=" in hints
 
 
 def test_shared_state_reset_hint():
     out = ("10 errors in 0.6s\n"
            "ERROR test_tasks.py - ValueError: Username already exists")
     hints = " ".join(_directed_hints(out)).lower()
-    assert "autouse" in hints and "reset" in hints
+    assert "autouse" in hints
+    assert "reset" in hints
 
 
 def test_keyerror_missing_key_hint():
     hints = " ".join(_directed_hints("E  KeyError: 'deleted'"))
-    assert "deleted" in hints and "MISSING" in hints.upper()
+    assert "deleted" in hints
+    assert "MISSING" in hints.upper()
 
 
 def test_404_id_type_mismatch_hint():
     hints = " ".join(_directed_hints(
         "FAILED test_tasks.py::test_get_task - assert 404 == 200")).lower()
     assert "id-type mismatch" in hints or "id type" in hints
-    assert "converter" in hints and "consistent" in hints
+    assert "converter" in hints
+    assert "consistent" in hints
 
 
 def test_import_hint_still_works():

@@ -72,4 +72,6 @@ def test_happy_path_shapes_text(uq, monkeypatch):
            "updated": "2026-07-01 10:05"}
     monkeypatch.setattr(psycopg, "connect", lambda *a, **k: _FakeConn(row))
     out = uq._ticket_local("ONE-100")
-    assert out and "ONE-100" in out["text"] and "hi" in out["text"]
+    assert out
+    assert "ONE-100" in out["text"]
+    assert "hi" in out["text"]

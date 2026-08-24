@@ -89,7 +89,8 @@ def test_web_fetch_refuses_a_private_target(monkeypatch):
     monkeypatch.setattr(ws.urllib.request, "urlopen",
                         lambda *a, **k: called.append(1) or _Resp())
     out = ws.web_fetch({"url": "http://169.254.169.254/latest/meta-data/"})
-    assert out["ok"] is False and "ssrf" in out["error"]
+    assert out["ok"] is False
+    assert "ssrf" in out["error"]
     assert not called
 
 
@@ -168,7 +169,8 @@ def test_web_fetch_reports_an_unverified_page(monkeypatch):
     monkeypatch.delenv("AIFORGE_WEB_SEARCH_DISABLE", raising=False)
     monkeypatch.setattr(ws.urllib.request, "urlopen", _open)
     out = ws.web_fetch({"url": "https://inspected.example.com"})
-    assert out["ok"] and out["tls_verified"] is False
+    assert out["ok"]
+    assert out["tls_verified"] is False
 
 
 def test_a_verified_page_says_nothing_about_tls(monkeypatch):
@@ -179,7 +181,8 @@ def test_a_verified_page_says_nothing_about_tls(monkeypatch):
     monkeypatch.setattr(ws.urllib.request,
                         "urlopen", lambda *a, **k: _Resp())
     out = ws.web_fetch({"url": "https://example.com"})
-    assert out["ok"] and "tls_verified" not in out
+    assert out["ok"]
+    assert "tls_verified" not in out
 
 
 def test_plain_http_is_still_allowed(monkeypatch):
@@ -189,7 +192,8 @@ def test_plain_http_is_still_allowed(monkeypatch):
     monkeypatch.delenv("AIFORGE_WEB_SEARCH_DISABLE", raising=False)
     monkeypatch.setattr(ws.urllib.request, "urlopen", lambda *a, **k: _Resp())
     out = ws.web_fetch({"url": "http://intranet.local/page"})
-    assert out["ok"] and "tls_verified" not in out
+    assert out["ok"]
+    assert "tls_verified" not in out
 
 
 # ── the doer / researcher path, which has its own fetch ──────────────────
@@ -226,7 +230,8 @@ def test_the_doer_fetch_falls_back_the_same_way(monkeypatch):
     monkeypatch.setattr(_web, "guard_public_url", lambda _u: None, raising=False)
     monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
     out = _web.fetch_url("https://inspected.example.com")
-    assert out["ok"] and out["tls_verified"] is False
+    assert out["ok"]
+    assert out["tls_verified"] is False
     assert calls[1].verify_mode == ssl.CERT_NONE
 
 
@@ -242,7 +247,8 @@ def test_the_doer_fetch_does_not_retry_a_404(monkeypatch):
     monkeypatch.setattr(_web.urllib.request, "urlopen", _open)
     monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
     out = _web.fetch_url("https://example.com/missing")
-    assert out["ok"] is False and out["status"] == 404
+    assert out["ok"] is False
+    assert out["status"] == 404
     assert len(calls) == 1
 
 
@@ -322,7 +328,8 @@ def test_a_configured_ca_bundle_is_used_on_the_doer_path(monkeypatch, tmp_path):
     monkeypatch.setattr(_web, "guard_public_url", lambda _u: None, raising=False)
     monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
     _web.fetch_url("https://example.com")
-    assert seen and seen[0] is not None, "the CA bundle was ignored"
+    assert seen, "the CA bundle was ignored"
+    assert seen[0] is not None, "the CA bundle was ignored"
     assert seen[0].verify_mode == ssl.CERT_REQUIRED
 
 
@@ -341,7 +348,8 @@ def test_the_crawl_dossier_records_an_unverified_page(monkeypatch, tmp_path):
                                         "text": "body text here",
                                         "tls_verified": False})
     out = web_ingest.web_crawl({"url": "https://inspected.example.com/docs"})
-    assert out["ok"] and out["tls_verified"] is False
+    assert out["ok"]
+    assert out["tls_verified"] is False
     import json as _json
     import os as _os
     meta = _json.loads(open(_os.path.join(
