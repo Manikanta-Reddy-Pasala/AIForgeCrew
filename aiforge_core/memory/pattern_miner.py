@@ -86,6 +86,24 @@ def _recent_doer_facts(days_back: int) -> list[dict]:
         ]
 
 
+def _best_overlap(files: set, seen_keys: "list[set]", threshold: float) -> int:
+    """Index of the existing group whose file set overlaps ``files`` most, or
+    -1 when nothing clears ``threshold``.
+
+    Jaccard = intersection / union, so a big group cannot swallow a small one
+    just by being big.
+    """
+    best_idx, best_score = -1, 0.0
+    for i, key_files in enumerate(seen_keys):
+        inter = len(files & key_files)
+        if inter == 0:
+            continue
+        jac = inter / len(files | key_files)
+        if jac > best_score and jac >= threshold:
+            best_score, best_idx = jac, i
+    return best_idx
+
+
 def _group_by_file_overlap(
     facts: list[dict], *, jaccard_threshold: float = 0.5,
 ) -> dict[str, list[dict]]:
@@ -98,17 +116,7 @@ def _group_by_file_overlap(
         stop = (fact.get("metadata", {}).get("stop_reason") or "")
         if not files:
             continue
-        # Find best-matching existing key by Jaccard.
-        best_idx = -1
-        best_score = 0.0
-        for i, key_files in enumerate(seen_keys):
-            inter = len(files & key_files)
-            if inter == 0:
-                continue
-            jac = inter / len(files | key_files)
-            if jac > best_score and jac >= jaccard_threshold:
-                best_score = jac
-                best_idx = i
+        best_idx = _best_overlap(files, seen_keys, jaccard_threshold)
         if best_idx == -1:
             seen_keys.append(set(files))
             best_idx = len(seen_keys) - 1

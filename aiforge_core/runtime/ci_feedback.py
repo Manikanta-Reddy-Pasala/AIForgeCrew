@@ -35,6 +35,36 @@ def _parse_pr_url(url: str) -> tuple[str, str, str] | None:
     return m.group(1), m.group(2), m.group(3)
 
 
+def _gh_json(args: list, *, timeout: int, fail: str, bad_json: str):
+    """(data, error). One place for the run / returncode / parse triple that
+    was written out three times, each with its own error label."""
+    try:
+        proc = subprocess.run(["gh", "api", *args], capture_output=True,
+                              text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None, {"ok": False, "error": "timeout"}
+    if proc.returncode != 0:
+        return None, {"ok": False, "error": fail, "stderr": proc.stderr[-400:]}
+    try:
+        return json.loads(proc.stdout), None
+    except json.JSONDecodeError:
+        return None, {"ok": False, "error": bad_json}
+
+
+def _aggregate(runs: list) -> "tuple[str, bool]":
+    """(status, completed) across the check runs — red beats green, and
+    anything still running beats both."""
+    statuses = [r.get("conclusion") for r in runs]
+    has_pending = any(r.get("status") != "completed" for r in runs)
+    if has_pending:
+        return "pending", False
+    if any(s in {"failure", "timed_out", "cancelled"} for s in statuses):
+        return "red", True
+    if statuses and all(s in {"success", "neutral", "skipped"} for s in statuses):
+        return "green", True
+    return "unknown", True
+
+
 def read_pr_checks(pr_url: str) -> dict[str, Any]:
     """Return the PR's current check-run summary.
 
@@ -51,56 +81,26 @@ def read_pr_checks(pr_url: str) -> dict[str, Any]:
     owner, repo, num = parsed
     if shutil.which("gh") is None:
         return {"ok": False, "error": "missing_gh"}
-    try:
-        proc = subprocess.run(
-            [
-                "gh", "api",
-                f"repos/{owner}/{repo}/commits/pull/{num}/check-runs"
-                if False else
-                f"repos/{owner}/{repo}/pulls/{num}",
-            ],
-            capture_output=True, text=True, timeout=20,
-        )
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "timeout"}
-    if proc.returncode != 0:
-        return {"ok": False, "error": "gh_failed",
-                "stderr": proc.stderr[-400:]}
-    try:
-        pr = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        return {"ok": False, "error": "bad_json"}
-    head_sha = pr.get("head", {}).get("sha")
+
+    pr, err = _gh_json([f"repos/{owner}/{repo}/pulls/{num}"],
+                       timeout=20, fail="gh_failed", bad_json="bad_json")
+    if err:
+        return err
+    head_sha = (pr.get("head") or {}).get("sha")
     if not head_sha:
         return {"ok": False, "error": "no_head_sha"}
-    proc2 = subprocess.run(
-        ["gh", "api",
-         f"repos/{owner}/{repo}/commits/{head_sha}/check-runs",
-         "--paginate"],
-        capture_output=True, text=True, timeout=30,
-    )
-    if proc2.returncode != 0:
-        return {"ok": False, "error": "gh_checks_failed",
-                "stderr": proc2.stderr[-400:]}
-    try:
-        body = json.loads(proc2.stdout)
-    except json.JSONDecodeError:
-        return {"ok": False, "error": "bad_checks_json"}
+
+    body, err = _gh_json(
+        [f"repos/{owner}/{repo}/commits/{head_sha}/check-runs", "--paginate"],
+        timeout=30, fail="gh_checks_failed", bad_json="bad_checks_json")
+    if err:
+        return err
     runs = body.get("check_runs") or []
-    statuses = [r.get("conclusion") for r in runs]
-    has_pending = any(r.get("status") not in {"completed"} for r in runs)
-    if has_pending:
-        agg = "pending"
-    elif any(s in {"failure", "timed_out", "cancelled"} for s in statuses):
-        agg = "red"
-    elif statuses and all(s in {"success", "neutral", "skipped"} for s in statuses):
-        agg = "green"
-    else:
-        agg = "unknown"
+    agg, completed = _aggregate(runs)
     return {
         "ok": True,
         "status": agg,
-        "completed": not has_pending,
+        "completed": completed,
         "raw_count": len(runs),
         "checks": [
             {

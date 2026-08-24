@@ -128,6 +128,22 @@ def last_stopped_turn(rows: list) -> "tuple[dict, str] | None":
     return last_assistant, prompt
 
 
+def _first_path(d) -> str:
+    """The first workspace path in ``d`` under any of the known path keys.
+
+    The tools disagree about what they call it (path / file / filename / …),
+    so the KEY ORDER is the precedence — and looking it up was written out
+    twice, once for the call args and once for each nested edit.
+    """
+    if not isinstance(d, dict):
+        return ""
+    for k in _PATH_KEYS:
+        v = d.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
 def _paths(name: str, args: dict, result) -> list:
     """Every workspace path this tool call names.
 
@@ -135,22 +151,16 @@ def _paths(name: str, args: dict, result) -> list:
     runner's ``wrote files`` step, whose paths live in the RESULT.
     """
     out: list = []
-    for k in _PATH_KEYS:
-        v = args.get(k)
-        if isinstance(v, str) and v.strip():
-            out.append(v.strip())
-            break
+    first = _first_path(args)
+    if first:
+        out.append(first)
     for edit in (args.get("edits") or []) if isinstance(args, dict) else []:
-        if isinstance(edit, dict):
-            for k in _PATH_KEYS:
-                v = edit.get(k)
-                if isinstance(v, str) and v.strip():
-                    out.append(v.strip())
-                    break
+        nested = _first_path(edit)
+        if nested:
+            out.append(nested)
     if isinstance(result, dict):
-        for v in (result.get("files") or []):
-            if isinstance(v, str) and v.strip():
-                out.append(v.strip())
+        out.extend(v.strip() for v in (result.get("files") or [])
+                   if isinstance(v, str) and v.strip())
     return out
 
 
@@ -163,75 +173,103 @@ def _mutates(name: str, args: dict) -> bool:
     return True
 
 
+def _empty_collection() -> dict:
+    return {"landed": [],      # the write reported success
+            "attempted": [],   # a write whose outcome we cannot read
+            "commands": [], "errors": [],
+            "steers": [],      # what the user redirected the turn to, mid-run
+            "subtasks": {}}
+
+
+def _collect_steer(s: dict, acc: dict) -> None:
+    """A steer can REPLACE the request (see chat_steer.steer_directive), and
+    resume re-sends the ORIGINAL words — so without this the brief lists
+    postgres files as landed under a prompt that still says MySQL, and the
+    agent dutifully reverts them."""
+    t = _txt(s.get("text"))
+    if t:
+        acc["steers"].append(t[:300])
+
+
+def _collect_error(s: dict, acc: dict) -> None:
+    t = _txt(s.get("text"))
+    if t:
+        acc["errors"].append(t[:300])
+
+
+def _collect_subtasks(s: dict, acc: dict) -> None:
+    for it in (s.get("items") or []):
+        if not (isinstance(it, dict) and it.get("slug")):
+            continue
+        slug = _txt(it["slug"])
+        acc["subtasks"][slug] = {
+            # `goal` is what five of the six producers call it; `title` is the
+            # sixth. Slug last — a slug is a label, not a statement of the work.
+            "what": _txt(it.get("goal") or it.get("title")) or slug,
+            "status": _txt(it.get("status")).lower() or "pending",
+        }
+
+
+def _collect_subtask_update(s: dict, acc: dict) -> None:
+    slug = _txt(s.get("slug"))
+    if not slug:
+        return
+    slot = acc["subtasks"].setdefault(slug, {"what": slug, "status": "pending"})
+    slot["status"] = _txt(s.get("status")).lower() or slot["status"]
+
+
+def _collect_tool(s: dict, acc: dict) -> None:
+    """A tool step: a write that landed, a write we cannot vouch for, or a
+    shell command worth replaying in the brief."""
+    name = _txt(s.get("name"))
+    args = s.get("args") if isinstance(s.get("args"), dict) else {}
+    res = s.get("result")
+    failed = isinstance(res, dict) and (res.get("ok") is False or res.get("error"))
+    ok = isinstance(res, dict) and res.get("ok") is True
+    if _mutates(name, args) or name == "wrote files":
+        if failed:
+            return              # a failed write is pending work, not done
+        for path in _paths(name, args, res):
+            if path in acc["landed"] or path in acc["attempted"]:
+                continue
+            key = "landed" if (ok or name == "wrote files") else "attempted"
+            acc[key].append(path)
+    elif name in _SHELL_TOOLS and ok:
+        cmd = _txt(args.get("cmd") or args.get("command"))
+        if cmd and cmd not in acc["commands"]:
+            acc["commands"].append(cmd[:120])
+
+
+_STEP_HANDLERS = {
+    "error": _collect_error,
+    "subtasks": _collect_subtasks,
+    "subtask_update": _collect_subtask_update,
+    "tool": _collect_tool,
+}
+
+
 def _collect(steps) -> dict:
-    """What the stopped attempt actually did, from its persisted steps."""
-    landed: list = []       # the write reported success
-    attempted: list = []    # a write whose outcome we cannot read
-    commands: list = []
-    errors: list = []
-    steers: list = []       # what the user redirected the turn to, mid-run
-    subtasks: dict = {}
+    """What the stopped attempt actually did, from its persisted steps.
+
+    One handler per step type, dispatched — the shape was previously a single
+    body with five inlined branches, where the only thing they shared was the
+    accumulator.
+    """
+    acc = _empty_collection()
     if not isinstance(steps, list):
-        return {"landed": [], "attempted": [], "commands": [], "errors": [],
-                "steers": [], "subtasks": {}}
+        return acc
     for s in steps:
         if not isinstance(s, dict):
             continue
         stype = s.get("type")
+        # A steer arrives as a "thought" with a role, not a type of its own.
         if stype == "thought" and s.get("role") == "steer":
-            # A steer can REPLACE the request (see chat_steer.steer_directive),
-            # and resume re-sends the ORIGINAL words — so without this the
-            # brief lists postgres files as landed under a prompt that still
-            # says MySQL, and the agent dutifully reverts them.
-            t = _txt(s.get("text"))
-            if t:
-                steers.append(t[:300])
+            _collect_steer(s, acc)
             continue
-        if stype == "error":
-            t = _txt(s.get("text"))
-            if t:
-                errors.append(t[:300])
-            continue
-        if stype == "subtasks":
-            for it in (s.get("items") or []):
-                if isinstance(it, dict) and it.get("slug"):
-                    slug = _txt(it["slug"])
-                    subtasks[slug] = {
-                        # `goal` is what five of the six producers call it;
-                        # `title` is the sixth. Slug last — a slug is a label,
-                        # not a statement of the work.
-                        "what": _txt(it.get("goal") or it.get("title")) or slug,
-                        "status": _txt(it.get("status")).lower() or "pending",
-                    }
-            continue
-        if stype == "subtask_update":
-            slug = _txt(s.get("slug"))
-            if slug:
-                slot = subtasks.setdefault(slug, {"what": slug,
-                                                  "status": "pending"})
-                slot["status"] = _txt(s.get("status")).lower() or slot["status"]
-            continue
-        if stype != "tool":
-            continue
-        name = _txt(s.get("name"))
-        args = s.get("args") if isinstance(s.get("args"), dict) else {}
-        res = s.get("result")
-        failed = isinstance(res, dict) and (res.get("ok") is False
-                                            or res.get("error"))
-        ok = isinstance(res, dict) and res.get("ok") is True
-        if _mutates(name, args) or name == "wrote files":
-            if failed:
-                continue           # a failed write is pending work, not done
-            for p in _paths(name, args, res):
-                bucket = landed if (ok or name == "wrote files") else attempted
-                if p not in landed and p not in attempted:
-                    bucket.append(p)
-        elif name in _SHELL_TOOLS and ok:
-            cmd = _txt(args.get("cmd") or args.get("command"))
-            if cmd and cmd not in commands:
-                commands.append(cmd[:120])
-    return {"landed": landed, "attempted": attempted, "commands": commands,
-            "errors": errors, "steers": steers, "subtasks": subtasks}
+        handler = _STEP_HANDLERS.get(stype)
+        if handler:
+            handler(s, acc)
+    return acc
 
 
 def build_brief(row: dict, cwd: str = "") -> str:

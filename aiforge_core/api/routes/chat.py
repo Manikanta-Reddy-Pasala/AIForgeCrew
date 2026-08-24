@@ -200,6 +200,43 @@ def _model_env_override(role: str) -> dict | None:
 
 
 @router.get("/api/chat/models")
+def _chat_capable(mid: str) -> bool:
+    """Embedding models are not chat-capable."""
+    return bool(mid) and "embed" not in mid.lower()
+
+
+def _registry_models(served: "set | list") -> "dict[str, dict]":
+    """Models the user CONFIGURED. Optional — an unavailable registry just
+    means the served list stands alone."""
+    out: dict[str, dict] = {}
+    try:
+        from aiforge_core.config import model_registry
+        rows = model_registry.list_models()
+    except Exception:  # noqa: BLE001 — registry optional; fall back to served
+        return out
+    for r in rows:
+        mid = (r.get("model") or "").strip()
+        if not _chat_capable(mid) or mid in out:
+            continue
+        out[mid] = {"id": mid,
+                    "label": (r.get("label") or mid.split("/")[-1]),
+                    "active": mid in served}
+    return out
+
+
+def _merge_registry_and_served(served: "set | list") -> list:
+    """Configured models UNION currently-served, active-first then by id.
+
+    Split out of `chat_models`, which was building this list AND assembling the
+    response around it — two jobs, and only this one has any logic in it.
+    """
+    out = _registry_models(served)
+    for mid in served:
+        if _chat_capable(mid) and mid not in out:
+            out[mid] = {"id": mid, "label": mid.split("/")[-1], "active": True}
+    return sorted(out.values(), key=lambda m: (not m["active"], m["id"]))
+
+
 def chat_models() -> dict:
     """Models the user can pick for the 'chat' slot.
 
@@ -218,27 +255,7 @@ def chat_models() -> dict:
     served = _served_model_ids_for_role("chat")
     current = row.get("model")
 
-    def _chat_capable(mid: str) -> bool:
-        return bool(mid) and "embed" not in mid.lower()
-
-    out: dict[str, dict] = {}
-    try:
-        from aiforge_core.config import model_registry
-        for r in model_registry.list_models():
-            mid = (r.get("model") or "").strip()
-            if not _chat_capable(mid) or mid in out:
-                continue
-            out[mid] = {"id": mid,
-                        "label": (r.get("label") or mid.split("/")[-1]),
-                        "active": mid in served}
-    except Exception:  # noqa: BLE001 — registry optional; fall back to served
-        pass
-    # Any currently-served model not in the registry still belongs in the list.
-    for mid in served:
-        if _chat_capable(mid) and mid not in out:
-            out[mid] = {"id": mid, "label": mid.split("/")[-1], "active": True}
-
-    models = sorted(out.values(), key=lambda m: (not m["active"], m["id"]))
+    models = _merge_registry_and_served(served)
     # An env pin (AIFORGE_CHAT_MODEL / AIFORGE_DEFAULT_MODEL) overrides the
     # picker — surface it so the UI can show "env-pinned, picking won't apply".
     env_ovr = _model_env_override("chat") or _model_env_override("_default")

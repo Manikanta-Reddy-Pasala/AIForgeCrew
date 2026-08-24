@@ -142,6 +142,73 @@ def _slot(sid: str) -> dict:
     return slot
 
 
+def _attribute(sid, role):
+    """(session, role) for this call, falling back to the request context.
+
+    The wire-level caller (_post) knows neither — both ride the request
+    context, which the chat turn binds and the generation thread inherits.
+
+    CONTEXTVAR ONLY. request_context.get_session_id() also falls back to the
+    process-global AIFORGE_CURRENT_SESSION env var, which the chat route sets
+    and never clears — so every bare thread in the system (session folds,
+    learners, classifiers) would bill its calls to whichever chat last ran a
+    turn. An unattributed call is correct; a call billed to an innocent chat
+    is not.
+    """
+    if sid is not None and role:
+        return sid, role
+    try:
+        from aiforge_core.runtime import request_context
+        if sid is None:
+            sid = _key(request_context.context_session_id())
+        role = role or request_context.get_role()
+    except Exception:  # noqa: BLE001
+        pass
+    return sid, role
+
+
+def _current_epoch():
+    try:
+        return _TURN_EPOCH.get()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _bump_step_counter() -> None:
+    """One more call inside the current ReAct step, when a step is bound."""
+    try:
+        _step = _STEP_CALLS.get()
+        if isinstance(_step, dict):
+            _step["n"] = int(_step.get("n") or 0) + 1
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _bill_session_locked(sid, role, epoch):
+    """Charge one call to a chat session. Returns the epoch to STAMP the token
+    with. Caller holds ``_lock``.
+
+    A cancelled generation is ABANDONED, not stopped: its thread keeps retrying
+    with the turn's context still bound. Those calls belong to the turn that
+    made them, not to whatever the user typed next — so the per-turn counter
+    only accepts calls stamped with the CURRENT turn's epoch (None = a caller
+    outside any turn, e.g. a background fold).
+    """
+    slot = _slot(sid)
+    slot["total"] += 1
+    if epoch is None or epoch == slot["epoch"]:
+        slot["turn"] += 1
+        # Stamp the token with the turn this call was COUNTED against.
+        # Carrying the caller's bare None instead meant a failure resolved
+        # `epoch is None` at settle time and landed on whatever turn was
+        # current THEN — the exact thing the token exists to prevent, and
+        # visible as "0 requests · 1 failed" on a message that sent nothing.
+        epoch = slot["epoch"]
+    if role:
+        slot["by_role"][role] = slot["by_role"].get(role, 0) + 1
+    return epoch
+
+
 def record(role: str | None = None, session_id=None, *,
            provider: str | None = None, model: str | None = None,
            now: float | None = None):
@@ -161,36 +228,9 @@ def record(role: str | None = None, session_id=None, *,
     """
     global _total, _dropped_at
     try:
-        sid = _key(session_id)
-        epoch = None
-        if sid is None or not role:
-            # The wire-level caller (_post) knows neither — both ride the
-            # request context, which the chat turn binds and the generation
-            # thread inherits (see _complete_cancellable).
-            #
-            # CONTEXTVAR ONLY. request_context.get_session_id() also falls back
-            # to the process-global AIFORGE_CURRENT_SESSION env var, which the
-            # chat route sets and never clears — so every bare thread in the
-            # system (session folds, learners, classifiers) would bill its
-            # calls to whichever chat last ran a turn. An unattributed call is
-            # correct; a call billed to an innocent chat is not.
-            try:
-                from aiforge_core.runtime import request_context
-                if sid is None:
-                    sid = _key(request_context.context_session_id())
-                role = role or request_context.get_role()
-            except Exception:  # noqa: BLE001
-                pass
-        try:
-            epoch = _TURN_EPOCH.get()
-        except Exception:  # noqa: BLE001
-            epoch = None
-        try:
-            _step = _STEP_CALLS.get()
-            if isinstance(_step, dict):
-                _step["n"] = int(_step.get("n") or 0) + 1
-        except Exception:  # noqa: BLE001
-            pass
+        sid, role = _attribute(_key(session_id), role)
+        epoch = _current_epoch()
+        _bump_step_counter()
         with _lock:
             # Stamped INSIDE the lock: two threads racing between "read clock"
             # and "append" can invert the deque, and the trim below stops at
@@ -204,25 +244,7 @@ def record(role: str | None = None, session_id=None, *,
             _recent.append(_ts)
             _bump_bucket_locked(_ts, role, provider, model)
             if sid is not None:
-                slot = _slot(sid)
-                slot["total"] += 1
-                # A cancelled generation is ABANDONED, not stopped: its thread
-                # keeps retrying with the turn's context still bound. Those
-                # calls belong to the turn that made them, not to whatever the
-                # user typed next — so the per-turn counter only accepts calls
-                # stamped with the CURRENT turn's epoch (None = a caller
-                # outside any turn, e.g. a background fold).
-                if epoch is None or epoch == slot["epoch"]:
-                    slot["turn"] += 1
-                    # Stamp the token with the turn this call was COUNTED
-                    # against. Carrying the caller's bare None instead meant a
-                    # failure resolved `epoch is None` at settle time and
-                    # landed on whatever turn was current THEN — the exact
-                    # thing the token exists to prevent, and visible as
-                    # "0 requests · 1 failed" on a message that sent nothing.
-                    epoch = slot["epoch"]
-                if role:
-                    slot["by_role"][role] = slot["by_role"].get(role, 0) + 1
+                epoch = _bill_session_locked(sid, role, epoch)
         return (_ts, sid, epoch)
     except Exception:  # noqa: BLE001
         return None
@@ -324,6 +346,54 @@ def step_reset(token) -> None:
         pass
 
 
+def _unpack_token(token, session_id):
+    """(ts, sid, epoch) from a record() token, with an explicit session_id
+    winning. A malformed token is simply "no attribution", never an error."""
+    ts = sid = epoch = None
+    if isinstance(token, tuple) and len(token) == 3:
+        ts, sid, epoch = token
+    if session_id is not None:
+        sid = _key(session_id)
+    return ts, sid, epoch
+
+
+def _bump_token_bucket_locked(ts: float, role, pt: int, ct: int) -> None:
+    """Add this response's tokens to its MINUTE bucket. Caller holds ``_lock``.
+
+    The per-role split is capped: model ids are operator-editable and mlx-lm's
+    are filesystem paths, so an uncapped label set ships a six-figure blob to
+    every polling browser.
+    """
+    key = _mkey(ts)
+    b = _buckets.get(key)
+    if b is None:
+        b = _new_bucket()
+        _buckets[key] = b
+        while len(_buckets) > _BUCKETS + 1:
+            _buckets.pop(min(_buckets), None)
+    b["ti"] = int(b.get("ti") or 0) + pt
+    b["to"] = int(b.get("to") or 0) + ct
+    r = str(role or "").strip()[:_LABEL_MAX]
+    if not (r and ct):
+        return
+    outs = b.setdefault("outs", {})
+    if r in outs or len(outs) < _LABELS_PER_BUCKET:
+        outs[r] = outs.get(r, 0) + ct
+    else:
+        outs["…other"] = outs.get("…other", 0) + ct
+
+
+def _bill_session_tokens_locked(sid, epoch, pt: int, ct: int) -> None:
+    """Charge tokens to a chat session, and to its turn when the token was
+    stamped with the turn still current. Caller holds ``_lock``."""
+    slot = _slot(sid)
+    slot["tokens_in"] = int(slot.get("tokens_in") or 0) + pt
+    slot["tokens_out"] = int(slot.get("tokens_out") or 0) + ct
+    if epoch is not None and epoch == slot["epoch"]:
+        slot["turn_tokens_in"] = int(slot.get("turn_tokens_in") or 0) + pt
+        slot["turn_tokens_out"] = int(slot.get("turn_tokens_out") or 0) + ct
+
+
 def record_tokens(role: str | None = None, *, prompt_tokens: int = 0,
                   completion_tokens: int = 0, token=None, session_id=None,
                   now: float | None = None) -> None:
@@ -345,13 +415,7 @@ def record_tokens(role: str | None = None, *, prompt_tokens: int = 0,
         ct = max(0, int(completion_tokens or 0))
         if not pt and not ct:
             return
-        ts = None
-        sid = None
-        epoch = None
-        if isinstance(token, tuple) and len(token) == 3:
-            ts, sid, epoch = token
-        if session_id is not None:
-            sid = _key(session_id)
+        ts, sid, epoch = _unpack_token(token, session_id)
         # NO ambient-context fallback, for the reason record_failure documents:
         # re-reading the context at SETTLE time bills a background fold's
         # tokens to whatever chat the thread has been rebound to since. A
@@ -364,31 +428,9 @@ def record_tokens(role: str | None = None, *, prompt_tokens: int = 0,
             _tokens_in_total += pt
             _tokens_out_total += ct
             if _mkey(ts) >= _mkey(_now) - (_BUCKETS - 1):
-                key = _mkey(ts)
-                b = _buckets.get(key)
-                if b is None:
-                    b = _new_bucket()
-                    _buckets[key] = b
-                    while len(_buckets) > _BUCKETS + 1:
-                        _buckets.pop(min(_buckets), None)
-                b["ti"] = int(b.get("ti") or 0) + pt
-                b["to"] = int(b.get("to") or 0) + ct
-                r = str(role or "").strip()[:_LABEL_MAX]
-                if r and ct:
-                    outs = b.setdefault("outs", {})
-                    if r in outs or len(outs) < _LABELS_PER_BUCKET:
-                        outs[r] = outs.get(r, 0) + ct
-                    else:
-                        outs["…other"] = outs.get("…other", 0) + ct
+                _bump_token_bucket_locked(ts, role, pt, ct)
             if sid is not None and sid in _sessions:
-                slot = _slot(sid)
-                slot["tokens_in"] = int(slot.get("tokens_in") or 0) + pt
-                slot["tokens_out"] = int(slot.get("tokens_out") or 0) + ct
-                if epoch is not None and epoch == slot["epoch"]:
-                    slot["turn_tokens_in"] = int(
-                        slot.get("turn_tokens_in") or 0) + pt
-                    slot["turn_tokens_out"] = int(
-                        slot.get("turn_tokens_out") or 0) + ct
+                _bill_session_tokens_locked(sid, epoch, pt, ct)
     except Exception:  # noqa: BLE001
         pass
 

@@ -94,6 +94,23 @@ def _collect_exts(cwd: str) -> set[str]:
     return exts
 
 
+# Marker file → profile, most-specific first. A table rather than a chain of
+# ifs: the ordering IS the logic, and a table shows it at a glance where ten
+# near-identical branches hid it. ``None`` means "recognised, but not
+# first-class here" — still authoritative, so detection stops.
+_MARKERS: "tuple[tuple[tuple[str, ...], str | None], ...]" = (
+    (("pom.xml",), "java"),
+    (("build.gradle", "build.gradle.kts", "settings.gradle"), "java"),
+    (("go.mod",), None),
+    (("Cargo.toml",), "rust"),
+    (("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"), "python"),
+    (("package.json",), None),
+    (("composer.json",), None),
+    (("Gemfile",), None),
+    (("CMakeLists.txt", "Makefile"), "cpp"),
+)
+
+
 def detect(cwd: str | None) -> str | None:
     """Fingerprint a worktree → canonical profile name (or None).
 
@@ -116,24 +133,11 @@ def detect(cwd: str | None) -> str | None:
         return "kotlin"
 
     # 1) authoritative marker files, most-specific first (→ profile names).
-    if has("pom.xml"):
-        return "java"
-    if has("build.gradle", "build.gradle.kts", "settings.gradle"):
-        return "java"
-    if has("go.mod"):
-        return None
-    if has("Cargo.toml"):
-        return "rust"
-    if has("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"):
-        return "python"
-    if has("package.json"):
-        return None
-    if has("composer.json"):
-        return None
-    if has("Gemfile"):
-        return None
-    if has("CMakeLists.txt", "Makefile"):
-        return "cpp"
+    for names, profile in _MARKERS:
+        if has(*names):
+            # A marker MATCHING but mapping to None still stops here: a go.mod
+            # tree is Go, not "whatever extensions happen to be lying around".
+            return profile
 
     # 2) no marker — extension fallback, fixed priority (python before node).
     for lang, es in (
