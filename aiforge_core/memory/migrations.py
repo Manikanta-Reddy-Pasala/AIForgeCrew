@@ -397,20 +397,29 @@ def purge_migrated_code() -> dict:
     return out
 
 
-def run_startup_migrations() -> dict:
-    """Run the full idempotent migration chain. Called once per API boot; each
-    step no-ops when nothing needs doing. Returns a per-step summary; never
-    raises."""
-    out: dict = {}
-    marker = _load_marker()
-    done = set(marker.get("done") or [])
+def _step(out: dict, name: str, fn) -> bool:
+    """Run one soft-fail migration step, recording its result under ``name``.
+    Returns False when it RAISED (a step that returns ``ok: False`` still
+    counts as having run — that is its own reported outcome)."""
+    try:
+        out[name] = fn()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        out[name] = {"ok": False, "error": str(exc)}
+        return False
 
-    # ── RE-EMBED first when the stored embeddings don't match the ACTIVE
-    # embedder — a backend/model switch or a migration that imported rows from a
-    # different embedder leaves mixed dims → broken KNN. Recompute all embeddings
-    # with the current embedder + rebuild the vec index (same memory API the
-    # ingest path uses). No-op (and skipped) when dims already match. Embedded
-    # (SQLite) backend only.
+
+def _migrate_md_format() -> dict:
+    from aiforge_core.memory import md_store
+    return md_store.migrate_to_okr()
+
+
+def _reembed_if_embedder_changed(out: dict) -> None:
+    """RE-EMBED when the stored embeddings don't match the ACTIVE embedder — a
+    backend/model switch or a migration that imported rows from a different
+    embedder leaves mixed dims → broken KNN. Recomputes all embeddings with the
+    current embedder + rebuilds the vec index (the same memory API the ingest
+    path uses). No-op when dims already match. Embedded (SQLite) backend only."""
     try:
         from aiforge_core.memory import backend_select, sqlite_memory
         if backend_select.embedded() and (
@@ -422,31 +431,35 @@ def run_startup_migrations() -> dict:
     except Exception as exc:  # noqa: BLE001
         out["reembed"] = {"ok": False, "error": str(exc)}
 
-    # ── move legacy root-level compacted-*.md briefs into the compacted/ folder
-    # (keeps the memory-dir root to transient captures only). Idempotent.
+
+def _move_files_into_folders(out: dict) -> None:
+    """Move legacy root-level compacted-*.md briefs into compacted/ and the raw
+    captures into captures/, so the memory-dir root holds only the compacted/ ·
+    captures/ · archive/ folders and markers. Idempotent."""
     try:
         from aiforge_core.memory import md_store
         out["briefs_folder"] = md_store.migrate_briefs_to_folder()
-        # …and the raw captures into captures/, so the root holds only the
-        # compacted/ · captures/ · archive/ folders and markers. Idempotent.
         out["captures_folder"] = md_store.migrate_captures_to_folder()
     except Exception as exc:  # noqa: BLE001
         out["briefs_folder"] = {"ok": False, "error": str(exc)}
 
-    # ── compact FIRST: fold old-format per-note .md files into their topic/repo
-    # briefs + retire masquerading captures NOW, so the brief→OKR step below
-    # sees consolidated briefs. Idempotent; safe every boot.
-    #
-    # BUT: `summarize=True, model_role="learner"` is one LLM call per brief, and
-    # this runs on EVERY API boot — which on a laptop means every morning the
-    # lid opens. That is the same "compaction is running in my working day"
-    # intrusion the evening window exists to remove, arriving by a path the
-    # scheduler never sees. Outside the window the structural fold still runs
-    # (files move, captures are swept, the migration completes) with the model
-    # left out of it; the evening pass re-folds every brief through the learner
-    # anyway (force_recompact_all), so nothing is permanently un-summarised.
-    # AIFORGE_STARTUP_COMPACT=always restores the old boot-time LLM fold; =off
-    # skips this block entirely.
+
+def _startup_compact(out: dict) -> None:
+    """Fold old-format per-note .md files into their topic/repo briefs + retire
+    masquerading captures NOW, so the brief→OKR step sees consolidated briefs.
+    Idempotent; safe every boot.
+
+    BUT: ``summarize=True, model_role="learner"`` is one LLM call per brief, and
+    this runs on EVERY API boot — which on a laptop means every morning the lid
+    opens. That is the same "compaction is running in my working day" intrusion
+    the evening window exists to remove, arriving by a path the scheduler never
+    sees. Outside the window the structural fold still runs (files move,
+    captures are swept, the migration completes) with the model left out of it;
+    the evening pass re-folds every brief through the learner anyway
+    (force_recompact_all), so nothing is permanently un-summarised.
+    AIFORGE_STARTUP_COMPACT=always restores the old boot-time LLM fold; =off
+    skips this entirely.
+    """
     try:
         from aiforge_core.memory import md_store
         from aiforge_core.runtime import compact_window
@@ -454,124 +467,110 @@ def run_startup_migrations() -> dict:
                 .strip().lower())
         if mode in ("off", "0", "false", "no"):
             out["compact"] = {"skipped": "disabled"}
-        else:
-            _llm = mode == "always" or compact_window.open_now()
-            r_repo = md_store.compact(group_by="repo", min_group=1,
-                                      summarize=_llm, model_role="learner",
-                                      archive_sources=False)
-            r_topic = md_store.compact(group_by="topic", min_group=1,
-                                       summarize=_llm, model_role="learner",
-                                       archive_sources=True)
-            r_sweep = md_store.sweep_stale_captures(archive=True)
-            out["compact"] = {"repo_in": r_repo.get("files_in"),
-                              "topic_in": r_topic.get("files_in"),
-                              "swept": r_sweep.get("swept"),
-                              "summarized": _llm}
-            if not _llm:
-                log.info("startup compaction: structural only — the learner "
-                         "fold waits for the %02d:00 window",
-                         compact_window.at_hour() or 0)
+            return
+        llm = mode == "always" or compact_window.open_now()
+        r_repo = md_store.compact(group_by="repo", min_group=1, summarize=llm,
+                                  model_role="learner", archive_sources=False)
+        r_topic = md_store.compact(group_by="topic", min_group=1, summarize=llm,
+                                   model_role="learner", archive_sources=True)
+        r_sweep = md_store.sweep_stale_captures(archive=True)
+        out["compact"] = {"repo_in": r_repo.get("files_in"),
+                          "topic_in": r_topic.get("files_in"),
+                          "swept": r_sweep.get("swept"), "summarized": llm}
+        if not llm:
+            log.info("startup compaction: structural only — the learner "
+                     "fold waits for the %02d:00 window",
+                     compact_window.at_hour() or 0)
     except Exception as exc:  # noqa: BLE001
         out["compact"] = {"ok": False, "error": str(exc)}
 
-    # ── always-safe, idempotent steps ──────────────────────────────────────
-    try:
-        from aiforge_core.memory import md_store
-        out["format"] = md_store.migrate_to_okr()
-    except Exception as exc:  # noqa: BLE001
-        out["format"] = {"ok": False, "error": str(exc)}
 
-    # ── bring existing on-disk files to OKF v0.1: rename legacy frontmatter keys
-    # (kind→type, source_url→resource, updated_at/created_at→timestamp) in the
-    # briefs (+ okf/ nodes). Idempotent; makes pre-OKF files OKF-readable.
-    try:
-        out["okf_frontmatter"] = _migrate_frontmatter_to_okf()
-    except Exception as exc:  # noqa: BLE001
-        out["okf_frontmatter"] = {"ok": False, "error": str(exc)}
-
-    # OKR-DAG (the separate memory/okf/ node graph) is CONSOLIDATED OUT by
-    # default — the flat compacted-<scope> briefs are the single OKR memory now.
-    # Set AIFORGE_OKR_DAG=1 to re-enable the DAG build/migrate steps.
-    _dag_on = os.environ.get("AIFORGE_OKR_DAG", "0") == "1"
-
-    # When the DAG is ON, rename a legacy okr/ node bundle to the OKF folder
-    # name so its nodes are found at okf_root(). (DAG OFF archives okr/ below.)
-    if _dag_on:
-        out["okr_to_okf_dir"] = _rename_okr_dir_to_okf()
-
-    # When the DAG is off, ARCHIVE any pre-existing okr/ folder OUT of the live
-    # memory dir (kept, not deleted → reversible) so a stale node graph from an
-    # earlier build can't shadow the flat briefs. Config-driven + idempotent;
-    # no manual box edits. AIFORGE_OKR_DAG=1 leaves it in place.
-    if not _dag_on:
-        out["okr_archive"] = _archive_okr_dag_folder()
-
-    # ── one-shot steps (marker-guarded so they can't undo later curation) ──
-    if _dag_on and "briefs_to_okr" not in done:
-        try:
-            from aiforge_core.memory.okf import author
-            out["briefs_to_okr"] = author.migrate_from_briefs()
-            done.add("briefs_to_okr")
-        except Exception as exc:  # noqa: BLE001
-            out["briefs_to_okr"] = {"ok": False, "error": str(exc)}
-
-    # ── foreign nodes out of okf/ and into the top-level peers/ inbox. One-shot:
-    # nothing writes okf/peers/ any more, so once it is drained there is no
-    # reason to walk it again on every boot.
+def _one_shot_steps(out: dict, done: set) -> None:
+    """Marker-guarded steps, so they can't undo later curation."""
+    # Foreign nodes out of okf/ and into the top-level peers/ inbox. Nothing
+    # writes okf/peers/ any more, so once it is drained there is no reason to
+    # walk it again on every boot.
     if "peers_out_of_okf" not in done:
         r = _move_okf_peers_to_inbox()
         out["peers_out_of_okf"] = r
         if r.get("ok"):
             done.add("peers_out_of_okf")
-
     if "neo4j_drain" not in done:
         r = _neo4j_drain()
         out["neo4j_drain"] = r
-        # only mark done when it actually ran (skipped = neo4j unused → retry
-        # later if the user switches backends)
-        if r.get("ok") and "skipped" not in r:
+        # Mark done when it actually ran, and also when there was nothing to
+        # drain (neo4j unused) — otherwise it retries forever.
+        if r.get("skipped") or r.get("ok"):
             done.add("neo4j_drain")
-        elif r.get("skipped"):
-            done.add("neo4j_drain")     # nothing to drain — don't retry forever
 
-    # ── scoped segregation (moves what the above produced into global/projects)
-    if _dag_on:
-        try:
-            from aiforge_core.memory.okf import store as _store
-            out["scoped"] = _store.migrate_scoped()
-        except Exception as exc:  # noqa: BLE001
-            out["scoped"] = {"ok": False, "error": str(exc)}
 
-    # ── CLASSIFY: an LLM sorts the migrated GLOBAL learnings into their project
+def _dag_steps(out: dict, done: set) -> None:
+    """The OKR-DAG (memory/okf/ node graph) steps — only when it is enabled."""
+    from aiforge_core.memory.okf import author
+    from aiforge_core.memory.okf import store as _store
+    # Rename a legacy okr/ node bundle to the OKF folder name so its nodes are
+    # found at okf_root().
+    out["okr_to_okf_dir"] = _rename_okr_dir_to_okf()
+    if "briefs_to_okr" not in done and _step(out, "briefs_to_okr",
+                                             author.migrate_from_briefs):
+        done.add("briefs_to_okr")
+    # Scoped segregation moves what the above produced into global/projects.
+    _step(out, "scoped", _store.migrate_scoped)
+    # CLASSIFY: an LLM sorts the migrated GLOBAL learnings into their project
     # (or trashes noise). Deterministic tag/key parsing can't reliably tell a
     # repo brief from a topic brief; the LLM + repo-name match can. One-shot.
-    if _dag_on and "classify" not in done:
+    if "classify" not in done:
         repos = _discover_repos()
-        if repos:
-            try:
-                from aiforge_core.memory.okf import author
-                out["classify"] = author.reclassify_global_learnings(repos)
-                done.add("classify")
-            except Exception as exc:  # noqa: BLE001
-                out["classify"] = {"ok": False, "error": str(exc)}
-        else:
-            out["classify"] = {"skipped": "no repos discovered"}
+        if not repos:
             # leave unmarked → retry next boot once repos are discoverable
+            out["classify"] = {"skipped": "no repos discovered"}
+        elif _step(out, "classify",
+                   lambda: author.reclassify_global_learnings(repos)):
+            done.add("classify")
+    # Build the per-repo hub CARDS from each project's learnings.
+    if "repo_profiles" not in done and _step(out, "repo_profiles",
+                                             author.build_repo_profiles):
+        done.add("repo_profiles")
 
-    # ── build the per-repo hub CARDS from each project's learnings (one-shot) ─
-    if _dag_on and "repo_profiles" not in done:
+
+def run_startup_migrations() -> dict:
+    """Run the full idempotent migration chain. Called once per API boot; each
+    step no-ops when nothing needs doing. Returns a per-step summary; never
+    raises."""
+    out: dict = {}
+    marker = _load_marker()
+    done = set(marker.get("done") or [])
+
+    _reembed_if_embedder_changed(out)
+    _move_files_into_folders(out)
+    _startup_compact(out)
+    # always-safe, idempotent steps
+    _step(out, "format", _migrate_md_format)
+    # Bring existing on-disk files to OKF v0.1: rename legacy frontmatter keys
+    # (kind→type, source_url→resource, updated_at/created_at→timestamp) in the
+    # briefs (+ okf/ nodes). Idempotent; makes pre-OKF files OKF-readable.
+    _step(out, "okf_frontmatter", _migrate_frontmatter_to_okf)
+
+    # OKR-DAG (the separate memory/okf/ node graph) is CONSOLIDATED OUT by
+    # default — the flat compacted-<scope> briefs are the single OKR memory now.
+    # Set AIFORGE_OKR_DAG=1 to re-enable the DAG build/migrate steps.
+    if os.environ.get("AIFORGE_OKR_DAG", "0") == "1":
         try:
-            from aiforge_core.memory.okf import author
-            out["repo_profiles"] = author.build_repo_profiles()
-            done.add("repo_profiles")
+            _dag_steps(out, done)
         except Exception as exc:  # noqa: BLE001
-            out["repo_profiles"] = {"ok": False, "error": str(exc)}
+            out["dag"] = {"ok": False, "error": str(exc)}
+    else:
+        # ARCHIVE any pre-existing okr/ folder OUT of the live memory dir (kept,
+        # not deleted → reversible) so a stale node graph from an earlier build
+        # can't shadow the flat briefs. Config-driven + idempotent.
+        out["okr_archive"] = _archive_okr_dag_folder()
+    _one_shot_steps(out, done)
 
     # Surface any step that failed — soft-fail steps otherwise swallow errors.
-    for _k, _v in out.items():
-        if isinstance(_v, dict) and _v.get("ok") is False:
+    for name, result in out.items():
+        if isinstance(result, dict) and result.get("ok") is False:
             log.error("startup-migration: step '%s' FAILED: %s",
-                      _k, _v.get("error") or _v)
+                      name, result.get("error") or result)
     _save_marker({"done": sorted(done), "version": 1})
     return out
 
