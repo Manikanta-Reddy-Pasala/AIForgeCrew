@@ -150,6 +150,93 @@ def build_litellm_model(role: str):
     return EscalatingLlm.build(role, primary, chain)
 
 
+def _build_doer():
+    """The Doer node, with every tool-boundary guard attached.
+
+    Doer backend selection: on a LOCAL endpoint the native function-calling
+    Doer does nothing (mlx_lm 0.31 "zero tool_use" bug), so fall back to the
+    chat agent's proven TEXT protocol wrapped as a FunctionNode. Default
+    ``auto`` = text only when the Doer endpoint is local; cloud stays native
+    (no behavior change). Soft-fail to native if the switch/import errors.
+
+    A text-doer FunctionNode handles tools INTERNALLY (via run_chat_agent's own
+    tool_policy) and replicates the quality signals itself, so these callbacks
+    simply don't apply to it — each attach is guarded, so they no-op cleanly.
+    """
+    try:
+        from .text_doer import should_use_text_protocol
+        use_text = should_use_text_protocol()
+    except Exception:  # noqa: BLE001
+        use_text = False
+    if use_text:
+        from .text_doer import make_text_doer_node
+        doer = make_text_doer_node()
+    else:
+        doer = _doer_mod.build(build_litellm_model)
+    for attr, factory in _DOER_TOOL_CALLBACKS:
+        try:
+            _append_callback(doer, attr, factory())
+        except Exception:  # noqa: BLE001 — a guard never blocks pipeline boot
+            pass
+    return doer
+
+
+def _scope_guard_cb():
+    """C6 scope guard — block edits outside ``scope_allowlist_globs`` at the
+    tool-call boundary. KISS: one before_tool_callback that rejects with a soft
+    error when the Doer drifts outside scope."""
+    from .scope_guard import make_scope_guard_callback
+    return make_scope_guard_callback()
+
+
+def _repeat_guard_cb():
+    """Stuck-loop guard — stop the Doer re-emitting the same (often malformed)
+    tool call until it burns the whole LLM-call budget."""
+    from .repeat_guard import make_repeat_guard_callback
+    return make_repeat_guard_callback()
+
+
+def _approval_gate_cb():
+    """Human-approval gate — honor allow/ask/deny + risk in the pipeline too.
+    Blocks for Approve/Reject ONLY when an interactive chat approver is
+    attached; autonomous ticket runs fall straight through (no hang). Last of
+    the before_tool guards so scope/repeat short-circuit before we ask."""
+    from .tool_gate import make_approval_gate_callback
+    return make_approval_gate_callback()
+
+
+def _quality_signal_cb():
+    """A1 quality gate signals — record run_tests/typecheck/format results into
+    tests_ok/typecheck_ok/lint_ok so the Feedback agent's deterministic gate
+    (quality_gate.evaluate) actually has inputs."""
+    from .quality_gate import make_quality_signal_callback
+    return make_quality_signal_callback()
+
+
+def _hook_before_cb():
+    from .hooks import adk_before_tool_callback
+    return adk_before_tool_callback()
+
+
+def _hook_after_cb():
+    from .hooks import adk_after_tool_callback
+    return adk_after_tool_callback()
+
+
+# (attribute, factory) in ATTACH ORDER — the guards run in this order, and the
+# lifecycle hooks (Claude-Code parity) come last so an operator's hooks.json
+# applies to autonomous ticket runs after the built-in guards have had their
+# say. AIFORGE_HOOKS_DISABLE=1 makes the hook adapters no-op.
+_DOER_TOOL_CALLBACKS = (
+    ("before_tool_callback", _scope_guard_cb),
+    ("before_tool_callback", _repeat_guard_cb),
+    ("before_tool_callback", _approval_gate_cb),
+    ("after_tool_callback", _quality_signal_cb),
+    ("before_tool_callback", _hook_before_cb),
+    ("after_tool_callback", _hook_after_cb),
+)
+
+
 def build_pipeline(*, skip_researcher: bool = False,
                     skip_conventions: bool = False,
                     skip_repomap: bool = False,
@@ -176,16 +263,6 @@ def build_pipeline(*, skip_researcher: bool = False,
     from google.adk.workflow import START, Edge, Workflow
 
     from .graph_pipeline import (
-        ROUTE_DONE,
-        ROUTE_EXIT,
-        ROUTE_FULL,
-        ROUTE_LOOP,
-        ROUTE_REPLAN,
-        ROUTE_RESEARCH_GAP,
-        ROUTE_RESEARCH_OK,
-        ROUTE_TRIVIAL,
-        ROUTE_VERIFY_PASS,
-        ROUTE_VERIFY_REPLAN,
         make_gap_gate,
         make_loop_gate,
         make_plan_promote,
@@ -193,7 +270,6 @@ def build_pipeline(*, skip_researcher: bool = False,
         make_validator_gate,
         make_verifier_gate,
     )
-    from .loop_budget import build_loop_budget_callbacks
     from .parallel_stages import (
         build_context_branches,
         make_context_join,
@@ -209,116 +285,7 @@ def build_pipeline(*, skip_researcher: bool = False,
     triage = _triage_mod.build(build_litellm_model)
     enhancer = _enhancer_mod.build(build_litellm_model)
     planner = _planner_mod.build(build_litellm_model)
-    # Doer backend selection: on a LOCAL endpoint the native function-calling
-    # Doer does nothing (mlx_lm 0.31 "zero tool_use" bug), so fall back to the
-    # chat agent's proven TEXT protocol wrapped as a FunctionNode. Default
-    # ``auto`` = text only when the Doer endpoint is local; cloud stays native
-    # (no behavior change). Soft-fail to native if the switch/import errors.
-    try:
-        from .text_doer import make_text_doer_node, should_use_text_protocol
-        _use_text_doer = should_use_text_protocol()
-    except Exception:
-        _use_text_doer = False
-    if _use_text_doer:
-        # A text-doer FunctionNode handles tools INTERNALLY (via
-        # run_chat_agent's own tool_policy) and replicates the quality signals
-        # itself, so the ADK before_tool/after_tool/before_model callbacks
-        # attached below simply don't apply to it. Each attach is already
-        # wrapped in try/except (a FunctionNode is a pydantic model that
-        # REJECTS unknown fields with ValueError), so they no-op cleanly on the
-        # node — losing them on the text path is acceptable for v1.
-        doer = make_text_doer_node()
-    else:
-        doer = _doer_mod.build(build_litellm_model)
-    # C6 scope guard — block edits outside ``scope_allowlist_globs`` at the
-    # tool-call boundary. KISS: one before_tool_callback that rejects with a
-    # soft error when the Doer drifts outside scope.
-    try:
-        from .scope_guard import make_scope_guard_callback
-        _scope_cb = make_scope_guard_callback()
-        if _scope_cb is not None:
-            existing = getattr(doer, "before_tool_callback", None)
-            if existing is None:
-                doer.before_tool_callback = _scope_cb
-            elif isinstance(existing, list):
-                doer.before_tool_callback = list(existing) + [_scope_cb]
-            else:
-                doer.before_tool_callback = [existing, _scope_cb]
-    except Exception:
-        pass  # scope guard never blocks pipeline boot
-    # Stuck-loop guard — stop the Doer re-emitting the same (often
-    # malformed) tool call until it burns the whole LLM-call budget.
-    try:
-        from .repeat_guard import make_repeat_guard_callback
-        _rep_cb = make_repeat_guard_callback()
-        if _rep_cb is not None:
-            existing = getattr(doer, "before_tool_callback", None)
-            if existing is None:
-                doer.before_tool_callback = _rep_cb
-            elif isinstance(existing, list):
-                doer.before_tool_callback = list(existing) + [_rep_cb]
-            else:
-                doer.before_tool_callback = [existing, _rep_cb]
-    except Exception:
-        pass
-    # Human-approval gate — honor allow/ask/deny + risk in the pipeline too.
-    # Blocks for Approve/Reject ONLY when an interactive chat approver is
-    # attached; autonomous ticket runs fall straight through (no hang).
-    # Last in the chain so scope/repeat guards short-circuit before we ask.
-    try:
-        from .tool_gate import make_approval_gate_callback
-        _gate_cb = make_approval_gate_callback()
-        if _gate_cb is not None:
-            existing = getattr(doer, "before_tool_callback", None)
-            if existing is None:
-                doer.before_tool_callback = _gate_cb
-            elif isinstance(existing, list):
-                doer.before_tool_callback = list(existing) + [_gate_cb]
-            else:
-                doer.before_tool_callback = [existing, _gate_cb]
-    except Exception:
-        pass
-    # A1 quality gate signals — record run_tests/typecheck/format results
-    # into tests_ok/typecheck_ok/lint_ok so the Feedback agent's
-    # deterministic gate (quality_gate.evaluate) actually has inputs.
-    try:
-        from .quality_gate import make_quality_signal_callback
-        _qs_cb = make_quality_signal_callback()
-        existing_after_tool = getattr(doer, "after_tool_callback", None)
-        if existing_after_tool is None:
-            doer.after_tool_callback = _qs_cb
-        elif isinstance(existing_after_tool, list):
-            doer.after_tool_callback = list(existing_after_tool) + [_qs_cb]
-        else:
-            doer.after_tool_callback = [existing_after_tool, _qs_cb]
-    except Exception:
-        pass  # signal wiring never blocks pipeline boot
-    # Lifecycle hooks (Claude-Code parity) at the pipeline tool boundary too —
-    # the chat path fires PreToolUse/PostToolUse in its dispatch loop; mirror
-    # it here so an operator's hooks.json applies to autonomous ticket runs.
-    # AIFORGE_HOOKS_DISABLE=1 makes the adapters no-op. Never blocks boot.
-    try:
-        from .hooks import adk_after_tool_callback, adk_before_tool_callback
-        _hook_before = adk_before_tool_callback()
-        if _hook_before is not None:
-            existing = getattr(doer, "before_tool_callback", None)
-            if existing is None:
-                doer.before_tool_callback = _hook_before
-            elif isinstance(existing, list):
-                doer.before_tool_callback = list(existing) + [_hook_before]
-            else:
-                doer.before_tool_callback = [existing, _hook_before]
-        _hook_after = adk_after_tool_callback()
-        if _hook_after is not None:
-            existing_after = getattr(doer, "after_tool_callback", None)
-            if existing_after is None:
-                doer.after_tool_callback = _hook_after
-            elif isinstance(existing_after, list):
-                doer.after_tool_callback = list(existing_after) + [_hook_after]
-            else:
-                doer.after_tool_callback = [existing_after, _hook_after]
-    except Exception:
-        pass  # hooks never block pipeline boot
+    doer = _build_doer()
     refiner = _refiner_mod.build(build_litellm_model)
     feedback = _feedback_mod.build(build_litellm_model)
     learner = _learner_mod.build(build_litellm_model)
@@ -339,244 +306,271 @@ def build_pipeline(*, skip_researcher: bool = False,
     # in parallel (no latency win) but cost 3x tokens to judge one plan.
     verifier = _verifier_mod.build(build_litellm_model)
 
-    # As ``Workflow`` graph nodes, LlmAgents default to single_turn
-    # (include_contents='none'), which would blind each stage to the prior
-    # stages' outputs. ``chat`` mode preserves the conversation history —
-    # matching the old SequentialAgent behaviour — for the agents that
-    # genuinely need it (multi-turn tool users + judges of the run's
-    # history). (``task`` mode is rejected for static graph nodes.)
-    _agent_nodes = [
-        enhancer, planner, doer, refiner, feedback, learner,
-        *context_branches,
-    ]
-    for _a in _agent_nodes:
-        # A text-doer FunctionNode is a pydantic model with no ``mode`` field
-        # (it drives its own ReAct loop, so chat/single_turn is meaningless) —
-        # setting it raises ValueError. Guard so the node can't break the build.
-        try:
-            _a.mode = "chat"
-        except Exception:  # noqa: BLE001
-            pass
-    # Tool-less single-shot judges run single_turn: they read everything
-    # they need from state-templated prompt blocks ({plan_md?} etc.), so
-    # replaying the full 22-node history into each of them wastes tokens
-    # massively (3 verifiers × full history × up to 4 planner epochs,
-    # plus the validator) and re-creates the ONE-117 KV pressure.
-    # single_turn → include_contents='none'.
-    _single_turn = [triage, validator, verifier]
+    chat_nodes = [enhancer, planner, doer, refiner, feedback, learner,
+                  *context_branches]
+    single_turn = [triage, validator, verifier]
+    critical = [triage, enhancer, planner, doer, validator]
     if gap_eval is not None:
-        _single_turn.append(gap_eval)
-    for _a in _single_turn:
-        _a.mode = "single_turn"
-
-    # Parallel branches share a JoinNode: if ONE branch raises (flaky local
-    # mlx-lm), the ADK workflow engine sets error_shut_down and the whole
-    # graph aborts — the join never fires, planning/doing never runs. Give
-    # the fan-out branches a light node-level retry so a transient blip
-    # retries instead of nuking the run. (EscalatingLlm already handles
-    # model-layer fallover; this guards the exhausted-chain re-raise.)
-    try:
-        from google.adk.workflow import RetryConfig
-        _branch_retry = RetryConfig(max_attempts=2, initial_delay=1.0,
-                                    backoff_factor=2.0)
-        for _b in (*context_branches, verifier):
-            _b.retry_config = _branch_retry
-        # The serial chokepoints too: enhancer/validator/planner/doer/triage
-        # sit on the critical path — a single transient exception in any
-        # of them is error_shut_down for the whole graph.
-        _crit = [triage, enhancer, planner, doer, validator]
-        if gap_eval is not None:
-            _crit.append(gap_eval)
-        for _b in _crit:
-            _b.retry_config = _branch_retry
-    except Exception:
-        pass  # retry is best-effort; never block pipeline boot
-
-    # ── per-agent callbacks (fire via agent.run_async inside the node) ──
-    # Persist Learner-emitted facts into Neo4j (Observation_v2 +
-    # Decision_v2). Without this, state['facts_json'] dies with the session.
-    from .learner_persist import make_learner_after_callback
-    _append_after(learner, make_learner_after_callback())
-
-    # Executor context cleansing — the Doer/Refiner run in chat mode, which
-    # replays the planner/enhancer/researcher prologue into them every turn.
-    # That hand-off already reaches them via their templated prompt blocks
-    # ({plan_md?}/{context_brief_md?}/{rules_md?}/…), so strip the redundant
-    # prologue from the replayed history and keep only the seed + their own
-    # recent loop work. Big win for slow 120B models. Flag-guarded.
-    # Split per-agent so a text-doer FunctionNode (which rejects before_model)
-    # doesn't also skip attaching the refiner's focus callback.
-    try:
-        from .executor_focus import make_executor_focus_callback
-        _append_before_model(doer, make_executor_focus_callback("doer"))
-    except Exception:
-        pass  # focus is best-effort; never block pipeline boot
-    try:
-        from .executor_focus import make_executor_focus_callback
-        _append_before_model(refiner, make_executor_focus_callback("refiner"))
-    except Exception:
-        pass
-
-    # Mid-run steering (Gap A, team mode) — registered AFTER focus-trim so an
-    # applied steer (the newest content) can never itself be cut by the trim.
-    # Doer + Refiner are the iterative nodes a team run actually spends most
-    # of its wall-clock in, so they're where "keep typing while it thinks"
-    # matters; see chat_steer_callback.py for why before_model (not a session
-    # state write) is the mechanism.
-    try:
-        from .chat_steer_callback import make_steer_before_model_callback
-        _append_before_model(doer, make_steer_before_model_callback("doer"))
-    except Exception:
-        pass  # steering is best-effort; never block pipeline boot
-    try:
-        from .chat_steer_callback import make_steer_before_model_callback
-        _append_before_model(refiner, make_steer_before_model_callback("refiner"))
-    except Exception:
-        pass
-
-    # Auto-consolidation after-callback on the Learner — mines the finished
-    # run's trajectory for durable facts (extract → decide ADD/UPDATE/DELETE/
-    # NOOP vs existing → reflect), complementing the explicit facts_json
-    # path above. Soft-fail; neo4j-only; feature-flagged.
-    try:
-        from .memory_consolidate import make_consolidate_after_callback
-        _append_after(learner, make_consolidate_after_callback())
-    except Exception:
-        pass  # consolidation wiring never blocks pipeline boot
-
-    # Record the Planner's decomposition as internal subtasks on the ticket
-    # (event-sourced) so the UI charts the breakdown + the Doer flips each
-    # subtask's status as it works through them.
-    from .subtasks_callback import make_planner_subtasks_callback
-    _append_after(planner, make_planner_subtasks_callback())
-
-    # ENHANCER DEGENERATE-OUTPUT GUARD (sequential/ADK path — same gate the
-    # parallel + escalated-simple paths get in parallel_subtasks._enhance):
-    # the enhancer is a single point of failure; a collapsed rewrite or one
-    # that dropped every named anchor must never replace the operator's ask.
-    _append_after(enhancer, _make_enhancer_guard())
-
-    # LOC-plateau watcher on the Refiner — sees each loop turn AFTER the Doer
-    # reported file_diffs. Sets state['loop_budget_kill'] which loop_gate
-    # reads to exit the Doer loop early. (The old LoopAgent before-callback
-    # abort is now the loop_gate's ``exit`` route.)
-    _plateau_before, plateau_after = build_loop_budget_callbacks()
-    if plateau_after is not None:
-        _append_after(refiner, plateau_after)
-
-    # Failure-memory after-callback on the Validator — writes a failure
-    # Observation_v2 when the run didn't land cleanly.
-    try:
-        from .failure_memory import make_failure_memory_after_callback
-        _append_after(validator, make_failure_memory_after_callback())
-    except Exception:
-        pass  # failure_memory wiring never blocks pipeline boot
+        single_turn.append(gap_eval)
+        critical.append(gap_eval)
+    _set_node_modes(chat_nodes, single_turn)
+    _set_node_retries((*context_branches, verifier), critical)
+    _attach_agent_callbacks(doer=doer, refiner=refiner, learner=learner,
+                            planner=planner, enhancer=enhancer,
+                            validator=validator)
 
     # ── routing + merge nodes ───────────────────────────────────────────
-    triage_gate = make_triage_gate()
-    context_join = make_context_join()
-    merge_context = make_merge_context_node()
-    loop_gate = make_loop_gate()
-    validator_gate = make_validator_gate()
-    verifier_gate = make_verifier_gate()
-    plan_promote = make_plan_promote()
-    research_entry = make_research_entry_node()
-    gap_gate = make_gap_gate() if not skip_researcher else None
+    nodes = {
+        "triage": triage, "enhancer": enhancer, "planner": planner,
+        "doer": doer, "refiner": refiner, "feedback": feedback,
+        "learner": learner, "validator": validator, "verifier": verifier,
+        "gap_eval": gap_eval, "context_branches": context_branches,
+        "triage_gate": make_triage_gate(),
+        "context_join": make_context_join(),
+        "merge_context": make_merge_context_node(),
+        "loop_gate": make_loop_gate(),
+        "validator_gate": make_validator_gate(),
+        "verifier_gate": make_verifier_gate(),
+        "plan_promote": make_plan_promote(),
+        "research_entry": make_research_entry_node(),
+        "gap_gate": make_gap_gate() if not skip_researcher else None,
+    }
 
     # ── graph edges ─────────────────────────────────────────────────────
     # NOTE: live_verifier is intentionally NOT in this graph — it runs
     # standalone AFTER the runner opens the PR (its deploy recipe merges +
     # rolls out the PR before testing). See adk_runner._run_live_verifier.
-    edges: list = [
-        # entry + fast-path switch
-        Edge(from_node=START, to_node=triage),
-        Edge(from_node=triage, to_node=triage_gate),
-        Edge(from_node=triage_gate, to_node=doer, route=ROUTE_TRIVIAL),
-        Edge(from_node=triage_gate, to_node=enhancer, route=ROUTE_FULL),
-    ]
-    # context fan-out: enhancer → research_entry → branches → join → merge.
-    # research_entry is the stable fan-out source so the research-gap loop
-    # can re-enter it and re-fire ALL branches in one scheduler wave
-    # (JoinNode re-arm requirement).
-    edges.append(Edge(from_node=enhancer, to_node=research_entry))
-    if not context_branches:
+    edges = (_entry_edges(Edge, START, nodes)
+             + _context_edges(Edge, nodes)
+             + _plan_edges(Edge, nodes)
+             + _loop_edges(Edge, nodes))
+    wf = Workflow(name="aiforge_v6_pipeline", edges=edges,
+                  max_concurrency=_workflow_concurrency())
+    _unstall_chat_nodes(wf)
+    return wf
+
+
+def _set_node_modes(chat_nodes, single_turn) -> None:
+    """As ``Workflow`` graph nodes, LlmAgents default to single_turn
+    (include_contents='none'), which would blind each stage to the prior
+    stages' outputs. ``chat`` mode preserves the conversation history —
+    matching the old SequentialAgent behaviour — for the agents that genuinely
+    need it (multi-turn tool users + judges of the run's history).
+
+    Tool-less single-shot judges stay single_turn: they read everything they
+    need from state-templated prompt blocks ({plan_md?} etc.), so replaying the
+    full 22-node history into each of them wastes tokens massively (3 verifiers
+    × full history × up to 4 planner epochs, plus the validator) and re-creates
+    the ONE-117 KV pressure.
+    """
+    for a in chat_nodes:
+        # A text-doer FunctionNode is a pydantic model with no ``mode`` field
+        # (it drives its own ReAct loop, so chat/single_turn is meaningless) —
+        # setting it raises ValueError. Guard so the node can't break the build.
+        try:
+            a.mode = "chat"
+        except Exception:  # noqa: BLE001
+            pass
+    for a in single_turn:
+        a.mode = "single_turn"
+
+
+def _set_node_retries(branches, critical) -> None:
+    """Parallel branches share a JoinNode: if ONE branch raises (flaky local
+    mlx-lm), the ADK workflow engine sets error_shut_down and the whole graph
+    aborts — the join never fires, planning/doing never runs. Give the fan-out
+    branches a light node-level retry so a transient blip retries instead of
+    nuking the run. (EscalatingLlm already handles model-layer fallover; this
+    guards the exhausted-chain re-raise.) The serial chokepoints get it too —
+    they sit on the critical path, where one transient exception is
+    error_shut_down for the whole graph."""
+    try:
+        from google.adk.workflow import RetryConfig
+        retry = RetryConfig(max_attempts=2, initial_delay=1.0,
+                            backoff_factor=2.0)
+        for b in (*branches, *critical):
+            b.retry_config = retry
+    except Exception:  # noqa: BLE001 — retry is best-effort
+        pass
+
+
+def _attach_agent_callbacks(*, doer, refiner, learner, planner, enhancer,
+                            validator) -> None:
+    """Per-agent callbacks (they fire via agent.run_async inside the node)."""
+    from .learner_persist import make_learner_after_callback
+    from .loop_budget import build_loop_budget_callbacks
+    from .subtasks_callback import make_planner_subtasks_callback
+
+    # Persist Learner-emitted facts into Neo4j (Observation_v2 + Decision_v2).
+    # Without this, state['facts_json'] dies with the session.
+    _append_after(learner, make_learner_after_callback())
+    # Record the Planner's decomposition as internal subtasks on the ticket
+    # (event-sourced) so the UI charts the breakdown + the Doer flips each
+    # subtask's status as it works through them.
+    _append_after(planner, make_planner_subtasks_callback())
+    # ENHANCER DEGENERATE-OUTPUT GUARD (same gate the parallel +
+    # escalated-simple paths get in parallel_subtasks._enhance): the enhancer
+    # is a single point of failure; a collapsed rewrite or one that dropped
+    # every named anchor must never replace the operator's ask.
+    _append_after(enhancer, _make_enhancer_guard())
+    # LOC-plateau watcher on the Refiner — sees each loop turn AFTER the Doer
+    # reported file_diffs. Sets state['loop_budget_kill'] which loop_gate reads
+    # to exit the Doer loop early.
+    _, plateau_after = build_loop_budget_callbacks()
+    _append_after(refiner, plateau_after)
+
+    # Executor context cleansing — the Doer/Refiner run in chat mode, which
+    # replays the planner/enhancer/researcher prologue into them every turn.
+    # That hand-off already reaches them via their templated prompt blocks, so
+    # strip the redundant prologue and keep only the seed + their own recent
+    # loop work. Big win for slow 120B models.
+    #
+    # Mid-run steering (Gap A, team mode) is registered AFTER focus-trim so an
+    # applied steer (the newest content) can never itself be cut by the trim.
+    # Doer + Refiner are the iterative nodes a team run spends most of its
+    # wall-clock in; see chat_steer_callback.py for why before_model (not a
+    # session state write) is the mechanism.
+    #
+    # Each attach is isolated: a text-doer FunctionNode rejects before_model,
+    # and that must not also skip the refiner's callbacks.
+    for agent, role in ((doer, "doer"), (refiner, "refiner")):
+        for module, factory in (
+                (".executor_focus", "make_executor_focus_callback"),
+                (".chat_steer_callback", "make_steer_before_model_callback")):
+            try:
+                mod = __import__(f"aiforge_core.runtime{module}",
+                                 fromlist=[factory])
+                _append_before_model(agent, getattr(mod, factory)(role))
+            except Exception:  # noqa: BLE001 — never block pipeline boot
+                pass
+
+    # Auto-consolidation after-callback on the Learner — mines the finished
+    # run's trajectory for durable facts (extract → decide ADD/UPDATE/DELETE/
+    # NOOP vs existing → reflect), complementing the explicit facts_json path
+    # above. Soft-fail; neo4j-only; feature-flagged.
+    try:
+        from .memory_consolidate import make_consolidate_after_callback
+        _append_after(learner, make_consolidate_after_callback())
+    except Exception:  # noqa: BLE001
+        pass
+    # Failure-memory after-callback on the Validator — writes a failure
+    # Observation_v2 when the run didn't land cleanly.
+    try:
+        from .failure_memory import make_failure_memory_after_callback
+        _append_after(validator, make_failure_memory_after_callback())
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _entry_edges(Edge, START, n) -> list:
+    """Entry + the cheap fast-path switch."""
+    from .graph_pipeline import ROUTE_FULL, ROUTE_TRIVIAL
+    return [Edge(from_node=START, to_node=n["triage"]),
+            Edge(from_node=n["triage"], to_node=n["triage_gate"]),
+            Edge(from_node=n["triage_gate"], to_node=n["doer"],
+                 route=ROUTE_TRIVIAL),
+            Edge(from_node=n["triage_gate"], to_node=n["enhancer"],
+                 route=ROUTE_FULL)]
+
+
+def _context_edges(Edge, n) -> list:
+    """context fan-out: enhancer → research_entry → branches → join → merge.
+
+    research_entry is the stable fan-out source so the research-gap loop can
+    re-enter it and re-fire ALL branches in one scheduler wave (a JoinNode
+    re-arm requirement).
+    """
+    from .graph_pipeline import ROUTE_RESEARCH_GAP, ROUTE_RESEARCH_OK
+    edges = [Edge(from_node=n["enhancer"], to_node=n["research_entry"])]
+    if not n["context_branches"]:
         # Lean: no context gatherers at all → go straight to the Planner.
         # (research_entry is a no-op fan-out source; it just passes through.)
-        edges.append(Edge(from_node=research_entry, to_node=planner))
-    else:
-        for br in context_branches:
-            edges.append(Edge(from_node=research_entry, to_node=br))
-            edges.append(Edge(from_node=br, to_node=context_join))
-        edges.append(Edge(from_node=context_join, to_node=merge_context))
-        if gap_gate is not None:
-            # merge_context → gap_eval → gap_gate ─┬ research_ok  → planner
-            #                                       └ research_gap → research_entry
-            edges.append(Edge(from_node=merge_context, to_node=gap_eval))
-            edges.append(Edge(from_node=gap_eval, to_node=gap_gate))
-            edges.append(Edge(from_node=gap_gate, to_node=planner,
-                              route=ROUTE_RESEARCH_OK))
-            edges.append(Edge(from_node=gap_gate, to_node=research_entry,
-                              route=ROUTE_RESEARCH_GAP))
-        else:
-            edges.append(Edge(from_node=merge_context, to_node=planner))
-    # planner → plan_promote (parse plan JSON → scope_allowlist_globs in
-    # state) → verifier fan-out → join → merge → verifier_gate
-    edges.append(Edge(from_node=planner, to_node=plan_promote))
-    # plan_promote → single verifier (judges correctness+scope+risk in one
-    # call, writes verifier_verdict) → verifier_gate.
-    edges.append(Edge(from_node=plan_promote, to_node=verifier))
-    # verifier_gate ACTS on the verdict: a rejected plan loops back to the
-    # planner once (bounded); a passing plan proceeds to the Doer.
-    edges.append(Edge(from_node=verifier, to_node=verifier_gate))
-    edges.append(Edge(from_node=verifier_gate, to_node=doer,
-                      route=ROUTE_VERIFY_PASS))
-    edges.append(Edge(from_node=verifier_gate, to_node=planner,
-                      route=ROUTE_VERIFY_REPLAN))
-    # doer loop: doer → refiner → feedback → loop_gate ⟲
+        return edges + [Edge(from_node=n["research_entry"], to_node=n["planner"])]
+    for br in n["context_branches"]:
+        edges.append(Edge(from_node=n["research_entry"], to_node=br))
+        edges.append(Edge(from_node=br, to_node=n["context_join"]))
+    edges.append(Edge(from_node=n["context_join"], to_node=n["merge_context"]))
+    if n["gap_gate"] is None:
+        edges.append(Edge(from_node=n["merge_context"], to_node=n["planner"]))
+        return edges
+    # merge_context → gap_eval → gap_gate ─┬ research_ok  → planner
+    #                                       └ research_gap → research_entry
     edges += [
-        Edge(from_node=doer, to_node=refiner),
-        Edge(from_node=refiner, to_node=feedback),
-        Edge(from_node=feedback, to_node=loop_gate),
-        Edge(from_node=loop_gate, to_node=doer, route=ROUTE_LOOP),
-        Edge(from_node=loop_gate, to_node=validator, route=ROUTE_EXIT),
-        # validator → replan back to planner, or done → learner
-        Edge(from_node=validator, to_node=validator_gate),
-        Edge(from_node=validator_gate, to_node=planner, route=ROUTE_REPLAN),
-        Edge(from_node=validator_gate, to_node=learner, route=ROUTE_DONE),
+        Edge(from_node=n["merge_context"], to_node=n["gap_eval"]),
+        Edge(from_node=n["gap_eval"], to_node=n["gap_gate"]),
+        Edge(from_node=n["gap_gate"], to_node=n["planner"],
+             route=ROUTE_RESEARCH_OK),
+        Edge(from_node=n["gap_gate"], to_node=n["research_entry"],
+             route=ROUTE_RESEARCH_GAP),
+    ]
+    return edges
+
+
+def _plan_edges(Edge, n) -> list:
+    """planner → plan_promote (parse plan JSON → scope_allowlist_globs in
+    state) → the single verifier (correctness+scope+risk in one call, writes
+    verifier_verdict) → verifier_gate, which ACTS on the verdict: a rejected
+    plan loops back to the planner once (bounded), a passing plan proceeds."""
+    from .graph_pipeline import ROUTE_VERIFY_PASS, ROUTE_VERIFY_REPLAN
+    return [
+        Edge(from_node=n["planner"], to_node=n["plan_promote"]),
+        Edge(from_node=n["plan_promote"], to_node=n["verifier"]),
+        Edge(from_node=n["verifier"], to_node=n["verifier_gate"]),
+        Edge(from_node=n["verifier_gate"], to_node=n["doer"],
+             route=ROUTE_VERIFY_PASS),
+        Edge(from_node=n["verifier_gate"], to_node=n["planner"],
+             route=ROUTE_VERIFY_REPLAN),
     ]
 
-    # Cap concurrent graph-scheduled nodes. The 4-way context fan-out
-    # against a single local mlx-lm endpoint is queueing, not parallelism
-    # — the server processes serially while 4 in-flight chat-mode prompts
-    # multiply KV-cache pressure (the ONE-117 OOM recipe). Floor is 3:
-    # with a smaller cap a replan pass can re-fire the 3 verify branches
-    # across two scheduler waves, and ADK's JoinNode then sees the
-    # not-yet-rescheduled third branch's stale pass-1 COMPLETED status
-    # and fires early with the old axis verdict (double-running
-    # merge_verdicts + verifier_gate). Raise for cloud providers via
-    # AIFORGE_WORKFLOW_MAX_CONCURRENCY (0 = unlimited).
-    _cap = int(os.environ.get("AIFORGE_WORKFLOW_MAX_CONCURRENCY", "3"))
-    if 0 < _cap < 3:
-        _cap = 3
-    wf = Workflow(
-        name="aiforge_v6_pipeline",
-        edges=edges,
-        max_concurrency=_cap if _cap > 0 else None,
-    )
-    # CRITICAL un-stall: ADK's graph builder CLONES every LlmAgent into
-    # the graph and forces wait_for_output=True for mode="chat"
-    # (conversational re-trigger semantics, _workflow_graph_utils.py).
-    # A chat node here never yields an engine "output" — its reply is
-    # message_as_output content — so the node parks in WAITING and
-    # downstream never triggers: the run stalled right after the
-    # enhancer. Our chat agents are one-shot graph stages; flip the
-    # flag on the CLONES (mutating the pre-construction originals is
-    # useless — the clone step overwrites it).
+
+def _loop_edges(Edge, n) -> list:
+    """doer → refiner → feedback → loop_gate ⟲, then validator → replan back
+    to the planner, or done → learner."""
+    from .graph_pipeline import (
+        ROUTE_DONE, ROUTE_EXIT, ROUTE_LOOP, ROUTE_REPLAN)
+    return [
+        Edge(from_node=n["doer"], to_node=n["refiner"]),
+        Edge(from_node=n["refiner"], to_node=n["feedback"]),
+        Edge(from_node=n["feedback"], to_node=n["loop_gate"]),
+        Edge(from_node=n["loop_gate"], to_node=n["doer"], route=ROUTE_LOOP),
+        Edge(from_node=n["loop_gate"], to_node=n["validator"], route=ROUTE_EXIT),
+        Edge(from_node=n["validator"], to_node=n["validator_gate"]),
+        Edge(from_node=n["validator_gate"], to_node=n["planner"],
+             route=ROUTE_REPLAN),
+        Edge(from_node=n["validator_gate"], to_node=n["learner"],
+             route=ROUTE_DONE),
+    ]
+
+
+def _workflow_concurrency() -> int | None:
+    """Cap concurrent graph-scheduled nodes. The 4-way context fan-out against
+    a single local mlx-lm endpoint is queueing, not parallelism — the server
+    processes serially while 4 in-flight chat-mode prompts multiply KV-cache
+    pressure (the ONE-117 OOM recipe). Floor is 3: with a smaller cap a replan
+    pass can re-fire the 3 verify branches across two scheduler waves, and
+    ADK's JoinNode then sees the not-yet-rescheduled third branch's stale
+    pass-1 COMPLETED status and fires early with the old axis verdict
+    (double-running merge_verdicts + verifier_gate). Raise for cloud providers
+    via AIFORGE_WORKFLOW_MAX_CONCURRENCY (0 = unlimited)."""
+    cap = int(os.environ.get("AIFORGE_WORKFLOW_MAX_CONCURRENCY", "3"))
+    if cap <= 0:
+        return None
+    return max(3, cap)
+
+
+def _unstall_chat_nodes(wf) -> None:
+    """CRITICAL un-stall: ADK's graph builder CLONES every LlmAgent into the
+    graph and forces wait_for_output=True for mode="chat" (conversational
+    re-trigger semantics, _workflow_graph_utils.py). A chat node here never
+    yields an engine "output" — its reply is message_as_output content — so the
+    node parks in WAITING and downstream never triggers: the run stalled right
+    after the enhancer. Our chat agents are one-shot graph stages; flip the flag
+    on the CLONES (mutating the pre-construction originals is useless — the
+    clone step overwrites it)."""
     from google.adk.agents import LlmAgent as _LlmAgent
-    for _n in wf.graph.nodes:
-        if isinstance(_n, _LlmAgent) and getattr(_n, "mode", None) == "chat":
-            _n.wait_for_output = False
-    return wf
+    for node in wf.graph.nodes:
+        if isinstance(node, _LlmAgent) and getattr(node, "mode", None) == "chat":
+            node.wait_for_output = False
 
 
 def _make_enhancer_guard():
@@ -609,36 +603,28 @@ def _make_enhancer_guard():
     return _cb
 
 
-def _append_after(agent, cb) -> None:
-    """Append ``cb`` to ``agent.after_agent_callback`` preserving existing
-    callback(s)."""
+def _append_callback(agent, attr: str, cb) -> None:
+    """Append ``cb`` to ``agent.<attr>`` preserving existing callback(s).
+
+    ADK accepts a single callable or a list, so every attach site had to
+    re-derive the same three cases; they only ever differed in the attribute.
+    """
     if cb is None:
         return
-    existing = getattr(agent, "after_agent_callback", None)
+    existing = getattr(agent, attr, None)
     merged: list = []
     if existing is not None:
-        if isinstance(existing, list):
-            merged.extend(existing)
-        else:
-            merged.append(existing)
+        merged.extend(existing if isinstance(existing, list) else [existing])
     merged.append(cb)
-    agent.after_agent_callback = merged
+    setattr(agent, attr, merged)
+
+
+def _append_after(agent, cb) -> None:
+    _append_callback(agent, "after_agent_callback", cb)
 
 
 def _append_before_model(agent, cb) -> None:
-    """Append ``cb`` to ``agent.before_model_callback`` preserving existing
-    callback(s)."""
-    if cb is None:
-        return
-    existing = getattr(agent, "before_model_callback", None)
-    merged: list = []
-    if existing is not None:
-        if isinstance(existing, list):
-            merged.extend(existing)
-        else:
-            merged.append(existing)
-    merged.append(cb)
-    agent.before_model_callback = merged
+    _append_callback(agent, "before_model_callback", cb)
 
 
 def build_live_verifier_agent(project: str | None = None):
