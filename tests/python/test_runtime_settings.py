@@ -38,7 +38,9 @@ def test_defaults(rs, monkeypatch):
         "chat_safety_cap": 0, "chat_turn_deadline_s": 0,
         "chat_cap_extensions": 2,
         "chat_unattended_cap": 2000,
-        "llm_max_rpm": 5}
+        "llm_max_rpm": 30,
+        "llm_rate_limit_backoff_s": 20,
+        "llm_rate_limit_cap_s": 60}
 
 
 def test_stale_cave_zero_migrated_to_default(rs, monkeypatch):

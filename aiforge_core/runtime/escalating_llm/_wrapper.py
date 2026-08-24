@@ -35,8 +35,13 @@ async def _throttle_global() -> None:
     """
     try:
         from aiforge_core.llm import rate_limiter as _rl
-        if _rl.global_rpm() <= 0:
-            return
+        # NO `if global_rpm() <= 0: return` short-circuit. acquire_global also
+        # serves a hold imposed by a SERVER that rejected us, which applies
+        # even when the operator set no ceiling of their own — and 0 is the
+        # setting most operators run. Skipping the call here made team mode,
+        # the highest-volume path and the one most likely to have earned the
+        # rejection, the only path that disobeyed a 429. It fast-returns on its
+        # own when there is nothing to wait for.
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, lambda: _rl.acquire_global(
             max_wait_s=float(_os.environ.get("AIFORGE_LLM_MAX_WAIT_S", "120"))))

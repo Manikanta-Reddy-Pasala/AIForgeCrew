@@ -692,9 +692,18 @@ def global_snapshot(*, series: bool = True) -> dict:
 def _limit_state() -> dict:
     try:
         from aiforge_core.llm import rate_limiter as _rl
-        return {"limit_rpm": int(_rl.global_rpm()), "queued": _rl.waiting()}
+        return {"limit_rpm": int(_rl.global_rpm()), "queued": _rl.waiting(),
+                # What the CEILING has counted in the last 60s. Not the same
+                # number as `per_minute`: the ceiling also counts sends the
+                # meter never sees a token for, and it is what decides whether
+                # the next call queues.
+                "limit_used": _rl.global_used(),
+                # Seconds left on a hold the SERVER imposed (a 429/quota
+                # rejection). Distinct from `queued`: that is our own ceiling
+                # throttling us, this is the provider having refused.
+                "held_s": round(_rl.held_for(), 1)}
     except Exception:  # noqa: BLE001 — the meter must never raise
-        return {"limit_rpm": 0, "queued": 0}
+        return {"limit_rpm": 0, "queued": 0, "limit_used": 0, "held_s": 0.0}
 
 
 def reset_all() -> None:

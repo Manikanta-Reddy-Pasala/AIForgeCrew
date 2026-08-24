@@ -85,15 +85,46 @@ _SPEC: dict[str, tuple[str, int]] = {
     # Operator ceiling on model requests per minute. 0 = no ceiling.
     #
     # Covers everything that goes through the LLM client (chat, the routers and
-    # classifiers, jobs, direct callers) and the ADK/team pipeline. It does NOT
-    # cover embeddings/rerank, the instructor-backed structured path, or the
-    # memory daemon — that runs in its OWN process, and this bucket is
-    # per-process, so the ceiling is per API process, not per machine.
+    # classifiers, jobs, direct callers), the ADK/team pipeline, and the
+    # instructor-backed structured path (every memory-side `learner` call). It
+    # does NOT cover embeddings/rerank, nor the memory daemon — that runs in
+    # its OWN process and this window is per-process, so the ceiling is per API
+    # process, not per machine. Size it accordingly.
+    #
+    # A SLIDING WINDOW: at most this many requests in any 60 seconds, which is
+    # how a provider publishing "N per minute" counts. (It used to be a token
+    # bucket that started full, which permitted up to 2N in a wall minute — so
+    # a ceiling set under the provider's limit still earned rejections.)
     #
     # A throttle, not a guard: one agent turn is routinely 10-40 calls, so a
     # low value queues ordinary work rather than preventing it. It never fails
     # a call — past AIFORGE_LLM_MAX_WAIT_S it warns and lets it through.
-    "llm_max_rpm": ("AIFORGE_LLM_MAX_RPM", 5),
+    #
+    # 0 disables OUR throttle, not our manners: a provider that answers 429 (or
+    # a 4xx naming a rate limit) still holds every caller in this process for
+    # Retry-After. Declining to self-throttle is a statement about our own
+    # preference, not permission to ignore a server that has refused us.
+    # 30, not 5. 5 was chosen when the structured/memory path was exempt from
+    # this ceiling; it no longer is, so the same number now covers strictly more
+    # traffic. And a sliding window releases differently from the token bucket
+    # it replaced: the bucket dripped a slot every 60/N seconds, so a 20-call
+    # turn made visible progress throughout, while a window of 5 gives five
+    # fast steps and then a 60-SECOND DEAD STOP, four times over. Same
+    # throughput, far worse to sit in front of. 30 fits an ordinary turn
+    # (10-40 calls) inside one window while still catching a runaway.
+    "llm_max_rpm": ("AIFORGE_LLM_MAX_RPM", 30),
+    # How long to wait after a provider REJECTS us for sending too fast (a 429,
+    # or a 4xx whose body names a rate limit) when it did not send a
+    # Retry-After. The provider is counting a minute; a sub-second backoff just
+    # re-earns the same rejection and pays a request to do it. 0 = fall back to
+    # the ordinary exponential backoff.
+    "llm_rate_limit_backoff_s": ("AIFORGE_LLM_RATE_LIMIT_BACKOFF_S", 20),
+    # The most a SINGLE rejection may cost, covering both the waiting caller's
+    # own sleep and the process-wide hold every other caller then observes.
+    # `Retry-After` is a number a remote server chose: unbounded, one header
+    # from a misconfigured or shared-tenant gateway parks the whole box for an
+    # hour.
+    "llm_rate_limit_cap_s": ("AIFORGE_LLM_RATE_LIMIT_CAP_S", 60),
 }
 
 # Sanity bounds — reject obviously-bad values from the API/UI so a typo
@@ -118,6 +149,12 @@ _BOUNDS: dict[str, tuple[int, int]] = {
     "chat_cap_extensions": (0, 50),
     "chat_unattended_cap": (1, 1_000_000),
     "llm_max_rpm": (0, 100_000),
+    # lo=0: fall back to the ordinary exponential backoff.
+    "llm_rate_limit_backoff_s": (0, 3_600),
+    # lo=1: a cap of 0 would mean "obey no rejection at all", which is not a
+    # thing an operator can usefully ask for — 0 rpm already says "do not
+    # throttle me", and even that keeps obeying the server.
+    "llm_rate_limit_cap_s": (1, 3_600),
 }
 
 

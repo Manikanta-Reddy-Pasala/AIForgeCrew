@@ -130,7 +130,14 @@ def structured_complete(role: str, messages: list[dict],
                     base_url=ep.base_url, api_key=ep.api_key, model=ep.model,
                     messages=messages, response_model=response_model,
                     max_retries=max_retries, max_tokens=max_tokens,
-                    timeout_s=timeout_s, temperature=temperature)
+                    timeout_s=timeout_s, temperature=temperature,
+                    # Role + provider are what put this path INTO the
+                    # operator's rate ceiling and the toolbar meter. Without
+                    # them the busiest unattended sender in the system (every
+                    # structured caller is memory-side, i.e. `learner`) is
+                    # both uncapped and invisible.
+                    role=role, provider=getattr(ep, "provider",
+                                                "openai_compatible"))
                 # The instructor path talks to the endpoint directly (bypasses
                 # client.complete), so mirror it to Langfuse here too.
                 try:

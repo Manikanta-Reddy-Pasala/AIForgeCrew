@@ -301,7 +301,10 @@ def _post(ep: Endpoint, payload: bytes, timeout_s: int,
     # by the caller's retry budget — a queue is not a failure, and charging it
     # there turned "you are throttled" into "your classifier errored".
     _throttled = _rl.acquire_global(
-        max_wait_s=float(_int_env("AIFORGE_LLM_MAX_WAIT_S", 120)))
+        max_wait_s=float(_int_env("AIFORGE_LLM_MAX_WAIT_S", 120)),
+        # Provider-scoped: a 429 from a cloud gateway must not stall the local
+        # mlx server, which declares no rate limit at all.
+        provider=ep.provider)
     if throttled is not None:
         throttled[0] = _throttled
     # ONE meter token for BOTH paths, and the failure counted here rather than
@@ -468,8 +471,54 @@ def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
                     sleep_s = min(cap, max(0.1, float(ra)))
                 except ValueError:
                     pass
+            if label == "rate_limited":
+                # The provider is counting a MINUTE; a 0.5s backoff just
+                # re-earns the same rejection and burns another request doing
+                # it. And the rejection is the only ground truth we ever get
+                # about what the server is actually counting — our ceiling is
+                # per-process and cannot see the memory daemon — so it must
+                # reach the limiter whether or not THIS caller can afford to
+                # wait.
+                _ra_f = 0.0
+                if ra:
+                    try:
+                        _ra_f = max(0.0, float(ra))
+                    except ValueError:
+                        _ra_f = 0.0
+                try:
+                    _rl.note_rate_limited(_ra_f, provider=ep.provider)
+                except Exception:  # noqa: BLE001 — never break on a hint
+                    pass
+                # BOUNDED. Without a cap of our own, `Retry-After: 3600` is
+                # two hours of blocking sleep on this thread from one header —
+                # and AIFORGE_LLM_RETRY_BUDGET=0 (a documented knob) removes
+                # the deadline that would otherwise refuse it. A hostile or
+                # simply misconfigured gateway must not own the process.
+                # Stored setting -> env -> default, so Settings -> Agent
+                # limits actually moves these (a knob the UI cannot change is
+                # worse than one it never offered).
+                _rl_cap = _rl._setting("llm_rate_limit_cap_s",
+                                       "AIFORGE_LLM_RATE_LIMIT_CAP_S", 60.0)
+                _rl_back = _rl._setting("llm_rate_limit_backoff_s",
+                                        "AIFORGE_LLM_RATE_LIMIT_BACKOFF_S", 20.0)
+                sleep_s = min(max(1.0, _rl_cap),
+                              max(sleep_s, _ra_f or _rl_back))
             # Add jitter to avoid thundering herd against shared providers.
             sleep_s += random.uniform(0, 0.25)
+            if label == "rate_limited" and deadline is not None:
+                # Spend what this caller ACTUALLY has, not a flat 20s. The
+                # budget check below refuses any retry that does not leave room
+                # for a full attempt, and 20s + timeout_s never fits a caller
+                # with a 15-30s budget — so the routers and classifiers, the
+                # very callers acquire_global's docstring names, got the flat
+                # backoff computed for them and then no retry at all, exactly
+                # as before this existed. Clamping to the room that is left
+                # buys them a shorter real wait instead of none. (The 0.05
+                # keeps the strict > comparison below from rejecting a value
+                # that fits exactly.)
+                sleep_s = max(0.0, min(
+                    sleep_s,
+                    deadline - time.monotonic() - float(timeout_s) - 0.05))
             budget_out = False
             if (retry and label == "timeout" and sent[0]
                     and attempt < max_attempts and attempt >= timeout_max):

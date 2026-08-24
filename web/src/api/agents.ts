@@ -45,6 +45,12 @@ export interface LlmSettings {
   chat_cap_extensions: number;
   chat_unattended_cap: number;
   llm_max_rpm: number;
+  /** seconds to wait after the PROVIDER rejects us for sending too fast and
+   *  sends no Retry-After (0 = ordinary exponential backoff) */
+  llm_rate_limit_backoff_s: number;
+  /** the most a single rejection may cost — this caller's wait AND the
+   *  process-wide hold. Retry-After is a number a remote server chose. */
+  llm_rate_limit_cap_s: number;
 }
 
 // PUT body: any subset of the knobs, plus names to FORGET so they fall back to
@@ -122,6 +128,14 @@ export interface LlmUsage {
   /** operator ceiling on requests/min (0 = none) and callers waiting on it */
   limit_rpm: number;
   queued: number;
+  /** requests counted against the ceiling in the last 60s (its own count, not
+   *  `per_minute`: the ceiling also counts sends the meter has no token for) */
+  limit_used?: number;
+  /** seconds left on a hold a PROVIDER imposed by rejecting us (429/quota).
+   *  Distinct from `queued`, which is our own ceiling throttling us — and it
+   *  applies even at limit_rpm=0, which is why the badge needs it to explain
+   *  itself. */
+  held_s?: number;
   series_60m?: number[];
   /** failures per minute, same 60 slots and same indexes as `series_60m` */
   series_fail_60m?: number[];
