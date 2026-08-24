@@ -5,6 +5,7 @@ chat sessions, and cross-repo CALLS_REPO edges. All lazy-import their
 backends and soft-fail; no cross-group imports so no import cycles."""
 from __future__ import annotations
 
+import contextlib
 import os
 from typing import Any
 

@@ -7,6 +7,7 @@ and exposes :func:`main`, the single-shot systemd entrypoint.
 """
 from __future__ import annotations
 
+import contextlib
 import asyncio
 import os
 import time

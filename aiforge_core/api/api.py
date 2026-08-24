@@ -191,7 +191,6 @@ def _ensure_model_context_on_boot() -> None:
     best-effort; AIFORGE_NO_CTX_RELOAD=1 skips, AIFORGE_LM_CONTEXT sets target."""
     if os.environ.get("AIFORGE_NO_CTX_RELOAD"):
         return
-    import threading
 
     def _work():
         try:
