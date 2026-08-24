@@ -66,7 +66,8 @@ def test_require_match_still_returns_real_matches():
     nodes = [_node("kubernetes ingress needs a tls secret"),
              _node("something about penguins")]
     out = _rank_by_query(nodes, "kubernetes ingress", 5, require_match=True)
-    assert len(out) == 1 and "kubernetes" in out[0]["body"]
+    assert len(out) == 1
+    assert "kubernetes" in out[0]["body"]
 
 
 def test_require_match_keeps_everything_when_there_is_no_query():

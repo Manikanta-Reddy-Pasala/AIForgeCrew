@@ -199,7 +199,8 @@ def test_probe_auto_relaxes_internal_without_flag(monkeypatch):
     monkeypatch.setattr(oc.urllib.request, "urlopen", _fake_urlopen)
     # insecure=False but host is .internal → auto-relaxed to CERT_NONE
     out = oc.probe("https://chatai.internal/api", insecure=False)
-    assert out["ok"] is True and out["models"] == ["qwen"]
+    assert out["ok"] is True
+    assert out["models"] == ["qwen"]
     assert seen["mode"] == ssl.CERT_NONE
 
 

@@ -36,7 +36,8 @@ def test_plan_groups_many_files_and_skips_few(tmp_path, monkeypatch):
     # fewer than the minimum → no plan (single agent handles it)
     prompt2 = "look at m0.java and m1.java"
     plan2, groups2, _ = ap.plan_single_repo(prompt2, str(tmp_path))
-    assert plan2 is False and groups2 == []
+    assert plan2 is False
+    assert groups2 == []
 
 
 def test_stream_planned_fans_out_and_synthesizes(tmp_path, monkeypatch):

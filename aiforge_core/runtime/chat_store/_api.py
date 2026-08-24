@@ -162,7 +162,8 @@ def dedupe_sessions() -> dict:
         parts = [str(s.get("title") or ""), str(s.get("cwd") or ""),
                  str(s.get("role") or "")]
         parts += [(m.get("role") or "") + ":" + (m.get("content") or "") for m in msgs]
-        sig = hashlib.sha1("\x1e".join(parts).encode("utf-8", "replace")).hexdigest()
+        sig = hashlib.sha1("\x1e".join(parts).encode("utf-8", "replace"),
+                           usedforsecurity=False).hexdigest()
         if sig in seen:
             try:
                 if be.delete_session(s.get("id")):

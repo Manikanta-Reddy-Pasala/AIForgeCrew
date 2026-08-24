@@ -299,7 +299,8 @@ def test_a_peer_cannot_serve_another_peers_node(monkeypatch, tmp_path):
 
     res = _sync(monkeypatch, [entry], {entry["hash"]: forged})   # served by nuc
 
-    assert res["applied"] == 0 and res["rejected"] == 1
+    assert res["applied"] == 0
+    assert res["rejected"] == 1
     assert b"REAL knowledge from ms" in victim.read_bytes()
 
 
@@ -422,7 +423,8 @@ def test_class_a_records_cannot_be_rewritten(monkeypatch, tmp_path):
 
     res = _sync(monkeypatch, entries, blobs)
 
-    assert res["applied"] == 0 and res["rejected"] == 2
+    assert res["applied"] == 0
+    assert res["rejected"] == 2
     assert capture.read_bytes() == b"# my paste\nsecret\n"
     assert compacted.read_bytes() == b"real compaction\n"
 

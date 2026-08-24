@@ -31,6 +31,11 @@ class _McpUpdateBody(BaseModel):
 
 
 @router.get("/api/mcp/catalog")
+def _default_dsn() -> str:
+    from aiforge_core.config.env import default_pg_dsn
+    return default_pg_dsn()
+
+
 def mcp_catalog() -> dict:
     """The curated MCP marketplace catalog (browse → one-click install)."""
     from aiforge_core.config import mcp_registry
@@ -126,9 +131,9 @@ async def mcp_tool_call(body: _McpCallBody) -> dict:
         # port) which 404s. Force the real sidecar URL for this run.
         "EMBED_URL": os.environ.get(
             "EMBED_URL", "http://127.0.0.1:8764"),
-        "AIFORGE_DSN": os.environ.get(
-            "AIFORGE_DSN",
-            "postgresql://aiforge:aiforgepass@127.0.0.1:5432/aiforge"),
+        # No baked-in credential: see config.env.default_pg_dsn. The literal
+        # this replaced shipped a working password in source control.
+        "AIFORGE_DSN": os.environ.get("AIFORGE_DSN") or _default_dsn(),
     }
 
     # JSON-RPC dance: initialize → tools/call → shutdown.

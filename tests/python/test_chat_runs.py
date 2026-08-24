@@ -89,7 +89,8 @@ def test_subscribe_to_finished_run_replays_then_sentinel():
 def test_new_run_evicts_old_for_same_session():
     old = cr.start(101)
     new = cr.start(101)
-    assert cr.get(101) is new and cr.get(101) is not old
+    assert cr.get(101) is new
+    assert cr.get(101) is not old
     # Finishing the OLD run object must not mark the NEW one done.
     old.finish()
     assert cr.is_running(101) is True
@@ -117,6 +118,7 @@ def test_iter_subscription_yields_until_sentinel():
     threading.Thread(target=producer, daemon=True).start()
     got = list(cr.iter_subscription(run, q, ping_every=2.0))
     types = [e["type"] for e in got]
-    assert "thought" in types and "done" in types
+    assert "thought" in types
+    assert "done" in types
     # The subscriber is removed from the run on generator close.
     assert q not in run.subscribers

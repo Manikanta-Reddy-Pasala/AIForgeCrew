@@ -17,7 +17,9 @@ def test_reads_many_files_in_one_call(tmp_path):
     for i in range(5):
         (tmp_path / f"m{i}.java").write_text(f"class M{i} {{ int f{i}; }}")
     r = _t_read_files({"paths": [f"m{i}.java" for i in range(5)]}, str(tmp_path))
-    assert r["ok"] and r["read"] == 5 and r["failed"] == 0
+    assert r["ok"]
+    assert r["read"] == 5
+    assert r["failed"] == 0
     for i in range(5):
         assert f"=== m{i}.java ===" in r["content"]
         assert f"class M{i}" in r["content"]
@@ -27,7 +29,8 @@ def test_string_paths_and_missing_file(tmp_path):
     (tmp_path / "a.txt").write_text("alpha")
     # comma/newline string is accepted; a missing file is reported, not fatal
     r = _t_read_files({"paths": "a.txt, gone.txt"}, str(tmp_path))
-    assert r["read"] == 1 and r["failed"] == 1
+    assert r["read"] == 1
+    assert r["failed"] == 1
     assert "alpha" in r["content"]
     assert "[read failed:" in r["content"]
 

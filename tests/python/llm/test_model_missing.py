@@ -112,7 +112,8 @@ def test_an_exhausted_call_names_the_model_the_endpoint_and_the_alternatives(
         c.complete("learner", [{"role": "user", "content": "hi"}])
     msg = str(ei.value)
     assert "llm.model_missing" in msg
-    assert "qwen/nope" in msg and "127.0.0.1:1234" in msg
+    assert "qwen/nope" in msg
+    assert "127.0.0.1:1234" in msg
     assert "qwen/qwen3-coder-next" in msg          # what the box DOES serve
     assert c.model_missing(ei.value) is True
 
@@ -266,7 +267,8 @@ def test_a_substitute_that_also_fails_still_names_the_real_problem(monkeypatch):
     with pytest.raises(RuntimeError) as ei:
         c.complete("learner", [{"role": "user", "content": "hi"}])
     msg = str(ei.value)
-    assert "llm.model_missing" in msg and "qwen/qwen3-coder-next" in msg
+    assert "llm.model_missing" in msg
+    assert "qwen/qwen3-coder-next" in msg
 
 
 def test_an_empty_served_list_is_not_a_substitution(monkeypatch):

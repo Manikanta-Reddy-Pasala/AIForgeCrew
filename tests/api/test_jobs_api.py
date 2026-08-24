@@ -120,10 +120,12 @@ def test_create_script_job_writes_script_and_runs_on_fire(app_client, tmp_path):
     assert r.status_code == 201
     body = r.json()
     assert body["kind"] == "script"
-    assert body["script_path"] and body["script_path"].endswith(".sh")
+    assert body["script_path"]
+    assert body["script_path"].endswith(".sh")
     # run-now shares the fire path → the script actually executes (no ticket).
     r = client.post(f"/api/jobs/{body['id']}/run-now")
-    assert r.status_code == 200 and r.json()["ok"] is True
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
     # _fire_script runs the script in a daemon thread (so a slow script never
     # blocks the tick/HTTP), so "ok" means DISPATCHED, not finished — poll for
     # the marker instead of asserting synchronously (else a loaded box races).
@@ -224,11 +226,13 @@ def test_degrades_gracefully_when_croniter_absent(app_client, monkeypatch):
     # preview → friendly, not a 500
     p = client.post("/api/jobs/preview", json={"instructions": "every day 8am"})
     assert p.status_code == 200
-    assert p.json()["ok"] is False and "croniter" in p.json()["error"].lower()
+    assert p.json()["ok"] is False
+    assert "croniter" in p.json()["error"].lower()
 
     # create → actionable 503
     c = client.post("/api/jobs", json=_DRAFT)
-    assert c.status_code == 503 and "croniter" in c.json()["detail"].lower()
+    assert c.status_code == 503
+    assert "croniter" in c.json()["detail"].lower()
 
 
 def test_parse_module_imports_without_croniter():

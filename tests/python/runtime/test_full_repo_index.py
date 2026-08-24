@@ -122,7 +122,8 @@ def test_neo4j_unconfigured_chunks_only(mi, monkeypatch, tmp_path):
     assert res["layers"]["doc_chunks"] == "ok"
     assert res["layers"]["symbols"].startswith("skip:")
     assert res["layers"]["graphify"].startswith("skip:")
-    assert res["symbols"] == 0 and res["graphify_nodes"] == 0
+    assert res["symbols"] == 0
+    assert res["graphify_nodes"] == 0
 
 
 def test_graphify_cli_absent(mi, monkeypatch, tmp_path):

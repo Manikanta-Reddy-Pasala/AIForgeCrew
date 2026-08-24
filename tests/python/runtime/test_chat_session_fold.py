@@ -22,7 +22,8 @@ def test_fold_sync_soft_fails(monkeypatch):
 
     monkeypatch.setattr(okr, "compact_session", _boom)
     res = chat_session_fold.fold_sync(1)
-    assert res.get("ok") is False and "db down" in res.get("error", "")
+    assert res.get("ok") is False
+    assert "db down" in res.get("error", "")
 
 
 def test_fold_delegates_to_compact_session(monkeypatch):

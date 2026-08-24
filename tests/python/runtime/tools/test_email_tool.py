@@ -160,7 +160,8 @@ def test_send_requires_to(smtp_cfg, monkeypatch):
     monkeypatch.setattr("smtplib.SMTP", _explode)
     monkeypatch.setattr("smtplib.SMTP_SSL", _explode)
     out = et.email_send({"subject": "s", "body": "b"})
-    assert out["ok"] is False and "to" in out["error"].lower()
+    assert out["ok"] is False
+    assert "to" in out["error"].lower()
 
 
 # ── email_read ────────────────────────────────────────────────────────
@@ -170,7 +171,8 @@ def test_read_unconfigured_no_imap_call(monkeypatch):
     monkeypatch.setattr("imaplib.IMAP4_SSL", _explode)
     monkeypatch.setattr("imaplib.IMAP4", _explode)
     out = et.email_read({})
-    assert out["ok"] is False and "not configured" in out["error"]
+    assert out["ok"] is False
+    assert "not configured" in out["error"]
 
 
 def test_read_parses_messages(imap_cfg, monkeypatch):
@@ -182,7 +184,8 @@ def test_read_parses_messages(imap_cfg, monkeypatch):
     m0 = msgs[0]
     assert set(m0) >= {"uid", "from", "to", "subject", "date", "snippet"}
     # newest first (seq 3 = Carol)
-    assert "Carol" in m0["from"] and m0["subject"] == "Invoice"
+    assert "Carol" in m0["from"]
+    assert m0["subject"] == "Invoice"
     assert "invoice" in m0["snippet"].lower()
 
 
@@ -210,8 +213,10 @@ def test_disable_switch_blocks_both(smtp_cfg, imap_cfg, monkeypatch):
     monkeypatch.setattr("imaplib.IMAP4", _explode)
     s = et.email_send({"to": "a@b.com", "subject": "x", "body": "y"})
     r = et.email_read({})
-    assert s["ok"] is False and "disabled" in s["error"].lower()
-    assert r["ok"] is False and "disabled" in r["error"].lower()
+    assert s["ok"] is False
+    assert "disabled" in s["error"].lower()
+    assert r["ok"] is False
+    assert "disabled" in r["error"].lower()
 
 
 # ── tool wiring (mirror the jira wiring assertions) ───────────────────
@@ -269,7 +274,8 @@ def test_reads_stored_smtp_config_when_env_absent(tmp_path, monkeypatch):
     out = et.email_send({"to": "a@b.com", "subject": "s", "body": "b"})
     assert out["ok"] is True
     srv = _FakeSMTP.instances[-1]
-    assert srv.host == "smtp.stored" and srv.port == 2525
+    assert srv.host == "smtp.stored"
+    assert srv.port == 2525
     assert srv.login_creds == ("u@stored", "stored-pw")
     assert srv.sent["From"] == "from@stored"
 
@@ -283,7 +289,8 @@ def test_reads_stored_imap_config_when_env_absent(tmp_path, monkeypatch):
     monkeypatch.setattr("imaplib.IMAP4_SSL", _FakeIMAP)
     out = et.email_read({"limit": 1})
     assert out["ok"] is True
-    assert _FakeIMAP.last.host == "imap.stored" and _FakeIMAP.last.port == 1993
+    assert _FakeIMAP.last.host == "imap.stored"
+    assert _FakeIMAP.last.port == 1993
 
 
 def test_env_wins_over_stored(tmp_path, monkeypatch):
@@ -307,7 +314,8 @@ def test_email_test_unconfigured(tmp_path, monkeypatch):
     _clear_env(monkeypatch)
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     out = et.email_test()
-    assert out["ok"] is False and out["error"] == "email_not_configured"
+    assert out["ok"] is False
+    assert out["error"] == "email_not_configured"
 
 
 def test_email_test_smtp_only_ok(tmp_path, smtp_cfg, monkeypatch):
@@ -316,5 +324,6 @@ def test_email_test_smtp_only_ok(tmp_path, smtp_cfg, monkeypatch):
     monkeypatch.setattr("smtplib.SMTP", _FakeSMTP)
     out = et.email_test()
     assert out["ok"] is True
-    assert out["smtp"]["ok"] is True and out["smtp"]["host"] == "smtp.internal"
+    assert out["smtp"]["ok"] is True
+    assert out["smtp"]["host"] == "smtp.internal"
     assert out["imap"] is None

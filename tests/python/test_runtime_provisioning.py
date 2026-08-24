@@ -92,10 +92,12 @@ def test_chat_run_command_blocks_delete(monkeypatch, tmp_path):
     monkeypatch.delenv("AIFORGE_CHAT_ALLOW_DELETE", raising=False)
     from aiforge_core.runtime import chat_agent
     out = chat_agent._t_run_command({"cmd": "rm -rf /tmp/x"}, str(tmp_path))
-    assert out["ok"] is False and out.get("blocked") == "delete"
+    assert out["ok"] is False
+    assert out.get("blocked") == "delete"
     # everything else runs
     ok = chat_agent._t_run_command({"cmd": "echo hi"}, str(tmp_path))
-    assert ok["ok"] is True and "hi" in ok["stdout"]
+    assert ok["ok"] is True
+    assert "hi" in ok["stdout"]
 
 
 # ── chat cancellation registry ───────────────────────────────────────
@@ -120,7 +122,8 @@ def test_chat_run_command_stops_when_cancelled(tmp_path):
     chat_cancel.set_active(101)
     chat_cancel.cancel(101)  # pre-cancelled
     out = chat_agent._t_run_command({"cmd": "sleep 30"}, str(tmp_path))
-    assert out["ok"] is False and out.get("stopped") is True
+    assert out["ok"] is False
+    assert out.get("stopped") is True
     chat_cancel.finish(101)
 
 
@@ -130,7 +133,8 @@ def test_project_detect_and_plan(tmp_path):
     (tmp_path / "pom.xml").write_text("<project/>")
     assert pr.detect(str(tmp_path))["stacks"] == ["maven"]
     tools, cmds = pr._plan("maven", "build", str(tmp_path))
-    assert "mvn" in tools and any("package" in c for c in cmds)
+    assert "mvn" in tools
+    assert any("package" in c for c in cmds)
 
 
 def test_project_detect_node_react(tmp_path):
@@ -174,7 +178,8 @@ def test_grep_tolerates_wrong_path(tmp_path):
     (tmp_path / "src" / "a.py").write_text("# TODO fix this\n")
     g = chat_agent._t_grep({"pattern": "TODO", "path": "does-not-exist"},
                            str(tmp_path))
-    assert g["ok"] and g["matches"]          # found despite wrong path
+    assert g["ok"]
+    assert g["matches"]
     assert "not found" in g["note"]
 
 
@@ -202,8 +207,10 @@ def test_repeat_guard_blocks_repeated_identical_call(monkeypatch):
         return results
 
     res = asyncio.run(run())
-    assert res[0] is None and res[1] is None         # first 2 allowed
-    assert res[2] and res[2]["error"] == "repeated_call"  # 3rd blocked
+    assert res[0] is None
+    assert res[1] is None
+    assert res[2]
+    assert res[2]["error"] == "repeated_call"
     # a DIFFERENT call is not blocked
     async def other():
         return await cb(tool=_Tool(), args={"command": "ls"}, tool_context=ctx)

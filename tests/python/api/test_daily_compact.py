@@ -156,7 +156,8 @@ def test_a_failing_stage_does_not_cancel_the_others(monkeypatch, tmp_path):
     tasks = _registered(monkeypatch, tmp_path)
     with pytest.raises(RuntimeError):        # the pass reports itself failed…
         tasks["daily-compact"].fn()
-    assert "briefs" in ran and "recompact" in ran   # …but stages 2-3 still ran
+    assert "briefs" in ran
+    assert "recompact" in ran
 
 
 def test_session_stage_failure_is_reported_but_contained(monkeypatch, tmp_path):
@@ -279,7 +280,8 @@ def test_a_raising_session_fold_fails_the_pass_but_not_the_other_stages(
     tasks = _registered(monkeypatch, tmp_path)
     with pytest.raises(RuntimeError):        # the pass reports itself failed…
         tasks["daily-compact"].fn()
-    assert "briefs" in ran and "recompact" in ran   # …and stages 2-3 still ran
+    assert "briefs" in ran
+    assert "recompact" in ran
 
 
 def test_a_retry_does_not_re_run_the_stages_that_already_succeeded(monkeypatch,
@@ -441,8 +443,10 @@ def test_llm_settings_rejects_a_contradictory_put(monkeypatch, tmp_path):
     client = TestClient(api.app)
     r = client.put("/api/runtime/llm-settings",
                    json={"chat_safety_cap": 99, "unset": ["chat_safety_cap"]})
-    assert r.status_code == 400 and "same knob" in r.text
+    assert r.status_code == 400
+    assert "same knob" in r.text
     r = client.put("/api/runtime/llm-settings", json={"unset": ["bogus_knob"]})
-    assert r.status_code == 400 and "unknown setting" in r.text
+    assert r.status_code == 400
+    assert "unknown setting" in r.text
     r = client.put("/api/runtime/llm-settings", json={"unset": ["chat_safety_cap"]})
     assert r.status_code == 200

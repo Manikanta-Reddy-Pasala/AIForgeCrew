@@ -120,7 +120,8 @@ def test_a_keyless_row_on_another_host_gets_NO_key(monkeypatch):
     with pytest.raises(RuntimeError):
         c.complete("chat", [{"role": "user", "content": "q"}])
     lan = [t for t in tried if t[1] == "http://192.168.1.50:1234/v1"]
-    assert lan and lan[0][2] == "", f"primary key leaked: {lan}"
+    assert lan, f"primary key leaked: {lan}"
+    assert lan[0][2] == "", f"primary key leaked: {lan}"
 
 
 def test_a_lan_insecure_flag_does_not_follow_to_another_host(monkeypatch):
@@ -149,7 +150,8 @@ def test_a_lan_insecure_flag_does_not_follow_to_another_host(monkeypatch):
     with pytest.raises(RuntimeError):
         c.complete("chat", [{"role": "user", "content": "q"}])
     vendor = [x for x in seen if x[0] == "https://api.vendor.com/v1"]
-    assert vendor and not vendor[0][1].get("insecure_tls"), seen
+    assert vendor, seen
+    assert not vendor[0][1].get("insecure_tls"), seen
 
 
 def test_a_vision_request_never_falls_through(monkeypatch):
@@ -296,7 +298,8 @@ def test_each_chain_model_gets_ONE_post_not_the_empty_ladder(monkeypatch):
     with pytest.raises(RuntimeError):
         c.complete("chat", [{"role": "user", "content": "q"}])
     chain = [s for s in seen if s[0] != "qwen/first"]
-    assert chain and all(s[1] == 0 for s in chain), seen
+    assert chain, seen
+    assert all(s[1] == 0 for s in chain), seen
 
 
 def test_a_malformed_registry_row_does_not_kill_the_chain(monkeypatch):

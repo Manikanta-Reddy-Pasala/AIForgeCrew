@@ -37,7 +37,8 @@ def test_exact_dedupe_same_repo(mem):
 def test_dedupe_is_repo_scoped(mem):
     a = mem.write_unit(text="same text", repo="r1")
     b = mem.write_unit(text="same text", repo="r2")
-    assert a > 0 and b > 0
+    assert a > 0
+    assert b > 0
 
 
 def test_repo_filter_includes_repo_agnostic(mem):

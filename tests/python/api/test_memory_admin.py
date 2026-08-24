@@ -241,7 +241,8 @@ def test_clear_graph_facts_scoped_to_fact_labels(monkeypatch, tmp_path):
     assert res["deleted"] == 7
 
     cypher, params = captured[-1]
-    assert "labels(n)" in cypher and "$labels" in cypher
+    assert "labels(n)" in cypher
+    assert "$labels" in cypher
     normalized = " ".join(cypher.split()).upper()
     assert "MATCH (N) DETACH DELETE N" not in normalized  # never a blanket wipe
     for lbl in ("Observation_v2", "Decision_v2", "Fact", "MemoryBlock"):

@@ -72,7 +72,9 @@ export default function Kanban() {
   const roles = useMemo(() => {
     const s = new Set<string>();
     for (const t of data) if (t.assignee_role) s.add(t.assignee_role);
-    return ['', ...Array.from(s).sort()];
+    // localeCompare: the default sort orders by UTF-16 code unit, so any
+    // non-ASCII role name sorts to the wrong place.
+    return ['', ...Array.from(s).sort((a, b) => a.localeCompare(b))];
   }, [data]);
 
   const active = useMemo(

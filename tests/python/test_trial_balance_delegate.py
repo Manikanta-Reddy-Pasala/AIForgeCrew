@@ -34,7 +34,8 @@ def test_render_markdown_summary_and_buckets() -> None:
             "large": [{"name": "Sundry Debtors", "delta": 12000}],
         },
     })
-    assert "tallyTotal" in md and "100" in md
+    assert "tallyTotal" in md
+    assert "100" in md
     assert "## Buckets" in md
     assert "matched (2)" in md
     assert "large (1)" in md
@@ -80,7 +81,8 @@ def test_call_pds_compare_posts_multipart(tmp_path: Path) -> None:
     args, kwargs = post_mock.call_args
     assert args[0].endswith("/compare-tb-files")
     files = kwargs["files"]
-    assert "tallyTb" in files and "oneshellTb" in files
+    assert "tallyTb" in files
+    assert "oneshellTb" in files
     headers = kwargs["headers"]
     assert headers.get("X-Business-Id") == "b1234"
 

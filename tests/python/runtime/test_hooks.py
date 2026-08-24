@@ -40,7 +40,8 @@ def test_posttooluse_runs_matching_hook(tmp_path, monkeypatch):
     out = hooks.fire("PostToolUse", {"tool": "file_write", "args": {}},
                      str(tmp_path))
     assert out["ok"] is True
-    assert marker.exists() and marker.read_text().strip() == "ok"
+    assert marker.exists()
+    assert marker.read_text().strip() == "ok"
 
 
 # ─── (b) matcher filtering ────────────────────────────────────────────
@@ -169,7 +170,8 @@ def test_repo_local_hooks_merge(tmp_path, monkeypatch):
     })
     out = hooks.fire("PostToolUse", {"tool": "file_write"}, str(repo))
     assert out["ok"] is True
-    assert g_marker.exists() and r_marker.exists()   # both fire
+    assert g_marker.exists()
+    assert r_marker.exists()
 
 
 # ─── chat-loop integration: a PreToolUse block skips the tool ─────────

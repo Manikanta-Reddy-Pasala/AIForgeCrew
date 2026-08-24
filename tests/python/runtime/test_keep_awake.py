@@ -149,7 +149,8 @@ def test_plain_linux_uses_the_inhibitor(monkeypatch):
                         lambda n: "/usr/bin/systemd-inhibit"
                         if n == "systemd-inhibit" else None)
     cmd = ka._command()
-    assert cmd[0] == "systemd-inhibit" and "--what=sleep:idle" in cmd
+    assert cmd[0] == "systemd-inhibit"
+    assert "--what=sleep:idle" in cmd
 
 
 def test_a_child_that_ignores_terminate_is_killed(monkeypatch):

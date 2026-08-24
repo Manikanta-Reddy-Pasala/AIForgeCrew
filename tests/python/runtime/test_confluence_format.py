@@ -41,7 +41,8 @@ def test_already_storage_passes_through():
 
 def test_escapes_stray_angle_brackets():
     out = md_to_storage("compare a < b and 2 > 1")
-    assert "&lt;" in out and "&gt;" in out    # not raw < > (would break XHTML)
+    assert "&lt;" in out
+    assert "&gt;" in out
 
 
 def test_empty_and_none():

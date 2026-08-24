@@ -4,7 +4,7 @@ import importlib
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def mem(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "mem"))
@@ -30,7 +30,8 @@ def test_brief_index_and_seed_block(mem):
 
     block = m.seed_memory_block()
     assert "memory index" in block.lower()
-    assert "svc:" in block and "shared:" in block
+    assert "svc:" in block
+    assert "shared:" in block
 
 
 def test_seed_block_disabled(mem, monkeypatch):
@@ -62,7 +63,8 @@ def test_lint_finds_broken_link_and_orphan(mem):
     r = m.lint_graph(repair=False)
     assert {"brief": "a", "ref": "compacted-ghost.md"} in r["broken"]
     assert "c" in r["orphans"]
-    assert "a" not in r["orphans"] and "b" not in r["orphans"]  # linked pair
+    assert "a" not in r["orphans"]
+    assert "b" not in r["orphans"]
 
 
 def test_lint_repair_strips_broken_ref(mem):
@@ -90,7 +92,8 @@ def test_recent_returns_newest_first(mem):
     sm.write_unit(text="newest fact two", kind="learning", repo="svc",
                   source="s2")
     rows = sm.recent(limit=5, repo="svc")
-    assert rows and rows[0]["text"] == "newest fact two"    # newest first
+    assert rows
+    assert rows[0]["text"] == "newest fact two"
     assert rows[0]["score"] >= rows[-1]["score"]
 
 

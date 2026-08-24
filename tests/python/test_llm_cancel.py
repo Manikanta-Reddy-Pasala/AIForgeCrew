@@ -27,7 +27,8 @@ def test_post_aborts_when_cancel_already_set():
 
 def test_cancelled_exc_is_non_retryable():
     retry, label = c._is_transient_exc(c._LLMCancelled("x"))
-    assert retry is False and label == "cancelled"
+    assert retry is False
+    assert label == "cancelled"
 
 
 def test_no_token_uses_default_path(monkeypatch):

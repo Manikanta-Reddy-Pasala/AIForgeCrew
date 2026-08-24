@@ -98,7 +98,8 @@ def _enumerate_files(worktree: str, kinds: set[str] | None) -> list[tuple[str, s
 
 
 def _sha1(text: str) -> str:
-    return hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest()
+    return hashlib.sha1(text.encode("utf-8", errors="replace"),
+                        usedforsecurity=False).hexdigest()
 
 
 def _llm_summarise(file_path: str, content: str, *,
@@ -152,7 +153,7 @@ def _llm_summarise(file_path: str, content: str, *,
                     r"<think>.*?</think>", "", raw, flags=re.DOTALL,
                 ).strip() or raw
         if body.startswith("```"):
-            body = re.sub(r"^```\w*\n?|\n?```$", "", body, flags=re.M).strip()
+            body = re.sub(r"(?:^```\w*\n?)|(?:\n?```$)", "", body, flags=re.M).strip()
         i, j = body.find("{"), body.rfind("}")
         if i >= 0 and j > i:
             body = body[i:j + 1]

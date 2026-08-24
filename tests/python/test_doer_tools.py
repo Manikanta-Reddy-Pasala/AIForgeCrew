@@ -30,7 +30,8 @@ def _isolated_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def test_validate_python_compile_ok() -> None:
     ok, err = dt.validate_syntax("a.py", "def f():\n    return 1\n")
-    assert ok and err == ""
+    assert ok
+    assert err == ""
 
 
 def test_validate_python_syntax_error() -> None:
@@ -321,8 +322,10 @@ def test_adk_function_tools_includes_new_tools() -> None:
     assert "grep_repo" in names
     assert "fetch_url" in names
     # Aliases stay reachable for hallucinated names
-    assert "grep" in names and "search" in names
-    assert "http_get" in names and "web_fetch" in names
+    assert "grep" in names
+    assert "search" in names
+    assert "http_get" in names
+    assert "web_fetch" in names
 
 
 def test_module_all_lists_new_tools() -> None:

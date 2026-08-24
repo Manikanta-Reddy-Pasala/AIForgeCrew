@@ -12,7 +12,7 @@ import time
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def mem(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
@@ -20,7 +20,7 @@ def mem(monkeypatch, tmp_path):
     return tmp_path / "md"
 
 
-@pytest.fixture()
+@pytest.fixture
 def folds(monkeypatch):
     """Record every merge, and keep the LLM out of it. Returns the call list."""
     calls: list[str] = []
@@ -90,7 +90,9 @@ def test_the_leader_folds_every_inbox_and_its_own_okf_into_the_mesh(mem, folds):
 
     out = tiers.distil_mesh()
 
-    assert out["ok"] and out["inputs"] == 3 and out["groups"] == 1
+    assert out["ok"]
+    assert out["inputs"] == 3
+    assert out["groups"] == 1
     node = _read(_node(paths.mesh_dir(), "M"))
     assert node["meta"]["derived"] == "mesh"
     for claim in ("tunnel mtu", "retry backoff", "lock timeout"):
@@ -107,7 +109,8 @@ def test_a_spoke_leaves_the_mesh_alone(mem, folds, monkeypatch):
 
     out = tiers.distil_mesh()
 
-    assert out["skipped"] == "not-admin" and out["admin"] == "air"
+    assert out["skipped"] == "not-admin"
+    assert out["admin"] == "air"
     assert not list(paths.mesh_dir().rglob("*.md"))
     assert folds == []
 
@@ -166,9 +169,11 @@ def test_the_view_is_built_from_the_mesh_and_our_own_okf(mem, folds):
 
     out = tiers.build_view()
 
-    assert out["ok"] and out["inputs"] == 2
+    assert out["ok"]
+    assert out["inputs"] == 2
     body = _read(_node(paths.view_dir(), "V"))["body"]
-    assert "mtu 1380" in body and "override it to 1280" in body
+    assert "mtu 1380" in body
+    assert "override it to 1280" in body
 
 
 def test_an_unchanged_mesh_costs_no_fold(mem, folds):
@@ -200,7 +205,8 @@ def test_a_local_note_reaches_the_view_without_waiting_for_a_new_mesh(mem, folds
                 "locally we override it to 1280")
     out = tiers.build_view()
 
-    assert out["ok"] and folds
+    assert out["ok"]
+    assert folds
     assert "override it to 1280" in _read(_node(paths.view_dir(), "V"))["body"]
 
 
@@ -302,7 +308,8 @@ def test_a_lone_machine_runs_both_tiers_over_its_own_knowledge(mem, folds):
 
     out = tiers.run_after_sync()
 
-    assert out["mesh"]["ok"] and out["view"]["ok"]
+    assert out["mesh"]["ok"]
+    assert out["view"]["ok"]
     assert "systemd" in _read(_node(paths.mesh_dir(), "M"))["body"]
     assert "systemd" in _read(_node(paths.view_dir(), "V"))["body"]
 
@@ -330,7 +337,8 @@ def test_both_tiers_work_with_no_model_reachable(mem):
 
     out = tiers.run_after_sync()
 
-    assert out["mesh"]["ok"] and out["view"]["ok"]
+    assert out["mesh"]["ok"]
+    assert out["view"]["ok"]
     assert "1380" in _read(_node(paths.view_dir(), "V"))["body"]
 
 

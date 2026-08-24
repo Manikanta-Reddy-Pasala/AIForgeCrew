@@ -200,13 +200,15 @@ def test_chat_models_endpoint(client, monkeypatch):
     monkeypatch.setattr(api._r_chat, "_served_model_ids_for_role",
                         lambda role: {"qwen-coder-x", "m2"})
     body = c.get("/api/chat/models").json()
-    assert body["provider"] and isinstance(body["models"], list)
+    assert body["provider"]
+    assert isinstance(body["models"], list)
     assert all(m["active"] for m in body["models"])     # only active listed
     s = c.post("/api/chat/sessions", json={}).json()
     assert s["role"] == "chat"
     # served model → active
     r = c.put("/api/chat/model", json={"provider": "openai_compatible", "model": "qwen-coder-x"})
-    assert r.status_code == 200 and r.json()["active"] is True
+    assert r.status_code == 200
+    assert r.json()["active"] is True
     assert c.get("/api/chat/models").json()["current_active"] is True
     # not served → saved but flagged inactive
     assert c.put("/api/chat/model",
@@ -224,12 +226,14 @@ def test_memory_sources_crud_and_index(client, monkeypatch, tmp_path):
     s = c.post("/api/memory/sources",
                json={"kind": "docs", "location": str(docs), "name": "d"}).json()
     # docs/repo sources auto-start indexing on create
-    assert s["kind"] == "docs" and s["status"] == "indexing"
+    assert s["kind"] == "docs"
+    assert s["status"] == "indexing"
     sid = s["id"]
     assert any(x["id"] == sid for x in c.get("/api/memory/sources").json())
 
     r = c.post(f"/api/memory/sources/{sid}/index")
-    assert r.status_code == 200 and r.json()["status"] == "indexing"
+    assert r.status_code == 200
+    assert r.json()["status"] == "indexing"
     # background thread finishes quickly with the stub writer
     import time
     for _ in range(20):
@@ -278,7 +282,8 @@ def test_ticket_answer_requeues(client):
     store.update_status(t.id, "blocked")
     r = c.post(f"/api/tickets/{t.identifier}/answer",
                json={"content": "use the React file"})
-    assert r.status_code == 200 and r.json()["status"] == "todo"
+    assert r.status_code == 200
+    assert r.json()["status"] == "todo"
     got = c.get(f"/api/tickets/{t.identifier}").json()["ticket"]
     assert got["status"] == "todo"
     assert "React file" in got["body"]
@@ -319,7 +324,8 @@ def test_chat_team_vs_simple_mode(client, monkeypatch):
     assert "SIMPLE" in r1.text                       # default = simple
     r2 = c.post(f"/api/chat/sessions/{sid}/message",
                 json={"content": "build an app", "mode": "team"})
-    assert "TEAM" in r2.text and "planner" in r2.text  # team = ADK flow
+    assert "TEAM" in r2.text
+    assert "planner" in r2.text
 
 
 def test_chat_session_isolated_workspace(client, monkeypatch, tmp_path):

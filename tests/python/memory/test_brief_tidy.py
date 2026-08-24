@@ -7,7 +7,7 @@ import importlib
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def mem(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "mem"))
@@ -55,7 +55,8 @@ def test_tidy_folds_kind_brief_into_shared(mem):
     _write_brief(mem, "learning", ["a stray learning fact"])
     assert "learning" in _brief_stems(mem)
     res = mem.tidy_briefs()
-    assert res["ok"] and res["folded_kind"] >= 1
+    assert res["ok"]
+    assert res["folded_kind"] >= 1
     stems = _brief_stems(mem)
     assert "learning" not in stems          # kind brief deleted
     # its fact now lives in the global shared brief
@@ -69,5 +70,6 @@ def test_tidy_dry_run_touches_nothing(mem):
     _write_brief(mem, "user-comment", ["stray comment"])
     before = _brief_stems(mem)
     res = mem.tidy_briefs(dry_run=True)
-    assert res["dry_run"] and res["folded_kind"] >= 1
+    assert res["dry_run"]
+    assert res["folded_kind"] >= 1
     assert _brief_stems(mem) == before      # nothing deleted/written

@@ -8,7 +8,7 @@ import pytest
 from aiforge_core.memory import okf as okr
 
 
-@pytest.fixture()
+@pytest.fixture
 def cfg(monkeypatch):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", tempfile.mkdtemp())
     monkeypatch.setenv("AIFORGE_OKR_AUTHOR", "1")
@@ -41,7 +41,9 @@ def test_extract_and_save_builds_graph(cfg, monkeypatch):
                       {"rule": "survivorship-bias-free", "scope": "Stock engine"}],
     })
     r = okr.extract_and_save("a long enough session transcript about backtesting " * 3)
-    assert r["ok"] and r["objectives"] and r["key_results"]
+    assert r["ok"]
+    assert r["objectives"]
+    assert r["key_results"]
     g = okr.build(force=True)
     oid = r["objectives"][0]
     kid = r["key_results"][0]
@@ -51,7 +53,9 @@ def test_extract_and_save_builds_graph(cfg, monkeypatch):
     # retrieval over the just-authored graph
     okr.set_active(kid)
     block = okr.context_block()
-    assert "Stock engine" in block and "Backtest logic" in block and "no k8s" in block
+    assert "Stock engine" in block
+    assert "Backtest logic" in block
+    assert "no k8s" in block
 
 
 def test_extract_dedupes_objective_by_title(cfg, monkeypatch):
@@ -83,12 +87,14 @@ def test_migrate_from_briefs(cfg, monkeypatch):
         work_notes.render_note("knowledge", "sync", title="sync",
                                facts=["exponential backoff"]), encoding="utf-8")
     r = okr.migrate_from_briefs()
-    assert r["ok"] and r["migrated"] == 2            # auth (merged parts) + sync
+    assert r["ok"]
+    assert r["migrated"] == 2
     g = okr.build(force=True)
     learns = [n for n in g.nodes.values() if n["type"] == "learning"]
     cats = {(n.get("meta") or {}).get("category") for n in learns}
     assert cats == {"auth", "sync"}
     auth = next(n for n in learns if (n.get("meta") or {}).get("category") == "auth")
-    assert "rotate keys 90d" in auth["body"] and "mTLS" in auth["body"]  # split merged
+    assert "rotate keys 90d" in auth["body"]
+    assert "mTLS" in auth["body"]
     # idempotent
     assert okr.migrate_from_briefs()["migrated"] == 0

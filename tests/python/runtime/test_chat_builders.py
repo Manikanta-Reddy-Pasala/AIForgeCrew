@@ -63,7 +63,7 @@ def test_bad_builder_name_does_not_crash(tmp_path):
 
 # ── create_job_script finalize tool ──────────────────────────────────────
 
-@pytest.fixture()
+@pytest.fixture
 def _jobs_env(monkeypatch, tmp_path):
     from aiforge_core.jobs import store
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))

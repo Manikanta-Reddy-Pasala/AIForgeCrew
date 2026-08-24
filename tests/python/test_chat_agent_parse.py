@@ -47,14 +47,16 @@ def test_parse_keeps_code_fences_and_real_action_values():
     txt = "Here:\n```python\naction = 1\n```"
     p = ca._parse("FINAL: " + txt)
     assert p["kind"] == "final"
-    assert "```python" in p["text"] and "action = 1" in p["text"]
+    assert "```python" in p["text"]
+    assert "action = 1" in p["text"]
 
 
 def test_parse_inline_args_rescue():
     """dspy A/B finding: `ACTION: tool {"item": "x"}` + empty `ARGS_JSON: {}`
     — the empty marker slot must not shadow the good inline object."""
     step = ca._parse('ACTION: lookup_price {"item": "coffee"}\nARGS_JSON: {}')
-    assert step["kind"] == "action" and step["tool"] == "lookup_price"
+    assert step["kind"] == "action"
+    assert step["tool"] == "lookup_price"
     assert step["args"] == {"item": "coffee"}
     # normal shape unaffected
     step = ca._parse('ACTION: lookup_price\nARGS_JSON: {"item": "tea"}')

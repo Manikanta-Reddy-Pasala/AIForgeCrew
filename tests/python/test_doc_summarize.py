@@ -104,7 +104,9 @@ def test_docx_page_segmentation(tmp_path):
     d.save(str(p))
     pages = de.document_pages(str(p))
     assert len(pages) == 3
-    assert "page one" in pages[0] and "page two" in pages[1] and "page three" in pages[2]
+    assert "page one" in pages[0]
+    assert "page two" in pages[1]
+    assert "page three" in pages[2]
 
 
 def test_extract_pages_selects_range(tmp_path):
@@ -118,9 +120,12 @@ def test_extract_pages_selects_range(tmp_path):
     p = tmp_path / "five.docx"
     d.save(str(p))
     out = de.extract_pages(str(p), "", "2-3")
-    assert "--- page 2 ---" in out and "--- page 3 ---" in out
-    assert "content of page 2" in out and "content of page 3" in out
-    assert "content of page 1" not in out and "content of page 5" not in out
+    assert "--- page 2 ---" in out
+    assert "--- page 3 ---" in out
+    assert "content of page 2" in out
+    assert "content of page 3" in out
+    assert "content of page 1" not in out
+    assert "content of page 5" not in out
 
 
 def test_docx_sparse_breaks_fall_back_to_approx(tmp_path):
@@ -141,7 +146,9 @@ def test_docx_sparse_breaks_fall_back_to_approx(tmp_path):
     assert kind == "approx"                        # sparse breaks not trusted
     assert len(pages) > 60                         # spans the whole doc, not ~10
     out = de.extract_pages(str(p), "", "68-70")
-    assert out and "--- page 68 ---" in out and "--- page 70 ---" in out
+    assert out
+    assert "--- page 68 ---" in out
+    assert "--- page 70 ---" in out
 
 
 def _docx_with_reported_pages(docx, tmp_path, n_paras, reported):
@@ -172,7 +179,8 @@ def test_docx_honours_word_reported_page_count(tmp_path):
     assert len(pages) == 321          # EXACT match to Word's count
     assert kind == "word"
     out = de.extract_pages(p, "", "68-70")
-    assert "--- page 68 ---" in out and "--- page 70 ---" in out
+    assert "--- page 68 ---" in out
+    assert "--- page 70 ---" in out
 
 
 def test_split_into_n_exact_count():
@@ -209,7 +217,8 @@ def test_summarize_doc_tool_out_of_range(monkeypatch, tmp_path):
     d.save(str(media / "small.docx"))
     r = _t_summarize_doc({"path": "small.docx", "pages": "68-70"}, str(tmp_path))
     assert r["ok"] is False
-    assert "out of range" in r["error"] and str(r["page_count"]) in r["error"]
+    assert "out of range" in r["error"]
+    assert str(r["page_count"]) in r["error"]
 
 
 def test_summarize_document_page_range(monkeypatch, tmp_path):
@@ -232,7 +241,8 @@ def test_summarize_document_page_range(monkeypatch, tmp_path):
         return orig(text, role)
     monkeypatch.setattr(ds, "summarize_text", _spy)
     ds.summarize_document(str(p), role="chat", pages="2-3")
-    assert "page 2" in captured["text"] and "page 3" in captured["text"]
+    assert "page 2" in captured["text"]
+    assert "page 3" in captured["text"]
     assert "page 5" not in captured["text"]      # only the requested range
 
 

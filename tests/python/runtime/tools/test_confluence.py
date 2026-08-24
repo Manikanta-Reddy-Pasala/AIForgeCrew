@@ -55,7 +55,8 @@ def test_search(cfg, monkeypatch):
         {"id": "10", "title": "Runbook", "type": "page",
          "space": {"key": "ENG"}}]})
     out = cf.confluence_search({"query": "deploy"})
-    assert out["ok"] and out["results"][0]["id"] == "10"
+    assert out["ok"]
+    assert out["results"][0]["id"] == "10"
     assert "/rest/api/content/search" in seen["url"]
     assert "text" in seen["url"]                       # cql built from query
     assert seen["headers"].get("Authorization") == "Bearer pat-123"
@@ -67,7 +68,9 @@ def test_read_by_id(cfg, monkeypatch):
                            "version": {"number": 4},
                            "body": {"storage": {"value": "<p>hi</p>"}}})
     out = cf.confluence_read({"id": "10"})
-    assert out["ok"] and out["body"] == "<p>hi</p>" and out["version"] == 4
+    assert out["ok"]
+    assert out["body"] == "<p>hi</p>"
+    assert out["version"] == 4
 
 
 def test_create_requires_fields(cfg):
@@ -79,7 +82,8 @@ def test_create(cfg, monkeypatch):
                                   "_links": {"webui": "/display/ENG/New"}})
     out = cf.confluence_create({"title": "New", "space": "ENG",
                                 "body": "<p>x</p>", "parent_id": "5"})
-    assert out["ok"] and out["id"] == "99"
+    assert out["ok"]
+    assert out["id"] == "99"
     assert seen["method"] == "POST"
     assert seen["body"]["space"]["key"] == "ENG"
     assert seen["body"]["ancestors"] == [{"id": "5"}]
@@ -99,7 +103,9 @@ def test_update_increments_version(cfg, monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     out = cf.confluence_update({"id": "10", "body": "<p>new</p>"})
-    assert out["ok"] and out["version"] == 8 and out["title"] == "Old"
+    assert out["ok"]
+    assert out["version"] == 8
+    assert out["title"] == "Old"
     assert calls["n"] == 2
 
 
@@ -176,7 +182,8 @@ def test_read_attaches_files(cfg, monkeypatch):
                         lambda pid, role="doer": [{"filename": "c.png",
                                                    "description": "a chart"}])
     out = cf.confluence_read({"id": "10"})
-    assert out["ok"] and out["attachments"][0]["description"] == "a chart"
+    assert out["ok"]
+    assert out["attachments"][0]["description"] == "a chart"
 
 
 def test_read_attachments_can_be_disabled(cfg, monkeypatch):
@@ -186,7 +193,8 @@ def test_read_attachments_can_be_disabled(cfg, monkeypatch):
     monkeypatch.setattr(cf, "_fetch_attachments",
                         lambda *a, **k: called.__setitem__("n", called["n"] + 1) or [])
     out = cf.confluence_read({"id": "10", "attachments": False})
-    assert "attachments" not in out and called["n"] == 0
+    assert "attachments" not in out
+    assert called["n"] == 0
 
 
 # ── media → storage macros (mermaid / code / image attachments) ──────────
@@ -204,7 +212,8 @@ def test_storagify_mermaid_code_and_image(monkeypatch):
     assert '<ac:parameter ac:name="language">python</ac:parameter>' in out
     assert '<ac:image><ri:attachment ri:filename="c.png"/></ac:image>' in out
     assert refs == [{"filename": "c.png", "src": "/tmp/c.png"}]
-    assert "```" not in out and "![chart]" not in out    # md fences + img gone
+    assert "```" not in out
+    assert "![chart]" not in out
 
 
 def test_storagify_mermaid_macro_env_override(monkeypatch):
@@ -217,7 +226,8 @@ def test_storagify_mermaid_macro_env_override(monkeypatch):
 def test_storagify_passthrough_plain_storage():
     body = "<p>plain <strong>storage</strong> body, no fences</p>"
     out, refs = cf._storagify_media(body)
-    assert out == body and refs == []
+    assert out == body
+    assert refs == []
 
 
 def test_storagify_cdata_escapes_early_close():
@@ -245,9 +255,11 @@ def test_create_converts_and_uploads_image(cfg, monkeypatch, tmp_path):
     assert '<ac:image><ri:attachment ri:filename="diagram.png"/></ac:image>' in sent
     assert "![" not in sent
     att = [r for r in calls if "/child/attachment" in r.full_url]
-    assert att and att[0].get_method() == "POST"
+    assert att
+    assert att[0].get_method() == "POST"
     assert att[0].headers.get("X-atlassian-token") == "nocheck"
-    assert out["attachments"][0]["ok"] and out["attachments"][0]["filename"] == "diagram.png"
+    assert out["attachments"][0]["ok"]
+    assert out["attachments"][0]["filename"] == "diagram.png"
 
 
 # ── mermaid diagram modes (code default / mermaid macro) ─────────────────
@@ -256,9 +268,11 @@ def test_mermaid_default_mode_is_code_macro(monkeypatch):
     # DEFAULT: a code macro with the mermaid source, in place (renders anywhere)
     monkeypatch.delenv("AIFORGE_CONFLUENCE_DIAGRAM", raising=False)
     out, refs = cf._storagify_media("```mermaid\ngraph TD\n A-->B\n```")
-    assert 'ac:name="code"' in out and "drawio" not in out
+    assert 'ac:name="code"' in out
+    assert "drawio" not in out
     assert '<ac:parameter ac:name="language">mermaid</ac:parameter>' in out
-    assert "graph TD" in out and refs == []
+    assert "graph TD" in out
+    assert refs == []
 
 
 def test_mermaid_mode_explicit_macro(monkeypatch):

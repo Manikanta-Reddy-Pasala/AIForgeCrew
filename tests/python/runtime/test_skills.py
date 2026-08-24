@@ -50,7 +50,8 @@ def test_search_ranks_by_relevance(tmp_path, monkeypatch):
         (sd / "SKILL.md").write_text(
             f"---\nname: {n}\ndescription: {desc}\ntriggers: [{trig}]\n---\nbody for {n}")
     hits = skills.search("I need to add a flyway migration", str(tmp_path / "x"), k=5)
-    assert hits and hits[0]["name"] == "flyway-migrations"
+    assert hits
+    assert hits[0]["name"] == "flyway-migrations"
     assert all(h["score"] > 0 for h in hits)
 
 
@@ -103,7 +104,8 @@ def test_repo_scope_writes_into_repo(tmp_path, monkeypatch):
     monkeypatch.delenv("AIFORGE_WORKSPACE_DIR", raising=False)
     monkeypatch.setenv("AIFORGE_SKILLS_DIR", str(tmp_path / "g"))
     res = skills.write_skill("x", "d", "body", cwd=str(tmp_path / "myrepo"), scope="repo")
-    assert res["ok"] and "/myrepo/.aiforge/skills/" in res["path"]
+    assert res["ok"]
+    assert "/myrepo/.aiforge/skills/" in res["path"]
 
 
 # ─── chat tool wiring ──────────────────────────────────────────────────
@@ -125,12 +127,14 @@ def test_chat_learn_skill_tool(tmp_path, monkeypatch):
         str(tmp_path / "repo"))
     assert out["ok"] is True
     found = ca._t_skill_search({"query": "deploy hotfix"}, str(tmp_path / "repo"))
-    assert found["ok"] and any(s["name"] == "deploy hotfix" for s in found["skills"])
+    assert found["ok"]
+    assert any(s["name"] == "deploy hotfix" for s in found["skills"])
 
 
 def test_doer_skill_tools_exported():
     from aiforge_core.runtime import doer_tools as dt
-    assert hasattr(dt, "skill_search") and hasattr(dt, "learn_skill")
+    assert hasattr(dt, "skill_search")
+    assert hasattr(dt, "learn_skill")
 
 
 def test_md_store_bullet_dedup_is_line_based(tmp_path, monkeypatch):

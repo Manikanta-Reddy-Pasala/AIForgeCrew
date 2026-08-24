@@ -310,7 +310,8 @@ def test_classify_head_diff_mixed(tmp_path: Path) -> None:
 def test_classify_head_diff_empty_when_no_commits(tmp_path: Path) -> None:
     _git_init(tmp_path)
     prod, test = gp._classify_head_diff(str(tmp_path))
-    assert prod == [] and test == []
+    assert prod == []
+    assert test == []
 
 
 # ── auto-merge on validate ────────────────────────────────────────────

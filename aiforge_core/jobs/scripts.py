@@ -64,7 +64,10 @@ def write_script(name: str, content: str) -> str:
     path = os.path.join(jobs_dir(), fname)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(body)
-    os.chmod(path, 0o755)
+    # 0o700, not 0o755: this is a generated script run by the SAME user.
+    # World-readable+executable let any local user read what it does and
+    # execute it, and it can carry job arguments.
+    os.chmod(path, 0o700)
     return path
 
 

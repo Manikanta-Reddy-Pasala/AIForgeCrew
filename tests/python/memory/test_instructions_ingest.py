@@ -4,7 +4,7 @@ import importlib
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def mem(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "mem"))
@@ -37,7 +37,8 @@ def test_ingest_creates_briefs_and_is_searchable(mem, tmp_path):
         encoding="utf-8")
 
     res = ii.ingest_instruction_files([str(repo / "CLAUDE.md")], compact=False)
-    assert res["ok"] and res["files"] == 1
+    assert res["ok"]
+    assert res["files"] == 1
     assert res["captured"] >= 2                       # both sections captured
     assert any("make build" in (h.get("text") or "")
                for h in sm.recall("compile the service", limit=8))
@@ -53,7 +54,8 @@ def test_clear_then_ingest_is_deterministic(mem, tmp_path):
 
     res = ii.ingest_instruction_files([str(repo / "CLAUDE.md")], clear=True,
                                       compact=False)
-    assert res["ok"] and res["cleared"] is not None
+    assert res["ok"]
+    assert res["cleared"] is not None
     hits = " ".join(h.get("text") or "" for h in sm.recall("widgets", limit=8))
     assert "widgets" not in hits
     assert any("payments" in (h.get("text") or "")

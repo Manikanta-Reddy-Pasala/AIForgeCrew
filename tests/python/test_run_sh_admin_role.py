@@ -67,7 +67,8 @@ def test_help_lists_both_role_flags(tmp_path: Path):
     proc = _run(tmp_path, ["--help"])
 
     assert proc.returncode == 0
-    assert "--admin " in proc.stdout and "--admin-page" in proc.stdout
+    assert "--admin " in proc.stdout
+    assert "--admin-page" in proc.stdout
     assert "--spoke" in proc.stdout
 
 

@@ -42,7 +42,8 @@ def test_a_spoke_dedupes_its_own_nodes(store, monkeypatch):
 
     res = store.dedupe_nodes()
 
-    assert res["removed"] == 1 and "skipped" not in res
+    assert res["removed"] == 1
+    assert "skipped" not in res
     assert _learning_files(store) == 1
 
 
@@ -51,7 +52,8 @@ def test_the_admin_dedupes(store):
 
     res = store.dedupe_nodes()
 
-    assert res["removed"] == 1 and "skipped" not in res
+    assert res["removed"] == 1
+    assert "skipped" not in res
     assert _learning_files(store) == 1
 
 
@@ -60,7 +62,8 @@ def test_a_single_machine_dedupes_exactly_as_before(store):
 
     res = store.dedupe_nodes()
 
-    assert res["removed"] == 1 and "skipped" not in res
+    assert res["removed"] == 1
+    assert "skipped" not in res
 
 
 def test_a_garbage_role_dedupes_anyway(store, monkeypatch):

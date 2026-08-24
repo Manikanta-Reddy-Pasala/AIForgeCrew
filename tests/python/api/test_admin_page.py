@@ -134,7 +134,8 @@ def test_sync_status_shape_on_a_spoke(monkeypatch, tmp_path):
     assert body["role"]["role"] == "spoke"
     assert body["role"]["is_admin"] is False
     assert body["role"]["admin_url"] == "http://10.0.0.5:8799"
-    assert body["admin"]["reachable"] is True and body["admin"]["entries"] == 7
+    assert body["admin"]["reachable"] is True
+    assert body["admin"]["entries"] == 7
     # The roll is the admin's bookkeeping; a spoke never shows one.
     assert body["spokes"] == []
 
@@ -224,7 +225,8 @@ def test_probe_0_performs_no_network_calls(monkeypatch, tmp_path):
     body = c.get("/api/admin/sync-status?probe=0").json()
     assert called == []                       # the probe was never entered
     assert body["probed"] is False
-    assert body["admin"]["reachable"] is False and body["admin"]["latency_ms"] is None
+    assert body["admin"]["reachable"] is False
+    assert body["admin"]["latency_ms"] is None
 
 
 def test_an_unreachable_admin_reports_the_error_without_failing_the_request(
@@ -243,7 +245,8 @@ def test_an_unreachable_admin_reports_the_error_without_failing_the_request(
     r = c.get("/api/admin/sync-status")
     assert r.status_code == 200
     up = r.json()["admin"]
-    assert up["reachable"] is False and up["probed"] is True
+    assert up["reachable"] is False
+    assert up["probed"] is True
     assert "connection refused" in up["error"]
     assert up["entries"] is None
 
@@ -280,7 +283,8 @@ def test_the_probe_counts_the_admins_advertised_entries(monkeypatch, tmp_path):
 def test_an_admin_with_no_url_is_not_probed(monkeypatch, tmp_path):
     _api, admin = _fresh_api(monkeypatch, tmp_path)
     res = admin._probe_admin("")
-    assert res["reachable"] is False and res["probed"] is False
+    assert res["reachable"] is False
+    assert res["probed"] is False
 
 
 # ─────────────────────────────── the page ───────────────────────────────────

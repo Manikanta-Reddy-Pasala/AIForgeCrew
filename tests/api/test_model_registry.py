@@ -33,7 +33,9 @@ def test_add_list_apply_delete(app_client):
         "api_key": "secret", "vision": "no"})
     assert r.status_code == 201, r.text
     m = r.json()
-    assert m["id"] and m["api_key_set"] is True and "api_key" not in m
+    assert m["id"]
+    assert m["api_key_set"] is True
+    assert "api_key" not in m
     assert m["vision"] == "no"
 
     lst = client.get("/api/agents/models").json()["models"]
@@ -42,7 +44,8 @@ def test_add_list_apply_delete(app_client):
     # Apply to agents → their config now points at this model.
     ap = client.post(f"/api/agents/models/{m['id']}/apply",
                      json={"roles": ["doer", "planner"]}).json()
-    assert set(ap["applied"]) == {"doer", "planner"} and not ap["errors"]
+    assert set(ap["applied"]) == {"doer", "planner"}
+    assert not ap["errors"]
     cfg = client.get("/api/agents/v2/config").json()
     assert cfg["doer"]["model"] == "qwen3-coder"
     assert cfg["doer"]["base_url"] == "http://h:1234/v1"

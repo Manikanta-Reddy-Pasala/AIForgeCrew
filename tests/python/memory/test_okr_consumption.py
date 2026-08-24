@@ -9,7 +9,7 @@ import tempfile
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def cfg(monkeypatch):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", tempfile.mkdtemp())
     monkeypatch.setenv("AIFORGE_MEMORY_BACKEND", "sqlite")
@@ -25,7 +25,8 @@ def test_knowledge_text_strips_envelope():
         facts=["db via gateway only", "use flyway"],
         body_md="Consolidated prose about the service.")
     k = work_notes.knowledge_text(note)
-    assert "db via gateway only" in k and "use flyway" in k
+    assert "db via gateway only" in k
+    assert "use flyway" in k
     assert "Consolidated prose about the service." in k
     assert "boilerplate" not in k          # Objective dropped
     assert "aiforge:body" not in k         # sentinel dropped
@@ -44,7 +45,8 @@ def test_project_brief_injects_clean_knowledge(cfg):
     m._brief_upsert("svc", "use flyway not ddl-auto")
     d = m.read_file("compacted-svc")
     k = cb._brief_knowledge(d)
-    assert "db via gateway only" in k and "flyway" in k
+    assert "db via gateway only" in k
+    assert "flyway" in k
     assert "Keep durable" not in k         # Objective boilerplate not injected
     assert "## Objective" not in k
     assert "aiforge:body" not in k

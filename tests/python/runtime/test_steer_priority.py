@@ -17,7 +17,8 @@ def test_the_directive_states_priority_and_both_readings():
     assert "PRIORITY" in d
     # Both readings are named, so the model has to choose rather than default
     # to the plan already in its context.
-    assert "REPLACES" in d and "ADDS" in d
+    assert "REPLACES" in d
+    assert "ADDS" in d
 
 
 def test_a_mid_run_message_reaches_the_model_as_that_directive(tmp_path):

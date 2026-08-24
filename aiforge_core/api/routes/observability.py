@@ -126,8 +126,13 @@ def stream_role_log(role: str):
                 import collections as _coll
                 # deque(maxlen) holds only the last 200 lines instead of
                 # materialising the whole (append-only, unbounded) log file.
-                with open(path, encoding="utf-8") as f:
-                    tail = list(_coll.deque(f, maxlen=200))
+                def _tail_sync():
+                    # Off the event loop: an append-only log can be large, and
+                    # a blocking read here stalls EVERY other request the
+                    # server is serving, not just this stream.
+                    with open(path, encoding="utf-8") as f:
+                        return list(_coll.deque(f, maxlen=200))
+                tail = await asyncio.to_thread(_tail_sync)
                 last_size = os.path.getsize(path)
                 for line in tail:
                     line = line.strip()
@@ -143,9 +148,11 @@ def stream_role_log(role: str):
                 sz = os.path.getsize(path)
                 if sz <= last_size:
                     continue
-                with open(path, encoding="utf-8") as f:
-                    f.seek(last_size)
-                    chunk = f.read()
+                def _read_from(offset: int) -> str:
+                    with open(path, encoding="utf-8") as f:
+                        f.seek(offset)
+                        return f.read()
+                chunk = await asyncio.to_thread(_read_from, last_size)
                 last_size = sz
                 for line in chunk.splitlines():
                     line = line.strip()
@@ -153,7 +160,10 @@ def stream_role_log(role: str):
                         continue
                     yield f"data: {line}\n\n"
         except asyncio.CancelledError:
-            return
+            # RE-RAISE. Swallowing it tells asyncio the task ended normally,
+            # so shutdown/disconnect handling stops waiting on a stream that
+            # was actually cancelled.
+            raise
 
     return sse_response(gen())
 
@@ -256,7 +266,10 @@ def stream_ticket_trace(identifier: str):
                 if in_ctx:
                     yield f"data: {json.dumps({'line': raw})}\n\n"
         except asyncio.CancelledError:
-            pass
+            # RE-RAISE after the `finally` has run its cleanup. Swallowing it
+            # reports a normal completion for a task that was cancelled, so
+            # the caller stops waiting on a teardown that never signalled.
+            raise
         finally:
             for t in tasks:
                 t.cancel()
@@ -310,7 +323,10 @@ def stream_llm_trace(identifier: str):
                    (needle_ticket in raw or needle_ticket_compact in raw):
                     yield f"data: {raw}\n\n"
         except asyncio.CancelledError:
-            pass
+            # RE-RAISE after the `finally` has run its cleanup. Swallowing it
+            # reports a normal completion for a task that was cancelled, so
+            # the caller stops waiting on a teardown that never signalled.
+            raise
         finally:
             try:
                 proc.kill()

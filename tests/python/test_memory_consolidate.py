@@ -15,8 +15,10 @@ def test_trajectory_text_builds_from_state():
     t = mc._trajectory_text({
         "enhanced_body": "do X", "plan_md": "step 1",
         "doer_outcome": "diff", "feedback_verdict": "pass"})
-    assert "TICKET" in t and "do X" in t
-    assert "PLAN" in t and "step 1" in t
+    assert "TICKET" in t
+    assert "do X" in t
+    assert "PLAN" in t
+    assert "step 1" in t
     assert mc._trajectory_text({}) == ""
 
 

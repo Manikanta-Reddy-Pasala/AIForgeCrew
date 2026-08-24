@@ -11,7 +11,7 @@ def _git(cwd, *a):
                           check=False)
 
 
-@pytest.fixture()
+@pytest.fixture
 def repo(tmp_path):
     _git(tmp_path, "init")
     _git(tmp_path, "config", "user.email", "t@t.t")

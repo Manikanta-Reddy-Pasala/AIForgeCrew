@@ -83,5 +83,6 @@ def test_two_hop_expansion_grows_results():
                           repo_root=str(REPO_ROOT))
     two = graphify_lookup("Memory", hops=2, max_neighbors=50,
                           repo_root=str(REPO_ROOT))
-    assert one["ok"] and two["ok"]
+    assert one["ok"]
+    assert two["ok"]
     assert len(two["neighbors"]) >= len(one["neighbors"])

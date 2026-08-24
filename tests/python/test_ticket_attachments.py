@@ -12,7 +12,7 @@ import pytest
 from aiforge_core.api import api as api_mod
 
 
-@pytest.fixture()
+@pytest.fixture
 def repo_root(tmp_path, monkeypatch):
     # _ticket_files_base() resolves AIFORGE_TICKET_FILES_DIR, then
     # AIFORGE_CONFIG_DIR, then AIFORGE_REPO_ROOT. This test covers the

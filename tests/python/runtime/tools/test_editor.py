@@ -240,18 +240,21 @@ def test_create_oversized_code_file_warns_but_writes(repo, monkeypatch):
     big = "x = 1\n" * 600
     out = ed.editor("create", "big.py", file_text=big)
     assert out["ok"] is True                      # non-blocking — write lands
-    assert "warning" in out and "split" in out["warning"].lower()
+    assert "warning" in out
+    assert "split" in out["warning"].lower()
     assert (repo / "big.py").read_text().count("\n") == 600
 
 
 def test_create_small_code_file_no_warning(repo):
     out = ed.editor("create", "small.py", file_text="x = 1\n" * 100)
-    assert out["ok"] and "warning" not in out
+    assert out["ok"]
+    assert "warning" not in out
 
 
 def test_oversized_non_code_file_no_warning(repo):
     out = ed.editor("create", "data.md", file_text="line\n" * 600)
-    assert out["ok"] and "warning" not in out       # markdown isn't code
+    assert out["ok"]
+    assert "warning" not in out
 
 
 def test_str_replace_growing_over_cap_warns(repo, monkeypatch):
@@ -259,10 +262,12 @@ def test_str_replace_growing_over_cap_warns(repo, monkeypatch):
     ed.editor("create", "g.py", file_text="A = 1\n")
     out = ed.editor("str_replace", "g.py", old_str="A = 1\n",
                     new_str="A = 1\n" + "y = 2\n" * 600)
-    assert out["ok"] and "warning" in out
+    assert out["ok"]
+    assert "warning" in out
 
 
 def test_cap_disabled_via_env(repo, monkeypatch):
     monkeypatch.setenv("AIFORGE_MAX_FILE_LINES", "0")
     out = ed.editor("create", "huge.py", file_text="x = 1\n" * 900)
-    assert out["ok"] and "warning" not in out
+    assert out["ok"]
+    assert "warning" not in out

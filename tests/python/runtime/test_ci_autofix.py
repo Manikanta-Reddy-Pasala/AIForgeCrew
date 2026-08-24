@@ -26,8 +26,10 @@ def test_build_fix_request_shape():
     assert req["pr"] == PR
     assert req["repo"] == REPO
     assert req["checks"] == ["build", "test"]
-    assert isinstance(req["title"], str) and req["title"]
-    assert isinstance(req["body"], str) and req["body"]
+    assert isinstance(req["title"], str)
+    assert req["title"]
+    assert isinstance(req["body"], str)
+    assert req["body"]
     # body mentions failing check names + log excerpts
     assert "build" in req["body"]
     assert "compile error" in req["body"]

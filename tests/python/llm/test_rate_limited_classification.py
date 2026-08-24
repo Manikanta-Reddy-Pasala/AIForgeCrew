@@ -180,7 +180,8 @@ def test_retry_after_is_honoured_over_the_default(monkeypatch):
                   provider="openai_compatible", role="learner", extras={})
     with pytest.raises(urllib.error.HTTPError):
         _http._post_with_retry(ep, b"{}", 600, role="learner", source="test")
-    assert slept and 45.0 <= max(slept) <= 45.3, slept
+    assert slept, slept
+    assert 45.0 <= max(slept) <= 45.3, slept
 
 
 def _rate_limited_post(monkeypatch, _http, headers=None):
@@ -280,4 +281,5 @@ def test_the_clamp_still_leaves_a_real_wait_and_a_real_retry(monkeypatch):
     with pytest.raises(urllib.error.HTTPError):
         _http._post_with_retry(ep, b"{}", 20, role="triage", source="test")
     assert len(attempts) >= 2, "the classifier got no retry at all"
-    assert slept and 1.0 < max(slept) < 20.0, slept   # shorter, but real
+    assert slept, slept
+    assert 1.0 < max(slept) < 20.0, slept

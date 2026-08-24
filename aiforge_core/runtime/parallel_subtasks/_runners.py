@@ -132,7 +132,7 @@ def _parse_file_blocks(text: str) -> dict:
     import re
     blocks: dict = {}
     # === path === markers
-    for m in re.finditer(r"^===\s*([^\n=]+?)\s*===\n(.*?)(?=^===\s*[^\n=]+?\s*===|\Z)",
+    for m in re.finditer(r"^===\s*([^\n=]+?)\s*===\n(.*?)(?=(?:^===\s*[^\n=]+?\s*===)|\Z)",
                          text, re.MULTILINE | re.DOTALL):
         path = m.group(1).strip().strip("`")
         body = m.group(2).strip()

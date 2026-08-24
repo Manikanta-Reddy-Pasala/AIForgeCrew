@@ -59,4 +59,5 @@ def test_ssl_label_reflects_ca_bundle(monkeypatch, capsys):
     monkeypatch.setenv("AIFORGE_LM_BASE_URL", "https://127.0.0.1:9/v1")
     ct.main(["doer"])
     out = capsys.readouterr().out
-    assert "CA bundle" in out and "verify=ON" in out
+    assert "CA bundle" in out
+    assert "verify=ON" in out

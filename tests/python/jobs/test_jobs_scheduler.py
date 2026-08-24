@@ -16,7 +16,7 @@ def _tmp_db(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_JOBS_DB_PATH", str(tmp_path / "jobs.db"))
 
 
-@pytest.fixture()
+@pytest.fixture
 def created(monkeypatch):
     calls: list[dict] = []
 

@@ -6,7 +6,7 @@ import types
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def mem(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "mem"))

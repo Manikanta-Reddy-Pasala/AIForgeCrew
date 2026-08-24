@@ -32,7 +32,8 @@ def test_disabled_via_env(monkeypatch) -> None:
     assert obs._is_disabled() is True
     # When disabled, make_stage_callbacks returns (None, None)
     before, after = obs.make_stage_callbacks("doer")
-    assert before is None and after is None
+    assert before is None
+    assert after is None
 
 
 def test_emit_pr_opened_calls_add_event() -> None:

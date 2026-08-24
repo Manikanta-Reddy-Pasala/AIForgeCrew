@@ -21,7 +21,7 @@ from aiforge_core.runtime.tools import mcp_client as mc
 # --------------------------------------------------------------------------- #
 # (a) registry: stdio is installable + surfaces in the enabled stdio set       #
 # --------------------------------------------------------------------------- #
-@pytest.fixture()
+@pytest.fixture
 def cfg(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("AIFORGE_MCP_ENDPOINTS", raising=False)

@@ -89,8 +89,11 @@ def _container_exists(name: str) -> bool:
 
 
 def _pg_url() -> str:
-    return (os.environ.get("AIFORGE_PG_URL")
-            or "postgresql://aiforge:aiforgepass@127.0.0.1:5432/aiforge")
+    # No baked-in credential: see config.env.default_pg_dsn. The literal this
+    # replaced shipped a working password in source control, and it was the
+    # DEFAULT — i.e. what ran wherever AIFORGE_PG_URL was unset.
+    from aiforge_core.config.env import default_pg_dsn
+    return os.environ.get("AIFORGE_PG_URL") or default_pg_dsn()
 
 
 def _migrate_pg_to_sqlite() -> bool:

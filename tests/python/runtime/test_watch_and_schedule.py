@@ -29,8 +29,10 @@ def test_it_stops_the_moment_the_condition_holds(tmp_path, monkeypatch):
     monkeypatch.setattr(_watch.time, "sleep", lambda *_a: None)
     res = _watch._t_watch_until(
         {"cmd": "true", "interval_s": 1, "max_checks": 10}, str(tmp_path))
-    assert res["ok"] and res["matched"]
-    assert res["checks"] == 3 and calls["n"] == 3
+    assert res["ok"]
+    assert res["matched"]
+    assert res["checks"] == 3
+    assert calls["n"] == 3
 
 
 def test_it_gives_up_instead_of_looping_forever(tmp_path, monkeypatch):
@@ -40,7 +42,8 @@ def test_it_gives_up_instead_of_looping_forever(tmp_path, monkeypatch):
     monkeypatch.setattr(_watch.time, "sleep", lambda *_a: None)
     res = _watch._t_watch_until(
         {"cmd": "false", "interval_s": 1, "max_checks": 4}, str(tmp_path))
-    assert res["ok"] is False and res["matched"] is False
+    assert res["ok"] is False
+    assert res["matched"] is False
     assert res["checks"] == 4
     assert "never met" in res["reason"]
 
@@ -80,7 +83,8 @@ def test_a_refused_command_is_not_retried(tmp_path, monkeypatch):
     monkeypatch.setattr(_watch.time, "sleep", lambda *_a: None)
     res = _watch._t_watch_until({"cmd": "rm -rf /", "max_checks": 9},
                                 str(tmp_path))
-    assert calls["n"] == 1 and res["blocked"] == "delete"
+    assert calls["n"] == 1
+    assert res["blocked"] == "delete"
 
 
 def test_stop_interrupts_the_watch(tmp_path, monkeypatch):
@@ -91,7 +95,8 @@ def test_stop_interrupts_the_watch(tmp_path, monkeypatch):
     monkeypatch.setattr(chat_cancel, "active", lambda: 42)
     monkeypatch.setattr(chat_cancel, "is_cancelled", lambda sid: True)
     res = _watch._t_watch_until({"cmd": "x", "max_checks": 99}, str(tmp_path))
-    assert res.get("stopped") is True and res["checks"] == 0
+    assert res.get("stopped") is True
+    assert res["checks"] == 0
 
 
 def test_the_budget_is_bounded_however_the_model_asks(tmp_path, monkeypatch):
@@ -123,7 +128,8 @@ def test_create_list_cancel(jobs, tmp_path):
         {"action": "create", "name": "nightly", "cron": "0 2 * * *",
          "instruction": "run the smoke suite"}, str(tmp_path))
     assert r["ok"], r
-    assert r["cron"] == "0 2 * * *" and r["next_run_at"]
+    assert r["cron"] == "0 2 * * *"
+    assert r["next_run_at"]
     jid = r["job_id"]
 
     listed = _watch._t_schedule_task({"action": "list"}, str(tmp_path))
@@ -131,7 +137,8 @@ def test_create_list_cancel(jobs, tmp_path):
 
     gone = _watch._t_schedule_task({"action": "cancel", "job_id": jid},
                                    str(tmp_path))
-    assert gone["ok"] and gone["cancelled"] == jid
+    assert gone["ok"]
+    assert gone["cancelled"] == jid
     assert not _watch._t_schedule_task({"action": "list"}, str(tmp_path))["jobs"]
 
 
@@ -147,7 +154,8 @@ def test_an_unmappable_interval_says_so_instead_of_lying():
     """7 minutes is not a crontab slot. Silently rounding it would schedule
     something the user did not ask for."""
     cron, err = _watch._cron_from({"every_minutes": 7})
-    assert cron is None and "does not map" in err
+    assert cron is None
+    assert "does not map" in err
 
 
 def test_it_refuses_an_impossible_cron(jobs, tmp_path):
@@ -155,7 +163,8 @@ def test_it_refuses_an_impossible_cron(jobs, tmp_path):
     r = _watch._t_schedule_task(
         {"action": "create", "name": "feb31", "cron": "0 0 31 2 *",
          "instruction": "x"}, str(tmp_path))
-    assert r["ok"] is False and "schedulable" in r["error"]
+    assert r["ok"] is False
+    assert "schedulable" in r["error"]
 
 
 def test_it_will_not_schedule_nothing(jobs, tmp_path):
@@ -194,7 +203,8 @@ def test_a_bad_condition_fails_before_the_first_check(tmp_path, monkeypatch):
                         {"ok": False, "code": 1, "stdout": "", "stderr": ""})
     for bad in ("regex:[", "contains Running", "when it is done", "contains:"):
         res = _watch._t_watch_until({"cmd": "x", "until": bad}, str(tmp_path))
-        assert res["ok"] is False and res.get("error"), bad
+        assert res["ok"] is False, bad
+        assert res.get("error"), bad
     assert calls["n"] == 0, "a bad condition still ran the command"
 
 
@@ -205,7 +215,8 @@ def test_a_catastrophic_regex_is_refused_not_run(tmp_path):
     life. The only safe moment is before it runs."""
     res = _watch._t_watch_until(
         {"cmd": "x", "until": "regex:(a+)+$"}, str(tmp_path))
-    assert res["ok"] is False and "nested quantifiers" in res["error"]
+    assert res["ok"] is False
+    assert "nested quantifiers" in res["error"]
 
 
 def test_contains_is_case_insensitive_like_regex_is():
@@ -241,7 +252,8 @@ def test_the_schedule_floor_stops_1440_runs_a_day(jobs, tmp_path):
     r = _watch._t_schedule_task(
         {"action": "create", "name": "hammer", "every_minutes": 1,
          "instruction": "x"}, str(tmp_path))
-    assert r["ok"] is False and "floor is" in r["error"]
+    assert r["ok"] is False
+    assert "floor is" in r["error"]
 
 
 def test_it_will_not_double_schedule_the_same_name(jobs, tmp_path):
@@ -251,7 +263,8 @@ def test_it_will_not_double_schedule_the_same_name(jobs, tmp_path):
          "instruction": "smoke"}
     assert _watch._t_schedule_task(a, str(tmp_path))["ok"]
     dup = _watch._t_schedule_task(a, str(tmp_path))
-    assert dup["ok"] is False and "already exists" in dup["error"]
+    assert dup["ok"] is False
+    assert "already exists" in dup["error"]
 
 
 def test_it_cannot_delete_an_operators_script_job(jobs, tmp_path):
@@ -261,7 +274,8 @@ def test_it_cannot_delete_an_operators_script_job(jobs, tmp_path):
                       kind="script", script_path="/usr/local/bin/backup.sh")
     res = _watch._t_schedule_task(
         {"action": "cancel", "job_id": job["id"]}, str(tmp_path))
-    assert res["ok"] is False and "Jobs page" in res["error"]
+    assert res["ok"] is False
+    assert "Jobs page" in res["error"]
     assert jobs.get(job["id"]) is not None
 
 
@@ -274,4 +288,5 @@ def test_the_job_list_does_not_ship_script_stderr_to_the_model(jobs, tmp_path):
     listed = _watch._t_schedule_task({"action": "list"}, str(tmp_path))["jobs"]
     row = [j for j in listed if j["id"] == job["id"]][0]
     assert row["failing"] is True
-    assert "last_error" not in row and "deploy.key" not in str(row)
+    assert "last_error" not in row
+    assert "deploy.key" not in str(row)

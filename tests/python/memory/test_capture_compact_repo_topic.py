@@ -10,7 +10,7 @@ import tempfile
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def cfg(monkeypatch):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", tempfile.mkdtemp())
     monkeypatch.setenv("AIFORGE_MEMORY_BACKEND", "sqlite")
@@ -24,7 +24,8 @@ def test_capture_writes_md_with_repo_and_topic(cfg):
                   repo="svc", topic="architecture")
     assert d["repo"] == "svc"
     assert d["topic"] == "architecture"
-    assert "repo:svc" in d["tags"] and "topic:architecture" in d["tags"]
+    assert "repo:svc" in d["tags"]
+    assert "topic:architecture" in d["tags"]
 
 
 def test_compact_by_repo_makes_project_brief(cfg):
@@ -160,7 +161,8 @@ def test_writetime_brief_is_fresh_immediately(cfg):
     from aiforge_core.memory import md_store as m
     m.capture("project_learning", "svc: db via gateway only", repo="svc", topic="arch")
     b = m.read_file("compacted-svc")
-    assert b and "db via gateway only" in b["body"]
+    assert b
+    assert "db via gateway only" in b["body"]
     m.capture("project_learning", "svc: db via gateway only", repo="svc", topic="arch")  # dup
     b2 = m.read_file("compacted-svc")
     assert b2["body"].count("# svc memory") == 1              # single heading

@@ -11,7 +11,7 @@ import tempfile
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def cfg(monkeypatch):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", tempfile.mkdtemp())
     monkeypatch.setenv("AIFORGE_MEMORY_BACKEND", "sqlite")
@@ -51,7 +51,8 @@ def test_repo_notes_is_okr_envelope(cfg):
     assert parsed["sections"]["objective"]          # Objective present
     # measurable Key Results = the scan counts
     krs = " ".join(parsed["sections"]["key_results"])
-    assert "1 controllers" in krs and "1 services" in krs
+    assert "1 controllers" in krs
+    assert "1 services" in krs
     # code links + service links preserved in the body
     assert "OrderController.java" in parsed["body"]
     assert "order.created" in parsed["body"]         # NATS service link
@@ -92,7 +93,8 @@ def test_migrate_is_idempotent(cfg):
     from aiforge_core.memory import md_store as m
     m._brief_upsert("svc", "already okr fact")     # writes OKR directly
     r1 = m.migrate_to_okr()
-    assert r1["migrated"] == 0 and r1["skipped"] == 1
+    assert r1["migrated"] == 0
+    assert r1["skipped"] == 1
     r2 = m.migrate_to_okr()
     assert r2["migrated"] == 0
 

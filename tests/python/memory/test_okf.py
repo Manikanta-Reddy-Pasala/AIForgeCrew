@@ -31,7 +31,8 @@ def test_append_log_newest_first_iso():
     okf.append_log(p, "new2", date="2026-07-11")
     txt = open(p).read()
     assert txt.index("## 2026-07-11") < txt.index("## 2026-07-10")   # newest first
-    assert "- new2" in txt and "- new" in txt
+    assert "- new2" in txt
+    assert "- new" in txt
 
 
 def test_okf_rules_injected_into_producers():
@@ -68,7 +69,8 @@ def test_record_solution_okf_node_log_and_dedup(monkeypatch, tmp_path):
         assert want in node, want
     import os as _os
     log = open(_os.path.join(store.okf_root(), "log.md")).read()
-    assert "## 2026-07-11" in log and "[fix]" in log
+    assert "## 2026-07-11" in log
+    assert "[fix]" in log
     # dedup: same fix again → no second node
     author.record_solution(kind="fix", summary="did: MessageRetryService reads priority header",
                            workspace="PosClientBackend", ticket="ONE-9", date="2026-07-11")
@@ -100,7 +102,9 @@ def test_okr_scope_segregation_global_vs_project(monkeypatch, tmp_path):
     assert sorted(d["id"] for d in s.load_all("global")) == ["L-01"]
     assert sorted(d["id"] for d in s.load_all("RepoA")) == ["L-02", "S-01"]
     idx = open(os.path.join(s.okf_root(), "index.md")).read()
-    assert "## Global" in idx and "## RepoA" in idx and "## RepoB" in idx
+    assert "## Global" in idx
+    assert "## RepoA" in idx
+    assert "## RepoB" in idx
     assert not idx.startswith("---")                          # reserved: no frontmatter
 
 
@@ -124,9 +128,11 @@ def test_okr_learning_classification_global_vs_repo(monkeypatch, tmp_path):
                             repo="RepoA")
     assert store.okr_scopes() == ["RepoA"]
     repo_l = store.load_all("RepoA")
-    assert repo_l and (repo_l[0]["meta"] or {}).get("category") == "structure"
+    assert repo_l
+    assert (repo_l[0]["meta"] or {}).get("category") == "structure"
     glob_l = store.load_all("global")
-    assert glob_l and "target one test" in (glob_l[0].get("body") or "")
+    assert glob_l
+    assert "target one test" in (glob_l[0].get("body") or "")
 
 
 def test_context_block_scoped_no_cross_project_leak(monkeypatch, tmp_path):
@@ -142,7 +148,8 @@ def test_context_block_scoped_no_cross_project_leak(monkeypatch, tmp_path):
     store.save_node("learning", None,
                     {"scope": "repo:RepoB", "workspace": "RepoB"}, "B SECRET rule")
     blk = R.context_block(repo="RepoA")
-    assert "univ rule" in blk and "A rule" in blk
+    assert "univ rule" in blk
+    assert "A rule" in blk
     assert "B SECRET" not in blk               # no cross-project leak
 
 
@@ -167,7 +174,8 @@ def test_okr_load_all_cache_and_deferred_index(monkeypatch, tmp_path):
                 reindex=False)
     assert not os.path.exists(idx)        # deferred — no index write
     s._write_index()
-    assert os.path.exists(idx) and "## RepoX" in open(idx).read()
+    assert os.path.exists(idx)
+    assert "## RepoX" in open(idx).read()
 
 
 def test_context_block_query_relevance_returns_related_only(monkeypatch, tmp_path):
@@ -183,7 +191,8 @@ def test_context_block_query_relevance_returns_related_only(monkeypatch, tmp_pat
                         {"scope": "repo:R", "workspace": "R", "category": cat}, body)
     blk = R.context_block(repo="R", query="fix the cache eviction bug")
     assert "eviction" in blk                      # the related doc surfaces
-    assert "resilience4j" not in blk and "JWT" not in blk   # unrelated filtered
+    assert "resilience4j" not in blk
+    assert "JWT" not in blk
 
 
 def test_context_block_fuzzy_fallback_ladder(monkeypatch, tmp_path):
@@ -220,8 +229,11 @@ def test_repo_script_task_nodes_and_retrieval(monkeypatch, tmp_path):
     proj = store.load_all("CacheLayer")
     card = next(d for d in proj if d["type"] == "repo")
     assert card["id"] == "R-cachelayer"
-    assert card["meta"]["build"] == "./mvnw package" and card["meta"]["test"] == "./mvnw test"
+    assert card["meta"]["build"] == "./mvnw package"
+    assert card["meta"]["test"] == "./mvnw test"
     assert len(card["meta"]["gotchas"]) == 2                       # unioned
     assert len([d for d in proj if d["type"] == "script"]) == 1    # deduped
     blk = R.context_block(repo="CacheLayer", query="how to build the cache")
-    assert "Profile:" in blk and "reindex.sh" in blk and "add a cache region" in blk
+    assert "Profile:" in blk
+    assert "reindex.sh" in blk
+    assert "add a cache region" in blk

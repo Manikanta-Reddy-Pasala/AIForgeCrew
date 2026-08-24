@@ -22,7 +22,8 @@ def test_doer_no_role_gets_base_web_but_not_web_read():
     # role=None returns the full base set — web_search + web_crawl are in it now,
     # but web_read (ungated raw read) stays researcher-only.
     n = _names(None)
-    assert "web_search" in n and "web_crawl" in n
+    assert "web_search" in n
+    assert "web_crawl" in n
     assert "web_read" not in n
 
 
@@ -30,7 +31,8 @@ def test_planner_gets_web_search_not_web_read():
     # a tool-using role (planner allowlist includes web_search/web_crawl); the
     # ungated web_read is still researcher-only.
     n = _names("planner")
-    assert "web_search" in n and "web_crawl" in n
+    assert "web_search" in n
+    assert "web_crawl" in n
     assert "web_read" not in n
 
 
@@ -47,6 +49,7 @@ def test_fetch_url_still_gated(monkeypatch):
     called = {"n": 0}
     monkeypatch.setattr(dt, "_do_fetch", lambda url: called.__setitem__("n", called["n"] + 1) or {"ok": True})
     r = dt.fetch_url("http://example.com")
-    assert r["ok"] is False and called["n"] == 0   # gated → no fetch
+    assert r["ok"] is False
+    assert called["n"] == 0
     monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
     assert dt.fetch_url("http://example.com")["ok"] is True

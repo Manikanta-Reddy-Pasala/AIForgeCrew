@@ -57,10 +57,13 @@ def test_pure_capture_short_circuits_with_event(app_client, monkeypatch):
     assert r.status_code == 200
     evs = _events(r.text)
     cap = [e for e in evs if e.get("type") == "captured"]
-    assert cap and cap[0]["category"] == "rule" and cap[0]["scope"] == "global"
+    assert cap
+    assert cap[0]["category"] == "rule"
+    assert cap[0]["scope"] == "global"
     # pure capture → brief ack message, no enhancer/agent run
     msgs = [e for e in evs if e.get("type") == "message"]
-    assert msgs and "saved" in msgs[0]["text"].lower()
+    assert msgs
+    assert "saved" in msgs[0]["text"].lower()
     assert not any(e.get("type") == "thought" and e.get("role") == "enhancer"
                    for e in evs)
     assert any(e.get("type") == "done" for e in evs)
@@ -79,10 +82,12 @@ def test_rules_endpoints_list_rescope_delete(app_client):
     assert "global" in listing["by_scope"]
     # PUT scope (global → project — both persistent, so undo can reverse it)
     pr = client.put(f"/api/rules/{rid}/scope", json={"scope": "project"})
-    assert pr.status_code == 200 and pr.json()["scope"] == "project"
+    assert pr.status_code == 200
+    assert pr.json()["scope"] == "project"
     # DELETE
     dr = client.delete(f"/api/rules/{rid}")
-    assert dr.status_code == 200 and dr.json()["ok"] is True
+    assert dr.status_code == 200
+    assert dr.json()["ok"] is True
 
 
 def test_capture_offers_gate_intent_without_setting_flag(app_client, monkeypatch):
@@ -100,7 +105,8 @@ def test_capture_offers_gate_intent_without_setting_flag(app_client, monkeypatch
                           "mode": "simple"})
     evs = _events(r.text)
     cap = [e for e in evs if e.get("type") == "captured"]
-    assert cap and cap[0].get("gate_intent") == "commit"
+    assert cap
+    assert cap[0].get("gate_intent") == "commit"
     # No flag set by capture — the gate-disable list is empty
     flags = client.get("/api/rules/flags").json()["by_scope"]
     assert not flags.get("session")

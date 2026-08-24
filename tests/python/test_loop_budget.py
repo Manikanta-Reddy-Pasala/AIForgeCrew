@@ -200,7 +200,8 @@ def test_build_callbacks_disabled_returns_none(monkeypatch):
 def test_build_callbacks_enabled_returns_pair(monkeypatch):
     monkeypatch.delenv("AIFORGE_LOOP_BUDGET_DISABLE", raising=False)
     before, after = loop_budget.build_loop_budget_callbacks()
-    assert before is not None and after is not None
+    assert before is not None
+    assert after is not None
 
 
 def test_env_overrides_threshold(monkeypatch):

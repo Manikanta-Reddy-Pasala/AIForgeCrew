@@ -30,4 +30,5 @@ def test_rule_demands_edge_cases_and_request_changes():
 def test_pure_refactor_is_exempt():
     # must not force coverage on no-behaviour-change diffs / fast-path
     low = VALIDATOR.lower()
-    assert "refactor" in low and "exempt" in low
+    assert "refactor" in low
+    assert "exempt" in low

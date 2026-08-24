@@ -25,7 +25,8 @@ def test_before_adapter_blocks_on_veto(tmp_path, monkeypatch):
          "block_on_nonzero": True}]})
     cb = hooks.adk_before_tool_callback()
     out = asyncio.run(cb(tool=_Tool(), args={"command": "ls"}))
-    assert isinstance(out, dict) and out.get("blocked") == "hook"
+    assert isinstance(out, dict)
+    assert out.get("blocked") == "hook"
 
 
 def test_before_adapter_allows_when_no_block(tmp_path, monkeypatch):

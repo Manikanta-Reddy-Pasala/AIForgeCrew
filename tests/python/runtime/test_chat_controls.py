@@ -314,7 +314,8 @@ def test_mentions_file_and_folder(tmp_path):
     (tmp_path / "sub").mkdir()
     block, toks = mentions.expand("look at @note.md and @sub/", str(tmp_path))
     assert "SECRET-CONTENT-MARKER" in block
-    assert "note.md" in toks and "sub/" in toks
+    assert "note.md" in toks
+    assert "sub/" in toks
 
 
 def test_mentions_outside_workspace_skipped(tmp_path):
@@ -395,7 +396,8 @@ def test_checkpoint_snapshot_and_restore(tmp_path):
     assert res["ok"] is True
     assert f.read_text() == "v1\n"          # rolled back
     lst = checkpoints.list_checkpoints(str(tmp_path))
-    assert lst and lst[0]["label"] == "before edit"
+    assert lst
+    assert lst[0]["label"] == "before edit"
 
 
 def test_checkpoint_outside_git(tmp_path):
@@ -440,7 +442,8 @@ def test_persist_skips_empty_turn(monkeypatch):
     chat_persist.persist_turn(session_id=1, cwd="/tmp", prompt="x",
                               final_text="done the thing", steps=[], team=True,
                               cancelled=False, awaiting=False)
-    assert added and added[0][0] == "done the thing"
+    assert added
+    assert added[0][0] == "done the thing"
 
 
 def test_checkpoint_unborn_head(tmp_path):
@@ -477,7 +480,8 @@ def test_gate_denies_by_policy(monkeypatch):
     monkeypatch.setenv("AIFORGE_TOOL_POLICY", "file_write=deny")
     cb = tool_gate.make_approval_gate_callback()
     out = _run(cb(tool=_FakeTool("file_write"), args={"path": "a"}, tool_context=None))
-    assert out and out.get("blocked") == "policy"
+    assert out
+    assert out.get("blocked") == "policy"
 
 
 def test_gate_ask_without_approver_allows_autonomous(monkeypatch):
@@ -513,7 +517,8 @@ def test_gate_ask_with_approver_blocks_then_rejects(monkeypatch):
                   args={"command": "str_replace", "path": "a"}, tool_context=None))
     t.join(timeout=3)
     assert any(e.get("type") == "approval" for e in events)
-    assert out and out.get("rejected") is True
+    assert out
+    assert out.get("rejected") is True
     chat_approve.clear_emitter(sid)
     chat_approve.finish(sid)
     chat_cancel.set_active(None)

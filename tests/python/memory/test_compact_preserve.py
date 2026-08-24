@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def mem(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "mem"))
@@ -45,5 +45,7 @@ def test_learnings_cap_keeps_newest_after_union_back(monkeypatch):
     note = work_notes.render_note("knowledge", "svc", title="svc",
                                   objective="d", learnings=learnings)
     kt = work_notes.knowledge_text(note)
-    assert "new-A" in kt and "new-B" in kt
-    assert "old-1" not in kt and "old-2" not in kt
+    assert "new-A" in kt
+    assert "new-B" in kt
+    assert "old-1" not in kt
+    assert "old-2" not in kt

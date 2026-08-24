@@ -9,6 +9,7 @@ the endpoints that use them.
 from __future__ import annotations
 
 import logging
+import asyncio
 import os
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
@@ -465,8 +466,14 @@ async def memory_sources_upload(file: UploadFile = File(...),
     os.makedirs(dest_dir, exist_ok=True)
     safe = os.path.basename(file.filename or "upload.txt")
     dest = os.path.join(dest_dir, safe)
-    with open(dest, "wb") as fh:
-        fh.write(await file.read())
+    payload = await file.read()
+
+    def _write() -> None:
+        with open(dest, "wb") as fh:
+            fh.write(payload)
+    # Off the event loop: an upload can be large, and a blocking write here
+    # stalls every other request the server is handling.
+    await asyncio.to_thread(_write)
     return _ms.create("file", dest, name or safe)
 
 

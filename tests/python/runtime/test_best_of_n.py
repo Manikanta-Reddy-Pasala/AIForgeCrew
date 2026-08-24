@@ -83,7 +83,8 @@ def test_on_status_emitted(tmp_path, monkeypatch):
     bon.best_of_n("x", str(tmp_path), n=2, run_one=_writer(),
                   on_status=lambda slug, status, *a: seen.append((slug, status)))
     statuses = {s for _, s in seen}
-    assert "running" in statuses and "grading" in statuses
+    assert "running" in statuses
+    assert "grading" in statuses
     assert ("bestof-1", "won") in seen
 
 
@@ -91,13 +92,15 @@ def test_on_status_emitted(tmp_path, monkeypatch):
 def test_n_guarded_low(tmp_path, monkeypatch):
     _patch_grader(monkeypatch, _grader({"bestof-0": 50, "bestof-1": 60}))
     r = bon.best_of_n("x", str(tmp_path), n=1, run_one=_writer())
-    assert r["n"] == 2 and len(r["attempts"]) == 2
+    assert r["n"] == 2
+    assert len(r["attempts"]) == 2
 
 
 def test_n_guarded_high(tmp_path, monkeypatch):
     _patch_grader(monkeypatch, _grader({f"bestof-{i}": i for i in range(10)}))
     r = bon.best_of_n("x", str(tmp_path), n=99, run_one=_writer())
-    assert r["n"] == 6 and len(r["attempts"]) == 6
+    assert r["n"] == 6
+    assert len(r["attempts"]) == 6
 
 
 def test_default_n_from_env(tmp_path, monkeypatch):
@@ -170,7 +173,8 @@ def test_all_fail_no_diff(tmp_path, monkeypatch):
     import subprocess
     branches = subprocess.run(["git", "branch"], cwd=str(tmp_path),
                               capture_output=True, text=True).stdout
-    assert "-sub-" not in branches and "bestof-" not in branches
+    assert "-sub-" not in branches
+    assert "bestof-" not in branches
 
 
 # ── B2: winner PRESERVED when its merge fails; losers still cleaned ───────────
@@ -188,7 +192,8 @@ def test_winner_preserved_on_merge_failure(tmp_path, monkeypatch):
     assert "merge FAILED" in r["review"]
     assert "CONFLICT boom" in (r.get("merge_error") or "")
     wbranch = r["winner"]["branch"]
-    assert wbranch and "bestof-1" in wbranch       # the real winner (score 90)
+    assert wbranch
+    assert "bestof-1" in wbranch
 
     # Winner branch preserved; loser branch removed.
     branches = subprocess.run(["git", "branch"], cwd=str(tmp_path),
@@ -198,7 +203,8 @@ def test_winner_preserved_on_merge_failure(tmp_path, monkeypatch):
     # Exactly ONE worktree kept — the winner's.
     wt_dir = os.path.join(str(tmp_path), ".aiforge-worktrees")
     remaining = os.listdir(wt_dir) if os.path.isdir(wt_dir) else []
-    assert len(remaining) == 1 and "bestof-1" in remaining[0]
+    assert len(remaining) == 1
+    assert "bestof-1" in remaining[0]
 
 
 # ── B5: grader offline for ALL → fall back to a real diff, don't discard ─────
@@ -213,7 +219,8 @@ def test_grader_offline_falls_back_to_real_diff(tmp_path, monkeypatch):
     assert r["ok"] is True                         # a real diff merged
     assert r["winner"]["slug"] == "bestof-0"       # deterministic ungraded pick
     assert r["winner"]["score"] is None            # ungraded sentinel, not 0
-    assert "ungraded" in r["review"] and "merged" in r["review"]
+    assert "ungraded" in r["review"]
+    assert "merged" in r["review"]
     assert "bestof-0.txt" in set(os.listdir(str(tmp_path)))
 
 
@@ -266,7 +273,8 @@ def test_best_of_n_cancelled_skips_merge(tmp_path, monkeypatch):
     r = bon.best_of_n("x", str(tmp_path), n=3, run_one=run_one, session_id=sid)
     chat_cancel.finish(sid)
 
-    assert r["cancelled"] is True and r["ok"] is False
+    assert r["cancelled"] is True
+    assert r["ok"] is False
     assert "cancelled" in r["review"]
     assert launched["n"] == 0               # no attempts launched
     # Nothing merged into the workspace.
@@ -297,7 +305,8 @@ def test_cancel_event_independent_of_session_token(tmp_path):
 
     r = bon.best_of_n("x", str(tmp_path), n=3, run_one=run_one,
                       session_id=None, cancel_event=ev)
-    assert r["cancelled"] is True and r["ok"] is False
+    assert r["cancelled"] is True
+    assert r["ok"] is False
     assert launched["n"] == 0               # no attempts launched, no merge
     assert not any(f.endswith(".txt") for f in os.listdir(str(tmp_path)))
 
@@ -425,7 +434,8 @@ def test_disk_preflight_warns_when_insufficient(tmp_path):
     (tmp_path / "f.bin").write_bytes(b"x" * 10_000)
     # An absurd safety factor forces the projected need above any real free space.
     msg = bon._disk_preflight(str(tmp_path), n=6, safety=10 ** 12)
-    assert msg and "low disk" in msg
+    assert msg
+    assert "low disk" in msg
 
 
 def test_disk_preflight_ok_normally(tmp_path):
@@ -457,7 +467,9 @@ def test_best_of_n_worktree_paths_run_unique(tmp_path, monkeypatch):
     bon.best_of_n("x", str(tmp_path), n=2, run_one=run_one)
     # Names look like "<token>-bestof-N" (NOT the legacy "sub-bestof-N"); all
     # share ONE non-empty run token so concurrent runs can't collide (CC1).
-    assert seen and all("-bestof-" in name for name in seen)
+    assert seen
+    assert all("-bestof-" in name for name in seen)
     assert not any(name.startswith("sub-") for name in seen)
     tokens = {name.split("-bestof-")[0] for name in seen}
-    assert len(tokens) == 1 and tokens.pop()
+    assert len(tokens) == 1
+    assert tokens.pop()

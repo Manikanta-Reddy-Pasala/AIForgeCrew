@@ -93,4 +93,5 @@ def test_the_saved_backoff_is_what_the_transport_sleeps(monkeypatch):
                   provider="openai_compatible", role="learner", extras={})
     with pytest.raises(urllib.error.HTTPError):
         _http._post_with_retry(ep, b"{}", 600, role="learner", source="test")
-    assert slept and 7.0 <= max(slept) <= 7.3, slept
+    assert slept, slept
+    assert 7.0 <= max(slept) <= 7.3, slept

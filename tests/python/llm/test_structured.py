@@ -83,7 +83,8 @@ def test_schema_lands_in_system_prompt(monkeypatch):
         {"role": "system", "content": "base"},
         {"role": "user", "content": "point"}], _Point)
     assert seen["sys"].startswith("base")
-    assert "JSON Schema" in seen["sys"] and '"x"' in seen["sys"]
+    assert "JSON Schema" in seen["sys"]
+    assert '"x"' in seen["sys"]
 
 
 def test_architect_uses_structured_path(monkeypatch, tmp_path):

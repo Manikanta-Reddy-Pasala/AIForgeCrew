@@ -12,7 +12,7 @@ import pytest
 from aiforge_core.memory.md_store import _compact as C
 
 
-@pytest.fixture()
+@pytest.fixture
 def small_window(monkeypatch):
     monkeypatch.setenv("AIFORGE_CONSOLIDATE_CTX_TOKENS", "16000")
 

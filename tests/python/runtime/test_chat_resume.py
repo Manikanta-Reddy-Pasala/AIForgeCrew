@@ -79,9 +79,11 @@ def test_landed_attempted_and_pending_are_kept_apart():
         {"type": "error", "text": "connection refused"},
     ]
     brief = cr.build_brief(_stopped_row(steps))
-    assert "Already written" in brief and "api/one.py" in brief
+    assert "Already written" in brief
+    assert "api/one.py" in brief
     assert "api/two.py" not in brief
-    assert "outcome unknown" in brief and "api/three.py" in brief
+    assert "outcome unknown" in brief
+    assert "api/three.py" in brief
     assert "pytest -q" in brief
     assert "connection refused" in brief
     assert "do ONLY what is still missing" in brief
@@ -96,7 +98,8 @@ def test_subtasks_are_named_by_their_goal():
         {"slug": "sub-3", "title": "add tests", "status": "pending"}]}]
     brief = cr.build_brief(_stopped_row(steps))
     assert "write the parser" in brief
-    assert "wire the CLI" in brief and "add tests" in brief
+    assert "wire the CLI" in brief
+    assert "add tests" in brief
     assert "sub-2" not in brief
 
 
@@ -160,7 +163,8 @@ def test_truncation_never_eats_the_instruction_or_the_errors():
     assert brief.startswith("[RESUME]")
     assert "the thing that killed it" in brief
     assert "do ONLY what is still missing" in brief
-    assert "and" in brief and "more" in brief      # says what it left out
+    assert "and" in brief
+    assert "more" in brief
 
 
 def test_preamble_only_when_the_same_ask_is_resent():

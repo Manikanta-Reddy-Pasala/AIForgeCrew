@@ -10,7 +10,7 @@ import tempfile
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def cfg_dir(monkeypatch):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", tempfile.mkdtemp())
     return None
@@ -32,8 +32,10 @@ def test_tool_tagged_learning_ranks_first_with_boost(cfg_dir):
 
     # Without boost the generic unit wins on semantics; with boost the
     # tool-scoped learning is pulled to the top.
-    assert base and "API endpoint" in base[0]["text"]
-    assert boosted and "Working Jira JQL" in boosted[0]["text"]
+    assert base
+    assert "API endpoint" in base[0]["text"]
+    assert boosted
+    assert "Working Jira JQL" in boosted[0]["text"]
 
 
 def test_tool_tags_derivation():

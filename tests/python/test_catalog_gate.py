@@ -60,7 +60,8 @@ def test_general_tools_are_never_dropped():
 def test_gate_can_be_disabled(monkeypatch):
     monkeypatch.setenv("AIFORGE_CHAT_GATE_TOOLS", "0")
     out, missing = gate_catalog(_SYSTEM, set())
-    assert out == _SYSTEM and missing == []
+    assert out == _SYSTEM
+    assert missing == []
 
 
 def test_a_failing_probe_counts_as_configured(monkeypatch):

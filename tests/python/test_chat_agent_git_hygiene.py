@@ -132,7 +132,8 @@ def test_run_chat_agent_blanket_becomes_observation(tmp_path):
     evs = _collect(ca.run_chat_agent(
         [{"role": "user", "content": "go"}], cwd=repo, complete_fn=fn))
     cmd_tools = [e for e in evs if e["type"] == "tool" and e["name"] == "run_command"]
-    assert cmd_tools and cmd_tools[0]["result"].get("blocked") == "blanket_git"
+    assert cmd_tools
+    assert cmd_tools[0]["result"].get("blocked") == "blanket_git"
     # No commit created in the fresh (commit-less) repo.
     log = subprocess.run(["git", "log", "--oneline"], cwd=repo,
                          capture_output=True, text=True)

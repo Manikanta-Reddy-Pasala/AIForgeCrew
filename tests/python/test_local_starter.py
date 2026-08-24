@@ -196,7 +196,8 @@ def test_load_model_now_builds_reload_command(
     assert out["ok"] is True
     assert out["context_length"] == 1048576
     args = run_mock.call_args[0][0]
-    assert args[0] == "ssh" and "user@studio" in args
+    assert args[0] == "ssh"
+    assert "user@studio" in args
     joined = " ".join(args)
     assert "lms server start" in joined
     assert "lms unload qwythos" in joined          # reload unloads first
@@ -210,7 +211,8 @@ def test_load_model_now_builds_reload_command(
 def test_load_model_now_no_host_returns_error() -> None:
     with patch("subprocess.run", side_effect=AssertionError("called")):
         out = ls.load_model_now("m", 131072)
-    assert out["ok"] is False and "AIFORGE_LMS_HOST" in out["error"]
+    assert out["ok"] is False
+    assert "AIFORGE_LMS_HOST" in out["error"]
 
 
 def test_load_model_now_clamps_to_floor(
@@ -240,7 +242,8 @@ def test_load_model_now_failure_reports_stderr(
     monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
     with patch("subprocess.run", return_value=_proc_fail()):
         out = ls.load_model_now("m", 131072)
-    assert out["ok"] is False and "boom" in out["error"]
+    assert out["ok"] is False
+    assert "boom" in out["error"]
 
 
 def test_load_model_now_ssh_timeout_reports_error(
@@ -250,7 +253,8 @@ def test_load_model_now_ssh_timeout_reports_error(
     with patch("subprocess.run",
                side_effect=subprocess.TimeoutExpired(cmd="ssh", timeout=10)):
         out = ls.load_model_now("m", 131072)
-    assert out["ok"] is False and "timeout" in out["error"]
+    assert out["ok"] is False
+    assert "timeout" in out["error"]
 
 
 # ─── End-to-end with maybe_substitute_primary ─────────────────────────

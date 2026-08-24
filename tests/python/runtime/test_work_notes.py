@@ -38,7 +38,8 @@ def test_render_parse_roundtrip():
         body_md="Long description here.\n\nWith paragraphs.")
     p = work_notes.parse_note(text)
     fm, sec = p["frontmatter"], p["sections"]
-    assert fm["kind"] == "jira" and fm["key"] == "ENG-1"
+    assert fm["kind"] == "jira"
+    assert fm["key"] == "ENG-1"
     assert fm["source_url"] == "https://jira.local/browse/ENG-1"
     assert fm["updated_at"]          # stamped
     assert p["title"] == "ENG-1 — fix the flux capacitor"
@@ -65,7 +66,9 @@ def test_render_emits_okf_frontmatter_names():
         "jira", "ENG-1", title="t", source_url="https://j/browse/ENG-1",
         description="a one-line summary", facts=["x"])
     head = raw.split("\n---", 1)[0]
-    assert "type: " in head and "resource: " in head and "timestamp: " in head
+    assert "type: " in head
+    assert "resource: " in head
+    assert "timestamp: " in head
     assert "description: " in head
     assert "kind:" not in head and "source_url:" not in head \
         and "updated_at:" not in head
@@ -84,7 +87,8 @@ def test_parse_mirrors_legacy_frontmatter_aliases():
               "source_url: https://j/browse/E-1\n"
               "updated_at: 2020-01-01T00:00:00+00:00\n---\n# E-1\nbody\n")
     fm = work_notes.parse_note(legacy)["frontmatter"]
-    assert fm["type"] == "jira" and fm["kind"] == "jira"
+    assert fm["type"] == "jira"
+    assert fm["kind"] == "jira"
     assert fm["resource"] == "https://j/browse/E-1"
     assert fm["source_url"] == "https://j/browse/E-1"
     # unquoted YAML dates parse as datetime; both spellings mirror the same value
@@ -98,7 +102,8 @@ def test_parse_mirrors_legacy_frontmatter_aliases():
         fh.write(legacy)
     assert work_notes.update_note(path, facts=["y"])["ok"]
     head = open(path, encoding="utf-8").read().split("\n---", 1)[0]
-    assert "type: " in head and "kind:" not in head
+    assert "type: " in head
+    assert "kind:" not in head
     _os.unlink(path)
 
 
@@ -108,8 +113,10 @@ def test_render_skips_empty_sections_and_is_deterministic():
     b = work_notes.render_note("web", "s1", title="T", updated_at="X",
                                facts=["engine: fetch"])
     assert a == b                       # deterministic byte-for-byte
-    assert "## Objective" not in a and "## Links" not in a
-    assert "## Learnings" not in a and "## Key Results" not in a
+    assert "## Objective" not in a
+    assert "## Links" not in a
+    assert "## Learnings" not in a
+    assert "## Key Results" not in a
     assert "## Facts" in a
     # section order is fixed when several are present; heading uses the
     # Google-OKR title case ("Key Results")
@@ -130,11 +137,13 @@ def test_parse_tolerates_legacy_heading_case():
 
 def test_parse_tolerates_hand_edited_legacy_file():
     p = work_notes.parse_note("# Just a title\n\nfree text, no frontmatter\n")
-    assert p["frontmatter"] == {} and p["title"] == "Just a title"
+    assert p["frontmatter"] == {}
+    assert p["title"] == "Just a title"
     assert "free text" in p["body"]
     # even broken YAML frontmatter must not raise
     p2 = work_notes.parse_note("---\n: : bad {yaml\n---\n# T\nbody")
-    assert p2["frontmatter"] == {} and p2["title"] == "T"
+    assert p2["frontmatter"] == {}
+    assert p2["title"] == "T"
 
 
 # ── link normalization ───────────────────────────────────────────────────
@@ -193,7 +202,8 @@ def test_update_preserves_unknown_sections_and_body(tmp_path):
     r = work_notes.update_note(path, facts=["status: Done"])
     assert r["ok"]
     after = open(path, encoding="utf-8").read()
-    assert "status: Done" in after and "status: To Do" not in after
+    assert "status: Done" in after
+    assert "status: To Do" not in after
     assert "## My scratch analysis" in after
     assert "- keep me exactly" in after
     assert "the full ticket text" in after
@@ -212,7 +222,8 @@ def test_update_bumps_updated_at(tmp_path, monkeypatch):
 
 def test_update_note_soft_errors_on_missing_file(tmp_path):
     r = work_notes.update_note(str(tmp_path / "nope.md"), facts=["x"])
-    assert r["ok"] is False and "read failed" in r["error"]
+    assert r["ok"] is False
+    assert "read failed" in r["error"]
 
 
 # ── curator: fact drift with a stubbed jira_read ─────────────────────────
@@ -241,7 +252,8 @@ def test_curator_status_change_updates_facts_and_learnings(workdir, monkeypatch)
                                 "assignee": "Marty", "priority": ""})
     monkeypatch.setenv("AIFORGE_NOTE_LINK_CHECK", "0")   # no network
     r = note_curator.curate_note(path)
-    assert r["ok"] and r["updated"]
+    assert r["ok"]
+    assert r["updated"]
     assert any("status To Do → In Progress" in c for c in r["changes"])
     after = work_notes.parse_note(open(path, encoding="utf-8").read())
     assert "status: In Progress" in after["sections"]["facts"]
@@ -265,7 +277,9 @@ def test_curator_no_drift_is_quiet_but_bumps_updated_at(workdir, monkeypatch):
     # backdate so the bump is observable at second precision
     work_notes.update_note(path)
     r = note_curator.curate_note(path)
-    assert r["ok"] and r["updated"] is False and r["changes"] == []
+    assert r["ok"]
+    assert r["updated"] is False
+    assert r["changes"] == []
     after = work_notes.parse_note(open(path, encoding="utf-8").read())
     assert "learnings" not in after["sections"]      # no noise entries
     assert after["frontmatter"]["updated_at"] >= before
@@ -280,7 +294,8 @@ def test_curator_unconfigured_source_never_raises(workdir, monkeypatch):
         lambda args, cwd=None: {"ok": False, "error": "jira_not_configured"})
     monkeypatch.setenv("AIFORGE_NOTE_LINK_CHECK", "0")
     r = note_curator.curate_note(path)
-    assert r["ok"] and r["updated"] is False
+    assert r["ok"]
+    assert r["updated"] is False
 
 
 def test_curator_flags_dead_links(workdir, monkeypatch):
@@ -291,7 +306,8 @@ def test_curator_flags_dead_links(workdir, monkeypatch):
     # every probed link reports a definitive 404
     monkeypatch.setattr(note_curator, "_link_dead", lambda url: True)
     r = note_curator.curate_note(path)
-    assert r["ok"] and r["updated"]
+    assert r["ok"]
+    assert r["updated"]
     assert any(c.startswith("link dead:") for c in r["changes"])
     after = work_notes.parse_note(open(path, encoding="utf-8").read())
     assert after["sections"]["links"] == \
@@ -309,7 +325,8 @@ def test_note_curate_refuses_paths_outside_work_root(workdir, tmp_path):
     outside.write_text(work_notes.render_note("jira", "X-1", title="t"),
                        encoding="utf-8")
     r = note_curator.curate_note(str(outside))
-    assert r["ok"] is False and "work root" in r["error"]
+    assert r["ok"] is False
+    assert "work root" in r["error"]
     # the refused file is untouched
     assert "X-1" in outside.read_text(encoding="utf-8")
 
@@ -470,7 +487,8 @@ def test_consolidate_note_rewrites_file_and_preserves_body(monkeypatch, tmp_path
     after = open(path, encoding="utf-8").read()
     assert "consolidated: new insight" in after
     assert "status: To Do" in after                  # existing fact kept
-    assert "## My scratch analysis" in after and "keep me exactly" in after
+    assert "## My scratch analysis" in after
+    assert "keep me exactly" in after
     assert "the full ticket text" in after
     assert not os.path.exists(path + ".tmp")
 
@@ -515,7 +533,8 @@ def test_chat_tool_note_consolidate_wired_and_jailed(workdir):
     # path outside the work root → refused
     r = chat_agent.TOOLS["note_consolidate"](
         {"text": "x", "path": "/etc/hosts"}, str(workdir))
-    assert r["ok"] is False and "work root" in r["error"]
+    assert r["ok"] is False
+    assert "work root" in r["error"]
 
 
 def test_consolidate_prompt_maps_tickets_to_key_results():
@@ -523,7 +542,8 @@ def test_consolidate_prompt_maps_tickets_to_key_results():
     points-to-remember are Facts. Guards the mapping contract from regression."""
     from aiforge_core.runtime.work_notes import _CONSOLIDATE_SYS
     s = _CONSOLIDATE_SYS.lower()
-    assert "ticket" in s and "key results" in s
+    assert "ticket" in s
+    assert "key results" in s
     assert "points to remember" in s
 
 
@@ -531,7 +551,8 @@ def test_supersede_archive_is_default():
     from aiforge_core.runtime.work_notes import _supersede_directive
     d = _supersede_directive().lower()
     # archive mode = drop the old value (update in place), NOT keep-both
-    assert "drop" in d and ("stale" in d or "old" in d)
+    assert "drop" in d
+    assert "stale" in d or "old" in d
     assert "keep both" not in d           # keep-both is the OTHER (keep) mode
 
 
@@ -539,7 +560,8 @@ def test_supersede_keep_mode_tags_instead_of_dropping(monkeypatch):
     monkeypatch.setenv("AIFORGE_OKR_SUPERSEDE", "keep")
     from aiforge_core.runtime.work_notes import _supersede_directive
     d = _supersede_directive().lower()
-    assert "superseded" in d and "keep both" in d
+    assert "superseded" in d
+    assert "keep both" in d
 
 
 def test_knowledge_text_includes_learnings():

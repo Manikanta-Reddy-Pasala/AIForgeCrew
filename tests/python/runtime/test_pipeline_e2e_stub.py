@@ -105,5 +105,6 @@ def test_graph_route_recorded(_stub_pipeline) -> None:
     pl, calls = _stub_pipeline
     wf = pl.build_pipeline(skip_researcher=True)
     state = _drive(wf, "tiny fix")
-    assert "doer" in calls and "learner" in calls
+    assert "doer" in calls
+    assert "learner" in calls
     assert state.get("graph_route", {}).get("complexity") == "moderate"

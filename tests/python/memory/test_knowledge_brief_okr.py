@@ -10,7 +10,7 @@ import tempfile
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def cfg(monkeypatch):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", tempfile.mkdtemp())
     monkeypatch.setenv("AIFORGE_MEMORY_BACKEND", "sqlite")
@@ -79,7 +79,8 @@ def test_compact_repo_axis_writes_okr_brief(cfg):
     raw = _raw("compacted-svc.md")
     assert 'type: "knowledge"' in raw
     assert "## Objective" in raw
-    assert "validate at boundary" in raw and "no direct mongo" in raw
+    assert "validate at boundary" in raw
+    assert "no direct mongo" in raw
 
 
 def test_compact_preserves_learnings(cfg):
@@ -101,7 +102,8 @@ def test_project_brief_reader_still_works(cfg):
     from aiforge_core.memory import md_store as m
     m._brief_upsert("shared", "global lesson: pin deps")
     b = m.read_file("compacted-shared")
-    assert b and "global lesson: pin deps" in b["body"]
+    assert b
+    assert "global lesson: pin deps" in b["body"]
     assert b["kind"] == "knowledge"                  # quotes stripped
 
 
@@ -115,7 +117,8 @@ def test_writetime_then_compact_then_writetime(cfg):
     m._brief_upsert("svc", "gamma fresh fact")
     raw = _raw("compacted-svc.md")
     assert "- gamma fresh fact" in raw
-    assert "alpha" in raw and "beta" in raw          # folded content kept
+    assert "alpha" in raw
+    assert "beta" in raw
 
 
 # ── structured (LLM) compaction into OKR sections + topic archiving ─────────
@@ -245,7 +248,9 @@ def test_cleanup_folds_cryptic_into_topic(cfg, monkeypatch):
     assert "compacted-auth.md" not in plan["stale"]         # real topic kept
     assert "compacted-auth-2.md" not in plan["stale"]       # split part kept
     r = m.cleanup_legacy_compacted()
-    assert r["ok"] and r["folded"] == 3 and r["facts"] >= 3
+    assert r["ok"]
+    assert r["folded"] == 3
+    assert r["facts"] >= 3
     live = {p.name for p in m._all_md_files()}
     assert "compacted-1852458641.md" not in live            # cryptic gone
     assert "compacted-clr-3049.md" not in live

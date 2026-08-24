@@ -110,14 +110,16 @@ def test_repo_cap(monkeypatch):
 def test_should_fan_out_two_repos():
     parent = _mk_repos("alpha", "beta")
     fan, repos, _ = ap.should_fan_out("read all repos and explore auth", parent)
-    assert fan is True and len(repos) == 2
+    assert fan is True
+    assert len(repos) == 2
 
 
 def test_should_not_fan_out_single_repo():
     parent = _mk_repos("solo")
     one = os.path.join(parent, "solo")
     fan, repos, _ = ap.should_fan_out("explain how auth works", one)
-    assert fan is False and len(repos) == 1
+    assert fan is False
+    assert len(repos) == 1
 
 
 def test_extract_topics_comma_and_list():
@@ -133,7 +135,9 @@ def test_subtask_passes_no_retry_no_recursion(monkeypatch):
         {"slug": "P", "goal": "g"}, "/tmp/wt",
         lambda sub, wt: (calls.append(sub["slug"]) or {"ok": True}),
         None, None, None, None, 0)
-    assert r["ok"] is True and "recursed" not in r and len(calls) == 1
+    assert r["ok"] is True
+    assert "recursed" not in r
+    assert len(calls) == 1
 
 
 def test_retry_succeeds_on_second_attempt(monkeypatch):
@@ -142,7 +146,9 @@ def test_retry_succeeds_on_second_attempt(monkeypatch):
     r = ps._run_one_recursive(
         {"slug": "P", "goal": "g"}, "/tmp/wt",
         lambda sub, wt: seq.pop(0), None, None, None, None, 0)
-    assert r["ok"] is True and "recursed" not in r and seq == []
+    assert r["ok"] is True
+    assert "recursed" not in r
+    assert seq == []
 
 
 def test_persistent_failure_retries_then_spawns_subagents_that_also_retry(monkeypatch):
@@ -157,7 +163,9 @@ def test_persistent_failure_retries_then_spawns_subagents_that_also_retry(monkey
         {"slug": "P", "goal": "big"}, "/tmp/wt",
         lambda sub, wt: (calls.append(sub["slug"]) or {"ok": False, "error": "boom"}),
         None, None, None, None, 0)
-    assert r["recursed"] is True and r["children"] == 2 and r["ok"] is False
+    assert r["recursed"] is True
+    assert r["children"] == 2
+    assert r["ok"] is False
     # parent 3 attempts + 2 children x 3 attempts = 9; children are depth-capped
     assert len(calls) == 9
     assert calls.count("P") == 3          # parent retried
@@ -176,7 +184,8 @@ def test_recursion_depth_cap_stops_at_one_level(monkeypatch):
         lambda sub, wt: (calls.append(sub["slug"]) or {"ok": False}),
         None, None, None, None, 0)
     # parent(1) + 2 children(1 each) = 3; children at depth 1 do NOT re-decompose
-    assert len(calls) == 3 and not any("." in c and c.count(".") > 1 for c in calls)
+    assert len(calls) == 3
+    assert not any("." in c and c.count(".") > 1 for c in calls)
 
 
 if __name__ == "__main__":

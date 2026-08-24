@@ -96,9 +96,11 @@ def test_loop_gate_loops_then_exits_at_cap() -> None:
     # Loop while under the cap; exit exactly at MAX_DOER_ITERS (default 4).
     for i in range(1, gp.MAX_DOER_ITERS):
         _run(gp._loop_gate(ctx))
-        assert ctx.route == gp.ROUTE_LOOP and state["doer_iters"] == i
+        assert ctx.route == gp.ROUTE_LOOP
+        assert state["doer_iters"] == i
     _run(gp._loop_gate(ctx))  # hits MAX_DOER_ITERS
-    assert ctx.route == gp.ROUTE_EXIT and state["doer_iters"] == gp.MAX_DOER_ITERS
+    assert ctx.route == gp.ROUTE_EXIT
+    assert state["doer_iters"] == gp.MAX_DOER_ITERS
 
 
 def test_loop_gate_kill_flag_exits() -> None:
@@ -112,7 +114,8 @@ def test_validator_gate_replan_once_then_done() -> None:
     ctx = _FakeCtx(state)
     _run(gp._validator_gate(ctx))
     assert ctx.route == gp.ROUTE_REPLAN
-    assert state["replan_count"] == 1 and state["doer_iters"] == 0
+    assert state["replan_count"] == 1
+    assert state["doer_iters"] == 0
     assert "replan_note" in state
     # second time: replan budget spent → done
     ctx2 = _FakeCtx(state)

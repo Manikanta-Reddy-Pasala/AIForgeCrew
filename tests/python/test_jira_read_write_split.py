@@ -63,4 +63,5 @@ def test_every_comment_writer_points_at_its_reader():
 def test_comments_requires_a_key():
     from aiforge_core.runtime.tools import jira
     r = jira.jira_comments({})
-    assert r["ok"] is False and "key" in r["error"]
+    assert r["ok"] is False
+    assert "key" in r["error"]

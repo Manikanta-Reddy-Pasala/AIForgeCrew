@@ -80,20 +80,24 @@ def test_run_command_preflight_missing_cd_and_script(tmp_path):
     actionable error BEFORE the shell runs (no cryptic 'No such file')."""
     repo = str(tmp_path)
     r = ca._t_run_command({"cmd": "cd no/such/dir && ls"}, repo)
-    assert r["blocked"] == "missing_path" and "cd target" in r["error"]
+    assert r["blocked"] == "missing_path"
+    assert "cd target" in r["error"]
     r = ca._t_run_command({"cmd": "bash deploy.sh"}, repo)
-    assert r["blocked"] == "missing_path" and "script" in r["error"]
+    assert r["blocked"] == "missing_path"
+    assert "script" in r["error"]
     r = ca._t_run_command({"cmd": "./go.sh --fast"}, repo)
     assert r["blocked"] == "missing_path"
     # `cd` chain tracked: script checked under the cd-ed dir.
     (tmp_path / "sub").mkdir()
     r = ca._t_run_command({"cmd": "cd sub && python x.py"}, repo)
-    assert r["blocked"] == "missing_path" and "x.py" in r["error"]
+    assert r["blocked"] == "missing_path"
+    assert "x.py" in r["error"]
     # existing paths run fine… (use `sh`, not `python`: a bare `python` is
     # absent on modern macOS/CI hosts, which fails the RUN, not the preflight)
     (tmp_path / "sub" / "run.sh").write_text("echo hi\n")
     r = ca._t_run_command({"cmd": "cd sub && sh run.sh"}, repo)
-    assert r.get("ok") is True and "hi" in r["stdout"]
+    assert r.get("ok") is True
+    assert "hi" in r["stdout"]
     # …and dynamic paths fail OPEN (no false block on $VARs / substitution).
     r = ca._t_run_command({"cmd": "cd $HOME && echo ok"}, repo)
     assert r.get("blocked") != "missing_path"

@@ -160,7 +160,8 @@ def test_primary_success_short_circuits() -> None:
                       primary_model=primary, chain_models=[cloud],
                       chain_labels=["cloud"])
     out = _drive(e)
-    assert len(out) == 1 and out[0].content.parts[0].text == "hello"
+    assert len(out) == 1
+    assert out[0].content.parts[0].text == "hello"
     assert primary.calls == 1
     assert cloud.calls == 0  # never reached
 
@@ -503,7 +504,7 @@ def test_cloud_default_for_local_skips_none_default(monkeypatch):
 # every agent in a run is retrying.
 
 
-@pytest.fixture()
+@pytest.fixture
 def _meter():
     from aiforge_core.llm import call_meter
     call_meter.reset_all()
@@ -536,7 +537,8 @@ def test_an_empty_pipeline_answer_counts_as_a_failure(_meter) -> None:
                       chain_labels=["cloud"])
     _drive(e)
     g = _meter.global_snapshot(series=False)
-    assert g["total"] == 2 and g["failed"] == 1
+    assert g["total"] == 2
+    assert g["failed"] == 1
     assert g["by_fail_reason"] == {"empty": 1}
 
 
@@ -547,7 +549,8 @@ def test_a_healthy_pipeline_call_reports_no_failures(_meter) -> None:
                       chain_labels=[])
     _drive(e)
     g = _meter.global_snapshot(series=False)
-    assert g["total"] == 1 and g["failed"] == 0
+    assert g["total"] == 1
+    assert g["failed"] == 0
     assert g["failed_per_minute"] == 0
 
 
@@ -559,7 +562,8 @@ def test_a_failed_stream_is_counted(_meter) -> None:
     with pytest.raises(RuntimeError):
         _drive(e, stream=True)
     g = _meter.global_snapshot(series=False)
-    assert g["total"] == 1 and g["failed"] == 1
+    assert g["total"] == 1
+    assert g["failed"] == 1
 
 
 def test_abandoning_a_stream_is_not_a_failure(_meter) -> None:
@@ -579,7 +583,8 @@ def test_abandoning_a_stream_is_not_a_failure(_meter) -> None:
 
     asyncio.run(_go())
     g = _meter.global_snapshot(series=False)
-    assert g["total"] == 1 and g["failed"] == 0
+    assert g["total"] == 1
+    assert g["failed"] == 0
 
 
 def test_the_lm_crash_recovery_retry_is_counted_too(monkeypatch, _meter) -> None:
@@ -645,7 +650,8 @@ def test_a_recovery_retry_that_answers_nothing_is_counted_as_empty(
                       chain_labels=["cloud"])
     _drive(e)
     g = _meter.global_snapshot(series=False)
-    assert g["failed"] == 2 and g["by_fail_reason"].get("empty") == 1
+    assert g["failed"] == 2
+    assert g["by_fail_reason"].get("empty") == 1
 
 
 def test_a_think_only_stream_is_not_a_healthy_request(_meter) -> None:
@@ -659,7 +665,8 @@ def test_a_think_only_stream_is_not_a_healthy_request(_meter) -> None:
                       chain_labels=[])
     _drive(e, stream=True)
     g = _meter.global_snapshot(series=False)
-    assert g["total"] == 1 and g["failed"] == 1
+    assert g["total"] == 1
+    assert g["failed"] == 1
     assert g["by_fail_reason"] == {"empty": 1}
 
 
@@ -819,7 +826,8 @@ def test_the_probe_carries_the_endpoint_key(monkeypatch, _meter):
     e = EscalatingLlm(model="qwen/qwen3.6-27b", role="doer",
                       primary_model=primary, chain_models=[], chain_labels=[])
     _drive(e)
-    assert reqs and reqs[0].get_header("Authorization") == "Bearer sk-secret"
+    assert reqs
+    assert reqs[0].get_header("Authorization") == "Bearer sk-secret"
     _models.reset_cache()
 
 
@@ -870,7 +878,8 @@ def test_a_rescued_team_response_is_counted_with_its_tokens(monkeypatch, _meter)
                       chain_models=[], chain_labels=[])
     assert _drive(e)[0].content.parts[0].text == "stand-in answer"
     g = _meter.global_snapshot(series=False)
-    assert g["tokens_out"] == 150 and g["tokens_in"] == 400
+    assert g["tokens_out"] == 150
+    assert g["tokens_in"] == 400
     _models.reset_cache()
 
 

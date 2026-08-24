@@ -64,9 +64,11 @@ def test_search_global(cfg, monkeypatch):
          "labels": ["x"], "assignee": {"name": "Alice"},
          "web_url": "https://gitlab.internal/g/p/-/issues/7"}])
     out = gl.gitlab_search({"query": "deploy"})
-    assert out["ok"] and out["results"][0]["iid"] == 7
+    assert out["ok"]
+    assert out["results"][0]["iid"] == 7
     assert out["results"][0]["assignee"] == "Alice"
-    assert "/api/v4/issues" in seen["url"] and "scope=all" in seen["url"]
+    assert "/api/v4/issues" in seen["url"]
+    assert "scope=all" in seen["url"]
     assert seen["headers"].get("Private-token") == "glpat-123"
 
 
@@ -86,7 +88,9 @@ def test_read(cfg, monkeypatch):
         [{"author": {"name": "Cara"}, "body": "hi"},
          {"author": {"name": "sys"}, "body": "changed", "system": True}])
     out = gl.gitlab_read({"project": "g/p", "iid": 42})
-    assert out["ok"] and out["description"] == "desc" and out["state"] == "opened"
+    assert out["ok"]
+    assert out["description"] == "desc"
+    assert out["state"] == "opened"
     assert out["labels"] == ["a", "b"]
     assert out["comments"] == [{"author": "Cara", "body": "hi"}]   # system note filtered
     assert out["url"].endswith("/issues/42")
@@ -111,7 +115,8 @@ def test_create(cfg, monkeypatch):
                                   "web_url": "https://gitlab.internal/g/p/-/issues/99"})
     out = gl.gitlab_create({"project": "g/p", "title": "New", "description": "d",
                             "labels": ["x", "y"]})
-    assert out["ok"] and out["iid"] == 99
+    assert out["ok"]
+    assert out["iid"] == 99
     assert seen["method"] == "POST"
     assert seen["body"]["title"] == "New"
     assert seen["body"]["labels"] == "x,y"
@@ -126,7 +131,8 @@ def test_update(cfg, monkeypatch):
     seen = _capture(monkeypatch, {"iid": 10})
     out = gl.gitlab_update({"project": "g/p", "iid": 10, "title": "Edited",
                             "labels": ["z"], "state_event": "close"})
-    assert out["ok"] and out["iid"] == 10
+    assert out["ok"]
+    assert out["iid"] == 10
     assert seen["method"] == "PUT"
     assert seen["body"]["title"] == "Edited"
     assert seen["body"]["labels"] == "z"
@@ -140,7 +146,8 @@ def test_update_requires_fields(cfg):
 def test_comment(cfg, monkeypatch):
     seen = _capture(monkeypatch, {"id": 555})
     out = gl.gitlab_comment({"project": "g/p", "iid": 10, "body": "looks good"})
-    assert out["ok"] and out["id"] == 555
+    assert out["ok"]
+    assert out["id"] == 555
     assert seen["method"] == "POST"
     assert "/projects/g%2Fp/issues/10/notes" in seen["url"]
     assert seen["body"]["body"] == "looks good"
@@ -164,7 +171,8 @@ def test_insecure_tls_builds_unverified_context(monkeypatch):
     seen = _capture(monkeypatch, [])
     gl.gitlab_search({"query": "x"})
     ctx = seen["context"]
-    assert ctx is not None and ctx.verify_mode == ssl.CERT_NONE
+    assert ctx is not None
+    assert ctx.verify_mode == ssl.CERT_NONE
 
 
 def test_reads_stored_config_when_env_absent(tmp_path, monkeypatch):

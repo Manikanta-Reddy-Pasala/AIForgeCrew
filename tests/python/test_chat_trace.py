@@ -18,16 +18,21 @@ def test_append_turn_writes_md_and_jsonl(trace_dir):
                {"type": "thought", "text": "thinking"},
                {"type": "error", "text": "boom"}],
         final_text="done the thing", team=True, cwd="/repo")
-    assert p and p.endswith("session_3.md")
+    assert p
+    assert p.endswith("session_3.md")
     md = (trace_dir / "session_3.md").read_text()
     assert "**User:** do a thing" in md
-    assert "grep_repo" in md and "💭" in md and "ERROR: boom" in md
+    assert "grep_repo" in md
+    assert "💭" in md
+    assert "ERROR: boom" in md
     assert "**Response:** done the thing" in md
     assert "· team" in md
     # jsonl sibling holds the structured turn
     rec = json.loads((trace_dir / "session_3.jsonl").read_text().strip())
-    assert rec["session_id"] == 3 and rec["n_tools"] == 1
-    assert rec["mode"] == "team" and rec["response"] == "done the thing"
+    assert rec["session_id"] == 3
+    assert rec["n_tools"] == 1
+    assert rec["mode"] == "team"
+    assert rec["response"] == "done the thing"
 
 
 def test_second_turn_appends(trace_dir):

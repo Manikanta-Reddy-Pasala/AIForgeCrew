@@ -45,7 +45,10 @@ export class ErrorBoundary extends React.Component<
     const done = () => this.setState({ copied: true });
     try {
       const p = navigator.clipboard?.writeText(text);
-      if (p) { p.then(done).catch(() => this.legacyCopy(text) && done()); }
+      // `!= null`, not truthiness: `p` is a Promise (always truthy) OR undefined
+      // when clipboard is unavailable, so the test is about EXISTENCE, and
+      // truthiness on a Promise reads as if its resolved value were checked.
+      if (p != null) { p.then(done).catch(() => this.legacyCopy(text) && done()); }
       else if (this.legacyCopy(text)) done();
     } catch { if (this.legacyCopy(text)) done(); }
   };

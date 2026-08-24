@@ -65,7 +65,8 @@ def test_compact_convo_sentinel_strip_is_exact(monkeypatch):
     out = ca._compact_convo(out)          # re-condense
     out = ca._compact_convo(out)
     s = out[0]["content"]
-    assert "KEEP_ME" in s and "KEEP_END" in s          # legit text preserved
+    assert "KEEP_ME" in s
+    assert "KEEP_END" in s
     assert s.count(ca._CONDENSE_OPEN) == 1             # exactly one block
 
 
@@ -74,7 +75,8 @@ def test_usage_event_emitted(tmp_path):
     evs = _collect(ca.run_chat_agent(
         [{"role": "user", "content": "hi"}], cwd=str(tmp_path), complete_fn=fn))
     usage = [e for e in evs if e["type"] == "usage"]
-    assert usage and 0 <= usage[0]["pct"] <= 100
+    assert usage
+    assert 0 <= usage[0]["pct"] <= 100
     assert usage[0]["budget_chars"] > 0
 
 
@@ -87,7 +89,8 @@ def test_usage_meter_counts_history_not_system_prompt(tmp_path):
     evs = _collect(ca.run_chat_agent(
         [{"role": "user", "content": "hi"}], cwd=str(tmp_path), complete_fn=fn))
     usage = [e for e in evs if e["type"] == "usage"]
-    assert usage and usage[0]["context_chars"] < 5000
+    assert usage
+    assert usage[0]["context_chars"] < 5000
 
 
 def test_condense_summary_includes_earlier_asks(monkeypatch):
@@ -102,7 +105,8 @@ def test_condense_summary_includes_earlier_asks(monkeypatch):
     out = ca._compact_convo(convo, keep_recent=4)
     sys_text = out[0]["content"]
     assert "auto-condensed" in sys_text
-    assert "Earlier asks:" in sys_text and "invoice exporter" in sys_text
+    assert "Earlier asks:" in sys_text
+    assert "invoice exporter" in sys_text
 
 
 def test_cave_mode_keeps_quality_blocks_and_shrinks_budget(tmp_path, monkeypatch):
@@ -130,7 +134,8 @@ def test_cave_mode_keeps_quality_blocks_and_shrinks_budget(tmp_path, monkeypatch
     list(ca.run_chat_agent([{"role": "user", "content": "hi"}],
                            cwd=str(tmp_path), complete_fn=fn))
     # Cave keeps the QUALITY blocks — nothing dropped to save tokens.
-    assert seen["skills"] >= 1 and seen["mentions"] >= 1
+    assert seen["skills"] >= 1
+    assert seen["mentions"] >= 1
     assert seen["workflows"] >= 1
 
 
@@ -155,7 +160,8 @@ def test_condense_tail_capped_by_size_not_count(monkeypatch):
     big_n, big_chars = _run(4000)     # huge turns
     small_n, small_chars = _run(100)  # tiny turns
     # both tails fit ~half the budget (freed the window)
-    assert big_chars <= budget and small_chars <= budget
+    assert big_chars <= budget
+    assert small_chars <= budget
     # big turns → FEWER kept (size cap bites); small turns → more (up to ceiling)
     assert big_n < small_n
     assert big_n >= 4                 # never below the floor
@@ -180,4 +186,5 @@ def test_force_condenses_a_history_that_still_fits(monkeypatch):
     out = ca._compact_convo(list(convo), keep_recent=8, force=True)
     assert len(out) < len(convo)
     assert "auto-condensed" in out[0]["content"]
-    assert out[0]["role"] == "system" and out[-1]["role"] == "user"
+    assert out[0]["role"] == "system"
+    assert out[-1]["role"] == "user"

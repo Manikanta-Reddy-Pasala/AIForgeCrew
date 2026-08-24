@@ -96,7 +96,8 @@ def test_dedup_shared_prefix_distinct_full_text_both_kept(uq):
             {"source": "memory", "text": b, "score": 0.7}]
     out = uq._dedup(list(hits))
     texts = [h["text"] for h in out]
-    assert a in texts and b in texts
+    assert a in texts
+    assert b in texts
     assert len(out) == 2
 
 

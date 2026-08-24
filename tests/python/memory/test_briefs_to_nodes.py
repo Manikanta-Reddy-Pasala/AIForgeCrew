@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def mem(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "mem"))
@@ -129,7 +129,8 @@ def test_a_conversion_that_explodes_does_not_kill_the_cycle(mem, monkeypatch):
     out = tiers.run_after_sync()
 
     assert out["briefs"]["ok"] is False
-    assert "mesh" in out and "view" in out, "the tiers still ran"
+    assert "mesh" in out, "the tiers still ran"
+    assert "view" in out, "the tiers still ran"
 
 
 def test_a_topic_that_outgrows_the_cap_still_converges(mem):

@@ -16,7 +16,7 @@ class _Resp:
         return False
 
 
-@pytest.fixture()
+@pytest.fixture
 def api(monkeypatch):
     monkeypatch.setenv("AIFORGE_EMBED_BACKEND", "api")
     monkeypatch.setenv("AIFORGE_EMBED_API_MODEL", "nomic-embed-text")

@@ -169,5 +169,6 @@ def test_kotlin_has_no_external_syntax_checker():
 
 def test_integration_report_kotlin_manual_and_stack_map():
     from aiforge_core.runtime import integration_report as ir
-    assert "kotlin" in ir._MANUAL and ir._MANUAL["kotlin"]
+    assert "kotlin" in ir._MANUAL
+    assert ir._MANUAL["kotlin"]
     assert ir._STACK_TO_LANG.get("kotlin") == "kotlin"

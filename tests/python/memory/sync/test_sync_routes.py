@@ -195,7 +195,8 @@ def test_our_own_tombstone_is_advertised_downstream(monkeypatch, tmp_path):
     assert [e["key"] for e in tombs] == ["M-01"]
     # …and its bytes are actually servable, or the spoke could never apply it.
     blob = TestClient(api.app).get(f"/api/memory/sync/blob/{tombs[0]['hash']}")
-    assert blob.status_code == 200 and blob.content == rec
+    assert blob.status_code == 200
+    assert blob.content == rec
 
 
 def test_another_machines_tombstone_is_not_relayed(monkeypatch, tmp_path):

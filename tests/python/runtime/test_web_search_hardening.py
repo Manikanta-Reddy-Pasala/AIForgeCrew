@@ -46,8 +46,11 @@ def test_web_search_falls_back_to_lite_when_html_empty(monkeypatch):
         return _LITE_BODY
     monkeypatch.setattr(ws, "_get_retry", fake_get_retry)
     r = ws.web_search({"query": "redis latest", "limit": 3})
-    assert r["ok"] and r["provider"] == "ddg-lite"
-    assert len(r["results"]) == 2 and calls["html"] == 1 and calls["lite"] == 1
+    assert r["ok"]
+    assert r["provider"] == "ddg-lite"
+    assert len(r["results"]) == 2
+    assert calls["html"] == 1
+    assert calls["lite"] == 1
 
 
 def test_web_search_lite_fallback_on_html_error(monkeypatch):
@@ -60,7 +63,9 @@ def test_web_search_lite_fallback_on_html_error(monkeypatch):
         return _LITE_BODY
     monkeypatch.setattr(ws, "_get_retry", fake_get_retry)
     r = ws.web_search({"query": "x", "limit": 5})
-    assert r["ok"] and r["provider"] == "ddg-lite" and len(r["results"]) == 2
+    assert r["ok"]
+    assert r["provider"] == "ddg-lite"
+    assert len(r["results"]) == 2
 
 
 def test_web_search_reports_error_only_when_both_fail(monkeypatch):
@@ -71,7 +76,8 @@ def test_web_search_reports_error_only_when_both_fail(monkeypatch):
         raise urllib.error.URLError("down")
     monkeypatch.setattr(ws, "_get_retry", boom)
     r = ws.web_search({"query": "x"})
-    assert r["ok"] is False and "down" in r["error"]
+    assert r["ok"] is False
+    assert "down" in r["error"]
 
 
 def test_get_retry_recovers_on_second_try(monkeypatch):

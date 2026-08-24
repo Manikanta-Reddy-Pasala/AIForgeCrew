@@ -66,7 +66,14 @@ _BULLET_RE = re.compile(r"^\s*[-*]\s+")
 # Leading/trailing punctuation on a claim line. Stripped only for *comparison*
 # in `_unrepresented`, so "port 8080." and "port 8080" count as the same fact —
 # part of the "exact-ish whole-line identity" that replaced substring matching.
-_EDGE_PUNCT_RE = re.compile(r"^\W+|\W+$")
+# Grouped explicitly: `^A|B$` parses as `(^A)|(B$)`, which IS the intended
+# strip-both-ends here — but only to a reader who works out the precedence.
+# POSSESSIVE quantifiers (`++`, Python 3.11+ and this project requires >=3.11).
+# `\W+$`-style strips backtrack super-linearly on input that does NOT match:
+# the engine retries the run at every length before giving up. `++` never
+# gives characters back, which is exactly right for a strip and turns the
+# scan linear.
+_EDGE_PUNCT_RE = re.compile(r"(?:^\W++)|(?:\W++$)")
 
 
 # ── bookkeeping ───────────────────────────────────────────────────────────

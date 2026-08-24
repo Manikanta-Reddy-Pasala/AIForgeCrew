@@ -70,7 +70,8 @@ def test_history_preamble_threads_prior_turns():
          {"role": "assistant", "content": "did X"},
          {"role": "user", "content": "now Y"}]   # last = current request
     pre = _history_preamble(h)
-    assert "build X" in pre and "did X" in pre
+    assert "build X" in pre
+    assert "did X" in pre
     assert "now Y" not in pre                      # current msg excluded
     assert _history_preamble([]) == ""
     assert _history_preamble(None) == ""

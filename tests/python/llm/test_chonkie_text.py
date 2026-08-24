@@ -61,7 +61,9 @@ def test_memory_doc_chunker_uses_chonkie():
     chunks = embed._split_doc_smart(_MD, file_path="README.md")
     assert len(chunks) > 2
     idx, text0, l0, _ = chunks[0]
-    assert idx == 0 and text0.startswith("# Guide") and l0 == 1
+    assert idx == 0
+    assert text0.startswith("# Guide")
+    assert l0 == 1
 
 
 def test_memory_doc_chunker_falls_back(monkeypatch):

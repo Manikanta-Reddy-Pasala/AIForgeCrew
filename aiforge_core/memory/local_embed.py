@@ -108,7 +108,7 @@ def _hash_embed(text: str) -> list[float]:
         # Sublinear TF damps very repetitive tokens.
         vec[_bucket(tok)] += 1.0 + math.log(c)
     norm = math.sqrt(sum(v * v for v in vec))
-    if norm == 0.0:
+    if norm <= 0.0:
         return vec
     return [v / norm for v in vec]
 

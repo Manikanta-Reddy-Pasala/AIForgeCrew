@@ -4,7 +4,7 @@ import importlib
 import pytest
 
 
-@pytest.fixture()
+@pytest.fixture
 def mem(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "mem"))
@@ -31,7 +31,8 @@ def test_read_resolves_a_capture_in_folder(mem):
     m.write("A note", "body text here", kind="note")
     name = list(m.captures_dir().glob("*.md"))[0].name
     got = m.read_file(name)
-    assert got and "body text here" in got["body"]
+    assert got
+    assert "body text here" in got["body"]
 
 
 def test_migrate_moves_legacy_root_captures(mem):

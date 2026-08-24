@@ -21,14 +21,17 @@ def test_set_get_update_progress(env):
         {"slug": "schema", "goal": "tables"}, {"slug": "models", "goal": "orm"},
         {"slug": "api", "goal": "routes"}, {"slug": "tests", "goal": "tests"}])
     got = subtasks.get_subtasks(t.id)
-    assert len(got) == 4 and all(s["status"] == "pending" for s in got)
+    assert len(got) == 4
+    assert all(s["status"] == "pending" for s in got)
     subtasks.update_subtask(t.id, "schema", "done")
     subtasks.update_subtask(t.id, "models", "done")
     subtasks.update_subtask(t.id, "api", "running")
     cur = {s["slug"]: s["status"] for s in subtasks.get_subtasks(t.id)}
     assert cur == {"schema": "done", "models": "done", "api": "running", "tests": "pending"}
     p = subtasks.progress(subtasks.get_subtasks(t.id))
-    assert p["total"] == 4 and p["done"] == 2 and abs(p["fraction"] - 0.5) < 1e-9
+    assert p["total"] == 4
+    assert p["done"] == 2
+    assert abs(p["fraction"] - 0.5) < 1e-9
 
 
 def test_invalid_status_rejected(env):
@@ -50,7 +53,8 @@ def test_set_subtasks_normalizes_status(env):
     cur = {s["slug"]: s["status"] for s in subtasks.get_subtasks(t.id)}
     assert cur == {"a": "done", "b": "pending", "c": "pending"}
     p = subtasks.progress(subtasks.get_subtasks(t.id))
-    assert p["counts"] == {"done": 1, "pending": 2} and p["done"] == 1
+    assert p["counts"] == {"done": 1, "pending": 2}
+    assert p["done"] == 1
 
 
 def test_replan_resets(env):
@@ -60,7 +64,8 @@ def test_replan_resets(env):
     subtasks.update_subtask(t.id, "a", "done")
     subtasks.set_subtasks(t.id, [{"slug": "b", "goal": "b"}])   # new plan
     cur = subtasks.get_subtasks(t.id)
-    assert [s["slug"] for s in cur] == ["b"] and cur[0]["status"] == "pending"
+    assert [s["slug"] for s in cur] == ["b"]
+    assert cur[0]["status"] == "pending"
 
 
 def test_callback_extracts_subtickets_from_plan_json():

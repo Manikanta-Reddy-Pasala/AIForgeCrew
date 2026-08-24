@@ -55,4 +55,5 @@ def test_compact_session_captures(monkeypatch, tmp_path):
     r = client.post(f"/api/chat/sessions/{sid}/compact")
     assert r.status_code == 200
     body = r.json()
-    assert body["ok"] and body["captured"] == 1
+    assert body["ok"]
+    assert body["captured"] == 1

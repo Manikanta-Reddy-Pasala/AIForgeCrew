@@ -29,7 +29,7 @@ def _env(monkeypatch, tmp_path, peer_id: str, admin: str = ""):
         monkeypatch.delenv("AIFORGE_ADMIN_URL", raising=False)
 
 
-@pytest.fixture()
+@pytest.fixture
 def folds(monkeypatch):
     def _fake(existing, new_content, *, role="learner", label=None, **kw):
         return {"objective": "", "key_results": [],
@@ -80,7 +80,8 @@ def test_a_demoted_admin_tombstones_its_own_stale_fold(monkeypatch, tmp_path, fo
     assert tomb.is_file(), "no tombstone was minted for the retracted fold"
     import json
     rec = json.loads(tomb.read_text(encoding="utf-8"))
-    assert rec.get("tomb") is True and rec.get("origin") == "air"
+    assert rec.get("tomb") is True
+    assert rec.get("origin") == "air"
 
 
 def test_the_retirement_tombstone_removes_the_fold_elsewhere(

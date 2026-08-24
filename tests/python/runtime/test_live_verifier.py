@@ -43,7 +43,8 @@ def test_recipe_loader_handles_none_project() -> None:
     from aiforge_core.agents import live_verifier as lv
 
     md = lv.load_recipe(None)
-    assert isinstance(md, str) and md
+    assert isinstance(md, str)
+    assert md
 
 
 def test_extract_live_verifier_parses_fenced_json() -> None:

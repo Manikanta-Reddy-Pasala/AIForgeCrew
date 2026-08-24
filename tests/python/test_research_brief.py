@@ -31,7 +31,8 @@ def test_parse_strips_fence():
 def test_parse_handles_surrounding_prose():
     raw = "Sure, here's the brief:\n[{\"subticket_id\":\"S3\"}]\nLet me know."
     out = rb.parse(raw)
-    assert out and out[0]["subticket_id"] == "S3"
+    assert out
+    assert out[0]["subticket_id"] == "S3"
 
 
 def test_parse_empty_string_returns_empty_list():
@@ -67,8 +68,10 @@ def test_render_full_brief_has_all_sections():
     }]
     md = rb.render_markdown(briefs)
     assert "Subticket: S5" in md
-    assert "x.py" in md and "core logic" in md
-    assert "Foo" in md and "calls" in md
+    assert "x.py" in md
+    assert "core logic" in md
+    assert "Foo" in md
+    assert "calls" in md
     assert "fact A" in md
     assert "watch out" in md
 

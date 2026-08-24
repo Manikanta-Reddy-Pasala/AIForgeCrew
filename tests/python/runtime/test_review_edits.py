@@ -87,7 +87,8 @@ def test_gate_review_on_with_emitter_forces_approval_and_rejects(monkeypatch):
                   args={"path": "a.txt", "content": "hi"}, tool_context=None))
     t.join(timeout=3)
     assert any(e.get("type") == "approval" for e in events)
-    assert out and out.get("rejected") is True
+    assert out
+    assert out.get("rejected") is True
     chat_approve.clear_emitter(sid)
     chat_approve.finish(sid)
     chat_cancel.set_active(None)
@@ -176,7 +177,8 @@ def test_gate_review_on_gates_doer_edit_aliases(monkeypatch):
                       tool_context=None))
         t.join(timeout=3)
         assert any(e.get("type") == "approval" for e in events), alias
-        assert out and out.get("rejected") is True, alias
+        assert out, alias
+        assert out.get("rejected") is True, alias
         chat_approve.clear_emitter(sid)
         chat_approve.finish(sid)
         chat_cancel.set_active(None)
@@ -243,7 +245,8 @@ def test_gate_review_editor_write_is_gated(monkeypatch):
                         "old_str": "x", "new_str": "y"}, tool_context=None))
     t.join(timeout=3)
     assert any(e.get("type") == "approval" for e in events)
-    assert out and out.get("rejected") is True
+    assert out
+    assert out.get("rejected") is True
     chat_approve.clear_emitter(sid)
     chat_approve.finish(sid)
     chat_cancel.set_active(None)
@@ -348,7 +351,8 @@ def test_unified_preview_resolves_repo_root(tmp_path, monkeypatch):
     f.write_text("one\n")
     monkeypatch.setenv("AIFORGE_REPO_ROOT", str(tmp_path))
     diff = unified_preview("r.py", "two\n", "")
-    assert "-one" in diff and "+two" in diff
+    assert "-one" in diff
+    assert "+two" in diff
 
 
 # ─── (c) push is never silently auto-approved by the commit flag ──────────
@@ -385,7 +389,8 @@ def test_gate_push_not_auto_approved_even_with_commit_flag(monkeypatch):
                            args={"cmd": "git push origin main"}, tool_context=None))
         t.join(timeout=3)
         assert any(e.get("type") == "approval" for e in events)
-        assert out_push and out_push.get("rejected") is True
+        assert out_push
+        assert out_push.get("rejected") is True
     finally:
         request_context.reset_repo_root(tok)
         chat_approve.clear_emitter(sid)

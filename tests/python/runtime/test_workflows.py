@@ -17,16 +17,20 @@ def wf(monkeypatch, tmp_path):
 
 def test_ensure_dirs_creates_both(wf, tmp_path):
     out = wf.ensure_dirs()
-    assert (tmp_path / "skills").is_dir() and (tmp_path / "workflows").is_dir()
-    assert "skills" in out and "workflows" in out
+    assert (tmp_path / "skills").is_dir()
+    assert (tmp_path / "workflows").is_dir()
+    assert "skills" in out
+    assert "workflows" in out
 
 
 def test_write_and_search(wf):
     r = wf.write_workflow("Release cut", "ship a release",
                           "## Steps\n1. tag\n2. push", triggers=["release", "deploy"])
-    assert r["ok"] and r["path"].endswith("WORKFLOW.md")
+    assert r["ok"]
+    assert r["path"].endswith("WORKFLOW.md")
     hits = wf.search("how do we cut a release")
-    assert hits and hits[0]["name"] == "Release cut"
+    assert hits
+    assert hits[0]["name"] == "Release cut"
 
 
 def test_write_requires_name_and_body(wf):
@@ -38,7 +42,8 @@ def test_repo_scope_writes_under_repo(wf, tmp_path, monkeypatch):
     repo = tmp_path / "repo"; repo.mkdir()
     monkeypatch.setenv("AIFORGE_WORKSPACE_DIR", str(repo))
     r = wf.write_workflow("Repo flow", "x", "## body", scope="repo", cwd=str(repo))
-    assert r["ok"] and "/.aiforge/workflows/" in r["path"]
+    assert r["ok"]
+    assert "/.aiforge/workflows/" in r["path"]
 
 
 def test_handwritten_workflow_picked_up(wf):
@@ -54,7 +59,8 @@ def test_auto_context_surfaces_relevant(wf):
     wf.write_workflow("Release cut", "ship a release",
                       "## Steps\n1. tag\n2. push", triggers=["release", "deploy"])
     block = wf.auto_context("how do we cut a release")
-    assert "APPLICABLE WORKFLOWS" in block and "Release cut" in block
+    assert "APPLICABLE WORKFLOWS" in block
+    assert "Release cut" in block
     assert wf.auto_context("unrelated quantum chromodynamics") == ""
 
 
@@ -64,8 +70,10 @@ def test_library_ships_builtin_flow(wf, monkeypatch, tmp_path):
     # jira/confluence read/write flow + the ticket→MR workflow) — no user data,
     # no product/repo names. User skills/workflows override a builtin by name.
     res = wf.ensure_dirs()
-    assert (tmp_path / "skills").is_dir() and (tmp_path / "workflows").is_dir()
-    assert "skills" in res and "workflows" in res
+    assert (tmp_path / "skills").is_dir()
+    assert (tmp_path / "workflows").is_dir()
+    assert "skills" in res
+    assert "workflows" in res
     skn = {s.name for s in sk.load()}
     wfn = {w.name for w in wf.load()}
     assert {"jira-read", "confluence-read", "jira-write"} <= skn
@@ -86,11 +94,13 @@ def test_write_with_scripts_creates_scripts_folder(wf):
     paths = r["scripts"]
     assert len(paths) == 2
     for p in paths:
-        assert "/scripts/" in p and os.path.isfile(p)
+        assert "/scripts/" in p
+        assert os.path.isfile(p)
         assert os.access(p, os.X_OK)          # chmod +x applied
     # runtime surfaces: auto_context tells the agent to RUN the scripts…
     block = wf.auto_context("nightly export")
-    assert "helper scripts" in block and "export.sh" in block
+    assert "helper scripts" in block
+    assert "export.sh" in block
     # …and search hits carry the script paths.
     hit = next(h for h in wf.search("nightly export") if h["name"] == "Nightly export")
     assert any(p.endswith("export.sh") for p in hit["scripts"])
@@ -99,19 +109,22 @@ def test_write_with_scripts_creates_scripts_folder(wf):
 def test_write_scripts_dict_form_accepted(wf):
     r = wf.write_workflow("Dict flow", "x", "## body",
                           scripts={"go.sh": "#!/usr/bin/env bash\necho hi\n"})
-    assert r["ok"] and r["scripts"][0].endswith("go.sh")
+    assert r["ok"]
+    assert r["scripts"][0].endswith("go.sh")
 
 
 def test_script_syntax_error_aborts_whole_write(wf):
     r = wf.write_workflow("Broken flow", "x", "## body",
                           scripts=[{"name": "bad.sh",
                                     "content": "if [ ; then\nfi\n"}])
-    assert not r["ok"] and "syntax" in r["error"]
+    assert not r["ok"]
+    assert "syntax" in r["error"]
     # nothing saved — the workflow must not exist half-written
     assert not any(w.name == "Broken flow" for w in wf.load())
     r2 = wf.write_workflow("Broken py", "x", "## body",
                            scripts=[{"name": "bad.py", "content": "def f(:\n"}])
-    assert not r2["ok"] and "syntax" in r2["error"]
+    assert not r2["ok"]
+    assert "syntax" in r2["error"]
 
 
 def test_script_name_traversal_rejected(wf):
@@ -138,7 +151,8 @@ def test_hard_gate_runs_scripts_and_refuses_failures(wf):
     r = wf.write_workflow("Failing flow", "x", "## body",
                           scripts=[{"name": "boom.sh",
                                     "content": "echo doomed >&2\nexit 3\n"}])
-    assert not r["ok"] and "FAILED its test run" in r["error"]
+    assert not r["ok"]
+    assert "FAILED its test run" in r["error"]
     assert "doomed" in r["error"]              # output surfaced for the fix
     assert not any(w.name == "Failing flow" for w in wf.load())
 
@@ -172,13 +186,15 @@ def test_learn_workflow_passes_hard_gate(wf, monkeypatch):
                                "scripts": [{"name": "s.sh",
                                             "content": "echo hi\n"}]},
                               cwd=None)
-    assert ok["ok"] and ok["scripts"][0].endswith("s.sh")
+    assert ok["ok"]
+    assert ok["scripts"][0].endswith("s.sh")
     bad = ca._t_learn_workflow({"name": "Gated bad", "description": "x",
                                 "body": "## steps",
                                 "scripts": [{"name": "b.sh",
                                              "content": "exit 1\n"}]},
                                cwd=None)
-    assert not bad["ok"] and "FAILED" in bad["error"]
+    assert not bad["ok"]
+    assert "FAILED" in bad["error"]
 
 
 def test_search_fuzzy_inflection_and_typo(wf):
@@ -213,4 +229,5 @@ def test_migration_removes_stale_seeded_copies(wf, tmp_path):
     # user file still survives.
     seeded.write_text("---\nname: ship-a-feature\nsource: builtin\n---\n\nold copy\n")
     assert wf.ensure_dirs()["workflows"]["removed_seeded"] == 0
-    assert seeded.exists() and mine.exists()
+    assert seeded.exists()
+    assert mine.exists()

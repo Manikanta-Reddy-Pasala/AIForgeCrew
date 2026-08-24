@@ -91,7 +91,8 @@ def test_multiask_tracked_as_subtasks(tmp_path):
           "to the sync client"}],
         cwd=str(tmp_path), complete_fn=fn))
     docks = [e for e in evs if e["type"] == "subtasks"]
-    assert docks and len(docks[0]["items"]) == 3
+    assert docks
+    assert len(docks[0]["items"]) == 3
     assert docks[0]["items"][0]["slug"] == "part-1"
     # EVERY item carries `goal`. The UI's Tasks dock reads that field, and this
     # path used to emit `title` alone — so expanding the dock threw "Cannot
@@ -103,7 +104,8 @@ def test_multiask_tracked_as_subtasks(tmp_path):
     ups = [(e["slug"], e["status"]) for e in evs if e["type"] == "subtask_update"]
     assert ("part-1", "done") in ups          # agent flipped it via the tool
     # FINAL closes out the rest so nothing lingers pending
-    assert ("part-2", "done") in ups and ("part-3", "done") in ups
+    assert ("part-2", "done") in ups
+    assert ("part-3", "done") in ups
 
 
 def test_multiask_single_question_untouched(tmp_path):
@@ -170,7 +172,8 @@ def test_bare_action_final_is_not_the_answer(tmp_path):
     assert _parse("ACTION: final\nARGS_JSON: {}")["kind"] == "continue"
     # …and the model's private reasoning is not an answer either.
     p = _parse("THOUGHT: done\nACTION: FINAL")
-    assert p["kind"] == "continue" and p["thought"] == "done"
+    assert p["kind"] == "continue"
+    assert p["thought"] == "done"
     # Real answers still pass through, in both spellings.
     assert _parse("FINAL: shipped it")["text"] == "shipped it"
     assert _parse("ACTION: FINAL\nShipped it.")["text"] == "Shipped it."
@@ -223,7 +226,8 @@ def test_an_empty_completion_does_not_double_charge_the_step_budget(tmp_path):
         cwd=str(tmp_path), complete_fn=fn, max_steps=3, session_id=None))
     msgs = " ".join(e["text"] for e in evs if e["type"] == "message")
     assert "Read it — it says hi." in msgs
-    assert "step budget" not in msgs and "safety cap" not in msgs
+    assert "step budget" not in msgs
+    assert "safety cap" not in msgs
 
 
 def test_a_builder_is_pushed_at_its_finalize_tool_not_away_from_it(tmp_path):
@@ -257,4 +261,5 @@ def test_the_give_up_line_does_not_claim_the_work_is_done(tmp_path):
     msgs = " ".join(e["text"] for e in evs if e["type"] == "message")
     assert msgs.strip().startswith("(stopped:")
     assert "finished the work" not in msgs
-    assert "FINAL×" not in msgs and "ACTION: FINAL" not in msgs
+    assert "FINAL×" not in msgs
+    assert "ACTION: FINAL" not in msgs
