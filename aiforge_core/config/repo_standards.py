@@ -186,6 +186,47 @@ def _first_on_path(*candidates: str) -> str | None:
     return None
 
 
+def _wrapper_or_path(worktree, wrapper: str, *binaries: str) -> str:
+    """The checked-in wrapper when present, else the first binary on PATH,
+    else the wrapper name (so the error names what is missing)."""
+    if worktree and os.path.isfile(os.path.join(worktree, wrapper.lstrip("./"))):
+        return wrapper
+    return _first_on_path(*binaries) or wrapper
+
+
+def _python_toolchain() -> dict[str, str]:
+    py = _first_on_path("python3", "python") or "python3"
+    return {"compile_cmd": f"{py} -m compileall -q .",
+            "test_cmd": f"{py} -m pytest -q"}
+
+
+def _java_toolchain(worktree) -> dict[str, str]:
+    """Gradle (incl. Kotlin/.kts) vs Maven — picked per marker/wrapper so a
+    Kotlin/gradle repo doesn't get mvn commands it can't run."""
+    is_gradle = bool(worktree and _glob.glob(
+        os.path.join(worktree, "build.gradle*")))
+    has_pom = bool(worktree and os.path.isfile(
+        os.path.join(worktree, "pom.xml")))
+    if is_gradle and not has_pom:
+        g = _wrapper_or_path(worktree, "./gradlew", "gradle")
+        return {"build_cmd": f"{g} build -x test",
+                "compile_cmd": f"{g} compileJava compileKotlin -x test",
+                "test_cmd": f"{g} test"}
+    mvn = _wrapper_or_path(worktree, "./mvnw", "mvn")
+    return {"build_cmd": f"{mvn} clean package -DskipTests",
+            "compile_cmd": f"{mvn} -q -DskipTests compile",
+            "test_cmd": f"{mvn} test"}
+
+
+def _node_toolchain(worktree) -> dict[str, str]:
+    """The package manager the LOCKFILE names, else whatever is installed."""
+    for lockfile, pm in (("yarn.lock", "yarn"), ("pnpm-lock.yaml", "pnpm")):
+        if worktree and os.path.isfile(os.path.join(worktree, lockfile)):
+            return {"build_cmd": f"{pm} run build", "test_cmd": f"{pm} test"}
+    pm = _first_on_path("npm", "pnpm", "yarn") or "npm"
+    return {"build_cmd": f"{pm} run build", "test_cmd": f"{pm} test"}
+
+
 def resolve_toolchain(lang: str, worktree: str | None = None) -> dict[str, str]:
     """Return host-resolved command overrides for ``lang`` (cached).
 
@@ -198,51 +239,16 @@ def resolve_toolchain(lang: str, worktree: str | None = None) -> dict[str, str]:
     key = (lang or "", os.path.abspath(worktree) if worktree else "")
     if key in _TOOLCHAIN_CACHE:
         return _TOOLCHAIN_CACHE[key]
-    out: dict[str, str] = {}
     lk = (lang or "").lower()
     try:
         if lk == "python":
-            py = _first_on_path("python3", "python") or "python3"
-            out = {
-                "compile_cmd": f"{py} -m compileall -q .",
-                "test_cmd":    f"{py} -m pytest -q",
-            }
+            out = _python_toolchain()
         elif lk == "java":
-            # Gradle (incl. Kotlin/.kts) vs Maven — pick per marker/wrapper so a
-            # Kotlin/gradle repo doesn't get mvn commands it can't run.
-            is_gradle = bool(worktree and _glob.glob(
-                os.path.join(worktree, "build.gradle*")))
-            has_pom = bool(worktree and os.path.isfile(
-                os.path.join(worktree, "pom.xml")))
-            if is_gradle and not has_pom:
-                if worktree and os.path.isfile(os.path.join(worktree, "gradlew")):
-                    g = "./gradlew"
-                else:
-                    g = _first_on_path("gradle") or "./gradlew"
-                out = {
-                    "build_cmd":   f"{g} build -x test",
-                    "compile_cmd": f"{g} compileJava compileKotlin -x test",
-                    "test_cmd":    f"{g} test",
-                }
-            else:
-                if worktree and os.path.isfile(os.path.join(worktree, "mvnw")):
-                    mvn = "./mvnw"
-                else:
-                    mvn = _first_on_path("mvn") or "./mvnw"
-                out = {
-                    "build_cmd":   f"{mvn} clean package -DskipTests",
-                    "compile_cmd": f"{mvn} -q -DskipTests compile",
-                    "test_cmd":    f"{mvn} test",
-                }
+            out = _java_toolchain(worktree)
         elif lk in ("node", "react"):
-            if worktree and os.path.isfile(os.path.join(worktree, "yarn.lock")):
-                pm = "yarn"
-            elif worktree and os.path.isfile(
-                    os.path.join(worktree, "pnpm-lock.yaml")):
-                pm = "pnpm"
-            else:
-                pm = _first_on_path("npm", "pnpm", "yarn") or "npm"
-            out = {"build_cmd": f"{pm} run build", "test_cmd": f"{pm} test"}
+            out = _node_toolchain(worktree)
+        else:
+            out = {}
     except Exception:  # noqa: BLE001 — probing must never break standards
         out = {}
     _TOOLCHAIN_CACHE[key] = out

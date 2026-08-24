@@ -111,67 +111,74 @@ _RELATIVE_PATH_RX = re.compile(r"<relativePath>([^<]*)</relativePath>")
 _PARENT_ARTIFACT_RX = re.compile(r"<artifactId>([^<]*)</artifactId>")
 
 
+def _parent_by_relative_path(cur: Path, parent_block: str) -> Path | None:
+    """1. ``<relativePath>`` in the ``<parent>`` block (explicit path)."""
+    rm = _RELATIVE_PATH_RX.search(parent_block)
+    if not rm:
+        return None
+    cand = (cur.parent / rm.group(1).strip()).resolve()
+    if cand.is_dir():
+        cand = cand / "pom.xml"
+    return cand if cand.exists() else None
+
+
+def _parent_by_default(cur: Path) -> Path | None:
+    """2. Default Maven fallback ``../pom.xml`` (only when that file exists)."""
+    cand = (cur.parent / ".." / "pom.xml").resolve()
+    return cand if cand.exists() else None
+
+
+def _parent_by_sibling_repo(parent_block: str, code_root: Path) -> Path | None:
+    """3. Sibling repo by ``<artifactId>`` — ``~/codeRepo/<artifactId>/pom.xml``.
+
+    Catches the OneShell layout where each service has its own repo and
+    references ``oneshell-commons`` as parent without a relativePath.
+    """
+    am = _PARENT_ARTIFACT_RX.search(parent_block)
+    if not am:
+        return None
+    sibling = code_root / am.group(1).strip() / "pom.xml"
+    return sibling.resolve() if sibling.exists() else None
+
+
+def _next_parent_pom(cur: Path) -> Path | None:
+    """The pom ``cur`` inherits from, by the three resolution rules in order."""
+    try:
+        txt = cur.read_text(errors="ignore")[:20_000]
+    except Exception:  # noqa: BLE001
+        return None
+    pm = _PARENT_BLOCK_RX.search(txt)
+    if not pm:
+        return None
+    block = pm.group(1)
+    return (_parent_by_relative_path(cur, block)
+            or _parent_by_default(cur)
+            or _parent_by_sibling_repo(block, CODE_ROOT))
+
+
 def _resolve_parent_pom(pom_path: Path) -> str:
     """Return merged XML from a pom and any local parent poms it references.
 
     Walks up the parent chain (max 3 hops) so services that inherit their
     Java version or spring-boot-starter-parent from an internal multi-module
-    root get the right detection. Resolution order per hop:
-
-    1. ``<relativePath>`` in the ``<parent>`` block (explicit path).
-    2. Default Maven fallback ``../pom.xml`` (only when that file exists).
-    3. Sibling repo by ``<artifactId>`` — looks for ``~/codeRepo/<artifactId>/
-       pom.xml``. Catches the OneShell layout where each service has its
-       own repo and references ``oneshell-commons`` as parent without a
-       relativePath.
+    root get the right detection. See :func:`_next_parent_pom` for the
+    per-hop resolution order.
     """
     chain = [pom_path]
     seen = {pom_path.resolve()}
     cur = pom_path
-    code_root = CODE_ROOT
     for _ in range(3):
-        try:
-            txt = cur.read_text(errors="ignore")[:20_000]
-        except Exception:
-            break
-        pm = _PARENT_BLOCK_RX.search(txt)
-        if not pm:
-            break
-        parent_block = pm.group(1)
-        nxt: Path | None = None
-
-        rm = _RELATIVE_PATH_RX.search(parent_block)
-        if rm:
-            rel = rm.group(1).strip()
-            cand = (cur.parent / rel).resolve()
-            if cand.is_dir():
-                cand = cand / "pom.xml"
-            if cand.exists():
-                nxt = cand
-
-        if nxt is None:
-            default_parent = (cur.parent / ".." / "pom.xml").resolve()
-            if default_parent.exists():
-                nxt = default_parent
-
-        if nxt is None:
-            am = _PARENT_ARTIFACT_RX.search(parent_block)
-            if am:
-                sibling = code_root / am.group(1).strip() / "pom.xml"
-                if sibling.exists():
-                    nxt = sibling.resolve()
-
+        nxt = _next_parent_pom(cur)
         if nxt is None or nxt in seen or not nxt.exists():
             break
         chain.append(nxt)
         seen.add(nxt)
         cur = nxt
-
     combined: list[str] = []
     for p in chain:
         try:
             combined.append(p.read_text(errors="ignore")[:40_000])
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
     return "\n".join(combined)
 
@@ -236,40 +243,40 @@ _PY_FW_MARKERS = {
 }
 
 
+def _read_or_empty(path: Path) -> str:
+    try:
+        return path.read_text(errors="ignore")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _python_entry(repo: Path) -> str:
+    """main.py > app.py > manage.py (Django) > run.py."""
+    for cand in ("main.py", "app.py", "manage.py", "run.py"):
+        if (repo / cand).exists():
+            return ("python manage.py runserver" if cand == "manage.py"
+                    else f"python {cand}")
+    return "python main.py"
+
+
 def _detect_python(repo: Path) -> tuple[list[str], str, str]:
     req = repo / "requirements.txt"
     pyp = repo / "pyproject.toml"
     if not (req.exists() or pyp.exists()):
         return [], "", ""
-    stack = ["Python"]
-    text = ""
-    if req.exists():
-        try:
-            text += req.read_text(errors="ignore")
-        except Exception:
-            pass
+    text = (_read_or_empty(req) if req.exists() else "")
     if pyp.exists():
-        try:
-            text += "\n" + pyp.read_text(errors="ignore")
-        except Exception:
-            pass
+        text += "\n" + _read_or_empty(pyp)
     tl = text.lower()
+    stack = ["Python"]
     for key, label in _PY_FW_MARKERS.items():
         if key in tl and label not in stack:
             stack.append(label)
-    stack.append(
-        "requirements.txt" if req.exists() else "pyproject.toml"
-    )
-    # entry: main.py > app.py > manage.py (Django)
-    entry = "python main.py"
-    for cand in ("main.py", "app.py", "manage.py", "run.py"):
-        if (repo / cand).exists():
-            entry = f"python {cand}"
-            if cand == "manage.py":
-                entry = "python manage.py runserver"
-            break
-    install = "pip install -r requirements.txt" if req.exists() else "pip install -e ."
-    return stack, f"{install} && {entry}", "python -m compileall -q ."
+    stack.append("requirements.txt" if req.exists() else "pyproject.toml")
+    install = ("pip install -r requirements.txt" if req.exists()
+               else "pip install -e .")
+    return (stack, f"{install} && {_python_entry(repo)}",
+            "python -m compileall -q .")
 
 
 def _detect_node(repo: Path) -> tuple[list[str], str, str]:
