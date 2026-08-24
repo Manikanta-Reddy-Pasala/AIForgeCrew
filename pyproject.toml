@@ -102,6 +102,9 @@ override-dependencies = [
   "requests>=2.33.0",
   "idna>=3.15",
   "python-dotenv>=1.2.2",
+  # CVE-2026-4539. Not held by our own constraint — a transitive pin keeps it
+  # back, so the override is the only lever.
+  "pygments>=2.20.0",
 ]
 
 [tool.uv.sources]

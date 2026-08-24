@@ -29,12 +29,13 @@ import re
 import sqlite3
 import urllib.request
 from pathlib import Path
+from aiforge_core.config.paths import config_dir
 
 
 def _root() -> Path:
     p = Path(os.environ.get(
         "AIFORGE_DOCS_DIR", os.path.join(os.path.expanduser(
-            os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")), "docs"),
+            str(config_dir())), "docs"),
     ))
     p.mkdir(parents=True, exist_ok=True)
     return p

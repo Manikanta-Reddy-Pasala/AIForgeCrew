@@ -27,6 +27,7 @@ import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import NamedTuple
+from aiforge_core.config.paths import config_dir
 
 try:
     import yaml
@@ -75,7 +76,7 @@ def _global_dir() -> Path:
     # Live under the same config dir as the rest of the app (AIFORGE_CONFIG_DIR)
     # — a raw Path.home() diverges from the operator's configured/mounted dir on
     # docker/hybrid, so skills built via chat landed outside it (looked lost).
-    cfg = os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge"))
+    cfg = str(config_dir())
     return Path(cfg) / "skills"
 
 

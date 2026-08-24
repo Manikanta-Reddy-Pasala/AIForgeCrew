@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from aiforge_core.api._shared import _db
 from aiforge_core.runtime.background import spawn as _spawn
+from aiforge_core.config.paths import config_dir
 
 router = APIRouter()
 
@@ -461,7 +462,7 @@ async def memory_sources_upload(file: UploadFile = File(...),
     registered as a ``file`` source (index it with the /index endpoint)."""
     from aiforge_core.runtime import memory_sources as _ms
     dest_dir = os.path.join(
-        os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")),
+        str(config_dir()),
         "memory-files")
     os.makedirs(dest_dir, exist_ok=True)
     safe = os.path.basename(file.filename or "upload.txt")

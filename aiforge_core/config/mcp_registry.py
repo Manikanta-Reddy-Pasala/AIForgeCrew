@@ -28,13 +28,14 @@ import re
 import threading
 
 from aiforge_core.config import _atomic
+from aiforge_core.config.paths import config_dir
 
 _LOCK = threading.Lock()
 _CATALOG_PATH = os.path.join(os.path.dirname(__file__), "mcp_catalog.json")
 
 
 def _path() -> str:
-    root = os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge"))
+    root = str(config_dir())
     return os.path.join(root, "mcp_servers.json")
 
 
@@ -57,8 +58,9 @@ def _slug(name: str) -> str:
 
 
 def _is_http(transport: str, url: str) -> bool:
+    from aiforge_core.net.url_policy import is_allowed
     return (transport or "http").lower() in ("http", "sse") \
-        and str(url or "").lower().startswith(("http://", "https://"))
+        and is_allowed(url)
 
 
 def _is_stdio(transport: str) -> bool:
@@ -136,8 +138,10 @@ def add_server(*, name: str, url: str = "", transport: str = "http",
     command = (command or "").strip()
     url = (url or "").strip()
     if transport in ("http", "sse"):
-        if url and not url.lower().startswith(("http://", "https://")):
-            raise ValueError("url must be http(s)")
+        from aiforge_core.net.url_policy import check
+        why = check(url) if url else None
+        if why:
+            raise ValueError(why)
         command, args, env = "", None, None
     elif transport == "stdio":
         if not command:

@@ -43,6 +43,7 @@ import os
 import subprocess
 
 from aiforge_core.config import _filecache
+from aiforge_core.config.paths import config_dir
 
 log = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ _NOOP = {"ok": True, "blocked": False, "results": []}
 
 
 def _global_path() -> str:
-    root = os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge"))
+    root = str(config_dir())
     return os.path.join(root, "hooks.json")
 
 

@@ -34,7 +34,11 @@ def _do_fetch(url: str) -> dict:
     no redirects to file://. Body capped at 256 KB, timeout 15s, http(s)
     only. Used by the gated ``fetch_url`` and the researcher-only
     ``web_read``."""
-    if not url or not url.lower().startswith(("http://", "https://")):
+    # SCHEME ONLY here, deliberately. url_policy's https requirement is for
+    # endpoints we send API keys and prompt text to (LLM/MCP base URLs). This
+    # reads PUBLIC PAGES: much of the web is still http, nothing of ours goes
+    # with the request, and the SSRF guard below is what actually matters.
+    if not url or not str(url).lower().startswith(("http://", "https://")):
         return {"ok": False, "error": "url must be http(s)"}
     # SSRF guard: a model-supplied URL must not pivot to cloud metadata
     # (169.254.169.254), loopback services or the private LAN. A pure DNS

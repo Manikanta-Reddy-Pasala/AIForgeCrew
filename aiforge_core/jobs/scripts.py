@@ -18,13 +18,14 @@ import os
 import re
 import subprocess
 from datetime import datetime
+from aiforge_core.config.paths import config_dir
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
 def jobs_dir() -> str:
     """Absolute local folder holding user job scripts. Created on demand."""
-    cfg = os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")
+    cfg = str(config_dir())
     path = os.path.join(os.path.expanduser(cfg), "jobs")
     os.makedirs(path, exist_ok=True)
     return path

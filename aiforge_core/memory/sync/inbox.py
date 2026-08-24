@@ -34,6 +34,7 @@ from __future__ import annotations
 import logging
 
 from aiforge_core.memory.sync import transport
+from aiforge_core.config.paths import config_dir
 
 _log = logging.getLogger("aiforge.sync")
 
@@ -54,7 +55,7 @@ def _roll_path():
     import os
     from pathlib import Path
 
-    d = Path(os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")))
+    d = Path(str(config_dir()))
     d.mkdir(parents=True, exist_ok=True)
     return d / "spokes.json"
 

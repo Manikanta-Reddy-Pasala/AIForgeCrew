@@ -57,6 +57,7 @@ import os
 from pathlib import Path
 
 from aiforge_core.memory.sync import _io
+from aiforge_core.config.paths import config_dir
 
 _log = logging.getLogger("aiforge.sync")
 
@@ -117,7 +118,7 @@ def _state_path() -> Path:
     ``peers.json`` used to live in) and is never synced. A spoke that loses it
     re-learns it from the admin's next manifest response.
     """
-    d = Path(os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")))
+    d = Path(str(config_dir()))
     d.mkdir(parents=True, exist_ok=True)
     return d / "admin.json"
 

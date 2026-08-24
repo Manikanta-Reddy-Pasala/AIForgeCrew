@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from aiforge_core.config import agent_config as _acfg
 from aiforge_core.runtime.background import spawn as _spawn
 from aiforge_core.tickets import store as tickets_mod
+from aiforge_core.config.paths import config_dir
 
 router = APIRouter()
 
@@ -416,7 +417,7 @@ def _chat_workspace_root() -> str:
     return os.environ.get(
         "AIFORGE_CHAT_WORKSPACE_ROOT",
         os.path.join(os.path.expanduser(
-            os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")), "chat-workspaces"))
+            str(config_dir())), "chat-workspaces"))
 
 
 def _delete_chat_workspace(cwd: str | None) -> bool:

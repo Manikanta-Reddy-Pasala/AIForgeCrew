@@ -38,16 +38,28 @@ def test_write_text_round_trips_and_replaces(tmp_path):
     assert target.read_text(encoding="utf-8") == "néw"
 
 
-def test_published_file_keeps_ordinary_permissions(tmp_path):
-    """mkstemp stages at 0600; every converted caller used a plain open, so the
-    published file must still carry the umask default or their configs would
-    silently tighten."""
+def test_published_file_is_owner_only(tmp_path):
+    """OWNER-ONLY, and deliberately no longer the umask default.
+
+    This used to assert the opposite — that a published file matched what a
+    plain `open()` would have produced — and the reason was sound at the time:
+    `_atomic` was replacing plain opens, and a refactor should not silently
+    change permissions as a side effect.
+
+    It is no longer a refactor. These files are AIFORGE_CONFIG_DIR, and
+    `agent_config` persists an `api_key` (agent_config/_persist.py), so the
+    umask default of 0644 published the operator's credentials to every local
+    account. The docstring of the mode-override test below already said as
+    much about the memory tree; making it the default is the generalisation.
+    """
     plain = tmp_path / "plain.txt"
     plain.write_text("x", encoding="utf-8")
     target = tmp_path / "atomic.txt"
     _atomic.write_text(target, "x")
 
-    assert os.stat(target).st_mode & 0o777 == os.stat(plain).st_mode & 0o777
+    assert os.stat(target).st_mode & 0o777 == 0o600
+    # …and specifically NOT whatever a plain open() would have produced.
+    assert os.stat(target).st_mode & 0o077 == 0
 
 
 def test_concurrent_writers_never_publish_a_blend(tmp_path):
@@ -146,7 +158,9 @@ def test_mode_override_keeps_private_content_owner_only(tmp_path):
     _atomic.write_bytes(private, b"secret", mode=0o600)
 
     assert os.stat(private).st_mode & 0o777 == 0o600
-    assert os.stat(default).st_mode & 0o777 != 0o600 or (os.umask(0), os.umask(0o077))[0] == 0o077
+    # The default is owner-only too now, so an explicit mode no longer has to
+    # differ from it — what matters is that neither is group/world readable.
+    assert os.stat(default).st_mode & 0o077 == 0
 
 
 def test_sync_io_writes_are_owner_only(monkeypatch, tmp_path):

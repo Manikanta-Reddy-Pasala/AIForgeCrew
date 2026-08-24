@@ -400,7 +400,7 @@ function ModelsCard({ models, reload }: { models: RegistryModel[]; reload: () =>
                onChange={e => setLabel(e.target.value)} /></label>
         <label className="small">Model id<input style={input} value={model} placeholder="qwen3-coder-next"
                onChange={e => setModel(e.target.value)} /></label>
-        <label className="small">Base URL<input style={input} value={baseUrl} placeholder="http://host:1234/v1"
+        <label className="small">Base URL<input style={input} value={baseUrl} placeholder="https://host/v1 (http:// only for localhost)"
                onChange={e => setBaseUrl(e.target.value)} /></label>
         <label className="small">API key <span className="muted">(optional)</span>
           <input style={input} type="password" value={apiKey} placeholder="leave blank for none"

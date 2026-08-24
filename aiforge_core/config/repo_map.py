@@ -17,10 +17,11 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from aiforge_core.config.paths import config_dir
 
 
 def _path() -> Path:
-    cfg = os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge"))
+    cfg = str(config_dir())
     return Path(cfg) / "repos.json"
 
 

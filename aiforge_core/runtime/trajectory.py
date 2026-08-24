@@ -17,6 +17,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any
+from aiforge_core.config.paths import config_dir
 
 
 def _trajectory_dir() -> Path:
@@ -28,7 +29,7 @@ def _trajectory_dir() -> Path:
         # Path.home() diverges from the operator's configured dir on
         # docker/hybrid, hiding the dumps.
         cfg = os.path.expanduser(
-            os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge"))
+            str(config_dir()))
         base = Path(cfg) / "trajectories"
     base.mkdir(parents=True, exist_ok=True)
     return base

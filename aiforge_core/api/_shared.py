@@ -15,6 +15,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from aiforge_core.config.env import AIFORGE_DSN
+from aiforge_core.config.paths import config_dir
 
 
 def env_truthy(name: str) -> bool:
@@ -59,7 +60,7 @@ def _ticket_files_base():
 # runtime route module's _persist_env write/read the same single location.
 _RUNTIME_ENV_PATH = os.path.expanduser(
     os.environ.get("AIFORGE_RUNTIME_ENV", os.path.join(
-        os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge"), "runtime.env"))
+        str(config_dir()), "runtime.env"))
 )
 _RUNTIME_ENV_LOCK = threading.Lock()
 

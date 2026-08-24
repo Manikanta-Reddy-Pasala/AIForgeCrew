@@ -19,6 +19,7 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Iterator
+from aiforge_core.config.paths import config_dir
 
 _LOCK = threading.Lock()
 
@@ -46,7 +47,7 @@ def _db_path() -> str:
     return os.environ.get(
         "AIFORGE_SOURCES_DB_PATH",
         os.path.join(
-            os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")),
+            str(config_dir()),
             "memory_sources.db",
         ),
     )

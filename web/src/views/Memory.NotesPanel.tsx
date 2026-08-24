@@ -193,6 +193,7 @@ export function NotesPanel() {
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                       zIndex: 1000, padding: 20 }}>
           <div onClick={e => e.stopPropagation()}
+               onKeyDown={e => e.stopPropagation()}
                style={{ background: 'var(--bg-0)', border: '1px solid var(--border-1)',
                         borderRadius: 10, maxWidth: 820, width: '100%', maxHeight: '85vh',
                         overflow: 'auto', padding: 16, boxShadow: '0 12px 48px rgba(0,0,0,0.45)' }}>

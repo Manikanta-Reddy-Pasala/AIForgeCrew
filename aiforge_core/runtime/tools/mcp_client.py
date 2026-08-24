@@ -109,8 +109,10 @@ def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
     # would make urllib.request.Request raise ValueError("unknown url type"),
     # which the callers don't catch → it escapes into the agent loop. Reject
     # cleanly via OSError so the existing soft-error handlers cover it.
-    if not str(url).lower().startswith(("http://", "https://")):
-        raise OSError(f"unsupported MCP transport (http/https only): {url}")
+    from aiforge_core.net.url_policy import check
+    why = check(url)
+    if why:
+        raise OSError(f"refusing MCP endpoint {url!r}: {why}")
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,

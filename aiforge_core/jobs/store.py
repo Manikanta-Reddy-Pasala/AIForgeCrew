@@ -24,6 +24,7 @@ from contextlib import contextmanager
 from datetime import datetime
 
 from aiforge_core.config import env as _env
+from aiforge_core.config.paths import config_dir
 
 _LOCK = threading.Lock()
 
@@ -99,7 +100,7 @@ class _SqliteJobStore:
         raw = os.environ.get("AIFORGE_JOBS_DB_PATH")
         if raw:
             return os.path.expanduser(raw)
-        cfg = os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")
+        cfg = str(config_dir())
         return os.path.join(os.path.expanduser(cfg), "jobs.db")
 
     @contextmanager

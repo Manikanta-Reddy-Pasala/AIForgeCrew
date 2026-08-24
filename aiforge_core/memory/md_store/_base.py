@@ -9,6 +9,7 @@ import os
 import re
 import threading
 from pathlib import Path
+from aiforge_core.config.paths import config_dir
 
 
 _log = logging.getLogger("aiforge.md_store")
@@ -34,7 +35,7 @@ _COMPACT_LOCK = threading.Lock()
 
 def memory_dir() -> Path:
     raw = os.environ.get("AIFORGE_MEMORY_MD_DIR") or os.path.join(
-        os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge"), "memory")
+        str(config_dir()), "memory")
     p = Path(os.path.expanduser(raw))
     p.mkdir(parents=True, exist_ok=True)
     return p

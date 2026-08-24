@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from aiforge_core.config.paths import config_dir
 
 
 # ─────────────────────────────── DSNs ───────────────────────────────
@@ -60,7 +61,7 @@ _pg_candidate = os.environ.get("AIFORGE_PG_URL") or (
 AIFORGE_PG_URL = _pg_candidate if _KEEP_PG else None
 AIFORGE_DB_PATH = os.environ.get(
     "AIFORGE_DB_PATH",
-    os.path.join(os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")),
+    os.path.join(str(config_dir()),
                  "aiforge.db"),
 )
 AIFORGE_USE_SQLITE = AIFORGE_PG_URL is None
@@ -74,12 +75,12 @@ RERANK_SIDECAR_URL  = os.environ.get("AIFORGE_RERANK_URL", "http://127.0.0.1:876
 
 # ─────────────────────────── Paths ──────────────────────────────────────
 LOG_DIR  = os.environ.get("AIFORGE_LOG_DIR", os.path.join(os.path.expanduser(
-    os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")), "logs"))
+    str(config_dir())), "logs"))
 # NOT /tmp: it is world-writable, so any local user can pre-create or replace
 # a lock file we then trust. The config dir is ours and already holds the
 # databases these locks guard.
 LOCK_DIR = os.environ.get("AIFORGE_LOCK_DIR") or os.path.join(
-    os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")),
+    str(config_dir()),
     "locks")
 WORKTREE_ROOT = os.environ.get(
     "AIFORGE_WORKTREE_ROOT",

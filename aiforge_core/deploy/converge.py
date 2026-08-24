@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from aiforge_core.config.paths import config_dir
 
 log = logging.getLogger("aiforge.deploy.converge")
 
@@ -36,7 +37,7 @@ _SUDO: list | None = None
 
 
 def _config_dir() -> Path:
-    return Path(os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")))
+    return Path(str(config_dir()))
 
 
 def _marker() -> Path:

@@ -25,6 +25,7 @@ import time
 from contextlib import contextmanager
 
 from aiforge_core.config import _atomic
+from aiforge_core.config.paths import config_dir
 
 # Soft size cap (~5 MB). When exceeded we keep only the last _TRIM_KEEP lines.
 _MAX_BYTES = 5 * 1024 * 1024
@@ -41,7 +42,7 @@ _record_count = 0
 
 
 def _config_dir() -> str:
-    return os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge"))
+    return str(config_dir())
 
 
 def _perf_path() -> str:

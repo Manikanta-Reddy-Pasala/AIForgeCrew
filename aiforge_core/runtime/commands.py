@@ -32,6 +32,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from aiforge_core.config.paths import config_dir
 
 try:
     import yaml
@@ -66,7 +67,7 @@ def _global_dir() -> Path:
         return Path(raw).expanduser()
     # Same config dir as the rest of the app (AIFORGE_CONFIG_DIR); a raw
     # Path.home() diverges from the operator's configured/mounted dir.
-    cfg = os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge"))
+    cfg = str(config_dir())
     return Path(cfg) / "commands"
 
 

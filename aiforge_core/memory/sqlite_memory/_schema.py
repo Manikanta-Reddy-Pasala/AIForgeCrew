@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from typing import Iterator
 
 from aiforge_core.memory import local_embed
+from aiforge_core.config.paths import config_dir
 
 _log = logging.getLogger("aiforge.memory")
 _EMBED_WARNED = False
@@ -155,7 +156,7 @@ def _db_path() -> str:
     return os.environ.get(
         "AIFORGE_MEMORY_DB_PATH",
         os.path.join(
-            os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")),
+            str(config_dir()),
             "memory.db",
         ),
     )

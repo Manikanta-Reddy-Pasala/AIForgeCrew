@@ -26,27 +26,26 @@ from typing import Callable
 log = logging.getLogger("aiforge.background")
 
 
-def spawn(fn: "Callable[[], object] | None" = None, *, name: str,
-          kind: str = "thread",
-          argv: "list[str] | None" = None,
-          on_error: "Callable[[BaseException], None] | None" = None):
-    """Launch background work. See module docstring. Best-effort — never raises."""
-    if kind == "process":
-        if not argv:
-            log.warning("background.spawn(kind=process) needs argv (name=%s)", name)
-            return None
-        try:
-            return subprocess.Popen(
-                argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                start_new_session=True)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("background process spawn failed (%s): %s", name, exc)
-            return None
-
-    if fn is None:
-        log.warning("background.spawn(kind=thread) needs fn (name=%s)", name)
+def _spawn_process(argv: "list[str] | None", name: str):
+    """Detached child process. Best-effort — never raises."""
+    if not argv:
+        log.warning("background.spawn(kind=process) needs argv (name=%s)", name)
+        return None
+    try:
+        return subprocess.Popen(
+            argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("background process spawn failed (%s): %s", name, exc)
         return None
 
+
+def _guarded(fn, name: str, on_error) -> "Callable[[], None]":
+    """Wrap the callable so a failure is REPORTED, never swallowed.
+
+    Split out because it is the one piece with real behaviour to get right:
+    an `on_error` that itself raises must not lose the original exception.
+    """
     def _run() -> None:
         try:
             fn()
@@ -59,14 +58,36 @@ def spawn(fn: "Callable[[], object] | None" = None, *, name: str,
                 except Exception:  # noqa: BLE001
                     pass
             log.warning("background task %r failed: %s", name, exc)
+    return _run
 
+
+def _spawn_thread(fn, name: str, on_error):
+    """Daemon thread running ``fn``. Best-effort — never raises."""
+    if fn is None:
+        log.warning("background.spawn(kind=thread) needs fn (name=%s)", name)
+        return None
     try:
-        t = threading.Thread(target=_run, name=name, daemon=True)
+        t = threading.Thread(target=_guarded(fn, name, on_error),
+                             name=name, daemon=True)
         t.start()
         return t
     except Exception as exc:  # noqa: BLE001
         log.warning("background thread spawn failed (%s): %s", name, exc)
         return None
+
+
+def spawn(fn: "Callable[[], object] | None" = None, *, name: str,
+          kind: str = "thread",
+          argv: "list[str] | None" = None,
+          on_error: "Callable[[BaseException], None] | None" = None):
+    """Launch background work. See module docstring. Best-effort — never raises.
+
+    Dispatch only: a process and a thread share nothing but this entry point,
+    so they are separate functions rather than two halves of one `if`.
+    """
+    if kind == "process":
+        return _spawn_process(argv, name)
+    return _spawn_thread(fn, name, on_error)
 
 
 __all__ = ["spawn"]
