@@ -21,113 +21,114 @@ from aiforge_core.config.env import ROLES
 router = APIRouter()
 
 
+# What each archetype does, for the Agents page.
+_ROLE_DESCRIPTIONS = {
+    "enhancer": "Cleans the raw request into a clear, unambiguous spec before planning.",
+    "architect": "Designs the file/module structure and approach for the spec.",
+    "triage": "Routes the work — trivial fast-path vs full pipeline.",
+    "planner": "Splits the design into ordered, concrete subtasks.",
+    "verifier": "Critiques the plan before code is written (merges the verify_* verdicts).",
+    "researcher": "Gathers the codebase/external context the plan needs.",
+    "doer": "Writes the actual code and runs the tools that implement each subtask.",
+    "refiner": "Polishes the doer's output — cleanup, edge cases — inside the work loop.",
+    "feedback": "In-loop reviewer: checks each pass and feeds corrections back.",
+    "learner": "Persists durable lessons/memory so future runs start smarter.",
+    "verify_correctness": "Axis critic: is the plan/code correct and complete?",
+    "verify_scope": "Axis critic: does it stay within the requested scope?",
+    "verify_risk": "Axis critic: flags risky, destructive, or fragile changes.",
+    "ctx_memory": "Parallel gatherer: pulls relevant past decisions / memory.",
+    "ctx_repomap": "Parallel gatherer: builds a map of the repo structure.",
+    "ctx_conventions": "Parallel gatherer: extracts the project's coding conventions.",
+    "gap_eval": "Research-completeness critic: drives the bounded re-search loop.",
+    "live_verifier": "Boots + exercises the built project against a live-verify recipe.",
+    "chat": "The dashboard chat assistant's own model slot (independent of the pipeline).",
+}
+
+_ORCHESTRATOR_ROLES = {"enhancer", "architect", "planner"}
+_FANOUT_ROLES = {"ctx_memory", "ctx_repomap", "ctx_conventions",
+                 "verify_correctness", "verify_scope", "verify_risk",
+                 "gap_eval", "live_verifier"}
+
+
+def _role_group(role: str) -> str:
+    if role == "chat":
+        return "chat"
+    if role in _ORCHESTRATOR_ROLES:
+        return "orchestrator"
+    return "fanout" if role in _FANOUT_ROLES else "pipeline"
+
+
+def _role_activity(name: str) -> tuple:
+    """``(last_activity_iso, lifetime_turns, active_tickets)``.
+
+    Uses Postgres-specific SQL (FILTER). On the embedded SQLite backend it
+    degrades to nulls — the static role catalogue still renders, so the Agents /
+    Home views work everywhere.
+    """
+    try:
+        with _db() as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT MAX(created_at) AS last_activity, "
+                "COUNT(*) FILTER (WHERE kind='llm_turn') AS turns "
+                "FROM ticket_events WHERE agent_role = %s", (name,))
+            row = cur.fetchone() or {}
+            cur.execute(
+                "SELECT identifier, status FROM tickets "
+                "WHERE assignee_role = %s AND status IN "
+                "('todo','in_progress','in_review') ORDER BY created_at DESC",
+                (name,))
+            active = [{"identifier": r["identifier"], "status": r["status"]}
+                      for r in cur.fetchall()]
+        last = row.get("last_activity")
+        return (last.isoformat() if last else None, row.get("turns", 0), active)
+    except Exception:  # noqa: BLE001
+        return (None, 0, [])
+
+
+def _visible_roles() -> list[str]:
+    """The REAL archetype list (config.agent_config) — not the 5 legacy env.py
+    ROLES — so the page shows enhancer/architect/planner and every other
+    configured agent. Only the synthetic default is hidden; every real agent
+    (incl. the chat slot + the context/verifier fan-out sub-agents) is shown."""
+    try:
+        roles = _acfg.archetypes()
+    except Exception:  # noqa: BLE001
+        roles = list(ROLES.keys())
+    return [r for r in roles if r != "_default"]
+
+
+def _agent_row(name: str) -> dict:
+    """One role's catalogue entry. Per-role model/provider come from
+    agent_config; max_turns/tool_allowlist only exist for the legacy ROLES and
+    default sensibly when absent."""
+    rc = ROLES.get(name)
+    try:
+        cfg = _acfg.get(name)
+    except Exception:  # noqa: BLE001
+        cfg = {}
+    cfg = cfg if isinstance(cfg, dict) else {}
+    last_iso, turns, active = _role_activity(name)
+    return {
+        "role": name,
+        "description": _ROLE_DESCRIPTIONS.get(name, ""),
+        "group": _role_group(name),
+        "model": cfg.get("model") or (rc.model if rc else ""),
+        # "transport" doubles as the provider chip in the UI: legacy roles
+        # report their transport; new orchestrator roles report the provider.
+        "transport": (rc.transport if rc
+                      else cfg.get("provider") or "openai_compatible"),
+        "max_turns": rc.max_turns if rc else None,
+        "tool_allowlist": list(rc.tool_allowlist) if rc else [],
+        "last_activity": last_iso,
+        "lifetime_turns": turns,
+        "active_tickets": active,
+    }
+
+
 @router.get("/api/agents")
 def list_agents() -> list[dict]:
     """Static role catalogue + dynamic last-activity from ticket_events."""
-    out = []
-    # Activity stats use Postgres-specific SQL (FILTER). On the embedded
-    # SQLite backend they degrade to nulls — the static role catalogue
-    # still renders so the Agents / Home views work everywhere.
-    def _activity(name: str) -> tuple:
-        try:
-            with _db() as c, c.cursor() as cur:
-                cur.execute(
-                    "SELECT MAX(created_at) AS last_activity, "
-                    "COUNT(*) FILTER (WHERE kind='llm_turn') AS turns "
-                    "FROM ticket_events WHERE agent_role = %s",
-                    (name,),
-                )
-                row = cur.fetchone() or {}
-                cur.execute(
-                    "SELECT identifier, status FROM tickets "
-                    "WHERE assignee_role = %s AND status IN "
-                    "('todo','in_progress','in_review') ORDER BY created_at DESC",
-                    (name,),
-                )
-                active = [{"identifier": r["identifier"], "status": r["status"]}
-                          for r in cur.fetchall()]
-            last = row.get("last_activity")
-            return (last.isoformat() if last else None, row.get("turns", 0), active)
-        except Exception:
-            return (None, 0, [])
-
-    # Enumerate the REAL archetype list (config.agent_config) — not the 5
-    # legacy env.py ROLES — so the page shows enhancer/architect/planner and
-    # every other configured agent. Per-role model/provider come from
-    # agent_config; max_turns/tool_allowlist only exist for the legacy ROLES
-    # (default sensibly when absent). Activity stats default to 0/null for
-    # roles that never fired.
-    try:
-        roles = _acfg.archetypes()
-    except Exception:
-        roles = list(ROLES.keys())
-
-    # Only the synthetic default is hidden — every real agent (incl. the chat
-    # slot + the context/verifier fan-out sub-agents) is shown, grouped.
-    roles = [r for r in roles if r != "_default"]
-
-    _DESC = {
-        "enhancer": "Cleans the raw request into a clear, unambiguous spec before planning.",
-        "architect": "Designs the file/module structure and approach for the spec.",
-        "triage": "Routes the work — trivial fast-path vs full pipeline.",
-        "planner": "Splits the design into ordered, concrete subtasks.",
-        "verifier": "Critiques the plan before code is written (merges the verify_* verdicts).",
-        "researcher": "Gathers the codebase/external context the plan needs.",
-        "doer": "Writes the actual code and runs the tools that implement each subtask.",
-        "refiner": "Polishes the doer's output — cleanup, edge cases — inside the work loop.",
-        "feedback": "In-loop reviewer: checks each pass and feeds corrections back.",
-        "learner": "Persists durable lessons/memory so future runs start smarter.",
-        "verify_correctness": "Axis critic: is the plan/code correct and complete?",
-        "verify_scope": "Axis critic: does it stay within the requested scope?",
-        "verify_risk": "Axis critic: flags risky, destructive, or fragile changes.",
-        "ctx_memory": "Parallel gatherer: pulls relevant past decisions / memory.",
-        "ctx_repomap": "Parallel gatherer: builds a map of the repo structure.",
-        "ctx_conventions": "Parallel gatherer: extracts the project's coding conventions.",
-        "gap_eval": "Research-completeness critic: drives the bounded re-search loop.",
-        "live_verifier": "Boots + exercises the built project against a live-verify recipe.",
-        "chat": "The dashboard chat assistant's own model slot (independent of the pipeline).",
-    }
-    _ORCH = {"enhancer", "architect", "planner"}
-    _FANOUT = {"ctx_memory", "ctx_repomap", "ctx_conventions",
-               "verify_correctness", "verify_scope", "verify_risk",
-               "gap_eval", "live_verifier"}
-
-    def _group(r: str) -> str:
-        if r == "chat":
-            return "chat"
-        if r in _ORCH:
-            return "orchestrator"
-        if r in _FANOUT:
-            return "fanout"
-        return "pipeline"
-
-    for name in roles:
-        rc = ROLES.get(name)
-        try:
-            cfg = _acfg.get(name)
-        except Exception:
-            cfg = {}
-        model = (cfg.get("model") if isinstance(cfg, dict) else None) \
-            or (rc.model if rc else "")
-        # "transport" doubles as the provider chip in the UI: legacy roles
-        # report their transport; new orchestrator roles report the provider.
-        transport = (rc.transport if rc
-                     else (cfg.get("provider") if isinstance(cfg, dict) else None)
-                     or "openai_compatible")
-        last_iso, turns, active = _activity(name)
-        out.append({
-            "role": name,
-            "description": _DESC.get(name, ""),
-            "group": _group(name),
-            "model": model,
-            "transport": transport,
-            "max_turns": rc.max_turns if rc else None,
-            "tool_allowlist": list(rc.tool_allowlist) if rc else [],
-            "last_activity": last_iso,
-            "lifetime_turns": turns,
-            "active_tickets": active,
-        })
-    return out
+    return [_agent_row(name) for name in _visible_roles()]
 
 
 @router.get("/api/config/agents")
@@ -213,30 +214,39 @@ def agents_v2_config() -> dict:
 
 
 @router.post("/api/providers/test")
+def _saved_role_credentials(role: str, base_url: str, api_key: str | None,
+                            insecure: bool) -> tuple[str, str | None, bool]:
+    """Fill blanks from the role's SAVED config (env + stored row).
+
+    The UI never echoes the stored token back into the field, so without this
+    fallback a Test issued right after Save would send no token and 401.
+    """
+    if not role or role not in _acfg.archetypes():
+        return base_url, api_key, insecure
+    try:
+        rl = _acfg.resolve_litellm(role)
+    except Exception:  # noqa: BLE001
+        return base_url, api_key, insecure
+    if not base_url:
+        base_url = rl.get("api_base") or ""
+    if not api_key:
+        k = rl.get("api_key")
+        api_key = None if (not k or k == "not-needed") else k
+    return base_url, api_key, insecure or bool(rl.get("insecure_tls"))
+
+
 def providers_test(body: _ProviderTestBody) -> dict:
     """Test-connection for the home page. Probes ``{base_url}/models`` and
     returns ``{ok, models[]}`` (or ``{ok:false, error}``).
 
     Blank ``base_url`` / ``api_key`` fall back to the saved config for
     ``role`` (resolved via env + stored row), so Test works right after
-    Save — the UI never echoes the stored token back into the field, so
-    without this fallback a post-Save Test would send no token and 401.
+    Save.
     """
     from aiforge_core.llm.providers.openai_compatible import probe
-    base_url = (body.base_url or "").strip()
-    api_key = (body.api_key or "").strip() or None
-    insecure = bool(body.insecure_tls)
-    if body.role and body.role in _acfg.archetypes():
-        try:
-            rl = _acfg.resolve_litellm(body.role)
-        except Exception:
-            rl = {}
-        if not base_url:
-            base_url = rl.get("api_base") or ""
-        if not api_key:
-            k = rl.get("api_key")
-            api_key = None if (not k or k == "not-needed") else k
-        insecure = insecure or bool(rl.get("insecure_tls"))
+    base_url, api_key, insecure = _saved_role_credentials(
+        body.role, (body.base_url or "").strip(),
+        (body.api_key or "").strip() or None, bool(body.insecure_tls))
     logging.getLogger("aiforge.api").info(
         "POST /api/providers/test role=%s base_url=%s insecure_tls=%s token=%s",
         body.role, base_url, insecure, "yes" if api_key else "no")
