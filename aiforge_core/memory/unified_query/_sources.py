@@ -135,6 +135,69 @@ def _unpack_mcp_rows(raw: Any) -> list[dict]:
     return [{"text": str(data)[:1500], "score": 0.5}]
 
 
+_OBS_VECTOR_Q = (
+    "CALL db.index.vector.queryNodes('codemem_observation_embed', $k, $v) "
+    "YIELD node, score "
+    "RETURN node.id AS id, node.text AS text, node.kind AS kind, "
+    "node.repo AS repo, score AS score")
+
+_OBS_FULLTEXT_Q = (
+    "CALL db.index.fulltext.queryNodes('codemem_observation_ft', $q) "
+    "YIELD node, score "
+    "RETURN node.id AS id, node.text AS text, node.kind AS kind, "
+    "node.repo AS repo, score AS score LIMIT $k")
+
+
+def _repo_filter(repo: str | None):
+    """Scoped recall unions the scoped key (a ticket/page/repo) AND GLOBAL
+    (repo-less) memory — so a ticket chat surfaces BOTH that ticket's own facts
+    and cross-ticket/global knowledge. Only OTHER repos' facts are excluded.
+    (Mirrors the direct recall's "repo = ? OR repo IS NULL".)"""
+    from aiforge_core.runtime.repo_ident import normalize_repo as _nr
+    want = _nr(repo) if repo else None
+
+    def _ok(rrepo) -> bool:
+        if want is None:
+            return True
+        rn = _nr(rrepo or "")
+        return rn in (want, "")
+    return _ok, want
+
+
+def _absorb_obs_rows(records, rows: list, seen: set, ok, cap: int) -> None:
+    for r in records:
+        if len(rows) >= cap:
+            return
+        rid = r.get("id")
+        if rid and rid not in seen and r.get("text") and ok(r.get("repo")):
+            seen.add(rid)
+            rows.append({"text": r["text"],
+                         "score": float(r.get("score") or 0.5),
+                         "kind": r.get("kind"), "repo": r.get("repo")})
+
+
+def _obs_vector_rows(s, text: str, k: int, rows: list, seen: set, ok,
+                     limit: int) -> None:
+    try:
+        from aiforge_core.memory.embed import embed as _embed
+        qv = _embed(text)
+    except Exception:  # noqa: BLE001 — embed sidecar down → FT only
+        return
+    if qv:
+        _absorb_obs_rows(s.run(_OBS_VECTOR_Q, k=k, v=qv).data(),
+                         rows, seen, ok, limit)
+
+
+def _obs_fulltext_rows(s, text: str, k: int, rows: list, seen: set, ok,
+                       limit: int) -> None:
+    """Lexical union (catches exact tokens a paraphrased vector misses)."""
+    try:
+        _absorb_obs_rows(s.run(_OBS_FULLTEXT_Q, q=text, k=k).data(),
+                         rows, seen, ok, limit * 2)
+    except Exception:  # noqa: BLE001 — FT query syntax on odd input
+        pass
+
+
 def _global_vector_recall(text: str, *, limit: int,
                           repo: str | None = None) -> list[dict]:
     """Vector+fulltext recall over ``Observation_v2`` on Neo4j. When ``repo`` is
@@ -151,72 +214,108 @@ def _global_vector_recall(text: str, *, limit: int,
     drv = _neo4j_driver_or_none()
     if drv is None:
         return []
-    from aiforge_core.runtime.repo_ident import normalize_repo as _nr
-    want = _nr(repo) if repo else None
+    ok, want = _repo_filter(repo)
     # Over-fetch when scoping so the repo's hits survive the top-k cut even if
     # other repos dominate the raw nearest-neighbours.
-    _k = min(limit * 6, 60) if want else min(limit, 20)
-    def _ok(rrepo) -> bool:
-        # Scoped recall unions the scoped key (a ticket/page/repo) AND GLOBAL
-        # (repo-less) memory — so a ticket chat surfaces BOTH that ticket's own
-        # facts and cross-ticket/global knowledge. Only OTHER repos' facts are
-        # excluded. (Mirrors the direct recall's "repo = ? OR repo IS NULL".)
-        if want is None:
-            return True
-        rn = _nr(rrepo or "")
-        return rn == want or rn == ""
+    k = min(limit * 6, 60) if want else min(limit, 20)
     rows: list[dict] = []
     seen: set[str] = set()
     try:
         with drv.session() as s:
-            try:
-                from aiforge_core.memory.embed import embed as _embed
-                qv = _embed(text)
-            except Exception:  # noqa: BLE001 — embed sidecar down → FT only
-                qv = None
-            if qv:
-                for r in s.run(
-                    "CALL db.index.vector.queryNodes"
-                    "('codemem_observation_embed', $k, $v) "
-                    "YIELD node, score "
-                    "RETURN node.id AS id, node.text AS text, node.kind AS kind, "
-                    "node.repo AS repo, score AS score",
-                    k=_k, v=qv,
-                ).data():
-                    if len(rows) >= limit:
-                        break
-                    if not _ok(r.get("repo")):
-                        continue
-                    if r.get("id") and r["id"] not in seen and r.get("text"):
-                        seen.add(r["id"])
-                        rows.append({"text": r["text"], "score": float(r.get("score") or 0.5),
-                                     "kind": r.get("kind"), "repo": r.get("repo")})
-            # Lexical union (catches exact tokens a paraphrased vector misses).
-            try:
-                for r in s.run(
-                    "CALL db.index.fulltext.queryNodes"
-                    "('codemem_observation_ft', $q) "
-                    "YIELD node, score "
-                    "RETURN node.id AS id, node.text AS text, node.kind AS kind, "
-                    "node.repo AS repo, score AS score LIMIT $k",
-                    q=text, k=_k,
-                ).data():
-                    if len(rows) >= limit * 2:
-                        break
-                    if not _ok(r.get("repo")):
-                        continue
-                    if r.get("id") and r["id"] not in seen and r.get("text"):
-                        seen.add(r["id"])
-                        rows.append({"text": r["text"], "score": float(r.get("score") or 0.5),
-                                     "kind": r.get("kind"), "repo": r.get("repo")})
-            except Exception:  # noqa: BLE001 — FT query syntax on odd input
-                pass
+            _obs_vector_rows(s, text, k, rows, seen, ok, limit)
+            _obs_fulltext_rows(s, text, k, rows, seen, ok, limit)
     finally:
-        try:
+        with contextlib.suppress(Exception):
             drv.close()
-        except Exception:  # noqa: BLE001
-            pass
     return rows
+
+
+def _bundle_object(text: str, repo: str, role: str | None):
+    """The AFM ContextBundle, or None when the backend is unavailable.
+
+    Module renamed api/read.py → api/http.py in AiForgeMemory commit 32d86ad
+    (feature-vertical refactor). Both are supported so older installs don't
+    break the unified_query loop.
+    """
+    try:
+        from aiforge_memory.api.http import context_bundle_object
+    except Exception:  # noqa: BLE001
+        try:
+            from aiforge_memory.api.read import context_bundle_object
+        except Exception:  # noqa: BLE001
+            return None
+    try:
+        return context_bundle_object(text, repo=repo, role=role or "doer",
+                                     token_budget=1000)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _chunk_score() -> float:
+    """Code chunks are raw RAG evidence, DEMOTED below the curated sources
+    (repo_map/conventions/notes and the OKR-DAG goal context): with a
+    goal-oriented memory, a wall of code chunks should not dominate recall.
+    Env-tunable AIFORGE_UMEM_CHUNK_SCORE (default 0.4, was 0.85)."""
+    try:
+        return max(0.0, min(1.0, float(
+            os.environ.get("AIFORGE_UMEM_CHUNK_SCORE", "0.4"))))
+    except (TypeError, ValueError):
+        return 0.4
+
+
+def _chunk_rows(chunks, repo: str) -> list[dict]:
+    score = _chunk_score()
+    out = []
+    for c in (chunks or [])[:5]:
+        path = c.get("file_path") or ""
+        body = (c.get("text") or "").strip()
+        if not (path and body):
+            continue
+        out.append({
+            # Per-chunk group (not a shared "afm:chunk") so _diversify's
+            # per-group cap doesn't drop 5 doer-evidence chunks down to 3.
+            "text": f"[afm/chunk {path}]\n{body[:800]}",
+            "group": f"afm:chunk:{path}",
+            "score": score,
+            "source_uri": f"afm://{repo}/{path}",
+        })
+    return out
+
+
+def _titled_rows(items, *, repo: str, label: str, group: str, score: float,
+                 default_title: str, cap: int, uri_kind: str) -> list[dict]:
+    """Notes and docs differ only in their label, weight and default title."""
+    out = []
+    for it in (items or [])[:3]:
+        body = (it.get("body") or "").strip()
+        if not body:
+            continue
+        title = it.get("title") or default_title
+        out.append({
+            "text": f"[afm/{label} {title}]\n{body[:cap]}",
+            "group": group,
+            "score": score,
+            "source_uri": (it.get("url") or
+                           f"afm://{repo}/{uri_kind}/{it.get('id', '')}"),
+        })
+    return out
+
+
+def _observation_rows(observations, repo: str) -> list[dict]:
+    """Vector-recalled observations (typically agent learnings)."""
+    out = []
+    for o in (observations or [])[:3]:
+        body = (o.get("text") or "").strip()
+        if not body:
+            continue
+        kind = o.get("kind") or "observation"
+        out.append({
+            "text": f"[afm/{kind}]\n{body[:500]}",
+            "group": "afm:observation",
+            "score": float(o.get("score") or 0.55),
+            "source_uri": f"afm://{repo}/observation/{o.get('id', '')}",
+        })
+    return out
 
 
 def _afm_bundle(text: str, *, repo: str, role: str | None) -> list[dict]:
@@ -233,101 +332,26 @@ def _afm_bundle(text: str, *, repo: str, role: str | None) -> list[dict]:
     - docs            → up to 3 rows, MENTIONS-linked Doc_v2
     - observations    → up to 3 rows, vector-recalled Observation_v2
     """
-    # Module renamed api/read.py → api/http.py in AiForgeMemory commit
-    # 32d86ad (feature-vertical refactor). Support both so older installs
-    # don't break the unified_query loop.
-    try:
-        from aiforge_memory.api.http import context_bundle_object
-    except Exception:
-        try:
-            from aiforge_memory.api.read import context_bundle_object
-        except Exception:
-            return []
-    role_arg = role or "doer"
-    try:
-        b = context_bundle_object(text, repo=repo, role=role_arg,
-                                  token_budget=1000)
-    except Exception:
-        return []
+    b = _bundle_object(text, repo, role)
     if b is None:
         return []
-
     out: list[dict] = []
-    # Highest-signal first: repo_map (structure summary)
-    if b.repo_map:
-        out.append({
-            "text": f"[afm/repo_map]\n{b.repo_map[:1500]}",
-            "group": "afm:repo_map",
-            "score": 0.95,
-            "source_uri": f"afm://{repo}/repo_map",
-        })
-    # Conventions = project rules; second priority
-    if b.conventions_md:
-        out.append({
-            "text": f"[afm/conventions]\n{b.conventions_md[:1500]}",
-            "group": "afm:conventions",
-            "score": 0.90,
-            "source_uri": f"afm://{repo}/conventions",
-        })
-    # Code chunks — raw RAG evidence. DEMOTED below the curated sources
-    # (repo_map/conventions/notes and the OKR-DAG goal context): with a
-    # goal-oriented memory, a wall of code chunks should not dominate recall.
-    # Env-tunable AIFORGE_UMEM_CHUNK_SCORE (default 0.4, was 0.85).
-    try:
-        _chunk_score = max(0.0, min(1.0, float(
-            os.environ.get("AIFORGE_UMEM_CHUNK_SCORE", "0.4"))))
-    except (TypeError, ValueError):
-        _chunk_score = 0.4
-    for c in (b.chunks or [])[:5]:
-        path = c.get("file_path") or ""
-        body = (c.get("text") or "").strip()
-        if not path or not body:
-            continue
-        out.append({
-            # Per-chunk group (not a shared "afm:chunk") so _diversify's
-            # per-group cap doesn't drop 5 doer-evidence chunks down to 3.
-            "text": f"[afm/chunk {path}]\n{body[:800]}",
-            "group": f"afm:chunk:{path}",
-            "score": _chunk_score,
-            "source_uri": f"afm://{repo}/{path}",
-        })
-    # Notes (MENTIONS-linked memos)
-    for n in (b.notes or [])[:3]:
-        title = n.get("title") or "Note"
-        body = (n.get("body") or "").strip()
-        if not body:
-            continue
-        out.append({
-            "text": f"[afm/note {title}]\n{body[:600]}",
-            "group": "afm:note",
-            "score": 0.70,
-            "source_uri": f"afm://{repo}/note/{n.get('id', '')}",
-        })
-    # External docs
-    for d in (b.docs or [])[:3]:
-        title = d.get("title") or "Doc"
-        body = (d.get("body") or "").strip()
-        url = d.get("url") or ""
-        if not body:
-            continue
-        out.append({
-            "text": f"[afm/doc {title}]\n{body[:600]}",
-            "group": "afm:doc",
-            "score": 0.65,
-            "source_uri": url or f"afm://{repo}/doc/{d.get('id', '')}",
-        })
-    # Vector-recalled observations (typically agent learnings)
-    for o in (b.observations or [])[:3]:
-        body = (o.get("text") or "").strip()
-        if not body:
-            continue
-        kind = o.get("kind") or "observation"
-        out.append({
-            "text": f"[afm/{kind}]\n{body[:500]}",
-            "group": "afm:observation",
-            "score": float(o.get("score") or 0.55),
-            "source_uri": f"afm://{repo}/observation/{o.get('id', '')}",
-        })
+    # Highest-signal first: repo_map (structure summary), then conventions
+    # (project rules).
+    for value, name, score in ((b.repo_map, "repo_map", 0.95),
+                               (b.conventions_md, "conventions", 0.90)):
+        if value:
+            out.append({"text": f"[afm/{name}]\n{value[:1500]}",
+                        "group": f"afm:{name}", "score": score,
+                        "source_uri": f"afm://{repo}/{name}"})
+    out += _chunk_rows(b.chunks, repo)
+    out += _titled_rows(b.notes, repo=repo, label="note", group="afm:note",
+                        score=0.70, default_title="Note", cap=600,
+                        uri_kind="note")
+    out += _titled_rows(b.docs, repo=repo, label="doc", group="afm:doc",
+                        score=0.65, default_title="Doc", cap=600,
+                        uri_kind="doc")
+    out += _observation_rows(b.observations, repo)
     return out
 
 

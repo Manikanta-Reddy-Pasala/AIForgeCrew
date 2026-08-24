@@ -199,9 +199,7 @@ def _ticket_force_provider(ticket) -> str | None:
 
 
 def _external_refs(ticket) -> list[str]:
-    """The ticket's external refs, or [] when ingestion is off/unavailable."""
-    if os.environ.get("AIFORGE_EXTERNAL_INGEST", "1") in ("0", "false", ""):
-        return []
+    """The ticket's external refs. Empty when it has none or no target repo."""
     if not ticket.project:
         return []
     refs = (ticket.metadata or {}).get("external_refs") or []
@@ -238,6 +236,11 @@ def _ingest_ticket_external_refs(ticket) -> None:
     Disable with ``AIFORGE_EXTERNAL_INGEST=0``. Soft-fail on any
     backend error.
     """
+    # The egress gate stays HERE, at the call site that reaches the network —
+    # tests/python/runtime/test_web_egress_gated.py reads this function's source
+    # to prove the control exists where the egress happens.
+    if os.environ.get("AIFORGE_EXTERNAL_INGEST", "1") in ("0", "false", ""):
+        return
     refs = _external_refs(ticket)
     if not refs:
         return
