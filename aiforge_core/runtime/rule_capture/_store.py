@@ -58,79 +58,100 @@ def _session_add(session_id, item: dict) -> None:
         _SESSION_ITEMS.setdefault(str(session_id), []).append(item)
 
 
-def _do_store(c: dict, *, rid: str, repo: str | None, session_id,
-              repo_root: str | None) -> dict:
-    cat = c.get("category")
-    scope = c.get("scope")
-    canonical = (c.get("canonical") or "").strip()
-    item = {
-        "id": rid, "category": cat, "scope": scope, "canonical": canonical,
-        "repo": repo, "session_id": (str(session_id) if session_id is not None else None),
+def _new_item(rid: str, c: dict, repo, session_id) -> dict:
+    return {
+        "id": rid, "category": c.get("category"), "scope": c.get("scope"),
+        "canonical": (c.get("canonical") or "").strip(), "repo": repo,
+        "session_id": (str(session_id) if session_id is not None else None),
         "location": "", "md_source": None, "md_bullet": None,
         "rule_path": None, "undone": False, "triggers": [],
-        # Gate-disable flags this captured item explicitly enabled (via an opt-in
-        # pill). Recorded here so undo/rescope/delete can REVOKE them — a deleted
-        # gate-disabling rule must re-enable the gate.
+        # Gate-disable flags this captured item explicitly enabled (via an
+        # opt-in pill). Recorded here so undo/rescope/delete can REVOKE them —
+        # a deleted gate-disabling rule must re-enable the gate.
         "applied_flags": [],
     }
-    try:
-        if scope == "session":
-            item["location"] = "session"
-            _session_add(session_id, item)
-            return {"id": rid, "location": "session", "category": cat, "scope": scope}
 
-        from aiforge_core.memory import md_store
+
+def _rule_brief_source(scope: str, repo) -> tuple[str, str]:
+    if scope == "global":
+        return "rules:global", "AIForge rules (all sessions)"
+    r = repo or "project"
+    return f"rules:{r}", f"{r} — rules"
+
+
+def _write_global_repo_rule(item: dict, canonical: str, triggers) -> None:
+    """Also land GLOBAL rules in the canonical repo_rules store
+    (~/.aiforge/rules) — the SAME store the Library UI + the ticket/doer
+    pipeline read — so a directive captured in passing shows up alongside
+    remember_rule / Library-form rules instead of living only in md_store
+    (invisible to the Library)."""
+    try:
+        from aiforge_core.runtime import repo_rules as _rr
+        res = _rr.write_rule(canonical[:60] or "rule", canonical,
+                             globs=(triggers or None), always=not triggers)
+        if res.get("ok"):
+            item["rule_path"] = res.get("path")
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.debug("rule_capture global repo-rule write failed: %s", exc)
+
+
+def _store_rule(item: dict, c: dict, repo, repo_root) -> None:
+    """A rule/feedback item: a bullet in the scope's brief, plus the canonical
+    repo_rules file for real rules."""
+    from aiforge_core.memory import md_store
+    cat, scope = item["category"], item["scope"]
+    canonical = item["canonical"]
+    triggers = c.get("triggers") or []
+    item["triggers"] = triggers
+    src, title = _rule_brief_source(scope, repo)
+    bullet_text = (f"[triggers: {', '.join(triggers)}] {canonical}"
+                   if triggers else canonical)
+    md_store.append_bullet(source=src, title=title, bullet=bullet_text,
+                           kind=cat, tags=[cat, scope])
+    item["md_source"] = src
+    item["md_bullet"] = "- " + bullet_text
+    item["location"] = f"md:{src}"
+    if cat != "rule":
+        return
+    if scope == "project" and repo_root:
+        rp = _write_repo_rule(repo_root, canonical[:60] or "rule", canonical,
+                              triggers=triggers)
+        if rp:
+            item["rule_path"] = rp
+    elif scope == "global":
+        _write_global_repo_rule(item, canonical, triggers)
+
+
+def _store_memory(item: dict, repo) -> None:
+    from aiforge_core.runtime.tools.memory_write import memory_write
+    memory_write(text=item["canonical"], kind="note",
+                 tags=[item["category"], item["scope"]], repo=repo or "notes")
+    item["location"] = f"memory:{item['scope']}"
+
+
+def _do_store(c: dict, *, rid: str, repo: str | None, session_id,
+              repo_root: str | None) -> dict:
+    item = _new_item(rid, c, repo, session_id)
+    cat, scope = item["category"], item["scope"]
+    if scope == "session":
+        item["location"] = "session"
+        _session_add(session_id, item)
+        return {"id": rid, "location": "session", "category": cat,
+                "scope": scope}
+    try:
         if cat in ("rule", "feedback"):
-            triggers = c.get("triggers") or []
-            item["triggers"] = triggers
-            if scope == "global":
-                src, title = "rules:global", "AIForge rules (all sessions)"
-            else:  # project
-                r = repo or "project"
-                src, title = f"rules:{r}", f"{r} — rules"
-            bullet_text = (
-                f"[triggers: {', '.join(triggers)}] {canonical}"
-                if triggers else canonical)
-            md_store.append_bullet(source=src, title=title, bullet=bullet_text,
-                                   kind=cat, tags=[cat, scope])
-            item["md_source"] = src
-            item["md_bullet"] = "- " + bullet_text
-            item["location"] = f"md:{src}"
-            if cat == "rule" and scope == "project" and repo_root:
-                rp = _write_repo_rule(repo_root, canonical[:60] or "rule",
-                                      canonical, triggers=triggers)
-                if rp:
-                    item["rule_path"] = rp
-            elif cat == "rule" and scope == "global":
-                # Also land GLOBAL rules in the canonical repo_rules store
-                # (~/.aiforge/rules) — the SAME store the Library UI + the
-                # ticket/doer pipeline read — so a directive captured in passing
-                # shows up alongside remember_rule / Library-form rules instead
-                # of living only in md_store (invisible to the Library).
-                try:
-                    from aiforge_core.runtime import repo_rules as _rr
-                    _res = _rr.write_rule(canonical[:60] or "rule", canonical,
-                                          globs=(triggers or None),
-                                          always=not triggers)
-                    if _res.get("ok"):
-                        item["rule_path"] = _res.get("path")
-                except Exception as exc:  # noqa: BLE001 — best-effort
-                    log.debug("rule_capture global repo-rule write failed: %s", exc)
-        else:  # memory
-            from aiforge_core.runtime.tools.memory_write import memory_write
-            mrepo = repo or "notes"
-            memory_write(text=canonical, kind="note",
-                         tags=[cat, scope], repo=mrepo)
-            item["location"] = f"memory:{scope}"
+            _store_rule(item, c, repo, repo_root)
+        else:
+            _store_memory(item, repo)
     except Exception as exc:  # noqa: BLE001 — store must never raise
         log.debug("rule_capture store soft-fail: %s", exc)
-
     # Persist the index entry (global/project only — session is in-memory).
     with _LOCK, _file_lock(_index_path()):
         idx = _load_index()
         idx["items"][rid] = item
         _save_index(idx)
-    return {"id": rid, "location": item["location"], "category": cat, "scope": scope}
+    return {"id": rid, "location": item["location"], "category": cat,
+            "scope": scope}
 
 
 def store(c: dict, *, repo: str | None = None, session_id=None,
