@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { clickable } from '../a11y';
 
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;  // 5MB hard cap per file
 
@@ -42,7 +43,8 @@ export function DropZone({ onFiles }: { onFiles: (files: File[]) => void }) {
         const dropped = Array.from(e.dataTransfer?.files || []);
         if (dropped.length) onFiles(dropped);
       }}
-      onClick={() => inputRef.current?.click()}
+      {...clickable(() => inputRef.current?.click())}
+      aria-label="Attach files: drag them here, or activate to browse"
       style={{
         border: hover
           ? '2px dashed var(--accent, #4a90e2)'

@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { chatApi, RegistryModel, AgentRole, AgentRoleConfig } from '../api';
+import { clickable } from '../a11y';
 
 const ORCH: string[] = ['enhancer', 'architect', 'planner'];
 const MAIN: string[] = ['doer', 'verifier', 'feedback', 'learner', 'refiner',
@@ -278,7 +279,7 @@ function ApprovalsCard() {
       {APPROVAL_MODES.map(({ key, label, hint }) => {
         const on = flags[key];
         return (
-          <div key={key} onClick={() => toggle(key, !on)}
+          <div key={key} {...clickable(() => toggle(key, !on))}
                style={{ display: 'flex', alignItems: 'center', gap: 10,
                         padding: '7px 0', cursor: 'pointer' }}>
             <span style={{ width: 90, fontSize: 13 }}>{label}</span>

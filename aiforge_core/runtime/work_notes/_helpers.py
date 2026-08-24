@@ -61,7 +61,10 @@ _BRIEF_REF_RE = re.compile(
 _JIRA_URL_RE = re.compile(r"/browse/([A-Z][A-Z0-9]{1,20}-\d+)\b")
 _CONF_URL_RE = re.compile(r"(?:/pages/|pageId=)(\d{4,})")
 
-_FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
+# `[ \t]*` not `\s*`: `\s` MATCHES the newline, so `---\s*\n` could split a
+# run of blank lines many ways — the super-linear case. What is actually
+# meant is "trailing spaces/tabs on the --- line".
+_FRONTMATTER_RE = re.compile(r"\A---[ \t]*\n(.*?)\n---[ \t]*\n?", re.DOTALL)
 
 # OKF ⇄ legacy frontmatter key aliases. Writers emit the OKF name (left); the
 # parser mirrors BOTH directions so a legacy on-disk file (kind/source_url/

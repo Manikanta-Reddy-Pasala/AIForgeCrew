@@ -85,7 +85,7 @@ def _blocks_to_storage(s: str) -> str:
             i += 1
             continue
         # heading
-        hm = re.match(r"^(#{1,6})\s+(.*)$", raw)
+        hm = re.match(r"^(#{1,6})[ \t]+(.*)$", raw)
         if hm:
             lvl = len(hm.group(1))
             out.append(f"<h{lvl}>{_inline(hm.group(2).strip())}</h{lvl}>")

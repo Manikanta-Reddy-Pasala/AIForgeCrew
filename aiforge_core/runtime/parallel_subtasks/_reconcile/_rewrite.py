@@ -11,7 +11,7 @@ from ._sources import _relevant_files, _spec_goal
 
 _PATCH_RE = re.compile(
     r"<<<<<<< SEARCH\s*\n(.*?)\n=======\s*\n(.*?)\n>>>>>>> REPLACE", re.DOTALL)
-_FILE_HDR_RE = re.compile(r"^###\s*FILE:\s*(.+?)\s*$", re.MULTILINE)
+_FILE_HDR_RE = re.compile(r"^###[ \t]*FILE:[ \t]*(.+?)[ \t]*$", re.MULTILINE)
 
 
 def _apply_patches(cwd: str, out: str) -> tuple[list, list]:

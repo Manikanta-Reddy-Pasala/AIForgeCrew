@@ -99,7 +99,7 @@ def file_read(path: str) -> dict:
             _READ_CACHE[ap] = (mt, text)
         return {"ok": True, "path": path,
                 "content": text, "bytes": len(text.encode("utf-8"))}
-    except (PermissionError, OSError) as exc:
+    except OSError as exc:
         return {"ok": False, "error": str(exc)}
 
 
@@ -160,7 +160,7 @@ def file_write(path: str, content: str) -> dict:
         record_touch(path)
         return {"ok": True, "path": path,
                 "bytes": len(content.encode("utf-8"))}
-    except (PermissionError, OSError) as exc:
+    except OSError as exc:
         return {"ok": False, "error": str(exc)}
 
 
@@ -185,7 +185,7 @@ def file_patch(path: str, old_text: str, new_text: str) -> dict:
         p.write_text(body.replace(old_text, new_text, 1), encoding="utf-8")
         record_touch(path)
         return {"ok": True, "path": path, "replaced": True}
-    except (PermissionError, OSError) as exc:
+    except OSError as exc:
         return {"ok": False, "error": str(exc)}
 
 
@@ -205,7 +205,7 @@ def list_dir(path: str = "") -> dict:
                 kind = "other"
             entries.append({"name": child.name, "kind": kind})
         return {"ok": True, "path": path or ".", "entries": entries}
-    except (PermissionError, OSError) as exc:
+    except OSError as exc:
         return {"ok": False, "error": str(exc)}
 
 
@@ -304,7 +304,7 @@ def grep_repo(pattern: str, path: str = ".") -> dict:
         return {"ok": False, "error": "empty pattern"}
     try:
         target = resolve_inside_root(path) if path and path != "." else root()
-    except (PermissionError, OSError) as exc:
+    except OSError as exc:
         return {"ok": False, "error": str(exc)}
     if not target.exists():
         return {"ok": False, "error": f"not found: {path}"}

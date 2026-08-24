@@ -329,8 +329,7 @@ def _fetch_readable(url: str, max_chars: int) -> dict:
     _verified: list = []
     try:
         raw = _get(url, verified=_verified)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
-            OSError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         return {"ok": False, "error": str(exc)}
     # Title, then body text with script/style/noscript removed.
     mt = re.search(r"<title[^>]*>(.*?)</title>", raw, re.DOTALL | re.IGNORECASE)

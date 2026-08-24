@@ -117,7 +117,7 @@ def http_request(method: str, url: str, *, headers: dict,
                 if hv:
                     out.setdefault("denied_reason", f"{hk}: {hv}")
         return out
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         return {"ok": False, "error": str(exc)}
     # `read(body_cap + 1)` is one byte past the cap precisely so we can tell
     # "exactly filled it" from "there was more". That extra byte used to be
@@ -188,7 +188,7 @@ def http_get_bytes(url: str, *, headers: dict, timeout: int = 20,
             raw = r.read(cap + 1)
     except urllib.error.HTTPError as exc:
         return {"ok": False, "error": f"http {exc.code}"}
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         return {"ok": False, "error": str(exc)}
     if len(raw) > cap:
         return {"ok": False, "error": "too_large", "limit": cap}

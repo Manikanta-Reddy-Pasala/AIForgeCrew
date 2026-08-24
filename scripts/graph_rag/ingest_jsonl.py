@@ -120,7 +120,6 @@ def collect_all(records: list[dict]):
     all_classes: list[dict] = []
     all_methods: list[dict] = []
     for rec in records:
-        pkg = rec["package"]
         imports = rec.get("imports") or []
         for cls in rec.get("classes") or []:
             cls["file"] = rec["file"]
@@ -442,7 +441,6 @@ def write_graph(driver, records: list[dict], collection_hints: dict[str, str]):
                 class_body_cache[klass_fqn] = "\n".join(
                     (mm.get("body") or "") for mm in methods_by_class[klass_fqn]
                 )
-            cls = {"header": "", "methods": methods_by_class[klass_fqn]}
             # mongoTemplate.* ops
             for match in _MONGO_TEMPLATE_RX.finditer(body):
                 op = match.group(1)

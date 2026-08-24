@@ -17,6 +17,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { logStreamURL } from '../api';
 import { Icon } from '../icons';
+import { clickable } from '../a11y';
 
 const ROLES = [
   'chat', 'adk_runner', 'enhancer', 'architect', 'planner', 'doer',
@@ -262,7 +263,7 @@ export default function Logs() {
               <span className={`chip sm ${levelClass(l.level)}`}>{l.level || 'info'}</span>
               {l.ticket && (
                 <span className="chip sm mono"
-                      onClick={() => setTicketFilter(l.ticket!)}
+                      {...clickable(() => setTicketFilter(l.ticket!))}
                       style={{ cursor: 'pointer' }}
                       title="filter by this ticket">
                   {l.ticket}

@@ -17,7 +17,7 @@ log = logging.getLogger("aiforge.spec_to_tests")
 _ACCEPTANCE_HEAD = re.compile(
     r"(?im)^#{0,3}\s*(acceptance(?:\s+criteria)?|definition\s+of\s+done)\b",
 )
-_BULLET = re.compile(r"^\s*[-*]\s+(.+?)\s*$", re.M)
+_BULLET = re.compile(r"^[ \t]*[-*][ \t]+(.+?)[ \t]*$", re.M)
 
 
 def _extract_acceptance(body: str) -> list[str]:

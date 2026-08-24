@@ -265,7 +265,8 @@ class SqliteBackend:
                 return None
             merged = json.loads(cur["metadata"] or "{}")
             merged.update(metadata_patch or {})
-            sets = [f"status = ?", f"updated_at = {_NOW}", "metadata = ?"]
+            # only the middle one interpolates; the others were f-strings by habit
+            sets = ["status = ?", f"updated_at = {_NOW}", "metadata = ?"]
             params: list = [status, json.dumps(merged)]
             if completed:
                 sets.insert(1, f"completed_at = {_NOW}")
@@ -417,7 +418,7 @@ class SqliteBackend:
 
     def search_title(self, needle, project, statuses) -> list[dict]:
         ph_status = ",".join("?" for _ in statuses)
-        sql = f"SELECT * FROM tickets WHERE lower(title) = ? "
+        sql = "SELECT * FROM tickets WHERE lower(title) = ? "
         params: list = [needle]
         if project:
             sql += "AND project = ? "

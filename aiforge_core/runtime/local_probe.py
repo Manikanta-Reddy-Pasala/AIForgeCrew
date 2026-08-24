@@ -89,8 +89,7 @@ def is_alive(api_base: str) -> bool:
             req, timeout=_timeout(), context=_ssl_context_for(url)
         ) as resp:
             alive = 200 <= resp.status < 500
-    except (urllib.error.URLError, urllib.error.HTTPError,
-            TimeoutError, OSError) as exc:
+    except OSError as exc:
         log.info("local_probe: %s unreachable (%s)", api_base,
                  type(exc).__name__)
         alive = False

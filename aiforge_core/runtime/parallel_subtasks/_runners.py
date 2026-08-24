@@ -267,7 +267,7 @@ def lightweight_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict
         + (f"PROJECT SPEC (shared — build YOUR slice to fit it; use the EXACT "
          f"file/dir paths it lists):\n{spec_md.strip()[:5000]}\n\n---\n\n"
          if spec_md and spec_md.strip() else "")
-        + f"Implement this subtask as COMPLETE, runnable file(s) in the language "
+        + "Implement this subtask as COMPLETE, runnable file(s) in the language "
           f"the target path implies (.py→Python, .java→Java, .go→Go, .ts→"
           f"TypeScript, .c/.cpp→C/C++, .rs→Rust, .sh→shell, …).\n\n"
         + (f"TARGET FILE (emit EXACTLY this path, verbatim — do not re-case or "

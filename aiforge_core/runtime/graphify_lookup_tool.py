@@ -174,7 +174,7 @@ def graphify_lookup(query: str, hops: int = 1,
     try:
         root_path = _resolve_repo_root(repo_root)
         nodes_by_id, adj, file_index, label_index = _load(root_path)
-    except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
+    except (OSError, json.JSONDecodeError) as exc:
         return {"ok": False, "error": f"graphify graph load failed: {exc}"}
 
     if hops not in (1, 2):

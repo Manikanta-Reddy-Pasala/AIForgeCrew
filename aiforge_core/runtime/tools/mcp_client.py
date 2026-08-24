@@ -294,7 +294,7 @@ def list_tools(endpoint: str) -> dict[str, Any]:
     except urllib.error.HTTPError as exc:
         return {"ok": False, "error": "http_error",
                 "status": exc.code, "endpoint": endpoint}
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except OSError as exc:
         return {"ok": False, "error": "connection_failed",
                 "endpoint": endpoint, "detail": str(exc)[:200]}
     tools_raw = (resp.get("result") or {}).get("tools") or []
@@ -334,7 +334,7 @@ def call_tool(
     except urllib.error.HTTPError as exc:
         return {"ok": False, "error": "http_error",
                 "status": exc.code, "endpoint": endpoint, "tool": tool}
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except OSError as exc:
         return {"ok": False, "error": "connection_failed",
                 "endpoint": endpoint, "tool": tool,
                 "detail": str(exc)[:200]}

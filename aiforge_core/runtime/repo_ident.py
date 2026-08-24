@@ -56,7 +56,7 @@ def normalize_repo(name: "str | None") -> str:
     Idempotent; a bare name passes through unchanged."""
     import re
     n = (name or "").strip()
-    return re.sub(r"\s*\([^)]*\)\s*$", "", n).strip() or n
+    return re.sub(r"[ \t]*\([^)]*\)[ \t]*$", "", n).strip() or n
 
 
 __all__ = ["git_toplevel", "repo_name", "normalize_repo"]

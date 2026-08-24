@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { SubtaskItem } from './Chat.types';
+import { clickable } from '../a11y';
 
 const SUBTASK_COLORS: Record<string, string> = {
   done: '#3fb950', skipped: '#5a6472', running: '#6aa6ff',
@@ -21,7 +22,7 @@ export function SubtaskList({ items, onViewSpec }: { items: SubtaskItem[]; onVie
   const pct = items.length ? Math.round((done / items.length) * 100) : 0;
   return (
     <div style={{ border: '1px solid var(--border-1)', borderRadius: 6, padding: '6px 10px', margin: '4px 0', background: 'var(--bg-1,#0d1117)' }}>
-      <div onClick={() => setOpen(v => !v)}
+      <div {...clickable(() => setOpen(v => !v))}
         style={{ fontSize: 12, fontWeight: 600, marginBottom: open ? 6 : 0, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {open ? '▾' : '▸'} Tasks <span style={{ color: '#8892a0' }}>{done}/{items.length}</span>

@@ -12,7 +12,10 @@ from pathlib import Path
 
 
 _log = logging.getLogger("aiforge.md_store")
-_FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
+# `[ \t]*` not `\s*`: `\s` MATCHES the newline, so `---\s*\n` could split a
+# run of blank lines many ways — the super-linear case. What is actually
+# meant is "trailing spaces/tabs on the --- line".
+_FM_RE = re.compile(r"^---[ \t]*\n(.*?)\n---[ \t]*\n(.*)$", re.DOTALL)
 
 # Serialize read-modify-write on the .md files — two concurrent chat turns
 # (or a chat turn + the auto-memory upsert) writing the same source file

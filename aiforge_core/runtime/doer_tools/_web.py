@@ -95,7 +95,7 @@ def _do_fetch(url: str) -> dict:
         return {"ok": False, "error": f"http {exc.code}", "status": exc.code}
     except urllib.error.URLError as exc:
         return {"ok": False, "error": f"url error: {exc.reason}"}
-    except (TimeoutError, OSError) as exc:
+    except OSError as exc:
         return {"ok": False, "error": str(exc)}
 
     truncated = len(raw) > _FETCH_MAX_BYTES

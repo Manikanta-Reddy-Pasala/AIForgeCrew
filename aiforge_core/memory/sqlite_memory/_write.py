@@ -56,7 +56,6 @@ def delete_by_tag(tag: str, *, repo: str | None = None) -> int:
     tag = (tag or "").strip()
     if not tag:
         return 0
-    needle = json.dumps(tag)   # match the tag as a JSON string element
     with _LOCK, _conn() as c:
         if repo is None:
             rows = c.execute("SELECT id, tags FROM memory_units").fetchall()

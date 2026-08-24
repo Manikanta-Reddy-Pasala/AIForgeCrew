@@ -374,8 +374,7 @@ def _try_post(ep: Endpoint, messages: list[dict],
                                     meter=_meter_tok)
         except _LLMCancelled:
             raise
-        except (urllib.error.URLError, urllib.error.HTTPError,
-                OSError, TimeoutError, ValueError) as _texc:
+        except (OSError, ValueError) as _texc:
             # ValueError covers a non-JSON 200 (proxy HTML error page,
             # truncated / streaming body) so a malformed response falls back to
             # the next provider instead of crashing complete(). Transport

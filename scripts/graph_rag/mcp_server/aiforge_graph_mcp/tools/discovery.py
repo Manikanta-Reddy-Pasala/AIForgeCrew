@@ -76,7 +76,7 @@ def list_services(args: dict) -> dict:
     env = args.get("env")
     cy = (
         "MATCH (r:Repo)-[:IS_SERVICE]->(d:Deployment) "
-        + (f"WHERE d.env_label = $env " if env else "")
+        + ("WHERE d.env_label = $env " if env else "")
         + "RETURN r.name AS repo, d.cluster AS cluster, d.ns AS ns, "
           "d.name AS deploy, d.image AS image, d.env_label AS env "
           "ORDER BY repo"

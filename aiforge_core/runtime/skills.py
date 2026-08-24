@@ -33,7 +33,10 @@ try:
 except Exception:  # noqa: BLE001
     yaml = None  # type: ignore
 
-_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
+# `[ \t]*` not `\s*`: `\s` MATCHES the newline, so `---\s*\n` could split a
+# run of blank lines many ways — the super-linear case. What is actually
+# meant is "trailing spaces/tabs on the --- line".
+_FRONTMATTER_RE = re.compile(r"^---[ \t]*\n(.*?)\n---[ \t]*\n?(.*)$", re.DOTALL)
 _REPO_SUBDIRS = (".aiforge/skills", ".claude/skills")
 # Per-skill body budget in the injected block. A skill that carries steps PLUS
 # a strict output format easily exceeds a small cap — and truncating mid-body
