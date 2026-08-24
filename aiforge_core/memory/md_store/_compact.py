@@ -40,6 +40,24 @@ from ._render import (
 _NO_TOPIC = "\x00no-topic"
 
 
+# Per-run capture signature: <slug>-YYYYMMDD-<6hex>.md
+_CAPTURE_SIG_SUFFIX_RE = re.compile(r"-\d{8}-[0-9a-f]{6}\.md$")
+
+
+def _retire_brief(path, dst, archive: bool) -> bool:
+    """Move the file into ``dst`` (reversible), or delete it. False on failure."""
+    import shutil
+    try:
+        if archive:
+            dst.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(path), str(dst / path.name))
+        else:
+            path.unlink()
+        return True
+    except OSError:
+        return False
+
+
 def sweep_stale_captures(*, archive: bool = True) -> dict:
     """Retire per-run capture files that MASQUERADE as canonical briefs.
 
@@ -55,28 +73,37 @@ def sweep_stale_captures(*, archive: bool = True) -> dict:
     Moves each masquerader into ``archive/<ts>/`` (reversible; ``archive=False``
     deletes). Canonical briefs — ``compacted-<topic>.md`` with NO date-hex
     suffix — are untouched. Runs in the hourly compaction. Never raises."""
-    import shutil
-    sig = re.compile(r"-\d{8}-[0-9a-f]{6}\.md$")   # per-run capture signature
     swept: list[str] = []
     dst = memory_dir() / "archive" / _now_iso().replace(":", "")
     try:
         with _COMPACT_LOCK:
             for p in iter_briefs():
-                if not sig.search(p.name):
+                if not _CAPTURE_SIG_SUFFIX_RE.search(p.name):
                     continue                    # real canonical brief — keep
-                try:
-                    if archive:
-                        dst.mkdir(parents=True, exist_ok=True)
-                        shutil.move(str(p), str(dst / p.name))
-                    else:
-                        p.unlink()
+                if _retire_brief(p, dst, archive):
                     swept.append(p.name)
-                except OSError:
-                    continue
     except Exception as exc:  # noqa: BLE001 — sweep is best-effort upkeep
         return {"ok": False, "error": str(exc), "swept": len(swept)}
     return {"ok": True, "swept": len(swept), "archived": archive,
             "files": swept}
+
+
+def _is_dead_brief(path) -> bool:
+    """A brief carrying ONLY the boilerplate Objective.
+
+    Links matter here: map_scopes links are BIDIRECTIONAL, so deleting a
+    links-only brief orphans its sibling's inbound link.
+    """
+    from aiforge_core.runtime import work_notes
+    try:
+        parsed = work_notes.parse_note(
+            path.read_text(encoding="utf-8", errors="replace"))
+    except Exception:  # noqa: BLE001
+        return False
+    sec = parsed.get("sections") or {}
+    return not (sec.get("facts") or sec.get("learnings")
+                or sec.get("key_results") or sec.get("links")
+                or (parsed.get("body") or "").strip())
 
 
 def sweep_empty_briefs(*, archive: bool = True) -> dict:
@@ -89,43 +116,20 @@ def sweep_empty_briefs(*, archive: bool = True) -> dict:
     up as an "empty" memory but holds no knowledge. Moves each into
     ``archive/<ts>/`` (reversible; ``archive=False`` deletes). A brief with ANY
     real content is never touched. Never raises."""
-    import shutil
-
-    from aiforge_core.runtime import work_notes
-    sig = re.compile(r"-\d{8}-[0-9a-f]{6}\.md$")   # skip per-run captures
     swept: list[str] = []
     dst = memory_dir() / "archive" / _now_iso().replace(":", "")
     try:
         with _COMPACT_LOCK:
             for p in iter_briefs():
-                if sig.search(p.name):
-                    continue                        # capture — sweep_stale owns it
-                try:
-                    parsed = work_notes.parse_note(
-                        p.read_text(encoding="utf-8", errors="replace"))
-                except Exception:  # noqa: BLE001
-                    continue
-                sec = parsed.get("sections") or {}
-                # objective is ALWAYS the boilerplate line — a brief is "dead"
-                # only when it has no Facts / Key results / Learnings / Links /
-                # body. Links matter: map_scopes links are BIDIRECTIONAL, so
-                # deleting a links-only brief orphans its sibling's inbound link.
-                if (sec.get("facts") or sec.get("learnings")
-                        or sec.get("key_results") or sec.get("links")
-                        or (parsed.get("body") or "").strip()):
-                    continue                        # has real content — keep
-                try:
-                    if archive:
-                        dst.mkdir(parents=True, exist_ok=True)
-                        shutil.move(str(p), str(dst / p.name))
-                    else:
-                        p.unlink()
+                if _CAPTURE_SIG_SUFFIX_RE.search(p.name):
+                    continue          # a capture — sweep_stale_captures owns it
+                if _is_dead_brief(p) and _retire_brief(p, dst, archive):
                     swept.append(p.name)
-                except OSError:
-                    continue
     except Exception as exc:  # noqa: BLE001 — best-effort upkeep
         return {"ok": False, "error": str(exc), "swept": len(swept)}
     return {"ok": True, "swept": len(swept), "archived": archive, "files": swept}
+
+
 def _demote_headings(body: str, by: int = 2) -> str:
     """Push every markdown heading in ``body`` ``by`` levels deeper (capped at
     h6) so an embedded ``# Title`` doesn't collide with the ``##`` section
@@ -205,36 +209,33 @@ def _summarize_block(text: str, role: str) -> str | None:
     return out or None
 
 
-def _summarize_notes(blocks: list[str], role: str) -> str | None:
-    """Map-reduce consolidation: summarize the notes (batched to fit the input
-    cap), then summarize the partial summaries if there was more than one
-    batch. Returns markdown or None (→ caller merges deterministically)."""
-    if not blocks:
-        return None
-    cap = _summary_input_cap(role)
-    # A single block can exceed the cap on its own — one enormous capture, a
-    # pasted log. Batching alone never split it, so it went to the model whole
-    # and 400'd on length, bailing the whole compaction. Split it on line
-    # boundaries first, so every batch below is under the cap by construction.
-    sized: list[str] = []
-    for b in blocks:
-        if len(b) <= cap:
-            sized.append(b)
-            continue
-        buf, used = [], 0
-        for line in (b or "").splitlines(keepends=True):
-            if used and used + len(line) > cap:
-                sized.append("".join(buf))
-                buf, used = [], 0
-            buf.append(line)
-            used += len(line)
-        if buf:
-            sized.append("".join(buf))
-    # Greedily batch blocks under the input cap.
+def _split_to_cap(block: str, cap: int) -> list[str]:
+    """Split ONE oversized block on line boundaries so every piece fits.
+
+    A single block can exceed the cap on its own — one enormous capture, a
+    pasted log. Batching alone never split it, so it went to the model whole,
+    400'd on length, and bailed the whole compaction.
+    """
+    if len(block) <= cap:
+        return [block]
+    out, buf, used = [], [], 0
+    for line in (block or "").splitlines(keepends=True):
+        if used and used + len(line) > cap:
+            out.append("".join(buf))
+            buf, used = [], 0
+        buf.append(line)
+        used += len(line)
+    if buf:
+        out.append("".join(buf))
+    return out
+
+
+def _batch_under_cap(blocks: list[str], cap: int) -> list[str]:
+    """Greedily batch blocks under the input cap."""
     batches: list[str] = []
     cur: list[str] = []
     cur_len = 0
-    for b in sized:
+    for b in blocks:
         if cur and cur_len + len(b) > cap:
             batches.append("\n\n".join(cur))
             cur, cur_len = [], 0
@@ -242,9 +243,19 @@ def _summarize_notes(blocks: list[str], role: str) -> str | None:
         cur_len += len(b)
     if cur:
         batches.append("\n\n".join(cur))
+    return batches
 
+
+def _summarize_notes(blocks: list[str], role: str) -> str | None:
+    """Map-reduce consolidation: summarize the notes (batched to fit the input
+    cap), then summarize the partial summaries if there was more than one
+    batch. Returns markdown or None (→ caller merges deterministically)."""
+    if not blocks:
+        return None
+    cap = _summary_input_cap(role)
+    sized = [piece for b in blocks for piece in _split_to_cap(b, cap)]
     partials: list[str] = []
-    for batch in batches:
+    for batch in _batch_under_cap(sized, cap):
         s = _summarize_block(batch, role)
         if s is None:
             return None          # bail whole op → deterministic merge
@@ -452,19 +463,26 @@ def _brief_parts(key: str, sections: dict, tags, title: str,
     base = _slug(key)
     parts: list[tuple[str, str]] = []
     for i, page in enumerate(pages):
-        first = i == 0
-        stem = f"compacted-{base}" if first else f"compacted-{base}-{i + 1}"
-        content = work_notes.render_note(
-            "knowledge", key if first else f"{key}-{i + 1}",
-            title=(title if n == 1 else f"{title} (part {i + 1}/{n})"),
-            objective=_BRIEF_OBJECTIVE.format(key=key),
-            key_results=((sections.get("key_results") or []) if first else None),
-            facts=page, links=(sections.get("links") or []),
-            learnings=((sections.get("learnings") or []) if first else None),
-            sources=(sources if first else None),
-            tags=tags, body_md="\n\n".join(_part_xref(base, i, n)))
-        parts.append((stem, content))
+        stem = f"compacted-{base}" if i == 0 else f"compacted-{base}-{i + 1}"
+        parts.append((stem, _render_part(work_notes, key, base, sections, tags,
+                                         title, sources, page, i, n)))
     return parts
+
+
+def _render_part(work_notes, key: str, base: str, sections: dict, tags,
+                 title: str, sources, page: list, i: int, n: int) -> str:
+    """One page of a (possibly split) brief. The canonical head (part 1) is the
+    only part that carries Key Results, Learnings and the fold's provenance."""
+    first = i == 0
+    return work_notes.render_note(
+        "knowledge", key if first else f"{key}-{i + 1}",
+        title=(title if n == 1 else f"{title} (part {i + 1}/{n})"),
+        objective=_BRIEF_OBJECTIVE.format(key=key),
+        key_results=((sections.get("key_results") or []) if first else None),
+        facts=page, links=(sections.get("links") or []),
+        learnings=((sections.get("learnings") or []) if first else None),
+        sources=(sources if first else None),
+        tags=tags, body_md="\n\n".join(_part_xref(base, i, n)))
 
 
 def _union_back(new_list, old_list) -> list:
@@ -478,54 +496,66 @@ def _union_back(new_list, old_list) -> list:
     return missing + new
 
 
+def _existing_brief_sections(path, base: str) -> tuple[dict, list]:
+    """``(sections, prior tags)`` read from the primary brief AND every
+    split-out part (compacted-<key>-N.md) — so a re-fold NEVER loses facts that
+    a previous oversize split moved into part 2+."""
+    from aiforge_core.runtime import work_notes
+    existing: dict = {"facts": [], "learnings": [], "links": [],
+                      "key_results": [], "objective": ""}
+    prev_tags: list = []
+    for pp in [path] + _brief_part_paths(base):
+        if not pp.exists():
+            continue
+        parsed = work_notes.parse_note(
+            pp.read_text(encoding="utf-8", errors="replace"))
+        _absorb_part(existing, parsed["sections"])
+        prev_tags += list((parsed["frontmatter"] or {}).get("tags") or [])
+    return existing, prev_tags
+
+
+def _absorb_part(existing: dict, sec: dict) -> None:
+    """Union one part's sections into the accumulating brief."""
+    existing["objective"] = existing["objective"] or (sec.get("objective") or "")
+    for fld in ("facts", "learnings", "links", "key_results"):
+        for it in sec.get(fld) or []:
+            if it not in existing[fld]:
+                existing[fld].append(it)
+
+
+def _refold_content(blocks: list[str], existing: dict) -> str:
+    """The text handed to the consolidator.
+
+    RE-FOLD a fact-only brief: force compaction adds every existing brief as an
+    empty-live group, and a brief that carries Facts but no consolidated PROSE
+    body yields blocks=[] → "" → consolidate() takes its no-LLM "nothing new"
+    path, so the force pass did zero real work (270 briefs in 8s, no model
+    calls). Feeding the brief's existing Facts back makes the LLM genuinely
+    re-consolidate them. Only fires when there is no new content — normal
+    compaction always has live items, so this is a no-op there.
+    """
+    new_content = "\n\n".join(b for b in blocks if b.strip())
+    if new_content.strip() or not existing.get("facts"):
+        return new_content
+    return "\n".join(f"- {f}" for f in existing["facts"])
+
+
 def _consolidate_brief_sections(key: str, path, blocks: list[str],
                                 model_role: str, tags) -> tuple[dict, list]:
     """LLM-consolidate the group into OKR sections (dedupe/map/supersede via
     work_notes.consolidate) and return ``(sections, merged_tags)``. Prior
     hand-added Learnings + the brief's prior tags are preserved."""
     from aiforge_core.runtime import work_notes
-    # Read the primary brief AND every split-out part (compacted-<key>-N.md) so a
-    # re-fold NEVER loses facts that a previous oversize split moved into part 2+.
-    existing: dict = {"facts": [], "learnings": [], "links": [], "key_results": [],
-                      "objective": ""}
-    prev_tags: list = []
-    base = _slug(key)
-    part_paths = [path] + _brief_part_paths(base)
-    for pp in part_paths:
-        if not pp.exists():
-            continue
-        parsed = work_notes.parse_note(pp.read_text(encoding="utf-8", errors="replace"))
-        sec = parsed["sections"]
-        existing["objective"] = existing["objective"] or (sec.get("objective") or "")
-        for fld in ("facts", "learnings", "links", "key_results"):
-            for it in sec.get(fld) or []:
-                if it not in existing[fld]:
-                    existing[fld].append(it)
-        prev_tags += list((parsed["frontmatter"] or {}).get("tags") or [])
-    new_content = "\n\n".join(b for b in blocks if b.strip())
-    # RE-FOLD a fact-only brief. Force compaction adds every existing brief as an
-    # empty-live group; a brief that carries Facts but no consolidated PROSE body
-    # yields blocks=[] → new_content="" → consolidate() takes its no-LLM
-    # "nothing new" path and the force pass does zero real work (270 briefs in 8s,
-    # no model calls). Feed the brief's existing Facts back as content so the LLM
-    # genuinely re-consolidates (dedupe/supersede/re-map) them. Only fires when
-    # there is no new content, i.e. exactly the force re-fold case — normal
-    # compaction always has live items, so new_content is non-empty and this is
-    # a no-op there.
-    if not new_content.strip() and existing.get("facts"):
-        new_content = "\n".join(f"- {f}" for f in existing["facts"])
+    existing, prev_tags = _existing_brief_sections(path, _slug(key))
     merged = work_notes.consolidate(
-        existing, new_content, role=model_role,
+        existing, _refold_content(blocks, existing), role=model_role,
         label=f"topic '{key}' ({len(blocks)} source(s))")
     # Deterministic UNION-BACK of derived/curated sections the LLM might omit:
     # Learnings (audit trail), Key Results (write-time W2 tickets) and Links
     # (map_scopes sibling links). Without this a single fold that drops them
     # loses that content permanently on the daily recompact.
-    merged["learnings"] = _union_back(merged.get("learnings"),
-                                      existing.get("learnings"))
-    merged["key_results"] = _union_back(merged.get("key_results"),
-                                        existing.get("key_results"))
-    merged["links"] = _union_back(merged.get("links"), existing.get("links"))
+    for fld in ("learnings", "key_results", "links"):
+        merged[fld] = _union_back(merged.get(fld), existing.get(fld))
     return merged, list(prev_tags) + list(tags or [])
 
 
@@ -864,18 +894,9 @@ def _write_prepared(prepared: list, archive, archive_sources: bool,
     archive.mkdir(parents=True, exist_ok=True)
     for p in prepared:
         _retire_stale_parts(p, archive, shutil)
-        wrote_any = False
-        for st, content in p["parts"]:
-            fpath = _md_path_for_stem(st)
-            try:
-                fpath.write_text(content, encoding="utf-8")
-            except Exception:  # noqa: BLE001 — keep originals; skip
-                continue
-            out_files.append(fpath.name)
-            wrote_any = True
-            if p["summarized"]:
-                summarized_files.append(fpath.name)
-        if not wrote_any or not archive_sources:
+        if not _write_parts(p, out_files, summarized_files):
+            continue
+        if not archive_sources:
             # projection mode keeps raw units for the OTHER axis (a unit feeds
             # both its repo + topic brief).
             continue
@@ -886,6 +907,22 @@ def _write_prepared(prepared: list, archive, archive_sources: bool,
             except Exception:  # noqa: BLE001
                 pass
     return moved
+
+
+def _write_parts(p: dict, out_files: list, summarized_files: list) -> bool:
+    """Write this group's file part(s); True when at least one landed."""
+    wrote_any = False
+    for st, content in p["parts"]:
+        fpath = _md_path_for_stem(st)
+        try:
+            fpath.write_text(content, encoding="utf-8")
+        except Exception:  # noqa: BLE001 — keep originals; skip
+            continue
+        out_files.append(fpath.name)
+        wrote_any = True
+        if p["summarized"]:
+            summarized_files.append(fpath.name)
+    return wrote_any
 
 
 def _ingest_brief(p: dict, st: str, group_by: str) -> None:
