@@ -112,66 +112,46 @@ def _root(cwd: str | None) -> str:
             or request_context.get_repo_root() or os.getcwd())
 
 
-def serve(args: dict, cwd: str | None = None) -> dict:
-    """Start ``cmd`` as a background service. Polls its early output for up to
-    ``wait_s`` (default 12) to detect the bound URL/port, then returns without
-    waiting for the (long-lived) process to exit. ``port`` is an optional hint
-    used to build the URL when the log doesn't print one."""
-    cmd = (args.get("cmd") or "").strip()
-    if not cmd:
-        return {"ok": False, "error": "missing 'cmd'"}
-    # Destructive-delete backstop: serve runs `cmd` via a shell, so it must
-    # honour the same delete gate as run_command/bash — otherwise an `rm -rf`
-    # (or any destructive form) smuggled in as a "server" command runs with no
-    # confirmation. Refuse unless the user confirmed (confirm_delete) or the
-    # env override is set. Normal dev-server commands (npm run dev, etc) pass.
+def _delete_refusal(cmd: str, args: dict) -> dict | None:
+    """Destructive-delete backstop: serve runs ``cmd`` via a shell, so it must
+    honour the same delete gate as run_command/bash — otherwise an `rm -rf` (or
+    any destructive form) smuggled in as a "server" command runs with no
+    confirmation. Normal dev-server commands (npm run dev, etc) pass."""
     from aiforge_core.runtime.tools import delete_guard
-    _confirmed = bool(args.get("confirm_delete")) or delete_guard.allow_delete(
+    confirmed = bool(args.get("confirm_delete")) or delete_guard.allow_delete(
         ("AIFORGE_CHAT_ALLOW_DELETE", "AIFORGE_ALLOW_DELETE"))
-    if not _confirmed and delete_guard.is_destructive_delete(cmd):
+    if not confirmed and delete_guard.is_destructive_delete(cmd):
         return {"ok": False, "error": delete_guard.REFUSAL
                 + " (re-issue with confirm_delete=true once the user agrees)"}
-    base = _root(args.get("cwd") or cwd)
-    try:
-        wait_s = float(args.get("wait_s", 12))
-    except (TypeError, ValueError):
-        wait_s = 12.0
-    try:
-        ttl = float(args["ttl_s"]) if args.get("ttl_s") is not None \
-            else _default_ttl()
-    except (TypeError, ValueError):
-        ttl = _default_ttl()
-    port_hint = str(args.get("port") or "").strip()
-    _ensure_reaper()        # auto-cleanup forgotten services
-    _reap()                 # opportunistically clear dead/expired first
+    return None
 
-    # Unique per invocation — a hash(cmd) name collides (two different cmds, or
-    # the same cmd served twice) and the URL/port detection then reads the wrong
-    # service's log.
+
+def _float_arg(args: dict, key: str, default: float) -> float:
+    try:
+        raw = args.get(key)
+        return float(raw) if raw is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _open_service_log() -> tuple[str, object]:
+    """``(path, file or PIPE)``. The name is unique per invocation — a
+    hash(cmd) name collides (two different cmds, or the same cmd served twice)
+    and the URL/port detection then reads the wrong service's log."""
     import uuid as _uuid
-    log_path = os.path.join(
-        os.environ.get("AIFORGE_CONFIG_DIR", os.path.expanduser("~/.aiforge")),
-        f"serve-{_uuid.uuid4().hex[:10]}.log")
+    from aiforge_core.config.paths import config_dir
+    log_path = os.path.join(str(config_dir()),
+                            f"serve-{_uuid.uuid4().hex[:10]}.log")
     try:
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
-        logf = open(log_path, "w+")
+        return log_path, open(log_path, "w+")
     except Exception:  # noqa: BLE001
-        logf = subprocess.PIPE  # type: ignore
-    try:
-        proc = subprocess.Popen(
-            cmd, shell=True, cwd=base, text=True,
-            stdout=logf, stderr=subprocess.STDOUT,
-            start_new_session=True)
-    except Exception as exc:  # noqa: BLE001
-        # Popen failed — don't leak the opened log file handle.
-        try:
-            if hasattr(logf, "close"):
-                logf.close()
-        except Exception:  # noqa: BLE001
-            pass
-        return {"ok": False, "error": str(exc)}
+        return log_path, subprocess.PIPE
 
-    # Register + bind to the session so the Stop button can also kill it.
+
+def _register_service(proc, cmd: str, port_hint: str, log_path: str,
+                      ttl: float) -> None:
+    """Track the service and bind it to the session so Stop can kill it too."""
     try:
         pgid = os.getpgid(proc.pid)
     except Exception:  # noqa: BLE001
@@ -188,31 +168,52 @@ def serve(args: dict, cwd: str | None = None) -> dict:
     except Exception:  # noqa: BLE001
         pass
 
-    # Watch the log for a URL/port (or an early crash) for up to wait_s.
-    url = None
+
+def _await_url(proc, log_path: str, port_hint: str,
+               wait_s: float) -> tuple[str | None, str, dict | None]:
+    """Watch the log for a URL/port (or an early crash) for up to ``wait_s``.
+    Returns ``(url, port_hint, early_exit_result)``."""
     deadline = time.monotonic() + wait_s
     while time.monotonic() < deadline:
         if proc.poll() is not None:        # died on startup
             tail = _read_log(log_path)
             _SERVICES.pop(proc.pid, None)
-            return {"ok": False, "error": "service exited on startup "
-                    f"(code {proc.returncode})", "log_tail": tail[-1500:]}
+            return None, port_hint, {
+                "ok": False,
+                "error": f"service exited on startup (code {proc.returncode})",
+                "log_tail": tail[-1500:]}
         text = _read_log(log_path)
         m = _URL_RE.search(text)
         if m:
-            url = m.group(0).replace("0.0.0.0", "localhost")
-            break
+            return m.group(0).replace("0.0.0.0", "localhost"), port_hint, None
         if not port_hint:
             pm = _PORT_RE.search(text)
             if pm:
                 port_hint = pm.group(1)
         time.sleep(0.4)
+    return None, port_hint, None
 
-    if not url and port_hint:
-        url = f"http://localhost:{port_hint}"
-    if proc.pid in _SERVICES:
-        _SERVICES[proc.pid]["url"] = url
-        _SERVICES[proc.pid]["port"] = port_hint or None
+
+def _spawn_service(cmd: str, base: str):
+    """``(log_path, proc, error)``. A Popen failure must not leak the opened
+    log file handle."""
+    log_path, logf = _open_service_log()
+    try:
+        proc = subprocess.Popen(cmd, shell=True, cwd=base, text=True,
+                                stdout=logf, stderr=subprocess.STDOUT,
+                                start_new_session=True)
+        return log_path, proc, ""
+    except Exception as exc:  # noqa: BLE001
+        try:
+            if hasattr(logf, "close"):
+                logf.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return log_path, None, str(exc)
+
+
+def _serve_result(proc, cmd: str, url, port_hint: str, log_path: str,
+                  ttl: float) -> dict:
     ttl_note = (f" · auto-stops after {int(ttl // 60)} min if you forget"
                 if ttl > 0 else "")
     return {"ok": True, "pid": proc.pid, "url": url,
@@ -221,6 +222,39 @@ def serve(args: dict, cwd: str | None = None) -> dict:
             "hint": (f"running — open {url}" if url else
                      "running (no URL detected; check the log)")
                     + f" · stop with stop_service(pid={proc.pid}){ttl_note}"}
+
+
+def serve(args: dict, cwd: str | None = None) -> dict:
+    """Start ``cmd`` as a background service. Polls its early output for up to
+    ``wait_s`` (default 12) to detect the bound URL/port, then returns without
+    waiting for the (long-lived) process to exit. ``port`` is an optional hint
+    used to build the URL when the log doesn't print one."""
+    cmd = (args.get("cmd") or "").strip()
+    if not cmd:
+        return {"ok": False, "error": "missing 'cmd'"}
+    refusal = _delete_refusal(cmd, args)
+    if refusal is not None:
+        return refusal
+    base = _root(args.get("cwd") or cwd)
+    wait_s = _float_arg(args, "wait_s", 12.0)
+    ttl = _float_arg(args, "ttl_s", _default_ttl())
+    port_hint = str(args.get("port") or "").strip()
+    _ensure_reaper()        # auto-cleanup forgotten services
+    _reap()                 # opportunistically clear dead/expired first
+
+    log_path, proc, err = _spawn_service(cmd, base)
+    if proc is None:
+        return {"ok": False, "error": err}
+    _register_service(proc, cmd, port_hint, log_path, ttl)
+    url, port_hint, early = _await_url(proc, log_path, port_hint, wait_s)
+    if early is not None:
+        return early
+    if not url and port_hint:
+        url = f"http://localhost:{port_hint}"
+    if proc.pid in _SERVICES:
+        _SERVICES[proc.pid]["url"] = url
+        _SERVICES[proc.pid]["port"] = port_hint or None
+    return _serve_result(proc, cmd, url, port_hint, log_path, ttl)
 
 
 def _read_log(path: str) -> str:

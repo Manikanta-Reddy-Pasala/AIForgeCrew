@@ -281,6 +281,131 @@ def _build_timeout_s() -> int:
         return 180
 
 
+def _trusted_existing(cwd, repo_canon: str) -> bool | None:
+    """Whether an EXISTING index can be trusted without building.
+
+    Integrity-verifies ONCE per repo (cached) so a corrupt index left by a
+    CRASHED prior process (OOM / SIGKILL mid-init — no in-process cleanup) isn't
+    trusted forever. True = trust it; None = it read corrupt, so fall through to
+    the locked build path.
+    """
+    if repo_canon in _VERIFIED_HEALTHY:
+        return True
+    if not _db_corrupt(repo_canon):
+        _VERIFIED_HEALTHY.add(repo_canon)
+        return True
+    # PROVEN-corrupt crash-leftover. Do NOT delete it HERE — this fast path
+    # holds no lock, and an index that reads corrupt right now can be a
+    # CONCURRENT process's DB caught mid-write (torn header/pages). rmtree'ing
+    # it would destroy a healthy build another process is finishing. The locked
+    # path removes + rebuilds under the cross-process flock. Clear the negative
+    # cache so the rebuild isn't cooldown-blocked.
+    _FAILED.pop(repo_canon, None)
+    return None
+
+
+def _in_cooldown(repo: str) -> bool:
+    """A repo that failed/timed out must NOT re-trigger the (blocking) build
+    every turn — that hung chat forever on a repo too big to index in the
+    budget."""
+    ts = _FAILED.get(repo)
+    return ts is not None and (_time.monotonic() - ts) < _retry_cooldown_s()
+
+
+def _already_good(cwd, repo: str) -> bool:
+    """Built by another thread/process while we waited — trust it UNLESS it is
+    the proven-corrupt leftover we fell through for."""
+    return bool(indexed(cwd)
+                and (repo in _VERIFIED_HEALTHY or not _db_corrupt(repo)))
+
+
+def _mark_failed(repo: str, have_lock: bool) -> bool:
+    """Drop a stub index and start the cooldown. The stub is removed when we
+    hold the REAL cross-process lock (so no other process could have built a
+    good index concurrently) OR when it is PROVEN corrupt — a corrupt index is
+    never a concurrent process's good one. Under the "nolock" fallback an
+    unprobeable index is left alone."""
+    if have_lock or _db_corrupt(repo):
+        _remove_partial_index(repo)
+    _FAILED[repo] = _time.monotonic()
+    return False
+
+
+def _after_timeout(cwd, repo: str, have_lock: bool) -> bool:
+    """A TIMEOUT means the PROCESS didn't exit in time — NOT necessarily that
+    the index is incomplete: a build that finished writing the DB but overran on
+    slow teardown is VALID. Keep the index UNLESS it is PROVEN corrupt. An
+    unprobeable store (the binary named its DB with an extension we can't read)
+    is trusted, exactly as the clean-exit path does — gating on _index_healthy
+    here instead deleted a complete build whose DB we simply couldn't locate,
+    and locked out rebuild for the cooldown."""
+    if indexed(cwd) and not _db_corrupt(repo):
+        _FAILED.pop(repo, None)
+        if _index_healthy(repo):            # proven-good → trust fast path
+            _VERIFIED_HEALTHY.add(repo)
+        return True
+    return _mark_failed(repo, have_lock)
+
+
+def _run_init(exe: str, repo: str, timeout_s: int | None):
+    """``codegraph init <path>`` — a POSITIONAL path; the query subcommands use
+    ``-p/--path``. Passing ``--path`` here made the binary reject it ("unknown
+    option '--path'") so autobuild silently failed. split() so an override like
+    "init --force" becomes two argv tokens, not one bogus token."""
+    return subprocess.run([exe, *_init_cmd().split(), repo],
+                          capture_output=True, text=True,
+                          timeout=timeout_s or _build_timeout_s())
+
+
+def _build_locked(cwd, repo: str, timeout_s: int | None) -> bool:
+    """The build itself, under the per-repo thread lock."""
+    if _already_good(cwd, repo):
+        return True
+    # Re-check the negative cache INSIDE the lock — a thread that queued while
+    # another built-and-failed must honor that fresh failure, not re-run the
+    # full blocking build.
+    if _in_cooldown(repo):
+        return False
+    exe = _bin()
+    if not exe:
+        return False
+    # Cross-PROCESS guard: another process may already be building this same
+    # repo's index (concurrent tickets). None = contended → skip the duplicate
+    # build (the other process will finish; next turn re-checks).
+    fl = _acquire_build_lock(repo)
+    if fl is None:
+        return False
+    have_lock = not isinstance(fl, str)
+    try:
+        if _already_good(cwd, repo):    # built by the other process meanwhile
+            return True
+        # Corrupt leftover AND we hold the real cross-process lock → no other
+        # process is building, so it's OUR crashed stub: remove it so `init`
+        # starts clean. Under the nolock fallback we can't prove that.
+        if indexed(cwd) and have_lock:
+            _remove_partial_index(repo)
+        return _init_and_verify(cwd, repo, exe, timeout_s, have_lock)
+    finally:
+        if hasattr(fl, "close"):
+            fl.close()
+
+
+def _init_and_verify(cwd, repo: str, exe: str, timeout_s, have_lock: bool) -> bool:
+    try:
+        p = _run_init(exe, repo, timeout_s)
+    except Exception:  # noqa: BLE001 — timeout / spawn failure
+        return _after_timeout(cwd, repo, have_lock)
+    # A non-zero exit (wrong subcommand, disk full, partial write) can still
+    # leave a stub .codegraph. A clean exit (rc 0) is TRUSTED — we do NOT
+    # integrity-gate it (the binary may name its DB with an extension we can't
+    # probe; gating deleted every good build).
+    if p.returncode != 0 or not indexed(cwd):
+        return _mark_failed(repo, have_lock)
+    _FAILED.pop(repo, None)
+    _VERIFIED_HEALTHY.add(repo)         # fresh clean build → trust fast path
+    return True
+
+
 def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> bool:
     """Blocking, bounded first-time build: if the resolved repo has no
     ``.codegraph`` index yet, run ``codegraph init <repo>`` (POSITIONAL path)
@@ -296,24 +421,9 @@ def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> b
     if not _autobuild_enabled() or _disabled() or not available():
         return indexed(cwd)
     if indexed(cwd):
-        # Integrity-verify ONCE per repo (cached) so a corrupt index left by a
-        # CRASHED prior process (OOM / SIGKILL mid-init — no in-process cleanup)
-        # isn't trusted forever. A PROVEN-corrupt index is removed + rebuilt; a
-        # valid or unverifiable one is trusted and cached.
-        rc = _canon_repo(_repo(cwd))
-        if rc in _VERIFIED_HEALTHY:
+        trusted = _trusted_existing(cwd, _canon_repo(_repo(cwd)))
+        if trusted:
             return True
-        if not _db_corrupt(rc):
-            _VERIFIED_HEALTHY.add(rc)
-            return True
-        # PROVEN-corrupt crash-leftover. Do NOT delete it HERE — this fast-path
-        # holds no lock, and an index that reads corrupt right now can be a
-        # CONCURRENT process's DB caught mid-write (torn header/pages). rmtree'ing
-        # it would destroy a healthy build another process is finishing. Fall
-        # through to the locked build path, which removes + rebuilds only under
-        # the cross-process flock. Clear the negative cache so the rebuild isn't
-        # cooldown-blocked.
-        _FAILED.pop(rc, None)
     repo = _repo(cwd)
     if not repo or not os.path.isdir(repo):
         return False
@@ -322,95 +432,10 @@ def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> b
     # repo (the "." fallback, a symlink) would get separate _FAILED / _LOCKS
     # entries and the flock's canonical guarantee wouldn't match them.
     repo = _canon_repo(repo)
-    # Negative cache: a repo that failed/timed out must NOT re-trigger the
-    # (blocking) build every turn — that hung chat forever on a repo too big to
-    # index in the budget. Skip re-attempts for a cooldown window.
-    ts = _FAILED.get(repo)
-    if ts is not None and (_time.monotonic() - ts) < _retry_cooldown_s():
+    if _in_cooldown(repo):
         return False
     with _lock_for(repo):            # PER-REPO lock (not one global)
-        # Built by another thread while we waited — trust it UNLESS it's the
-        # proven-corrupt leftover we fell through for (don't re-trust corrupt).
-        if indexed(cwd) and (repo in _VERIFIED_HEALTHY or not _db_corrupt(repo)):
-            return True
-        # Re-check the negative cache INSIDE the lock — a thread that queued
-        # while another built-and-failed must honor that fresh failure, not
-        # re-run the full blocking build.
-        ts2 = _FAILED.get(repo)
-        if ts2 is not None and (_time.monotonic() - ts2) < _retry_cooldown_s():
-            return False
-        exe = _bin()
-        if not exe:
-            return False
-        # Cross-PROCESS guard: another process may already be building this same
-        # repo's index (concurrent tickets). None = contended → skip the
-        # duplicate build (the other process will finish; next turn re-checks).
-        _fl = _acquire_build_lock(repo)
-        if _fl is None:
-            return False
-        # Only remove a failed build's stub index when we hold a REAL
-        # cross-process lock — then no OTHER process could have built a good
-        # index concurrently, so any .codegraph present is our own stub. Under
-        # the "nolock" fallback we can't prove that, so we must NOT rmtree
-        # (could delete a concurrent process's fresh good index).
-        _have_lock = not isinstance(_fl, str)
-        try:
-            if indexed(cwd):            # built by the other process meanwhile
-                if repo in _VERIFIED_HEALTHY or not _db_corrupt(repo):
-                    return True
-                # Corrupt leftover AND we hold the real cross-process lock → no
-                # other process is building, so it's OUR crashed stub: remove it
-                # so `init` starts clean. Under the nolock fallback we can't prove
-                # that, so leave it (init overwrites, or the failure is handled).
-                if _have_lock:
-                    _remove_partial_index(repo)
-            try:
-                # NOTE: `init` takes a POSITIONAL path (`codegraph init <path>`)
-                # — the query subcommands use `-p/--path`. Passing `--path` here
-                # made the binary reject it ("unknown option '--path'") so
-                # autobuild silently failed. split() so an override like
-                # "init --force" becomes two argv tokens, not one bogus token.
-                p = subprocess.run([exe, *_init_cmd().split(), repo],
-                                   capture_output=True, text=True,
-                                   timeout=timeout_s or _build_timeout_s())
-            except Exception:  # noqa: BLE001 — timeout / spawn failure
-                # A TIMEOUT means the PROCESS didn't exit in time — NOT
-                # necessarily that the index is incomplete: a build that finished
-                # writing the DB but overran on slow teardown is VALID. Keep the
-                # index UNLESS it's PROVEN corrupt (a recognised DB failed
-                # quick_check). An unprobeable store (the binary named its DB with
-                # an extension we can't read) is trusted, exactly as the clean-exit
-                # path below does — gating on _index_healthy here instead deleted a
-                # complete build whose DB we simply couldn't locate, plus locked
-                # out rebuild for the cooldown.
-                if indexed(cwd) and not _db_corrupt(repo):
-                    _FAILED.pop(repo, None)
-                    if _index_healthy(repo):        # proven-good → trust fast-path
-                        _VERIFIED_HEALTHY.add(repo)
-                    return True
-                # Remove the stub if we hold the lock OR it's PROVEN corrupt (a
-                # found DB failed quick_check) — a corrupt index is never a
-                # concurrent process's good one, so it's safe to drop even under
-                # "nolock" (else indexed()'s existence check trusts it forever).
-                if _have_lock or _db_corrupt(repo):
-                    _remove_partial_index(repo)
-                _FAILED[repo] = _time.monotonic()
-                return False
-            # A non-zero exit (wrong subcommand, disk full, partial write) can
-            # still leave a stub .codegraph. A clean exit (rc 0) is TRUSTED — we
-            # do NOT integrity-gate it (the binary may name its DB with an
-            # extension we can't probe; gating deleted every good build).
-            if p.returncode != 0 or not indexed(cwd):
-                if _have_lock or _db_corrupt(repo):
-                    _remove_partial_index(repo)
-                _FAILED[repo] = _time.monotonic()
-                return False
-            _FAILED.pop(repo, None)
-            _VERIFIED_HEALTHY.add(repo)     # fresh clean build → trust fast-path
-            return True
-        finally:
-            if hasattr(_fl, "close"):
-                _fl.close()
+        return _build_locked(cwd, repo, timeout_s)
 
 
 def _run(args: list[str], cwd: str | None) -> dict:

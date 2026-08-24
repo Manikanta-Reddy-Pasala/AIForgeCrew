@@ -333,6 +333,97 @@ def _save_marker(d: dict) -> None:
         _atomic.write_text(_marker_path(), json.dumps(d))
 
 
+def _session_turns(chat_store, session_id) -> tuple[list | None, str]:
+    """``(turns, error)`` — the user/assistant messages with content."""
+    try:
+        messages = chat_store.get_messages(session_id)
+    except Exception as exc:  # noqa: BLE001
+        return None, str(exc)
+    return [m for m in (messages or [])
+            if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+            and (m.get("content") or "").strip()], ""
+
+
+def _record_window_failure(session_id, entry: dict, taken: int,
+                           epoch0: int) -> None:
+    """Model down — do NOT advance: these turns fold on the next pass. But COUNT
+    the failure: a window the model can never answer (truncated output, a
+    filter, a size limit) is deterministic, so without a bound the same window
+    is retried every pass, forever, capturing nothing."""
+    import time as _time
+    last, part = entry["offset"], entry["part"]
+    fails, fail_at = entry["fails"], entry["fail_at"]
+    now_s = int(_time.time())
+    if now_s - fail_at >= _WINDOW_FAIL_SPACING_S:
+        fails += 1                    # a burst of failures counts once
+        fail_at = now_s
+    give_up = fails >= _MAX_WINDOW_FAILS
+    if give_up:
+        log.warning("chat_okr: session=%s window at offset %d failed %d "
+                    "times — skipping it to keep the session moving",
+                    session_id, last, fails)
+    with _MARKER_LOCK:
+        if _RESET_EPOCH != epoch0:
+            return
+        marker = _load_marker()
+        _put_entry(marker, session_id,
+                   {"offset": (last + max(1, taken)) if give_up else last,
+                    "part": 0 if give_up else part,
+                    "fails": 0 if give_up else fails,
+                    "fail_at": 0 if give_up else fail_at})
+        _save_marker(marker)
+
+
+def _capture_items(md_store, items, session_id, repo, role) -> tuple[int, list]:
+    """``(captured, rows)``.
+
+    ONE scope call for the whole window, not one per item: per-item calls
+    re-sent the classifier's rule prompt for every fact and made scoping ~90% of
+    a fold's LLM traffic. Guarded, because a scope failure must not cost the
+    whole window's items — and this function must never raise.
+    """
+    rows = [((getattr(it, "text", "") or "").strip(),
+             (getattr(it, "kind", "") or "learning").strip()) for it in items]
+    rows = [r for r in rows if r[0]]
+    try:
+        scopes = md_store.classify_scopes([t for t, _ in rows], hint_repo=repo,
+                                          role=role)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("chat_okr scope classification failed: %s", exc)
+        scopes = [{"scope": "project", "repo": repo, "topic": None}
+                  for _ in rows]
+    captured = 0
+    for (text, kind), sc in zip(rows, scopes):
+        try:
+            md_store.capture(kind, text, repo=sc["repo"], topic=sc["topic"],
+                             classify=False,
+                             source=f"chat-session:{session_id}")
+            captured += 1
+        except Exception as exc:  # noqa: BLE001 — one bad item never aborts the fold
+            log.debug("chat_okr capture failed: %s", exc)
+    return captured, rows
+
+
+def _advance_offset(session_id, last: int, taken: int, next_part: int,
+                    total_turns: int, epoch0: int) -> tuple[int, bool]:
+    """``(offset, reset_happened)``.
+
+    Re-reads under the marker lock so a concurrent different-session write isn't
+    clobbered. If a reset (clear_all_markers) ran while we did the slow LLM
+    work, our offset is stale — writing it would resurrect a cleared entry and
+    make a reused session id under-fold, so the write-back is skipped.
+    """
+    offset = last if next_part else min(last + max(1, taken), total_turns)
+    with _MARKER_LOCK:
+        if _RESET_EPOCH != epoch0:
+            return offset, True
+        marker = _load_marker()
+        _put_entry(marker, session_id, {"offset": offset, "part": next_part,
+                                        "fails": 0, "fail_at": 0})
+        _save_marker(marker)
+    return offset, False
+
+
 def compact_session(session_id, *, repo: str | None = None,
                     role: str = "learner", min_turns: int = 2) -> dict:
     """Distil ONE session into scoped OKR briefs. Never raises.
@@ -363,13 +454,9 @@ def compact_session(session_id, *, repo: str | None = None,
         # between the message read and the epoch read went undetected).
         with _MARKER_LOCK:
             epoch0 = _RESET_EPOCH
-        try:
-            messages = chat_store.get_messages(session_id)
-        except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "error": str(exc), "captured": 0}
-        turns = [m for m in (messages or [])
-                 if isinstance(m, dict) and m.get("role") in ("user", "assistant")
-                 and (m.get("content") or "").strip()]
+        turns, err = _session_turns(chat_store, session_id)
+        if turns is None:
+            return {"ok": False, "error": err, "captured": 0}
         if len(turns) < max(1, int(min_turns)):
             return {"ok": True, "skipped": "too_short", "captured": 0}
 
@@ -377,71 +464,20 @@ def compact_session(session_id, *, repo: str | None = None,
         # marker lock is short — a DIFFERENT session mustn't clobber the shared
         # file (lost update) — but is released before the slow LLM work.
         with _MARKER_LOCK:
-            marker = _load_marker()
-            entry = _entry(marker, session_id)
-        last, part, fails = entry["offset"], entry["part"], entry["fails"]
-        fail_at = entry["fail_at"]
+            entry = _entry(_load_marker(), session_id)
+        last = entry["offset"]
         if len(turns) <= last:
             return {"ok": True, "skipped": "no_new", "captured": 0}
         new_turns = turns[last:]
 
-        transcript, taken, next_part = _transcript(new_turns, _window_chars(role),
-                                                   start_char=part)
+        transcript, taken, next_part = _transcript(
+            new_turns, _window_chars(role), start_char=entry["part"])
         items = _extract(transcript, role)
         if items is None:
-            # Model down — soft-fail (callers treat a RAISE as a real error) and
-            # do NOT advance: these turns are folded on the next pass. But count
-            # the failure: a window the model can never answer (truncated output,
-            # a filter, a size limit) is deterministic, so without a bound the
-            # same window is retried every pass, forever, capturing nothing.
-            import time as _time
-            now_s = int(_time.time())
-            if now_s - fail_at >= _WINDOW_FAIL_SPACING_S:
-                fails += 1                    # a burst of failures counts once
-                fail_at = now_s
-            give_up = fails >= _MAX_WINDOW_FAILS
-            if give_up:
-                log.warning("chat_okr: session=%s window at offset %d failed %d "
-                            "times — skipping it to keep the session moving",
-                            session_id, last, fails)
-            with _MARKER_LOCK:
-                if _RESET_EPOCH == epoch0:
-                    marker = _load_marker()
-                    _put_entry(marker, session_id,
-                               {"offset": (last + max(1, taken)) if give_up else last,
-                                "part": 0 if give_up else part,
-                                "fails": 0 if give_up else fails,
-                                "fail_at": 0 if give_up else fail_at})
-                    _save_marker(marker)
+            _record_window_failure(session_id, entry, taken, epoch0)
             return {"ok": True, "skipped": "extract_failed", "captured": 0,
                     "remaining": len(new_turns)}
-        captured = 0
-        rows = [((getattr(it, "text", "") or "").strip(),
-                 (getattr(it, "kind", "") or "learning").strip()) for it in items]
-        rows = [r for r in rows if r[0]]
-        # ONE scope call for the whole window, not one per item: per-item calls
-        # re-sent the classifier's rule prompt for every fact and made scoping
-        # ~90% of a fold's LLM traffic. Guarded because this function must never
-        # raise, and a scope failure must not cost the whole window's items.
-        try:
-            scopes = md_store.classify_scopes([t for t, _ in rows], hint_repo=repo,
-                                              role=role)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("chat_okr scope classification failed: %s", exc)
-            scopes = [{"scope": "project", "repo": repo, "topic": None}
-                      for _ in rows]
-        for (text, kind), sc in zip(rows, scopes):
-            try:
-                md_store.capture(kind, text, repo=sc["repo"], topic=sc["topic"],
-                                 classify=False, source=f"chat-session:{session_id}")
-                captured += 1
-            except Exception as exc:  # noqa: BLE001 — one bad item never aborts the fold
-                log.debug("chat_okr capture failed: %s", exc)
-        # Advance the durable offset (re-read under the marker lock so a
-        # concurrent different-session write isn't clobbered). But if a reset
-        # (clear_all_markers) ran while we did the slow LLM work, our offset is
-        # stale — writing it would resurrect a cleared entry and make a reused
-        # session id under-fold; skip the write-back in that case.
+        captured, rows = _capture_items(md_store, items, session_id, repo, role)
         if rows and captured == 0:
             # The model answered but NOTHING was stored (md_store/sqlite down,
             # disk full). Advancing here would mark the window folded with zero
@@ -454,19 +490,12 @@ def compact_session(session_id, *, repo: str | None = None,
         if captured < len(rows):
             log.warning("chat_okr: session=%s captured %d of %d items",
                         session_id, captured, len(rows))
-        with _MARKER_LOCK:
-            if _RESET_EPOCH != epoch0:
-                return {"ok": True, "captured": captured, "skipped": "reset"}
-            marker = _load_marker()
-            if next_part:                    # mid-way through an oversized turn
-                offset = last
-            else:
-                offset = min(last + max(1, taken), len(turns))
-            _put_entry(marker, session_id, {"offset": offset, "part": next_part,
-                                            "fails": 0, "fail_at": 0})
-            _save_marker(marker)
-    remaining = max(0, len(turns) - offset) if not next_part \
-        else max(1, len(turns) - offset)
+        offset, was_reset = _advance_offset(session_id, last, taken, next_part,
+                                            len(turns), epoch0)
+        if was_reset:
+            return {"ok": True, "captured": captured, "skipped": "reset"}
+    remaining = (max(1, len(turns) - offset) if next_part
+                 else max(0, len(turns) - offset))
     log.info("chat_okr: session=%s repo=%s captured=%d (offset→%d part=%d, "
              "remaining=%d)", session_id, repo, captured, offset, next_part,
              remaining)
