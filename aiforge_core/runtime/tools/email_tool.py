@@ -34,6 +34,7 @@ Config (env  ·  UI-store key):
 from __future__ import annotations
 
 import email as _email
+import contextlib
 import imaplib
 import os
 import smtplib
@@ -135,6 +136,33 @@ def _as_list(v) -> list[str]:
 
 # ─────────────────────────── send (SMTP) ────────────────────────────
 
+def _build_message(c: dict, args: dict, to: list, cc: list) -> EmailMessage:
+    msg = EmailMessage()
+    msg["From"] = c["from"] or c["user"]
+    msg["To"] = ", ".join(to)
+    if cc:
+        msg["Cc"] = ", ".join(cc)
+    msg["Subject"] = str(args.get("subject") or "")
+    msg.set_content(str(args.get("body") or ""))
+    if args.get("html"):
+        msg.add_alternative(str(args["html"]), subtype="html")
+    return msg
+
+
+def _smtp_open(c: dict):
+    """A connected, authenticated SMTP session (STARTTLS or implicit SSL)."""
+    if c["starttls"]:
+        srv = smtplib.SMTP(c["host"], c["port"], timeout=_TIMEOUT_S)
+        srv.ehlo()
+        srv.starttls()
+        srv.ehlo()
+    else:
+        srv = smtplib.SMTP_SSL(c["host"], c["port"], timeout=_TIMEOUT_S)
+    if c["user"]:
+        srv.login(c["user"], c["password"])
+    return srv
+
+
 def email_send(args: dict, cwd: str | None = None) -> dict:
     """Send an email via SMTP. ``args``: ``to`` (str|list, required),
     ``subject``, ``body`` (plain text); optional ``html``, ``cc``, ``bcc``."""
@@ -147,47 +175,18 @@ def email_send(args: dict, cwd: str | None = None) -> dict:
     to = _as_list(args.get("to"))
     if not to:
         return {"ok": False, "error": "missing 'to'"}
-    cc = _as_list(args.get("cc"))
-    bcc = _as_list(args.get("bcc"))
-    subject = str(args.get("subject") or "")
-    body = str(args.get("body") or "")
+    cc, bcc = _as_list(args.get("cc")), _as_list(args.get("bcc"))
     try:
-        msg = EmailMessage()
-        msg["From"] = c["from"] or c["user"]
-        msg["To"] = ", ".join(to)
-        if cc:
-            msg["Cc"] = ", ".join(cc)
-        msg["Subject"] = subject
-        msg.set_content(body)
-        if args.get("html"):
-            msg.add_alternative(str(args["html"]), subtype="html")
-        recipients = to + cc + bcc  # bcc kept out of headers, still delivered
-        if c["starttls"]:
-            srv = smtplib.SMTP(c["host"], c["port"], timeout=_TIMEOUT_S)
-            try:
-                srv.ehlo()
-                srv.starttls()
-                srv.ehlo()
-                if c["user"]:
-                    srv.login(c["user"], c["password"])
-                srv.send_message(msg, to_addrs=recipients)
-            finally:
-                try:
-                    srv.quit()
-                except Exception:  # noqa: BLE001
-                    pass
-        else:
-            srv = smtplib.SMTP_SSL(c["host"], c["port"], timeout=_TIMEOUT_S)
-            try:
-                if c["user"]:
-                    srv.login(c["user"], c["password"])
-                srv.send_message(msg, to_addrs=recipients)
-            finally:
-                try:
-                    srv.quit()
-                except Exception:  # noqa: BLE001
-                    pass
-        return {"ok": True, "to": to, "cc": cc, "subject": subject}
+        msg = _build_message(c, args, to, cc)
+        srv = _smtp_open(c)
+        try:
+            # bcc kept out of the headers, still delivered
+            srv.send_message(msg, to_addrs=to + cc + bcc)
+        finally:
+            with contextlib.suppress(Exception):
+                srv.quit()
+        return {"ok": True, "to": to, "cc": cc,
+                "subject": str(args.get("subject") or "")}
     except Exception as exc:  # noqa: BLE001 — never raise into the agent loop
         return {"ok": False, "error": str(exc)}
 
@@ -212,24 +211,36 @@ def _to_text(payload: bytes, part) -> str:
         return payload.decode("utf-8", errors="replace")
 
 
+def _is_readable_text_part(part) -> bool:
+    """A plain-text body part — not a multipart wrapper, not an attachment."""
+    if part.get_content_maintype() == "multipart":
+        return False
+    if "attachment" in str(part.get("Content-Disposition") or "").lower():
+        return False
+    return part.get_content_type() == "text/plain"
+
+
+def _multipart_snippet(m) -> str:
+    for part in m.walk():
+        payload = (part.get_payload(decode=True)
+                   if _is_readable_text_part(part) else None)
+        if payload:
+            return _to_text(payload, part).strip()[:_SNIPPET_CAP]
+    return ""
+
+
+def _single_part_snippet(m) -> str:
+    payload = m.get_payload(decode=True)
+    if payload:
+        return _to_text(payload, m).strip()[:_SNIPPET_CAP]
+    return str(m.get_payload() or "")[:_SNIPPET_CAP]
+
+
 def _body_snippet(m) -> str:
     """First ~500 chars of the plain-text body; attachments soft-skipped."""
     try:
-        if m.is_multipart():
-            for part in m.walk():
-                if part.get_content_maintype() == "multipart":
-                    continue
-                if "attachment" in str(part.get("Content-Disposition") or "").lower():
-                    continue
-                if part.get_content_type() == "text/plain":
-                    payload = part.get_payload(decode=True)
-                    if payload:
-                        return _to_text(payload, part).strip()[:_SNIPPET_CAP]
-            return ""
-        payload = m.get_payload(decode=True)
-        if payload:
-            return _to_text(payload, m).strip()[:_SNIPPET_CAP]
-        return str(m.get_payload() or "")[:_SNIPPET_CAP]
+        return (_multipart_snippet(m) if m.is_multipart()
+                else _single_part_snippet(m))
     except Exception:  # noqa: BLE001
         return ""
 
@@ -242,6 +253,58 @@ def _first_bytes(msg_data) -> bytes:
     return b""
 
 
+def _imap_connect(c: dict):
+    return (imaplib.IMAP4_SSL(c["host"], c["port"]) if c["ssl"]
+            else imaplib.IMAP4(c["host"], c["port"]))
+
+
+def _read_limit(args: dict) -> int:
+    try:
+        return max(1, int(args.get("limit", 10) or 10))
+    except (TypeError, ValueError):
+        return 10
+
+
+def _message_row(num, m) -> dict:
+    return {"uid": num.decode() if isinstance(num, bytes) else str(num),
+            "from": _decode_header(m.get("From", "")),
+            "to": _decode_header(m.get("To", "")),
+            "subject": _decode_header(m.get("Subject", "")),
+            "date": m.get("Date", ""),
+            "snippet": _body_snippet(m)}
+
+
+def _fetch_message(srv, num):
+    """The parsed message, or None when it cannot be read."""
+    try:
+        _typ, msg_data = srv.fetch(num, "(RFC822)")
+    except Exception:  # noqa: BLE001 — skip an unreadable message
+        return None
+    raw = _first_bytes(msg_data)
+    return _email.message_from_bytes(raw) if raw else None
+
+
+def _collect_messages(srv, folder: str, *, unseen: bool, query: str,
+                      limit: int) -> list[dict]:
+    """Newest-first messages matching ``query`` (subject + from)."""
+    srv.select(folder)
+    _typ, data = srv.search(None, *(["UNSEEN"] if unseen else ["ALL"]))
+    ids = list(reversed(data[0].split() if data and data[0] else []))
+    out: list[dict] = []
+    for num in ids:
+        if len(out) >= limit:
+            break
+        m = _fetch_message(srv, num)
+        if m is None:
+            continue
+        row = _message_row(num, m)
+        haystack = row["subject"].lower() + " " + row["from"].lower()
+        if query and query not in haystack:
+            continue
+        out.append(row)
+    return out
+
+
 def email_read(args: dict, cwd: str | None = None) -> dict:
     """Fetch recent/matching emails via IMAP. ``args``: optional ``folder``
     (default INBOX), ``limit`` (default 10), ``query``/``search`` (substring
@@ -252,60 +315,23 @@ def email_read(args: dict, cwd: str | None = None) -> dict:
     if not c["host"]:
         return {"ok": False,
                 "error": "email not configured (set AIFORGE_IMAP_HOST/USER/PASSWORD)"}
-    folder = str(args.get("folder") or "INBOX")
     try:
-        limit = max(1, int(args.get("limit", 10) or 10))
-    except (TypeError, ValueError):
-        limit = 10
-    query = str(args.get("query") or args.get("search") or "").strip().lower()
-    unseen = _truthy(args.get("unseen_only"))
-    try:
-        if c["ssl"]:
-            srv = imaplib.IMAP4_SSL(c["host"], c["port"])
-        else:
-            srv = imaplib.IMAP4(c["host"], c["port"])
+        srv = _imap_connect(c)
         try:
             if c["user"]:
                 srv.login(c["user"], c["password"])
-            srv.select(folder)
-            criteria = ["UNSEEN"] if unseen else ["ALL"]
-            typ, data = srv.search(None, *criteria)
-            ids = (data[0].split() if data and data[0] else [])
-            ids = list(reversed(ids))  # newest (highest seq) first
-            out: list[dict] = []
-            for num in ids:
-                if len(out) >= limit:
-                    break
-                try:
-                    typ, msg_data = srv.fetch(num, "(RFC822)")
-                except Exception:  # noqa: BLE001 — skip an unreadable message
-                    continue
-                raw = _first_bytes(msg_data)
-                if not raw:
-                    continue
-                m = _email.message_from_bytes(raw)
-                frm = _decode_header(m.get("From", ""))
-                subj = _decode_header(m.get("Subject", ""))
-                if query and query not in (subj.lower() + " " + frm.lower()):
-                    continue
-                out.append({
-                    "uid": num.decode() if isinstance(num, bytes) else str(num),
-                    "from": frm,
-                    "to": _decode_header(m.get("To", "")),
-                    "subject": subj,
-                    "date": m.get("Date", ""),
-                    "snippet": _body_snippet(m),
-                })
-            try:
+            messages = _collect_messages(
+                srv, str(args.get("folder") or "INBOX"),
+                unseen=_truthy(args.get("unseen_only")),
+                query=str(args.get("query") or args.get("search") or "")
+                .strip().lower(),
+                limit=_read_limit(args))
+            with contextlib.suppress(Exception):
                 srv.close()
-            except Exception:  # noqa: BLE001
-                pass
-            return {"ok": True, "messages": out}
+            return {"ok": True, "messages": messages}
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 srv.logout()
-            except Exception:  # noqa: BLE001
-                pass
     except Exception as exc:  # noqa: BLE001 — never raise into the agent loop
         return {"ok": False, "error": str(exc)}
 
@@ -318,6 +344,50 @@ def email_search(args: dict, cwd: str | None = None) -> dict:
 
 # ─────────────────────────── connectivity test ──────────────────────
 
+def _smtp_probe(c: dict) -> None:
+    """Connect (and log in, when a user is set). Raises on failure."""
+    if c["starttls"]:
+        srv = smtplib.SMTP(c["host"], c["port"], timeout=_TIMEOUT_S)
+        try:
+            srv.ehlo()
+            srv.starttls()
+            srv.ehlo()
+            if c["user"]:
+                srv.login(c["user"], c["password"])
+        finally:
+            with contextlib.suppress(Exception):
+                srv.quit()
+        return
+    srv = smtplib.SMTP_SSL(c["host"], c["port"], timeout=_TIMEOUT_S)
+    try:
+        if c["user"]:
+            srv.login(c["user"], c["password"])
+    finally:
+        with contextlib.suppress(Exception):
+            srv.quit()
+
+
+def _imap_probe(c: dict) -> None:
+    srv = _imap_connect(c)
+    try:
+        if c["user"]:
+            srv.login(c["user"], c["password"])
+    finally:
+        with contextlib.suppress(Exception):
+            srv.logout()
+
+
+def _probe_side(c: dict, probe) -> dict | None:
+    """``{ok, host, …}`` for a configured side; None when it isn't configured."""
+    if not c["host"]:
+        return None
+    try:
+        probe(c)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "host": c["host"], "error": str(exc)}
+    return {"ok": True, "host": c["host"], "port": c["port"], "user": c["user"]}
+
+
 def email_test() -> dict:
     """Connectivity + auth check for the Settings UI. Connects (and logs in,
     when a user is set) to whichever of SMTP/IMAP is configured. Returns
@@ -329,59 +399,13 @@ def email_test() -> dict:
     if not smtp_c["host"] and not imap_c["host"]:
         return {"ok": False, "error": "email_not_configured",
                 "hint": "set an SMTP host (send) and/or an IMAP host (read)"}
-
-    out: dict = {"smtp": None, "imap": None}
-    ok = True
-
-    if smtp_c["host"]:
-        try:
-            if smtp_c["starttls"]:
-                srv = smtplib.SMTP(smtp_c["host"], smtp_c["port"], timeout=_TIMEOUT_S)
-                try:
-                    srv.ehlo(); srv.starttls(); srv.ehlo()
-                    if smtp_c["user"]:
-                        srv.login(smtp_c["user"], smtp_c["password"])
-                finally:
-                    try: srv.quit()
-                    except Exception: pass  # noqa: BLE001,E701
-            else:
-                srv = smtplib.SMTP_SSL(smtp_c["host"], smtp_c["port"], timeout=_TIMEOUT_S)
-                try:
-                    if smtp_c["user"]:
-                        srv.login(smtp_c["user"], smtp_c["password"])
-                finally:
-                    try: srv.quit()
-                    except Exception: pass  # noqa: BLE001,E701
-            out["smtp"] = {"ok": True, "host": smtp_c["host"], "port": smtp_c["port"],
-                           "user": smtp_c["user"]}
-        except Exception as exc:  # noqa: BLE001
-            ok = False
-            out["smtp"] = {"ok": False, "host": smtp_c["host"], "error": str(exc)}
-
-    if imap_c["host"]:
-        try:
-            if imap_c["ssl"]:
-                srv = imaplib.IMAP4_SSL(imap_c["host"], imap_c["port"])
-            else:
-                srv = imaplib.IMAP4(imap_c["host"], imap_c["port"])
-            try:
-                if imap_c["user"]:
-                    srv.login(imap_c["user"], imap_c["password"])
-            finally:
-                try: srv.logout()
-                except Exception: pass  # noqa: BLE001,E701
-            out["imap"] = {"ok": True, "host": imap_c["host"], "port": imap_c["port"],
-                           "user": imap_c["user"]}
-        except Exception as exc:  # noqa: BLE001
-            ok = False
-            out["imap"] = {"ok": False, "host": imap_c["host"], "error": str(exc)}
-
-    result: dict = {"ok": ok, **out}
-    if not ok:
-        errs = [v.get("error") for v in (out["smtp"], out["imap"])
-                if isinstance(v, dict) and v.get("error")]
-        if errs:
-            result["error"] = "; ".join(errs)
+    sides = {"smtp": _probe_side(smtp_c, _smtp_probe),
+             "imap": _probe_side(imap_c, _imap_probe)}
+    errors = [v["error"] for v in sides.values()
+              if isinstance(v, dict) and v.get("error")]
+    result: dict = {"ok": not errors, **sides}
+    if errors:
+        result["error"] = "; ".join(errors)
     return result
 
 
