@@ -146,37 +146,46 @@ def gitlab_search(args: dict, cwd: str | None = None) -> dict:
     return {"ok": True, "results": [_issue_summary(x) for x in rows]}
 
 
-def gitlab_read(args: dict, cwd: str | None = None) -> dict:
-    """Read an issue by ``project`` + ``iid`` (the #number). Returns fields +
-    comments. ``project`` defaults to GITLAB_PROJECT."""
+def _issue_notes(proj: str, enc: str) -> list:
+    """The human comments on an issue (system notes filtered out)."""
+    n = _request("GET", f"/projects/{_enc_proj(proj)}/issues/{enc}/notes",
+                 params={"per_page": 50, "sort": "asc"})
+    if not (n["ok"] and isinstance(n["data"], list)):
+        return []
+    return [{"author": ((c.get("author") or {}) or {}).get("name"),
+             "body": (c.get("body") or "")[:4000]}
+            for c in n["data"] if not c.get("system")]
+
+
+def _addressed(args: dict) -> tuple[str, str, dict | None]:
+    """``(project, encoded iid, error)`` for an issue-addressed call."""
     proj = _proj_id(args)
     iid = str(args.get("iid") or args.get("id") or args.get("key") or "").strip()
     if not proj:
-        return {"ok": False, "error": "missing 'project'"}
+        return "", "", {"ok": False, "error": "missing 'project'"}
     if not iid:
-        return {"ok": False, "error": "missing 'iid'"}
+        return "", "", {"ok": False, "error": "missing 'iid'"}
     enc, ierr = _iid_or_error(iid)
-    if ierr:
-        return ierr
+    return proj, enc, ierr
+
+
+def gitlab_read(args: dict, cwd: str | None = None) -> dict:
+    """Read an issue by ``project`` + ``iid`` (the #number). Returns fields +
+    comments. ``project`` defaults to GITLAB_PROJECT."""
+    proj, enc, err = _addressed(args)
+    if err:
+        return err
     r = _request("GET", f"/projects/{_enc_proj(proj)}/issues/{enc}")
     if not r["ok"]:
         return r
     d = r["data"] if isinstance(r["data"], dict) else {}
-    comments: list = []
-    n = _request("GET", f"/projects/{_enc_proj(proj)}/issues/"
-                 f"{enc}/notes",
-                 params={"per_page": 50, "sort": "asc"})
-    if n["ok"] and isinstance(n["data"], list):
-        comments = [{"author": ((c.get("author") or {}) or {}).get("name"),
-                     "body": (c.get("body") or "")[:4000]}
-                    for c in n["data"] if not c.get("system")]
     return {"ok": True, "iid": d.get("iid"), "title": d.get("title"),
             "state": d.get("state"),
             "author": ((d.get("author") or {}) or {}).get("name"),
             "assignee": ((d.get("assignee") or {}) or {}).get("name"),
             "labels": d.get("labels") or [],
             "description": (d.get("description") or "")[:_BODY_CAP],
-            "comments": comments, "url": d.get("web_url")}
+            "comments": _issue_notes(proj, enc), "url": d.get("web_url")}
 
 
 def gitlab_create(args: dict, cwd: str | None = None) -> dict:
@@ -753,6 +762,84 @@ def _truthy(val, default: bool = True) -> bool:
     return bool(val)
 
 
+def _pipeline_status_flags(out: dict, status: str) -> None:
+    out["finished"] = status in _TERMINAL
+    out["passed"] = status == "success"
+    if status == "manual":
+        out["blocked_on_manual"] = True
+        out["hint"] = ("pipeline is waiting for a manual job — it will not "
+                       "progress until someone runs it")
+
+
+def _failed_job_logs(proj, args: dict, failed: list) -> tuple[dict, str]:
+    """``(logs by job name, truncation note)`` for the failed jobs."""
+    tail = _pipe_int(args, "log_chars", _LOG_TAIL, 200, 20_000)
+    logs: dict = {}
+    for j in failed[:_MAX_TRACES]:
+        txt, note = _job_trace(proj, j.get("id"), tail)
+        logs[str(j.get("name"))] = txt or f"({note or 'no log'})"
+        if note and txt:
+            logs[str(j.get("name")) + " [note]"] = note
+    # Never let a cap look like completeness.
+    truncated = (f"{len(failed)} jobs failed; showing logs for the first "
+                 f"{_MAX_TRACES}") if len(failed) > _MAX_TRACES else ""
+    return logs, truncated
+
+
+def _explain_failure(out: dict, proj, failed: list) -> None:
+    """Something failed and it was not any job we can see. Say that, rather than
+    hand back an empty list that reads as "nothing failed"."""
+    bridges = _fetch_bridges(proj, out.get("id"))
+    bad = [b for b in bridges
+           if str(b.get("status")).lower() in ("failed", "canceled",
+                                               "cancelled", "canceling")
+           and not b.get("allow_failure")]
+    if bad:
+        # Reported even when a job ALSO failed: a parent can fail for both
+        # reasons, and only mentioning the child when nothing else failed hid it
+        # in exactly the messier case.
+        out["failed_child_pipelines"] = bad
+        if not failed:
+            out["hint"] = ("this pipeline failed because a TRIGGERED CHILD "
+                           "pipeline failed — read that one for the cause")
+    elif out.get("jobs_error"):
+        # We did not READ the jobs, so an empty list is UNREAD, not empty — and
+        # offering three speculative causes while the actual error sits two keys
+        # above sends the reader to debug a .gitlab-ci.yml that is perfectly fine.
+        out["hint"] = (f"pipeline is failed, and the job list could not be "
+                       f"read ({out['jobs_error']}) — the cause is not known "
+                       f"from this result, not absent from it")
+    elif not failed:
+        out["hint"] = ("pipeline is failed but no failed job was found: it may "
+                       "be a trigger/bridge failure, a job outside the listed "
+                       "pages, or a pipeline-level error (e.g. an invalid "
+                       ".gitlab-ci.yml)")
+
+
+def _collect_jobs(out: dict, proj, status: str) -> tuple[list, list, bool]:
+    """``(jobs, failed_jobs, keep_going)``.
+
+    On a job-list error the pipeline itself read fine — say so rather than
+    losing it. But do NOT stop early on a FAILED pipeline: that skipped the
+    bridge check and the "no failed job found" hint, leaving `status: failed`
+    with no explanation at all, which is the symptom, not the fix.
+    """
+    jobs, jerr, jnote = _fetch_jobs(proj, out.get("id"))
+    if jerr:
+        out["jobs_error"] = jerr.get("error")
+        if status != "failed":
+            return [], [], False
+        return [], [], True
+    # allow_failure jobs did not fail the pipeline — they are kept out of the
+    # blamed list, and out of the round trips we spend on logs.
+    failed = [j for j in jobs
+              if str(j.get("status")).lower() == "failed"
+              and not j.get("allow_failure")]
+    if jnote:
+        out["jobs_truncated"] = jnote
+    return jobs, failed, True
+
+
 def gitlab_pipeline(args: dict, cwd: str | None = None, *,
                     skip_jobs: bool = False) -> dict:
     """READ one CI pipeline: status, jobs, and the log tail of what failed.
@@ -767,92 +854,216 @@ def gitlab_pipeline(args: dict, cwd: str | None = None, *,
     d, err = _resolve_pipeline(proj, args)
     if err:
         return err
-    d = d or {}
-    out = {"ok": True, "project": proj, **_pipeline_summary(d)}
+    out = {"ok": True, "project": proj, **_pipeline_summary(d or {})}
     status = str(out.get("status") or "").lower()
-    out["finished"] = status in _TERMINAL
-    out["passed"] = status == "success"
-    if status == "manual":
-        out["blocked_on_manual"] = True
-        out["hint"] = ("pipeline is waiting for a manual job — it will not "
-                       "progress until someone runs it")
+    _pipeline_status_flags(out, status)
     if skip_jobs:
         # A PARAMETER, not a key in `args`. As a key it was model-injectable:
         # `_loop` hands the raw parsed args to the tool, the schema allows
         # additional properties, and the wrapper passes them straight through —
         # so a prompt-injected `"_skip_jobs": true` produced a failed pipeline
-        # with no failed_jobs, no logs, no bridge check and no hint. The
-        # comment claiming "nothing the model writes can" set this was simply
-        # false; a signature the model cannot reach is the way to be sure.
+        # with no failed_jobs, no logs, no bridge check and no hint. A signature
+        # the model cannot reach is the way to be sure.
         out["jobs_omitted"] = "polling snapshot — jobs and logs not fetched"
         return out
-    jobs, jerr, jnote = _fetch_jobs(proj, out.get("id"))
-    if jerr:
-        # The pipeline itself read fine; say so rather than losing it. But do
-        # NOT return early on a FAILED pipeline — that skipped the bridge check
-        # and the "no failed job found" hint, leaving `status: failed` with no
-        # explanation at all, which is the symptom, not the fix.
-        out["jobs_error"] = jerr.get("error")
-        if status != "failed":
-            return out
-        jobs, failed, jnote = [], [], ""
-    else:
-        failed = [j for j in jobs
-                  if str(j.get("status")).lower() == "failed"
-                  and not j.get("allow_failure")]
-    # allow_failure jobs did not fail the pipeline — they are kept out of the
-    # blamed list above, and out of the round trips we spend on logs.
+    jobs, failed, keep_going = _collect_jobs(out, proj, status)
+    if not keep_going:
+        return out
     out["failed_jobs"] = [j.get("name") for j in failed]
-    if jnote:
-        out["jobs_truncated"] = jnote
-    # LOGS BEFORE JOBS in the dict. json.dumps preserves insertion order and
-    # the loop truncates the serialised observation, so a 40-job `jobs` array
-    # sitting in front of `logs` sliced the failure reason out of what the
-    # model actually reads — at 14 jobs, measured.
+    # LOGS BEFORE JOBS in the dict. json.dumps preserves insertion order and the
+    # loop truncates the serialised observation, so a 40-job `jobs` array sitting
+    # in front of `logs` sliced the failure reason out of what the model actually
+    # reads — at 14 jobs, measured.
     if failed and _truthy(args.get("logs")):
-        tail = _pipe_int(args, "log_chars", _LOG_TAIL, 200, 20_000)
-        logs: dict = {}
-        for j in failed[:_MAX_TRACES]:
-            txt, note = _job_trace(proj, j.get("id"), tail)
-            logs[str(j.get("name"))] = txt or f"({note or 'no log'})"
-            if note and txt:
-                logs[str(j.get("name")) + " [note]"] = note
-        out["logs"] = logs
-        if len(failed) > _MAX_TRACES:
-            # Never let a cap look like completeness.
-            out["logs_truncated"] = (f"{len(failed)} jobs failed; showing logs "
-                                     f"for the first {_MAX_TRACES}")
+        out["logs"], truncated = _failed_job_logs(proj, args, failed)
+        if truncated:
+            out["logs_truncated"] = truncated
     if status == "failed":
-        # Something failed and it was not any job we can see. Say that, rather
-        # than hand back an empty list that reads as "nothing failed".
-        bridges = _fetch_bridges(proj, out.get("id"))
-        bad = [b for b in bridges
-               if str(b.get("status")).lower() in ("failed", "canceled",
-                                                   "cancelled", "canceling")
-               and not b.get("allow_failure")]
-        if bad:
-            # Reported even when a job ALSO failed: a parent can fail for both
-            # reasons, and only mentioning the child when nothing else failed
-            # hid it in exactly the messier case.
-            out["failed_child_pipelines"] = bad
-            if not failed:
-                out["hint"] = ("this pipeline failed because a TRIGGERED CHILD "
-                               "pipeline failed — read that one for the cause")
-        elif out.get("jobs_error"):
-            # We did not READ the jobs, so an empty list is UNREAD, not empty —
-            # and offering three speculative causes while the actual error sits
-            # two keys above sends the reader to debug a .gitlab-ci.yml that is
-            # perfectly fine.
-            out["hint"] = (f"pipeline is failed, and the job list could not be "
-                           f"read ({out['jobs_error']}) — the cause is not "
-                           f"known from this result, not absent from it")
-        elif not failed:
-            out["hint"] = ("pipeline is failed but no failed job was found: it "
-                           "may be a trigger/bridge failure, a job outside the "
-                           "listed pages, or a pipeline-level error (e.g. an "
-                           "invalid .gitlab-ci.yml)")
+        _explain_failure(out, proj, failed)
     out["jobs"] = jobs
     return out
+
+
+class _WatchBudget:
+    """How long one pipeline watch may run, and whether Stop can reach it."""
+
+    __slots__ = ("interval", "budget", "max_checks", "sid", "chat_cancel",
+                 "unattended")
+
+    def __init__(self, args: dict) -> None:
+        self.interval = _pipe_int(args, "interval_s", 20, 5, 3600)
+        # This SLEEPS inside one tool call on the producer thread: the step cap,
+        # the turn deadline and mid-run steering are all checked BETWEEN steps,
+        # so none of them bound it, and there are only eight producer slots.
+        # Same discipline and the same ceiling as watch_until.
+        self.budget = _pipe_int(args, "timeout_s", 600, 10,
+                                _pipe_env("AIFORGE_GITLAB_WATCH_MAX_SECONDS", 1800))
+        self.max_checks = _pipe_int(args, "max_checks", 60, 1,
+                                    _pipe_env("AIFORGE_GITLAB_WATCH_MAX_CHECKS", 200))
+        self.chat_cancel = None
+        self.sid = None
+        try:
+            from aiforge_core.runtime import chat_cancel as _cc
+            self.chat_cancel = _cc
+            self.sid = _cc.active()
+        except Exception:  # noqa: BLE001 — no cancel machinery → unattended
+            self.sid = None
+        self.unattended = self.sid is None
+        if self.unattended:
+            # No cancel handle at all: the jobs runner and /api/chat/agent pass
+            # session_id=None, and chat_cancel is a ContextVar that does not
+            # cross into a worker thread. NOTHING can interrupt this loop, so it
+            # does not get a long one — fail SHORT, not open. Reported back,
+            # because a caller that asked for 600s and silently got 180 cannot
+            # explain its own timeout.
+            #
+            # NOT the team/ADK path: chat_pipeline._drive and
+            # parallel_subtasks._stream both call `chat_cancel.set_active(...)`
+            # inside their driver thread precisely so Stop reaches the tools they
+            # run. Those get a real sid, so they are attended and keep the full
+            # budget — which is why the doer wrapper's docstring had to stop
+            # promising a clamp.
+            self.budget = min(self.budget, _pipe_env(
+                "AIFORGE_GITLAB_WATCH_UNATTENDED_SECONDS", 180))
+            self.max_checks = min(self.max_checks, 10)
+
+    def cancelled(self) -> bool:
+        return not self.unattended and self.chat_cancel.is_cancelled(self.sid)
+
+
+def _watch_envelope(checks: int, started: float) -> dict:
+    # No `requests` key. It counted gitlab_pipeline CALLS, so it was always
+    # `checks` or `checks + 1` — carrying no information beyond `checks` while
+    # its name implied HTTP volume, which is 1-20x higher.
+    import time as _time
+    return {"checks": checks,
+            "elapsed_s": round(_time.monotonic() - started, 1)}
+
+
+def _watch_stopped(state: dict, checks: int, started: float, err: dict) -> dict:
+    # SPREAD FIRST, explicit keys last. The other order let `last["ok"]`
+    # overwrite `ok: False`, so a watch the user stopped came back as a watch
+    # that succeeded — and an error dict overwrote "stopped by user" with an
+    # HTTP error, making Stop indistinguishable from a failure.
+    out = {**state, **_watch_envelope(checks, started),
+           "ok": False, "stopped": True, "error": "stopped by user"}
+    if err and state:
+        # The snapshot is real but old — the same thing the timeout path says,
+        # and for the same reason.
+        out["stale"] = True
+        out["last_poll_error"] = err.get("error")
+    return out
+
+
+def _watch_finished(args: dict, cwd, res: dict, pinned, checks: int,
+                    started: float) -> dict:
+    """The pipeline is done — now, and only now, pay for the jobs and logs."""
+    final = gitlab_pipeline({**args, "pipeline_id": pinned}, cwd)
+    if final.get("ok"):
+        return {**final, **_watch_envelope(checks, started)}
+    # The ONE call that was going to fetch the logs failed (a 429 right at
+    # completion is common). Falling back silently to the logs=False snapshot
+    # hands back a clean, finished, failed result naming a job with no log and
+    # no reason there is no log — which reads as "there was no log".
+    return {**res, **_watch_envelope(checks, started),
+            "logs_error": final.get("error"),
+            "hint": ("the pipeline finished, but re-reading it for the job logs "
+                     "failed — read it again with gitlab_pipeline")}
+
+
+def _watch_fatal(good: dict, res: dict, checks: int, started: float) -> dict:
+    """A bad token or a missing project fails identically forever; looping on it
+    burns the whole budget to learn nothing.
+
+    But we may already have READ this pipeline (a token rotated mid-watch, a
+    project archived). The docstring promises `passed` on every return that
+    observed the pipeline at all — discarding `good` here broke that promise on
+    the one path that had the data and dropped it.
+    """
+    out = {**good, **res, **_watch_envelope(checks, started)}
+    if good:
+        out["stale"] = True
+        out["last_poll_error"] = res.get("error")
+    return out
+
+
+def _watch_sleep(b: "_WatchBudget") -> bool:
+    """Sleep one interval in slices so Stop is honoured mid-wait, not after it.
+    False when the watch was cancelled during the wait."""
+    import time as _time
+    waited = 0.0
+    while waited < b.interval:
+        if b.cancelled():
+            return False
+        _time.sleep(min(1.0, b.interval - waited))
+        waited += 1.0
+    return True
+
+
+def _watch_timeout(b: "_WatchBudget", good: dict, err: dict, checks: int,
+                   started: float) -> dict:
+    tail = {**_watch_envelope(checks, started), "timed_out": True}
+    if b.unattended:
+        # Both halves, and only the one that BIT. Reporting the seconds budget
+        # unconditionally read as "the 180s ran out" when what actually ended the
+        # run was the 10-check cap at 45s — the same complaint about a silently
+        # shortened budget, one field over.
+        if checks >= b.max_checks:
+            tail["unattended_max_checks"] = b.max_checks
+        else:
+            tail["unattended_budget_s"] = b.budget
+    if not good:
+        # We never once read the pipeline. Saying ok:True here handed the agent a
+        # successful-looking envelope carrying an HTTP error and no `passed` key
+        # at all — the one shape from which a model can tell a user the build
+        # passed when nothing was ever observed.
+        return {**(err or {"ok": False, "error": "no_successful_poll"}),
+                **tail, "ok": False,
+                "reason": "the pipeline was never successfully read"}
+    out = {**good, **tail, "ok": True}
+    if err:
+        # Ended on a failed poll: the data is the last GOOD one, and it is old.
+        out["stale"] = True
+        out["last_poll_error"] = err.get("error")
+    out["reason"] = (f"still {good.get('status') or 'unknown'} after "
+                     f"{checks} check(s) — the watch gave up, "
+                     f"the pipeline did not")
+    return out
+
+
+def _poll_args(args: dict, pinned) -> dict:
+    """Args for ONE poll.
+
+    ``logs=False`` while polling: a stage-1 failure with later stages still
+    running re-downloaded up to three job traces on EVERY poll and threw all but
+    the last away — fetched once, on the check that finishes. ``skip_jobs`` at
+    the call site does the same for the job list: only ``finished`` decides
+    whether to keep polling, and walking up to five 100-job pages every poll
+    re-fetched — and discarded — six times the HTTP the watch actually needed.
+    """
+    out = {**args, "logs": False}
+    if pinned:
+        out["pipeline_id"] = pinned
+    return out
+
+
+def _one_check(args: dict, cwd, pinned, good: dict, err: dict, checks: int,
+               started: float):
+    """One poll. Returns ``(final_result_or_None, good, err, pinned)``."""
+    res = gitlab_pipeline(_poll_args(args, pinned), cwd, skip_jobs=True)
+    if not res.get("ok"):
+        if _is_fatal(res):
+            return _watch_fatal(good, res, checks, started), good, res, pinned
+        return None, good, res, pinned
+    # PIN the id after the first successful resolve. A ref-addressed watch
+    # re-ran "latest pipeline on this ref" every poll, so a colleague pushing
+    # mid-watch silently re-targeted it — and it would then report `passed` for
+    # a pipeline the user never asked about while theirs failed.
+    pinned = pinned or res.get("id")
+    if res.get("finished"):
+        return (_watch_finished(args, cwd, res, pinned, checks, started),
+                res, {}, pinned)
+    return None, res, {}, pinned
 
 
 def gitlab_pipeline_watch(args: dict, cwd: str | None = None) -> dict:
@@ -871,165 +1082,29 @@ def gitlab_pipeline_watch(args: dict, cwd: str | None = None) -> dict:
     is ``passed``, present on every return that observed the pipeline at all.
     """
     import time as _time
-    proj = _proj_id(args)
-    if not proj:
+    if not _proj_id(args):
         return {"ok": False, "error": "missing 'project'",
                 "hint": "pass project=\"group/proj\" or set GITLAB_PROJECT"}
-    interval = _pipe_int(args, "interval_s", 20, 5, 3600)
-    # This SLEEPS inside one tool call on the producer thread: the step cap,
-    # the turn deadline and mid-run steering are all checked BETWEEN steps, so
-    # none of them bound it, and there are only eight producer slots. Same
-    # discipline and the same ceiling as watch_until.
-    budget = _pipe_int(args, "timeout_s", 600, 10,
-                       _pipe_env("AIFORGE_GITLAB_WATCH_MAX_SECONDS", 1800))
-    max_checks = _pipe_int(args, "max_checks", 60, 1,
-                           _pipe_env("AIFORGE_GITLAB_WATCH_MAX_CHECKS", 200))
-
-    sid = None
-    chat_cancel = None
-    try:
-        from aiforge_core.runtime import chat_cancel as _cc
-        chat_cancel = _cc
-        sid = _cc.active()
-    except Exception:  # noqa: BLE001 — no cancel machinery → treat as unattended
-        sid = None
-    unattended = sid is None
-    if unattended:
-        # No cancel handle at all: the jobs runner and /api/chat/agent pass
-        # session_id=None, and chat_cancel is a ContextVar that does not cross
-        # into a worker thread. NOTHING can interrupt this loop, so it does not
-        # get a long one — fail SHORT, not open. Reported back, because a
-        # caller that asked for 600s and silently got 180 cannot explain its
-        # own timeout.
-        #
-        # NOT the team/ADK path, whatever an earlier version of this comment
-        # said: chat_pipeline._drive and parallel_subtasks._stream both call
-        # `chat_cancel.set_active(session_id)` inside their driver thread
-        # precisely so Stop reaches the tools they run. Those get a real sid,
-        # so they are attended and keep the full budget — which is correct, and
-        # is why the doer wrapper's docstring had to stop promising a clamp.
-        budget = min(budget, _pipe_env("AIFORGE_GITLAB_WATCH_UNATTENDED_SECONDS", 180))
-        max_checks = min(max_checks, 10)
-
-    def _envelope(checks: int, started: float) -> dict:
-        # No `requests` key. It counted gitlab_pipeline CALLS, so it was always
-        # `checks` or `checks + 1` — carrying no information beyond `checks`
-        # while its name implied HTTP volume, which is 1-20x higher.
-        return {"checks": checks,
-                "elapsed_s": round(_time.monotonic() - started, 1)}
-
-    def _stopped(state: dict, checks: int, started: float, err: dict) -> dict:
-        # SPREAD FIRST, explicit keys last. The other order let `last["ok"]`
-        # overwrite `ok: False`, so a watch the user stopped came back as a
-        # watch that succeeded — and an error dict overwrote "stopped by user"
-        # with an HTTP error, making Stop indistinguishable from a failure.
-        out = {**state, **_envelope(checks, started),
-               "ok": False, "stopped": True, "error": "stopped by user"}
-        if err and state:
-            # The snapshot is real but old — the same thing the timeout path
-            # says, and for the same reason.
-            out["stale"] = True
-            out["last_poll_error"] = err.get("error")
-        return out
-
+    b = _WatchBudget(args)
     started = _time.monotonic()
     checks = 0
     pinned = args.get("pipeline_id") or args.get("id") or None
     good: dict = {}          # the last snapshot we actually READ
     err: dict = {}           # the last failed poll, if the run ended on one
-    while checks < max_checks:
-        if not unattended and chat_cancel.is_cancelled(sid):
-            return _stopped(good, checks, started, err)
+    while checks < b.max_checks:
+        if b.cancelled():
+            return _watch_stopped(good, checks, started, err)
         checks += 1
-        # `logs=False` while polling: a stage-1 failure with later stages still
-        # running re-downloaded up to three job traces on EVERY poll and threw
-        # all but the last away. Fetched once, on the check that finishes.
-        # `jobs=False` as well as `logs=False`: only `finished` decides
-        # whether to keep polling, and walking up to five 100-job pages every
-        # poll re-fetched — and discarded — six times the HTTP the watch
-        # actually needed. Fix #8 removed the log re-download; fix #9 quietly
-        # put a bigger cost back in its place.
-        poll_args = {**args, "logs": False}
-        if pinned:
-            poll_args["pipeline_id"] = pinned
-        res = gitlab_pipeline(poll_args, cwd, skip_jobs=True)
-        if res.get("ok"):
-            good, err = res, {}
-            # PIN the id after the first successful resolve. A ref-addressed
-            # watch re-ran "latest pipeline on this ref" every poll, so a
-            # colleague pushing mid-watch silently re-targeted it — and it
-            # would then report `passed` for a pipeline the user never asked
-            # about while theirs failed.
-            pinned = pinned or res.get("id")
-            if res.get("finished"):
-                # Now, and only now, pay for the jobs and the logs.
-                final = gitlab_pipeline({**args, "pipeline_id": pinned}, cwd)
-                if final.get("ok"):
-                    return {**final, **_envelope(checks, started)}
-                # The ONE call that was going to fetch the logs failed (a 429
-                # right at completion is common). Falling back silently to the
-                # logs=False snapshot hands back a clean, finished, failed
-                # result naming a job with no log and no reason there is no
-                # log — which reads as "there was no log".
-                return {**res, **_envelope(checks, started),
-                        "logs_error": final.get("error"),
-                        "hint": ("the pipeline finished, but re-reading it for "
-                                 "the job logs failed — read it again with "
-                                 "gitlab_pipeline")}
-        else:
-            err = res
-            if _is_fatal(res):
-                # A bad token or a missing project fails identically forever;
-                # looping on it burns the whole budget to learn nothing.
-                #
-                # But we may already have READ this pipeline (a token rotated
-                # mid-watch, a project archived). The docstring promises
-                # `passed` on every return that observed the pipeline at all —
-                # discarding `good` here broke that promise on the one path
-                # that had the data and dropped it.
-                out = {**good, **res, **_envelope(checks, started)}
-                if good:
-                    out["stale"] = True
-                    out["last_poll_error"] = res.get("error")
-                return out
-        elapsed = _time.monotonic() - started
-        if elapsed + interval > budget or checks >= max_checks:
+        done, good, err, pinned = _one_check(args, cwd, pinned, good, err,
+                                             checks, started)
+        if done is not None:
+            return done
+        if (_time.monotonic() - started) + b.interval > b.budget \
+                or checks >= b.max_checks:
             break
-        # Sleep in slices so Stop is honoured mid-wait, not after it.
-        waited = 0.0
-        while waited < interval:
-            if not unattended and chat_cancel.is_cancelled(sid):
-                return _stopped(good, checks, started, err)
-            _time.sleep(min(1.0, interval - waited))
-            waited += 1.0
-
-    tail = {**_envelope(checks, started), "timed_out": True}
-    if unattended:
-        # Both halves, and only the one that BIT. Reporting the seconds budget
-        # unconditionally read as "the 180s ran out" when what actually ended
-        # the run was the 10-check cap at 45s — the same complaint the comment
-        # above makes about a silently shortened budget, one field over.
-        if checks >= max_checks:
-            tail["unattended_max_checks"] = max_checks
-        else:
-            tail["unattended_budget_s"] = budget
-    if not good:
-        # We never once read the pipeline. Saying ok:True here handed the agent
-        # a successful-looking envelope carrying an HTTP error and no `passed`
-        # key at all — the one shape from which a model can tell a user the
-        # build passed when nothing was ever observed.
-        return {**(err or {"ok": False, "error": "no_successful_poll"}),
-                **tail, "ok": False,
-                "reason": "the pipeline was never successfully read"}
-    out = {**good, **tail, "ok": True}
-    if err:
-        # Ended on a failed poll: the data is the last GOOD one, and it is old.
-        out["stale"] = True
-        out["last_poll_error"] = err.get("error")
-    out["reason"] = (f"still {good.get('status') or 'unknown'} after "
-                     f"{checks} check(s) — the watch gave up, "
-                     f"the pipeline did not")
-    return out
+        if not _watch_sleep(b):
+            return _watch_stopped(good, checks, started, err)
+    return _watch_timeout(b, good, err, checks, started)
 
 
 __all__ = ["gitlab_search", "gitlab_read", "gitlab_create", "gitlab_update",
