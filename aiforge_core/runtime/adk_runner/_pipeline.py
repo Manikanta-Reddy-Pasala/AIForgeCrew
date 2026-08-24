@@ -19,6 +19,213 @@ from ._base import log, tickets_mod
 from ._verdict import _extract_live_verifier, _pipeline_deadline_s
 
 
+class _CtxLimits:
+    """The trimming budget, read from env once instead of by each closure."""
+
+    __slots__ = ("keep_invocations", "max_contents", "strategy",
+                 "max_chars", "max_part_chars", "min_keep")
+
+    def __init__(self) -> None:
+        self.keep_invocations = _int_env("AIFORGE_CONTEXT_KEEP_INVOCATIONS", 12)
+        self.max_contents = _int_env("AIFORGE_CONTEXT_MAX_CONTENTS", 60)
+        self.strategy = os.environ.get("AIFORGE_CONDENSER_STRATEGY", "").strip()
+        # ~4 chars/token; budget in tokens then converted to a char ceiling.
+        max_tokens = _int_env("AIFORGE_CONTEXT_MAX_TOKENS",
+                              int(_context_window() * _history_frac()))
+        self.max_chars = max(4000, max_tokens * 4)
+        self.max_part_chars = _int_env("AIFORGE_CONTEXT_MAX_PART_CHARS", 24000)
+        self.min_keep = max(4, _int_env("AIFORGE_CONTEXT_MIN_KEEP", 8))
+
+
+def _int_env(key: str, default: int) -> int:
+    try:
+        return int(os.environ.get(key, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _context_window() -> int:
+    try:
+        from aiforge_core.config import runtime_settings as _rs
+        return int(_rs.get("context_window") or 131072)
+    except Exception:  # noqa: BLE001
+        return 131072
+
+
+def _history_frac() -> float:
+    """The same condense trigger the simple ReAct loop uses.
+
+    Team mode and mid-run steers then condense EARLY too, instead of running
+    near-full where small models drift and invent edits. Soft-fails to the old
+    0.55 when the import is unavailable.
+    """
+    try:
+        from aiforge_core.runtime.chat_agent._context._window import (
+            _history_fraction)
+        return _history_fraction()
+    except Exception:  # noqa: BLE001
+        return 0.55
+
+
+def _text_of(c) -> str:
+    try:
+        return " ".join(p.text for p in (c.parts or [])
+                        if getattr(p, "text", None))
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _dedupe_adjacent_user(contents: list) -> list:
+    """Drop adjacent duplicate user-text contents. single_turn nodes
+    append their seed input to the SHARED session events (shallow
+    session copy in ADK's wrapper), so every chat agent replays the
+    ticket+memory seed twice back-to-back — pure token waste."""
+    out: list = []
+    for c in contents:
+        dup = (out and getattr(c, "role", "") == "user"
+               and getattr(out[-1], "role", "") == "user"
+               and _text_of(c) and _text_of(c) == _text_of(out[-1]))
+        if not dup:
+            out.append(c)
+    return out
+
+
+def _content_chars(c) -> int:
+    """Estimate a content's character weight — text parts plus a rough
+    size for function_response payloads (the big tool results)."""
+    total = 0
+    for p in (getattr(c, "parts", None) or []):
+        t = getattr(p, "text", None)
+        if t:
+            total += len(t)
+            continue
+        fr = getattr(p, "function_response", None)
+        if fr is not None:
+            with contextlib.suppress(Exception):
+                total += len(str(getattr(fr, "response", "") or ""))
+    return total
+
+
+def _shorten(s: str, cap: int) -> str:
+    """Head + tail of ``s``, middle elided, when it exceeds ``cap``."""
+    if len(s) <= cap:
+        return s
+    half = max(1000, cap // 2)
+    return (s[:half] + f"\n…[truncated {len(s) - cap} "
+            f"chars to fit context]…\n" + s[-half:])
+
+
+def _capped_part(p, cap: int, gtypes):
+    """``p`` truncated to ``cap`` if it is oversized text or a fat function
+    response; the part itself otherwise."""
+    t = getattr(p, "text", None)
+    if t and len(t) > cap:
+        return gtypes.Part.from_text(text=_shorten(t, cap))
+    fr = getattr(p, "function_response", None)
+    if fr is None:
+        return p
+    resp = getattr(fr, "response", None)
+    if len(str(resp or "")) <= cap or not isinstance(resp, dict):
+        return p
+    half = max(1000, cap // 2)
+    trimmed = {k: (_shorten(v, cap) if isinstance(v, str) and len(v) > half else v)
+               for k, v in resp.items()}
+    return gtypes.Part.from_function_response(
+        name=getattr(fr, "name", "") or "", response=trimmed)
+
+
+def _cap_content(c, cap: int):
+    """Return ``c`` if within the per-content cap, else a rebuilt copy
+    with oversized text / function_response payloads truncated (head +
+    tail kept, middle elided). Falls back to the original on any error
+    so a structure we don't understand is never dropped."""
+    if cap <= 0 or _content_chars(c) <= cap:
+        return c
+    try:
+        from google.genai import types as gtypes
+        parts = [_capped_part(p, cap, gtypes)
+                 for p in (getattr(c, "parts", None) or [])]
+        return gtypes.Content(role=getattr(c, "role", "user"), parts=parts)
+    except Exception:  # noqa: BLE001
+        return c
+
+
+def _window(contents: list, n: int, adjust, is_human) -> list:
+    """The seed user message plus the last ``n`` contents, split adjusted so a
+    function response is never orphaned from its call."""
+    if n <= 0 or len(contents) <= n:
+        return list(contents)
+    split = len(contents) - n
+    with contextlib.suppress(Exception):
+        split = adjust(contents, split)
+    head_seed = [c for c in contents[:split] if is_human(c)][:1]
+    return head_seed + list(contents[split:])
+
+
+def _tail_trimmer(lim: "_CtxLimits", adjust, is_human):
+    """ADK ``custom_filter``: dedupe seed echoes, cap oversized contents, then
+    keep the seed user message + the most recent contents under BOTH the count
+    cap and the token budget (item-3: protect slow 120B models)."""
+    def _tail_trim(contents):
+        contents = [_cap_content(c, lim.max_part_chars)
+                    for c in _dedupe_adjacent_user(contents)]
+        keep_n = lim.max_contents if lim.max_contents > 0 else len(contents)
+        out = _window(contents, keep_n, adjust, is_human)
+        # Token-budget pass: if the kept window is still too heavy, shrink
+        # the tail window until under the char ceiling (or we hit min_keep).
+        while (lim.max_chars > 0 and keep_n > lim.min_keep
+               and sum(_content_chars(c) for c in out) > lim.max_chars):
+            keep_n -= 4
+            out = _window(contents, keep_n, adjust, is_human)
+        return out
+    return _tail_trim
+
+
+def _as_events(contents: list) -> list[dict]:
+    return [{"type": "content", "role": getattr(c, "role", ""),
+             "text": " ".join(getattr(p, "text", "") or ""
+                              for p in (getattr(c, "parts", None) or [])
+                              if getattr(p, "text", None))}
+            for c in contents]
+
+
+def _condensing_filter(tail_trim, strategy: str):
+    """Sub #4: optional aggressive condenser layered over the content-tail
+    trim. ``amortized`` compresses the oldest half into one synthetic block;
+    ``recent`` is keep-tail only."""
+    from aiforge_core.runtime.condensers import condense
+
+    def _filter(contents):
+        contents = tail_trim(contents)
+        condensed = condense(_as_events(contents), strategy)
+        # ADK custom_filter must return list[Content]; align tail-N of the
+        # condensed events to tail-N of the real contents and keep those
+        # objects. ``amortized`` prepends one synthetic block, which we pass
+        # through as a fresh Content.
+        summarised = bool(condensed) and condensed[0].get("role") == "condenser"
+        keep_n = len(condensed) - (1 if summarised else 0)
+        tail = list(contents[-keep_n:]) if keep_n > 0 else []
+        if not summarised:
+            return tail
+        from google.genai import types as gtypes
+        summary = gtypes.Content(
+            role="user",
+            parts=[gtypes.Part.from_text(text=condensed[0]["text"])])
+        return [summary] + tail
+    return _filter
+
+
+def _phantom_tool_guard() -> list:
+    """Keep the pipeline alive when a text agent emits a hallucinated
+    function_call — ADK would otherwise raise "Tool X not found" and abort the
+    whole run. See tool_error_plugin."""
+    try:
+        from ..tool_error_plugin import PhantomToolGuardPlugin
+        return [PhantomToolGuardPlugin()]
+    except Exception:  # noqa: BLE001 — resilience is best-effort
+        return []
+
+
 def _build_context_plugins() -> list:
     """Wire ADK's ``ContextFilterPlugin`` so long-running Doer loops
     don't blow past the LM's context window.
@@ -33,11 +240,10 @@ def _build_context_plugins() -> list:
     BUT an "invocation" starts at a *human-user* message, and a Workflow
     graph run has exactly ONE (the seed prompt): the invocation trim
     never fires. The real work is done by the content-tail custom
-    filter below: keep the seed user message + the most recent
-    ``AIFORGE_CONTEXT_MAX_CONTENTS`` contents (split adjusted so a
-    function response is never orphaned from its call). Critical
-    hand-offs (plan/context/verdicts) are injected from session state
-    via ``{key?}`` templating, so trimming old history is safe.
+    filter (:func:`_tail_trimmer`): keep the seed user message + the most
+    recent ``AIFORGE_CONTEXT_MAX_CONTENTS`` contents. Critical hand-offs
+    (plan/context/verdicts) are injected from session state via ``{key?}``
+    templating, so trimming old history is safe.
 
     Env knobs:
       AIFORGE_CONTEXT_MAX_CONTENTS=60      → contents to retain (tail)
@@ -50,216 +256,24 @@ def _build_context_plugins() -> list:
     try:
         from google.adk.plugins.context_filter_plugin import (
             ContextFilterPlugin,
-            _adjust_split_index_to_avoid_orphaned_function_responses,
-            _is_human_user_content,
+            _adjust_split_index_to_avoid_orphaned_function_responses as _adjust,
+            _is_human_user_content as _is_human,
         )
     except ImportError:
         log.warning("context_filter: ContextFilterPlugin not available — "
                     "ADK older than 2.0b? skipping")
         return []
-    keep = int(os.environ.get("AIFORGE_CONTEXT_KEEP_INVOCATIONS", "12"))
-    max_contents = int(os.environ.get("AIFORGE_CONTEXT_MAX_CONTENTS", "60"))
-    strategy = os.environ.get("AIFORGE_CONDENSER_STRATEGY", "").strip()
 
-    # Token-aware budget (item-3 / 120B fix). Count-only trimming let a
-    # single huge tool result (e.g. file_read of a 4K-line file) blow the
-    # window regardless of how few contents we keep. Two guards:
-    #   1. per-content cap — truncate any one content over MAX_PART_CHARS
-    #      so one giant result can't dominate the prompt.
-    #   2. global token budget — after the count trim, drop more from the
-    #      head until the estimated token total is under the budget, which
-    #      defaults to ~55% of the role's context window.
-    def _int_env(key: str, default: int) -> int:
-        try:
-            return int(os.environ.get(key, str(default)))
-        except (TypeError, ValueError):
-            return default
-
-    try:
-        from aiforge_core.config import runtime_settings as _rs
-        _ctx_win = int(_rs.get("context_window") or 131072)
-    except Exception:  # noqa: BLE001
-        _ctx_win = 131072
-    # ~4 chars/token; budget in tokens then converted to a char ceiling.
-    # Default the fraction to the SAME condense trigger the simple ReAct loop
-    # uses (_history_fraction — cave standard → ~40%, opted-out → 0.85), so team
-    # mode AND mid-run steers condense EARLY too instead of running near-full
-    # where small models drift + invent edits. Explicit AIFORGE_CONTEXT_MAX_TOKENS
-    # still overrides. Soft-fails to the old 0.55 if the import is unavailable.
-    try:
-        from aiforge_core.runtime.chat_agent._context._window import (
-            _history_fraction)
-        _frac = _history_fraction()
-    except Exception:  # noqa: BLE001
-        _frac = 0.55
-    max_tokens = _int_env("AIFORGE_CONTEXT_MAX_TOKENS", int(_ctx_win * _frac))
-    max_chars = max(4000, max_tokens * 4)
-    max_part_chars = _int_env("AIFORGE_CONTEXT_MAX_PART_CHARS", 24000)
-    min_keep = max(4, _int_env("AIFORGE_CONTEXT_MIN_KEEP", 8))
-
-    def _text_of(c) -> str:
-        try:
-            return " ".join(p.text for p in (c.parts or [])
-                            if getattr(p, "text", None))
-        except Exception:
-            return ""
-
-    def _dedupe_adjacent_user(contents):
-        """Drop adjacent duplicate user-text contents. single_turn nodes
-        append their seed input to the SHARED session events (shallow
-        session copy in ADK's wrapper), so every chat agent replays the
-        ticket+memory seed twice back-to-back — pure token waste."""
-        out: list = []
-        for c in contents:
-            if (out
-                    and getattr(c, "role", "") == "user"
-                    and getattr(out[-1], "role", "") == "user"):
-                t = _text_of(c)
-                if t and t == _text_of(out[-1]):
-                    continue
-            out.append(c)
-        return out
-
-    def _content_chars(c) -> int:
-        """Estimate a content's character weight — text parts plus a rough
-        size for function_response payloads (the big tool results)."""
-        total = 0
-        for p in (getattr(c, "parts", None) or []):
-            t = getattr(p, "text", None)
-            if t:
-                total += len(t)
-                continue
-            fr = getattr(p, "function_response", None)
-            if fr is not None:
-                try:
-                    total += len(str(getattr(fr, "response", "") or ""))
-                except Exception:
-                    pass
-        return total
-
-    def _cap_content(c):
-        """Return ``c`` if within the per-content cap, else a rebuilt copy
-        with oversized text / function_response payloads truncated (head +
-        tail kept, middle elided). Falls back to the original on any error
-        so a structure we don't understand is never dropped."""
-        if max_part_chars <= 0 or _content_chars(c) <= max_part_chars:
-            return c
-        try:
-            from google.genai import types as gtypes
-            half = max(1000, max_part_chars // 2)
-
-            def _shorten(s: str) -> str:
-                if len(s) <= max_part_chars:
-                    return s
-                return (s[:half] + f"\n…[truncated {len(s) - max_part_chars} "
-                        f"chars to fit context]…\n" + s[-half:])
-
-            new_parts = []
-            for p in (getattr(c, "parts", None) or []):
-                t = getattr(p, "text", None)
-                if t and len(t) > max_part_chars:
-                    new_parts.append(gtypes.Part.from_text(text=_shorten(t)))
-                    continue
-                fr = getattr(p, "function_response", None)
-                if fr is not None:
-                    resp = getattr(fr, "response", None)
-                    sresp = str(resp or "")
-                    if len(sresp) > max_part_chars and isinstance(resp, dict):
-                        trimmed = {k: (_shorten(v) if isinstance(v, str)
-                                       and len(v) > half else v)
-                                   for k, v in resp.items()}
-                        new_parts.append(gtypes.Part.from_function_response(
-                            name=getattr(fr, "name", "") or "",
-                            response=trimmed))
-                        continue
-                new_parts.append(p)
-            return gtypes.Content(role=getattr(c, "role", "user"),
-                                  parts=new_parts)
-        except Exception:  # noqa: BLE001
-            return c
-
-    def _tail_trim(contents):
-        """Dedupe seed echoes, cap oversized contents, then keep the seed
-        user message + the most recent contents under BOTH the count cap
-        and the token budget (item-3: protect slow 120B models)."""
-        contents = _dedupe_adjacent_user(contents)
-        contents = [_cap_content(c) for c in contents]
-
-        def _window(n):
-            if n <= 0 or len(contents) <= n:
-                return list(contents)
-            split = len(contents) - n
-            try:
-                split = _adjust_split_index_to_avoid_orphaned_function_responses(
-                    contents, split)
-            except Exception:
-                pass
-            head_seed = [c for c in contents[:split]
-                         if _is_human_user_content(c)][:1]
-            return head_seed + list(contents[split:])
-
-        keep_n = max_contents if max_contents > 0 else len(contents)
-        out = _window(keep_n)
-        # Token-budget pass: if the kept window is still too heavy, shrink
-        # the tail window until under the char ceiling (or we hit min_keep).
-        while max_chars > 0 and keep_n > min_keep \
-                and sum(_content_chars(c) for c in out) > max_chars:
-            keep_n -= 4
-            out = _window(keep_n)
-        return out
-
-    if strategy:
-        # Sub #4: optional aggressive condenser layered over the
-        # content-tail trim. ``amortized`` compresses oldest half
-        # into one synthetic block; ``recent`` is keep-tail only.
-        from aiforge_core.runtime.condensers import condense
-
-        def _adk_custom_filter(contents):
-            contents = _tail_trim(contents)
-            events = [
-                {"type": "content", "role": getattr(c, "role", ""),
-                 "text": " ".join(
-                     getattr(p, "text", "") for p in getattr(c, "parts", [])
-                     if getattr(p, "text", None)
-                 )}
-                for c in contents
-            ]
-            condensed = condense(events, strategy)
-            # ADK custom_filter must return list[Content]; map back by
-            # keeping the original Content objects when index survives,
-            # otherwise drop (amortized prepends one synthetic block we
-            # let through as-is via a fresh Content).
-            from google.genai import types as gtypes
-            # Heuristic: align tail-N of condensed to tail-N of contents.
-            keep_n = len(condensed) - (1 if condensed and condensed[0].get(
-                "role") == "condenser" else 0)
-            tail = contents[-keep_n:] if keep_n > 0 else []
-            if condensed and condensed[0].get("role") == "condenser":
-                summary_part = gtypes.Part.from_text(
-                    text=condensed[0]["text"],
-                )
-                summary = gtypes.Content(role="user", parts=[summary_part])
-                return [summary] + list(tail)
-            return list(tail)
-
-        custom = _adk_custom_filter
+    lim = _CtxLimits()
+    custom = _tail_trimmer(lim, _adjust, _is_human)
+    if lim.strategy:
+        custom = _condensing_filter(custom, lim.strategy)
         log.info("context_filter: enabled max_contents=%d + condenser=%s",
-                 max_contents, strategy)
+                 lim.max_contents, lim.strategy)
     else:
-        custom = _tail_trim
-        log.info("context_filter: enabled max_contents=%d", max_contents)
-    plugins: list = [ContextFilterPlugin(
-        num_invocations_to_keep=keep, custom_filter=custom,
-    )]
-    # Phantom-tool guard: keep the pipeline alive when a text agent emits a
-    # hallucinated function_call (ADK would otherwise raise "Tool X not found"
-    # and abort the whole run). See tool_error_plugin.
-    try:
-        from ..tool_error_plugin import PhantomToolGuardPlugin
-        plugins.append(PhantomToolGuardPlugin())
-    except Exception:  # noqa: BLE001 — resilience is best-effort
-        pass
-    return plugins
+        log.info("context_filter: enabled max_contents=%d", lim.max_contents)
+    return [ContextFilterPlugin(num_invocations_to_keep=lim.keep_invocations,
+                                custom_filter=custom)] + _phantom_tool_guard()
 
 
 def _run_live_verifier(ticket, pr_url: str) -> dict | None:

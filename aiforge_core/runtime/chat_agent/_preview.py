@@ -93,126 +93,175 @@ def _fetch_current(fn, args: dict, cwd: str, timeout: float = 4.0) -> dict:
         ex.shutdown(wait=False)
 
 
+def _preview_file_write(args: dict, cwd: str) -> str:
+    import difflib
+    path = args.get("path", "?")
+    new = args.get("content", "")
+    try:
+        old = _resolve(cwd, path).read_text(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001 — no such file yet → it is a creation
+        old = ""
+    diff = "".join(difflib.unified_diff(
+        old.splitlines(keepends=True), new.splitlines(keepends=True),
+        fromfile=f"a/{path}", tofile=f"b/{path}"))
+    if diff:
+        return f"**Write `{path}`**\n\n" + _fence(diff, "diff")
+    return f"**New file `{path}`** ({len(new)} bytes)\n\n" + _fence(str(new))
+
+
+def _preview_file_patch(args: dict, cwd: str) -> str:
+    return (f"**Patch `{args.get('path', '?')}`**\n\n" + _fence(
+        f"- {str(args.get('old_text', ''))}\n"
+        f"+ {str(args.get('new_text', ''))}", "diff"))
+
+
+def _preview_command(args: dict, cwd: str) -> str:
+    return "**Run command**\n\n" + _fence(str(args.get("cmd", "")), "bash")
+
+
+def _preview_confluence_create(args: dict, cwd: str) -> str:
+    return (f"### Create Confluence page\n\n"
+            f"**Space:** `{args.get('space', '?')}` · "
+            f"**Title:** {args.get('title', '?')}\n\n"
+            f"**Body:**\n\n"
+            + _xhtml_to_md(str(args.get('body', ''))))
+
+
+def _preview_confluence_update(args: dict, cwd: str) -> str:
+    from aiforge_core.runtime.tools import confluence
+    pid = args.get("id", "?")
+    cur = _fetch_current(confluence.confluence_read, {"id": pid}, cwd)
+    cur_md = _xhtml_to_md(str(cur.get("body") or "")) if cur else ""
+    out = f"### Update Confluence page `{pid}`\n\n"
+    if args.get("title"):
+        out += f"**New title:** {args['title']}\n\n"
+    if args.get("body") is not None:
+        new_md = _xhtml_to_md(str(args.get("body", "")))
+        out += ("**Body changes:**\n\n" + _change_diff(cur_md, new_md, "body")
+                if cur_md else "**New body:**\n\n" + new_md)
+    return out
+
+
+def _preview_jira_create(args: dict, cwd: str) -> str:
+    from aiforge_core.runtime.tools.jira_format import to_jira_wiki
+    md = (f"### Create Jira issue\n\n"
+          f"**Project:** `{args.get('project', '?')}` · "
+          f"**Type:** {args.get('issuetype', 'Task')}"
+          + (f" · **Priority:** {args['priority']}" if args.get('priority') else "")
+          + f"\n\n**Summary:** {args.get('summary', '?')}\n")
+    if args.get("description"):
+        # Preview the ACTUAL Jira wiki markup that will be sent (single-*
+        # bold etc.), not the model's raw markdown — so what you approve
+        # is what Jira renders.
+        md += f"\n{to_jira_wiki(str(args['description']))}\n"
+    if args.get("labels"):
+        md += f"\n**Labels:** {args['labels']}\n"
+    return md
+
+
+def _preview_jira_update(args: dict, cwd: str) -> str:
+    from aiforge_core.runtime.tools import jira
+    from aiforge_core.runtime.tools.jira_format import to_jira_wiki
+    key = args.get("key", "?")
+    cur = _fetch_current(jira.jira_read, {"key": key}, cwd)
+    md = f"### Update Jira issue `{key}`\n\n"
+    if args.get("summary"):
+        md += (f"**Summary:** {cur.get('summary', '(current)')} "
+               f"→ **{args['summary']}**\n\n")
+    md += _field_lines(args, ("priority", "assignee", "labels"))
+    if args.get("description") is not None:
+        # Diff Jira-wiki vs Jira-wiki: the current body is already wiki
+        # markup, so convert the new one too — otherwise every '*bold*'
+        # line reads as a change (markdown '**' vs wiki '*') and the
+        # preview shows the wrong '**'. Now the diff is real content only.
+        md += ("**Description changes:**\n\n"
+               + _change_diff(str(cur.get("description") or ""),
+                              to_jira_wiki(str(args["description"])),
+                              "description"))
+    return md
+
+
+def _preview_jira_comment(args: dict, cwd: str) -> str:
+    return (f"### Comment on Jira `{args.get('key', '?')}`\n\n"
+            f"{_xhtml_to_md(str(args.get('body', '')))}")
+
+
+def _preview_gitlab_create(args: dict, cwd: str) -> str:
+    md = (f"### Create GitLab issue\n\n"
+          f"**Project:** `{args.get('project', '?')}`\n\n"
+          f"**Title:** {args.get('title', '?')}\n")
+    if args.get("description"):
+        md += f"\n{str(args['description'])}\n"
+    if args.get("labels"):
+        md += f"\n**Labels:** {args['labels']}\n"
+    return md
+
+
+def _preview_gitlab_update(args: dict, cwd: str) -> str:
+    from aiforge_core.runtime.tools import gitlab
+    proj, iid = args.get("project", "?"), args.get("iid", "?")
+    cur = _fetch_current(gitlab.gitlab_read, {"project": proj, "iid": iid}, cwd)
+    md = f"### Update GitLab issue `{proj}#{iid}`\n\n"
+    if args.get("title"):
+        md += (f"**Title:** {cur.get('title', '(current)')} "
+               f"→ **{args['title']}**\n\n")
+    md += _field_lines(args, ("labels", "state_event"))
+    if args.get("description") is not None:
+        md += ("**Description changes:**\n\n"
+               + _change_diff(str(cur.get("description") or ""),
+                              str(args["description"]), "description"))
+    return md
+
+
+def _preview_gitlab_comment(args: dict, cwd: str) -> str:
+    return (f"### Comment on GitLab "
+            f"`{args.get('project', '?')}#{args.get('iid', '?')}`\n\n"
+            f"{str(args.get('body', ''))}")
+
+
+def _field_lines(args: dict, keys: tuple) -> str:
+    """``**Key:** value`` for each supplied field — the scalar half of an
+    update preview, which both trackers spell the same way."""
+    return "".join(f"**{k.replace('_', ' ').capitalize()}:** {args[k]}\n\n"
+                   for k in keys if args.get(k))
+
+
+# tool → preview builder. A table, because the old chain was fifteen `if
+# tool == …` arms whose only shared part was the fallback.
+_PREVIEWS = {
+    "file_write": _preview_file_write,
+    "file_create": _preview_file_write,
+    "file_patch": _preview_file_patch,
+    "run_command": _preview_command,
+    "bash": _preview_command,
+    "shell": _preview_command,
+    "confluence_create": _preview_confluence_create,
+    "confluence_update": _preview_confluence_update,
+    "jira_create": _preview_jira_create,
+    "jira_update": _preview_jira_update,
+    "jira_comment": _preview_jira_comment,
+    "gitlab_create": _preview_gitlab_create,
+    "gitlab_update": _preview_gitlab_update,
+    "gitlab_comment": _preview_gitlab_comment,
+}
+
+
 def _diff_preview(tool: str, args: dict, cwd: str) -> str:
     """Markdown preview of a mutating action for the approval gate.
 
     Returns markdown (the chat UI renders it): diffs/commands/JSON go in fenced
     code blocks; the integration write tools (Confluence/Jira/GitLab) get a
     readable heading + fields + body so the operator reviews formatted content,
-    not a raw ``{"...": "..."}`` string dump."""
-    import difflib
-    try:
-        if tool in ("file_write", "file_create"):
-            path = args.get("path", "?")
-            new = args.get("content", "")
-            try:
-                old = _resolve(cwd, path).read_text(encoding="utf-8", errors="replace")
-            except Exception:  # noqa: BLE001
-                old = ""
-            diff = "".join(difflib.unified_diff(
-                old.splitlines(keepends=True), new.splitlines(keepends=True),
-                fromfile=f"a/{path}", tofile=f"b/{path}"))
-            if diff:
-                return f"**Write `{path}`**\n\n" + _fence(diff, "diff")
-            return f"**New file `{path}`** ({len(new)} bytes)\n\n" + _fence(
-                str(new))
-        if tool == "file_patch":
-            return (f"**Patch `{args.get('path', '?')}`**\n\n" + _fence(
-                f"- {str(args.get('old_text', ''))}\n"
-                f"+ {str(args.get('new_text', ''))}", "diff"))
-        if tool in ("run_command", "bash", "shell"):
-            return "**Run command**\n\n" + _fence(str(args.get("cmd", "")), "bash")
+    not a raw ``{"...": "..."}`` string dump.
 
-        # ── integration writes → formatted markdown, not a JSON blob ──────
-        if tool == "confluence_create":
-            return (f"### Create Confluence page\n\n"
-                    f"**Space:** `{args.get('space', '?')}` · "
-                    f"**Title:** {args.get('title', '?')}\n\n"
-                    f"**Body:**\n\n"
-                    + _xhtml_to_md(str(args.get('body', ''))))
-        if tool == "confluence_update":
-            pid = args.get("id", "?")
-            new_md = _xhtml_to_md(str(args.get("body", "")))
-            from aiforge_core.runtime.tools import confluence
-            cur = _fetch_current(confluence.confluence_read, {"id": pid}, cwd)
-            cur_md = _xhtml_to_md(str(cur.get("body") or "")) if cur else ""
-            out = f"### Update Confluence page `{pid}`\n\n"
-            if args.get("title"):
-                out += f"**New title:** {args['title']}\n\n"
-            if args.get("body") is not None:
-                out += ("**Body changes:**\n\n" + _change_diff(cur_md, new_md, "body")
-                        if cur_md else "**New body:**\n\n" + new_md)
-            return out
-        if tool == "jira_create":
-            from aiforge_core.runtime.tools.jira_format import to_jira_wiki
-            md = (f"### Create Jira issue\n\n"
-                  f"**Project:** `{args.get('project', '?')}` · "
-                  f"**Type:** {args.get('issuetype', 'Task')}"
-                  + (f" · **Priority:** {args['priority']}" if args.get('priority') else "")
-                  + f"\n\n**Summary:** {args.get('summary', '?')}\n")
-            if args.get("description"):
-                # Preview the ACTUAL Jira wiki markup that will be sent (single-*
-                # bold etc.), not the model's raw markdown — so what you approve
-                # is what Jira renders.
-                md += f"\n{to_jira_wiki(str(args['description']))}\n"
-            if args.get("labels"):
-                md += f"\n**Labels:** {args['labels']}\n"
-            return md
-        if tool == "jira_update":
-            key = args.get("key", "?")
-            from aiforge_core.runtime.tools import jira
-            from aiforge_core.runtime.tools.jira_format import to_jira_wiki
-            cur = _fetch_current(jira.jira_read, {"key": key}, cwd)
-            md = f"### Update Jira issue `{key}`\n\n"
-            if args.get("summary"):
-                md += (f"**Summary:** {cur.get('summary', '(current)')} "
-                       f"→ **{args['summary']}**\n\n")
-            for k in ("priority", "assignee", "labels"):
-                if args.get(k):
-                    md += f"**{k.capitalize()}:** {args[k]}\n\n"
-            if args.get("description") is not None:
-                # Diff Jira-wiki vs Jira-wiki: the current body is already wiki
-                # markup, so convert the new one too — otherwise every '*bold*'
-                # line reads as a change (markdown '**' vs wiki '*') and the
-                # preview shows the wrong '**'. Now the diff is real content only.
-                md += ("**Description changes:**\n\n"
-                       + _change_diff(str(cur.get("description") or ""),
-                                      to_jira_wiki(str(args["description"])),
-                                      "description"))
-            return md
-        if tool == "jira_comment":
-            return (f"### Comment on Jira `{args.get('key', '?')}`\n\n"
-                    f"{_xhtml_to_md(str(args.get('body', '')))}")
-        if tool == "gitlab_create":
-            md = (f"### Create GitLab issue\n\n"
-                  f"**Project:** `{args.get('project', '?')}`\n\n"
-                  f"**Title:** {args.get('title', '?')}\n")
-            if args.get("description"):
-                md += f"\n{str(args['description'])}\n"
-            if args.get("labels"):
-                md += f"\n**Labels:** {args['labels']}\n"
-            return md
-        if tool == "gitlab_update":
-            proj, iid = args.get("project", "?"), args.get("iid", "?")
-            from aiforge_core.runtime.tools import gitlab
-            cur = _fetch_current(gitlab.gitlab_read, {"project": proj, "iid": iid}, cwd)
-            md = f"### Update GitLab issue `{proj}#{iid}`\n\n"
-            if args.get("title"):
-                md += (f"**Title:** {cur.get('title', '(current)')} "
-                       f"→ **{args['title']}**\n\n")
-            for k in ("labels", "state_event"):
-                if args.get(k):
-                    md += f"**{k.replace('_', ' ').capitalize()}:** {args[k]}\n\n"
-            if args.get("description") is not None:
-                md += ("**Description changes:**\n\n"
-                       + _change_diff(str(cur.get("description") or ""),
-                                      str(args["description"]), "description"))
-            return md
-        if tool == "gitlab_comment":
-            return (f"### Comment on GitLab "
-                    f"`{args.get('project', '?')}#{args.get('iid', '?')}`\n\n"
-                    f"{str(args.get('body', ''))}")
-    except Exception:  # noqa: BLE001
-        pass
+    An unknown tool — or a builder that raises, e.g. because the tracker is
+    unreachable — falls back to the raw args, since showing SOMETHING is what
+    lets the operator decide.
+    """
+    builder = _PREVIEWS.get(tool)
+    if builder is not None:
+        try:
+            return builder(args, cwd)
+        except Exception:  # noqa: BLE001
+            pass
     return _fence(json.dumps(args, default=str, indent=2), "json")
-

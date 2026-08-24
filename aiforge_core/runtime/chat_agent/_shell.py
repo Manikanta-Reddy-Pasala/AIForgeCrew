@@ -65,71 +65,144 @@ _ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||[;|()\{\}\n]")
 
 
+class _NonCodeMasker:
+    """Blanks quoted-string and heredoc-body regions, preserving length.
+
+    One method per shell construct. It was a single while-loop with the scanner
+    for every construct inlined, which is what made an ordinary lexer hard to
+    read: each branch is small, they simply all shared ``i``.
+    """
+
+    _DELIM_RE = re.compile(r"""(["']?)([A-Za-z_][A-Za-z0-9_]*)\1""")
+
+    def __init__(self, cmd: str) -> None:
+        self.cmd = cmd
+        self.n = len(cmd)
+        self.out = list(cmd)
+        self.i = 0
+        self.pending: list[tuple[str, bool]] = []   # (delimiter, strip-tabs)
+
+    def _blank(self, a: int, b: int) -> None:
+        for k in range(a, min(b, self.n)):
+            if self.out[k] != "\n":
+                self.out[k] = " "
+
+    def _single_quote(self) -> None:
+        j = self.cmd.find("'", self.i + 1)
+        end = (j + 1) if j != -1 else self.n
+        self._blank(self.i, end)
+        self.i = end
+
+    def _double_quote(self) -> None:
+        j = self.i + 1
+        while j < self.n:
+            if self.cmd[j] == "\\":
+                j += 2
+                continue
+            if self.cmd[j] == '"':
+                break
+            j += 1
+        end = (j + 1) if j < self.n else self.n
+        self._blank(self.i, end)
+        self.i = end
+
+    def _blank_one_body(self, delim: str, strip_tabs: bool) -> None:
+        """Blank lines until the delimiter line, which ends this heredoc."""
+        while self.i < self.n:
+            eol = self.cmd.find("\n", self.i)
+            line_end = eol if eol != -1 else self.n
+            line = self.cmd[self.i:line_end]
+            self._blank(self.i, line_end)
+            self.i = line_end + 1 if eol != -1 else self.n
+            cmp_line = line.lstrip("\t") if strip_tabs else line
+            if cmp_line.strip() == delim:
+                return
+
+    def _heredoc_bodies(self) -> None:
+        """At the newline that opens the queued heredocs, in declared order."""
+        self.i += 1
+        for delim, strip_tabs in self.pending:
+            self._blank_one_body(delim, strip_tabs)
+        self.pending = []
+
+    def _heredoc_start(self) -> None:
+        """Queue a ``<<DELIM`` / ``<<-DELIM``; its body starts at the newline."""
+        op = re.match(r"<<-?", self.cmd[self.i:]).group(0)
+        self.i += len(op)
+        while self.i < self.n and self.cmd[self.i] in " \t":
+            self.i += 1
+        dm = self._DELIM_RE.match(self.cmd[self.i:])
+        if dm:
+            self.pending.append((dm.group(2), op.endswith("-")))
+            self.i += dm.end()
+
+    def run(self) -> str:
+        while self.i < self.n:
+            ch = self.cmd[self.i]
+            if ch == "\n" and self.pending:
+                self._heredoc_bodies()
+            elif ch == "'":
+                self._single_quote()
+            elif ch == '"':
+                self._double_quote()
+            elif ch == "\\":
+                self.i += 2                      # escaped char is never code
+            elif self.cmd[self.i:self.i + 2] == "<<":
+                self._heredoc_start()
+            else:
+                self.i += 1
+        return "".join(self.out)
+
+
 def _mask_noncode(cmd: str) -> str:
     """Return ``cmd`` with quoted-string and heredoc-body regions blanked to
     spaces (length-preserving), so a ``git add -A`` living inside ``echo "…"``
     or a heredoc body is NOT scanned as a real command."""
-    out = list(cmd)
-    n = len(cmd)
-    i = 0
-    pending: list[tuple[str, bool]] = []   # (heredoc delimiter, strip-tabs)
+    return _NonCodeMasker(cmd).run()
 
-    def _blank(a: int, b: int) -> None:
-        for k in range(a, min(b, n)):
-            if out[k] != "\n":
-                out[k] = " "
 
-    while i < n:
-        ch = cmd[i]
-        if ch == "\n" and pending:
-            i += 1
-            for delim, strip_tabs in pending:
-                while i < n:
-                    eol = cmd.find("\n", i)
-                    line_end = eol if eol != -1 else n
-                    line = cmd[i:line_end]
-                    _blank(i, line_end)            # blank the heredoc body line
-                    i = line_end + 1 if eol != -1 else n
-                    cmp_line = line.lstrip("\t") if strip_tabs else line
-                    if cmp_line.strip() == delim:
-                        break
-            pending = []
-            continue
-        if ch == "'":
-            j = cmd.find("'", i + 1)
-            end = (j + 1) if j != -1 else n
-            _blank(i, end)
-            i = end
-            continue
-        if ch == '"':
-            j = i + 1
-            while j < n:
-                if cmd[j] == "\\":
-                    j += 2
-                    continue
-                if cmd[j] == '"':
-                    break
-                j += 1
-            end = (j + 1) if j < n else n
-            _blank(i, end)
-            i = end
-            continue
-        if ch == "\\":
-            i += 2
-            continue
-        if cmd[i:i + 2] == "<<":
-            m = re.match(r"<<-?", cmd[i:])
-            op = m.group(0)
-            i += len(op)
-            while i < n and cmd[i] in " \t":
-                i += 1
-            dm = re.match(r"""(["']?)([A-Za-z_][A-Za-z0-9_]*)\1""", cmd[i:])
-            if dm:
-                pending.append((dm.group(2), op.endswith("-")))
-                i += dm.end()
-            continue
-        i += 1
-    return "".join(out)
+def _peel_benign_prefixes(toks: list[str]) -> list[str]:
+    """Drop leading ``env=val`` assignments and ``sudo`` (with its dash-flags),
+    so ``sudo git add -A`` / ``FOO=bar git add -A`` are not mistaken for a
+    non-git command."""
+    k = 0
+    while k < len(toks):
+        if _ENV_ASSIGN_RE.match(toks[k]):
+            k += 1
+        elif toks[k] == "sudo":
+            k += 1
+            while k < len(toks) and toks[k].startswith("-"):
+                k += 1
+        else:
+            break
+    return toks[k:]
+
+
+def _git_subcommand(toks: list[str]) -> tuple[str, list[str]] | None:
+    """``(subcommand, args)`` for a git invocation, past its ``-C <dir>``-style
+    globals; None when the segment is not git at all."""
+    toks = _peel_benign_prefixes(toks)
+    if len(toks) < 2 or toks[0] != "git":
+        return None
+    i = 1
+    while i < len(toks) and toks[i].startswith("-"):
+        i += 2 if toks[i] in _GIT_GLOBAL_VALUE_OPTS else 1
+    return (toks[i], toks[i + 1:]) if i < len(toks) else None
+
+
+def _is_blanket_add(after: list[str]) -> bool:
+    """``git add -A`` / ``.`` / ``--all`` in any form, and NOTHING targeted:
+    one blanket selector, and every other argument a selector or ``--``."""
+    allowed = _BLANKET_ADD_SELECTORS | {"--"}
+    return bool(after) and all(a in allowed for a in after) \
+        and any(a in _BLANKET_ADD_SELECTORS for a in after)
+
+
+def _is_autostage_commit(after: list[str]) -> bool:
+    """``git commit --all``, or an ``a`` inside a short flag cluster (-a, -am)."""
+    return any(a == "--all"
+               or (a.startswith("-") and not a.startswith("--") and "a" in a)
+               for a in after)
 
 
 def _is_blanket_git(cmd: str) -> bool:
@@ -144,43 +217,14 @@ def _is_blanket_git(cmd: str) -> bool:
     a blanket add inside a heredoc body are NOT flagged. A targeted ``git add
     <paths>`` and a plain ``git commit`` (no ``-a``) run normally."""
     for seg in _SEGMENT_SPLIT_RE.split(_mask_noncode(cmd or "")):
-        toks = seg.split()
-        # Peel benign leading prefixes: ``env=val`` assignments + ``sudo`` (and
-        # its dash-flags) — so ``sudo git add -A`` / ``FOO=bar git add -A`` are
-        # not mistaken for a non-git command.
-        k = 0
-        while k < len(toks):
-            t = toks[k]
-            if _ENV_ASSIGN_RE.match(t):
-                k += 1
-                continue
-            if t == "sudo":
-                k += 1
-                while k < len(toks) and toks[k].startswith("-"):
-                    k += 1
-                continue
-            break
-        toks = toks[k:]
-        if len(toks) < 2 or toks[0] != "git":
+        found = _git_subcommand(seg.split())
+        if found is None:
             continue
-        i = 1                                  # skip leading ``-C <dir>`` globals
-        while i < len(toks) and toks[i].startswith("-"):
-            i += 2 if toks[i] in _GIT_GLOBAL_VALUE_OPTS else 1
-        if i >= len(toks):
-            continue
-        sub = toks[i]
-        after = toks[i + 1:]
-        if sub == "add":
-            allowed = _BLANKET_ADD_SELECTORS | {"--"}
-            if after and all(a in allowed for a in after) \
-                    and any(a in _BLANKET_ADD_SELECTORS for a in after):
-                return True
-        elif sub == "commit":
-            for a in after:
-                if a == "--all":
-                    return True
-                if a.startswith("-") and not a.startswith("--") and "a" in a:
-                    return True
+        sub, after = found
+        if sub == "add" and _is_blanket_add(after):
+            return True
+        if sub == "commit" and _is_autostage_commit(after):
+            return True
     return False
 
 
@@ -230,6 +274,37 @@ def _peel_prefixes(toks: list[str]) -> list[str]:
     return toks[k:]
 
 
+def _node_pm_starts_server(rest: list[str]) -> bool:
+    """``npm run dev`` / ``pnpm run serve`` / bare ``yarn dev``."""
+    args = [a for a in rest if not a.startswith("-")]
+    if not args:
+        return False
+    if args[0] == "run":
+        return len(args) > 1 and args[1] in _NODE_SERVER_SUBS
+    return args[0] in _NODE_SERVER_SUBS
+
+
+def _python_starts_server(rest: list[str]) -> bool:
+    """``python -m http.server`` / ``python manage.py runserver``."""
+    if "-m" in rest:
+        i = rest.index("-m")
+        if i + 1 < len(rest) and rest[i + 1] in _SERVER_PY_MODULES:
+            return True
+    return "runserver" in rest
+
+
+# program (basename) → does this argv start a server? Everything not listed
+# falls through to the flat _SERVER_PROGRAMS set.
+_SERVER_BY_PROG = {
+    "flask": lambda rest: "run" in rest,
+    "django-admin": lambda rest: "runserver" in rest,
+    "next": lambda rest: any(a in _NODE_SERVER_SUBS for a in rest),
+    "ng": lambda rest: any(a in _NODE_SERVER_SUBS for a in rest),
+    "rails": lambda rest: any(a in ("server", "s") for a in rest),
+    "php": lambda rest: "-S" in rest,
+}
+
+
 def _cmd_starts_server(toks: list[str]) -> bool:
     """True when a single (already prefix-peeled) command launches a long-lived
     server/dev process: ``npm run dev``, ``uvicorn app:app``, ``flask run``,
@@ -240,29 +315,14 @@ def _cmd_starts_server(toks: list[str]) -> bool:
     prog = toks[0].rsplit("/", 1)[-1]
     rest = toks[1:]
     if prog in _NODE_PMS:
-        args = [a for a in rest if not a.startswith("-")]
-        if args and args[0] == "run" and len(args) > 1 \
-                and args[1] in _NODE_SERVER_SUBS:
-            return True                      # npm run dev / pnpm run serve
-        return bool(args and args[0] in _NODE_SERVER_SUBS)   # yarn dev
-    if prog in ("python", "python3") and "-m" in rest:
-        i = rest.index("-m")
-        if i + 1 < len(rest) and rest[i + 1] in _SERVER_PY_MODULES:
-            return True
+        return _node_pm_starts_server(rest)
     if prog in ("python", "python3", "manage.py") or any(
             a.rsplit("/", 1)[-1] == "manage.py" for a in rest):
-        if "runserver" in rest:             # (python) manage.py runserver
+        if _python_starts_server(rest):
             return True
-    if prog == "flask":
-        return "run" in rest
-    if prog == "django-admin":
-        return "runserver" in rest
-    if prog in ("next", "ng"):              # next dev/start · ng serve
-        return any(a in _NODE_SERVER_SUBS for a in rest)
-    if prog == "rails":
-        return any(a in ("server", "s") for a in rest)
-    if prog == "php":
-        return "-S" in rest
+    check = _SERVER_BY_PROG.get(prog)
+    if check is not None:
+        return check(rest)
     return prog in _SERVER_PROGRAMS
 
 
@@ -287,6 +347,18 @@ def _script_starts_server(path: str, base: str | None) -> bool:
     return False
 
 
+def _script_arg(toks: list[str]) -> str | None:
+    """The shell script this argv runs — ``./x.sh`` or ``bash x.sh`` — else None.
+    Flagged only by its CONTENT later, never on the name alone."""
+    pbase = toks[0].rsplit("/", 1)[-1]
+    if pbase.endswith((".sh", ".bash")):
+        return toks[0]
+    if pbase in ("bash", "sh", "zsh") and len(toks) > 1 \
+            and toks[1].rsplit("/", 1)[-1].endswith((".sh", ".bash")):
+        return toks[1]
+    return None
+
+
 def _is_server_start(cmd: str, base: str | None = None) -> bool:
     """True when ``cmd`` would launch a long-lived FOREGROUND server that never
     returns, so ``run_command`` would poll it until the timeout and WEDGE the
@@ -299,30 +371,22 @@ def _is_server_start(cmd: str, base: str | None = None) -> bool:
     so a one-shot script keeps working. Quote/heredoc-aware, sees a server in an
     ``a && b`` chain, peels ``sudo``/``env=val`` prefixes. A command already
     BACKGROUNDED (trailing ``&``) returns at once, so it is NOT flagged."""
-    for seg in _SEGMENT_SPLIT_RE.split(_mask_noncode(cmd or "")):
-        seg = seg.strip()
-        if not seg or seg.endswith("&"):     # backgrounded → returns; allow
-            continue
-        toks = _peel_prefixes(seg.split())
-        if not toks:
-            continue
-        prog = toks[0]
-        pbase = prog.rsplit("/", 1)[-1]
-        # A shell-script invocation (``./x.sh`` or ``bash x.sh``): flag only if
-        # the script's CONTENT starts a server — never on the name alone.
-        script = None
-        if pbase.endswith((".sh", ".bash")):
-            script = prog
-        elif pbase in ("bash", "sh", "zsh") and len(toks) > 1 \
-                and toks[1].rsplit("/", 1)[-1].endswith((".sh", ".bash")):
-            script = toks[1]
-        if script is not None:
-            if _script_starts_server(script, base):
-                return True
-            continue
-        if _cmd_starts_server(toks):
-            return True
-    return False
+    return any(_segment_starts_server(seg, base)
+               for seg in _SEGMENT_SPLIT_RE.split(_mask_noncode(cmd or "")))
+
+
+def _segment_starts_server(seg: str, base: str | None) -> bool:
+    """One simple-command chunk of an ``a && b`` chain."""
+    seg = seg.strip()
+    if not seg or seg.endswith("&"):         # backgrounded → returns; allow
+        return False
+    toks = _peel_prefixes(seg.split())
+    if not toks:
+        return False
+    script = _script_arg(toks)
+    if script is not None:
+        return _script_starts_server(script, base)
+    return _cmd_starts_server(toks)
 
 
 def _workspace_root() -> Path | None:
@@ -363,6 +427,39 @@ def _t_file_read(args: dict, cwd: str) -> dict:
     return {"ok": True, "content": p.read_text(encoding="utf-8", errors="replace")}
 
 
+def _requested_paths(args: dict) -> list[str]:
+    """``paths`` as a list — it also arrives as a comma/newline string, or under
+    the singular ``path`` key."""
+    raw = args.get("paths")
+    if raw is None:
+        raw = args.get("path") or []
+    if isinstance(raw, str):
+        raw = [s for s in re.split(r"[,\n]+", raw) if s.strip()]
+    return [str(p).strip() for p in (raw or []) if str(p).strip()]
+
+
+def _read_files_cap() -> int:
+    try:
+        return max(200, int(os.environ.get(
+            "AIFORGE_CHAT_READ_FILES_PER_CAP", "6000")))
+    except ValueError:
+        return 6000
+
+
+def _one_read_block(path: str, cwd: str, per_cap: int) -> tuple[str, bool]:
+    """``(=== path === block, ok)`` for one file, capped so no single file eats
+    the observation budget."""
+    r = _t_file_read({"path": path}, cwd)
+    if not (isinstance(r, dict) and r.get("ok") and not r.get("is_dir")):
+        err = r.get("error") if isinstance(r, dict) else "unknown error"
+        return f"=== {path} ===\n[read failed: {err}]", False
+    txt = str(r.get("content") or "")
+    if len(txt) > per_cap:
+        txt = (txt[:per_cap] + f"\n…[truncated {len(txt) - per_cap} chars — "
+               "use read_lines for the rest]")
+    return f"=== {path} ===\n{txt}", True
+
+
 def _t_read_files(args: dict, cwd: str) -> dict:
     """Read MANY files in ONE call — the batched form of :func:`_t_file_read`.
 
@@ -372,42 +469,20 @@ def _t_read_files(args: dict, cwd: str) -> dict:
     string). Returns every file's content concatenated under ``=== path ===``
     headers in one ``content`` field, each file capped so no single file eats the
     observation budget (raise AIFORGE_CHAT_READ_FILES_PER_CAP; default 6000)."""
-    raw = args.get("paths")
-    if raw is None:
-        raw = args.get("path") or []
-    if isinstance(raw, str):
-        raw = [s for s in re.split(r"[,\n]+", raw) if s.strip()]
-    paths = [str(p).strip() for p in (raw or []) if str(p).strip()]
+    paths = _requested_paths(args)
     if not paths:
         return {"ok": False, "error": "missing 'paths' (a list of file paths)"}
-    try:
-        per_cap = max(200, int(os.environ.get(
-            "AIFORGE_CHAT_READ_FILES_PER_CAP", "6000")))
-    except ValueError:
-        per_cap = 6000
+    per_cap = _read_files_cap()
     max_files = 60
     dropped = max(0, len(paths) - max_files)
-    parts: list[str] = []
-    ok_n = err_n = 0
-    for p in paths[:max_files]:
-        r = _t_file_read({"path": p}, cwd)
-        if isinstance(r, dict) and r.get("ok") and not r.get("is_dir"):
-            txt = str(r.get("content") or "")
-            if len(txt) > per_cap:
-                txt = (txt[:per_cap]
-                       + f"\n…[truncated {len(txt) - per_cap} chars — "
-                         "use read_lines for the rest]")
-            parts.append(f"=== {p} ===\n{txt}")
-            ok_n += 1
-        else:
-            _err = r.get("error") if isinstance(r, dict) else "unknown error"
-            parts.append(f"=== {p} ===\n[read failed: {_err}]")
-            err_n += 1
+    blocks = [_one_read_block(p, cwd, per_cap) for p in paths[:max_files]]
+    ok_n = sum(1 for _, ok in blocks if ok)
+    err_n = len(blocks) - ok_n
     note = f"{ok_n} read, {err_n} failed"
     if dropped:
         note += f", {dropped} skipped (>{max_files}-file cap — call again)"
     return {"ok": ok_n > 0, "count": ok_n, "read": ok_n, "failed": err_n,
-            "content": "\n\n".join(parts), "note": note}
+            "content": "\n\n".join(b for b, _ in blocks), "note": note}
 
 
 # Code extensions where a syntax check is meaningful (so we never reject a
@@ -481,16 +556,32 @@ _SCRIPT_RUNNERS = {"bash", "sh", "zsh", "python", "python3", "node", "ruby",
 _SCRIPT_EXTS = (".sh", ".bash", ".py", ".js", ".mjs", ".rb", ".pl")
 
 
-def _preflight_missing_path(cmd: str, base: str) -> str | None:
-    """Cheap existence check BEFORE running: a `cd <dir>` into a folder that
-    doesn't exist, or `bash <script>` / `./script.sh` on a missing file, fails
-    with a cryptic shell error the model then thrashes on. Validate LITERAL
-    paths only — anything dynamic ($VAR, ``, $(), globs) is skipped (fail-open).
-    Tracks `cd` chains so `cd a && ./b.sh` checks b.sh under a/. Returns a
-    human-actionable error string, or None when nothing is provably missing."""
+def _is_literal_path(p: str) -> bool:
+    """A path we can check on disk — nothing dynamic ($VAR, ``, $(), globs)."""
+    return not any(ch in p for ch in ("$", "`", "*", "?", "(", "{"))
+
+
+def _resolved(path: str, cur: str) -> str:
+    p = os.path.expanduser(path)
+    return p if os.path.isabs(p) else os.path.join(cur, p)
+
+
+def _script_token(toks: list[str]) -> str | None:
+    """The script a segment runs — ``bash x.sh`` or ``./x.sh`` — else None."""
+    head = toks[0]
+    if head in _SCRIPT_RUNNERS:
+        cand = next((t for t in toks[1:] if not t.startswith("-")), None)
+        return cand if cand and cand.lower().endswith(_SCRIPT_EXTS) else None
+    if (head.startswith("./") or os.path.isabs(head)) \
+            and head.lower().endswith(_SCRIPT_EXTS):
+        return head
+    return None
+
+
+def _segment_tokens(cmd: str):
+    """Each separator-delimited segment as tokens; unparseable ones skipped
+    (complex shell → fail open)."""
     import shlex
-    cur = base
-    # split on the common separators; ignore parse errors (complex shell → skip)
     for seg in re.split(r"&&|\|\||;|\n|\|", cmd or ""):
         seg = seg.strip()
         if not seg:
@@ -499,19 +590,24 @@ def _preflight_missing_path(cmd: str, base: str) -> str | None:
             toks = shlex.split(seg)
         except ValueError:
             continue
-        if not toks:
-            continue
+        if toks:
+            yield toks
 
-        def _literal(p: str) -> bool:
-            return not any(ch in p for ch in ("$", "`", "*", "?", "(", "{"))
 
-        head = toks[0]
-        if head == "cd" and len(toks) >= 2:
+def _preflight_missing_path(cmd: str, base: str) -> str | None:
+    """Cheap existence check BEFORE running: a `cd <dir>` into a folder that
+    doesn't exist, or `bash <script>` / `./script.sh` on a missing file, fails
+    with a cryptic shell error the model then thrashes on. Validate LITERAL
+    paths only — anything dynamic ($VAR, ``, $(), globs) is skipped (fail-open).
+    Tracks `cd` chains so `cd a && ./b.sh` checks b.sh under a/. Returns a
+    human-actionable error string, or None when nothing is provably missing."""
+    cur = base
+    for toks in _segment_tokens(cmd):
+        if toks[0] == "cd" and len(toks) >= 2:
             tgt = toks[1]
-            if tgt == "-" or not _literal(tgt):
+            if tgt == "-" or not _is_literal_path(tgt):
                 return None            # dynamic — stop tracking, fail open
-            d = os.path.expanduser(tgt)
-            d = d if os.path.isabs(d) else os.path.join(cur, d)
+            d = _resolved(tgt, cur)
             if not os.path.isdir(d):
                 return (f"cd target does not exist: {tgt!r} (resolved "
                         f"{os.path.normpath(d)}). Nothing was run. Check the "
@@ -519,17 +615,9 @@ def _preflight_missing_path(cmd: str, base: str) -> str | None:
                         "the real folder.")
             cur = os.path.normpath(d)
             continue
-        script = None
-        if head in _SCRIPT_RUNNERS:
-            cand = next((t for t in toks[1:] if not t.startswith("-")), None)
-            if cand and cand.lower().endswith(_SCRIPT_EXTS):
-                script = cand
-        elif (head.startswith("./") or os.path.isabs(head)) \
-                and head.lower().endswith(_SCRIPT_EXTS):
-            script = head
-        if script and _literal(script):
-            p = os.path.expanduser(script)
-            p = p if os.path.isabs(p) else os.path.join(cur, p)
+        script = _script_token(toks)
+        if script and _is_literal_path(script):
+            p = _resolved(script, cur)
             if not os.path.isfile(p):
                 return (f"script does not exist: {script!r} (resolved "
                         f"{os.path.normpath(p)}). Nothing was run. Find it "
@@ -539,6 +627,36 @@ def _preflight_missing_path(cmd: str, base: str) -> str | None:
 
 
 _OBS_TEXT_KEYS = ("content", "text", "body", "markdown", "preview", "stdout")
+
+
+def _largest_text_key(result: dict, raw_len: int, cap: int) -> str | None:
+    """The text field big enough that trimming it alone gets us under ``cap``."""
+    key = max((k for k in _OBS_TEXT_KEYS if isinstance(result.get(k), str)),
+              key=lambda k: len(result[k]), default=None)
+    return key if key and len(result[key]) > (raw_len - cap) else None
+
+
+def _cut_at_structure(text: str, budget: int) -> str:
+    """``budget`` chars of ``text``, cut at a structure boundary."""
+    from aiforge_core.integrations import chonkie_text_adapter
+    if chonkie_text_adapter.available():
+        return chonkie_text_adapter.cut_at_structure(text, budget)
+    # dep-free structural fallback: last paragraph boundary
+    kept = text[:budget]
+    nl = kept.rfind("\n\n")
+    return kept[:nl] if nl > budget // 2 else kept
+
+
+def _trimmed_json(result: dict, key: str, raw_len: int, cap: int) -> str:
+    text = result[key]
+    budget = max(500, len(text) - (raw_len - cap) - 200)
+    kept = _cut_at_structure(text, budget)
+    trimmed = dict(result)
+    trimmed[key] = (kept + f"\n…[TRUNCATED at a structure "
+                    f"boundary — {len(kept)} of {len(text)} chars "
+                    "shown. The document CONTINUES: use read_lines "
+                    "with an offset, or ask for a specific section.]")
+    return json.dumps(trimmed)
 
 
 def _smart_truncate_obs(result, cap: int) -> str:
@@ -557,38 +675,45 @@ def _smart_truncate_obs(result, cap: int) -> str:
     if len(raw) <= cap:
         return raw
     try:
-        if isinstance(result, dict):
-            key = max((k for k in _OBS_TEXT_KEYS
-                       if isinstance(result.get(k), str)),
-                      key=lambda k: len(result[k]), default=None)
-            if key and len(result[key]) > (len(raw) - cap):
-                from aiforge_core.integrations import chonkie_text_adapter
-                text = result[key]
-                budget = max(500, len(text) - (len(raw) - cap) - 200)
-                if chonkie_text_adapter.available():
-                    kept = chonkie_text_adapter.cut_at_structure(text, budget)
-                else:
-                    # dep-free structural fallback: last paragraph boundary
-                    kept = text[:budget]
-                    nl = kept.rfind("\n\n")
-                    if nl > budget // 2:
-                        kept = kept[:nl]
-                trimmed = dict(result)
-                trimmed[key] = (kept + f"\n…[TRUNCATED at a structure "
-                                f"boundary — {len(kept)} of {len(text)} chars "
-                                "shown. The document CONTINUES: use read_lines "
-                                "with an offset, or ask for a specific "
-                                "section.]")
-                out = json.dumps(trimmed)
-                if len(out) <= cap + 400:      # small tolerance for the note
-                    return out
+        key = _largest_text_key(result, len(raw), cap) \
+            if isinstance(result, dict) else None
+        if key:
+            out = _trimmed_json(result, key, len(raw), cap)
+            if len(out) <= cap + 400:          # small tolerance for the note
+                return out
     except Exception:  # noqa: BLE001 — smart cut is best-effort
         pass
     return raw[:cap]
 
 
-def _t_run_command(args: dict, cwd: str) -> dict:
-    cmd = args["cmd"]
+_BLANKET_GIT_REFUSAL = (
+    "Blanket staging (git add -A / git add . / git commit -a) is disabled in "
+    "chat to avoid committing unrelated files. Stage ONLY the files you "
+    "changed: `git add <path1> <path2>` then `git commit -m \"...\"` then "
+    "`git push`.")
+
+_SERVER_START_REFUSAL = (
+    "This starts a long-lived server/dev process that won't return, so "
+    "run_command would block the whole turn. Use the `serve` tool instead — "
+    "serve(cmd=\"…\") starts it in the background and gives you the URL "
+    "immediately (stop it later with stop_service). If you truly want it in "
+    "the foreground, append ` &` to background it yourself.")
+
+
+def _run_refusal(cmd: str, args: dict, base: str) -> dict | None:
+    """The pre-flight gates, all fail-CLOSED. None means the command may run.
+
+    - a destructive delete without an explicit confirm;
+    - blanket git staging, which in chat would sweep the user's UNRELATED files
+      (and the agent's own artifacts) into a commit. We do NOT execute it — the
+      soft error makes the agent loop re-issue a targeted `git add <paths>`;
+    - a FOREGROUND server-start: it never returns, so run_command would poll it
+      until the (10-min) timeout and wedge the turn — the chat "network error"
+      bug. Redirected to `serve`, which backgrounds it and returns the URL;
+    - a literal `cd <missing dir>` / `bash <missing script>`, refused with an
+      actionable error instead of the shell's cryptic "No such file or
+      directory" (which the model then thrashes on).
+    """
     from aiforge_core.runtime.tools import delete_guard
     allow_delete = delete_guard.allow_delete(
         ("AIFORGE_CHAT_ALLOW_DELETE", "AIFORGE_ALLOW_DELETE"))
@@ -597,52 +722,98 @@ def _t_run_command(args: dict, cwd: str) -> dict:
         return {"ok": False, "blocked": "delete",
                 "error": delete_guard.REFUSAL + " (re-issue with "
                          "confirm_delete=true after the user agrees.)"}
-    base = cwd
-    root = _workspace_root()
-    if root is not None:
-        base = str(root)
-    # Commit hygiene: REFUSE a blanket git stage. A `git add -A` / `git add .` /
-    # `git commit -a` in chat would sweep the user's UNRELATED files (and the
-    # agent's own artifacts) into a commit. We do NOT execute it — we return a
-    # soft error so the agent loop re-issues a targeted `git add <paths>` (the
-    # system prompt already instructs specific staging). Fail-CLOSED: if a
-    # blanket add could run, refuse. A targeted `git add <paths>` runs normally.
     if _is_blanket_git(cmd):
         return {"ok": False, "blocked": "blanket_git",
-                "error": "Blanket staging (git add -A / git add . / "
-                "git commit -a) is disabled in chat to avoid committing "
-                "unrelated files. Stage ONLY the files you changed: "
-                "`git add <path1> <path2>` then `git commit -m \"...\"` then "
-                "`git push`."}
-    # Refuse a FOREGROUND server-start: it never returns, so run_command would
-    # poll it until the (10-min) timeout and wedge the turn — the chat "network
-    # error" bug. Redirect to the `serve` tool (backgrounds it, returns the URL
-    # at once). Fail-fast so the request can't sit open on a hung tool call.
+                "error": _BLANKET_GIT_REFUSAL}
     if _is_server_start(cmd, base):
         return {"ok": False, "blocked": "server_start",
-                "error": "This starts a long-lived server/dev process that "
-                "won't return, so run_command would block the whole turn. Use "
-                "the `serve` tool instead — serve(cmd=\"…\") starts it in the "
-                "background and gives you the URL immediately (stop it later "
-                "with stop_service). If you truly want it in the foreground, "
-                "append ` &` to background it yourself."}
-    # Pre-flight: a literal `cd <missing dir>` or `bash <missing script>` is
-    # refused with an actionable error instead of the shell's cryptic
-    # "No such file or directory" (which the model then thrashes on).
-    _missing = _preflight_missing_path(cmd, base)
-    if _missing:
-        return {"ok": False, "blocked": "missing_path", "error": _missing}
+                "error": _SERVER_START_REFUSAL}
+    missing = _preflight_missing_path(cmd, base)
+    if missing:
+        return {"ok": False, "blocked": "missing_path", "error": missing}
+    return None
+
+
+def _drain(proc, timeout: float = 5) -> tuple[str, str] | None:
+    """Whatever the process buffered, or None if it could not be collected."""
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except Exception:  # noqa: BLE001
+        return None
+    return out or "", err or ""
+
+
+def _timeout_result(proc, timeout: int) -> dict:
+    """Capture whatever the command buffered BEFORE we kill it, so the agent
+    sees partial output (e.g. which tests ran/passed before the hang) and can
+    adapt — instead of a blind "timeout" with no signal."""
+    import signal as _sig
+    try:
+        os.killpg(os.getpgid(proc.pid), _sig.SIGTERM)
+    except Exception:  # noqa: BLE001
+        pass
+    drained = _drain(proc)
+    if drained is None:
+        _kill_proc(proc)
+        drained = ("", "")
+    out, err = drained
+    return {"ok": False, "timed_out": True, "code": None,
+            "stdout": out[-_MAX_OBS:], "stderr": err[-_MAX_OBS:],
+            "error": f"timed out after {timeout}s — PARTIAL output "
+            "above. This is not a failure of your change: the command "
+            "just ran longer than the limit. Next: run a NARROWER "
+            "command (one test file or a single test case), or re-issue "
+            "this exact command with a larger \"timeout\" (e.g. 600). Do "
+            "NOT undo your edits over a timeout."}
+
+
+def _await_exit(proc, timeout: int, sid) -> dict | None:
+    """Poll until the process exits; a dict when it was stopped or timed out."""
+    import time as _time
+    from aiforge_core.runtime import chat_cancel
+    deadline = _time.monotonic() + timeout
+    while proc.poll() is None:
+        if sid is not None and chat_cancel.is_cancelled(sid):
+            _kill_proc(proc)
+            return {"ok": False, "stopped": True, "error": "stopped by user"}
+        if _time.monotonic() > deadline:
+            return _timeout_result(proc, timeout)
+        _time.sleep(0.2)
+    return None
+
+
+def _collect_output(proc) -> tuple[str, str]:
+    """Bound communicate(): a daemon grandchild inheriting the stdout pipe
+    (e.g. `npm run dev &`) keeps it open after the process exits, so an
+    un-timed communicate() blocks forever even past the deadline."""
+    try:
+        ct = int(os.environ.get("AIFORGE_COMMUNICATE_TIMEOUT_S", "10"))
+    except (TypeError, ValueError):
+        ct = 10
+    try:
+        out, err = proc.communicate(timeout=ct)
+        return out or "", err or ""
+    except subprocess.TimeoutExpired:
+        _kill_proc(proc)
+        return _drain(proc) or ("", "")
+
+
+def _t_run_command(args: dict, cwd: str) -> dict:
+    cmd = args["cmd"]
+    root = _workspace_root()
+    base = str(root) if root is not None else cwd
+    refusal = _run_refusal(cmd, args, base)
+    if refusal is not None:
+        return refusal
     # Default generous so dependency installs / builds (npm ci, mvn package,
     # pip install) aren't killed mid-run; agent may override per call.
     default_to = int(os.environ.get("AIFORGE_CHAT_CMD_TIMEOUT_S", "600"))
     timeout = int(args.get("timeout", default_to))
-    # Run in its own process group so the Stop button can kill the whole
-    # tree (the shell + its children), and poll for cancellation.
-    import time as _time
-
     from aiforge_core.runtime import chat_cancel
     sid = chat_cancel.active()
     try:
+        # Its own process group, so the Stop button can kill the whole tree
+        # (the shell + its children).
         proc = subprocess.Popen(
             cmd, shell=True, cwd=base, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -655,52 +826,12 @@ def _t_run_command(args: dict, cwd: str) -> dict:
             chat_cancel.track_pgid(sid, os.getpgid(proc.pid))
         except Exception:  # noqa: BLE001
             pass
-    deadline = _time.monotonic() + timeout
-    while proc.poll() is None:
-        if sid is not None and chat_cancel.is_cancelled(sid):
-            _kill_proc(proc)
-            return {"ok": False, "stopped": True, "error": "stopped by user"}
-        if _time.monotonic() > deadline:
-            # Capture whatever the command buffered BEFORE we kill it, so the
-            # agent sees partial output (e.g. which tests ran/passed before the
-            # hang) and can adapt — instead of a blind "timeout" with no signal.
-            import signal as _sig
-            try:
-                os.killpg(os.getpgid(proc.pid), _sig.SIGTERM)
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                out, err = proc.communicate(timeout=5)
-            except Exception:  # noqa: BLE001
-                _kill_proc(proc)
-                out, err = "", ""
-            return {"ok": False, "timed_out": True, "code": None,
-                    "stdout": (out or "")[-_MAX_OBS:],
-                    "stderr": (err or "")[-_MAX_OBS:],
-                    "error": f"timed out after {timeout}s — PARTIAL output "
-                    "above. This is not a failure of your change: the command "
-                    "just ran longer than the limit. Next: run a NARROWER "
-                    "command (one test file or a single test case), or re-issue "
-                    "this exact command with a larger \"timeout\" (e.g. 600). Do "
-                    "NOT undo your edits over a timeout."}
-        _time.sleep(0.2)
-    # Bound communicate(): a daemon grandchild inheriting the stdout pipe
-    # (e.g. `npm run dev &`) keeps it open after the process exits, so an
-    # un-timed communicate() blocks forever even past the deadline.
-    try:
-        _ct = int(os.environ.get("AIFORGE_COMMUNICATE_TIMEOUT_S", "10"))
-    except (TypeError, ValueError):
-        _ct = 10
-    try:
-        out, err = proc.communicate(timeout=_ct)
-    except subprocess.TimeoutExpired:
-        _kill_proc(proc)
-        try:
-            out, err = proc.communicate(timeout=5)
-        except Exception:  # noqa: BLE001
-            out, err = "", ""
+    stopped = _await_exit(proc, timeout, sid)
+    if stopped is not None:
+        return stopped
+    out, err = _collect_output(proc)
     return {"ok": proc.returncode == 0, "code": proc.returncode,
-            "stdout": (out or "")[-_MAX_OBS:], "stderr": (err or "")[-_MAX_OBS:]}
+            "stdout": out[-_MAX_OBS:], "stderr": err[-_MAX_OBS:]}
 
 
 def _kill_proc(proc) -> None:
