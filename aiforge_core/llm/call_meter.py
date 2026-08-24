@@ -701,9 +701,19 @@ def _limit_state() -> dict:
                 # Seconds left on a hold the SERVER imposed (a 429/quota
                 # rejection). Distinct from `queued`: that is our own ceiling
                 # throttling us, this is the provider having refused.
-                "held_s": round(_rl.held_for(), 1)}
+                "held_s": round(_rl.held_for(), 1),
+                # WHICH window the two numbers above describe. They are
+                # machine-wide when the cross-process store is live and
+                # process-local when it has fallen back — and the fallback is
+                # exactly the failure an operator is trying to diagnose, so an
+                # unlabelled number is the one thing that cannot help them.
+                # NOTE `queued` stays process-local: it counts THIS process's
+                # parked callers, which is what a user staring at this tab is
+                # waiting on.
+                "limit_scope": _rl.window_scope()}
     except Exception:  # noqa: BLE001 — the meter must never raise
-        return {"limit_rpm": 0, "queued": 0, "limit_used": 0, "held_s": 0.0}
+        return {"limit_rpm": 0, "queued": 0, "limit_used": 0, "held_s": 0.0,
+                "limit_scope": "process"}
 
 
 def reset_all() -> None:

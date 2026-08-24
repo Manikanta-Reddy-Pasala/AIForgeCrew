@@ -13,6 +13,12 @@ from aiforge_core.llm import rate_limiter as rl
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    # THE IN-PROCESS WINDOW, deliberately. It is the real fallback whenever the
+    # shared store is unavailable (locked, read-only config dir, disabled), so
+    # its math still has to hold — and it is the only half a driven monotonic
+    # clock can exercise, since the cross-process window must use wall time.
+    # The shared window has its own suite: test_shared_rate_window.py.
+    monkeypatch.setenv("AIFORGE_LLM_SHARED_WINDOW", "0")
     from aiforge_core.config import _filecache
     _filecache.clear()
     rl._RPM_BUCKETS.clear()

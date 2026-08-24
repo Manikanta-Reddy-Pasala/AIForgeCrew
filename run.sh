@@ -89,6 +89,15 @@
 #     Set AIFORGE_WORKSPACE_DIR=/path to clamp the chat file scope.
 set -euo pipefail
 
+# EXPORT the config dir before spawning anything. The rate ceiling, and the
+# settings store it reads, are keyed on this path — and the children only ever
+# resolved it from a DEFAULT ($HOME/.aiforge). A supervisor with its own HOME
+# (a systemd unit, a launchd plist, a sudo'd runner) therefore put the API and
+# the runner on two different rate windows, and each quietly got the operator's
+# full llm_max_rpm: the exact bug the shared window fixes, but with a file on
+# disk that makes it look fixed.
+export AIFORGE_CONFIG_DIR="${AIFORGE_CONFIG_DIR:-$HOME/.aiforge}"
+
 cd "$(dirname "$0")"
 
 # ── Local env file (self-hosted endpoint + TLS toggle) ────────────────

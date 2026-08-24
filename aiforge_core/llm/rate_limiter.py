@@ -18,8 +18,9 @@ Local providers (mlx-lm) opt out by returning ``rate_limits=None``;
 :func:`acquire` short-circuits to a no-op for them.
 
 Separately, :func:`acquire_global` is the OPERATOR's own ceiling across every
-provider and caller — a sliding 60s window rather than a bucket, on the
-monotonic clock. See its docstring for why each of those words matters.
+provider and caller — a sliding 60s window rather than a bucket, shared by
+every AIForge process on the machine (see :mod:`_shared_window`; the
+in-process window below is the fallback when that store is unavailable).
 """
 from __future__ import annotations
 
@@ -210,13 +211,17 @@ def _trim_locked(now: float) -> None:
 def note_rate_limited(retry_after_s: float = 0.0,
                       provider: "str | None" = None) -> None:
     """The SERVER said we are over ITS limit. Hold every caller of THAT
-    provider in this process until its window can plausibly have cleared.
+    provider ON THIS MACHINE until its window can plausibly have cleared.
 
     Without this, one rejection teaches nobody: our own count sits comfortably
     under our ceiling (the ceiling is only ever an ESTIMATE of the server's
-    rule — it is per-process, it cannot see the memory daemon, and the server
-    counts a window we never observe), so the next caller sends straight into
+    rule — the server counts a window we never observe, and other tools on
+    other machines may share the same account), so the next caller sends into
     the same wall, and the model chain spends another request discovering it.
+
+    Written to the shared store first: across processes this is the half that
+    matters most, because only ONE of them gets the 429 and the others were
+    sending into a wall the server had already named.
 
     A SEPARATE HOLD, not a synthetic fill of ``_sends``. Filling the window
     silently did nothing in the one situation that matters most: when callers
@@ -236,7 +241,16 @@ def note_rate_limited(retry_after_s: float = 0.0,
     hold = retry_after_s if retry_after_s and retry_after_s > 0 else 60.0
     hold = min(hold, _hold_cap())
     key = provider or _ANY
+    # SHARED first. Across processes this is the half that matters most: only
+    # ONE of them gets the 429, and without a shared hold the others keep
+    # sending into a wall the server has already named. Wall clock here, not
+    # monotonic, because that is the only clock two processes agree on.
+    sw = _shared()
+    if sw is not None:
+        sw.set_hold(key, time.time() + hold, cap=_hold_cap())
     with _WINDOW_LOCK:
+        # The in-process copy is kept regardless: it is the fallback when the
+        # shared store is unavailable, and it costs nothing to maintain.
         _holds[key] = max(_holds.get(key, 0.0), _now() + hold)
 
 
@@ -252,13 +266,42 @@ def _hold_left_locked(now: float, provider: "str | None") -> float:
 
 
 def held_for(provider: "str | None" = None) -> float:
-    """Seconds still left on a server-imposed hold; 0 when none."""
+    """Seconds still left on a server-imposed hold; 0 when none.
+
+    The longer of what THIS process knows and what the machine knows — a hold
+    another process earned is just as binding as one we earned ourselves.
+    """
     with _WINDOW_LOCK:
-        return _hold_left_locked(_now(), provider)
+        mine = _hold_left_locked(_now(), provider)
+    sw = _shared()
+    if sw is None:
+        return mine
+    shared = sw.hold_left((_ANY, provider or _ANY), cap=_hold_cap())
+    return mine if shared is None else max(mine, shared)
+
+
+def window_scope() -> str:
+    """"machine" when the cross-process window is live, else "process".
+
+    An operator asking "why am I still rate limited with the setting applied"
+    cannot answer it without this: a silent fallback puts the ceiling back to
+    per-process, which is the very bug the shared window exists to fix.
+    """
+    sw = _shared()
+    # writable(), not count(): a read never blocks on a writer in WAL, so
+    # count() reports a healthy number while every take() is failing — the one
+    # state this exists to reveal.
+    return "machine" if (sw is not None and sw.writable()) else "process"
 
 
 def global_used() -> int:
-    """Requests counted against the ceiling in the last 60 seconds."""
+    """Requests counted against the ceiling in the last 60 seconds — on this
+    MACHINE when the shared window is live, else in this process."""
+    sw = _shared()
+    if sw is not None:
+        n = sw.count()
+        if n is not None:
+            return n
     with _WINDOW_LOCK:
         _trim_locked(_now())
         return len(_sends)
@@ -267,6 +310,10 @@ def global_used() -> int:
 def reset_global() -> None:
     """Test helper — forget every send, hold and parked caller."""
     global _waiting
+    sw = _shared()
+    if sw is not None:
+        sw.close()          # a test may have moved AIFORGE_CONFIG_DIR
+        sw.reset()          # no-ops when no store was ever created
     with _WINDOW_LOCK:
         _sends.clear()
         _holds.clear()
@@ -274,6 +321,57 @@ def reset_global() -> None:
         # Not cosmetic: a leaked counter shows the toolbar a queue that will
         # never drain, with no way for an operator to clear it.
         _waiting = 0
+
+
+def _shared():
+    """The cross-process window, or None when it is off/unavailable."""
+    try:
+        from . import _shared_window as _sw
+        if not _sw.enabled():
+            return None
+        return _sw
+    except Exception:  # noqa: BLE001 — never let it break a call
+        return None
+
+
+def _take(rpm: float, provider: "str | None") -> "tuple[bool, float]":
+    """Claim one send. (claimed, seconds_until_room).
+
+    Tries the SHARED window first — the whole point, since `run.sh` runs the
+    API, the team-pipeline runner and the boot-time fold as separate processes
+    that each used to get the operator's full allowance. Falls back to this
+    process's own window whenever the shared store has no opinion, so a locked
+    or unwritable file throttles slightly worse rather than not at all.
+    """
+    sw = _shared()
+    if sw is not None:
+        got = sw.take(_limit(rpm))
+        if got is not None:
+            return got
+    with _WINDOW_LOCK:
+        now = _now()
+        _trim_locked(now)
+        if len(_sends) < _limit(rpm):
+            _sends.append(now)
+            return True, 0.0
+        return False, max(0.0, (_sends[0] + 60.0) - now)
+
+
+def _force_take(rpm: float) -> None:
+    """Count a send that is going out past the wait budget anyway."""
+    sw = _shared()
+    # USE THE RETURN VALUE. force() reports a miss precisely so it is not lost,
+    # and dropping it here returned before the fallback too — so under
+    # saturation 0.8% of forced sends (100% during a cooldown) were counted in
+    # neither window. Under-counting is the direction that PERMITS extra sends
+    # later, which is the failure this module exists to prevent.
+    if sw is not None and sw.force(_limit(rpm)):
+        return
+    with _WINDOW_LOCK:
+        _sends.append(_now())
+        cap = _limit(rpm)
+        if len(_sends) > cap:
+            del _sends[:len(_sends) - cap]
 
 
 def acquire_global(*, max_wait_s: float = 120.0,
@@ -322,23 +420,24 @@ def acquire_global(*, max_wait_s: float = 120.0,
             # should not wait out the old number. (At most once per sleep step,
             # so this is a settings read every few seconds per parked caller.)
             rpm = global_rpm()
-            with _WINDOW_LOCK:
-                now = _now()
-                _trim_locked(now)
-                hold_s = _hold_left_locked(now, provider)
+            # HOLD FIRST, and claim only once it is clear. Claiming a slot and
+            # handing it back when a hold turned out to bar the send needed a
+            # "give one back" operation — and with no ownership token that
+            # deleted the newest row on the MACHINE, i.e. another process's
+            # real send. During a hold, which is exactly when we are already
+            # over the provider's limit, that made the shared window
+            # systematically under-count real traffic.
+            hold_s = held_for(provider)
+            window_s = 0.0
+            if hold_s <= 0:
                 if rpm <= 0:
-                    window_s = 0.0
-                elif len(_sends) < _limit(rpm):
-                    window_s = 0.0
-                else:
-                    # Room appears when the oldest send ages out. `_sends` is
-                    # non-empty here: _limit() floors at 1.
-                    window_s = max(0.0, (_sends[0] + 60.0) - now)
-                sleep_s = max(hold_s, window_s)
-                if sleep_s <= 0:
-                    if rpm > 0:
-                        _sends.append(now)
                     return waited
+                claimed, window_s = _take(rpm, provider)
+                if claimed:
+                    return waited
+            sleep_s = max(hold_s, window_s)
+            if sleep_s <= 0:
+                continue
             if waited + sleep_s > max_wait_s:
                 log.warning(
                     "llm.rate_ceiling_overrun: waited %.1fs of a %.1fs budget "
@@ -346,17 +445,8 @@ def acquire_global(*, max_wait_s: float = 120.0,
                     "rather than failing it. Raise the ceiling in Settings -> "
                     "Agent limits if this is common.",
                     waited, max_wait_s, rpm, hold_s)
-                with _WINDOW_LOCK:
-                    if rpm > 0:
-                        _sends.append(_now())
-                        # CLAMPED. An overrun call is honestly counted, but
-                        # letting the window grow past capacity blocks the next
-                        # well-behaved caller for a full 60s instead of
-                        # 60/rpm, and ships a `limit_used` above `limit_rpm`
-                        # for the UI to render as nonsense.
-                        _cap = _limit(rpm)
-                        if len(_sends) > _cap:
-                            del _sends[:len(_sends) - _cap]
+                if rpm > 0:
+                    _force_take(rpm)
                 return waited
             _step = min(sleep_s, 5.0)
             time.sleep(_step)
