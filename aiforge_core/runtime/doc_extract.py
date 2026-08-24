@@ -350,6 +350,21 @@ def extract_text(path: str, mime: str = "") -> str:
 
 
 # ── page selection ─────────────────────────────────────────────────────────
+def _spec_bounds(part: str) -> tuple[int, int] | None:
+    """The inclusive 1-based ``(lo, hi)`` a single spec term covers — ``"7"`` is
+    ``(7, 7)``, ``"9-5"`` is normalised to ``(5, 9)``. None when it is not a
+    number (or a pair of them), which the caller skips."""
+    try:
+        if "-" not in part:
+            n = int(part)
+            return (n, n)
+        a, b = part.split("-", 1)
+        lo, hi = int(a), int(b)
+        return (hi, lo) if lo > hi else (lo, hi)
+    except ValueError:
+        return None
+
+
 def parse_page_spec(spec: str, total: int) -> list[int]:
     """Parse a page spec like ``"10-20"``, ``"3,5,7-9"``, ``"12"`` into sorted,
     unique 0-based indices within ``[0, total)``. "" / garbage → []."""
@@ -357,23 +372,13 @@ def parse_page_spec(spec: str, total: int) -> list[int]:
         return []
     idx: set[int] = set()
     for part in str(spec).replace(" ", "").split(","):
-        if not part:
+        bounds = _spec_bounds(part) if part else None
+        if bounds is None:
             continue
-        try:
-            if "-" in part:
-                a, b = part.split("-", 1)
-                lo, hi = int(a), int(b)
-                if lo > hi:
-                    lo, hi = hi, lo
-                for n in range(lo, hi + 1):
-                    if 1 <= n <= total:
-                        idx.add(n - 1)
-            else:
-                n = int(part)
-                if 1 <= n <= total:
-                    idx.add(n - 1)
-        except ValueError:
-            continue
+        lo, hi = bounds
+        # Clamped rather than rejected: "10-99" on a 12-page file means pages
+        # 10..12, which is what a reader asking for "10 onwards" meant.
+        idx.update(n - 1 for n in range(max(lo, 1), min(hi, total) + 1))
     return sorted(idx)
 
 
