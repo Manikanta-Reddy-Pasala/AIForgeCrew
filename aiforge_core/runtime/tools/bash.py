@@ -171,102 +171,91 @@ def _drain_until_prompt(
     return last_seen, None, True
 
 
+def _kill_group_and_reap(proc) -> tuple[bytes, bytes]:
+    """SIGKILL the process group and drain it, so we don't leak pipe FDs or
+    leave a zombie accumulating across a long Doer run."""
+    try:
+        os.killpg(os.getpgid(proc.pid), 9)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        return proc.communicate(timeout=5)
+    except Exception:  # noqa: BLE001
+        return b"", b""
+
+
+def _completed_result(command: str, returncode, out_b, err_b) -> dict[str, Any]:
+    out_s = (out_b or b"").decode("utf-8", "replace")
+    err_s = (err_b or b"").decode("utf-8", "replace")
+    return {"ok": returncode == 0, "command": command, "returncode": returncode,
+            "stdout": out_s[:_STDOUT_CAP_BYTES],
+            "stderr": err_s[:_STDOUT_CAP_BYTES],
+            "truncated": (len(out_s) > _STDOUT_CAP_BYTES
+                          or len(err_s) > _STDOUT_CAP_BYTES)}
+
+
+def _drain_bounded(proc) -> tuple[bytes, bytes]:
+    """The main process exited — but a daemon grandchild can still hold the
+    stdout pipe, blocking communicate() forever. Bound it; on hang, kill the
+    group and drain, keeping what we captured."""
+    try:
+        return proc.communicate(timeout=_COMMUNICATE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return _kill_group_and_reap(proc)
+
+
+def _run_cancellable(command: str, timeout: int, sid, chat_cancel) -> dict[str, Any]:
+    """New process group so the chat Stop button can kill the whole tree
+    mid-build (team-mode Doer runs here on tmux-less hosts). The pgid is
+    registered from the PARENT right after spawn."""
+    import time as _t
+    proc = subprocess.Popen(
+        command, shell=True, cwd=root(), stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, start_new_session=True)
+    try:
+        chat_cancel.track_pgid(sid, os.getpgid(proc.pid))
+    except Exception:  # noqa: BLE001
+        pass
+    deadline = _t.monotonic() + timeout
+    while proc.poll() is None:
+        if chat_cancel.is_cancelled(sid):
+            _kill_group_and_reap(proc)
+            return _err_result(command, "stopped by user", stopped=True)
+        if _t.monotonic() > deadline:
+            _kill_group_and_reap(proc)
+            return _err_result(command, "timeout", truncated=True)
+        _t.sleep(0.2)
+    out_b, err_b = _drain_bounded(proc)
+    # The return shape matches the non-cancellable path — callers/tests rely on
+    # ``truncated``.
+    return _completed_result(command, proc.returncode, out_b, err_b)
+
+
+def _run_plain(command: str, timeout: int) -> dict[str, Any]:
+    try:
+        proc = subprocess.run(command, shell=True, cwd=root(),
+                              capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        return {"ok": False, "error": "timeout", "command": command,
+                "stdout": (exc.stdout or b"").decode("utf-8", "replace")[
+                    :_STDOUT_CAP_BYTES],
+                "stderr": (exc.stderr or b"").decode("utf-8", "replace")[
+                    :_STDOUT_CAP_BYTES],
+                "truncated": True}
+    return _completed_result(command, proc.returncode, proc.stdout, proc.stderr)
+
+
 def _fallback_run(command: str, timeout: int) -> dict[str, Any]:
-    # New process group so the chat Stop button can kill the whole tree
-    # mid-build (team-mode Doer runs here on tmux-less hosts). Register the
-    # pgid from the PARENT right after spawn via Popen.
     from aiforge_core.runtime import chat_cancel
     sid = chat_cancel.active()
-    if sid is not None and chat_cancel.is_cancelled(sid):
+    if sid is None:
+        return _run_plain(command, timeout)
+    if chat_cancel.is_cancelled(sid):
         return _err_result(command, "stopped by user", stopped=True)
-    if sid is not None:
-        try:
-            import time as _t
-            proc_p = subprocess.Popen(
-                command, shell=True, cwd=root(),
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                start_new_session=True)
-            try:
-                chat_cancel.track_pgid(sid, os.getpgid(proc_p.pid))
-            except Exception:  # noqa: BLE001
-                pass
-            def _kill_and_reap():
-                # Reap the SIGKILLed group so we don't leak pipe FDs / leave
-                # a zombie accumulating across a long Doer run.
-                try:
-                    os.killpg(os.getpgid(proc_p.pid), 9)
-                except Exception:  # noqa: BLE001
-                    pass
-                try:
-                    proc_p.communicate(timeout=5)
-                except Exception:  # noqa: BLE001
-                    pass
-
-            deadline = _t.monotonic() + timeout
-            while proc_p.poll() is None:
-                if chat_cancel.is_cancelled(sid):
-                    _kill_and_reap()
-                    return _err_result(command, "stopped by user", stopped=True)
-                if _t.monotonic() > deadline:
-                    _kill_and_reap()
-                    return _err_result(command, "timeout", truncated=True)
-                _t.sleep(0.2)
-            # The main process exited — but a daemon grandchild can still hold
-            # the stdout pipe, blocking communicate() forever. Bound it; on
-            # hang, kill the group and drain, keeping what we captured.
-            try:
-                out_b, err_b = proc_p.communicate(timeout=_COMMUNICATE_TIMEOUT_S)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(os.getpgid(proc_p.pid), 9)
-                except Exception:  # noqa: BLE001
-                    pass
-                try:
-                    out_b, err_b = proc_p.communicate(timeout=5)
-                except Exception:  # noqa: BLE001
-                    out_b, err_b = b"", b""
-            out_s = (out_b or b"").decode("utf-8", "replace")
-            err_s = (err_b or b"").decode("utf-8", "replace")
-            return {"ok": proc_p.returncode == 0, "command": command,
-                    "returncode": proc_p.returncode,
-                    "stdout": out_s[:_STDOUT_CAP_BYTES],
-                    "stderr": err_s[:_STDOUT_CAP_BYTES],
-                    # Keep the return shape consistent with the non-cancellable
-                    # path below — callers/tests rely on ``truncated``.
-                    "truncated": (len(out_s) > _STDOUT_CAP_BYTES
-                                  or len(err_s) > _STDOUT_CAP_BYTES)}
-        except Exception as exc:  # noqa: BLE001
-            return _err_result(command, str(exc))
     try:
-        proc = subprocess.run(
-            command, shell=True, cwd=root(),
-            capture_output=True, timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        return {
-            "ok": False,
-            "error": "timeout",
-            "command": command,
-            "stdout": (exc.stdout or b"").decode("utf-8", "replace")[
-                :_STDOUT_CAP_BYTES
-            ],
-            "stderr": (exc.stderr or b"").decode("utf-8", "replace")[
-                :_STDOUT_CAP_BYTES
-            ],
-            "truncated": True,
-        }
-    out = proc.stdout.decode("utf-8", "replace")
-    err = proc.stderr.decode("utf-8", "replace")
-    return {
-        "ok": proc.returncode == 0,
-        "returncode": proc.returncode,
-        "command": command,
-        "stdout": out[:_STDOUT_CAP_BYTES],
-        "stderr": err[:_STDOUT_CAP_BYTES],
-        "truncated": (
-            len(out) > _STDOUT_CAP_BYTES or len(err) > _STDOUT_CAP_BYTES
-        ),
-    }
+        return _run_cancellable(command, timeout, sid, chat_cancel)
+    except Exception as exc:  # noqa: BLE001
+        return _err_result(command, str(exc))
 
 
 def bash(

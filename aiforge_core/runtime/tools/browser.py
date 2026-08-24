@@ -221,6 +221,47 @@ def _scroll(page: Any, dx: int, dy: int) -> dict[str, Any]:
     return {"ok": True, "dx": dx, "dy": dy}
 
 
+# Arguments where an empty string is not a usable value (an address or a name),
+# unlike `text`, where "" is a legitimate thing to type.
+_NON_EMPTY_ARGS = frozenset({"url", "selector", "key"})
+
+
+def _missing(args: dict, names: tuple, code: str) -> str | None:
+    """``code`` when any required argument is absent, else None.
+
+    The error CODE is given per command rather than derived, because the two
+    two-argument commands report a combined one (``missing_x_or_y``,
+    ``missing_selector_or_text``) that the model's prompt already names.
+    """
+    for n in names:
+        v = args.get(n)
+        if v is None or (n in _NON_EMPTY_ARGS and not v):
+            return code
+    return None
+
+
+# command -> (required args, error code, handler taking (page, args))
+_BROWSE_COMMANDS = {
+    "goto": (("url",), "missing_url", lambda page, a: _goto(page, a["url"])),
+    "screenshot": ((), "", lambda page, a: _screenshot(page, a.get("path"))),
+    "click": (("selector",), "missing_selector",
+              lambda page, a: _click(page, a["selector"])),
+    "fill": (("selector", "text"), "missing_selector_or_text",
+             lambda page, a: _fill(page, a["selector"], a["text"])),
+    "extract_text": ((), "",
+                     lambda page, a: _extract_text(page, a.get("selector"))),
+    "mouse_click": (("x", "y"), "missing_x_or_y",
+                    lambda page, a: _mouse_click(page, a["x"], a["y"],
+                                                 a.get("button") or "left")),
+    "key_press": (("key",), "missing_key",
+                  lambda page, a: _key_press(page, a["key"])),
+    "type": (("text",), "missing_text",
+             lambda page, a: _type_text(page, a["text"])),
+    "scroll": ((), "", lambda page, a: _scroll(page, a.get("dx") or 0,
+                                               a.get("dy") or 0)),
+}
+
+
 def browse(
     command: str,
     *,
@@ -245,51 +286,26 @@ def browse(
     if not _playwright_available():
         return {"ok": False, "error": "playwright_missing",
                 "hint": "pip install playwright && playwright install chromium"}
-
     _run_id = _effective_run_id(_run_id)
-
     if command == "close":
         destroy_context(_run_id)
         return {"ok": True}
-
+    spec = _BROWSE_COMMANDS.get(command)
+    if spec is None:
+        return {"ok": False, "error": "unknown_command", "command": command}
+    required, code, handler = spec
+    args = {"url": url, "path": path, "selector": selector, "text": text,
+            "x": x, "y": y, "button": button, "key": key, "dx": dx, "dy": dy}
+    missing = _missing(args, required, code)
+    if missing:
+        return {"ok": False, "error": missing}
     try:
         _ctx, page = _get_context(_run_id)
     except Exception as exc:  # noqa: BLE001 — install/launch failures
         return {"ok": False, "error": "browser_launch_failed",
                 "detail": str(exc)[:300]}
-
     try:
-        if command == "goto":
-            if not url:
-                return {"ok": False, "error": "missing_url"}
-            return _goto(page, url)
-        if command == "screenshot":
-            return _screenshot(page, path)
-        if command == "click":
-            if not selector:
-                return {"ok": False, "error": "missing_selector"}
-            return _click(page, selector)
-        if command == "fill":
-            if selector is None or text is None:
-                return {"ok": False, "error": "missing_selector_or_text"}
-            return _fill(page, selector, text)
-        if command == "extract_text":
-            return _extract_text(page, selector)
-        if command == "mouse_click":
-            if x is None or y is None:
-                return {"ok": False, "error": "missing_x_or_y"}
-            return _mouse_click(page, x, y, button or "left")
-        if command == "key_press":
-            if not key:
-                return {"ok": False, "error": "missing_key"}
-            return _key_press(page, key)
-        if command == "type":
-            if text is None:
-                return {"ok": False, "error": "missing_text"}
-            return _type_text(page, text)
-        if command == "scroll":
-            return _scroll(page, dx or 0, dy or 0)
-        return {"ok": False, "error": "unknown_command", "command": command}
+        return handler(page, args)
     except Exception as exc:  # noqa: BLE001 — Playwright timeouts, etc.
         emit("Browse", {"action": "error", "command": command,
                         "error": str(exc)[:300]})
