@@ -322,6 +322,71 @@ def _batch(rows: Iterable[dict], size: int = 1000):
         yield buf
 
 
+def _classify_nodes(nodes_in: list, repo_name: str) -> tuple[list, list, list, int]:
+    """``(files, symbols, others, skipped)`` — every node bucketed by the label
+    it will be written under. A node with no id, a duplicate id, or a missing
+    key field for its bucket is skipped."""
+    files: list[dict] = []
+    symbols: list[dict] = []
+    others: list[dict] = []          # rationale + catch-all
+    skipped = 0
+    seen_ids: set[str] = set()
+    for n in nodes_in:
+        nid = n.get("id")
+        if not nid or nid in seen_ids:
+            skipped += 1
+            continue
+        seen_ids.add(nid)
+        cat, row = _row_for_node(n, repo_name)
+        if cat == "file":
+            if row.get("path"):
+                files.append(row)
+            else:
+                skipped += 1
+        elif cat == "symbol":
+            if row.get("id"):
+                symbols.append(row)
+            else:
+                skipped += 1
+        else:
+            row["id"] = nid
+            row.setdefault("kind", n.get("file_type", "graphify"))
+            others.append(row)
+    return files, symbols, others, skipped
+
+
+def _bucket_edges(edges_in: list, repo_name: str) -> tuple[dict, int]:
+    """Bucket edges by relationship type so we can issue one parameterised
+    Cypher batch per type — Cypher doesn't allow dynamic types in MERGE without
+    APOC. ``(edges_by_type, skipped)``."""
+    edges_by_type: dict[str, list[dict]] = {}
+    skipped = 0
+    for e in edges_in:
+        if not e.get("source") or not e.get("target"):
+            skipped += 1
+            continue
+        rtype = _relation_type(e.get("relation"))
+        edges_by_type.setdefault(rtype, []).append(_row_for_edge(e, repo_name))
+    return edges_by_type, skipped
+
+
+def _write_graph(driver, files: list, symbols: list, others: list,
+                 edges_by_type: dict, source_tag: str, batch_size: int,
+                 stats: dict) -> None:
+    with driver.session() as session:
+        _ensure_schema(session)
+        for cypher, rows in ((CYPHER_FILE, files), (CYPHER_SYMBOL, symbols),
+                             (CYPHER_GRAPHIFY_NODE, others)):
+            for chunk in _batch(rows, batch_size):
+                session.run(cypher, rows=chunk, source_tag=source_tag)
+                stats["nodes_created"] += len(chunk)
+        for rtype, rows in edges_by_type.items():
+            cypher = CYPHER_EDGE_TYPED % rtype
+            for chunk in _batch(rows, batch_size):
+                session.run(cypher, rows=chunk, source_tag=source_tag)
+                stats["edges_created"] += len(chunk)
+
+
 def load_graphify_json(
     driver: Any,
     graph_json_path: Path,
@@ -361,96 +426,28 @@ def load_graphify_json(
     graph_json_path = Path(graph_json_path)
     if not graph_json_path.exists():
         raise FileNotFoundError(graph_json_path)
-
     with graph_json_path.open() as fh:
         graph = json.load(fh)
 
-    nodes_in: list[dict] = graph.get("nodes", []) or []
-    edges_in: list[dict] = graph.get("links", graph.get("edges", [])) or []
-
-    files: list[dict] = []
-    symbols: list[dict] = []
-    others: list[dict] = []  # rationale + catch-all
-    nodes_skipped = 0
-
-    seen_ids: set[str] = set()
-    for n in nodes_in:
-        nid = n.get("id")
-        if not nid or nid in seen_ids:
-            nodes_skipped += 1
-            continue
-        seen_ids.add(nid)
-        cat, row = _row_for_node(n, repo_name)
-        if cat == "file":
-            if not row.get("path"):
-                nodes_skipped += 1
-                continue
-            files.append(row)
-        elif cat == "symbol":
-            if not row.get("id"):
-                nodes_skipped += 1
-                continue
-            symbols.append(row)
-        else:
-            row["id"] = nid
-            row.setdefault("kind", n.get("file_type", "graphify"))
-            others.append(row)
-
-    # Bucket edges by relationship type so we can issue one parameterised
-    # Cypher batch per type (Cypher doesn't allow dynamic types in MERGE
-    # without APOC).
-    edges_by_type: dict[str, list[dict]] = {}
-    edges_skipped = 0
-    for e in edges_in:
-        if not e.get("source") or not e.get("target"):
-            edges_skipped += 1
-            continue
-        rtype = _relation_type(e.get("relation"))
-        edges_by_type.setdefault(rtype, []).append(_row_for_edge(e, repo_name))
-
+    files, symbols, others, nodes_skipped = _classify_nodes(
+        graph.get("nodes", []) or [], repo_name)
+    edges_by_type, edges_skipped = _bucket_edges(
+        graph.get("links", graph.get("edges", [])) or [], repo_name)
     stats = {
-        "nodes_created": 0,
-        "nodes_skipped": nodes_skipped,
-        "edges_created": 0,
-        "edges_skipped": edges_skipped,
-        "dur_ms": 0,
-        "source_tag": source_tag,
-        "repo": repo_name,
-        "files": len(files),
-        "symbols": len(symbols),
-        "others": len(others),
+        "nodes_created": 0, "nodes_skipped": nodes_skipped,
+        "edges_created": 0, "edges_skipped": edges_skipped,
+        "dur_ms": 0, "source_tag": source_tag, "repo": repo_name,
+        "files": len(files), "symbols": len(symbols), "others": len(others),
         "edge_types": {k: len(v) for k, v in edges_by_type.items()},
     }
-
     if dry_run:
         stats["dur_ms"] = int((time.time() - t0) * 1000)
         log.info("dry-run stats: %s", stats)
         return stats
-
     if driver is None:
         raise ValueError("driver is required when dry_run=False")
-
-    with driver.session() as session:
-        _ensure_schema(session)
-
-        for chunk in _batch(files, batch_size):
-            session.run(CYPHER_FILE, rows=chunk, source_tag=source_tag)
-            stats["nodes_created"] += len(chunk)
-
-        for chunk in _batch(symbols, batch_size):
-            session.run(CYPHER_SYMBOL, rows=chunk, source_tag=source_tag)
-            stats["nodes_created"] += len(chunk)
-
-        for chunk in _batch(others, batch_size):
-            session.run(CYPHER_GRAPHIFY_NODE, rows=chunk, source_tag=source_tag)
-            stats["nodes_created"] += len(chunk)
-
-        for rtype, rows in edges_by_type.items():
-            cypher = CYPHER_EDGE_TYPED % rtype
-            for chunk in _batch(rows, batch_size):
-                session.run(cypher, rows=chunk, source_tag=source_tag)
-                stats["edges_created"] += len(chunk)
-
+    _write_graph(driver, files, symbols, others, edges_by_type, source_tag,
+                 batch_size, stats)
     stats["dur_ms"] = int((time.time() - t0) * 1000)
     log.info("graphify load complete: %s", stats)
     return stats

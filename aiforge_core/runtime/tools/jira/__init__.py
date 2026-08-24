@@ -61,6 +61,56 @@ from ._projects import (
 
 # ─────────────────────────── tools ──────────────────────────────────
 
+def _search_jql(args: dict) -> tuple[str, dict | None]:
+    """``(jql, error)``.
+
+    A bare ``text ~ …`` is SCOPED to the default project when the caller didn't
+    name one — otherwise it searches every project the token can see, a common
+    cause of a job's filter returning the wrong/empty set. An explicit
+    ``project=`` in the JQL, or an explicit ``args["project"]``, wins.
+    """
+    jql = (args.get("jql") or "").strip()
+    if not jql and args.get("query"):
+        q = str(args["query"]).replace('"', '\\"')
+        jql = f'text ~ "{q}" ORDER BY updated DESC'
+    if not jql:
+        return "", {"ok": False, "error": "missing 'query' or 'jql'"}
+    proj = (args.get("project") or default_project() or "").strip().replace(
+        '"', '\\"')
+    if not proj or "project" in jql.lower():
+        return jql, None
+    low = jql.lower()
+    if " order by" in low:
+        i = low.index(" order by")
+        return f'project = "{proj}" AND ({jql[:i]}){jql[i:]}', None
+    return f'project = "{proj}" AND ({jql})', None
+
+
+def _search_limit(args: dict) -> int:
+    """The desired count. "all"/0/negative → everything up to the safety cap."""
+    cap = _search_cap()
+    raw = args.get("limit", 50)
+    if str(raw).strip().lower() in ("all", "0", "-1", ""):
+        return cap
+    try:
+        return min(max(1, int(raw)), cap)
+    except (TypeError, ValueError):
+        return min(50, cap)
+
+
+def _search_start(args: dict) -> int:
+    try:
+        return max(0, int(args.get("startAt", args.get("start_at", 0)) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _search_page(jql: str, start: int, page: int, flds: str) -> dict:
+    return _request("GET", "/rest/api/2/search",
+                    params={"jql": jql, "startAt": start, "maxResults": page,
+                            "fields": flds})
+
+
 def jira_search(args: dict, cwd: str | None = None) -> dict:
     """Find issues. ``jql`` (raw JQL) OR ``query`` (full-text).
 
@@ -68,52 +118,19 @@ def jira_search(args: dict, cwd: str | None = None) -> dict:
     pull every match up to the safety cap (``AIFORGE_JIRA_SEARCH_CAP``, def 500).
     Results are paginated internally, so a limit above Jira's per-page cap works.
     The reply carries ``total`` (all matches) and ``truncated`` (more exist)."""
-    jql = (args.get("jql") or "").strip()
-    if not jql and args.get("query"):
-        q = str(args["query"]).replace('"', '\\"')
-        jql = f'text ~ "{q}" ORDER BY updated DESC'
-    if not jql:
-        return {"ok": False, "error": "missing 'query' or 'jql'"}
-    # Scope to the default project when the caller didn't name one — otherwise a
-    # bare "text ~ ..." searches every project the token can see (a common cause
-    # of a job's filter returning the wrong/empty set). Explicit project=/JQL is
-    # left untouched. Honour an explicit args["project"] over the default.
-    proj = (args.get("project") or default_project() or "").strip().replace('"', '\\"')
-    if proj and "project" not in jql.lower():
-        low = jql.lower()
-        if " order by" in low:
-            i = low.index(" order by")
-            where, order = jql[:i], jql[i:]
-            jql = f'project = "{proj}" AND ({where}){order}'
-        else:
-            jql = f'project = "{proj}" AND ({jql})'
+    jql, err = _search_jql(args)
+    if err:
+        return err
     # Opt-in time tracking on search hits (original/remaining estimate + spent).
     want_time = _truthy(str(args.get("time", args.get("with_time", "false"))))
-    flds = "summary,status,issuetype,assignee"
-    if want_time:
-        flds += "," + _TIME_FIELDS
-    # Resolve the desired count. "all"/0/negative → everything up to the cap.
-    cap = _search_cap()
-    raw_limit = args.get("limit", 50)
-    if str(raw_limit).strip().lower() in ("all", "0", "-1", ""):
-        limit = cap
-    else:
-        try:
-            limit = max(1, int(raw_limit))
-        except (TypeError, ValueError):
-            limit = 50
-        limit = min(limit, cap)
-    try:
-        start = max(0, int(args.get("startAt", args.get("start_at", 0)) or 0))
-    except (TypeError, ValueError):
-        start = 0
+    flds = "summary,status,issuetype,assignee" + (
+        "," + _TIME_FIELDS if want_time else "")
+    limit = _search_limit(args)
+    start = _search_start(args)
     out: list = []
     total = None
     while len(out) < limit:
-        page = min(_SEARCH_PAGE, limit - len(out))
-        r = _request("GET", "/rest/api/2/search",
-                     params={"jql": jql, "startAt": start,
-                             "maxResults": page, "fields": flds})
+        r = _search_page(jql, start, min(_SEARCH_PAGE, limit - len(out)), flds)
         if not r["ok"]:
             # Fail hard on the first page; on a later page keep what we have.
             if not out:
@@ -121,18 +138,50 @@ def jira_search(args: dict, cwd: str | None = None) -> dict:
             return {"ok": True, "results": out, "total": total,
                     "count": len(out), "truncated": True,
                     "error": r.get("error")}
-        data = r["data"] if isinstance(r["data"], dict) else {}
-        issues = data.get("issues") or []
-        if isinstance(data.get("total"), int):
-            total = data["total"]
-        out.extend(_issue_summary(x, with_time=want_time) for x in issues)
+        issues, total = _absorb_page(r, out, total, want_time)
         start += len(issues)
-        # Exhausted: server returned a short/empty page, or we've reached total.
+        # Exhausted: server returned a short/empty page, or we reached total.
         if not issues or (isinstance(total, int) and start >= total):
             break
-    truncated = isinstance(total, int) and total > len(out)
-    return {"ok": True, "results": out, "total": total,
-            "count": len(out), "truncated": truncated}
+    return {"ok": True, "results": out, "total": total, "count": len(out),
+            "truncated": isinstance(total, int) and total > len(out)}
+
+
+def _absorb_page(r: dict, out: list, total, want_time: bool) -> tuple[list, int | None]:
+    """Append one page's issues to ``out``; returns ``(issues, total)``."""
+    data = r["data"] if isinstance(r["data"], dict) else {}
+    issues = data.get("issues") or []
+    if isinstance(data.get("total"), int):
+        total = data["total"]
+    out.extend(_issue_summary(x, with_time=want_time) for x in issues)
+    return issues, total
+
+
+def _named(field) -> str | None:
+    """The ``name``/``displayName`` of a Jira object field, tolerating None."""
+    obj = field or {}
+    return obj.get("name") or obj.get("displayName")
+
+
+def _issue_comments(fields: dict) -> list[dict]:
+    comment = (fields.get("comment") or {}) or {}
+    return [{"author": _named(c.get("author")),
+             "body": (c.get("body") or "")[:4000]}
+            for c in (comment.get("comments") or [])]
+
+
+def _issue_view(d: dict, fields: dict) -> dict:
+    return {"ok": True, "key": d.get("key"), "summary": fields.get("summary"),
+            "type": _named(fields.get("issuetype")),
+            "status": _named(fields.get("status")),
+            "assignee": _named(fields.get("assignee")),
+            "reporter": _named(fields.get("reporter")),
+            "priority": _named(fields.get("priority")),
+            "labels": fields.get("labels") or [],
+            "time": _time_fields(fields),
+            "description": (fields.get("description") or "")[:_BODY_CAP],
+            "comments": _issue_comments(fields),
+            "url": _issue_url(d.get("key", ""))}
 
 
 def jira_read(args: dict, cwd: str | None = None) -> dict:
@@ -148,19 +197,7 @@ def jira_read(args: dict, cwd: str | None = None) -> dict:
         return r
     d = r["data"] if isinstance(r["data"], dict) else {}
     f = d.get("fields") if isinstance(d.get("fields"), dict) else {}
-    comments = [{"author": ((c.get("author") or {}) or {}).get("displayName"),
-                 "body": (c.get("body") or "")[:4000]}
-                for c in (((f.get("comment") or {}) or {}).get("comments") or [])]
-    out = {"ok": True, "key": d.get("key"), "summary": f.get("summary"),
-           "type": ((f.get("issuetype") or {}) or {}).get("name"),
-           "status": ((f.get("status") or {}) or {}).get("name"),
-           "assignee": ((f.get("assignee") or {}) or {}).get("displayName"),
-           "reporter": ((f.get("reporter") or {}) or {}).get("displayName"),
-           "priority": ((f.get("priority") or {}) or {}).get("name"),
-           "labels": f.get("labels") or [],
-           "time": _time_fields(f),
-           "description": (f.get("description") or "")[:_BODY_CAP],
-           "comments": comments, "url": _issue_url(d.get("key", ""))}
+    out = _issue_view(d, f)
     # Pull attachments (images + documents) + analyse them so the agent uses
     # them as part of the task (opt out with attachments=false). Best-effort.
     if _truthy(str(args.get("attachments", args.get("images", "true")))):
@@ -171,6 +208,33 @@ def jira_read(args: dict, cwd: str | None = None) -> dict:
         if atts:
             out["attachments"] = atts
     return out
+
+
+def _worklog_rows(worklogs: list) -> tuple[list[dict], int]:
+    """``(rows, total seconds)`` for the fetched worklog page."""
+    rows = []
+    total_secs = 0
+    for w in worklogs:
+        secs = w.get("timeSpentSeconds") or 0
+        try:
+            total_secs += int(secs)
+        except (TypeError, ValueError):
+            pass
+        rows.append({"author": _named(w.get("author")),
+                     "time_spent": w.get("timeSpent") or _fmt_secs(secs),
+                     "time_spent_seconds": secs,
+                     "started": w.get("started"),
+                     "comment": (w.get("comment") or "")[:500]})
+    return rows, total_secs
+
+
+def _time_rollup(key: str) -> dict | None:
+    """The issue's estimate/spent rollup — one extra lightweight call."""
+    tr = _request("GET", f"/rest/api/2/issue/{urllib.parse.quote(key)}",
+                  params={"fields": _TIME_FIELDS})
+    if tr["ok"] and isinstance(tr["data"], dict):
+        return _time_fields(tr["data"].get("fields") or {})
+    return None
 
 
 def jira_worklog(args: dict, cwd: str | None = None) -> dict:
@@ -185,38 +249,18 @@ def jira_worklog(args: dict, cwd: str | None = None) -> dict:
     if not r["ok"]:
         return r
     data = r["data"] if isinstance(r["data"], dict) else {}
-    logs = []
-    total_secs = 0
-    for w in (data.get("worklogs") or []):
-        secs = w.get("timeSpentSeconds") or 0
-        try:
-            total_secs += int(secs)
-        except (TypeError, ValueError):
-            pass
-        logs.append({
-            "author": ((w.get("author") or {}) or {}).get("displayName"),
-            "time_spent": w.get("timeSpent") or _fmt_secs(secs),
-            "time_spent_seconds": secs,
-            "started": w.get("started"),
-            "comment": (w.get("comment") or "")[:500],
-        })
-    # Estimate/spent rollup for context (one extra lightweight call).
-    rollup = None
-    tr = _request("GET", f"/rest/api/2/issue/{urllib.parse.quote(key)}",
-                  params={"fields": _TIME_FIELDS})
-    if tr["ok"] and isinstance(tr["data"], dict):
-        rollup = _time_fields((tr["data"].get("fields") or {}))
+    logs, total_secs = _worklog_rows(data.get("worklogs") or [])
     total_available = data.get("total")
-    truncated = isinstance(total_available, int) and total_available > len(logs)
     return {"ok": True, "key": key, "worklogs": logs,
             "worklog_count": len(logs),
             "worklog_total": total_available,
             # NB: total_logged sums only the fetched page; when `truncated`, use
             # `tracking.time_spent` (the issue's authoritative rollup) instead.
-            "truncated": truncated,
+            "truncated": isinstance(total_available, int)
+                         and total_available > len(logs),
             "total_logged": _fmt_secs(total_secs),
             "total_logged_seconds": total_secs,
-            "tracking": rollup, "url": _issue_url(key)}
+            "tracking": _time_rollup(key), "url": _issue_url(key)}
 
 
 def jira_log_work(args: dict, cwd: str | None = None) -> dict:
@@ -279,31 +323,19 @@ def jira_create(args: dict, cwd: str | None = None) -> dict:
                         "description": args.get("description")}}
 
 
-def jira_update(args: dict, cwd: str | None = None) -> dict:
-    """Update issue fields. Required: ``key``. Provide any of ``summary``,
-    ``description``, ``priority`` (name), ``labels`` (list), ``assignee``
-    (name), ``status`` (auto-routed to a workflow transition), or a raw
-    ``fields`` dict (merged last, wins)."""
-    key = (args.get("key") or args.get("id") or "").strip()
-    if not key:
-        return {"ok": False, "error": "missing 'key'"}
-    raw_fields = dict(args["fields"]) if isinstance(args.get("fields"), dict) else {}
-    # Jira status is NOT an editable field — it changes only via a workflow
-    # transition. Accept a `status`/`state` arg (or a `status` inside `fields`)
-    # and route it to jira_transition, so "move CLR-1 to In Progress" works
-    # whether the agent calls jira_update or jira_transition.
-    status_want = (args.get("status") or args.get("state") or "").strip()
-    if not status_want and raw_fields.get("status") is not None:
-        _st = raw_fields.pop("status")
-        status_want = (_st.get("name") if isinstance(_st, dict)
-                       else str(_st)).strip()
-    transitioned = None
-    if status_want:
-        tr = jira_transition({"key": key, "transition": status_want,
-                              "comment": args.get("comment")}, cwd)
-        if not tr.get("ok"):
-            return tr
-        transitioned = status_want
+def _wanted_status(args: dict, raw_fields: dict) -> str:
+    """Jira status is NOT an editable field — it changes only via a workflow
+    transition. A ``status``/``state`` arg (or a ``status`` inside ``fields``)
+    is routed to jira_transition, so "move CLR-1 to In Progress" works whether
+    the agent calls jira_update or jira_transition."""
+    want = (args.get("status") or args.get("state") or "").strip()
+    if want or raw_fields.get("status") is None:
+        return want
+    st = raw_fields.pop("status")
+    return (st.get("name") if isinstance(st, dict) else str(st)).strip()
+
+
+def _update_fields(args: dict, raw_fields: dict) -> dict:
     fields: dict = {}
     if args.get("summary"):
         fields["summary"] = args["summary"]
@@ -318,8 +350,29 @@ def jira_update(args: dict, cwd: str | None = None) -> dict:
         if isinstance(labels, str):
             labels = [s.strip() for s in labels.split(",") if s.strip()]
         fields["labels"] = labels
-    if raw_fields:                       # status already popped out above
+    if raw_fields:                       # status already popped out
         fields.update(raw_fields)
+    return fields
+
+
+def jira_update(args: dict, cwd: str | None = None) -> dict:
+    """Update issue fields. Required: ``key``. Provide any of ``summary``,
+    ``description``, ``priority`` (name), ``labels`` (list), ``assignee``
+    (name), ``status`` (auto-routed to a workflow transition), or a raw
+    ``fields`` dict (merged last, wins)."""
+    key = (args.get("key") or args.get("id") or "").strip()
+    if not key:
+        return {"ok": False, "error": "missing 'key'"}
+    raw_fields = dict(args["fields"]) if isinstance(args.get("fields"), dict) else {}
+    status_want = _wanted_status(args, raw_fields)
+    transitioned = None
+    if status_want:
+        tr = jira_transition({"key": key, "transition": status_want,
+                              "comment": args.get("comment")}, cwd)
+        if not tr.get("ok"):
+            return tr
+        transitioned = status_want
+    fields = _update_fields(args, raw_fields)
     if not fields:
         # A status-only change is legit (it went through the transition above).
         if transitioned:
