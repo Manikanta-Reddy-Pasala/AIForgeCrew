@@ -16,6 +16,10 @@ runtime via the Settings UI without touching code.
 
 Local providers (mlx-lm) opt out by returning ``rate_limits=None``;
 :func:`acquire` short-circuits to a no-op for them.
+
+Separately, :func:`acquire_global` is the OPERATOR's own ceiling across every
+provider and caller — a sliding 60s window rather than a bucket, on the
+monotonic clock. See its docstring for why each of those words matters.
 """
 from __future__ import annotations
 
@@ -97,16 +101,68 @@ def _resolved_limits(provider: str,
 
 
 # The operator's OWN ceiling, across every provider and every caller: chat,
-# the team pipeline, jobs and the memory daemon share one bucket. The
+# the team pipeline, jobs and the structured/memory path share it. The
 # per-provider limits above are what a PROVIDER declares it will serve; this is
 # what the person running the box is willing to send.
-_GLOBAL = "__aiforge_global__"
+#
+# A SLIDING WINDOW (see acquire_global), and on the MONOTONIC clock. Wall time
+# would have been a silent kill switch: `_sends` holds absolute stamps, so one
+# backwards NTP correction or a laptop resume leaves entries that never age out
+# of `now - 60`, every caller takes the overrun path, and the ceiling is off for
+# the length of the step while logging that it is working. The token bucket
+# this replaced survived that by clamping `elapsed` to >= 0; a window of
+# timestamps has no such self-healing, so it must use the clock that cannot go
+# backwards. call_meter's own 60s ring made this exact choice for this exact
+# reason.
+_WINDOW_LOCK = threading.Lock()
+_sends: "list[float]" = []
+# Set by note_rate_limited: monotonic instant before which nothing may be sent
+# to THAT PROVIDER because it said we are over its limit. Keyed, because the
+# common setup is a cloud gateway for the doer and a local mlx/LM Studio for
+# the learner — and a rejection from the gateway must not stall 60s of memory
+# work against a server that declares no rate limit at all. The empty key is
+# the catch-all for callers that do not know their provider, and everyone
+# checks it.
+_ANY = ""
+_holds: "dict[str, float]" = {}
+
+
+def _setting(name: str, env: str, default: float) -> float:
+    """Stored setting -> env -> built-in default, like every other runtime knob.
+
+    Reading the env var alone would have made the Settings field inert: the
+    store is what the UI writes, and a knob the UI cannot actually change is
+    worse than one it never offered.
+    """
+    try:
+        from aiforge_core.config import runtime_settings as _rs
+        return float(_rs.get(name))
+    except Exception:  # noqa: BLE001 — never let a settings read block a call
+        try:
+            raw = os.environ.get(env)
+            return float(raw) if raw else default
+        except (TypeError, ValueError):
+            return default
+
+
+def _hold_cap() -> float:
+    """Longest hold a single server response may impose. `Retry-After: 3600`
+    from a misconfigured or shared-tenant gateway would otherwise park every
+    caller in the process for its full wait budget, once per call, for an hour
+    — from one header. Same knob that caps the caller's own backoff."""
+    return max(1.0, _setting("llm_rate_limit_cap_s",
+                             "AIFORGE_LLM_RATE_LIMIT_CAP_S", 60.0))
+
+
+def _now() -> float:
+    """The clock the ceiling runs on. Monotonic, never wall time — see above."""
+    return time.monotonic()
 
 
 def global_rpm() -> float:
     """Operator-set ceiling on model requests per minute; 0 = no ceiling.
 
-    Resolves stored setting → env → default, like every other runtime knob.
+    Resolves stored setting -> env -> default, like every other runtime knob.
     """
     try:
         from aiforge_core.config import runtime_settings as _rs
@@ -126,10 +182,114 @@ def waiting() -> int:
         return _waiting
 
 
-def acquire_global(*, max_wait_s: float = 120.0) -> float:
+def _limit(rpm: float) -> int:
+    """The window's integer capacity for a ceiling of ``rpm``.
+
+    FLOORS AT 1. ``int(0.9)`` is 0, and a capacity of 0 made ``len(_sends) < 0``
+    unreachable — so acquire_global fell through to ``_sends[0]`` on an empty
+    list and raised IndexError into ``_post``, which does not catch it. A
+    fractional ceiling reaches here from the env fallback in :func:`global_rpm`
+    (``float(raw)``, no int coercion), so this is reachable, not theoretical.
+    Anyone who asks for a fraction of a request per minute means "as few as
+    possible", which is one.
+    """
+    return max(1, int(rpm))
+
+
+def _trim_locked(now: float) -> None:
+    """Drop sends that have aged out of the 60s window. Caller holds
+    ``_WINDOW_LOCK``."""
+    cut = now - 60.0
+    i = 0
+    while i < len(_sends) and _sends[i] <= cut:
+        i += 1
+    if i:
+        del _sends[:i]
+
+
+def note_rate_limited(retry_after_s: float = 0.0,
+                      provider: "str | None" = None) -> None:
+    """The SERVER said we are over ITS limit. Hold every caller of THAT
+    provider in this process until its window can plausibly have cleared.
+
+    Without this, one rejection teaches nobody: our own count sits comfortably
+    under our ceiling (the ceiling is only ever an ESTIMATE of the server's
+    rule — it is per-process, it cannot see the memory daemon, and the server
+    counts a window we never observe), so the next caller sends straight into
+    the same wall, and the model chain spends another request discovering it.
+
+    A SEPARATE HOLD, not a synthetic fill of ``_sends``. Filling the window
+    silently did nothing in the one situation that matters most: when callers
+    have been overrunning the ceiling, ``len(_sends)`` is already at or above
+    capacity, so "top the window up to capacity" is ``range(0)`` — a no-op at
+    exactly the moment a rejection is most likely to arrive.
+
+    APPLIES EVEN AT ``llm_max_rpm=0``. Zero means "I have not asked you to
+    throttle me", which is a statement about our own preference; it is not
+    permission to ignore a provider that has just refused us. Obeying a
+    rejection is never the wrong thing to do, and the hold is bounded by the
+    caller's ``max_wait_s`` like every other wait here.
+
+    BOUNDED by :func:`_hold_cap`, because ``retry_after_s`` is a number a
+    remote server chose.
+    """
+    hold = retry_after_s if retry_after_s and retry_after_s > 0 else 60.0
+    hold = min(hold, _hold_cap())
+    key = provider or _ANY
+    with _WINDOW_LOCK:
+        _holds[key] = max(_holds.get(key, 0.0), _now() + hold)
+
+
+def _hold_left_locked(now: float, provider: "str | None") -> float:
+    """Seconds left on a hold that applies to ``provider``. Caller holds
+    ``_WINDOW_LOCK``."""
+    left = 0.0
+    for key in ({_ANY, provider or _ANY}):
+        until = _holds.get(key)
+        if until is not None:
+            left = max(left, until - now)
+    return max(0.0, left)
+
+
+def held_for(provider: "str | None" = None) -> float:
+    """Seconds still left on a server-imposed hold; 0 when none."""
+    with _WINDOW_LOCK:
+        return _hold_left_locked(_now(), provider)
+
+
+def global_used() -> int:
+    """Requests counted against the ceiling in the last 60 seconds."""
+    with _WINDOW_LOCK:
+        _trim_locked(_now())
+        return len(_sends)
+
+
+def reset_global() -> None:
+    """Test helper — forget every send, hold and parked caller."""
+    global _waiting
+    with _WINDOW_LOCK:
+        _sends.clear()
+        _holds.clear()
+    with _WAIT_LOCK:
+        # Not cosmetic: a leaked counter shows the toolbar a queue that will
+        # never drain, with no way for an operator to clear it.
+        _waiting = 0
+
+
+def acquire_global(*, max_wait_s: float = 120.0,
+                   provider: "str | None" = None) -> float:
     """Block until the operator's global rate ceiling allows one more request.
 
-    Returns the seconds spent waiting (0 when uncapped).
+    Returns the seconds spent waiting (0 when uncapped and unheld).
+
+    A SLIDING WINDOW, not a token bucket. The bucket this replaced started
+    FULL and refilled continuously, so a ceiling of N allowed an opening burst
+    of N *plus* the N that refilled during the same 60 seconds — up to 2N in a
+    wall-clock minute. Providers that publish "N requests per minute" count a
+    sliding window, so a ceiling set deliberately UNDER the provider's (17
+    against a limit of 20) still earned rejections — precisely the failure this
+    ceiling exists to prevent. Counting the sends of the last 60 seconds means
+    "never more than N in any minute", which is the server's own rule.
 
     THIS ONE DELAYS, IT NEVER FAILS. The per-provider :func:`acquire` raises
     when it gives up, because a provider limit is the provider's rule and
@@ -141,37 +301,66 @@ def acquire_global(*, max_wait_s: float = 120.0) -> float:
     is bounded by ``max_wait_s``, and reaching that bound lets the call through
     with a warning instead of killing it. A ceiling that stops the product is
     not a throttle, it is an outage.
+
+    THE OVERRUN IS ACCOUNTED FOR. A call let through past ``max_wait_s`` is
+    still a call that left the box, so it is appended to the window like any
+    other. It has to be: waiters decide independently, so under real load
+    (default ceiling 5, a turn of 10-40 calls, a 120s bound) several can
+    overrun at once, and a window that did not count them would keep reporting
+    a box at its limit as idle.
     """
     global _waiting
     rpm = global_rpm()
-    if rpm <= 0:
+    if rpm <= 0 and held_for(provider) <= 0:
         return 0.0
-    lock = _LOCKS.setdefault(_GLOBAL, threading.Lock())
     waited = 0.0
     with _WAIT_LOCK:
         _waiting += 1
     try:
         while True:
-            with lock:
-                b = _bucket(_RPM_BUCKETS, _GLOBAL, rpm)
-                # The ceiling is live: an operator who raises it mid-run should
-                # not wait out a bucket sized by the old value.
-                if b.capacity != rpm:
-                    b.capacity = rpm
-                    b.rate = rpm / 60.0
-                    b.tokens = min(b.tokens, rpm)
-                sleep_s = b.take(1.0)
-                if sleep_s == 0.0:
+            # Re-read the ceiling every pass: an operator who raises it mid-run
+            # should not wait out the old number. (At most once per sleep step,
+            # so this is a settings read every few seconds per parked caller.)
+            rpm = global_rpm()
+            with _WINDOW_LOCK:
+                now = _now()
+                _trim_locked(now)
+                hold_s = _hold_left_locked(now, provider)
+                if rpm <= 0:
+                    window_s = 0.0
+                elif len(_sends) < _limit(rpm):
+                    window_s = 0.0
+                else:
+                    # Room appears when the oldest send ages out. `_sends` is
+                    # non-empty here: _limit() floors at 1.
+                    window_s = max(0.0, (_sends[0] + 60.0) - now)
+                sleep_s = max(hold_s, window_s)
+                if sleep_s <= 0:
+                    if rpm > 0:
+                        _sends.append(now)
                     return waited
             if waited + sleep_s > max_wait_s:
                 log.warning(
                     "llm.rate_ceiling_overrun: waited %.1fs of a %.1fs budget "
-                    "at llm_max_rpm=%g — letting this call through rather than "
-                    "failing it. Raise the ceiling in Settings → Agent limits "
-                    "if this is common.", waited, max_wait_s, rpm)
+                    "at llm_max_rpm=%g (hold %.1fs) — letting this call through "
+                    "rather than failing it. Raise the ceiling in Settings -> "
+                    "Agent limits if this is common.",
+                    waited, max_wait_s, rpm, hold_s)
+                with _WINDOW_LOCK:
+                    if rpm > 0:
+                        _sends.append(_now())
+                        # CLAMPED. An overrun call is honestly counted, but
+                        # letting the window grow past capacity blocks the next
+                        # well-behaved caller for a full 60s instead of
+                        # 60/rpm, and ships a `limit_used` above `limit_rpm`
+                        # for the UI to render as nonsense.
+                        _cap = _limit(rpm)
+                        if len(_sends) > _cap:
+                            del _sends[:len(_sends) - _cap]
                 return waited
-            time.sleep(min(sleep_s, 5.0))
-            waited += min(sleep_s, 5.0)
+            _step = min(sleep_s, 5.0)
+            time.sleep(_step)
+            waited += _step
     finally:
         with _WAIT_LOCK:
             _waiting -= 1

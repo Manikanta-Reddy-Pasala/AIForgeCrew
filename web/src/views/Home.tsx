@@ -594,6 +594,7 @@ function AgentLimitsCard() {
         // so a button whose tooltip says "nothing stops a turn but you" cannot
         // leave a 5/min throttle in force.
         chat_safety_cap: 0, chat_turn_deadline_s: 0, llm_max_rpm: 0,
+        llm_rate_limit_backoff_s: 20, llm_rate_limit_cap_s: 60,
       } as LlmSettingsInput);
       setVals(next);
       setNonce(x => x + 1);
@@ -611,7 +612,8 @@ function AgentLimitsCard() {
     try {
       const next = await api.setLlmSettings({
         unset: ['chat_safety_cap', 'chat_turn_deadline_s', 'chat_cap_extensions',
-                'chat_unattended_cap', 'llm_max_rpm'],
+                'chat_unattended_cap', 'llm_max_rpm',
+                'llm_rate_limit_backoff_s', 'llm_rate_limit_cap_s'],
       });
       setVals(next);
       setNonce(x => x + 1);
@@ -708,8 +710,14 @@ function AgentLimitsCard() {
                'How many times a turn still making progress may extend the cap / deadline. 0 = stop hard. Default 2.',
                0, 50)}
         {field('llm_max_rpm', 'LLM calls per minute',
-               'Ceiling on model requests per minute for this API process — chat, the routers, jobs and the team pipeline (not embeddings or the memory daemon, which is its own process). 0 = no ceiling. One agent turn is routinely 10-40 calls, so at 5/min a single message queues for minutes. Calls WAIT, they are never failed; the toolbar meter shows ⏳ while any are parked.',
+               'Ceiling on model requests in any 60 seconds for this API process — chat, the routers, jobs, the team pipeline and memory\u2019s structured extractions (not embeddings, and not the memory daemon, which is its own process with its own ceiling). 0 = no ceiling. Set it BELOW your provider\u2019s published limit, not at it. One agent turn is routinely 10-40 calls, so at 5/min a single message queues for minutes. Calls WAIT, they are never failed; the toolbar meter shows \u23f3 while any are parked.',
                0, 100_000)}
+        {field('llm_rate_limit_backoff_s', 'Rate-limit backoff (s)',
+               'How long to wait after the PROVIDER rejects us for sending too fast and sends no Retry-After. It is counting a minute, so a sub-second backoff just re-earns the rejection and pays a request to do it. 0 = ordinary exponential backoff. Default 20.',
+               0, 3_600)}
+        {field('llm_rate_limit_cap_s', 'Rate-limit cap (s)',
+               'The most a SINGLE rejection may cost — both this caller\u2019s own wait and the hold every other caller then observes. Retry-After is a number the remote server chose, and unbounded it lets one header park the whole box. Default 60.',
+               1, 3_600)}
         {field('chat_unattended_cap', 'Background step cap',
                'Steps for runs with nobody watching (scheduled jobs, analysis fan-out, subtasks). These have no Stop button, so this one cannot be 0. Default 2000.',
                1, 1_000_000)}

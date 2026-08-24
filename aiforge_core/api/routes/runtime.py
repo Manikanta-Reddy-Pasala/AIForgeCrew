@@ -292,6 +292,11 @@ class _RuntimeSettingsBody(BaseModel):
     chat_unattended_cap: int | None = Field(None, ge=1, le=1_000_000)
     # 0 = no ceiling.
     llm_max_rpm: int | None = Field(None, ge=0, le=100_000)
+    # Rate-limit response knobs. Bounds MUST match _BOUNDS in runtime_settings:
+    # this validator is the only write path, so a mismatch here makes the
+    # store's own bound unreachable and the UI 422s on a value it offers.
+    llm_rate_limit_backoff_s: int | None = Field(None, ge=0, le=3_600)
+    llm_rate_limit_cap_s: int | None = Field(None, ge=1, le=3_600)
     # Names to FORGET, so those knobs fall back to env / built-in default
     # (the store otherwise shadows the documented env var forever).
     unset: list[str] | None = None

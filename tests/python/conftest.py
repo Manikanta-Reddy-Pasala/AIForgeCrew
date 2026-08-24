@@ -10,6 +10,7 @@ value from the operator still wins.
 from __future__ import annotations
 
 import os
+import pytest
 import tempfile
 
 os.environ.setdefault("AIFORGE_AUTODETECT_CTX", "0")
@@ -21,10 +22,14 @@ os.environ.setdefault("AIFORGE_AUTODETECT_CTX", "0")
 # Production leaves it unset → classify_scope's own default "1" → LLM on.
 os.environ.setdefault("AIFORGE_OKR_SCOPE_LLM", "0")
 
-# The operator's calls-per-minute ceiling (llm_max_rpm, default 5) is a real
-# throttle: a suite that drives the transport more than five times a minute
-# would sit in the limiter's queue for the rest of the run. Off in tests; the
-# ceiling's own tests set it explicitly.
+# The operator's calls-per-minute ceiling (llm_max_rpm) is a real throttle: a
+# suite that drives the transport more than the ceiling allows would sit in the
+# limiter's queue for the rest of the run. Off in tests; the ceiling's own tests
+# set it explicitly.
+#
+# NOT SUFFICIENT ON ITS OWN — see the _reset_llm_ceiling fixture below. A
+# server-imposed HOLD applies even at rpm=0, lives in module state, and outlives
+# the test that armed it by up to 60 real seconds.
 os.environ.setdefault("AIFORGE_LLM_MAX_RPM", "0")
 
 # Recall map→summarize (recall_summary.summarize_hits) makes one learner-role
@@ -49,3 +54,20 @@ os.environ.setdefault("AIFORGE_UMEM_SUMMARIZE", "0")
 # two successive ones — can't see each other's leftovers.
 os.environ.setdefault("AIFORGE_CONFIG_DIR",
                       tempfile.mkdtemp(prefix="aiforge-test-"))
+
+
+@pytest.fixture(autouse=True)
+def _reset_llm_ceiling():
+    """Drop the rate ceiling's process-global state between tests.
+
+    `AIFORGE_LLM_MAX_RPM=0` above turns off our own throttle but NOT a hold
+    armed by a simulated server rejection: those apply at rpm=0 by design and
+    persist in module state on the monotonic clock. Any test that drives a
+    rate-limit body through the transport would otherwise add up to 60 seconds
+    of real blocking to every later test in the run — a suite that hangs, with
+    the cause several files away from the symptom.
+    """
+    from aiforge_core.llm import rate_limiter as _rl
+    _rl.reset_global()
+    yield
+    _rl.reset_global()

@@ -188,7 +188,12 @@ function LlmMeterInner() {
         {!!u && !stale && u.queued > 0 && (
           // Being throttled is not the same as being slow. Say so, or a capped
           // box reads as a broken one.
-          <span style={{ color: 'var(--warn)' }}>· ⏳ {u.queued}</span>
+          <span style={{ color: 'var(--warn)' }}
+                title={(u.held_s ?? 0) > 0
+                  ? `the provider rejected us — holding ${Math.round(u.held_s!)}s`
+                  : `${u.queued} call(s) waiting on your ${u.limit_rpm}/min ceiling`}>
+            · ⏳ {u.queued}
+          </span>
         )}
       </button>
 
@@ -217,8 +222,18 @@ function LlmMeterInner() {
 
           {!!u?.limit_rpm && (
             <div className="llm-meter-note" style={{ color: 'var(--fg-2)' }}>
-              capped at {u.limit_rpm}/min{u.queued > 0
+              capped at {u.limit_rpm}/min{typeof u.limit_used === 'number'
+                ? ` · ${u.limit_used} used` : ''}{u.queued > 0
                 ? ` · ${u.queued} call(s) waiting` : ''} — Settings → Agent limits
+            </div>
+          )}
+          {(u?.held_s ?? 0) > 0 && (
+            // The reason the ⏳ badge can appear with NO ceiling set: the
+            // provider refused us and we are obeying it. Without this line an
+            // operator running limit_rpm=0 sees a queue with no explanation.
+            <div className="llm-meter-note" style={{ color: 'var(--warn)' }}>
+              the provider rejected us for sending too fast — holding{' '}
+              {Math.round(u!.held_s!)}s before the next call
             </div>
           )}
           {!!(u?.tokens_out_60m ?? 0) && (
