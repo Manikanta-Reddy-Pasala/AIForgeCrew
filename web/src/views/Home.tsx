@@ -710,7 +710,7 @@ function AgentLimitsCard() {
                'How many times a turn still making progress may extend the cap / deadline. 0 = stop hard. Default 2.',
                0, 50)}
         {field('llm_max_rpm', 'LLM calls per minute',
-               'Ceiling on model requests in any 60 seconds for this API process — chat, the routers, jobs, the team pipeline and memory\u2019s structured extractions (not embeddings, and not the memory daemon, which is its own process with its own ceiling). 0 = no ceiling. Set it BELOW your provider\u2019s published limit, not at it. One agent turn is routinely 10-40 calls, so at 5/min a single message queues for minutes. Calls WAIT, they are never failed; the toolbar meter shows \u23f3 while any are parked.',
+               'Ceiling on model requests in any 60 seconds, shared by EVERY AIForge process on this machine — chat, the routers, jobs, the team-pipeline runner and memory\u2019s structured extractions (not embeddings, which go to a local sidecar). 0 = no ceiling. Set it BELOW your provider\u2019s published limit, not at it. One agent turn is routinely 10-40 calls and the memory fold runs alongside it, so a low value queues ordinary work for minutes. Calls WAIT, they are never failed; the toolbar shows \u23f3 while any are parked, and says whether the ceiling is machine-wide or has fallen back to this process alone.',
                0, 100_000)}
         {field('llm_rate_limit_backoff_s', 'Rate-limit backoff (s)',
                'How long to wait after the PROVIDER rejects us for sending too fast and sends no Retry-After. It is counting a minute, so a sub-second backoff just re-earns the rejection and pays a request to do it. 0 = ordinary exponential backoff. Default 20.',

@@ -86,10 +86,16 @@ _SPEC: dict[str, tuple[str, int]] = {
     #
     # Covers everything that goes through the LLM client (chat, the routers and
     # classifiers, jobs, direct callers), the ADK/team pipeline, and the
-    # instructor-backed structured path (every memory-side `learner` call). It
-    # does NOT cover embeddings/rerank, nor the memory daemon — that runs in
-    # its OWN process and this window is per-process, so the ceiling is per API
-    # process, not per machine. Size it accordingly.
+    # instructor-backed structured path (every memory-side `learner` call). Not
+    # embeddings — those go to a local sidecar, not to the provider.
+    #
+    # PER MACHINE, not per process. run.sh starts uvicorn, the team-pipeline
+    # runner and the boot-time fold as separate processes, and each used to get
+    # this whole allowance to itself — so 15 against a gateway permitting 20/min
+    # put 30+ on the wire and the rejections kept coming with the setting
+    # correctly applied everywhere. They now share one window on disk (see
+    # llm/_shared_window.py). If that store is unavailable the ceiling degrades
+    # to per-process and says so in the log and in the toolbar's limit_scope.
     #
     # A SLIDING WINDOW: at most this many requests in any 60 seconds, which is
     # how a provider publishing "N per minute" counts. (It used to be a token
@@ -101,18 +107,17 @@ _SPEC: dict[str, tuple[str, int]] = {
     # a call — past AIFORGE_LLM_MAX_WAIT_S it warns and lets it through.
     #
     # 0 disables OUR throttle, not our manners: a provider that answers 429 (or
-    # a 4xx naming a rate limit) still holds every caller in this process for
+    # a 4xx naming a rate limit) still holds every caller on the machine for
     # Retry-After. Declining to self-throttle is a statement about our own
     # preference, not permission to ignore a server that has refused us.
-    # 30, not 5. 5 was chosen when the structured/memory path was exempt from
-    # this ceiling; it no longer is, so the same number now covers strictly more
-    # traffic. And a sliding window releases differently from the token bucket
-    # it replaced: the bucket dripped a slot every 60/N seconds, so a 20-call
-    # turn made visible progress throughout, while a window of 5 gives five
-    # fast steps and then a 60-SECOND DEAD STOP, four times over. Same
-    # throughput, far worse to sit in front of. 30 fits an ordinary turn
-    # (10-40 calls) inside one window while still catching a runaway.
-    "llm_max_rpm": ("AIFORGE_LLM_MAX_RPM", 30),
+    #
+    # 60, raised from 30 WITH the move to a machine-wide window and not
+    # separately. 30 was chosen when each process got 30 of its own, so on the
+    # ordinary two- or three-process box the honest equivalent is higher, not
+    # the same number silently meaning a third of the throughput. It still has
+    # to cover a 10-40 call turn while the memory fold and the pipeline run
+    # alongside it.
+    "llm_max_rpm": ("AIFORGE_LLM_MAX_RPM", 60),
     # How long to wait after a provider REJECTS us for sending too fast (a 429,
     # or a 4xx whose body names a rate limit) when it did not send a
     # Retry-After. The provider is counting a minute; a sub-second backoff just

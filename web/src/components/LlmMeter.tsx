@@ -227,6 +227,18 @@ function LlmMeterInner() {
                 ? ` · ${u.queued} call(s) waiting` : ''} — Settings → Agent limits
             </div>
           )}
+          {u?.limit_scope === 'process' && (
+            // The ceiling is meant to be machine-wide. When the shared store is
+            // unavailable each process counts alone, so the real rate is this
+            // number TIMES the number of AIForge processes — which looks
+            // exactly like "the setting is not working".
+            <div className="llm-meter-note" style={{ color: 'var(--warn)' }}>
+              ⚠ counting THIS PROCESS ONLY — the shared window is unavailable,
+              so the machine-wide rate is a multiple of any ceiling you set, and
+              a provider rejection seen by one process will not hold the others.
+              See the aiforge.rate_limiter log for why.
+            </div>
+          )}
           {(u?.held_s ?? 0) > 0 && (
             // The reason the ⏳ badge can appear with NO ceiling set: the
             // provider refused us and we are obeying it. Without this line an

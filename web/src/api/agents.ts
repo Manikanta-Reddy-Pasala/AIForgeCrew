@@ -131,6 +131,12 @@ export interface LlmUsage {
   /** requests counted against the ceiling in the last 60s (its own count, not
    *  `per_minute`: the ceiling also counts sends the meter has no token for) */
   limit_used?: number;
+  /** "machine" when every AIForge process on the box shares one ceiling,
+   *  "process" when the shared store was unavailable and this process is
+   *  counting alone — which silently multiplies the real rate by the number of
+   *  processes, so it is the first thing to check when the setting looks
+   *  applied and the provider still rejects. */
+  limit_scope?: 'machine' | 'process';
   /** seconds left on a hold a PROVIDER imposed by rejecting us (429/quota).
    *  Distinct from `queued`, which is our own ceiling throttling us — and it
    *  applies even at limit_rpm=0, which is why the badge needs it to explain
