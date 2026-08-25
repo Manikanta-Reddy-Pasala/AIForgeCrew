@@ -1365,6 +1365,19 @@ def _consume_produce_events(_events, st, steps, run, session_id, turn_t0,
             break
 
 
+def _mirror_event_to_log(ev, session_id, clog, emit):
+    """Mirror a substantive producer event (thought/tool/message/error) into the observability NDJSON. Best-effort."""
+    if clog is not None and emit is not None and \
+            ev.get("type") in ("thought", "tool", "message", "error"):
+        try:
+            emit(clog, ev["type"], session=session_id, name=ev.get("name"),
+                 text=(ev.get("text") or "")[:200],
+                 tool_ok=(ev.get("result") or {}).get("ok")
+                 if isinstance(ev.get("result"), dict) else None)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _clean_and_log_produce_event(ev, session_id, turn_t0, turn_mode, clog, emit):
     """Sanitise + timestamp + log-mirror one producer event. Returns the event
     (possibly rewritten) or None to DROP it.
@@ -1386,15 +1399,7 @@ def _clean_and_log_produce_event(ev, session_id, turn_t0, turn_mode, clog, emit)
     if ev.get("type") == "done" and "elapsed_s" not in ev:
         ev = {**ev, "elapsed_s": round(_time.time() - turn_t0, 2),
               "mode": turn_mode}
-    if clog is not None and emit is not None and \
-            ev.get("type") in ("thought", "tool", "message", "error"):
-        try:
-            emit(clog, ev["type"], session=session_id, name=ev.get("name"),
-                 text=(ev.get("text") or "")[:200],
-                 tool_ok=(ev.get("result") or {}).get("ok")
-                 if isinstance(ev.get("result"), dict) else None)
-        except Exception:  # noqa: BLE001
-            pass
+    _mirror_event_to_log(ev, session_id, clog, emit)
     return ev
 
 

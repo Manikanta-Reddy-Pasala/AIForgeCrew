@@ -128,6 +128,36 @@ def _synthesize_solution_fact(prompt: str, facts: list, changed: list[str]) -> d
             "files": changed[:20]}
 
 
+def _distil_facts_llm(messages, prompt, repo, session_id, event_time, learner_persist):
+    """Run the distiller LLM; on failure fall back to persisting an explicit remember-cue user line so a stated preference is never lost. Returns (raw, llm_down)."""
+    from aiforge_core.llm import client as _llm
+    _llm_down = False
+    try:
+        raw = _llm.complete(
+            "learner", messages,
+            max_tokens=_int_env("AIFORGE_CHAT_LEARNER_MAX_TOKENS", 800),
+            temperature=0.0,
+            timeout_s=_int_env("AIFORGE_CHAT_LEARNER_TIMEOUT_S", 120),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.debug("chat_learner llm failed: %s", exc)
+        raw, _llm_down = "", True
+        # DETERMINISTIC FALLBACK: when the distil LLM is down (flaky endpoint), an
+        # EXPLICIT instruction to remember must still persist — else a stated
+        # preference is silently lost. Save the raw user line as one fact.
+        from aiforge_core.runtime.capture_cues import has_cue as _has_cue
+        if _has_cue(prompt):
+            try:
+                learner_persist.persist_facts(
+                    facts=[{"text": prompt.strip()[:500], "tags": ["preference"]}],
+                    repo=repo, session_id=str(session_id or ""),
+                    event_time=event_time)
+                log.info("chat_learner fallback saved raw instruction (LLM down)")
+            except Exception:  # noqa: BLE001
+                pass
+    return raw, _llm_down
+
+
 def learn_from_chat(*, prompt: str, final_text: str, steps: list | None,
                     repo: str, session_id, event_time: float | None = None) -> dict:
     """Distil + persist durable facts from one completed simple/plan turn.
@@ -161,30 +191,7 @@ def learn_from_chat(*, prompt: str, final_text: str, steps: list | None,
             "nothing is worth remembering long-term. Skip pleasantries and "
             "one-off chatter.\n\n" + _transcript(prompt, final_text, steps)},
     ]
-    _llm_down = False
-    try:
-        raw = _llm.complete(
-            "learner", messages,
-            max_tokens=_int_env("AIFORGE_CHAT_LEARNER_MAX_TOKENS", 800),
-            temperature=0.0,
-            timeout_s=_int_env("AIFORGE_CHAT_LEARNER_TIMEOUT_S", 120),
-        )
-    except Exception as exc:  # noqa: BLE001
-        log.debug("chat_learner llm failed: %s", exc)
-        raw, _llm_down = "", True
-        # DETERMINISTIC FALLBACK: when the distil LLM is down (flaky endpoint), an
-        # EXPLICIT instruction to remember must still persist — else a stated
-        # preference is silently lost. Save the raw user line as one fact.
-        from aiforge_core.runtime.capture_cues import has_cue as _has_cue
-        if _has_cue(prompt):
-            try:
-                learner_persist.persist_facts(
-                    facts=[{"text": prompt.strip()[:500], "tags": ["preference"]}],
-                    repo=repo, session_id=str(session_id or ""),
-                    event_time=event_time)
-                log.info("chat_learner fallback saved raw instruction (LLM down)")
-            except Exception:  # noqa: BLE001
-                pass
+    raw, _llm_down = _distil_facts_llm(messages, prompt, repo, session_id, event_time, learner_persist)
 
     facts = learner_persist._coerce_facts(_extract_json(raw))
     # GROUND-TRUTH SOLUTION: if this turn actually changed the repo (edit tools

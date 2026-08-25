@@ -376,28 +376,43 @@ def _same_subject(a: str, b: str, cache: dict) -> bool:
         return False
 
 
+def _uf_find(parent, x):
+    """Union-find root of x with path compression."""
+    while parent[x] != x:
+        parent[x] = parent[parent[x]]
+        x = parent[x]
+    return x
+
+
+def _uf_union(parent, a, b):
+    """Union two topic keys; canonical root = the SHORTER (broader) name."""
+    ra, rb = _uf_find(parent, a), _uf_find(parent, b)
+    if ra != rb:
+        if len(rb) < len(ra) or (len(rb) == len(ra) and rb < ra):
+            ra, rb = rb, ra
+        parent[rb] = ra
+
+
+def _same_topic_family(a, b, families, ratio, sim):
+    """True when two topic keys name the SAME subject: prefix family, plural,
+    shared prefix words, typo sibling, high lexical ratio, or embedding-near."""
+    import difflib
+    shared = _shared_prefix(a, b)
+    return (a.startswith(b + "-") or b.startswith(a + "-")   # prefix family
+            or a == b + "s" or b == a + "s"                  # plural (note/notes)
+            or shared >= 2                                   # wifi-device-* siblings
+            or (families and shared >= 1)                    # windows-* whole family
+            or _typo_sibling(a, b)                           # windows-ntp / -npt
+            or difflib.SequenceMatcher(None, a, b).ratio() >= ratio
+            or _same_subject(a, b, sim))                     # calc / calculator
+
+
 def _topic_clusters(keys: list[str]) -> list[list[str]]:
     """Group topic keys that are the SAME subject: prefix-family (one extends
     another at a word boundary — gpsd / gpsd-config / gpsd-configuration) OR
     fuzzy-near-identical (note / notes). Union-find over both signals. Returns
     only clusters with >1 member (the ones worth merging)."""
-    import difflib
     parent = {k: k for k in keys}
-
-    def find(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(a, b):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            # canonical root = the SHORTER (broader) name
-            if len(rb) < len(ra) or (len(rb) == len(ra) and rb < ra):
-                ra, rb = rb, ra
-            parent[rb] = ra
-
     ratio = _topic_merge_ratio()
     families = _merge_families()
     # Similarity over each topic's slug + brief head — the signal no amount of
@@ -407,18 +422,11 @@ def _topic_clusters(keys: list[str]) -> list[list[str]]:
     sim: dict = {}
     for i, a in enumerate(keys):
         for b in keys[i + 1:]:
-            shared = _shared_prefix(a, b)
-            if (a.startswith(b + "-") or b.startswith(a + "-")   # prefix family
-                    or a == b + "s" or b == a + "s"              # plural (note/notes)
-                    or shared >= 2                               # wifi-device-* siblings
-                    or (families and shared >= 1)                # windows-* whole family
-                    or _typo_sibling(a, b)                       # windows-ntp / -npt
-                    or difflib.SequenceMatcher(None, a, b).ratio() >= ratio
-                    or _same_subject(a, b, sim)):                # calc / calculator
-                union(a, b)
+            if _same_topic_family(a, b, families, ratio, sim):
+                _uf_union(parent, a, b)
     groups: dict[str, list[str]] = {}
     for k in keys:
-        groups.setdefault(find(k), []).append(k)
+        groups.setdefault(_uf_find(parent, k), []).append(k)
     return [sorted(v, key=len) for v in groups.values() if len(v) > 1]
 
 
