@@ -1438,6 +1438,127 @@ def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
     return None
 
 
+def _pre_tool_checks(st, name, args, cwd, _scope_globs):
+    """PreToolUse hook block + autonomous scope-allowlist enforcement. Yields a
+    scope-violation observation and returns continue when the path is out of
+    scope; otherwise returns the hook-block dict (or None) for dispatch."""
+    # Lifecycle hook (Claude Code parity): PreToolUse can block a tool
+    # (a `block_on_nonzero` hook that exits non-zero) — surface it like the
+    # plan-mode/policy blocks. Hooks soft-fail; a hooks error never breaks
+    # the turn.
+    _hook_block = None
+    try:
+        from aiforge_core.runtime import hooks as _hooks
+        _pre = _hooks.fire("PreToolUse", {"tool": name, "args": args}, cwd)
+        if _pre.get("blocked"):
+            _hook_block = _pre
+    except Exception:  # noqa: BLE001 — hooks must never break dispatch
+        _hook_block = None
+
+    # Scope allowlist enforcement (autonomous Doer path). Reject a
+    # mutating file tool whose resolved target path is outside the
+    # ticket's scope_allowlist_globs — refuse WITHOUT writing, and hand
+    # the model a corrective observation. Reuses scope_guard's matcher
+    # so the text path enforces exactly like the native callback.
+    if _scope_globs:
+        try:
+            from aiforge_core.runtime import scope_guard as _sg
+            _off = [p for p in _sg._path_from_args(name, args or {})
+                    if not _sg._matches_any(p, _scope_globs)]
+        except Exception:  # noqa: BLE001 — never break dispatch
+            _off = []
+        if _off:
+            result = {
+                "ok": False, "error": "scope_violation",
+                "blocked_paths": _off,
+                "scope_allowlist_globs": _scope_globs,
+                "hint": ("Edit refused: path is outside the ticket's "
+                         "scope_allowlist_globs. Edit only files inside "
+                         "an allowed glob."),
+            }
+            yield {"type": "tool", "name": name, "args": args,
+                   "result": result}
+            st.convo.append({"role": "user",
+                          "content": f"OBSERVATION: {json.dumps(result)}"})
+            return "continue"
+    return _hook_block
+
+
+def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
+    """Post-tool bookkeeping: PostToolUse hook, emit the tool result, count landed
+    reads/edits (feeding the progress + verify gates), post-edit syntax self-
+    check, builder-finalize signal, and append the (smart-truncated) OBSERVATION."""
+    # PostToolUse hook (best-effort, never blocks).
+    try:
+        from aiforge_core.runtime import hooks as _hooks
+        _hooks.fire("PostToolUse",
+                    {"tool": name, "args": args, "result": result}, cwd)
+    except Exception:  # noqa: BLE001 — hooks must never break the turn
+        pass
+    yield {"type": "tool", "name": name, "args": args, "result": result,
+           "call_id": n}
+    # Loop-engineering bookkeeping: count edits that actually LANDED (gates
+    # the verify-on-final loop — a 0-edit Q&A turn is never test-gated).
+    # Remember a successful read so a later identical re-read short-circuits.
+    if (name in _READ_OBS_TOOLS and not (
+            isinstance(result, dict) and result.get("ok") is False)):
+        # F2: counted OUTSIDE the _long_chain_help gate —
+        # AIFORGE_CHAT_STUCK_RECOVERIES=0 turns off the duplicate-read
+        # NUDGE, and must not silently delete half the progress signal with
+        # it (a read-only research turn would never extend on that box).
+        if sig not in st.read_sigs_ever:
+            st.reads_new += 1        # real progress: knowledge it did not have
+            st.read_sigs_ever[sig] = True
+            while len(st.read_sigs_ever) > _ACTION_SIG_MAX:
+                st.read_sigs_ever.popitem(last=False)
+        if _long_chain_help:
+            st.read_sigs_seen.add(sig)
+    if name in _EDIT_TOOL_NAMES and not (
+            isinstance(result, dict) and result.get("ok") is False):
+        st.edits_made += 1
+        st.read_sigs_seen.clear()   # a file just changed → re-reads are valid again
+        # D: post-edit self-check. Immediately syntax-check the file just
+        # written and, if broken, hand the model the error THIS step (tight
+        # feedback) instead of letting it surface only at the end-of-run test
+        # gate. Best-effort + opt-out (AIFORGE_CHAT_POST_EDIT_CHECK=0).
+        if os.environ.get("AIFORGE_CHAT_POST_EDIT_CHECK", "1") not in ("0", "false"):
+            try:
+                _pe = _post_edit_syntax_error(name, args, cwd)
+            except Exception:  # noqa: BLE001
+                _pe = None
+            if _pe:
+                yield {"type": "thought", "role": "system",
+                       "text": f"⚠ syntax error in the file you just edited "
+                               f"— fix it now: {_pe[:160]}"}
+                st.convo.append({"role": "user", "content":
+                    "[automated syntax check — not the user] The file you just "
+                    f"wrote has a syntax error; fix it before continuing:\n{_pe[:600]}"})
+    # Builder finalize: a successful create_job_script / learn_skill /
+    # learn_workflow / remember_rule ends the interview. Signal the UI so it
+    # can drop this session's builder mode — otherwise every later message
+    # re-fires the charter and the user is stuck building forever (and can be
+    # walked into duplicate artifacts).
+    if name in _FINALIZE_TOOLS and isinstance(result, dict) and result.get("ok"):
+        st.builder_finalized = True
+        yield {"type": "builder_done", "kind": name}
+    _obs_cap = _MAX_OBS_READ if name in _READ_OBS_TOOLS else _MAX_OBS
+    # Content-READ tools: cut oversized documents at a STRUCTURE boundary
+    # (chonkie) with a continuation note, instead of a blunt slice that
+    # hands the model a broken JSON/sentence tail. Others keep the slice.
+    obs = (_smart_truncate_obs(result, _obs_cap)
+           if name in _READ_OBS_TOOLS else json.dumps(result)[:_obs_cap])
+    # Recency reminder: a strict output format from an APPLICABLE SKILL sits
+    # in the system prompt (far above), while this fresh tool result sits at
+    # the end where the model attends most — so after a tool round-trip it
+    # tends to summarize the result in its own words and drop the format
+    # (e.g. a jira-reading skill's exact layout). Re-assert the format right
+    # next to the data so the FINAL honours it. Only when a skill fired.
+    _tail = ("\n[format reminder] If your FINAL presents this result and an "
+             "APPLICABLE SKILL above specifies an output format, reproduce "
+             "it EXACTLY — no extra prose, headers, or table it does not "
+             "specify.") if _bundle.skills_md else ""
+    st.convo.append({"role": "user", "content": f"OBSERVATION: {obs}{_tail}"})
+
 def run_chat_agent(
     messages: list[dict], *,
     cwd: str,
@@ -1801,116 +1922,12 @@ def run_chat_agent(
         if _sig == "continue":
             continue
 
-        # Lifecycle hook (Claude Code parity): PreToolUse can block a tool
-        # (a `block_on_nonzero` hook that exits non-zero) — surface it like the
-        # plan-mode/policy blocks. Hooks soft-fail; a hooks error never breaks
-        # the turn.
-        _hook_block = None
-        try:
-            from aiforge_core.runtime import hooks as _hooks
-            _pre = _hooks.fire("PreToolUse", {"tool": name, "args": args}, cwd)
-            if _pre.get("blocked"):
-                _hook_block = _pre
-        except Exception:  # noqa: BLE001 — hooks must never break dispatch
-            _hook_block = None
-
-        # Scope allowlist enforcement (autonomous Doer path). Reject a
-        # mutating file tool whose resolved target path is outside the
-        # ticket's scope_allowlist_globs — refuse WITHOUT writing, and hand
-        # the model a corrective observation. Reuses scope_guard's matcher
-        # so the text path enforces exactly like the native callback.
-        if _scope_globs:
-            try:
-                from aiforge_core.runtime import scope_guard as _sg
-                _off = [p for p in _sg._path_from_args(name, args or {})
-                        if not _sg._matches_any(p, _scope_globs)]
-            except Exception:  # noqa: BLE001 — never break dispatch
-                _off = []
-            if _off:
-                result = {
-                    "ok": False, "error": "scope_violation",
-                    "blocked_paths": _off,
-                    "scope_allowlist_globs": _scope_globs,
-                    "hint": ("Edit refused: path is outside the ticket's "
-                             "scope_allowlist_globs. Edit only files inside "
-                             "an allowed glob."),
-                }
-                yield {"type": "tool", "name": name, "args": args,
-                       "result": result}
-                st.convo.append({"role": "user",
-                              "content": f"OBSERVATION: {json.dumps(result)}"})
-                continue
-
+        _hb = yield from _pre_tool_checks(st, name, args, cwd, _scope_globs)
+        if _hb == "continue":
+            continue
+        _hook_block = _hb
         result = yield from _dispatch_tool(name, args, cwd, n, _hook_block)
-        # PostToolUse hook (best-effort, never blocks).
-        try:
-            from aiforge_core.runtime import hooks as _hooks
-            _hooks.fire("PostToolUse",
-                        {"tool": name, "args": args, "result": result}, cwd)
-        except Exception:  # noqa: BLE001 — hooks must never break the turn
-            pass
-        yield {"type": "tool", "name": name, "args": args, "result": result,
-               "call_id": n}
-        # Loop-engineering bookkeeping: count edits that actually LANDED (gates
-        # the verify-on-final loop — a 0-edit Q&A turn is never test-gated).
-        # Remember a successful read so a later identical re-read short-circuits.
-        if (name in _READ_OBS_TOOLS and not (
-                isinstance(result, dict) and result.get("ok") is False)):
-            # F2: counted OUTSIDE the _long_chain_help gate —
-            # AIFORGE_CHAT_STUCK_RECOVERIES=0 turns off the duplicate-read
-            # NUDGE, and must not silently delete half the progress signal with
-            # it (a read-only research turn would never extend on that box).
-            if sig not in st.read_sigs_ever:
-                st.reads_new += 1        # real progress: knowledge it did not have
-                st.read_sigs_ever[sig] = True
-                while len(st.read_sigs_ever) > _ACTION_SIG_MAX:
-                    st.read_sigs_ever.popitem(last=False)
-            if _long_chain_help:
-                st.read_sigs_seen.add(sig)
-        if name in _EDIT_TOOL_NAMES and not (
-                isinstance(result, dict) and result.get("ok") is False):
-            st.edits_made += 1
-            st.read_sigs_seen.clear()   # a file just changed → re-reads are valid again
-            # D: post-edit self-check. Immediately syntax-check the file just
-            # written and, if broken, hand the model the error THIS step (tight
-            # feedback) instead of letting it surface only at the end-of-run test
-            # gate. Best-effort + opt-out (AIFORGE_CHAT_POST_EDIT_CHECK=0).
-            if os.environ.get("AIFORGE_CHAT_POST_EDIT_CHECK", "1") not in ("0", "false"):
-                try:
-                    _pe = _post_edit_syntax_error(name, args, cwd)
-                except Exception:  # noqa: BLE001
-                    _pe = None
-                if _pe:
-                    yield {"type": "thought", "role": "system",
-                           "text": f"⚠ syntax error in the file you just edited "
-                                   f"— fix it now: {_pe[:160]}"}
-                    st.convo.append({"role": "user", "content":
-                        "[automated syntax check — not the user] The file you just "
-                        f"wrote has a syntax error; fix it before continuing:\n{_pe[:600]}"})
-        # Builder finalize: a successful create_job_script / learn_skill /
-        # learn_workflow / remember_rule ends the interview. Signal the UI so it
-        # can drop this session's builder mode — otherwise every later message
-        # re-fires the charter and the user is stuck building forever (and can be
-        # walked into duplicate artifacts).
-        if name in _FINALIZE_TOOLS and isinstance(result, dict) and result.get("ok"):
-            st.builder_finalized = True
-            yield {"type": "builder_done", "kind": name}
-        _obs_cap = _MAX_OBS_READ if name in _READ_OBS_TOOLS else _MAX_OBS
-        # Content-READ tools: cut oversized documents at a STRUCTURE boundary
-        # (chonkie) with a continuation note, instead of a blunt slice that
-        # hands the model a broken JSON/sentence tail. Others keep the slice.
-        obs = (_smart_truncate_obs(result, _obs_cap)
-               if name in _READ_OBS_TOOLS else json.dumps(result)[:_obs_cap])
-        # Recency reminder: a strict output format from an APPLICABLE SKILL sits
-        # in the system prompt (far above), while this fresh tool result sits at
-        # the end where the model attends most — so after a tool round-trip it
-        # tends to summarize the result in its own words and drop the format
-        # (e.g. a jira-reading skill's exact layout). Re-assert the format right
-        # next to the data so the FINAL honours it. Only when a skill fired.
-        _tail = ("\n[format reminder] If your FINAL presents this result and an "
-                 "APPLICABLE SKILL above specifies an output format, reproduce "
-                 "it EXACTLY — no extra prose, headers, or table it does not "
-                 "specify.") if _bundle.skills_md else ""
-        st.convo.append({"role": "user", "content": f"OBSERVATION: {obs}{_tail}"})
+        yield from _post_tool(st, name, args, result, cwd, sig, n,
+                              _long_chain_help, _bundle)
 
 
