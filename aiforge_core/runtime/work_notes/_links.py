@@ -23,18 +23,42 @@ def _md_ref(ref_kind: str, ref_key: str) -> str:
             f"(../../{ref_kind}/{slug}/{_PRIMARY_NOTE.get(ref_kind, 'dossier.md')})")
 
 
+def _canonical_link(s: str, kind: str, key: str) -> "str | None":
+    """The canonical form of one link string, or None to drop it.
+
+    A managed-dossier reference (an md ref, a legacy ``[[kind/key]]`` wiki ref,
+    or a Jira/Confluence URL for ANOTHER dossier) becomes the relative markdown
+    FILE LINK ``[kind/key](../../kind/key/ticket.md)``; a sibling-brief mapping
+    link and the note's OWN source URL stay as-is; a non-http(s) scheme is
+    dropped (a persisted note is shared state — file:///javascript: must never
+    land in it).
+    """
+    mm = _MD_REF_RE.match(s)
+    if mm:
+        return _md_ref(mm.group(1), mm.group(2))   # re-canonicalize label/file drift
+    wm = _WIKI_REF_RE.match(s)
+    if wm:
+        return _md_ref(wm.group(1), wm.group(2))
+    if _BRIEF_REF_RE.match(s):
+        return s                                    # sibling-brief mapping — canonical
+    if not re.match(r"^https?://", s, re.IGNORECASE):
+        return None                                 # scheme filter — http(s) only
+    jm = _JIRA_URL_RE.search(s)
+    if jm and not (kind == "jira" and jm.group(1) == str(key)):
+        return _md_ref("jira", jm.group(1))
+    cm = _CONF_URL_RE.search(s)
+    if cm and not (kind == "confluence" and cm.group(1) == str(key)):
+        return _md_ref("confluence", cm.group(1))
+    return s                                         # the note's own source URL
+
+
 def normalize_links(links, kind: str, key: str) -> list[str]:
     """Canonicalize a link list for a ``(kind, key)`` note.
 
-    - only http(s) URLs pass the scheme filter (a persisted note is shared
-      state — file:///javascript: etc. must never land in it);
-    - a reference to ANOTHER managed dossier — a /browse/KEY-123 or
-      /pages/<id> URL, a legacy ``[[kind/key]]`` wiki ref, or an existing md
-      ref — becomes the canonical relative MARKDOWN FILE LINK
-      ``[kind/key](../../kind/key/ticket.md)``; the note's OWN canonical URL
-      stays a URL (it IS the source link);
-    - everything is deduped, order preserved (first occurrence wins) so
-      output is deterministic.
+    Only http(s) URLs pass the scheme filter; a reference to another managed
+    dossier becomes the canonical relative markdown file link while the note's
+    OWN canonical URL stays a URL; everything is deduped, order preserved (first
+    occurrence wins) so output is deterministic.
     """
     out: list[str] = []
     seen: set[str] = set()
@@ -44,28 +68,8 @@ def normalize_links(links, kind: str, key: str) -> list[str]:
         s = raw.strip()
         if not s:
             continue
-        mm = _MD_REF_RE.match(s)
-        wm = _WIKI_REF_RE.match(s)
-        bm = _BRIEF_REF_RE.match(s)
-        if mm:
-            # re-canonicalize (label drift, filename drift) → stable dedupe
-            canonical = _md_ref(mm.group(1), mm.group(2))
-        elif wm:
-            canonical = _md_ref(wm.group(1), wm.group(2))
-        elif bm:
-            canonical = s          # sibling-brief mapping link — already canonical
-        else:
-            if not re.match(r"^https?://", s, re.IGNORECASE):
-                continue                      # scheme filter — http(s) only
-            jm = _JIRA_URL_RE.search(s)
-            cm = _CONF_URL_RE.search(s)
-            if jm and not (kind == "jira" and jm.group(1) == str(key)):
-                canonical = _md_ref("jira", jm.group(1))
-            elif cm and not (kind == "confluence" and cm.group(1) == str(key)):
-                canonical = _md_ref("confluence", cm.group(1))
-            else:
-                canonical = s
-        if canonical not in seen:
+        canonical = _canonical_link(s, kind, key)
+        if canonical and canonical not in seen:
             seen.add(canonical)
             out.append(canonical)
     return out

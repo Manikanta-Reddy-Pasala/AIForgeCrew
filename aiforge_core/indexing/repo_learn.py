@@ -66,34 +66,39 @@ def _detect_kind(path: str, content: str) -> str | None:
     return None
 
 
+def _classify_source_file(full: str, kinds: set[str] | None,
+                          is_noise_path) -> "str | None":
+    """The kind of a Java/Kotlin file if it should be indexed, else None (noise
+    path, unreadable, undetectable, or not one of the requested kinds)."""
+    if is_noise_path(full):
+        return None
+    try:
+        head = Path(full).read_text(encoding="utf-8", errors="replace")[:4000]
+    except Exception:
+        return None
+    kind = _detect_kind(full, head)
+    if kind is None or (kinds and kind not in kinds):
+        return None
+    return kind
+
+
 def _enumerate_files(worktree: str, kinds: set[str] | None) -> list[tuple[str, str]]:
     """Walk worktree, yield (kind, abs_path) for every Java/Kotlin file
     matching one of the requested kinds (default: all)."""
-    out: list[tuple[str, str]] = []
     from aiforge_core.indexing.noise import is_noise_path, prune_dirnames
     src_root = os.path.join(worktree, "src", "main")
     if not os.path.isdir(src_root):
         src_root = worktree
+    out: list[tuple[str, str]] = []
     for dirpath, dirnames, filenames in os.walk(src_root):
         prune_dirnames(dirnames)
         for fn in filenames:
             if not (fn.endswith(".java") or fn.endswith(".kt")):
                 continue
             full = os.path.join(dirpath, fn)
-            if is_noise_path(full):
-                continue
-            try:
-                head = Path(full).read_text(
-                    encoding="utf-8", errors="replace",
-                )[:4000]
-            except Exception:
-                continue
-            kind = _detect_kind(full, head)
-            if kind is None:
-                continue
-            if kinds and kind not in kinds:
-                continue
-            out.append((kind, full))
+            kind = _classify_source_file(full, kinds, is_noise_path)
+            if kind is not None:
+                out.append((kind, full))
     return out
 
 
@@ -240,6 +245,36 @@ def _persist_fact(*, repo: str, file_id: str, file_path: str, parsed: dict,
         return None
 
 
+def _learn_one_file(repo: str, worktree: str, abs_path: str,
+                    counts: dict) -> bool:
+    """Summarise + persist one file, updating ``counts`` in place. Skips an
+    unchanged file (same content sha), counts an error on any read/LLM/persist
+    failure. Returns True only when an LLM call was actually made (so the caller
+    paces the rate-limit delay to real calls, not to skips/read-errors)."""
+    try:
+        content = Path(abs_path).read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        counts["errors"] += 1
+        return False
+    sha = _sha1(content[:32000])
+    # Stable id derived from rel path → re-run replaces.
+    rel = abs_path[len(worktree) + 1:] if abs_path.startswith(worktree) else abs_path
+    file_id = f"{repo}:{rel}".lower()
+    if _existing_sha1(file_id) == sha:
+        counts["skipped_unchanged"] += 1
+        return False
+    parsed = _llm_summarise(abs_path, content)
+    if parsed is None:
+        counts["errors"] += 1
+        return False
+    if _persist_fact(repo=repo, file_id=file_id, file_path=abs_path,
+                     parsed=parsed, content_sha1=sha):
+        counts["summarised"] += 1
+    else:
+        counts["errors"] += 1
+    return True
+
+
 def learn_repo(repo: str, *,
                kinds: Iterable[str] | None = None,
                limit: int | None = None,
@@ -259,39 +294,11 @@ def learn_repo(repo: str, *,
     if not os.path.isdir(worktree):
         return {"repo": repo, "error": f"not a dir: {worktree}"}
     targets = _enumerate_files(worktree, set(kinds) if kinds else None)
-    counts = {
-        "repo": repo,
-        "scanned": len(targets),
-        "summarised": 0,
-        "skipped_unchanged": 0,
-        "errors": 0,
-    }
-    for kind, abs_path in targets[: limit or len(targets)]:
-        try:
-            content = Path(abs_path).read_text(
-                encoding="utf-8", errors="replace",
-            )
-        except Exception:
-            counts["errors"] += 1
-            continue
-        sha = _sha1(content[:32000])
-        # Stable id derived from rel path → re-run replaces.
-        rel = abs_path[len(worktree) + 1:] if abs_path.startswith(worktree) else abs_path
-        file_id = f"{repo}:{rel}".lower()
-        prior = _existing_sha1(file_id)
-        if prior == sha:
-            counts["skipped_unchanged"] += 1
-            continue
-        parsed = _llm_summarise(abs_path, content)
-        if parsed is None:
-            counts["errors"] += 1
-            continue
-        if _persist_fact(repo=repo, file_id=file_id, file_path=abs_path,
-                         parsed=parsed, content_sha1=sha):
-            counts["summarised"] += 1
-        else:
-            counts["errors"] += 1
-        if sleep_s:
+    counts = {"repo": repo, "scanned": len(targets), "summarised": 0,
+              "skipped_unchanged": 0, "errors": 0}
+    for _kind, abs_path in targets[: limit or len(targets)]:
+        made_call = _learn_one_file(repo, worktree, abs_path, counts)
+        if sleep_s and made_call:
             time.sleep(sleep_s)
     return counts
 
