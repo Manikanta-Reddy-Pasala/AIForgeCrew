@@ -21,6 +21,15 @@ from pathlib import Path
 from typing import Any
 from aiforge_core.config.paths import config_dir
 
+def _outcome_mark(ok):
+    """✅/❌/• for a True/False/other outcome."""
+    if ok is True:
+        return "✅"
+    if ok is False:
+        return "❌"
+    return "•"
+
+
 
 def trace_dir() -> Path:
     raw = os.environ.get("AIFORGE_CHAT_TRACE_DIR")
@@ -50,7 +59,7 @@ def _fmt_action(step: dict) -> str:
         name = step.get("name") or "?"
         res = step.get("result")
         ok = res.get("ok") if isinstance(res, dict) else None
-        mark = "✅" if ok is True else ("❌" if ok is False else "•")
+        mark = _outcome_mark(ok)
         return (f"- 🔧 {mark} `{name}`({_short(step.get('args'), 200)}) "
                 f"→ {_short(res, 300)}")
     if t == "thought":

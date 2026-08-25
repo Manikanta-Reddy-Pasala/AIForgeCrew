@@ -14,6 +14,15 @@ from __future__ import annotations
 
 import os
 
+def _outcome_mark(ok):
+    """✅/❌/• for a True/False/other outcome."""
+    if ok is True:
+        return "✅"
+    if ok is False:
+        return "❌"
+    return "•"
+
+
 # Tools whose args carry a shell command.
 _CMD_TOOLS = {"run_command", "bash", "run_shell", "shell", "serve"}
 # File-mutating tools → key by path.
@@ -119,7 +128,7 @@ def ledger_block(session_id) -> str:
         return ""
     lines = []
     for it in items:
-        mark = "✅" if it["outcome"] is True else "❌" if it["outcome"] is False else "•"
+        mark = _outcome_mark(it["outcome"])
         lines.append(f"- {mark} {it['label']}")
     body = "\n".join(lines)
     cap = _cap()
