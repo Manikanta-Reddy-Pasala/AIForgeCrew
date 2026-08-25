@@ -185,8 +185,10 @@ _EMBED_BATCH = 32  # docs per /embed_batch call — CPU bge-m3 batches far faste
                    # nowhere near 32×), so a big repo indexes in minutes not hours.
 
 
-def _ingest_tree(root: Path, *, repo: str, exts: set[str], kind: str) -> int:
-    # Collect (chunk_text, ref) first so we can EMBED IN BATCHES, then write.
+def _collect_chunks(root: Path, exts: set[str]) -> list[tuple[str, str]]:
+    """(chunk_text, rel_ref) for every source file under ``root``, each chunk
+    prefixed with a ``# <rel>`` header. Bounded by ``_MAX_CHUNKS`` so a huge tree
+    can't blow memory."""
     pending: list[tuple[str, str]] = []
     for f in _iter_files(root, exts):
         text = _read_source(f)
@@ -196,22 +198,29 @@ def _ingest_tree(root: Path, *, repo: str, exts: set[str], kind: str) -> int:
         header = f"# {rel}\n"
         for ch in _chunks(text):
             if len(pending) >= _MAX_CHUNKS:
-                break
+                return pending
             pending.append((header + ch, rel))
-        if len(pending) >= _MAX_CHUNKS:
-            break
+    return pending
 
+
+def _embed_batch_vecs(batch: list[tuple[str, str]]) -> "list[list[float] | None]":
+    """Embed one batch in a single round-trip; soft-fail to per-write embed (all
+    None) so a sidecar hiccup never aborts the ingest."""
+    try:
+        from aiforge_core.memory.embed import embed_batch as _eb
+        return _eb([t for t, _ in batch])  # type: ignore[return-value]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("batch embed failed (%s); falling back per-write", exc)
+        return [None] * len(batch)
+
+
+def _ingest_tree(root: Path, *, repo: str, exts: set[str], kind: str) -> int:
+    # Collect (chunk_text, ref) first so we can EMBED IN BATCHES, then write.
+    pending = _collect_chunks(root, exts)
     n = 0
     for i in range(0, len(pending), _EMBED_BATCH):
         batch = pending[i:i + _EMBED_BATCH]
-        vecs: "list[list[float] | None]" = [None] * len(batch)
-        try:  # one round-trip for the whole batch; soft-fail → per-write embed
-            from aiforge_core.memory.embed import embed_batch as _eb
-            vecs = _eb([t for t, _ in batch])  # type: ignore[assignment]
-        except Exception as exc:  # noqa: BLE001
-            log.warning("batch embed failed (%s); falling back per-write", exc)
-            vecs = [None] * len(batch)
-        for (txt, rel), vec in zip(batch, vecs):
+        for (txt, rel), vec in zip(batch, _embed_batch_vecs(batch)):
             if _write(txt, kind=kind, repo=repo, ref=rel, embed_vec=vec):
                 n += 1
     return n
@@ -382,74 +391,79 @@ def _index_graphify(root: Path, repo: str) -> "tuple[int, str]":
             pass
 
 
+def _index_chunk_layer(root: Path, repo: str, flag: str, exts: set, kind: str,
+                       layers: dict, layer_key: str) -> int:
+    """Run one chunk layer (code or doc). Records its status in ``layers`` and
+    returns the units written. Skipped when its flag is off; soft-fails."""
+    if not _flag(flag, True):
+        layers[layer_key] = "skip:disabled"
+        return 0
+    try:
+        units = _ingest_tree(root, repo=repo, exts=exts, kind=kind)
+        layers[layer_key] = "ok"
+        return units
+    except Exception as exc:  # noqa: BLE001
+        log.warning("%s index failed: %s", layer_key, exc)
+        layers[layer_key] = f"error:{exc}"
+        return 0
+
+
+def _empty_index_error(root: Path, layers: dict) -> "str | None":
+    """The error message for a walk that produced nothing anywhere (almost always
+    a wrong / empty / unmounted path). Surfaces the RESOLVED abs path so the user
+    sees where the indexer actually looked. None when a chunk layer errored (a
+    real failure, reported separately)."""
+    if any(str(layers.get(k, "")).startswith("error:")
+           for k in ("code_chunks", "doc_chunks")):
+        return None
+    try:
+        abs_path = str(root.resolve())
+    except Exception:  # noqa: BLE001
+        abs_path = str(root)
+    layers["code_chunks"] = "skip:no_files"
+    return (f"indexed 0 files from {abs_path} — the directory is empty from the "
+            f"indexer's view. Check the path is correct and, if running the api "
+            f"in Docker, that this repo is under the mounted workspace "
+            f"(AIFORGE_HOST_WORKSPACE → /workspace).")
+
+
 def _index_repo_full(root: Path, repo: str) -> dict:
     """Full multi-layer index of a repo/directory. Every layer soft-fails
-    independently; chunks (A/A2) are the guaranteed baseline. Overall
-    ``error`` is set only if no chunk layer produced anything."""
+    independently; chunks (A/A2) are the guaranteed baseline. Overall ``error``
+    is set only if no chunk layer produced anything.
+
+    DECONFLICT: on Neo4j the AFM package (System-2) also indexes code chunks
+    incrementally; an operator running AFM can set AIFORGE_INDEX_CODE_CHUNKS=0
+    (+ AIFORGE_INDEX_SYMBOLS=0) so this full-walk path only owns graphify + docs.
+    """
     layers: dict[str, str] = {}
-    code_units = doc_units = symbols = graphify_nodes = 0
-
-    # ── Layer A — code text chunks (baseline) ──
-    # DECONFLICT: on Neo4j the AFM package (System-2) also indexes code chunks,
-    # incrementally via git-diff + git hooks. To avoid double-indexing, an
-    # operator running AFM can set AIFORGE_INDEX_CODE_CHUNKS=0 so THIS full-walk
-    # path skips code chunks (+ set AIFORGE_INDEX_SYMBOLS=0) and only owns
-    # graphify + docs. Default on (System-1 remains the sole indexer otherwise).
-    if not _flag("AIFORGE_INDEX_CODE_CHUNKS", True):
-        layers["code_chunks"] = "skip:disabled"
-    else:
-        try:
-            code_units = _ingest_tree(root, repo=repo, exts=_CODE_EXT, kind="code")
-            layers["code_chunks"] = "ok"
-        except Exception as exc:  # noqa: BLE001
-            log.warning("code chunk index failed: %s", exc)
-            layers["code_chunks"] = f"error:{exc}"
-
-    # ── Layer A2 — document chunks (md/pdf/docx/…) ──
-    if not _flag("AIFORGE_INDEX_DOCS", True):
-        layers["doc_chunks"] = "skip:disabled"
-    else:
-        try:
-            doc_units = _ingest_tree(root, repo=repo, exts=_ALL_DOC_EXT,
-                                     kind="doc")
-            layers["doc_chunks"] = "ok"
-        except Exception as exc:  # noqa: BLE001
-            log.warning("doc chunk index failed: %s", exc)
-            layers["doc_chunks"] = f"error:{exc}"
+    code_units = _index_chunk_layer(root, repo, "AIFORGE_INDEX_CODE_CHUNKS",
+                                    _CODE_EXT, "code", layers, "code_chunks")
+    doc_units = _index_chunk_layer(root, repo, "AIFORGE_INDEX_DOCS",
+                                   _ALL_DOC_EXT, "doc", layers, "doc_chunks")
 
     # ── Layer B — tree-sitter symbol graph (Neo4j only) ──
     if not _flag("AIFORGE_INDEX_SYMBOLS", True):
         layers["symbols"] = "skip:disabled"
+        symbols = 0
     else:
         symbols, layers["symbols"] = _index_symbols(root, repo)
 
     # ── Layer C — graphify knowledge graph (Neo4j only) ──
     if not _flag("AIFORGE_INDEX_GRAPHIFY", True):
         layers["graphify"] = "skip:disabled"
+        graphify_nodes = 0
     else:
         graphify_nodes, layers["graphify"] = _index_graphify(root, repo)
 
     units = code_units + doc_units
     error = None
-    # Walk succeeded but produced NOTHING anywhere → almost always a wrong,
-    # empty, or (in Docker) unmounted path. Surface the RESOLVED abs path so the
-    # user sees where the indexer actually looked, instead of a silent "ok, 0".
-    if units == 0 and symbols == 0 and not any(
-            str(layers.get(k, "")).startswith("error:")
-            for k in ("code_chunks", "doc_chunks")):
-        try:
-            _abs = str(root.resolve())
-        except Exception:  # noqa: BLE001
-            _abs = str(root)
-        error = (f"indexed 0 files from {_abs} — the directory is empty from the "
-                 f"indexer's view. Check the path is correct and, if running the "
-                 f"api in Docker, that this repo is under the mounted workspace "
-                 f"(AIFORGE_HOST_WORKSPACE → /workspace).")
-        layers["code_chunks"] = "skip:no_files"
-    if error is None and units == 0 and not any(layers.get(k) == "ok"
-                              for k in ("code_chunks", "doc_chunks")):
-        error = "all chunk layers failed: " + \
-            f"code={layers.get('code_chunks')} doc={layers.get('doc_chunks')}"
+    if units == 0 and symbols == 0:
+        error = _empty_index_error(root, layers)
+    if error is None and units == 0 and not any(
+            layers.get(k) == "ok" for k in ("code_chunks", "doc_chunks")):
+        error = ("all chunk layers failed: "
+                 f"code={layers.get('code_chunks')} doc={layers.get('doc_chunks')}")
     log.info("repo index %r: units=%d symbols=%d graphify=%d layers=%s",
              repo, units, symbols, graphify_nodes, layers)
     return {"units": units, "code_units": code_units, "doc_units": doc_units,
@@ -457,13 +471,41 @@ def _index_repo_full(root: Path, repo: str) -> dict:
             "layers": layers, "error": error}
 
 
+def _ingest_dir(loc: str, repo: str, exts: set, kind: str) -> dict:
+    """Ingest a directory tree, or an error dict when it is not a directory."""
+    root = Path(loc).expanduser()
+    if not root.is_dir():
+        return {"units": 0, "error": f"not a directory: {loc}"}
+    return {"units": _ingest_tree(root, repo=repo, exts=exts, kind=kind),
+            "error": None}
+
+
+def _ingest_single_file(loc: str, repo: str) -> dict:
+    """Ingest one file as doc chunks, or an error dict when it is not a file."""
+    f = Path(loc).expanduser()
+    if not f.is_file():
+        return {"units": 0, "error": f"not a file: {loc}"}
+    text = f.read_text(encoding="utf-8", errors="replace")
+    n = sum(1 for ch in _chunks(text)
+            if _write(f"# {f.name}\n" + ch, kind="doc", repo=repo, ref=f.name))
+    return {"units": n, "error": None}
+
+
+def _ingest_url(loc: str, repo: str) -> dict:
+    """Fetch + ingest a URL's text as doc chunks."""
+    text = _fetch_url(loc)
+    n = sum(1 for ch in _chunks(text)
+            if _write(ch, kind="doc", repo=repo, ref=loc))
+    return {"units": n, "error": None}
+
+
 def ingest_source(source: dict) -> dict:
     """Ingest one source dict ({kind, name, location}). Returns
     ``{units, error}``. Never raises — errors are returned."""
     kind = source["kind"]
-    # Key by the BARE repo name (strip the ' (Python)' display suffix) so
-    # indexed chunks/symbols file under the SAME key the chat/recall path uses
-    # (git basename) — else recall by "requests" never finds "requests (Python)".
+    # Key by the BARE repo name (strip the ' (Python)' display suffix) so indexed
+    # chunks/symbols file under the SAME key the chat/recall path uses (git
+    # basename) — else recall by "requests" never finds "requests (Python)".
     from aiforge_core.runtime.repo_ident import normalize_repo as _nr
     repo = _nr(source.get("name") or "") or "memory"
     loc = source["location"]
@@ -474,25 +516,11 @@ def ingest_source(source: dict) -> dict:
                 return {"units": 0, "error": f"not a directory: {loc}"}
             return _index_repo_full(root, repo)
         if kind == "docs":
-            root = Path(loc).expanduser()
-            if not root.is_dir():
-                return {"units": 0, "error": f"not a directory: {loc}"}
-            return {"units": _ingest_tree(root, repo=repo, exts=_DOC_EXT,
-                                          kind="doc"), "error": None}
+            return _ingest_dir(loc, repo, _DOC_EXT, "doc")
         if kind == "file":
-            f = Path(loc).expanduser()
-            if not f.is_file():
-                return {"units": 0, "error": f"not a file: {loc}"}
-            text = f.read_text(encoding="utf-8", errors="replace")
-            n = sum(1 for ch in _chunks(text)
-                    if _write(f"# {f.name}\n" + ch, kind="doc", repo=repo,
-                              ref=f.name))
-            return {"units": n, "error": None}
+            return _ingest_single_file(loc, repo)
         if kind == "url":
-            text = _fetch_url(loc)
-            n = sum(1 for ch in _chunks(text)
-                    if _write(ch, kind="doc", repo=repo, ref=loc))
-            return {"units": n, "error": None}
+            return _ingest_url(loc, repo)
         return {"units": 0, "error": f"unknown kind: {kind}"}
     except Exception as exc:  # noqa: BLE001
         return {"units": 0, "error": str(exc)}
