@@ -250,24 +250,54 @@ def record(role: str | None = None, session_id=None, *,
         return None
 
 
+def _record_window_fail(ts: float, now: float, reason) -> bool:
+    """Record a failure into the rate window + per-minute buckets (caller holds
+    ``_lock``). Returns False when the send is older than the reported history
+    (NO minute to charge to): it stays in the lifetime total but is left out of
+    every window AND the caller skips the per-session update too, exactly as the
+    original early-return did. The cutoff matches the 59-whole-minutes-back the
+    windows read, not _RETAIN_S."""
+    if _mkey(ts) < _mkey(now) - (_BUCKETS - 1):
+        return False
+    if now - ts < _WINDOW_S:
+        # Only stamps inside the exact window matter to the rate; the rest are
+        # trimmed on the next read anyway, and keeping them out bounds the insort.
+        bisect.insort(_recent_fail, ts)
+        del _recent_fail[:max(0, len(_recent_fail) - _RECENT_MAX)]
+    _bump_fail_bucket_locked(ts, reason)
+    return True
+
+
+def _record_session_fail(sid, epoch) -> None:
+    """Increment a KNOWN session's failed counter (caller holds ``_lock``). Only
+    a session the meter already knows — a failure must not mint a slot (and evict
+    a live one) for a chat that never sent anything through this process."""
+    if sid is None or sid not in _sessions:
+        return
+    slot = _slot(sid)
+    slot["failed"] = int(slot.get("failed") or 0) + 1
+    # A REAL epoch match only. `record` stamps the token with the turn it counted
+    # the send against, so an unstamped failure is one whose turn is unknown —
+    # guessing "the current one" can put turn_failed above a turn that never
+    # included the send. Undercounting one turn beats billing an innocent one.
+    if epoch is not None and epoch == slot["epoch"]:
+        slot["turn_failed"] = int(slot.get("turn_failed") or 0) + 1
+
+
 def record_failure(token=None, reason: str | None = None, *,
                    session_id=None, now: float | None = None) -> None:
-    """One request that :func:`record` counted did NOT come back with an
-    answer. Never raises.
+    """One request that :func:`record` counted did NOT come back with an answer.
+    Never raises.
 
     ``token`` is what ``record`` returned for that very request, and it is
     REQUIRED: without one this is a no-op. That is what makes "failures are a
-    subset of requests" structural rather than a promise — ``record`` returns
-    None only when it could not count the send, and counting a failure for an
-    uncounted send puts ``failed`` above ``total``, paints a sparkline minute
-    with nothing to scale it against, and lets a broken meter report traffic
-    the box never sent. The token also carries the minute, chat and turn of
-    the SEND, which is what the failure is billed to.
+    subset of requests" structural — counting a failure for an uncounted send
+    would put ``failed`` above ``total``. The token also carries the minute, chat
+    and turn of the SEND, which is what the failure is billed to.
 
-    ``reason`` is a short label (``http_500``, ``timeout``, ``cancelled``,
-    ``empty``…). It is clipped and the per-minute label set is capped, because
-    an unbounded reason (a stringified exception) would ship an exception novel
-    to every polling browser.
+    ``reason`` is a short label (``http_500``, ``timeout``, ``empty``…), clipped
+    and its per-minute set capped so an unbounded reason (a stringified
+    exception) can't ship a novel to every polling browser.
     """
     global _fail_total
     try:
@@ -278,8 +308,7 @@ def record_failure(token=None, reason: str | None = None, *,
             sid = _key(session_id)
         # NOTE: no ambient-context fallback for the session. The token already
         # answers the question, and re-reading the context at SETTLE time would
-        # attribute a fold's timeout to whatever chat the thread has been
-        # rebound to since — a different chat, not a better guess.
+        # attribute a fold's timeout to whatever chat the thread was rebound to.
         with _lock:
             _now = time.monotonic() if now is None else now
             if not isinstance(ts, (int, float)) or ts > _now:
@@ -287,38 +316,8 @@ def record_failure(token=None, reason: str | None = None, *,
                 # hand-fed `now` in a test): treat it as happening now.
                 ts = _now
             _fail_total += 1
-            # A send older than the reported history has NO minute left to be
-            # charged to. It is counted in the lifetime total (it happened) and
-            # left out of every window — the send it belongs to is outside
-            # those windows too. Re-stamping it to the current minute instead
-            # would report a burst that never happened AND put `failed_60m`
-            # above `last_60m`: the meter's one invariant, and the reason the
-            # token is mandatory, broken at window level. The windows read 59
-            # whole minutes back (`_bucket_sum_locked`), not `_RETAIN_S`, so
-            # the cutoff has to match them or a 59-to-60-minute-old failure
-            # lands in a bucket nothing reports.
-            if _mkey(ts) < _mkey(_now) - (_BUCKETS - 1):
-                return
-            if _now - ts < _WINDOW_S:
-                # Only stamps inside the exact window matter to the rate; the
-                # rest would be trimmed on the next read anyway, and keeping
-                # them out bounds the insort.
-                bisect.insort(_recent_fail, ts)
-                del _recent_fail[:max(0, len(_recent_fail) - _RECENT_MAX)]
-            _bump_fail_bucket_locked(ts, reason)
-            if sid is not None and sid in _sessions:
-                # Only a session the meter already knows: a failure must not
-                # mint a slot (and evict a live one) for a chat that never sent
-                # anything through this process.
-                slot = _slot(sid)
-                slot["failed"] = int(slot.get("failed") or 0) + 1
-                # A REAL epoch match only. `record` stamps the token with the
-                # turn it counted the send against, so an unstamped failure is
-                # one whose turn is unknown — and guessing "the current one"
-                # can put `turn_failed` above a `turn` that never included the
-                # send. Undercounting one turn beats billing an innocent one.
-                if epoch is not None and epoch == slot["epoch"]:
-                    slot["turn_failed"] = int(slot.get("turn_failed") or 0) + 1
+            if _record_window_fail(ts, _now, reason):
+                _record_session_fail(sid, epoch)
     except Exception:  # noqa: BLE001
         pass
 
@@ -647,29 +646,30 @@ def snapshot(session_id=None) -> dict:
         now = time.monotonic()
         slot = _slot(sid) if sid is not None and sid in _sessions else None
         _prune_buckets_locked(now)
+        s = slot or {}
         return {
-            "turn": int((slot or {}).get("turn") or 0),
-            "session": int((slot or {}).get("total") or 0),
+            "turn": int(s.get("turn") or 0),
+            "session": int(s.get("total") or 0),
             "total": _total,
             "per_minute": _per_minute_locked(now),
             "last_15m": _bucket_sum_locked(now, 15),
             "last_60m": _bucket_sum_locked(now, _BUCKETS),
-            "by_role": dict((slot or {}).get("by_role") or {}),
+            "by_role": dict(s.get("by_role") or {}),
             # Failures are a SUBSET of the counts above, never a separate
             # population: `turn` is every attempt this message made and
             # `turn_failed` is how many of them came back with nothing.
-            "turn_failed": int((slot or {}).get("turn_failed") or 0),
-            "session_failed": int((slot or {}).get("failed") or 0),
+            "turn_failed": int(s.get("turn_failed") or 0),
+            "session_failed": int(s.get("failed") or 0),
             "failed": _fail_total,
             "failed_per_minute": _fail_per_minute_locked(now),
             # What the model actually WROTE for this message and this chat —
-            # the number a "be brief" instruction is meant to move, and the
-            # one the request count cannot show (40 one-line steps and one
+            # the number a "be brief" instruction is meant to move, and the one
+            # the request count cannot show (40 one-line steps and one
             # 6000-token essay are both "41 requests").
-            "turn_tokens_out": int((slot or {}).get("turn_tokens_out") or 0),
-            "session_tokens_out": int((slot or {}).get("tokens_out") or 0),
-            "turn_tokens_in": int((slot or {}).get("turn_tokens_in") or 0),
-            "session_tokens_in": int((slot or {}).get("tokens_in") or 0),
+            "turn_tokens_out": int(s.get("turn_tokens_out") or 0),
+            "session_tokens_out": int(s.get("tokens_out") or 0),
+            "turn_tokens_in": int(s.get("turn_tokens_in") or 0),
+            "session_tokens_in": int(s.get("tokens_in") or 0),
         }
 
 

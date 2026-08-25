@@ -164,33 +164,43 @@ def review_plan(request: str, subs: list) -> tuple[list, str]:
     return corrected, f"plan reviewed + fixed ({len(subs)}→{len(corrected)} files)"
 
 
+def _plan_line_subtask(line: str, by_path: dict, paths: list, seen: set) -> "dict | None":
+    """One ``path | goal`` reviewer line → a subtask dict (preserving the closest
+    original subtask's fields), or None to skip (no pipe, non-code path, empty,
+    or already seen)."""
+    import difflib
+    if "|" not in line:
+        return None
+    path, _, goal = line.partition("|")
+    path = path.strip().lstrip("0123456789.) ").strip("`").strip()
+    goal = goal.strip()
+    if not path or not path.endswith(_CODE_SUFFIXES) or path in seen:
+        return None
+    seen.add(path)
+    base = by_path.get(path)
+    if base is None:                       # typo-renamed: match the closest old path
+        m = difflib.get_close_matches(path, paths, n=1, cutoff=0.6)
+        base = by_path.get(m[0]) if m else None
+    s = dict(base) if base else {}
+    s["path"] = path
+    if goal:
+        s["goal"] = goal
+    if not s.get("slug"):
+        s["slug"] = re.sub(r"[^a-z0-9]+", "-", path.lower()).strip("-")[:40] or "step"
+    return s
+
+
 def _parse_plan(out: str, subs: list) -> list:
     """Turn the reviewer's ``path | goal`` lines into subtask dicts, preserving
     each original subtask's fields (slug etc.) by closest-path match."""
-    import difflib
     by_path = {(s.get("path") or "").strip(): s for s in subs}
     paths = list(by_path)
-    seen, new = set(), []
+    seen: set = set()
+    new = []
     for line in out.splitlines():
-        if "|" not in line:
-            continue
-        path, _, goal = line.partition("|")
-        path = path.strip().lstrip("0123456789.) ").strip("`").strip()
-        goal = goal.strip()
-        if not path or not path.endswith(_CODE_SUFFIXES) or path in seen:
-            continue
-        seen.add(path)
-        base = by_path.get(path)
-        if base is None:                       # typo-renamed: match the closest old path
-            m = difflib.get_close_matches(path, paths, n=1, cutoff=0.6)
-            base = by_path.get(m[0]) if m else None
-        s = dict(base) if base else {}
-        s["path"] = path
-        if goal:
-            s["goal"] = goal
-        if not s.get("slug"):
-            s["slug"] = re.sub(r"[^a-z0-9]+", "-", path.lower()).strip("-")[:40] or "step"
-        new.append(s)
+        s = _plan_line_subtask(line, by_path, paths, seen)
+        if s is not None:
+            new.append(s)
     return new
 
 
