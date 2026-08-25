@@ -162,6 +162,23 @@ def native_tools_enabled(role: str) -> bool:
 _NATIVE_ARGS_UNRECOVERABLE = "\x00native-args-unrecoverable"
 
 
+def _resolve_call_args(raw):
+    """Resolve a tool call's ``arguments``, DISTINGUISHING a legit empty-args
+    call from a malformed one: dict → use it; None/""/"{}" → genuinely empty ({});
+    a non-empty string that fails to parse → ATTEMPTED-but-broken (None, don't
+    surrender to {})."""
+    if isinstance(raw, dict):
+        return raw
+    if raw is None or (isinstance(raw, str) and raw.strip() in ("", "{}")):
+        return {}
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
 def _synth_step(msg: dict) -> str:
     """Adapt a native assistant message into the text step the loop's ``_parse``
     already understands. A ``tool_calls`` reply → a synthetic ACTION/ARGS_JSON
@@ -172,46 +189,63 @@ def _synth_step(msg: dict) -> str:
     attempted but can't be parsed (caller falls back to text for that turn)."""
     from aiforge_core.llm.client._text import _msg_text
     calls = msg.get("tool_calls") or []
+    if not calls:
+        return _msg_text(msg)
+    fn = (calls[0] or {}).get("function") or {}
+    name = fn.get("name") or ""
+    if not name:
+        return _msg_text(msg)          # nameless call carries no action → content
+    args = _resolve_call_args(fn.get("arguments"))
+    if not isinstance(args, dict):
+        return _NATIVE_ARGS_UNRECOVERABLE
+    return f"ACTION: {name}\nARGS_JSON: {json.dumps(args, ensure_ascii=False)}"
+
+
+def _native_error_is_permanent(exc, model: str) -> bool:
+    """DEFINITIVE: this model can't do native tools — cache + fall back to text
+    for this and every future turn. A rejection that names ONLY tool_choice is
+    NOT a tools-capability signal (same guard the probe uses)."""
+    if _tools_unsupported(exc) and not _rejects_only_tool_choice(exc):
+        _NATIVE_CACHE[model] = False
+        log.info("native unsupported at runtime → text fallback (%s)", model)
+        return True
+    return False
+
+
+def _native_error_transient(exc) -> bool:
+    """A clearly TRANSIENT error (5xx/429/timeout/model-reloading) → let the
+    loop's retry re-issue native. Anything else (an unclassified 400 — a strict
+    server rejecting the 'tools' field with unfamiliar wording) is non-transient
+    and falls back to text for THIS turn only."""
+    try:
+        from aiforge_core.llm.client._errors import _is_transient_exc
+        return bool(_is_transient_exc(exc)[0])
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _log_native_step(calls: list) -> None:
+    """Observability: log whether a native step produced a tool_call or plain
+    content so a run can be audited ("all calls native")."""
     if calls:
         fn = (calls[0] or {}).get("function") or {}
-        name = fn.get("name") or ""
-        raw = fn.get("arguments")
-        # Resolve args, DISTINGUISHING a legit empty-args call from a malformed
-        # one: dict → use it; None/""/"{}" → genuinely empty; a non-empty string
-        # that fails to parse → ATTEMPTED-but-broken (don't surrender to {}).
-        if isinstance(raw, dict):
-            args = raw
-        elif raw is None or (isinstance(raw, str) and raw.strip() in ("", "{}")):
-            args = {}
-        elif isinstance(raw, str):
-            try:
-                args = json.loads(raw)
-            except (ValueError, TypeError):
-                args = None
-        else:
-            args = None
-        # A nameless call carries no action → treat it as plain content.
-        if not name:
-            return _msg_text(msg)
-        if not isinstance(args, dict):
-            return _NATIVE_ARGS_UNRECOVERABLE
-        return f"ACTION: {name}\nARGS_JSON: {json.dumps(args, ensure_ascii=False)}"
-    return _msg_text(msg)
+        log.info("native tool_call: %s (n=%d)", fn.get("name"), len(calls))
+    else:
+        log.info("native content step (no tool_call)")
 
 
 def make_native_complete_fn():
     """A drop-in ``complete_fn(role, convo) -> str`` that calls the model with
-    native tools and returns the adapted text step. Passing the CORE tool
-    schemas natively while the full tool catalog stays in the system prompt is
+    native tools and returns the adapted text step. Passing the CORE tool schemas
+    natively while the full tool catalog stays in the system prompt is
     deliberate: core coding tools get reliable native args, the long tail is
     still callable via a text ACTION in the same turn (hybrid)."""
     from aiforge_core.llm import client
-
     from ._tools._schemas import NATIVE_TOOL_SCHEMAS
 
     def _fn(role: str, convo: list[dict]) -> str:
-        # Known-incapable model (a prior turn hit a definitive tools-rejection)
-        # → text protocol, transparently. This is the ONLY thing that disables
+        # Known-incapable model (a prior turn hit a definitive tools-rejection) →
+        # text protocol, transparently. This is the ONLY thing that disables
         # native, and it's per-model + self-discovered, never transient.
         model = _model_for(role)
         if _NATIVE_CACHE.get(model) is False:
@@ -220,37 +254,13 @@ def make_native_complete_fn():
             msg = client.complete_raw(
                 role, convo, tools=NATIVE_TOOL_SCHEMAS, tool_choice="auto")
         except Exception as exc:  # noqa: BLE001
-            if _tools_unsupported(exc) and not _rejects_only_tool_choice(exc):
-                # DEFINITIVE: this model can't do native tools — cache + fall
-                # back to text for this and every future turn. A rejection that
-                # names ONLY tool_choice is NOT a tools-capability signal (same
-                # guard the probe uses) — the model does native FC; don't disable.
-                _NATIVE_CACHE[model] = False
-                log.info("native unsupported at runtime → text fallback (%s)", model)
+            if _native_error_is_permanent(exc, model):
                 return client.complete(role, convo)
-            # A clearly TRANSIENT error (5xx/429/timeout/model-reloading) → let
-            # the loop's retry re-issue native. Anything else (an unclassified
-            # 400 — e.g. a strict/Jackson server rejecting the 'tools' field with
-            # wording our token list doesn't recognise) must NOT hard-fail every
-            # turn: fall back to text for THIS turn (no permanent disable — we
-            # re-probe native next turn).
-            try:
-                from aiforge_core.llm.client._errors import _is_transient_exc
-                transient = bool(_is_transient_exc(exc)[0])
-            except Exception:  # noqa: BLE001
-                transient = False
-            if transient:
+            if _native_error_transient(exc):
                 raise
             log.info("native call failed non-transiently → text this turn (%s)", exc)
             return client.complete(role, convo)
-        calls = msg.get("tool_calls") or []
-        # Observability: log whether this native step produced a tool_call or
-        # plain content so a run can be audited ("all calls native").
-        if calls:
-            fn = (calls[0] or {}).get("function") or {}
-            log.info("native tool_call: %s (n=%d)", fn.get("name"), len(calls))
-        else:
-            log.info("native content step (no tool_call)")
+        _log_native_step(msg.get("tool_calls") or [])
         step = _synth_step(msg)
         if step == _NATIVE_ARGS_UNRECOVERABLE:
             # the model attempted tool args but they were truncated/malformed —

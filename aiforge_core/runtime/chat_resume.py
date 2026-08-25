@@ -218,22 +218,29 @@ def _collect_subtask_update(s: dict, acc: dict) -> None:
     slot["status"] = _txt(s.get("status")).lower() or slot["status"]
 
 
+def _collect_write(name, args, res, ok: bool, failed: bool, acc: dict) -> None:
+    """Record a mutating write's touched paths. A FAILED write is pending work,
+    not done, so it is skipped entirely; otherwise each new path lands in
+    ``landed`` (confirmed) or ``attempted`` (can't vouch for it)."""
+    if failed:
+        return
+    for path in _paths(name, args, res):
+        if path in acc["landed"] or path in acc["attempted"]:
+            continue
+        key = "landed" if (ok or name == "wrote files") else "attempted"
+        acc[key].append(path)
+
+
 def _collect_tool(s: dict, acc: dict) -> None:
-    """A tool step: a write that landed, a write we cannot vouch for, or a
-    shell command worth replaying in the brief."""
+    """A tool step: a write that landed, a write we cannot vouch for, or a shell
+    command worth replaying in the brief."""
     name = _txt(s.get("name"))
     args = s.get("args") if isinstance(s.get("args"), dict) else {}
     res = s.get("result")
     failed = isinstance(res, dict) and (res.get("ok") is False or res.get("error"))
     ok = isinstance(res, dict) and res.get("ok") is True
     if _mutates(name, args) or name == "wrote files":
-        if failed:
-            return              # a failed write is pending work, not done
-        for path in _paths(name, args, res):
-            if path in acc["landed"] or path in acc["attempted"]:
-                continue
-            key = "landed" if (ok or name == "wrote files") else "attempted"
-            acc[key].append(path)
+        _collect_write(name, args, res, ok, failed, acc)
     elif name in _SHELL_TOOLS and ok:
         cmd = _txt(args.get("cmd") or args.get("command"))
         if cmd and cmd not in acc["commands"]:

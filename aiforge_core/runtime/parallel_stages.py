@@ -60,46 +60,58 @@ _VERIFY_AXES: list[tuple[str, str]] = [
 ]
 
 
+def _verdict_from_json(text: str, raw: Any) -> "dict | None":
+    """Parse a verdict dict from ``text``: a clean (fenced or bare) JSON object,
+    then a brace-balanced extraction that survives ``prose {json} prose`` and
+    trailing commentary a small local model tacks on. None when neither yields a
+    dict. The brace-balanced pass is the real hardening — a malformed-but-present
+    REJECT lands as reject instead of defaulting to pass."""
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+    try:
+        from aiforge_core.runtime.rule_capture import _extract_json
+        obj = _extract_json(raw)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+    return None
+
+
+def _strip_json_fence(raw: str) -> str:
+    """Trim a ```json fence / backticks off a raw verdict string."""
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text[:4].lower() == "json":
+            text = text[4:]
+    return text
+
+
 def _coerce_verdict(raw: Any) -> dict:
     """Normalise a sub-verifier output into a verdict dict.
 
-    Accepts a dict, a JSON string, or a bare verdict token. Anything
-    unparseable is treated as ``pass`` — a parse failure must not block
-    the pipeline on a critic's formatting slip; the other two axes plus
-    the downstream Feedback/Validator gates still apply.
+    Accepts a dict, a JSON string, or a bare verdict token. Anything unparseable
+    is treated as ``pass`` — a parse failure must not block the pipeline on a
+    critic's formatting slip; the other two axes plus the downstream
+    Feedback/Validator gates still apply.
     """
     if isinstance(raw, dict):
         return raw
     if isinstance(raw, str) and raw.strip():
-        text = raw.strip()
-        if text.startswith("```"):
-            text = text.strip("`")
-            if text[:4].lower() == "json":
-                text = text[4:]
-        # 1. clean parse (fenced or bare JSON object).
-        try:
-            obj = json.loads(text)
-            if isinstance(obj, dict):
-                return obj
-        except Exception:
-            pass
-        # 2. brace-balanced extraction — survives ``prose {json} prose``
-        #    and trailing commentary a small local model tacks on. This is
-        #    the real hardening: a malformed-but-present REJECT still lands
-        #    as reject instead of silently defaulting to pass below.
-        try:
-            from aiforge_core.runtime.rule_capture import _extract_json
-            obj = _extract_json(raw)
-            if isinstance(obj, dict):
-                return obj
-        except Exception:
-            pass
-        # 3. bare leading ``reject`` token (no JSON at all).
-        head = text.lstrip("`*_-> ").lower()
-        if head.startswith("reject"):
+        text = _strip_json_fence(raw)
+        obj = _verdict_from_json(text, raw)
+        if obj is not None:
+            return obj
+        # bare leading ``reject`` token (no JSON at all).
+        if text.lstrip("`*_-> ").lower().startswith("reject"):
             return {"verdict": "reject", "rationale": text[:200]}
-    # 4. LAST resort: truly unparseable → fail OPEN (defensible for one
-    #    axis; the other axes + Feedback/Validator gates still apply).
+    # LAST resort: truly unparseable → fail OPEN (defensible for one axis; the
+    # other axes + Feedback/Validator gates still apply).
     return {"verdict": "pass"}
 
 
@@ -144,30 +156,33 @@ async def merge_context(ctx):  # type: ignore[no-untyped-def]
         pass  # never break the graph on a merge slip
 
 
+def _fold_axis_verdict(key: str, axis: str, state, issues: list,
+                      reject_axes: list) -> None:
+    """Fold one axis's verdict into the merge accumulators: a ``reject`` records
+    the axis + its rationale; every axis contributes its own issues."""
+    verdict = _coerce_verdict(state.get(key))
+    if str(verdict.get("verdict", "pass")).lower() == "reject":
+        reject_axes.append(axis)
+        rat = verdict.get("rationale")
+        if rat:
+            issues.append({"kind": axis, "message": str(rat)})
+    for it in verdict.get("issues") or []:
+        issues.append(it)
+
+
 async def merge_verdicts(ctx):  # type: ignore[no-untyped-def]
     """AND the three axis verdicts into the legacy ``verifier_verdict``."""
     try:
         state = ctx.state
         issues: list = []
-        rejected = False
         reject_axes: list[str] = []
         for key, axis in _VERIFY_AXES:
-            verdict = _coerce_verdict(state.get(key))
-            if str(verdict.get("verdict", "pass")).lower() == "reject":
-                rejected = True
-                reject_axes.append(axis)
-                rat = verdict.get("rationale")
-                if rat:
-                    issues.append({"kind": axis, "message": str(rat)})
-            for it in verdict.get("issues") or []:
-                issues.append(it)
+            _fold_axis_verdict(key, axis, state, issues, reject_axes)
         state["verifier_verdict"] = {
-            "verdict": "reject" if rejected else "pass",
+            "verdict": "reject" if reject_axes else "pass",
             "issues": issues,
-            "rationale": (
-                f"rejected by: {', '.join(reject_axes)}" if rejected
-                else "all axes passed"
-            ),
+            "rationale": (f"rejected by: {', '.join(reject_axes)}" if reject_axes
+                          else "all axes passed"),
         }
     except Exception:
         pass
