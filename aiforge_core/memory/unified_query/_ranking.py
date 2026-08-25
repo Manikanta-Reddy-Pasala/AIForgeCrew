@@ -153,52 +153,54 @@ def _raw_of(h: dict) -> float:
         return 0.0
 
 
+def _fetch_rerank_scores(url: str, query: str, hits: list[dict]) -> "list | None":
+    """POST hits to the reranker sidecar and return its per-hit scores, or None
+    on any failure / unexpected shape (accepts ``{scores:[...]}`` or a list of
+    ``{score}``)."""
+    import json as _json
+    import urllib.request as _ur
+    from aiforge_core.net.ssl import context_for as _ssl_context_for
+    texts = [(h.get("text") or "")[:1500] for h in hits]
+    body = _json.dumps({"query": query[:512], "texts": texts}).encode()
+    rerank_url = url.rstrip("/") + "/rerank"
+    req = _ur.Request(rerank_url, data=body,
+                      headers={"Content-Type": "application/json"})
+    with _ur.urlopen(req, timeout=8, context=_ssl_context_for(rerank_url)) as r:
+        resp = _json.loads(r.read())
+    if isinstance(resp, dict) and "scores" in resp:
+        return resp["scores"]
+    if isinstance(resp, list):
+        return [s.get("score") if isinstance(s, dict) else s for s in resp]
+    return None
+
+
+def _apply_rerank_scores(hits: list[dict], scores: list) -> None:
+    """Blend each hit's rerank score into its score: 0.7 rerank + 0.3 original,
+    which keeps source-weight info (T2 fact > generic memory) while letting the
+    cross-encoder reorder near-ties. Then sort desc."""
+    for h, s in zip(hits, scores):
+        try:
+            h["rerank_score"] = float(s)
+            h["score"] = 0.7 * float(s) + 0.3 * float(h.get("score") or 0)
+        except (TypeError, ValueError):
+            continue
+    hits.sort(key=lambda h: -float(h.get("score") or 0))
+
+
 def _rerank_top(hits: list[dict], *, query: str) -> list[dict] | None:
     """POST hits to the reranker sidecar. Returns the same list with
-    `rerank_score` field added and re-sorted desc. Returns None on any
-    failure (caller falls back to unsorted list)."""
+    `rerank_score` added and re-sorted desc. Returns None on any failure (caller
+    falls back to the unsorted list)."""
     if not hits or not query.strip():
         return None
     url = os.environ.get("AIFORGE_RERANK_URL", "http://127.0.0.1:8765")
-    if not url:
-        return None
-    if os.environ.get("AIFORGE_RERANK_DISABLE", "0") == "1":
+    if not url or os.environ.get("AIFORGE_RERANK_DISABLE", "0") == "1":
         return None
     try:
-        import json as _json
-        import urllib.request as _ur
-
-        from aiforge_core.net.ssl import context_for as _ssl_context_for
-        texts = [(h.get("text") or "")[:1500] for h in hits]
-        body = _json.dumps({"query": query[:512], "texts": texts}).encode()
-        rerank_url = url.rstrip("/") + "/rerank"
-        req = _ur.Request(
-            rerank_url,
-            data=body,
-            headers={"Content-Type": "application/json"},
-        )
-        with _ur.urlopen(req, timeout=8, context=_ssl_context_for(rerank_url)) as r:
-            resp = _json.loads(r.read())
-        # Accept both shapes: list-of-{score} or {scores:[...]}
-        if isinstance(resp, dict) and "scores" in resp:
-            scores = resp["scores"]
-        elif isinstance(resp, list):
-            scores = [s.get("score") if isinstance(s, dict) else s
-                      for s in resp]
-        else:
+        scores = _fetch_rerank_scores(url, query, hits)
+        if scores is None or len(scores) != len(hits):
             return None
-        if len(scores) != len(hits):
-            return None
-        for h, s in zip(hits, scores):
-            try:
-                h["rerank_score"] = float(s)
-                # Blend: 0.7 rerank + 0.3 original. Keeps source-weight
-                # info (T2 fact > generic memory) while letting the
-                # cross-encoder reorder near-ties.
-                h["score"] = 0.7 * float(s) + 0.3 * float(h.get("score") or 0)
-            except (TypeError, ValueError):
-                continue
-        hits.sort(key=lambda h: -float(h.get("score") or 0))
+        _apply_rerank_scores(hits, scores)
         return hits
     except Exception:
         return None

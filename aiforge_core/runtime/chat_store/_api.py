@@ -140,38 +140,45 @@ def delete_all_sessions() -> int:
     return _backend().delete_all_sessions()
 
 
+def _session_signature(be, s: dict) -> str:
+    """A content fingerprint of one session: title + cwd + role + the full
+    message sequence (role+content). Two sessions with the same signature are
+    duplicates."""
+    import hashlib
+    try:
+        msgs = be.get_messages(s.get("id")) or []
+    except Exception:  # noqa: BLE001
+        msgs = []
+    parts = [str(s.get("title") or ""), str(s.get("cwd") or ""),
+             str(s.get("role") or "")]
+    parts += [(m.get("role") or "") + ":" + (m.get("content") or "") for m in msgs]
+    return hashlib.sha1("\x1e".join(parts).encode("utf-8", "replace"),
+                        usedforsecurity=False).hexdigest()
+
+
 def dedupe_sessions() -> dict:
     """Remove DUPLICATE chat sessions (e.g. from a non-idempotent migration that
     re-created every session each run). Two sessions are duplicates when they
     share title + cwd + role AND the exact same message sequence (role+content).
     Keeps the LOWEST id, deletes the rest + their messages. Returns
     {ok, removed, kept}. Soft-fail."""
-    import hashlib
     be = _backend()
-    seen: dict[str, int] = {}
-    removed = 0
     try:
         sessions = sorted(be.list_sessions(), key=lambda x: x.get("id") or 0)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
+    seen: dict[str, int] = {}
+    removed = 0
     for s in sessions:
-        try:
-            msgs = be.get_messages(s.get("id")) or []
-        except Exception:  # noqa: BLE001
-            msgs = []
-        parts = [str(s.get("title") or ""), str(s.get("cwd") or ""),
-                 str(s.get("role") or "")]
-        parts += [(m.get("role") or "") + ":" + (m.get("content") or "") for m in msgs]
-        sig = hashlib.sha1("\x1e".join(parts).encode("utf-8", "replace"),
-                           usedforsecurity=False).hexdigest()
-        if sig in seen:
-            try:
-                if be.delete_session(s.get("id")):
-                    removed += 1
-            except Exception:  # noqa: BLE001
-                pass
-        else:
+        sig = _session_signature(be, s)
+        if sig not in seen:
             seen[sig] = s.get("id")
+            continue
+        try:
+            if be.delete_session(s.get("id")):
+                removed += 1
+        except Exception:  # noqa: BLE001
+            pass
     return {"ok": True, "removed": removed, "kept": len(seen)}
 
 
