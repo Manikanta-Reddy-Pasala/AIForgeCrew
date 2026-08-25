@@ -1619,28 +1619,11 @@ def _builder_nudge(st, builder, n):
             f"asking questions. If one required value is genuinely missing, "
             f"ask ONLY for that, then finalize."})
 
-def run_chat_agent(
-    messages: list[dict], *,
-    cwd: str,
-    role: str = "doer",
-    max_steps: int | None = None,   # kept for callers/tests; None = no cap
-    complete_fn: Callable[..., str] | None = None,
-    session_id: int | None = None,
-    mode: str = "act",              # "act" = full tools; "plan" = read-only
-    scope_globs: list[str] | None = None,  # autonomous Doer scope allowlist
-    builder: str | None = None,     # job|skill|workflow|rule — task charter
-    strict_finish: bool = False,    # work-producing run (doer): an IMPLICIT
-    #                                 bare-prose final is premature narration →
-    #                                 nudge to act, don't quit with no work done
-) -> Iterator[dict]:
-    """Drive the ReAct loop until the agent finishes or a stuck loop is
-    detected (NOT a step count). Yields SSE-ready event dicts:
-
-    ``{"type": "thought", "text"}`` · ``{"type": "tool", "name", "args",
-    "result"}`` · ``{"type": "message", "text"}`` (final) ·
-    ``{"type": "approval", ...}`` (ask-policy gate) ·
-    ``{"type": "error", "text"}`` · ``{"type": "done"}``.
-    """
+def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
+                      session_id, mode, scope_globs, builder, strict_finish):
+    """Assemble everything the ReAct loop needs (native detection, mode/read-only
+    flags, scope allowlist, budget-capped convo, cap/deadline/extension budgets,
+    the request meter and every per-turn counter) into one st namespace."""
     _native_on = False
     if complete_fn is None:
         from aiforge_core.llm.client import complete as complete_fn  # type: ignore
@@ -1751,26 +1734,7 @@ def run_chat_agent(
         except Exception:  # noqa: BLE001
             pass
 
-    if _dropped_playbooks:
-        yield {"type": "thought", "role": "system",
-               "text": "⚠ context window too small — dropped the "
-                       + " + ".join(_dropped_playbooks) + " block(s): matched "
-                       "workflows/skills may NOT be followed this turn. Load "
-                       "the model at a larger context window to fix this."}
-    # Simple-mode task tracking: surface the derived checklist in the UI's
-    # subtasks dock (same events the pipeline uses) so the user can watch the
-    # parts get worked live — the agent flips them via plan_progress.
-    if _asks:
-        yield {"type": "subtasks", "items": [
-            # `goal` is the field name every other producer uses and the one
-            # the UI's Tasks panel reads. This path emitted `title` alone, so
-            # expanding that panel on a split-asks turn threw "Cannot read
-            # properties of undefined (reading 'length')" and the view died.
-            # Both keys go out: `title` is kept for anything already reading it.
-            {"slug": f"part-{i + 1}", "goal": a, "title": a, "status": "pending"}
-            for i, a in enumerate(_asks)]}
 
-    n = 0
     # ── Budget extensions ────────────────────────────────────────────────
     # The step cap and the turn deadline are RUNAWAY guards, not task budgets.
     # A turn that is still producing NEW work earns another budget instead of
@@ -1825,17 +1789,7 @@ def run_chat_agent(
     _progress_mark = (0, 0, _wt_fp0)
 
 
-    # One-time visibility: confirm native tool-calling is driving this run (every
-    # tool call goes through native OpenAI function-calling, not the text
-    # ACTION/ARGS_JSON protocol). Opt out of the banner: AIFORGE_CHAT_NATIVE_BANNER=0.
-    if _native_on and os.environ.get("AIFORGE_CHAT_NATIVE_BANNER", "1") not in ("0", "false"):
-        try:
-            from ._tools._schemas import NATIVE_TOOL_SCHEMAS
-            _ntools = len(NATIVE_TOOL_SCHEMAS)
-        except Exception:  # noqa: BLE001
-            _ntools = 0
-        yield {"type": "thought", "role": "system",
-               "text": f"🔌 native tool-calling active ({_ntools} tools)"}
+
     st = types.SimpleNamespace(
         convo=convo, safety=safety, turn_deadline=_turn_deadline,
         condensed_notified=condensed_notified, continue_nudges=continue_nudges,
@@ -1855,7 +1809,69 @@ def run_chat_agent(
         builder=builder, strict_finish=strict_finish, plan_mode=plan_mode,
         analyze_mode=analyze_mode, readonly_mode=readonly_mode,
         scope_globs=_scope_globs, asks=_asks, bundle=_bundle, meter=_meter,
-        native_on=_native_on)
+        dropped_playbooks=_dropped_playbooks, native_on=_native_on)
+    return st
+
+
+def _emit_loop_prelude(st):
+    """Emit the one-time turn prelude events: a dropped-playbook warning, the
+    multi-ask subtasks dock, and the native-tool-calling banner."""
+    if st.dropped_playbooks:
+        yield {"type": "thought", "role": "system",
+               "text": "⚠ context window too small — dropped the "
+                       + " + ".join(st.dropped_playbooks) + " block(s): matched "
+                       "workflows/skills may NOT be followed this turn. Load "
+                       "the model at a larger context window to fix this."}
+    if st.asks:
+        yield {"type": "subtasks", "items": [
+            # `goal` is the field name every other producer uses and the one
+            # the UI's Tasks panel reads. This path emitted `title` alone, so
+            # expanding that panel on a split-asks turn threw "Cannot read
+            # properties of undefined (reading 'length')" and the view died.
+            # Both keys go out: `title` is kept for anything already reading it.
+            {"slug": f"part-{i + 1}", "goal": a, "title": a, "status": "pending"}
+            for i, a in enumerate(st.asks)]}
+    # One-time visibility: confirm native tool-calling is driving this run (every
+    # tool call goes through native OpenAI function-calling, not the text
+    # ACTION/ARGS_JSON protocol). Opt out of the banner: AIFORGE_CHAT_NATIVE_BANNER=0.
+    if st.native_on and os.environ.get("AIFORGE_CHAT_NATIVE_BANNER", "1") not in ("0", "false"):
+        try:
+            from ._tools._schemas import NATIVE_TOOL_SCHEMAS
+            _ntools = len(NATIVE_TOOL_SCHEMAS)
+        except Exception:  # noqa: BLE001
+            _ntools = 0
+        yield {"type": "thought", "role": "system",
+               "text": f"🔌 native tool-calling active ({_ntools} tools)"}
+
+
+def run_chat_agent(
+    messages: list[dict], *,
+    cwd: str,
+    role: str = "doer",
+    max_steps: int | None = None,   # kept for callers/tests; None = no cap
+    complete_fn: Callable[..., str] | None = None,
+    session_id: int | None = None,
+    mode: str = "act",              # "act" = full tools; "plan" = read-only
+    scope_globs: list[str] | None = None,  # autonomous Doer scope allowlist
+    builder: str | None = None,     # job|skill|workflow|rule — task charter
+    strict_finish: bool = False,    # work-producing run (doer): an IMPLICIT
+    #                                 bare-prose final is premature narration →
+    #                                 nudge to act, don't quit with no work done
+) -> Iterator[dict]:
+    """Drive the ReAct loop until the agent finishes or a stuck loop is
+    detected (NOT a step count). Yields SSE-ready event dicts:
+
+    ``{"type": "thought", "text"}`` · ``{"type": "tool", "name", "args",
+    "result"}`` · ``{"type": "message", "text"}`` (final) ·
+    ``{"type": "approval", ...}`` (ask-policy gate) ·
+    ``{"type": "error", "text"}`` · ``{"type": "done"}``.
+    """
+    from aiforge_core.runtime import chat_cancel
+    st = _build_loop_state(
+        messages, cwd, role, max_steps, complete_fn, session_id, mode,
+        scope_globs, builder, strict_finish)
+    n = 0
+    yield from _emit_loop_prelude(st)
     while True:
         n += 1
         _sig = yield from _step_cap_guard(st, n)
@@ -1874,8 +1890,8 @@ def run_chat_agent(
         if _sig == "return":
             return
         yield from _drain_steering(st, session_id)
-        yield from _condense_and_report(st, role, complete_fn, session_id, _meter)
-        out = yield from _run_completion(st, role, complete_fn, session_id, _meter)
+        yield from _condense_and_report(st, role, complete_fn, session_id, st.meter)
+        out = yield from _run_completion(st, role, complete_fn, session_id, st.meter)
         if out is _RETRY_STOP:
             return
 
@@ -1888,8 +1904,8 @@ def run_chat_agent(
         step = _parse(out)
         if step["kind"] == "final":
             _sig = yield from _handle_final(
-                st, step, builder, strict_finish, plan_mode, readonly_mode,
-                cwd, _asks, _wt_fp0)
+                st, step, builder, strict_finish, st.plan_mode, st.readonly_mode,
+                cwd, st.asks, st.wt_fp0)
             if _sig == "return":
                 return
             if _sig == "continue":
@@ -1920,7 +1936,7 @@ def run_chat_agent(
         # Stuck-action loop: same tool+args repeated too many times → ask
         # the user instead of looping to the safety cap.
         sig = name + "|" + json.dumps(args, sort_keys=True, default=str)
-        _sig = yield from _action_stall_guard(st, name, args, sig, _long_chain_help)
+        _sig = yield from _action_stall_guard(st, name, args, sig, st.long_chain_help)
         if _sig == "return":
             return
         if _sig == "continue":
@@ -1928,7 +1944,7 @@ def run_chat_agent(
         if step.get("thought"):
             yield {"type": "thought", "text": step["thought"]}
 
-        _sig = yield from _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode)
+        _sig = yield from _pre_dispatch_gates(st, name, args, st.readonly_mode, st.analyze_mode)
         if _sig == "continue":
             continue
         _sig = yield from _approval_gate(name, args, cwd, session_id, st.convo)
@@ -1937,12 +1953,12 @@ def run_chat_agent(
         if _sig == "continue":
             continue
 
-        _hb = yield from _pre_tool_checks(st, name, args, cwd, _scope_globs)
+        _hb = yield from _pre_tool_checks(st, name, args, cwd, st.scope_globs)
         if _hb == "continue":
             continue
         _hook_block = _hb
         result = yield from _dispatch_tool(name, args, cwd, n, _hook_block)
         yield from _post_tool(st, name, args, result, cwd, sig, n,
-                              _long_chain_help, _bundle)
+                              st.long_chain_help, st.bundle)
 
 
