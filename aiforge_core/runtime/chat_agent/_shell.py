@@ -594,6 +594,20 @@ def _segment_tokens(cmd: str):
             yield toks
 
 
+def _script_missing_error(toks, cur):
+    """Error string when a segment runs a LITERAL script path that does not
+    exist under ``cur``, else None (dynamic/absent script → fail open)."""
+    script = _script_token(toks)
+    if script and _is_literal_path(script):
+        p = _resolved(script, cur)
+        if not os.path.isfile(p):
+            return (f"script does not exist: {script!r} (resolved "
+                    f"{os.path.normpath(p)}). Nothing was run. Find it "
+                    "first (file_find / list_dir) or create it, then "
+                    "re-issue.")
+    return None
+
+
 def _preflight_missing_path(cmd: str, base: str) -> str | None:
     """Cheap existence check BEFORE running: a `cd <dir>` into a folder that
     doesn't exist, or `bash <script>` / `./script.sh` on a missing file, fails
@@ -615,14 +629,9 @@ def _preflight_missing_path(cmd: str, base: str) -> str | None:
                         "the real folder.")
             cur = os.path.normpath(d)
             continue
-        script = _script_token(toks)
-        if script and _is_literal_path(script):
-            p = _resolved(script, cur)
-            if not os.path.isfile(p):
-                return (f"script does not exist: {script!r} (resolved "
-                        f"{os.path.normpath(p)}). Nothing was run. Find it "
-                        "first (file_find / list_dir) or create it, then "
-                        "re-issue.")
+        err = _script_missing_error(toks, cur)
+        if err:
+            return err
     return None
 
 

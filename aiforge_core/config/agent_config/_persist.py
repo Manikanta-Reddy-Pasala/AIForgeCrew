@@ -19,6 +19,43 @@ from ._state import (
 _LOCK = threading.Lock()
 
 
+def _build_role_row(provider, model, base_url, api_key, insecure_tls, disk, role):
+    """Build the persisted role row; a blank api_key PRESERVES the saved token (UI never echoes it), pass '' to clear."""
+    row: dict[str, Any] = {
+        "provider": provider, "model": model.strip(),
+    }
+    if base_url and base_url.strip():
+        row["base_url"] = base_url.strip()
+    else:
+        row["base_url"] = None
+    # Secret-preserving: the UI never echoes a stored api_key back, so
+    # its field is blank on every reload. A blank key here therefore
+    # means "leave the saved token untouched", NOT "wipe it" — else a
+    # plain Save (or per-row Save after Apply-to-all) would silently
+    # null the token. Pass api_key="" explicitly to clear (UI sends a
+    # non-empty value only when the operator typed a new token).
+    if api_key and api_key.strip():
+        row["api_key"] = api_key.strip()
+    else:
+        row["api_key"] = (disk.get(role) or {}).get("api_key")
+    row["insecure_tls"] = bool(insecure_tls)
+    return row
+
+
+def _validate_role_args(role, provider, model, base_url, api_key):
+    """Validate the role/provider/model/base_url/api_key args; raise ValueError on the first problem."""
+    if role != _DEFAULT_KEY and role not in _ROLES:
+        raise ValueError(f"unknown role: {role}")
+    if provider not in PROVIDERS:
+        raise ValueError(f"unknown provider: {provider}")
+    if not model or not model.strip():
+        raise ValueError("model cannot be empty")
+    if base_url is not None and not isinstance(base_url, str):
+        raise ValueError("base_url must be string or None")
+    if api_key is not None and not isinstance(api_key, str):
+        raise ValueError("api_key must be string or None")
+
+
 def set_role(role: str, provider: str, model: str,
              base_url: str | None = None,
              api_key: str | None = None,
@@ -34,16 +71,7 @@ def set_role(role: str, provider: str, model: str,
     on next read, which is desired for a one-off override without losing
     the saved default.
     """
-    if role != _DEFAULT_KEY and role not in _ROLES:
-        raise ValueError(f"unknown role: {role}")
-    if provider not in PROVIDERS:
-        raise ValueError(f"unknown provider: {provider}")
-    if not model or not model.strip():
-        raise ValueError("model cannot be empty")
-    if base_url is not None and not isinstance(base_url, str):
-        raise ValueError("base_url must be string or None")
-    if api_key is not None and not isinstance(api_key, str):
-        raise ValueError("api_key must be string or None")
+    _validate_role_args(role, provider, model, base_url, api_key)
     with _LOCK:
         p = _path()
         disk: dict[str, dict[str, Any]] = {}
@@ -52,24 +80,7 @@ def set_role(role: str, provider: str, model: str,
                 disk = _fc.read_json(p) or {}
             except Exception:
                 disk = {}
-        row: dict[str, Any] = {
-            "provider": provider, "model": model.strip(),
-        }
-        if base_url and base_url.strip():
-            row["base_url"] = base_url.strip()
-        else:
-            row["base_url"] = None
-        # Secret-preserving: the UI never echoes a stored api_key back, so
-        # its field is blank on every reload. A blank key here therefore
-        # means "leave the saved token untouched", NOT "wipe it" — else a
-        # plain Save (or per-row Save after Apply-to-all) would silently
-        # null the token. Pass api_key="" explicitly to clear (UI sends a
-        # non-empty value only when the operator typed a new token).
-        if api_key and api_key.strip():
-            row["api_key"] = api_key.strip()
-        else:
-            row["api_key"] = (disk.get(role) or {}).get("api_key")
-        row["insecure_tls"] = bool(insecure_tls)
+        row = _build_role_row(provider, model, base_url, api_key, insecure_tls, disk, role)
         disk[role] = row
         _fc.write_json(p, disk)   # atomic + busts the read cache
     return get(role)

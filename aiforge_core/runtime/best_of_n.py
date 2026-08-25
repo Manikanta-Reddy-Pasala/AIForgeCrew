@@ -338,6 +338,42 @@ def _review_line(n: int, results: list[dict], winner: dict, merged: bool,
             f"{merge_info or 'unknown'}")
 
 
+def _finalize_best_of_n(results, n, cwd, base, warnings, on_status):
+    """Pick the winner, merge its branch (preserving a failed-merge winner's work), clean up losers, and assemble the result dict."""
+    results.sort(key=_winner_sort_key)
+    winner = results[0] if results else {"slug": None, "score": 0,
+                                         "why": "no attempts", "branch": None,
+                                         "ok": False, "graded": False}
+    merged, merge_info = False, ""
+    winner_real = bool(winner.get("ok") and winner.get("branch"))
+    if winner_real:
+        merged, merge_info = _merge_branch(cwd, base, winner["branch"])
+        _update(None, winner["slug"], "won" if merged else "failed", on_status)
+
+    # B2 — clean up losers + a SUCCESSFULLY-merged winner, but PRESERVE the
+    # winner's branch + worktree when its merge FAILED so the work is
+    # recoverable (the merge stderr is surfaced in ``review`` / ``merge_error``).
+    # A merged winner's commits already live on ``base``; an all-failed run's
+    # "winner" produced no diff, so nothing is worth keeping there.
+    preserve_branch = winner["branch"] if (winner_real and not merged) else None
+    for r in results:
+        if not (preserve_branch and r.get("branch") == preserve_branch):
+            _cleanup(cwd, r)
+
+    return {
+        "ok": bool(merged),
+        "n": n,
+        "winner": {"slug": winner.get("slug"), "score": winner.get("score"),
+                   "why": winner.get("why"), "branch": preserve_branch},
+        "attempts": [{"slug": r["slug"], "score": r["score"], "why": r["why"]}
+                     for r in results],
+        "merge_error": (merge_info or "merge failed") if preserve_branch else None,
+        "warnings": warnings,
+        "cancelled": False,
+        "review": _review_line(n, results, winner, merged, merge_info),
+    }
+
+
 def best_of_n(spec: str, cwd: str, *, n: int = 3, run_one=None,
               on_status=None, session_id: int | None = None,
               cancel_event=None) -> dict:
@@ -380,38 +416,7 @@ def best_of_n(spec: str, cwd: str, *, n: int = 3, run_one=None,
     if cancelled or cancelled_fn():
         return _cancelled_result(n, results, warnings, cwd, on_status)
 
-    results.sort(key=_winner_sort_key)
-    winner = results[0] if results else {"slug": None, "score": 0,
-                                         "why": "no attempts", "branch": None,
-                                         "ok": False, "graded": False}
-    merged, merge_info = False, ""
-    winner_real = bool(winner.get("ok") and winner.get("branch"))
-    if winner_real:
-        merged, merge_info = _merge_branch(cwd, base, winner["branch"])
-        _update(None, winner["slug"], "won" if merged else "failed", on_status)
-
-    # B2 — clean up losers + a SUCCESSFULLY-merged winner, but PRESERVE the
-    # winner's branch + worktree when its merge FAILED so the work is
-    # recoverable (the merge stderr is surfaced in ``review`` / ``merge_error``).
-    # A merged winner's commits already live on ``base``; an all-failed run's
-    # "winner" produced no diff, so nothing is worth keeping there.
-    preserve_branch = winner["branch"] if (winner_real and not merged) else None
-    for r in results:
-        if not (preserve_branch and r.get("branch") == preserve_branch):
-            _cleanup(cwd, r)
-
-    return {
-        "ok": bool(merged),
-        "n": n,
-        "winner": {"slug": winner.get("slug"), "score": winner.get("score"),
-                   "why": winner.get("why"), "branch": preserve_branch},
-        "attempts": [{"slug": r["slug"], "score": r["score"], "why": r["why"]}
-                     for r in results],
-        "merge_error": (merge_info or "merge failed") if preserve_branch else None,
-        "warnings": warnings,
-        "cancelled": False,
-        "review": _review_line(n, results, winner, merged, merge_info),
-    }
+    return _finalize_best_of_n(results, n, cwd, base, warnings, on_status)
 
 
 def _drain_queue(q, session_id, cancel_event):
