@@ -213,6 +213,40 @@ def _raise_if_model_dropped(body: object) -> None:
         raise _ModelReloading(f"model unavailable (reloading?): {msg[:200]}")
 
 
+def _http_body_names_model_drop(exc: "urllib.error.HTTPError") -> bool:
+    """Whether a 4xx's body names a model drop (server reloading), making it
+    transient rather than a permanent bad-request. ``exc.read()`` is ONE-SHOT —
+    prefer a body already read+stashed by another reader (_http_err_body /
+    _tools_unsupported may run FIRST and consume it); only read fresh when
+    nothing is stashed, and never overwrite a good stash with a second read's
+    empty bytes."""
+    try:
+        body = getattr(exc, "_aiforge_body", None)
+        if body is None:
+            body = exc.read()
+            exc._aiforge_body = body  # type: ignore[attr-defined]
+        return bool(body) and any(
+            m in body.decode("utf-8", "replace").lower()
+            for m in _MODEL_DROP_MARKERS)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _http_error_transient(exc: "urllib.error.HTTPError") -> tuple[bool, str]:
+    """(retry?, label) for an HTTPError. Rate-limit is checked BEFORE the
+    _TRANSIENT_HTTP shortcut: 401/403 are in that set (the nginx blip), so a
+    gateway answering "quota exceeded" with a 403 (Cloudflare + several API
+    gateways do) must not return http_403, take a 0.5s backoff and never tell
+    the ceiling — the whole process then kept hammering a server that said stop."""
+    if is_rate_limited(exc):
+        return True, "rate_limited"
+    if exc.code in _TRANSIENT_HTTP:
+        return True, f"http_{exc.code}"
+    if _http_body_names_model_drop(exc):
+        return True, "model_reloading_4xx"
+    return False, f"http_{exc.code}"
+
+
 def _is_transient_exc(exc: Exception) -> tuple[bool, str]:
     """Return (retry?, label) for transport exceptions.
 
@@ -225,33 +259,7 @@ def _is_transient_exc(exc: Exception) -> tuple[bool, str]:
     if isinstance(exc, _ModelReloading):
         return True, "model_reloading"
     if isinstance(exc, urllib.error.HTTPError):
-        # BEFORE the _TRANSIENT_HTTP shortcut, not after: 401 and 403 are in
-        # that set by default (the nginx blip), so a gateway that answers
-        # "quota exceeded" with a 403 — Cloudflare and several API gateways do
-        # — used to return http_403 here, take a 0.5s backoff and never tell
-        # the ceiling. The whole process then kept hammering a server that had
-        # just said stop.
-        if is_rate_limited(exc):
-            return True, "rate_limited"
-        if exc.code in _TRANSIENT_HTTP:
-            return True, f"http_{exc.code}"
-        # A 4xx whose body names a model drop is still transient (the server
-        # is reloading), not a permanent bad-request. NOTE: exc.read() is
-        # ONE-SHOT — prefer a body already read+stashed by another reader
-        # (_http_err_body / _tools_unsupported may run FIRST and consume it);
-        # only read fresh when nothing is stashed, and never overwrite a good
-        # stash with the empty bytes a second read returns.
-        try:
-            _body = getattr(exc, "_aiforge_body", None)
-            if _body is None:
-                _body = exc.read()
-                exc._aiforge_body = _body  # type: ignore[attr-defined]
-            if _body and any(m in _body.decode("utf-8", "replace").lower()
-                             for m in _MODEL_DROP_MARKERS):
-                return True, "model_reloading_4xx"
-        except Exception:  # noqa: BLE001
-            pass
-        return False, f"http_{exc.code}"
+        return _http_error_transient(exc)
     if isinstance(exc, urllib.error.URLError):
         return True, "url_error"
     if isinstance(exc, TimeoutError):

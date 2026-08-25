@@ -113,45 +113,49 @@ def emit(log: Logger | None, event: str, **fields) -> None:
     log.info(event, extra={"aiforge": ctx})
 
 
+def _evict_old_run_loggers(name: str) -> None:
+    """LRU-evict old per-ticket loggers so a long-lived orchestrator processing
+    many tickets doesn't accumulate open FDs + logger objects unboundedly (each
+    unique ticket = one never-closed FileHandler)."""
+    if name in _run_logger_lru:
+        return
+    _run_logger_lru.append(name)
+    while len(_run_logger_lru) > _RUN_LOGGER_CAP:
+        old = _run_logger_lru.pop(0)
+        ol = logging.getLogger(old)
+        for h in list(ol.handlers):
+            try:
+                h.close()
+            except Exception:  # noqa: BLE001
+                pass
+            ol.removeHandler(h)
+        logging.Logger.manager.loggerDict.pop(old, None)
+
+
 def get_run_logger(ticket_id: str, *, role: str = "orchestrator") -> Logger:
     """Per-ticket logger with dedicated NDJSON file at
     ``~/.aiforge/runs/<ticket_id>.ndjson``.
 
-    Used by orchestrator + recovery + escalation so every run produces
-    one debuggable trace file. Stderr handler also fires (inherits from
-    role handler) so live tail works.
+    Used by orchestrator + recovery + escalation so every run produces one
+    debuggable trace file. Stderr handler also fires (inherits from role handler)
+    so live tail works.
     """
     _configure_root()
     runs_dir = Path(LOG_DIR).parent / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
     safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in ticket_id)
-    logger = logging.getLogger(f"aiforge.run.{safe}")
+    name = f"aiforge.run.{safe}"
+    logger = logging.getLogger(name)
     target = runs_dir / f"{safe}.ndjson"
     has_target = any(
         isinstance(h, logging.FileHandler)
         and getattr(h, "baseFilename", "") == str(target)
-        for h in logger.handlers
-    )
+        for h in logger.handlers)
     if not has_target:
         fh = logging.FileHandler(str(target), encoding="utf-8")
         fh.setFormatter(_JsonFormatter())
         logger.addHandler(fh)
-        # LRU-evict old per-ticket loggers so a long-lived orchestrator that
-        # processes many tickets doesn't accumulate open FDs + logger objects
-        # unboundedly (each unique ticket = one never-closed FileHandler).
-        name = f"aiforge.run.{safe}"
-        if name not in _run_logger_lru:
-            _run_logger_lru.append(name)
-            while len(_run_logger_lru) > _RUN_LOGGER_CAP:
-                old = _run_logger_lru.pop(0)
-                ol = logging.getLogger(old)
-                for h in list(ol.handlers):
-                    try:
-                        h.close()
-                    except Exception:  # noqa: BLE001
-                        pass
-                    ol.removeHandler(h)
-                logging.Logger.manager.loggerDict.pop(old, None)
+        _evict_old_run_loggers(name)
     logger._aiforge_role = role  # type: ignore[attr-defined]
     logger._aiforge_ticket = ticket_id  # type: ignore[attr-defined]
     return logger
