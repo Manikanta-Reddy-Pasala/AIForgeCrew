@@ -159,13 +159,13 @@ export function MdLite({ text }: Readonly<{ text: string }>) {
             {body.split('\n').map((ln, j) => {
               let color: string | undefined;
               let background: string | undefined;
-              if (/^\+\+\+/.test(ln) || /^---/.test(ln) || /^(diff |index )/.test(ln)) {
+              if (ln.startsWith('+++') || ln.startsWith('---') || /^(diff |index )/.test(ln)) {
                 color = 'var(--fg-3)';
-              } else if (/^\+/.test(ln)) {
+              } else if (ln.startsWith('+')) {
                 color = 'var(--ok, #3fb950)'; background = 'rgba(63,185,80,0.10)';
-              } else if (/^-/.test(ln)) {
+              } else if (ln.startsWith('-')) {
                 color = 'var(--err, #e5534b)'; background = 'rgba(229,83,75,0.10)';
-              } else if (/^@@/.test(ln)) {
+              } else if (ln.startsWith('@@')) {
                 color = '#6aa6ff';
               }
               return <div key={j} style={{ color, background, padding: '0 4px' }}>{ln || ' '}</div>;
