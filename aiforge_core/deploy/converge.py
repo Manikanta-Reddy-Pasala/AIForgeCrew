@@ -125,35 +125,49 @@ def _drain_neo4j_to_okr() -> bool:
         return False
 
 
-def _remove_db_infra() -> dict:
-    """Remove the DB-infra containers + their images + volumes. NEVER langfuse."""
-    removed = {"containers": [], "volumes": [], "images": []}
-    # containers — explicit infra names only
-    for name in _INFRA:
-        if _container_exists(name):
-            if _docker("rm", "-f", name)[0] == 0:
-                removed["containers"].append(name)
-    # volumes — aiforge-named, excluding langfuse
+def _remove_infra_containers() -> list[str]:
+    """Force-remove the explicit DB-infra containers; return the names removed."""
+    return [name for name in _INFRA
+            if _container_exists(name) and _docker("rm", "-f", name)[0] == 0]
+
+
+def _remove_aiforge_volumes() -> list[str]:
+    """Remove aiforge-named volumes, NEVER langfuse; return the names removed."""
     rc, out = _docker("volume", "ls", "-q")
-    if rc == 0:
-        for v in out.splitlines():
-            v = v.strip()
-            if v and "aiforge" in v.lower() and "langfuse" not in v.lower():
-                if _docker("volume", "rm", v)[0] == 0:
-                    removed["volumes"].append(v)
-    # images — aiforge-tagged, excluding langfuse
+    if rc != 0:
+        return []
+    removed = []
+    for v in out.splitlines():
+        v = v.strip()
+        if v and "aiforge" in v.lower() and "langfuse" not in v.lower():
+            if _docker("volume", "rm", v)[0] == 0:
+                removed.append(v)
+    return removed
+
+
+def _remove_aiforge_images() -> list[str]:
+    """Remove aiforge-tagged images, NEVER langfuse; return the image ids
+    removed (deduped, since one id can carry several repo:tag lines)."""
     rc, out = _docker("images", "--filter", "reference=*aiforge*",
                       "--format", "{{.Repository}}:{{.Tag}}|{{.ID}}")
-    if rc == 0:
-        seen = set()
-        for line in out.splitlines():
-            repo_tag, _, img_id = line.partition("|")
-            if "langfuse" in repo_tag.lower() or not img_id or img_id in seen:
-                continue
-            seen.add(img_id)
-            if _docker("rmi", "-f", img_id)[0] == 0:
-                removed["images"].append(img_id)
+    if rc != 0:
+        return []
+    removed, seen = [], set()
+    for line in out.splitlines():
+        repo_tag, _, img_id = line.partition("|")
+        if "langfuse" in repo_tag.lower() or not img_id or img_id in seen:
+            continue
+        seen.add(img_id)
+        if _docker("rmi", "-f", img_id)[0] == 0:
+            removed.append(img_id)
     return removed
+
+
+def _remove_db_infra() -> dict:
+    """Remove the DB-infra containers + their images + volumes. NEVER langfuse."""
+    return {"containers": _remove_infra_containers(),
+            "volumes": _remove_aiforge_volumes(),
+            "images": _remove_aiforge_images()}
 
 
 # Backend-pointer keys that belong to the removed hybrid mode. This build is
@@ -164,29 +178,34 @@ _DB_KEY_RE = re.compile(
     r"AIFORGE_NEO4J_PASSWORD|AIFORGE_NEO4J_PASS|AIFORGE_REQUIRE_DATA_BACKEND)\s*=")
 
 
+def _neutralise_db_lines(path) -> bool:
+    """Comment out stale PG/Neo4j backend lines in one env file. True when it
+    changed. Best-effort — an unreadable/unwritable file is skipped."""
+    if not path.is_file():
+        return False
+    try:
+        out, changed = [], False
+        for ln in path.read_text(encoding="utf-8").splitlines():
+            if _DB_KEY_RE.match(ln) and not ln.lstrip().startswith("#"):
+                out.append("# [converge→sqlite] " + ln)
+                changed = True
+            else:
+                out.append(ln)
+        if changed:
+            path.write_text("\n".join(out) + "\n", encoding="utf-8")
+            log.info("converge: neutralised PG/Neo4j lines in %s", path.name)
+        return changed
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _clear_pg_from_env() -> None:
     """Comment out stale Postgres/Neo4j backend lines in the repo .env AND the
     UI-persisted ~/.aiforge/runtime.env, so a future boot never re-points the
     SQLite-only app at a removed Postgres/Neo4j."""
-    targets = [_repo_root() / "aiforge.env", _repo_root() / ".env",
-               _config_dir() / "runtime.env"]
-    for p in targets:
-        if not p.is_file():
-            continue
-        try:
-            out, changed = [], False
-            for ln in p.read_text(encoding="utf-8").splitlines():
-                if _DB_KEY_RE.match(ln) and not ln.lstrip().startswith("#"):
-                    out.append("# [converge→sqlite] " + ln)
-                    changed = True
-                else:
-                    out.append(ln)
-            if changed:
-                p.write_text("\n".join(out) + "\n", encoding="utf-8")
-                log.info("converge: neutralised PG/Neo4j lines in %s", p.name)
-        except Exception:  # noqa: BLE001
-            pass
-
+    for path in (_repo_root() / "aiforge.env", _repo_root() / ".env",
+                 _config_dir() / "runtime.env"):
+        _neutralise_db_lines(path)
 
 def converge(*, force: bool = False) -> dict:
     """Run the convergence once. Returns a summary; never raises."""
