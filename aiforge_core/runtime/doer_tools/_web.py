@@ -29,69 +29,70 @@ def _web_fetch_allowed() -> bool:
     )
 
 
+def _open_web_response(req, url: str):
+    """Open the GET, verified first. Falls back to an UNVERIFIED fetch only after
+    the verified attempt fails with a certificate error on a network that
+    inspects TLS (re-signs with an untrusted CA). Returns ``(resp_cm,
+    unverified)``. AIFORGE_LLM_CA_BUNDLE is honoured on the verified attempt so
+    an operator's installed CA actually takes effect."""
+    from aiforge_core.net.ssl import (insecure_context, is_cert_error,
+                                      public_verifying_context,
+                                      web_tls_fallback_allowed_for)
+    try:
+        return urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT_S,
+                                      context=public_verifying_context()), False
+    except Exception as exc:  # noqa: BLE001 — classified right here
+        if not (is_cert_error(exc) and web_tls_fallback_allowed_for(url)):
+            raise
+        _log.warning("web.tls_unverified url=%s err=%s — refetching without "
+                     "verification", url, str(exc)[:160])
+        return urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT_S,
+                                      context=insecure_context()), True
+
+
+def _reguard_redirect(resp, url: str, guard_public_url, SSRFBlocked) -> "dict | None":
+    """Re-guard the final URL after any redirect hops — a public URL can 30x to
+    a private/metadata target. Returns a refusal dict, or None to allow."""
+    final = getattr(resp, "url", None)
+    if final and final != url:
+        try:
+            guard_public_url(final)
+        except SSRFBlocked as exc:
+            if exc.kind != "dns":
+                return {"ok": False,
+                        "error": f"blocked after redirect (ssrf): {exc}"}
+    return None
+
+
 def _do_fetch(url: str) -> dict:
     """The actual http(s) GET (no gate). NOT a browser: no cookies, no JS,
     no redirects to file://. Body capped at 256 KB, timeout 15s, http(s)
-    only. Used by the gated ``fetch_url`` and the researcher-only
-    ``web_read``."""
+    only. Used by the gated ``fetch_url`` and the researcher-only ``web_read``."""
     # SCHEME ONLY here, deliberately. url_policy's https requirement is for
-    # endpoints we send API keys and prompt text to (LLM/MCP base URLs). This
-    # reads PUBLIC PAGES: much of the web is still http, nothing of ours goes
-    # with the request, and the SSRF guard below is what actually matters.
+    # endpoints we send API keys and prompt text to; this reads PUBLIC PAGES:
+    # much of the web is still http, nothing of ours goes with the request, and
+    # the SSRF guard below is what actually matters.
     if not url or not str(url).lower().startswith(("http://", "https://")):
         return {"ok": False, "error": "url must be http(s)"}
     # SSRF guard: a model-supplied URL must not pivot to cloud metadata
-    # (169.254.169.254), loopback services or the private LAN. A pure DNS
-    # failure is left to urlopen to surface as a natural network error.
+    # (169.254.169.254), loopback services or the private LAN. A pure DNS failure
+    # is left to urlopen to surface as a natural network error.
     from aiforge_core.net.ssl import SSRFBlocked, guard_public_url
     try:
         guard_public_url(url)
     except SSRFBlocked as exc:
         if exc.kind != "dns":
             return {"ok": False, "error": f"blocked (ssrf): {exc}"}
-    from aiforge_core.net.ssl import (insecure_context, is_cert_error,
-                                      public_verifying_context,
-                                      web_tls_fallback_allowed_for)
-    _unverified = False
+
+    unverified = False
     try:
         req = urllib.request.Request(
-            url, headers={"User-Agent": "AIForgeCrew-Doer/1.0"},
-        )
-        # Public/arbitrary web fetch — stdlib default TLS verification,
-        # regardless of AIFORGE_LLM_SSL_VERIFY (that toggle is scoped to
-        # AIForge's own self-hosted endpoints, see aiforge_core.net.ssl).
-        #
-        # One exception, and only after the verified attempt has FAILED with a
-        # certificate error: a network that inspects TLS re-signs every
-        # response with a CA this process does not trust, which otherwise makes
-        # the whole web unreadable. The retry is reported (`tls_verified:
-        # False`), never silent, and AIFORGE_WEB_INSECURE_TLS=0 forbids it.
-        try:
-            # Honour AIFORGE_LLM_CA_BUNDLE on the VERIFIED attempt. Without it
-            # the operator's fix for a TLS-inspecting network (install its CA)
-            # did nothing on this path and every page came back through the
-            # unverified fallback instead.
-            resp_cm = urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT_S,
-                                             context=public_verifying_context())
-        except Exception as _exc:  # noqa: BLE001 — classified right here
-            if not (is_cert_error(_exc) and web_tls_fallback_allowed_for(url)):
-                raise
-            _log.warning("web.tls_unverified url=%s err=%s — refetching "
-                         "without verification", url, str(_exc)[:160])
-            _unverified = True
-            resp_cm = urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT_S,
-                                             context=insecure_context())
+            url, headers={"User-Agent": "AIForgeCrew-Doer/1.0"})
+        resp_cm, unverified = _open_web_response(req, url)
         with resp_cm as resp:
-            # Re-guard the final URL after any redirect hops — a public URL
-            # can 30x to a private/metadata target; refuse to return its body.
-            final = getattr(resp, "url", None)
-            if final and final != url:
-                try:
-                    guard_public_url(final)
-                except SSRFBlocked as exc:
-                    if exc.kind != "dns":
-                        return {"ok": False,
-                                "error": f"blocked after redirect (ssrf): {exc}"}
+            blocked = _reguard_redirect(resp, url, guard_public_url, SSRFBlocked)
+            if blocked is not None:
+                return blocked
             raw = resp.read(_FETCH_MAX_BYTES + 1)
             status = resp.status
             ctype = resp.headers.get("Content-Type", "")
@@ -103,18 +104,13 @@ def _do_fetch(url: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
     truncated = len(raw) > _FETCH_MAX_BYTES
-    body = raw[:_FETCH_MAX_BYTES].decode("utf-8", "replace")
     return {
-        "ok": True,
-        "url": url,
-        "status": status,
-        "content_type": ctype,
-        "body": body,
-        "bytes": len(raw),
-        "truncated": truncated,
-        # Stated only when the answer is "no" — an ordinary verified fetch
-        # should not carry a reassurance the model then repeats forever.
-        **({"tls_verified": False} if _unverified else {}),
+        "ok": True, "url": url, "status": status, "content_type": ctype,
+        "body": raw[:_FETCH_MAX_BYTES].decode("utf-8", "replace"),
+        "bytes": len(raw), "truncated": truncated,
+        # Stated only when the answer is "no" — an ordinary verified fetch should
+        # not carry a reassurance the model then repeats forever.
+        **({"tls_verified": False} if unverified else {}),
     }
 
 
