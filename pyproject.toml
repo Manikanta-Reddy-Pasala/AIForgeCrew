@@ -21,6 +21,12 @@ dependencies = [
   "openai>=1.50",
   "numpy>=1.26",
   "litellm>=1.40",
+  # sqlite-vec provides the vec0 virtual table that backs semantic memory recall
+  # (the production default, AIFORGE_EMBED_BACKEND != hash). Core, not an extra:
+  # without it every memory write hit "no such module: vec0". The code now
+  # degrades to a keyword/brute-force scan if it is somehow absent, but the
+  # semantic path is the intended one, so ship the extension by default.
+  "sqlite-vec>=0.1",
   # ADK 2.x — drives the v6 SequentialAgent[Planner, Verifier,
   # LoopAgent[Doer, Feedback], Learner] in runtime.adk_runner.
   # Pinned: 2.3.x added a Workflow validation that rejects the v6 graph

@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from aiforge_core.memory import local_embed
 
 from ._schema import _conn, _vec_enabled
+
+_log = logging.getLogger("aiforge.memory.recall")
+_VEC_RECALL_WARNED = False
 
 
 def _knn_rows(c, qvec, repo, limit: int) -> tuple[dict, list]:
@@ -141,10 +145,21 @@ def recall(text: str, *, limit: int = 8, repo: str | None = None,
     if not any(qvec):
         return []
     # Semantic backend → sqlite-vec KNN (real nearest-neighbour, no O(N) scan).
-    # No cosine fallback here: a missing extension raises (loud) as the user
-    # requires; the brute-force path below is only the dev/test 'hash' backend.
+    # If the extension can't load, fall through to the brute-force cosine scan
+    # below (LOUD warning, once) rather than losing recall entirely — the same
+    # degrade the write path applies in _schema._disable_vec. Install sqlite-vec
+    # to restore fast KNN.
     if _vec_enabled():
-        return _vec_recall(text, qvec, repo, limit, boost)
+        try:
+            return _vec_recall(text, qvec, repo, limit, boost)
+        except Exception as exc:              # noqa: BLE001 — sqlite-vec missing
+            global _VEC_RECALL_WARNED
+            if not _VEC_RECALL_WARNED:
+                _log.warning(
+                    "sqlite-vec unavailable (%s) — recall falls back to a "
+                    "brute-force cosine scan (O(N)). Install sqlite-vec for "
+                    "fast KNN.", exc)
+                _VEC_RECALL_WARNED = True
     with _conn() as c:
         rows = _candidate_rows(c, repo)
     return _dedupe_by_text(_score_rows(rows, qvec, boost), limit)

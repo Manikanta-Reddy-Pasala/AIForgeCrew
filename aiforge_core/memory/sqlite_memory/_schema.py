@@ -112,10 +112,35 @@ def _vec_enabled() -> bool:
         "model2vec", "static", "api", "openai", "lmstudio", "ollama")
 
 
+_VEC_WARNED = False
+
+
+def _disable_vec(c, exc) -> None:
+    """sqlite-vec could not be loaded (extension missing / incompatible). DROP
+    the vec0 sync triggers so a memory WRITE still lands via keyword+FTS rather
+    than dying on ``no such module: vec0`` — losing a note because the vector
+    index is unavailable is exactly the failure ``_safe_embed`` rules out for
+    the embedder, and it holds for the extension too. Semantic recall stays
+    degraded until sqlite-vec is installed (``pip install sqlite-vec`` or the
+    ``embed-static`` extra) and ``aiforge-maint memory reembed`` backfills."""
+    global _VEC_WARNED
+    if not _VEC_WARNED:
+        _log.warning(
+            "sqlite-vec unavailable (%s) — memory writes continue WITHOUT the "
+            "vec0 index (keyword/FTS recall still works). Install sqlite-vec to "
+            "restore semantic recall.", exc)
+        _VEC_WARNED = True
+    for _t in ("vec_memory_ai", "vec_memory_ad", "vec_memory_au"):
+        try:
+            c.execute(f"DROP TRIGGER IF EXISTS {_t}")
+        except sqlite3.OperationalError:
+            pass
+
+
 def _init_vec(c) -> None:
     """Load sqlite-vec + create the vec0 table (dim = active embedder) + sync
     triggers, backfilling existing rows. Raises so a broken semantic setup is
-    LOUD (no silent cosine fallback)."""
+    caught by ``_conn`` and degraded (writes never lost); see ``_disable_vec``."""
     import sqlite_vec
     from aiforge_core.memory import local_embed
     c.enable_load_extension(True)
@@ -176,7 +201,14 @@ def _conn() -> Iterator[sqlite3.Connection]:
         except sqlite3.OperationalError:
             pass
         if _vec_enabled():                     # sqlite-vec ANN (semantic backend)
-            _init_vec(c)                       # RAISES if the extension is missing
+            try:
+                _init_vec(c)
+            except Exception as exc:           # noqa: BLE001 — ImportError (the
+                # sqlite-vec extra isn't installed) or OperationalError ("no such
+                # module: vec0", the extension can't load on this platform). A
+                # memory WRITE must not be lost for it — same rule _safe_embed
+                # already applies to the embedder — so degrade instead of raise.
+                _disable_vec(c, exc)
         yield c
         c.commit()
     finally:
