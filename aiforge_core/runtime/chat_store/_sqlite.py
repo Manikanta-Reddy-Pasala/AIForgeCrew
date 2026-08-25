@@ -80,7 +80,21 @@ class _SqliteChatStore:
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         c = sqlite3.connect(path, timeout=30.0)
         c.row_factory = sqlite3.Row
-        c.execute("PRAGMA journal_mode=WAL")
+        # busy_timeout FIRST: the connect `timeout` sets a busy handler for
+        # statement execution, but switching journal mode needs a brief
+        # exclusive lock that under concurrent connections (the API TestClient
+        # runs the app on a threadpool) otherwise fails IMMEDIATELY with
+        # "database is locked" instead of waiting. An explicit busy_timeout makes
+        # the WAL switch (and every later statement) wait for the lock. This
+        # surfaced as a roaming failure in test_chat_resume_route.
+        c.execute("PRAGMA busy_timeout=30000")
+        # journal_mode=WAL persists in the DB file, so a concurrent reader can
+        # leave it already-WAL and the switch is a no-op; tolerate a transient
+        # lock here rather than fail the whole request.
+        try:
+            c.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError:
+            pass
         c.execute("PRAGMA foreign_keys=ON")
         try:
             c.executescript(_SQLITE_DDL)
