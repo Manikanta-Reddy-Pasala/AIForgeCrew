@@ -1733,6 +1733,68 @@ def _augment_user_turn(m: dict, enriched, resume_brief, prompt, doc_task) -> Non
             m["content"] += _DRAFT_ONLY_NOTE
 
 
+def _prelude_notices(resume_brief, cmd_expanded):
+    """Small user-facing notices before the agent runs: a resume marker (so a
+    retry doesn't look identical to the failed run) and a command-expansion note
+    (so the user sees WHY their "/deploy …" became a longer prompt)."""
+    if resume_brief:
+        yield {"type": "thought", "role": "system",
+               "text": "↻ Resuming the stopped turn — carrying over what already "
+                       "landed and finishing only what is pending."}
+    if cmd_expanded:
+        yield {"type": "thought", "role": "command",
+               "text": f"Expanded /{cmd_expanded} command template."}
+
+
+def _enhance_prompt(_pp, prompt, history, cwd, skip_enhance):
+    """The enriched spec for this turn. A skippable follow-up uses the raw prompt;
+    otherwise the enhancer folds ``history`` INTO the spec (restoring referent
+    resolution — "no, use postgres instead" must resolve against prior turns, not
+    fabricate a context-free spec) with recall SCOPED to this session's repo
+    (anti-contamination)."""
+    if skip_enhance:
+        return prompt
+    from aiforge_core.runtime.chat_agent import _chat_repo_key as _crk2
+    return _pp._enhance(prompt, history=history, cwd=cwd, repo=_crk2(cwd))
+
+
+def _dispatch_agent_route(_rd, _pp, prompt, cwd, session_id, history,
+                          _with_resume, _path, _turn_t0, team, _resume_brief,
+                          rctx):
+    """Dispatch to the doc-analysis, orchestrator-pipeline, or sequential-team
+    route (in that precedence). Yields each route's events and sets
+    ``rctx["done"]`` when one of them terminates the turn; falls through (no
+    done) to the single-agent path for simple/plan work."""
+    _doc_task = _rd.doc_task
+    _route_pipeline = _rd.route_pipeline
+    if _rd.notice:
+        yield {"type": "thought", "role": "router", "text": _rd.notice}
+    rctx = {"done": False}
+    if _doc_task:
+        yield from _doc_task_route(prompt, cwd, session_id, _with_resume, rctx)
+        if rctx["done"]:
+            return
+    if _route_pipeline:
+        yield from _pipeline_route(_pp, prompt, cwd, session_id, history,
+                                   _with_resume, _path, _turn_t0, rctx)
+        if rctx["done"]:
+            return
+    if team and not _doc_task:
+        # Sequential team pipeline has its own ADK enhancer; don't double-
+        # enhance. Mark the driver launched ONLY here so a crash in the
+        # parallel pre-steps above still persists + cleans up inline in the
+        # producer's finally. A DOC/ANALYSIS task falls through to the single
+        # research agent below even in team mode. The resume brief goes in as
+        # its own argument so raw_prompt stays the user's actual request.
+        _path["driver"] = True
+        from aiforge_core.runtime.chat_pipeline import stream_chat_pipeline
+        yield from stream_chat_pipeline(prompt, cwd=cwd,
+                                        session_id=session_id, history=history,
+                                        started_at=_turn_t0,
+                                        resume_brief=_resume_brief)
+        return
+
+
 def _early_route_events(cmd_help_text, body, history, cwd, role, session_id, pctx):
     """The two deterministic early routes that bypass the whole agent machinery:
     built-in /help (inline command listing, no model call) and BUILDER mode
@@ -2100,19 +2162,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                                        session_id, pctx0)
         if pctx0["done"]:
             return
-        # Resuming a stopped turn — say so, or the run looks identical to the
-        # one that just failed and the user cannot tell whether the retry is
-        # repeating itself.
-        if _resume_brief:
-            yield {"type": "thought", "role": "system",
-                   "text": "↻ Resuming the stopped turn — carrying over what "
-                           "already landed and finishing only what is pending."}
-        # A user command expanded — a small notice so the user sees WHY their
-        # "/deploy …" turned into a longer prompt (the agent runs on the
-        # expanded template below, unchanged).
-        if _cmd_expanded:
-            yield {"type": "thought", "role": "command",
-                   "text": f"Expanded /{_cmd_expanded} command template."}
+        yield from _prelude_notices(_resume_brief, _cmd_expanded)
         # Staleness auto-curation: a session bound to a jira/confluence
         # context folder (cwd = work/<kind>/<key>) re-verifies that context's
         # note when its updated_at crossed AIFORGE_NOTE_STALE_HOURS. The
@@ -2153,30 +2203,11 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         _is_build_task = _rd.is_build_task
         _build_escalate = _rd.build_escalate
         _route_pipeline = _rd.route_pipeline
-        if _rd.notice:
-            yield {"type": "thought", "role": "router", "text": _rd.notice}
-        pctx2 = {"done": False}
-        if _doc_task:
-            yield from _doc_task_route(prompt, cwd, session_id, _with_resume, pctx2)
-            if pctx2["done"]:
-                return
-        if _route_pipeline:
-            yield from _pipeline_route(_pp, prompt, cwd, session_id, history,
-                                       _with_resume, _path, _turn_t0, pctx2)
-            if pctx2["done"]:
-                return
-        if team and not _doc_task:
-            # Sequential team pipeline has its own ADK enhancer; don't double-
-            # enhance. Mark the driver launched ONLY here so a crash in the
-            # parallel pre-steps above still persists + cleans up inline in the
-            # producer's finally. A DOC/ANALYSIS task falls through to the single
-            # research agent below even in team mode. The resume brief goes in as
-            # its own argument so raw_prompt stays the user's actual request.
-            _path["driver"] = True
-            yield from stream_chat_pipeline(prompt, cwd=cwd,
-                                            session_id=session_id, history=history,
-                                            started_at=_turn_t0,
-                                            resume_brief=_resume_brief)
+        rctx = {"done": False}
+        yield from _dispatch_agent_route(
+            _rd, _pp, prompt, cwd, session_id, history, _with_resume, _path,
+            _turn_t0, team, _resume_brief, rctx)
+        if rctx["done"]:
             return
         # SIMPLE and PLAN modes — the Enhancer is MANDATORY on the FIRST turn
         # of a session (fresh context, referents to resolve, no memory pulled
@@ -2194,26 +2225,10 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             yield {"type": "thought", "role": "router",
                    "text": "Small follow-up — handling directly (skipped the "
                            "full pipeline for speed)."}
-        if _skip_enhance:
-            _enriched = prompt
-        else:
+        if not _skip_enhance:
             yield {"type": "thought", "role": "enhancer",
                    "text": "Enhancing request + gathering context…"}
-            # Fold `history` INTO the spec (restores referent resolution: a
-            # context-dependent follow-up like "no, use postgres instead" or
-            # "fix that bug" must be resolved against the prior turns, else
-            # the enhancer fabricates a context-free spec that REPLACES the
-            # user's words).
-            from aiforge_core.runtime.chat_agent import _chat_repo_key as _crk2
-            _enriched = _pp._enhance(prompt, history=history, cwd=cwd,
-                                     repo=_crk2(cwd))   # scope recall (anti-contamination)
-        # Replace the LAST user turn's content with the enriched spec, keeping
-        # every prior turn intact. Trimming the recent turns (an earlier "avoid
-        # the double-fold" attempt) broke claude_local's user/assistant
-        # alternation and dropped context when `_enhance` no-ops on a trivial
-        # follow-up ("yes"/"no"). The residual double-fold (recent turns appear
-        # raw AND folded into the spec) is benign token redundancy, not semantic
-        # harm; alternation stays intact and no turn is ever dropped.
+        _enriched = _enhance_prompt(_pp, prompt, history, cwd, _skip_enhance)
         _enriched_history = _fold_enriched_history(
             history, _enriched, _resume_brief, prompt, _doc_task)
         if agent_mode == "plan":
