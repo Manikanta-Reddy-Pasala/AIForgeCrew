@@ -1559,6 +1559,66 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
              "specify.") if _bundle.skills_md else ""
     st.convo.append({"role": "user", "content": f"OBSERVATION: {obs}{_tail}"})
 
+def _run_completion(st, role, complete_fn, session_id, _meter):
+    """Run one model completion: bind the per-step meter, call the model (with the
+    bounded retry recovery), reset the meter, and normalise the result. Yields
+    retry/stop events; returns the completion text, or _RETRY_STOP to end."""
+    # This STEP's own send counter, bound for the duration of the step.
+    # Not a delta of the session's turn count: that was inert for every
+    # caller without a session (jobs, text_doer, the analysis fan-out —
+    # the unattended paths where a storm has nobody watching), refundable
+    # by a concurrent turn_reset, and spendable by unrelated same-session
+    # traffic.
+    _step_calls = None
+    _step_tok = None
+    if _meter is not None and _max_gen_per_step() > 0:
+        try:
+            _step_calls = _meter.step_begin()
+            _step_tok = _meter.step_bind(_step_calls)
+        except Exception:  # noqa: BLE001
+            _step_calls, _step_tok = None, None
+    try:
+        out = _complete_cancellable(complete_fn, role, st.convo, session_id)
+    except Exception as exc:  # noqa: BLE001
+        out = yield from _retry_completion(
+            complete_fn, role, st.convo, session_id, exc,
+            _step_calls, _meter, _step_tok)
+        if out is _RETRY_STOP:
+            return _RETRY_STOP
+    # The step's sends are counted; unbind before the next one binds its
+    # own (a step that leaves its counter bound would have the NEXT step's
+    # calls spend a budget that is already exhausted).
+    if _meter is not None:
+        _meter.step_reset(_step_tok)
+        _step_tok = None
+
+    # H1: Stop pressed DURING generation — the cancellable wrapper returned
+    # the sentinel (the abandoned LLM call finishes in the background,
+    # ignored). Distinct from a legitimately-empty completion below.
+    if out is _CANCELLED:
+        yield {"type": "error", "text": "stopped by user"}
+        yield {"type": "done"}
+        return _RETRY_STOP
+    if out is None:
+        out = ""   # a real empty completion — treat as an empty turn
+    return out
+
+
+def _builder_nudge(st, builder, n):
+    """Once a builder session has interviewed enough, inject a one-time reminder
+    to call the finalize tool NOW so the session ends with an artifact."""
+    # Builder nudge (#7): a local model can interview forever and never emit
+    # the finalize tool, leaving the session with no artifact. Once it has had
+    # enough back-and-forth, inject a one-time reminder to finalize NOW.
+    if builder and not st.builder_nudged and n >= _BUILDER_NUDGE_AFTER:
+        st.builder_nudged = True
+        _fin = _BUILDER_FINALIZE_TOOL.get(builder, "the finalize tool")
+        st.convo.append({"role": "user", "content":
+            f"[system reminder] You have gathered enough detail. Call "
+            f"`{_fin}` NOW with the collected values to finish — do not keep "
+            f"asking questions. If one required value is genuinely missing, "
+            f"ask ONLY for that, then finalize."})
+
 def run_chat_agent(
     messages: list[dict], *,
     cwd: str,
@@ -1805,17 +1865,7 @@ def run_chat_agent(
             yield {"type": "error", "text": "stopped by user"}
             yield {"type": "done"}
             return
-        # Builder nudge (#7): a local model can interview forever and never emit
-        # the finalize tool, leaving the session with no artifact. Once it has had
-        # enough back-and-forth, inject a one-time reminder to finalize NOW.
-        if builder and not st.builder_nudged and n >= _BUILDER_NUDGE_AFTER:
-            st.builder_nudged = True
-            _fin = _BUILDER_FINALIZE_TOOL.get(builder, "the finalize tool")
-            st.convo.append({"role": "user", "content":
-                f"[system reminder] You have gathered enough detail. Call "
-                f"`{_fin}` NOW with the collected values to finish — do not keep "
-                f"asking questions. If one required value is genuinely missing, "
-                f"ask ONLY for that, then finalize."})
+        _builder_nudge(st, builder, n)
         # (#16) Mid-run steering is drained in ONE place — the guarded block just
         # below (before the model call). A second, earlier drain here used to win
         # the race and append an UNGUARDED user turn, creating two consecutive
@@ -1825,44 +1875,9 @@ def run_chat_agent(
             return
         yield from _drain_steering(st, session_id)
         yield from _condense_and_report(st, role, complete_fn, session_id, _meter)
-        # This STEP's own send counter, bound for the duration of the step.
-        # Not a delta of the session's turn count: that was inert for every
-        # caller without a session (jobs, text_doer, the analysis fan-out —
-        # the unattended paths where a storm has nobody watching), refundable
-        # by a concurrent turn_reset, and spendable by unrelated same-session
-        # traffic.
-        _step_calls = None
-        _step_tok = None
-        if _meter is not None and _max_gen_per_step() > 0:
-            try:
-                _step_calls = _meter.step_begin()
-                _step_tok = _meter.step_bind(_step_calls)
-            except Exception:  # noqa: BLE001
-                _step_calls, _step_tok = None, None
-        try:
-            out = _complete_cancellable(complete_fn, role, st.convo, session_id)
-        except Exception as exc:  # noqa: BLE001
-            out = yield from _retry_completion(
-                complete_fn, role, st.convo, session_id, exc,
-                _step_calls, _meter, _step_tok)
-            if out is _RETRY_STOP:
-                return
-        # The step's sends are counted; unbind before the next one binds its
-        # own (a step that leaves its counter bound would have the NEXT step's
-        # calls spend a budget that is already exhausted).
-        if _meter is not None:
-            _meter.step_reset(_step_tok)
-            _step_tok = None
-
-        # H1: Stop pressed DURING generation — the cancellable wrapper returned
-        # the sentinel (the abandoned LLM call finishes in the background,
-        # ignored). Distinct from a legitimately-empty completion below.
-        if out is _CANCELLED:
-            yield {"type": "error", "text": "stopped by user"}
-            yield {"type": "done"}
+        out = yield from _run_completion(st, role, complete_fn, session_id, _meter)
+        if out is _RETRY_STOP:
             return
-        if out is None:
-            out = ""   # a real empty completion — treat as an empty turn
 
         _sig = yield from _stuck_output_guard(st, out)
         if _sig == "return":
