@@ -851,6 +851,8 @@ button.icon:hover:not(:disabled) { color: var(--fg-0); background: var(--bg-3); 
   border-top: 1px solid var(--border-0);
   display: flex; gap: var(--s-2);
   background: var(--bg-1);
+  /* Let the composer span the full chat column width */
+  align-items: stretch;
 }
 .chat-composer textarea {
   flex: 1;
@@ -863,8 +865,6 @@ button.icon:hover:not(:disabled) { color: var(--fg-0); background: var(--bg-3); 
   padding: 12px 14px;
   resize: vertical;
 }
-/* Let the composer span the full chat column width */
-.chat-composer { align-items: stretch; }
 .chat-composer > div { width: 100%; }
 
 /* Compact model/role selector in the chat topbar */
