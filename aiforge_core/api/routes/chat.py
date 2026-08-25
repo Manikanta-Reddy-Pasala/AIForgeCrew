@@ -1210,7 +1210,6 @@ def _plan_mode_route(_pp, _enriched, _enriched_history, cwd, role, session_id,
     yield {"type": "plan_ready", "spec": _enriched}
     if _pending_done is not None:
         yield _pending_done
-    return
 
 
 def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
@@ -1802,7 +1801,6 @@ def _dispatch_agent_route(_rd, _pp, prompt, cwd, session_id, history,
                                         session_id=session_id, history=history,
                                         started_at=_turn_t0,
                                         resume_brief=_resume_brief)
-        return
 
 
 def _early_route_events(cmd_help_text, body, history, cwd, role, session_id, pctx):
@@ -1834,7 +1832,6 @@ def _early_route_events(cmd_help_text, body, history, cwd, role, session_id, pct
                                       session_id=session_id, mode="act",
                                       builder=body.builder)
             pctx["done"] = True
-            return
 
 
 def _fold_enriched_history(history, enriched, resume_brief, prompt, doc_task):

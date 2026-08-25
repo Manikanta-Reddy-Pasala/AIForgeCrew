@@ -177,14 +177,10 @@ async def _tail_forever(path: str):
         except Exception:  # noqa: BLE001
             pass
         last_size = _size_of(path)
-    try:
-        async for event in _poll_appends(path, last_size):
-            yield event
-    except asyncio.CancelledError:
-        # RE-RAISE. Swallowing it tells asyncio the task ended normally, so
-        # shutdown/disconnect handling stops waiting on a stream that was
-        # actually cancelled.
-        raise
+    # CancelledError propagates (not swallowed) so shutdown/disconnect handling
+    # knows the stream was actually cancelled.
+    async for event in _poll_appends(path, last_size):
+        yield event
 
 
 @router.get("/api/logs/{role}/stream")
@@ -273,11 +269,6 @@ async def _merged_trace(log: str, err: str, host: str, identifier: str):
             in_ctx, emit = _trace_scope(raw, identifier, in_ctx)
             if emit:
                 yield f"data: {json.dumps({'line': raw})}\n\n"
-    except asyncio.CancelledError:
-        # RE-RAISE after the `finally` has run its cleanup. Swallowing it
-        # reports a normal completion for a task that was cancelled, so the
-        # caller stops waiting on a teardown that never signalled.
-        raise
     finally:
         for t in tasks:
             t.cancel()
@@ -328,11 +319,6 @@ async def _llm_trace_lines(err: str, host: str, identifier: str):
             raw = line.decode("utf-8", "replace").rstrip("\n")
             if _is_llm_call_for(raw, identifier):
                 yield f"data: {raw}\n\n"
-    except asyncio.CancelledError:
-        # RE-RAISE after the `finally` has run its cleanup. Swallowing it
-        # reports a normal completion for a task that was cancelled, so the
-        # caller stops waiting on a teardown that never signalled.
-        raise
     finally:
         try:
             proc.kill()
