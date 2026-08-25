@@ -7,7 +7,7 @@ import { clickable } from '../a11y';
 
 export function NotesPanel() {
   const [files, setFiles] = useState<any[] | null>(null);
-  const [open, setOpen] = useState<any | null>(null);
+  const [open, setOpen] = useState<any>(null);
   const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState('');
   const [text, setText] = useState('');

@@ -5,7 +5,7 @@ import { OKF_TYPE_BADGE } from './Memory.helpers';
 import { OkfMeta } from './Memory.OkfMeta';
 
 export function OkrPanel() {
-  const [g, setG] = useState<any | null>(null);
+  const [g, setG] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const load = useCallback(() => { api.memoryOkr().then(setG).catch(() => setG({ nodes: [] })); }, []);
   useEffect(() => { load(); }, [load]);
