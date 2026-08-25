@@ -41,6 +41,18 @@ def _stub_content(path: str, api: list, is_test: bool) -> str:
     return "\n".join(hdr) + "\n"
 
 
+def _stub_line(a: str) -> "str | None":
+    """One scaffold line for an API contract entry: a class/def keeps its
+    signature with a stub body; a `CONST: type` or anything else becomes a
+    module-level `name = None`. None when no symbol could be cleaned."""
+    base = a.rstrip(":")
+    if base.startswith(("class ", "async def ", "def ")):
+        body = "    ..." if base.startswith("class ") else "    raise NotImplementedError"
+        return f"\n\n{base}:\n{body}"
+    nm = _clean_symbol(a)
+    return f"\n\n{nm} = None" if nm else None
+
+
 def _python_stub(api: list) -> str:
     """Real Python signature stubs from the API contract — keeps sibling imports
     resolvable while workers fill in bodies. Conservative: only clear top-level
@@ -48,18 +60,9 @@ def _python_stub(api: list) -> str:
     lines = [f'"""Stub {_SCAFFOLD_MARK} — implement the bodies; keep this exact '
              'public API."""']
     for a in [x.strip() for x in api if x and x.strip()]:
-        base = a.rstrip(":")
-        if base.startswith(("class ", "async def ", "def ")):
-            body = "    ..." if base.startswith("class ") else "    raise NotImplementedError"
-            lines.append(f"\n\n{base}:\n{body}")
-        elif ":" in a and "=" not in a and "(" not in a:   # CONST: type
-            nm = _clean_symbol(a)
-            if nm:
-                lines.append(f"\n\n{nm} = None")
-        else:
-            nm = _clean_symbol(a)
-            if nm:
-                lines.append(f"\n\n{nm} = None")
+        line = _stub_line(a)
+        if line:
+            lines.append(line)
     return "\n".join(lines) + "\n"
 
 

@@ -322,6 +322,25 @@ def _batch(rows: Iterable[dict], size: int = 1000):
         yield buf
 
 
+def _bucket_node(cat, row, nid, n, files, symbols, others):
+    """Append one classified node to its bucket; return 1 if it was skipped
+    (missing the key field for its bucket), else 0."""
+    if cat == "file":
+        if row.get("path"):
+            files.append(row)
+            return 0
+        return 1
+    if cat == "symbol":
+        if row.get("id"):
+            symbols.append(row)
+            return 0
+        return 1
+    row["id"] = nid
+    row.setdefault("kind", n.get("file_type", "graphify"))
+    others.append(row)
+    return 0
+
+
 def _classify_nodes(nodes_in: list, repo_name: str) -> tuple[list, list, list, int]:
     """``(files, symbols, others, skipped)`` — every node bucketed by the label
     it will be written under. A node with no id, a duplicate id, or a missing
@@ -338,20 +357,7 @@ def _classify_nodes(nodes_in: list, repo_name: str) -> tuple[list, list, list, i
             continue
         seen_ids.add(nid)
         cat, row = _row_for_node(n, repo_name)
-        if cat == "file":
-            if row.get("path"):
-                files.append(row)
-            else:
-                skipped += 1
-        elif cat == "symbol":
-            if row.get("id"):
-                symbols.append(row)
-            else:
-                skipped += 1
-        else:
-            row["id"] = nid
-            row.setdefault("kind", n.get("file_type", "graphify"))
-            others.append(row)
+        skipped += _bucket_node(cat, row, nid, n, files, symbols, others)
     return files, symbols, others, skipped
 
 
