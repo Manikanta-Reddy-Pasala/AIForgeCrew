@@ -1333,6 +1333,111 @@ def _handle_continue_step(st, step, builder, cwd):
     return None
 
 
+def _action_stall_guard(st, name, args, sig, _long_chain_help):
+    """Stall guard for an action: short-circuit a duplicate read with a progress
+    recap, and on the same tool+args repeated too often first recover with a
+    recap+nudge (bounded), else pause for the user. Returns continue/return/None."""
+    # Duplicate-READ short-circuit: a local model on a long sweep re-issues a
+    # read it already ran (its result is still above in the convo). Don't
+    # re-execute or count it toward the stuck guard — hand back a cheap
+    # progress recap that points at the next unread file / the write step, so
+    # every read must make NEW progress. Cleared on any edit (a file just
+    # written is worth re-reading). Disabled with the same env switch as the
+    # recovery nudge (AIFORGE_CHAT_STUCK_RECOVERIES=0 → full legacy behaviour).
+    if _long_chain_help and name in _READ_OBS_TOOLS and sig in st.read_sigs_seen:
+        _recap = _progress_recap(st.convo)
+        yield {"type": "thought", "role": "system",
+               "text": f"⏭ duplicate read skipped ({name})"}
+        st.convo.append({"role": "user", "content":
+            "OBSERVATION: [skipped — duplicate] You ALREADY ran this exact "
+            "read; its result is above and re-reading wastes a step. "
+            + (_recap + ". " if _recap else "")
+            + "Read a DIFFERENT file you have not read yet, or if you have "
+            "enough, WRITE your output now (file_write) or emit FINAL."})
+        return "continue"
+    # Bounded, LEAST-RECENTLY-USED first. An uncapped turn (cap 0) removes
+    # the 2000-step ceiling that used to bound this table in practice, and
+    # nothing else prunes it (convo is condensed, recent_outputs is a maxlen
+    # deque, read_sigs_seen is cleared on compaction).
+    #
+    # The order matters more than the bound: a plain dict is ordered by
+    # FIRST insert, so dropping "the oldest half" would evict exactly the
+    # signatures that have been repeating longest — the ones accumulating
+    # strikes — and the stall guard would never fire on the very runaway
+    # this table exists to catch. move_to_end on each touch makes the
+    # eviction least-recently-SEEN instead.
+    st.action_counts[sig] = st.action_counts.get(sig, 0) + 1
+    st.action_counts.move_to_end(sig)
+    while len(st.action_counts) > _ACTION_SIG_MAX:
+        st.action_counts.popitem(last=False)
+    if st.action_counts[sig] >= _LOOP_REPEAT:
+        # A local model on a long chain re-issues an action it already ran —
+        # most often re-reading a file it read earlier (it lost track over the
+        # growing history), which the old hard bail turned into an abandoned
+        # task. Recover FIRST: recap what's already done + point at the next
+        # step (bounded); only give up if the model keeps repeating.
+        if st.stuck_recoveries < _stuck_recovery_max():
+            st.stuck_recoveries += 1
+            st.action_counts[sig] = 0          # clear this action's strike count
+            _recap = _progress_recap(st.convo)
+            yield {"type": "thought", "role": "system",
+                   "text": f"↺ repeated `{name}` — recap + nudge to continue"}
+            st.convo.append({"role": "user", "content":
+                f"[loop guard — not the user] You already ran `{name}` with "
+                "these exact args and its result is ABOVE — repeating it makes "
+                "no progress. "
+                + (_recap + ". " if _recap else "")
+                + "Do the NEXT, DIFFERENT step now: act on something not yet "
+                "done (e.g. the next unread file from the request), or output "
+                "`FINAL: <answer>` if everything is complete. Do NOT repeat a "
+                "previous action."})
+            return "continue"
+        yield {"type": "message", "awaiting_input": True,
+               "text": f"I keep trying the same step (`{name}`) without "
+                       "progress. I've paused — could you clarify or tell "
+                       "me how you'd like me to proceed?"}
+        yield {"type": "done"}
+        return "return"
+    return None
+
+
+def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
+    """Pre-dispatch bookkeeping gates: plan_progress flips a UI subtask (pure
+    bookkeeping, allowed in every mode); read-only Plan/Analyze mode blocks a
+    mutating tool. Returns continue or None."""
+    # Simple-mode task tracker: plan_progress flips a checklist item in
+    # the UI's subtasks dock. Pure bookkeeping — no side effects, allowed
+    # in every mode (incl. plan), never gated.
+    if name == "plan_progress":
+        _slug = str(args.get("slug") or args.get("part") or "").strip()
+        _st = str(args.get("status") or "done").strip().lower()
+        if _st not in ("pending", "running", "done", "failed"):
+            _st = "done"
+        if _slug:
+            yield {"type": "subtask_update", "slug": _slug, "status": _st}
+        result = {"ok": bool(_slug), "slug": _slug, "status": _st,
+                  **({} if _slug else {"error": "missing 'slug'"})}
+        yield {"type": "tool", "name": name, "args": args, "result": result}
+        st.convo.append({"role": "user",
+                      "content": f"OBSERVATION: {json.dumps(result)}"})
+        return "continue"
+
+    # PLAN/ANALYZE mode (#2): block mutating tools — read-only only.
+    if readonly_mode and name not in _READONLY_TOOLS:
+        _mname = "Analyze" if analyze_mode else "Plan"
+        _mtail = ("Report your FINDINGS." if analyze_mode
+                  else "Finish with a PLAN; the user will switch to Act "
+                       "mode to execute it.")
+        result = {"ok": False, "blocked": "plan_mode",
+                  "error": f"'{name}' is blocked in {_mname} mode "
+                           f"(read-only). {_mtail}"}
+        yield {"type": "tool", "name": name, "args": args, "result": result}
+        st.convo.append({"role": "user",
+                      "content": f"OBSERVATION: {json.dumps(result)}"})
+        return "continue"
+    return None
+
+
 def run_chat_agent(
     messages: list[dict], *,
     cwd: str,
@@ -1679,102 +1784,17 @@ def run_chat_agent(
         # Stuck-action loop: same tool+args repeated too many times → ask
         # the user instead of looping to the safety cap.
         sig = name + "|" + json.dumps(args, sort_keys=True, default=str)
-        # Duplicate-READ short-circuit: a local model on a long sweep re-issues a
-        # read it already ran (its result is still above in the convo). Don't
-        # re-execute or count it toward the stuck guard — hand back a cheap
-        # progress recap that points at the next unread file / the write step, so
-        # every read must make NEW progress. Cleared on any edit (a file just
-        # written is worth re-reading). Disabled with the same env switch as the
-        # recovery nudge (AIFORGE_CHAT_STUCK_RECOVERIES=0 → full legacy behaviour).
-        if _long_chain_help and name in _READ_OBS_TOOLS and sig in st.read_sigs_seen:
-            _recap = _progress_recap(st.convo)
-            yield {"type": "thought", "role": "system",
-                   "text": f"⏭ duplicate read skipped ({name})"}
-            st.convo.append({"role": "user", "content":
-                "OBSERVATION: [skipped — duplicate] You ALREADY ran this exact "
-                "read; its result is above and re-reading wastes a step. "
-                + (_recap + ". " if _recap else "")
-                + "Read a DIFFERENT file you have not read yet, or if you have "
-                "enough, WRITE your output now (file_write) or emit FINAL."})
-            continue
-        # Bounded, LEAST-RECENTLY-USED first. An uncapped turn (cap 0) removes
-        # the 2000-step ceiling that used to bound this table in practice, and
-        # nothing else prunes it (convo is condensed, recent_outputs is a maxlen
-        # deque, read_sigs_seen is cleared on compaction).
-        #
-        # The order matters more than the bound: a plain dict is ordered by
-        # FIRST insert, so dropping "the oldest half" would evict exactly the
-        # signatures that have been repeating longest — the ones accumulating
-        # strikes — and the stall guard would never fire on the very runaway
-        # this table exists to catch. move_to_end on each touch makes the
-        # eviction least-recently-SEEN instead.
-        st.action_counts[sig] = st.action_counts.get(sig, 0) + 1
-        st.action_counts.move_to_end(sig)
-        while len(st.action_counts) > _ACTION_SIG_MAX:
-            st.action_counts.popitem(last=False)
-        if st.action_counts[sig] >= _LOOP_REPEAT:
-            # A local model on a long chain re-issues an action it already ran —
-            # most often re-reading a file it read earlier (it lost track over the
-            # growing history), which the old hard bail turned into an abandoned
-            # task. Recover FIRST: recap what's already done + point at the next
-            # step (bounded); only give up if the model keeps repeating.
-            if st.stuck_recoveries < _stuck_recovery_max():
-                st.stuck_recoveries += 1
-                st.action_counts[sig] = 0          # clear this action's strike count
-                _recap = _progress_recap(st.convo)
-                yield {"type": "thought", "role": "system",
-                       "text": f"↺ repeated `{name}` — recap + nudge to continue"}
-                st.convo.append({"role": "user", "content":
-                    f"[loop guard — not the user] You already ran `{name}` with "
-                    "these exact args and its result is ABOVE — repeating it makes "
-                    "no progress. "
-                    + (_recap + ". " if _recap else "")
-                    + "Do the NEXT, DIFFERENT step now: act on something not yet "
-                    "done (e.g. the next unread file from the request), or output "
-                    "`FINAL: <answer>` if everything is complete. Do NOT repeat a "
-                    "previous action."})
-                continue
-            yield {"type": "message", "awaiting_input": True,
-                   "text": f"I keep trying the same step (`{name}`) without "
-                           "progress. I've paused — could you clarify or tell "
-                           "me how you'd like me to proceed?"}
-            yield {"type": "done"}
+        _sig = yield from _action_stall_guard(st, name, args, sig, _long_chain_help)
+        if _sig == "return":
             return
-
+        if _sig == "continue":
+            continue
         if step.get("thought"):
             yield {"type": "thought", "text": step["thought"]}
 
-        # Simple-mode task tracker: plan_progress flips a checklist item in
-        # the UI's subtasks dock. Pure bookkeeping — no side effects, allowed
-        # in every mode (incl. plan), never gated.
-        if name == "plan_progress":
-            _slug = str(args.get("slug") or args.get("part") or "").strip()
-            _st = str(args.get("status") or "done").strip().lower()
-            if _st not in ("pending", "running", "done", "failed"):
-                _st = "done"
-            if _slug:
-                yield {"type": "subtask_update", "slug": _slug, "status": _st}
-            result = {"ok": bool(_slug), "slug": _slug, "status": _st,
-                      **({} if _slug else {"error": "missing 'slug'"})}
-            yield {"type": "tool", "name": name, "args": args, "result": result}
-            st.convo.append({"role": "user",
-                          "content": f"OBSERVATION: {json.dumps(result)}"})
+        _sig = yield from _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode)
+        if _sig == "continue":
             continue
-
-        # PLAN/ANALYZE mode (#2): block mutating tools — read-only only.
-        if readonly_mode and name not in _READONLY_TOOLS:
-            _mname = "Analyze" if analyze_mode else "Plan"
-            _mtail = ("Report your FINDINGS." if analyze_mode
-                      else "Finish with a PLAN; the user will switch to Act "
-                           "mode to execute it.")
-            result = {"ok": False, "blocked": "plan_mode",
-                      "error": f"'{name}' is blocked in {_mname} mode "
-                               f"(read-only). {_mtail}"}
-            yield {"type": "tool", "name": name, "args": args, "result": result}
-            st.convo.append({"role": "user",
-                          "content": f"OBSERVATION: {json.dumps(result)}"})
-            continue
-
         _sig = yield from _approval_gate(name, args, cwd, session_id, st.convo)
         if _sig == "return":
             return
