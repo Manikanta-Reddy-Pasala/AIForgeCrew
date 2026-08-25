@@ -94,20 +94,9 @@ def _coerce_doer_outcome(value: Any) -> dict | None:
     return None
 
 
-def _worktree_loc() -> "int | None":
-    """Lines changed in the working tree, from git. ``None`` when git cannot
-    answer (no repo, no binary, an error).
-
-    This is the REAL progress signal. The fallback below counts file_diffs
-    entries, and the Doer's own prompt contract emits
-    ``{path, action}`` — no ``content``, no ``loc`` — so that count was the
-    number of FILES TOUCHED, typically 1-6. The plateau rule ("three
-    consecutive deltas under 50 lines") is then true of every possible turn,
-    which turned a progress watchdog into a plain 10-minute timer that shipped
-    productive work as ``partial``: 14 new files across four turns read as a
-    stall.
-    """
-    import subprocess
+def _repo_root_for_loc() -> str:
+    """The repo to measure — AIFORGE_REPO_ROOT, else the request context's. ""
+    when neither resolves to a real directory."""
     root = (os.environ.get("AIFORGE_REPO_ROOT") or "").strip()
     if not root:
         try:
@@ -115,7 +104,36 @@ def _worktree_loc() -> "int | None":
             root = request_context.get_repo_root() or ""
         except Exception:  # noqa: BLE001
             root = ""
-    if not root or not os.path.isdir(root):
+    return root if root and os.path.isdir(root) else ""
+
+
+def _sum_numstat(text: str) -> int:
+    """Sum added+deleted line counts from ``git diff --numstat`` output.
+    Binary files report ``-`` and contribute nothing."""
+    total = 0
+    for line in (text or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        total += sum(int(n) for n in parts[:2] if n.isdigit())
+    return total
+
+
+def _worktree_loc() -> "int | None":
+    """Lines changed in the working tree, from git. ``None`` when git cannot
+    answer (no repo, no binary, an error).
+
+    This is the REAL progress signal. The fallback below counts file_diffs
+    entries, and the Doer's own prompt contract emits ``{path, action}`` — no
+    ``content``, no ``loc`` — so that count was the number of FILES TOUCHED,
+    typically 1-6. The plateau rule ("three consecutive deltas under 50 lines")
+    is then true of every possible turn, which turned a progress watchdog into a
+    plain 10-minute timer that shipped productive work as ``partial``: 14 new
+    files across four turns read as a stall.
+    """
+    import subprocess
+    root = _repo_root_for_loc()
+    if not root:
         return None
     try:
         out = subprocess.run(                      # noqa: S603 — fixed argv
@@ -123,17 +141,26 @@ def _worktree_loc() -> "int | None":
             cwd=root, capture_output=True, text=True, timeout=10)
         if out.returncode != 0:
             return None
-        total = 0
-        for line in (out.stdout or "").splitlines():
-            parts = line.split("\t")
-            if len(parts) < 2:
-                continue
-            for n in parts[:2]:
-                if n.isdigit():                    # "-" for binary files
-                    total += int(n)
-        return total
+        return _sum_numstat(out.stdout)
     except Exception:  # noqa: BLE001 — a watchdog must never break the run
         return None
+
+
+def _diff_loc_from_model(diffs: list) -> int:
+    """Sum the model's own per-entry LOC accounting: explicit ``loc``, else a
+    newline count of ``content`` (a stable, model-agnostic proxy), else 1 for a
+    reported patch with no content (so we DO see motion)."""
+    total = 0
+    for entry in diffs:
+        if not isinstance(entry, dict):
+            continue
+        loc = entry.get("loc")
+        if isinstance(loc, int):
+            total += loc
+            continue
+        content = entry.get("content")
+        total += (content.count("\n") + 1) if isinstance(content, str) else 1
+    return total
 
 
 def _loc_for_turn(state: dict) -> "int | None":
@@ -150,32 +177,13 @@ def _loc_for_turn(state: dict) -> "int | None":
     diffs = outcome.get("file_diffs") or []
     if not isinstance(diffs, list):
         return 0
-    # Ask GIT first — it knows what actually changed, whatever the model chose
-    # to report. Only when git cannot answer do we fall back to the model's
-    # own accounting.
+    # Ask GIT first — it knows what actually changed, whatever the model chose to
+    # report. Only when git cannot answer do we fall back to the model's own
+    # accounting. A `None` from git here is "unmeasurable", NOT "no progress".
     if any(isinstance(e, dict) and not isinstance(e.get("loc"), int)
            and not isinstance(e.get("content"), str) for e in diffs):
-        wt = _worktree_loc()
-        if wt is not None:
-            return wt
-        return None            # unmeasurable — NOT "no progress"
-    total = 0
-    for entry in diffs:
-        if not isinstance(entry, dict):
-            continue
-        # Prefer explicit LOC if the Doer reports it (forward compat).
-        loc = entry.get("loc")
-        if isinstance(loc, int):
-            total += loc
-            continue
-        content = entry.get("content")
-        if isinstance(content, str):
-            # newline count is a stable, model-agnostic LOC proxy.
-            total += content.count("\n") + 1
-            continue
-        # patch w/o content reported — count as 1 so we DO see motion.
-        total += 1
-    return total
+        return _worktree_loc()
+    return _diff_loc_from_model(diffs)
 
 
 def _record_history(state: dict, loc: int, *, now: float | None = None) -> None:
