@@ -156,56 +156,72 @@ def _has_non_text_content(messages: list[dict]) -> bool:
     return False
 
 
-def _try_model_chain(role: str, primary: Endpoint, messages: list[dict], *,
-                     temperature, max_tokens, top_p, extras,
-                     timeout_s: int, shipped: dict | None = None,
-                     tried: list | None = None) -> "str | None":
-    """One attempt against each OTHER configured model, in registry order.
+def _chain_rows(primary: Endpoint):
+    """The registry rows to try after ``primary``, or [] when the registry is
+    absent/unusable (one malformed registry is not a reason to fail the call)."""
+    try:
+        from aiforge_core.config import model_registry
+        return model_registry.chain_after(primary.model, primary.base_url)
+    except Exception:  # noqa: BLE001 — the registry is optional
+        return []
+
+
+def _chain_endpoint(row: dict, primary: Endpoint) -> "Endpoint | None":
+    """The endpoint for one registry row, or None when the row is unusable.
 
     A row that names its own base_url is a DIFFERENT CONNECTION and is taken
-    whole — its own key, its own TLS setting. Inheriting the primary's would
-    put one endpoint's credential on another host's wire (and, through
-    ``extras``, strip TLS verification from a public endpoint because a LAN box
-    was marked insecure). A row without a base_url is the same endpoint with a
-    different model id, which is the common case for several models loaded on
-    one local server.
+    whole — its own key, its own TLS. Inheriting the primary's would put one
+    endpoint's credential on another host's wire (and, through ``extras``, strip
+    TLS verification from a public endpoint because a LAN box was marked
+    insecure). A row without a base_url is the same endpoint with a different
+    model id — the common case for several models on one local server.
     """
-    if not _model_chain_enabled():
+    if not isinstance(row, dict):
+        return None                      # one malformed row is not a reason to
+    mid = str(row.get("model") or "").strip()   # abandon every other model
+    if not mid:
         return None
+    # str() first: a hand-edited registry can hold a number here, and `.strip()`
+    # on it raised an AttributeError from inside the LLM client in place of the
+    # informative llm.exhausted the caller expects.
+    row_url = str(row.get("base_url") or "").strip()
+    if row_url and row_url.rstrip("/") != (primary.base_url or "").rstrip("/"):
+        # Another host: take the connection whole. An empty key stays EMPTY — a
+        # keyed primary must not lend its credential — and the row's own
+        # insecure_tls decides its TLS, not the primary's.
+        ex = dict(primary.extras or {})
+        ex.pop("insecure_tls", None)
+        if row.get("insecure_tls"):
+            ex["insecure_tls"] = True
+        return replace(primary, model=mid, base_url=row_url,
+                       api_key=str(row.get("api_key") or ""), extras=ex)
+    return replace(primary, model=mid)
+
+
+def _model_chain_blocked(messages: list[dict], shipped: dict | None) -> bool:
+    """Whether the chain must not run at all for this call."""
+    if not _model_chain_enabled():
+        return True
     if shipped and shipped.get("timeout"):
         # The prompt REACHED a model and was abandoned on a read timeout. Every
         # layer in this stack refuses to re-issue that; the chain must not be
         # the one place that does it N more times.
+        return True
+    return _has_non_text_content(messages)
+
+
+def _try_model_chain(role: str, primary: Endpoint, messages: list[dict], *,
+                     temperature, max_tokens, top_p, extras,
+                     timeout_s: int, shipped: dict | None = None,
+                     tried: list | None = None) -> "str | None":
+    """One attempt against each OTHER configured model, in registry order."""
+    if _model_chain_blocked(messages, shipped):
         return None
-    if _has_non_text_content(messages):
-        return None
-    try:
-        from aiforge_core.config import model_registry
-        rows = model_registry.chain_after(primary.model, primary.base_url)
-    except Exception:  # noqa: BLE001 — the registry is optional
-        return None
-    for row in rows:
-        if not isinstance(row, dict):
-            continue                     # one malformed row is not a reason to
-        mid = str(row.get("model") or "").strip()   # abandon every other model
-        if not mid:
+    for row in _chain_rows(primary):
+        ep = _chain_endpoint(row, primary)
+        if ep is None:
             continue
-        # str() first: a hand-edited registry can hold a number here, and
-        # `.strip()` on it raised an AttributeError from inside the LLM client
-        # in place of the informative llm.exhausted the caller expects.
-        _row_url = str(row.get("base_url") or "").strip()
-        if _row_url and _row_url.rstrip("/") != (primary.base_url or "").rstrip("/"):
-            # Another host: take the connection whole. An empty key stays
-            # EMPTY — a keyed primary must not lend its credential — and the
-            # row's own insecure_tls decides its TLS, not the primary's.
-            _ex = dict(primary.extras or {})
-            _ex.pop("insecure_tls", None)
-            if row.get("insecure_tls"):
-                _ex["insecure_tls"] = True
-            ep = replace(primary, model=mid, base_url=_row_url,
-                         api_key=str(row.get("api_key") or ""), extras=_ex)
-        else:
-            ep = replace(primary, model=mid)
+        mid = ep.model
         _log.warning(
             "llm.model_chain_try role=%s failed=%s trying=%s endpoint=%s — "
             "the selected model did not answer; falling through to the next "
@@ -232,57 +248,51 @@ def _try_model_chain(role: str, primary: Endpoint, messages: list[dict], *,
     return None
 
 
+def _native_chain_post(role: str, ep: Endpoint, alt: Endpoint, mid: str,
+                       body_obj: dict, timeout_s: int, *,
+                       meter: list) -> "dict | None":
+    """Post one chain model on the native path, returning its answer or None.
+    Rewrites the model id inside the already-built body so the tool definitions
+    and every other parameter travel unchanged. Re-raises cancellation."""
+    body_obj["model"] = mid
+    _log.warning(
+        "llm.model_chain_try role=%s failed=%s trying=%s endpoint=%s "
+        "(native tool path)", role, ep.model, mid, alt.base_url)
+    try:
+        out = _post_with_retry(alt, json.dumps(body_obj).encode(),
+                               timeout_s, role=role,
+                               source="model_chain_native", meter=meter)
+    except _LLMCancelled:
+        raise
+    except Exception:  # noqa: BLE001 — try the next configured model
+        return None
+    _log.warning("llm.model_chain_used role=%s model=%s (selected %s did "
+                 "not answer)", role, mid, ep.model)
+    return out
+
+
 def _native_model_chain(role: str, ep: Endpoint, payload: bytes,
                         timeout_s: int, *, meter: list) -> "dict | None":
     """The model chain for the NATIVE tool-calling path.
 
     Same rule as the text path — one attempt per configured model, own key and
     own TLS for a row that names its own host — but it rewrites the model id
-    inside the already-built JSON body rather than rebuilding it, so the tool
-    definitions and every other parameter travel unchanged.
+    inside the already-built JSON body rather than rebuilding it.
     """
     if not _model_chain_enabled():
-        return None
-    try:
-        from aiforge_core.config import model_registry
-        rows = model_registry.chain_after(ep.model, ep.base_url)
-    except Exception:  # noqa: BLE001
         return None
     try:
         body_obj = json.loads(payload.decode())
     except Exception:  # noqa: BLE001
         return None
-    for row in rows:
-        if not isinstance(row, dict):
+    for row in _chain_rows(ep):
+        alt = _chain_endpoint(row, ep)
+        if alt is None:
             continue
-        mid = str(row.get("model") or "").strip()
-        if not mid:
-            continue
-        _row_url = str(row.get("base_url") or "").strip()
-        if _row_url and _row_url.rstrip("/") != (ep.base_url or "").rstrip("/"):
-            _ex = dict(ep.extras or {})
-            _ex.pop("insecure_tls", None)
-            if row.get("insecure_tls"):
-                _ex["insecure_tls"] = True
-            alt = replace(ep, model=mid, base_url=_row_url,
-                          api_key=str(row.get("api_key") or ""), extras=_ex)
-        else:
-            alt = replace(ep, model=mid)
-        body_obj["model"] = mid
-        _log.warning(
-            "llm.model_chain_try role=%s failed=%s trying=%s endpoint=%s "
-            "(native tool path)", role, ep.model, mid, alt.base_url)
-        try:
-            out = _post_with_retry(alt, json.dumps(body_obj).encode(),
-                                   timeout_s, role=role,
-                                   source="model_chain_native", meter=meter)
-        except _LLMCancelled:
-            raise
-        except Exception:  # noqa: BLE001 — try the next configured model
-            continue
-        _log.warning("llm.model_chain_used role=%s model=%s (selected %s did "
-                     "not answer)", role, mid, ep.model)
-        return out
+        out = _native_chain_post(role, ep, alt, alt.model, body_obj,
+                                 timeout_s, meter=meter)
+        if out is not None:
+            return out
     return None
 
 
