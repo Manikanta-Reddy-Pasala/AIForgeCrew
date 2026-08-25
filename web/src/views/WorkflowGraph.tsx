@@ -142,7 +142,9 @@ export default function WorkflowGraph() {
         es?.close();
         loadFallback();
       };
-    } catch (e) {
+    } catch {
+      // EventSource setup failed (blocked/unsupported) — fall back to a
+      // one-shot fetch of the topology instead.
       loadFallback();
     }
     return () => { cancelled = true; es?.close(); };
