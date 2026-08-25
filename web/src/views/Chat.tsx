@@ -162,7 +162,9 @@ export default function Chat() {
 
   // Compaction toggle: disable the daily memory-compaction pass entirely.
   // Persisted server-side (runtime.env); takes effect on the next boot.
-  const [compactionDisabled, setCompactionDisabled] = useState(false);
+  // DISABLED BY DEFAULT — seed the checkbox checked so it matches the real
+  // default (unset ⇒ disabled) before the GET resolves.
+  const [compactionDisabled, setCompactionDisabled] = useState(true);
   useEffect(() => {
     api.getCompaction().then(r => setCompactionDisabled(!!r.disabled)).catch(() => {});
   }, []);

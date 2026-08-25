@@ -157,15 +157,21 @@ def set_force_full_pipeline(payload: dict) -> dict:
 
 @router.get("/api/runtime/compaction")
 def get_compaction() -> dict:
-    """Whether the daily memory-compaction pass is disabled."""
-    return {"disabled": _env_truthy("AIFORGE_COMPACT_DISABLE")}
+    """Whether the daily memory-compaction pass is disabled.
+
+    DISABLED BY DEFAULT: an UNSET flag reads as disabled (matches the boot
+    gate in ``api._start_daily_reindex`` and the boot-time fold guard in
+    ``memory.migrations._startup_compact``). Only an explicit ``0``/``false``/
+    ``no`` enables compaction."""
+    return {"disabled":
+            os.environ.get("AIFORGE_COMPACT_DISABLE", "1") in ("1", "true", "yes")}
 
 
 @router.put("/api/runtime/compaction")
 def set_compaction(payload: dict) -> dict:
     """Enable/disable the daily memory-compaction pass (recompact + dedupe +
-    the evening fold). Takes effect on the next process boot; the running
-    scheduler keeps its current registration until then."""
+    the evening fold). Disabled by default. Takes effect on the next process
+    boot; the running scheduler keeps its current registration until then."""
     disabled = bool(payload.get("disabled"))
     val = "1" if disabled else "0"
     os.environ["AIFORGE_COMPACT_DISABLE"] = val
