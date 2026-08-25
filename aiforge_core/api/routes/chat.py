@@ -56,7 +56,7 @@ def approval_settings_get() -> dict:
     return {"chat": m["simple"], "plan": m["plan"], "pipeline": m["team"]}
 
 
-@router.put("/api/chat/approval-settings/{mode}")
+@router.put("/api/chat/approval-settings/{mode}", responses={400: {"description": "Bad request"}})
 def approval_settings_set(mode: str, body: _ApprovalModeBody) -> dict:
     """Enable/disable approvals for one mode. `mode` is chat | plan | pipeline."""
     from aiforge_core.config import approval_settings
@@ -277,7 +277,7 @@ class _ChatModelBody(BaseModel):
                             "TEAM mode (all agents) uses this model")
 
 
-@router.put("/api/chat/model")
+@router.put("/api/chat/model", responses={400: {"description": "Bad request"}})
 def chat_model_set(body: _ChatModelBody) -> dict:
     """Persist the chat slot's model + report whether it's active (served
     right now). Rejected only on bad input — an inactive model is saved
@@ -380,7 +380,7 @@ def orchestrator_model_get() -> dict:
             "models": [{"id": m, "label": m.split("/")[-1]} for m in sorted(served)]}
 
 
-@router.put("/api/chat/orchestrator-model")
+@router.put("/api/chat/orchestrator-model", responses={400: {"description": "Bad request"}})
 def orchestrator_model_set(body: _ChatModelBody) -> dict:
     """Set the model for the orchestrator's 2 agents (enhancer + planner)."""
     cur = _acfg.get("chat") if "chat" in _acfg.archetypes() else {}
@@ -563,7 +563,7 @@ def chat_sessions_reset() -> dict:
     return {"ok": True, "deleted": deleted, "workspaces_removed": removed}
 
 
-@router.get("/api/chat/sessions/{session_id}")
+@router.get("/api/chat/sessions/{session_id}", responses={404: {"description": "Not found"}})
 def chat_session_get(session_id: int) -> dict:
     from aiforge_core.runtime import chat_store
     s = chat_store.get_session(session_id)
@@ -572,7 +572,7 @@ def chat_session_get(session_id: int) -> dict:
     return {"session": s, "messages": chat_store.get_messages(session_id)}
 
 
-@router.post("/api/chat/sessions/{session_id}/compact")
+@router.post("/api/chat/sessions/{session_id}/compact", responses={404: {"description": "Not found"}})
 def chat_session_compact(session_id: int) -> dict:
     """Session-end OKR compaction (explicit trigger): distil this session into
     scoped OKR briefs (global / project / topic) via chat_okr.compact_session."""
@@ -625,7 +625,7 @@ def chat_session_spec(session_id: int) -> dict:
     return {"exists": False, "content": ""}
 
 
-@router.patch("/api/chat/sessions/{session_id}")
+@router.patch("/api/chat/sessions/{session_id}", responses={404: {"description": "Not found"}})
 def chat_session_rename(session_id: int, body: _RenameBody) -> dict:
     from aiforge_core.runtime import chat_store
     s = chat_store.rename_session(session_id, body.title)
@@ -634,7 +634,7 @@ def chat_session_rename(session_id: int, body: _RenameBody) -> dict:
     return s
 
 
-@router.delete("/api/chat/sessions/{session_id}", status_code=204)
+@router.delete("/api/chat/sessions/{session_id}", status_code=204, responses={404: {"description": "Not found"}})
 def chat_session_delete(session_id: int) -> None:
     from aiforge_core.runtime import (
         chat_approve,
@@ -670,7 +670,7 @@ def chat_session_delete(session_id: int) -> None:
     _delete_chat_workspace((_sess or {}).get("cwd"))
 
 
-@router.post("/api/chat/sessions/{session_id}/media", status_code=201)
+@router.post("/api/chat/sessions/{session_id}/media", status_code=201, responses={400: {"description": "Bad request"}, 404: {"description": "Not found"}})
 async def chat_media_upload(session_id: int, file: UploadFile = File(...)) -> dict:
     """Attach a file (image OR document — pdf/xlsx/docx/text) to a chat session:
     save it to the session's media folder, derive a description (vision caption
@@ -711,7 +711,7 @@ class _MediaDescBody(BaseModel):
     description: str = Field("", description="user caption / edited description")
 
 
-@router.patch("/api/chat/media/{media_id}")
+@router.patch("/api/chat/media/{media_id}", responses={404: {"description": "Not found"}})
 def chat_media_describe(media_id: int, body: _MediaDescBody) -> dict:
     from aiforge_core.runtime import chat_store
     row = chat_store.set_media_description(media_id, body.description)
@@ -720,7 +720,7 @@ def chat_media_describe(media_id: int, body: _MediaDescBody) -> dict:
     return row
 
 
-@router.delete("/api/chat/media/{media_id}", status_code=204)
+@router.delete("/api/chat/media/{media_id}", status_code=204, responses={404: {"description": "Not found"}})
 def chat_media_delete(media_id: int) -> None:
     from aiforge_core.runtime import chat_store
     row = chat_store.delete_media(media_id)
@@ -733,7 +733,7 @@ def chat_media_delete(media_id: int) -> None:
         pass
 
 
-@router.get("/api/chat/media/{media_id}/raw")
+@router.get("/api/chat/media/{media_id}/raw", responses={404: {"description": "Not found"}})
 def chat_media_raw(media_id: int) -> FileResponse:
     from aiforge_core.runtime import chat_store
     row = chat_store.get_media(media_id)
@@ -2265,7 +2265,7 @@ def _stream(pc):
         yield f"data: {json.dumps(ev)}\n\n"
 
 
-@router.post("/api/chat/sessions/{session_id}/message")
+@router.post("/api/chat/sessions/{session_id}/message", responses={404: {"description": "Not found"}, 409: {"description": "Conflict"}})
 def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingResponse:
     """Append a user message, run the full-FS coding agent over the whole
     session history (Claude-CLI-style: many tool steps, builds repos),
@@ -2548,7 +2548,7 @@ class _CheckpointBody(BaseModel):
     label: str | None = Field(None, description="human label for the snapshot")
 
 
-@router.get("/api/chat/sessions/{session_id}/checkpoints")
+@router.get("/api/chat/sessions/{session_id}/checkpoints", responses={404: {"description": "Not found"}})
 def chat_session_checkpoints(session_id: int) -> dict:
     """List workspace checkpoints (#3) for this session's working dir."""
     from aiforge_core.runtime import chat_store, checkpoints
@@ -2559,7 +2559,7 @@ def chat_session_checkpoints(session_id: int) -> dict:
     return {"checkpoints": checkpoints.list_checkpoints(cwd)}
 
 
-@router.post("/api/chat/sessions/{session_id}/checkpoints", status_code=201)
+@router.post("/api/chat/sessions/{session_id}/checkpoints", status_code=201, responses={404: {"description": "Not found"}})
 def chat_session_checkpoint_create(session_id: int, body: _CheckpointBody) -> dict:
     """Snapshot the session's working dir (#3) to a hidden git ref."""
     import datetime as _dt
@@ -2583,7 +2583,7 @@ class _RestoreBody(BaseModel):
                            "the checkpoint so the tree exactly matches it")
 
 
-@router.post("/api/chat/sessions/{session_id}/checkpoints/restore")
+@router.post("/api/chat/sessions/{session_id}/checkpoints/restore", responses={404: {"description": "Not found"}})
 def chat_session_checkpoint_restore(session_id: int, body: _RestoreBody) -> dict:
     """Restore the session's working dir to a checkpoint (#3).
 
@@ -2603,7 +2603,7 @@ class _SessionTicketBody(BaseModel):
     project: str | None = Field(None, description="target repo; defaults to session cwd name")
 
 
-@router.post("/api/chat/sessions/{session_id}/ticket", status_code=201)
+@router.post("/api/chat/sessions/{session_id}/ticket", status_code=201, responses={404: {"description": "Not found"}})
 def chat_session_ticket(session_id: int, body: _SessionTicketBody) -> dict:
     """Pipeline mode: turn a chat message into a real ticket that runs the
     full architect→planner→verifier→doer→feedback→learner pipeline. The

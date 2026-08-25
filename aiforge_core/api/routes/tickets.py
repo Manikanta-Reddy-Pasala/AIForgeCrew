@@ -171,7 +171,7 @@ def list_tickets(role: str | None = Query(None),
     return [_ticket_row_out(r) for r in rows]
 
 
-@router.get("/api/tickets/{identifier}")
+@router.get("/api/tickets/{identifier}", responses={404: {"description": "Not found"}})
 def get_ticket(identifier: str) -> dict:
     # Backend-agnostic ticket detail. Children are fetched via the
     # enriched list filtered by this ticket as parent.
@@ -446,7 +446,7 @@ def _patch_fields(payload) -> dict:
     return fields
 
 
-@router.patch("/api/tickets/{identifier}")
+@router.patch("/api/tickets/{identifier}", responses={400: {"description": "Bad request"}, 404: {"description": "Not found"}})
 def patch_ticket(identifier: str, payload: TicketPatch) -> dict:
     t = tickets_mod.get(identifier)
     if t is None:
@@ -476,7 +476,7 @@ def workflow_preview(payload: RoutePreview) -> dict:
     )
 
 
-@router.put("/api/tickets/{identifier}/route")
+@router.put("/api/tickets/{identifier}/route", responses={400: {"description": "Bad request"}, 404: {"description": "Not found"}})
 def override_route(identifier: str, payload: RouteUpdate) -> dict:
     """Manual route override — UI 'override' link calls this. Sets
     route_source='manual' by default so the audit trail distinguishes
@@ -510,7 +510,7 @@ def override_route(identifier: str, payload: RouteUpdate) -> dict:
     })
 
 
-@router.post("/api/tickets/{identifier}/run-parallel", status_code=202)
+@router.post("/api/tickets/{identifier}/run-parallel", status_code=202, responses={404: {"description": "Not found"}})
 def run_subtasks_parallel(identifier: str) -> dict:
     """Run this ticket's subtasks CONCURRENTLY (each in its own worktree),
     merging successful branches back. Runs in the background; the ticket moves
@@ -532,7 +532,7 @@ def run_subtasks_parallel(identifier: str) -> dict:
     return {"started": True, "identifier": identifier}
 
 
-@router.post("/api/tickets/{identifier}/comments", status_code=201)
+@router.post("/api/tickets/{identifier}/comments", status_code=201, responses={404: {"description": "Not found"}})
 def add_comment(identifier: str, payload: CommentCreate) -> dict:
     t = tickets_mod.get(identifier)
     if t is None:
@@ -548,7 +548,7 @@ def tickets_reset() -> dict:
     return {"ok": True, "deleted": tickets_mod.reset_all()}
 
 
-@router.delete("/api/tickets/{identifier}", status_code=204)
+@router.delete("/api/tickets/{identifier}", status_code=204, responses={404: {"description": "Not found"}})
 def delete_ticket(identifier: str) -> None:
     """Delete a ticket and its events. Worktree, branch, and any open PR
     are deliberately NOT touched — operator handles those out-of-band
@@ -587,7 +587,7 @@ def _resolve_active_task_dirs(identifier: str) -> list[str]:
     return []
 
 
-@router.post("/api/tickets/{identifier}/intervene")
+@router.post("/api/tickets/{identifier}/intervene", responses={400: {"description": "Bad request"}, 404: {"description": "Not found"}})
 def intervene(identifier: str, payload: dict) -> dict:
     """Inject a runtime instruction into a running agent.
 
@@ -623,7 +623,7 @@ class _TicketAnswerBody(BaseModel):
     content: str = Field(..., min_length=1)
 
 
-@router.post("/api/tickets/{identifier}/answer")
+@router.post("/api/tickets/{identifier}/answer", responses={404: {"description": "Not found"}})
 def ticket_answer(identifier: str, body: _TicketAnswerBody) -> dict:
     """Answer a clarification a chat/interactive ticket asked. Folds the
     answer into the ticket body, marks it clarified, and re-queues it so

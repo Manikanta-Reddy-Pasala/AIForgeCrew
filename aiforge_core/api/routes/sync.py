@@ -81,7 +81,7 @@ def sync_manifest() -> dict:
             "role": role.role()}
 
 
-@router.get("/api/memory/sync/blob/{digest}")
+@router.get("/api/memory/sync/blob/{digest}", responses={404: {"description": "Not found"}})
 def sync_blob(digest: str) -> Response:
     from aiforge_core.memory.sync import inbox
     from aiforge_core.memory.sync import manifest as _man
@@ -108,7 +108,7 @@ async def sync_offer(request: Request) -> dict:
     return {"want": inbox.wanted(entries if isinstance(entries, list) else [])}
 
 
-@router.post("/api/memory/sync/push")
+@router.post("/api/memory/sync/push", responses={400: {"description": "Bad request"}})
 async def sync_push(request: Request) -> dict:
     """A spoke sends one record we asked for. ``applied`` says whether it stuck."""
     payload = await _read_json(request)

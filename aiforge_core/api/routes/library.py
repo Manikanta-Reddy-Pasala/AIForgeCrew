@@ -58,7 +58,7 @@ def _skill_dict(s, kind: str | None = None) -> dict:
             "origin": _library_origin(source, kind) if kind else "default"}
 
 
-@router.get("/api/library/{kind}")
+@router.get("/api/library/{kind}", responses={404: {"description": "Not found"}})
 def library_list(kind: str) -> list[dict]:
     """List all skills / workflows / rules."""
     if kind == "skills":
@@ -78,7 +78,7 @@ def library_list(kind: str) -> list[dict]:
     raise HTTPException(404, f"unknown kind {kind!r}")
 
 
-@router.post("/api/library/{kind}", status_code=201)
+@router.post("/api/library/{kind}", status_code=201, responses={400: {"description": "Bad request"}, 404: {"description": "Not found"}})
 def library_create(kind: str, payload: dict = Body(...)) -> dict:
     """Create/overwrite a skill / workflow / rule from text."""
     name = (payload.get("name") or "").strip()
@@ -106,7 +106,7 @@ def library_create(kind: str, payload: dict = Body(...)) -> dict:
     return res
 
 
-@router.delete("/api/library/{kind}/{name}")
+@router.delete("/api/library/{kind}/{name}", responses={404: {"description": "Not found"}})
 def library_delete(kind: str, name: str) -> dict:
     """Delete a single skill / workflow / rule by name (custom or default)."""
     if kind == "skills":
@@ -125,7 +125,7 @@ def library_delete(kind: str, name: str) -> dict:
     return res
 
 
-@router.delete("/api/library/{kind}")
+@router.delete("/api/library/{kind}", responses={404: {"description": "Not found"}})
 def library_clear(kind: str) -> dict:
     """Clear ALL skills / workflows / rules of a kind (custom + defaults)."""
     if kind == "skills":
@@ -151,7 +151,7 @@ _LIBRARY_GEN_PROMPT = {
 }
 
 
-@router.post("/api/library/{kind}/generate")
+@router.post("/api/library/{kind}/generate", responses={400: {"description": "Bad request"}, 404: {"description": "Not found"}, 502: {"description": "Bad gateway"}})
 def library_generate(kind: str, payload: dict = Body(...)) -> dict:
     """Draft a skill / workflow / rule from a text description using the
     configured LLM. Returns the draft markdown for review before saving."""

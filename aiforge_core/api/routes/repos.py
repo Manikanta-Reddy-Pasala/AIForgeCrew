@@ -24,7 +24,7 @@ def repos_get() -> dict:
     return repo_map.list_all()
 
 
-@router.put("/api/repos")
+@router.put("/api/repos", responses={400: {"description": "Bad request"}})
 def repos_set(body: _RepoMapBody) -> dict:
     """Set the global base folder and/or an explicit per-repo path."""
     from aiforge_core.config import repo_map
@@ -41,7 +41,7 @@ def repos_set(body: _RepoMapBody) -> dict:
     return repo_map.list_all()
 
 
-@router.delete("/api/repos/{name}")
+@router.delete("/api/repos/{name}", responses={404: {"description": "Not found"}})
 def repos_delete(name: str) -> dict:
     """Remove an explicit per-repo path mapping."""
     from aiforge_core.config import repo_map

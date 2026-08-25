@@ -72,7 +72,7 @@ def jobs_preview(payload: JobPreviewBody) -> dict:
     return jobs_parse.parse_instructions(payload.instructions)
 
 
-@router.post("/api/jobs", status_code=201)
+@router.post("/api/jobs", status_code=201, responses={400: {"description": "Bad request"}})
 def jobs_create(payload: JobCreate) -> dict:
     from aiforge_core.jobs import parse as jobs_parse, store as jobs_store
     _require_croniter()
@@ -88,7 +88,7 @@ def jobs_create(payload: JobCreate) -> dict:
         project=payload.project, next_run_at=nxt, kind=_kind)
 
 
-@router.post("/api/jobs/script", status_code=201)
+@router.post("/api/jobs/script", status_code=201, responses={400: {"description": "Bad request"}})
 def jobs_create_script(payload: JobScriptCreate) -> dict:
     """Finalize a script job: write the approved script to the local jobs
     folder and register a cron job that RUNS it (deterministic — no LLM per
@@ -132,7 +132,7 @@ def jobs_list() -> list[dict]:
     return out
 
 
-@router.patch("/api/jobs/{job_id}")
+@router.patch("/api/jobs/{job_id}", responses={400: {"description": "Bad request"}, 404: {"description": "Not found"}})
 def jobs_patch(job_id: int, payload: JobPatch) -> dict:
     from aiforge_core.jobs import parse as jobs_parse, store as jobs_store
     if jobs_store.get(job_id) is None:
@@ -153,7 +153,7 @@ def jobs_patch(job_id: int, payload: JobPatch) -> dict:
     return jobs_store.update(job_id, **fields)
 
 
-@router.delete("/api/jobs/{job_id}")
+@router.delete("/api/jobs/{job_id}", responses={404: {"description": "Not found"}})
 def jobs_delete(job_id: int) -> dict:
     from aiforge_core.jobs import store as jobs_store
     # Deleting the row IS deleting the schedule — the scheduler only ever
@@ -167,7 +167,7 @@ def jobs_delete(job_id: int) -> dict:
     return {"ok": True}
 
 
-@router.post("/api/jobs/{job_id}/run-now")
+@router.post("/api/jobs/{job_id}/run-now", responses={404: {"description": "Not found"}})
 def jobs_run_now(job_id: int) -> dict:
     """Manual fire — same code path as the scheduler tick; works even
     when the job is paused."""

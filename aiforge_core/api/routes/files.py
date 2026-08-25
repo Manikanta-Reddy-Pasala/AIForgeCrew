@@ -54,7 +54,7 @@ def _attachment_candidates(identifier: str, safe_name: str) -> list:
     return candidates
 
 
-@router.get("/files/{identifier}/{name}")
+@router.get("/files/{identifier}/{name}", responses={404: {"description": "Not found"}})
 def serve_ticket_file(identifier: str, name: str):
     """Serve a ticket attachment by (ticket, filename).
 

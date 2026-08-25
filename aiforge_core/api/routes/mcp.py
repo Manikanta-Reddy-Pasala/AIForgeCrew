@@ -49,7 +49,7 @@ def mcp_servers() -> dict:
     return {"servers": mcp_registry.list_servers()}
 
 
-@router.post("/api/mcp/servers", status_code=201)
+@router.post("/api/mcp/servers", status_code=201, responses={400: {"description": "Bad request"}})
 def mcp_server_install(body: _McpInstallBody) -> dict:
     from aiforge_core.config import mcp_registry
     try:
@@ -59,7 +59,7 @@ def mcp_server_install(body: _McpInstallBody) -> dict:
         raise HTTPException(400, str(exc))
 
 
-@router.put("/api/mcp/servers/{server_id}")
+@router.put("/api/mcp/servers/{server_id}", responses={404: {"description": "Not found"}})
 def mcp_server_update(server_id: str, body: _McpUpdateBody) -> dict:
     from aiforge_core.config import mcp_registry
     row = mcp_registry.update_server(
@@ -70,14 +70,14 @@ def mcp_server_update(server_id: str, body: _McpUpdateBody) -> dict:
     return row
 
 
-@router.delete("/api/mcp/servers/{server_id}", status_code=204)
+@router.delete("/api/mcp/servers/{server_id}", status_code=204, responses={404: {"description": "Not found"}})
 def mcp_server_delete(server_id: str) -> None:
     from aiforge_core.config import mcp_registry
     if not mcp_registry.remove_server(server_id):
         raise HTTPException(404, f"unknown MCP server: {server_id}")
 
 
-@router.post("/api/mcp/servers/{server_id}/test")
+@router.post("/api/mcp/servers/{server_id}/test", responses={404: {"description": "Not found"}})
 def mcp_server_test(server_id: str) -> dict:
     """Connectivity check — list the server's tools via the MCP client."""
     from aiforge_core.config import mcp_registry
@@ -105,7 +105,7 @@ class _McpCallBody(BaseModel):
     args: dict[str, Any] = Field(default_factory=dict)
 
 
-@router.post("/api/mcp/tool")
+@router.post("/api/mcp/tool", responses={400: {"description": "Bad request"}, 500: {"description": "Server error"}, 504: {"description": "Error"}})
 async def mcp_tool_call(body: _McpCallBody) -> dict:
     if body.tool not in _MCP_ALLOWED_TOOLS:
         raise HTTPException(400, f"tool '{body.tool}' not in allowlist")

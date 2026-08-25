@@ -221,7 +221,7 @@ def memory_files_list() -> list[dict]:
     return md_store.list_files()
 
 
-@router.get("/api/memory/files/{name}")
+@router.get("/api/memory/files/{name}", responses={404: {"description": "Not found"}})
 def memory_files_get(name: str) -> dict:
     from aiforge_core.memory import md_store
     d = md_store.read_file(name)
@@ -438,7 +438,7 @@ def memory_sources_list() -> list[dict]:
     return _ms.list_sources()
 
 
-@router.post("/api/memory/sources", status_code=201)
+@router.post("/api/memory/sources", status_code=201, responses={400: {"description": "Bad request"}})
 def memory_sources_create(body: _MemSourceBody) -> dict:
     """Register a memory source. ``repo``/``docs`` sources auto-start a full
     multi-layer background index immediately (chunks + tree-sitter symbols +
@@ -478,14 +478,14 @@ async def memory_sources_upload(file: UploadFile = File(...),
     return _ms.create("file", dest, name or safe)
 
 
-@router.delete("/api/memory/sources/{source_id}", status_code=204)
+@router.delete("/api/memory/sources/{source_id}", status_code=204, responses={404: {"description": "Not found"}})
 def memory_sources_delete(source_id: int) -> None:
     from aiforge_core.runtime import memory_sources as _ms
     if not _ms.delete(source_id):
         raise HTTPException(404, f"source {source_id} not found")
 
 
-@router.post("/api/memory/sources/{source_id}/index")
+@router.post("/api/memory/sources/{source_id}/index", responses={404: {"description": "Not found"}})
 def memory_sources_index(source_id: int) -> dict:
     """Kick off background indexing of a source into memory."""
     from aiforge_core.runtime import memory_sources as _ms
@@ -541,7 +541,7 @@ def memory_graph_expand_ep(store: str, node_id: str,
     return _admin.graph_expand(store, node_id, limit)
 
 
-@router.post("/api/memory/clear/{store}")
+@router.post("/api/memory/clear/{store}", responses={400: {"description": "Bad request"}})
 def memory_clear_store_ep(store: str,
                           body: "_MemConfirmBody | None" = None) -> dict:
     """Clear ALL data in ONE store. ``store`` ∈ graph_facts | symbols |
@@ -556,7 +556,7 @@ def memory_clear_store_ep(store: str,
         raise HTTPException(400, str(exc))
 
 
-@router.post("/api/memory/clear-all")
+@router.post("/api/memory/clear-all", responses={400: {"description": "Bad request"}})
 def memory_clear_all_ep(body: "_MemConfirmBody | None" = None) -> dict:
     """Wipe DATA across every memory store, preserving source registrations +
     config (their index state is reset to idle so they can be re-indexed).

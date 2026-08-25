@@ -157,7 +157,7 @@ class _AgentConfigBody(BaseModel):
     model: str = Field(..., description="Model identifier for the provider")
 
 
-@router.put("/api/config/agents/{role}")
+@router.put("/api/config/agents/{role}", responses={400: {"description": "Bad request"}})
 def config_agents_set(role: str, body: _AgentConfigBody) -> dict:
     try:
         cfg = _acfg.set_role(role, body.provider, body.model)
@@ -303,7 +303,7 @@ def _reassign_by_capability() -> None:
         pass
 
 
-@router.post("/api/agents/models", status_code=201)
+@router.post("/api/agents/models", status_code=201, responses={400: {"description": "Bad request"}})
 def models_add(body: _ModelBody) -> dict:
     from aiforge_core.config import model_registry
     if not (body.model or "").strip():
@@ -338,7 +338,7 @@ def models_add(body: _ModelBody) -> dict:
     return row
 
 
-@router.put("/api/agents/models/{model_id}")
+@router.put("/api/agents/models/{model_id}", responses={404: {"description": "Not found"}})
 def models_update(model_id: str, body: _ModelBody) -> dict:
     from aiforge_core.config import model_registry
     row = model_registry.update_model(
@@ -358,7 +358,7 @@ def models_update(model_id: str, body: _ModelBody) -> dict:
     return row
 
 
-@router.delete("/api/agents/models/{model_id}", status_code=204)
+@router.delete("/api/agents/models/{model_id}", status_code=204, responses={404: {"description": "Not found"}})
 def models_delete(model_id: str) -> None:
     from aiforge_core.config import model_registry
     if not model_registry.remove_model(model_id):
@@ -376,7 +376,7 @@ def models_sync() -> dict:
     return res
 
 
-@router.post("/api/agents/models/{model_id}/apply")
+@router.post("/api/agents/models/{model_id}/apply", responses={404: {"description": "Not found"}})
 def models_apply(model_id: str, body: _ApplyModelBody) -> dict:
     from aiforge_core.config import model_registry
     try:
@@ -412,7 +412,7 @@ def agents_auto_assign(body: _AutoAssignBody) -> dict:
     return out
 
 
-@router.put("/api/agents/v2/{role}/config")
+@router.put("/api/agents/v2/{role}/config", responses={400: {"description": "Bad request"}, 404: {"description": "Not found"}})
 def agents_v2_set(role: str, body: _AgentConfigV2Body) -> dict:
     # "_default" is the global fallback every pipeline role inherits (the
     # home page's "Apply to all" writes it). Allowed alongside the named
@@ -454,7 +454,7 @@ def agents_v2_profiles_list() -> dict:
     }
 
 
-@router.put("/api/agents/v2/profile/{name}")
+@router.put("/api/agents/v2/profile/{name}", responses={404: {"description": "Not found"}})
 def agents_v2_profile_apply(name: str) -> dict:
     """Bulk-apply a profile preset to every archetype.
 

@@ -58,7 +58,7 @@ def get_rate_limits() -> dict:
     return {"providers": out, "max_wait_s": int(os.environ.get("AIFORGE_LLM_MAX_WAIT_S", 120))}
 
 
-@router.put("/api/runtime/rate_limits")
+@router.put("/api/runtime/rate_limits", responses={400: {"description": "Bad request"}})
 def set_rate_limit(payload: dict) -> dict:
     """Tighten/loosen a provider's RPM or TPM at runtime.
 
@@ -103,7 +103,7 @@ def get_llm_backend() -> dict:
     }
 
 
-@router.put("/api/runtime/llm_backend")
+@router.put("/api/runtime/llm_backend", responses={400: {"description": "Bad request"}})
 def set_llm_backend(payload: dict) -> dict:
     """Flip the active LLM backend for every agent.
 
@@ -155,7 +155,7 @@ def set_force_full_pipeline(payload: dict) -> dict:
     return {"enabled": enabled, "persisted": True}
 
 
-@router.post("/api/runtime/session_param")
+@router.post("/api/runtime/session_param", responses={400: {"description": "Bad request"}})
 def session_param(payload: dict) -> dict:
     """Per-role LLM param tuning at runtime (GA /session.key=value, commit
     127a4e6). Updates the agent_config so the NEXT agent run picks new
@@ -308,7 +308,7 @@ def llm_settings_get() -> dict:
     return _rs.all_settings()
 
 
-@router.put("/api/runtime/llm-settings")
+@router.put("/api/runtime/llm-settings", responses={400: {"description": "Bad request"}})
 def llm_settings_set(body: _RuntimeSettingsBody) -> dict:
     from aiforge_core.config import runtime_settings as _rs
 
