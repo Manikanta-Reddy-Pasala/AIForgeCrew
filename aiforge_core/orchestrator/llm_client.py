@@ -39,46 +39,36 @@ _FENCE = re.compile(r"(?:^`{3,}+(?:json)?\s*+\n?)|(?:\n?`{3,}+\s*+$)", re.MULTIL
 _JSON_OBJ_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
+def _loads_dict(text: str) -> "dict | None":
+    """json.loads ``text`` and return it only when it parses to a dict."""
+    try:
+        obj = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
 def _resilient_json_parse(raw: str | None) -> dict | None:
-    """Five-stage tolerant JSON parse for local-model output:
-
-    1. raw input → strip 3+ backtick fences → strip
-    2. json.loads on cleaned
-    3. fall back to largest balanced {...} block
-    4. fall back to "first { to last }" slice (catches nested fences)
-    5. give up and return None
-
-    Returns the parsed dict, or None if every fallback fails.
-    """
+    """Tolerant JSON parse for local-model output: strip ``` fences, try strict,
+    then the largest balanced {...} block, then a first-{ to last-} slice
+    (catches nested fences). Returns the parsed dict, or None if all fail."""
     if not raw:
         return None
     cleaned = _FENCE.sub("", raw).strip()
     if not cleaned:
         return None
-    # 2. strict
-    try:
-        obj = json.loads(cleaned)
-        return obj if isinstance(obj, dict) else None
-    except json.JSONDecodeError:
-        pass
-    # 3. balanced object regex (greedy)
-    m = _JSON_OBJ_RE.search(cleaned)
+    obj = _loads_dict(cleaned)                          # 2. strict
+    if obj is not None:
+        return obj
+    m = _JSON_OBJ_RE.search(cleaned)                    # 3. balanced object regex
     if m:
-        try:
-            obj = json.loads(m.group(0))
-            return obj if isinstance(obj, dict) else None
-        except json.JSONDecodeError:
-            pass
-    # 4. first { to last }
-    if "{" in cleaned and "}" in cleaned:
-        first = cleaned.find("{")
-        last = cleaned.rfind("}")
+        obj = _loads_dict(m.group(0))
+        if obj is not None:
+            return obj
+    if "{" in cleaned and "}" in cleaned:              # 4. first { to last }
+        first, last = cleaned.find("{"), cleaned.rfind("}")
         if first != -1 and last > first:
-            try:
-                obj = json.loads(cleaned[first : last + 1])
-                return obj if isinstance(obj, dict) else None
-            except json.JSONDecodeError:
-                pass
+            return _loads_dict(cleaned[first:last + 1])
     return None
 
 

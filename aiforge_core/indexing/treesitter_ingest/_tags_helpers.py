@@ -31,33 +31,46 @@ def _tag_parser(lang: str):
         return None
 
 
+def _find_name_nodes(root_node, want: bytes, line: int) -> list:
+    """Every named node matching ``(text, line)`` under ``root_node``."""
+    cands = []
+    stack = [root_node]
+    while stack:
+        n = stack.pop()
+        if n.is_named and n.start_point[0] == line and n.text == want:
+            cands.append(n)
+        stack.extend(n.children)
+    return cands
+
+
+def _kind_from_ancestors(node) -> "str | None":
+    """Walk up (bounded) from ``node`` and classify by the first enclosing
+    class- or function-like declaration, or None when neither is found."""
+    p = node.parent
+    depth = 0
+    while p is not None and depth < 15:
+        t = p.type
+        if any(h in t for h in _CLASS_NODE_HINTS):
+            return "class"
+        if any(h in t for h in _FUNC_NODE_HINTS):
+            return "method"
+        p = p.parent
+        depth += 1
+    return None
+
+
 def _classify_def(root_node, name: str, line: int) -> str:
     """Classify a definition as ``class`` or ``method`` by walking up from the
     name node to its enclosing declaration. Callables are uniformly ``method``
     (not split function/method) so the existing method-only :CALLS writer can
-    resolve cross-language calls. Falls back to name shape when the node can't
-    be located (TitleCase → class, else method)."""
+    resolve cross-language calls. Falls back to name shape when the node can't be
+    located (TitleCase → class, else method)."""
     if root_node is not None:
         want = name.encode("utf-8", errors="replace")
-        # Collect candidate name nodes matching (text, line).
-        cands = []
-        stack = [root_node]
-        while stack:
-            n = stack.pop()
-            if n.is_named and n.start_point[0] == line and n.text == want:
-                cands.append(n)
-            stack.extend(n.children)
-        for nn in cands:
-            p = nn.parent
-            depth = 0
-            while p is not None and depth < 15:
-                t = p.type
-                if any(h in t for h in _CLASS_NODE_HINTS):
-                    return "class"
-                if any(h in t for h in _FUNC_NODE_HINTS):
-                    return "method"
-                p = p.parent
-                depth += 1
+        for nn in _find_name_nodes(root_node, want, line):
+            kind = _kind_from_ancestors(nn)
+            if kind is not None:
+                return kind
     return "class" if name[:1].isupper() else "method"
 
 
