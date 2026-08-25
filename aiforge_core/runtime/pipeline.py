@@ -240,7 +240,7 @@ _DOER_TOOL_CALLBACKS = (
 def build_pipeline(*, skip_researcher: bool = False,
                     skip_conventions: bool = False,
                     skip_repomap: bool = False,
-                    _project: str | None = None):
+                    project: str | None = None):
     """Construct the v6 ``Workflow`` graph. Returns the root node ready
     for ``Runner(agent=..., session_service=...)``.
 
