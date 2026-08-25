@@ -2029,6 +2029,15 @@ def run_chat_agent(
     st = _build_loop_state(
         messages, cwd, role, max_steps, complete_fn, session_id, mode,
         scope_globs, builder, strict_finish)
+    # _build_loop_state RESOLVES the completion fn (injects native tool-calling
+    # when the caller passed none, as chat does) into st.complete_fn. The loop
+    # below still threads a `complete_fn` local into _step_prologue/_run_completion
+    # — rebind it to the resolved one, or native chat calls None(role, convo)
+    # ("'NoneType' object is not callable" → the "model didn't respond" retry
+    # loop on a model that answered fine). Regression from the run_chat_agent
+    # decomposition: the resolve moved into the helper but the local kept the
+    # caller's original None.
+    complete_fn = st.complete_fn
     n = 0
     yield from _emit_loop_prelude(st)
     while True:

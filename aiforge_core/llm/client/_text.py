@@ -93,7 +93,13 @@ def _is_garbage(text: str, *, allow_empty_json: bool = False) -> bool:
     # structured roles) so the learner fix doesn't leak into conversational output.
     if allow_empty_json and t in ("[]", "{}"):
         return False
-    if len(t) < 3:
+    # A very short reply is garbage ONLY when it carries no actual content — a
+    # stray punctuation/markup fragment (".", "…", "<>", "``"). A short but real
+    # answer ("4", "no", "ok", "42", a yes/no, a single-digit result) is a
+    # LEGITIMATE response and must not be flagged empty: the old bare `len < 3`
+    # rejected "4" (the correct answer to "2+2"), which then retried and failed
+    # as "model didn't respond" on a model that had answered correctly.
+    if len(t) < 3 and not any(c.isalnum() for c in t):
         return True
     if t in ("<tool_call>", "</tool_call>", "<|im_end|>", "<|endoftext|>"):
         return True
