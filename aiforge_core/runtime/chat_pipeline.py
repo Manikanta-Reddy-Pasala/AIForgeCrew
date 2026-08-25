@@ -204,26 +204,386 @@ def _finalize_subtasks(items: list[dict] | None, run_ok: bool,
     return out
 
 
-def stream_chat_pipeline(prompt: str, *, cwd: str,
-                         session_id: int | None = None,
-                         history: list[dict] | None = None,
-                         started_at: float | None = None,
-                         resume_brief: str = "") -> Iterator[dict]:
-    q: queue.Queue = queue.Queue()
+def _release_run_lock(my_lock_gen, prev_root) -> None:
+    """Restore ``prev_root`` and release the run lock — but ONLY when this holder
+    still owns it. If a kill-all force-released the lock (bumping the generation)
+    another run now owns the lock + env root, so we must NOT release again or
+    clobber their prev_root. The gen-check + restore + release run together under
+    _RUN_LOCK_GEN_LOCK (the same lock force_release takes) so the check can't go
+    stale before the release (TOCTOU)."""
+    with _RUN_LOCK_GEN_LOCK:
+        if _RUN_LOCK_GEN != my_lock_gen:
+            return
+        if prev_root is None:
+            os.environ.pop("AIFORGE_REPO_ROOT", None)
+        else:
+            os.environ["AIFORGE_REPO_ROOT"] = prev_root
+        try:
+            _RUN_LOCK.release()
+        except RuntimeError:
+            pass
+
+
+def _drive_teardown(root_token, my_lock_gen, prev_root, session_id, cwd,
+                    raw_prompt, final_text, steps, sub_items, run_ok,
+                    started_at, q) -> None:
+    """The team-run finally: reset the repo-root contextvar, release the run
+    lock, reconcile the subtask panel to the outcome, persist the turn and clear
+    the session's approver/cancel/steer state. Persistence is done HERE (the
+    background thread), not the SSE generator, so a client disconnect can't drop
+    the real answer or persist a partial one."""
     from aiforge_core.runtime import chat_cancel
-    raw_prompt = prompt   # the user's actual request (before context augmentation)
-    # A resume brief is CONTEXT, not the request. Folding it into `prompt`
-    # before this line would make it the "user's actual request": raw_prompt is
-    # what gets persisted as the turn's request, written into long-term memory
-    # (chat_persist: "**Request:** …"), and used as the RECALL QUERY for rules /
-    # skills / memory. A short ask would be stored and retrieved as mostly
-    # "[RESUME] Your previous attempt…" boilerplate. It joins the planner-facing
-    # prompt below instead, with the context blocks.
-    # Build a context-rich prompt: project summary + prior conversation +
-    # the current request, so the team pipeline isn't clueless on follow-ups.
-    # ONE shared context bundle — same source-selection/scoping/gating as single
-    # chat (context_bundle.build_bundle), so team-chat can never silently miss a
-    # source the single path injects.
+    if root_token is not None:
+        from aiforge_core.runtime import request_context
+        request_context.reset_repo_root(root_token)
+    _release_run_lock(my_lock_gen, prev_root)
+    cancelled = bool(session_id is not None
+                     and chat_cancel.is_cancelled(session_id))
+    # Reconcile the subtask panel (done on a clean finish, failed on error/stop)
+    # — emit live updates AND mutate the persisted item dicts (same objects in
+    # `steps`) so a reload shows the same.
+    for ev in _finalize_subtasks(sub_items, run_ok, cancelled):
+        q.put(ev)
+    if session_id is not None:
+        try:
+            from aiforge_core.runtime import chat_persist
+            chat_persist.persist_turn(
+                session_id=session_id, cwd=cwd, prompt=raw_prompt,
+                final_text=final_text, steps=steps, team=True,
+                cancelled=cancelled, awaiting=False, mode="team",
+                duration_s=_dur(started_at))
+        except Exception:  # noqa: BLE001
+            pass
+        from aiforge_core.runtime import chat_approve, chat_interject
+        chat_approve.clear_emitter(session_id)
+        chat_approve.finish(session_id)
+        chat_cancel.finish(session_id)
+        # Team mode does NOT fold steers mid-run — but still clear so a queued
+        # steer can't leak into the next turn.
+        chat_interject.clear(session_id)
+    q.put(_SENTINEL)
+
+
+async def _team_final_state(svc, session) -> dict:
+    """The ADK session state at run end, {} on any error."""
+    try:
+        sess = await svc.get_session(app_name="aiforge-chat", user_id="chat",
+                                     session_id=session.id)
+        return dict(sess.state or {})
+    except Exception:
+        return {}
+
+
+def _promote_team_answer(by_role: dict, st: dict, final: str,
+                         enhancer_blocked) -> str:
+    """The conversational answer. Learner/validator/refiner emit JSON verdicts,
+    not prose, and run AFTER the Doer — so never let them win. ``doer_outcome``
+    is the key the Doer actually writes (native + the local text_doer
+    FunctionNode, which emits no ADK "doer"-authored events, so on a LOCAL
+    endpoint the answer used to fall through to the Researcher or a bare
+    "Done.")."""
+    if enhancer_blocked:
+        return (f"I need more detail before I can build this — {enhancer_blocked}. "
+                f"Could you say what to build/change and where?")
+    return (by_role.get("doer") or st.get("doer_outcome")
+            or by_role.get("researcher") or final or "Done.")
+
+
+def _team_change_events(cwd: str, seq_start_sha: str, enhancer_blocked) -> list:
+    """The structured Changes diff (PR-style, same events the UI renders). The
+    sequential Doer edits the working tree, so include it. [] on a non-git run or
+    an enhancer-blocked turn."""
+    if not (seq_start_sha and not enhancer_blocked):
+        return []
+    try:
+        from .parallel_subtasks import _emit_changes
+        return list(_emit_changes(cwd, seq_start_sha, include_worktree=True))
+    except Exception:  # noqa: BLE001 — never break the turn
+        return []
+
+
+def _guard_edit_claim(msg: str, cwd: str, seq_start_sha: str, enhancer_blocked,
+                      change_events: list) -> str:
+    """The promoted answer can claim it "applied fixes" while the diff is EMPTY
+    (the same hallucination the simple loop guards). When it asserts an edit but
+    nothing changed, prepend an honest note. A non-git run gives no signal."""
+    if not (seq_start_sha and not enhancer_blocked and not change_events):
+        return msg
+    try:
+        from aiforge_core.runtime.chat_agent._context import (
+            _claims_file_edits, _edit_claim_disclaimer, _edit_claim_guard_enabled)
+        if _edit_claim_guard_enabled() and _claims_file_edits(msg):
+            return _edit_claim_disclaimer(msg)
+    except Exception:  # noqa: BLE001 — guard must never break a turn
+        pass
+    return msg
+
+
+async def _compute_team_answer(svc, session, by_role, final, enhancer_blocked,
+                               cwd, seq_start_sha) -> "tuple[str, list]":
+    """The final answer text + change events for a team run. The Changes diff is
+    computed BEFORE surfacing the answer so the claim-vs-reality guard can
+    cross-check an "applied fixes" claim against the ACTUAL diff."""
+    st = await _team_final_state(svc, session)
+    msg = _promote_team_answer(by_role, st, final, enhancer_blocked)
+    change_events = _team_change_events(cwd, seq_start_sha, enhancer_blocked)
+    msg = _guard_edit_claim(msg, cwd, seq_start_sha, enhancer_blocked,
+                            change_events)
+    return msg, change_events
+
+
+async def _close_team_run(agen, runner) -> None:
+    """ADK-native stop: aclose() the run generator (cancels the in-flight agent +
+    all its sub-agents) and close the runner. Both best-effort."""
+    try:
+        await agen.aclose()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        await runner.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _planner_subtask_event(text: str) -> "dict | None":
+    """Surface a Planner decomposition as a live subtasks event (chat is
+    ticketless, so this is ephemeral). None when the plan has no subtasks."""
+    try:
+        from .subtasks_callback import _extract_subtickets
+        subs = _extract_subtickets(text)
+    except Exception:  # noqa: BLE001
+        subs = []
+    if not subs:
+        return None
+    return {"type": "subtasks", "items": [
+        {"slug": s.get("slug") or f"sub-{i+1}",
+         "goal": s.get("goal") or s.get("title") or "", "status": "pending"}
+        for i, s in enumerate(subs)]}
+
+
+def _enhancer_block_reason(ev: dict) -> "str | None":
+    """The Enhancer's "too vague to act on" reason if ``ev`` is that sentinel,
+    else None. The sentinel (its stand-in for a clarifying question it must never
+    ask) must never reach the user as a raw thought and must STOP the run —
+    otherwise it silently becomes the Planner/Doer's brief and burns minutes."""
+    if (ev.get("type") == "thought" and ev.get("role") == "enhancer"
+            and (ev.get("text") or "").strip().startswith("ENHANCE_BLOCKED")):
+        return ((ev.get("text") or "").strip().split(":", 1)[-1].strip()[:300]
+                or "the request is too vague to build a concrete plan from")
+    return None
+
+
+def _process_team_event(ev: dict, q, steps: list, by_role: dict,
+                        acc: dict) -> "str | None":
+    """Route one mapped team event to the queue + accumulators. Returns the
+    enhancer-block reason to STOP the run, or None to continue.
+
+    Tracks the latest substantive text PER ROLE so the final answer can be the
+    Doer's work — NOT the Learner's facts JSON, which runs last and would win."""
+    reason = _enhancer_block_reason(ev)
+    if reason is not None:
+        return reason
+    q.put(ev)
+    if ev.get("type") in ("thought", "tool", "error"):
+        steps.append(ev)
+    if ev.get("type") == "thought" and ev.get("role") and ev.get("text"):
+        by_role[ev["role"]] = ev["text"]
+        if ev["role"] == "planner" and not acc["emitted_subtasks"]:
+            sub_ev = _planner_subtask_event(ev["text"])
+            if sub_ev is not None:
+                acc["emitted_subtasks"] = True
+                # Keep the item-dict handle so the finally block can reconcile
+                # the SAME objects (also in `steps`) to the run outcome.
+                acc["sub_items"] = sub_ev["items"]
+                q.put(sub_ev)
+                steps.append(sub_ev)
+    return None
+
+
+def _emit_steer_acks(session_id, chat_interject, q) -> None:
+    """Surface a "📌 Got your message" ack for any queued steer (Gap A): the
+    Doer/Refiner's before_model callback already folded it into its next model
+    call — this just mirrors the ack the simple loop shows, polled once per
+    event since the callback has no direct handle to this queue."""
+    if session_id is None:
+        return
+    from aiforge_core.runtime import chat_steer
+    for applied in chat_interject.pop_applied(session_id):
+        q.put(chat_steer.applied_event(applied))
+
+
+async def _drive_run_events(agen, runner, q, session_id, chat_interject,
+                            steps: list) -> dict:
+    """Drive the team pipeline's event stream: surface steer acks, honour Stop,
+    map each ADK event to the queue + accumulators, and stop on the Enhancer's
+    too-vague sentinel. Returns ``{by_role, final, sub_items, enhancer_blocked}``
+    (``steps`` is mutated in place)."""
+    from aiforge_core.runtime import chat_cancel
+    by_role: dict[str, str] = {}
+    final = ""
+    acc = {"emitted_subtasks": False, "sub_items": None}
+    enhancer_blocked = None
+    async for event in agen:
+        _emit_steer_acks(session_id, chat_interject, q)
+        if session_id is not None and chat_cancel.is_cancelled(session_id):
+            await _close_team_run(agen, runner)
+            q.put({"type": "error", "text": "stopped by user", "stopped": True})
+            break
+        for ev in map_event(event):
+            reason = _process_team_event(ev, q, steps, by_role, acc)
+            if reason is not None:
+                enhancer_blocked = reason
+        if enhancer_blocked:
+            await _close_team_run(agen, runner)
+            break
+        t = _event_text(event)
+        if t:
+            final = t
+    return {"by_role": by_role, "final": final, "sub_items": acc["sub_items"],
+            "enhancer_blocked": enhancer_blocked}
+
+
+def _bind_team_session(session_id, q) -> None:
+    """Bind this driver thread to ``session_id`` so Stop can cancel it, attach an
+    interactive approver + mark the run steerable, and expose the session to the
+    Doer's subtask_update tool + the request meter (env AND thread contextvar —
+    the env var is process-global and never cleared, so it can't be trusted for
+    metering; the driver runs in a bare Thread that inherits no context)."""
+    from aiforge_core.runtime import chat_cancel
+    chat_cancel.set_active(session_id)
+    if session_id is None:
+        return
+    from aiforge_core.runtime import chat_approve, chat_interject
+    from aiforge_core.runtime import request_context as _rc
+    chat_approve.set_emitter(session_id, q.put)
+    chat_interject.set_steerable(session_id, True)
+    os.environ["AIFORGE_CURRENT_SESSION"] = str(session_id)
+    _rc.set_session_id(session_id)
+
+
+def _persist_stop_before_start(session_id, cwd, raw_prompt, started_at) -> None:
+    """Persist a stopped turn for a Stop that landed while WAITING on the run
+    lock — the api _produce finally skips persistence for the team path
+    (``_path["driver"]`` is already set), so without this a Stop-before-start
+    leaves the user msg with NO assistant turn on reload."""
+    from aiforge_core.runtime import chat_approve, chat_cancel
+    chat_approve.clear_emitter(session_id)
+    chat_approve.finish(session_id)
+    try:
+        from aiforge_core.runtime import chat_persist
+        chat_persist.persist_turn(
+            session_id=session_id, cwd=cwd, prompt=raw_prompt,
+            final_text="(stopped before the run started)", steps=[], team=True,
+            cancelled=True, awaiting=False, mode="team",
+            duration_s=_dur(started_at))
+    except Exception:  # noqa: BLE001
+        pass
+    chat_cancel.finish(session_id)
+
+
+def _acquire_team_run_lock(session_id, cwd, raw_prompt, started_at, q):
+    """Acquire the process-wide team-run lock, cancellably. Returns the owner
+    lock-generation on success (a kill-all force-release bumps it, which lets a
+    holder neutralise its own teardown), or None when Stop landed while waiting —
+    in which case the stop events + sentinel are already on the queue and the
+    caller returns immediately."""
+    from aiforge_core.runtime import chat_cancel
+    waited = False
+    while True:
+        if session_id is not None and chat_cancel.is_cancelled(session_id):
+            if session_id is not None:
+                _persist_stop_before_start(session_id, cwd, raw_prompt, started_at)
+            q.put({"type": "error", "text": "stopped by user", "stopped": True})
+            q.put(_SENTINEL)
+            return None
+        if _RUN_LOCK.acquire(timeout=0.5):
+            return _run_lock_gen()
+        if not waited:
+            waited = True
+            q.put({"type": "thought", "role": "system",
+                   "text": "waiting for another team run to finish…"})
+
+
+def _tail_team_queue(q, flags: dict):
+    """Yield events off the team run's queue until the sentinel, tracking
+    errored/stopped/saw_real in ``flags``. A 10s ``get`` timeout emits a ``ping``
+    heartbeat — a slow local model can leave minute-long gaps and without periodic
+    output the SSE connection idles and the browser/proxy drops it."""
+    while True:
+        try:
+            item = q.get(timeout=10)
+        except queue.Empty:
+            yield {"type": "ping"}
+            continue
+        if item is _SENTINEL:
+            return
+        if item.get("type") == "error":
+            flags["errored"] = True
+            if item.get("stopped"):
+                flags["stopped"] = True
+        else:
+            flags["saw_real"] = True
+        yield item
+
+
+def _persist_fallback_turn(session_id, cwd, raw_prompt, fb_final, fb_steps,
+                           started_at) -> None:
+    """Persist the fallback agent's turn (team _gen skips persistence for team)
+    and finish the session's cancel/approve/steer state so nothing leaks into the
+    next turn."""
+    from aiforge_core.runtime import chat_cancel as _cc
+    from aiforge_core.runtime import chat_persist
+    cancelled_fb = _cc.is_cancelled(session_id)
+    chat_persist.persist_turn(
+        session_id=session_id, cwd=cwd, prompt=raw_prompt, final_text=fb_final,
+        steps=fb_steps, team=False, cancelled=cancelled_fb, awaiting=False,
+        mode="team", duration_s=_dur(started_at))
+    _cc.finish(session_id)
+    from aiforge_core.runtime import chat_approve as _ca
+    from aiforge_core.runtime import chat_interject as _ci
+    _ca.finish(session_id)          # a fallback torn down mid-approval would
+    _ci.clear(session_id)           # otherwise leak _PENDING/_REVIEW for next turn
+
+
+def _run_pipeline_fallback(raw_prompt, cwd, session_id, started_at):
+    """Run the lightweight single agent as a fallback and yield its events. The
+    fallback agent doesn't persist itself, so its answer is persisted here so it
+    survives a reload. Best-effort — a fallback failure just ends the stream."""
+    try:
+        from aiforge_core.runtime import chat_cancel as _cc
+        from .chat_agent import run_chat_agent
+        if session_id is not None:
+            _cc.start(session_id)   # re-arm so Stop can halt the fallback
+        yield {"type": "agent", "role": "fallback",
+               "text": "(pipeline unavailable — using the lightweight agent)"}
+        fb_final = ""
+        fb_steps: list[dict] = []
+        for ev in run_chat_agent([{"role": "user", "content": raw_prompt}],
+                                 cwd=cwd, session_id=session_id):
+            if ev.get("type") == "message":
+                fb_final = ev.get("text", "")
+            elif ev.get("type") in ("thought", "tool", "error"):
+                fb_steps.append(ev)
+            if ev.get("type") != "done":
+                yield ev
+        if session_id is not None:
+            _persist_fallback_turn(session_id, cwd, raw_prompt, fb_final,
+                                   fb_steps, started_at)
+    except Exception:
+        pass
+
+
+def _build_team_prompt(cwd, prompt, history, session_id, resume_brief):
+    """Build the planner-facing prompt (project summary + prior conversation +
+    session images + the current request) and the pipeline STATE keys.
+
+    ONE shared context bundle — same source-selection/scoping/gating as single
+    chat (context_bundle.build_bundle), so team-chat can never silently miss a
+    source the single path injects. A resume brief is CONTEXT, not the request,
+    so it joins here (raw_prompt stays the user's actual ask — what gets
+    persisted, memoized, and used as the recall query). Returns
+    ``(prompt, team_state)``."""
+    raw_prompt = prompt
     cave = False
     _ctx_on = lambda _b: True  # noqa: E731
     try:
@@ -235,7 +595,6 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
     bundle = _cb.build_bundle(cwd, raw_prompt, cave=cave, ctx_on=_ctx_on,
                               session_id=session_id, want_repo_map=False)
     convo = _history_preamble(history)
-    # SESSION IMAGES — descriptions of attached images, queryable all session.
     img_ctx = ""
     if session_id is not None:
         try:
@@ -251,79 +610,37 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
     # ALSO expose these as pipeline STATE keys — many graph nodes run
     # include_contents='none' and read the {rules_md?}/{memory_brief_md?}/
     # {user_prefs_md?} placeholders, NOT the seed prose above.
-    _team_state = {"chat_cwd": cwd}
+    team_state = {"chat_cwd": cwd}
     if bundle.rules_md:
-        _team_state["rules_md"] = bundle.rules_md
+        team_state["rules_md"] = bundle.rules_md
     if bundle.memory_md:
-        _team_state["memory_brief_md"] = bundle.memory_md
+        team_state["memory_brief_md"] = bundle.memory_md
     if bundle.preferences_md:
-        _team_state["user_prefs_md"] = bundle.preferences_md
+        team_state["user_prefs_md"] = bundle.preferences_md
+    return prompt, team_state
+
+
+def stream_chat_pipeline(prompt: str, *, cwd: str,
+                         session_id: int | None = None,
+                         history: list[dict] | None = None,
+                         started_at: float | None = None,
+                         resume_brief: str = "") -> Iterator[dict]:
+    q: queue.Queue = queue.Queue()
+    from aiforge_core.runtime import chat_cancel
+    raw_prompt = prompt   # the user's actual request (before context augmentation)
+    prompt, _team_state = _build_team_prompt(cwd, prompt, history, session_id,
+                                             resume_brief)
 
     async def _drive() -> None:
-        # Bind this driver thread (+ the bash tool the Doer runs) to the
-        # session so the Stop button can cancel + kill its subprocesses.
-        chat_cancel.set_active(session_id)
-        # Attach an interactive approver so the Doer's tool gate can pause
-        # this team run for human Approve/Reject (the gate no-ops without it).
+        _bind_team_session(session_id, q)
+        # Serialize the AIFORGE_REPO_ROOT mutation across concurrent team runs,
+        # cancellably + with feedback so a 2nd concurrent run doesn't stall its
+        # client silently behind a long-running first run.
+        my_lock_gen = _acquire_team_run_lock(session_id, cwd, raw_prompt,
+                                             started_at, q)
+        if my_lock_gen is None:
+            return                       # stopped while waiting — already handled
         from aiforge_core.runtime import chat_interject
-        if session_id is not None:
-            from aiforge_core.runtime import chat_approve
-            chat_approve.set_emitter(session_id, q.put)
-            # Mark this team run STEERABLE so /steer accepts mid-run guidance —
-            # the Doer/Refiner before_model callback (chat_steer_callback) folds
-            # it in and this loop surfaces the "📌 Got your message" ack. Without
-            # this, push(require_steerable=True) refused every steer and the UI
-            # (wrongly) reported "steering not available in team mode".
-            chat_interject.set_steerable(session_id, True)
-            # Expose the session so the Doer's subtask_update tool can push a
-            # LIVE subtask_update event onto this stream (real-time status in
-            # the pinned dock), not just persist it to the ticket store.
-            os.environ["AIFORGE_CURRENT_SESSION"] = str(session_id)
-            # …and bind it to THIS thread's context, which is what the request
-            # meter reads. The env var is deliberately not trusted there (it is
-            # process-global and never cleared, so it bills a background
-            # thread's work to whichever chat ran last), and the driver runs in
-            # a bare Thread that inherits no context — so a team turn had no
-            # session at all: no per-turn request count, no tokens, and the
-            # chat footer's usage line suppressed entirely.
-            from aiforge_core.runtime import request_context as _rc
-            _rc.set_session_id(session_id)
-        # Serialize the AIFORGE_REPO_ROOT mutation across concurrent team runs.
-        # Acquire CANCELLABLY + with feedback so a 2nd concurrent team run
-        # doesn't stall its client silently behind a long-running first run.
-        acquired = False
-        waited = False
-        while not acquired:
-            if session_id is not None and chat_cancel.is_cancelled(session_id):
-                if session_id is not None:
-                    from aiforge_core.runtime import chat_approve
-                    chat_approve.clear_emitter(session_id)
-                    chat_approve.finish(session_id)
-                    # Persist a stopped turn here — the api _produce finally
-                    # skips persistence for the team path (_path["driver"] is
-                    # already set), so without this a Stop while waiting on the
-                    # lock leaves the user msg with NO assistant turn on reload.
-                    try:
-                        from aiforge_core.runtime import chat_persist
-                        chat_persist.persist_turn(
-                            session_id=session_id, cwd=cwd, prompt=raw_prompt,
-                            final_text="(stopped before the run started)",
-                            steps=[], team=True, cancelled=True, awaiting=False,
-                            mode="team", duration_s=_dur(started_at))
-                    except Exception:  # noqa: BLE001
-                        pass
-                    chat_cancel.finish(session_id)
-                q.put({"type": "error", "text": "stopped by user", "stopped": True})
-                q.put(_SENTINEL)
-                return
-            acquired = _RUN_LOCK.acquire(timeout=0.5)
-            if not acquired and not waited:
-                waited = True
-                q.put({"type": "thought", "role": "system",
-                       "text": "waiting for another team run to finish…"})
-        # Lock is held — record the owner generation so a kill-all force-release
-        # (which bumps the generation) can neutralise this holder's teardown.
-        my_lock_gen = _run_lock_gen()
         # Lock is held — everything from here is inside try/finally so the
         # env mutation can't leak the lock if it raises.
         prev_root = os.environ.get("AIFORGE_REPO_ROOT")
@@ -418,150 +735,15 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                     os.environ.get("AIFORGE_CHAT_MAX_LLM_CALLS", "600")))
             except Exception:
                 pass
-            final = ""
-            by_role: dict[str, str] = {}
-            emitted_subtasks = False
-            _enhancer_blocked_reason = None
             agen = runner.run_async(**kw)
-            async for event in agen:
-                # Mid-run steering ack (Gap A, team mode): the Doer/Refiner's
-                # before_model callback (chat_steer_callback) already folded
-                # any queued steer into its next model call — this just
-                # surfaces the same "📌 Got your message" acknowledgment the
-                # simple-mode ReAct loop shows inline, polled once per event
-                # since the callback has no direct handle to this queue.
-                if session_id is not None:
-                    from aiforge_core.runtime import chat_steer
-                    for _applied in chat_interject.pop_applied(session_id):
-                        q.put(chat_steer.applied_event(_applied))
-                if session_id is not None and chat_cancel.is_cancelled(session_id):
-                    # ADK-native stop: aclose() the run generator (cancels
-                    # the in-flight agent + all its sub-agents) and close the
-                    # runner, then kill any subprocess groups the Doer spawned.
-                    try:
-                        await agen.aclose()
-                    except Exception:  # noqa: BLE001
-                        pass
-                    try:
-                        await runner.close()
-                    except Exception:  # noqa: BLE001
-                        pass
-                    q.put({"type": "error", "text": "stopped by user",
-                           "stopped": True})
-                    break
-                for ev in map_event(event):
-                    # The Enhancer's "too vague to act on" sentinel (see
-                    # aiforge_core/runtime/prompts/enhancer.py — its stand-in
-                    # for a clarifying question, since it must never ask one)
-                    # must never reach the user as a raw thought bubble, and
-                    # must stop the run here — same gap as the ticket path
-                    # (adk_runner._enhancer_block_reason): without this, the
-                    # sentinel silently became the Planner/Doer's brief and
-                    # the run burned minutes building from garbage.
-                    if (ev.get("type") == "thought" and ev.get("role") == "enhancer"
-                            and (ev.get("text") or "").strip().startswith("ENHANCE_BLOCKED")):
-                        _enhancer_blocked_reason = (
-                            (ev.get("text") or "").strip().split(":", 1)[-1].strip()[:300]
-                            or "the request is too vague to build a concrete plan from")
-                        continue
-                    q.put(ev)
-                    if ev.get("type") in ("thought", "tool", "error"):
-                        steps.append(ev)
-                    # Track latest substantive text PER ROLE so the final
-                    # answer can be the Doer's work — NOT the Learner's facts
-                    # JSON, which runs last and would otherwise win.
-                    if ev.get("type") == "thought" and ev.get("role") and ev.get("text"):
-                        by_role[ev["role"]] = ev["text"]
-                        # When the Planner decomposes a big task, surface the
-                        # subtasks as a live task list in the chat UI (chat is
-                        # ticketless, so this is ephemeral — the managed chart +
-                        # parallel execution live on a ticket).
-                        if ev["role"] == "planner" and not emitted_subtasks:
-                            try:
-                                from .subtasks_callback import _extract_subtickets
-                                subs = _extract_subtickets(ev["text"])
-                            except Exception:  # noqa: BLE001
-                                subs = []
-                            if subs:
-                                emitted_subtasks = True
-                                _sub_ev = {"type": "subtasks", "items": [
-                                    {"slug": s.get("slug") or f"sub-{i+1}",
-                                     "goal": s.get("goal") or s.get("title") or "",
-                                     "status": "pending"}
-                                    for i, s in enumerate(subs)]}
-                                # Keep a handle so the finally block can reconcile
-                                # these same item dicts to the run outcome (the
-                                # SAME objects live in `steps`, so mutating them
-                                # updates what gets persisted on reload).
-                                _sub_items = _sub_ev["items"]
-                                q.put(_sub_ev)
-                                # Persist with the turn's steps so the subtask
-                                # panel survives a navigate-away / reload.
-                                steps.append(_sub_ev)
-                if _enhancer_blocked_reason:
-                    # Stop here — don't let the Planner/Doer run on a brief
-                    # the Enhancer already flagged as too vague to act on.
-                    try:
-                        await agen.aclose()
-                    except Exception:  # noqa: BLE001
-                        pass
-                    try:
-                        await runner.close()
-                    except Exception:  # noqa: BLE001
-                        pass
-                    break
-                t = _event_text(event)
-                if t:
-                    final = t
-            try:
-                sess = await svc.get_session(
-                    app_name="aiforge-chat", user_id="chat", session_id=session.id)
-                st = dict(sess.state or {})
-            except Exception:
-                st = {}
-            # The Doer's output is the conversational answer (the actual work).
-            # Learner/validator/refiner emit JSON verdicts, not user-facing
-            # prose, and run AFTER the Doer — so never let them be the answer.
-            # `doer_outcome` is the state key the Doer actually writes (both the
-            # native agents/doer.py and the local text_doer FunctionNode). The
-            # old `doer_summary`/`validator_summary` keys were never written, so
-            # on a LOCAL endpoint — where the Doer is a text_doer FunctionNode
-            # that emits no ADK "doer"-authored events — the answer fell through
-            # to the Researcher's text or a bare "Done.", hiding the Doer's work.
-            if _enhancer_blocked_reason:
-                msg = (f"I need more detail before I can build this — "
-                       f"{_enhancer_blocked_reason}. Could you say what to "
-                       f"build/change and where?")
-            else:
-                msg = (by_role.get("doer") or st.get("doer_outcome")
-                       or by_role.get("researcher") or final or "Done.")
-            # Structured Changes diff (same PR-style view as the parallel path).
-            # The sequential Doer edits the working tree, so include it. Compute
-            # it BEFORE surfacing the answer so the claim-vs-reality guard can
-            # cross-check an "applied fixes" claim against the ACTUAL diff — the
-            # SAME events the UI renders, computed once (DRY).
-            _change_events: list = []
-            if _seq_start_sha and not _enhancer_blocked_reason:
-                try:
-                    from .parallel_subtasks import _emit_changes
-                    _change_events = list(_emit_changes(
-                        cwd, _seq_start_sha, include_worktree=True))
-                except Exception:  # noqa: BLE001 — never break the turn
-                    _change_events = []
-            # The promoted answer (often the Enhancer's or a local text_doer's
-            # prose) can claim it "applied fixes" while the diff is EMPTY — the
-            # same hallucination the simple loop guards. When it asserts an edit
-            # but nothing changed, prepend an honest note. A non-git run
-            # (_seq_start_sha == "") gives no signal, so it's left alone.
-            if _seq_start_sha and not _enhancer_blocked_reason and not _change_events:
-                try:
-                    from aiforge_core.runtime.chat_agent._context import (
-                        _claims_file_edits, _edit_claim_disclaimer,
-                        _edit_claim_guard_enabled)
-                    if _edit_claim_guard_enabled() and _claims_file_edits(msg):
-                        msg = _edit_claim_disclaimer(msg)
-                except Exception:  # noqa: BLE001 — guard must never break a turn
-                    pass
+            evres = await _drive_run_events(agen, runner, q, session_id,
+                                            chat_interject, steps)
+            by_role, final = evres["by_role"], evres["final"]
+            _sub_items = evres["sub_items"] if evres["sub_items"] is not None else _sub_items
+            _enhancer_blocked_reason = evres["enhancer_blocked"]
+            msg, _change_events = await _compute_team_answer(
+                svc, session, by_role, final, _enhancer_blocked_reason,
+                cwd, _seq_start_sha)
             final_text = msg
             _run_ok = True
             q.put({"type": "message", "text": msg})
@@ -577,58 +759,9 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
             # expensive path to repeat.
             q.put({"type": "stopped", "reason": "pipeline_error"})
         finally:
-            # The repo-root contextvar is thread-local to THIS run, so reset it
-            # unconditionally (no cross-run contamination like the shared env).
-            if root_token is not None:
-                from aiforge_core.runtime import request_context
-                request_context.reset_repo_root(root_token)
-            # If a kill-all force-released the lock out from under us, the
-            # generation changed: another run (or none) now owns the lock + the
-            # env root, so we must NOT release the lock again or restore our
-            # prev_root over theirs. The gen-check + env-restore + release run
-            # together under _RUN_LOCK_GEN_LOCK (the same lock force_release
-            # takes) so the check can't go stale before the release (TOCTOU).
-            with _RUN_LOCK_GEN_LOCK:
-                if _RUN_LOCK_GEN == my_lock_gen:
-                    if prev_root is None:
-                        os.environ.pop("AIFORGE_REPO_ROOT", None)
-                    else:
-                        os.environ["AIFORGE_REPO_ROOT"] = prev_root
-                    try:
-                        _RUN_LOCK.release()
-                    except RuntimeError:
-                        pass
-            # The team run owns BOTH the cancel-token lifetime AND persistence
-            # — done HERE (background thread), not in the SSE generator, so a
-            # client disconnect can't drop the real answer or persist a
-            # partial one.
-            cancelled = bool(session_id is not None
-                             and chat_cancel.is_cancelled(session_id))
-            # Reconcile the subtask panel to the outcome so it doesn't sit at
-            # "0/N pending" after the run finishes. done on a clean finish,
-            # failed on error/stop. Emit live updates AND mutate the persisted
-            # item dicts (same objects in `steps`) so a reload shows the same.
-            for _ev in _finalize_subtasks(_sub_items, _run_ok, cancelled):
-                q.put(_ev)
-            if session_id is not None:
-                try:
-                    from aiforge_core.runtime import chat_persist
-                    chat_persist.persist_turn(
-                        session_id=session_id, cwd=cwd, prompt=raw_prompt,
-                        final_text=final_text, steps=steps, team=True,
-                        cancelled=cancelled, awaiting=False,
-                        mode="team", duration_s=_dur(started_at))
-                except Exception:  # noqa: BLE001
-                    pass
-            if session_id is not None:
-                from aiforge_core.runtime import chat_approve, chat_interject
-                chat_approve.clear_emitter(session_id)
-                chat_approve.finish(session_id)
-                chat_cancel.finish(session_id)
-                # Team mode does NOT fold steers in mid-run (see note below) —
-                # but still clear so a queued steer can't leak into the next turn.
-                chat_interject.clear(session_id)
-            q.put(_SENTINEL)
+            _drive_teardown(root_token, my_lock_gen, prev_root, session_id, cwd,
+                            raw_prompt, final_text, steps, _sub_items, _run_ok,
+                            started_at, q)
 
     def _drive_awake() -> None:
         # A team run is minutes of work. Locking the screen and walking away
@@ -642,68 +775,12 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
 
     t = threading.Thread(target=_drive_awake, daemon=True)
     t.start()
-    errored = False
-    stopped = False
-    saw_real = False     # any substantive (non-error) event from the pipeline
-    while True:
-        try:
-            # Heartbeat: a slow local model can leave minute-long gaps between
-            # agent steps. Without periodic output the SSE connection idles and
-            # the browser/proxy drops it ("network error"). Emit a ping so the
-            # stream stays warm; the UI ignores unknown event types.
-            item = q.get(timeout=10)
-        except queue.Empty:
-            yield {"type": "ping"}
-            continue
-        if item is _SENTINEL:
-            break
-        if item.get("type") == "error":
-            errored = True
-            if item.get("stopped"):
-                stopped = True
-        else:
-            saw_real = True
-        yield item
-    # Fall back to the lightweight agent ONLY when the pipeline couldn't run
-    # at all — it errored, produced NO substantive events, and the user
-    # didn't Stop it. (A user Stop, or an error mid-run after real output,
-    # must NOT silently launch a second agent.)
-    if errored and not saw_real and not stopped:
-        try:
-            from aiforge_core.runtime import chat_cancel as _cc
-            from .chat_agent import run_chat_agent
-            if session_id is not None:
-                _cc.start(session_id)   # re-arm so Stop can halt the fallback
-            yield {"type": "agent", "role": "fallback",
-                   "text": "(pipeline unavailable — using the lightweight agent)"}
-            fb_final = ""
-            fb_steps: list[dict] = []
-            for ev in run_chat_agent([{"role": "user", "content": raw_prompt}],
-                                     cwd=cwd, session_id=session_id):
-                if ev.get("type") == "message":
-                    fb_final = ev.get("text", "")
-                elif ev.get("type") in ("thought", "tool", "error"):
-                    fb_steps.append(ev)
-                if ev.get("type") != "done":
-                    yield ev
-            # The fallback agent doesn't persist itself — do it here so its
-            # answer survives reload (team _gen skips persistence for team).
-            if session_id is not None:
-                from aiforge_core.runtime import chat_persist
-                cancelled_fb = _cc.is_cancelled(session_id)
-                chat_persist.persist_turn(
-                    session_id=session_id, cwd=cwd, prompt=raw_prompt,
-                    final_text=fb_final, steps=fb_steps, team=False,
-                    cancelled=cancelled_fb, awaiting=False,
-                    mode="team", duration_s=_dur(started_at))
-                _cc.finish(session_id)
-                # CC4 — also finish the approval gate; a fallback torn down
-                # mid-approval would otherwise leak _PENDING/_REVIEW_EDITS for
-                # this session into the next turn.
-                from aiforge_core.runtime import chat_approve as _ca
-                _ca.finish(session_id)
-                from aiforge_core.runtime import chat_interject as _ci
-                _ci.clear(session_id)
-        except Exception:
-            pass
+    flags = {"errored": False, "stopped": False, "saw_real": False}
+    yield from _tail_team_queue(q, flags)
+    # Fall back to the lightweight agent ONLY when the pipeline couldn't run at
+    # all — it errored, produced NO substantive events, and the user didn't Stop
+    # it. (A user Stop, or an error mid-run after real output, must NOT silently
+    # launch a second agent.)
+    if flags["errored"] and not flags["saw_real"] and not flags["stopped"]:
+        yield from _run_pipeline_fallback(raw_prompt, cwd, session_id, started_at)
     yield {"type": "done"}
