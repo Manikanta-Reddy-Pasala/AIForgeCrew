@@ -89,42 +89,56 @@ def reembed_all() -> dict:
     return {"reembedded": n, "failed": failed}
 
 
+def _dedupe_query(repo: "str | None", max_scan: int) -> "tuple[str, tuple]":
+    """The scan SQL + params for the dedupe sweep (preferences excluded; scoped
+    to ``repo`` when given), newest-first."""
+    where = "WHERE kind != 'preference'"
+    params: tuple = ()
+    if repo is not None:
+        where += " AND (repo IS ? OR repo = ?)"
+        params = (repo, repo)
+    return (f"SELECT id, kind, embedding FROM memory_units {where} "
+            "ORDER BY id DESC LIMIT ?", (*params, max_scan))
+
+
+def _is_near_dup(kind: str, vec: list, kept: list, threshold: float) -> bool:
+    """True when ``vec`` is within ``threshold`` cosine of an already-kept unit of
+    the same ``kind``."""
+    for _kid, kkind, kvec in kept:
+        if kkind == kind and local_embed.cosine(vec, kvec) >= threshold:
+            return True
+    return False
+
+
+def _row_vector(row) -> list:
+    """The stored embedding of a row, or [] when absent/unparseable."""
+    try:
+        vec = json.loads(row["embedding"] or "[]")
+    except (TypeError, ValueError):
+        return []
+    return vec if (vec and any(vec)) else []
+
+
 def dedupe(*, repo: str | None = None, threshold: float = 0.95,
            max_scan: int = 5000) -> dict:
     """Periodic SEMANTIC dedup sweep. write_unit only dedups EXACT (repo,text);
     paraphrases ("README had 3 X" vs "README contained 3 X refs") accumulate.
-    This collapses near-duplicates (cosine ≥ ``threshold`` on the STORED
+    This collapses near-duplicates (cosine >= ``threshold`` on the STORED
     embeddings — no sidecar call) within the same ``kind``, keeping the NEWEST
     (highest id) and deleting the rest. Preferences (``kind='preference'``) are
     left alone (they're subject-upserted + distinct on purpose). Returns
     ``{scanned, removed}``. Best-effort — a bad row never stops the sweep."""
     with _LOCK, _conn() as c:
-        where = "WHERE kind != 'preference'"
-        params: tuple = ()
-        if repo is not None:
-            where += " AND (repo IS ? OR repo = ?)"
-            params = (repo, repo)
-        rows = c.execute(
-            f"SELECT id, kind, embedding FROM memory_units {where} "
-            "ORDER BY id DESC LIMIT ?", (*params, max_scan)).fetchall()
+        sql, params = _dedupe_query(repo, max_scan)
+        rows = c.execute(sql, params).fetchall()
         # rows are newest-first; keep the first of each near-duplicate cluster.
         kept: list[tuple[int, str, list]] = []
         remove: list[int] = []
         for r in rows:
-            try:
-                vec = json.loads(r["embedding"] or "[]")
-            except (TypeError, ValueError):
-                vec = []
-            if not vec or not any(vec):
+            vec = _row_vector(r)
+            if not vec:
                 continue                     # no vector → can't compare, keep
-            dup = False
-            for _kid, kkind, kvec in kept:
-                if kkind != r["kind"]:
-                    continue
-                if local_embed.cosine(vec, kvec) >= threshold:
-                    dup = True
-                    break
-            if dup:
+            if _is_near_dup(r["kind"], vec, kept, threshold):
                 remove.append(r["id"])
             else:
                 kept.append((r["id"], r["kind"], vec))
