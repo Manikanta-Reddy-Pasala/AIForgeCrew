@@ -920,7 +920,7 @@ def _step_cap_guard(st, n):
                         "was real work)")
             yield {"type": "message", "text": _why}
             yield {"type": "done"}
-            return
+            return "return"
     return None
 
 
@@ -954,7 +954,7 @@ def _deadline_guard(st, n):
                            "AIFORGE_CHAT_TURN_DEADLINE_S) if this was real "
                            "long-running work)"}
             yield {"type": "done"}
-            return
+            return "return"
     return None
 
 
