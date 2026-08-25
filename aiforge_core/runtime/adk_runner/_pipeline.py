@@ -377,7 +377,8 @@ async def _drive_single(runner, session_svc, session_id: str,
     try:
         async with cm:
             async for _event in runner.run_async(**kwargs):
-                pass
+                pass  # intentionally empty: drain the run to completion; the
+                # final result is read from the session state below
         return await _session_state(session_svc, session_id)
     except Exception as exc:  # noqa: BLE001 — deadline or max_llm_calls trip
         is_deadline = isinstance(exc, TimeoutError)
