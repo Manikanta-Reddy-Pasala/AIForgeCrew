@@ -89,7 +89,7 @@ export function categoryOf(f: any): Category {
 // "compacted-sync-retry-policy" → "sync retry policy"; keeps a real title as-is.
 export function cleanTitle(f: any): string {
   const t = String(f.title || f.name || '').replace(/\.md$/, '');
-  return t.replace(/^compacted-/, '').replace(/-/g, ' ').trim() || t;
+  return t.replace(/^compacted-/, '').replaceAll('-', ' ').trim() || t;
 }
 
 export const CAT_ICON: Record<Category, string> = {
