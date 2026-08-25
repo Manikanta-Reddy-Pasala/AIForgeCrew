@@ -32,20 +32,15 @@ dependencies = [
   # Vendored into packages/aiforge_memory/ (was a git dependency); resolved
   # from the local path via [tool.uv.sources] below.
   "aiforge-memory",
-  # Code-graph memory: tree-sitter AST parsing for the symbol index +
-  # repo-map (aiforge_core/indexing/treesitter_ingest.py, memory/rag/indexer).
-  # These were hand-installed on the dev host and vanished on `uv sync`,
-  # silently degrading the symbol/AST layer — declare them so every memory
-  # bit ships. Core+grammar wheels are ABI-matched by uv's resolver.
+  # tree-sitter AST parsing behind aider's RepoMap (aiforge_core/memory/
+  # code_context.aider_digest) + memory/rag/indexer. Declared so `uv sync`
+  # can't prune them. Core+grammar wheels are ABI-matched by uv's resolver.
   "tree-sitter>=0.21",
   "tree-sitter-java>=0.21",
   "tree-sitter-python>=0.21",
-  # Multi-language symbol ingest (kotlin/python/react/c/cpp). The generic
-  # tag-query engine (aider.repomap.RepoMap.get_tags_raw) drives
-  # treesitter_ingest._parse_via_tags — it reuses aider's bundled tree-sitter
-  # tags queries via grep-ast's filename_to_lang + the tree-sitter-language-pack
-  # grammars, so we don't hand-write a per-language AST walker. Declared so
-  # `uv sync` can't prune them out from under the symbol layer.
+  # aider's RepoMap (aider.repomap.RepoMap) drives the tree-sitter-backed
+  # repo digest via grep-ast's filename_to_lang + the tree-sitter-language-pack
+  # grammars. Declared so `uv sync` can't prune them out from under RepoMap.
   "aider-chat>=0.86",
   "grep-ast>=0.9",
   "tree-sitter-language-pack>=0.13",
@@ -169,7 +164,6 @@ testpaths = ["tests/python"]
 addopts = "-ra"
 markers = [
     "live_sidecar: requires embed/rerank sidecars running",
-    "live_neo4j: requires Neo4j running at AIFORGE_NEO4J_URI",
     "live_llm: requires planner LLM at AIFORGE_INTENT_LM_URL",
     "live_repomix: requires `repomix` binary on PATH",
 ]

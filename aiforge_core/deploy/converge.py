@@ -7,13 +7,13 @@ once.
 
 Flow — idempotent, marker-guarded, DATA-SAFE:
   1. detect a prior ``aiforge-postgres`` container
-  2. start postgres + neo4j (to read from)
+  2. start postgres (to read from)
   3. migrate Postgres chat+tickets → SQLite         (scripts/migrate_to_sqlite)
-  4. drain Neo4j Observation/Decision → scoped OKR   (memory.migrations)
-  5. VERIFY both succeeded
-  6. ONLY then remove the DB-infra containers + their images + volumes
-     — KEEP langfuse (its own postgres powers the trace UI)
-  7. clear a stale AIFORGE_PG_URL from .env, mark done (retry next run on failure)
+  4. VERIFY it succeeded
+  5. ONLY then remove the DB-infra containers + their images + volumes
+     — this also tears down any lingering ``aiforge-neo4j`` container from a
+       prior hybrid setup. KEEP langfuse (its own postgres powers the trace UI)
+  6. clear a stale AIFORGE_PG_URL from .env, mark done (retry next run on failure)
 
 Nothing here raises; every step soft-fails and is logged.
 """
@@ -108,20 +108,6 @@ def _migrate_pg_to_sqlite() -> bool:
         return r.returncode == 0
     except Exception as exc:  # noqa: BLE001
         log.warning("converge: migrate_to_sqlite failed: %s", exc)
-        return False
-
-
-def _drain_neo4j_to_okr() -> bool:
-    """Drain Neo4j memory into the scoped OKR (memory.migrations) while neo4j is
-    still up. True unless the drain explicitly reports ok=False."""
-    try:
-        os.environ["AIFORGE_MIGRATE_NEO4J"] = "1"
-        from aiforge_core.memory import migrations
-        r = migrations.run_startup_migrations()
-        drain = r.get("neo4j_drain") or {}
-        return drain.get("ok") is not False
-    except Exception as exc:  # noqa: BLE001
-        log.warning("converge: neo4j drain failed: %s", exc)
         return False
 
 
@@ -231,16 +217,12 @@ def converge(*, force: bool = False) -> dict:
 
     log.info("converge: prior dockerized Postgres detected — migrating to SQLite/OKR")
     _docker("start", "aiforge-postgres")
-    _docker("start", "aiforge-neo4j")      # up so the drain can read it first
     import time
     time.sleep(6)
 
     if not _migrate_pg_to_sqlite():
         log.error("converge: Postgres→SQLite FAILED — keeping Docker intact (retry next run)")
         return {"ok": False, "step": "postgres_to_sqlite"}
-    if not _drain_neo4j_to_okr():
-        log.error("converge: Neo4j→OKR drain FAILED — keeping Docker intact (retry next run)")
-        return {"ok": False, "step": "neo4j_drain"}
 
     log.info("converge: migration verified — removing DB-infra (KEEPING langfuse)")
     removed = _remove_db_infra()
