@@ -16,7 +16,8 @@ import pytest
 _KNOBS = ("AIFORGE_JOBS_DISABLE", "AIFORGE_REINDEX_DAILY", "AIFORGE_REINDEX_EVERY_H",
           "AIFORGE_REINDEX_HOUR", "AIFORGE_COMPACT_EVERY_H", "AIFORGE_COMPACT_AT_HOUR",
           "AIFORGE_RECOMPACT_DAILY", "AIFORGE_RECOMPACT_HOUR", "AIFORGE_SESSION_COMPACT",
-          "AIFORGE_SESSION_IDLE_MIN", "AIFORGE_SESSION_COMPACT_MAX_WINDOWS")
+          "AIFORGE_SESSION_IDLE_MIN", "AIFORGE_SESSION_COMPACT_MAX_WINDOWS",
+          "AIFORGE_COMPACT_DISABLE")
 
 
 def _api(monkeypatch, tmp_path):
@@ -28,10 +29,16 @@ def _api(monkeypatch, tmp_path):
     return api
 
 
-def _registered(monkeypatch, tmp_path, **env):
-    """Task names _start_daily_reindex registers, without running any of them."""
+def _registered(monkeypatch, tmp_path, *, compaction="0", **env):
+    """Task names _start_daily_reindex registers, without running any of them.
+
+    Compaction is DISABLED BY DEFAULT now, so these scheduling-behaviour tests
+    ENABLE it (``compaction="0"``) to exercise the registration path. Pass
+    ``compaction=None`` to test the real default (unset ⇒ disabled)."""
     api = _api(monkeypatch, tmp_path)
-    for k, v in env.items():                 # after _api — it clears the knobs
+    if compaction is not None:               # after _api — it clears the knobs
+        monkeypatch.setenv("AIFORGE_COMPACT_DISABLE", compaction)
+    for k, v in env.items():
         monkeypatch.setenv(k, v)
     from aiforge_core.runtime import periodic as p
     monkeypatch.setattr(p, "_TASKS", [])
@@ -433,6 +440,72 @@ def test_api_delegates_the_hour_parse_to_compact_window(monkeypatch):
     monkeypatch.setenv("AIFORGE_COMPACT_EVERY_H", "2")
     assert api._compact_at_hour() is None
     assert compact_window.at_hour() is None
+
+
+def test_compaction_disabled_by_default_registers_no_fold(monkeypatch, tmp_path):
+    """DISABLED BY DEFAULT: with AIFORGE_COMPACT_DISABLE unset the boot gate must
+    register NONE of the compaction jobs — the user's "it kicks in before the app
+    starts and burns LLM requests" report. Reindex + the cheap hourly jobs still
+    register (they are merkle-skip no-ops, no LLM)."""
+    tasks = _registered(monkeypatch, tmp_path, compaction=None)   # real default
+    for gone in ("daily-compact", "chat-compact", "session-okr-compact",
+                 "recompact-all"):
+        assert gone not in tasks
+    assert "reindex" in tasks                 # non-LLM maintenance still on
+
+
+def test_explicit_zero_re_enables_compaction(monkeypatch, tmp_path):
+    """Only an explicit 0/false/no turns it back on — matches the endpoint +
+    _startup_compact semantics."""
+    for on in ("0", "false", "no"):
+        tasks = _registered(monkeypatch, tmp_path, compaction=on)
+        assert "daily-compact" in tasks, on
+    for off in ("1", "true", "yes"):
+        tasks = _registered(monkeypatch, tmp_path, compaction=off)
+        assert "daily-compact" not in tasks, off
+
+
+def test_boot_fold_runs_no_llm_when_compaction_disabled(monkeypatch, tmp_path):
+    """The boot-time _startup_compact fold must NOT call the learner when
+    compaction is disabled (the default). Structural fold still runs, but every
+    md_store.compact call is summarize=False — no LLM request fires at boot."""
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.delenv("AIFORGE_COMPACT_DISABLE", raising=False)   # real default
+    monkeypatch.delenv("AIFORGE_STARTUP_COMPACT", raising=False)
+    from aiforge_core.memory import md_store
+    from aiforge_core.runtime import compact_window
+    # Force the window OPEN so the ONLY thing that can suppress the LLM is the
+    # disable flag under test (not "outside the window").
+    monkeypatch.setattr(compact_window, "open_now", lambda: True)
+    seen: list = []
+    monkeypatch.setattr(md_store, "compact",
+                        lambda *a, **k: seen.append(k.get("summarize")) or {})
+    monkeypatch.setattr(md_store, "sweep_stale_captures", lambda *a, **k: {})
+    from aiforge_core.memory import migrations
+    out: dict = {}
+    migrations._startup_compact(out)
+    assert seen == [False, False]             # both axes structural-only, no LLM
+    assert out["compact"]["summarized"] is False
+
+
+def test_boot_fold_runs_llm_when_compaction_enabled_in_window(monkeypatch, tmp_path):
+    """Sanity: explicitly enabling compaction restores the in-window LLM fold, so
+    the guard gates on the flag and nothing else."""
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("AIFORGE_COMPACT_DISABLE", "0")            # explicitly ON
+    monkeypatch.delenv("AIFORGE_STARTUP_COMPACT", raising=False)
+    from aiforge_core.memory import md_store
+    from aiforge_core.runtime import compact_window
+    monkeypatch.setattr(compact_window, "open_now", lambda: True)
+    seen: list = []
+    monkeypatch.setattr(md_store, "compact",
+                        lambda *a, **k: seen.append(k.get("summarize")) or {})
+    monkeypatch.setattr(md_store, "sweep_stale_captures", lambda *a, **k: {})
+    from aiforge_core.memory import migrations
+    out: dict = {}
+    migrations._startup_compact(out)
+    assert seen == [True, True]               # learner fold runs when enabled
+    assert out["compact"]["summarized"] is True
 
 
 def test_llm_settings_rejects_a_contradictory_put(monkeypatch, tmp_path):
