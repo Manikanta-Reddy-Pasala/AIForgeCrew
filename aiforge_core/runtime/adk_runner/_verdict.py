@@ -58,54 +58,61 @@ def _ticket_looks_readonly(ticket) -> bool:
     return bool(ask and not change)
 
 
+def _reason_from_dict(raw: dict) -> "str | None":
+    """The rationale from a legacy JSON dict verdict. Both ``rationale`` and
+    ``reason`` are seen in the wild; ``reason`` is the new canonical key (matches
+    the ticket_events column the operators query)."""
+    return raw.get("rationale") or raw.get("reason")
+
+
+def _strip_leading_verdict(head: str) -> str:
+    """Drop a leading verdict token so we don't double-print it, then flatten
+    newlines/tabs so the audit row is single-line
+    (``"pass: pass — looks good"`` → ``"looks good"``)."""
+    head = head.lstrip("`*_-> ")
+    for token in _VERDICT_TOKENS:
+        if head.lower().startswith(token):
+            head = head[len(token):]
+            break
+    return head.strip(" :—-\n\t").replace("\n", " ").replace("\t", " ")
+
+
+def _reason_from_str(raw: str) -> "str | None":
+    """The rationale from a raw string verdict — a legacy JSON string first
+    (parsed once, plain text on failure rather than 500ing), else the leading-
+    token format's line 2+."""
+    s = raw.strip()
+    if s.startswith("{"):
+        try:
+            obj = json.loads(s)
+        except json.JSONDecodeError:
+            obj = None
+        if isinstance(obj, dict):
+            got = _reason_from_dict(obj)
+            if got is not None:
+                return got
+    return _strip_leading_verdict(s)
+
+
 def _extract_reason(state: dict, verdict: str) -> str:
     """Pull the post-verdict rationale line out of the Feedback output.
 
-    The Feedback prompt asks the model to put the verdict token on
-    line 1 and a short rationale on line 2+. This function returns
-    that rationale flattened to a single line, trimmed to
-    :data:`_REASON_MAX_CHARS` so the audit trail can't be bloated.
-
-    Tolerated shapes mirror :func:`_extract_verdict`:
-      1. raw string ``"<token>\\n<reason>..."`` → returns reason
-      2. dict ``{"verdict": ..., "rationale": "..."}`` → returns rationale
-      3. anything else / no rationale → role-appropriate default
-
-    The verdict token itself is stripped from the head so we don't
-    double-print it (``"pass: pass — looks good"`` → ``"pass: looks good"``).
+    The Feedback prompt asks the model to put the verdict token on line 1 and a
+    short rationale on line 2+. This returns that rationale flattened to a single
+    line, trimmed to :data:`_REASON_MAX_CHARS` so the audit trail can't be
+    bloated. Tolerated shapes mirror :func:`_extract_verdict`: a raw
+    ``"<token>\n<reason>"`` string, a ``{"verdict", "rationale"}`` dict, or a
+    role-appropriate default when there is no rationale.
     """
     raw = state.get("feedback_verdict")
     text: str | None = None
     if isinstance(raw, dict):
-        # Legacy JSON dict — both ``rationale`` and ``reason`` seen in
-        # the wild; ``reason`` is the new canonical key (matches the
-        # ticket_events column the operators query).
-        text = raw.get("rationale") or raw.get("reason")
+        text = _reason_from_dict(raw)
     elif isinstance(raw, str) and raw.strip():
-        s = raw.strip()
-        # Legacy JSON string — try once, fall through to plain text on
-        # parse fail rather than 500ing.
-        if s.startswith("{"):
-            try:
-                obj = json.loads(s)
-            except json.JSONDecodeError:
-                obj = None
-            if isinstance(obj, dict):
-                text = obj.get("rationale") or obj.get("reason")
-        if text is None:
-            # Plain leading-token format: drop line 1, take the rest.
-            head = s.lstrip("`*_-> ")
-            for token in _VERDICT_TOKENS:
-                if head.lower().startswith(token):
-                    head = head[len(token):]
-                    break
-            # Anything after the verdict token is the rationale; flatten
-            # newlines and tabs so the audit row is single-line.
-            text = head.strip(" :—-\n\t").replace("\n", " ").replace("\t", " ")
+        text = _reason_from_str(raw)
 
     if not text:
         return _REASON_DEFAULT_PASS if verdict == "pass" else _REASON_DEFAULT_FAIL
-
     # Collapse runs of whitespace so the audit body is compact.
     text = " ".join(text.split())
     if len(text) > _REASON_MAX_CHARS:
