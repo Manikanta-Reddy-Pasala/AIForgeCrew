@@ -4,8 +4,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   DndContext, DragEndEvent, DragOverEvent, DragOverlay, DragStartEvent,
   PointerSensor, useSensor, useSensors, useDroppable, closestCorners,
+  useDraggable,
 } from '@dnd-kit/core';
-import { useDraggable } from '@dnd-kit/core';
 import { toast } from 'sonner';
 import { api } from '../api';
 import { Icon } from '../icons';
