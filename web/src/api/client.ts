@@ -180,7 +180,7 @@ export const api = {
     if (!r.ok) {
       let detail = '';
       try { const b = await r.json(); detail = b?.detail || b?.error || ''; } catch { /* ignore */ }
-      throw new Error(`${r.status} ${r.statusText}${detail ? ` — ${detail}` : ''}`);
+      throw new Error(`${r.status} ${r.statusText}${detail ? ' — ' + detail : ''}`);
     }
     return r.json();
   },

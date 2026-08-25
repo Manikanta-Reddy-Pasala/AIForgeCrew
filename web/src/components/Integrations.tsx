@@ -65,7 +65,7 @@ export function ConfluenceCard() {
         let extra = '';
         if (r.denied_reason) extra = ` [${r.denied_reason}]`;
         else if (r.detail) extra = ` — ${r.detail}`;
-        toast.error(`${r.error || 'Test failed'} (${r.auth} auth)${extra}${r.hint ? ` — ${r.hint}` : ''}`, { duration: 14000 });
+        toast.error(`${r.error || 'Test failed'} (${r.auth} auth)${extra}${r.hint ? ' — ' + r.hint : ''}`, { duration: 14000 });
       }
     } catch (e: any) {
       toast.error(`Test failed: ${e.message}`);
@@ -167,7 +167,7 @@ export function JiraCard() {
         let extra = '';
         if (r.denied_reason) extra = ` [${r.denied_reason}]`;
         else if (r.detail) extra = ` — ${r.detail}`;
-        toast.error(`${r.error || 'Test failed'} (${r.auth} auth)${extra}${r.hint ? ` — ${r.hint}` : ''}`, { duration: 14000 });
+        toast.error(`${r.error || 'Test failed'} (${r.auth} auth)${extra}${r.hint ? ' — ' + r.hint : ''}`, { duration: 14000 });
       }
     } catch (e: any) {
       toast.error(`Test failed: ${e.message}`);
@@ -266,7 +266,7 @@ export function GitlabCard() {
       if (r.ok) toast.success(`Connected to ${r.base_url || 'GitLab'} as ${r.user || '?'} (${r.auth} auth)`);
       else {
         const extra = r.detail ? ` — ${r.detail}` : '';
-        toast.error(`${r.error || 'Test failed'} (${r.auth} auth)${extra}${r.hint ? ` — ${r.hint}` : ''}`, { duration: 14000 });
+        toast.error(`${r.error || 'Test failed'} (${r.auth} auth)${extra}${r.hint ? ' — ' + r.hint : ''}`, { duration: 14000 });
       }
     } catch (e: any) {
       toast.error(`Test failed: ${e.message}`);
@@ -380,7 +380,7 @@ export function EmailCard() {
         ].filter(Boolean);
         toast.success(`Connected — ${parts.join(' · ') || 'ok'}`);
       } else {
-        toast.error(`${r.error || 'Test failed'}${r.hint ? ` — ${r.hint}` : ''}`, { duration: 14000 });
+        toast.error(`${r.error || 'Test failed'}${r.hint ? ' — ' + r.hint : ''}`, { duration: 14000 });
       }
     } catch (e: any) {
       toast.error(`Test failed: ${e.message}`);

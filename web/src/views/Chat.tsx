@@ -772,7 +772,7 @@ export default function Chat() {
       if (evt.type === 'auto_approved') {
         setLiveTurn(prev => prev ? { ...prev, steps: [...prev.steps,
           { kind: 'thought' as const, role: 'system',
-            text: `⚡ auto-approved ${evt.name} (flag: ${evt.flag}${evt.scope ? ` · ${evt.scope}` : ''})` }] } : prev);
+            text: `⚡ auto-approved ${evt.name} (flag: ${evt.flag}${evt.scope ? ' · ' + evt.scope : ''})` }] } : prev);
         return;
       }
 
@@ -1045,7 +1045,7 @@ export default function Chat() {
         let detail = '';
         try { const b = await res.json(); detail = b?.detail || b?.error || ''; } catch { /* ignore */ }
         try { if (!detail) detail = await res.text(); } catch { /* ignore */ }
-        throw new Error(`${res.status} ${res.statusText}${detail ? ` — ${detail}` : ''}`);
+        throw new Error(`${res.status} ${res.statusText}${detail ? ' — ' + detail : ''}`);
       }
 
       streamOpened = true;

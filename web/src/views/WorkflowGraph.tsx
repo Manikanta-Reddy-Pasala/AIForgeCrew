@@ -377,9 +377,9 @@ export default function WorkflowGraph() {
           // Tooltip lists exactly what this stage used + how it was chosen.
           const ctxTip = ctxN
             ? '\nContext used:'
-              + (n.skills || []).map(s => `\n  • skill: ${s.name}${s.why ? ` (${s.why})` : ''}`).join('')
-              + (n.workflows || []).map(w => `\n  • workflow: ${w.name}${w.why ? ` (${w.why})` : ''}`).join('')
-              + (n.rules || []).map(r => `\n  • rule: ${r.name}${r.source ? ` (${r.source})` : ''}`).join('')
+              + (n.skills || []).map(s => `\n  • skill: ${s.name}${s.why ? ' (' + s.why + ')' : ''}`).join('')
+              + (n.workflows || []).map(w => `\n  • workflow: ${w.name}${w.why ? ' (' + w.why + ')' : ''}`).join('')
+              + (n.rules || []).map(r => `\n  • rule: ${r.name}${r.source ? ' (' + r.source + ')' : ''}`).join('')
             : '';
           return (
             <g key={n.id} transform={`translate(${p.x},${p.y})`}>
