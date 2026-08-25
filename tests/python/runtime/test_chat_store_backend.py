@@ -1,9 +1,7 @@
-"""chat_store backend SELECTION + SQLite round-trip.
+"""chat_store backend selection + SQLite round-trip.
 
-The PG impl needs a live Postgres to fully exercise (mirrors the tickets
-pg_backend, which is likewise selection-tested only). Here we assert the
-factory picks the right backend class from the env, and that the SQLite
-path still round-trips end to end.
+SQLite-only build: the backend is always the embedded SQLite impl. Here we
+assert the factory picks it and that the SQLite path round-trips end to end.
 """
 from __future__ import annotations
 
@@ -31,28 +29,6 @@ def test_sqlite_selected_when_no_pg(cs):
     assert cs._backend().name == "sqlite"
 
 
-def test_pg_selected_when_pg_url_set(cs, monkeypatch):
-    from aiforge_core.config import env
-    monkeypatch.setattr(env, "AIFORGE_USE_SQLITE", False, raising=False)
-    monkeypatch.setattr(env, "AIFORGE_PG_URL",
-                        "postgresql://u@127.0.0.1:5432/db", raising=False)
-    # WHY the _conn stub: _backend() now PROBES the DSN with a real connection
-    # and degrades to embedded SQLite when Postgres is unreachable (single-mode
-    # SQLite stacks have no PG running). That is deliberate product behaviour,
-    # so this selection test stubs the probe instead of requiring a live
-    # server — a unit test must never depend on a running database.
-    import contextlib
-
-    @contextlib.contextmanager
-    def _fake_conn(self):
-        yield None
-
-    monkeypatch.setattr(cs._PgChatStore, "_conn", _fake_conn)
-    cs.reset_backend_for_tests()
-    be = cs._backend()
-    assert isinstance(be, cs._PgChatStore)
-    assert be.name == "postgres"
-    assert be.dsn == "postgresql://u@127.0.0.1:5432/db"
 
 
 def test_sqlite_session_message_roundtrip(cs):

@@ -7,10 +7,7 @@ from __future__ import annotations
 
 import threading
 
-from aiforge_core.config import env as _env
-
 from ._helpers import _rank_search, _tokens
-from ._postgres import _PgChatStore
 from ._sqlite import _SqliteChatStore
 
 _BACKEND = None
@@ -18,32 +15,14 @@ _BACKEND_LOCK = threading.Lock()
 
 
 def _backend():
-    """Pick the chat backend once per process — Postgres when AIFORGE_PG_URL is
-    set (the data-driven stack), else embedded SQLite (the --lite default)."""
+    """The chat backend — embedded SQLite (SQLite-only build), created once
+    per process."""
     global _BACKEND
     if _BACKEND is not None:
         return _BACKEND
     with _BACKEND_LOCK:
         if _BACKEND is None:
-            if getattr(_env, "AIFORGE_USE_SQLITE", True):
-                _BACKEND = _SqliteChatStore()
-            else:
-                # Postgres configured but maybe unreachable (no Docker / PG down)
-                # → degrade to embedded SQLite instead of failing every chat
-                # turn. AIFORGE_REQUIRE_PG=1 hard-fails instead.
-                try:
-                    be = _PgChatStore(_env.AIFORGE_PG_URL)
-                    with be._conn():                   # probe: real connection
-                        pass
-                    _BACKEND = be
-                except Exception as exc:  # noqa: BLE001
-                    import os
-                    if os.environ.get("AIFORGE_REQUIRE_PG") == "1":
-                        raise
-                    import logging
-                    logging.getLogger("aiforge.chat").warning(
-                        "Postgres unreachable (%s) — chat using embedded SQLite", exc)
-                    _BACKEND = _SqliteChatStore()
+            _BACKEND = _SqliteChatStore()
     return _BACKEND
 
 

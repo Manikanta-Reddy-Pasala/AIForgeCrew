@@ -1,7 +1,4 @@
 import importlib
-import os
-
-import pytest
 
 
 def _reload_env(monkeypatch, **env):
@@ -19,17 +16,16 @@ def test_default_is_sqlite(monkeypatch):
     assert envmod.AIFORGE_PG_URL is None
 
 
-def test_pg_url_selects_postgres(monkeypatch):
+def test_sqlite_only_ignores_pg_url(monkeypatch):
+    # SQLite-only build: a stray AIFORGE_PG_URL never flips the backend.
     envmod = _reload_env(monkeypatch, AIFORGE_PG_URL="postgresql://x/y")
-    assert envmod.AIFORGE_USE_SQLITE is False
-    assert envmod.AIFORGE_PG_URL == "postgresql://x/y"
+    assert envmod.AIFORGE_USE_SQLITE is True
+    assert envmod.AIFORGE_PG_URL is None
 
 
-def test_both_backends_satisfy_protocol():
+def test_sqlite_backend_satisfies_protocol():
     from aiforge_core.tickets.backends.base import StoreBackend
-    from aiforge_core.tickets.backends.pg_backend import PgBackend
     from aiforge_core.tickets.backends.sqlite_backend import SqliteBackend
     proto = [m for m in dir(StoreBackend) if not m.startswith("_")]
-    for be in (PgBackend, SqliteBackend):
-        missing = [m for m in proto if not hasattr(be, m)]
-        assert missing == [], f"{be.__name__} missing {missing}"
+    missing = [m for m in proto if not hasattr(SqliteBackend, m)]
+    assert missing == [], f"SqliteBackend missing {missing}"

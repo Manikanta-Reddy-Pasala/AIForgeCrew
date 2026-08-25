@@ -1,16 +1,11 @@
-"""Scheduled-jobs store — backend-neutral (SQLite or Postgres).
+"""Scheduled-jobs store — embedded SQLite (SQLite-only build).
 
-Same public function API + return shapes regardless of backend; the backend is
-chosen ONCE per process by ``AIFORGE_PG_URL`` (the data-driven switch), exactly
-like the tickets + chat stores. SQLite (path ``$AIFORGE_JOBS_DB_PATH``, default
-``$AIFORGE_CONFIG_DIR/jobs.db``) is the ``--lite`` default; Postgres takes over
-in the docker/hybrid stack so scheduled jobs live beside tickets, not in a
-stray ``.db`` file.
+SQLite path ``$AIFORGE_JOBS_DB_PATH`` (default ``$AIFORGE_CONFIG_DIR/jobs.db``).
 
 Timestamps are naive server-LOCAL ISO-8601 strings (second precision) — matching
-the spec's cron semantics ("8am" = local 8am). They are stored as TEXT in BOTH
-backends (even Postgres) so lexicographic comparison == chronological and the
-exact string round-trips. Lexicographic comparison == chronological, with one
+the spec's cron semantics ("8am" = local 8am). They are stored as TEXT so
+lexicographic comparison == chronological and the exact string round-trips.
+Lexicographic comparison == chronological, with one
 accepted edge: during a DST fall-back hour the wall clock (and thus the string)
 repeats; the recompute-from-now in mark_fired prevents double-fires, so the
 worst case is a fire shifted by up to an hour once a year.
@@ -23,7 +18,6 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime
 
-from aiforge_core.config import env as _env
 from aiforge_core.config.paths import config_dir
 
 _SELECT_FROM_JOBS_WHERE_ID = 'SELECT * FROM jobs WHERE id=?'
@@ -196,153 +190,6 @@ class _SqliteJobStore:
             return (cur.rowcount or 0) > 0
 
 
-# ══════════════════════════════ Postgres backend ═════════════════════════════
-
-_PG_DDL = """
-CREATE TABLE IF NOT EXISTS jobs (
-  id bigserial PRIMARY KEY,
-  name text NOT NULL,
-  cron text NOT NULL,
-  ticket_title text NOT NULL,
-  ticket_body text NOT NULL,
-  project text,
-  enabled boolean NOT NULL DEFAULT TRUE,
-  last_run_at text,
-  next_run_at text NOT NULL,
-  last_error text,
-  created_at text NOT NULL,
-  kind text NOT NULL DEFAULT 'ticket',
-  script_path text
-);
-"""
-
-# Idempotent column adds for a jobs table created before the ``script`` kind.
-_PG_MIGRATE = (
-    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS kind text NOT NULL "
-    "DEFAULT 'ticket';"
-    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS script_path text;"
-)
-
-
-class _PgJobStore:
-    name = "postgres"
-
-    def __init__(self, dsn: str):
-        self.dsn = dsn
-        self._schema_ready = False
-        self._schema_lock = threading.Lock()
-
-    @contextmanager
-    def _conn(self):
-        import psycopg
-        c = psycopg.connect(self.dsn, autocommit=False, connect_timeout=5,
-                            options="-c statement_timeout=15000")
-        try:
-            self._ensure_schema(c)
-            yield c
-        finally:
-            c.close()
-
-    def _ensure_schema(self, c) -> None:
-        if self._schema_ready:
-            return
-        with self._schema_lock:
-            if self._schema_ready:
-                return
-            try:
-                with c.cursor() as cur:
-                    cur.execute(_PG_DDL)
-                    cur.execute(_PG_MIGRATE)
-                c.commit()
-                # Only mark ready on SUCCESS — else a failed DDL was masked as
-                # "schema ready", and every later query hit a missing table.
-                self._schema_ready = True
-            except Exception:
-                c.rollback()
-
-    def _cur(self, c):
-        from psycopg.rows import dict_row
-        return c.cursor(row_factory=dict_row)
-
-    def create(self, *, name, cron, ticket_title, ticket_body,
-               project=None, next_run_at, kind="ticket",
-               script_path=None) -> dict:
-        next_run_at = _norm_ts(next_run_at)
-        with self._conn() as c, self._cur(c) as cur:
-            cur.execute(
-                "INSERT INTO jobs (name, cron, ticket_title, ticket_body, "
-                "project, next_run_at, created_at, kind, script_path) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
-                (name, cron, ticket_title, ticket_body, project,
-                 next_run_at, now_iso(), kind, script_path))
-            r = cur.fetchone()
-            c.commit()
-        return _row(r)
-
-    def get(self, job_id) -> "dict | None":
-        with self._conn() as c, self._cur(c) as cur:
-            cur.execute("SELECT * FROM jobs WHERE id=%s", (job_id,))
-            r = cur.fetchone()
-        return _row(r) if r else None
-
-    def list_jobs(self) -> list[dict]:
-        with self._conn() as c, self._cur(c) as cur:
-            cur.execute("SELECT * FROM jobs ORDER BY id")
-            rs = cur.fetchall()
-        return [_row(r) for r in rs]
-
-    def update(self, job_id, fields) -> "dict | None":
-        # Postgres 'enabled' is a real boolean — keep Python bools as-is
-        # (unlike SQLite, which needs 0/1 ints).
-        sets = ", ".join(f"{k}=%s" for k in fields)
-        vals = list(fields.values())
-        with self._conn() as c, self._cur(c) as cur:
-            cur.execute(f"UPDATE jobs SET {sets} WHERE id=%s RETURNING *",
-                        (*vals, job_id))
-            r = cur.fetchone()
-            c.commit()
-        return _row(r) if r else None
-
-    def delete(self, job_id) -> bool:
-        with self._conn() as c, c.cursor() as cur:
-            cur.execute("DELETE FROM jobs WHERE id=%s", (job_id,))
-            deleted = (cur.rowcount or 0) > 0
-            c.commit()
-        return deleted
-
-    def due_jobs(self, now) -> list[dict]:
-        with self._conn() as c, self._cur(c) as cur:
-            cur.execute("SELECT * FROM jobs WHERE enabled=TRUE AND next_run_at<=%s "
-                        "ORDER BY id", (now,))
-            rs = cur.fetchall()
-        return [_row(r) for r in rs]
-
-    def mark_fired(self, job_id, *, last_run_at, next_run_at,
-                   last_error=None) -> None:
-        last_run_at = _norm_ts(last_run_at)
-        next_run_at = _norm_ts(next_run_at)
-        with self._conn() as c, c.cursor() as cur:
-            cur.execute(
-                "UPDATE jobs SET last_run_at=%s, next_run_at=%s, last_error=%s "
-                "WHERE id=%s", (last_run_at, next_run_at, last_error, job_id))
-            c.commit()
-
-    def claim(self, job_id, *, expected_next_run_at, last_run_at, next_run_at,
-              last_error=None) -> bool:
-        """Atomic CAS advance (see the SQLite backend). The conditional UPDATE is
-        the DB-level claim: across processes/replicas exactly one racer's WHERE
-        matches, so only it fires."""
-        with self._conn() as c, c.cursor() as cur:
-            cur.execute(
-                "UPDATE jobs SET last_run_at=%s, next_run_at=%s, last_error=%s "
-                "WHERE id=%s AND next_run_at=%s",
-                (_norm_ts(last_run_at), _norm_ts(next_run_at), last_error,
-                 job_id, _norm_ts(expected_next_run_at)))
-            claimed = (cur.rowcount or 0) > 0
-            c.commit()
-            return claimed
-
-
 # ═══════════════════════════ backend selection ═══════════════════════════════
 
 _BACKEND = None
@@ -355,10 +202,7 @@ def _backend():
         return _BACKEND
     with _BACKEND_LOCK:
         if _BACKEND is None:
-            if getattr(_env, "AIFORGE_USE_SQLITE", True):
-                _BACKEND = _SqliteJobStore()
-            else:
-                _BACKEND = _PgJobStore(_env.AIFORGE_PG_URL)
+            _BACKEND = _SqliteJobStore()
     return _BACKEND
 
 

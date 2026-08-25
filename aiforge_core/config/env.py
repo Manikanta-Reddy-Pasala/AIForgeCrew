@@ -47,24 +47,17 @@ def default_pg_dsn() -> str:
 AIFORGE_DSN = os.environ.get("AIFORGE_DSN") or default_pg_dsn()
 
 # ─────────────────────────── storage backend ───────────────────────────
-# SQLite-ONLY by default (single-mode build). Postgres is OPT-IN: it is used
-# ONLY when AIFORGE_KEEP_PG=1 AND a postgres URL is given. This means a stray
-# AIFORGE_PG_URL / AIFORGE_DSN left over from an old hybrid setup (shell export,
-# .env, ~/.aiforge/runtime.env) can NEVER flip the app to a Postgres that no
-# longer exists — killing the "Postgres unreachable" spam at the source.
-_KEEP_PG = os.environ.get("AIFORGE_KEEP_PG") == "1"
-_pg_candidate = os.environ.get("AIFORGE_PG_URL") or (
-    AIFORGE_DSN if str(AIFORGE_DSN).startswith(("postgres://", "postgresql://"))
-    and os.environ.get("AIFORGE_FORCE_PG") == "1"
-    else None
-)
-AIFORGE_PG_URL = _pg_candidate if _KEEP_PG else None
+# SQLite-ONLY build. Postgres has been removed, so a stray AIFORGE_PG_URL /
+# AIFORGE_DSN left over from an old hybrid setup (shell export, .env,
+# ~/.aiforge/runtime.env) can NEVER flip the app to a Postgres that no longer
+# exists — killing the "Postgres unreachable" spam at the source.
+AIFORGE_PG_URL = None
 AIFORGE_DB_PATH = os.environ.get(
     "AIFORGE_DB_PATH",
     os.path.join(str(config_dir()),
                  "aiforge.db"),
 )
-AIFORGE_USE_SQLITE = AIFORGE_PG_URL is None
+AIFORGE_USE_SQLITE = True
 
 # ─────────────────────────── Inference endpoints ────────────────────────
 LM_STUDIO_BASE_URL = os.environ.get("AIFORGE_LM_BASE_URL", "http://127.0.0.1:1234/v1")

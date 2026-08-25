@@ -246,16 +246,6 @@ def test_memory_sources_crud_and_index(client, monkeypatch, tmp_path):
     assert c.delete(f"/api/memory/sources/{sid}").status_code == 204
 
 
-def test_memory_stats_neo4j_routing(client, monkeypatch):
-    c, _ = client
-    import aiforge_core.api.api as api
-    monkeypatch.setattr("aiforge_core.memory.backend_select.memory_backend",
-                        lambda: "neo4j")
-    monkeypatch.setattr(api._r_memory, "_neo4j_stats",
-                        lambda: {"backend": "neo4j", "total": 7, "wings": []})
-    r = c.get("/api/memory/stats")
-    assert r.status_code == 200
-    assert r.json() == {"backend": "neo4j", "total": 7, "wings": []}
 
 
 def test_chat_pipeline_ticket(client):

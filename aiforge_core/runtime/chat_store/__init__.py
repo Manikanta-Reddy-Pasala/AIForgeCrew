@@ -1,19 +1,13 @@
 """Persistent chat sessions for the Claude-style multi-conversation UI.
 
-Backend-neutral: the SAME public function API routes to a SQLite impl
-(embedded, the ``--lite`` default) OR a Postgres impl, chosen ONCE per process
-by ``AIFORGE_PG_URL`` (same switch as the tickets store). The public functions
-(create_session, add_message, get_messages, search_messages, …) and their
-return shapes are identical across backends, so every caller (api.py,
-chat_agent.py, chat_summary.py, chat_media.py) is unchanged.
-
-SQLite path lives at ``$AIFORGE_CHAT_DB_PATH`` (default
-``$AIFORGE_CONFIG_DIR/chat.db``). On the compose deploy the chat tables live
-in the shared Postgres so conversations survive redeploys alongside tickets.
+SQLite-only build: the public function API (create_session, add_message,
+get_messages, search_messages, …) is backed by the embedded SQLite impl.
+The SQLite DB lives at ``$AIFORGE_CHAT_DB_PATH`` (default
+``$AIFORGE_CONFIG_DIR/chat.db``).
 
 This module was split (grouped by concern) into ``_helpers`` / ``_sqlite`` /
-``_postgres`` / ``_api`` submodules; this package re-exports the full former
-public surface so ``from aiforge_core.runtime import chat_store`` and every
+``_api`` submodules; this package re-exports the full public surface so
+``from aiforge_core.runtime import chat_store`` and every
 ``chat_store.<name>`` attribute access is unchanged.
 """
 from __future__ import annotations
@@ -51,7 +45,6 @@ from ._helpers import (
     _session_out,
     _tokens,
 )
-from ._postgres import _PG_DDL, _PgChatStore
 from ._sqlite import _NOW, _SQLITE_DDL, _SqliteChatStore
 
 __all__ = [

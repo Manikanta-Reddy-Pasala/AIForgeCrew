@@ -1,7 +1,6 @@
-"""jobs store backend SELECTION + SQLite round-trip.
+"""jobs store backend selection + SQLite round-trip.
 
-Same shape as test_chat_store_backend: the PG impl needs a live Postgres to
-fully verify; here we assert selection + the SQLite path still round-trips.
+SQLite-only build: the backend is always the embedded SQLite impl.
 """
 from __future__ import annotations
 
@@ -36,16 +35,6 @@ def test_sqlite_selected_when_no_pg(js):
     assert js._backend().name == "sqlite"
 
 
-def test_pg_selected_when_pg_url_set(js, monkeypatch):
-    from aiforge_core.config import env
-    monkeypatch.setattr(env, "AIFORGE_USE_SQLITE", False, raising=False)
-    monkeypatch.setattr(env, "AIFORGE_PG_URL",
-                        "postgresql://u@127.0.0.1:5432/db", raising=False)
-    js.reset_backend_for_tests()
-    be = js._backend()
-    assert isinstance(be, js._PgJobStore)
-    assert be.name == "postgres"
-    assert be.dsn == "postgresql://u@127.0.0.1:5432/db"
 
 
 def test_sqlite_crud_roundtrip(js):

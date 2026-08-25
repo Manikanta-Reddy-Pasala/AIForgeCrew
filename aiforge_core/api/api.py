@@ -126,7 +126,7 @@ def _guard_and_announce_backends() -> None:
     one line naming every backend. The guard is intentionally hard-fail; the
     log is soft (never crashes boot)."""
     from aiforge_core.config import backends
-    backends.require_data_backends()   # hard-fail on misconfigured data mode
+    backends.require_data_backends()   # no-op (SQLite-only build)
     backends.boot_log()                # soft one-line announcement
 
 

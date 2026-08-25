@@ -17,28 +17,16 @@ def test_default_is_sqlite(monkeypatch):
     assert bs.embedded() is True
 
 
-def test_neo4j_env_selects_neo4j(monkeypatch):
-    bs = _reload(monkeypatch, NEO4J_URI="bolt://host:7687")
-    assert bs.memory_backend() == "neo4j"
-    assert bs.embedded() is False
-
-
-def test_aiforge_neo4j_env_selects_neo4j(monkeypatch):
-    bs = _reload(monkeypatch, AIFORGE_NEO4J_URI="bolt://host:7687")
-    assert bs.memory_backend() == "neo4j"
-
-
-def test_pg_env_selects_postgres(monkeypatch):
-    bs = _reload(monkeypatch, AIFORGE_PG_URL="postgresql://x/y")
-    assert bs.memory_backend() == "postgres"
-
-
-def test_explicit_override_wins(monkeypatch):
-    bs = _reload(monkeypatch, AIFORGE_MEMORY_BACKEND="sqlite",
+def test_sqlite_only_ignores_legacy_backend_env(monkeypatch):
+    # SQLite-only build: the legacy Postgres/Neo4j backend env vars no longer
+    # switch the memory backend — it is always embedded SQLite.
+    bs = _reload(monkeypatch, AIFORGE_PG_URL="postgresql://x/y",
                  NEO4J_URI="bolt://host:7687")
     assert bs.memory_backend() == "sqlite"
+    assert bs.embedded() is True
 
 
-def test_explicit_neo4j_without_env(monkeypatch):
-    bs = _reload(monkeypatch, AIFORGE_MEMORY_BACKEND="neo4j")
-    assert bs.memory_backend() == "neo4j"
+def test_explicit_override_is_ignored(monkeypatch):
+    bs = _reload(monkeypatch, AIFORGE_MEMORY_BACKEND="postgres")
+    assert bs.memory_backend() == "sqlite"
+    assert bs.embedded() is True
