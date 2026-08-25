@@ -250,6 +250,15 @@ export const api = {
       body: JSON.stringify({ enabled }),
     }),
 
+  getCompaction: () =>
+    j<{ disabled: boolean }>('/runtime/compaction'),
+  setCompaction: (disabled: boolean) =>
+    j<{ disabled: boolean; persisted: boolean }>('/runtime/compaction', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ disabled }),
+    }),
+
   // Test an OpenAI-compatible endpoint reachability. `insecure_tls` skips
   // TLS verification for this probe (self-signed / internal HTTPS box).
   // `role` lets the server fill a blank base_url/api_key from that role's

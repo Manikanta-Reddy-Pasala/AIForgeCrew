@@ -160,6 +160,18 @@ export default function Chat() {
     catch { setFullPipeline(!next); }   // revert on failure
   }
 
+  // Compaction toggle: disable the daily memory-compaction pass entirely.
+  // Persisted server-side (runtime.env); takes effect on the next boot.
+  const [compactionDisabled, setCompactionDisabled] = useState(false);
+  useEffect(() => {
+    api.getCompaction().then(r => setCompactionDisabled(!!r.disabled)).catch(() => {});
+  }, []);
+  async function toggleCompaction(next: boolean) {
+    setCompactionDisabled(next);
+    try { await api.setCompaction(next); }
+    catch { setCompactionDisabled(!next); }   // revert on failure
+  }
+
   // Rename state: { id, value }
   const [renaming, setRenaming] = useState<{ id: number; value: string } | null>(null);
 
@@ -1526,6 +1538,12 @@ export default function Chat() {
                       Force full pipeline
                     </label>
                   )}
+                  <label className="chat-menu-item" title="Turn off the daily memory-compaction pass (recompact + dedupe + evening fold). Takes effect on next restart."
+                         style={menuItem}>
+                    <input type="checkbox" checked={compactionDisabled}
+                           onChange={e => toggleCompaction(e.target.checked)} disabled={busy} />
+                    Disable memory compaction
+                  </label>
                   {activeSession && (
                     <button style={menuBtn} onClick={() => { setMenuOpen(false); openCheckpoints(); }}>
                       ↶ Checkpoints

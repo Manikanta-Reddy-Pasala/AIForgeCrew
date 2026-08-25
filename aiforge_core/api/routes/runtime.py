@@ -155,6 +155,27 @@ def set_force_full_pipeline(payload: dict) -> dict:
     return {"enabled": enabled, "persisted": True}
 
 
+@router.get("/api/runtime/compaction")
+def get_compaction() -> dict:
+    """Whether the daily memory-compaction pass is disabled."""
+    return {"disabled": _env_truthy("AIFORGE_COMPACT_DISABLE")}
+
+
+@router.put("/api/runtime/compaction")
+def set_compaction(payload: dict) -> dict:
+    """Enable/disable the daily memory-compaction pass (recompact + dedupe +
+    the evening fold). Takes effect on the next process boot; the running
+    scheduler keeps its current registration until then."""
+    disabled = bool(payload.get("disabled"))
+    val = "1" if disabled else "0"
+    os.environ["AIFORGE_COMPACT_DISABLE"] = val
+    try:
+        _persist_env("AIFORGE_COMPACT_DISABLE", val)
+    except Exception:  # noqa: BLE001
+        pass
+    return {"disabled": disabled, "persisted": True}
+
+
 @router.post("/api/runtime/session_param", responses={400: {"description": "Bad request"}})
 def session_param(payload: dict) -> dict:
     """Per-role LLM param tuning at runtime (GA /session.key=value, commit
