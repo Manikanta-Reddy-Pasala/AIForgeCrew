@@ -872,6 +872,92 @@ def _may_extend(st, n):
     return True
 
 
+def _step_cap_guard(st, n):
+    """Runaway step-cap check: a turn still producing new work extends its step
+    budget (after a forced condense); otherwise stop, naming the knob that
+    actually applied (Quick / unattended / safety cap). Returns "return" to end
+    the turn, or None to continue."""
+    if st.capped and n > st.safety:
+        # Runaway step cap. Before giving up, offer an extension to a turn
+        # that is still producing new work — condense the history first so
+        # the extra steps run in a clean window rather than a bloated one.
+        if _may_extend(st, n):
+            st.safety += st.cap_base
+            _before_ext = len(st.convo)
+            st.convo = _compact_convo(st.convo, keep_recent=8, role=st.role,
+                                   complete_fn=st.complete_fn,
+                                   session_id=st.session_id, force=True)
+            if len(st.convo) < _before_ext:
+                st.read_sigs_seen.clear()   # results dropped → re-reads are valid
+            _did = ("condensed the history and " if len(st.convo) < _before_ext
+                    else "")
+            yield {"type": "thought", "role": "system",
+                   "text": f"⏳ still making progress — {_did}extended the "
+                           f"step budget to {st.safety} "
+                           f"({st.extensions_used}/{st.ext_budget})"}
+        else:
+            _fire_stop("cap", st.cwd)
+            # Name the knob that ACTUALLY stopped this run. A Quick-mode
+            # turn is bounded by its caller's max_steps, so pointing the
+            # user at the Settings cap sends them to a number that had no
+            # say — and with the cap set to 0 that number is already off.
+            if st.caller_cap is not None:
+                _why = (f"(stopped: used up Quick mode's {st.safety}-step "
+                        "budget — send it again with Quick off, or raise "
+                        "AIFORGE_CHAT_QUICK_STEPS)")
+            elif st.unattended:
+                # The operator may have set the step cap to 0; saying
+                # "raise the step cap" would send them to a knob that is
+                # already off and had no say in this stop.
+                _why = (f"(stopped: hit the {st.safety}-step cap for runs with "
+                        "nobody watching — raise the background step cap in "
+                        "Settings → Agent limits, or "
+                        "AIFORGE_CHAT_UNATTENDED_CAP)")
+            else:
+                _why = ("(stopped: hit the runaway safety cap — raise the "
+                        "step cap in Settings → Agent limits, or "
+                        "AIFORGE_CHAT_SAFETY_CAP; 0 = no limit — if this "
+                        "was real work)")
+            yield {"type": "message", "text": _why}
+            yield {"type": "done"}
+            return
+    return None
+
+
+def _deadline_guard(st, n):
+    """Wall-clock turn-deadline check: a turn still landing new work buys another
+    time slice (after a forced condense); otherwise stop. Returns "return" to end
+    the turn, or None to continue."""
+    if st.turn_deadline is not None and time.monotonic() > st.turn_deadline:
+        # Same deal as the step cap: a turn still landing new work buys
+        # another slice of wall clock instead of losing everything.
+        if _may_extend(st, n):
+            st.turn_deadline = time.monotonic() + st.turn_budget_s
+            _before_ext = len(st.convo)
+            st.convo = _compact_convo(st.convo, keep_recent=8, role=st.role,
+                                   complete_fn=st.complete_fn,
+                                   session_id=st.session_id, force=True)
+            if len(st.convo) < _before_ext:
+                st.read_sigs_seen.clear()
+            _did = ("condensed the history and " if len(st.convo) < _before_ext
+                    else "")
+            yield {"type": "thought", "role": "system",
+                   "text": f"⏳ still making progress — {_did}extended the "
+                           f"turn by {int(st.turn_budget_s)}s "
+                           f"({st.extensions_used}/{st.ext_budget})"}
+        else:
+            _fire_stop("deadline", st.cwd)
+            yield {"type": "message",
+                   "text": f"(stopped: hit the {int(st.turn_budget_s)}s turn "
+                           "time budget — raise the turn deadline in "
+                           "Settings → Agent limits (or "
+                           "AIFORGE_CHAT_TURN_DEADLINE_S) if this was real "
+                           "long-running work)"}
+            yield {"type": "done"}
+            return
+    return None
+
+
 def run_chat_agent(
     messages: list[dict], *,
     cwd: str,
@@ -1102,53 +1188,18 @@ def run_chat_agent(
         action_counts=action_counts, recent_outputs=recent_outputs,
         read_sigs_seen=read_sigs_seen, read_sigs_ever=read_sigs_ever,
         cap_base=_cap_base, ext_budget=_ext_budget, wt_fp0=_wt_fp0,
-        turn_budget_s=_turn_budget_s, long_chain_help=_long_chain_help, cwd=cwd)
+        turn_budget_s=_turn_budget_s, long_chain_help=_long_chain_help, cwd=cwd,
+        capped=_capped, caller_cap=_caller_cap, unattended=_unattended,
+        role=role, complete_fn=complete_fn, session_id=session_id,
+        builder=builder, strict_finish=strict_finish, plan_mode=plan_mode,
+        analyze_mode=analyze_mode, readonly_mode=readonly_mode,
+        scope_globs=_scope_globs, asks=_asks, bundle=_bundle, meter=_meter,
+        native_on=_native_on)
     while True:
         n += 1
-        if _capped and n > st.safety:
-            # Runaway step cap. Before giving up, offer an extension to a turn
-            # that is still producing new work — condense the history first so
-            # the extra steps run in a clean window rather than a bloated one.
-            if _may_extend(st, n):
-                st.safety += _cap_base
-                _before_ext = len(st.convo)
-                st.convo = _compact_convo(st.convo, keep_recent=8, role=role,
-                                       complete_fn=complete_fn,
-                                       session_id=session_id, force=True)
-                if len(st.convo) < _before_ext:
-                    st.read_sigs_seen.clear()   # results dropped → re-reads are valid
-                _did = ("condensed the history and " if len(st.convo) < _before_ext
-                        else "")
-                yield {"type": "thought", "role": "system",
-                       "text": f"⏳ still making progress — {_did}extended the "
-                               f"step budget to {st.safety} "
-                               f"({st.extensions_used}/{_ext_budget})"}
-            else:
-                _fire_stop("cap", cwd)
-                # Name the knob that ACTUALLY stopped this run. A Quick-mode
-                # turn is bounded by its caller's max_steps, so pointing the
-                # user at the Settings cap sends them to a number that had no
-                # say — and with the cap set to 0 that number is already off.
-                if _caller_cap is not None:
-                    _why = (f"(stopped: used up Quick mode's {st.safety}-step "
-                            "budget — send it again with Quick off, or raise "
-                            "AIFORGE_CHAT_QUICK_STEPS)")
-                elif _unattended:
-                    # The operator may have set the step cap to 0; saying
-                    # "raise the step cap" would send them to a knob that is
-                    # already off and had no say in this stop.
-                    _why = (f"(stopped: hit the {st.safety}-step cap for runs with "
-                            "nobody watching — raise the background step cap in "
-                            "Settings → Agent limits, or "
-                            "AIFORGE_CHAT_UNATTENDED_CAP)")
-                else:
-                    _why = ("(stopped: hit the runaway st.safety cap — raise the "
-                            "step cap in Settings → Agent limits, or "
-                            "AIFORGE_CHAT_SAFETY_CAP; 0 = no limit — if this "
-                            "was real work)")
-                yield {"type": "message", "text": _why}
-                yield {"type": "done"}
-                return
+        _sig = yield from _step_cap_guard(st, n)
+        if _sig == "return":
+            return
         if session_id is not None and chat_cancel.is_cancelled(session_id):
             yield {"type": "error", "text": "stopped by user"}
             yield {"type": "done"}
@@ -1168,33 +1219,9 @@ def run_chat_agent(
         # below (before the model call). A second, earlier drain here used to win
         # the race and append an UNGUARDED user turn, creating two consecutive
         # user turns (breaks claude_local) — removed.
-        if st.turn_deadline is not None and time.monotonic() > st.turn_deadline:
-            # Same deal as the step cap: a turn still landing new work buys
-            # another slice of wall clock instead of losing everything.
-            if _may_extend(st, n):
-                st.turn_deadline = time.monotonic() + _turn_budget_s
-                _before_ext = len(st.convo)
-                st.convo = _compact_convo(st.convo, keep_recent=8, role=role,
-                                       complete_fn=complete_fn,
-                                       session_id=session_id, force=True)
-                if len(st.convo) < _before_ext:
-                    st.read_sigs_seen.clear()
-                _did = ("condensed the history and " if len(st.convo) < _before_ext
-                        else "")
-                yield {"type": "thought", "role": "system",
-                       "text": f"⏳ still making progress — {_did}extended the "
-                               f"turn by {int(_turn_budget_s)}s "
-                               f"({st.extensions_used}/{_ext_budget})"}
-            else:
-                _fire_stop("deadline", cwd)
-                yield {"type": "message",
-                       "text": f"(stopped: hit the {int(_turn_budget_s)}s turn "
-                               "time budget — raise the turn deadline in "
-                               "Settings → Agent limits (or "
-                               "AIFORGE_CHAT_TURN_DEADLINE_S) if this was real "
-                               "long-running work)"}
-                yield {"type": "done"}
-                return
+        _sig = yield from _deadline_guard(st, n)
+        if _sig == "return":
+            return
         # Mid-run steering (Gap A): fold any user-injected guidance into the
         # working context as a user turn BEFORE the next model call, so the
         # agent adjusts course without a Stop + new turn. Surface it so the UI
