@@ -236,6 +236,40 @@ def providers_test(body: _ProviderTestBody) -> dict:
     return probe(base_url, api_key, insecure=insecure)
 
 
+class _NativeTestBody(_ProviderTestBody):
+    model: str | None = Field(
+        None, description="Model id to test; falls back to the saved model "
+                          "for `role` when omitted")
+
+
+@router.post("/api/providers/test-native")
+def providers_test_native(body: _NativeTestBody) -> dict:
+    """Native tool-calling test for a model: POSTs a real one-tool request to
+    ``{base_url}/chat/completions`` and reports whether the endpoint returns a
+    ``tool_calls`` reply (native FC works), plain content (the model ignores
+    tools), or an error. This is the diagnostic for "the model doesn't respond"
+    when native tool-calling is on — chat sends tools, so an endpoint that only
+    answers a plain {model,messages} request (like a bare curl) fails here.
+
+    Blank ``base_url`` / ``api_key`` / ``model`` fall back to the saved config
+    for ``role`` so the button works right after Save without re-typing.
+    """
+    from aiforge_core.llm.providers.openai_compatible import probe_native
+    base_url, api_key, insecure = _saved_role_credentials(
+        body.role, (body.base_url or "").strip(),
+        (body.api_key or "").strip() or None, bool(body.insecure_tls))
+    model = (body.model or "").strip()
+    if not model and body.role and body.role in _acfg.archetypes():
+        try:
+            model = (_acfg.resolve_litellm(body.role).get("model") or "").strip()
+        except Exception:  # noqa: BLE001
+            model = ""
+    logging.getLogger("aiforge.api").info(
+        "POST /api/providers/test-native role=%s base_url=%s model=%s tls=%s",
+        body.role, base_url, model, insecure)
+    return probe_native(base_url, model, api_key, insecure=insecure)
+
+
 @router.get("/api/agents/v2/providers")
 def agents_v2_providers() -> list[dict]:
     """Catalog payload for the Settings UI: each provider with its

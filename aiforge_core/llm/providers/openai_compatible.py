@@ -180,4 +180,96 @@ def probe(base_url: str, api_key: str | None = None,
     return {"ok": True, "models": _probe_models(payload)}
 
 
+_NATIVE_TOOL = [{"type": "function", "function": {
+    "name": "aiforge_ping",
+    "description": "Acknowledge readiness by echoing ack.",
+    "parameters": {"type": "object",
+                   "properties": {"ack": {"type": "string"}},
+                   "required": []}}}]
+
+
+def probe_native(base_url: str, model: str, api_key: str | None = None,
+                 timeout: float | None = None, insecure: bool = False) -> dict:
+    """Native tool-calling test-connection. POSTs a real one-tool request to
+    ``{base_url}/chat/completions`` — the EXACT url + shape the chat loop uses
+    (no ``_ensure_v1`` rewrite, unlike :func:`probe`) — under both
+    ``tool_choice`` modes, and reports what the endpoint actually returned so an
+    operator can SEE why native FC fails: a ``tool_calls`` reply (native works),
+    plain ``content`` (the model ignored the tool), or the error body/HTTP code.
+    Never raises.
+
+    This is what the Settings "Test native tools" button calls. It answers the
+    exact question ``_native._probe_native`` hides behind an optimistic default:
+    does THIS model, at THIS url, return tool_calls for a tools request?
+    """
+    import urllib.error
+    if not base_url or not base_url.strip():
+        return {"ok": False, "error": "base_url required"}
+    if not model or not model.strip():
+        return {"ok": False, "error": "model required"}
+    url = base_url.strip().rstrip("/") + "/chat/completions"
+    headers = {"Content-Type": "application/json",
+               "Accept": "application/json", "User-Agent": _user_agent()}
+    if api_key and api_key.strip() and api_key.strip() != _NO_TOKEN:
+        headers["Authorization"] = f"Bearer {api_key.strip()}"
+    skip_tls, tls_mode = _probe_tls_plan(url, insecure)
+    from .._ssl import context_for as _ssl_context_for
+    from .._ssl import insecure_context as _ssl_insecure
+    ctx = _ssl_insecure() if skip_tls else _ssl_context_for(url)
+    log.info("probe_native -> url=%s model=%s tls=%s", url, model, tls_mode)
+
+    results: dict = {}
+    for choice in ("auto", "required"):
+        body = json.dumps({
+            "model": model.strip(),
+            "messages": [{"role": "user",
+                          "content": "Call the aiforge_ping tool with ack='ok'."}],
+            "tools": _NATIVE_TOOL,
+            "tool_choice": choice,
+            "max_tokens": 64,
+        }).encode()
+        try:
+            req = urllib.request.Request(url, data=body, headers=headers,
+                                         method="POST")
+            with urllib.request.urlopen(
+                    req, timeout=_probe_timeout(timeout), context=ctx) as r:
+                payload = json.loads(r.read())
+            ch0 = (payload.get("choices") or [{}])[0]
+            msg = ch0.get("message") or {}
+            results[choice] = {
+                "ok": True,
+                "tool_calls": bool(msg.get("tool_calls")),
+                "finish_reason": ch0.get("finish_reason"),
+                "content_preview": (msg.get("content") or "")[:160],
+            }
+        except urllib.error.HTTPError as exc:
+            try:
+                err_body = exc.read()[:400].decode("utf-8", "replace")
+            except Exception:  # noqa: BLE001
+                err_body = ""
+            results[choice] = {"ok": False, "http": exc.code, "error": err_body}
+        except Exception as exc:  # noqa: BLE001
+            results[choice] = {"ok": False, "error": str(exc)[:400]}
+
+    got_tool_calls = any(r.get("tool_calls") for r in results.values())
+    # "auto" is the mode the RUNTIME uses; "required" is only the probe's forcing
+    # mode. Native FC is USABLE iff auto returns a tool_call.
+    auto = results.get("auto", {})
+    if auto.get("tool_calls"):
+        verdict = "native tool-calling works (tool_calls returned for tool_choice=auto)"
+    elif auto.get("ok"):
+        verdict = ("the endpoint answered but returned plain content, NOT a "
+                   "tool_call, for tool_choice=auto — this model ignores tools, "
+                   "so native tool-calling will not work here")
+    elif got_tool_calls:
+        verdict = ("tool_choice=auto failed but tool_choice=required returned a "
+                   "tool_call — the endpoint supports tools but not the 'auto' "
+                   "mode the runtime uses")
+    else:
+        verdict = ("no tool_call under either mode — see the error/http fields; "
+                   "the endpoint likely rejects the tools payload")
+    return {"ok": bool(auto.get("tool_calls")), "model": model.strip(),
+            "url": url, "verdict": verdict, "results": results}
+
+
 register_provider(OpenAICompatibleProvider())
