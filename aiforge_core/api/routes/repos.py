@@ -5,6 +5,8 @@ identical to the inline handlers.
 """
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
@@ -54,7 +56,7 @@ def repos_delete(name: str) -> dict:
 # ─────────────────────────── Repo standards ────────────────────────────
 @router.get("/api/repo/standards")
 def repo_standards_get(
-    name: str = Query(..., description="Repo name"),
+    name: Annotated[str, Query(description="Repo name")],
     worktree: str | None = None,
 ) -> dict:
     """Resolved per-project standards (commands + conventions)."""

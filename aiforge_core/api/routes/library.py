@@ -4,6 +4,8 @@ instruction library: list all, create from text or via the LLM, delete/clear.
 """
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Body, HTTPException
 
 router = APIRouter()
@@ -79,7 +81,7 @@ def library_list(kind: str) -> list[dict]:
 
 
 @router.post("/api/library/{kind}", status_code=201, responses={400: {"description": "Bad request"}, 404: {"description": "Not found"}})
-def library_create(kind: str, payload: dict = Body(...)) -> dict:
+def library_create(kind: str, payload: Annotated[dict, Body()]) -> dict:
     """Create/overwrite a skill / workflow / rule from text."""
     name = (payload.get("name") or "").strip()
     body = (payload.get("body") or "").strip()
@@ -152,7 +154,7 @@ _LIBRARY_GEN_PROMPT = {
 
 
 @router.post("/api/library/{kind}/generate", responses={400: {"description": "Bad request"}, 404: {"description": "Not found"}, 502: {"description": "Bad gateway"}})
-def library_generate(kind: str, payload: dict = Body(...)) -> dict:
+def library_generate(kind: str, payload: Annotated[dict, Body()]) -> dict:
     """Draft a skill / workflow / rule from a text description using the
     configured LLM. Returns the draft markdown for review before saving."""
     if kind not in _LIBRARY_GEN_PROMPT:

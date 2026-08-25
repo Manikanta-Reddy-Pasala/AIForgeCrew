@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -512,7 +512,7 @@ def agents_v2_profile_apply(name: str) -> dict:
 
 
 @router.post("/api/agents/v2/reset")
-def agents_v2_reset(keep_default: bool = Query(False)) -> dict:
+def agents_v2_reset(keep_default: Annotated[bool, Query()] = False) -> dict:
     """Wipe the saved per-role agent config for a clean reconfigure.
 
     Removes stale per-role rows that can shadow a newly-set global default.

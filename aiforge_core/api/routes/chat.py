@@ -15,6 +15,8 @@ import logging
 import os
 import threading
 
+from typing import Annotated
+
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
@@ -671,7 +673,7 @@ def chat_session_delete(session_id: int) -> None:
 
 
 @router.post("/api/chat/sessions/{session_id}/media", status_code=201, responses={400: {"description": "Bad request"}, 404: {"description": "Not found"}})
-async def chat_media_upload(session_id: int, file: UploadFile = File(...)) -> dict:
+async def chat_media_upload(session_id: int, file: Annotated[UploadFile, File()]) -> dict:
     """Attach a file (image OR document — pdf/xlsx/docx/text) to a chat session:
     save it to the session's media folder, derive a description (vision caption
     for an image, extracted text for a document), and store the row. The

@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import logging
 
+from typing import Annotated
+
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
@@ -154,7 +156,7 @@ def _role_view() -> dict:
 
 
 @router.get("/api/admin/sync-status")
-def sync_status(request: Request, probe: int = Query(1)) -> dict:
+def sync_status(request: Request, probe: Annotated[int, Query()] = 1) -> dict:
     _require_loopback(request)
     from aiforge_core.memory.sync import inbox as _inbox
 
