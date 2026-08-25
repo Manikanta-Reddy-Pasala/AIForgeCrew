@@ -7,7 +7,6 @@ import {
   AgentRoleConfig,
   ProviderCatalog,
   ProviderId,
-  ProviderModel,
   LlmSettings,
   LlmSettingsInput,
 } from '../api';
@@ -121,7 +120,7 @@ export default function Home() {
   // Test (bulk or per-row). One generic source: enter base_url + token,
   // Test, and every openai_compatible model dropdown fills from /v1/models —
   // no per-model hardcoding.
-  const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
+  const [, setDiscoveredModels] = useState<string[]>([]);
 
   // bulk "apply to all" widget
   const [bulk, setBulk] = useState<BulkState>({
@@ -389,10 +388,6 @@ export default function Home() {
       setResetBusy(false);
     }
   }
-
-  const allProviders: ProviderCatalog[] = providers || [];
-  const bulkCat = provById.get(bulk.provider);
-  const bulkModels: ProviderModel[] = bulkCat?.models || [];
 
   return (
     <>

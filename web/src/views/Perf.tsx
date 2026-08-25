@@ -96,10 +96,6 @@ export default function Perf() {
     () => FAMILY_KEYS.reduce((a, k) => a + families[k].total, 0),
     [families],
   );
-  const heaviestFamily = useMemo(
-    () => Math.max(1, ...FAMILY_KEYS.map(k => families[k].total)),
-    [families],
-  );
 
   function toggleFamily(f: FamilyKey) {
     const next = new Set(active);
