@@ -156,22 +156,28 @@ function LlmMeterInner() {
   const series = Array.isArray(u?.series_60m) ? u!.series_60m! : null;
   const failSeries = Array.isArray(u?.series_fail_60m) ? u!.series_fail_60m! : undefined;
 
+  let meterTitle: string;
+  if (u && !stale) {
+    meterTitle = `${perMin} LLM request(s) in the last minute · ${u.last_15m} in 15 min · `
+      + `${hour} in the last hour · ${u.total} since the API started. `
+      + (failHour
+          ? `${failMin} of the last minute and ${failHour} of the last hour `
+            + 'came back with no answer (still counted — they went out). '
+          : '')
+      + 'Counted at the wire, retries included. Click for the breakdown.';
+  } else if (down) {
+    meterTitle = 'LLM meter unreachable — this is not "no requests"';
+  } else {
+    meterTitle = 'LLM requests sent by AIForge';
+  }
+
   return (
     <div className="llm-meter" ref={box}>
       <button type="button"
         className="llm-meter-pill"
         onClick={() => setOpen(o => !o)}
         aria-expanded={open}
-        title={u && !stale
-          ? `${perMin} LLM request(s) in the last minute · ${u.last_15m} in 15 min · `
-            + `${hour} in the last hour · ${u.total} since the API started. `
-            + (failHour
-                ? `${failMin} of the last minute and ${failHour} of the last hour `
-                  + 'came back with no answer (still counted — they went out). '
-                : '')
-            + 'Counted at the wire, retries included. Click for the breakdown.'
-          : down ? 'LLM meter unreachable — this is not "no requests"'
-                 : 'LLM requests sent by AIForge'}
+        title={meterTitle}
       >
         <span className="llm-meter-bolt" style={{ color: rateTone(perMin) }}>⚡</span>
         <span style={{ color: u && !stale ? rateTone(perMin) : 'var(--fg-2)' }}>{n(perMin)}/min</span>

@@ -91,8 +91,8 @@ function DiffBody({ diff }: Readonly<{ diff: string }>) {
 
 function ChangeFileRow({ file }: Readonly<{ file: ChangeFile }>) {
   const [open, setOpen] = useState(false);
-  const statusColor = file.status === 'added' ? 'var(--ok)'
-    : file.status === 'deleted' ? 'var(--err)' : 'var(--accent)';
+  const STATUS_COLOR: Record<string, string> = { added: 'var(--ok)', deleted: 'var(--err)' };
+  const statusColor = STATUS_COLOR[file.status] ?? 'var(--accent)';
   return (
     <div style={{ borderTop: '1px solid var(--border-0)' }}>
       <button type="button" onClick={() => setOpen(o => !o)} style={{
@@ -138,11 +138,15 @@ export function AgentStepRow({ step }: Readonly<{ step: AgentStep }>) {
   if (step.kind === 'tool') {
     const res = step.result as any;
     const ok = res?.ok !== false && !res?.error;
-    const snippet = step.pending
-      ? 'running…'
-      : ok
-      ? (res?.output ? String(res.output).slice(0, 120) : 'ok')
-      : (res?.error ? String(res.error).slice(0, 120) : 'error');
+    let snippet: string;
+    if (step.pending) snippet = 'running…';
+    else if (ok) snippet = res?.output ? String(res.output).slice(0, 120) : 'ok';
+    else snippet = res?.error ? String(res.error).slice(0, 120) : 'error';
+    const toolTextColor = (step.pending || ok) ? 'var(--fg-1)' : 'var(--err)';
+    let arrowColor: string;
+    if (step.pending) arrowColor = 'var(--fg-2, var(--fg-1))';
+    else if (ok) arrowColor = 'var(--ok)';
+    else arrowColor = 'var(--err)';
     return (
       <div style={{
         display: 'flex', gap: 6, alignItems: 'flex-start',
@@ -153,7 +157,7 @@ export function AgentStepRow({ step }: Readonly<{ step: AgentStep }>) {
         fontSize: 'var(--fs-xs)',
         lineHeight: 1.5,
         fontFamily: 'var(--font-mono)',
-        color: step.pending ? 'var(--fg-1)' : (ok ? 'var(--fg-1)' : 'var(--err)'),
+        color: toolTextColor,
       }}>
         <span style={{ flexShrink: 0, marginTop: 1 }}>{step.pending ? '⏳' : '🔧'}</span>
         <AgentBadge role={step.role} />
@@ -165,7 +169,7 @@ export function AgentStepRow({ step }: Readonly<{ step: AgentStep }>) {
           ).join('')}
           {')'}
           {' → '}
-          <span style={{ color: step.pending ? 'var(--fg-2, var(--fg-1))' : (ok ? 'var(--ok)' : 'var(--err)') }}>
+          <span style={{ color: arrowColor }}>
             {snippet}
           </span>
         </span>

@@ -157,14 +157,17 @@ export default function Perf() {
         })}
       </div>
 
-      {totalRows === 0 ? (
+      {(() => {
+        if (totalRows === 0) return (
         <div className="card" style={{ padding: 24, color: 'var(--fg-3)' }}>
           <div style={{ color: 'var(--fg-2)', marginBottom: 4 }}>No activity recorded yet.</div>
           <div className="small">Open a chat or run a ticket and this fills in automatically.</div>
         </div>
-      ) : visibleFamilies.length === 0 ? (
+        );
+        if (visibleFamilies.length === 0) return (
         <div className="small muted">All families filtered out — re-enable a chip above.</div>
-      ) : (
+        );
+        return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {visibleFamilies.map(f => {
             const fam = families[f];
@@ -219,7 +222,8 @@ export default function Perf() {
             );
           })}
         </div>
-      )}
+        );
+      })()}
 
       <div className="small muted" style={{ marginTop: 14 }}>
         Source: <code>~/.aiforge/perf.ndjson</code>{reset && <span style={{ color: 'var(--warn)', marginLeft: 8 }}>· stats just cleared.</span>}

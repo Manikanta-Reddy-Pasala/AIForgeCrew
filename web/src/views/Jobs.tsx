@@ -187,15 +187,18 @@ export default function Jobs() {
       )}
 
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-        {isLoading ? (
+        {(() => {
+          if (isLoading) return (
           <div className="empty"><div className="skeleton" style={{ width: 200, height: 16 }} /></div>
-        ) : !jobs?.length ? (
+          );
+          if (!jobs?.length) return (
           <div className="empty">
             <div className="empty-icon"><Icon.Refresh size={18} /></div>
             <div style={{ color: 'var(--fg-0)', fontWeight: 500 }}>No scheduled jobs yet</div>
             <div>Create one above — describe it in plain words.</div>
           </div>
-        ) : (
+          );
+          return (
           <table>
             <thead>
               <tr>
@@ -238,7 +241,8 @@ export default function Jobs() {
               ))}
             </tbody>
           </table>
-        )}
+          );
+        })()}
       </div>
     </>
   );

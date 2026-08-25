@@ -67,8 +67,9 @@ export function NotesPanel() {
             const s = await api.memoryCompactAllStatus();
             // step N/6 · <current step> · brief M/K (which brief) · elapsed
             const stepNo = Math.min(s.steps_done.length + 1, s.total_steps);
+            const keyPart = s.sub?.key ? ` (${s.sub.key})` : '';
             const brief = s.sub && s.sub.total
-              ? ` · brief ${s.sub.done}/${s.sub.total}${s.sub.key ? ` (${s.sub.key})` : ''}`
+              ? ` · brief ${s.sub.done}/${s.sub.total}${keyPart}`
               : '';
             const short = s.sub && s.sub.total
               ? `${s.current} ${s.sub.done}/${s.sub.total}`
@@ -129,9 +130,9 @@ export function NotesPanel() {
           </button>
         </div>
       )}
-      {files === null ? <div className="muted small">Loading…</div>
-        : files.length === 0 ? <div className="muted small">No notes yet — they appear after chat runs, or add one.</div>
-        : (() => {
+      {(() => {
+        if (files === null) return <div className="muted small">Loading…</div>;
+        if (files.length === 0) return <div className="muted small">No notes yet — they appear after chat runs, or add one.</div>;
           const q = filter.trim().toLowerCase();
           const shown = files.filter(f => !q
             || cleanTitle(f).toLowerCase().includes(q)

@@ -41,10 +41,15 @@ export function SubtaskProgress(
       {(() => {
         const failed = counts['failed'] || 0;
         const remaining = total - done - failed;
-        const verdict = done === total ? 'All subtasks done & validated ✓'
-          : failed > 0 ? 'Some subtasks failed — needs attention'
-          : remaining > 0 ? 'In progress' : 'Review';
-        const tone = done === total ? '#3fb950' : failed > 0 ? '#e5534b' : '#6aa6ff';
+        let verdict: string;
+        if (done === total) verdict = 'All subtasks done & validated ✓';
+        else if (failed > 0) verdict = 'Some subtasks failed — needs attention';
+        else if (remaining > 0) verdict = 'In progress';
+        else verdict = 'Review';
+        let tone: string;
+        if (done === total) tone = '#3fb950';
+        else if (failed > 0) tone = '#e5534b';
+        else tone = '#6aa6ff';
         return (
           <div className="row" style={{ marginTop: 8, justifyContent: 'space-between',
                alignItems: 'center', fontSize: 12 }}>

@@ -7,6 +7,14 @@ import { integrationsApi } from '../api';
 
 const inputStyle = { width: '100%', maxWidth: 460, padding: '6px 8px', fontSize: 13 };
 
+// Placeholder for the token/password field — masked hint when a secret is
+// already stored, otherwise a per-auth-mode prompt.
+function tokenPlaceholder(hasToken: boolean, authMode: 'pat' | 'basic'): string {
+  if (hasToken) return '•••••• (leave blank to keep)';
+  if (authMode === 'pat') return 'paste PAT';
+  return 'password';
+}
+
 // ── Confluence integration card ──────────────────────────────────────────────
 export function ConfluenceCard() {
   const [baseUrl, setBaseUrl] = useState('');
@@ -54,7 +62,9 @@ export function ConfluenceCard() {
       const r = await integrationsApi.testConfluence();
       if (r.ok) toast.success(`Connected to ${r.base_url || 'Confluence'} (${r.auth} auth)`);
       else {
-        const extra = r.denied_reason ? ` [${r.denied_reason}]` : (r.detail ? ` — ${r.detail}` : '');
+        let extra = '';
+        if (r.denied_reason) extra = ` [${r.denied_reason}]`;
+        else if (r.detail) extra = ` — ${r.detail}`;
         toast.error(`${r.error || 'Test failed'} (${r.auth} auth)${extra}${r.hint ? ` — ${r.hint}` : ''}`, { duration: 14000 });
       }
     } catch (e: any) {
@@ -83,7 +93,7 @@ export function ConfluenceCard() {
         </label>
         <label className="small">{authMode === 'pat' ? 'Personal Access Token' : 'Password'}
           <input style={inputStyle} type="password"
-                 placeholder={hasToken ? '•••••• (leave blank to keep)' : (authMode === 'pat' ? 'paste PAT' : 'password')}
+                 placeholder={tokenPlaceholder(hasToken, authMode)}
                  value={token} onChange={e => setToken(e.target.value)} />
         </label>
         {authMode === 'basic' && (
@@ -154,7 +164,9 @@ export function JiraCard() {
       const r = await integrationsApi.testJira();
       if (r.ok) toast.success(`Connected to ${r.base_url || 'Jira'} as ${r.user || '?'} (${r.auth} auth)`);
       else {
-        const extra = r.denied_reason ? ` [${r.denied_reason}]` : (r.detail ? ` — ${r.detail}` : '');
+        let extra = '';
+        if (r.denied_reason) extra = ` [${r.denied_reason}]`;
+        else if (r.detail) extra = ` — ${r.detail}`;
         toast.error(`${r.error || 'Test failed'} (${r.auth} auth)${extra}${r.hint ? ` — ${r.hint}` : ''}`, { duration: 14000 });
       }
     } catch (e: any) {
@@ -183,7 +195,7 @@ export function JiraCard() {
         </label>
         <label className="small">{authMode === 'pat' ? 'Personal Access Token' : 'Password'}
           <input style={inputStyle} type="password"
-                 placeholder={hasToken ? '•••••• (leave blank to keep)' : (authMode === 'pat' ? 'paste PAT' : 'password')}
+                 placeholder={tokenPlaceholder(hasToken, authMode)}
                  value={token} onChange={e => setToken(e.target.value)} />
         </label>
         {authMode === 'basic' && (

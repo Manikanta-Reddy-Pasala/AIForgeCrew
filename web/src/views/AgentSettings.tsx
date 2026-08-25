@@ -344,7 +344,8 @@ function ModelsCard({ models, reload }: Readonly<{ models: RegistryModel[]; relo
       if (!r.ok) { toast.error(`Could not reach server: ${r.error || 'unknown error'}`); return; }
       const ids = r.models || [];
       setDiscovered(ids);
-      toast.success(ids.length ? `Found ${ids.length} model${ids.length === 1 ? '' : 's'}` : 'Server returned no models');
+      const idsPlural = ids.length === 1 ? '' : 's';
+      toast.success(ids.length ? `Found ${ids.length} model${idsPlural}` : 'Server returned no models');
     } catch (e: any) { toast.error(e.message); }
     finally { setIdentifying(false); }
   }
@@ -431,7 +432,8 @@ function ModelsCard({ models, reload }: Readonly<{ models: RegistryModel[]; relo
                 onClick={async () => {
                   setSyncing(true);
                   try { const r = await chatApi.syncModels(); reload();
-                    toast.success(r.count ? `Detected ${r.count} model${r.count === 1 ? '' : 's'}` : 'No new models found'); }
+                    const countPlural = r.count === 1 ? '' : 's';
+                    toast.success(r.count ? `Detected ${r.count} model${countPlural}` : 'No new models found'); }
                   catch (e: any) { toast.error(e.message); }
                   finally { setSyncing(false); }
                 }}>

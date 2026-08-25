@@ -25,6 +25,10 @@ export function BodyBlock({
     finally { setSaving(false); }
   }
 
+  const bodyView = body
+    ? <pre style={{ whiteSpace: 'pre-wrap' }}>{body}</pre>
+    : <div className="muted small">(empty)</div>;
+
   return (
     <div className="card">
       <div className="card-header" style={{ display: 'flex', alignItems: 'center' }}>
@@ -53,9 +57,7 @@ export function BodyBlock({
           </div>
         </div>
       ) : (
-        body
-          ? <pre style={{ whiteSpace: 'pre-wrap' }}>{body}</pre>
-          : <div className="muted small">(empty)</div>
+        bodyView
       )}
     </div>
   );

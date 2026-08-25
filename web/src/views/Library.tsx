@@ -168,15 +168,18 @@ export default function Library({ kind }: Readonly<{ kind: Kind }>) {
         ))}
       </div>
 
-      {isLoading ? (
+      {(() => {
+        if (isLoading) return (
         <div className="skeleton" style={{ height: 120 }} />
-      ) : shown.length === 0 ? (
+        );
+        if (shown.length === 0) return (
         <div className="empty">
           {tab === 'default'
             ? `No default ${meta.one}s.`
             : `No custom ${meta.one}s yet — create one above.`}
         </div>
-      ) : (
+        );
+        return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {shown.map((it: any) => {
             const open = expanded === it.name;
@@ -218,7 +221,8 @@ export default function Library({ kind }: Readonly<{ kind: Kind }>) {
             );
           })}
         </div>
-      )}
+        );
+      })()}
     </>
   );
 }

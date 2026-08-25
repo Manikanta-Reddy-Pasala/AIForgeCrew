@@ -133,15 +133,19 @@ export default function Tools() {
                     </div>
                     <div className="muted xs" style={{ flex: 1 }}>{c.description}</div>
                     <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                      {!c.installable ? (
+                      {(() => {
+                        if (!c.installable) return (
                         <span className="muted xs">stdio — not installable yet</span>
-                      ) : inst && c.id !== 'custom-http' ? (
+                        );
+                        if (inst && c.id !== 'custom-http') return (
                         <span className="xs" style={{ color: '#22c55e', fontWeight: 600 }}>✓ installed</span>
-                      ) : (
+                        );
+                        return (
                         <button type="button" className="sm" disabled={busy === c.id} onClick={() => install(c)}>
                           {c.id === 'custom-http' ? 'Add…' : 'Install'}
                         </button>
-                      )}
+                        );
+                      })()}
                       {c.homepage && (
                         <a className="xs muted" href={c.homepage} target="_blank" rel="noreferrer"
                            style={{ marginLeft: 'auto' }}>docs ↗</a>

@@ -247,8 +247,9 @@ export default function Home() {
       if (res.ok) {
         const modelCount = res.models?.length ?? 0;
         if (res.models && res.models.length > 0) setDiscoveredModels(res.models);
+        const modelPlural = modelCount === 1 ? '' : 's';
         const msg = modelCount > 0
-          ? `Reachable — ${modelCount} model${modelCount === 1 ? '' : 's'}`
+          ? `Reachable — ${modelCount} model${modelPlural}`
           : 'Reachable';
         toast.success(msg);
         // offer to fill model with first result
@@ -290,7 +291,8 @@ export default function Home() {
       if (res.ok) {
         const n = res.models?.length ?? 0;
         if (res.models && res.models.length > 0) setDiscoveredModels(res.models);
-        toast.success(n > 0 ? `Reachable — ${n} model${n === 1 ? '' : 's'}` : 'Reachable');
+        const nPlural = n === 1 ? '' : 's';
+        toast.success(n > 0 ? `Reachable — ${n} model${nPlural}` : 'Reachable');
         if (res.models && res.models.length > 0 && !bulk.model) {
           patchBulk({ model: res.models[0] });
         }
@@ -459,8 +461,8 @@ export default function Home() {
 // Integrations tab — pick Jira / Confluence / GitLab / Email, configure one at a time.
 function IntegrationsTab() {
   const [sub, setSub] = useState<'jira' | 'confluence' | 'gitlab' | 'email'>('jira');
-  const label = (s: string) =>
-    s === 'gitlab' ? 'GitLab' : s === 'email' ? 'Email' : s;
+  const LABELS: Record<string, string> = { gitlab: 'GitLab', email: 'Email' };
+  const label = (s: string) => LABELS[s] ?? s;
   return (
     <div className="card">
       <div className="row" style={{ gap: 4, marginBottom: 12 }}>

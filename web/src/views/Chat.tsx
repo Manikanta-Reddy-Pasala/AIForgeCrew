@@ -20,6 +20,20 @@ import { clickable } from '../a11y';
 // (a useRef guard did, and one click created 2-3 chats).
 let builderLaunchAtMs = 0;
 
+// Trailing " · N msgs" label for a session, or '' when the count is absent/zero.
+function msgCountLabel(count?: number | null): string {
+  if (count == null || count <= 0) return '';
+  const plural = count === 1 ? '' : 's';
+  return ` · ${count} msg${plural}`;
+}
+
+// Compact display of a session's working directory — truncated from the left
+// when long so the meaningful tail stays visible.
+function cwdLabel(cwd?: string | null): string {
+  if (!cwd) return 'default workspace';
+  return cwd.length > 48 ? '…' + cwd.slice(-46) : cwd;
+}
+
 // ── Chat component ─────────────────────────────────────────────────────────────
 
 export default function Chat() {
@@ -195,8 +209,11 @@ export default function Chat() {
   useEffect(() => {
     chatApi.approvalSettings().then(setApprovalFlags).catch(() => { /* */ });
   }, []);
-  const modeApprovalKey = (m: ChatMode): 'chat' | 'plan' | 'pipeline' =>
-    m === 'team' ? 'pipeline' : m === 'plan' ? 'plan' : 'chat';
+  const modeApprovalKey = (m: ChatMode): 'chat' | 'plan' | 'pipeline' => {
+    if (m === 'team') return 'pipeline';
+    if (m === 'plan') return 'plan';
+    return 'chat';
+  };
   const approvalsOn = approvalFlags[modeApprovalKey(chatMode)];
   async function toggleApprovals() {
     const key = modeApprovalKey(chatMode);
@@ -1264,17 +1281,20 @@ export default function Chat() {
           )}
         </div>
         <div className="chat-sessions-list">
-          {sessionsLoading ? (
+          {(() => {
+            if (sessionsLoading) return (
             <div style={{ padding: '12px 10px', display: 'flex', flexDirection: 'column', gap: 6 }}>
               {[1,2,3].map(i => (
                 <div key={i} className="skeleton" style={{ height: 44, borderRadius: 8 }} />
               ))}
             </div>
-          ) : sessions.length === 0 ? (
+            );
+            if (sessions.length === 0) return (
             <div style={{ padding: '16px 10px', textAlign: 'center', color: 'var(--fg-3)', fontSize: 'var(--fs-xs)' }}>
               No conversations yet
             </div>
-          ) : sessions.map(s => (
+            );
+            return sessions.map(s => (
             <div
               key={s.id}
               className={`chat-session-item ${s.id === activeId ? 'active' : ''}`}
@@ -1301,9 +1321,7 @@ export default function Chat() {
                       <span title={new Date(s.updated_at).toLocaleString()}>
                         {dateTimeLabel(s.updated_at)} · {relTime(s.updated_at)}
                       </span>
-                      {s.message_count != null && s.message_count > 0
-                        ? ` · ${s.message_count} msg${s.message_count === 1 ? '' : 's'}`
-                        : ''}
+                      {msgCountLabel(s.message_count)}
                     </div>
                   </>
                 )}
@@ -1325,7 +1343,8 @@ export default function Chat() {
                 </div>
               )}
             </div>
-          ))}
+          ));
+          })()}
         </div>
       </div>
 
@@ -1349,9 +1368,7 @@ export default function Chat() {
               <span className="xs muted" title={activeSession.cwd || 'default workspace'}
                     style={{ fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 <Icon.Folder size={12} style={{ verticalAlign: '-2px', marginRight: 4 }} />
-                {activeSession.cwd
-                  ? (activeSession.cwd.length > 48 ? '…' + activeSession.cwd.slice(-46) : activeSession.cwd)
-                  : 'default workspace'}
+                {cwdLabel(activeSession.cwd)}
               </span>
             )}
             {activeBuilder && (
@@ -1588,11 +1605,13 @@ export default function Chat() {
               <Icon.Plus size={14} /> New chat
             </button>
           </div>
-        ) : msgsLoading ? (
+        ) : (() => {
+          if (msgsLoading) return (
           <div className="chat-log" style={{ justifyContent: 'center', alignItems: 'center' }}>
             <div className="typing"><span /><span /><span /></div>
           </div>
-        ) : (
+          );
+          return (
           <>
             <div className="chat-log" ref={logRef}>
               {/* Captured auto-approve flags are IGNORED while this mode requires
@@ -1918,16 +1937,14 @@ export default function Chat() {
                      not composing) — full height when idle. Drag the corner to
                      expand either way (resize: vertical). */
                   rows={busy ? 1 : 3}
-                  placeholder={
-                    pendingApproval
-                      ? "Resolve the approval above first (Approve / Reject)…"
-                      : awaitingReply
-                        ? "The agent is waiting for your reply — type your answer, Enter to send…"
-                        : busy
-                          ? (activeRunMode === 'team'
-                              ? "Steer the run — your note is folded into SPEC.md for the remaining tasks (Enter to send)…"
-                              : "Steer the running agent — type guidance, Enter to inject (no Stop needed)…")
-                          : "Ask the agent to read/write files, run commands, implement a feature…  (Enter to send, Shift+Enter for newline)"}
+                  placeholder={(() => {
+                    if (pendingApproval) return "Resolve the approval above first (Approve / Reject)…";
+                    if (awaitingReply) return "The agent is waiting for your reply — type your answer, Enter to send…";
+                    if (busy) return activeRunMode === 'team'
+                      ? "Steer the run — your note is folded into SPEC.md for the remaining tasks (Enter to send)…"
+                      : "Steer the running agent — type guidance, Enter to inject (no Stop needed)…";
+                    return "Ask the agent to read/write files, run commands, implement a feature…  (Enter to send, Shift+Enter for newline)";
+                  })()}
                   value={input}
                   onChange={e => setInput(e.target.value)}
                   onKeyDown={onKey}
@@ -1947,13 +1964,15 @@ export default function Chat() {
                     ■ Stop
                   </button>
                 )}
-                {canSteer ? (
+                {(() => {
+                  if (canSteer) return (
                   <button type="button" onClick={steer} disabled={!input.trim() || steering}
                           title="Inject this guidance into the running agent without stopping it"
                           style={{ whiteSpace: 'nowrap' }}>
                     ↳ Steer
                   </button>
-                ) : busy && !awaitingReply ? (
+                  );
+                  if (busy && !awaitingReply) return (
                   // canSteer is false here only because pendingApproval is set
                   // (the review-edits gate — simple/plan only, team doesn't use
                   // it, so this is never actually a team-mode restriction).
@@ -1962,13 +1981,15 @@ export default function Chat() {
                           style={{ whiteSpace: 'nowrap' }}>
                     ↳ Steer
                   </button>
-                ) : (
+                  );
+                  return (
                   // Idle, or awaiting the user's reply — primary action sends a
                   // normal turn (FE1).
                   <button type="button" onClick={() => send()} disabled={busy || !input.trim()}>
                     <Icon.Agents size={14} /> {awaitingReply ? 'Reply' : 'Run'}
                   </button>
-                )}
+                  );
+                })()}
               </div>
               {/* Plan→approve→execute (Gap B): one-click run the approved plan
                   as a team build. */}
@@ -1998,7 +2019,8 @@ export default function Chat() {
               )}
             </div>
           </>
-        )}
+          );
+        })()}
 
         {/* Composer shown even when no session: send will create one */}
         {activeId === null && (

@@ -474,15 +474,18 @@ export default function Tickets() {
       </div>
 
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-        {isLoading ? (
+        {(() => {
+          if (isLoading) return (
           <div className="empty"><div className="skeleton" style={{ width: 200, height: 16 }} /></div>
-        ) : visible.length === 0 ? (
+          );
+          if (visible.length === 0) return (
           <div className="empty">
             <div className="empty-icon"><Icon.Filter size={18} /></div>
             <div style={{ color: 'var(--fg-0)', fontWeight: 500 }}>No tickets match</div>
             <div>Adjust filters or create a new one.</div>
           </div>
-        ) : (
+          );
+          return (
           <table>
             <thead>
               <tr>
@@ -511,7 +514,8 @@ export default function Tickets() {
               ))}
             </tbody>
           </table>
-        )}
+          );
+        })()}
       </div>
     </>
   );

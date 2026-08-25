@@ -197,17 +197,20 @@ export function SourcesPanel() {
       </div>
 
       {/* ── Sources table ── */}
-      {loading ? (
+      {(() => {
+        if (loading) return (
         <div className="stack">
           {[1, 2].map(i => <div key={i} className="skeleton" style={{ height: 40, borderRadius: 6 }} />)}
         </div>
-      ) : sources.length === 0 ? (
+        );
+        if (sources.length === 0) return (
         <div className="empty" style={{ padding: '32px 16px' }}>
           <div className="empty-icon">∅</div>
           <div style={{ color: 'var(--fg-0)', fontWeight: 500 }}>No sources yet</div>
           <div>Add a repo, docs folder, URL, or file above.</div>
         </div>
-      ) : (
+        );
+        return (
         <div style={{ overflowX: 'auto' }}>
           <table>
             <thead>
@@ -271,7 +274,8 @@ export function SourcesPanel() {
             </tbody>
           </table>
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
