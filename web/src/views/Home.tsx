@@ -531,9 +531,10 @@ function OrchestratorModelCard() {
         from the same model universe as chat.
       </div>
       <div className="row" style={{ gap: 10, alignItems: 'center' }}>
-        <label className="small muted">Model</label>
+        <label className="small muted" htmlFor="orchestrator-model">Model</label>
         {opts.length > 0 ? (
           <select
+            id="orchestrator-model"
             value={current}
             onChange={e => change(e.target.value)}
             disabled={busy || !loaded}

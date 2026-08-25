@@ -205,8 +205,9 @@ export default function TicketDetail() {
           <div className="card">
             <div className="card-header"><h2>Transition</h2></div>
             <div className="row" style={{ gap: 8, alignItems: 'center' }}>
-              <label className="small muted">Move to</label>
+              <label className="small muted" htmlFor="ticket-transition">Move to</label>
               <select
+                id="ticket-transition"
                 value={t.status}
                 onChange={e => {
                   const s = e.target.value;
