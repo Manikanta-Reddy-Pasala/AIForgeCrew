@@ -7,6 +7,9 @@ from contextlib import contextmanager
 
 from ._helpers import _media_out, _message_out, _session_out
 
+_UPDATE_CHAT_SESSIONS_SET_UPD = 'UPDATE chat_sessions SET updated_at=now() WHERE id=%s'
+_NEW_CHAT = 'New chat'
+
 _PG_DDL = """
 CREATE TABLE IF NOT EXISTS chat_sessions (
     id          bigserial PRIMARY KEY,
@@ -83,12 +86,12 @@ class _PgChatStore:
         from psycopg.rows import dict_row
         return c.cursor(row_factory=dict_row)
 
-    def create_session(self, title="New chat", cwd=None, role="chat") -> dict:
+    def create_session(self, title=_NEW_CHAT, cwd=None, role="chat") -> dict:
         with self._conn() as c, self._cur(c) as cur:
             cur.execute(
                 "INSERT INTO chat_sessions(title, cwd, role) VALUES (%s,%s,%s) "
                 "RETURNING *",
-                (title or "New chat", cwd, role or "doer"))
+                (title or _NEW_CHAT, cwd, role or "doer"))
             r = cur.fetchone()
             c.commit()
         return _session_out(r)
@@ -171,7 +174,7 @@ class _PgChatStore:
                 (session_id, role, content, json.dumps(steps or []),
                  mode or "simple", duration_s))
             mid = cur.fetchone()["id"]
-            cur.execute("UPDATE chat_sessions SET updated_at=now() WHERE id=%s",
+            cur.execute(_UPDATE_CHAT_SESSIONS_SET_UPD,
                         (session_id,))
             c.commit()
         return int(mid)
@@ -187,7 +190,7 @@ class _PgChatStore:
             cur.execute("DELETE FROM chat_messages WHERE session_id=%s AND id>=%s",
                         (session_id, message_id))
             n = cur.rowcount
-            cur.execute("UPDATE chat_sessions SET updated_at=now() WHERE id=%s",
+            cur.execute(_UPDATE_CHAT_SESSIONS_SET_UPD,
                         (session_id,))
             c.commit()
         return n
@@ -204,7 +207,7 @@ class _PgChatStore:
         with self._conn() as c, self._cur(c) as cur:
             cur.execute("UPDATE chat_sessions SET title=%s, updated_at=now() "
                         "WHERE id=%s RETURNING *",
-                        (title.strip() or "New chat", session_id))
+                        (title.strip() or _NEW_CHAT, session_id))
             r = cur.fetchone()
             c.commit()
         return _session_out(r) if r else None
@@ -235,7 +238,7 @@ class _PgChatStore:
                 (session_id, filename, path, mime or "", description or ""))
             r = cur.fetchone()
             cur2 = c.cursor()
-            cur2.execute("UPDATE chat_sessions SET updated_at=now() WHERE id=%s",
+            cur2.execute(_UPDATE_CHAT_SESSIONS_SET_UPD,
                          (session_id,))
             cur2.close()
             c.commit()

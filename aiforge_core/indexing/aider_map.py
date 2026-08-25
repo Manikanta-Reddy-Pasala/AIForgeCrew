@@ -43,6 +43,8 @@ from typing import Optional
 
 from aiforge_core.observability.logging import emit, get_logger
 
+_AIDER_REPOMAP_SKIPPED = 'aider_repomap.skipped'
+
 
 # ─────────────────────────── Public API ────────────────────────────────
 
@@ -180,13 +182,13 @@ def render_repo_map(cfg: AiderMapConfig) -> str:
     chat_files = list(cfg.chat_files)
     total = len(chat_files) + len(other_files)
     if total < 5:
-        emit(log, "aider_repomap.skipped", reason="repo_too_small",
+        emit(log, _AIDER_REPOMAP_SKIPPED, reason="repo_too_small",
              file_count=total)
         return ""
     try:
         from aider.repomap import RepoMap  # noqa: WPS433 (deliberately lazy)
     except Exception as exc:  # noqa: BLE001
-        emit(log, "aider_repomap.skipped", reason="import_failed",
+        emit(log, _AIDER_REPOMAP_SKIPPED, reason="import_failed",
              error=str(exc)[:200])
         return ""
 
@@ -196,7 +198,7 @@ def render_repo_map(cfg: AiderMapConfig) -> str:
             digest = _run_repomap(RepoMap, cfg, chat_files, other_files,
                                   main_model, _QuietIO())
     except Exception as exc:  # noqa: BLE001 — indexing never breaks the prompt
-        emit(log, "aider_repomap.skipped", reason="render_failed",
+        emit(log, _AIDER_REPOMAP_SKIPPED, reason="render_failed",
              error=str(exc)[:200])
         digest = ""
 

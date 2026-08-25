@@ -1133,6 +1133,8 @@ except Exception as _exc:
 # name every handler already uses.
 from aiforge_core.api._shared import _db  # noqa: E402
 
+_INDEX_HTML = 'index.html'
+
 
 _CHAT_SYSTEM = """You are the AIForge chat agent. The operator asks
 questions about our OneShell codebase / past tickets / decisions. You
@@ -1249,13 +1251,13 @@ if os.path.isdir(_DIST):
             try:
                 resp = await super().get_response(path, scope)
             except Exception:
-                resp = FileResponse(os.path.join(_DIST, "index.html"))
+                resp = FileResponse(os.path.join(_DIST, _INDEX_HTML))
             # index.html / the SPA shell must never be cached, or a deploy
             # leaves users on a stale bundle that references deleted asset
             # hashes ("everything broken" after an update). The hashed
             # assets under /ui/assets/ stay cacheable.
-            if path in ("", "/", "index.html") or not path.startswith("assets/"):
-                if getattr(resp, "media_type", "") == "text/html" or path in ("", "/", "index.html"):
+            if path in ("", "/", _INDEX_HTML) or not path.startswith("assets/"):
+                if getattr(resp, "media_type", "") == "text/html" or path in ("", "/", _INDEX_HTML):
                     resp.headers["Cache-Control"] = "no-cache, must-revalidate"
             return resp
 

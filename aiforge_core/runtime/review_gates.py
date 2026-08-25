@@ -24,6 +24,8 @@ import os
 import re
 import urllib.request
 
+_PLAN_REVIEWED_SOUND = 'plan reviewed — sound'
+
 _OFF = ("0", "false")
 _SKIP_DIRS = {"node_modules", "venv", ".venv", "__pycache__", "target", "build",
               "dist", ".git", ".aiforge-venv", "site-packages"}
@@ -154,13 +156,13 @@ def review_plan(request: str, subs: list) -> tuple[list, str]:
     out = (review_once(f"{instr}\n\n---\n\nREQUEST:\n{request[:2000]}\n\n"
                        f"PLAN:\n{manifest}", 2048) or "").strip()
     if not out or out.upper().startswith("CLEAN") or "|" not in out:
-        return subs, "plan reviewed — sound"
+        return subs, _PLAN_REVIEWED_SOUND
     corrected = _parse_plan(out, subs)
     # Sanity: never accept a mangled/truncated plan that dropped most files.
     if len(corrected) < max(2, (len(subs) + 1) // 2):
-        return subs, "plan reviewed — sound"
+        return subs, _PLAN_REVIEWED_SOUND
     if [s.get("path") for s in corrected] == [s.get("path") for s in subs]:
-        return subs, "plan reviewed — sound"
+        return subs, _PLAN_REVIEWED_SOUND
     return corrected, f"plan reviewed + fixed ({len(subs)}→{len(corrected)} files)"
 
 

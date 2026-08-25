@@ -72,7 +72,7 @@ def indexed(cwd: str | None = None) -> bool:
         r = _repo(cwd)
         if not r:
             return False
-        d = os.path.join(r, ".codegraph")
+        d = os.path.join(r, _CODEGRAPH)
         # Require a POPULATED index, not a bare directory — a build that timed
         # out / aborted (esp. on the "nolock" path where we can't safely remove
         # it) leaves an empty or partial .codegraph dir; trusting mere existence
@@ -137,7 +137,7 @@ def _db_files(repo: str) -> list:
     with an extension we don't recognise — callers must treat 'no DB found' as
     'can't verify', NOT 'corrupt'."""
     import glob
-    d = os.path.join(repo, ".codegraph")
+    d = os.path.join(repo, _CODEGRAPH)
     try:
         dbs = (glob.glob(os.path.join(d, "**", "*.db"), recursive=True)
                + glob.glob(os.path.join(d, "**", "*.sqlite"), recursive=True))
@@ -185,7 +185,7 @@ def _remove_partial_index(repo: str) -> None:
     _VERIFIED_HEALTHY.discard(repo)
     try:
         import shutil
-        d = os.path.join(repo, ".codegraph")
+        d = os.path.join(repo, _CODEGRAPH)
         if os.path.isdir(d):
             shutil.rmtree(d, ignore_errors=True)
     except Exception:  # noqa: BLE001
@@ -227,6 +227,9 @@ def enabled_for_run(cwd: str | None = None) -> bool:
 import threading as _threading  # noqa: E402
 import time as _time  # noqa: E402
 from collections import defaultdict as _defaultdict  # noqa: E402
+
+_CODEGRAPH = '.codegraph'
+_MISSING_SYMBOL = "missing 'symbol'"
 
 # PER-REPO build locks (not one global) — a first-time build of repo X must not
 # block an unrelated first-time build of repo Y across sessions.
@@ -475,7 +478,7 @@ def codegraph_callers(args: dict, cwd: str | None = None) -> dict:
     """Functions/methods that CALL a symbol. Required: ``symbol``."""
     s = str(args.get("symbol") or "").strip()
     if not s:
-        return {"ok": False, "error": "missing 'symbol'"}
+        return {"ok": False, "error": _MISSING_SYMBOL}
     return _run(["callers", s], cwd)
 
 
@@ -483,7 +486,7 @@ def codegraph_callees(args: dict, cwd: str | None = None) -> dict:
     """Functions/methods a symbol CALLS. Required: ``symbol``."""
     s = str(args.get("symbol") or "").strip()
     if not s:
-        return {"ok": False, "error": "missing 'symbol'"}
+        return {"ok": False, "error": _MISSING_SYMBOL}
     return _run(["callees", s], cwd)
 
 
@@ -492,7 +495,7 @@ def codegraph_impact(args: dict, cwd: str | None = None) -> dict:
     ``symbol``. Use before an edit to find everything that must stay in sync."""
     s = str(args.get("symbol") or "").strip()
     if not s:
-        return {"ok": False, "error": "missing 'symbol'"}
+        return {"ok": False, "error": _MISSING_SYMBOL}
     return _run(["impact", s], cwd)
 
 

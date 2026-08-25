@@ -26,6 +26,8 @@ import re
 
 from aiforge_core.config import _atomic
 
+_MIGRATIONS_JSON = '.migrations.json'
+
 log = logging.getLogger("aiforge.memory.migrations")
 
 
@@ -43,7 +45,7 @@ def _archive_okr_dag_folder() -> dict:
         # into okr-1, okr-2… on every restart.
         if not src.is_dir():
             return {"skipped": "no live okr/ folder"}
-        real = [p for p in src.iterdir() if p.name != ".migrations.json"]
+        real = [p for p in src.iterdir() if p.name != _MIGRATIONS_JSON]
         if not real:
             return {"skipped": "only migration marker — nothing to archive"}
         arch_root = memory_dir().parent / "memory-archive"
@@ -164,7 +166,7 @@ def _rename_okr_dir_to_okf() -> dict:
             # okf/ is already the live bundle — an okr/ holding only stale
             # bookkeeping (.migrations.json) is orphaned; remove it so the tree
             # is clean. Anything else stays put (don't clobber real data).
-            leftover = [p for p in src.iterdir() if p.name != ".migrations.json"]
+            leftover = [p for p in src.iterdir() if p.name != _MIGRATIONS_JSON]
             if not leftover:
                 shutil.rmtree(str(src), ignore_errors=True)
                 return {"ok": True, "removed_stale_marker": str(src)}
@@ -257,7 +259,7 @@ def _discover_repos() -> list:
 
 def _marker_path() -> str:
     from aiforge_core.memory.okf import store as _store
-    return os.path.join(_store.okf_root(), ".migrations.json")
+    return os.path.join(_store.okf_root(), _MIGRATIONS_JSON)
 
 
 def _load_marker() -> dict:

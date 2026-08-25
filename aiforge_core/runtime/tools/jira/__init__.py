@@ -58,6 +58,8 @@ from ._projects import (
     jira_sprints,
 )
 
+_MISSING_KEY = "missing 'key'"
+
 
 # ─────────────────────────── tools ──────────────────────────────────
 
@@ -188,7 +190,7 @@ def jira_read(args: dict, cwd: str | None = None) -> dict:
     """Read an issue by ``key`` (e.g. ENG-123). Returns fields + comments."""
     key = (args.get("key") or args.get("id") or "").strip()
     if not key:
-        return {"ok": False, "error": "missing 'key'"}
+        return {"ok": False, "error": _MISSING_KEY}
     r = _request("GET", f"/rest/api/2/issue/{urllib.parse.quote(key)}",
                  params={"fields": "summary,description,status,issuetype,"
                                    "assignee,reporter,priority,labels,comment,"
@@ -243,7 +245,7 @@ def jira_worklog(args: dict, cwd: str | None = None) -> dict:
     "how much time has been recorded on ENG-123 and by whom"."""
     key = (args.get("key") or args.get("id") or "").strip()
     if not key:
-        return {"ok": False, "error": "missing 'key'"}
+        return {"ok": False, "error": _MISSING_KEY}
     r = _request("GET", f"/rest/api/2/issue/{urllib.parse.quote(key)}/worklog",
                  params={"maxResults": int(args.get("limit", 50))})
     if not r["ok"]:
@@ -362,7 +364,7 @@ def jira_update(args: dict, cwd: str | None = None) -> dict:
     ``fields`` dict (merged last, wins)."""
     key = (args.get("key") or args.get("id") or "").strip()
     if not key:
-        return {"ok": False, "error": "missing 'key'"}
+        return {"ok": False, "error": _MISSING_KEY}
     raw_fields = dict(args["fields"]) if isinstance(args.get("fields"), dict) else {}
     status_want = _wanted_status(args, raw_fields)
     transitioned = None
@@ -401,7 +403,7 @@ def jira_comments(args: dict, cwd: str | None = None) -> dict:
     """
     key = (args.get("key") or args.get("id") or "").strip()
     if not key:
-        return {"ok": False, "error": "missing 'key'"}
+        return {"ok": False, "error": _MISSING_KEY}
     try:
         limit = max(1, min(100, int(args.get("limit", 50))))
     except (TypeError, ValueError):
@@ -434,7 +436,7 @@ def jira_comment(args: dict, cwd: str | None = None) -> dict:
     """
     key = (args.get("key") or args.get("id") or "").strip()
     if not key:
-        return {"ok": False, "error": "missing 'key'"}
+        return {"ok": False, "error": _MISSING_KEY}
     if not args.get("body"):
         return {"ok": False, "error": "missing 'body'"}
     # Server/DC v2 renders WIKI markup — convert the agent's HTML/Markdown body
@@ -453,7 +455,7 @@ def jira_transitions(args: dict, cwd: str | None = None) -> dict:
     (id + name + target status). Required: ``key``."""
     key = (args.get("key") or args.get("id") or "").strip()
     if not key:
-        return {"ok": False, "error": "missing 'key'"}
+        return {"ok": False, "error": _MISSING_KEY}
     r = _request("GET", f"/rest/api/2/issue/{urllib.parse.quote(key)}/transitions")
     if not r["ok"]:
         return r
@@ -470,7 +472,7 @@ def jira_transition(args: dict, cwd: str | None = None) -> dict:
     status name — matched case-insensitively). Optional ``comment``."""
     key = (args.get("key") or args.get("id") or "").strip()
     if not key:
-        return {"ok": False, "error": "missing 'key'"}
+        return {"ok": False, "error": _MISSING_KEY}
     want = str(args.get("transition") or args.get("to")
                or args.get("status") or args.get("name") or "").strip()
     if not want:
@@ -506,7 +508,7 @@ def jira_assign(args: dict, cwd: str | None = None) -> dict:
     key = (args.get("key") or args.get("id") or "").strip()
     who = str(args.get("assignee") or args.get("user") or "").strip()
     if not key:
-        return {"ok": False, "error": "missing 'key'"}
+        return {"ok": False, "error": _MISSING_KEY}
     if not who:
         return {"ok": False, "error": "missing 'assignee'"}
     name = None if who.lower() in ("-1", "unassigned", "none", "") else who

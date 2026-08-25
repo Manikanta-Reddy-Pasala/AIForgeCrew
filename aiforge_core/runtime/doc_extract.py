@@ -24,6 +24,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+_TEXT_PLAIN = 'text/plain'
+_XLSX = '.xlsx'
+
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 _DRAWING = _W + "drawing"
 _PICT = _W + "pict"
@@ -33,13 +36,13 @@ _BR_TYPE = _W + "type"
 
 _EXT_MIME = {
     ".pdf": "application/pdf",
-    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    _XLSX: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".xls": "application/vnd.ms-excel",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".csv": "text/csv", ".txt": "text/plain", ".md": "text/markdown",
-    ".json": "application/json", ".log": "text/plain", ".yaml": "text/yaml",
+    ".csv": "text/csv", ".txt": _TEXT_PLAIN, ".md": "text/markdown",
+    ".json": "application/json", ".log": _TEXT_PLAIN, ".yaml": "text/yaml",
     ".yml": "text/yaml", ".py": "text/x-python", ".js": "text/javascript",
-    ".ts": "text/plain", ".java": "text/x-java", ".go": "text/x-go",
+    ".ts": _TEXT_PLAIN, ".java": "text/x-java", ".go": "text/x-go",
 }
 _TEXT_EXTS = {".txt", ".md", ".csv", ".json", ".log", ".yaml", ".yml",
               ".py", ".js", ".ts", ".java", ".go", ".sh", ".sql", ".html",
@@ -304,7 +307,7 @@ def paginate(path: str, mime: str = "") -> tuple[list[str], str]:
     try:
         if _is_pdf(path, mime):
             return _pdf_pages(path), "exact"
-        if ext == ".xlsx" or "spreadsheet" in (mime or ""):
+        if ext == _XLSX or "spreadsheet" in (mime or ""):
             return _xlsx_pages(path), "sheets"
         if _is_docx(path, mime):
             return _docx_paginate(path)
@@ -355,7 +358,7 @@ def extract_text(path: str, mime: str = "") -> str:
     ext = os.path.splitext(path)[1].lower()
     try:
         if _is_pdf(path, mime) or _is_docx(path, mime) \
-                or ext == ".xlsx" or "spreadsheet" in (mime or ""):
+                or ext == _XLSX or "spreadsheet" in (mime or ""):
             pages = document_pages(path, mime)
             return _join_pages(pages, _doc_char_budget())
         if (mime or "").startswith("text/") or ext in _TEXT_EXTS:

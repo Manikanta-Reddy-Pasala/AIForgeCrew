@@ -19,6 +19,8 @@ import re
 import urllib.request
 from pathlib import Path
 
+_SKIP_DISABLED = 'skip:disabled'
+
 log = logging.getLogger("aiforge.memory_ingest")
 
 _CHUNK = 1500          # chars per chunk
@@ -396,7 +398,7 @@ def _index_chunk_layer(root: Path, repo: str, flag: str, exts: set, kind: str,
     """Run one chunk layer (code or doc). Records its status in ``layers`` and
     returns the units written. Skipped when its flag is off; soft-fails."""
     if not _flag(flag, True):
-        layers[layer_key] = "skip:disabled"
+        layers[layer_key] = _SKIP_DISABLED
         return 0
     try:
         units = _ingest_tree(root, repo=repo, exts=exts, kind=kind)
@@ -444,14 +446,14 @@ def _index_repo_full(root: Path, repo: str) -> dict:
 
     # ── Layer B — tree-sitter symbol graph (Neo4j only) ──
     if not _flag("AIFORGE_INDEX_SYMBOLS", True):
-        layers["symbols"] = "skip:disabled"
+        layers["symbols"] = _SKIP_DISABLED
         symbols = 0
     else:
         symbols, layers["symbols"] = _index_symbols(root, repo)
 
     # ── Layer C — graphify knowledge graph (Neo4j only) ──
     if not _flag("AIFORGE_INDEX_GRAPHIFY", True):
-        layers["graphify"] = "skip:disabled"
+        layers["graphify"] = _SKIP_DISABLED
         graphify_nodes = 0
     else:
         graphify_nodes, layers["graphify"] = _index_graphify(root, repo)

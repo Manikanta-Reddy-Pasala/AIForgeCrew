@@ -8,6 +8,8 @@ import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
+_BASH = '.bash'
+
 _ACTION_RE = re.compile(r"ACTION:\s*([A-Za-z_]+)", re.IGNORECASE)
 _ARGS_RE = re.compile(r"ARGS_JSON:\s*(\{.*\})", re.IGNORECASE | re.DOTALL)
 _FINAL_RE = re.compile(r"FINAL:\s*(.*)", re.IGNORECASE | re.DOTALL)
@@ -351,10 +353,10 @@ def _script_arg(toks: list[str]) -> str | None:
     """The shell script this argv runs — ``./x.sh`` or ``bash x.sh`` — else None.
     Flagged only by its CONTENT later, never on the name alone."""
     pbase = toks[0].rsplit("/", 1)[-1]
-    if pbase.endswith((".sh", ".bash")):
+    if pbase.endswith((".sh", _BASH)):
         return toks[0]
     if pbase in ("bash", "sh", "zsh") and len(toks) > 1 \
-            and toks[1].rsplit("/", 1)[-1].endswith((".sh", ".bash")):
+            and toks[1].rsplit("/", 1)[-1].endswith((".sh", _BASH)):
         return toks[1]
     return None
 
@@ -553,7 +555,7 @@ def _t_list_dir(args: dict, cwd: str) -> dict:
 
 _SCRIPT_RUNNERS = {"bash", "sh", "zsh", "python", "python3", "node", "ruby",
                    "perl", "uv"}
-_SCRIPT_EXTS = (".sh", ".bash", ".py", ".js", ".mjs", ".rb", ".pl")
+_SCRIPT_EXTS = (".sh", _BASH, ".py", ".js", ".mjs", ".rb", ".pl")
 
 
 def _is_literal_path(p: str) -> bool:

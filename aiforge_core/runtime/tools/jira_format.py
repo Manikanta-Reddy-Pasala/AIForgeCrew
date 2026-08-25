@@ -13,6 +13,8 @@ from __future__ import annotations
 import html as _html
 import re
 
+_N_CODE_N = '\\n{code}\\n'
+
 _HTML_HINT = re.compile(r"</?(p|br|ul|ol|li|strong|b|em|i|code|pre|h[1-6]|a|div)\b",
                         re.I)
 

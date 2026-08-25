@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+_MODULE = '<module>'
+
 if TYPE_CHECKING:
     from .store_v2 import Store
 
@@ -83,11 +85,11 @@ def _chunk_python_regex(text: str) -> list[tuple[str, str]]:
     for seg in re.split(r"(?m)^(def |class |async def )", text):
         buf += seg
         if len(buf) >= CHUNK_CHARS:
-            chunks.append(("<module>", buf))
+            chunks.append((_MODULE, buf))
             buf = ""
     if buf:
-        chunks.append(("<module>", buf))
-    return chunks or [("<module>", text)]
+        chunks.append((_MODULE, buf))
+    return chunks or [(_MODULE, text)]
 
 
 def _walk_definitions(node, name_stack: list, text: str,
@@ -113,7 +115,7 @@ def _chunk_python(text: str) -> list[tuple[str, str]]:
     parser = Parser(Language(tspy.language()))
     chunks: list[tuple[str, str]] = []
     _walk_definitions(parser.parse(text.encode()).root_node, [], text, chunks)
-    return chunks or [("<module>", text)]
+    return chunks or [(_MODULE, text)]
 
 
 def _chunk_for_path(path: str, text: str) -> list[tuple[str, str]]:

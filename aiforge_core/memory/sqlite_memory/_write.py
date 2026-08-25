@@ -5,6 +5,8 @@ import json
 
 from ._schema import _LOCK, _conn, _safe_embed
 
+_DELETE_FROM_MEMORY_UNITS_WHE = 'DELETE FROM memory_units WHERE id = ?'
+
 
 def write_unit(
     *,
@@ -71,7 +73,7 @@ def delete_by_tag(tag: str, *, repo: str | None = None) -> int:
             except (TypeError, ValueError):
                 continue
         for i in ids:
-            c.execute("DELETE FROM memory_units WHERE id = ?", (i,))
+            c.execute(_DELETE_FROM_MEMORY_UNITS_WHE, (i,))
         return len(ids)
 
 
@@ -116,7 +118,7 @@ def prune_missing_file_rows(present_sources) -> int:
             "WHERE source LIKE 'md:%' OR source LIKE 'compacted:%'").fetchall()
         ids = [r["id"] for r in rows if r["source"] not in present]
         for i in ids:
-            c.execute("DELETE FROM memory_units WHERE id = ?", (i,))
+            c.execute(_DELETE_FROM_MEMORY_UNITS_WHE, (i,))
         return len(ids)
 
 
@@ -166,7 +168,7 @@ def delete_by_text_contains(fragment: str, *, repo: str,
         ids = [r["id"] for r in rows if frag in (r["text"] or "")
                and (exclude_kind is None or r["kind"] != exclude_kind)]
         for i in ids:
-            c.execute("DELETE FROM memory_units WHERE id = ?", (i,))
+            c.execute(_DELETE_FROM_MEMORY_UNITS_WHE, (i,))
         return len(ids)
 
 

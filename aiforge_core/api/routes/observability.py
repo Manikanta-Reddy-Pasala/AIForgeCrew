@@ -20,6 +20,8 @@ from aiforge_core.api.routes._sse import sse_response
 from aiforge_core.config.env import LM_STUDIO_BASE_URL, LOG_DIR
 from aiforge_core.tickets import store as tickets_mod
 
+_AIFORGE_LOGS_GRAPH_RUNNER_ER = '~/.aiforge/logs/graph-runner.err'
+
 router = APIRouter()
 
 
@@ -295,7 +297,7 @@ def stream_ticket_trace(identifier: str):
         os.path.expanduser("~/.aiforge/logs/graph-runner.log"))
     err = os.environ.get(
         "AIFORGE_GRAPH_RUNNER_ERR",
-        os.path.expanduser("~/.aiforge/logs/graph-runner.err"))
+        os.path.expanduser(_AIFORGE_LOGS_GRAPH_RUNNER_ER))
     return sse_response(_merged_trace(log, err, host, identifier))
 
 
@@ -343,7 +345,7 @@ async def _llm_trace_lines(err: str, host: str, identifier: str):
 def stream_llm_trace(identifier: str):
     err = os.environ.get(
         "AIFORGE_GRAPH_RUNNER_ERR",
-        os.path.expanduser("~/.aiforge/logs/graph-runner.err"))
+        os.path.expanduser(_AIFORGE_LOGS_GRAPH_RUNNER_ER))
     host = os.environ.get("AIFORGE_GRAPH_RUNNER_HOST", "").strip()
     return sse_response(_llm_trace_lines(err, host, identifier))
 
@@ -354,7 +356,7 @@ def list_llm_trace(identifier: str, limit: int = 50):
     as a JSON list. Easier to inspect in a browser / curl | jq."""
     err = os.environ.get(
         "AIFORGE_GRAPH_RUNNER_ERR",
-        os.path.expanduser("~/.aiforge/logs/graph-runner.err"),
+        os.path.expanduser(_AIFORGE_LOGS_GRAPH_RUNNER_ER),
     )
     needle_event = '"event": "llm.call"'
     needle_event_compact = '"event":"llm.call"'

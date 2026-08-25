@@ -11,6 +11,8 @@ import threading
 from pathlib import Path
 from aiforge_core.config.paths import config_dir
 
+_COMPACTED_MD = 'compacted-*.md'
+
 
 _log = logging.getLogger("aiforge.md_store")
 # `[ \t]*` not `\s*`: `\s` MATCHES the newline, so `---\s*\n` could split a
@@ -84,9 +86,9 @@ def iter_briefs() -> list[Path]:
     """Every consolidated brief file, sorted. Reads the ``compacted/`` subfolder
     AND (transitionally) any legacy root-level ``compacted-*.md`` not yet moved."""
     seen: dict[str, Path] = {}
-    for p in briefs_dir().glob("compacted-*.md"):
+    for p in briefs_dir().glob(_COMPACTED_MD):
         seen[p.name] = p
-    for p in memory_dir().glob("compacted-*.md"):   # legacy root (pre-migration)
+    for p in memory_dir().glob(_COMPACTED_MD):   # legacy root (pre-migration)
         seen.setdefault(p.name, p)
     return [seen[k] for k in sorted(seen)]
 
@@ -131,7 +133,7 @@ def migrate_briefs_to_folder() -> dict:
     # ROOT-level briefs ONLY — a brief already in bdir must NEVER be touched
     # (iterating iter_briefs() here would compute dest==source and unlink the
     # live brief — a data-loss bug).
-    for p in list(memory_dir().glob("compacted-*.md")):
+    for p in list(memory_dir().glob(_COMPACTED_MD)):
         if p.parent == bdir:
             continue                                # already in the folder — skip
         if _CAPTURE_SIG_RE.search(p.name):

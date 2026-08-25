@@ -11,6 +11,8 @@ import urllib.request
 
 from aiforge_core.net.ssl import context_for as _ssl_context_for
 
+_EMBED_BATCH = '/embed_batch'
+
 SIDECAR_URL = os.environ.get("AIFORGE_EMBED_URL", "http://127.0.0.1:8764")
 DIM = 1024
 
@@ -22,7 +24,7 @@ def _post(path: str, body: dict, timeout: float | None = None) -> dict:
     back as 0.000 for every row).
     """
     if timeout is None:
-        n = len(body.get("texts") or []) if path == "/embed_batch" else 1
+        n = len(body.get("texts") or []) if path == _EMBED_BATCH else 1
         # Linear scale: 5s base + 1.5s per doc, capped at 180s.
         timeout = min(180.0, 5.0 + 1.5 * max(1, n))
     req = urllib.request.Request(
@@ -53,11 +55,11 @@ def embed_batch(texts: list[str], *, chunk_size: int = 16) -> list[list[float]]:
     if not texts:
         return []
     if len(texts) <= chunk_size:
-        resp = _post("/embed_batch", {"texts": list(texts)})
+        resp = _post(_EMBED_BATCH, {"texts": list(texts)})
         return resp["embeddings"]
     out: list[list[float]] = []
     for i in range(0, len(texts), chunk_size):
         chunk = list(texts[i:i + chunk_size])
-        resp = _post("/embed_batch", {"texts": chunk})
+        resp = _post(_EMBED_BATCH, {"texts": chunk})
         out.extend(resp["embeddings"])
     return out

@@ -26,6 +26,8 @@ from aiforge_core.runtime.background import spawn as _spawn
 from aiforge_core.tickets import store as tickets_mod
 from aiforge_core.config.paths import config_dir
 
+_NEW_CHAT = 'New chat'
+
 router = APIRouter()
 
 _af_log = logging.getLogger("aiforge")
@@ -482,7 +484,7 @@ def _is_isolated_workspace(cwd: str | None) -> bool:
 @router.post("/api/chat/sessions", status_code=201)
 def chat_session_create(body: _NewSessionBody) -> dict:
     from aiforge_core.runtime import chat_store
-    s = chat_store.create_session(body.title or "New chat",
+    s = chat_store.create_session(body.title or _NEW_CHAT,
                                   body.cwd or _default_cwd(),
                                   role=body.role or "chat")
     # Isolation: when the caller didn't pin a cwd, give the session its
@@ -2319,7 +2321,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                                           mode=_turn_mode)
     # Provisional title now (instant), upgraded to a model-generated one after
     # the turn (see _produce). _fresh marks a still-unnamed session.
-    _fresh_title = (session.get("title") or "New chat") == "New chat"
+    _fresh_title = (session.get("title") or _NEW_CHAT) == _NEW_CHAT
     _apply_provisional_title(session_id, body, _fresh_title)
 
     # Fold each assistant turn's tool digest into history + keep did-work-but-
@@ -2615,7 +2617,7 @@ def chat_session_ticket(session_id: int, body: _SessionTicketBody) -> dict:
     project = (body.project or "").strip() or os.path.basename(
         os.path.normpath(session.get("cwd") or _default_cwd())) or None
     title = body.content.strip().splitlines()[0][:120] or "chat request"
-    if (session.get("title") or "New chat") == "New chat":
+    if (session.get("title") or _NEW_CHAT) == _NEW_CHAT:
         chat_store.rename_session(session_id, title)
     t = tickets_mod.create(
         title=title, body=body.content.strip(), project=project,

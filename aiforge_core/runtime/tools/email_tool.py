@@ -42,6 +42,8 @@ from email.message import EmailMessage
 
 from . import _http_integration as _http
 
+_EMAIL_DISABLED_AIFORGE_EMAIL = 'email disabled (AIFORGE_EMAIL_DISABLE=1)'
+
 _TIMEOUT_S = 30
 _SNIPPET_CAP = 500
 
@@ -167,7 +169,7 @@ def email_send(args: dict, cwd: str | None = None) -> dict:
     """Send an email via SMTP. ``args``: ``to`` (str|list, required),
     ``subject``, ``body`` (plain text); optional ``html``, ``cc``, ``bcc``."""
     if _disabled():
-        return {"ok": False, "error": "email disabled (AIFORGE_EMAIL_DISABLE=1)"}
+        return {"ok": False, "error": _EMAIL_DISABLED_AIFORGE_EMAIL}
     c = _smtp_conf()
     if not c["host"]:
         return {"ok": False,
@@ -310,7 +312,7 @@ def email_read(args: dict, cwd: str | None = None) -> dict:
     (default INBOX), ``limit`` (default 10), ``query``/``search`` (substring
     matched against subject+from), ``unseen_only`` (bool). Newest first."""
     if _disabled():
-        return {"ok": False, "error": "email disabled (AIFORGE_EMAIL_DISABLE=1)"}
+        return {"ok": False, "error": _EMAIL_DISABLED_AIFORGE_EMAIL}
     c = _imap_conf()
     if not c["host"]:
         return {"ok": False,
@@ -394,7 +396,7 @@ def email_test() -> dict:
     ``{"ok": bool, "smtp": {...}, "imap": {...}}`` — ``ok`` is true when every
     *configured* side connected. Never raises."""
     if _disabled():
-        return {"ok": False, "error": "email disabled (AIFORGE_EMAIL_DISABLE=1)"}
+        return {"ok": False, "error": _EMAIL_DISABLED_AIFORGE_EMAIL}
     smtp_c, imap_c = _smtp_conf(), _imap_conf()
     if not smtp_c["host"] and not imap_c["host"]:
         return {"ok": False, "error": "email_not_configured",

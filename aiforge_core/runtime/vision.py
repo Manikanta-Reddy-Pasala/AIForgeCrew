@@ -12,6 +12,8 @@ import base64
 from pathlib import Path
 from typing import Any
 
+_IMAGE_WEBP = 'image/webp'
+
 _MAX_BYTES = 5 * 1024 * 1024  # 5 MB
 
 _VISION_MODELS = (
@@ -29,16 +31,16 @@ _MIME_SIGNATURES: tuple[tuple[bytes, str], ...] = (
     (b"\xff\xd8\xff", "image/jpeg"),
     (b"GIF87a", "image/gif"),
     (b"GIF89a", "image/gif"),
-    (b"RIFF", "image/webp"),  # bytes 0-3; bytes 8-11 should be "WEBP"
+    (b"RIFF", _IMAGE_WEBP),  # bytes 0-3; bytes 8-11 should be "WEBP"
 )
 
 
 def _detect_mime(raw: bytes) -> str | None:
     for sig, mime in _MIME_SIGNATURES:
         if raw.startswith(sig):
-            if mime == "image/webp" and len(raw) < 12:
+            if mime == _IMAGE_WEBP and len(raw) < 12:
                 return None
-            if mime == "image/webp" and raw[8:12] != b"WEBP":
+            if mime == _IMAGE_WEBP and raw[8:12] != b"WEBP":
                 return None
             return mime
     return None

@@ -13,22 +13,24 @@ from typing import Any
 
 from aiforge_core.runtime.sandbox import resolve_inside_root, root  # noqa: F401
 
+_PATH = '{path}'
+
 log = logging.getLogger("aiforge.tools.format")
 
 # Map suffix → command template. ``{path}`` placeholder is the file
 # path relative to the worktree. Each entry is a list (no shell=True)
 # so paths with spaces don't break.
 _FORMATTERS: dict[str, list[str]] = {
-    ".py": ["ruff", "format", "{path}"],
-    ".js": ["prettier", "--write", "{path}"],
-    ".jsx": ["prettier", "--write", "{path}"],
-    ".ts": ["prettier", "--write", "{path}"],
-    ".tsx": ["prettier", "--write", "{path}"],
-    ".json": ["prettier", "--write", "{path}"],
-    ".md": ["prettier", "--write", "{path}"],
-    ".go": ["gofmt", "-w", "{path}"],
-    ".rs": ["rustfmt", "{path}"],
-    ".java": ["google-java-format", "-i", "{path}"],
+    ".py": ["ruff", "format", _PATH],
+    ".js": ["prettier", "--write", _PATH],
+    ".jsx": ["prettier", "--write", _PATH],
+    ".ts": ["prettier", "--write", _PATH],
+    ".tsx": ["prettier", "--write", _PATH],
+    ".json": ["prettier", "--write", _PATH],
+    ".md": ["prettier", "--write", _PATH],
+    ".go": ["gofmt", "-w", _PATH],
+    ".rs": ["rustfmt", _PATH],
+    ".java": ["google-java-format", "-i", _PATH],
 }
 
 
@@ -65,7 +67,7 @@ def format(path: str) -> dict[str, Any]:
     tool_name = cmd_tmpl[0]
     if shutil.which(tool_name) is None:
         return {"ok": False, "error": "missing_tool", "tool": tool_name}
-    cmd = [str(abs_path) if part == "{path}" else part for part in cmd_tmpl]
+    cmd = [str(abs_path) if part == _PATH else part for part in cmd_tmpl]
     try:
         p = subprocess.run(
             cmd, capture_output=True, text=True, timeout=60, cwd=str(root()),

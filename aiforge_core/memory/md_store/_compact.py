@@ -32,6 +32,8 @@ from ._render import (
     brief_source_stems,
 )
 
+_N_N_N_N = '\\n\\n---\\n\\n'
+
 # Sentinel topic key for a note the topic labeller couldn't theme. Such a note
 # already lives in its repo/shared brief, so it must NOT spawn a topic file —
 # and it must NEVER fall back to the note's KIND (that minted the junk

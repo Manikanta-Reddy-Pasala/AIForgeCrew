@@ -29,6 +29,8 @@ from pathlib import Path
 from typing import NamedTuple
 from aiforge_core.config.paths import config_dir
 
+_SKILL_MD = 'SKILL.md'
+
 try:
     import yaml
 except Exception:  # noqa: BLE001
@@ -131,7 +133,7 @@ def _skill_md_path(child: Path) -> "Path | None":
     """The SKILL markdown for one directory entry: ``<dir>/SKILL.md`` (dir form)
     or a flat ``*.md`` file. None for anything else."""
     if child.is_dir():
-        cand = child / "SKILL.md"
+        cand = child / _SKILL_MD
         return cand if cand.is_file() else None
     return child if child.suffix == ".md" else None
 
@@ -471,7 +473,7 @@ def write_skill(name: str, description: str, body: str,
     front = _skill_frontmatter(name, description, trig, scope)
     try:
         skill_dir.mkdir(parents=True, exist_ok=True)
-        path = skill_dir / "SKILL.md"
+        path = skill_dir / _SKILL_MD
         path.write_text(front + "\n" + body + "\n", encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
@@ -512,7 +514,7 @@ def _unlink_skill_file(src: str, roots) -> "str | None":
         p.unlink()
     except FileNotFoundError:
         return None
-    if p.name == "SKILL.md" and p.parent.is_dir() and not any(p.parent.iterdir()):
+    if p.name == _SKILL_MD and p.parent.is_dir() and not any(p.parent.iterdir()):
         p.parent.rmdir()
     return str(p)
 

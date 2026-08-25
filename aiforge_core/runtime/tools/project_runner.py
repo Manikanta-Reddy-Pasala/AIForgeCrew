@@ -25,6 +25,8 @@ import os
 import subprocess
 import time
 
+_PACKAGE_JSON = 'package.json'
+
 _CAP = 8000
 
 
@@ -59,7 +61,7 @@ def _node_pm(cwd: str) -> str:
 
 def _node_framework(cwd: str) -> str:
     try:
-        pkg = json.loads(open(os.path.join(cwd, "package.json")).read())
+        pkg = json.loads(open(os.path.join(cwd, _PACKAGE_JSON)).read())
         deps = {**(pkg.get("dependencies") or {}), **(pkg.get("devDependencies") or {})}
         for fw in ("next", "vite", "react-scripts", "react", "@angular/core", "vue"):
             if fw in deps:
@@ -101,7 +103,7 @@ def _node_has_test_script(cwd: str) -> bool:
     """A real package.json "test" script (not the npm-init placeholder)?"""
     try:
         import json as _j
-        pkg = _j.loads(open(os.path.join(cwd, "package.json")).read())
+        pkg = _j.loads(open(os.path.join(cwd, _PACKAGE_JSON)).read())
         t = ((pkg.get("scripts") or {}).get("test") or "")
         return bool(t) and "no test specified" not in t
     except Exception:  # noqa: BLE001
@@ -141,7 +143,7 @@ def detect(cwd: str) -> dict:
         stacks.append("maven")
     if _has(cwd, "build.gradle", "build.gradle.kts", "settings.gradle"):
         stacks.append("gradle")
-    if _has(cwd, "package.json"):
+    if _has(cwd, _PACKAGE_JSON):
         stacks.append(f"node:{_node_framework(cwd)}")
     if _has(cwd, "requirements.txt", "pyproject.toml", "setup.py", "setup.cfg"):
         stacks.append("python")

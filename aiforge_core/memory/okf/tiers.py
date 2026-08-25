@@ -40,6 +40,8 @@ import logging
 import re
 from pathlib import Path
 
+_MD = '**/*.md'
+
 _log = logging.getLogger("aiforge.okf")
 
 # Value of the `derived:` frontmatter marker on a tier-1 / tier-2 node. Marking
@@ -112,7 +114,7 @@ def _fingerprint(dirs) -> list:
 
     count = size = newest = 0
     for directory in dirs:
-        for p in _io.iter_syncable(directory, "**/*.md"):
+        for p in _io.iter_syncable(directory, _MD):
             try:
                 st = p.stat()
             except OSError:      # vanished mid-walk; the next pass sees it gone
@@ -150,7 +152,7 @@ def _load(dirs) -> list[dict]:
 
     out: list[dict] = []
     for directory in dirs:
-        for p in _io.iter_syncable(directory, "**/*.md"):
+        for p in _io.iter_syncable(directory, _MD):
             if p.name == "index.md" or p.name.endswith(".conflict.md"):
                 continue
             try:
@@ -516,7 +518,7 @@ def _prune(directory: Path, keep: set[str]) -> int:
     from aiforge_core.memory.sync import _io
 
     dropped = 0
-    for p in _io.iter_syncable(directory, "**/*.md"):
+    for p in _io.iter_syncable(directory, _MD):
         if p.stem in keep:
             continue
         try:

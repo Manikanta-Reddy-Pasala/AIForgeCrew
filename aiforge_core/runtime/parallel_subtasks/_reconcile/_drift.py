@@ -7,6 +7,8 @@ import os
 
 from .._contracts import _blackboard_from_contracts
 
+_IMPORT = ' import '
+
 
 _SKIP_DIRS = (".git", ".aiforge-worktrees", ".aiforge-venv", ".venv",
               "__pycache__", "node_modules", ".pytest_cache")
@@ -80,10 +82,10 @@ def _dead_imported_names(tree, modsyms: dict[str, set]) -> set:
 
 def _strip_import_line(line: str, dead: set) -> str | None:
     """``line`` with the dead names removed, or None if nothing survives."""
-    head, names = line.split(" import ", 1)
+    head, names = line.split(_IMPORT, 1)
     kept = [n.strip() for n in names.split(",")
             if n.strip() and n.strip().split(" as ")[0].strip() not in dead]
-    return head + " import " + ", ".join(kept) if kept else None
+    return head + _IMPORT + ", ".join(kept) if kept else None
 
 
 def _is_dead_all_entry(stripped: str, dead: set) -> bool:
@@ -96,7 +98,7 @@ def _without_dead_names(src: str, dead: set) -> str:
     out = []
     for line in src.splitlines():
         ls = line.strip()
-        if ls.startswith("from ") and " import " in ls:
+        if ls.startswith("from ") and _IMPORT in ls:
             kept = _strip_import_line(line, dead)
             if kept is not None:
                 out.append(kept)

@@ -26,6 +26,10 @@ import urllib.parse
 
 from . import _http_integration as _http
 
+_PASS_PROJECT_GROUP_PROJ_OR_S = 'pass project=\\"group/proj\\" or set GITLAB_PROJECT'
+_MISSING_IID = "missing 'iid'"
+_MISSING_PROJECT = "missing 'project'"
+
 _TIMEOUT_S = 20
 _BODY_CAP = 200_000
 
@@ -162,9 +166,9 @@ def _addressed(args: dict) -> tuple[str, str, dict | None]:
     proj = _proj_id(args)
     iid = str(args.get("iid") or args.get("id") or args.get("key") or "").strip()
     if not proj:
-        return "", "", {"ok": False, "error": "missing 'project'"}
+        return "", "", {"ok": False, "error": _MISSING_PROJECT}
     if not iid:
-        return "", "", {"ok": False, "error": "missing 'iid'"}
+        return "", "", {"ok": False, "error": _MISSING_IID}
     enc, ierr = _iid_or_error(iid)
     return proj, enc, ierr
 
@@ -193,7 +197,7 @@ def gitlab_create(args: dict, cwd: str | None = None) -> dict:
     Optional: ``description``, ``labels`` (list/csv), ``assignee_ids`` (list)."""
     proj = _proj_id(args)
     if not proj:
-        return {"ok": False, "error": "missing 'project'"}
+        return {"ok": False, "error": _MISSING_PROJECT}
     if not args.get("title"):
         return {"ok": False, "error": "missing 'title'"}
     body: dict = {"title": args["title"]}
@@ -224,9 +228,9 @@ def gitlab_update(args: dict, cwd: str | None = None) -> dict:
     proj = _proj_id(args)
     iid = str(args.get("iid") or args.get("id") or args.get("key") or "").strip()
     if not proj:
-        return {"ok": False, "error": "missing 'project'"}
+        return {"ok": False, "error": _MISSING_PROJECT}
     if not iid:
-        return {"ok": False, "error": "missing 'iid'"}
+        return {"ok": False, "error": _MISSING_IID}
     body: dict = {}
     if args.get("title"):
         body["title"] = args["title"]
@@ -264,9 +268,9 @@ def gitlab_comment(args: dict, cwd: str | None = None) -> dict:
     proj = _proj_id(args)
     iid = str(args.get("iid") or args.get("id") or args.get("key") or "").strip()
     if not proj:
-        return {"ok": False, "error": "missing 'project'"}
+        return {"ok": False, "error": _MISSING_PROJECT}
     if not iid:
-        return {"ok": False, "error": "missing 'iid'"}
+        return {"ok": False, "error": _MISSING_IID}
     if not args.get("body"):
         return {"ok": False, "error": "missing 'body'"}
     enc, ierr = _iid_or_error(iid)
@@ -288,7 +292,7 @@ def gitlab_mr_create(args: dict, cwd: str | None = None) -> dict:
     proj = _proj_id(args)
     src = str(args.get("source_branch") or args.get("source") or "").strip()
     if not proj:
-        return {"ok": False, "error": "missing 'project'"}
+        return {"ok": False, "error": _MISSING_PROJECT}
     if not src:
         return {"ok": False, "error": "missing 'source_branch'"}
     if not args.get("title"):
@@ -405,7 +409,7 @@ _MAX_JOB_PAGES = 5
 # killed the watch on check 1 for exactly the thing it was built for.
 _FATAL_ERRORS = ("gitlab_not_configured", "http 400", "http 401", "http 403",
                  "http 404", "unexpected_payload", "bad pipeline_id",
-                 "missing 'project'")
+                 _MISSING_PROJECT)
 
 
 def _is_fatal(res: dict) -> bool:
@@ -583,7 +587,7 @@ def gitlab_pipelines(args: dict, cwd: str | None = None) -> dict:
     GITLAB_PROJECT), ``ref``/``branch``, ``status``, ``sha``, ``limit``."""
     proj = _proj_id(args)
     if not proj:
-        return {"ok": False, "error": "missing 'project'",
+        return {"ok": False, "error": _MISSING_PROJECT,
                 "hint": "pass project=\"group/proj\" or set GITLAB_PROJECT"}
     params: dict = {"per_page": _pipe_int(args, "limit", 20, 1, 100),
                     "order_by": "id", "sort": "desc"}
@@ -849,7 +853,7 @@ def gitlab_pipeline(args: dict, cwd: str | None = None, *,
     Set ``logs`` false to skip fetching failed-job logs."""
     proj = _proj_id(args)
     if not proj:
-        return {"ok": False, "error": "missing 'project'",
+        return {"ok": False, "error": _MISSING_PROJECT,
                 "hint": "pass project=\"group/proj\" or set GITLAB_PROJECT"}
     d, err = _resolve_pipeline(proj, args)
     if err:
@@ -1083,7 +1087,7 @@ def gitlab_pipeline_watch(args: dict, cwd: str | None = None) -> dict:
     """
     import time as _time
     if not _proj_id(args):
-        return {"ok": False, "error": "missing 'project'",
+        return {"ok": False, "error": _MISSING_PROJECT,
                 "hint": "pass project=\"group/proj\" or set GITLAB_PROJECT"}
     b = _WatchBudget(args)
     started = _time.monotonic()

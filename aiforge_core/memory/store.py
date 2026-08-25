@@ -21,6 +21,8 @@ if TYPE_CHECKING:        # forward-ref for the `list["Hit"]` annotations
 
 from . import embed as embed_mod
 
+_AND_WING_LIKE_S = ' AND wing LIKE %s'
+
 DEFAULT_DSN = os.environ.get("AIFORGE_PGMEM_DSN",
                               "host=127.0.0.1 port=5432 dbname=aiforge")
 
@@ -306,7 +308,7 @@ class Store:
         )
         params: list[Any] = [query, query, tier]
         if wing_prefix:
-            sql += " AND wing LIKE %s"
+            sql += _AND_WING_LIKE_S
             params.append(f"{wing_prefix}%")
         sql += " ORDER BY sc DESC LIMIT %s"
         params.append(top_k)
@@ -336,7 +338,7 @@ class Store:
         )
         params: list[Any] = [vlit, tier]
         if wing_prefix:
-            sql += " AND wing LIKE %s"
+            sql += _AND_WING_LIKE_S
             params.append(f"{wing_prefix}%")
         sql += " ORDER BY embedding <=> %s::vector LIMIT %s"
         params += [vlit, top_k]
@@ -362,7 +364,7 @@ class Store:
             "SELECT id, tier, wing, parent_id, kind, source, title, text, "
             "metadata, created_at, expires_at "
             "FROM memories WHERE tier = %s"
-            + (" AND wing LIKE %s" if wing_prefix else "")
+            + (_AND_WING_LIKE_S if wing_prefix else "")
             + " ORDER BY embedding <=> %s::vector LIMIT %s"
         )
         params: list[Any] = [tier]

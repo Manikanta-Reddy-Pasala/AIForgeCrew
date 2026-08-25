@@ -26,6 +26,8 @@ from datetime import datetime
 from aiforge_core.config import env as _env
 from aiforge_core.config.paths import config_dir
 
+_SELECT_FROM_JOBS_WHERE_ID = 'SELECT * FROM jobs WHERE id=?'
+
 _LOCK = threading.Lock()
 
 _UPDATABLE = {"name", "cron", "ticket_title", "ticket_body", "project",
@@ -134,13 +136,13 @@ class _SqliteJobStore:
                 "VALUES (?,?,?,?,?,?,?,?,?)",
                 (name, cron, ticket_title, ticket_body, project,
                  next_run_at, now_iso(), kind, script_path))
-            r = con.execute("SELECT * FROM jobs WHERE id=?",
+            r = con.execute(_SELECT_FROM_JOBS_WHERE_ID,
                             (cur.lastrowid,)).fetchone()
             return _row(r)
 
     def get(self, job_id) -> "dict | None":
         with self._conn() as con:
-            r = con.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            r = con.execute(_SELECT_FROM_JOBS_WHERE_ID, (job_id,)).fetchone()
             return _row(r) if r else None
 
     def list_jobs(self) -> list[dict]:
@@ -153,7 +155,7 @@ class _SqliteJobStore:
         vals = [int(v) if isinstance(v, bool) else v for v in fields.values()]
         with _LOCK, self._conn() as con:
             con.execute(f"UPDATE jobs SET {sets} WHERE id=?", (*vals, job_id))
-            r = con.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            r = con.execute(_SELECT_FROM_JOBS_WHERE_ID, (job_id,)).fetchone()
             return _row(r) if r else None
 
     def delete(self, job_id) -> bool:

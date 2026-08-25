@@ -12,6 +12,9 @@ from ._media import (_resolve_image_bytes, _safe_filename, _storagify_media,
                      _upload_attachment, _upload_page_images)
 from ._attachments import _fetch_attachments
 
+_REST_API_CONTENT = '/rest/api/content'
+_MISSING_ID = "missing 'id'"
+
 
 def _request(method, path, **kw):
     """Forward to the package-level ``_request`` at call time so tests that
@@ -61,7 +64,7 @@ def _resolve_page_id(args: dict) -> "dict | str":
         space = args.get("space") or default_space()
         if space:
             params["spaceKey"] = space
-        rr = _request("GET", "/rest/api/content", params=params)
+        rr = _request("GET", _REST_API_CONTENT, params=params)
         if not rr["ok"]:
             return rr
         res = (rr["data"].get("results") if isinstance(rr["data"], dict) else None) or []
@@ -124,7 +127,7 @@ def confluence_create(args: dict, cwd: str | None = None) -> dict:
     }
     if args.get("parent_id"):
         payload["ancestors"] = [{"id": str(args["parent_id"])}]
-    r = _request("POST", "/rest/api/content", body=payload)
+    r = _request("POST", _REST_API_CONTENT, body=payload)
     if not r["ok"]:
         return r
     d = r["data"] if isinstance(r["data"], dict) else {}
@@ -142,7 +145,7 @@ def confluence_update(args: dict, cwd: str | None = None) -> dict:
     ``representation``. Version is auto-incremented (reads current first)."""
     pid = args.get("id")
     if not pid:
-        return {"ok": False, "error": "missing 'id'"}
+        return {"ok": False, "error": _MISSING_ID}
     if not args.get("body"):
         return {"ok": False, "error": "missing 'body'"}
     cur = _request("GET", f"/rest/api/content/{pid}", params={"expand": "version"})
@@ -181,7 +184,7 @@ def confluence_attach(args: dict, cwd: str | None = None) -> dict:
     the body — use this for a standalone upload."""
     pid = args.get("id")
     if not pid:
-        return {"ok": False, "error": "missing 'id'"}
+        return {"ok": False, "error": _MISSING_ID}
     src = str(args.get("path") or args.get("url") or "").strip()
     if not src:
         return {"ok": False, "error": "missing 'path' or 'url'"}
@@ -197,7 +200,7 @@ def confluence_children(args: dict, cwd: str | None = None) -> dict:
     """List the child pages of a Confluence page. Required: ``id``."""
     pid = str(args.get("id") or "").strip()
     if not pid:
-        return {"ok": False, "error": "missing 'id'"}
+        return {"ok": False, "error": _MISSING_ID}
     r = _request("GET",
                  f"/rest/api/content/{urllib.parse.quote(pid)}/child/page",
                  params={"limit": int(args.get("limit", 50))})
@@ -252,7 +255,7 @@ def confluence_page_by_title(args: dict, cwd: str | None = None) -> dict:
     title = (args.get("title") or "").strip()
     if not space or not title:
         return {"ok": False, "error": "space and title are required"}
-    r = _request("GET", "/rest/api/content",
+    r = _request("GET", _REST_API_CONTENT,
                  params={"spaceKey": space, "title": title,
                          "expand": "version", "limit": 5})
     if not r["ok"]:
@@ -272,7 +275,7 @@ def confluence_labels(args: dict, cwd: str | None = None) -> dict:
     """Read the labels on a page. Required: ``id``."""
     pid = str(args.get("id") or "").strip()
     if not pid:
-        return {"ok": False, "error": "missing 'id'"}
+        return {"ok": False, "error": _MISSING_ID}
     r = _request("GET",
                  f"/rest/api/content/{urllib.parse.quote(pid)}/label")
     if not r["ok"]:
@@ -304,7 +307,7 @@ def confluence_comments(args: dict, cwd: str | None = None) -> dict:
     """Read the comments on a page. Required: ``id``."""
     pid = str(args.get("id") or "").strip()
     if not pid:
-        return {"ok": False, "error": "missing 'id'"}
+        return {"ok": False, "error": _MISSING_ID}
     r = _request("GET",
                  f"/rest/api/content/{urllib.parse.quote(pid)}/child/comment",
                  params={"expand": "body.storage", "limit":
@@ -335,7 +338,7 @@ def confluence_comment(args: dict, cwd: str | None = None) -> dict:
                              "representation": args.get("representation",
                                                         "storage")}},
     }
-    r = _request("POST", "/rest/api/content", body=payload)
+    r = _request("POST", _REST_API_CONTENT, body=payload)
     if not r["ok"]:
         return r
     d = r["data"] if isinstance(r["data"], dict) else {}
@@ -347,7 +350,7 @@ def confluence_descendants(args: dict, cwd: str | None = None) -> dict:
     Required: ``id``."""
     pid = str(args.get("id") or "").strip()
     if not pid:
-        return {"ok": False, "error": "missing 'id'"}
+        return {"ok": False, "error": _MISSING_ID}
     r = _request("GET",
                  f"/rest/api/content/{urllib.parse.quote(pid)}/descendant/page",
                  params={"limit": int(args.get("limit", 100))})

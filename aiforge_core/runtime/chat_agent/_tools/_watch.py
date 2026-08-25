@@ -20,6 +20,8 @@ import os
 import re
 import time
 
+_STOPPED_BY_USER = 'stopped by user'
+
 # Two tails at 4000 overshot the loop's own 6000-char observation cap, so the
 # second one was silently re-truncated downstream. Half each is honest.
 _MAX_TAIL = 2000
@@ -167,7 +169,7 @@ def _check_outcome(last: dict, until: str, rx, checks: int,
     a second "run a shell command" would be a second place to forget them."""
     if last.get("stopped"):
         return {"ok": False, "stopped": True, "checks": checks,
-                "error": "stopped by user", "last": _tail(last)}
+                "error": _STOPPED_BY_USER, "last": _tail(last)}
     if last.get("blocked"):
         # A refused command will be refused every time — looping is waste.
         return {"ok": False, "checks": checks, "blocked": last["blocked"],
@@ -204,7 +206,7 @@ def _t_watch_until(args: dict, cwd: str) -> dict:
     while checks < max_checks:
         if sid is not None and chat_cancel.is_cancelled(sid):
             return {"ok": False, "stopped": True, "checks": checks,
-                    "error": "stopped by user"}
+                    "error": _STOPPED_BY_USER}
         checks += 1
         last = _t_run_command({"cmd": cmd, "timeout": per_cmd}, cwd)
         done = _check_outcome(last, until, rx, checks,
@@ -216,7 +218,7 @@ def _t_watch_until(args: dict, cwd: str) -> dict:
             break
         if _watch_sleep(interval, sid):
             return {"ok": False, "stopped": True, "checks": checks,
-                    "error": "stopped by user", "last": _tail(last)}
+                    "error": _STOPPED_BY_USER, "last": _tail(last)}
     return {"ok": False, "matched": False, "checks": checks,
             "elapsed_s": round(time.monotonic() - started, 1),
             "reason": f"gave up after {checks} check(s) — the condition "

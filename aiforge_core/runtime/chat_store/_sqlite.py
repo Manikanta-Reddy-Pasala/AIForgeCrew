@@ -10,6 +10,10 @@ from typing import Iterator
 from ._helpers import _LOCK, _media_out, _message_out, _session_out
 from aiforge_core.config.paths import config_dir
 
+_SELECT_FROM_CHAT_MEDIA_WHERE = 'SELECT * FROM chat_media WHERE id=?'
+_SELECT_FROM_CHAT_SESSIONS_WH = 'SELECT * FROM chat_sessions WHERE id=?'
+_NEW_CHAT = 'New chat'
+
 _SQLITE_DDL = """
 CREATE TABLE IF NOT EXISTS chat_sessions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -115,13 +119,13 @@ class _SqliteChatStore:
         finally:
             c.close()
 
-    def create_session(self, title="New chat", cwd=None, role="chat") -> dict:
+    def create_session(self, title=_NEW_CHAT, cwd=None, role="chat") -> dict:
         with _LOCK, self._conn() as c:
             cur = c.execute(
                 "INSERT INTO chat_sessions(title, cwd, role) VALUES (?,?,?)",
-                (title or "New chat", cwd, role or "doer"),
+                (title or _NEW_CHAT, cwd, role or "doer"),
             )
-            r = c.execute("SELECT * FROM chat_sessions WHERE id=?",
+            r = c.execute(_SELECT_FROM_CHAT_SESSIONS_WH,
                           (cur.lastrowid,)).fetchone()
         return _session_out(dict(r))
 
@@ -129,7 +133,7 @@ class _SqliteChatStore:
         with self._conn() as c:
             c.execute(f"UPDATE chat_sessions SET cwd=?, updated_at={_NOW} WHERE id=?",
                       (cwd, session_id))
-            r = c.execute("SELECT * FROM chat_sessions WHERE id=?",
+            r = c.execute(_SELECT_FROM_CHAT_SESSIONS_WH,
                           (session_id,)).fetchone()
         return _session_out(dict(r)) if r else None
 
@@ -137,7 +141,7 @@ class _SqliteChatStore:
         with self._conn() as c:
             c.execute(f"UPDATE chat_sessions SET role=?, updated_at={_NOW} WHERE id=?",
                       (role or "doer", session_id))
-            r = c.execute("SELECT * FROM chat_sessions WHERE id=?",
+            r = c.execute(_SELECT_FROM_CHAT_SESSIONS_WH,
                           (session_id,)).fetchone()
         return _session_out(dict(r)) if r else None
 
@@ -160,7 +164,7 @@ class _SqliteChatStore:
 
     def get_session(self, session_id):
         with self._conn() as c:
-            r = c.execute("SELECT * FROM chat_sessions WHERE id=?",
+            r = c.execute(_SELECT_FROM_CHAT_SESSIONS_WH,
                           (session_id,)).fetchone()
         return _session_out(dict(r)) if r else None
 
@@ -232,8 +236,8 @@ class _SqliteChatStore:
     def rename_session(self, session_id, title):
         with self._conn() as c:
             c.execute(f"UPDATE chat_sessions SET title=?, updated_at={_NOW} WHERE id=?",
-                      (title.strip() or "New chat", session_id))
-            r = c.execute("SELECT * FROM chat_sessions WHERE id=?",
+                      (title.strip() or _NEW_CHAT, session_id))
+            r = c.execute(_SELECT_FROM_CHAT_SESSIONS_WH,
                           (session_id,)).fetchone()
         return _session_out(dict(r)) if r else None
 
@@ -263,7 +267,7 @@ class _SqliteChatStore:
             )
             c.execute(f"UPDATE chat_sessions SET updated_at={_NOW} WHERE id=?",
                       (session_id,))
-            r = c.execute("SELECT * FROM chat_media WHERE id=?",
+            r = c.execute(_SELECT_FROM_CHAT_MEDIA_WHERE,
                           (cur.lastrowid,)).fetchone()
         return _media_out(dict(r))
 
@@ -276,7 +280,7 @@ class _SqliteChatStore:
 
     def get_media(self, media_id):
         with self._conn() as c:
-            r = c.execute("SELECT * FROM chat_media WHERE id=?",
+            r = c.execute(_SELECT_FROM_CHAT_MEDIA_WHERE,
                           (media_id,)).fetchone()
         return _media_out(dict(r)) if r else None
 
@@ -284,13 +288,13 @@ class _SqliteChatStore:
         with self._conn() as c:
             c.execute("UPDATE chat_media SET description=? WHERE id=?",
                       (description or "", media_id))
-            r = c.execute("SELECT * FROM chat_media WHERE id=?",
+            r = c.execute(_SELECT_FROM_CHAT_MEDIA_WHERE,
                           (media_id,)).fetchone()
         return _media_out(dict(r)) if r else None
 
     def delete_media(self, media_id):
         with self._conn() as c:
-            r = c.execute("SELECT * FROM chat_media WHERE id=?",
+            r = c.execute(_SELECT_FROM_CHAT_MEDIA_WHERE,
                           (media_id,)).fetchone()
             if r is None:
                 return None

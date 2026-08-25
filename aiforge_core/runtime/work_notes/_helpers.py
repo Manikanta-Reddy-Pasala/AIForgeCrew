@@ -10,6 +10,8 @@ import json
 import logging
 import re
 
+_DOSSIER_MD = 'dossier.md'
+
 _log = logging.getLogger("aiforge.work_notes")
 
 # Canonical section order — the whole point of the standard. Never reorder.
@@ -36,8 +38,8 @@ _KEY_TO_HEADING = {
 # must land on the CURATED dossier — the reader-facing note that carries the
 # envelope + its own links — not the raw dump. web writes only page.md (its
 # render_note note IS page.md, no separate merge) and repo only dossier.md.
-_PRIMARY_NOTE = {"jira": "dossier.md", "confluence": "dossier.md",
-                 "web": "page.md", "repo": "dossier.md"}
+_PRIMARY_NOTE = {"jira": _DOSSIER_MD, "confluence": _DOSSIER_MD,
+                 "web": "page.md", "repo": _DOSSIER_MD}
 
 # LEGACY wiki-style cross-ref ([[jira/PROJ-42]]) — accepted on INPUT only and
 # upgraded; the canonical output form is a relative md file link (_md_ref).

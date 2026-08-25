@@ -16,6 +16,8 @@ from ._preview import (_diff_preview)
 from ._prompt import (_SYSTEM, _parse, _strip_reasoning_prefix)
 from ._context import (_CANCELLED, _EDIT_TOOL_NAMES, _LOOP_REPEAT, _OUTPUT_REPEAT, _WEB_LOOKUP_DIRECTIVE, _cap_system_prompt, _cave_mode, _chat_session_recall, _claims_file_edits, _compact_convo, _complete_cancellable, _compress_prompt, _ctx_budget_chars, _ctx_on, _edit_claim_disclaimer, _edit_claim_guard_enabled, _edit_claim_nudge, _fire_stop, _has_web_intent, _post_edit_syntax_error, _progress_recap, _extension_budget, _repo_name, _stuck_recovery_max, _run_project_verify, _safety_cap, _split_asks, _sys_prompt_budget_chars, _unattended_cap, _text_of, _turn_deadline_s, _verify_fix_message, _verify_max_rounds, _verify_on_final_enabled, _worktree_fingerprint)
 
+_THE_FINALIZE_TOOL = 'the finalize tool'
+
 # Cap on the per-turn signature tables (the action-strike table and the
 # "files this turn has ever read" set). Both were bounded in practice by the
 # 2000-step safety cap; an uncapped turn removes that ceiling.
@@ -1176,7 +1178,7 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
     # loop (bounded so a model that truly can't finalize still exits).
     if builder and not st.builder_finalized and st.builder_final_tries < 2:
         st.builder_final_tries += 1
-        _fin = _BUILDER_FINALIZE_TOOL.get(builder, "the finalize tool")
+        _fin = _BUILDER_FINALIZE_TOOL.get(builder, _THE_FINALIZE_TOOL)
         if step.get("text"):
             yield {"type": "thought", "text": step["text"]}
         st.convo.append({"role": "user", "content":
@@ -1335,7 +1337,7 @@ def _handle_continue_step(st, step, builder, cwd):
         # finalize tool. Telling it "reply with FINAL, do not emit
         # ACTION" is the exact opposite instruction, and the turn would
         # end claiming success with nothing created.
-        _fin = _BUILDER_FINALIZE_TOOL.get(builder, "the finalize tool")
+        _fin = _BUILDER_FINALIZE_TOOL.get(builder, _THE_FINALIZE_TOOL)
         st.convo.append({"role": "user", "content":
                       f"You signalled you were finished but never called "
                       f"`{_fin}`, so nothing was created. Call `{_fin}` NOW "
@@ -1655,7 +1657,7 @@ def _builder_nudge(st, builder, n):
     # enough back-and-forth, inject a one-time reminder to finalize NOW.
     if builder and not st.builder_nudged and n >= _BUILDER_NUDGE_AFTER:
         st.builder_nudged = True
-        _fin = _BUILDER_FINALIZE_TOOL.get(builder, "the finalize tool")
+        _fin = _BUILDER_FINALIZE_TOOL.get(builder, _THE_FINALIZE_TOOL)
         st.convo.append({"role": "user", "content":
             f"[system reminder] You have gathered enough detail. Call "
             f"`{_fin}` NOW with the collected values to finish — do not keep "

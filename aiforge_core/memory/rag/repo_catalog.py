@@ -34,6 +34,8 @@ from pathlib import Path
 
 from aiforge_core.memory.rag.neo4j_memory import _get_driver, MemoryRow, retain_fact
 
+_POM_XML = 'pom.xml'
+
 log = logging.getLogger("aiforge.repo_catalog")
 
 CODE_ROOT = Path(os.environ.get("AIFORGE_CODE_ROOT",
@@ -118,13 +120,13 @@ def _parent_by_relative_path(cur: Path, parent_block: str) -> Path | None:
         return None
     cand = (cur.parent / rm.group(1).strip()).resolve()
     if cand.is_dir():
-        cand = cand / "pom.xml"
+        cand = cand / _POM_XML
     return cand if cand.exists() else None
 
 
 def _parent_by_default(cur: Path) -> Path | None:
     """2. Default Maven fallback ``../pom.xml`` (only when that file exists)."""
-    cand = (cur.parent / ".." / "pom.xml").resolve()
+    cand = (cur.parent / ".." / _POM_XML).resolve()
     return cand if cand.exists() else None
 
 
@@ -137,7 +139,7 @@ def _parent_by_sibling_repo(parent_block: str, code_root: Path) -> Path | None:
     am = _PARENT_ARTIFACT_RX.search(parent_block)
     if not am:
         return None
-    sibling = code_root / am.group(1).strip() / "pom.xml"
+    sibling = code_root / am.group(1).strip() / _POM_XML
     return sibling.resolve() if sibling.exists() else None
 
 
@@ -184,7 +186,7 @@ def _resolve_parent_pom(pom_path: Path) -> str:
 
 
 def _detect_java(repo: Path) -> tuple[list[str], str, str]:
-    pom = repo / "pom.xml"
+    pom = repo / _POM_XML
     if not pom.exists():
         return [], "", ""
     try:

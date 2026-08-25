@@ -13,6 +13,8 @@ from typing import Iterable
 
 from aiforge_core.net.ssl import context_for as _ssl_context_for
 
+_CODE = 'code/'
+
 RERANK_URL = os.environ.get("AIFORGE_RERANK_URL", "http://127.0.0.1:8765")
 
 
@@ -90,7 +92,7 @@ ROLE_POLICIES: dict[str, dict] = {
     "architect": {
         "tiers": [
             {"tier": "t2", "top_k": 8},
-            {"tier": "t4", "top_k": 8, "wing_prefix": "code/"},
+            {"tier": "t4", "top_k": 8, "wing_prefix": _CODE},
             {"tier": "t3", "top_k": 4, "wing_prefix": "skills"},
             {"tier": "t1", "top_k": 8},
         ],
@@ -100,14 +102,14 @@ ROLE_POLICIES: dict[str, dict] = {
         "tiers": [
             {"tier": "t2", "top_k": 6},
             {"tier": "t3", "top_k": 8, "wing_prefix": "skills"},
-            {"tier": "t4", "top_k": 12, "wing_prefix": "code/"},
+            {"tier": "t4", "top_k": 12, "wing_prefix": _CODE},
             {"tier": "t1", "top_k": 8},
         ],
         "rerank_keep": 12,
     },
     "developer": {
         "tiers": [
-            {"tier": "t4", "top_k": 20, "wing_prefix": "code/"},
+            {"tier": "t4", "top_k": 20, "wing_prefix": _CODE},
             {"tier": "t3", "top_k": 6, "wing_prefix": "skills"},
             {"tier": "t1", "top_k": 8},
             {"tier": "t2", "top_k": 4},
@@ -133,14 +135,14 @@ ROLE_POLICIES: dict[str, dict] = {
         "tiers": [
             {"tier": "t2", "top_k": 6},
             {"tier": "t3", "top_k": 8, "wing_prefix": "skills"},
-            {"tier": "t4", "top_k": 12, "wing_prefix": "code/"},
+            {"tier": "t4", "top_k": 12, "wing_prefix": _CODE},
             {"tier": "t1", "top_k": 8},
         ],
         "rerank_keep": 12,
     },
     "doer": {
         "tiers": [
-            {"tier": "t4", "top_k": 20, "wing_prefix": "code/"},
+            {"tier": "t4", "top_k": 20, "wing_prefix": _CODE},
             {"tier": "t3", "top_k": 6, "wing_prefix": "skills"},
             {"tier": "t1", "top_k": 8},
             {"tier": "t2", "top_k": 4},
@@ -149,7 +151,7 @@ ROLE_POLICIES: dict[str, dict] = {
     },
     "feedback": {
         "tiers": [
-            {"tier": "t4", "top_k": 10, "wing_prefix": "code/"},
+            {"tier": "t4", "top_k": 10, "wing_prefix": _CODE},
             {"tier": "t1", "top_k": 10},
             {"tier": "t3", "top_k": 4, "wing_prefix": "skills"},
         ],

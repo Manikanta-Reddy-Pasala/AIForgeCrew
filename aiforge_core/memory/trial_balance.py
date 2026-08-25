@@ -38,6 +38,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+_TRIAL_BALANCE_REPORT_MD = 'trial-balance-report.md'
+
 
 def _pds_base() -> str:
     return os.environ.get(
@@ -191,7 +193,7 @@ def run_workflow(ticket: dict, *, log=None) -> dict:
             "process": "trial_balance",
             "applied": False,
             "udiff": "",
-            "target": "trial-balance-report.md",
+            "target": _TRIAL_BALANCE_REPORT_MD,
             "problems": [{
                 "mode": "missing_attachment",
                 "evidence": f"required attachment role(s) missing: {missing}",
@@ -218,7 +220,7 @@ def run_workflow(ticket: dict, *, log=None) -> dict:
             "process": "trial_balance",
             "applied": False,
             "udiff": "",
-            "target": "trial-balance-report.md",
+            "target": _TRIAL_BALANCE_REPORT_MD,
             "problems": [{
                 "mode": "pds_unreachable",
                 "evidence": str(exc)[:500],
@@ -239,7 +241,7 @@ def run_workflow(ticket: dict, *, log=None) -> dict:
         "mode": "pds-delegate",
         "applied": False,
         "udiff": md,
-        "target": "trial-balance-report.md",
+        "target": _TRIAL_BALANCE_REPORT_MD,
         "raw": result,
         "problems": [],
         "blocked_by_detectors": blocked,

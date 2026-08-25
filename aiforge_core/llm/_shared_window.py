@@ -55,6 +55,8 @@ import sqlite3
 import threading
 import time
 
+_BEGIN_IMMEDIATE = 'BEGIN IMMEDIATE'
+
 log = logging.getLogger("aiforge.rate_limiter")
 
 _LOCAL = threading.local()
@@ -336,7 +338,7 @@ def take(limit: int, now: float | None = None) -> "tuple[bool, float] | None":
     now = time.time() if now is None else now
     try:
         try:
-            db.execute("BEGIN IMMEDIATE")
+            db.execute(_BEGIN_IMMEDIATE)
             # RE-READ THE CLOCK INSIDE THE LOCK. Read outside it, `now` could
             # be up to _LOCK_TIMEOUT_S stale — and across a clock step that
             # made the prune below delete the whole window that the callers on
@@ -408,7 +410,7 @@ def force(limit: int, now: float | None = None) -> bool:
     now = time.time() if now is None else now
     try:
         try:
-            db.execute("BEGIN IMMEDIATE")
+            db.execute(_BEGIN_IMMEDIATE)
             if _live:
                 now = time.time()       # see take(): a stale clock prunes wrongly
             # Prune first, both directions. Without it the trim below ranks
@@ -534,7 +536,7 @@ def writable() -> bool:
         return False
     try:
         try:
-            db.execute("BEGIN IMMEDIATE")
+            db.execute(_BEGIN_IMMEDIATE)
             db.execute("DELETE FROM sends WHERE ts < 0")
             db.execute("COMMIT")
         except BaseException:

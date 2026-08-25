@@ -17,6 +17,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Iterator
 
+_SELECT_FROM_TICKETS_WHERE_ID = 'SELECT * FROM tickets WHERE id = ?'
+
 _LOCK = threading.Lock()
 
 _PRIORITY_ORDER = (
@@ -173,14 +175,14 @@ class SqliteBackend:
                 f"VALUES ({placeholders})",
                 values,
             )
-            r = c.execute("SELECT * FROM tickets WHERE id = ?",
+            r = c.execute(_SELECT_FROM_TICKETS_WHERE_ID,
                           (cur.lastrowid,)).fetchone()
         return _row_to_dict(r)
 
     def fetch_ticket(self, ident_or_id) -> "dict | None":
         with self._conn() as c:
             if isinstance(ident_or_id, int):
-                r = c.execute("SELECT * FROM tickets WHERE id = ?",
+                r = c.execute(_SELECT_FROM_TICKETS_WHERE_ID,
                               (ident_or_id,)).fetchone()
             else:
                 r = c.execute("SELECT * FROM tickets WHERE identifier = ?",
@@ -220,7 +222,7 @@ class SqliteBackend:
                     (r["id"],),
                 )
                 if upd.rowcount and upd.rowcount > 0:
-                    r2 = c.execute("SELECT * FROM tickets WHERE id = ?",
+                    r2 = c.execute(_SELECT_FROM_TICKETS_WHERE_ID,
                                    (r["id"],)).fetchone()
                     return _row_to_dict(r2)
                 # lost the race for this row — another claimer took it; the
@@ -272,7 +274,7 @@ class SqliteBackend:
                 sets.insert(1, f"completed_at = {_NOW}")
             params.append(ticket_id)
             c.execute(f"UPDATE tickets SET {', '.join(sets)} WHERE id = ?", params)
-            r = c.execute("SELECT * FROM tickets WHERE id = ?",
+            r = c.execute(_SELECT_FROM_TICKETS_WHERE_ID,
                           (ticket_id,)).fetchone()
         return _row_to_dict(r) if r else None
 
@@ -302,7 +304,7 @@ class SqliteBackend:
                 params.append(ticket_id)
                 c.execute(f"UPDATE tickets SET {', '.join(sets)} WHERE id = ?",
                           params)
-            r = c.execute("SELECT * FROM tickets WHERE id = ?",
+            r = c.execute(_SELECT_FROM_TICKETS_WHERE_ID,
                           (ticket_id,)).fetchone()
         return _row_to_dict(r) if r else None
 
@@ -351,7 +353,7 @@ class SqliteBackend:
                 "WHERE id = ?",
                 (extra, ticket_id),
             )
-            r = c.execute("SELECT * FROM tickets WHERE id = ?",
+            r = c.execute(_SELECT_FROM_TICKETS_WHERE_ID,
                           (ticket_id,)).fetchone()
         return _row_to_dict(r) if r else None
 

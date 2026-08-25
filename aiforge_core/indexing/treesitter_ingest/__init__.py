@@ -95,6 +95,8 @@ from ._neo4j import (
     _write_file_payload,
 )
 
+_JAVA = '.java'
+
 
 # ─────────────── generic tag-query extractor (non-java langs) ───────────────
 #
@@ -265,7 +267,7 @@ DEFAULT_LANGUAGES = [
 
 # Which on-disk suffixes each requested language contributes to the walk.
 _LANG_SUFFIXES: dict[str, tuple[str, ...]] = {
-    "java": (".java",),
+    "java": (_JAVA,),
     "kotlin": (".kt", ".kts"),
     "python": (".py", ".pyi"),
     "javascript": (".js", ".jsx", ".mjs", ".cjs"),
@@ -285,7 +287,7 @@ def _walk_suffixes(languages: list[str]) -> tuple:
     # `.h` is ambiguous C/C++; include it whenever either is requested.
     if ("cpp" in languages or "c" in languages) and ".h" not in suffixes:
         suffixes.append(".h")
-    return tuple(dict.fromkeys(suffixes)) or (".java",)
+    return tuple(dict.fromkeys(suffixes)) or (_JAVA,)
 
 
 def _lang_mapper():
@@ -304,7 +306,7 @@ def _parse_one(fpath: Path, data: bytes, sha1: str, repo_name: str,
     edges); every other supported language is parsed by the generic aider
     tag-query engine, which yields the same shape.
     """
-    if fpath.suffix.lower() == ".java":
+    if fpath.suffix.lower() == _JAVA:
         if not TREESITTER_AVAILABLE:
             return None            # java grammar missing → skip java files
         return _parse_java_file(fpath, data, repo_name, sha1)
