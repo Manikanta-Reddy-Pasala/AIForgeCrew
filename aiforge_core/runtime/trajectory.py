@@ -73,6 +73,47 @@ def _part_to_dict(part: Any) -> dict[str, Any]:
     return out
 
 
+def _event_content(event: Any, out: dict) -> None:
+    """Copy an ADK Event's content role + non-empty parts into ``out``."""
+    content = getattr(event, "content", None)
+    if content is None:
+        return
+    role = getattr(content, "role", None)
+    if role is not None:
+        out["role"] = role
+    part_dicts = [pd for pd in
+                  (_part_to_dict(p) for p in (getattr(content, "parts", None) or []))
+                  if pd]
+    if part_dicts:
+        out["parts"] = part_dicts
+
+
+def _event_actions(event: Any, out: dict) -> None:
+    """Copy an ADK Event's state/artifact deltas, transfer and escalate flags."""
+    actions = getattr(event, "actions", None)
+    if actions is None:
+        return
+    for attr in ("state_delta", "artifact_delta"):
+        val = getattr(actions, attr, None)
+        if val:
+            out[attr] = _safe_jsonable(val)
+    transfer = getattr(actions, "transfer_to_agent", None)
+    if transfer:
+        out["transfer_to_agent"] = transfer
+    if getattr(actions, "escalate", False):
+        out["escalate"] = True
+
+
+def _copy_attrs(event: Any, attrs, out: dict, *, skip_existing: bool = False,
+                jsonable: bool = True) -> None:
+    """Copy each present (not-None) attribute of ``event`` into ``out``."""
+    for attr in attrs:
+        val = getattr(event, attr, None)
+        if val is None or (skip_existing and attr in out):
+            continue
+        out[attr] = _safe_jsonable(val) if jsonable else val
+
+
 def _event_to_dict(event: Any) -> dict[str, Any]:
     """Coerce an ADK ``Event`` (google.adk.events.Event) into a plain
     dict for JSON storage. Handles both ADK Events and bare dicts; falls
@@ -88,53 +129,16 @@ def _event_to_dict(event: Any) -> dict[str, Any]:
         return event
 
     out: dict[str, Any] = {}
-
-    for attr in ("id", "invocation_id", "author", "timestamp",
-                 "partial", "branch", "long_running_tool_ids"):
-        val = getattr(event, attr, None)
-        if val is not None:
-            out[attr] = _safe_jsonable(val)
-
-    content = getattr(event, "content", None)
-    if content is not None:
-        role = getattr(content, "role", None)
-        if role is not None:
-            out["role"] = role
-        parts = getattr(content, "parts", None) or []
-        part_dicts = [_part_to_dict(p) for p in parts]
-        part_dicts = [pd for pd in part_dicts if pd]
-        if part_dicts:
-            out["parts"] = part_dicts
-
-    actions = getattr(event, "actions", None)
-    if actions is not None:
-        state_delta = getattr(actions, "state_delta", None)
-        if state_delta:
-            out["state_delta"] = _safe_jsonable(state_delta)
-        artifact_delta = getattr(actions, "artifact_delta", None)
-        if artifact_delta:
-            out["artifact_delta"] = _safe_jsonable(artifact_delta)
-        transfer = getattr(actions, "transfer_to_agent", None)
-        if transfer:
-            out["transfer_to_agent"] = transfer
-        if getattr(actions, "escalate", False):
-            out["escalate"] = True
-
-    error_code = getattr(event, "error_code", None)
-    if error_code is not None:
-        out["error_code"] = error_code
-    error_msg = getattr(event, "error_message", None)
-    if error_msg is not None:
-        out["error_message"] = error_msg
-
-    # Legacy-shape fallback: ad-hoc test fixtures and older callsites
-    # pass plain objects with type/tool_name/tool_args/etc. attributes.
-    # Preserve them so older traces and tests stay readable.
-    for attr in ("type", "kind", "text", "agent_name",
-                 "tool_name", "tool_args", "tool_result"):
-        val = getattr(event, attr, None)
-        if val is not None and attr not in out:
-            out[attr] = _safe_jsonable(val)
+    _copy_attrs(event, ("id", "invocation_id", "author", "timestamp",
+                        "partial", "branch", "long_running_tool_ids"), out)
+    _event_content(event, out)
+    _event_actions(event, out)
+    _copy_attrs(event, ("error_code", "error_message"), out, jsonable=False)
+    # Legacy-shape fallback: ad-hoc test fixtures and older callsites pass plain
+    # objects with type/tool_name/tool_args/etc. attributes. Preserve them so
+    # older traces and tests stay readable.
+    _copy_attrs(event, ("type", "kind", "text", "agent_name", "tool_name",
+                        "tool_args", "tool_result"), out, skip_existing=True)
 
     if not out:
         try:
@@ -257,6 +261,18 @@ def _short(val: Any, limit: int = 120) -> str:
 _PATH_RE = re.compile(r"[\w./-]+\.(?:py|java|ts|tsx|js|go|rs|md|yaml|yml|json|xml)\b")
 
 
+def _repo_paths_in(blob: str):
+    """Yield repo-relative file paths found in ``blob`` — absolute and
+    parent-relative matches are skipped, a ``./`` prefix is stripped, and a path
+    must contain a ``/`` to count (a bare filename is too weak a MENTIONS edge)."""
+    for m in _PATH_RE.findall(blob):
+        if m.startswith(("/", "..")):
+            continue
+        path = m[2:] if m.startswith("./") else m
+        if "/" in path:
+            yield path
+
+
 def _touched_paths(events: list[dict], cap: int = 10) -> list[str]:
     """Pull repo-relative file paths out of the event stream so the
     trajectory note gets MENTIONS edges (refs match File_v2.path).
@@ -265,11 +281,8 @@ def _touched_paths(events: list[dict], cap: int = 10) -> list[str]:
     seen: list[str] = []
     for evt in events:
         blob = str(evt.get("args") or "") + " " + str(evt.get("text") or "")
-        for m in _PATH_RE.findall(blob):
-            if m.startswith(("/", "..")):
-                continue  # absolute / parent-relative — not a repo path
-            path = m[2:] if m.startswith("./") else m
-            if "/" in path and path not in seen:
+        for path in _repo_paths_in(blob):
+            if path not in seen:
                 seen.append(path)
                 if len(seen) >= cap:
                     return seen
