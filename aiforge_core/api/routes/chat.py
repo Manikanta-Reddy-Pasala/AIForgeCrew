@@ -1733,6 +1733,38 @@ def _augment_user_turn(m: dict, enriched, resume_brief, prompt, doc_task) -> Non
             m["content"] += _DRAFT_ONLY_NOTE
 
 
+def _early_route_events(cmd_help_text, body, history, cwd, role, session_id, pctx):
+    """The two deterministic early routes that bypass the whole agent machinery:
+    built-in /help (inline command listing, no model call) and BUILDER mode
+    (job|skill|workflow|rule — a focused interactive builder; the enhancer would
+    distort its clarifying Q&A). Each sets ``pctx["done"]`` so the caller returns."""
+    from aiforge_core.runtime.chat_agent import run_chat_agent
+    # Built-in /help (or /commands): answer inline with the command listing
+    # and finish — no model call, works with zero user command files.
+    if cmd_help_text is not None:
+        yield {"type": "message", "text": cmd_help_text}
+        yield {"type": "done"}
+        pctx["done"] = True
+        return
+    # Builder mode (job|skill|workflow|rule): a focused, deterministic
+    # interactive builder. Bypass the enhancer/team/plan machinery (the
+    # enhancer would distort the clarifying Q&A) and run the single chat
+    # agent with the task charter, which ends by calling its finalize tool.
+    if body.builder:
+        # NOTE: do NOT re-import run_chat_agent here — a local import inside
+        # this generator makes the name LOCAL to the whole generator, so the
+        # non-builder paths below (which don't run this branch) hit it
+        # unbound → "UnboundLocalError: run_chat_agent". Use the closure from
+        # the outer function's import.
+        from aiforge_core.runtime.prompts_extended import builders as _bld
+        if _bld.charter_for(body.builder):
+            yield from run_chat_agent(history, cwd=cwd, role=role,
+                                      session_id=session_id, mode="act",
+                                      builder=body.builder)
+            pctx["done"] = True
+            return
+
+
 def _fold_enriched_history(history, enriched, resume_brief, prompt, doc_task):
     """Fold the enhancer's interpretation into the LAST user turn — AUGMENT, don't
     replace: keep the user's verbatim words and attach the restatement as a
@@ -1744,6 +1776,20 @@ def _fold_enriched_history(history, enriched, resume_brief, prompt, doc_task):
             _augment_user_turn(m, enriched, resume_brief, prompt, doc_task)
             break
     return enriched_history
+
+
+def _single_agent_events(enriched_history, cwd, role, session_id, single_mode,
+                         quick, awaiting_ctx):
+    """Run the single conversational agent and yield its events, flagging
+    ``awaiting_ctx["awaiting"]`` when the turn ended waiting on user input (an
+    ASK / a REJECT). A doc/analysis task runs read-only (mode="analyze")."""
+    from aiforge_core.runtime.chat_agent import run_chat_agent
+    for ev in run_chat_agent(enriched_history, cwd=cwd, role=role,
+                             session_id=session_id, mode=single_mode,
+                             max_steps=_quick_step_cap(quick)):
+        if ev.get("type") == "message" and ev.get("awaiting_input"):
+            awaiting_ctx["awaiting"] = True
+        yield ev
 
 
 def _commit_simple_baseline(cwd):
@@ -2049,28 +2095,11 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         return f"{text}\n\n---\n{_resume_brief}" if _resume_brief else text
 
     def _events():
-        # Built-in /help (or /commands): answer inline with the command listing
-        # and finish — no model call, works with zero user command files.
-        if _cmd_help_text is not None:
-            yield {"type": "message", "text": _cmd_help_text}
-            yield {"type": "done"}
+        pctx0 = {"done": False}
+        yield from _early_route_events(_cmd_help_text, body, history, cwd, role,
+                                       session_id, pctx0)
+        if pctx0["done"]:
             return
-        # Builder mode (job|skill|workflow|rule): a focused, deterministic
-        # interactive builder. Bypass the enhancer/team/plan machinery (the
-        # enhancer would distort the clarifying Q&A) and run the single chat
-        # agent with the task charter, which ends by calling its finalize tool.
-        if body.builder:
-            # NOTE: do NOT re-import run_chat_agent here — a local import inside
-            # this generator makes the name LOCAL to the whole generator, so the
-            # non-builder paths below (which don't run this branch) hit it
-            # unbound → "UnboundLocalError: run_chat_agent". Use the closure from
-            # the outer function's import.
-            from aiforge_core.runtime.prompts_extended import builders as _bld
-            if _bld.charter_for(body.builder):
-                yield from run_chat_agent(history, cwd=cwd, role=role,
-                                          session_id=session_id, mode="act",
-                                          builder=body.builder)
-                return
         # Resuming a stopped turn — say so, or the run looks identical to the
         # one that just failed and the user cannot tell whether the retry is
         # repeating itself.
@@ -2207,20 +2236,14 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # shows the previous ticket's edits.
         _simple_sha, _skip_worktree = _commit_simple_baseline(cwd)
         _single_mode = "analyze" if _doc_task and agent_mode != "plan" else agent_mode
-        _turn_awaiting = False
-        for _ev in run_chat_agent(_enriched_history, cwd=cwd, role=role,
-                                  session_id=session_id, mode=_single_mode,
-                                  max_steps=_quick_step_cap(body.quick)):
-            if _ev.get("type") == "message" and _ev.get("awaiting_input"):
-                _turn_awaiting = True
-            yield _ev
-        # A turn that ended AWAITING user input — e.g. a REJECT ("tell me what to
-        # do instead") or an ASK — must NOT fall into the post-run integration
-        # build below: on a turn that had an earlier APPLIED edit, _wrote_source()
-        # is True and the build fires AFTER the reject, holds the is_running slot
-        # (run.finish() is in _produce's finally), and 409-blocks the user's very
-        # next (resume) message. Pointless work on a paused turn — end here.
-        if _turn_awaiting:
+        awaiting_ctx = {"awaiting": False}
+        yield from _single_agent_events(_enriched_history, cwd, role, session_id,
+                                        _single_mode, body.quick, awaiting_ctx)
+        # A turn that ended AWAITING user input (a REJECT/ASK) must NOT fall into
+        # the post-run integration build: on a turn with an earlier APPLIED edit,
+        # _turn_wrote_source() is True and the build fires AFTER the reject, holds
+        # the is_running slot and 409-blocks the user's next (resume) message.
+        if awaiting_ctx["awaiting"]:
             return
         yield from _post_run_events(prompt, cwd, agent_mode, _simple_sha)
 
