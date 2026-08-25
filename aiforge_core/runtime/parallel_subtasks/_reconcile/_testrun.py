@@ -184,7 +184,7 @@ def _route_steering(txt: str, subs: list) -> dict:
     low = txt.lower()
     best, score = None, 0
     for s in subs:
-        toks = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{2,}",
+        toks = re.findall(r"[a-zA-Z_]\w{2,}",
                           f"{s.get('path','')} {s.get('goal','')}".lower())
         hits = sum(1 for t in set(toks) if t in low)
         if hits > score:

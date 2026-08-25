@@ -58,7 +58,7 @@ def _digest_file_paths(digest: str) -> list[str]:
     import re
     paths: list[str] = []
     for line in digest.splitlines():
-        m = re.match(r"^([^\s│⋮].*\.[A-Za-z0-9_]+):\s*$", line)
+        m = re.match(r"^([^\s│⋮].*\.\w+):\s*$", line)
         if m:
             paths.append(m.group(1))
     return paths[:20]

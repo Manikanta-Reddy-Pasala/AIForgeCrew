@@ -274,7 +274,7 @@ def _http_clients(worktree: str) -> list[str]:
         worktree,
     ):
         for m in re.finditer(
-            r'(https?://[^\s"\'\\)]+|/(v[0-9]+/api/[^\s"\'\\)]*))',
+            r'(https?://[^\s"\'\\)]+|/(v\d+/api/[^\s"\'\\)]*))',
             ln,
         ):
             out.add(m.group(1)[:120])

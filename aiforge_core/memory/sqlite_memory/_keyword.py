@@ -13,7 +13,7 @@ _VOCAB_CACHE: dict = {}
 
 
 def _kw_tokens(q: str) -> list[str]:
-    toks = [t for t in _re.findall(r"[a-z0-9][a-z0-9_-]{1,}", (q or "").lower())
+    toks = [t for t in _re.findall(r"[a-z0-9][a-z0-9_-]+", (q or "").lower())
             if t not in _STOP]
     # keep order, dedupe
     seen: set[str] = set()

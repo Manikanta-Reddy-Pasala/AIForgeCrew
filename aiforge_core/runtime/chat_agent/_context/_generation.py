@@ -30,7 +30,7 @@ import re as _re
 
 # An assistant turn's synthesized action line ("ACTION: file_read"). Native tool
 # calls and the text protocol both render to this, so one regex covers both.
-_RECAP_ACTION_RE = _re.compile(r"^\s*ACTION:\s*([A-Za-z0-9_]+)", _re.MULTILINE)
+_RECAP_ACTION_RE = _re.compile(r"^\s*ACTION:\s*(\w+)", _re.MULTILINE)
 _RECAP_PATH_RE = _re.compile(r'"(?:path|file|filename|target)"\s*:\s*"([^"]+)"')
 
 

@@ -59,7 +59,7 @@ _BLANKET_ADD_SELECTORS = frozenset({"-A", "--all", "."})
 # leading ``-C <dir>`` / ``-c k=v`` to reach the SUBCOMMAND.
 _GIT_GLOBAL_VALUE_OPTS = frozenset(
     {"-C", "-c", "--git-dir", "--work-tree", "--namespace"})
-_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=")
 # Split a (quote/heredoc-masked) command into simple-command chunks on every
 # shell separator AND subshell/group punctuation, so a blanket stage nested in
 # ``(...)`` / ``{...}`` — including the no-separator ``(git add -A)`` form — is
@@ -75,7 +75,7 @@ class _NonCodeMasker:
     read: each branch is small, they simply all shared ``i``.
     """
 
-    _DELIM_RE = re.compile(r"""(["']?)([A-Za-z_][A-Za-z0-9_]*)\1""")
+    _DELIM_RE = re.compile(r"""(["']?)([A-Za-z_]\w*)\1""")
 
     def __init__(self, cmd: str) -> None:
         self.cmd = cmd

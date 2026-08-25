@@ -75,7 +75,7 @@ def _tag(rows: list[dict], *, source: str, weight: float) -> list[dict]:
     return out
 
 
-_SYMBOL_HINT_RE = re.compile(r"\b[A-Z][A-Za-z0-9_]+\b")
+_SYMBOL_HINT_RE = re.compile(r"\b[A-Z]\w+\b")
 
 
 def _looks_like_symbol(text: str) -> bool:

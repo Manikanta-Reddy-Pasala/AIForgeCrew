@@ -355,7 +355,7 @@ def _synthesize(overall: str, results: list[dict], topics: list[str]) -> str:
 # and reports), then synthesize. Same discover→batch→synthesize shape as the
 # code pipeline, for reads.
 
-_PATHISH_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./\-]*\.[A-Za-z0-9]{1,6}")
+_PATHISH_RE = re.compile(r"\w[A-Za-z0-9_./\-]*\.[A-Za-z0-9]{1,6}")
 
 
 def _discover_target_files(prompt: str, cwd: str) -> list[str]:

@@ -35,7 +35,7 @@ _FILE_RE = re.compile(
     r"\b[\w][\w.-]*\.(?:py|java|kt|js|jsx|ts|tsx|go|rs|rb|php|c|h|cpp|hpp|cs|"
     r"sql|sh|bash|yaml|yml|json|toml|ini|xml|md|txt|csv|proto|gradle|tf)\b",
     re.IGNORECASE)
-_PATH_RE = re.compile(r"(?:^|[\s(\"'`])(?:\.{0,2}/)?(?:[\w.-]+/){1,}[\w.-]+")
+_PATH_RE = re.compile(r"(?:^|[\s(\"'`])(?:\.{0,2}/)?(?:[\w.-]+/)+[\w.-]+")
 # A dotted or ::-joined symbol path (com.foo.Bar, module::thing, Foo.bar())
 _SYMBOL_RE = re.compile(r"\b\w+(?:::\w+|\.\w+){2,}\b|\b\w+\.\w+\(\)")
 
