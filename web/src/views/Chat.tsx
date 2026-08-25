@@ -1188,6 +1188,10 @@ export default function Chat() {
     }
   }
 
+  // Schedule a textarea refocus on the next tick. Named helper so the SSE
+  // reducer callback isn't a deeply-nested inline function.
+  const refocusSoon = () => setTimeout(() => textareaRef.current?.focus(), 30);
+
   function onRenameKey(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Enter') { e.preventDefault(); commitRename(); }
     if (e.key === 'Escape') { setRenaming(null); }
@@ -1277,8 +1281,7 @@ export default function Chat() {
 
       if (handlePillEvent(evt)) return;
 
-      setLiveTurn(prev => reduceTurn(prev, evt,
-        () => setTimeout(() => textareaRef.current?.focus(), 30)));
+      setLiveTurn(prev => reduceTurn(prev, evt, refocusSoon));
     }
 
     while (true) {

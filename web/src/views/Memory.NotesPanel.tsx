@@ -5,6 +5,16 @@ import { Icon } from '../icons';
 import { Category, CATEGORY_ORDER, CAT_ICON, categoryOf, cleanTitle } from './Memory.helpers';
 import { clickable } from '../a11y';
 
+// The clickable tag chips for one note row. Extracted so the row-rendering
+// chain stays within the nested-function depth limit.
+function renderTags(tags: string[], onTag: (t: string) => void) {
+  return tags.slice(0, 6).map((t: string) => (
+    <span key={t} className="chip xs"
+          style={{ cursor: 'pointer' }}
+          {...clickable(() => onTag(t))}>{t}</span>
+  ));
+}
+
 export function NotesPanel() {
   const [files, setFiles] = useState<any[] | null>(null);
   const [open, setOpen] = useState<any>(null);
@@ -166,11 +176,7 @@ export function NotesPanel() {
                             <a style={{ cursor: 'pointer', fontWeight: 500, minWidth: 200 }}
                                {...clickable(() => view(f.name))}>{cleanTitle(f)}</a>
                             <div className="row" style={{ gap: 4, flexWrap: 'wrap', flex: 1 }}>
-                              {tags.slice(0, 6).map((t: string) => (
-                                <span key={t} className="chip xs"
-                                      style={{ cursor: 'pointer' }}
-                                      {...clickable(() => setFilter(t))}>{t}</span>
-                              ))}
+                              {renderTags(tags, setFilter)}
                             </div>
                             <span className="muted xs" style={{ whiteSpace: 'nowrap' }}>
                               {(f.created || '').slice(0, 10)}
