@@ -32,7 +32,7 @@ from ._render import (
     brief_source_stems,
 )
 
-_N_N_N_N = '\\n\\n---\\n\\n'
+_SECTION_SEP = "\n\n---\n\n"  # blank-line-fenced markdown section separator
 
 # Sentinel topic key for a note the topic labeller couldn't theme. Such a note
 # already lives in its repo/shared brief, so it must NOT spawn a topic file —
@@ -265,7 +265,7 @@ def _summarize_notes(blocks: list[str], role: str) -> str | None:
     if len(partials) == 1:
         return partials[0]
     # reduce step — combine the partial summaries
-    combined = "\n\n---\n\n".join(partials)
+    combined = _SECTION_SEP.join(partials)
     if len(combined) <= cap:
         return _summarize_block(combined, role) or combined
     return combined          # already summarized; accept as-is if still huge
@@ -854,9 +854,9 @@ def _prepare_group(key: str, items: list[dict], *, group_by: str,
             body = f"# {title}\n\n{summary}"
             did_summarize = True
     if body is None:
-        merged_prefix = ((existing_body + "\n\n---\n\n") if existing_body
+        merged_prefix = ((existing_body + _SECTION_SEP) if existing_body
                          else f"# {title}\n\n")
-        body = _capped_merge(merged_prefix + "\n\n---\n\n".join(sections), title)
+        body = _capped_merge(merged_prefix + _SECTION_SEP.join(sections), title)
 
     if group_by in ("repo", "topic"):
         # No model: keep the OKR envelope, consolidation lives in the body

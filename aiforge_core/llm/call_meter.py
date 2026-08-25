@@ -67,6 +67,7 @@ _MINUTE_S = 60.0
 # browser — assembled under the lock every LLM call takes — to render 8 rows.
 _LABEL_MAX = 64
 _LABELS_PER_BUCKET = 40
+_OVERFLOW_BUCKET = "…other"  # bucket key for labels past _LABELS_PER_BUCKET
 _BUCKETS = 60                     # minutes of history kept
 _RETAIN_S = _BUCKETS * _MINUTE_S
 _WINDOW_S = 60.0
@@ -379,7 +380,7 @@ def _bump_token_bucket_locked(ts: float, role, pt: int, ct: int) -> None:
     if r in outs or len(outs) < _LABELS_PER_BUCKET:
         outs[r] = outs.get(r, 0) + ct
     else:
-        outs["…other"] = outs.get("…other", 0) + ct
+        outs[_OVERFLOW_BUCKET] = outs.get(_OVERFLOW_BUCKET, 0) + ct
 
 
 def _bill_session_tokens_locked(sid, epoch, pt: int, ct: int) -> None:
@@ -521,7 +522,7 @@ def _bump_bucket_locked(ts: float, role, provider, model) -> None:
         if v in slot or len(slot) < _LABELS_PER_BUCKET:
             slot[v] = slot.get(v, 0) + 1
         else:
-            slot["…other"] = slot.get("…other", 0) + 1
+            slot[_OVERFLOW_BUCKET] = slot.get(_OVERFLOW_BUCKET, 0) + 1
 
 
 def _bump_fail_bucket_locked(ts: float, reason) -> None:
@@ -541,7 +542,7 @@ def _bump_fail_bucket_locked(ts: float, reason) -> None:
     if v in fails or len(fails) < _LABELS_PER_BUCKET:
         fails[v] = fails.get(v, 0) + 1
     else:
-        fails["…other"] = fails.get("…other", 0) + 1
+        fails[_OVERFLOW_BUCKET] = fails.get(_OVERFLOW_BUCKET, 0) + 1
 
 
 def _prune_buckets_locked(now: float) -> None:

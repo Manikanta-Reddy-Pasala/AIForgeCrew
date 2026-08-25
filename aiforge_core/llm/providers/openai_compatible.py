@@ -26,6 +26,7 @@ log = logging.getLogger("aiforge.provider.openai_compatible")
 
 _DEFAULT_BASE = "http://127.0.0.1:1234/v1"
 _NO_TOKEN = "not-needed"
+_APPLICATION_JSON = "application/json"
 
 
 def _user_agent() -> str:
@@ -154,7 +155,7 @@ def probe(base_url: str, api_key: str | None = None,
     if not base_url or not base_url.strip():
         return {"ok": False, "error": "base_url required", "models": []}
     url = _ensure_v1(base_url.strip()) + "/models"
-    headers = {"Accept": "application/json", "User-Agent": _user_agent()}
+    headers = {"Accept": _APPLICATION_JSON, "User-Agent": _user_agent()}
     has_token = bool(api_key and api_key.strip() and api_key.strip() != _NO_TOKEN)
     if has_token:
         headers["Authorization"] = f"Bearer {api_key.strip()}"
@@ -208,8 +209,8 @@ def probe_native(base_url: str, model: str, api_key: str | None = None,
     if not model or not model.strip():
         return {"ok": False, "error": "model required"}
     url = base_url.strip().rstrip("/") + "/chat/completions"
-    headers = {"Content-Type": "application/json",
-               "Accept": "application/json", "User-Agent": _user_agent()}
+    headers = {"Content-Type": _APPLICATION_JSON,
+               "Accept": _APPLICATION_JSON, "User-Agent": _user_agent()}
     if api_key and api_key.strip() and api_key.strip() != _NO_TOKEN:
         headers["Authorization"] = f"Bearer {api_key.strip()}"
     skip_tls, tls_mode = _probe_tls_plan(url, insecure)

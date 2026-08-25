@@ -13,7 +13,7 @@ from __future__ import annotations
 import html as _html
 import re
 
-_N_CODE_N = '\\n{code}\\n'
+_CODE_FENCE = "\n{code}\n"
 
 _HTML_HINT = re.compile(r"</?(p|br|ul|ol|li|strong|b|em|i|code|pre|h[1-6]|a|div)\b",
                         re.I)
@@ -30,8 +30,8 @@ def to_jira_wiki(text):
 # ── HTML → wiki ──────────────────────────────────────────────────────────────
 def _html_to_wiki(s: str) -> str:
     # code first, so tag-stripping never touches code contents
-    s = re.sub(r"<pre\b[^>]*>(.*?)</pre>", lambda m: "\n{code}\n"
-               + _strip_tags(m.group(1)).strip("\n") + "\n{code}\n",
+    s = re.sub(r"<pre\b[^>]*>(.*?)</pre>", lambda m: _CODE_FENCE
+               + _strip_tags(m.group(1)).strip("\n") + _CODE_FENCE,
                s, flags=re.I | re.S)
     s = re.sub(r"<code\b[^>]*>(.*?)</code>",
                lambda m: "{{" + _strip_tags(m.group(1)) + "}}", s, flags=re.I | re.S)
@@ -78,7 +78,7 @@ def _md_to_wiki(s: str) -> str:
     def _fence(m):
         lang = (m.group(1) or "").strip()
         head = "{code:" + lang + "}" if lang else "{code}"
-        return "\n" + head + "\n" + m.group(2).rstrip("\n") + "\n{code}\n"
+        return "\n" + head + "\n" + m.group(2).rstrip("\n") + _CODE_FENCE
     s = re.sub(r"```([^\n`]*)\n(.*?)```", _fence, s, flags=re.S)
 
     out_lines = []

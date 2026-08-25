@@ -26,7 +26,7 @@ import urllib.parse
 
 from . import _http_integration as _http
 
-_PASS_PROJECT_GROUP_PROJ_OR_S = 'pass project=\\"group/proj\\" or set GITLAB_PROJECT'
+_PROJECT_HINT = 'pass project="group/proj" or set GITLAB_PROJECT'
 _MISSING_IID = "missing 'iid'"
 _MISSING_PROJECT = "missing 'project'"
 
@@ -593,7 +593,7 @@ def gitlab_pipelines(args: dict, _cwd: str | None = None) -> dict:
     proj = _proj_id(args)
     if not proj:
         return {"ok": False, "error": _MISSING_PROJECT,
-                "hint": "pass project=\"group/proj\" or set GITLAB_PROJECT"}
+                "hint": _PROJECT_HINT}
     params: dict = {"per_page": _pipe_int(args, "limit", 20, 1, 100),
                     "order_by": "id", "sort": "desc"}
     ref = (args.get("ref") or args.get("branch") or "").strip()
@@ -859,7 +859,7 @@ def gitlab_pipeline(args: dict, _cwd: str | None = None, *,
     proj = _proj_id(args)
     if not proj:
         return {"ok": False, "error": _MISSING_PROJECT,
-                "hint": "pass project=\"group/proj\" or set GITLAB_PROJECT"}
+                "hint": _PROJECT_HINT}
     d, err = _resolve_pipeline(proj, args)
     if err:
         return err
@@ -1093,7 +1093,7 @@ def gitlab_pipeline_watch(args: dict, cwd: str | None = None) -> dict:
     import time as _time
     if not _proj_id(args):
         return {"ok": False, "error": _MISSING_PROJECT,
-                "hint": "pass project=\"group/proj\" or set GITLAB_PROJECT"}
+                "hint": _PROJECT_HINT}
     b = _WatchBudget(args)
     started = _time.monotonic()
     checks = 0

@@ -21,6 +21,7 @@ import re
 # Already-storage signal: real block/format tags or a Confluence macro.
 _STORAGE_HINT = re.compile(r"<(p|h[1-6]|ul|ol|li|strong|em|a|table|ac:)\b", re.I)
 _FENCE = re.compile(r"```.*?```", re.DOTALL)
+_ORDERED_ITEM = r"^\s*\d+\.\s+"  # markdown ordered-list item: "1. ", "2. ", ...
 
 
 def md_to_storage(text):
@@ -70,8 +71,8 @@ def _inline(s: str) -> str:
 def _consume_list(lines: list[str], i: int) -> "tuple[str, int]":
     """A run of SAME-TYPE list items starting at ``lines[i]`` → (``<ul>/<ol>``
     html, next index). An ordered run and an unordered run stay separate lists."""
-    ordered = bool(re.match(r"^\s*\d+\.\s+", lines[i]))
-    item_re = r"^\s*\d+\.\s+" if ordered else r"^\s*[-*+]\s+"
+    ordered = bool(re.match(_ORDERED_ITEM, lines[i]))
+    item_re = _ORDERED_ITEM if ordered else r"^\s*[-*+]\s+"
     items: list[str] = []
     while i < len(lines) and re.match(item_re, lines[i]):
         it = re.sub(item_re, "", lines[i]).strip()
@@ -93,7 +94,7 @@ def _block_at(lines: list[str], i: int) -> "tuple[str | None, int]":
     if hm:
         lvl = len(hm.group(1))
         return f"<h{lvl}>{_inline(hm.group(2).strip())}</h{lvl}>", i + 1
-    if re.match(r"^\s*[-*+]\s+", lines[i]) or re.match(r"^\s*\d+\.\s+", lines[i]):
+    if re.match(r"^\s*[-*+]\s+", lines[i]) or re.match(_ORDERED_ITEM, lines[i]):
         return _consume_list(lines, i)
     return f"<p>{_inline(raw)}</p>", i + 1
 

@@ -16,6 +16,8 @@ from pydantic import BaseModel
 from aiforge_core.runtime import review_gates
 from aiforge_core.runtime.git_pr import _EXCLUDE_PATHSPECS, ensure_artifact_gitignore
 
+_SPEC_MD = "SPEC.md"
+
 def _pin_to_subtask(subs: list, target: str, text: str,
                     note: str) -> tuple[str, str] | None:
     """Attach the mandate to ONE subtask. None when that subtask is gone (the
@@ -49,7 +51,7 @@ def _steer_headings(target: str, note: str) -> tuple[str, str]:
 
 def _append_spec_mandate(cwd: str, heading: str, text: str) -> None:
     try:
-        with open(os.path.join(cwd, "SPEC.md"), "a", encoding="utf-8") as fh:
+        with open(os.path.join(cwd, _SPEC_MD), "a", encoding="utf-8") as fh:
             fh.write(f"\n\n{heading}\n- **MUST:** {text}\n")
     except Exception:  # noqa: BLE001
         pass
@@ -199,7 +201,7 @@ def _write_spec(prompt: str, subs: list, cwd: str, state: dict):
         log.debug("spec review skipped: %s", exc)
     state["spec_md"] = spec_md
     try:
-        with open(os.path.join(cwd, "SPEC.md"), "w", encoding="utf-8") as fh:
+        with open(os.path.join(cwd, _SPEC_MD), "w", encoding="utf-8") as fh:
             fh.write(spec_md)
         yield {"type": "thought", "role": "planner",
                "text": f"Wrote SPEC.md ({len(subs)} subtasks) — the shared "
@@ -268,7 +270,7 @@ def _spec_runner(cwd: str, spec_md: str):
         # seen by subtasks that start AFTER the steer (sequential on local).
         spec = spec_md
         try:
-            p = os.path.join(cwd, "SPEC.md")
+            p = os.path.join(cwd, _SPEC_MD)
             if os.path.isfile(p):
                 with open(p, encoding="utf-8", errors="replace") as fh:
                     spec = fh.read()
@@ -634,7 +636,7 @@ _USER_MANDATES: dict[str, list[str]] = {}
 # list across languages. Substring-matched against each changed path.
 _CHANGES_HIDE = (
     # aiforge internals
-    "SPEC.md", ".aiforge-venv", ".aiforge-contracts", ".aiforge-baseline",
+    _SPEC_MD, ".aiforge-venv", ".aiforge-contracts", ".aiforge-baseline",
     ".aiforge-worktrees",
     # python
     "__pycache__", ".pyc", ".pyo", ".egg-info", ".pytest_cache", ".ruff_cache",
