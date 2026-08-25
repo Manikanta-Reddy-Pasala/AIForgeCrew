@@ -176,36 +176,40 @@ def _rename_okr_dir_to_okf() -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def _drain_peer_files(src, _paths, shutil) -> "tuple[int, int]":
+    """Move each foreign node file out of ``src`` into the peers inbox. Returns
+    ``(moved, kept)`` — a file already at the destination is kept in place (the
+    newer layout wins, nothing is lost)."""
+    moved = kept = 0
+    for f in sorted(src.rglob("*")):
+        if not f.is_file():
+            continue
+        dest = _paths.peers_root() / f.relative_to(src)
+        if dest.exists():
+            kept += 1                   # destination wins; nothing is lost
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(f), str(dest))
+        moved += 1
+    return moved, kept
+
+
 def _move_okf_peers_to_inbox() -> dict:
     """Move foreign OKF nodes out of ``okf/peers/<origin>/`` into the top-level
     ``peers/<origin>/`` inbox.
 
-    ``okf/`` now means "knowledge this machine authored" — it is the compaction
-    source and the only thing this peer contributes to the mesh — so other
-    peers' raw nodes must not sit inside it (see
-    ``docs/superpowers/specs/2026-07-20-two-tier-knowledge-compaction.md``).
-
-    Idempotent: a second run finds nothing to move. Never clobbers a file
-    already at the destination — the newer layout wins and the source is left in
-    place for a human to look at. Never raises: a node must boot even when its
-    memory tree is odd."""
+    ``okf/`` now means "knowledge this machine authored" — the compaction source
+    and the only thing this peer contributes to the mesh — so other peers' raw
+    nodes must not sit inside it. Idempotent; never clobbers a file already at the
+    destination; never raises (a node must boot even when its memory tree is odd).
+    """
     import shutil
     try:
         from aiforge_core.memory.sync import paths as _paths
         src = _paths.legacy_peers_dir()
         if not src.is_dir():
             return {"ok": True, "skipped": "no legacy okf/peers/ folder"}
-        moved = kept = 0
-        for f in sorted(src.rglob("*")):
-            if not f.is_file():
-                continue
-            dest = _paths.peers_root() / f.relative_to(src)
-            if dest.exists():
-                kept += 1                   # destination wins; nothing is lost
-                continue
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(f), str(dest))
-            moved += 1
+        moved, kept = _drain_peer_files(src, _paths, shutil)
         for d in sorted(src.rglob("*"), reverse=True):
             if d.is_dir():
                 _rmdir_if_empty(d)
