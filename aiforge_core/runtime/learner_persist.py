@@ -411,6 +411,21 @@ def persist_facts(
     return out
 
 
+def _ticket_event_time(ticket_identifier: str) -> "float | None":
+    """Lift a ticket's created_at into an Observation_v2.event_time timestamp so
+    bi-temporal queries can hop by "when did this happen?" separate from the
+    ingest moment. None when there is no ticket or it can't be read."""
+    if not ticket_identifier:
+        return None
+    try:
+        from aiforge_core.tickets.store import get as ticket_get
+        t = ticket_get(ticket_identifier)
+        ca = getattr(t, "created_at", None) if t else None
+        return ca.timestamp() if ca is not None else None
+    except Exception:
+        return None
+
+
 def make_learner_after_callback():
     """Return an ADK ``after_agent_callback`` for the Learner agent.
 
@@ -425,30 +440,13 @@ def make_learner_after_callback():
             if not facts:
                 return None
             ticket_identifier = state.get("ticket_identifier", "")
-            repo = (
-                state.get("ticket_project")
-                or os.environ.get("AIFORGE_AFM_REPO", "")
-                or ""
-            )
-            session_id = state.get("session_id", "")
-            # Gap-7 wire: lift the ticket's created_at into Observation_v2.event_time
-            # so bi-temporal queries can hop by "when did this happen?"
-            # separate from the ingest moment.
-            event_time = None
-            if ticket_identifier:
-                try:
-                    from aiforge_core.tickets.store import get as ticket_get
-                    t = ticket_get(ticket_identifier)
-                    ca = getattr(t, "created_at", None) if t else None
-                    if ca is not None:
-                        event_time = ca.timestamp()
-                except Exception:
-                    event_time = None
+            repo = (state.get("ticket_project")
+                    or os.environ.get("AIFORGE_AFM_REPO", "") or "")
             persist_facts(
                 facts=facts, repo=repo,
                 ticket_identifier=ticket_identifier,
-                session_id=session_id,
-                event_time=event_time,
+                session_id=state.get("session_id", ""),
+                event_time=_ticket_event_time(ticket_identifier),
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("learner_persist.callback_failed: %s", exc)
