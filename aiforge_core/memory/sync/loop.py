@@ -249,11 +249,11 @@ def run_forever(interval: int = DEFAULT_INTERVAL) -> None:
                 # A permanent on-disk fault otherwise looks exactly like a
                 # transient one, forever, and nothing in the log distinguishes
                 # "syncing fine" from "has not synced since Tuesday".
-                _log.error("sync: %d consecutive cycles have failed — this is "
-                           "not transient, sync and compaction are both "
-                           "stopped: %s", failures, exc, exc_info=True)
+                _log.exception("sync: %d consecutive cycles have failed — this "
+                               "is not transient, sync and compaction are both "
+                               "stopped: %s", failures, exc)
             else:
-                _log.error("sync: cycle failed, continuing: %s", exc, exc_info=True)
+                _log.exception("sync: cycle failed, continuing: %s", exc)
         else:
             failures = 0
         time.sleep(interval)
