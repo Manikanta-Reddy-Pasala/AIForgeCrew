@@ -1063,6 +1063,86 @@ def _condense_and_report(st, role, complete_fn, session_id, _meter):
                # as the provider reported them.
                "llm_turn_tokens_out": _calls.get("turn_tokens_out", 0)}
 
+def _verify_on_final(st, cwd, plan_mode, builder):
+    """Progress-gated verify->fix on FINAL: only an act-mode run that edited
+    files with a real suite; loop while failures drop, else accept honestly.
+    Returns continue or None."""
+    # A + B: enforced verify→fix on FINAL (progress-gated). Only for an
+    # act-mode run that actually EDITED files with a real test suite —
+    # a Q&A turn (0 edits) or read-only plan mode is untouched. Keep
+    # looping while the failure count DROPS; once it stalls (2 rounds no
+    # improvement) accept the HONEST still-failing final rather than
+    # churn. This gives simple/doer runs the pipeline's no-false-green
+    # guarantee. Opt out: AIFORGE_CHAT_VERIFY_ON_FINAL=0.
+    if (not plan_mode and not builder and st.edits_made > 0
+            and st.verify_rounds < _verify_max_rounds()
+            and _verify_on_final_enabled()):
+        _vok, _vout = _run_project_verify(cwd)
+        if _vok is False:
+            try:
+                from aiforge_core.runtime.parallel_subtasks import _fail_count
+                _fails = _fail_count(_vout)
+            except Exception:  # noqa: BLE001
+                _fails = 1
+            if st.verify_prev_fails is not None and _fails >= st.verify_prev_fails:
+                st.verify_stalls += 1
+            else:
+                st.verify_stalls = 0
+            st.verify_prev_fails = _fails
+            if st.verify_stalls < 2:
+                st.verify_rounds += 1
+                yield {"type": "thought", "role": "system",
+                       "text": f"✗ tests failing ({_fails}) — fixing "
+                               f"(verify round {st.verify_rounds}/"
+                               f"{_verify_max_rounds()})…"}
+                st.convo.append({"role": "user",
+                              "content": _verify_fix_message(_vout)})
+                return "continue"
+            yield {"type": "thought", "role": "system",
+                   "text": f"⚠ tests still failing ({_fails}) after "
+                           f"{st.verify_rounds} fix rounds — stopping with "
+                           "the honest state."}
+    return None
+
+
+def _claim_guard(st, step, cwd, readonly_mode, builder, _wt_fp0):
+    """Claim-vs-reality guard: when the model claims edits but landed zero and
+    the tree is unchanged, nudge it to write (bounded); on the last try prepend
+    an honest disclaimer. Returns continue or None."""
+    # Claim-vs-reality guard: the model asserts it edited/created files
+    # but landed ZERO edits this turn AND the working tree is unchanged
+    # (checked against every tool + any on-disk write, not just counted
+    # ones) — a hallucinated tool-use surfaced as prose (the frequent
+    # "I applied the fix to X / Confirmed Fixes Applied" with no diff).
+    # Nudge it to actually write (bounded); if it still won't, prepend an
+    # honest note so the user is never told a change landed that didn't.
+    # Opt out: AIFORGE_CHAT_EDIT_CLAIM_GUARD=0.
+    # Disk cross-check: "" = no git signal (honor the contract — NOT
+    # "clean"), so in a non-git workspace we rely on _edits_made==0 alone;
+    # with git, fire only when the tree is UNCHANGED (a real write would
+    # have dirtied it — an incidental dirty tree suppressing the guard is
+    # an accepted conservative miss).
+    _wt_now = (_worktree_fingerprint(cwd)
+               if _edit_claim_guard_enabled() else "")
+    _no_landed_write = (_wt_now == "" or _wt_now == _wt_fp0)
+    if (not readonly_mode and not builder and st.edits_made == 0
+            and _edit_claim_guard_enabled()
+            and _claims_file_edits(step.get("text") or "")
+            and _no_landed_write):
+        if st.edit_claim_nudges < 2:
+            st.edit_claim_nudges += 1
+            if step.get("text"):
+                yield {"type": "thought", "text": step["text"]}
+            yield {"type": "thought", "role": "system",
+                   "text": "⚠ you described file edits but no write ran "
+                           "and nothing changed on disk — applying for "
+                           "real…"}
+            st.convo.append({"role": "user", "content": _edit_claim_nudge()})
+            return "continue"
+        step["text"] = _edit_claim_disclaimer(step.get("text") or "")
+    return None
+
+
 def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
                   cwd, _asks, _wt_fp0):
     """Handle a FINAL step: builder-not-finalized nudge, implicit-final doer
@@ -1121,72 +1201,12 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
             "missing work now (ACTIONs as needed) and produce ONE "
             "complete FINAL covering all parts, numbered."})
         return "continue"
-    # Claim-vs-reality guard: the model asserts it edited/created files
-    # but landed ZERO edits this turn AND the working tree is unchanged
-    # (checked against every tool + any on-disk write, not just counted
-    # ones) — a hallucinated tool-use surfaced as prose (the frequent
-    # "I applied the fix to X / Confirmed Fixes Applied" with no diff).
-    # Nudge it to actually write (bounded); if it still won't, prepend an
-    # honest note so the user is never told a change landed that didn't.
-    # Opt out: AIFORGE_CHAT_EDIT_CLAIM_GUARD=0.
-    # Disk cross-check: "" = no git signal (honor the contract — NOT
-    # "clean"), so in a non-git workspace we rely on _edits_made==0 alone;
-    # with git, fire only when the tree is UNCHANGED (a real write would
-    # have dirtied it — an incidental dirty tree suppressing the guard is
-    # an accepted conservative miss).
-    _wt_now = (_worktree_fingerprint(cwd)
-               if _edit_claim_guard_enabled() else "")
-    _no_landed_write = (_wt_now == "" or _wt_now == _wt_fp0)
-    if (not readonly_mode and not builder and st.edits_made == 0
-            and _edit_claim_guard_enabled()
-            and _claims_file_edits(step.get("text") or "")
-            and _no_landed_write):
-        if st.edit_claim_nudges < 2:
-            st.edit_claim_nudges += 1
-            if step.get("text"):
-                yield {"type": "thought", "text": step["text"]}
-            yield {"type": "thought", "role": "system",
-                   "text": "⚠ you described file edits but no write ran "
-                           "and nothing changed on disk — applying for "
-                           "real…"}
-            st.convo.append({"role": "user", "content": _edit_claim_nudge()})
-            return "continue"
-        step["text"] = _edit_claim_disclaimer(step.get("text") or "")
-    # A + B: enforced verify→fix on FINAL (progress-gated). Only for an
-    # act-mode run that actually EDITED files with a real test suite —
-    # a Q&A turn (0 edits) or read-only plan mode is untouched. Keep
-    # looping while the failure count DROPS; once it stalls (2 rounds no
-    # improvement) accept the HONEST still-failing final rather than
-    # churn. This gives simple/doer runs the pipeline's no-false-green
-    # guarantee. Opt out: AIFORGE_CHAT_VERIFY_ON_FINAL=0.
-    if (not plan_mode and not builder and st.edits_made > 0
-            and st.verify_rounds < _verify_max_rounds()
-            and _verify_on_final_enabled()):
-        _vok, _vout = _run_project_verify(cwd)
-        if _vok is False:
-            try:
-                from aiforge_core.runtime.parallel_subtasks import _fail_count
-                _fails = _fail_count(_vout)
-            except Exception:  # noqa: BLE001
-                _fails = 1
-            if st.verify_prev_fails is not None and _fails >= st.verify_prev_fails:
-                st.verify_stalls += 1
-            else:
-                st.verify_stalls = 0
-            st.verify_prev_fails = _fails
-            if st.verify_stalls < 2:
-                st.verify_rounds += 1
-                yield {"type": "thought", "role": "system",
-                       "text": f"✗ tests failing ({_fails}) — fixing "
-                               f"(verify round {st.verify_rounds}/"
-                               f"{_verify_max_rounds()})…"}
-                st.convo.append({"role": "user",
-                              "content": _verify_fix_message(_vout)})
-                return "continue"
-            yield {"type": "thought", "role": "system",
-                   "text": f"⚠ tests still failing ({_fails}) after "
-                           f"{st.verify_rounds} fix rounds — stopping with "
-                           "the honest state."}
+    _sig = yield from _claim_guard(st, step, cwd, readonly_mode, builder, _wt_fp0)
+    if _sig == "continue":
+        return "continue"
+    _sig = yield from _verify_on_final(st, cwd, plan_mode, builder)
+    if _sig == "continue":
+        return "continue"
     # FINAL accepted on a multi-part turn: close out the tracker so
     # the dock never ends with stale pending items the model forgot
     # to flip.
