@@ -93,6 +93,32 @@ def _maybe_trim(path: str) -> None:
         pass
 
 
+def _fold_perf_record(raw: str, buckets: dict) -> None:
+    """Parse one ndjson perf line and fold it into ``buckets`` keyed by
+    (family, name). A malformed line is skipped."""
+    raw = raw.strip()
+    if not raw:
+        return
+    try:
+        rec = json.loads(raw)
+    except Exception:
+        return
+    family = str(rec.get("family", "Other"))
+    name = str(rec.get("name", "?"))
+    try:
+        ms = float(rec.get("ms", 0.0))
+    except Exception:
+        ms = 0.0
+    b = buckets.get((family, name))
+    if b is None:
+        buckets[(family, name)] = {"event": family, "name": name, "count": 1,
+                                   "total_ms": ms, "max_ms": ms}
+    else:
+        b["count"] += 1
+        b["total_ms"] += ms
+        b["max_ms"] = max(b["max_ms"], ms)
+
+
 def aggregate() -> list[dict]:
     """Group samples by (family, name); return rows sorted by total_ms desc.
 
@@ -106,34 +132,7 @@ def aggregate() -> list[dict]:
         buckets: dict[tuple[str, str], dict] = {}
         with open(path, "r", encoding="utf-8") as fh:
             for raw in fh:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    rec = json.loads(raw)
-                except Exception:
-                    continue
-                family = str(rec.get("family", "Other"))
-                name = str(rec.get("name", "?"))
-                try:
-                    ms = float(rec.get("ms", 0.0))
-                except Exception:
-                    ms = 0.0
-                key = (family, name)
-                b = buckets.get(key)
-                if b is None:
-                    buckets[key] = {
-                        "event": family,
-                        "name": name,
-                        "count": 1,
-                        "total_ms": ms,
-                        "max_ms": ms,
-                    }
-                else:
-                    b["count"] += 1
-                    b["total_ms"] += ms
-                    if ms > b["max_ms"]:
-                        b["max_ms"] = ms
+                _fold_perf_record(raw, buckets)
         rows = list(buckets.values())
         rows.sort(key=lambda r: r["total_ms"], reverse=True)
         return rows

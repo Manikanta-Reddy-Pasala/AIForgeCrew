@@ -72,21 +72,26 @@ def _compile_condition(until: str) -> "tuple[object | None, str | None]":
         return None, None
     for prefix in ("contains:", "not_contains:", "regex:"):
         if low.startswith(prefix):
-            needle = cond[len(prefix):].strip()
-            if not needle:
-                return None, f"`{prefix}` needs something to look for."
-            if prefix != "regex:":
-                return None, None
-            if _REDOS_RE.search(needle):
-                return None, (f"regex {needle!r} has nested quantifiers, which "
-                              "can hang for exponential time on ordinary "
-                              "output. Use a simpler pattern or contains:.")
-            try:
-                return re.compile(needle, re.I | re.M), None
-            except re.error as exc:
-                return None, f"bad regex {needle!r}: {exc}"
+            return _compile_prefixed(prefix, cond[len(prefix):].strip())
     return None, (f"unrecognised condition {cond!r} — use one of: "
                   + ", ".join(_CONDITIONS))
+
+
+def _compile_prefixed(prefix: str, needle: str) -> "tuple[object | None, str | None]":
+    """Validate one ``contains:/not_contains:/regex:`` condition, compiling the
+    regex (with a ReDoS guard) only for ``regex:``."""
+    if not needle:
+        return None, f"`{prefix}` needs something to look for."
+    if prefix != "regex:":
+        return None, None
+    if _REDOS_RE.search(needle):
+        return None, (f"regex {needle!r} has nested quantifiers, which "
+                      "can hang for exponential time on ordinary "
+                      "output. Use a simpler pattern or contains:.")
+    try:
+        return re.compile(needle, re.I | re.M), None
+    except re.error as exc:
+        return None, f"bad regex {needle!r}: {exc}"
 
 
 def _matches(until: str, res: dict, rx=None) -> "tuple[bool, str]":
@@ -117,6 +122,63 @@ def _matches(until: str, res: dict, rx=None) -> "tuple[bool, str]":
     return bool(res.get("ok")), "command exited 0"
 
 
+def _watch_limits(args: dict, sid) -> tuple[int, int, int, int]:
+    """Resolve (interval_s, max_checks, budget_s, per_cmd_s) for a watch,
+    tightening them when there is no cancel handle.
+
+    The watch sleeps INSIDE a tool call on the producer thread: the step cap,
+    the turn deadline and mid-run steering are all checked between steps, so
+    none of them bound it. Defaults 5min / hard ceiling 30 — the old 6h ceiling
+    meant one call could hold a producer slot (there are 8) for a working day.
+    With no cancel handle (unattended callers pass session_id=None; chat_cancel
+    is a ContextVar that does not cross into a worker thread) Stop cannot reach
+    the watch, so it fails SHORT rather than open."""
+    interval = _int(args, "interval_s", 30, 1, 3600)
+    max_checks = _int(args, "max_checks", 20, 1,
+                      _env_int("AIFORGE_WATCH_MAX_CHECKS", 60))
+    budget = _int(args, "timeout_s", 300, 5,
+                  _env_int("AIFORGE_WATCH_MAX_SECONDS", 1800))
+    per_cmd = _int(args, "cmd_timeout", 120, 1, 3600)
+    if sid is None:
+        budget = min(budget, _env_int("AIFORGE_WATCH_UNATTENDED_SECONDS", 120))
+        max_checks = min(max_checks, 5)
+    # A per-command timeout longer than the whole budget lets one check run past
+    # the ceiling the caller asked for.
+    return interval, max_checks, budget, min(per_cmd, budget)
+
+
+def _watch_sleep(interval: float, sid) -> bool:
+    """Sleep ``interval`` in 1s slices so Stop is honoured mid-wait. Returns True
+    if the watch was cancelled during the sleep."""
+    from aiforge_core.runtime import chat_cancel
+    waited = 0.0
+    while waited < interval:
+        if sid is not None and chat_cancel.is_cancelled(sid):
+            return True
+        time.sleep(min(1.0, interval - waited))
+        waited += 1.0
+    return False
+
+
+def _check_outcome(last: dict, until: str, rx, checks: int,
+                   elapsed: float) -> "dict | None":
+    """The terminal result of one watch check (stopped / blocked / matched), or
+    None to keep watching. Reuses run_command's refusal + cancellation guards —
+    a second "run a shell command" would be a second place to forget them."""
+    if last.get("stopped"):
+        return {"ok": False, "stopped": True, "checks": checks,
+                "error": "stopped by user", "last": _tail(last)}
+    if last.get("blocked"):
+        # A refused command will be refused every time — looping is waste.
+        return {"ok": False, "checks": checks, "blocked": last["blocked"],
+                "error": last.get("error"), "last": _tail(last)}
+    matched, why = _matches(until, last, rx)
+    if matched:
+        return {"ok": True, "matched": True, "checks": checks,
+                "elapsed_s": elapsed, "reason": why, "last": _tail(last)}
+    return None
+
+
 def _t_watch_until(args: dict, cwd: str) -> dict:
     """Re-run one command until a condition holds, or the budget runs out.
 
@@ -125,6 +187,7 @@ def _t_watch_until(args: dict, cwd: str) -> dict:
     that there is a per-minute ceiling on model calls.
     """
     from .._shell import _t_run_command
+    from aiforge_core.runtime import chat_cancel
     cmd = (args.get("cmd") or "").strip()
     if not cmd:
         return {"ok": False, "error": "watch_until needs a `cmd` to run."}
@@ -133,31 +196,8 @@ def _t_watch_until(args: dict, cwd: str) -> dict:
     if cond_err:
         # Fail NOW, not after twenty checks discover the same thing.
         return {"ok": False, "error": cond_err}
-    interval = _int(args, "interval_s", 30, 1, 3600)
-    max_checks = _int(args, "max_checks", 20, 1,
-                      _env_int("AIFORGE_WATCH_MAX_CHECKS", 60))
-    # This sleeps INSIDE a tool call on the producer thread: the step cap, the
-    # turn deadline and mid-run steering are all checked between steps, so none
-    # of them can bound it. Default 5 minutes, hard ceiling 30 — the previous
-    # 6h ceiling meant one tool call could hold a producer slot (there are 8)
-    # for a working day.
-    budget = _int(args, "timeout_s", 300, 5,
-                  _env_int("AIFORGE_WATCH_MAX_SECONDS", 1800))
-    per_cmd = _int(args, "cmd_timeout", 120, 1, 3600)
-
-    from aiforge_core.runtime import chat_cancel
     sid = chat_cancel.active()
-    if sid is None:
-        # No cancel handle — the unattended callers (subtask doers, the jobs
-        # runner, /api/chat/agent) pass session_id=None, and chat_cancel is a
-        # ContextVar that does not cross into a worker thread. Stop cannot
-        # reach this watch, so it does not get a long one: fail SHORT rather
-        # than fail open.
-        budget = min(budget, _env_int("AIFORGE_WATCH_UNATTENDED_SECONDS", 120))
-        max_checks = min(max_checks, 5)
-    # A per-command timeout longer than the whole budget lets one check run
-    # past the ceiling the caller asked for.
-    per_cmd = min(per_cmd, budget)
+    interval, max_checks, budget, per_cmd = _watch_limits(args, sid)
     started = time.monotonic()
     checks = 0
     last: dict = {}
@@ -166,35 +206,17 @@ def _t_watch_until(args: dict, cwd: str) -> dict:
             return {"ok": False, "stopped": True, "checks": checks,
                     "error": "stopped by user"}
         checks += 1
-        # Reuse run_command rather than spawning here: it carries the
-        # destructive-delete refusal, the blanket-git refusal, the
-        # server-start refusal, process-group cancellation and output caps.
-        # A second implementation of "run a shell command" would be a second
-        # place for those guards to be forgotten.
         last = _t_run_command({"cmd": cmd, "timeout": per_cmd}, cwd)
-        if last.get("stopped"):
+        done = _check_outcome(last, until, rx, checks,
+                              round(time.monotonic() - started, 1))
+        if done is not None:
+            return done
+        if round(time.monotonic() - started, 1) + interval > budget \
+                or checks >= max_checks:
+            break
+        if _watch_sleep(interval, sid):
             return {"ok": False, "stopped": True, "checks": checks,
                     "error": "stopped by user", "last": _tail(last)}
-        if last.get("blocked"):
-            # A refused command will be refused every time — looping on it is
-            # pure waste.
-            return {"ok": False, "checks": checks, "blocked": last["blocked"],
-                    "error": last.get("error"), "last": _tail(last)}
-        matched, why = _matches(until, last, rx)
-        elapsed = round(time.monotonic() - started, 1)
-        if matched:
-            return {"ok": True, "matched": True, "checks": checks,
-                    "elapsed_s": elapsed, "reason": why, "last": _tail(last)}
-        if elapsed + interval > budget or checks >= max_checks:
-            break
-        # Sleep in slices so Stop is honoured mid-wait rather than after it.
-        waited = 0.0
-        while waited < interval:
-            if sid is not None and chat_cancel.is_cancelled(sid):
-                return {"ok": False, "stopped": True, "checks": checks,
-                        "error": "stopped by user", "last": _tail(last)}
-            time.sleep(min(1.0, interval - waited))
-            waited += 1.0
     return {"ok": False, "matched": False, "checks": checks,
             "elapsed_s": round(time.monotonic() - started, 1),
             "reason": f"gave up after {checks} check(s) — the condition "
@@ -252,6 +274,96 @@ def _interval_minutes(cron: str) -> "int | None":
     return None
 
 
+def _schedule_list(jobs_store) -> dict:
+    """List scheduled jobs. `last_error` is deliberately NOT returned: for a
+    script job it is a 500-char stderr tail from an arbitrary local ops script —
+    paths, hostnames, whatever it printed — and forwarding that to the model
+    ships it to the provider. A boolean answers "is it failing?" without the
+    payload."""
+    return {"ok": True, "jobs": [
+        {"id": j.get("id"), "name": j.get("name"), "cron": j.get("cron"),
+         "kind": j.get("kind"), "next_run_at": j.get("next_run_at"),
+         "enabled": j.get("enabled"),
+         "failing": bool(j.get("last_error"))} for j in jobs_store.list_jobs()]}
+
+
+def _schedule_cancel(args: dict, jobs_store) -> dict:
+    """Cancel a ticket job by numeric id. A script job is a host shell script
+    the OPERATOR installed — this tool schedules instructions, so it does not
+    get to delete those."""
+    try:
+        job_id = int(args.get("job_id"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "cancel needs a numeric `job_id` "
+                                      "(use action=list to find it)."}
+    existing = jobs_store.get(job_id)
+    if not existing:
+        return {"ok": False, "error": f"no job {job_id}"}
+    if (existing.get("kind") or "ticket") != "ticket":
+        return {"ok": False, "error":
+                f"job {job_id} is a {existing.get('kind')} job installed "
+                "outside chat — cancel it from the Jobs page."}
+    return ({"ok": True, "cancelled": job_id} if jobs_store.delete(job_id)
+            else {"ok": False, "error": f"no job {job_id}"})
+
+
+def _schedule_validate_cron(cron: str, jobs_parse) -> "dict | None":
+    """Cron guard: reject a too-frequent interval (each fire files a ticket the
+    pipeline then builds) or an unschedulable expression. None when OK."""
+    floor = _env_int("AIFORGE_SCHEDULE_MIN_MINUTES", 15)
+    every = _interval_minutes(cron)
+    if every is not None and every < floor:
+        return {"ok": False, "error":
+                f"`{cron}` fires every {every} minute(s); the floor is "
+                f"{floor} because each run files a ticket that the pipeline "
+                "works autonomously. Use a longer interval, or raise "
+                "AIFORGE_SCHEDULE_MIN_MINUTES."}
+    if not jobs_parse.schedulable(cron):
+        # Covers both "croniter missing" and "valid syntax, impossible date".
+        return {"ok": False, "error":
+                f"`{cron}` is not a schedulable crontab expression "
+                "(or the croniter package is not installed)."}
+    return None
+
+
+def _schedule_create(args: dict, jobs_parse, jobs_store) -> dict:
+    """Create a recurring ticket job from an instruction + cron."""
+    instruction = (args.get("instruction") or args.get("prompt") or "").strip()
+    if not instruction:
+        return {"ok": False, "error": "schedule_task needs an `instruction` — "
+                                      "what should happen on each run."}
+    # Bounded like the natural-language job path (jobs/parse.py) rather than
+    # storing whatever arrives: a runaway instruction becomes every ticket body
+    # this job ever files.
+    instruction = instruction[:4000]
+    name = ((args.get("name") or "").strip() or instruction[:60])[:120]
+    cron, err = _cron_from(args)
+    if err:
+        return {"ok": False, "error": err}
+    bad = _schedule_validate_cron(cron, jobs_parse)
+    if bad is not None:
+        return bad
+    # A retry after a transient failure must not double-schedule: two rows with
+    # the same name both fire every slot, so every run files two tickets.
+    for j in jobs_store.list_jobs():
+        if (j.get("name") or "").strip().lower() == name.strip().lower():
+            return {"ok": False, "error":
+                    f"a job named {name!r} already exists (id {j.get('id')}, "
+                    f"cron {j.get('cron')}). Cancel it first, or use another "
+                    "name.", "job_id": j.get("id")}
+    try:
+        nxt = jobs_parse.next_runs(cron, n=1)[0]
+        job = jobs_store.create(
+            name=name, cron=cron, ticket_title=name[:120],
+            ticket_body=instruction, project=args.get("project") or None,
+            next_run_at=nxt, kind="ticket")
+    except Exception as exc:  # noqa: BLE001 — surface, never crash the turn
+        return {"ok": False, "error": f"could not schedule: {exc}"}
+    return {"ok": True, "job_id": job.get("id"), "name": job.get("name"),
+            "cron": cron, "next_run_at": job.get("next_run_at"),
+            "note": "Each run files a ticket with this instruction."}
+
+
 def _t_schedule_task(args: dict, cwd: str) -> dict:
     """Create / list / cancel a recurring task in the jobs scheduler.
 
@@ -265,85 +377,13 @@ def _t_schedule_task(args: dict, cwd: str) -> dict:
 
     action = (args.get("action") or "create").strip().lower()
     if action in ("list", "ls"):
-        rows = jobs_store.list_jobs()
-        # `last_error` is deliberately NOT returned: for a script job it is a
-        # 500-char stderr tail from an arbitrary local ops script — paths,
-        # hostnames, whatever it printed — and forwarding that to the model
-        # ships it to the provider. A boolean answers "is it failing?" without
-        # the payload.
-        return {"ok": True, "jobs": [
-            {"id": j.get("id"), "name": j.get("name"), "cron": j.get("cron"),
-             "kind": j.get("kind"), "next_run_at": j.get("next_run_at"),
-             "enabled": j.get("enabled"),
-             "failing": bool(j.get("last_error"))} for j in rows]}
+        return _schedule_list(jobs_store)
     if action in ("cancel", "delete", "remove", "stop"):
-        try:
-            job_id = int(args.get("job_id"))
-        except (TypeError, ValueError):
-            return {"ok": False, "error": "cancel needs a numeric `job_id` "
-                                          "(use action=list to find it)."}
-        existing = jobs_store.get(job_id)
-        if not existing:
-            return {"ok": False, "error": f"no job {job_id}"}
-        if (existing.get("kind") or "ticket") != "ticket":
-            # A script job is a host shell script the OPERATOR installed. This
-            # tool schedules instructions; it does not get to delete those.
-            return {"ok": False, "error":
-                    f"job {job_id} is a {existing.get('kind')} job installed "
-                    "outside chat — cancel it from the Jobs page."}
-        return ({"ok": True, "cancelled": job_id} if jobs_store.delete(job_id)
-                else {"ok": False, "error": f"no job {job_id}"})
+        return _schedule_cancel(args, jobs_store)
     if action != "create":
         return {"ok": False, "error": f"unknown action {action!r} — use "
                                       "create, list or cancel."}
-
-    name = (args.get("name") or "").strip()
-    instruction = (args.get("instruction") or args.get("prompt") or "").strip()
-    if not instruction:
-        return {"ok": False, "error": "schedule_task needs an `instruction` — "
-                                      "what should happen on each run."}
-    # Bounded like the natural-language job path (jobs/parse.py) rather than
-    # storing whatever arrives: a runaway instruction becomes every ticket
-    # body this job ever files.
-    instruction = instruction[:4000]
-    name = (name or instruction[:60])[:120]
-    cron, err = _cron_from(args)
-    if err:
-        return {"ok": False, "error": err}
-    _floor = _env_int("AIFORGE_SCHEDULE_MIN_MINUTES", 15)
-    _every = _interval_minutes(cron)
-    if _every is not None and _every < _floor:
-        # Every fire files a ticket the pipeline then builds. At 1 minute that
-        # is 1,440 autonomous runs a day from one tool call.
-        return {"ok": False, "error":
-                f"`{cron}` fires every {_every} minute(s); the floor is "
-                f"{_floor} because each run files a ticket that the pipeline "
-                "works autonomously. Use a longer interval, or raise "
-                "AIFORGE_SCHEDULE_MIN_MINUTES."}
-    # A retry after a transient failure must not double-schedule: two rows
-    # with the same name both fire every slot, so every run files two tickets.
-    for j in jobs_store.list_jobs():
-        if (j.get("name") or "").strip().lower() == name.strip().lower():
-            return {"ok": False, "error":
-                    f"a job named {name!r} already exists (id {j.get('id')}, "
-                    f"cron {j.get('cron')}). Cancel it first, or use another "
-                    "name.", "job_id": j.get("id")}
-    if not jobs_parse.schedulable(cron):
-        # Covers both "croniter missing" and "valid syntax, impossible date".
-        return {"ok": False, "error":
-                f"`{cron}` is not a schedulable crontab expression "
-                "(or the croniter package is not installed)."}
-    try:
-        nxt = jobs_parse.next_runs(cron, n=1)[0]
-        job = jobs_store.create(
-            name=name, cron=cron, ticket_title=name[:120],
-            ticket_body=instruction, project=args.get("project") or None,
-            next_run_at=nxt, kind="ticket")
-    except Exception as exc:  # noqa: BLE001 — surface, never crash the turn
-        return {"ok": False, "error": f"could not schedule: {exc}"}
-    return {"ok": True, "job_id": job.get("id"), "name": job.get("name"),
-            "cron": cron, "next_run_at": job.get("next_run_at"),
-            "note": "Each run files a ticket with this instruction."}
+    return _schedule_create(args, jobs_parse, jobs_store)
 
 
 __all__ = ["_t_watch_until", "_t_schedule_task"]

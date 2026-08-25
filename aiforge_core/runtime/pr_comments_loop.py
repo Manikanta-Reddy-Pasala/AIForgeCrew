@@ -193,59 +193,55 @@ def _post_followup_ticket(
         return False
 
 
+def _process_pr_comments(pr: dict, seen: dict, tally: dict) -> None:
+    """Ticket / lightweight-reply each NEW comment on one PR, updating ``seen``
+    (last-processed comment id per PR) and ``tally`` counters in place."""
+    repo = pr.get("headRepository", {}).get("name") or ""
+    owner = pr.get("headRepositoryOwner", {}).get("login") or ""
+    if not (repo and owner):
+        return
+    pr_num = pr.get("number")
+    comments = _gh_json(["api", f"repos/{owner}/{repo}/issues/{pr_num}/comments",
+                         "--paginate"])
+    if not isinstance(comments, list):
+        return
+    key = f"{owner}/{repo}#{pr_num}"
+    last_id = seen.get(key, 0)
+    for c in comments:
+        cid = c.get("id", 0)
+        if cid <= last_id:
+            continue
+        route = route_comment(c)
+        log.info("PR %s comment %s -> %s (%s)", key, cid, route["mode"],
+                 route["reason"])
+        if route["mode"] == "lightweight":
+            reply = lightweight_reply(c)
+            log.info("lightweight reply (not posted) for comment %s: %s",
+                     cid, reply["reply_text"])
+            tally["lightweight_replies"] += 1
+            seen[key] = last_id = max(last_id, cid)
+            continue
+        if _post_followup_ticket(project=repo, pr_num=pr_num, comment=c):
+            tally["new_tickets"] += 1
+            seen[key] = last_id = max(last_id, cid)
+
+
 def run() -> dict:
     """One-shot: scan open PRs we authored, ticket each new comment."""
     if shutil.which("gh") is None:
         return {"ok": False, "error": "missing_gh"}
-    state = _load_state()
+    seen = _load_state()
     prs = _gh_json([
         "pr", "list", "--author", "@me", "--state", "open",
         "--json", "number,headRepository,headRefName,headRepositoryOwner,baseRefName",
         "--limit", "30",
     ]) or []
-    new_tickets = 0
-    lightweight_replies = 0
-    seen = state
+    tally = {"new_tickets": 0, "lightweight_replies": 0}
     for pr in prs:
-        repo = pr.get("headRepository", {}).get("name") or ""
-        owner = pr.get("headRepositoryOwner", {}).get("login") or ""
-        if not (repo and owner):
-            continue
-        pr_num = pr.get("number")
-        comments = _gh_json([
-            "api", f"repos/{owner}/{repo}/issues/{pr_num}/comments",
-            "--paginate",
-        ])
-        if not isinstance(comments, list):
-            continue
-        key = f"{owner}/{repo}#{pr_num}"
-        last_id = seen.get(key, 0)
-        for c in comments:
-            cid = c.get("id", 0)
-            if cid <= last_id:
-                continue
-            route = route_comment(c)
-            log.info(
-                "PR %s comment %s -> %s (%s)",
-                key, cid, route["mode"], route["reason"],
-            )
-            if route["mode"] == "lightweight":
-                reply = lightweight_reply(c)
-                log.info(
-                    "lightweight reply (not posted) for comment %s: %s",
-                    cid, reply["reply_text"],
-                )
-                lightweight_replies += 1
-                seen[key] = max(last_id, cid)
-                last_id = seen[key]
-                continue
-            if _post_followup_ticket(project=repo, pr_num=pr_num, comment=c):
-                new_tickets += 1
-                seen[key] = max(last_id, cid)
-                last_id = seen[key]
+        _process_pr_comments(pr, seen, tally)
     _save_state(seen)
-    return {"ok": True, "tickets_created": new_tickets,
-            "lightweight_replies": lightweight_replies,
+    return {"ok": True, "tickets_created": tally["new_tickets"],
+            "lightweight_replies": tally["lightweight_replies"],
             "prs_scanned": len(prs)}
 
 
