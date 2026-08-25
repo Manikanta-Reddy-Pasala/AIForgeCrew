@@ -123,33 +123,40 @@ def _resolve_stage_attribution(role: str) -> dict[str, Any]:
     return out
 
 
+_STAGE_OUTPUT_KEYS = ("{role}_outcome", "{role}_verdict", "{role}_plan",
+                      "facts_json", "feedback_verdict", "verifier_verdict")
+
+
+def _stage_output(role: str, state) -> str:
+    """The role's produced text — its ``{role}_outcome`` slot, then common
+    fallback output keys."""
+    for tmpl in _STAGE_OUTPUT_KEYS:
+        v = state.get(tmpl.format(role=role))
+        if v:
+            return str(v)
+    return ""
+
+
 def make_stage_callbacks(role: str) -> tuple:
     """Return ``(before, after)`` ADK callbacks that emit ``stage_start``
     / ``stage_done`` events for ``role``. Wire onto every LlmAgent.
 
-    Body excerpts:
-      - stage_start: short description of what the agent is about to do
-      - stage_done: short excerpt of what it produced (output_key value)
-
-    Both events carry per-stage model attribution in ``metadata`` so the
-    UI can show "Enhancer → qwen3-coder-next (local)" instead of
-    leaving the operator to guess.
+    Both events carry per-stage model attribution in ``metadata`` so the UI can
+    show "Enhancer → qwen3-coder-next (local)" instead of leaving the operator
+    to guess.
     """
     if _is_disabled():
         return (None, None)
 
     async def _before(*, callback_context, **_kw):
         try:
-            state = callback_context.state
-            tid = _ticket_id_from_state(state)
+            tid = _ticket_id_from_state(callback_context.state)
             if tid is None:
                 return None
-            attr = _resolve_stage_attribution(role)
-            _emit(
-                ticket_id=tid, agent_role=role, kind="stage_start",
-                body=f"{role} entered",
-                metadata={"role": role, "phase": "start", **attr},
-            )
+            _emit(ticket_id=tid, agent_role=role, kind="stage_start",
+                  body=f"{role} entered",
+                  metadata={"role": role, "phase": "start",
+                            **_resolve_stage_attribution(role)})
         except Exception as exc:  # noqa: BLE001
             log.debug("stage_start.failed role=%s: %s", role, exc)
         return None
@@ -160,24 +167,11 @@ def make_stage_callbacks(role: str) -> tuple:
             tid = _ticket_id_from_state(state)
             if tid is None:
                 return None
-            # Agents write their result to a role-keyed slot — try the
-            # convention `{role}_outcome`, then fall back to common
-            # output keys.
-            output = ""
-            for key in (
-                f"{role}_outcome", f"{role}_verdict", f"{role}_plan",
-                "facts_json", "feedback_verdict", "verifier_verdict",
-            ):
-                v = state.get(key)
-                if v:
-                    output = str(v)
-                    break
-            attr = _resolve_stage_attribution(role)
-            _emit(
-                ticket_id=tid, agent_role=role, kind="stage_done",
-                body=f"{role} produced: {output}" if output else f"{role} done",
-                metadata={"role": role, "phase": "done", **attr},
-            )
+            output = _stage_output(role, state)
+            _emit(ticket_id=tid, agent_role=role, kind="stage_done",
+                  body=f"{role} produced: {output}" if output else f"{role} done",
+                  metadata={"role": role, "phase": "done",
+                            **_resolve_stage_attribution(role)})
         except Exception as exc:  # noqa: BLE001
             log.debug("stage_done.failed role=%s: %s", role, exc)
         return None
