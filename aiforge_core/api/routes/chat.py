@@ -519,6 +519,28 @@ def chat_session_list() -> list[dict]:
 
 
 @router.post("/api/chat/sessions/reset")
+def _sweep_orphan_session_dirs() -> int:
+    """Belt-and-braces: rm -rf any orphaned ``session-*`` dirs under the managed
+    workspace root (e.g. from a session whose row was already gone). Returns how
+    many were removed. Never raises."""
+    removed = 0
+    try:
+        import shutil
+        root = _chat_workspace_root()
+        for name in os.listdir(root):
+            if not name.startswith("session-"):
+                continue
+            path = os.path.join(root, name)
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+                removed += 1
+    except FileNotFoundError:
+        pass
+    except Exception:  # noqa: BLE001
+        pass
+    return removed
+
+
 def chat_sessions_reset() -> dict:
     """Delete ALL chat sessions + messages and reset the id sequence, AND rm -rf
     every managed session workspace so no stale files survive the clear."""
@@ -534,25 +556,8 @@ def chat_sessions_reset() -> dict:
         chat_okr.clear_all_markers()
     except Exception:  # noqa: BLE001
         pass
-    removed = 0
-    for _cwd in cwds:
-        if _delete_chat_workspace(_cwd):
-            removed += 1
-    # Belt-and-braces: also sweep any orphaned session-* dirs left under the
-    # managed root (e.g. from a session whose row was already gone).
-    try:
-        import shutil
-        _root = _chat_workspace_root()
-        for _name in os.listdir(_root):
-            if _name.startswith("session-"):
-                _p = os.path.join(_root, _name)
-                if os.path.isdir(_p):
-                    shutil.rmtree(_p, ignore_errors=True)
-                    removed += 1
-    except FileNotFoundError:
-        pass
-    except Exception:  # noqa: BLE001
-        pass
+    removed = sum(1 for _cwd in cwds if _delete_chat_workspace(_cwd))
+    removed += _sweep_orphan_session_dirs()
     return {"ok": True, "deleted": deleted, "workspaces_removed": removed}
 
 
@@ -780,6 +785,19 @@ def _step_digest(steps: list) -> str:
     return ", ".join(bits)
 
 
+def _history_row_content(m: dict, role: str) -> str:
+    """The content for one persisted row, folding an assistant turn's tool DIGEST
+    into it so the agent remembers its own prior actions. "" for a row with
+    nothing to say (which the caller then skips)."""
+    content = (m.get("content") or "").strip()
+    if role != "assistant":
+        return content
+    digest = _step_digest(m.get("steps") or [])
+    if not digest:
+        return content
+    return (content + f"\n[did: {digest}]").strip() if content else f"[did: {digest}]"
+
+
 def _chat_history_for_agent(rows: list) -> list[dict]:
     """Build the agent's conversation history from persisted messages.
 
@@ -793,12 +811,7 @@ def _chat_history_for_agent(rows: list) -> list[dict]:
         role = m.get("role")
         if role not in ("user", "assistant"):
             continue
-        content = (m.get("content") or "").strip()
-        if role == "assistant":
-            digest = _step_digest(m.get("steps") or [])
-            if digest:
-                content = (content + f"\n[did: {digest}]").strip() if content \
-                    else f"[did: {digest}]"
+        content = _history_row_content(m, role)
         if not content:
             continue   # truly empty (e.g. a user turn with no text) — skip
         if out and out[-1]["role"] == role:
@@ -806,6 +819,122 @@ def _chat_history_for_agent(rows: list) -> list[dict]:
         else:
             out.append({"role": role, "content": content})
     return out
+
+
+_TOPIC_CUE_PHRASES = ("track ", "organize by", "organise by", "as a topic",
+                      "remember this topic", "topic:")
+
+
+def _warn_if_not_persisted(res, label: str, repo: str) -> None:
+    """Warn when a writeback returned a real failure (not a skip). On a daemon
+    thread with no HTTP surface, a "remember X" that fails to store is real data
+    loss and a WARNING is the only signal."""
+    if isinstance(res, dict) and res.get("ok") is False and res.get("skipped") is None:
+        _af_log.warning("%s did NOT persist (repo=%s): %s", label, repo,
+                        res.get("error"))
+
+
+def _capture_chat_cue(prompt, repo: str, session_id, pref_captured: bool) -> None:
+    """A user comment / topic suggestion the user explicitly states → md capture
+    (repo + topic stamped) so it reaches the compaction axes. Preference turns
+    are captured elsewhere, so skip those for the plain-comment branch."""
+    try:
+        from aiforge_core.memory import md_store as _md2
+        from aiforge_core.runtime import capture_cues as _cc
+        low = (prompt or "").lower()
+        if any(ph in low for ph in _TOPIC_CUE_PHRASES):
+            _md2.capture("topic_suggestion", (prompt or "").strip(),
+                         repo=repo, source=f"chat:{session_id or ''}")
+        elif not pref_captured and _cc.has_cue(prompt or ""):
+            _md2.capture("user_comment", (prompt or "").strip(),
+                         repo=repo, source=f"chat:{session_id or ''}")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _chat_learn_writeback(cwd, prompt, final_text, steps, session_id) -> None:
+    """Single-chat (simple/plan) memory writeback on a daemon thread. The team
+    pipeline runs a Learner node itself; the inline simple/plan path never did,
+    so chat work never reached long-term memory. Distils + persists durable
+    facts. Best-effort — a failure here must never affect the turn."""
+    try:
+        from aiforge_core.runtime import chat_learner, preference_capture
+        from aiforge_core.runtime.chat_agent import _chat_repo_key
+        # Same key resolution as RECALL (_chat_repo_key, git-toplevel basename) —
+        # the old bare repo_key(cwd) filed subdir-pinned sessions under the subdir
+        # while recall read the repo root, so facts were never found.
+        repo = _chat_repo_key(cwd)
+        # PREFERENCE FIRST — a preference-cue message ("use X as default", "from
+        # now on…") is UPSERTED by subject and owns the turn. The learner still
+        # runs on EVERY turn to distil the OTHER signal (technical learnings,
+        # project-structure findings, durable intent the pref capture didn't
+        # own); it dedups against memory so it won't re-emit the pref.
+        pc = preference_capture.capture(prompt, repo=repo, session_id=session_id)
+        lr = chat_learner.learn_from_chat(
+            prompt=prompt, final_text=final_text, steps=steps, repo=repo,
+            session_id=session_id)
+        _warn_if_not_persisted(lr, "chat_learner", repo)
+        _warn_if_not_persisted(pc, "preference_capture", repo)
+        _capture_chat_cue(prompt, repo, session_id,
+                          bool(isinstance(pc, dict) and pc.get("captured")))
+    except Exception as exc:  # noqa: BLE001
+        _af_log.warning("chat learn/capture thread failed: %s", exc)
+
+
+def _chat_summarize_session(cwd, session_id) -> None:
+    """Boundary-gated per-SESSION summary → browsable md file + memory graph.
+    Refreshes an upsert'd summary every N turns as the session grows (one
+    cheap-tier LLM call, capped) so cross-session recall goes through
+    unified_query's graph instead of a substring scan. Best-effort on a daemon
+    thread — a failure here must never affect the turn."""
+    try:
+        from aiforge_core.runtime import chat_store, chat_summary
+        from aiforge_core.runtime.chat_agent import _chat_repo_key
+        every = 4
+        try:
+            every = max(1, int(os.environ.get(
+                "AIFORGE_CHAT_SUMMARY_EVERY", "4")))
+        except (TypeError, ValueError):
+            every = 4
+        n = len(chat_store.get_messages(session_id))
+        if n <= 0 or n % every != 0:
+            return
+        _repo = _chat_repo_key(cwd)   # git-toplevel, matches recall
+        chat_summary.summarize_session(session_id, _repo)
+        # Auto-author a workflow from the session's WORKING
+        # steps + file it into OKR memory with tags, so the
+        # working commands are reusable and don't get redone.
+        from aiforge_core.runtime import session_ledger
+        session_ledger.capture_working_workflow(session_id, _repo)
+        # OKR-DAG auto-authoring: extract durable Objectives/
+        # KeyResults/Learnings from this session into the graph,
+        # and write a session node from the executed steps.
+        try:
+            from aiforge_core.memory import okf as _okr
+            from aiforge_core.runtime.chat_agent import _chat_repo_key
+            # An unpinned chat runs in an isolated scratch
+            # workspace (chat-workspaces/session-<id>) — NOT
+            # a real repo. Scope its knowledge GLOBAL instead
+            # of minting a phantom projects/session-<id>/ OKR
+            # tree (one bogus "project" per session).
+            _rkey = None if _is_isolated_workspace(cwd) \
+                else _chat_repo_key(cwd)
+            _msgs2 = chat_store.get_messages(session_id) or []
+            _tx = "\n".join(
+                f"{m.get('role')}: {m.get('content')}"
+                for m in _msgs2 if isinstance(m, dict)
+                and m.get("content"))[:8000]
+            # classify each learning global vs THIS repo
+            _okr.extract_and_save(_tx, repo=_rkey)
+            _led = session_ledger.ledger_block(session_id)
+            if _led:
+                _okr.write_session_node(
+                    title=f"chat session {session_id}",
+                    body=_led, repo=_rkey)
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @router.post("/api/chat/sessions/{session_id}/message")
@@ -1983,70 +2112,11 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 # on a daemon thread (off the response path). Skip cancelled
                 # turns and the parallel-team path (its own runners cover it).
                 if not cancelled and not team and not _path["parallel"]:
-                    def _chat_learn():
-                        try:
-                            from aiforge_core.runtime import chat_learner
-                            from aiforge_core.runtime.chat_agent import _chat_repo_key
-                            # Same key resolution as RECALL (_chat_repo_key,
-                            # git-toplevel basename) — the old bare repo_key(cwd)
-                            # filed subdir-pinned sessions under the subdir while
-                            # recall read the repo root, so facts were never found.
-                            _repo = _chat_repo_key(cwd)
-                            # PREFERENCE FIRST — a message with a preference cue
-                            # ("use X as default", "from now on…") is UPSERTED by
-                            # subject and owns the turn: skip the fact-distiller
-                            # for it, so we don't pay a SECOND LLM call and write
-                            # the same sentence twice (a pref: unit AND a learning
-                            # unit). Ordinary turns still distil facts.
-                            from aiforge_core.runtime import preference_capture
-                            _pc = preference_capture.capture(
-                                prompt, repo=_repo, session_id=session_id)
-                            # Run the learner on EVERY turn (even when a
-                            # preference was captured) — it distils the OTHER
-                            # signal: technical learnings, project-structure
-                            # findings (folder layout, patterns, build/test cmd),
-                            # and any durable user intent the pref-subject capture
-                            # didn't own. It dedups against memory context, so it
-                            # won't re-emit the pref. Comprehensive capture is the
-                            # point — every message + every discovery is considered.
-                            _lr = chat_learner.learn_from_chat(
-                                prompt=prompt, final_text=final_text,
-                                steps=steps, repo=_repo, session_id=session_id)
-                            # Don't SILENTLY drop a failed persist — a "remember X"
-                            # that fails to store is real data loss (daemon thread,
-                            # no HTTP surface, so a WARNING is the only signal).
-                            if isinstance(_lr, dict) and _lr.get("ok") is False \
-                                    and _lr.get("skipped") is None:
-                                _af_log.warning("chat_learner did NOT persist "
-                                                "(repo=%s): %s", _repo, _lr.get("error"))
-                            if isinstance(_pc, dict) and _pc.get("ok") is False \
-                                    and _pc.get("skipped") is None:
-                                _af_log.warning("preference_capture did NOT persist "
-                                                "(repo=%s): %s", _repo, _pc.get("error"))
-                            # USER COMMENT / TOPIC SUGGESTION the user explicitly
-                            # states → md capture (repo + topic stamped) so it
-                            # reaches the compaction axes. Preference turns are
-                            # already captured above, so skip those.
-                            try:
-                                from aiforge_core.memory import md_store as _md2
-                                from aiforge_core.runtime import capture_cues as _cc
-                                _low = (prompt or "").lower()
-                                _pref_done = isinstance(_pc, dict) and _pc.get("captured")
-                                if any(s in _low for s in (
-                                        "track ", "organize by", "organise by",
-                                        "as a topic", "remember this topic", "topic:")):
-                                    _md2.capture("topic_suggestion", (prompt or "").strip(),
-                                                 repo=_repo, source=f"chat:{session_id or ''}")
-                                elif not _pref_done and _cc.has_cue(prompt or ""):
-                                    _md2.capture("user_comment", (prompt or "").strip(),
-                                                 repo=_repo, source=f"chat:{session_id or ''}")
-                            except Exception:  # noqa: BLE001
-                                pass
-                        except Exception as _lexc:  # noqa: BLE001
-                            _af_log.warning("chat learn/capture thread failed: %s",
-                                            _lexc)
+                    from functools import partial as _partial
                     from aiforge_core.runtime import background as _bg
-                    _bg.spawn(_chat_learn, name="chat-learn")
+                    _bg.spawn(_partial(_chat_learn_writeback, cwd, prompt,
+                                       final_text, steps, session_id),
+                              name="chat-learn")
                     # Boundary-gated per-SESSION summary → browsable md file +
                     # memory graph (Neo4j when configured). Refreshes an
                     # upsert'd summary every N turns as the session grows (one
@@ -2054,56 +2124,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                     # through unified_query's graph instead of a substring scan.
                     # Best-effort on a daemon thread — a failure here must never
                     # affect the turn.
-                    def _chat_summarize():
-                        try:
-                            from aiforge_core.runtime import chat_store, chat_summary
-                            from aiforge_core.runtime.chat_agent import _chat_repo_key
-                            every = 4
-                            try:
-                                every = max(1, int(os.environ.get(
-                                    "AIFORGE_CHAT_SUMMARY_EVERY", "4")))
-                            except (TypeError, ValueError):
-                                every = 4
-                            n = len(chat_store.get_messages(session_id))
-                            if n <= 0 or n % every != 0:
-                                return
-                            _repo = _chat_repo_key(cwd)   # git-toplevel, matches recall
-                            chat_summary.summarize_session(session_id, _repo)
-                            # Auto-author a workflow from the session's WORKING
-                            # steps + file it into OKR memory with tags, so the
-                            # working commands are reusable and don't get redone.
-                            from aiforge_core.runtime import session_ledger
-                            session_ledger.capture_working_workflow(session_id, _repo)
-                            # OKR-DAG auto-authoring: extract durable Objectives/
-                            # KeyResults/Learnings from this session into the graph,
-                            # and write a session node from the executed steps.
-                            try:
-                                from aiforge_core.memory import okf as _okr
-                                from aiforge_core.runtime.chat_agent import _chat_repo_key
-                                # An unpinned chat runs in an isolated scratch
-                                # workspace (chat-workspaces/session-<id>) — NOT
-                                # a real repo. Scope its knowledge GLOBAL instead
-                                # of minting a phantom projects/session-<id>/ OKR
-                                # tree (one bogus "project" per session).
-                                _rkey = None if _is_isolated_workspace(cwd) \
-                                    else _chat_repo_key(cwd)
-                                _msgs2 = chat_store.get_messages(session_id) or []
-                                _tx = "\n".join(
-                                    f"{m.get('role')}: {m.get('content')}"
-                                    for m in _msgs2 if isinstance(m, dict)
-                                    and m.get("content"))[:8000]
-                                # classify each learning global vs THIS repo
-                                _okr.extract_and_save(_tx, repo=_rkey)
-                                _led = session_ledger.ledger_block(session_id)
-                                if _led:
-                                    _okr.write_session_node(
-                                        title=f"chat session {session_id}",
-                                        body=_led, repo=_rkey)
-                            except Exception:  # noqa: BLE001
-                                pass
-                        except Exception:  # noqa: BLE001
-                            pass
-                    _bg.spawn(_chat_summarize, name="chat-summarize")
+                    _bg.spawn(_partial(_chat_summarize_session, cwd,
+                                       session_id), name="chat-summarize")
             # Wake every subscriber (this stream + any /attach) and close THIS
             # run object (not by session id — a newer turn for the same session
             # may have already replaced it in the registry). Done LAST so a
