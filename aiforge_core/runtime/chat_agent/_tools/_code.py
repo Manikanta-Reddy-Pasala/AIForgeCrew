@@ -76,23 +76,10 @@ _PAGINATION_NOTES = {
 }
 
 
-def _t_summarize_doc(args: dict, cwd: str) -> dict:
-    """Summarise an attached/loaded document (pdf / docx / xlsx). Optional
-    ``pages`` (e.g. "10-20", "3,5,7-9") summarises ONLY those pages/sections via
-    the map-reduce summariser, so a 400-page report can be read section by
-    section. No ``pages`` → the whole document."""
-    import os as _os
-    path = str(args.get("path") or args.get("file")
-               or args.get("filename") or "").strip()
-    if not path:
-        return {"ok": False, "error": "need a file path/name"}
-    fp = _resolve_doc(path, cwd)
-    if not fp:
-        return {"ok": False, "error": f"file not found: {path}"}
+def _summarize_paged(fp, name, pages, role):
+    """Paginate the doc, validate the requested page range, run the map-reduce
+    summariser, and assemble the result dict (or a structured error)."""
     from aiforge_core.runtime import doc_extract, doc_summarize
-    pages = str(args.get("pages") or "").strip() or None
-    role = str(args.get("role") or "chat").strip() or "chat"
-    name = _os.path.basename(fp)
     paged, kind = doc_extract.paginate(fp, "")
     total = len(paged)
     note = _PAGINATION_NOTES.get(kind)
@@ -114,6 +101,25 @@ def _t_summarize_doc(args: dict, cwd: str) -> dict:
     if note:
         out["note"] = note
     return out
+
+
+def _t_summarize_doc(args: dict, cwd: str) -> dict:
+    """Summarise an attached/loaded document (pdf / docx / xlsx). Optional
+    ``pages`` (e.g. "10-20", "3,5,7-9") summarises ONLY those pages/sections via
+    the map-reduce summariser, so a 400-page report can be read section by
+    section. No ``pages`` → the whole document."""
+    import os as _os
+    path = str(args.get("path") or args.get("file")
+               or args.get("filename") or "").strip()
+    if not path:
+        return {"ok": False, "error": "need a file path/name"}
+    fp = _resolve_doc(path, cwd)
+    if not fp:
+        return {"ok": False, "error": f"file not found: {path}"}
+    pages = str(args.get("pages") or "").strip() or None
+    role = str(args.get("role") or "chat").strip() or "chat"
+    name = _os.path.basename(fp)
+    return _summarize_paged(fp, name, pages, role)
 
 
 _RENAME_EXTS = (".py", ".ts", ".tsx", ".js", ".jsx", ".java", ".go", ".rs",

@@ -137,32 +137,29 @@ def _write_file_payload(session, parsed: FileParseResult, stats: IngestStats) ->
         stats.symbols_written += 1
 
 
+def _run_merges(session, pairs, cypher, key_a, key_b, repo):
+    """Run one MERGE cypher over (a, b) pairs (bound to key_a/key_b + repo) and
+    return the total rows written."""
+    total = 0
+    for a, b in pairs:
+        rec = session.run(cypher, **{key_a: a, key_b: b, "repo": repo}).single()
+        if rec and rec["n"]:
+            total += int(rec["n"])
+    return total
+
+
 def _resolve_edges(session, parsed: FileParseResult, stats: IngestStats) -> None:
     repo = parsed.file.repo
 
-    for caller_fqn, callee_simple in parsed.call_simples:
-        rec = session.run(
-            _CALLS_MERGE,
-            caller_fqn=caller_fqn, callee_simple=callee_simple, repo=repo,
-        ).single()
-        if rec and rec["n"]:
-            stats.calls_written += int(rec["n"])
-
-    for child_fqn, parent_simple in parsed.extends_edges:
-        rec = session.run(
-            _EXTENDS_MERGE,
-            child_fqn=child_fqn, parent_simple=parent_simple, repo=repo,
-        ).single()
-        if rec and rec["n"]:
-            stats.extends_written += int(rec["n"])
-
-    for cls_fqn, iface_simple in parsed.implements_edges:
-        rec = session.run(
-            _IMPLEMENTS_MERGE,
-            cls_fqn=cls_fqn, iface_simple=iface_simple, repo=repo,
-        ).single()
-        if rec and rec["n"]:
-            stats.implements_written += int(rec["n"])
+    stats.calls_written += _run_merges(
+        session, parsed.call_simples, _CALLS_MERGE,
+        "caller_fqn", "callee_simple", repo)
+    stats.extends_written += _run_merges(
+        session, parsed.extends_edges, _EXTENDS_MERGE,
+        "child_fqn", "parent_simple", repo)
+    stats.implements_written += _run_merges(
+        session, parsed.implements_edges, _IMPLEMENTS_MERGE,
+        "cls_fqn", "iface_simple", repo)
 
     for imp in parsed.imports:
         # Only :Symbol-targeted imports — wildcard imports get the package

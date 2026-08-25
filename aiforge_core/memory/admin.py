@@ -405,15 +405,8 @@ def _sample_facts(s, limit: int) -> dict:
     return {"available": True, "nodes": nodes, "edges": []}
 
 
-def _expand_symbols(s, node_id: str, limit: int) -> dict:
-    # UNDIRECTED match so both callers and callees of the node show up; the
-    # edge still preserves its true direction via startNode/endNode fqn.
-    rows = list(s.run(
-        "MATCH (n:Symbol {fqn:$id})-[r:CALLS|DEFINES|EXTENDS|IMPLEMENTS]-(m:Symbol) "
-        "RETURN n.fqn AS nid, coalesce(n.simple, n.fqn) AS nlabel, n.kind AS nkind, "
-        "m.fqn AS mid, coalesce(m.simple, m.fqn) AS mlabel, m.kind AS mkind, "
-        "startNode(r).fqn AS a, endNode(r).fqn AS b, type(r) AS t LIMIT $limit",
-        id=node_id, limit=limit))
+def _symbol_nodes_edges(rows):
+    """Build (nodes, edges) from symbol-graph expand rows (undirected match; edges keep their true start/end direction)."""
     nodes: dict = {}
     edges = []
     for r in rows:
@@ -425,6 +418,19 @@ def _expand_symbols(s, node_id: str, limit: int) -> dict:
                               "kind": nkind or "symbol"}
         if r["a"] is not None and r["b"] is not None:
             edges.append({"from": r["a"], "to": r["b"], "type": r["t"]})
+    return nodes, edges
+
+
+def _expand_symbols(s, node_id: str, limit: int) -> dict:
+    # UNDIRECTED match so both callers and callees of the node show up; the
+    # edge still preserves its true direction via startNode/endNode fqn.
+    rows = list(s.run(
+        "MATCH (n:Symbol {fqn:$id})-[r:CALLS|DEFINES|EXTENDS|IMPLEMENTS]-(m:Symbol) "
+        "RETURN n.fqn AS nid, coalesce(n.simple, n.fqn) AS nlabel, n.kind AS nkind, "
+        "m.fqn AS mid, coalesce(m.simple, m.fqn) AS mlabel, m.kind AS mkind, "
+        "startNode(r).fqn AS a, endNode(r).fqn AS b, type(r) AS t LIMIT $limit",
+        id=node_id, limit=limit))
+    nodes, edges = _symbol_nodes_edges(rows)
     # Ensure the anchor node is present even when it has no matching edges.
     if node_id not in nodes:
         anchor = s.run(
@@ -439,13 +445,8 @@ def _expand_symbols(s, node_id: str, limit: int) -> dict:
     return {"available": True, "nodes": list(nodes.values()), "edges": edges}
 
 
-def _expand_graphify(s, node_id: str, limit: int) -> dict:
-    rows = list(s.run(
-        "MATCH (n {id:$id})-[r]-(m) WHERE (n.source = $src OR n:GraphifyNode) "
-        "RETURN n.id AS nid, coalesce(n.name, n.title, n.id) AS nlabel, "
-        "m.id AS mid, coalesce(m.name, m.title, m.id) AS mlabel, "
-        "startNode(r).id AS a, endNode(r).id AS b, type(r) AS t LIMIT $limit",
-        id=node_id, src=_GRAPHIFY_SOURCE, limit=limit))
+def _graphify_nodes_edges(rows):
+    """Build (nodes, edges) from graphify expand rows."""
     nodes: dict = {}
     edges = []
     for r in rows:
@@ -455,6 +456,17 @@ def _expand_graphify(s, node_id: str, limit: int) -> dict:
                               "kind": "graphify"}
         if r["a"] is not None and r["b"] is not None:
             edges.append({"from": r["a"], "to": r["b"], "type": r["t"]})
+    return nodes, edges
+
+
+def _expand_graphify(s, node_id: str, limit: int) -> dict:
+    rows = list(s.run(
+        "MATCH (n {id:$id})-[r]-(m) WHERE (n.source = $src OR n:GraphifyNode) "
+        "RETURN n.id AS nid, coalesce(n.name, n.title, n.id) AS nlabel, "
+        "m.id AS mid, coalesce(m.name, m.title, m.id) AS mlabel, "
+        "startNode(r).id AS a, endNode(r).id AS b, type(r) AS t LIMIT $limit",
+        id=node_id, src=_GRAPHIFY_SOURCE, limit=limit))
+    nodes, edges = _graphify_nodes_edges(rows)
     if node_id not in nodes:
         anchor = s.run(
             "MATCH (n {id:$id}) WHERE (n.source = $src OR n:GraphifyNode) "
