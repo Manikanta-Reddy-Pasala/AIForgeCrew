@@ -217,6 +217,15 @@ function DraggableCard({ t }: { t: any }) {
           navigate(`/tickets/${t.identifier}`);
         }
       }}
+      // Keyboard parity for the click-to-open above: the card is reachable via
+      // dnd-kit's attributes (role=button, tabIndex=0), so Enter/Space must
+      // open the detail page the same way a click does.
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          navigate(`/tickets/${t.identifier}`);
+        }
+      }}
       style={{ cursor: 'pointer' }}
     >
       <TicketCard t={t} dragging={isDragging} />
