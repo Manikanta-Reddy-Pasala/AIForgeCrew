@@ -321,6 +321,17 @@ def _prune_stale_session_flags(flags: dict) -> bool:
     return bool(stale)
 
 
+def _active_nested(section: dict) -> dict:
+    """``{key: {name: True}}`` for the truthy flags of a nested (repo/session)
+    scope, dropping keys with nothing active."""
+    out: dict = {}
+    for key, d in (section or {}).items():
+        active = {n: True for n, v in (d or {}).items() if v}
+        if active:
+            out[key] = active
+    return out
+
+
 def list_flags() -> dict:
     """All active gate-disable flags, grouped by scope, for the Auto-approvals
     panel. Only truthy flags are listed. Stale session flags (session deleted)
@@ -334,16 +345,8 @@ def list_flags() -> dict:
             _save_flags(flags)          # persist the cleanup
     except Exception:  # noqa: BLE001 — pruning is best-effort, never break listing
         pass
-    out: dict = {"global": {}, "repo": {}, "session": {}}
-    for n, v in (flags.get("global") or {}).items():
-        if v:
-            out["global"][n] = True
-    for r, d in (flags.get("repo") or {}).items():
-        active = {n: True for n, v in (d or {}).items() if v}
-        if active:
-            out["repo"][r] = active
-    for s, d in (flags.get("session") or {}).items():
-        active = {n: True for n, v in (d or {}).items() if v}
-        if active:
-            out["session"][s] = active
-    return out
+    return {
+        "global": {n: True for n, v in (flags.get("global") or {}).items() if v},
+        "repo": _active_nested(flags.get("repo") or {}),
+        "session": _active_nested(flags.get("session") or {}),
+    }
