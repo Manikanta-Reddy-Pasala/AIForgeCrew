@@ -154,7 +154,6 @@ _RUNTIME_ENV_DB_KEYS = frozenset({
 })
 
 
-@app.on_event("startup")
 def _apply_runtime_env_line(line: str, keep_pg: bool) -> None:
     """Apply one ``KEY=VALUE`` line from runtime.env into os.environ. A real env
     var / project .env already set WINS (never clobbered); comments/blanks and
@@ -170,6 +169,7 @@ def _apply_runtime_env_line(line: str, keep_pg: bool) -> None:
         os.environ[k] = v.strip()
 
 
+@app.on_event("startup")
 def _load_runtime_env() -> None:
     """Restore UI-persisted toggles (runtime.env) into the process env on boot
     using a plain KEY=VALUE parser — NOT a shell source — so a value can never
@@ -333,7 +333,6 @@ def _compact_at_hour() -> "int | None":
     return compact_window.at_hour()
 
 
-@app.on_event("startup")
 def _compact_mode_skips(idle_only: bool) -> bool:
     """True when this pass should not fold anything at all.
 
@@ -666,6 +665,7 @@ def _register_daily_compaction(_pd, daily_hour: int) -> None:
                      "AIFORGE_COMPACT_MAX_SKIP_DAYS", 3, low=0))
 
 
+@app.on_event("startup")
 def _start_daily_reindex() -> None:
     """Once a day, re-index EVERY registered repo/docs source so semantic
     recall + the graphify graph stay current with the code (the RepoMap is
