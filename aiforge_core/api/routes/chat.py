@@ -2235,7 +2235,12 @@ def _produce(pc):
         pc.session_id, (bool(pc.body.review_edits) or _review_env) and not pc.team)
     # Record the EFFECTIVE run mode (after any team→simple downgrade) so the
     # tool gate can honor the per-mode approval Settings toggle.
-    _eff_mode = "team" if pc.team else ("plan" if pc.agent_mode == "plan" else "simple")
+    if pc.team:
+        _eff_mode = "team"
+    elif pc.agent_mode == "plan":
+        _eff_mode = "plan"
+    else:
+        _eff_mode = "simple"
     _chat_approve.set_mode(pc.session_id, _eff_mode)
     steps: list[dict] = []
     final_text = ""

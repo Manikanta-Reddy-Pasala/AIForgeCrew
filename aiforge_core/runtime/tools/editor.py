@@ -86,7 +86,12 @@ def _dir_tree(path: Path, depth: int) -> list[dict[str, str]]:
     if depth <= 0:
         return out
     for child in sorted(path.iterdir()):
-        kind = "dir" if child.is_dir() else ("file" if child.is_file() else "other")
+        if child.is_dir():
+            kind = "dir"
+        elif child.is_file():
+            kind = "file"
+        else:
+            kind = "other"
         try:
             rel = str(child.relative_to(root()))
         except ValueError:

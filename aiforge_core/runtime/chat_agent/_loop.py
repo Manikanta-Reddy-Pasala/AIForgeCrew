@@ -809,10 +809,12 @@ def _run_approval(name, args, cwd, session_id, convo, verdict, _destructive_del)
     # the user's Approve/Reject (POST /api/chat/sessions/{id}/approve).
     preview = _diff_preview(name, args, cwd)
     seq = chat_approve.request(session_id) if session_id is not None else 0
-    _reason = (verdict["reason"] if verdict["policy"] == tool_policy.ASK
-               else "Confirm this destructive delete before it runs."
-               if _destructive_del
-               else "Review edits: confirm this file change before it lands.")
+    if verdict["policy"] == tool_policy.ASK:
+        _reason = verdict["reason"]
+    elif _destructive_del:
+        _reason = "Confirm this destructive delete before it runs."
+    else:
+        _reason = "Review edits: confirm this file change before it lands."
     yield {"type": "approval", "id": seq, "name": name, "args": args,
            "reason": _reason, "preview": preview}
     if session_id is None:

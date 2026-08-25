@@ -569,7 +569,12 @@ def _resolve_pipeline(proj: str, args: dict) -> "tuple[dict | None, dict | None]
     rows = r["data"] if isinstance(r["data"], list) else []
     rows = [x for x in rows if isinstance(x, dict)]
     if not rows:
-        where = f" for ref {ref!r}" if ref else (f" for sha {sha!r}" if sha else "")
+        if ref:
+            where = f" for ref {ref!r}"
+        elif sha:
+            where = f" for sha {sha!r}"
+        else:
+            where = ""
         return None, {"ok": False, "error": "no_pipelines",
                       "hint": f"no pipeline found in {proj}{where}"}
     latest = rows[0].get("id")

@@ -953,7 +953,12 @@ def _ingest_brief(p: dict, st: str, group_by: str) -> None:
     # Burying every brief under 'notes' (the old default) made all consolidated
     # OKR knowledge invisible to repo-scoped recall.
     bkey = p.get("key")
-    brepo = (None if group_by == "topic" else bkey) if bkey else "notes"
+    if not bkey:
+        brepo = "notes"
+    elif group_by == "topic":
+        brepo = None
+    else:
+        brepo = bkey
     # real kind ('knowledge') + clean human title (see ingest_dir)
     _ingest_unit(title=_brief_title(bkey or st), body=ingest_body,
                  kind="knowledge", tags=p["tags"], source=f"compacted:{st}",
