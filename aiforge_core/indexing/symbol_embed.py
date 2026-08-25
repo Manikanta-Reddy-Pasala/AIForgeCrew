@@ -70,14 +70,59 @@ def consume_refresh_marker() -> bool:
     return False
 
 
+_SYMBOL_SELECT = (
+    "MATCH (s:Symbol) "
+    "{where}"
+    "RETURN s.fqn AS fqn, s.simple AS simple, s.kind AS kind, "
+    "       s.return_type AS return_type, s.param_types AS param_types, "
+    "       s.repo AS repo, s.file_path AS file_path, "
+    "       s.start_line AS start_line, s.end_line AS end_line "
+    "LIMIT $batch")
+_SYMBOL_UPDATE = (
+    "MATCH (s:Symbol {fqn: $fqn}) "
+    "SET s.embedding = $vec, s.embedded_at = datetime() "
+    "RETURN s.fqn")
+
+
+def _symbol_text(r) -> str:
+    """Synthesise the embeddable text for one :Symbol row from its scalars (no
+    'body'/'signature' fields exist — _build_text derives both, with an optional
+    on-disk slice between start_line/end_line)."""
+    return _build_text(
+        r["fqn"], simple=r.get("simple"), kind=r.get("kind"),
+        return_type=r.get("return_type"), param_types=r.get("param_types"),
+        file_path=r.get("file_path"), start_line=r.get("start_line"),
+        end_line=r.get("end_line"))
+
+
+def _embed_symbol_row(r, sess, embed, out: dict) -> bool:
+    """Embed + persist one symbol row into ``out``. Returns False to signal the
+    caller to STOP (the embed sidecar looks down: 5+ errors → bail rather than
+    logging 200× the same connection-refused)."""
+    text = _symbol_text(r)
+    if not text:
+        out["skipped"] += 1
+        return True
+    try:
+        vec = list(embed(text))
+    except Exception as exc:
+        out["errors"].append(f"embed {r['fqn']}: {str(exc)[:80]}")
+        if len(out["errors"]) >= 5:
+            out["errors"].append("...truncated, sidecar down")
+            return False
+        return True
+    sess.run(_SYMBOL_UPDATE, fqn=r["fqn"], vec=vec).consume()
+    out["embedded"] += 1
+    return True
+
+
 def backfill(repo: str | None = None, *, batch: int = 200) -> dict:
     """Embed every ``:Symbol`` that lacks ``embedding``.
 
     Returns ``{scanned, embedded, skipped, errors}``.
     """
     if os.environ.get("AIFORGE_SYMBOL_EMBED", "1") != "1":
-        return {"scanned": 0, "embedded": 0, "skipped": 0,
-                "errors": ["disabled"]}
+        return {"scanned": 0, "embedded": 0, "skipped": 0, "errors": ["disabled"]}
     try:
         from aiforge_core.memory.rag.neo4j_memory import _get_driver
     except ImportError:
@@ -89,59 +134,17 @@ def backfill(repo: str | None = None, *, batch: int = 200) -> dict:
         return {"scanned": 0, "embedded": 0, "skipped": 0,
                 "errors": ["embed sidecar unavailable"]}
 
-    # AIForge :Symbol schema (graphify + tree-sitter): fqn, simple,
-    # kind, repo, file_path, return_type, param_types, modifiers,
-    # start_line, end_line. No 'body' / 'signature' fields — we
-    # synthesise both from the available scalars + (optional) on-disk
-    # slice between start_line/end_line.
-    cy_select = (
-        "MATCH (s:Symbol) "
-        + ("WHERE s.repo = $repo AND s.embedding IS NULL "
-           if repo else "WHERE s.embedding IS NULL ")
-        + "RETURN s.fqn AS fqn, s.simple AS simple, s.kind AS kind, "
-        "       s.return_type AS return_type, s.param_types AS param_types, "
-        "       s.repo AS repo, s.file_path AS file_path, "
-        "       s.start_line AS start_line, s.end_line AS end_line "
-        "LIMIT $batch"
-    )
-    cy_update = (
-        "MATCH (s:Symbol {fqn: $fqn}) "
-        "SET s.embedding = $vec, s.embedded_at = datetime() "
-        "RETURN s.fqn"
-    )
-
+    where = ("WHERE s.repo = $repo AND s.embedding IS NULL "
+             if repo else "WHERE s.embedding IS NULL ")
+    cy_select = _SYMBOL_SELECT.format(where=where)
     out = {"scanned": 0, "embedded": 0, "skipped": 0, "errors": []}
     try:
         with _get_driver().session() as sess:
             rows = list(sess.run(cy_select, repo=repo, batch=batch))
             out["scanned"] = len(rows)
             for r in rows:
-                fqn = r["fqn"]
-                text = _build_text(
-                    fqn,
-                    simple=r.get("simple"),
-                    kind=r.get("kind"),
-                    return_type=r.get("return_type"),
-                    param_types=r.get("param_types"),
-                    file_path=r.get("file_path"),
-                    start_line=r.get("start_line"),
-                    end_line=r.get("end_line"),
-                )
-                if not text:
-                    out["skipped"] += 1
-                    continue
-                try:
-                    vec = list(embed(text))
-                except Exception as exc:
-                    out["errors"].append(f"embed {fqn}: {str(exc)[:80]}")
-                    if len(out["errors"]) >= 5:
-                        # Sidecar likely down — bail early instead of
-                        # logging 200× the same connection-refused.
-                        out["errors"].append("...truncated, sidecar down")
-                        break
-                    continue
-                sess.run(cy_update, fqn=fqn, vec=vec).consume()
-                out["embedded"] += 1
+                if not _embed_symbol_row(r, sess, embed, out):
+                    break
     except Exception as exc:
         out["errors"].append(f"neo4j: {exc}")
     return out
