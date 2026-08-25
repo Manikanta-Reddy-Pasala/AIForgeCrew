@@ -119,11 +119,11 @@ const THEME_KEY = 'aiforge.theme';
  *  and exposes a toggle that persists the choice to localStorage. */
 function useTheme(): [Theme, () => void] {
   const [theme, setTheme] = useState<Theme>(() =>
-    document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light',
+    document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
   );
 
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
+    document.documentElement.dataset.theme = theme;
     try { localStorage.setItem(THEME_KEY, theme); } catch { /* storage disabled */ }
   }, [theme]);
 
