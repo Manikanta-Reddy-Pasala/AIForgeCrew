@@ -147,16 +147,46 @@ def _fire_script(job: dict) -> bool:
     return True
 
 
+def _run_agent_job(job: dict, prompt: str) -> None:
+    """Execute one agent job's request through the chat agent (full tool surface,
+    autonomous — session_id=None, no approval gate). Records the outcome on
+    ``last_error`` (None = ok). Never crashes the worker thread."""
+    try:
+        import os
+        import tempfile
+        from aiforge_core.runtime.chat_agent import run_chat_agent
+        cwd = os.path.join(tempfile.gettempdir(), f"aiforge-job-{job['id']}")
+        os.makedirs(cwd, exist_ok=True)
+        final, err = "", None
+        for ev in run_chat_agent([{"role": "user", "content": prompt}],
+                                 cwd=cwd, role="chat", session_id=None):
+            etype = ev.get("type")
+            if etype == "message":
+                final = ev.get("text") or final
+            elif etype == "error":
+                err = ev.get("text")
+        if err:
+            store.update(job["id"], last_error=str(err)[:500])
+            log.warning("jobs.fire_agent_failed job=%s: %s", job["id"], err)
+        else:
+            store.update(job["id"], last_error=None)
+            log.info("jobs.fired agent job=%s: %s", job["id"], (final or "")[:160])
+    except Exception as exc:  # noqa: BLE001 — worker never crashes the thread
+        try:
+            store.update(job["id"], last_error=str(exc)[:500])
+        except Exception:  # noqa: BLE001
+            pass
+        log.warning("jobs.fire_agent_crashed job=%s: %s", job["id"], exc)
+
+
 def _fire_agent(job: dict) -> bool:
     """Run an AGENT job: execute the job's request through the CHAT AGENT — a
     single agent with the FULL tool surface (jira/confluence/email + files/shell),
     NOT the code pipeline — so an operational task ("read JIRA-123 + the linked
     Confluence page, summarise, email me") actually reads the data and sends the
     mail, exactly like chat mode. Runs on a daemon thread (schedule already
-    advanced) so a long run can't stall the tick loop; records the outcome on
-    ``last_error`` (None = ok). Returns True = dispatched."""
+    advanced) so a long run can't stall the tick loop. Returns True = dispatched."""
     import threading as _t
-
     prompt = (job.get("ticket_body") or job.get("ticket_title") or "").strip()
 
     def _run() -> None:
@@ -165,43 +195,11 @@ def _fire_agent(job: dict) -> bool:
         # idling toward sleep the whole time it works. Screen lock is untouched.
         from aiforge_core.runtime.keep_awake import keep_awake
         with keep_awake(f"job {job.get('id')}"):
-            _run_job()
-
-    def _run_job() -> None:
-        try:
-            import os
-            import tempfile
-
-            from aiforge_core.runtime.chat_agent import run_chat_agent
-            cwd = os.path.join(tempfile.gettempdir(), f"aiforge-job-{job['id']}")
-            os.makedirs(cwd, exist_ok=True)
-            final, err = "", None
-            # session_id=None → autonomous (no approval gate to hang on); the
-            # chat agent's TOOLS include jira/confluence/email.
-            for ev in run_chat_agent(
-                    [{"role": "user", "content": prompt}],
-                    cwd=cwd, role="chat", session_id=None):
-                _t_ = ev.get("type")
-                if _t_ == "message":
-                    final = ev.get("text") or final
-                elif _t_ == "error":
-                    err = ev.get("text")
-            if err:
-                store.update(job["id"], last_error=str(err)[:500])
-                log.warning("jobs.fire_agent_failed job=%s: %s", job["id"], err)
-            else:
-                store.update(job["id"], last_error=None)
-                log.info("jobs.fired agent job=%s: %s", job["id"],
-                         (final or "")[:160])
-        except Exception as exc:  # noqa: BLE001 — worker never crashes the thread
-            try:
-                store.update(job["id"], last_error=str(exc)[:500])
-            except Exception:  # noqa: BLE001
-                pass
-            log.warning("jobs.fire_agent_crashed job=%s: %s", job["id"], exc)
+            _run_agent_job(job, prompt)
 
     _t.Thread(target=_run, name=f"jobs-agent-{job['id']}", daemon=True).start()
     return True
+
 
 
 def tick(now: datetime | None = None) -> int:
