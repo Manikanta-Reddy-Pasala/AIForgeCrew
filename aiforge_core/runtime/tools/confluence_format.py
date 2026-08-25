@@ -67,6 +67,37 @@ def _inline(s: str) -> str:
     return s
 
 
+def _consume_list(lines: list[str], i: int) -> "tuple[str, int]":
+    """A run of SAME-TYPE list items starting at ``lines[i]`` → (``<ul>/<ol>``
+    html, next index). An ordered run and an unordered run stay separate lists."""
+    ordered = bool(re.match(r"^\s*\d+\.\s+", lines[i]))
+    item_re = r"^\s*\d+\.\s+" if ordered else r"^\s*[-*+]\s+"
+    items: list[str] = []
+    while i < len(lines) and re.match(item_re, lines[i]):
+        it = re.sub(item_re, "", lines[i]).strip()
+        items.append(f"<li>{_inline(it)}</li>")
+        i += 1
+    tag = "ol" if ordered else "ul"
+    return f"<{tag}>{''.join(items)}</{tag}>", i
+
+
+def _block_at(lines: list[str], i: int) -> "tuple[str | None, int]":
+    """The block rendered from ``lines[i]`` → (html or None for a blank line,
+    next index). Handles placeholders, headings, list runs and paragraphs."""
+    raw = lines[i].strip()
+    if not raw:
+        return None, i + 1
+    if re.fullmatch(r"\x00\d+\x00", raw):
+        return raw, i + 1                 # protected fence/image placeholder
+    hm = re.match(r"^(#{1,6})[ \t]+(.*)$", raw)
+    if hm:
+        lvl = len(hm.group(1))
+        return f"<h{lvl}>{_inline(hm.group(2).strip())}</h{lvl}>", i + 1
+    if re.match(r"^\s*[-*+]\s+", lines[i]) or re.match(r"^\s*\d+\.\s+", lines[i]):
+        return _consume_list(lines, i)
+    return f"<p>{_inline(raw)}</p>", i + 1
+
+
 def _blocks_to_storage(s: str) -> str:
     """Line-oriented block conversion: headings, ordered/unordered lists (runs
     grouped into <ul>/<ol>), and paragraphs. Blank lines separate paragraphs."""
@@ -74,38 +105,9 @@ def _blocks_to_storage(s: str) -> str:
     out: list[str] = []
     i = 0
     while i < len(lines):
-        line = lines[i]
-        raw = line.strip()
-        if not raw:
-            i += 1
-            continue
-        # placeholder-only line (protected fence/image) → emit as-is block
-        if re.fullmatch(r"\x00\d+\x00", raw):
-            out.append(raw)
-            i += 1
-            continue
-        # heading
-        hm = re.match(r"^(#{1,6})[ \t]+(.*)$", raw)
-        if hm:
-            lvl = len(hm.group(1))
-            out.append(f"<h{lvl}>{_inline(hm.group(2).strip())}</h{lvl}>")
-            i += 1
-            continue
-        # a run of SAME-TYPE list items → one <ul> / <ol> (an ordered run and an
-        # unordered run stay separate lists).
-        if re.match(r"^\s*[-*+]\s+", line) or re.match(r"^\s*\d+\.\s+", line):
-            ordered = bool(re.match(r"^\s*\d+\.\s+", line))
-            item_re = r"^\s*\d+\.\s+" if ordered else r"^\s*[-*+]\s+"
-            items: list[str] = []
-            while i < len(lines) and re.match(item_re, lines[i]):
-                it = re.sub(item_re, "", lines[i]).strip()
-                items.append(f"<li>{_inline(it)}</li>")
-                i += 1
-            tag = "ol" if ordered else "ul"
-            out.append(f"<{tag}>{''.join(items)}</{tag}>")
-            continue
-        out.append(f"<p>{_inline(raw)}</p>")
-        i += 1
+        block, i = _block_at(lines, i)
+        if block is not None:
+            out.append(block)
     return "\n".join(out)
 
 

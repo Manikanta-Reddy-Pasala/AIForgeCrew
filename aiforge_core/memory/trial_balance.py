@@ -84,39 +84,47 @@ def call_pds_compare(
     return r.json() or {}
 
 
+def _render_summary(summary: dict, lines: list[str]) -> None:
+    if not summary:
+        return
+    lines.append("## Summary\n")
+    for k, v in summary.items():
+        lines.append(f"- **{k}**: {v}")
+    lines.append("")
+
+
+def _render_buckets(buckets: dict, lines: list[str]) -> None:
+    lines.append("## Buckets\n")
+    for name, rows in buckets.items():
+        count = len(rows) if isinstance(rows, list) else "?"
+        lines.append(f"### {name} ({count})\n")
+        if isinstance(rows, list) and rows:
+            # First 5 rows as a peek; full data stays in the doer_outcome.raw
+            # payload for any audit downstream.
+            for row in rows[:5]:
+                lines.append(f"- `{json.dumps(row, default=str)[:300]}`")
+            if len(rows) > 5:
+                lines.append(f"- … and {len(rows) - 5} more")
+        lines.append("")
+
+
 def render_markdown(result: dict) -> str:
     """Format the PDS response as a Markdown audit report.
 
-    PDS's response schema (per v1.4 release) is intentionally
-    self-describing: top-level ``summary`` + ``buckets`` lists. We
-    surface the bucket names + counts + a few representative rows
-    rather than dumping the whole JSON — operators read the report,
-    raw JSON stays in the doer-outcome dict for downstream tooling.
+    PDS's response schema (per v1.4 release) is intentionally self-describing:
+    top-level ``summary`` + ``buckets`` lists. We surface the bucket names +
+    counts + a few representative rows rather than dumping the whole JSON —
+    operators read the report, raw JSON stays in the doer-outcome dict.
     """
     lines: list[str] = ["# Tally ↔ OneShell trial-balance reconciliation\n"]
     summary = result.get("summary") or {}
-    if summary:
-        lines.append("## Summary\n")
-        for k, v in summary.items():
-            lines.append(f"- **{k}**: {v}")
-        lines.append("")
+    _render_summary(summary, lines)
     buckets = result.get("buckets") or {}
     if isinstance(buckets, dict):
-        lines.append("## Buckets\n")
-        for name, rows in buckets.items():
-            count = len(rows) if isinstance(rows, list) else "?"
-            lines.append(f"### {name} ({count})\n")
-            if isinstance(rows, list) and rows:
-                # First 5 rows as a peek; full data stays in the
-                # doer_outcome.raw payload for any audit downstream.
-                for row in rows[:5]:
-                    lines.append(f"- `{json.dumps(row, default=str)[:300]}`")
-                if len(rows) > 5:
-                    lines.append(f"- … and {len(rows) - 5} more")
-            lines.append("")
+        _render_buckets(buckets, lines)
     if not summary and not buckets:
-        # Schema we didn't expect — dump the raw JSON so the operator
-        # at least sees what PDS returned.
+        # Schema we didn't expect — dump the raw JSON so the operator at least
+        # sees what PDS returned.
         lines.append("## Raw PDS response\n")
         lines.append("```json")
         lines.append(json.dumps(result, indent=2, default=str)[:4000])
