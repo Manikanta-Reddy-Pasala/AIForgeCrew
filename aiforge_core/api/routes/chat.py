@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import threading
+from dataclasses import dataclass
 
 from typing import Annotated
 
@@ -1431,21 +1432,33 @@ def _route_produce_event(ev, st: dict, steps: list) -> None:
         st["emitted_done"] = True
 
 
-def _reset_turn_context(_meter, _meter_token, _reqctx, _sess_token,
-                        _repo_token) -> None:
+@dataclass(frozen=True)
+class _TurnResetContext:
+    """The per-turn meter boundary + session/repo-root contextvar tokens, bound
+    at turn start and reset together at turn end. Bundled so the producer's
+    finally forwards ONE handle instead of five loose tokens that always travel
+    as a unit."""
+    meter: object
+    meter_token: object
+    reqctx: object
+    sess_token: object
+    repo_token: object
+
+
+def _reset_turn_context(ctx: "_TurnResetContext") -> None:
     """Reset the per-turn meter boundary + the session/repo-root contextvars.
     Each soft-fails independently."""
     try:
-        if _meter is not None:
-            _meter.reset_turn(_meter_token)
+        if ctx.meter is not None:
+            ctx.meter.reset_turn(ctx.meter_token)
     except Exception:  # noqa: BLE001
         pass
     try:
-        _reqctx.reset_session_id(_sess_token)
+        ctx.reqctx.reset_session_id(ctx.sess_token)
     except Exception:  # noqa: BLE001
         pass
     try:
-        _reqctx.reset_repo_root(_repo_token)
+        ctx.reqctx.reset_repo_root(ctx.repo_token)
     except Exception:  # noqa: BLE001
         pass
 
@@ -1479,8 +1492,7 @@ def _persist_produce_turn(session_id, cwd, prompt, final_text, steps, awaiting,
 
 
 def _finalize_produce_turn(session_id, cwd, prompt, final_text, steps, awaiting,
-                           team, path, _turn_mode, _turn_t0, _meter, _meter_token,
-                           _reqctx, _sess_token, _repo_token, run,
+                           team, path, _turn_mode, _turn_t0, _reset_ctx, run,
                            _awake_release) -> None:
     """The producer's finally: emit the turn-outcome Langfuse score, reset the
     meter/session/repo-root state, and (for every mode EXCEPT the team driver,
@@ -1509,7 +1521,7 @@ def _finalize_produce_turn(session_id, cwd, prompt, final_text, steps, awaiting,
                 metadata={"mode": _turn_mode})
     except Exception:  # noqa: BLE001 — tracing must never break a turn
         pass
-    _reset_turn_context(_meter, _meter_token, _reqctx, _sess_token, _repo_token)
+    _reset_turn_context(_reset_ctx)
     # TEAM mode: the background driver owns the run's lifetime AND its
     # persistence (chat_pipeline._drive) — it survives a client
     # disconnect and holds the real final answer, so we must NOT
@@ -2261,8 +2273,9 @@ def _produce(pc):
     finally:
         _finalize_produce_turn(
             pc.session_id, pc.cwd, pc.prompt, st["final_text"], steps, st["awaiting"],
-            pc.team, pc._path, pc._turn_mode, pc._turn_t0, _meter, _meter_token, _reqctx,
-            _sess_token, _repo_token, pc.run, _awake_release)
+            pc.team, pc._path, pc._turn_mode, pc._turn_t0,
+            _TurnResetContext(_meter, _meter_token, _reqctx, _sess_token, _repo_token),
+            pc.run, _awake_release)
 
 def _stream(pc):
     from aiforge_core.runtime import chat_runs
