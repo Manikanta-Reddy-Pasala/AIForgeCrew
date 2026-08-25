@@ -372,7 +372,7 @@ function ModelsCard({ models, reload }: Readonly<{ models: RegistryModel[]; relo
   // Per-model context window (tokens). 0/blank = fall back to the 128K default.
   async function setContextFor(id: string, tokens: number) {
     try {
-      await chatApi.updateModel(id, { context_window: Math.max(0, tokens | 0) });
+      await chatApi.updateModel(id, { context_window: Math.max(0, Math.trunc(tokens)) });
       reload();
     } catch (e: any) { toast.error(e.message); }
   }
