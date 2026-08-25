@@ -93,7 +93,7 @@ function CodeFence({ body, children }:
 // Earliest-match tokenizer. Order in the alternation matters: ** before *,
 // __ before _, so bold wins over italic.
 const INLINE_RE =
-  /(`[^`]+`)|(\*\*[\s\S]+?\*\*)|(__[\s\S]+?__)|(\*[^*\n]+?\*)|(_[^_\n]+?_)|(\[[^\]]+\]\([^)\s]+\))|(\bhttps?:\/\/[^\s<>()]+)/;
+  /(`[^`]+`)|(\*\*(?:[^*]|\*(?!\*))+\*\*)|(__(?:[^_]|_(?!_))+__)|(\*[^*\n]+?\*)|(_[^_\n]+?_)|(\[[^\]]+\]\([^)\s]+\))|(\bhttps?:\/\/[^\s<>()]+)/;
 
 function renderInline(text: string, key: string): React.ReactNode[] {
   const out: React.ReactNode[] = [];
@@ -128,7 +128,7 @@ function renderInline(text: string, key: string): React.ReactNode[] {
 }
 
 function splitRow(line: string): string[] {
-  return line.replace(/^\s*\|?/, '').replace(/\|?\s*$/, '').split('|').map(c => c.trim());
+  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
 }
 
 // ── block ───────────────────────────────────────────────────────────────────
@@ -190,7 +190,7 @@ export function MdLite({ text }: Readonly<{ text: string }>) {
     }
 
     // heading (# … ######)
-    const h = /^(#{1,6})\s+(.*)$/.exec(line);
+    const h = /^(#{1,6})\s+(\S.*|)$/.exec(line);
     if (h) {
       const lvl = h[1].length;
       const Tag = (`h${lvl}` as keyof JSX.IntrinsicElements);
@@ -208,7 +208,7 @@ export function MdLite({ text }: Readonly<{ text: string }>) {
 
     // GFM table: header row + |---|---| separator
     if (line.includes('|') && i + 1 < lines.length &&
-        /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(lines[i + 1]) &&
+        /^[\s:|-]*$/.test(lines[i + 1]) &&
         lines[i + 1].includes('-')) {
       const header = splitRow(line);
       i += 2;

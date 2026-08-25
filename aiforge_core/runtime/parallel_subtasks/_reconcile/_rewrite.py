@@ -11,7 +11,7 @@ from ._sources import _relevant_files, _spec_goal
 
 _PATCH_RE = re.compile(
     r"<<<<<<< SEARCH\s*\n(.*?)\n=======\s*\n(.*?)\n>>>>>>> REPLACE", re.DOTALL)
-_FILE_HDR_RE = re.compile(r"^###[ \t]*FILE:[ \t]*(.+?)[ \t]*$", re.MULTILINE)
+_FILE_HDR_RE = re.compile(r"^###[ \t]*FILE:[ \t]*(.+)$", re.MULTILINE)
 
 
 def _syntax_ok(rel: str, content: str) -> bool:

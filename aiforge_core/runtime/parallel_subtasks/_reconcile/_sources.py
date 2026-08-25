@@ -58,7 +58,7 @@ def _files_in_output(cwd: str, output: str) -> set:
     targeted context for the resolver (not the whole tree)."""
     import re as _re
     hits: set = set()
-    for m in _re.findall(r"([\w./\\-]+\.(?:py|java|go|js|mjs|ts|tsx|rs|c|cc|cpp|cxx|h|hpp|rb|php))", output):
+    for m in _re.findall(r"([\w/\\-]+(?:\.[\w/\\-]+)*\.(?:py|java|go|js|mjs|ts|tsx|rs|c|cc|cpp|cxx|h|hpp|rb|php))", output):
         p = m.replace("\\", "/")
         if os.path.isabs(p) and p.startswith(cwd):
             p = os.path.relpath(p, cwd)

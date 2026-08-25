@@ -63,7 +63,7 @@ def _code_macro(code: str, lang: str = "") -> str:
 
 
 _MERMAID_FENCE_RE = re.compile(r"```mermaid[^\n]*\n(.*?)```", re.S | re.I)
-_CODE_FENCE_RE = re.compile(r"```([A-Za-z0-9_+#.-]*)[^\n]*\n(.*?)```", re.S)
+_CODE_FENCE_RE = re.compile(r"```([A-Za-z0-9_+#.-]*+)[^\n]*\n(.*?)```", re.S)
 _MD_IMG_RE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 _HTML_IMG_RE = re.compile(r"<img\b[^>]*\bsrc=[\"']([^\"']+)[\"'][^>]*/?>", re.I)
 

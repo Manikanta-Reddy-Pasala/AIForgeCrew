@@ -160,7 +160,7 @@ _VERB_RE = re.compile(r"\b(?:" + "|".join(_ACTION_VERBS) + r")\b", re.I)
 # skipped enhancement and lost the memory/README context-fold. Concrete now
 # means "names an actual code file".
 _FILE_EXT_RE = re.compile(
-    r"[\w./-]+\.(?:py|js|ts|tsx|jsx|java|go|rs|md|json|ya?ml|sql)\b", re.I)
+    r"[\w/-]+(?:\.[\w/-]+)*\.(?:py|js|ts|tsx|jsx|java|go|rs|md|json|ya?ml|sql)\b", re.I)
 # Multi-part connectors that mean "enhance, don't skip" (a list / sequence).
 _MULTIPART_RE = re.compile(r"\band\b|\bthen\b|;| & ", re.I)
 

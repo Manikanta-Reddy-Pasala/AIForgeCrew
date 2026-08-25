@@ -90,7 +90,7 @@ def _block_at(lines: list[str], i: int) -> "tuple[str | None, int]":
         return None, i + 1
     if re.fullmatch(r"\x00\d+\x00", raw):
         return raw, i + 1                 # protected fence/image placeholder
-    hm = re.match(r"^(#{1,6})[ \t]+(.*)$", raw)
+    hm = re.match(r"^(#{1,6})[ \t]++(.*)$", raw)
     if hm:
         lvl = len(hm.group(1))
         return f"<h{lvl}>{_inline(hm.group(2).strip())}</h{lvl}>", i + 1

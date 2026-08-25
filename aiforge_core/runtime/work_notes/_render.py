@@ -28,8 +28,8 @@ from ._links import normalize_links, normalize_tags
 _LEAK_ITEM_RE = re.compile(
     r"""^(?:
           \#{1,6}\s                                  # markdown heading
-        | \#{0,2}\s*(?:objective|key\s*results|facts|links|learnings)\s*:?\s*$
-        | -{3,}\s*$ | —{2,}\s*$                       # rule / separator
+        | \#{0,2}\s*(?:objective|key\s*results|facts|links|learnings)\s*+:?\s*+$
+        | -{3,}\s*+$ | —{2,}\s*+$                     # rule / separator
     )""", re.IGNORECASE | re.VERBOSE)
 # Known envelope-boilerplate fragments that must never sit in a list item.
 _BOILERPLATE_SUBSTR = ("keep durable, deduped knowledge",)
@@ -238,7 +238,7 @@ class _NoteReader:
         return False
 
     def _take_heading(self, line: str) -> bool:
-        hm = re.match(r"^##[ \t]+(.+?)[ \t]*$", line)
+        hm = re.match(r"^##[ \t]+(.+)$", line)
         if not hm:
             return False
         canon = _SECTION_KEYS.get(hm.group(1).strip().lower())

@@ -255,7 +255,7 @@ def _t_remember_rule(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-_BULLET_TRIGGERS_RE = re.compile(r"^\[triggers:[ \t]*([^\]]*)\][ \t]*(.*)$")
+_BULLET_TRIGGERS_RE = re.compile(r"^\[triggers:[ \t]*+([^\]]*+)\][ \t]*+(.*)$")
 
 
 def _parse_bullet(line: str) -> tuple[tuple[str, ...], str]:

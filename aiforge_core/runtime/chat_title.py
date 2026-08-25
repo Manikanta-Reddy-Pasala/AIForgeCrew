@@ -64,7 +64,7 @@ _VERB = re.compile(
     r"debug|investigate|update)\s+(a|an|the|me|some)?\s*", re.I)
 # Trailing clause that adds noise ("… with tests", "… across 3 modules").
 _TAIL = re.compile(
-    r"\s+(with|across|using|that|which|so that|in order to|and then|plus|,)\b.*$",
+    r"\s++(with|across|using|that|which|so that|in order to|and then|plus|,)\b.*$",
     re.I | re.S)
 
 

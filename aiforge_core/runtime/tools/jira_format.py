@@ -85,18 +85,18 @@ def _md_to_wiki(s: str) -> str:
     for line in s.split("\n"):
         # atx heading -> hN. (inline-convert the heading text too, so a
         # '## **Bold**' heading doesn't keep its markdown '**')
-        m = re.match(r"^(#{1,6})[ \t]+(.*)$", line)
+        m = re.match(r"^(#{1,6})[ \t]++(.*)$", line)
         if m:
             out_lines.append(f"h{len(m.group(1))}. {_md_inline(m.group(2).strip())}")
             continue
         # bullet -   -> *   ;  1.  -> #  — inline-convert the ITEM text so bold
         # ('**API:**'), inline code and links inside a list item render (Jira
         # bold is a SINGLE '*'; markdown '**x**' must become '*x*').
-        m = re.match(r"^[ \t]*[-*+][ \t]+(.*)$", line)
+        m = re.match(r"^[ \t]*+[-*+][ \t]++(.*)$", line)
         if m:
             out_lines.append("* " + _md_inline(m.group(1)))
             continue
-        m = re.match(r"^[ \t]*\d+\.[ \t]+(.*)$", line)
+        m = re.match(r"^[ \t]*+\d++\.[ \t]++(.*)$", line)
         if m:
             out_lines.append("# " + _md_inline(m.group(1)))
             continue

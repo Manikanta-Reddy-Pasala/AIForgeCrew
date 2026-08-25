@@ -193,7 +193,7 @@ def extract_topics(prompt: str) -> list[str]:
     # stop at a sentence boundary / deliverable clause
     tail = re.split(r"(?:\band\s+(?:create|write|make|produce|generate)\b|"
                     r"[.;\n]|\bthen\b)", tail, maxsplit=1)[0]
-    parts = re.split(r"\s*(?:,|/|\band\b|\bor\b)\s*", tail)
+    parts = re.split(r"\s*+(?:,|/|\band\b|\bor\b)\s*+", tail)
     topics = [t.strip(" .-") for t in parts if len(t.strip(" .-")) > 2]
     # drop obvious non-topics (verbs/filler that leaked in)
     stop = {"the", "these", "them", "each", "all", "repos", "repo",

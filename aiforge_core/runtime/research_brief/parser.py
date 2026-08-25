@@ -12,7 +12,7 @@ from typing import Any
 
 # Markdown code-fence wrapper — local models often wrap JSON in ```json...```
 # even when the prompt asks for raw JSON. Strip it before parsing.
-_FENCE_RE = re.compile(r"```(?:json)?\s*(.+?)\s*```", re.DOTALL)
+_FENCE_RE = re.compile(r"```(?:json)?(.+?)```", re.DOTALL)
 
 
 def _strip_code_fence(text: str) -> str:

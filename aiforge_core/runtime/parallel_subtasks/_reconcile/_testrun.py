@@ -350,7 +350,7 @@ def _leaked_state(output: str) -> bool:
     return bool(
         re.search(r"(ValueError|Exception|IntegrityError)[^\n]*already exists", output)
         or re.search(r"errors?\b.*\n.*already exists", output, re.I)
-        or (re.search(r"\d+\s+errors?\b", output) and "already exists" in output))
+        or (re.search(r"\d++\s+errors?\b", output) and "already exists" in output))
 
 
 def _directed_hints(output: str) -> list[str]:
@@ -390,8 +390,8 @@ def _fail_count(output: str) -> int:
     couldn't-run/collection-error (worst); 0 = all green."""
     import re as _re
     out = output or ""
-    failed = _re.search(r"(\d+)\s+failed", out)
-    errored = _re.search(r"(\d+)\s+errors?\b", out)
+    failed = _re.search(r"(\d++)\s+failed", out)
+    errored = _re.search(r"(\d++)\s+errors?\b", out)
     n = (int(failed.group(1)) if failed else 0) + (int(errored.group(1)) if errored else 0)
     if n:
         return n

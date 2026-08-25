@@ -256,7 +256,7 @@ def _fetch_url(url: str) -> str:
     # crude HTML strip
     raw = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", raw,
                  flags=re.DOTALL | re.IGNORECASE)
-    return re.sub(r"\s+\n", "\n", _TAG_RE.sub(" ", raw))
+    return re.sub(r"[^\S\n]+\n", "\n", _TAG_RE.sub(" ", raw))
 
 
 def _index_chunk_layer(root: Path, repo: str, flag: str, exts: set, kind: str,
