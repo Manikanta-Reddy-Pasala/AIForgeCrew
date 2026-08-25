@@ -222,6 +222,37 @@ def _push(repo_root: str, branch: str) -> tuple[bool, str]:
     return False, err[:300]
 
 
+def _recover_existing_pr(out, err, repo_root):
+    """gh pr create failed: if the branch already has an open PR, extract/resolve its URL and treat it as success; else return the error."""
+    combined = f"{out}\n{err}"
+    # Re-run of a ticket whose branch already has an open PR (ONE-1
+    # pushed an updated fix via force-with-lease, but `gh pr create`
+    # refuses a second PR for the same branch). The work IS shipped —
+    # extract the existing PR URL from gh's error and treat it as
+    # success so the ticket doesn't dead-end as ``blocked`` over an
+    # already-delivered change.
+    import re as _re
+    m = _re.search(r"https://github\.com/\S+/pull/\d+", combined)
+    if m:
+        existing = m.group(0)
+        log.info("git_pr.exists — reusing open PR %s", existing)
+        return existing, ""
+    # No URL in the error but the message clearly says it exists →
+    # ask gh for the branch's PR url explicitly.
+    if "already exists" in combined.lower():
+        rc2, out2, _ = run_git(
+            ["gh", "pr", "view", "--json", "url", "-q", ".url"],
+            repo_root,
+        )
+        _lines2 = (out2 or "").strip().splitlines()
+        url2 = _lines2[-1] if _lines2 else ""   # blank/whitespace → no IndexError
+        if rc2 == 0 and url2.startswith("http"):
+            log.info("git_pr.exists — resolved open PR %s", url2)
+            return url2, ""
+    log.warning("git_pr.gh_create_failed: %s", err)
+    return "", err[:300]
+
+
 def _open_pr(repo_root: str, identifier: str, title: str,
              body: str) -> tuple[str, str]:
     """``(pr_url, error_or_empty)``. PR url is empty when ``gh`` is
@@ -236,33 +267,7 @@ def _open_pr(repo_root: str, identifier: str, title: str,
         repo_root,
     )
     if rc != 0:
-        combined = f"{out}\n{err}"
-        # Re-run of a ticket whose branch already has an open PR (ONE-1
-        # pushed an updated fix via force-with-lease, but `gh pr create`
-        # refuses a second PR for the same branch). The work IS shipped —
-        # extract the existing PR URL from gh's error and treat it as
-        # success so the ticket doesn't dead-end as ``blocked`` over an
-        # already-delivered change.
-        import re as _re
-        m = _re.search(r"https://github\.com/\S+/pull/\d+", combined)
-        if m:
-            existing = m.group(0)
-            log.info("git_pr.exists — reusing open PR %s", existing)
-            return existing, ""
-        # No URL in the error but the message clearly says it exists →
-        # ask gh for the branch's PR url explicitly.
-        if "already exists" in combined.lower():
-            rc2, out2, _ = run_git(
-                ["gh", "pr", "view", "--json", "url", "-q", ".url"],
-                repo_root,
-            )
-            _lines2 = (out2 or "").strip().splitlines()
-            url2 = _lines2[-1] if _lines2 else ""   # blank/whitespace → no IndexError
-            if rc2 == 0 and url2.startswith("http"):
-                log.info("git_pr.exists — resolved open PR %s", url2)
-                return url2, ""
-        log.warning("git_pr.gh_create_failed: %s", err)
-        return "", err[:300]
+        return _recover_existing_pr(out, err, repo_root)
     pr_url = (out or "").strip().splitlines()[-1] if out else ""
     log.info("git_pr.opened: %s", pr_url)
     return pr_url, ""

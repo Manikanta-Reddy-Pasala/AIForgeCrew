@@ -269,6 +269,26 @@ def _summarize_notes(blocks: list[str], role: str) -> str | None:
     return combined          # already summarized; accept as-is if still huge
 
 
+def _snap_known_topics(files, known):
+    """Deterministically snap each note to the nearest known topic over the cutoff (no LLM). Returns (labels, leftover_notes, shortlist_of_nearest)."""
+    from . import _topics
+    labels: dict = {}
+    leftover: list[dict] = []
+    shortlist: list[str] = []
+    vec_cache: dict = {}
+
+    for d in files:
+        text = (d.get("title") or "") + "\n" + (d.get("body") or "")[:400]
+        hit, near = _topics.snap_by_similarity(text, known, _cache=vec_cache)
+        if not shortlist and near:
+            shortlist = near
+        if hit:
+            labels[d["file"]] = hit
+        else:
+            leftover.append(d)
+    return labels, leftover, shortlist
+
+
 def _topic_labels(files: list[dict], role: str) -> dict:
     """Map ``{file_name: topic-slug}`` for a compaction pass.
 
@@ -290,20 +310,7 @@ def _topic_labels(files: list[dict], role: str) -> dict:
     from ._scope import _snap_topic
 
     known = _topics.existing_topics()
-    labels: dict = {}
-    leftover: list[dict] = []
-    shortlist: list[str] = []
-    vec_cache: dict = {}
-
-    for d in files:
-        text = (d.get("title") or "") + "\n" + (d.get("body") or "")[:400]
-        hit, near = _topics.snap_by_similarity(text, known, _cache=vec_cache)
-        if not shortlist and near:
-            shortlist = near
-        if hit:
-            labels[d["file"]] = hit
-        else:
-            leftover.append(d)
+    labels, leftover, shortlist = _snap_known_topics(files, known)
 
     if leftover:
         for f, slug in _llm_topic_labels(leftover, role, shortlist).items():

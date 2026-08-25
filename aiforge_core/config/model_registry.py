@@ -437,6 +437,26 @@ def _is_generative(model_id: str) -> bool:
     return not any(k in m for k in _NON_GENERATIVE_MARKERS)
 
 
+def _by_ctx(ms):
+    """Models sorted by DESCENDING context window (largest first)."""
+    return sorted(ms, key=lambda m: -(m.get("context_window") or 0))
+
+
+def _assign_role(rl, vision, coder, think, models, default):
+    """Best model id for one role name by capability: vision-needing -> vision,
+    fast/direct -> non-thinking coder, thinking -> reasoning, coder -> coder,
+    else the fast default."""
+    if "vision" in rl and vision:
+        return vision[0]["id"]
+    if any(f in rl for f in _FAST_ROLES):
+        return (coder or think or _by_ctx(models))[0]["id"]
+    if any(t in rl for t in _THINKING_ROLES) and think:
+        return think[0]["id"]
+    if any(c in rl for c in _CODER_ROLES) and coder:
+        return coder[0]["id"]
+    return default
+
+
 def suggest_assignments(roles: list) -> dict:
     """Map each role to the best available model BY CAPABILITY: thinking roles →
     a reasoning model, coder roles → a fast non-reasoning coder, vision-needing →
@@ -445,10 +465,6 @@ def suggest_assignments(roles: list) -> dict:
     models = [m for m in list_models() if _is_generative(m.get("model") or m.get("id"))]
     if not models:
         return {}
-
-    def _by_ctx(ms):
-        return sorted(ms, key=lambda m: -(m.get("context_window") or 0))
-
     think = _by_ctx([m for m in models if m.get("has_thinking")])
     coder = _by_ctx([m for m in models if not m.get("has_thinking")])
     vision = _by_ctx([m for m in models if m.get("has_vision")])
@@ -459,19 +475,8 @@ def suggest_assignments(roles: list) -> dict:
     default = (coder or think or _by_ctx(models))[0]["id"]
     out: dict = {}
     for role in roles:
-        rl = (role or "").lower()
-        if "vision" in rl and vision:
-            out[role] = vision[0]["id"]
-        elif any(f in rl for f in _FAST_ROLES):
-            # quick/direct-output → the fast NON-thinking model (a reasoning
-            # model returns empty here). Fall back to any model if none exists.
-            out[role] = (coder or think or _by_ctx(models))[0]["id"]
-        elif any(t in rl for t in _THINKING_ROLES) and think:
-            out[role] = think[0]["id"]
-        elif any(c in rl for c in _CODER_ROLES) and coder:
-            out[role] = coder[0]["id"]
-        else:
-            out[role] = default
+        out[role] = _assign_role((role or "").lower(), vision, coder, think,
+                                 models, default)
     return out
 
 
