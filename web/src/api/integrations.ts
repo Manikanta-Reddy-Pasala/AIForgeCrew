@@ -5,8 +5,6 @@ export type ConfluenceCfg = {
   has_token: boolean; env_managed: boolean;
 };
 
-export type JiraCfg = ConfluenceCfg;
-
 export type GitlabCfg = {
   base_url: string; project: string; oauth: boolean; insecure_tls: boolean;
   has_token: boolean; env_managed: boolean;
@@ -31,9 +29,9 @@ export const integrationsApi = {
     j<{ ok: boolean; base_url?: string; auth?: string; error?: string; detail?: string; hint?: string; denied_reason?: string }>(
       '/integrations/confluence/test', { method: 'POST' }),
 
-  getJira: () => j<JiraCfg>('/integrations/jira'),
+  getJira: () => j<ConfluenceCfg>('/integrations/jira'),
   setJira: (cfg: { base_url?: string; token?: string; user?: string; insecure_tls?: boolean }) =>
-    j<JiraCfg>('/integrations/jira', {
+    j<ConfluenceCfg>('/integrations/jira', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(cfg),
