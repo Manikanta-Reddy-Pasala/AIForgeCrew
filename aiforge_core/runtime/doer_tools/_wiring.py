@@ -137,27 +137,45 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
     #     researcher keeps the widest sanctioned egress.
     if role == "researcher":
         tools = tools + [FunctionTool(func=web_read)]
-    # CodeGraph gate: drop the codegraph_* tools unless codegraph is actually
-    # usable on this run — the SINGLE shared gate (binary + real index for the
-    # repo + not env-disabled + not opted out per-ticket). Same gate the Doer
-    # seed mandate and the chat catalog use, so all three agree.
-    _cg_names = {"codegraph_impact", "codegraph_callers", "codegraph_callees",
-                 "codegraph_explore", "codegraph_query"}
-    try:
-        from aiforge_core.runtime.tools import codegraph as _cg
-        _cg_on = _cg.enabled_for_run()
-    except Exception:  # noqa: BLE001
-        _cg_on = False
-    if not _cg_on:
-        tools = [t for t in tools
-                 if (getattr(t, "name", None)
-                     or getattr(getattr(t, "func", None), "__name__", ""))
-                 not in _cg_names]
+    tools = _apply_codegraph_gate(tools)
     if role is None:
         return tools
     if os.environ.get("AIFORGE_TOOL_ENFORCE", "1").strip().lower() in (
             "0", "false", "no", "off"):
         return tools
+    return _filter_tools_by_role(tools, role)
+
+
+def _tool_name(t) -> str:
+    return getattr(t, "name", None) or getattr(
+        getattr(t, "func", None), "__name__", "")
+
+
+def _apply_codegraph_gate(tools: list) -> list:
+    """Drop the codegraph_* tools unless codegraph is usable on this run — the
+    SINGLE shared gate (binary + real index for the repo + not env-disabled +
+    not opted out per-ticket), the same one the Doer seed mandate and chat
+    catalog use, so all three agree."""
+    cg_names = {"codegraph_impact", "codegraph_callers", "codegraph_callees",
+                "codegraph_explore", "codegraph_query"}
+    try:
+        from aiforge_core.runtime.tools import codegraph as _cg
+        cg_on = _cg.enabled_for_run()
+    except Exception:  # noqa: BLE001
+        cg_on = False
+    if cg_on:
+        return tools
+    return [t for t in tools if _tool_name(t) not in cg_names]
+
+
+def _filter_tools_by_role(tools: list, role: str) -> list:
+    """Filter ``tools`` by the role's allowed/forbidden contract from
+    agents.yaml. A tool passes only if its name is in ``allowed`` (or allowed is
+    unrestricted) AND not in ``forbidden``. Soft-fail: any accessor error → full
+    set. A NON-EMPTY allowlist that matched zero registered tools is almost
+    always a config typo — fail OPEN to the base set + log, so the agent isn't
+    tool-less. A DELIBERATELY tool-less role uses forbidden=ALL → allowed ==
+    frozenset() (falsy here), still respected."""
     try:
         from aiforge_core.config.agent_config import allowed_tools_for
         allowed, forbidden = allowed_tools_for(role)
@@ -165,11 +183,6 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
         return tools
     if allowed is None and not forbidden:
         return tools  # unrestricted role → full set
-
-    def _tool_name(t) -> str:
-        return getattr(t, "name", None) or getattr(
-            getattr(t, "func", None), "__name__", "")
-
     out = []
     for t in tools:
         name = _tool_name(t)
@@ -178,12 +191,6 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
         if allowed is not None and name not in allowed:
             continue
         out.append(t)
-    # A NON-EMPTY allowlist that matched zero registered tools is almost always a
-    # config typo (names that don't correspond to any real tool). Shipping an
-    # agent with zero tools makes the model hallucinate tool calls that then
-    # hard-fail downstream ("Tool 'X' not found. Available tools:" — empty). Fail
-    # OPEN to the base set and log loudly. A DELIBERATELY tool-less role uses
-    # forbidden=ALL → allowed == frozenset() (falsy here), which we still respect.
     if not out and allowed:
         import logging
         logging.getLogger("aiforge.tools").warning(
