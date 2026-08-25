@@ -13,7 +13,7 @@ import os
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from aiforge_core.api._shared import _db, _persist_env
+from aiforge_core.api._shared import _persist_env
 from aiforge_core.api._shared import env_truthy as _env_truthy
 
 router = APIRouter()
@@ -203,86 +203,22 @@ def session_param(payload: dict) -> dict:
 # ─────────────────────────── Metrics ────────────────────────────────────
 @router.get("/api/metrics")
 def metrics() -> dict:
-    """Operational metrics: ticket counts, verdict ratios, tick stop_reasons,
-    memory hit-rate. Computed on-demand from aiforge Postgres."""
-    with _db() as c, c.cursor() as cur:
-        # tickets per status per role
-        cur.execute(
-            "SELECT assignee_role, status, COUNT(*) AS n "
-            "FROM tickets GROUP BY assignee_role, status"
-        )
-        ticket_grid = [dict(r) for r in cur.fetchall()]
+    """Operational metrics.
 
-        # feedback verdict ratio (from metadata)
-        cur.execute(
-            "SELECT "
-            " COUNT(*) FILTER (WHERE metadata->>'feedback_verdict'='pass') AS pass,"
-            " COUNT(*) FILTER (WHERE metadata->>'feedback_verdict'='fail') AS fail,"
-            " COUNT(*) FILTER (WHERE metadata->>'feedback_verdict'='implicit_pass') AS implicit_pass "
-            "FROM tickets"
-        )
-        v = cur.fetchone() or {}
-
-        # stop_reason distribution per role
-        cur.execute(
-            "SELECT assignee_role, metadata->>'last_stop_reason' AS stop_reason, "
-            "COUNT(*) AS n FROM tickets "
-            "WHERE metadata->>'last_stop_reason' IS NOT NULL "
-            "GROUP BY assignee_role, metadata->>'last_stop_reason'"
-        )
-        stop_reasons = [dict(r) for r in cur.fetchall()]
-
-        # reclaim distribution
-        cur.execute(
-            "SELECT COALESCE((metadata->>'reclaim_count')::int, 0) AS rc, "
-            "COUNT(*) AS n FROM tickets "
-            "WHERE (metadata->>'reclaim_count')::int > 0 "
-            "GROUP BY rc ORDER BY rc"
-        )
-        reclaims = [dict(r) for r in cur.fetchall()]
-
-        # Memory: hit-rate per tier/wing (A + B tracking)
-        cur.execute(
-            "SELECT tier, "
-            " COUNT(*) AS total, "
-            " COUNT(*) FILTER (WHERE (metadata->>'hit_count')::int > 0) AS hit, "
-            " COUNT(*) FILTER (WHERE wing LIKE 'archived/%') AS archived "
-            "FROM memories GROUP BY tier ORDER BY tier"
-        )
-        memory_hit = [dict(r) for r in cur.fetchall()]
-
-        # Top-hit facts
-        cur.execute(
-            "SELECT id, tier, wing, source, LEFT(text, 120) AS text, "
-            "COALESCE((metadata->>'hit_count')::int, 0) AS hits "
-            "FROM memories "
-            "WHERE tier IN ('t2', 't3') "
-            "AND COALESCE((metadata->>'hit_count')::int, 0) > 0 "
-            "ORDER BY (metadata->>'hit_count')::int DESC NULLS LAST LIMIT 10"
-        )
-        top_facts = [dict(r) for r in cur.fetchall()]
-
-        # Ticks — avg duration + count per role (last 24h)
-        cur.execute(
-            "SELECT agent_role, COUNT(*) AS ticks "
-            "FROM ticket_events WHERE kind='llm_turn' "
-            "AND created_at > now() - interval '24 hours' "
-            "GROUP BY agent_role"
-        )
-        activity_24h = [dict(r) for r in cur.fetchall()]
-
+    These aggregates were computed over the Postgres ``tickets`` /
+    ``ticket_events`` / ``memories`` tables, which were removed with the
+    Postgres backend (SQLite-only build). Returns the empty-shaped result so
+    any caller keeps working; the SQLite ticket/memory stores expose their own
+    counts via their dedicated endpoints.
+    """
     return {
-        "ticket_grid": ticket_grid,
-        "feedback_verdicts": {
-            "pass": v.get("pass", 0),
-            "fail": v.get("fail", 0),
-            "implicit_pass": v.get("implicit_pass", 0),
-        },
-        "stop_reasons": stop_reasons,
-        "reclaim_distribution": reclaims,
-        "memory_by_tier": memory_hit,
-        "top_facts_by_hits": top_facts,
-        "activity_24h": activity_24h,
+        "ticket_grid": [],
+        "feedback_verdicts": {"pass": 0, "fail": 0, "implicit_pass": 0},
+        "stop_reasons": [],
+        "reclaim_distribution": [],
+        "memory_by_tier": [],
+        "top_facts_by_hits": [],
+        "activity_24h": [],
     }
 
 

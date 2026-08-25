@@ -15,7 +15,6 @@ import os
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
-from aiforge_core.api._shared import _db
 from aiforge_core.runtime.background import spawn as _spawn
 from aiforge_core.config.paths import config_dir
 
@@ -51,26 +50,14 @@ def _spawn_reindex_all() -> None:
 
 @router.get("/api/memory/stats")
 def memory_stats() -> dict:
-    from aiforge_core.memory import backend_select as _bsel
-    backend = _bsel.memory_backend()
-    if backend == "sqlite":
-        from aiforge_core.memory import sqlite_memory as _sqlmem
-        s = _sqlmem.stats()
-        wings = [{"tier": "embedded", "wing": k, "n": v, "embedded": v}
-                 for k, v in s.get("by_kind", {}).items()]
-        return {"backend": "sqlite", "total": s.get("total", 0), "wings": wings,
-                # the OKR node-DAG view is consolidated out by default; the UI
-                # hides its panel unless the DAG is explicitly enabled.
-                "okr_dag": os.environ.get("AIFORGE_OKR_DAG", "0") == "1"}
-    with _db() as c, c.cursor() as cur:
-        cur.execute(
-            "SELECT tier, wing, COUNT(*) AS n, "
-            "COUNT(embedding) AS embedded "
-            "FROM memories GROUP BY tier, wing "
-            "ORDER BY tier, wing"
-        )
-        rows = cur.fetchall()
-    return {"backend": "postgres", "wings": rows}
+    from aiforge_core.memory import sqlite_memory as _sqlmem
+    s = _sqlmem.stats()
+    wings = [{"tier": "embedded", "wing": k, "n": v, "embedded": v}
+             for k, v in s.get("by_kind", {}).items()]
+    return {"backend": "sqlite", "total": s.get("total", 0), "wings": wings,
+            # the OKR node-DAG view is consolidated out by default; the UI
+            # hides its panel unless the DAG is explicitly enabled.
+            "okr_dag": os.environ.get("AIFORGE_OKR_DAG", "0") == "1"}
 
 
 def _search_origin(h: dict) -> str:
@@ -102,8 +89,6 @@ def memory_search(q: str = Query(..., min_length=2),
     vector-index hits from md-file/keyword hits (and everything else); ``hits``
     is the same rows flat (rank order) for any caller that wants them merged.
     Each row carries an ``origin`` field mirroring its group."""
-    from aiforge_core.memory import backend_select as _bsel
-    backend = _bsel.memory_backend()
 
     def _shape(h: dict, tier: str) -> dict:
         origin = _search_origin(h)
@@ -136,26 +121,14 @@ def memory_search(q: str = Query(..., min_length=2),
         return {"query": q, "used_sources": res.get("used_sources", []),
                 "groups": groups, "hits": flat}
 
-    if backend == "sqlite":
-        # Full HYBRID (same as the agents' memory_lookup): semantic KNN
-        # (sqlite-vec) + keyword/BM25 + spell-correction + link expansion.
-        from aiforge_core.memory import unified_query as _uq
-        res = _uq.query(q, role=role, limit=top_k)
-        tier = "embedded"
-        flat = [_shape(h, tier) for h in res.get("hits", [])]
-        grp = [_shape(h, tier) for h in res.get("ranked", res.get("hits", []))]
-        return _grouped(flat, grp, res)
-
-    from aiforge_core.memory.store import Memory
-    m = Memory()
-    hits = m.search(q, role=role, top_k=top_k)
-    rows = [
-        {"tier": h.tier, "origin": "other", "channel": None,
-         "wing": h.wing, "source": h.source, "linked": False,
-         "text": h.text[:800], "score": h.score, "metadata": h.metadata}
-        for h in hits
-    ]
-    return _grouped(rows, rows, {"used_sources": []})
+    # Full HYBRID (same as the agents' memory_lookup): semantic KNN
+    # (sqlite-vec) + keyword/BM25 + spell-correction + link expansion.
+    from aiforge_core.memory import unified_query as _uq
+    res = _uq.query(q, role=role, limit=top_k)
+    tier = "embedded"
+    flat = [_shape(h, tier) for h in res.get("hits", [])]
+    grp = [_shape(h, tier) for h in res.get("ranked", res.get("hits", []))]
+    return _grouped(flat, grp, res)
 
 
 class _MemSourceBody(BaseModel):
