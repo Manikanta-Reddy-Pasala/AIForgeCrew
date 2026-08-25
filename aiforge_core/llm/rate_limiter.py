@@ -31,7 +31,6 @@ import time
 
 log = logging.getLogger("aiforge.rate_limiter")
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
@@ -559,6 +558,45 @@ def acquire_global(*, max_wait_s: float = 120.0,
     finally:
         with _WAIT_LOCK:
             _waiting -= 1
+
+
+def govern_send(*, role: "str | None" = None, provider: "str | None" = None,
+                model: "str | None" = None, max_wait_s: float = 120.0,
+                meter: bool = True) -> "tuple[float, object]":
+    """THE single gateway every model send passes through. Returns
+    ``(waited_s, meter_token)`` — hand the token to :func:`call_meter.record_failure`
+    if the send turns out to have failed (``None`` when ``meter=False``).
+
+    Does the two things every send owes the operator, in the one order that
+    keeps them consistent:
+      1. THROTTLE — block until the global ceiling AND this call's category
+         sub-ceiling (chosen from ``role``: memory/compaction 'learner' → the
+         small ``compaction_rpm`` bucket, everything else → ``chat_rpm``) both
+         have room. Never fails; overruns are still counted.
+      2. COUNT — record the request in the toolbar meter (skip with
+         ``meter=False`` for a path that meters at a different point, e.g. the
+         ADK path counts after the response so it can attach token usage).
+
+    THE THREE SEND PATHS ALL ROUTE THROUGH HERE:
+      * ``llm.client._http`` — the chat / wire path
+      * ``integrations.instructor_adapter`` — structured extractions (this is
+        the OKF / memory-compaction path, all on the 'learner' role)
+      * ``runtime.escalating_llm`` — the ADK team-pipeline path
+    A NEW path that reaches a model MUST call this too. Skipping it makes that
+    traffic BOTH uncapped and invisible — the exact defect that let memory
+    compaction bypass the ceiling and never show on the meter. One place to add
+    a send path correctly; one place to change the policy.
+    """
+    waited = acquire_global(max_wait_s=max_wait_s, provider=provider, role=role)
+    tok = None
+    if meter:
+        try:
+            from aiforge_core.llm import call_meter as _meter
+            tok = _meter.record(role=role, provider=provider, model=model)
+        except Exception:  # noqa: BLE001 — metering must never break a call
+            tok = None
+    return waited, tok
+
 
 def _drain_bucket(buckets: dict, provider: str, limit: float, amount: float,
                   sleeps: list, deducted: list) -> None:

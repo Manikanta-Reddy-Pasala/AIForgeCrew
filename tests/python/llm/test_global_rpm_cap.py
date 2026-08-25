@@ -426,3 +426,39 @@ def test_a_hold_is_seen_by_threads_that_did_not_earn_it(monkeypatch):
         t.join(timeout=5)
     assert len(waited) == 4
     assert rl.waiting() == 0
+
+
+def test_govern_send_is_the_one_gateway_and_categorises_by_role(monkeypatch):
+    """govern_send throttles under the role's category ceiling AND counts the
+    send — the single place every model path routes through. A 'learner'
+    (memory/compaction) send lands in the compaction bucket; a token comes back
+    unless meter=False."""
+    monkeypatch.setenv("AIFORGE_LLM_SHARED_WINDOW", "0")
+    from aiforge_core.config import runtime_settings as rs
+    rs.set_many({"llm_max_rpm": 100, "compaction_rpm": 2, "chat_rpm": 100})
+    rl.reset_global()
+    # learner → compaction bucket, capped at 2
+    for _ in range(2):
+        waited, tok = rl.govern_send(role="learner", provider="p", model="m")
+        assert waited == 0.0
+    assert sum(1 for _, c in rl._sends if c == "compaction") == 2
+    blocked, _ = rl._take(100, "compaction", 2, "p")   # bucket now full
+    assert blocked is False
+    # a chat send is unaffected by the compaction cap
+    waited, _ = rl.govern_send(role="doer", provider="p", model="m")
+    assert waited == 0.0
+    # meter=False → throttle only, no token
+    _w, tok = rl.govern_send(role="doer", provider="p", meter=False)
+    assert tok is None
+
+
+def test_all_three_send_paths_route_through_govern_send():
+    """Guard against a future path bypassing the ceiling+meter: the three model
+    send paths must each call rate_limiter.govern_send."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[3] / "aiforge_core"
+    for rel in ("llm/client/_http.py",
+                "integrations/instructor_adapter.py",
+                "runtime/escalating_llm/_wrapper.py"):
+        src = (root / rel).read_text()
+        assert "govern_send(" in src, f"{rel} does not route through govern_send"

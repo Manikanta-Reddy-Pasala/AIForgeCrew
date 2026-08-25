@@ -317,13 +317,14 @@ def _post(ep: Endpoint, payload: bytes, timeout_s: int,
     # fail an unreachable endpoint fast. Its wait is deliberately NOT bounded
     # by the caller's retry budget — a queue is not a failure, and charging it
     # there turned "you are throttled" into "your classifier errored".
-    _throttled = _rl.acquire_global(
+    # The one gateway. meter=False here: this path counts through
+    # _record_request below, which has the cancel-check that must sit BETWEEN
+    # the throttle and the count. Provider-scoped so a 429 from a cloud gateway
+    # does not stall the local mlx server; role picks the category sub-ceiling.
+    _throttled, _ = _rl.govern_send(
+        role=role, provider=ep.provider,
         max_wait_s=float(_int_env("AIFORGE_LLM_MAX_WAIT_S", 120)),
-        # Provider-scoped: a 429 from a cloud gateway must not stall the local
-        # mlx server, which declares no rate limit at all.
-        provider=ep.provider,
-        # Role picks the category sub-ceiling (compaction vs chat).
-        role=role)
+        meter=False)
     if throttled is not None:
         throttled[0] = _throttled
     # ONE meter token for BOTH paths, and the failure counted here rather than

@@ -44,9 +44,12 @@ async def _throttle_global(role: "str | None" = None) -> None:
         # rejection, the only path that disobeyed a 429. It fast-returns on its
         # own when there is nothing to wait for.
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, lambda: _rl.acquire_global(
+        # The one gateway (throttle only here: this path counts the send AFTER
+        # the response, in _meter_record, so it can attach token usage).
+        await loop.run_in_executor(None, lambda: _rl.govern_send(
+            role=role,
             max_wait_s=float(_os.environ.get("AIFORGE_LLM_MAX_WAIT_S", "120")),
-            role=role))
+            meter=False))
     except Exception:  # noqa: BLE001 — a throttle must never break a call
         # Including the limiter giving up: acquire_global lets the call through
         # rather than raising, and even if that changes, one throttled call

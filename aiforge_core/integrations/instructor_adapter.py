@@ -117,21 +117,20 @@ def _event_hooks(role: str | None, model: str | None, provider: str,
     from aiforge_core.llm import rate_limiter as _rl
 
     def _on_request(request) -> None:
-        # Order matches _post: throttle first, then count what is going out.
+        # ONE gateway (rate_limiter.govern_send): throttle first — under this
+        # role's category ceiling; role is 'learner' for every structured
+        # extraction, so this is the memory/compaction bucket — then count the
+        # send. httpx hands the SAME Request object to the response hook, and
+        # `extensions` is a plain mutable dict, so stashing the token there
+        # lands a later failure on the minute and turn of ITS OWN send.
         try:
-            _rl.acquire_global(max_wait_s=_wait_budget(), provider=provider,
-                               role=role)
-        except Exception:  # noqa: BLE001 — a limiter fault must not kill a call
-            pass
-        try:
-            tok = _meter.record(role, provider=provider, model=model)
-            # httpx hands the SAME Request object to the response hook, and
-            # `extensions` is a plain mutable dict on it — so this is how the
-            # failure lands on the minute and turn of ITS OWN send rather than
-            # of whenever the reply came back.
-            request.extensions["aiforge_meter_token"] = tok
-            pending.append(tok)
-        except Exception:  # noqa: BLE001 — metering never breaks a call
+            _waited, tok = _rl.govern_send(
+                role=role, provider=provider, model=model,
+                max_wait_s=_wait_budget())
+            if tok is not None:
+                request.extensions["aiforge_meter_token"] = tok
+                pending.append(tok)
+        except Exception:  # noqa: BLE001 — a limiter/meter fault must not kill a call
             pass
 
     def _on_response(response) -> None:
@@ -208,18 +207,14 @@ def _build_metered_client(base_url: str, timeout_s, role, model, provider,
 
 
 def _charge_one_unmetered(role, model, provider: str) -> None:
-    """No hooks means no ceiling on the sends about to happen. Charge ONE up
-    front: undercounting a retry is a smaller error than exempting this whole
-    path, which is the bug this file was rewritten to fix."""
+    """The metered httpx client could not be built, so no per-send hooks will
+    fire. Charge ONE up front through the same gateway: undercounting a retry is
+    a smaller error than exempting this whole path, which is the bug this file
+    was rewritten to fix."""
     try:
         from aiforge_core.llm import rate_limiter as _rl
-        _rl.acquire_global(max_wait_s=_wait_budget(), provider=provider,
-                           role=role)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        from aiforge_core.llm import call_meter as _meter
-        _meter.record(role, provider=provider, model=model)
+        _rl.govern_send(role=role, provider=provider, model=model,
+                        max_wait_s=_wait_budget())
     except Exception:  # noqa: BLE001
         pass
 
