@@ -1,9 +1,8 @@
-"""Ingest a registered memory source into the active memory backend.
+"""Ingest a registered memory source into the embedded SQLite memory store.
 
-Backend-agnostic: writes each chunk via
-:func:`aiforge_core.runtime.tools.memory_write.memory_write`, which
-already routes to embedded SQLite or Neo4j depending on the active
-backend. Runs in a background thread (see the API endpoint).
+Writes each chunk via
+:func:`aiforge_core.runtime.tools.memory_write.memory_write`.
+Runs in a background thread (see the API endpoint).
 
 Kinds:
   repo  — walk a code folder/repo, chunk source files
@@ -76,10 +75,9 @@ def _write(text: str, *, kind: str, repo: str, ref: str,
     from aiforge_core.runtime.tools.memory_write import memory_write
     res = memory_write(text=text, kind=kind, tags=["ingest", ref], repo=repo,
                        source="ingest", embed_vec=embed_vec)
-    # Count only real inserts. A deduped write returns ok=True but id=0
-    # (embedded) or deduped=True (Neo4j) and persists nothing — counting it
-    # made a re-index of an unchanged repo report its full unit count while
-    # inserting zero rows.
+    # Count only real inserts. A deduped write returns ok=True but id=0 and
+    # persists nothing — counting it made a re-index of an unchanged repo
+    # report its full unit count while inserting zero rows.
     return bool(res.get("id")) and not res.get("deduped")
 
 
@@ -261,138 +259,6 @@ def _fetch_url(url: str) -> str:
     return re.sub(r"\s+\n", "\n", _TAG_RE.sub(" ", raw))
 
 
-def _neo4j_driver_or_none():
-    """Open a ``neo4j.Driver`` from env, or return None when the graph
-    backend isn't the active/configured one.
-
-    Mirrors the env pattern in ``runtime.tools.memory_write``. Returns None
-    (never raises) when: the active memory backend isn't ``neo4j``, the
-    ``neo4j`` driver isn't installed, no URI is configured, or the connect
-    fails. Layers B (symbols) and C (graphify) are graph-only, so a None
-    here makes them skip cleanly on the embedded SQLite backend.
-    """
-    try:
-        from aiforge_core.memory import backend_select
-        if backend_select.memory_backend() != "neo4j":
-            return None
-    except Exception:  # noqa: BLE001
-        return None
-    uri = os.environ.get("AIFORGE_NEO4J_URI") or os.environ.get("NEO4J_URI")
-    if not uri:
-        return None
-    try:
-        from neo4j import GraphDatabase
-    except ImportError:
-        return None
-    user = os.environ.get("AIFORGE_NEO4J_USER", "neo4j")
-    pw = os.environ.get(
-        "AIFORGE_NEO4J_PASSWORD",
-        os.environ.get("NEO4J_PASSWORD", "password"),
-    )
-    try:
-        return GraphDatabase.driver(uri, auth=(user, pw))
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _stat_count(stats, key: str) -> int:
-    """Pull a numeric field out of an IngestStats / dict / mock stats obj."""
-    if stats is None:
-        return 0
-    if hasattr(stats, "as_dict"):
-        try:
-            stats = stats.as_dict()
-        except Exception:  # noqa: BLE001
-            stats = {}
-    if isinstance(stats, dict):
-        try:
-            return int(stats.get(key, 0) or 0)
-        except (TypeError, ValueError):
-            return 0
-    v = getattr(stats, key, 0)
-    try:
-        return int(v or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _index_symbols(root: Path, repo: str) -> "tuple[int, str]":
-    """Layer B — tree-sitter symbol graph into Neo4j. Java uses the rich
-    walker; kotlin/python/react (js/ts/jsx/tsx)/c/cpp go through the generic
-    aider tag-query engine (treesitter_ingest._parse_via_tags)."""
-    from aiforge_core.indexing import treesitter_ingest as tsi
-    if not tsi.TREESITTER_AVAILABLE:
-        return 0, "skip:treesitter_unavailable"
-    driver = _neo4j_driver_or_none()
-    if driver is None:
-        return 0, "skip:no_neo4j"
-    try:
-        stats = tsi.ingest_repo(
-            driver, Path(root), repo_name=repo,
-            languages=tsi.DEFAULT_LANGUAGES,
-        )
-        seen = _stat_count(stats, "files_seen")
-        n = _stat_count(stats, "symbols_written")
-        if seen == 0:
-            # No java/kotlin/python/react/c/cpp source under the root — the
-            # symbol layer has nothing to extract even though the code text may
-            # have been chunked. Say so, so it's not mistaken for a failure.
-            return n, "skip:no_source_files (no supported source files found)"
-        return n, "ok"
-    except Exception as exc:  # noqa: BLE001
-        log.warning("symbol index failed: %s", exc)
-        return 0, f"error:{exc}"
-    finally:
-        try:
-            driver.close()
-        except Exception:  # noqa: BLE001
-            pass
-
-
-def _index_graphify(root: Path, repo: str) -> "tuple[int, str]":
-    """Layer C — graphify knowledge graph into Neo4j. Runs the ``graphify``
-    CLI as a subprocess, then loads ``graphify-out/graph.json``."""
-    import shutil
-    import subprocess
-    # Resolve the graphify binary: AIFORGE_GRAPHIFY_BIN (absolute path) wins,
-    # else look it up on PATH. On a Docker api or a venv whose PATH lacks the
-    # host pip-install bin, `graphify` won't be on PATH — point the env at it.
-    _gbin = os.environ.get("AIFORGE_GRAPHIFY_BIN", "").strip()
-    graphify_bin = _gbin if (_gbin and os.path.isfile(_gbin)) else shutil.which("graphify")
-    if not graphify_bin:
-        return 0, "skip:graphify_cli_absent (set AIFORGE_GRAPHIFY_BIN to its path)"
-    driver = _neo4j_driver_or_none()
-    if driver is None:
-        return 0, "skip:no_neo4j"
-    try:
-        timeout = int(os.environ.get("AIFORGE_GRAPHIFY_TIMEOUT_S", "600"))
-    except (TypeError, ValueError):
-        timeout = 600
-    try:
-        subprocess.run(
-            [graphify_bin, "update", "."], cwd=str(root),
-            timeout=timeout, capture_output=True,
-        )
-        graph_json = Path(root) / "graphify-out" / "graph.json"
-        if not graph_json.exists():
-            return 0, "skip:no_graph_json"
-        from aiforge_core.indexing.graphify_loader import load_graphify_json
-        out = load_graphify_json(driver, graph_json, repo_name=repo)
-        n = int((out or {}).get("nodes_created", 0) or 0)
-        return n, "ok"
-    except subprocess.TimeoutExpired:
-        log.warning("graphify update timed out for %s", root)
-        return 0, "skip:graphify_timeout"
-    except Exception as exc:  # noqa: BLE001
-        log.warning("graphify index failed: %s", exc)
-        return 0, f"error:{exc}"
-    finally:
-        try:
-            driver.close()
-        except Exception:  # noqa: BLE001
-            pass
-
-
 def _index_chunk_layer(root: Path, repo: str, flag: str, exts: set, kind: str,
                        layers: dict, layer_key: str) -> int:
     """Run one chunk layer (code or doc). Records its status in ``layers`` and
@@ -430,13 +296,9 @@ def _empty_index_error(root: Path, layers: dict) -> "str | None":
 
 
 def _index_repo_full(root: Path, repo: str) -> dict:
-    """Full multi-layer index of a repo/directory. Every layer soft-fails
-    independently; chunks (A/A2) are the guaranteed baseline. Overall ``error``
-    is set only if no chunk layer produced anything.
-
-    DECONFLICT: on Neo4j the AFM package (System-2) also indexes code chunks
-    incrementally; an operator running AFM can set AIFORGE_INDEX_CODE_CHUNKS=0
-    (+ AIFORGE_INDEX_SYMBOLS=0) so this full-walk path only owns graphify + docs.
+    """Full index of a repo/directory into the embedded SQLite store. The code
+    + doc chunk layers soft-fail independently and are the guaranteed baseline.
+    Overall ``error`` is set only if no chunk layer produced anything.
     """
     layers: dict[str, str] = {}
     code_units = _index_chunk_layer(root, repo, "AIFORGE_INDEX_CODE_CHUNKS",
@@ -444,32 +306,17 @@ def _index_repo_full(root: Path, repo: str) -> dict:
     doc_units = _index_chunk_layer(root, repo, "AIFORGE_INDEX_DOCS",
                                    _ALL_DOC_EXT, "doc", layers, "doc_chunks")
 
-    # ── Layer B — tree-sitter symbol graph (Neo4j only) ──
-    if not _flag("AIFORGE_INDEX_SYMBOLS", True):
-        layers["symbols"] = _SKIP_DISABLED
-        symbols = 0
-    else:
-        symbols, layers["symbols"] = _index_symbols(root, repo)
-
-    # ── Layer C — graphify knowledge graph (Neo4j only) ──
-    if not _flag("AIFORGE_INDEX_GRAPHIFY", True):
-        layers["graphify"] = _SKIP_DISABLED
-        graphify_nodes = 0
-    else:
-        graphify_nodes, layers["graphify"] = _index_graphify(root, repo)
-
     units = code_units + doc_units
     error = None
-    if units == 0 and symbols == 0:
+    if units == 0:
         error = _empty_index_error(root, layers)
     if error is None and units == 0 and not any(
             layers.get(k) == "ok" for k in ("code_chunks", "doc_chunks")):
         error = ("all chunk layers failed: "
                  f"code={layers.get('code_chunks')} doc={layers.get('doc_chunks')}")
-    log.info("repo index %r: units=%d symbols=%d graphify=%d layers=%s",
-             repo, units, symbols, graphify_nodes, layers)
+    log.info("repo index %r: units=%d layers=%s", repo, units, layers)
     return {"units": units, "code_units": code_units, "doc_units": doc_units,
-            "symbols": symbols, "graphify_nodes": graphify_nodes,
+            "symbols": 0, "graphify_nodes": 0,
             "layers": layers, "error": error}
 
 

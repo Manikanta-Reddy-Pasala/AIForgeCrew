@@ -59,71 +59,19 @@ def record_failure(
     text = _failure_text(ticket, verdict, reason, ci_status, review_verdict)
     tags = _failure_tags(ticket, verdict, ci_status, review_verdict)
 
-    # Embedded (zero-infra) path — write the failure to the SQLite memory
-    # store so prior failures still surface on the next similar ticket.
-    from aiforge_core.memory import backend_select as _bsel
-    if _bsel.embedded():
-        try:
-            from aiforge_core.memory import sqlite_memory as _sqlmem
-            rid = _sqlmem.write_unit(
-                text=text, kind="failure", source="failure_memory",
-                tags=tags, repo=ticket.project, ticket=ticket.identifier,
-            )
-            log.info("failure_memory[sqlite]: ticket=%s id=%s",
-                     ticket.identifier, rid)
-            return {"ok": True, "id": rid, "deduped": rid == 0}
-        except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "error": f"sqlite: {exc}"}
-
+    # Write the failure to the embedded SQLite memory store so prior failures
+    # still surface on the next similar ticket.
     try:
-        from aiforge_memory.features.memory.store import upsert_observation
-        from neo4j import GraphDatabase
-    except ImportError:
-        return {"ok": False, "error": "deps_missing"}
-
-    uri = os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687")
-    user = os.environ.get("AIFORGE_NEO4J_USER", "neo4j")
-    pw = os.environ.get(
-        "AIFORGE_NEO4J_PASSWORD",
-        os.environ.get("NEO4J_PASSWORD", "password"),
-    )
-    try:
-        drv = GraphDatabase.driver(uri, auth=(user, pw))
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": f"driver: {exc}"}
-
-    # Embed the failure text — without embed_vec the observation is
-    # invisible to vector recall AND the PPR seed stage, so the whole
-    # "prior failures surface on the next similar ticket" loop was
-    # broken at the write site. Soft: no sidecar → write without vector.
-    embed_vec = None
-    try:
-        from aiforge_core.memory.embed import embed as _embed
-        embed_vec = _embed(text)
-    except Exception:  # noqa: BLE001
-        embed_vec = None
-
-    try:
-        out = upsert_observation(
-            drv, repo=ticket.project, text=text,
-            kind="failure",
-            author="failure_memory",
-            tags=tags,
-            embed_vec=embed_vec,
+        from aiforge_core.memory import sqlite_memory as _sqlmem
+        rid = _sqlmem.write_unit(
+            text=text, kind="failure", source="failure_memory",
+            tags=tags, repo=ticket.project, ticket=ticket.identifier,
         )
-        log.info(
-            "failure_memory: ticket=%s id=%s deduped=%s",
-            ticket.identifier, out.get("id"), out.get("deduped"),
-        )
-        return {"ok": True, "id": out.get("id"),
-                "deduped": out.get("deduped", False)}
+        log.info("failure_memory[sqlite]: ticket=%s id=%s",
+                 ticket.identifier, rid)
+        return {"ok": True, "id": rid, "deduped": rid == 0}
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": f"upsert: {exc}"}
-    finally:
-        try:
-            drv.close()
-        except Exception:
-            pass
+        return {"ok": False, "error": f"sqlite: {exc}"}
 
 
 def _validator_dict(vv) -> dict:

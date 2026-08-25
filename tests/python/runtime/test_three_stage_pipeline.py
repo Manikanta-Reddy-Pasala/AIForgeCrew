@@ -154,31 +154,6 @@ def test_failure_memory_skips_without_project() -> None:
     assert out["error"] == "no_project"
 
 
-def test_failure_memory_calls_upsert(monkeypatch) -> None:
-    # Exercise the Neo4j/AFM write path — pin a Neo4j URI so
-    # backend_select doesn't route to the default embedded SQLite store.
-    monkeypatch.setenv("NEO4J_URI", "bolt://test:7687")
-    t = _StubTicket()
-    fake_upsert = MagicMock(
-        return_value={"id": "obs_xyz", "deduped": False},
-    )
-    fake_store = MagicMock(upsert_observation=fake_upsert)
-    fake_gdb = MagicMock()
-    fake_gdb.driver.return_value = MagicMock()
-    with patch.dict("sys.modules", {
-        "aiforge_memory.features.memory.store": fake_store,
-        "neo4j": MagicMock(GraphDatabase=fake_gdb),
-    }):
-        out = failure_memory.record_failure(
-            t, verdict="fail", reason="something broke",
-            ci_status="red",
-        )
-    assert out["ok"] is True
-    fake_upsert.assert_called_once()
-    kwargs = fake_upsert.call_args.kwargs
-    assert kwargs["kind"] == "failure"
-    assert "kind:failure" in kwargs["tags"]
-    assert "ci:red" in kwargs["tags"]
 
 
 def test_failure_memory_callback_skips_on_clean_pass(monkeypatch) -> None:

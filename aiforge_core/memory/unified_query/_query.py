@@ -73,9 +73,8 @@ class _RecallCtx:
 
 
 def _src_sqlite_recall(ctx: "_RecallCtx") -> None:
-    """1) Embedded SQLite vector recall — active only when no Neo4j/Postgres is
-    configured. Surfaces the agent's own observations/failures/learnings written
-    to ~/.aiforge/memory.db. The pro backends recall via afm_bundle instead."""
+    """1) Embedded SQLite vector recall. Surfaces the agent's own
+    observations/failures/learnings written to ~/.aiforge/memory.db."""
     try:
         from aiforge_core.memory import backend_select as _bsel
         if _bsel.embedded():
@@ -260,7 +259,7 @@ def _src_global_vector(ctx: "_RecallCtx") -> None:
     never saw ingested code/doc observations. Contamination guard: a SCOPED task
     runs a REPO-SCOPED vector recall (no cross-task bleed — the "game leaked into
     tempconv" bug); repo-less calls stay global; cross-repo bleed for a scoped
-    task needs AIFORGE_UMEM_CROSS_TASK=1. Neo4j-only; soft-fail."""
+    task needs AIFORGE_UMEM_CROSS_TASK=1. Soft-fail."""
     if os.environ.get("AIFORGE_UMEM_GLOBAL_VECTOR", "1") != "1":
         return
     try:

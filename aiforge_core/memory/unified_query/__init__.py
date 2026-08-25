@@ -6,12 +6,11 @@ list. Replaces the 3-tool chain ``search_memory → ticket_brief →
 related_memories`` (and often ``sym_lookup`` / ``find_doc`` on top).
 
 Sources merged (each contributes, soft-fail individually):
-1. Memory.search — Postgres / Neo4j hybrid retrieval
+1. embedded SQLite vector recall
 2. ticket_brief (if ``ticket`` looks like an identifier)
-3. related_memories MCP — Neo4j graph hops
-4. sym_lookup MCP — code symbol + signature
-5. find_doc MCP — markdown / SOP files
-6. docs_index.lookup_doc — external library docs (top library guessed
+3. sym_lookup MCP — code symbol + signature
+4. find_doc MCP — markdown / SOP files
+5. docs_index.lookup_doc — external library docs (top library guessed
    from query: spring/react/mongodb/...)
 
 Ranking: each source emits a ``score`` (roughly [0, 1]); we min-max

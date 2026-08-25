@@ -153,18 +153,6 @@ def test_diversify_groups_afm_sections():
     assert sum(1 for h in out if h["group"] == "afm:observation") == 2
 
 
-def test_trajectory_touched_paths():
-    from aiforge_core.runtime.trajectory import _touched_paths
-    events = [
-        {"args": "{'path': 'src/app/main.py'}"},
-        {"text": "edited aiforge_core/runtime/pipeline.py and ran tests"},
-        {"args": "no paths here"},
-        {"args": "{'path': 'src/app/main.py'}"},  # dupe
-    ]
-    paths = _touched_paths(events)
-    assert "src/app/main.py" in paths
-    assert "aiforge_core/runtime/pipeline.py" in paths
-    assert len([p for p in paths if p == "src/app/main.py"]) == 1
 
 
 def test_globs_intersect_extension_vs_dir():

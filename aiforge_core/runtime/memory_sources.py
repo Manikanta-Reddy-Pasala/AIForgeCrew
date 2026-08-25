@@ -3,8 +3,8 @@
 A "source" is something the user wants folded into memory: a code repo /
 folder, a docs/markdown folder, an external URL, or an uploaded file.
 Stored in SQLite (always available); the actual ingestion is done by
-:mod:`aiforge_core.runtime.memory_ingest`, which writes into whatever
-memory backend is active (Neo4j or embedded SQLite).
+:mod:`aiforge_core.runtime.memory_ingest`, which writes into the embedded
+SQLite memory store.
 
 Lives at ``$AIFORGE_SOURCES_DB_PATH`` (default
 ``$AIFORGE_CONFIG_DIR/memory_sources.db``) — under the persisted

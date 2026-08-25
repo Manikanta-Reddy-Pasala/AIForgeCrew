@@ -141,14 +141,9 @@ def _ticket_media_paths(ticket) -> list[str]:
     return [p for p in paths if p]
 
 
-def _persist_media_sqlite(summary: str, media_paths: list, ticket) -> bool:
-    """Write the media observation to the embedded SQLite store. Returns True
-    when the embedded backend handled it (so the caller stops), False to fall
-    through to the Neo4j path. Never raises."""
+def _persist_media_sqlite(summary: str, media_paths: list, ticket) -> None:
+    """Write the media observation to the embedded SQLite store. Never raises."""
     try:
-        from aiforge_core.memory import backend_select as _bsel
-        if not _bsel.embedded():
-            return False
         from aiforge_core.memory import sqlite_memory as _sqlmem
         _sqlmem.write_unit(
             text=summary, kind="attachment", source="adk_runner",
@@ -157,57 +152,6 @@ def _persist_media_sqlite(summary: str, media_paths: list, ticket) -> bool:
             metadata={"media_refs": media_paths})
     except Exception as exc:  # noqa: BLE001
         log.debug("vision persist[sqlite] failed: %s", exc)
-    return True     # embedded path OWNS the write (success OR swallowed error)
-
-
-def _ticket_event_time(ticket) -> "float | None":
-    """The ticket's created_at as epoch seconds, or None."""
-    try:
-        from aiforge_core.tickets.store import get as ticket_get
-        t = ticket_get(ticket.identifier)
-        created_at = getattr(t, "created_at", None)
-        return created_at.timestamp() if created_at is not None else None
-    except Exception:
-        return None
-
-
-def _persist_media_neo4j(summary: str, media_paths: list, ticket) -> None:
-    """Write the media observation to Neo4j (embedded, so embeddable + reachable
-    via vector recall). No-op when AFM/neo4j is absent. Never raises."""
-    try:
-        from aiforge_memory.features.memory.store import upsert_observation
-        from neo4j import GraphDatabase
-    except ImportError:
-        return
-    uri = os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687")
-    user = os.environ.get("AIFORGE_NEO4J_USER", "neo4j")
-    pw = os.environ.get("AIFORGE_NEO4J_PASSWORD",
-                        os.environ.get("NEO4J_PASSWORD", "password"))
-    try:
-        drv = GraphDatabase.driver(uri, auth=(user, pw))
-    except Exception as exc:  # noqa: BLE001
-        log.debug("vision persist driver fail: %s", exc)
-        return
-    try:
-        media_vec = None
-        try:
-            from aiforge_core.memory.embed import embed as _embed
-            media_vec = _embed(summary)
-        except Exception:  # noqa: BLE001
-            media_vec = None
-        upsert_observation(
-            drv, repo=ticket.project, text=summary, kind="attachment",
-            author="adk_runner",
-            tags=[f"ticket:{ticket.identifier}", "kind:vision"],
-            media_refs=media_paths, event_time=_ticket_event_time(ticket),
-            embed_vec=media_vec)
-    except Exception as exc:  # noqa: BLE001
-        log.debug("vision persist failed: %s", exc)
-    finally:
-        try:
-            drv.close()
-        except Exception:
-            pass
 
 
 def _persist_ticket_media(ticket) -> None:
@@ -225,10 +169,4 @@ def _persist_ticket_media(ticket) -> None:
     summary = (f"Ticket {ticket.identifier} included {len(media_paths)} image "
                f"attachment(s): "
                + ", ".join(p.rsplit("/", 1)[-1] for p in media_paths))
-    # Embedded (zero-infra) path first — every sibling writer branches here on
-    # the default SQLite backend. Without it the observation went straight to
-    # bolt://…:7687 (fails/ImportErrors, swallowed) and the Doer never recalled
-    # prior screenshots.
-    if _persist_media_sqlite(summary, media_paths, ticket):
-        return
-    _persist_media_neo4j(summary, media_paths, ticket)
+    _persist_media_sqlite(summary, media_paths, ticket)

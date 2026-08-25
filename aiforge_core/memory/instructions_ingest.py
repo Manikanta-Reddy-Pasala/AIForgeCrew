@@ -9,9 +9,8 @@ every section is captured as a scoped learning via :func:`md_store.capture`
 captures into standard OKR briefs. An optional clean wipe runs first so a re-run
 is deterministic.
 
-Backend-agnostic: capture/compact/ingest route through whatever memory backend
-is active — the standard md + Postgres + Neo4j graph, or the embedded SQLite
-store. Nothing here hardcodes a path or a machine — pass the files (or roots to
+Capture/compact/ingest route through the embedded SQLite memory store.
+Nothing here hardcodes a path or a machine — pass the files (or roots to
 scan) as arguments.
 
 CLI::
@@ -110,11 +109,9 @@ def discover(roots: list[str], names: tuple[str, ...] = DEFAULT_NAMES) -> list[P
 
 
 def _wipe_memory() -> dict:
-    """Committed clean wipe of memory DATA across whatever backend is active —
-    md files + the index stores (SQLite ``sqlite`` OR the standard Neo4j graph:
-    ``graph_facts``/``chunks``/``symbols``/``graphify``). Chat sessions and the
-    registered sources/config are preserved. Each store soft-fails, so clearing
-    all is safe on any backend (SQLite-only or md+Postgres+Neo4j)."""
+    """Committed clean wipe of memory DATA — md files + the SQLite ``sqlite``
+    store. Chat sessions and the registered sources/config are preserved. Each
+    store soft-fails, so clearing all is safe."""
     from aiforge_core.memory import admin
     stores = [s for s in admin.CLEARABLE if s != "chat"]
     return {s: admin.clear_store(s) for s in stores}

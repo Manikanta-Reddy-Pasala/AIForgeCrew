@@ -1,7 +1,6 @@
 """Auto-generate `<repo>/.aiforge/REPO_NOTES.md` for a repo.
 
-Scans the worktree + Neo4j (when available) to produce a structured
-markdown reference covering:
+Scans the worktree to produce a structured markdown reference covering:
   - Purpose (from README + repo_standards if present)
   - Top-level layout (key directories + file counts)
   - Controllers (every @RestController / @Controller class + paths)

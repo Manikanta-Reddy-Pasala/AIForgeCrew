@@ -401,7 +401,7 @@ def _attach_agent_callbacks(*, doer, refiner, learner, planner, enhancer,
     from .loop_budget import build_loop_budget_callbacks
     from .subtasks_callback import make_planner_subtasks_callback
 
-    # Persist Learner-emitted facts into Neo4j (Observation_v2 + Decision_v2).
+    # Persist Learner-emitted facts into the embedded SQLite memory store.
     # Without this, state['facts_json'] dies with the session.
     _append_after(learner, make_learner_after_callback())
     # Record the Planner's decomposition as internal subtasks on the ticket
@@ -444,10 +444,9 @@ def _attach_agent_callbacks(*, doer, refiner, learner, planner, enhancer,
             except Exception:  # noqa: BLE001 — never block pipeline boot
                 pass
 
-    # Auto-consolidation after-callback on the Learner — mines the finished
-    # run's trajectory for durable facts (extract → decide ADD/UPDATE/DELETE/
-    # NOOP vs existing → reflect), complementing the explicit facts_json path
-    # above. Soft-fail; neo4j-only; feature-flagged.
+    # Auto-consolidation after-callback on the Learner — the graph-backed
+    # consolidation store was removed, so this callback is a soft no-op now;
+    # kept wired for when a consolidation backend returns. Soft-fail.
     try:
         from .memory_consolidate import make_consolidate_after_callback
         _append_after(learner, make_consolidate_after_callback())

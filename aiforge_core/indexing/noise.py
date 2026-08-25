@@ -1,13 +1,9 @@
 """Single source of truth for indexing noise.
 
 Every indexer + retrieval path imports from here so a path that is
-noise to RepoMap is also noise to graphify ingest, treesitter ingest,
-merkle hashing, symbol embedding, AND the UnifiedContext output
-filter. KISS: one constants module, two helper functions.
-
-Also exposes a Cypher fragment for one-shot purge of pre-existing
-:Symbol / :Chunk / :File nodes whose ``file_path`` matches noise so
-old crud can be cleaned out without re-indexing.
+noise to RepoMap is also noise to chunk ingest, merkle hashing, AND
+the UnifiedContext output filter. KISS: one constants module, a few
+helper functions.
 """
 from __future__ import annotations
 
@@ -93,23 +89,8 @@ def prune_dirnames(dirnames: list[str]) -> None:
     dirnames[:] = [d for d in dirnames if not is_noise_dir(d)]
 
 
-# ─────────── Neo4j purge fragment ───────────
-# Cypher template that nukes :Symbol / :Chunk / :File whose
-# ``file_path`` lives in a noise dir. Run once after deploying the
-# shared filter to drop pre-existing crud. Not auto-run — operator
-# triggers via ``aiforge index purge-noise`` (added separately).
-PURGE_CYPHER = """
-UNWIND $tokens AS tok
-MATCH (n)
-WHERE (n:Symbol OR n:Chunk OR n:File OR n:Memory)
-  AND n.file_path CONTAINS tok
-DETACH DELETE n
-RETURN tok, count(n) AS purged
-"""
-
-
 __all__ = [
     "EXCLUDE_DIRS", "EXCLUDE_DIR_TOKENS", "EXCLUDE_EXTENSIONS",
     "is_noise_dir", "is_noise_path", "filter_paths",
-    "prune_dirnames", "PURGE_CYPHER",
+    "prune_dirnames",
 ]

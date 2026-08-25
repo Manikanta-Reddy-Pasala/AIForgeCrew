@@ -1,10 +1,10 @@
 """Shared trace-event emitter for the OpenHands-parity tool surface.
 
-Every tool calls :func:`emit` to record a labelled event on the Neo4j
-trace alongside the existing ``:Turn`` / ``:ToolCall`` nodes. The emit
-path is best-effort: a Neo4j outage or missing config never bubbles into
-the model loop. Oversized string fields are truncated to 4 KB to keep
-the audit trail bounded.
+Every tool calls :func:`emit` to record a labelled event via
+``runtime.observability.emit_trace``. The emit path is best-effort: a
+sink outage or missing config never bubbles into the model loop.
+Oversized string fields are truncated to 4 KB to keep the audit trail
+bounded.
 """
 from __future__ import annotations
 

@@ -36,11 +36,6 @@ def test_tree_sitter_importable_and_api_compatible():
     import tree_sitter_java as j
     import tree_sitter_python as p
     from tree_sitter import Language
-    # single-arg Language(capsule) is the >=0.22 API the ingest code uses
+    # single-arg Language(capsule) is the >=0.22 API aider's RepoMap uses
     Language(j.language())
     Language(p.language())
-
-
-def test_treesitter_ingest_module_loads_and_reports_available():
-    from aiforge_core.indexing import treesitter_ingest as t
-    assert t.TREESITTER_AVAILABLE is True

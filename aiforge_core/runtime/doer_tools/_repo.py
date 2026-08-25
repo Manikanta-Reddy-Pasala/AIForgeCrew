@@ -120,11 +120,9 @@ def codegraph_query(query: str) -> dict:
 def impacted_tests(changed_files: str) -> dict:
     """Map changed files → the test files that likely cover them.
 
-    Walks the Neo4j File_v2/Symbol_v2 graph (MENTIONS/CALLS/IMPORTS) back
-    up to test files. Pass the result's ``pattern`` to ``run_tests`` /
-    ``pytest -k`` / ``mvn -Dtest=`` to run only the relevant slice
-    instead of the full suite. Soft-fails to an empty list (→ run all)
-    when the graph is unavailable.
+    The code-graph backend was removed (SQLite-only build), so this always
+    returns an empty list and the caller runs the full test suite. Kept as a
+    stable tool surface for when a code-graph backend returns.
 
     Args:
       changed_files: comma- or space-separated repo-relative paths you

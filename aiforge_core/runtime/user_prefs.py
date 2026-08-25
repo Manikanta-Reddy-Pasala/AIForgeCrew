@@ -1,12 +1,11 @@
 """Durable user-preference memory (frontier gap #9).
 
 A single GLOBAL self-editing block (repo ``_user``, label ``preferences``)
-that persists user preferences across every repo and ticket — distinct
-from the per-session rule_capture and the per-repo working_notes block.
-Recorded preferences are injected into the orchestrator/doer context so
-the agent honours "I always want X" without being re-told.
+that persists user preferences across every repo and ticket.
 
-Reuses AiForgeMemory ``features.memory.blocks``; neo4j-only, soft-fail.
+This was backed by the optional AiForgeMemory graph blocks store, which has
+been removed (SQLite-only build). The public surface is preserved as a
+soft no-op so callers that inject preferences degrade gracefully.
 """
 from __future__ import annotations
 
@@ -19,50 +18,22 @@ _LABEL = "preferences"
 
 
 def _driver():
-    try:
-        from .learner_persist import _open_driver
-        return _open_driver()
-    except Exception:  # noqa: BLE001
-        return None
+    """The preferences block backend was removed — always None."""
+    return None
 
 
 def get_preferences() -> str:
     """Current user-preference text, or '' (never raises)."""
-    drv = _driver()
-    if drv is None:
-        return ""
-    try:
-        from aiforge_memory.features.memory import blocks
-        return blocks.get_block(drv, repo=_REPO, label=_LABEL)
-    except Exception as exc:  # noqa: BLE001
-        log.debug("get_preferences failed: %s", exc)
-        return ""
-    finally:
-        try:
-            drv.close()
-        except Exception:  # noqa: BLE001
-            pass
+    return ""
 
 
 def record_preference(text: str) -> dict:
-    """Append a durable user preference (deduped). Soft-fail."""
+    """Append a durable user preference. The backend was removed, so this is
+    a soft no-op."""
     text = (text or "").strip()
     if not text:
         return {"ok": False, "error": "empty"}
-    drv = _driver()
-    if drv is None:
-        return {"ok": False, "error": "no neo4j driver"}
-    try:
-        from aiforge_memory.features.memory import blocks
-        r = blocks.append_block(drv, repo=_REPO, label=_LABEL, line=text)
-        return {"ok": True, "chars": r.get("chars", 0)}
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": str(exc)}
-    finally:
-        try:
-            drv.close()
-        except Exception:  # noqa: BLE001
-            pass
+    return {"ok": False, "error": "preferences backend removed"}
 
 
 def preferences_block() -> str:

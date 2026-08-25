@@ -12,13 +12,11 @@ def test_block_tool_needs_repo(monkeypatch):
     assert "repo" in r["error"]
 
 
-def test_block_tool_no_driver_embedded(monkeypatch):
+def test_block_tool_backend_removed(monkeypatch):
     monkeypatch.setenv("AIFORGE_AFM_REPO", "x")
-    import aiforge_core.runtime.learner_persist as lp
-    monkeypatch.setattr(lp, "_open_driver", lambda: None)
     r = mb.memory_block(action="read")
     assert r["ok"] is False
-    assert "driver" in r["error"]
+    assert "removed" in r["error"]
 
 
 def test_user_prefs_block_empty_when_no_driver(monkeypatch):

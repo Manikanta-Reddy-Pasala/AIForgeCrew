@@ -1,11 +1,11 @@
 """Markdown-file memory: human-readable notes on the filesystem that are
 ALSO ingested into the searchable memory backend and shown in the UI.
 
-Why: the app's knowledge memory (SQLite/Neo4j) is opaque — you can't `cat`
+Why: the app's knowledge memory (SQLite) is opaque — you can't `cat`
 it or diff it in git. This keeps a plain ``.md`` file per memory under a
 directory (``AIFORGE_MEMORY_MD_DIR``, default ``~/.aiforge/memory``) as the
-human-facing source of truth, and mirrors each into the memory backend
-(via the embedded SQLite store or AFM/Neo4j) so search + stats + the
+human-facing source of truth, and mirrors each into the embedded SQLite
+memory store so search + stats + the
 Memory tab pick it up. Drop a ``.md`` file in the dir by hand and call
 :func:`ingest_dir` to pull it in.
 

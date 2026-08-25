@@ -2,9 +2,8 @@
 
 Stores memory units (the agent's learnings, failures, self-writes) in
 ``~/.aiforge/memory.db`` with an offline hash embedding, and recalls by
-brute-force cosine. Used when ``backend_select.embedded()`` is True
-(no Neo4j / Postgres configured). Quality is lexical, not semantic —
-the "pro" Neo4j/bge-m3 path supersedes it when its env vars are set.
+brute-force cosine. This is the memory backend (``backend_select.embedded()``
+is True). Quality is lexical, not semantic.
 
 Public surface:
     write_unit(*, text, kind, ...) -> int        # 0 when skipped (dup/empty)

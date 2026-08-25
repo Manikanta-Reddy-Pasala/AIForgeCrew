@@ -72,7 +72,6 @@ from aiforge_core.api.routes import repos as _r_repos  # noqa: E402
 from aiforge_core.api.routes import library as _r_library  # noqa: E402
 from aiforge_core.api.routes import rules as _r_rules  # noqa: E402
 from aiforge_core.api.routes import mcp as _r_mcp  # noqa: E402
-from aiforge_core.api.routes.mcp import _MCP_ALLOWED_TOOLS  # noqa: E402 — used by _call_mcp_sync (moved with the mcp routes)
 from aiforge_core.api.routes import integrations as _r_integrations  # noqa: E402
 from aiforge_core.api.routes import memory as _r_memory  # noqa: E402
 from aiforge_core.api.routes import agents as _r_agents  # noqa: E402
@@ -270,11 +269,10 @@ def _reassign_agents_on_boot() -> None:
 @app.on_event("startup")
 def _run_memory_migrations() -> None:
     """Auto-upgrade EVERY deployment's memory into the current scoped-OKR shape:
-    legacy brief format → OKR envelope, compacted briefs → OKR learnings, old
-    Neo4j Observation/Decision nodes → md captures, then flat okr/ → global/ +
-    projects/<repo>/. Idempotent (one-shot steps are marker-guarded); never
-    blocks startup. This is the migration path new/upgrading users get for free
-    on ``run.sh`` (which boots this API)."""
+    legacy brief format → OKR envelope, compacted briefs → OKR learnings, then
+    flat okr/ → global/ + projects/<repo>/. Idempotent (one-shot steps are
+    marker-guarded); never blocks startup. This is the migration path
+    new/upgrading users get for free on ``run.sh`` (which boots this API)."""
     def _run():
         try:
             from aiforge_core.memory import migrations
@@ -482,26 +480,10 @@ def _compact_chat_md() -> bool:
         return False
 
 
-def _graph_maintain() -> None:
-    """Daily GRAPH MAINTENANCE (Neo4j only) — AFM decay + per-repo
-    digest/dedupe; no-op on the embedded backend. Best-effort."""
-    try:
-        from aiforge_core.memory import backend_select
-        if backend_select.memory_backend() != "neo4j":
-            return
-        import argparse
-
-        from aiforge_memory.api.commands import maintain as _mt
-        _mt.run(argparse.Namespace())
-        _af_log.info("graph maintenance ran")
-    except Exception as exc:  # noqa: BLE001
-        _af_log.debug("graph maintenance skipped/failed: %s", exc)
-
-
 def _dedupe_memory() -> None:
     """Daily SEMANTIC DEDUP of the embedded memory store — write_unit only
     dedups exact (repo,text); paraphrases pile up. Collapses near-duplicates on
-    the stored vectors (no sidecar). Neo4j has its own write-time dedupe."""
+    the stored vectors (no sidecar)."""
     try:
         from aiforge_core.memory import backend_select
         if backend_select.memory_backend() != "sqlite":
@@ -624,8 +606,6 @@ def _register_hourly_jobs(_pd, hour: int) -> None:
     # so an idle tick is a near-instant no-op; only a CHANGED repo pays.
     every_h = _int_env_or("AIFORGE_REINDEX_EVERY_H", 3)
     _pd.register("reindex", _r_memory._spawn_reindex_all, every_s=every_h * 3600)
-    _pd.register("graph-maintain", _graph_maintain,
-                 at_hour=max(0, min(23, hour + 2)))
     _pd.register("memory-dedup", _dedupe_memory,
                  at_hour=max(0, min(23, hour + 3)))
 
@@ -945,8 +925,8 @@ def _enforce_bind_security() -> None:
 @app.on_event("startup")
 def _warn_default_db_creds() -> None:
     """Soft, never-fatal: if the API is bound to a NON-loopback host but the
-    Postgres / Neo4j passwords are still the compose defaults, log a loud
-    warning. Doesn't hard-fail (could break a user's current run)."""
+    Postgres password is still the compose default, log a loud warning.
+    Doesn't hard-fail (could break a user's current run)."""
     try:
         if _is_loopback_host(_bind_host()):
             return
@@ -954,10 +934,6 @@ def _warn_default_db_creds() -> None:
         dsn = os.environ.get("AIFORGE_DSN", "") + os.environ.get("AIFORGE_PG_URL", "")
         if ":aiforgepass@" in dsn or os.environ.get("PG_PASSWORD", "") == "aiforgepass":
             weak.append("Postgres")
-        neo_pw = os.environ.get("AIFORGE_NEO4J_PASSWORD") or os.environ.get(
-            "NEO4J_PASSWORD", "")
-        if neo_pw == "password" or os.environ.get("NEO4J_AUTH", "") == "neo4j/password":
-            weak.append("Neo4j")
         if weak:
             _af_log.warning(
                 "SECURITY: bound to non-loopback host %s with DEFAULT %s "
@@ -1164,43 +1140,6 @@ _REPO_RE = re.compile(r"\b(Pos[A-Z][A-Za-z]+|oneshell-[a-z-]+|MongoDbService|"
                       r"EmailService|NotificationService|Gst[A-Z][A-Za-z]*|"
                       r"VendorIntegrationService|WhatsappApiService|"
                       r"Scheduler|QuartzScheduler|StoreIntelligence)\b")
-
-
-def _call_mcp_sync(tool: str, args: dict, timeout: int = 15) -> dict | None:
-    """Synchronous one-shot MCP invocation from inside a sync handler."""
-    if tool not in _MCP_ALLOWED_TOOLS:
-        return None
-    import subprocess
-    cmd = [os.environ.get(
-        "AIFORGE_MCP_BIN",
-        "aiforge-graph-mcp",
-    )]
-    payload = "\n".join(json.dumps(m) for m in [
-        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
-         "params": {"protocolVersion": "2024-11-05",
-                    "capabilities": {"tools": {}},
-                    "clientInfo": {"name": "aiforge-ui", "version": "0.1"}}},
-        {"jsonrpc": "2.0", "method": "notifications/initialized"},
-        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-         "params": {"name": tool, "arguments": args}},
-    ]) + "\n"
-    try:
-        proc = subprocess.run(
-            cmd, input=payload.encode(), capture_output=True,
-            timeout=timeout, check=False,
-        )
-    except Exception:
-        return None
-    for line in (proc.stdout or b"").splitlines():
-        try:
-            msg = json.loads(line)
-        except Exception:
-            continue
-        if isinstance(msg, dict) and msg.get("id") == 2:
-            if "error" in msg:
-                return None
-            return msg.get("result") or {}
-    return None
 
 
 _NORMALIZE_SYSTEM = """You are a query normalizer. The user will send one

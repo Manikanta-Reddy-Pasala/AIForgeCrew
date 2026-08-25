@@ -7,7 +7,6 @@ and exposes :func:`main`, the single-shot systemd entrypoint.
 """
 from __future__ import annotations
 
-import contextlib
 import asyncio
 import os
 import time
@@ -207,35 +206,14 @@ def _external_refs(ticket) -> list[str]:
     return [r for r in refs if isinstance(r, str) and r.strip()]
 
 
-def _neo4j_driver():
-    """A Neo4j driver, or None when the package or the server is unavailable."""
-    try:
-        from neo4j import GraphDatabase
-    except ImportError:
-        return None
-    uri = os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687")
-    user = os.environ.get("AIFORGE_NEO4J_USER", "neo4j")
-    pw = os.environ.get("AIFORGE_NEO4J_PASSWORD",
-                        os.environ.get("NEO4J_PASSWORD", "password"))
-    try:
-        return GraphDatabase.driver(uri, auth=(user, pw))
-    except Exception as exc:  # noqa: BLE001
-        log.debug("external_ingest driver fail: %s", exc)
-        return None
-
-
 def _ingest_ticket_external_refs(ticket) -> None:
-    """Gap-9 wire-in: feed ``ticket.metadata.external_refs`` (a list
-    of URLs / paths) through :func:`ingest_external_source` so the
-    Doer's memory_block sees their content.
+    """Gap-9 wire-in: feed ``ticket.metadata.external_refs`` (a list of URLs /
+    paths) into memory so the Doer sees their content.
 
-    Each ref ingests as one ``Doc_v2`` + chunked ``Note_v2`` keyed on
-    the ref URI. AFM dedupes by URI at the Doc level (second ingest of
-    the same URL re-uses the node), so the cost of re-ingesting is
-    bounded.
+    The graph-backed external-ingest store was removed (SQLite-only build), so
+    this is now a soft no-op. The egress gate is kept intact.
 
-    Disable with ``AIFORGE_EXTERNAL_INGEST=0``. Soft-fail on any
-    backend error.
+    Disable with ``AIFORGE_EXTERNAL_INGEST=0``.
     """
     # The egress gate stays HERE, at the call site that reaches the network —
     # tests/python/runtime/test_web_egress_gated.py reads this function's source
@@ -245,31 +223,8 @@ def _ingest_ticket_external_refs(ticket) -> None:
     refs = _external_refs(ticket)
     if not refs:
         return
-    try:
-        from aiforge_memory.features.external_ingest import (
-            ingest_external_source,
-        )
-    except ImportError:
-        return
-    drv = _neo4j_driver()
-    if drv is None:
-        return
-    md = ticket.metadata or {}
-    try:
-        for src in refs[:5]:  # cap fan-out per ticket
-            try:
-                out = ingest_external_source(
-                    drv, source=src, repo=ticket.project,
-                    source_type=md.get("external_refs_type", "external"),
-                    tags=[f"ticket:{ticket.identifier}"])
-                log.info("external_ingest ticket=%s src=%s ok=%s notes=%d",
-                         ticket.identifier, src, out.get("ok"),
-                         len(out.get("note_ids") or []))
-            except Exception as exc:  # noqa: BLE001
-                log.debug("external_ingest failed for %s: %s", src, exc)
-    finally:
-        with contextlib.suppress(Exception):
-            drv.close()
+    # External-ref ingestion backend removed — nothing to persist to.
+    return
 
 
 class _Verdict:

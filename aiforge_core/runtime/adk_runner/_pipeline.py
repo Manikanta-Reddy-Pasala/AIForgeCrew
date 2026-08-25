@@ -503,12 +503,8 @@ def _toolchain_md() -> str:
 
 def _user_prefs_md() -> str:
     """Durable user preferences (gap #9) — global, cross-repo, so the agent
-    honours "I always want X" without being re-told.
-
-    BOTH stores are merged: the Neo4j preferences block (pro backend) AND the
-    embedded sqlite ``pref:`` units chat_capture writes — else a preference set
-    in chat on the embedded backend never reached the doer (it writes sqlite,
-    this read only Neo4j).
+    honours "I always want X" without being re-told. Sourced from the embedded
+    sqlite ``pref:`` units chat_capture writes.
     """
     parts = []
     try:

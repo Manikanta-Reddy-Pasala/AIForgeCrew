@@ -184,12 +184,6 @@ export const api = {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ confirm: true }),
     }),
-  mcpTool:  (tool: string, args: Record<string, any> = {}) =>
-    j<any>('/mcp/tool', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tool, args }),
-    }),
   chatRetain: (p: {
     query: string; answer: string; worked: boolean;
     topic?: string; hit_refs?: string[];

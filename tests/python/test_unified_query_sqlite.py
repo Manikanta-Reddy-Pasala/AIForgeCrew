@@ -33,15 +33,6 @@ def test_embedded_recall_surfaces_in_unified_query(env, monkeypatch):
     assert any("lambda" in (h.get("text") or "") for h in res["hits"])
 
 
-def test_no_recall_when_not_embedded(env, monkeypatch):
-    sm, uq = env
-    monkeypatch.setattr(uq, "_mcp_call", lambda *a, **k: None, raising=False)
-    sm.write_unit(text="present but should be invisible", repo="demo")
-    # Flip to a non-embedded backend; the sqlite source must go dark.
-    monkeypatch.setenv("NEO4J_URI", "bolt://unreachable:7687")
-    import aiforge_core.memory.backend_select as bs
-    importlib.reload(bs)
-    importlib.reload(uq)
-    monkeypatch.setattr(uq, "_mcp_call", lambda *a, **k: None, raising=False)
-    res = uq.query("present invisible", repo="demo", limit=5)
-    assert "memory" not in res["used_sources"]
+# (Removed test_no_recall_when_not_embedded: NEO4J_URI no longer flips the
+# memory backend — this is a SQLite-only build, so the embedded recall is
+# always active.)

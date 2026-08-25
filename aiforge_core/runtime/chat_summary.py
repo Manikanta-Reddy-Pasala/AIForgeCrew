@@ -11,10 +11,9 @@ persists it to BOTH:
   * an md file — via :func:`aiforge_core.memory.md_store.upsert_section`, keyed
     by ``source=chat-session:<id>`` so one stable, human-browsable file per
     session is refreshed (not duplicated) as the chat grows; and
-  * the configured memory backend — via
-    :func:`aiforge_core.runtime.tools.memory_write.memory_write`, which routes
-    to Neo4j when configured (the GRAPH) and no-ops to SQLite otherwise, so
-    cross-session recall becomes graph-powered.
+  * the embedded SQLite memory store — via
+    :func:`aiforge_core.runtime.tools.memory_write.memory_write`, so
+    cross-session recall works.
 
 Lean + local: ONE cheap LLM call, a capped transcript and capped output,
 boundary-gated by the caller (every N turns, not every turn). Soft-fail

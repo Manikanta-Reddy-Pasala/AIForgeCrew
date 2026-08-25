@@ -1,12 +1,7 @@
-"""MCP marketplace/installer + graph_rag MCP tool-call routes.
+"""MCP marketplace/installer routes.
 Extracted from api.py (behavior-preserving) — was split across two locations.
 """
 from __future__ import annotations
-
-import asyncio
-import json
-import os
-from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -28,11 +23,6 @@ class _McpUpdateBody(BaseModel):
     description: str | None = None
     enabled: bool | None = None
     api_key: str | None = None
-
-
-def _default_dsn() -> str:
-    from aiforge_core.config.env import default_pg_dsn
-    return default_pg_dsn()
 
 
 @router.get("/api/mcp/catalog")
@@ -87,108 +77,6 @@ def mcp_server_test(server_id: str) -> dict:
         raise HTTPException(404, f"unknown MCP server: {server_id}")
     name = row.get("name") or row.get("id")
     return mcp_client.list_tools(name)
-
-
-# ─────────────────────── graph_rag MCP tool call ───────────────────────────
-_MCP_ALLOWED_TOOLS = {
-    "sym_lookup", "list_repos", "list_services", "list_endpoints",
-    "list_integrations", "graph_neighborhood", "caller_chain",
-    "callee_chain", "read_source", "impact", "cross_repo_flow",
-    "data_lineage", "build_plan", "test_plan", "kube_status",
-    "kube_describe", "kube_image_tag", "kube_config", "find_doc",
-    "related_memories", "ticket_fetch", "ticket_brief",
-}
-
-
-class _McpCallBody(BaseModel):
-    tool: str = Field(..., description="Tool name from graph_rag MCP allowlist")
-    args: dict[str, Any] = Field(default_factory=dict)
-
-
-@router.post("/api/mcp/tool", responses={400: {"description": "Bad request"}, 500: {"description": "Server error"}, 504: {"description": "Error"}})
-async def mcp_tool_call(body: _McpCallBody) -> dict:
-    if body.tool not in _MCP_ALLOWED_TOOLS:
-        raise HTTPException(400, f"tool '{body.tool}' not in allowlist")
-    cmd = [
-        os.environ.get("AIFORGE_MCP_BIN",
-                       "aiforge-graph-mcp"),
-    ]
-    env = {
-        **os.environ,
-        "AIFORGE_NEO4J_URI": os.environ.get(
-            "AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687"),
-        "AIFORGE_NEO4J_USER": os.environ.get("AIFORGE_NEO4J_USER", "neo4j"),
-        "AIFORGE_NEO4J_PASSWORD": os.environ.get(
-            "AIFORGE_NEO4J_PASSWORD", "password"),
-        # graph_rag/cypher_lib reads NEO4J_URI / NEO4J_USER / NEO4J_PASS
-        # (no AIFORGE_ prefix); mirror so the subprocess can connect.
-        "NEO4J_URI": os.environ.get(
-            "AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687"),
-        "NEO4J_USER": os.environ.get("AIFORGE_NEO4J_USER", "neo4j"),
-        "NEO4J_PASS": os.environ.get(
-            "AIFORGE_NEO4J_PASSWORD", "password"),
-        # Embed sidecar — graph_mcp defaults to :1235/v1 (planner LLM
-        # port) which 404s. Force the real sidecar URL for this run.
-        "EMBED_URL": os.environ.get(
-            "EMBED_URL", "http://127.0.0.1:8764"),
-        # No baked-in credential: see config.env.default_pg_dsn. The literal
-        # this replaced shipped a working password in source control.
-        "AIFORGE_DSN": os.environ.get("AIFORGE_DSN") or _default_dsn(),
-    }
-
-    # JSON-RPC dance: initialize → tools/call → shutdown.
-    init_req = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                "params": {"protocolVersion": "2024-11-05",
-                           "capabilities": {"tools": {}},
-                           "clientInfo": {"name": "aiforge-ui",
-                                          "version": "0.1"}}}
-    init_notify = {"jsonrpc": "2.0", "method": "notifications/initialized"}
-    tool_req = {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                "params": {"name": body.tool, "arguments": body.args}}
-    payload = (
-        json.dumps(init_req) + "\n" +
-        json.dumps(init_notify) + "\n" +
-        json.dumps(tool_req) + "\n"
-    )
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, env=env,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        out, err = await asyncio.wait_for(
-            proc.communicate(payload.encode()), timeout=30,
-        )
-    except TimeoutError:
-        try:
-            proc.kill()
-            await proc.wait()   # reap — don't leak a zombie
-        except Exception: pass
-        raise HTTPException(504, "MCP server timed out")
-    except FileNotFoundError:
-        # No MCP server binary installed (operator reset 2026-06-26). Fail
-        # soft so the UI shows a clean empty state instead of a 500.
-        return {"ok": False, "error": "MCP not configured",
-                "detail": f"binary not found: {cmd[0]}"}
-
-    # Scan stdout line by line for the JSON-RPC response to id=2.
-    result: dict | None = None
-    for line in out.splitlines():
-        try:
-            msg = json.loads(line)
-        except Exception:
-            continue
-        if isinstance(msg, dict) and msg.get("id") == 2:
-            result = msg
-            break
-    if result is None:
-        raise HTTPException(
-            500, f"MCP call produced no response. stderr={err[:400]!r}",
-        )
-    if "error" in result:
-        raise HTTPException(400, f"MCP error: {result['error']}")
-    return {"tool": body.tool, "result": result.get("result")}
 
 
 __all__ = ["router"]

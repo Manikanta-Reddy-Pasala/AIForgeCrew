@@ -14,8 +14,7 @@ preference piled up contradictions. This module closes both:
      repo-agnostic (GLOBAL) — so a restatement replaces the old value and the
      preference applies across every repo.
 
-Best-effort: never raises into the chat path. Embedded (SQLite) backend only —
-the Neo4j path already has semantic dedupe.
+Best-effort: never raises into the chat path. Embedded (SQLite) backend only.
 """
 from __future__ import annotations
 
@@ -78,14 +77,6 @@ def capture(prompt: str, *, repo: str | None = None,
     p = (prompt or "").strip()
     if len(p) < 4 or not _has_cue(p):
         return {"ok": False, "skipped": "no-gate"}
-    # Embedded backend only; the pro path dedupes separately.
-    try:
-        from aiforge_core.memory import backend_select as _bsel
-        if not _bsel.embedded():
-            return {"ok": False, "skipped": "not-embedded"}
-    except Exception:  # noqa: BLE001
-        return {"ok": False, "skipped": "backend-unknown"}
-
     subjects = _existing_subjects(None)
     try:
         from aiforge_core.llm import client as _llm

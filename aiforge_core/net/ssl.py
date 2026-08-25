@@ -3,8 +3,8 @@
 AIForge talks to a fleet of self-hosted services over plain HTTP or, when
 the operator fronts them with TLS, over HTTPS with an internal or
 self-signed certificate: the OpenAI-compatible model endpoint, the
-embed / rerank sidecars, the memory / neo4j-http service, the MCP
-servers, the local liveness probes and AIForge's own REST API. The
+embed / rerank sidecars, the memory service, the MCP servers, the
+local liveness probes and AIForge's own REST API. The
 stdlib ``urllib.request.urlopen`` default verifies against the system
 trust store, so such an endpoint fails with
 ``CERTIFICATE_VERIFY_FAILED``.
@@ -118,7 +118,6 @@ _SERVICE_URL_KEYS = (
     "AIFORGE_LM_BASE_URL", "AIFORGE_OPENAI_COMPAT_BASE_URL",
     "AIFORGE_EMBED_URL", "AIFORGE_RERANK_URL",
     "AIFORGE_API_BASE", "AIFORGE_MEMORY_URL",
-    "NEO4J_HTTP_URL", "NEO4J_URI",
 )
 
 
@@ -145,7 +144,7 @@ def _agent_config_hosts(add) -> None:
 def _configured_service_hosts() -> set[str]:
     """Hosts of the explicitly-configured AIForge service base-URLs.
 
-    Covers the model endpoint(s), embed/rerank sidecars, memory/neo4j http, MCP
+    Covers the model endpoint(s), embed/rerank sidecars, memory http, MCP
     servers and AIForge's own API. Anything an operator points a base-url env var
     at counts as a host they control, so a custom DNS name (not just a private
     IP) for the self-hosted box is trusted.

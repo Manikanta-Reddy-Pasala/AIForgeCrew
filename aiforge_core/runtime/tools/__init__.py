@@ -5,7 +5,7 @@ Sub-modules:
 * :mod:`editor`      — multi-command file editor (view/create/str_replace/insert/undo_edit)
 * :mod:`bash`        — tmux-backed persistent shell session
 * :mod:`cognition`   — think + finish
-* :mod:`_trace`      — shared Neo4j event emitter
+* :mod:`_trace`      — shared trace-event emitter
 
 Sibling tool modules NEVER import each other — keeps responsibilities clean and
 unit tests cheap. The ADK :class:`FunctionTool` factory lives below.

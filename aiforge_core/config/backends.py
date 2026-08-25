@@ -3,7 +3,7 @@
 Four data stores back the running system:
 
   * tickets  -> Postgres when ``AIFORGE_PG_URL`` is set, else SQLite
-  * memory   -> neo4j / postgres / sqlite (see ``memory.backend_select``)
+  * memory   -> postgres / sqlite (see ``memory.backend_select``)
   * chat     -> Postgres when ``AIFORGE_PG_URL`` is set, else SQLite
   * jobs     -> Postgres when ``AIFORGE_PG_URL`` is set, else SQLite
 
@@ -11,7 +11,7 @@ In the zero-infra / ``--lite`` deploy every store is embedded SQLite and that
 is fine. In the docker / hybrid ("data-driven") deploy the run script exports
 ``AIFORGE_REQUIRE_DATA_BACKEND=1``; if ANY store then still resolves to an
 embedded SQLite backend we abort boot LOUDLY rather than silently scribbling
-``.db`` files next to a real Postgres+Neo4j stack.
+``.db`` files next to a real Postgres stack.
 
 ``boot_log()`` is soft (a logging failure must never crash boot).
 ``require_data_backends()`` is intentionally hard-fail.
@@ -95,9 +95,9 @@ def require_data_backends() -> None:
     if not weak:
         return
     raise RuntimeError(
-        "data-driven mode requires Postgres+Neo4j but these stores are still "
-        f"embedded SQLite: {', '.join(weak)}. Set AIFORGE_PG_URL and "
-        "AIFORGE_MEMORY_BACKEND=neo4j, or use ./run.sh --lite. "
+        "data-driven mode requires Postgres but these stores are still "
+        f"embedded SQLite: {', '.join(weak)}. Set AIFORGE_PG_URL, or use "
+        "./run.sh --lite. "
         f"(resolved: tickets={b['tickets']} memory={b['memory']} "
         f"chat={b['chat']} jobs={b['jobs']})"
     )

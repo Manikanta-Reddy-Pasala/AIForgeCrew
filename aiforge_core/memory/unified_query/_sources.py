@@ -1,11 +1,9 @@
-"""The individual memory sources unified_query fans out to: ticket brief
-(local Postgres + graph_mcp), generic MCP calls, external docs lookup, the
-global Neo4j vector/fulltext recall, the AiForgeMemory ContextBundle, prior
-chat sessions, and cross-repo CALLS_REPO edges. All lazy-import their
-backends and soft-fail; no cross-group imports so no import cycles."""
+"""The individual memory sources unified_query fans out to: ticket brief,
+generic MCP calls, external docs lookup, the AiForgeMemory ContextBundle,
+prior chat sessions, and cross-repo links. All lazy-import their backends
+and soft-fail; no cross-group imports so no import cycles."""
 from __future__ import annotations
 
-import contextlib
 import os
 from typing import Any
 
@@ -136,99 +134,13 @@ def _unpack_mcp_rows(raw: Any) -> list[dict]:
     return [{"text": str(data)[:1500], "score": 0.5}]
 
 
-_OBS_VECTOR_Q = (
-    "CALL db.index.vector.queryNodes('codemem_observation_embed', $k, $v) "
-    "YIELD node, score "
-    "RETURN node.id AS id, node.text AS text, node.kind AS kind, "
-    "node.repo AS repo, score AS score")
-
-_OBS_FULLTEXT_Q = (
-    "CALL db.index.fulltext.queryNodes('codemem_observation_ft', $q) "
-    "YIELD node, score "
-    "RETURN node.id AS id, node.text AS text, node.kind AS kind, "
-    "node.repo AS repo, score AS score LIMIT $k")
-
-
-def _repo_filter(repo: str | None):
-    """Scoped recall unions the scoped key (a ticket/page/repo) AND GLOBAL
-    (repo-less) memory — so a ticket chat surfaces BOTH that ticket's own facts
-    and cross-ticket/global knowledge. Only OTHER repos' facts are excluded.
-    (Mirrors the direct recall's "repo = ? OR repo IS NULL".)"""
-    from aiforge_core.runtime.repo_ident import normalize_repo as _nr
-    want = _nr(repo) if repo else None
-
-    def _ok(rrepo) -> bool:
-        if want is None:
-            return True
-        rn = _nr(rrepo or "")
-        return rn in (want, "")
-    return _ok, want
-
-
-def _absorb_obs_rows(records, rows: list, seen: set, ok, cap: int) -> None:
-    for r in records:
-        if len(rows) >= cap:
-            return
-        rid = r.get("id")
-        if rid and rid not in seen and r.get("text") and ok(r.get("repo")):
-            seen.add(rid)
-            rows.append({"text": r["text"],
-                         "score": float(r.get("score") or 0.5),
-                         "kind": r.get("kind"), "repo": r.get("repo")})
-
-
-def _obs_vector_rows(s, text: str, k: int, rows: list, seen: set, ok,
-                     limit: int) -> None:
-    try:
-        from aiforge_core.memory.embed import embed as _embed
-        qv = _embed(text)
-    except Exception:  # noqa: BLE001 — embed sidecar down → FT only
-        return
-    if qv:
-        _absorb_obs_rows(s.run(_OBS_VECTOR_Q, k=k, v=qv).data(),
-                         rows, seen, ok, limit)
-
-
-def _obs_fulltext_rows(s, text: str, k: int, rows: list, seen: set, ok,
-                       limit: int) -> None:
-    """Lexical union (catches exact tokens a paraphrased vector misses)."""
-    try:
-        _absorb_obs_rows(s.run(_OBS_FULLTEXT_Q, q=text, k=k).data(),
-                         rows, seen, ok, limit * 2)
-    except Exception:  # noqa: BLE001 — FT query syntax on odd input
-        pass
-
-
 def _global_vector_recall(text: str, *, limit: int,
                           repo: str | None = None) -> list[dict]:
-    """Vector+fulltext recall over ``Observation_v2`` on Neo4j. When ``repo`` is
-    given, results are FILTERED to that repo (over-fetch, then keep only matching
-    — repo-scoped recall with NO cross-repo bleed); when None, repo-agnostic.
-
-    The AFM ContextBundle (source 7) only surfaces vector-recalled observations
-    when a ``repo`` is scoped. A GLOBAL memory search (the /api/memory/search UI,
-    ingested repos, cross-wing "search everything") passes no repo, so those
-    observations were invisible. This queries the ``codemem_observation_embed``
-    vector index directly (semantic) and unions the ``codemem_observation_ft``
-    fulltext index (lexical) across ALL repos. Soft-fail → []."""
-    from aiforge_core.runtime.memory_ingest import _neo4j_driver_or_none
-    drv = _neo4j_driver_or_none()
-    if drv is None:
-        return []
-    ok, want = _repo_filter(repo)
-    # Over-fetch when scoping so the repo's hits survive the top-k cut even if
-    # other repos dominate the raw nearest-neighbours.
-    k = min(limit * 6, 60) if want else min(limit, 20)
-    rows: list[dict] = []
-    seen: set[str] = set()
-    try:
-        with drv.session() as s:
-            _obs_vector_rows(s, text, k, rows, seen, ok, limit)
-            _obs_fulltext_rows(s, text, k, rows, seen, ok, limit)
-    finally:
-        with contextlib.suppress(Exception):
-            drv.close()
-    return rows
+    """Global observation recall — was backed by an optional graph vector
+    index that has been removed (SQLite-only build). The embedded SQLite
+    vector recall (source 1) now owns semantic recall, so this is a no-op
+    that returns []."""
+    return []
 
 
 def _bundle_object(text: str, repo: str, role: str | None):
