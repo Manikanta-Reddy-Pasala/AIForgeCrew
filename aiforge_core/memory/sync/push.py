@@ -49,6 +49,57 @@ def _mine(entries: list[dict]) -> list[dict]:
             and paths.fold(str(e.get("origin") or "")) == me]
 
 
+# The bytes could not be produced. REJECT — the file is gone or unreadable, so
+# it owes the counter a rejection. SKIP — it was edited inside the round trip;
+# the next cycle offers the new bytes under their own hash, so it is neither a
+# send nor a failure (exactly the original's uncounted `continue`).
+_REJECT, _SKIP = object(), object()
+
+
+def _read_verified_body(entry: dict, root, _io):
+    """The bytes to push for one offered entry, or the ``_REJECT`` / ``_SKIP``
+    sentinel when there are none.
+
+    Re-read rather than cached: the manifest was built before the offer round
+    trip, and a file edited inside that window must not be sent under its old
+    hash — the admin verifies the two against each other and would refuse it
+    every cycle.
+    """
+    path = root / str(entry.get("path") or "")
+    try:
+        body = path.read_bytes() if _io.is_syncable(path) else None
+    except OSError:
+        body = None
+    if body is None:
+        return _REJECT
+    if _io.sha256_bytes(body) != str(entry.get("hash") or "").lower():
+        _log.info("sync: %s changed during the cycle — offering it again "
+                  "next time", entry.get("path"))
+        return _SKIP
+    return body
+
+
+def _push_wanted(base_url: str, want: list, result: dict, deadline,
+                 root, _io, transport) -> None:
+    """Push each wanted entry, honouring the cycle budget. The budget stops the
+    loop part-way and the rest are re-offered next cycle."""
+    import time
+    for entry in want:
+        if deadline is not None and time.monotonic() >= deadline:
+            _log.warning("sync: cycle budget spent part-way through the push "
+                         "— %d entry(ies) left for the next cycle",
+                         len(want) - result["pushed"] - result["rejected"])
+            return
+        body = _read_verified_body(entry, root, _io)
+        if body is _SKIP:
+            continue
+        if body is _REJECT:
+            result["rejected"] += 1
+            continue
+        ok = transport.push_blob(base_url, entry, body)
+        result["pushed" if ok else "rejected"] += 1
+
+
 def run_once(base_url: str, deadline: float | None = None) -> dict:
     """Offer and push one cycle's worth. Never raises.
 
@@ -57,8 +108,6 @@ def run_once(base_url: str, deadline: float | None = None) -> dict:
     re-offered next cycle; the offer is computed fresh each time, so nothing has
     to be remembered between cycles.
     """
-    import time
-
     from aiforge_core.memory.sync import _io, manifest, transport
 
     result = {"ok": False, "offered": 0, "pushed": 0, "rejected": 0}
@@ -69,34 +118,8 @@ def run_once(base_url: str, deadline: float | None = None) -> dict:
         if want is None:
             return result          # admin unreachable: nothing sent, no error
         result["ok"] = True
-        root = _io.root()
-        for entry in want:
-            if deadline is not None and time.monotonic() >= deadline:
-                _log.warning("sync: cycle budget spent part-way through the push "
-                             "— %d entry(ies) left for the next cycle",
-                             len(want) - result["pushed"] - result["rejected"])
-                break
-            path = root / str(entry.get("path") or "")
-            try:
-                # Re-read rather than cached: the manifest was built before the
-                # offer round trip, and a file edited inside that window must
-                # not be sent under its old hash — the admin verifies the two
-                # against each other and would refuse it every cycle.
-                body = path.read_bytes() if _io.is_syncable(path) else None
-            except OSError:
-                body = None
-            if body is None:
-                result["rejected"] += 1
-                continue
-            if _io.sha256_bytes(body) != str(entry.get("hash") or "").lower():
-                # Edited inside the round trip. Sending it would fail the
-                # admin's hash check; the next cycle offers the new bytes under
-                # their own hash, so this is a skip rather than a failure.
-                _log.info("sync: %s changed during the cycle — offering it again "
-                          "next time", entry.get("path"))
-                continue
-            ok = transport.push_blob(base_url, entry, body)
-            result["pushed" if ok else "rejected"] += 1
+        _push_wanted(base_url, want, result, deadline, _io.root(), _io,
+                     transport)
     except Exception as exc:  # noqa: BLE001 — an unreachable admin is not our death
         _log.warning("sync: push to %s failed mid-cycle: %s", base_url, exc)
     _log.info("sync: push offered=%d pushed=%d rejected=%d", result["offered"],

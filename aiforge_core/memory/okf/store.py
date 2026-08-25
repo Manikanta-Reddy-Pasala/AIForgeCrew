@@ -201,6 +201,37 @@ def save_node(node_type: str, node_id: str | None, meta: dict,
     return {"ok": True, "id": nid, "path": path, "scope": scope or "global"}
 
 
+def _index_by_scope(root: str) -> dict[str, list[tuple[str, str]]]:
+    """Group every node into ``{scope_label: [(bundle_rel_link, hook), …]}`` for
+    the navigation index. The hook is the node's title/description/first line."""
+    by_scope: dict[str, list[tuple[str, str]]] = {}
+    for d in load_all():
+        p = d.get("path", "")
+        rel = "/" + os.path.relpath(p, root).replace(os.sep, "/")
+        meta = d.get("meta") or {}
+        hook = (meta.get("title") or meta.get("description")
+                or (d.get("body") or "").strip().split("\n", 1)[0])[:80]
+        by_scope.setdefault(_scope_label_from_path(p), []).append((rel, hook))
+    return by_scope
+
+
+def _index_lines(by_scope: dict[str, list[tuple[str, str]]]) -> list[str]:
+    """Render the grouped index: ``## Global`` first, then one section per
+    project, each concept linked bundle-relative."""
+    order = ["Global"] + sorted(k for k in by_scope if k != "Global")
+    lines = ["# OKR Knowledge Bundle", ""]
+    for label in order:
+        items = by_scope.get(label)
+        if not items:
+            continue
+        lines.append(f"## {label}")
+        for rel, hook in sorted(items):
+            lines.append(f"- [{rel.rsplit('/', 1)[-1]}]({rel})"
+                         + (f" — {hook}" if hook else ""))
+        lines.append("")
+    return lines
+
+
 def _write_index() -> str:
     """(Re)generate the reserved OKF ``index.md`` at the bundle root — pure
     navigation, NO frontmatter (spec §3), GROUPED by scope: a ``## Global``
@@ -208,31 +239,14 @@ def _write_index() -> str:
     concepts with absolute bundle-relative links. Soft-fail (best-effort)."""
     try:
         root = okf_root()
-        by_scope: dict[str, list[tuple[str, str]]] = {}
-        for d in load_all():
-            p = d.get("path", "")
-            rel = "/" + os.path.relpath(p, root).replace(os.sep, "/")
-            meta = d.get("meta") or {}
-            hook = (meta.get("title") or meta.get("description")
-                    or (d.get("body") or "").strip().split("\n", 1)[0])[:80]
-            by_scope.setdefault(_scope_label_from_path(p), []).append((rel, hook))
-        order = ["Global"] + sorted(k for k in by_scope if k != "Global")
-        lines = ["# OKR Knowledge Bundle", ""]
-        for label in order:
-            items = by_scope.get(label)
-            if not items:
-                continue
-            lines.append(f"## {label}")
-            for rel, hook in sorted(items):
-                lines.append(f"- [{rel.rsplit('/', 1)[-1]}]({rel})"
-                             + (f" — {hook}" if hook else ""))
-            lines.append("")
+        lines = _index_lines(_index_by_scope(root))
         from aiforge_core.memory.sync import _io as _sync_io
 
         idx = os.path.join(root, "index.md")
         # Atomic: a reader never sees a half-written index, and two savers
         # racing here stage into separate temp files.
-        _sync_io.write_atomic(Path(idx), ("\n".join(lines).rstrip() + "\n").encode("utf-8"))
+        _sync_io.write_atomic(Path(idx),
+                              ("\n".join(lines).rstrip() + "\n").encode("utf-8"))
         return idx
     except Exception:  # noqa: BLE001 — index is navigation, never block a save
         return ""
@@ -315,43 +329,98 @@ def load_all(scope: str | None = None) -> list[dict]:
     return out
 
 
+def _scoped_dest(node_type: str, src: str, filename: str) -> str | None:
+    """Where a legacy flat node file belongs once scoped, or None to leave it
+    (unreadable, or already in place)."""
+    try:
+        with open(src, encoding="utf-8") as fh:
+            d = _n.parse_node(fh.read())
+    except OSError:
+        return None
+    dst = os.path.join(type_dir(node_type, _scope_of(node_type, d.get("meta") or {})),
+                       filename)
+    return None if os.path.abspath(src) == os.path.abspath(dst) else dst
+
+
+def _migrate_legacy_dir(node_type: str, legacy: str) -> int:
+    """Move every scoped-able node file out of one legacy flat dir; return how
+    many moved. The dir is removed when it ends up empty."""
+    import shutil
+    moved = 0
+    for f in list(os.listdir(legacy)):
+        if not f.endswith(".md"):
+            continue
+        src = os.path.join(legacy, f)
+        dst = _scoped_dest(node_type, src, f)
+        if dst is None:
+            continue
+        try:
+            shutil.move(src, dst)
+            moved += 1
+        except OSError:
+            continue
+    try:
+        if not os.listdir(legacy):
+            os.rmdir(legacy)
+    except OSError:
+        pass
+    return moved
+
+
 def migrate_scoped() -> dict:
     """One-shot: move legacy FLAT ``okf/<dir>/*.md`` nodes into their scoped home
     (global/ or projects/<workspace>/) by each node's derived scope. Idempotent
     (already-scoped nodes are untouched); empty legacy dirs are removed; the
     index is rebuilt. Soft-fail. Returns ``{ok, moved, scopes}``."""
-    import shutil
     root = okf_root()
     moved = 0
     for t in _n.NODE_TYPES:
         legacy = os.path.join(root, _DIR.get(t, "misc"))
-        if not os.path.isdir(legacy):
-            continue
-        for f in list(os.listdir(legacy)):
-            if not f.endswith(".md"):
-                continue
-            src = os.path.join(legacy, f)
-            try:
-                with open(src, encoding="utf-8") as fh:
-                    d = _n.parse_node(fh.read())
-            except OSError:
-                continue
-            dst = os.path.join(type_dir(t, _scope_of(t, d.get("meta") or {})), f)
-            if os.path.abspath(src) == os.path.abspath(dst):
-                continue
-            try:
-                shutil.move(src, dst)
-                moved += 1
-            except OSError:
-                continue
-        try:
-            if not os.listdir(legacy):
-                os.rmdir(legacy)
-        except OSError:
-            pass
+        if os.path.isdir(legacy):
+            moved += _migrate_legacy_dir(t, legacy)
     _invalidate()          # files moved on disk → drop stale parse cache
     _write_index()
     return {"ok": True, "moved": moved, "scopes": okr_scopes()}
+
+
+_SESSION_SCOPE_RE = re.compile(r"^session-\d+$")
+
+
+def _fold_session_nodes_to_global() -> int:
+    """Rewrite every node under a phantom ``session-<id>`` scope into GLOBAL
+    (fresh id, old file dropped); return how many moved."""
+    moved = 0
+    for d in list(load_all()):
+        if not _SESSION_SCOPE_RE.match(str(_scope_label_from_path(d.get("path", "")))):
+            continue
+        meta = dict(d.get("meta") or {})
+        meta.pop("workspace", None)
+        meta["scope"] = "global"
+        save_node(d.get("type"), None, meta, d.get("body") or "", reindex=False)
+        with contextlib.suppress(OSError):
+            os.unlink(d["path"])
+        moved += 1
+    return moved
+
+
+def _remove_empty_session_dirs() -> int:
+    """Delete ``projects/session-*/`` dirs that hold no ``.md`` files (dedupe
+    emptied them); return how many were removed."""
+    import shutil
+    pdir = os.path.join(okf_root(), "projects")
+    if not os.path.isdir(pdir):
+        return 0
+    dirs = 0
+    for n in list(os.listdir(pdir)):
+        if not _SESSION_SCOPE_RE.match(n):
+            continue
+        sub = os.path.join(pdir, n)
+        if any(f.endswith(".md") for _r, _ds, fs in os.walk(sub) for f in fs):
+            continue
+        with contextlib.suppress(OSError):
+            shutil.rmtree(sub)
+            dirs += 1
+    return dirs
 
 
 def fold_session_scopes_to_global() -> dict:
@@ -361,37 +430,12 @@ def fold_session_scopes_to_global() -> dict:
     scope into GLOBAL (fresh id, drop the old file), then dedupes the merged
     globals and removes the now-empty ``session-*`` project dirs. Idempotent;
     soft-fail. Returns ``{ok, moved, removed, dirs}``."""
-    import shutil
-    moved = 0
     try:
-        for d in list(load_all()):
-            label = str(_scope_label_from_path(d.get("path", "")))
-            if not re.match(r"^session-\d+$", label):
-                continue
-            meta = dict(d.get("meta") or {})
-            meta.pop("workspace", None)
-            meta["scope"] = "global"
-            save_node(d.get("type"), None, meta, d.get("body") or "",
-                      reindex=False)
-            with contextlib.suppress(OSError):
-                os.unlink(d["path"])
-            moved += 1
+        moved = _fold_session_nodes_to_global()
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": str(exc), "moved": moved}
+        return {"ok": False, "error": str(exc), "moved": 0}
     ded = dedupe_nodes()          # collapse the merged paraphrases in global
-    dirs = 0
-    pdir = os.path.join(okf_root(), "projects")
-    if os.path.isdir(pdir):
-        for n in list(os.listdir(pdir)):
-            if not re.match(r"^session-\d+$", n):
-                continue
-            sub = os.path.join(pdir, n)
-            # only remove once it holds no .md files (dedupe emptied it)
-            if not any(f.endswith(".md") for _r, _ds, fs in os.walk(sub)
-                       for f in fs):
-                with contextlib.suppress(OSError):
-                    shutil.rmtree(sub)
-                    dirs += 1
+    dirs = _remove_empty_session_dirs()
     if moved or dirs:
         _invalidate()
         _write_index()
@@ -414,6 +458,39 @@ def _concept_of(d: dict) -> str:
     return _norm_concept(d.get("body") or m.get("description") or m.get("title") or "")
 
 
+def _concept_threshold(threshold: float | None) -> float:
+    """The similarity cutoff — the caller's, else the env default, else 0.86."""
+    if threshold is not None:
+        return threshold
+    try:
+        return float(os.environ.get("AIFORGE_OKF_CONCEPT_SIMILARITY", "0.86"))
+    except (TypeError, ValueError):
+        return 0.86
+
+
+def _best_concept_match(node_type: str, want_scope: str, target: str,
+                        threshold: float) -> str | None:
+    """Scan same-type, same-scope nodes for a concept match. An EXACT normalized
+    hit wins immediately; otherwise the closest fuzzy match at or above
+    ``threshold``. None when nothing qualifies."""
+    import difflib
+    best: tuple[str, float] | None = None
+    for d in load_all():
+        if d.get("type") != node_type:
+            continue
+        if _scope_of(node_type, d.get("meta") or {}) != want_scope:
+            continue
+        cand = _concept_of(d)
+        if not cand:
+            continue
+        if cand == target:
+            return d.get("id")
+        r = difflib.SequenceMatcher(None, target, cand).ratio()
+        if r >= threshold and (best is None or r > best[1]):
+            best = (d.get("id"), r)
+    return best[0] if best else None
+
+
 def find_by_concept(node_type: str, meta: dict, concept_text: str,
                     *, threshold: float | None = None) -> str | None:
     """Return the id of an EXISTING node of the same ``node_type`` and the same
@@ -423,34 +500,32 @@ def find_by_concept(node_type: str, meta: dict, concept_text: str,
     types with no natural title key (learnings, key_results) still honour OKF
     'one concept = one file' (≤1 per scope → ≤2 total: global + project).
     ``None`` when no match. Soft-fail (returns None on any error)."""
-    if threshold is None:
-        try:
-            threshold = float(os.environ.get("AIFORGE_OKF_CONCEPT_SIMILARITY", "0.86"))
-        except (TypeError, ValueError):
-            threshold = 0.86
     target = _norm_concept(concept_text)
     if not target:
         return None
     try:
-        import difflib
-        want_scope = _scope_of(node_type, meta or {})
-        best: tuple[str, float] | None = None
-        for d in load_all():
-            if d.get("type") != node_type:
-                continue
-            if _scope_of(node_type, d.get("meta") or {}) != want_scope:
-                continue
-            cand = _concept_of(d)
-            if not cand:
-                continue
-            if cand == target:
-                return d.get("id")
-            r = difflib.SequenceMatcher(None, target, cand).ratio()
-            if r >= threshold and (best is None or r > best[1]):
-                best = (d.get("id"), r)
-        return best[0] if best else None
+        return _best_concept_match(node_type, _scope_of(node_type, meta or {}),
+                                   target, _concept_threshold(threshold))
     except Exception:  # noqa: BLE001 — lookup must never break a write
         return None
+
+
+def _is_concept_dup(key_text: str, prior: list[str], threshold: float) -> bool:
+    """True when ``key_text`` matches an already-kept concept — exactly, or
+    fuzzily at/above ``threshold``."""
+    import difflib
+    return key_text in prior or any(
+        difflib.SequenceMatcher(None, key_text, p).ratio() >= threshold
+        for p in prior)
+
+
+def _tombstone_loser(d: dict, _tomb) -> None:
+    """Mark a deleted duplicate deleted TO THE MESH — an unlink alone is undone
+    by the next pull from any peer still holding it. Only the loser: the
+    survivor keeps its identity, and ``mark_deleted`` refuses anything this
+    machine did not mint."""
+    m = d.get("meta") or {}
+    _tomb.mark_deleted(m.get("origin"), d.get("id"), m.get("rev"))
 
 
 def dedupe_nodes() -> dict:
@@ -465,15 +540,9 @@ def dedupe_nodes() -> dict:
     this machine minted — ``tombstone.mark_deleted`` refuses another origin — so
     there is nothing here for the admin to arbitrate. The cross-machine merge is
     the separate, admin-only step (``okf.tiers.distil_mesh``)."""
-    import difflib
-    import os
-
     from aiforge_core.memory.sync import tombstone as _tomb  # lazy: heavy package
 
-    try:
-        threshold = float(os.environ.get("AIFORGE_OKF_CONCEPT_SIMILARITY", "0.86"))
-    except (TypeError, ValueError):
-        threshold = 0.86
+    threshold = _concept_threshold(None)
     # bucket kept concepts by (type, scope) so fuzzy compares stay in-scope
     kept: dict[tuple, list[str]] = {}
     removed = 0
@@ -485,29 +554,22 @@ def dedupe_nodes() -> dict:
         key_text = _concept_of(d)
         if not key_text:
             continue
-        bucket = (d.get("type"), _scope_label_from_path(d.get("path", "")))
-        prior = kept.setdefault(bucket, [])
-        dup = key_text in prior or any(
-            difflib.SequenceMatcher(None, key_text, p).ratio() >= threshold
-            for p in prior)
-        if dup:
-            try:
-                os.unlink(d["path"])
-                removed += 1
-            except OSError:
-                continue
-            # The loser is gone here, so say so to the mesh — an unlink alone is
-            # undone by the next pull from any peer still holding it. Only the
-            # loser: the survivor keeps its identity, and mark_deleted refuses
-            # anything this machine did not mint (see there).
-            m = d.get("meta") or {}
-            _tomb.mark_deleted(m.get("origin"), d.get("id"), m.get("rev"))
-        else:
+        prior = kept.setdefault(
+            (d.get("type"), _scope_label_from_path(d.get("path", ""))), [])
+        if not _is_concept_dup(key_text, prior, threshold):
             prior.append(key_text)
+            continue
+        try:
+            os.unlink(d["path"])
+            removed += 1
+        except OSError:
+            continue
+        _tombstone_loser(d, _tomb)
     if removed:
         _invalidate()
         _write_index()
-    return {"ok": True, "removed": removed, "kept": sum(len(v) for v in kept.values())}
+    return {"ok": True, "removed": removed,
+            "kept": sum(len(v) for v in kept.values())}
 
 
 __all__ = ["okf_root", "type_dir", "next_id", "save_node", "read_node",
