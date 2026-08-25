@@ -52,15 +52,15 @@ def confluence_search(args: dict, cwd: str | None = None) -> dict:
     return {"ok": True, "results": out}
 
 
-def confluence_read(args: dict, cwd: str | None = None) -> dict:
-    """Read a page (storage XHTML body). By ``id``, or ``title`` (+ optional
-    ``space`` key)."""
+def _resolve_page_id(args: dict) -> "dict | str":
+    """Resolve a page id from ``id`` or a ``title`` (+ optional ``space``)
+    lookup. Returns the id string, or an error dict when it can't be resolved."""
     pid = args.get("id")
     if not pid and args.get("title"):
         params = {"title": args["title"], "expand": "version", "limit": 1}
-        _space = args.get("space") or default_space()
-        if _space:
-            params["spaceKey"] = _space
+        space = args.get("space") or default_space()
+        if space:
+            params["spaceKey"] = space
         rr = _request("GET", "/rest/api/content", params=params)
         if not rr["ok"]:
             return rr
@@ -70,6 +70,25 @@ def confluence_read(args: dict, cwd: str | None = None) -> dict:
         pid = res[0].get("id")
     if not pid:
         return {"ok": False, "error": "missing 'id' or 'title'"}
+    return pid
+
+
+def _read_attachments(args: dict, doc_id) -> list:
+    """Fetch + analyse a page's attachments (opt out with attachments=false).
+    Resolves off the package so a test patching `_fetch_attachments` on the
+    top-level `confluence` module (pre-split namespace) is honoured."""
+    if not _truthy(str(args.get("attachments", args.get("images", "true")))):
+        return []
+    _fetch = sys.modules[__package__]._fetch_attachments
+    return _fetch(str(doc_id)) or []
+
+
+def confluence_read(args: dict, cwd: str | None = None) -> dict:
+    """Read a page (storage XHTML body). By ``id``, or ``title`` (+ optional
+    ``space`` key)."""
+    pid = _resolve_page_id(args)
+    if isinstance(pid, dict):
+        return pid                       # error dict from the lookup
     r = _request("GET", f"/rest/api/content/{pid}",
                  params={"expand": "body.storage,version,space"})
     if not r["ok"]:
@@ -80,15 +99,9 @@ def confluence_read(args: dict, cwd: str | None = None) -> dict:
            "space": (d.get("space") or {}).get("key"),
            "version": (d.get("version") or {}).get("number"),
            "body": body[:_BODY_CAP], "url": _page_url(d)}
-    # Pull attachments (images + documents) + analyse them so the agent uses
-    # them as part of the task (opt out with attachments=false). Best-effort.
-    if _truthy(str(args.get("attachments", args.get("images", "true")))):
-        # Resolve off the package so a test patching `_fetch_attachments` on the
-        # top-level `confluence` module (pre-split namespace) is honoured.
-        _fetch = sys.modules[__package__]._fetch_attachments
-        atts = _fetch(str(d.get("id") or pid))
-        if atts:
-            out["attachments"] = atts
+    atts = _read_attachments(args, d.get("id") or pid)
+    if atts:
+        out["attachments"] = atts
     return out
 
 
@@ -344,55 +357,6 @@ def confluence_descendants(args: dict, cwd: str | None = None) -> dict:
     kids = [{"id": c.get("id"), "title": c.get("title")}
             for c in (d.get("results") or []) if isinstance(c, dict)]
     return {"ok": True, "id": pid, "count": len(kids), "descendants": kids}
-
-
-def confluence_attach(args: dict, cwd: str | None = None) -> dict:
-    """Attach a LOCAL file to a Confluence page. Required: ``id`` (page id),
-    ``path`` (local file path). Uses a multipart upload (the JSON _request
-    helper can't, so this builds the request directly)."""
-    import mimetypes
-    import os as _os
-    import urllib.request as _ur
-    if not _configured():
-        return {"ok": False, "error": "confluence_not_configured"}
-    pid = str(args.get("id") or "").strip()
-    path = str(args.get("path") or "").strip()
-    if not pid or not path:
-        return {"ok": False, "error": "need 'id' + local 'path'"}
-    if not _os.path.isfile(path):
-        return {"ok": False, "error": f"file not found: {path}"}
-    try:
-        with open(path, "rb") as fh:
-            payload = fh.read()
-    except OSError as exc:
-        return {"ok": False, "error": f"read_failed: {exc}"}
-    fname = _os.path.basename(path)
-    ctype = mimetypes.guess_type(fname)[0] or "application/octet-stream"
-    boundary = "----AIForgeBoundary7MA4YWxkTrZu0gW"
-    body = b"".join([
-        f"--{boundary}\r\n".encode(),
-        f'Content-Disposition: form-data; name="file"; filename="{fname}"\r\n'
-        .encode(),
-        f"Content-Type: {ctype}\r\n\r\n".encode(),
-        payload, b"\r\n",
-        f"--{boundary}--\r\n".encode(),
-    ])
-    headers = _headers()
-    headers.pop("Content-Type", None)
-    headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
-    headers["X-Atlassian-Token"] = "no-check"   # required for attachments
-    url = _base() + f"/rest/api/content/{urllib.parse.quote(pid)}/child/attachment"
-    req = _ur.Request(url, data=body, headers=headers, method="POST")
-    try:
-        with _ur.urlopen(req, timeout=_TIMEOUT_S, context=_ssl_ctx()) as resp:
-            import json as _json
-            raw = resp.read(_BODY_CAP)
-            data = _json.loads(raw) if raw else {}
-    except Exception as exc:  # noqa: BLE001 — soft-fail like the JSON helper
-        return {"ok": False, "error": f"attach_failed: {str(exc)[:300]}"}
-    results = data.get("results") if isinstance(data, dict) else None
-    aid = (results[0].get("id") if results else None)
-    return {"ok": True, "id": pid, "attachment_id": aid, "filename": fname}
 
 
 def confluence_test() -> dict:
