@@ -55,7 +55,9 @@ def test_prompts_non_empty_for_real_agents():
     Doer can read ``state['structural_plan']`` deterministically.
     """
     for mod in ALL_MODULES:
-        assert isinstance(mod.PROMPT, str) and len(mod.PROMPT) > 50, (
+        assert isinstance(mod.PROMPT, str), (
+            f"{mod.ROLE} prompt looks empty/stub")
+        assert len(mod.PROMPT) > 50, (
             f"{mod.ROLE} prompt looks empty/stub")
 
 

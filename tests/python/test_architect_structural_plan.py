@@ -61,7 +61,9 @@ def test_architect_prompt_rejects_phantom_paths():
 def test_architect_prompt_describes_per_file_import_allowlist():
     """``imports`` is per-file, restricting what each file may import."""
     text = prompts.ARCHITECT.lower()
-    assert "import" in text and "allowlist" in text, (
+    assert "import" in text, (
+        "architect prompt must describe per-file import allowlist")
+    assert "allowlist" in text, (
         "architect prompt must describe per-file import allowlist")
 
 

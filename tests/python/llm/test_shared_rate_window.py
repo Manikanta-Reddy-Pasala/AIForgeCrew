@@ -56,7 +56,8 @@ def test_the_window_slides():
     for _ in range(3):
         sw.take(3, now=now - 59.5)
     claimed, wait = sw.take(3, now=now)
-    assert claimed is False and wait < 1.0
+    assert claimed is False
+    assert wait < 1.0
     # …half a second later the oldest has aged out and there is room again.
     assert sw.take(3, now=now + 1.0) == (True, 0.0)
 
@@ -180,7 +181,8 @@ def test_a_broken_store_still_throttles(monkeypatch):
     assert rl.acquire_global() == 0.0
     assert rl.acquire_global() == 0.0
     claimed, wait = rl._take(2, "chat", 0, None)
-    assert claimed is False and wait > 0
+    assert claimed is False
+    assert wait > 0
 
 
 # ── the one that would have caught the bug ──────────────────────────
@@ -353,7 +355,8 @@ def test_the_fallback_is_announced_once():
     logger.addHandler(handler)
     old_level, logger.level = logger.level, logging.WARNING
     try:
-        assert sw._fails == 0 and sw._warned is False
+        assert sw._fails == 0
+        assert sw._warned is False
         for _ in range(sw._FAIL_LIMIT):
             sw._degrade(OSError("disk is read-only"))
     finally:
@@ -469,7 +472,8 @@ def test_contention_never_promotes_a_caller_to_its_own_window(monkeypatch):
     got = sw.take(2)
     assert got is not None, "a busy store reported itself as unavailable"
     claimed, wait = got
-    assert claimed is False and wait > 0
+    assert claimed is False
+    assert wait > 0
 
     # …and the limiter does NOT fall through to its private window.
     _set_rpm(2)
@@ -537,7 +541,8 @@ def test_one_success_clears_the_failure_run():
     failure for the life of the PROCESS rather than consecutive ones — three
     stumbles hours apart tripped a 60s cooldown in which the process ran on its
     private window with the whole ceiling. Measured: 331 sends against 50."""
-    assert sw._fails == 0 and sw._cold() is False
+    assert sw._fails == 0
+    assert sw._cold() is False
     sw._degrade(OSError("blip"))
     sw._degrade(OSError("blip"))
     assert sw._fails == 2

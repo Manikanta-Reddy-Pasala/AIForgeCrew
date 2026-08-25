@@ -85,7 +85,10 @@ def test_planner_prompt_is_self_contained_json_contract():
     # at least one balanced JSON-ish brace pair
     opens = text.count("{")
     closes = text.count("}")
-    assert opens >= 2 and closes >= 2, (
+    assert opens >= 2, (
+        f"planner prompt JSON examples look broken: opens={opens} "
+        f"closes={closes}")
+    assert closes >= 2, (
         f"planner prompt JSON examples look broken: opens={opens} "
         f"closes={closes}")
     # crude balance check — drift = bug

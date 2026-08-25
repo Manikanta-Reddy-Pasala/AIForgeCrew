@@ -60,7 +60,8 @@ def test_compaction_subceiling_independent_of_global(monkeypatch):
     for _ in range(3):
         assert rl._take(100, "compaction", 3, "p")[0] is True
     blocked, wait = rl._take(100, "compaction", 3, "p")
-    assert blocked is False and wait > 0     # compaction bucket full
+    assert blocked is False  # compaction bucket full
+    assert wait > 0
     # chat is unaffected — its own bucket still has room under the same global
     assert rl._take(100, "chat", 100, "p")[0] is True
 

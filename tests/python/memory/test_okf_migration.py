@@ -21,8 +21,9 @@ def test_rewrite_file_frontmatter_renames_legacy_keys(tmp_path):
     assert "type: knowledge" in head
     assert "resource: https://x/y" in head
     assert "timestamp: 2020-01-01" in head
-    assert "kind:" not in head and "source_url:" not in head \
-        and "updated_at:" not in head
+    assert "kind:" not in head
+    assert "source_url:" not in head
+    assert "updated_at:" not in head
     # body is untouched (the "source_url" word in prose is preserved)
     assert "source_url in body stays" in txt
     # idempotent: a second pass makes no change

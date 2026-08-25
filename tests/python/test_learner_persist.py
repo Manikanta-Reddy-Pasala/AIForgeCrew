@@ -63,4 +63,5 @@ def test_persist_facts_routes_to_sqlite(monkeypatch) -> None:
         repo="MyRepo", ticket_identifier="ONE-1")
     assert out["written_observations"] == 1
     assert out["written_decisions"] == 1
-    assert captured and captured[0]["repo"] == "MyRepo"
+    assert captured
+    assert captured[0]["repo"] == "MyRepo"

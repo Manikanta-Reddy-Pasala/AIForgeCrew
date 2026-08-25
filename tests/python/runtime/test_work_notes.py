@@ -70,8 +70,9 @@ def test_render_emits_okf_frontmatter_names():
     assert "resource: " in head
     assert "timestamp: " in head
     assert "description: " in head
-    assert "kind:" not in head and "source_url:" not in head \
-        and "updated_at:" not in head
+    assert "kind:" not in head
+    assert "source_url:" not in head
+    assert "updated_at:" not in head
     # the rendered file passes the OKF conformance validator (has `type:`)
     assert okf.validate_file(raw) == []
     p = work_notes.parse_note(raw)
