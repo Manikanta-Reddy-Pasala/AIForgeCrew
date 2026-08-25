@@ -431,6 +431,133 @@ def _history_to_convo(sys_msg, messages, _img_blocks):
     return convo
 
 
+_RETRY_STOP = object()
+
+
+def _retry_plan(exc, _step_calls):
+    """Compute the completion-retry plan: the retry count (env default, capped
+    by the per-step generation budget, forced to 0 for a shipped read-timeout or
+    an unserved-model config error) plus the per-step budget and a config-error
+    message. Returns ``(retries, budget, cfg_error)``."""
+    _cfg_error = ""
+    _retries = 5
+    try:
+        _retries = max(0, int(os.environ.get("AIFORGE_CHAT_LLM_RETRIES", "5")))
+    except ValueError:
+        _retries = 5
+    # BOUND THE PRODUCT, not this layer alone. Below this sweep the
+    # client already re-posts an empty answer (AIFORGE_LLM_EMPTY_RETRIES,
+    # default 3 → 4 posts) and the transport retries a broken one
+    # (AIFORGE_LLM_RETRY_MAX, default 3), so five more sweeps here is up
+    # to twenty full generations for ONE step — every one of them
+    # shipping the whole prompt and generating an answer nobody reads.
+    # The meter already counts what this turn has actually sent, so
+    # spend the remaining budget instead of a fixed count.
+    _spent = int((_step_calls or {}).get("n") or 0)
+    _budget = _max_gen_per_step()
+    if _budget > 0:      # 0 = ceiling disabled, not "no retries"
+        _retries = min(_retries, max(0, _budget - _spent))
+
+
+    # A read timeout means the model RECEIVED this prompt and is
+    # still generating it. Re-issuing the identical completion leaves
+    # that generation running and starts another on a box that already
+    # could not finish one — five more times, by default. The transport
+    # marks the exception; honour it here, or the layer below's
+    # "do not re-POST" rule is undone one call up.
+    try:
+        from aiforge_core.llm.client import shipped_timeout as _st
+        if _st(exc):
+            _retries = 0
+    except Exception:  # noqa: BLE001
+        pass
+    # A model the endpoint does not serve is CONFIGURATION. Retrying it
+    # cannot work — five more full-prompt round trips, each answered
+    # with the same 400, then the same useless "didn't respond" line.
+    # Say what is wrong instead; the exception already names the model,
+    # the endpoint and what that box does serve.
+    _cfg_error = ""
+    try:
+        from aiforge_core.llm.client import model_missing as _mm
+        if _mm(exc):
+            _retries = 0
+            _cfg_error = str(exc).split(" — ", 1)[-1].strip()
+    except Exception:  # noqa: BLE001
+        pass
+    return _retries, _budget, _cfg_error
+
+
+def _emit_completion_failure(_cfg_error, _meter, _step_tok):
+    """Emit the user-facing completion-failure message + the structural
+    ``stopped``/``done`` markers (so chat_resume knows the turn died mid-work),
+    and release the step meter."""
+    yield {"type": "message", "text": (
+        f"⚠️ {_cfg_error}" if _cfg_error else
+        "⚠️ The model didn't respond (it may be loading, busy, or the "
+        "request was rejected). Nothing was changed — please try again "
+        "in a moment. If it keeps happening, check the model endpoint.")}
+    # STRUCTURAL marker, the same one a Stop leaves: this turn ended
+    # without an answer, and whatever it had already read or written
+    # is on disk. Without it `chat_resume` sees a turn that "ended
+    # normally" with a warning as its answer, so Retry starts from
+    # nothing and re-does every edit the dead attempt made — the
+    # exact case a resume exists for, and the one it was missing.
+    yield {"type": "stopped", "reason": "llm_unavailable"}
+    yield {"type": "done"}
+    if _meter is not None:
+        _meter.step_reset(_step_tok)
+
+def _retry_completion(complete_fn, role, convo, session_id, exc,
+                      _step_calls, _meter, _step_tok):
+    """Recover a failed model completion: retry (bounded by the per-step
+    generation budget; 0 retries for a shipped-timeout or unserved-model error)
+    with escalating backoff. Yields progress/stop events; returns the completion
+    text (possibly None) on recovery, or ``_RETRY_STOP`` when the caller must end
+    the turn."""
+    from aiforge_core.runtime import chat_cancel
+    # RESILIENCE: a local model can transiently drop a request (mid-load,
+    # busy, a one-off empty/4xx). Retry a few times before surfacing, and
+    # never show the raw `llm.exhausted role=chat …` stack; give a plain,
+    # actionable message.
+    # AIFORGE_CHAT_LLM_RETRIES tunes the retry count (default 5) — a
+    # local model that's loading/busy often needs a few passes.
+    _retries, _budget, _cfg_error = _retry_plan(exc, _step_calls)
+    def _over_budget() -> bool:
+        """Has this STEP spent its generation budget yet?
+
+        Re-read every sweep, because one sweep is not one generation:
+        below this loop the client re-posts an empty answer and the
+        transport re-attempts a broken one, so a single sweep can burn
+        four or twelve. Extrapolating the whole step from the first
+        sample let a declared ceiling of 6 spend 12 — the very
+        multiplication this exists to stop."""
+        if _budget <= 0 or _step_calls is None:
+            return False
+        return int(_step_calls.get("n") or 0) >= _budget
+    out = None
+    _last = exc
+    for _rn in range(_retries):
+        if session_id is not None and chat_cancel.is_cancelled(session_id):
+            break
+        if _over_budget():
+            break
+        yield {"type": "thought", "role": "system",
+               "text": f"⟳ model didn't respond — retrying ({_rn + 1}/{_retries})…"}
+        # Escalating backoff: give a mid-load / busy local model (or a
+        # slow compress+forward hop) progressively more room to recover.
+        time.sleep(3.0 * (_rn + 1))
+        try:
+            out = _complete_cancellable(complete_fn, role, convo, session_id)
+            _last = None
+            break
+        except Exception as exc2:  # noqa: BLE001
+            _last = exc2
+    if _last is not None:
+        yield from _emit_completion_failure(_cfg_error, _meter, _step_tok)
+        return _RETRY_STOP
+    return out
+
+
 def run_chat_agent(
     messages: list[dict], *,
     cwd: str,
@@ -874,101 +1001,10 @@ def run_chat_agent(
         try:
             out = _complete_cancellable(complete_fn, role, convo, session_id)
         except Exception as exc:  # noqa: BLE001
-            # RESILIENCE: a local model can transiently drop a request (mid-load,
-            # busy, a one-off empty/4xx). Retry a few times before surfacing, and
-            # never show the raw `llm.exhausted role=chat …` stack; give a plain,
-            # actionable message.
-            # AIFORGE_CHAT_LLM_RETRIES tunes the retry count (default 5) — a
-            # local model that's loading/busy often needs a few passes.
-            _retries = 5
-            try:
-                _retries = max(0, int(os.environ.get("AIFORGE_CHAT_LLM_RETRIES", "5")))
-            except ValueError:
-                _retries = 5
-            # BOUND THE PRODUCT, not this layer alone. Below this sweep the
-            # client already re-posts an empty answer (AIFORGE_LLM_EMPTY_RETRIES,
-            # default 3 → 4 posts) and the transport retries a broken one
-            # (AIFORGE_LLM_RETRY_MAX, default 3), so five more sweeps here is up
-            # to twenty full generations for ONE step — every one of them
-            # shipping the whole prompt and generating an answer nobody reads.
-            # The meter already counts what this turn has actually sent, so
-            # spend the remaining budget instead of a fixed count.
-            _spent = int((_step_calls or {}).get("n") or 0)
-            _budget = _max_gen_per_step()
-            if _budget > 0:      # 0 = ceiling disabled, not "no retries"
-                _retries = min(_retries, max(0, _budget - _spent))
-
-            def _over_budget() -> bool:
-                """Has this STEP spent its generation budget yet?
-
-                Re-read every sweep, because one sweep is not one generation:
-                below this loop the client re-posts an empty answer and the
-                transport re-attempts a broken one, so a single sweep can burn
-                four or twelve. Extrapolating the whole step from the first
-                sample let a declared ceiling of 6 spend 12 — the very
-                multiplication this exists to stop."""
-                if _budget <= 0 or _step_calls is None:
-                    return False
-                return int(_step_calls.get("n") or 0) >= _budget
-            # A read timeout means the model RECEIVED this prompt and is
-            # still generating it. Re-issuing the identical completion leaves
-            # that generation running and starts another on a box that already
-            # could not finish one — five more times, by default. The transport
-            # marks the exception; honour it here, or the layer below's
-            # "do not re-POST" rule is undone one call up.
-            try:
-                from aiforge_core.llm.client import shipped_timeout as _st
-                if _st(exc):
-                    _retries = 0
-            except Exception:  # noqa: BLE001
-                pass
-            # A model the endpoint does not serve is CONFIGURATION. Retrying it
-            # cannot work — five more full-prompt round trips, each answered
-            # with the same 400, then the same useless "didn't respond" line.
-            # Say what is wrong instead; the exception already names the model,
-            # the endpoint and what that box does serve.
-            _cfg_error = ""
-            try:
-                from aiforge_core.llm.client import model_missing as _mm
-                if _mm(exc):
-                    _retries = 0
-                    _cfg_error = str(exc).split(" — ", 1)[-1].strip()
-            except Exception:  # noqa: BLE001
-                pass
-            out = None
-            _last = exc
-            for _rn in range(_retries):
-                if session_id is not None and chat_cancel.is_cancelled(session_id):
-                    break
-                if _over_budget():
-                    break
-                yield {"type": "thought", "role": "system",
-                       "text": f"⟳ model didn't respond — retrying ({_rn + 1}/{_retries})…"}
-                # Escalating backoff: give a mid-load / busy local model (or a
-                # slow compress+forward hop) progressively more room to recover.
-                time.sleep(3.0 * (_rn + 1))
-                try:
-                    out = _complete_cancellable(complete_fn, role, convo, session_id)
-                    _last = None
-                    break
-                except Exception as exc2:  # noqa: BLE001
-                    _last = exc2
-            if _last is not None:
-                yield {"type": "message", "text": (
-                    f"⚠️ {_cfg_error}" if _cfg_error else
-                    "⚠️ The model didn't respond (it may be loading, busy, or the "
-                    "request was rejected). Nothing was changed — please try again "
-                    "in a moment. If it keeps happening, check the model endpoint.")}
-                # STRUCTURAL marker, the same one a Stop leaves: this turn ended
-                # without an answer, and whatever it had already read or written
-                # is on disk. Without it `chat_resume` sees a turn that "ended
-                # normally" with a warning as its answer, so Retry starts from
-                # nothing and re-does every edit the dead attempt made — the
-                # exact case a resume exists for, and the one it was missing.
-                yield {"type": "stopped", "reason": "llm_unavailable"}
-                yield {"type": "done"}
-                if _meter is not None:
-                    _meter.step_reset(_step_tok)
+            out = yield from _retry_completion(
+                complete_fn, role, convo, session_id, exc,
+                _step_calls, _meter, _step_tok)
+            if out is _RETRY_STOP:
                 return
         # The step's sends are counted; unbind before the next one binds its
         # own (a step that leaves its counter bound would have the NEXT step's
