@@ -279,6 +279,32 @@ def _collect(steps) -> dict:
     return acc
 
 
+def _brief_block(title, items, cap, budget, body):
+    """Append one titled, budget-bounded block of items to ``body`` (with an
+    "…and N more" tail when truncated). Returns the remaining budget."""
+    if not items or budget <= 0:
+        return budget
+    lines = [title]
+    used = len(title) + 1
+    shown = 0
+    for it in items[:cap]:
+        line = f"  - {it}"
+        if used + len(line) + 1 > budget:
+            break
+        lines.append(line)
+        used += len(line) + 1
+        shown += 1
+    if not shown:
+        return budget
+    left = len(items) - shown
+    if left > 0:
+        lines.append(f"  …and {left} more")
+        used += 20
+    
+    body.append("\n".join(lines))
+    return budget - used
+
+
 def build_brief(row: dict, cwd: str = "") -> str:
     """The resume briefing for a stopped turn, or "" when there is nothing
     worth saying (a turn that stopped before doing anything is just a retry).
@@ -321,36 +347,14 @@ def build_brief(row: dict, cwd: str = "") -> str:
     budget = _MAX_BRIEF_CHARS - len(head) - len(tail) - 4
     body: list = []
 
-    def _block(title: str, items: list, cap: int) -> None:
-        nonlocal budget
-        if not items or budget <= 0:
-            return
-        lines = [title]
-        used = len(title) + 1
-        shown = 0
-        for it in items[:cap]:
-            line = f"  - {it}"
-            if used + len(line) + 1 > budget:
-                break
-            lines.append(line)
-            used += len(line) + 1
-            shown += 1
-        if not shown:
-            return
-        left = len(items) - shown
-        if left > 0:
-            lines.append(f"  …and {left} more")
-            used += 20
-        budget -= used
-        body.append("\n".join(lines))
 
-    _block("Already written (verify before touching again):",
-           got["landed"], _MAX_FILES)
-    _block("Attempted, outcome unknown — CHECK these on disk before rewriting:",
-           got["attempted"], _MAX_FILES)
-    _block("Subtasks already completed:", done, _MAX_PENDING)
-    _block("Subtasks still PENDING:", pending, _MAX_PENDING)
-    _block("Commands that already ran successfully:", got["commands"], 5)
+    budget = _brief_block("Already written (verify before touching again):",
+           got["landed"], _MAX_FILES, budget, body)
+    budget = _brief_block("Attempted, outcome unknown — CHECK these on disk before rewriting:",
+           got["attempted"], _MAX_FILES, budget, body)
+    budget = _brief_block("Subtasks already completed:", done, _MAX_PENDING, budget, body)
+    budget = _brief_block("Subtasks still PENDING:", pending, _MAX_PENDING, budget, body)
+    budget = _brief_block("Commands that already ran successfully:", got["commands"], 5, budget, body)
 
     return "\n".join([head, *body, tail])
 

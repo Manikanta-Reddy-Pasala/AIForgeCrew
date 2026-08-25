@@ -362,6 +362,30 @@ def match_rules(rules: list[Rule], scope_globs: list[str] | None) -> list[Rule]:
     return out
 
 
+def _resolve_trigger_pool(trigger_pool, query, matched):
+    """Resolve rules that had no glob hit: no query -> include all (fail open); else score their triggers via skills.select_or_ask, extend matched with the picks, and return ambiguous near-tie groups."""
+    ambiguous: list[list[Rule]] = []
+    if trigger_pool and not query:
+        # No query to score against — fail OPEN (include all trigger rules),
+        # matching chat_agent._rules_context's no-query behavior. Failing
+        # closed here would silently drop a trigger-only repo rule that the
+        # old glob-only match_rules() would always have applied.
+        matched.extend(trigger_pool)
+    elif query and trigger_pool:
+        from aiforge_core.runtime import skills as _sk
+        pool_skills = [
+            _sk.Skill(name=r.name, description="", triggers=r.triggers,
+                      body=r.body, source=r.source, always=False, priority=0)
+            for r in trigger_pool]
+        chosen_sk, amb_sk = _sk.select_or_ask(
+            query, k=len(trigger_pool), pool=pool_skills)
+        by_name = {r.name: r for r in trigger_pool}
+        matched.extend(by_name[s.name] for s in chosen_sk if s.name in by_name)
+        for grp in amb_sk:
+            ambiguous.append([by_name[s.name] for s in grp if s.name in by_name])
+    return ambiguous
+
+
 def match_rules_with_triggers(
     rules: list[Rule], scope_globs: list[str] | None, query: str,
 ) -> tuple[list[Rule], list[list[Rule]]]:
@@ -390,25 +414,7 @@ def match_rules_with_triggers(
             matched.append(r)
         elif r.triggers:
             trigger_pool.append(r)
-    ambiguous: list[list[Rule]] = []
-    if trigger_pool and not query:
-        # No query to score against — fail OPEN (include all trigger rules),
-        # matching chat_agent._rules_context's no-query behavior. Failing
-        # closed here would silently drop a trigger-only repo rule that the
-        # old glob-only match_rules() would always have applied.
-        matched.extend(trigger_pool)
-    elif query and trigger_pool:
-        from aiforge_core.runtime import skills as _sk
-        pool_skills = [
-            _sk.Skill(name=r.name, description="", triggers=r.triggers,
-                      body=r.body, source=r.source, always=False, priority=0)
-            for r in trigger_pool]
-        chosen_sk, amb_sk = _sk.select_or_ask(
-            query, k=len(trigger_pool), pool=pool_skills)
-        by_name = {r.name: r for r in trigger_pool}
-        matched.extend(by_name[s.name] for s in chosen_sk if s.name in by_name)
-        for grp in amb_sk:
-            ambiguous.append([by_name[s.name] for s in grp if s.name in by_name])
+    ambiguous = _resolve_trigger_pool(trigger_pool, query, matched)
     return matched, ambiguous
 
 

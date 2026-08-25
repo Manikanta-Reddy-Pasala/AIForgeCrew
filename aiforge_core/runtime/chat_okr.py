@@ -171,6 +171,16 @@ def _oversized_turn_slice(role: str, content: str, start_char: int,
     return head + content[:body_room], 0, (start_char or 0) + body_room
 
 
+def _prep_turn(m, n, start_char):
+    """The (ROLE, content) for one transcript turn — the first turn resumes at
+    ``start_char`` when walking an oversized turn in slices."""
+    role = (m.get("role") or "user").strip().upper()
+    content = (m.get("content") or "").strip()
+    if n == 0 and start_char:
+        content = content[start_char:]
+    return role, content
+
+
 def _transcript(turns: list[dict], limit: int,
                 start_char: int = 0) -> "tuple[str, int, int]":
     """Compact ``ROLE: content`` transcript of the OLDEST turns that fit in
@@ -190,10 +200,7 @@ def _transcript(turns: list[dict], limit: int,
     lines: list[str] = []
     used = taken = 0
     for n, m in enumerate(turns):
-        role = (m.get("role") or "user").strip().upper()
-        content = (m.get("content") or "").strip()
-        if n == 0 and start_char:
-            content = content[start_char:]
+        role, content = _prep_turn(m, n, start_char)
         if not content:
             taken += 1                      # empty turn: consumed, nothing to say
             continue
