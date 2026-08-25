@@ -155,6 +155,21 @@ _RUNTIME_ENV_DB_KEYS = frozenset({
 
 
 @app.on_event("startup")
+def _apply_runtime_env_line(line: str, keep_pg: bool) -> None:
+    """Apply one ``KEY=VALUE`` line from runtime.env into os.environ. A real env
+    var / project .env already set WINS (never clobbered); comments/blanks and
+    stale Postgres/Neo4j keys (single mode is SQLite) are ignored."""
+    line = line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        return
+    k, _, v = line.partition("=")
+    k = k.strip()
+    if k in _RUNTIME_ENV_DB_KEYS and not keep_pg:
+        return                                # SQLite-only; ignore stale DB pointers
+    if k and k not in os.environ:             # don't clobber real env/.env
+        os.environ[k] = v.strip()
+
+
 def _load_runtime_env() -> None:
     """Restore UI-persisted toggles (runtime.env) into the process env on boot
     using a plain KEY=VALUE parser — NOT a shell source — so a value can never
@@ -163,23 +178,41 @@ def _load_runtime_env() -> None:
     Postgres/Neo4j backend keys are SKIPPED (single mode is SQLite)."""
     try:
         from aiforge_core.api._shared import _RUNTIME_ENV_PATH
-        path = _RUNTIME_ENV_PATH
-        if not os.path.isfile(path):
+        if not os.path.isfile(_RUNTIME_ENV_PATH):
             return
-        _keep_pg = os.environ.get("AIFORGE_KEEP_PG") == "1"
-        with open(path) as f:
+        keep_pg = os.environ.get("AIFORGE_KEEP_PG") == "1"
+        with open(_RUNTIME_ENV_PATH) as f:
             for raw in f:
-                line = raw.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, _, v = line.partition("=")
-                k = k.strip()
-                if k in _RUNTIME_ENV_DB_KEYS and not _keep_pg:
-                    continue                          # SQLite-only; ignore stale DB pointers
-                if k and k not in os.environ:        # don't clobber real env/.env
-                    os.environ[k] = v.strip()
+                _apply_runtime_env_line(raw, keep_pg)
     except Exception:  # noqa: BLE001
         pass
+
+
+def _models_below_context(want: int) -> list[str]:
+    """LM Studio's loaded model ids whose context is under ``want``. Queries the
+    local /api/v0/models endpoint; raises on any network/parse error (caller
+    swallows it)."""
+    import urllib.request as _u
+    import json as _j
+    base = os.environ.get("AIFORGE_LM_BASE_URL",
+                          "http://127.0.0.1:1234/v1").rstrip("/")
+    api0 = base.rsplit("/v1", 1)[0] + "/api/v0/models"
+    data = _j.loads(_u.urlopen(api0, timeout=8).read())
+    return [mid for m in data.get("data", [])
+            if m.get("state") == "loaded"
+            and (mid := m.get("id"))
+            and (m.get("loaded_context_length") or 0) < want]
+
+
+def _reload_models_to_context(below: list[str], want: int) -> None:
+    """Reload each named model at the ``want`` context. Best-effort per model."""
+    from aiforge_core.runtime import local_starter
+    for mid in below:
+        try:
+            local_starter.load_model_now(mid, want, ttl=43200)
+            _af_log.info("boot ctx-reload: %s -> %d", mid, want)
+        except Exception as _e:  # noqa: BLE001
+            _af_log.debug("boot ctx-reload failed for %s: %s", mid, _e)
 
 
 @app.on_event("startup")
@@ -195,29 +228,14 @@ def _ensure_model_context_on_boot() -> None:
     def _work():
         try:
             import time as _t
-            import urllib.request as _u
-            import json as _j
             _t.sleep(8)                       # let the server + LM Studio settle
             try:
                 want = int(os.environ.get("AIFORGE_LM_CONTEXT", "262144"))
             except ValueError:
                 want = 262144
-            base = os.environ.get("AIFORGE_LM_BASE_URL",
-                                  "http://127.0.0.1:1234/v1").rstrip("/")
-            api0 = base.rsplit("/v1", 1)[0] + "/api/v0/models"
-            data = _j.loads(_u.urlopen(api0, timeout=8).read())
-            loaded = [(m.get("id"), m.get("loaded_context_length") or 0)
-                      for m in data.get("data", []) if m.get("state") == "loaded"]
-            below = [mid for mid, ctx in loaded if mid and ctx < want]
-            if not below:
-                return
-            from aiforge_core.runtime import local_starter
-            for mid in below:
-                try:
-                    local_starter.load_model_now(mid, want, ttl=43200)
-                    _af_log.info("boot ctx-reload: %s -> %d", mid, want)
-                except Exception as _e:  # noqa: BLE001
-                    _af_log.debug("boot ctx-reload failed for %s: %s", mid, _e)
+            below = _models_below_context(want)
+            if below:
+                _reload_models_to_context(below, want)
         except Exception as _exc:  # noqa: BLE001 — never break boot
             _af_log.debug("boot ctx-reload skipped: %s", _exc)
 
@@ -757,6 +775,42 @@ def _bind_host() -> str:
     return (os.environ.get("AIFORGE_BIND_HOST") or "127.0.0.1").strip() or "127.0.0.1"
 
 
+def _find_uvicorn_server():
+    """Walk the coroutine frames of the live asyncio tasks for the running
+    uvicorn ``Server``. Startup hooks run inside uvicorn's lifespan task, not
+    under ``Server.startup``, so the server is not on our own stack. None under
+    TestClient / no running loop / anything we cannot introspect."""
+    try:
+        import asyncio
+        tasks = asyncio.all_tasks()
+    except Exception:  # noqa: BLE001 — no running loop (TestClient, unit tests)
+        return None
+    for task in tasks:
+        coro = task.get_coro()
+        while coro is not None:
+            frame = getattr(coro, "cr_frame", None)
+            if frame is None:
+                break
+            obj = frame.f_locals.get("self")
+            cls = type(obj)
+            if cls.__name__ == "Server" and cls.__module__.split(".")[0] == "uvicorn":
+                return obj
+            coro = getattr(coro, "cr_await", None)
+    return None
+
+
+def _server_socket_hosts(server) -> list[str]:
+    """The hosts of the server's REAL listening sockets (``getsockname``)."""
+    hosts: list[str] = []
+    for asgi_server in (getattr(server, "servers", None) or []):
+        for sock in (getattr(asgi_server, "sockets", None) or []):
+            try:
+                hosts.append(str(sock.getsockname()[0]))
+            except Exception:  # noqa: BLE001 — a unix socket has no host tuple
+                continue
+    return hosts
+
+
 def _observed_bind_hosts() -> list[str]:
     """The addresses this process is REALLY listening on, or ``[]`` if unknown.
 
@@ -765,42 +819,15 @@ def _observed_bind_hosts() -> list[str]:
     satisfy the boot guard with the loopback default while publishing a
     shell-running control plane to the LAN. So ask the server, not the env.
 
-    Startup hooks run inside uvicorn's lifespan task, not under
-    ``Server.startup``, so the server is not on our own stack — it is found by
-    walking the coroutine frames of the live asyncio tasks. Real listening
-    sockets win when they exist (``getsockname``); ``config.host`` is the
-    answer during startup, before the sockets are created. Returns ``[]`` under
-    TestClient / gunicorn / anything else we cannot introspect, which the
-    caller must treat as "unobserved", not as "loopback".
+    Real listening sockets win when they exist; ``config.host`` is the answer
+    during startup, before the sockets are created. Returns ``[]`` under
+    TestClient / gunicorn / anything else we cannot introspect, which the caller
+    must treat as "unobserved", not as "loopback".
     """
-    try:
-        import asyncio
-        tasks = asyncio.all_tasks()
-    except Exception:  # noqa: BLE001 — no running loop (TestClient, unit tests)
-        return []
-    server = None
-    for task in tasks:
-        coro = task.get_coro()
-        while coro is not None and server is None:
-            frame = getattr(coro, "cr_frame", None)
-            if frame is None:
-                break
-            obj = frame.f_locals.get("self")
-            cls = type(obj)
-            if cls.__name__ == "Server" and cls.__module__.split(".")[0] == "uvicorn":
-                server = obj
-            coro = getattr(coro, "cr_await", None)
-        if server is not None:
-            break
+    server = _find_uvicorn_server()
     if server is None:
         return []
-    hosts: list[str] = []
-    for asgi_server in (getattr(server, "servers", None) or []):
-        for sock in (getattr(asgi_server, "sockets", None) or []):
-            try:
-                hosts.append(str(sock.getsockname()[0]))
-            except Exception:  # noqa: BLE001 — a unix socket has no host tuple
-                continue
+    hosts = _server_socket_hosts(server)
     if hosts:
         return hosts
     config = getattr(server, "config", None)
