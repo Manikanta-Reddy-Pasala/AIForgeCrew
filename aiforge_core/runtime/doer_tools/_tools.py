@@ -183,43 +183,46 @@ def todowrite(todos: str = "", **_kw) -> dict:
     return todo_write(todos)
 
 
-def glob(pattern: str = "*", path: str = ".") -> dict:
-    """Find files by NAME pattern (Claude-Code Glob) — a real fnmatch walk,
-    not a content grep. ``pattern`` matches the basename OR the repo-relative
-    path (so ``**/*.py`` and ``*.py`` both work). Skips vcs/build noise."""
+_GLOB_SKIP = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist",
+              "build", "target", ".next", ".idea", ".mypy_cache", ".pytest_cache"}
+
+
+def _glob_walk(base, pat: str, bare: str, r) -> "tuple[list[str], bool]":
+    """Walk ``base`` (pruning vcs/build noise in place) collecting repo-relative
+    paths matching ``pat``/``bare`` by basename OR path. Returns
+    ``(matches, capped)`` — capped at 500. In-place dir pruning means we never
+    DESCEND into noise (a post-hoc filter still walked millions of entries and
+    tested ABSOLUTE path parts, so a checkout under /venv/ skipped everything)."""
     import fnmatch
+    import os as _os
+    matches: list[str] = []
+    for dirpath, dirs, files in _os.walk(base):
+        dirs[:] = [d for d in dirs if d not in _GLOB_SKIP]
+        for fn in files:
+            rel = _os.path.relpath(_os.path.join(dirpath, fn), str(r))
+            if fnmatch.fnmatch(fn, bare) or fnmatch.fnmatch(rel, pat) \
+                    or fnmatch.fnmatch(rel, bare):
+                matches.append(rel)
+                if len(matches) >= 500:
+                    return matches, True
+    return matches, False
+
+
+def glob(pattern: str = "*", path: str = ".") -> dict:
+    """Find files by NAME pattern (Claude-Code Glob) — a real fnmatch walk, not a
+    content grep. ``pattern`` matches the basename OR the repo-relative path (so
+    ``**/*.py`` and ``*.py`` both work). Skips vcs/build noise."""
     from aiforge_core.runtime.sandbox import resolve_inside_root, root
-    _SKIP = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist",
-             "build", "target", ".next", ".idea", ".mypy_cache", ".pytest_cache"}
     try:
         base = resolve_inside_root(path) if path not in ("", ".") else root()
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
     pat = (pattern or "*").strip()
     # Normalise a leading "**/" so "**/*.py" also matches root-level files
-    # (fnmatch's * spans "/", so the raw "**/*.py" REQUIRES a slash → misses
+    # (fnmatch's * spans "/", so raw "**/*.py" REQUIRES a slash → misses
     # top-level files; str.lstrip("*/") over-strips to ".py").
     bare = pat[3:] if pat.startswith("**/") else pat
-    matches: list[str] = []
-    r = root()
-    import os as _os
-    capped = False
-    # Walk with in-place dir pruning so we never DESCEND into vcs/build noise
-    # (the previous post-hoc filter still walked millions of entries, and it
-    # tested ABSOLUTE path parts → a checkout under /venv/ skipped everything).
-    for dirpath, dirs, files in _os.walk(base):
-        dirs[:] = [d for d in dirs if d not in _SKIP]
-        for fn in files:
-            full = _os.path.join(dirpath, fn)
-            rel = _os.path.relpath(full, str(r))
-            if fnmatch.fnmatch(fn, bare) or fnmatch.fnmatch(rel, pat) \
-                    or fnmatch.fnmatch(rel, bare):
-                matches.append(rel)
-                if len(matches) >= 500:
-                    capped = True
-                    break
-        if capped:
-            break
+    matches, capped = _glob_walk(base, pat, bare, root())
     return {"ok": True, "pattern": pat, "count": len(matches),
             "truncated": capped, "matches": sorted(matches)}
 
