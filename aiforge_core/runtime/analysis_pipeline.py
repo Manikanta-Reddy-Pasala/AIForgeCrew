@@ -23,6 +23,8 @@ Public API:
 """
 from __future__ import annotations
 
+import contextlib
+
 import concurrent.futures
 import logging
 import os
@@ -209,20 +211,11 @@ def should_fan_out(prompt: str, cwd: str) -> tuple[bool, list[dict], list[str]]:
     return (len(repos) >= 2, repos, topics)
 
 
-def _explore_one(repo: dict, topics: list[str], overall: str) -> dict:
-    """One READ-ONLY explore agent on ``repo``. Runs the researcher role (no
-    file_write/patch/bash — repo is never mutated) in the repo's REAL dir and
-    returns its findings markdown. Autonomous (session_id=None) so no per-tool
-    approval gates fire on a pure read."""
-    try:
-        from aiforge_core.llm.client import complete as _complete
-        from aiforge_core.runtime.chat_agent import run_chat_agent
-    except Exception as exc:  # noqa: BLE001
-        return {"name": repo["name"], "path": repo["path"], "ok": False,
-                "error": f"import: {exc}", "findings": ""}
+def _explore_prompt(repo: dict, topics: list[str], overall: str) -> str:
+    """The READ-ONLY analysis brief for one repo explore agent."""
     topic_line = ("Focus topics: " + "; ".join(topics) + "\n" if topics
                   else "Give a structured overview of the repository.\n")
-    msg = (
+    return (
         f"READ-ONLY analysis of the repository `{repo['name']}` at "
         f"`{repo['path']}`. Do NOT modify, create, or delete any file — this is "
         f"an inspection only.\n\n{topic_line}\n"
@@ -233,51 +226,80 @@ def _explore_one(repo: dict, topics: list[str], overall: str) -> dict:
         "any notable risks or gaps. End with a 3-5 bullet summary. Return ONLY "
         "the findings markdown as your final answer.")
 
+
+@contextlib.contextmanager
+def _bound_repo_root(path: str):
+    """Bind ``path`` as the repo root on THIS worker thread's context for the
+    duration. ThreadPoolExecutor does NOT copy contextvars, and codegraph._repo()
+    resolves via get_repo_root() BEFORE its cwd arg — so without this a
+    concurrent team run's process-global AIFORGE_REPO_ROOT env would resolve
+    codegraph to the WRONG repo. The contextvar wins over the shared env."""
+    tok = rc = None
+    try:
+        from aiforge_core.runtime import request_context as rc
+        tok = rc.set_repo_root(path)
+    except Exception:  # noqa: BLE001
+        rc = None
+    try:
+        yield
+    finally:
+        if tok is not None and rc is not None:
+            try:
+                rc.reset_repo_root(tok)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _findings_from_events(events, unit: dict) -> "tuple[str, bool, dict | None]":
+    """Collect the findings markdown from a read-only explore run. Returns
+    ``(findings, ok, error_result)`` — ``error_result`` is a fully-formed result
+    dict when the run emitted an error event (caller returns it), else None."""
+    findings, ok = "", False
+    for ev in events:
+        if ev.get("type") == "error":
+            return "", False, {"name": unit["name"], "path": unit["path"],
+                               "ok": False, "error": ev.get("text"),
+                               "findings": ""}
+        if ev.get("type") == "message" and not ev.get("awaiting_input"):
+            txt = ev.get("text") or ""
+            if txt and not txt.startswith("(stopped:"):
+                findings, ok = txt, True
+    return findings, ok, None
+
+
+def _explore_one(repo: dict, topics: list[str], overall: str) -> dict:
+    """One READ-ONLY explore agent on ``repo``. Runs the researcher role (no
+    file_write/patch/bash — repo is never mutated) in the repo's REAL dir and
+    returns its findings markdown. Autonomous (session_id=None) so no per-tool
+    approval gates fire on a pure read."""
+    try:
+        from aiforge_core.llm.client import complete as _complete
+    except Exception as exc:  # noqa: BLE001
+        return {"name": repo["name"], "path": repo["path"], "ok": False,
+                "error": f"import: {exc}", "findings": ""}
+    msg = _explore_prompt(repo, topics, overall)
+
     def complete_fn(role, convo):
         return _complete(role, convo)
 
-    # Bind the repo root to THIS worker thread's context. ThreadPoolExecutor
-    # does NOT copy contextvars, and codegraph._repo() resolves via
-    # get_repo_root() BEFORE its cwd arg — so without this, a concurrent team
-    # run's process-global AIFORGE_REPO_ROOT env would make every explore
-    # resolve codegraph to the WRONG repo. Setting the contextvar here makes it
-    # win over the shared env, and reset restores the worker's context.
-    _root_tok = None
+    # mode="analyze" is the HARD read-only guard AND asks for FINDINGS (not a
+    # change-plan): run_chat_agent's tool gate blocks any tool not in
+    # _READONLY_TOOLS. role= does NOT restrict tools in the chat loop and
+    # session_id=None skips the approval gate, so WITHOUT read-only mode a
+    # hallucinated write would auto-apply in the user's REAL repo — mandatory.
+    from aiforge_core.runtime.chat_agent import run_chat_agent
     try:
-        from aiforge_core.runtime import request_context as _rc
-        _root_tok = _rc.set_repo_root(repo["path"])
-    except Exception:  # noqa: BLE001
-        _rc = None
-
-    findings, ok = "", False
-    try:
-        # mode="analyze" is the HARD read-only guard AND asks for FINDINGS (not
-        # a change-plan): run_chat_agent's tool gate blocks any tool not in
-        # _READONLY_TOOLS (file_write/patch/bash/confluence_create/... blocked;
-        # file_read/grep/repo_map/codegraph allowed). role= does NOT restrict
-        # tools in the chat loop and session_id=None skips the approval gate, so
-        # WITHOUT read-only mode a hallucinated write would auto-apply in the
-        # user's REAL repo (no worktree here) — read-only is mandatory.
-        for ev in run_chat_agent([{"role": "user", "content": msg}],
-                                 cwd=repo["path"], role="researcher",
-                                 session_id=None, mode="analyze",
-                                 complete_fn=complete_fn):
-            if ev.get("type") == "error":
-                return {"name": repo["name"], "path": repo["path"], "ok": False,
-                        "error": ev.get("text"), "findings": ""}
-            if ev.get("type") == "message" and not ev.get("awaiting_input"):
-                txt = ev.get("text") or ""
-                if txt and not txt.startswith("(stopped:"):
-                    findings, ok = txt, True
+        with _bound_repo_root(repo["path"]):
+            findings, ok, err = _findings_from_events(
+                run_chat_agent([{"role": "user", "content": msg}],
+                               cwd=repo["path"], role="researcher",
+                               session_id=None, mode="analyze",
+                               complete_fn=complete_fn), repo)
     except Exception as exc:  # noqa: BLE001
         return {"name": repo["name"], "path": repo["path"], "ok": False,
                 "error": str(exc), "findings": ""}
-    finally:
-        if _root_tok is not None and _rc is not None:
-            try:
-                _rc.reset_repo_root(_root_tok)
-            except Exception:  # noqa: BLE001
-                pass
+    if err is not None:
+        return err
     return {"name": repo["name"], "path": repo["path"], "ok": ok,
             "findings": findings}
 
@@ -409,40 +431,44 @@ def _explore_files_group(group: dict, topics: list[str], overall: str) -> dict:
         "file: its key class/symbols and what it does (path:line where useful). "
         "Return ONLY the findings markdown.")
 
-    _root_tok = None
-    _rc = None
+    # NO complete_fn → run_chat_agent picks NATIVE tool-calling (the default).
+    # `read_files` needs reliable structured args, which local models only get
+    # via native FC — the text protocol fumbles them into `ARGS_JSON: {}` and the
+    # explore stalls. Native is the proven-good path for this exact tool.
     try:
-        from aiforge_core.runtime import request_context as _rc
-        _root_tok = _rc.set_repo_root(group["path"])
-    except Exception:  # noqa: BLE001
-        _rc = None
-    findings, ok = "", False
-    try:
-        # NO complete_fn → run_chat_agent picks NATIVE tool-calling (the default).
-        # `read_files` needs reliable structured args, which local models only get
-        # via native FC — the text protocol fumbles them into `ARGS_JSON: {}` and
-        # the explore stalls. Native is the proven-good path for this exact tool.
-        for ev in run_chat_agent([{"role": "user", "content": msg}],
-                                 cwd=group["path"], role="researcher",
-                                 session_id=None, mode="analyze"):
-            if ev.get("type") == "error":
-                return {"name": group["name"], "path": group["path"],
-                        "ok": False, "error": ev.get("text"), "findings": ""}
-            if ev.get("type") == "message" and not ev.get("awaiting_input"):
-                txt = ev.get("text") or ""
-                if txt and not txt.startswith("(stopped:"):
-                    findings, ok = txt, True
+        with _bound_repo_root(group["path"]):
+            findings, ok, err = _findings_from_events(
+                run_chat_agent([{"role": "user", "content": msg}],
+                               cwd=group["path"], role="researcher",
+                               session_id=None, mode="analyze"), group)
     except Exception as exc:  # noqa: BLE001
         return {"name": group["name"], "path": group["path"], "ok": False,
                 "error": str(exc), "findings": ""}
-    finally:
-        if _root_tok is not None and _rc is not None:
-            try:
-                _rc.reset_repo_root(_root_tok)
-            except Exception:  # noqa: BLE001
-                pass
+    if err is not None:
+        return err
     return {"name": group["name"], "path": group["path"], "ok": ok,
             "findings": findings}
+
+
+def _future_result(fut, unit: dict) -> dict:
+    """The explore result for one completed future, or a synthesized failure
+    result when the worker raised."""
+    try:
+        return fut.result()
+    except Exception as exc:  # noqa: BLE001
+        return {"name": unit["name"], "path": unit.get("path", ""), "ok": False,
+                "error": str(exc), "findings": ""}
+
+
+def _explore_result_events(unit: dict, res: dict):
+    """The subtask-update + researcher-thought events for one explore result."""
+    yield {"type": "subtask_update", "slug": unit["name"],
+           "status": "done" if res.get("ok") else "failed"}
+    why = res.get("error") or "no findings produced"
+    yield {"type": "thought", "role": "researcher",
+           "text": (f"{unit['name']}: "
+                    + ("findings ready" if res.get("ok")
+                       else f"explore failed ({why})"))}
 
 
 def _fan_out_and_synthesize(prompt, units, explore_fn, topics, session_id, noun):
@@ -470,25 +496,14 @@ def _fan_out_and_synthesize(prompt, units, explore_fn, topics, session_id, noun)
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
         fut_map = {ex.submit(explore_fn, u, topics, prompt): u for u in units}
         for fut in concurrent.futures.as_completed(fut_map):
-            u = fut_map[fut]
             if session_id is not None and chat_cancel.is_cancelled(session_id):
                 # Break silently — the SSE producer stops on the first post-cancel
                 # event, so the partial draft below must be the first thing it sees.
                 cancelled = True
                 break
-            try:
-                res = fut.result()
-            except Exception as exc:  # noqa: BLE001
-                res = {"name": u["name"], "path": u.get("path", ""), "ok": False,
-                       "error": str(exc), "findings": ""}
+            res = _future_result(fut, fut_map[fut])
             results.append(res)
-            yield {"type": "subtask_update", "slug": u["name"],
-                   "status": "done" if res.get("ok") else "failed"}
-            _why = res.get("error") or "no findings produced"
-            yield {"type": "thought", "role": "researcher",
-                   "text": (f"{u['name']}: "
-                            + ("findings ready" if res.get("ok")
-                               else f"explore failed ({_why})"))}
+            yield from _explore_result_events(fut_map[fut], res)
 
     if not results:
         yield {"type": "message",
