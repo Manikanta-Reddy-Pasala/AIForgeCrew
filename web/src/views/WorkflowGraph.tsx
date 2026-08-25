@@ -323,7 +323,7 @@ export default function WorkflowGraph() {
                     boxSizing: 'border-box', WebkitOverflowScrolling: 'touch' }}>
       <svg width={W} height={H} style={{ background: 'var(--bg-1)', display: 'block',
                                           maxWidth: 'none', flexShrink: 0 }}>
-        {topo.edges.map((e, i) => {
+        {topo.edges.map((e) => {
           const a = positions[e.from], b = positions[e.to];
           if (!a || !b) return null;
           const x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2;
@@ -337,7 +337,7 @@ export default function WorkflowGraph() {
             ? `M ${x1} ${y1} C ${x1 + 30} ${y1 + 50} ${x2 - 30} ${y2 + 50} ${x2} ${y2}`
             : `M ${x1} ${y1} L ${x2} ${y2}`;
           return (
-            <g key={i}>
+            <g key={`${e.from}-${e.to}-${e.label ?? ''}`}>
               <path d={path} stroke={stroke} strokeWidth={1.5}
                     strokeDasharray={dasharray} fill="none"
                     markerEnd={isFeedback ? 'url(#arrow-fb)' : 'url(#arrow)'} />
@@ -548,8 +548,8 @@ function CtxColumn({ title, color, items }:
         <div className="small muted">—</div>
       ) : (
         <ul style={{ margin: 0, paddingLeft: 16 }}>
-          {items.map((it, i) => (
-            <li key={i} className="small">
+          {items.map((it) => (
+            <li key={`${it.name}-${it.tag ?? ''}`} className="small">
               {it.name}
               {it.tag && <span className="muted"> · {it.tag}</span>}
             </li>

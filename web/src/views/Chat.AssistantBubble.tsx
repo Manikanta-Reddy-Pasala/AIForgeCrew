@@ -9,6 +9,19 @@ import { AgentStepRow } from './Chat.AgentSteps';
 
 // ── AssistantBubble — renders steps + final text ──────────────────────────────
 
+// A stable per-step key: prefer the tool's call_id, else derive from the step's
+// discriminating content. Steps are append-only within a turn, so these
+// composites are unique in practice — and unlike the array index they survive a
+// step flipping pending→done or the list being filtered (S6479).
+function stepKey(s: AgentStep): string {
+  switch (s.kind) {
+    case 'tool': return `tool:${s.call_id ?? `${s.name}:${JSON.stringify(s.args)}`}`;
+    case 'thought': return `thought:${s.role ?? ''}:${s.text}`;
+    case 'error': return `error:${s.text}`;
+    case 'changes': return `changes:${s.files.map(f => f.path).join(',')}`;
+  }
+}
+
 export function AssistantBubble({
   text,
   steps,
@@ -58,8 +71,8 @@ export function AssistantBubble({
           </button>
           {showSteps && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {otherSteps.map((s, i) => (
-                <AgentStepRow key={i} step={s} />
+              {otherSteps.map((s) => (
+                <AgentStepRow key={stepKey(s)} step={s} />
               ))}
             </div>
           )}
@@ -73,7 +86,7 @@ export function AssistantBubble({
       {/* Changes diff — always visible (the deliverable), below the answer. */}
       {changeSteps.length > 0 && (
         <div style={{ marginTop: text ? 8 : 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {changeSteps.map((s, i) => <AgentStepRow key={`chg-${i}`} step={s} />)}
+          {changeSteps.map((s) => <AgentStepRow key={`chg-${stepKey(s)}`} step={s} />)}
         </div>
       )}
       {streaming && !text && steps.length === 0 && (

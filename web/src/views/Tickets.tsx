@@ -331,7 +331,7 @@ export default function Tickets() {
                     📎 Attachments:
                   </strong>
                   {draft.attached_files.map((f, i) => (
-                    <span key={i} style={{
+                    <span key={f.name} style={{
                       padding: '2px 6px',
                       background: 'var(--bg-2)',
                       borderRadius: 3,

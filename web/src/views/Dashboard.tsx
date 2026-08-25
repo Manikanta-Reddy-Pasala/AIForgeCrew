@@ -184,8 +184,8 @@ export default function Dashboard() {
             <table>
               <thead><tr><th>Tier</th><th>Wing</th><th style={{ textAlign: 'right' }}>Count</th><th style={{ textAlign: 'right' }}>Embedded</th></tr></thead>
               <tbody>
-                {(mStats.wings || []).slice(0, 10).map((w: any, i: number) => (
-                  <tr key={i}>
+                {(mStats.wings || []).slice(0, 10).map((w: any) => (
+                  <tr key={`${w.tier}-${w.wing}`}>
                     <td><span className="chip">{w.tier}</span></td>
                     <td className="small mono">{w.wing}</td>
                     <td className="small mono" style={{ textAlign: 'right' }}>{Number(w.n).toLocaleString()}</td>

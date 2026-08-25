@@ -29,7 +29,7 @@ export function EnrichmentBlock({ enrichment }: Readonly<{ enrichment: any }>) {
         <details>
           <summary className="small"><strong>Focal files</strong> ({focal.length})</summary>
           <ul className="small mono" style={{ marginTop: 4 }}>
-            {focal.map((f: string, k: number) => <li key={k}>{f}</li>)}
+            {focal.map((f: string) => <li key={f}>{f}</li>)}
           </ul>
         </details>
       )}
@@ -37,7 +37,7 @@ export function EnrichmentBlock({ enrichment }: Readonly<{ enrichment: any }>) {
         <details>
           <summary className="small"><strong>Reference files</strong> ({ref.length})</summary>
           <ul className="small mono" style={{ marginTop: 4 }}>
-            {ref.map((f: string, k: number) => <li key={k}>{f}</li>)}
+            {ref.map((f: string) => <li key={f}>{f}</li>)}
           </ul>
         </details>
       )}
@@ -45,8 +45,8 @@ export function EnrichmentBlock({ enrichment }: Readonly<{ enrichment: any }>) {
         <details>
           <summary className="small"><strong>Similar past tickets</strong> ({sims.length})</summary>
           <ul className="small" style={{ marginTop: 4 }}>
-            {sims.map((s: any, k: number) => (
-              <li key={k}>
+            {sims.map((s: any) => (
+              <li key={s.identifier}>
                 <Link to={`/tickets/${s.identifier}`} className="identifier-badge">
                   {s.identifier}
                 </Link>
@@ -60,7 +60,7 @@ export function EnrichmentBlock({ enrichment }: Readonly<{ enrichment: any }>) {
         <details>
           <summary className="small"><strong>T3 recipes</strong> ({t3.length})</summary>
           <ul className="small" style={{ marginTop: 4 }}>
-            {t3.map((r: string, k: number) => <li key={k}>{r.slice(0, 280)}</li>)}
+            {t3.map((r: string) => <li key={r}>{r.slice(0, 280)}</li>)}
           </ul>
         </details>
       )}

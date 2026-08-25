@@ -61,7 +61,9 @@ export function SearchPanel() {
                 <span>· {groups[g.key].length}</span>
                 <span style={{ marginLeft: 'auto' }}>{g.hint}</span>
               </div>
-              {groups[g.key].map((h, i) => <HitCard key={i} h={h} />)}
+              {groups[g.key].map((h: any) => (
+                <HitCard key={h.id ?? `${h.source ?? ''}::${(h.text ?? '').slice(0, 60)}`} h={h} />
+              ))}
             </div>
           ))}
         </div>

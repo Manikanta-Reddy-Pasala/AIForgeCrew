@@ -77,6 +77,9 @@ function DiffBody({ diff }: Readonly<{ diff: string }>) {
       fontSize: 'var(--fs-xs)', lineHeight: 1.55, fontFamily: 'var(--font-mono)',
       background: 'var(--bg-code)', borderTop: '1px solid var(--border-0)',
     }}>
+      {/* key=index: immutable diff text rendered once; lines legitimately
+          duplicate (blank/context lines) so a content key would collide, and
+          the list never reorders. (S6479 exception) */}
       {diff.split('\n').map((ln, i) => {
         let color: string | undefined;
         let bg: string | undefined;
@@ -123,7 +126,7 @@ function ChangesView({ files, summary }: Readonly<{ files: ChangeFile[]; summary
         {summary.additions > 0 && <span style={{ color: 'var(--ok)' }}>+{summary.additions}</span>}
         {summary.deletions > 0 && <span style={{ color: 'var(--err)' }}>−{summary.deletions}</span>}
       </div>
-      {files.map((f, i) => <ChangeFileRow key={i} file={f} />)}
+      {files.map((f) => <ChangeFileRow key={f.path} file={f} />)}
     </div>
   );
 }

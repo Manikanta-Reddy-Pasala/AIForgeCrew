@@ -168,6 +168,8 @@ export function MdLite({ text }: Readonly<{ text: string }>) {
               } else if (ln.startsWith('@@')) {
                 color = '#6aa6ff';
               }
+              // key=index: immutable fence text rendered once; diff lines
+              // legitimately duplicate and never reorder. (S6479 exception)
               return <div key={j} style={{ color, background, padding: '0 4px' }}>{ln || ' '}</div>;
             })}
           </pre>
@@ -216,6 +218,10 @@ export function MdLite({ text }: Readonly<{ text: string }>) {
         i++;
       }
       out.push(
+        // key=index throughout this table: a pure render of immutable parsed
+        // text — header/cell text and whole rows legitimately duplicate (a
+        // content key would collide) and column/row order is positional and
+        // never reorders. (S6479 exception)
         <table key={`tb-${k++}`} className="md-table">
           <thead><tr>{header.map((c, j) => <th key={j}>{renderInline(c, `th-${k}-${j}`)}</th>)}</tr></thead>
           <tbody>
@@ -259,6 +265,7 @@ export function MdLite({ text }: Readonly<{ text: string }>) {
       }
       out.push(
         <ol key={`ol-${k++}`} start={startNum}>
+          {/* key=index: immutable parsed items, may duplicate, never reorder. (S6479 exception) */}
           {items.map((it, j) => <li key={j}>{renderInline(it, `oli-${k}-${j}`)}</li>)}
         </ol>,
       );
@@ -274,6 +281,7 @@ export function MdLite({ text }: Readonly<{ text: string }>) {
       }
       out.push(
         <ul key={`ul-${k++}`}>
+          {/* key=index: immutable parsed items, may duplicate, never reorder. (S6479 exception) */}
           {items.map((it, j) => <li key={j}>{renderInline(it, `li-${k}-${j}`)}</li>)}
         </ul>,
       );
@@ -302,6 +310,8 @@ export function MdLite({ text }: Readonly<{ text: string }>) {
     // line through the inline tokenizer.
     out.push(
       <p key={`para-${k++}`}>
+        {/* key=index: soft-wrapped lines of one immutable paragraph; positional,
+            may duplicate, never reorder. (S6479 exception) */}
         {pLines.map((pl, j) => (
           <React.Fragment key={j}>
             {j > 0 && <br />}

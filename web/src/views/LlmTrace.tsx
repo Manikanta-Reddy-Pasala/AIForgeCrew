@@ -100,7 +100,7 @@ export default function LlmTrace() {
         {events.map((c, i) => {
           const open = !!expanded[i];
           return (
-            <div key={i} className="card" style={{ marginBottom: 8 }}>
+            <div key={c.ts ?? `${c.agent_role ?? ''}-${c.dur_ms ?? ''}`} className="card" style={{ marginBottom: 8 }}>
               <div className="row" style={{ justifyContent: 'space-between' }}>
                 <div className="row" style={{ gap: 8 }}>
                   <strong>#{i + 1}</strong>
@@ -128,6 +128,9 @@ export default function LlmTrace() {
               </div>
               {open && (
                 <div style={{ marginTop: 8 }}>
+                  {/* key=index: immutable per-call transcript rendered once;
+                      roles/content duplicate across turns and it never reorders,
+                      so a content key would collide. (S6479 exception) */}
                   {(c.messages || []).map((m, j) => (
                     <details key={j} style={{ marginBottom: 6 }}>
                       <summary className="small">

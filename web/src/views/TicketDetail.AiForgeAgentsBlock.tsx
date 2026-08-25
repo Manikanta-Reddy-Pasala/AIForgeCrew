@@ -41,8 +41,8 @@ export function AiForgeAgentsBlock({ m }: Readonly<{ m: any }>) {
           <details open>
             <summary className="small"><strong>Plan steps</strong> ({steps.length})</summary>
             <ol className="small mono" style={{ marginTop: 4 }}>
-              {steps.map((s: any, k: number) => (
-                <li key={k}>
+              {steps.map((s: any) => (
+                <li key={`${s.action}-${s.target}`}>
                   <span className="chip sm" style={{ marginRight: 6 }}>{s.action}</span>
                   <code>{s.target}</code>
                   {s.expected && <div className="muted">↳ {s.expected}</div>}
@@ -56,8 +56,8 @@ export function AiForgeAgentsBlock({ m }: Readonly<{ m: any }>) {
           <details>
             <summary className="small"><strong>Unresolved refs</strong> ({grounding.unresolved_refs.length})</summary>
             <ul className="small mono" style={{ marginTop: 4 }}>
-              {grounding.unresolved_refs.map((u: any, k: number) => (
-                <li key={k}><code>{u.target}</code> — {u.reason} ({u.action})</li>
+              {grounding.unresolved_refs.map((u: any) => (
+                <li key={`${u.target}-${u.action}`}><code>{u.target}</code> — {u.reason} ({u.action})</li>
               ))}
             </ul>
           </details>
@@ -67,8 +67,8 @@ export function AiForgeAgentsBlock({ m }: Readonly<{ m: any }>) {
           <details>
             <summary className="small"><strong>Verifier issues</strong> ({verifier.issues.length})</summary>
             <ul className="small" style={{ marginTop: 4 }}>
-              {verifier.issues.map((i: any, k: number) => (
-                <li key={k}>
+              {verifier.issues.map((i: any) => (
+                <li key={`${i.kind}-${i.step_id ?? ''}-${i.message}`}>
                   <strong>{i.kind}</strong> {i.step_id ? `(step ${i.step_id})` : ''}: {i.message}
                 </li>
               ))}
@@ -80,8 +80,8 @@ export function AiForgeAgentsBlock({ m }: Readonly<{ m: any }>) {
           <details>
             <summary className="small"><strong>Doer detector hits</strong> ({doer.problems.length})</summary>
             <ul className="small mono" style={{ marginTop: 4 }}>
-              {doer.problems.map((p: any, k: number) => (
-                <li key={k}><strong>{p.mode}</strong> — {p.evidence}</li>
+              {doer.problems.map((p: any) => (
+                <li key={`${p.mode}-${p.evidence}`}><strong>{p.mode}</strong> — {p.evidence}</li>
               ))}
             </ul>
           </details>
@@ -123,8 +123,8 @@ export function AiForgeAgentsBlock({ m }: Readonly<{ m: any }>) {
             )}
             {review.comments?.length > 0 && (
               <ul className="small" style={{ marginTop: 4 }}>
-                {review.comments.map((c: string, k: number) => (
-                  <li key={k}>{c}</li>
+                {review.comments.map((c: string) => (
+                  <li key={c}>{c}</li>
                 ))}
               </ul>
             )}
@@ -137,7 +137,7 @@ export function AiForgeAgentsBlock({ m }: Readonly<{ m: any }>) {
               <strong>Allowed files seeded</strong> (showing {allowed.length} of {allowedCount})
             </summary>
             <ul className="small mono" style={{ marginTop: 4 }}>
-              {allowed.map((f: string, k: number) => <li key={k}>{f}</li>)}
+              {allowed.map((f: string) => <li key={f}>{f}</li>)}
             </ul>
           </details>
         )}

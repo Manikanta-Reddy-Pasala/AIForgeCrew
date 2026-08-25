@@ -79,12 +79,12 @@ export function AttachmentsBlock({
         )}
       </div>
       <div className="stack" style={{ gap: 12 }}>
-        {existing.map((f, i) => {
+        {existing.map((f) => {
           const url = `/files/${encodeURIComponent(identifier)}/${encodeURIComponent(f.name)}`;
           const isImage = IMAGE_EXT.test(f.name);
           const isRemoved = removed.has(f.name);
           return (
-            <div key={i} className="row"
+            <div key={f.name} className="row"
               style={{ gap: 12, alignItems: 'flex-start', opacity: isRemoved ? 0.4 : 1 }}>
               {isImage ? (
                 <a href={url} target="_blank" rel="noopener">
@@ -132,8 +132,8 @@ export function AttachmentsBlock({
           <DropZone onFiles={onFiles} />
           {added.length > 0 && (
             <div className="stack" style={{ gap: 2 }}>
-              {added.map((f, i) => (
-                <div key={i} className="small muted">
+              {added.map((f) => (
+                <div key={f.name} className="small muted">
                   📎 {f.name} ({formatBytes(f.size)}){' '}
                   <button type="button" className="ghost sm danger"
                     onClick={() => setAdded(prev => prev.filter(x => x.name !== f.name))}>

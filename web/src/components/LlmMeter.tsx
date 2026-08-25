@@ -46,6 +46,9 @@ function Sparkline({ data, fails }: Readonly<{ data: number[]; fails?: number[] 
         const h = Math.max(tot > 0 ? 2 : 1, Math.round((tot / max) * 28));
         const fh = f > 0 ? Math.max(1, Math.round((Math.min(f, tot) / Math.max(1, tot)) * h)) : 0;
         return (
+          // key=index is correct here: fixed-slot positional bars over a numeric
+          // bucket series (values duplicate, e.g. zeros); slot i IS the identity
+          // and the series never reorders. (S6479 exception)
           <span
             key={i}
             style={{

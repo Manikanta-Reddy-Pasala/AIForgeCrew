@@ -94,8 +94,8 @@ export default function Trace() {
         {steps.length === 0 && (
           <div className="card muted small">Waiting for graph-runner…</div>
         )}
-        {steps.map((s, i) => (
-          <div key={i} className="card" style={{ marginBottom: 8 }}>
+        {steps.map((s) => (
+          <div key={`${s.n}-${s.started}`} className="card" style={{ marginBottom: 8 }}>
             <div className="row" style={{ justifyContent: 'space-between' }}>
               <strong>Step {s.n || '—'}</strong>
               <div className="small muted">
