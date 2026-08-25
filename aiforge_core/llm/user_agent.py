@@ -109,7 +109,7 @@ _OPT_OUT = {"off", "none", "no", "0", "false", "anon", "anonymous"}
 # value" — while CRLF+space (obs-fold, RFC 9110 §5.2, deprecated precisely
 # because proxies disagree on it) went out on the wire intact. The one field a
 # human types by hand was the only one not being sanitised.
-_CTRL = re.compile(r"[\r\n\x00-\x1f\x7f]+")
+_CTRL = re.compile(r"[\x00-\x1f\x7f]+")
 
 
 def user_agent() -> str:

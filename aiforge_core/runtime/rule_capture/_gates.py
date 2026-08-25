@@ -122,7 +122,7 @@ _SHELL_SEP_RE = re.compile(r"&&|\|\||;|\||\n|\$\(|`")
 # (Python 3.11+, and this project requires >=3.11) forbids re-entering the
 # group once it has matched, which is exactly the backtracking that explodes.
 _GIT_HEAD_RE = re.compile(
-    r"^\s*git\s+(?>(?:-[A-Za-z]\S*|\S+=\S+)\s+)*(?:commit|add|push)\b",
+    r"^\s*git\s+(?>(?:-[A-Z]\S*|\S+=\S+)\s+)*(?:commit|add|push)\b",
     re.IGNORECASE)
 
 

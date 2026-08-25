@@ -10,7 +10,7 @@ from pathlib import Path
 
 _BASH = '.bash'
 
-_ACTION_RE = re.compile(r"ACTION:\s*([A-Za-z_]+)", re.IGNORECASE)
+_ACTION_RE = re.compile(r"ACTION:\s*([A-Z_]+)", re.IGNORECASE)
 _ARGS_RE = re.compile(r"ARGS_JSON:\s*(\{.*\})", re.IGNORECASE | re.DOTALL)
 _FINAL_RE = re.compile(r"FINAL:\s*(.*)", re.IGNORECASE | re.DOTALL)
 _ASK_RE = re.compile(r"ASK:\s*(.*)", re.IGNORECASE | re.DOTALL)
