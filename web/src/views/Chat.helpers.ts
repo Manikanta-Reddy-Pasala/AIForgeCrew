@@ -62,7 +62,7 @@ export function relTime(isoStr: string): string {
 // date to just the time). Shown alongside the relative label.
 export function dateTimeLabel(isoStr: string): string {
   const d = new Date(isoStr);
-  if (isNaN(d.getTime())) return '';
+  if (Number.isNaN(d.getTime())) return '';
   const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   const now = new Date();
   const sameDay = d.getFullYear() === now.getFullYear()

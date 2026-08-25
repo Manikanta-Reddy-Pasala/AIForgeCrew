@@ -18,7 +18,7 @@ export function statusClass(status: string) {
 export function relativeDate(iso: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso;
+  if (Number.isNaN(d.getTime())) return iso;
   const diff = Date.now() - d.getTime();
   const mins  = Math.floor(diff / 60000);
   const hours = Math.floor(diff / 3600000);
