@@ -623,10 +623,13 @@ export default function Chat() {
     ruleFlags().then(setGateFlags).catch(() => {});
   }
   useEffect(() => { refreshRules(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [activeId]);
-  const ruleState: RuleState = {
+  // Memoised so the Context value is a stable reference across renders (a fresh
+  // object each render re-renders every consumer). Sonar ts:S6481.
+  const ruleState: RuleState = useMemo(() => ({
     byId: ruleById, loaded: ruleLoaded, sessionId: activeId,
     flags: gateFlags, refresh: refreshRules,
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [ruleById, ruleLoaded, activeId, gateFlags]);
 
   // Composer
   const [input, setInput] = useState('');
