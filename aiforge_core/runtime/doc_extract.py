@@ -81,6 +81,16 @@ def _is_docx(path: str, mime: str) -> bool:
 
 
 # ── PDF ──────────────────────────────────────────────────────────────────
+def _table_rows(page) -> list[str]:
+    """One page's tables flattened to ``"a | b | c"`` row strings."""
+    rows: list[str] = []
+    for tbl in (page.extract_tables() or []):
+        for row in tbl:
+            cells = ["" if c is None else str(c).replace("\n", " ") for c in row]
+            rows.append(" | ".join(cells))
+    return rows
+
+
 def _pdf_tables(path: str, page_cap: int) -> dict[int, list[str]]:
     """Structured tables per page via pdfplumber (optional dep). Returns
     ``{page_index: ["a | b", …]}``. Empty when pdfplumber is absent or the PDF
@@ -94,12 +104,7 @@ def _pdf_tables(path: str, page_cap: int) -> dict[int, list[str]]:
     try:
         with pdfplumber.open(path) as pdf:
             for i, page in enumerate(pdf.pages[:page_cap]):
-                rows: list[str] = []
-                for tbl in (page.extract_tables() or []):
-                    for row in tbl:
-                        cells = ["" if c is None else str(c).replace("\n", " ")
-                                 for c in row]
-                        rows.append(" | ".join(cells))
+                rows = _table_rows(page)
                 if rows:
                     tables[i] = rows
     except Exception:  # noqa: BLE001
@@ -138,6 +143,27 @@ def _para_has_page_break(p_elem) -> bool:
     return False
 
 
+def _append_docx_paragraph(child, doc, Paragraph, pages: list, img_counter: list) -> None:
+    """Fold one docx paragraph child into ``pages``: start a new page on a
+    rendered/manual break, append its text, and append an ``[embedded image N]``
+    marker (bumping ``img_counter[0]``) when it carries a drawing/picture."""
+    if _para_has_page_break(child):
+        pages.append([])                     # break starts a new page
+    para = Paragraph(child, doc)
+    if para.text.strip():
+        pages[-1].append(para.text)
+    if child.findall(".//" + _DRAWING) or child.findall(".//" + _PICT):
+        img_counter[0] += 1
+        pages[-1].append(f"[embedded image {img_counter[0]}]")
+
+
+def _append_docx_table(child, doc, Table, pages: list) -> None:
+    """Fold one docx table child into the current page as ``"a | b"`` rows."""
+    for row in Table(child, doc).rows:
+        cells = [c.text.strip().replace("\n", " ") for c in row.cells]
+        pages[-1].append(" | ".join(cells))
+
+
 def _docx_pages(path: str) -> list[str]:
     """docx text segmented into pages on rendered/manual page breaks; each page
     carries paragraphs AND tables (in document order) plus ``[embedded image N]``
@@ -150,22 +176,12 @@ def _docx_pages(path: str) -> list[str]:
 
     doc = docx.Document(path)
     pages: list[list[str]] = [[]]
-    img_n = 0
+    img_counter = [0]
     for child in doc.element.body.iterchildren():
         if isinstance(child, CT_P):
-            if _para_has_page_break(child):
-                pages.append([])                 # break starts a new page
-            para = Paragraph(child, doc)
-            if para.text.strip():
-                pages[-1].append(para.text)
-            if child.findall(".//" + _DRAWING) or child.findall(".//" + _PICT):
-                img_n += 1
-                pages[-1].append(f"[embedded image {img_n}]")
+            _append_docx_paragraph(child, doc, Paragraph, pages, img_counter)
         elif isinstance(child, CT_Tbl):
-            table = Table(child, doc)
-            for row in table.rows:
-                cells = [c.text.strip().replace("\n", " ") for c in row.cells]
-                pages[-1].append(" | ".join(cells))
+            _append_docx_table(child, doc, Table, pages)
     return ["\n".join(p).strip() for p in pages]
 
 

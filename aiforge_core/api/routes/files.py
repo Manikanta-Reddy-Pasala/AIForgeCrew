@@ -34,35 +34,40 @@ except OSError:
 
 
 @router.get("/files/{identifier}/{name}")
-def serve_ticket_file(identifier: str, name: str):
-    """Serve a ticket attachment by (ticket, filename).
-
-    A dynamic route rather than a ``StaticFiles`` mount: the mount binds ONE
-    directory at import time, but the runner rebinds ``AIFORGE_REPO_ROOT`` per
-    ticket, so uploads land in a per-ticket worktree
-    (``/home/ai/codeRepo/<repo>/.aiforge/ticket-files/...``) that the boot-time
-    mount root does not point at → every such attachment 404'd. The ticket's
-    ``metadata.attached_files[].abs_path`` records the real write location, so
-    resolve from there first, then fall back to the persistent base dir.
-    """
+def _attachment_candidates(identifier: str, safe_name: str) -> list:
+    """Ordered on-disk candidate paths for a ticket attachment: the recorded
+    ``abs_path`` (the real per-ticket-worktree write location), then the
+    persistent base dir (current env), then the boot-time mount root."""
     from pathlib import Path as _Path
-    safe_name = _Path(name).name  # contain path traversal to the ticket dir
-    candidates: list[_Path] = []
+    candidates: list = []
     try:
         t = tickets_mod.get_enriched(identifier)
     except Exception:  # noqa: BLE001 — a store hiccup must not 500 the asset
         t = None
     if t:
         for f in ((t.get("metadata") or {}).get("attached_files") or []):
-            if not isinstance(f, dict) or (f.get("name") or "") != safe_name:
-                continue
-            ap = f.get("abs_path")
-            if ap:
-                candidates.append(_Path(ap))
-    # Fallbacks: the persistent base (current env) + the boot-time mount root.
+            if isinstance(f, dict) and (f.get("name") or "") == safe_name:
+                ap = f.get("abs_path")
+                if ap:
+                    candidates.append(_Path(ap))
     candidates.append(_ticket_files_base() / identifier / safe_name)
     candidates.append(_Path(_TICKET_FILES_ROOT) / identifier / safe_name)
-    for p in candidates:
+    return candidates
+
+
+def serve_ticket_file(identifier: str, name: str):
+    """Serve a ticket attachment by (ticket, filename).
+
+    A dynamic route rather than a ``StaticFiles`` mount: the mount binds ONE
+    directory at import time, but the runner rebinds ``AIFORGE_REPO_ROOT`` per
+    ticket, so uploads land in a per-ticket worktree that the boot-time mount
+    root does not point at → every such attachment 404'd. The ticket's
+    ``metadata.attached_files[].abs_path`` records the real write location, so
+    resolve from there first, then fall back to the persistent base dir.
+    """
+    from pathlib import Path as _Path
+    safe_name = _Path(name).name  # contain path traversal to the ticket dir
+    for p in _attachment_candidates(identifier, safe_name):
         try:
             if p.is_file():
                 return FileResponse(str(p))
