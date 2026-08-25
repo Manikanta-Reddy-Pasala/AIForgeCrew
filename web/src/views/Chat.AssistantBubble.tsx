@@ -15,7 +15,10 @@ import { AgentStepRow } from './Chat.AgentSteps';
 // step flipping pending→done or the list being filtered (S6479).
 function stepKey(s: AgentStep): string {
   switch (s.kind) {
-    case 'tool': return `tool:${s.call_id ?? `${s.name}:${JSON.stringify(s.args)}`}`;
+    case 'tool': {
+      const detail = s.call_id ?? `${s.name}:${JSON.stringify(s.args)}`;
+      return `tool:${detail}`;
+    }
     case 'thought': return `thought:${s.role ?? ''}:${s.text}`;
     case 'error': return `error:${s.text}`;
     case 'changes': return `changes:${s.files.map(f => f.path).join(',')}`;
