@@ -161,7 +161,12 @@ export default function WorkflowGraph() {
     //    so they don't corrupt the depth pass. An edge to a node currently on
     //    the recursion stack is a back-edge.
     const adj: Record<string, string[]> = {};
-    topo.edges.forEach(e => { if (e.from !== e.to) (adj[e.from] ||= []).push(e.to); });
+    topo.edges.forEach(e => {
+      if (e.from !== e.to) {
+        adj[e.from] ||= [];
+        adj[e.from].push(e.to);
+      }
+    });
     const state: Record<string, number> = {};   // 0 none · 1 on-stack · 2 done
     const back = new Set<string>();
     const dfs = (u: string) => {
@@ -189,7 +194,8 @@ export default function WorkflowGraph() {
     const depths: Node[][] = [];
     topo.nodes.forEach(n => {
       const d = depthMap[n.id] ?? 0;
-      (depths[d] ||= []).push(n);
+      depths[d] ||= [];
+      depths[d].push(n);
     });
     return { depthMap, depths, back };
   }, [topo]);

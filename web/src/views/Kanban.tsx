@@ -49,7 +49,8 @@ export default function Kanban() {
         if (!hay.includes(qq)) continue;
       }
       const st = optimistic[t.id] || t.status;
-      (g[st] ??= []).push({ ...t, status: st });
+      g[st] ??= [];
+      g[st].push({ ...t, status: st });
     }
     for (const k of Object.keys(g)) {
       g[k].sort((a, b) =>
