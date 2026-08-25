@@ -71,6 +71,7 @@ export const chatApi = {
   approvalSettings: api.approvalSettings,
   setApprovalMode: api.setApprovalMode,
   providersTest: api.providersTest,
+  testNative: api.testNative,
   // AgentSettings reads the per-role config through chatApi too; without this
   // delegation the call is undefined, throws, and the swallowed catch leaves
   // every agent dropdown stuck on "— pick a model —" despite saved config.
