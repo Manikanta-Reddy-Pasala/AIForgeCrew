@@ -170,7 +170,7 @@ export default function Logs() {
     });
   }, [lines, filter, ticketFilter]);
 
-  const anyOpen = (Object.values(connState) as string[]).some(v => v === 'open');
+  const anyOpen = (Object.values(connState) as string[]).includes('open');
 
   return (
     <>
