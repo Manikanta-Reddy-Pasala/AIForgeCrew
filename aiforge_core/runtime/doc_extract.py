@@ -146,13 +146,13 @@ def _para_has_page_break(p_elem) -> bool:
     return False
 
 
-def _append_docx_paragraph(child, doc, Paragraph, pages: list, img_counter: list) -> None:
+def _append_docx_paragraph(child, doc, paragraph_cls, pages: list, img_counter: list) -> None:
     """Fold one docx paragraph child into ``pages``: start a new page on a
     rendered/manual break, append its text, and append an ``[embedded image N]``
     marker (bumping ``img_counter[0]``) when it carries a drawing/picture."""
     if _para_has_page_break(child):
         pages.append([])                     # break starts a new page
-    para = Paragraph(child, doc)
+    para = paragraph_cls(child, doc)
     if para.text.strip():
         pages[-1].append(para.text)
     if child.findall(".//" + _DRAWING) or child.findall(".//" + _PICT):
@@ -160,9 +160,9 @@ def _append_docx_paragraph(child, doc, Paragraph, pages: list, img_counter: list
         pages[-1].append(f"[embedded image {img_counter[0]}]")
 
 
-def _append_docx_table(child, doc, Table, pages: list) -> None:
+def _append_docx_table(child, doc, table_cls, pages: list) -> None:
     """Fold one docx table child into the current page as ``"a | b"`` rows."""
-    for row in Table(child, doc).rows:
+    for row in table_cls(child, doc).rows:
         cells = [c.text.strip().replace("\n", " ") for c in row.cells]
         pages[-1].append(" | ".join(cells))
 

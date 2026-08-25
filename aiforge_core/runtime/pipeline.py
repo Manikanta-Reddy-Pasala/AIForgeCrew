@@ -461,18 +461,18 @@ def _attach_agent_callbacks(*, doer, refiner, learner, planner, enhancer,
         pass
 
 
-def _entry_edges(Edge, START, n) -> list:
+def _entry_edges(edge_cls, start, n) -> list:
     """Entry + the cheap fast-path switch."""
     from .graph_pipeline import ROUTE_FULL, ROUTE_TRIVIAL
-    return [Edge(from_node=START, to_node=n["triage"]),
-            Edge(from_node=n["triage"], to_node=n["triage_gate"]),
-            Edge(from_node=n["triage_gate"], to_node=n["doer"],
-                 route=ROUTE_TRIVIAL),
-            Edge(from_node=n["triage_gate"], to_node=n["enhancer"],
-                 route=ROUTE_FULL)]
+    return [edge_cls(from_node=start, to_node=n["triage"]),
+            edge_cls(from_node=n["triage"], to_node=n["triage_gate"]),
+            edge_cls(from_node=n["triage_gate"], to_node=n["doer"],
+                     route=ROUTE_TRIVIAL),
+            edge_cls(from_node=n["triage_gate"], to_node=n["enhancer"],
+                     route=ROUTE_FULL)]
 
 
-def _context_edges(Edge, n) -> list:
+def _context_edges(edge_cls, n) -> list:
     """context fan-out: enhancer → research_entry → branches → join → merge.
 
     research_entry is the stable fan-out source so the research-gap loop can
@@ -480,64 +480,64 @@ def _context_edges(Edge, n) -> list:
     re-arm requirement).
     """
     from .graph_pipeline import ROUTE_RESEARCH_GAP, ROUTE_RESEARCH_OK
-    edges = [Edge(from_node=n["enhancer"], to_node=n["research_entry"])]
+    edges = [edge_cls(from_node=n["enhancer"], to_node=n["research_entry"])]
     if not n["context_branches"]:
         # Lean: no context gatherers at all → go straight to the Planner.
         # (research_entry is a no-op fan-out source; it just passes through.)
-        return edges + [Edge(from_node=n["research_entry"], to_node=n["planner"])]
+        return edges + [edge_cls(from_node=n["research_entry"], to_node=n["planner"])]
     for br in n["context_branches"]:
-        edges.append(Edge(from_node=n["research_entry"], to_node=br))
-        edges.append(Edge(from_node=br, to_node=n["context_join"]))
-    edges.append(Edge(from_node=n["context_join"], to_node=n["merge_context"]))
+        edges.append(edge_cls(from_node=n["research_entry"], to_node=br))
+        edges.append(edge_cls(from_node=br, to_node=n["context_join"]))
+    edges.append(edge_cls(from_node=n["context_join"], to_node=n["merge_context"]))
     if n["gap_gate"] is None:
-        edges.append(Edge(from_node=n["merge_context"], to_node=n["planner"]))
+        edges.append(edge_cls(from_node=n["merge_context"], to_node=n["planner"]))
         return edges
     # merge_context → gap_eval → gap_gate ─┬ research_ok  → planner
     #                                       └ research_gap → research_entry
     edges += [
-        Edge(from_node=n["merge_context"], to_node=n["gap_eval"]),
-        Edge(from_node=n["gap_eval"], to_node=n["gap_gate"]),
-        Edge(from_node=n["gap_gate"], to_node=n["planner"],
-             route=ROUTE_RESEARCH_OK),
-        Edge(from_node=n["gap_gate"], to_node=n["research_entry"],
-             route=ROUTE_RESEARCH_GAP),
+        edge_cls(from_node=n["merge_context"], to_node=n["gap_eval"]),
+        edge_cls(from_node=n["gap_eval"], to_node=n["gap_gate"]),
+        edge_cls(from_node=n["gap_gate"], to_node=n["planner"],
+                 route=ROUTE_RESEARCH_OK),
+        edge_cls(from_node=n["gap_gate"], to_node=n["research_entry"],
+                 route=ROUTE_RESEARCH_GAP),
     ]
     return edges
 
 
-def _plan_edges(Edge, n) -> list:
+def _plan_edges(edge_cls, n) -> list:
     """planner → plan_promote (parse plan JSON → scope_allowlist_globs in
     state) → the single verifier (correctness+scope+risk in one call, writes
     verifier_verdict) → verifier_gate, which ACTS on the verdict: a rejected
     plan loops back to the planner once (bounded), a passing plan proceeds."""
     from .graph_pipeline import ROUTE_VERIFY_PASS, ROUTE_VERIFY_REPLAN
     return [
-        Edge(from_node=n["planner"], to_node=n["plan_promote"]),
-        Edge(from_node=n["plan_promote"], to_node=n["verifier"]),
-        Edge(from_node=n["verifier"], to_node=n["verifier_gate"]),
-        Edge(from_node=n["verifier_gate"], to_node=n["doer"],
-             route=ROUTE_VERIFY_PASS),
-        Edge(from_node=n["verifier_gate"], to_node=n["planner"],
-             route=ROUTE_VERIFY_REPLAN),
+        edge_cls(from_node=n["planner"], to_node=n["plan_promote"]),
+        edge_cls(from_node=n["plan_promote"], to_node=n["verifier"]),
+        edge_cls(from_node=n["verifier"], to_node=n["verifier_gate"]),
+        edge_cls(from_node=n["verifier_gate"], to_node=n["doer"],
+                 route=ROUTE_VERIFY_PASS),
+        edge_cls(from_node=n["verifier_gate"], to_node=n["planner"],
+                 route=ROUTE_VERIFY_REPLAN),
     ]
 
 
-def _loop_edges(Edge, n) -> list:
+def _loop_edges(edge_cls, n) -> list:
     """doer → refiner → feedback → loop_gate ⟲, then validator → replan back
     to the planner, or done → learner."""
     from .graph_pipeline import (
         ROUTE_DONE, ROUTE_EXIT, ROUTE_LOOP, ROUTE_REPLAN)
     return [
-        Edge(from_node=n["doer"], to_node=n["refiner"]),
-        Edge(from_node=n["refiner"], to_node=n["feedback"]),
-        Edge(from_node=n["feedback"], to_node=n["loop_gate"]),
-        Edge(from_node=n["loop_gate"], to_node=n["doer"], route=ROUTE_LOOP),
-        Edge(from_node=n["loop_gate"], to_node=n["validator"], route=ROUTE_EXIT),
-        Edge(from_node=n["validator"], to_node=n["validator_gate"]),
-        Edge(from_node=n["validator_gate"], to_node=n["planner"],
-             route=ROUTE_REPLAN),
-        Edge(from_node=n["validator_gate"], to_node=n["learner"],
-             route=ROUTE_DONE),
+        edge_cls(from_node=n["doer"], to_node=n["refiner"]),
+        edge_cls(from_node=n["refiner"], to_node=n["feedback"]),
+        edge_cls(from_node=n["feedback"], to_node=n["loop_gate"]),
+        edge_cls(from_node=n["loop_gate"], to_node=n["doer"], route=ROUTE_LOOP),
+        edge_cls(from_node=n["loop_gate"], to_node=n["validator"], route=ROUTE_EXIT),
+        edge_cls(from_node=n["validator"], to_node=n["validator_gate"]),
+        edge_cls(from_node=n["validator_gate"], to_node=n["planner"],
+                 route=ROUTE_REPLAN),
+        edge_cls(from_node=n["validator_gate"], to_node=n["learner"],
+                 route=ROUTE_DONE),
     ]
 
 

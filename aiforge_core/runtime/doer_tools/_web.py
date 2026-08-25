@@ -50,14 +50,14 @@ def _open_web_response(req, url: str):
                                       context=insecure_context()), True
 
 
-def _reguard_redirect(resp, url: str, guard_public_url, SSRFBlocked) -> "dict | None":
+def _reguard_redirect(resp, url: str, guard_public_url, ssrf_blocked) -> "dict | None":
     """Re-guard the final URL after any redirect hops — a public URL can 30x to
     a private/metadata target. Returns a refusal dict, or None to allow."""
     final = getattr(resp, "url", None)
     if final and final != url:
         try:
             guard_public_url(final)
-        except SSRFBlocked as exc:
+        except ssrf_blocked as exc:
             if exc.kind != "dns":
                 return {"ok": False,
                         "error": f"blocked after redirect (ssrf): {exc}"}

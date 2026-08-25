@@ -121,7 +121,7 @@ def _tags_cache_dir(cfg: "AiderMapConfig"):
 
 
 @contextlib.contextmanager
-def _tags_cache_redirected(RepoMap, cache_dir):
+def _tags_cache_redirected(repo_map_cls, cache_dir):
     """Point aider's hardcoded ``<root>/.aider.tags.cache.v4`` at ``cache_dir``.
 
     It can't be passed as an argument, so the class attribute is mutated —
@@ -130,24 +130,24 @@ def _tags_cache_redirected(RepoMap, cache_dir):
     if cache_dir is None:
         yield
         return
-    saved = getattr(RepoMap, "TAGS_CACHE_DIR", None)
+    saved = getattr(repo_map_cls, "TAGS_CACHE_DIR", None)
     _MAP_LOCK.acquire()
     try:
         try:
-            RepoMap.TAGS_CACHE_DIR = str(cache_dir / ".aider.tags.cache.v4")
+            repo_map_cls.TAGS_CACHE_DIR = str(cache_dir / ".aider.tags.cache.v4")
         except Exception:  # noqa: BLE001
             pass
         yield
     finally:
         if saved is not None:
             try:
-                RepoMap.TAGS_CACHE_DIR = saved
+                repo_map_cls.TAGS_CACHE_DIR = saved
             except Exception:  # noqa: BLE001
                 pass
         _MAP_LOCK.release()
 
 
-def _run_repomap(RepoMap, cfg, chat_files, other_files, main_model,
+def _run_repomap(repo_map_cls, cfg, chat_files, other_files, main_model,
                  aider_io) -> str:
     """Build the ranked digest.
 
@@ -159,7 +159,7 @@ def _run_repomap(RepoMap, cfg, chat_files, other_files, main_model,
                  for p in (chat_files + other_files)]
     idents, fnames = _mentions(cfg.user_text, rel_files)
     with contextlib.redirect_stdout(_stdio.StringIO()):
-        rm = RepoMap(map_tokens=cfg.map_tokens, root=str(cfg.root),
+        rm = repo_map_cls(map_tokens=cfg.map_tokens, root=str(cfg.root),
                      main_model=main_model, io=aider_io, verbose=False,
                      refresh=cfg.refresh)
         return rm.get_repo_map(chat_files, other_files,
