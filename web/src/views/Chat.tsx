@@ -698,7 +698,7 @@ export default function Chat() {
     if (!trimmed) return;
     // Find current title to check if changed
     const current = sessions.find(s => s.id === renaming.id);
-    if (current && current.title === trimmed) return;
+    if (current?.title === trimmed) return;
     try {
       const updated = await chatApi.sessionRename(renaming.id, trimmed);
       setSessions(prev => prev.map(s => s.id === renaming.id ? { ...s, title: updated.title } : s));
@@ -1225,7 +1225,7 @@ export default function Chat() {
   // Subtasks for the pinned bottom dock: the live run's list (updates status
   // live), else the most recent finished turn that carried a decomposition.
   const dockSubtasks: SubtaskItem[] | undefined = (() => {
-    if (liveTurn?.subtasks && liveTurn.subtasks.length) return liveTurn.subtasks;
+    if (liveTurn?.subtasks?.length) return liveTurn.subtasks;
     for (let i = messages.length - 1; i >= 0; i--) {
       const st = (messages[i].steps || []).find((s: any) => s?.type === 'subtasks');
       if (st?.items?.length) return st.items as SubtaskItem[];
@@ -1298,10 +1298,10 @@ export default function Chat() {
             <div
               key={s.id}
               className={`chat-session-item ${s.id === activeId ? 'active' : ''}`}
-              {...clickable(() => { if (!renaming || renaming.id !== s.id) selectSession(s.id); })}
+              {...clickable(() => { if (renaming?.id !== s.id) selectSession(s.id); })}
             >
               <div className="chat-session-item-body">
-                {renaming && renaming.id === s.id ? (
+                {renaming?.id === s.id ? (
                   <input
                     ref={renameInputRef}
                     className="chat-session-rename-input"
@@ -1326,7 +1326,7 @@ export default function Chat() {
                   </>
                 )}
               </div>
-              {(!renaming || renaming.id !== s.id) && (
+              {renaming?.id !== s.id && (
                 <div className="chat-session-actions">
                   <button type="button"
                     title="Rename"

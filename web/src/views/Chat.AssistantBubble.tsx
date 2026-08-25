@@ -42,7 +42,7 @@ export function AssistantBubble({
   const otherSteps = steps.filter(s => s.kind !== 'changes');
   return (
     <div>
-      {captured && captured.map(c => <CapturedPill key={c.id} item={c} />)}
+      {captured?.map(c => <CapturedPill key={c.id} item={c} />)}
       {subtasks && subtasks.length > 0 && <SubtaskList items={subtasks} />}
       {otherSteps.length > 0 && (
         <div style={{ marginBottom: text ? 8 : 0 }}>

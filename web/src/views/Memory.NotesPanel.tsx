@@ -46,7 +46,7 @@ export function NotesPanel() {
         `Topics: ${summary}\n\nOriginals are archived (not deleted) and can be restored.`,
       )) return;
       const r = await api.memoryFilesCompact({ group_by: 'topic' });
-      const how = (r.summarized && r.summarized.length)
+      const how = (r.summarized?.length)
         ? `LLM-summarized ${r.summarized.length}/${r.files_out}`
         : 'merged (no model reachable)';
       toast.success(`Compacted ${r.files_in} → ${r.files_out} files · ${how}`);
@@ -68,10 +68,10 @@ export function NotesPanel() {
             // step N/6 · <current step> · brief M/K (which brief) · elapsed
             const stepNo = Math.min(s.steps_done.length + 1, s.total_steps);
             const keyPart = s.sub?.key ? ` (${s.sub.key})` : '';
-            const brief = s.sub && s.sub.total
+            const brief = s.sub?.total
               ? ` · brief ${s.sub.done}/${s.sub.total}${keyPart}`
               : '';
-            const short = s.sub && s.sub.total
+            const short = s.sub?.total
               ? `${s.current} ${s.sub.done}/${s.sub.total}`
               : (s.current || 'working…');
             const label = s.running
