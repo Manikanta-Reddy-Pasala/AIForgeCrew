@@ -91,16 +91,29 @@ def destroy_kernel(run_id: str) -> None:
         emit("Cell", {"action": "kernel_stopped", "run_id": run_id})
 
 
+def _fold_iopub_msg(content: dict, mtype: str, acc: dict) -> bool:
+    """Fold one iopub message into the stdout/stderr/result accumulators.
+    Returns True when it signals the kernel is idle (stop draining)."""
+    if mtype == "stream":
+        target = "stderr" if content.get("name", "") == "stderr" else "stdout"
+        acc[target].append(content.get("text", ""))
+    elif mtype == "execute_result":
+        acc["result"] = str(content.get("data", {}).get("text/plain", ""))
+    elif mtype == "error":
+        acc["stderr"].append("\n".join(content.get("traceback", [])))
+    elif mtype == "status" and content.get("execution_state") == "idle":
+        return True
+    return False
+
+
 def _drain_iopub(client: Any, msg_id: str, timeout: int) -> dict[str, Any]:
     """Collect stdout / stderr / result from a single execute request."""
     import time as _t
-    stdout_parts: list[str] = []
-    stderr_parts: list[str] = []
-    result: str = ""
+    acc: dict = {"stdout": [], "stderr": [], "result": ""}
     timed_out = False
-    # WALL-CLOCK deadline — not a per-message idle timeout. Otherwise a cell
-    # that prints continuously (``while True: print(x)``) resets the timeout
-    # on every message and never terminates.
+    # WALL-CLOCK deadline — not a per-message idle timeout. Otherwise a cell that
+    # prints continuously (``while True: print(x)``) resets the timeout on every
+    # message and never terminates.
     deadline = _t.monotonic() + max(1, timeout)
     while True:
         remaining = deadline - _t.monotonic()
@@ -114,27 +127,12 @@ def _drain_iopub(client: Any, msg_id: str, timeout: int) -> dict[str, Any]:
             break
         if msg.get("parent_header", {}).get("msg_id") != msg_id:
             continue
-        mtype = msg.get("msg_type", "")
-        content = msg.get("content", {})
-        if mtype == "stream":
-            name = content.get("name", "")
-            txt = content.get("text", "")
-            if name == "stderr":
-                stderr_parts.append(txt)
-            else:
-                stdout_parts.append(txt)
-        elif mtype == "execute_result":
-            data = content.get("data", {})
-            result = str(data.get("text/plain", ""))
-        elif mtype == "error":
-            tb = "\n".join(content.get("traceback", []))
-            stderr_parts.append(tb)
-        elif mtype == "status" and content.get("execution_state") == "idle":
+        if _fold_iopub_msg(msg.get("content", {}), msg.get("msg_type", ""), acc):
             break
     return {
-        "stdout": "".join(stdout_parts),
-        "stderr": "".join(stderr_parts),
-        "result": result,
+        "stdout": "".join(acc["stdout"]),
+        "stderr": "".join(acc["stderr"]),
+        "result": acc["result"],
         "timed_out": timed_out,
     }
 
