@@ -36,34 +36,52 @@ def _ticket_scope_globs(state: dict) -> list[str]:
     return [g for g in raw if isinstance(g, str) and g]
 
 
+def _editor_paths(args: dict) -> list[str]:
+    if (args.get("command") or "") in {"view"}:
+        return []  # read-only, no scope hit
+    p = args.get("path") or ""
+    return [p] if p else []
+
+
+def _write_paths(args: dict) -> list[str]:
+    p = args.get("path") or args.get("file") or ""
+    return [p] if p else []
+
+
+def _multi_edit_paths(args: dict) -> list[str]:
+    # batch edit: {"edits": [{"path", ...}, ...]} — every path counts.
+    out: list[str] = []
+    for e in (args.get("edits") or []):
+        if isinstance(e, dict):
+            p = str(e.get("path") or "").strip()
+            if p:
+                out.append(p)
+    return out
+
+
+def _rename_symbol_paths(args: dict) -> list[str]:
+    # Mass word-boundary rewrite across every code file under `path` (default
+    # "."). Scope it by its base path so an autonomous run can't rewrite files
+    # outside the ticket's allowlist.
+    return [str(args.get("path") or ".")]
+
+
+# tool → paths extractor. Tools absent here (git_commit, reads) hit no scope:
+# git_commit touches the whole tree we already approved file by file.
+_PATH_EXTRACTORS = {
+    "editor": _editor_paths,
+    "file_write": _write_paths,
+    "file_create": _write_paths,
+    "file_patch": _write_paths,
+    "multi_edit": _multi_edit_paths,
+    "rename_symbol": _rename_symbol_paths,
+}
+
+
 def _path_from_args(tool_name: str, args: dict) -> list[str]:
     """Return every filesystem path the call wants to touch."""
-    if tool_name == "editor":
-        if (args.get("command") or "") in {"view"}:
-            return []  # read-only, no scope hit
-        p = args.get("path") or ""
-        return [p] if p else []
-    if tool_name in ("file_write", "file_create", "file_patch"):
-        p = args.get("path") or args.get("file") or ""
-        return [p] if p else []
-    if tool_name == "multi_edit":
-        # batch edit: {"edits": [{"path", ...}, ...]} — every path counts.
-        out: list[str] = []
-        for e in (args.get("edits") or []):
-            if isinstance(e, dict):
-                p = str(e.get("path") or "").strip()
-                if p:
-                    out.append(p)
-        return out
-    if tool_name == "rename_symbol":
-        # Mass word-boundary rewrite across every code file under `path`
-        # (default "."). Scope it by its base path so an autonomous run can't
-        # rewrite files outside the ticket's allowlist.
-        return [str(args.get("path") or ".")]
-    if tool_name == "git_commit":
-        # commit touches the whole tree we already approved file by file
-        return []
-    return []
+    extractor = _PATH_EXTRACTORS.get(tool_name)
+    return extractor(args) if extractor else []
 
 
 def _repo_root_prefixes() -> tuple[str, ...]:

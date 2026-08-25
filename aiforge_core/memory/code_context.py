@@ -99,6 +99,20 @@ def aider_digest(worktree: str, chat_files: list[str],
 _REPO_MAP_EXTS = (".java", ".py", ".ts", ".tsx", ".js", ".kt", ".go")
 
 
+def _wanted_repo_file(dirpath: str, fname: str, root: Path, exclude: set[str],
+                      is_noise_path) -> "str | None":
+    """The absolute path of ``fname`` if it is an in-scope code file, else None
+    (wrong extension, noise path, or explicitly excluded)."""
+    if not fname.endswith(_REPO_MAP_EXTS):
+        return None
+    full = os.path.join(dirpath, fname)
+    if is_noise_path(full):
+        return None
+    if os.path.relpath(full, root) in exclude:
+        return None
+    return full
+
+
 def _enumerate_repo_files(root: Path, exclude: set[str],
                           cap: int = 4000) -> list[str]:
     """Walk worktree, return code files. Noise dirs/extensions filtered
@@ -109,13 +123,8 @@ def _enumerate_repo_files(root: Path, exclude: set[str],
     for dirpath, dirnames, filenames in os.walk(root):
         prune_dirnames(dirnames)   # in-place prune for noise dirs
         for f in filenames:
-            if not f.endswith(_REPO_MAP_EXTS):
-                continue
-            full = os.path.join(dirpath, f)
-            if is_noise_path(full):
-                continue
-            rel = os.path.relpath(full, root)
-            if rel in exclude:
+            full = _wanted_repo_file(dirpath, f, root, exclude, is_noise_path)
+            if full is None:
                 continue
             out.append(full)
             if len(out) >= cap:
@@ -150,59 +159,48 @@ LIMIT $limit
 """
 
 
-def graph_neighbours(file_paths: list[str], limit: int = 30) -> str:
-    """Return a short text block of symbols linked to the in-scope files.
-
-    Pulls calls/imports/extends/implements edges from Neo4j (populated
-    by tree-sitter ingest + Graphify mirror). Filters to ≤30 lines so
-    the doer prompt doesn't explode.
-
-    Returns "" on driver error or empty results.
-    """
-    if not file_paths:
-        return ""
-    if os.environ.get("AIFORGE_DOER_GRAPH_NEIGHBOURS", "1") != "1":
-        return ""
-    try:
-        from neo4j import GraphDatabase  # type: ignore
-    except Exception:
-        return ""
-    from aiforge_core.memory.neo4j_conn import neo4j_params
-    uri, user, pw = neo4j_params()
-    # Reduce to the repo-relative tail. The indexer keeps the host-side
-    # absolute path; matching by ENDS WITH on the relative suffix is
-    # both fast (suffix index for Symbol.file_path is implicit on small
-    # corpora) and host-agnostic.
+def _neighbour_suffix_paths(file_paths: list[str]) -> list[str]:
+    """Reduce host-side absolute paths to repo-relative tails for an ENDS WITH
+    match against ``Symbol.file_path``. Drops everything before ``src/main/`` /
+    ``src/test/``; a path without either marker is kept as-is. Capped at 20."""
     suffix_paths: set[str] = set()
     for p in file_paths:
-        # Drop everything before "src/main/" or first repo marker.
         for marker in ("src/main/", "src/test/"):
             idx = p.find(marker)
             if idx >= 0:
                 suffix_paths.add(p[idx:])
                 break
         else:
-            # Fall back to the relative path as-is.
             suffix_paths.add(p)
-    rel_paths = list(suffix_paths)[:20]
-    rows: list[dict] = []
+    return list(suffix_paths)[:20]
+
+
+def _fetch_neighbour_rows(rel_paths: list[str], limit: int) -> list[dict]:
+    """Run the neighbours Cypher, returning [] on any driver/session error. The
+    driver is always closed — it must not leak when ``session().run()`` raises."""
+    try:
+        from neo4j import GraphDatabase  # type: ignore
+    except Exception:
+        return []
+    from aiforge_core.memory.neo4j_conn import neo4j_params
+    uri, user, pw = neo4j_params()
     drv = None
     try:
         drv = GraphDatabase.driver(uri, auth=(user, pw))
         with drv.session() as s:
-            rows = s.run(_NEIGHBOURS_CYPHER, paths=rel_paths, limit=limit).data()
+            return s.run(_NEIGHBOURS_CYPHER, paths=rel_paths, limit=limit).data()
     except Exception:
-        return ""
+        return []
     finally:
-        # Always close — the driver must not leak when session().run() raises
-        # (control would otherwise jump past a close() left inside the try).
         if drv is not None:
             try:
                 drv.close()
             except Exception:
                 pass
-    if not rows:
-        return ""
+
+
+def _render_neighbours(rows: list[dict]) -> str:
+    """Format neighbour edges into a short text block (≤ prompt-safe)."""
     lines = [f"[Graphify+tree-sitter — top-{len(rows)} neighbour symbols]"]
     for r in rows:
         if not r.get("from_fqn") or not r.get("to_fqn"):
@@ -210,9 +208,23 @@ def graph_neighbours(file_paths: list[str], limit: int = 30) -> str:
         sig = (r.get("sig") or "").strip().replace("\n", " ")[:80]
         lines.append(
             f"- {r['from_fqn']} --{r['rel']}--> {r['to_fqn']}"
-            + (f"  ({sig})" if sig else "")
-        )
+            + (f"  ({sig})" if sig else ""))
     return "\n".join(lines) if len(lines) > 1 else ""
+
+
+def graph_neighbours(file_paths: list[str], limit: int = 30) -> str:
+    """Return a short text block of symbols linked to the in-scope files.
+
+    Pulls calls/imports/extends/implements edges from Neo4j (populated by
+    tree-sitter ingest + Graphify mirror). Filters so the doer prompt doesn't
+    explode. Returns "" on driver error or empty results.
+    """
+    if not file_paths:
+        return ""
+    if os.environ.get("AIFORGE_DOER_GRAPH_NEIGHBOURS", "1") != "1":
+        return ""
+    rows = _fetch_neighbour_rows(_neighbour_suffix_paths(file_paths), limit)
+    return _render_neighbours(rows) if rows else ""
 
 
 # ─────────────────── Compat shim (understander / legacy callers) ────────────

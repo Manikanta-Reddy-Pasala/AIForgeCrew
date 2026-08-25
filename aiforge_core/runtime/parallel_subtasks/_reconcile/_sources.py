@@ -68,16 +68,10 @@ def _files_in_output(cwd: str, output: str) -> set:
     return hits
 
 
-def _py_local_imports(cwd: str, rel: str) -> set:
-    """Local module files a Python file imports (1 hop) — so the resolver sees
-    both sides of a cross-file mismatch, still minimal."""
+def _imported_basenames(tree) -> set:
+    """The last path segment of every module a parsed Python file imports —
+    ``from a.b.c import x`` and ``import a.b.c`` both contribute ``c``."""
     import ast as _ast
-    out: set = set()
-    try:
-        with open(os.path.join(cwd, rel), encoding="utf-8", errors="replace") as fh:
-            tree = _ast.parse(fh.read())
-    except Exception:  # noqa: BLE001
-        return out
     mods: set = set()
     for node in _ast.walk(tree):
         if isinstance(node, _ast.ImportFrom) and node.module:
@@ -85,13 +79,34 @@ def _py_local_imports(cwd: str, rel: str) -> set:
         elif isinstance(node, _ast.Import):
             for a in node.names:
                 mods.add(a.name.split(".")[-1])
-    for base in mods:
-        fn = base + ".py"
-        for root, _d, files in os.walk(cwd):
-            if fn in files:
-                r = os.path.relpath(os.path.join(root, fn), cwd)
-                if ".aiforge" not in r:
-                    out.add(r)
+    return mods
+
+
+def _local_module_files(cwd: str, basename: str) -> set:
+    """Repo-relative ``<basename>.py`` files under ``cwd`` (excluding .aiforge)."""
+    fn = basename + ".py"
+    out: set = set()
+    for root, _d, files in os.walk(cwd):
+        if fn in files:
+            r = os.path.relpath(os.path.join(root, fn), cwd)
+            if ".aiforge" not in r:
+                out.add(r)
+    return out
+
+
+def _py_local_imports(cwd: str, rel: str) -> set:
+    """Local module files a Python file imports (1 hop) — so the resolver sees
+    both sides of a cross-file mismatch, still minimal."""
+    import ast as _ast
+    try:
+        with open(os.path.join(cwd, rel), encoding="utf-8",
+                  errors="replace") as fh:
+            tree = _ast.parse(fh.read())
+    except Exception:  # noqa: BLE001
+        return set()
+    out: set = set()
+    for base in _imported_basenames(tree):
+        out |= _local_module_files(cwd, base)
     return out
 
 
@@ -211,28 +226,27 @@ _SRC_EXTS = (".py", ".java", ".go", ".js", ".mjs", ".ts", ".tsx", ".c", ".cc",
              ".scala", ".sh")
 
 
-def _turn_changed_source(cwd: str) -> "list[str] | None":
-    """Source files THIS turn changed — BOTH uncommitted (working tree) AND
-    COMMITTED since the pre-turn baseline. The parallel subtasks COMMIT their
-    files, so ``git status`` shows a clean tree and misses everything they built;
-    without the baseline diff a greenfield build looks like "nothing changed" and
-    its compile error is wrongly ruled pre-existing. Returns None on git error
-    (caller treats as "don't skip")."""
+def _working_tree_changes(cwd: str) -> "set[str] | None":
+    """Uncommitted (working-tree) paths from ``git status --porcelain``. None on
+    git error (the tree is unusable → caller treats as "don't skip")."""
     import subprocess as _sp
-    files: set[str] = set()
     try:
         r = _sp.run(["git", "-C", cwd, "status", "--porcelain"],
                     capture_output=True, text=True, timeout=10)
         if r.returncode != 0:
             return None                       # git unusable
-        for ln in (r.stdout or "").splitlines():
-            p = ln[3:].strip().strip('"')
-            if p:
-                files.add(p)
+        return {p for ln in (r.stdout or "").splitlines()
+                if (p := ln[3:].strip().strip('"'))}
     except Exception:  # noqa: BLE001
         return None
-    # committed-since-baseline (the subtasks' work) — diff HEAD against the most
-    # recent 'baseline' commit the planner pinned.
+
+
+def _committed_since_baseline(cwd: str) -> set[str]:
+    """Paths committed since the planner's pinned 'baseline' commit — the
+    parallel subtasks COMMIT their files, so ``git status`` shows a clean tree
+    and misses everything they built. Best-effort: empty set on any git error."""
+    import subprocess as _sp
+    files: set[str] = set()
     try:
         base = _sp.run(["git", "-C", cwd, "rev-list", "--max-count=1",
                         "--grep=baseline", "HEAD"],
@@ -241,11 +255,24 @@ def _turn_changed_source(cwd: str) -> "list[str] | None":
             d = _sp.run(["git", "-C", cwd, "diff", "--name-only", f"{base}..HEAD"],
                         capture_output=True, text=True, timeout=10)
             if d.returncode == 0:
-                for p in (d.stdout or "").splitlines():
-                    if p.strip():
-                        files.add(p.strip())
+                files.update(p.strip() for p in (d.stdout or "").splitlines()
+                             if p.strip())
     except Exception:  # noqa: BLE001
         pass
+    return files
+
+
+def _turn_changed_source(cwd: str) -> "list[str] | None":
+    """Source files THIS turn changed — BOTH uncommitted (working tree) AND
+    COMMITTED since the pre-turn baseline. The parallel subtasks COMMIT their
+    files, so ``git status`` shows a clean tree and misses everything they built;
+    without the baseline diff a greenfield build looks like "nothing changed" and
+    its compile error is wrongly ruled pre-existing. Returns None on git error
+    (caller treats as "don't skip")."""
+    files = _working_tree_changes(cwd)
+    if files is None:
+        return None
+    files |= _committed_since_baseline(cwd)
     return [f for f in files if f.endswith(_SRC_EXTS)]
 
 
