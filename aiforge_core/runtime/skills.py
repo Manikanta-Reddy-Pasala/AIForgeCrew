@@ -388,8 +388,8 @@ def select_or_ask(query: str, cwd: str | None = None, k: int = 4,
         if len(group) > 1:
             ambiguous.append(group)
             score_by_name = {h["name"]: h["score"] for h in near}
-            best = sorted(
-                group, key=lambda s: (-s.priority, -score_by_name[s.name]))[0]
+            best = min(
+                group, key=lambda s: (-s.priority, -score_by_name[s.name]))
             chosen[best.name] = best
             hits = hits[len(near):]   # remaining non-ambiguous hits below
     for h in hits[:k]:
