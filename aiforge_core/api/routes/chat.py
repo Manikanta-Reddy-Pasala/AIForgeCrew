@@ -1594,6 +1594,146 @@ def _publish_final_usage(run, session_id, steps: list) -> None:
         pass
 
 
+def _looks_like_analysis(p: str) -> bool:
+    """A read-only analysis query ("analyze/explain/how does X work") — the user
+    wants an EXPLANATION, not a build. An action verb (fix/create/build…) present
+    means it is NOT read-only."""
+    import re as _re
+    p = (p or "").lower()
+    ask = _re.search(r"\b(analy[sz]e|explain|describe|summar[iy][sz]e|"
+                     r"review|understand|audit|document|investigate|trace|"
+                     r"walk\s*(me)?\s*through|how\s+(does|do|is|are)|"
+                     r"what\s+(does|is|are)|why\s+(does|is|are)|where\s+"
+                     r"(is|are)|tell me about|show me how)\b", p)
+    change = _re.search(r"\b(fix|create|build|implement|add|write|refactor|"
+                        r"rename|delete|remove|update|generat|make|"
+                        r"modify|patch|scaffold)\b", p)
+    return bool(ask and not change)
+
+
+_SRC_EXTS_VERIFY = (".py", ".java", ".go", ".js", ".mjs", ".ts", ".tsx", ".c",
+                    ".cc", ".cpp", ".h", ".hpp", ".rs", ".rb", ".php", ".cs",
+                    ".kt", ".swift", ".scala", ".sh")
+
+
+def _turn_wrote_source(cwd) -> bool:
+    """True only if THIS turn created/modified a source file — the signal there's
+    something to build+test. Because a pre-turn baseline commit was taken, git
+    status reflects only this turn's writes; a JIRA/Q&A/analysis turn touches no
+    source. Does NOT fall through to the process-global touched_paths() when git
+    is usable (it can hold a PRIOR turn's path and re-trigger the build)."""
+    try:
+        import subprocess as _sp
+        r = _sp.run(["git", "-C", cwd, "status", "--porcelain"],
+                    capture_output=True, text=True, timeout=10)
+        if r.returncode == 0:
+            return any(ln[3:].strip().endswith(_SRC_EXTS_VERIFY)
+                       for ln in (r.stdout or "").splitlines() if ln.strip())
+    except Exception:  # noqa: BLE001 — git missing / timeout
+        pass
+    try:
+        from aiforge_core.runtime.doer_tools import touched_paths
+        return any(str(p).endswith(_SRC_EXTS_VERIFY) for p in touched_paths())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _worth_verifying(cwd) -> bool:
+    """PROPORTIONALITY: only run the (heavy) build+test+self-heal when there's a
+    detectable build/test stack. A doc/config/tiny edit in a repo with no tests +
+    no build system gets the Changes diff, not a pointless build. Unsure → verify
+    (old behaviour)."""
+    try:
+        from aiforge_core.runtime.tools.project_runner import _has_tests, detect
+        stacks = (detect(cwd) or {}).get("stacks") or []
+        if stacks and _has_tests(cwd, stacks):
+            return True
+        import glob
+        return bool(glob.glob(os.path.join(cwd, "**", "test_*.py"), recursive=True)
+                    or glob.glob(os.path.join(cwd, "**", "*_test.py"), recursive=True))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _integration_verify_events(cwd):
+    """Build + run the project's integration tests with the pipeline's self-heal
+    (rewrite offending files until green, bounded), then yield the report — but
+    only when a build/test ACTUALLY ran (ok True/False; ok=None = no markers/
+    toolchain, where the Changes diff is the useful output). Never breaks the turn."""
+    try:
+        from aiforge_core.runtime.parallel_subtasks import _reconcile_integration
+        yield {"type": "thought", "role": "verifier",
+               "text": "Building + running integration tests…"}
+        ires: dict = {}
+        yield from _reconcile_integration(cwd, ires)
+        rep = ires.get("rep") or {}
+        if rep.get("md") and rep.get("ok") is not None:
+            # supplementary=True: render the report but DON'T persist it as the
+            # agent's own answer.
+            yield {"type": "message", "text": rep["md"], "role": "verifier",
+                   "supplementary": True}
+    except Exception as exc:  # noqa: BLE001 — never break the turn
+        _af_log.debug("integration report skipped: %s", exc)
+
+
+def _post_run_events(prompt, cwd, agent_mode, simple_sha):
+    """After the single agent finishes: (1) build+test+self-heal ONLY when this
+    turn wrote source, the mode isn't plan/read-only, it's env-enabled, and
+    there's a stack worth verifying; (2) emit a clean PR-style Changes diff (gated
+    on not-read-only ONLY — a doc/config edit still shows its diff; _emit_changes
+    self-guards an empty diff)."""
+    readonly = _looks_like_analysis(prompt)
+    if (agent_mode != "plan" and not readonly and _turn_wrote_source(cwd)
+            and os.environ.get("AIFORGE_CHAT_INTEGRATION_TEST", "1")
+            not in ("0", "false") and _worth_verifying(cwd)):
+        yield from _integration_verify_events(cwd)
+    if simple_sha and not readonly:
+        try:
+            from aiforge_core.runtime.parallel_subtasks import _emit_changes
+            yield from _emit_changes(cwd, simple_sha, include_worktree=True)
+        except Exception as exc:  # noqa: BLE001
+            _af_log.debug("simple changes diff skipped: %s", exc)
+
+
+def _commit_simple_baseline(cwd):
+    """Commit the CURRENT working-tree state as this turn's diff baseline so the
+    single-agent Changes view + the "did it write source?" gate reflect ONLY what
+    THIS turn does — a reused chat/ticket workspace carries a previous task's
+    uncommitted files otherwise. A jira/confluence/web context folder holds a
+    generated dossier, NOT code, so it is SKIPPED (no Changes view). Returns
+    ``(simple_sha, skip_worktree)``."""
+    _simple_sha = ""
+    # A jira/confluence context folder holds a generated dossier + notes, NOT
+    # code — code work for a ticket lives in the resolved repo, never here. So
+    # never show a Changes view for it: a plain READ writes ticket.md /
+    # dossier.md / attachments/ (+ the .gitignore) and would otherwise report
+    # "N files changed". Skip the worktree baseline + the changes event for
+    # ANY such context, even one already git-inited by an earlier turn.
+    # Real repos / repo-context / session scratch still track normally.
+    _skip_worktree = False
+    try:
+        from aiforge_core.runtime import work_context as _wc0
+        _ctx0 = _wc0.context_for_path(cwd)
+        if _ctx0 and _ctx0[0] in ("jira", "confluence", "web"):
+            _skip_worktree = True
+            _af_log.info("chat: no Changes view for %s dossier folder %s "
+                         "(read-only context)", _ctx0[0], cwd)
+    except Exception:  # noqa: BLE001
+        pass
+    if not _skip_worktree:
+        try:
+            from aiforge_core.runtime.parallel_subtasks import _commit_turn_baseline
+            _simple_sha = _commit_turn_baseline(cwd)
+        except Exception:  # noqa: BLE001
+            _simple_sha = ""
+    # A doc/analysis task is READ-ONLY: force analyze mode so the single
+    # agent (like the fan-out explores) can't write/patch/bash in the user's
+    # real repo — it produces the analysis/document as its answer. Otherwise
+    # a "analyze X and write a report" turn ran writable and could mutate the
+    # repo + trigger the post-run build. Non-doc turns keep their mode.
+    return _simple_sha, _skip_worktree
+
+
 @router.post("/api/chat/sessions/{session_id}/message")
 def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingResponse:
     """Append a user message, run the full-FS coding agent over the whole
@@ -2059,35 +2199,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # `git status` reports THEM, so a no-code Jira/Q&A turn wrongly triggers
         # the build/integration pipeline on stale files and the Changes view
         # shows the previous ticket's edits.
-        _simple_sha = ""
-        # A jira/confluence context folder holds a generated dossier + notes, NOT
-        # code — code work for a ticket lives in the resolved repo, never here. So
-        # never show a Changes view for it: a plain READ writes ticket.md /
-        # dossier.md / attachments/ (+ the .gitignore) and would otherwise report
-        # "N files changed". Skip the worktree baseline + the changes event for
-        # ANY such context, even one already git-inited by an earlier turn.
-        # Real repos / repo-context / session scratch still track normally.
-        _skip_worktree = False
-        try:
-            from aiforge_core.runtime import work_context as _wc0
-            _ctx0 = _wc0.context_for_path(cwd)
-            if _ctx0 and _ctx0[0] in ("jira", "confluence", "web"):
-                _skip_worktree = True
-                _af_log.info("chat: no Changes view for %s dossier folder %s "
-                             "(read-only context)", _ctx0[0], cwd)
-        except Exception:  # noqa: BLE001
-            pass
-        if not _skip_worktree:
-            try:
-                from aiforge_core.runtime.parallel_subtasks import _commit_turn_baseline
-                _simple_sha = _commit_turn_baseline(cwd)
-            except Exception:  # noqa: BLE001
-                _simple_sha = ""
-        # A doc/analysis task is READ-ONLY: force analyze mode so the single
-        # agent (like the fan-out explores) can't write/patch/bash in the user's
-        # real repo — it produces the analysis/document as its answer. Otherwise
-        # a "analyze X and write a report" turn ran writable and could mutate the
-        # repo + trigger the post-run build. Non-doc turns keep their mode.
+        _simple_sha, _skip_worktree = _commit_simple_baseline(cwd)
         _single_mode = "analyze" if _doc_task and agent_mode != "plan" else agent_mode
         _turn_awaiting = False
         for _ev in run_chat_agent(_enriched_history, cwd=cwd, role=role,
@@ -2104,119 +2216,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # next (resume) message. Pointless work on a paused turn — end here.
         if _turn_awaiting:
             return
-        # Read-only / analysis query ("analyze/explain/how does X work") → the user
-        # wants an EXPLANATION, not a build. Don't run the integration-check +
-        # self-heal (which would build/test an existing repo and report a failure
-        # instead of the analysis).
-        def _looks_like_analysis(p: str) -> bool:
-            import re as _re
-            p = (p or "").lower()
-            ask = _re.search(r"\b(analy[sz]e|explain|describe|summar[iy][sz]e|"
-                             r"review|understand|audit|document|investigate|trace|"
-                             r"walk\s*(me)?\s*through|how\s+(does|do|is|are)|"
-                             r"what\s+(does|is|are)|why\s+(does|is|are)|where\s+"
-                             r"(is|are)|tell me about|show me how)\b", p)
-            change = _re.search(r"\b(fix|create|build|implement|add|write|refactor|"
-                                r"rename|delete|remove|update|generat|make|"
-                                r"modify|patch|scaffold)\b", p)
-            return bool(ask and not change)
-
-        _readonly = _looks_like_analysis(prompt)
-
-        def _wrote_source() -> bool:
-            """True only if this turn CREATED/MODIFIED a source file — the signal
-            there's something to build+test. A JIRA/Confluence/Q&A/chat/analysis
-            turn touches no source, so the integration-check (+ its hardcoded
-            python fallback steps) must NOT run for it."""
-            exts = (".py", ".java", ".go", ".js", ".mjs", ".ts", ".tsx", ".c",
-                    ".cc", ".cpp", ".h", ".hpp", ".rs", ".rb", ".php", ".cs",
-                    ".kt", ".swift", ".scala", ".sh")
-            try:
-                import subprocess as _sp
-                _r = _sp.run(["git", "-C", cwd, "status", "--porcelain"],
-                             capture_output=True, text=True, timeout=10)
-                if _r.returncode == 0:
-                    # git ran cleanly → the working tree IS the answer. Because a
-                    # pre-turn baseline commit was taken, this reflects ONLY this
-                    # turn's writes: source touched → True, otherwise (empty tree
-                    # OR non-source changes) → False. Do NOT fall through to the
-                    # process-global touched_paths(), which can hold a PRIOR turn's
-                    # path and would re-trigger the build on a no-code turn.
-                    return any(ln[3:].strip().endswith(exts)
-                               for ln in (_r.stdout or "").splitlines() if ln.strip())
-            except Exception:  # noqa: BLE001 — git missing / timeout
-                pass
-            # Fallback ONLY when git is unusable (not a repo): best-effort.
-            try:
-                from aiforge_core.runtime.doer_tools import touched_paths
-                return any(str(p).endswith(exts) for p in touched_paths())
-            except Exception:  # noqa: BLE001
-                return False
-
-        # Simple/act mode: after the agent finishes, COMPILE + run the project's
-        # tests and report — ONLY when this turn actually wrote source code. Skips
-        # plan mode, read-only analysis, and every non-code task (JIRA/Confluence/
-        # Q&A/chat). Best-effort; env-gated off with AIFORGE_CHAT_INTEGRATION_TEST=0.
-        # PROPORTIONALITY: only run the (heavy) build+test+self-heal when there's
-        # something to verify — a detectable build/test stack. A doc/config/tiny
-        # edit in a repo with no tests + no build system gets the Changes diff, not
-        # a pointless build cycle. AIFORGE_CHAT_INTEGRATION_TEST=0 disables entirely.
-        def _worth_verifying() -> bool:
-            try:
-                from aiforge_core.runtime.tools.project_runner import (
-                    _has_tests,
-                    detect,
-                )
-                stacks = (detect(cwd) or {}).get("stacks") or []
-                if stacks and _has_tests(cwd, stacks):
-                    return True
-                # bare python (no marker) but with test files → still worth it
-                import glob
-                return bool(glob.glob(os.path.join(cwd, "**", "test_*.py"),
-                                      recursive=True)
-                            or glob.glob(os.path.join(cwd, "**", "*_test.py"),
-                                         recursive=True))
-            except Exception:  # noqa: BLE001
-                return True   # unsure → keep the old behaviour (verify)
-        if agent_mode != "plan" and not _readonly and _wrote_source() \
-                and os.environ.get(
-                    "AIFORGE_CHAT_INTEGRATION_TEST", "1") not in ("0", "false") \
-                and _worth_verifying():
-            try:
-                from aiforge_core.runtime.parallel_subtasks import (
-                    _reconcile_integration,
-                )
-                yield {"type": "thought", "role": "verifier",
-                       "text": "Building + running integration tests…"}
-                # Same self-heal as the pipeline: build+test, and if it fails,
-                # rewrite the offending files until green (bounded), then report.
-                _ires: dict = {}
-                yield from _reconcile_integration(cwd, _ires)
-                _rep = _ires.get("rep") or {}
-                # Only show the integration report when a build/test ACTUALLY ran
-                # (ok True/False). ok=None = "no build markers / no toolchain" — a
-                # simple file edit with no tests — so DON'T dump the "build & test
-                # it yourself (python)" boilerplate as the answer; the Changes diff
-                # below is the useful output.
-                if _rep.get("md") and _rep.get("ok") is not None:
-                    # supplementary=True: render the build report but DON'T let it
-                    # replace the agent's own answer as the persisted final_text.
-                    yield {"type": "message", "text": _rep["md"],
-                           "role": "verifier", "supplementary": True}
-            except Exception as _iexc:  # noqa: BLE001 — never break the turn
-                _af_log.debug("integration report skipped: %s", _iexc)
-        # SHOW CHANGES (simple mode too) — a clean PR-style diff of what the single
-        # agent edited, same view as the pipeline. Working-tree diff (uncommitted).
-        # Gated on `not _readonly` ONLY (NOT _wrote_source, which lists code
-        # extensions) so a doc/config-only edit (README, yaml, json, Dockerfile)
-        # still shows its diff. _emit_changes self-guards on an empty diff, so a
-        # pure Q&A turn that wrote nothing simply emits no changes event.
-        if _simple_sha and not _readonly:
-            try:
-                from aiforge_core.runtime.parallel_subtasks import _emit_changes
-                yield from _emit_changes(cwd, _simple_sha, include_worktree=True)
-            except Exception as _cx:  # noqa: BLE001
-                _af_log.debug("simple changes diff skipped: %s", _cx)
+        yield from _post_run_events(prompt, cwd, agent_mode, _simple_sha)
 
     # The PRODUCER runs on a background daemon thread and publishes every event
     # into the per-session run registry (chat_runs). It NO LONGER yields to the
