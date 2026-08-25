@@ -225,14 +225,10 @@ class _Task:
             return max(0.0, self.every_s - elapsed)
         return float("inf")
 
-    def _daily_next(self, now_mono: float, now_dt: datetime) -> float:
-        """AT-OR-AFTER the hour, once per local day — not "the next :00".
-
-        time.sleep only ever overshoots, so a task pinned to the exact instant
-        is skipped for a whole day whenever the loop wakes a few ms late.
-        """
-        rec = self._record(now_dt)
-        last, ok, fails = rec["at"], rec["ok"], rec["fails"]
+    def _clamp_future(self, last, rec, now_dt):
+        """A run stamp in the FUTURE (dead RTC / restored snapshot / clock moved
+        back) is CLAMPED to now (not dropped, which would also drop the min-gap
+        floor). Returns the possibly-clamped last."""
         if last is not None and last > now_dt + timedelta(minutes=5):
             # A stamp in the FUTURE (dead RTC, restored snapshot, clock moved
             # back) is CLAMPED to now, not dropped: dropping it also drops the
@@ -241,24 +237,12 @@ class _Task:
                         self.name, last)
             last = rec["at"] = now_dt
             self._persist()
-        gap = (now_dt - last).total_seconds() if last is not None else None
+        return last
 
-        if last is not None and not ok and fails < _MAX_FAILS \
-                and last.date() == now_dt.date() \
-                and not (self.strict_hour and now_dt.hour < self.at_hour):
-            # A failed pass retries within the hour, then gives up until its
-            # next slot. SAME DAY only: a retry that crossed midnight would eat
-            # the new day's slot and walk the task around the clock. A
-            # strict_hour task never retries BEFORE its hour either — a state
-            # file written by an older build (or a clock change) can hold a
-            # failed morning attempt, and retrying it is the same intrusion the
-            # flag exists to stop.
-            return self._delay(now_mono) if gap >= _RETRY_S else _RETRY_S - gap
-
-        if last is not None and (last.date() == now_dt.date() or gap < _MIN_GAP_S):
-            return self._wait_for_hour(now_mono, now_dt)    # already ran / too soon
-        if now_dt.hour >= self.at_hour:
-            return self._delay(now_mono)
+    def _missed_slot_next(self, now_mono, now_dt, rec, last):
+        """Delay when no run happened today: a non-strict task catches up now;
+        a strict_hour task waits for its slot unless it has skipped past
+        strict_max_skip_days. Returns seconds to sleep."""
         # MISSED-SLOT CATCH-UP. Measured against YESTERDAY's slot, not "24h ago":
         # an elapsed-time rule fires one wake later each day (the loop only
         # re-checks hourly), so the run walks forward and falls out of a laptop's
@@ -285,6 +269,35 @@ class _Task:
                          self.name, self.strict_max_skip_days, self.at_hour)
                 return self._delay(now_mono)
         return self._wait_for_hour(now_mono, now_dt)
+
+    def _daily_next(self, now_mono: float, now_dt: datetime) -> float:
+        """AT-OR-AFTER the hour, once per local day — not "the next :00".
+
+        time.sleep only ever overshoots, so a task pinned to the exact instant
+        is skipped for a whole day whenever the loop wakes a few ms late.
+        """
+        rec = self._record(now_dt)
+        last, ok, fails = rec["at"], rec["ok"], rec["fails"]
+        last = self._clamp_future(last, rec, now_dt)
+        gap = (now_dt - last).total_seconds() if last is not None else None
+
+        if last is not None and not ok and fails < _MAX_FAILS \
+                and last.date() == now_dt.date() \
+                and not (self.strict_hour and now_dt.hour < self.at_hour):
+            # A failed pass retries within the hour, then gives up until its
+            # next slot. SAME DAY only: a retry that crossed midnight would eat
+            # the new day's slot and walk the task around the clock. A
+            # strict_hour task never retries BEFORE its hour either — a state
+            # file written by an older build (or a clock change) can hold a
+            # failed morning attempt, and retrying it is the same intrusion the
+            # flag exists to stop.
+            return self._delay(now_mono) if gap >= _RETRY_S else _RETRY_S - gap
+
+        if last is not None and (last.date() == now_dt.date() or gap < _MIN_GAP_S):
+            return self._wait_for_hour(now_mono, now_dt)    # already ran / too soon
+        if now_dt.hour >= self.at_hour:
+            return self._delay(now_mono)
+        return self._missed_slot_next(now_mono, now_dt, rec, last)
 
     def _wait_for_hour(self, now_mono: float, now_dt: datetime) -> float:
         nxt = now_dt.replace(hour=self.at_hour, minute=0, second=0, microsecond=0)
