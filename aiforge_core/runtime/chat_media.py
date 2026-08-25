@@ -66,7 +66,7 @@ from .doc_extract import (  # noqa: E402
 
 
 def _kind_for(mime: str, ext: str) -> str:
-    if mime.startswith("image/"):
+    if mime.startswith(_IMAGE):
         return "image"
     if mime.startswith("text/") or ext in _TEXT_EXTS:
         return "text"
@@ -139,7 +139,7 @@ def _embedded_images(path: str, mime: str) -> list[tuple[str, bytes]]:
     ext = os.path.splitext(path)[1].lower()
     if ext == ".docx" or "wordprocessing" in (mime or ""):
         return _docx_images(path)
-    if ext == ".pdf" or (mime or "") == "application/pdf":
+    if ext == ".pdf" or (mime or "") == _APPLICATION_PDF:
         return _pdf_images(path)
     return []
 
@@ -173,7 +173,7 @@ def _with_doc_images(path: str, mime: str, txt: str, role: str) -> str:
 
 def _is_pdf(path: str, mime: str) -> bool:
     return os.path.splitext(path)[1].lower() == ".pdf" \
-        or (mime or "") == "application/pdf"
+        or (mime or "") == _APPLICATION_PDF
 
 
 def _pdf_is_scanned(path: str, mime: str, extracted: str) -> bool:
@@ -256,7 +256,7 @@ def describe_upload(path: str, filename: str, mime: str, role: str = "chat") -> 
     image, or — for a document — a size-selected excerpt/summary (small doc:
     raw text; large doc: map-reduce summary). docx image captions appended when
     a vision model is reachable."""
-    if mime.startswith("image/"):
+    if mime.startswith(_IMAGE):
         return describe_image(path, role)
     full = extract_text(path, mime).strip()
     scanned = _pdf_is_scanned(path, mime, full)
@@ -281,6 +281,9 @@ from .vision_detect import (  # noqa: F401 — re-export for back-compat
     _probe_vision,
     _settings_override,
 )
+
+_APPLICATION_PDF = 'application/pdf'
+_IMAGE = 'image/'
 
 
 def _vision_role(role: str) -> str | None:
@@ -365,9 +368,9 @@ def supported_attachment(mime: str, filename: str) -> bool:
     extract text from (pdf / xlsx / docx / text)?"""
     mime = (mime or "").lower()
     ext = os.path.splitext(filename or "")[1].lower()
-    if mime.startswith("image/"):
+    if mime.startswith(_IMAGE):
         return True
-    if mime in ("application/pdf",) or "spreadsheet" in mime or \
+    if mime in (_APPLICATION_PDF,) or "spreadsheet" in mime or \
             "wordprocessing" in mime or mime.startswith("text/"):
         return True
     return ext in {".pdf", ".xlsx", ".docx"} | _TEXT_EXTS
@@ -393,7 +396,7 @@ def analyze_attachment(filename: str, raw: bytes, role: str = "doer",
     """Analyse one downloaded attachment (image OR document) for inclusion in a
     tool result. Returns ``{filename, description}`` — a vision caption for an
     image, or extracted text for a document. "" when nothing could be read."""
-    if vision._detect_mime(raw) is not None or (mime or "").startswith("image/"):
+    if vision._detect_mime(raw) is not None or (mime or "").startswith(_IMAGE):
         return {"filename": filename, "description": describe_bytes(raw, role)}
     import tempfile
     ext = os.path.splitext(filename or "")[1].lower() or ".bin"
@@ -426,7 +429,7 @@ def context_block(session_id: int) -> str:
     for i, m in enumerate(rows, 1):
         desc = (m.get("description") or "").strip() or "(no description/text yet)"
         mime = m.get("mime") or ""
-        label = "image" if mime.startswith("image/") else "file"
+        label = "image" if mime.startswith(_IMAGE) else "file"
         lines.append(f"--- {label} {i}: {m['filename']} ---\n{desc}")
     return ("SESSION FILES — the user attached these to this chat (images carry "
             "a description, documents carry their extracted text). Use them to "
@@ -444,7 +447,7 @@ def image_blocks_for_turn(session_id: int, role: str = "chat") -> list[dict]:
     only pay that cost when there is actually an image to attach."""
     from aiforge_core.runtime import chat_store
     imgs = [m for m in chat_store.list_media(session_id)
-            if (m.get("mime") or "").startswith("image/")]
+            if (m.get("mime") or "").startswith(_IMAGE)]
     if not imgs:
         return []
     if not vision_enabled(role, probe=True):

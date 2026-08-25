@@ -14,6 +14,11 @@ agent_role fired, and when).
 """
 from __future__ import annotations
 
+_BUILD_LOOP = 'Build loop'
+_PLAN_VERIFY = 'Plan & verify'
+_VALIDATE_FINISH = 'Validate & finish'
+_CONTEXT_FAN_OUT_PARALLEL = 'Context fan-out (parallel)'
+
 # Node kinds: agent (LLM stage) · gate (conditional route) · branch
 # (parallel fan-out member) · join (parallel barrier) · merge (state
 # merge) · start.
@@ -28,40 +33,40 @@ _NODES: list[dict] = [
      "desc": "The trivial-vs-full decision."},
     {"id": "enhancer", "label": "Enhancer", "type": "agent", "stage": "Orchestrator",
      "desc": "Orchestrator: cleans the raw request into a clear spec + design (runs the architect role)."},
-    {"id": "researcher", "label": "Researcher", "type": "branch", "stage": "Context fan-out (parallel)",
+    {"id": "researcher", "label": "Researcher", "type": "branch", "stage": _CONTEXT_FAN_OUT_PARALLEL,
      "desc": "Parallel branch: gathers the external/codebase context the plan needs."},
-    {"id": "gap_eval", "label": "Gap critic", "type": "agent", "stage": "Context fan-out (parallel)",
+    {"id": "gap_eval", "label": "Gap critic", "type": "agent", "stage": _CONTEXT_FAN_OUT_PARALLEL,
      "desc": "Checks whether research is complete; loops the Researcher until gaps close."},
-    {"id": "gap_gate", "label": "Research-gap gate", "type": "gate", "stage": "Context fan-out (parallel)",
+    {"id": "gap_gate", "label": "Research-gap gate", "type": "gate", "stage": _CONTEXT_FAN_OUT_PARALLEL,
      "desc": "Loop back for more research, or proceed."},
-    {"id": "ctx_repomap", "label": "Ctx: repo map", "type": "branch", "stage": "Context fan-out (parallel)",
+    {"id": "ctx_repomap", "label": "Ctx: repo map", "type": "branch", "stage": _CONTEXT_FAN_OUT_PARALLEL,
      "desc": "Parallel branch: maps the repo structure for grounding."},
-    {"id": "ctx_conventions", "label": "Ctx: conventions", "type": "branch", "stage": "Context fan-out (parallel)",
+    {"id": "ctx_conventions", "label": "Ctx: conventions", "type": "branch", "stage": _CONTEXT_FAN_OUT_PARALLEL,
      "desc": "Parallel branch: extracts the project's coding conventions (skipped when repo rules exist)."},
-    {"id": "context_join", "label": "Context join", "type": "join", "stage": "Context fan-out (parallel)",
+    {"id": "context_join", "label": "Context join", "type": "join", "stage": _CONTEXT_FAN_OUT_PARALLEL,
      "desc": "Barrier: waits for all parallel context branches to finish."},
-    {"id": "merge_context", "label": "Merge context", "type": "merge", "stage": "Context fan-out (parallel)",
+    {"id": "merge_context", "label": "Merge context", "type": "merge", "stage": _CONTEXT_FAN_OUT_PARALLEL,
      "desc": "Merges every branch's findings into one shared context."},
-    {"id": "planner", "label": "Planner", "type": "agent", "stage": "Plan & verify",
+    {"id": "planner", "label": "Planner", "type": "agent", "stage": _PLAN_VERIFY,
      "desc": "Orchestrator: splits the design into ordered, concrete subtasks."},
     {"id": "verifier", "label": "Verifier (correctness+scope+risk)",
-     "type": "agent", "stage": "Plan & verify",
+     "type": "agent", "stage": _PLAN_VERIFY,
      "desc": "Critiques the plan before any code — correctness + scope + risk in one multi-axis call."},
-    {"id": "verifier_gate", "label": "Verifier gate", "type": "gate", "stage": "Plan & verify",
+    {"id": "verifier_gate", "label": "Verifier gate", "type": "gate", "stage": _PLAN_VERIFY,
      "desc": "Plan passes to the Doer, or bounces back to re-plan."},
-    {"id": "doer", "label": "Doer", "type": "agent", "stage": "Build loop",
+    {"id": "doer", "label": "Doer", "type": "agent", "stage": _BUILD_LOOP,
      "desc": "Writes the actual code + runs the tools for each subtask."},
-    {"id": "refiner", "label": "Refiner", "type": "agent", "stage": "Build loop",
+    {"id": "refiner", "label": "Refiner", "type": "agent", "stage": _BUILD_LOOP,
      "desc": "Polishes the Doer's output — cleanup, edge cases — inside the loop."},
-    {"id": "feedback", "label": "Feedback", "type": "agent", "stage": "Build loop",
+    {"id": "feedback", "label": "Feedback", "type": "agent", "stage": _BUILD_LOOP,
      "desc": "In-loop reviewer: checks each pass and feeds corrections back."},
-    {"id": "loop_gate", "label": "Loop gate", "type": "gate", "stage": "Build loop",
+    {"id": "loop_gate", "label": "Loop gate", "type": "gate", "stage": _BUILD_LOOP,
      "desc": "Loop the Doer for another pass, or exit to validation."},
-    {"id": "validator", "label": "Validator", "type": "agent", "stage": "Validate & finish",
+    {"id": "validator", "label": "Validator", "type": "agent", "stage": _VALIDATE_FINISH,
      "desc": "Final check of the built result against the plan."},
-    {"id": "validator_gate", "label": "Validator gate", "type": "gate", "stage": "Validate & finish",
+    {"id": "validator_gate", "label": "Validator gate", "type": "gate", "stage": _VALIDATE_FINISH,
      "desc": "Done, or bounce back to re-plan."},
-    {"id": "learner", "label": "Learner", "type": "agent", "stage": "Validate & finish",
+    {"id": "learner", "label": "Learner", "type": "agent", "stage": _VALIDATE_FINISH,
      "desc": "Persists durable lessons/memory so future runs start smarter."},
 ]
 

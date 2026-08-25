@@ -43,6 +43,9 @@ from typing import Any, Iterable
 
 from aiforge_core.config import languages as _languages
 
+_BUILD_GRADLE = 'build.gradle*'
+_POM_XML = 'pom.xml'
+
 
 @dataclass
 class Standards:
@@ -204,9 +207,9 @@ def _java_toolchain(worktree) -> dict[str, str]:
     """Gradle (incl. Kotlin/.kts) vs Maven — picked per marker/wrapper so a
     Kotlin/gradle repo doesn't get mvn commands it can't run."""
     is_gradle = bool(worktree and _glob.glob(
-        os.path.join(worktree, "build.gradle*")))
+        os.path.join(worktree, _BUILD_GRADLE)))
     has_pom = bool(worktree and os.path.isfile(
-        os.path.join(worktree, "pom.xml")))
+        os.path.join(worktree, _POM_XML)))
     if is_gradle and not has_pom:
         g = _wrapper_or_path(worktree, "./gradlew", "gradle")
         return {"build_cmd": f"{g} build -x test",
@@ -329,8 +332,8 @@ def check_toolchain(worktree: str | None,
     if not worktree or not os.path.isdir(worktree):
         return []
     msgs: list[str] = []
-    is_maven = os.path.isfile(os.path.join(worktree, "pom.xml"))
-    is_gradle = bool(_glob.glob(os.path.join(worktree, "build.gradle*")))
+    is_maven = os.path.isfile(os.path.join(worktree, _POM_XML))
+    is_gradle = bool(_glob.glob(os.path.join(worktree, _BUILD_GRADLE)))
     lang = lang if lang is not None else detect_lang(worktree)
     msgs += _check_jvm_toolchain(worktree, lang, is_maven, is_gradle)
     msgs += _check_native_toolchain(worktree, lang)
@@ -437,9 +440,9 @@ def _detect_native_lang(base):
 def _detect_lang_uncached(base: str) -> str:
     if not os.path.isdir(base):
         return ""
-    if os.path.isfile(os.path.join(base, "pom.xml")):
+    if os.path.isfile(os.path.join(base, _POM_XML)):
         return "java"
-    if _glob.glob(os.path.join(base, "build.gradle*")):
+    if _glob.glob(os.path.join(base, _BUILD_GRADLE)):
         return "java"
     if os.path.isfile(os.path.join(base, "package.json")):
         return "node"
