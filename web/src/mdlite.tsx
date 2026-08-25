@@ -43,7 +43,7 @@ export function copyText(text: string): Promise<void> {
       ta.focus();
       ta.select();
       const ok = document.execCommand('copy');
-      document.body.removeChild(ta);
+      ta.remove();
       ok ? resolve() : reject(new Error('copy failed'));
     } catch (e) { reject(e as Error); }
   });
