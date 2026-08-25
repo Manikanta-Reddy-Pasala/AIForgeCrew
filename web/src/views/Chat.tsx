@@ -1005,9 +1005,9 @@ export default function Chat() {
         setSelectedModel(prev => {
           const backendCurrent = resp.current || '';
           const localPersisted = prev;
-          const allIds = models.map((m: ChatModelEntry) => m.id);
-          if (backendCurrent && allIds.includes(backendCurrent)) return backendCurrent;
-          if (localPersisted && allIds.includes(localPersisted)) return localPersisted;
+          const allIds = new Set(models.map((m: ChatModelEntry) => m.id));
+          if (backendCurrent && allIds.has(backendCurrent)) return backendCurrent;
+          if (localPersisted && allIds.has(localPersisted)) return localPersisted;
           return backendCurrent || (models[0]?.id ?? '');
         });
         setModelActive(resp.current_active ?? true);

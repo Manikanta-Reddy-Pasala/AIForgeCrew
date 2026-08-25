@@ -77,10 +77,10 @@ export type Category = typeof CATEGORY_ORDER[number];
 export function categoryOf(f: any): Category {
   const kind = String(f.kind || '').toLowerCase();
   const name = String(f.name || '').toLowerCase();
-  const tags: string[] = (f.tags || []).map((t: string) => String(t).toLowerCase());
-  const has = (...xs: string[]) => xs.some(x => kind === x || tags.includes(x));
-  if (has('workflow') || name.startsWith('compacted-session-') || tags.includes('workflow')) return 'Workflows';
-  if (has('command') || tags.includes('command') || tags.includes('commands')) return 'Commands';
+  const tags = new Set<string>((f.tags || []).map((t: string) => String(t).toLowerCase()));
+  const has = (...xs: string[]) => xs.some(x => kind === x || tags.has(x));
+  if (has('workflow') || name.startsWith('compacted-session-') || tags.has('workflow')) return 'Workflows';
+  if (has('command') || tags.has('command') || tags.has('commands')) return 'Commands';
   if (has('decision', 'gotcha', 'bug', 'solution', 'fix', 'feedback', 'learning', 'project_learning')) return 'Solutions';
   if (has('task', 'session', 'project') || /^compacted-(jira|clr|rsp|\d)/.test(name)) return 'Tasks';
   return 'Topics';
