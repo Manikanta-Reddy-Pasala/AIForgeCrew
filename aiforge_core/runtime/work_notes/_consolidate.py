@@ -215,7 +215,7 @@ def _overlap(item: str, focus_words: set) -> int:
     """
     if not focus_words:
         return 0
-    words = {w for w in re.findall(r"[a-z0-9]{4,}", item.lower())}
+    words = set(re.findall(r"[a-z0-9]{4,}", item.lower()))
     return len(words & focus_words)
 
 
