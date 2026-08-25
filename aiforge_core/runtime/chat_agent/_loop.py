@@ -613,37 +613,12 @@ def _dispatch_tool(name, args, cwd, n, _hook_block):
     return result
 
 
-def _compute_gate_decision(name, args, cwd, session_id, verdict):
-    """Decide whether one tool call must pause for approval: per-mode approval
-    toggle, pre-apply forced review, destructive-delete detection, and the
-    scoped commit-auto-approve / allow-delete opt-ins (each subordinate floor
-    preserved; may set args[confirm_delete]). Returns
-    ``(gate, destructive_del, force_review, bypass)`` with ``bypass`` =
-    ``(auto_approved, scope)``."""
-    from aiforge_core.runtime import chat_approve
-    from aiforge_core.runtime.tools import tool_policy
-    # Pre-apply review mode (Gap D): when armed for this session, force the
-    # approval gate for any mutating tool even if policy would auto-allow.
-    _force_review = (session_id is not None and _is_mutating(name, args)
-                     and chat_approve.review_edits(session_id))
-    # Per-mode approval Settings toggle (Chat/Plan/Pipeline). When ON, this
-    # mode pauses for Approve/Reject AND the captured "never re-ask" bypass
-    # flags below are IGNORED (the toggle is the master control — a user who
-    # turned approvals ON wants to be asked, not silently auto-approved). When
-    # OFF, ask-policy/review gates don't fire and the bypass flags apply.
-    _mode_approvals = chat_approve.approvals_required(session_id)
-    # Destructive delete (rm -rf, etc): the run_command tool has its OWN
-    # confirm_delete arg gate (delete_guard). If we don't route it through
-    # the approval gate AND mark it confirmed on approve, the tool keeps
-    # refusing ("re-issue with confirm_delete=true") and the model loops
-    # asking the user to "type yes" forever. So always gate it, and let the
-    # human's Approve BE the confirmation.
+def _command_gate_flags(name, args, cwd, session_id, _mode_approvals):
+    """For a shell-family tool, detect a destructive delete (unless the
+    allow_delete opt-in auto-confirms it) and whether a scoped commit-auto-approve
+    flag applies to a whole-command git commit/add. May set args[confirm_delete].
+    Returns ``(destructive_del, auto_commit)``."""
     _destructive_del = False
-    # Captured-rule "never re-ask" flags — set ONLY by an EXPLICIT user
-    # opt-in (rule_capture.set_gate_flag), never by the classifier. A
-    # commit_auto_approve flag auto-approves a whole-command git commit/add/
-    # push; allow_delete auto-confirms a destructive delete — for the scope
-    # (session → repo precedence; autonomous runs ignore chat-set flags).
     _auto_commit = False
     if name in ("run_command", "bash", "run_shell", "shell", "serve",
                 "watch_until"):
@@ -683,6 +658,36 @@ def _compute_gate_decision(name, args, cwd, session_id, verdict):
                 args["confirm_delete"] = True
         except Exception:  # noqa: BLE001
             pass
+    return _destructive_del, _auto_commit
+
+
+def _compute_gate_decision(name, args, cwd, session_id, verdict):
+    """Decide whether one tool call must pause for approval: per-mode approval
+    toggle, pre-apply forced review, destructive-delete detection, and the
+    scoped commit-auto-approve / allow-delete opt-ins (each subordinate floor
+    preserved; may set args[confirm_delete]). Returns
+    ``(gate, destructive_del, force_review, bypass)`` with ``bypass`` =
+    ``(auto_approved, scope)``."""
+    from aiforge_core.runtime import chat_approve
+    from aiforge_core.runtime.tools import tool_policy
+    # Pre-apply review mode (Gap D): when armed for this session, force the
+    # approval gate for any mutating tool even if policy would auto-allow.
+    _force_review = (session_id is not None and _is_mutating(name, args)
+                     and chat_approve.review_edits(session_id))
+    # Per-mode approval Settings toggle (Chat/Plan/Pipeline). When ON, this
+    # mode pauses for Approve/Reject AND the captured "never re-ask" bypass
+    # flags below are IGNORED (the toggle is the master control — a user who
+    # turned approvals ON wants to be asked, not silently auto-approved). When
+    # OFF, ask-policy/review gates don't fire and the bypass flags apply.
+    _mode_approvals = chat_approve.approvals_required(session_id)
+    # Destructive delete (rm -rf, etc): the run_command tool has its OWN
+    # confirm_delete arg gate (delete_guard). If we don't route it through
+    # the approval gate AND mark it confirmed on approve, the tool keeps
+    # refusing ("re-issue with confirm_delete=true") and the model loops
+    # asking the user to "type yes" forever. So always gate it, and let the
+    # human's Approve BE the confirmation.
+    _destructive_del, _auto_commit = _command_gate_flags(
+        name, args, cwd, session_id, _mode_approvals)
     # review_edits (_force_review) is an EXPLICIT per-request / global opt-in
     # ("hold my edits") — it must gate INDEPENDENTLY of the per-mode approval
     # toggle, else body.review_edits=True / AIFORGE_CHAT_REVIEW_EDITS=1 were
@@ -711,6 +716,70 @@ def _compute_gate_decision(name, args, cwd, session_id, verdict):
     return _gate, _destructive_del, _force_review, (False, None)
 
 
+def _autonomous_decision(name, args, _destructive_del):
+    """The approve/reject decision for an autonomous run (no human): auto-approve
+    caution/review, hard-block only a DANGEROUS command or destructive delete."""
+    # Autonomous path (parallel sub-Doer) — no human to approve.
+    # Mirror run_shell's floor: auto-approve caution/review gates,
+    # hard-block only truly DANGEROUS commands + destructive deletes
+    # (a blanket reject here silently broke sudo / -g installs /
+    # force-push in worktree-isolated autonomous runs).
+    _danger = bool(_destructive_del)
+    if not _danger and name in ("run_command", "run_shell", "serve",
+                                "bash", "shell", "watch_until"):
+        try:
+            from aiforge_core.runtime.tools import command_risk
+            _lvl = command_risk.assess(
+                args.get("cmd") or args.get("command") or "")["level"]
+            _danger = _lvl == command_risk.DANGEROUS
+        except Exception:  # noqa: BLE001
+            _danger = False
+    decision = ({"decision": "reject", "note": "autonomous: dangerous action blocked"}
+                if _danger else
+                {"decision": "approve", "note": "autonomous auto-approve"})
+    return decision
+
+
+def _handle_rejection(name, args, session_id, convo, decision):
+    """Handle a rejected/expired approval: reject-with-guidance folds the note in
+    as a steer and continues; interactive reject-without-guidance stops and waits
+    for the user; autonomous reject records an observation and continues. Returns
+    "continue"/"return"."""
+    from aiforge_core.runtime import chat_steer
+    _rnote = decision.get("note") or ""
+    _user_guidance = chat_steer.user_guidance(_rnote)
+    result = {"ok": False, "rejected": True,
+              "error": "user rejected this action"
+                       + (f": {_rnote}" if _rnote else "")}
+    yield {"type": "tool", "name": name, "args": args, "result": result}
+    # CHAT-ON-APPROVAL: if the user rejected WITH guidance, don't just
+    # stop — fold the guidance in as a steer and CONTINUE so the agent
+    # adjusts immediately (no separate follow-up message needed).
+    if session_id is not None and _user_guidance:
+        yield chat_steer.steer_event(_user_guidance)
+        convo.append({"role": "user",
+                      "content": chat_steer.reject_directive(
+                          name, _user_guidance)})
+        return "continue"
+    # Interactive reject WITHOUT guidance is TERMINAL: STOP and WAIT
+    # for the user (the old record-and-continue let a model that
+    # didn't emit ASK: just keep going). Pause via awaiting_input;
+    # the next user message resumes. Autonomous runs (session_id is
+    # None) keep the record-and-continue behaviour.
+    if session_id is not None:
+        _ask = ("Stopped — you rejected the "
+                f"`{name}` action"
+                + ". Tell me what you'd like me to do instead, and "
+                "I'll continue from there.")
+        yield {"type": "message", "awaiting_input": True, "text": _ask}
+        yield {"type": "done"}
+        return "return"
+    convo.append({"role": "user",
+                  "content": f"OBSERVATION: {json.dumps(result)} "
+                             "(the user rejected it — do NOT retry; "
+                             "adjust or ASK what they want instead.)"})
+    return "continue"
+
 def _run_approval(name, args, cwd, session_id, convo, verdict, _destructive_del):
     """Surface the diff preview + Approve/Reject for a gated tool call and wait
     (autonomous runs auto-approve caution, hard-block only DANGEROUS/destructive;
@@ -729,24 +798,7 @@ def _run_approval(name, args, cwd, session_id, convo, verdict, _destructive_del)
     yield {"type": "approval", "id": seq, "name": name, "args": args,
            "reason": _reason, "preview": preview}
     if session_id is None:
-        # Autonomous path (parallel sub-Doer) — no human to approve.
-        # Mirror run_shell's floor: auto-approve caution/review gates,
-        # hard-block only truly DANGEROUS commands + destructive deletes
-        # (a blanket reject here silently broke sudo / -g installs /
-        # force-push in worktree-isolated autonomous runs).
-        _danger = bool(_destructive_del)
-        if not _danger and name in ("run_command", "run_shell", "serve",
-                                    "bash", "shell", "watch_until"):
-            try:
-                from aiforge_core.runtime.tools import command_risk
-                _lvl = command_risk.assess(
-                    args.get("cmd") or args.get("command") or "")["level"]
-                _danger = _lvl == command_risk.DANGEROUS
-            except Exception:  # noqa: BLE001
-                _danger = False
-        decision = ({"decision": "reject", "note": "autonomous: dangerous action blocked"}
-                    if _danger else
-                    {"decision": "approve", "note": "autonomous auto-approve"})
+        decision = _autonomous_decision(name, args, _destructive_del)
     else:
         decision = chat_approve.wait(session_id)
     # M4: a gate left unanswered (user navigated away) auto-rejects on
@@ -755,40 +807,8 @@ def _run_approval(name, args, cwd, session_id, convo, verdict, _destructive_del)
     if decision.get("note") == "approval timed out":
         yield {"type": "approval_expired", "id": seq, "name": name}
     if decision.get("decision") != "approve":
-        _rnote = decision.get("note") or ""
-        from aiforge_core.runtime import chat_steer
-        _user_guidance = chat_steer.user_guidance(_rnote)
-        result = {"ok": False, "rejected": True,
-                  "error": "user rejected this action"
-                           + (f": {_rnote}" if _rnote else "")}
-        yield {"type": "tool", "name": name, "args": args, "result": result}
-        # CHAT-ON-APPROVAL: if the user rejected WITH guidance, don't just
-        # stop — fold the guidance in as a steer and CONTINUE so the agent
-        # adjusts immediately (no separate follow-up message needed).
-        if session_id is not None and _user_guidance:
-            yield chat_steer.steer_event(_user_guidance)
-            convo.append({"role": "user",
-                          "content": chat_steer.reject_directive(
-                              name, _user_guidance)})
-            return "continue"
-        # Interactive reject WITHOUT guidance is TERMINAL: STOP and WAIT
-        # for the user (the old record-and-continue let a model that
-        # didn't emit ASK: just keep going). Pause via awaiting_input;
-        # the next user message resumes. Autonomous runs (session_id is
-        # None) keep the record-and-continue behaviour.
-        if session_id is not None:
-            _ask = ("Stopped — you rejected the "
-                    f"`{name}` action"
-                    + ". Tell me what you'd like me to do instead, and "
-                    "I'll continue from there.")
-            yield {"type": "message", "awaiting_input": True, "text": _ask}
-            yield {"type": "done"}
-            return "return"
-        convo.append({"role": "user",
-                      "content": f"OBSERVATION: {json.dumps(result)} "
-                                 "(the user rejected it — do NOT retry; "
-                                 "adjust or ASK what they want instead.)"})
-        return "continue"
+        return (yield from _handle_rejection(
+            name, args, session_id, convo, decision))
     # Approved → the human's Accept IS the delete confirmation, so
     # satisfy the run_command tool's confirm_delete gate (otherwise it
     # re-refuses and the model loops asking the user again).
