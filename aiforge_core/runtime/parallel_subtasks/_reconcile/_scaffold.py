@@ -113,14 +113,28 @@ def _enforce_disjoint_files(subs: list) -> tuple[list, int]:
     return out, folded
 
 
-def _ensure_impl_modules(subs: list) -> list:
-    """DECOMPOSITION CONSISTENCY (inverse of the off-plan pruner): every test that
-    targets a module (test_board→board, BookServiceTest→BookService, board.test→
-    board) MUST have a matching impl file in the plan. When the architect collapses
-    all impl into one file but writes per-module tests, those tests can't import
-    their modules → collection errors no reconcile fixes. Adds the missing impl
-    subtasks. Language-agnostic; skips non-module test names (integration/e2e/…)."""
+_TEST_MODULE_PATTERNS = (
+    r"(?i)test_(.+)$", r"(?i)(.+)_tests?$",
+    r"(.+)Tests?$",           # XTest / XTests (plural)
+    r"(.+)IT(?:Case)?$",      # Java integration tests
+    r"(?i)(.+)\.test$", r"(?i)(.+)\.spec$",
+)
+
+
+def _test_target_module(stem: str) -> "str | None":
+    """The impl module a test stem targets (test_board→board, BookServiceTest→
+    BookService, board.test→board), or None for a non-module test name."""
     import re as _re
+    for pat in _TEST_MODULE_PATTERNS:
+        m = _re.match(pat, stem)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _partition_impl_tests(subs: list) -> "tuple[set, list, list]":
+    """Split ``subs`` into (impl_stems, impl_dirs, tests) — impl stems lowercased,
+    impl dirs (excluding .xml) in order, tests as ``(sub, path, stem, ext)``."""
     impl_stems: set = set()
     impl_dirs: list = []
     tests: list = []
@@ -136,21 +150,28 @@ def _ensure_impl_modules(subs: list) -> list:
             d = os.path.dirname(p)
             if d and d not in impl_dirs and ext.lower() != ".xml":
                 impl_dirs.append(d)
+    return impl_stems, impl_dirs, tests
+
+
+def _ensure_impl_modules(subs: list) -> list:
+    """DECOMPOSITION CONSISTENCY (inverse of the off-plan pruner): every test that
+    targets a module (test_board→board, BookServiceTest→BookService, board.test→
+    board) MUST have a matching impl file in the plan. When the architect collapses
+    all impl into one file but writes per-module tests, those tests can't import
+    their modules → collection errors no reconcile fixes. Adds the missing impl
+    subtasks. Language-agnostic; skips non-module test names (integration/e2e/…)."""
+    impl_stems, impl_dirs, tests = _partition_impl_tests(subs)
     added: list = []
     for s, p, stem, ext in tests:
-        m = (_re.match(r"(?i)test_(.+)$", stem) or _re.match(r"(?i)(.+)_tests?$", stem)
-             or _re.match(r"(.+)Tests?$", stem)          # XTest / XTests (plural)
-             or _re.match(r"(.+)IT(?:Case)?$", stem)     # Java integration tests
-             or _re.match(r"(?i)(.+)\.test$", stem) or _re.match(r"(?i)(.+)\.spec$", stem))
-        if not m:
+        name = _test_target_module(stem)
+        if name is None:
             continue
-        name = m.group(1)
         if name.lower() in _NON_MODULE_TEST_STEMS or name.lower() in impl_stems:
             continue
         impl_path = _impl_path_for_test(p, name, ext, impl_dirs).lstrip("/")
         added.append({"slug": name.lower(), "path": impl_path,
-                      "goal": f"Implement {name} to satisfy its tests ({os.path.basename(p)}).",
-                      "api": []})
+                      "goal": f"Implement {name} to satisfy its tests "
+                              f"({os.path.basename(p)}).", "api": []})
         impl_stems.add(name.lower())
     return subs + added
 
