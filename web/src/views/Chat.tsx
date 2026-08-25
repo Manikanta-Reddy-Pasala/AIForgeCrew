@@ -200,6 +200,15 @@ async function raiseForStatus(res: Response): Promise<void> {
   throw new Error(`${res.status} ${res.statusText}${detail ? ' — ' + detail : ''}`);
 }
 
+// Its OWN boundary fallback for the Tasks dock — a bad field from one of the six
+// producer payloads should degrade to a panel, not take the whole chat view down.
+const tasksPanelFallback = (e: Error, reset: () => void) => (
+  <div className="small muted" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+    <span>Tasks panel failed to render ({String(e.message).slice(0, 80)})</span>
+    <button type="button" className="ghost xs" onClick={reset}>retry</button>
+  </div>
+);
+
 // ── Topbar controls (extracted from Chat's return so each stays a small unit) ─
 
 // Simple | Plan | Team mode toggle.
@@ -2034,12 +2043,7 @@ export default function Chat() {
                     them took the ENTIRE chat view down — messages, composer
                     and all — because the only boundary is around the whole
                     route. A panel should degrade to a panel. */}
-                <ErrorBoundary fallback={(e, reset) => (
-                  <div className="small muted" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <span>Tasks panel failed to render ({String(e.message).slice(0, 80)})</span>
-                    <button type="button" className="ghost xs" onClick={reset}>retry</button>
-                  </div>
-                )}>
+                <ErrorBoundary fallback={tasksPanelFallback}>
                   <SubtaskList items={dockSubtasks} onViewSpec={openSpec} />
                 </ErrorBoundary>
               </div>
