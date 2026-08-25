@@ -63,7 +63,7 @@ export function setGateFlag(
   return j('/rules/flags', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, scope, ...(opts || {}) }),
+    body: JSON.stringify({ name, scope, ...opts }),
   });
 }
 

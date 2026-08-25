@@ -154,7 +154,7 @@ export const chatApi = {
       `/chat/sessions/${id}/checkpoints/restore`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sha, ...(opts || {}) }),
+        body: JSON.stringify({ sha, ...opts }),
       }),
 };
 
