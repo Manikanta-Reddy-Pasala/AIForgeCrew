@@ -61,47 +61,51 @@ class Rule:
     updated_at: str = ""             # ISO-8601; provenance/freshness (body untouched)
 
 
+def _parse_rule_frontmatter(text: str) -> tuple[dict, str]:
+    """(meta dict, body) from a rule file. No/invalid front-matter → ({}, body)."""
+    m = _FRONTMATTER_RE.match(text)
+    if not m:
+        return {}, text.strip()
+    try:
+        meta = yaml.safe_load(m.group(1)) or {}
+    except yaml.YAMLError:
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    return meta, m.group(2).strip()
+
+
+def _csv_or_list(raw, *, lower: bool = False) -> tuple:
+    """Normalize a ``globs``/``triggers`` value (a list or a comma string) to a
+    tuple of non-empty strings, optionally lowercased."""
+    if isinstance(raw, str):
+        raw = [x.strip() for x in raw.split(",")]
+    items = (str(x) for x in (raw or []) if isinstance(x, (str, int)) and str(x).strip())
+    return tuple(x.lower() for x in items) if lower else tuple(items)
+
+
 def _parse_rule_file(path: Path) -> Rule | None:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return None
-    meta: dict = {}
-    body = text.strip()
-    m = _FRONTMATTER_RE.match(text)
-    if m:
-        try:
-            meta = yaml.safe_load(m.group(1)) or {}
-        except yaml.YAMLError:
-            meta = {}
-        if not isinstance(meta, dict):
-            meta = {}
-        body = m.group(2).strip()
+    meta, body = _parse_rule_frontmatter(text)
     if not body:
         return None
-    raw_globs = meta.get("globs") or []
-    if isinstance(raw_globs, str):
-        raw_globs = [g.strip() for g in raw_globs.split(",") if g.strip()]
-    globs = tuple(str(g) for g in raw_globs if g)
-    always = bool(meta.get("alwaysApply", False))
-    raw_triggers = meta.get("triggers") or []
-    if isinstance(raw_triggers, str):
-        raw_triggers = [t.strip() for t in raw_triggers.split(",")]
-    triggers = tuple(str(t).lower() for t in raw_triggers
-                     if isinstance(t, str) and t.strip())
+    from aiforge_core.runtime import artifact_links as _al
     # Unified frontmatter: prefer an explicit `name`; fall back to the legacy
     # convention where `description` doubled as the display label, then the
     # filename. `description` is now its own field (kept separate from name).
-    name = str(meta.get("name") or meta.get("description") or path.stem)
-    description = str(meta.get("description") or "")
-    scope = str(meta.get("scope") or "global").lower()
-    from aiforge_core.runtime import artifact_links as _al
-    links = tuple(_al.parse_links(meta.get("links")))
-    updated_at = str(meta.get("updated_at") or "")
     return Rule(
-        name=name, globs=globs, always=always, body=body, source=str(path),
-        triggers=triggers, description=description, scope=scope,
-        links=links, updated_at=updated_at,
+        name=str(meta.get("name") or meta.get("description") or path.stem),
+        globs=_csv_or_list(meta.get("globs")),
+        always=bool(meta.get("alwaysApply", False)),
+        body=body, source=str(path),
+        triggers=_csv_or_list(meta.get("triggers"), lower=True),
+        description=str(meta.get("description") or ""),
+        scope=str(meta.get("scope") or "global").lower(),
+        links=tuple(_al.parse_links(meta.get("links"))),
+        updated_at=str(meta.get("updated_at") or ""),
     )
 
 
@@ -125,6 +129,31 @@ def load_global_rules() -> list[Rule]:
     return rules
 
 
+def _rule_frontmatter(name: str, description: str, gl: list, trig: list,
+                      scope: str, always: bool, links: list | None) -> list[str]:
+    """Render the UNIFIED rule frontmatter lines. String values are JSON-encoded
+    → valid YAML scalars, so a ':' / ']' / ',' in a name/trigger — or a glob
+    like '*.py' starting with a YAML indicator char — can't corrupt the block
+    (which would drop ALL metadata and make the rule always-apply + undeletable)."""
+    from aiforge_core.runtime import artifact_links as _al
+    front = ["---", "name: " + json.dumps(name)]
+    if description.strip():
+        front.append("description: " + json.dumps(description.strip()))
+    if trig:
+        front.append("triggers: [" + ", ".join(json.dumps(t) for t in trig) + "]")
+    front.append("scope: " + json.dumps((scope or "global").lower()))
+    front.append(f"alwaysApply: {str(bool(always)).lower()}")
+    if gl:
+        front.append("globs: [" + ", ".join(json.dumps(g) for g in gl) + "]")
+    norm_links = _al.normalize_links(links)
+    if norm_links:
+        front.append(_al.yaml_line(norm_links))
+    front.append("updated_at: " + json.dumps(
+        _dt.datetime.now(_dt.UTC).replace(microsecond=0).isoformat()))
+    front.append("---")
+    return front
+
+
 def write_rule(name: str, body: str, *, globs: list[str] | None = None,
                always: bool = True, description: str = "",
                triggers: list[str] | None = None, scope: str = "global",
@@ -132,12 +161,10 @@ def write_rule(name: str, body: str, *, globs: list[str] | None = None,
     """Author/overwrite a global rule at ~/.aiforge/rules/<slug>.md.
 
     Emits the UNIFIED artifact frontmatter shared by rules, skills, and
-    workflows — ``name`` / ``description`` / ``triggers`` / ``scope`` /
-    ``links`` (cross-links to other artifacts) / ``updated_at`` — plus the
-    Cursor-compat ``alwaysApply`` / ``globs`` the deterministic scope-matcher
-    still reads. The BODY is never touched (a rule stays a terse directive) —
-    only the metadata is unified. Returns ``{ok, name, path}`` or
-    ``{ok: False, error}``."""
+    workflows plus the Cursor-compat ``alwaysApply`` / ``globs`` the
+    deterministic scope-matcher still reads. The BODY is never touched (a rule
+    stays a terse directive) — only the metadata is unified. Returns
+    ``{ok, name, path}`` or ``{ok: False, error}``."""
     name = (name or "").strip()
     body = (body or "").strip()
     if not name or not body:
@@ -148,31 +175,7 @@ def write_rule(name: str, body: str, *, globs: list[str] | None = None,
         d.mkdir(parents=True, exist_ok=True)
         gl = [g.strip() for g in (globs or []) if str(g).strip()]
         trig = [t.strip().lower() for t in (triggers or []) if str(t).strip()]
-        # JSON-encode string values → valid YAML scalars, so a ':' / ']' / ','
-        # in a name/description/trigger can't corrupt the frontmatter (which
-        # would drop ALL metadata and make the rule always-apply + undeletable).
-        front = ["---", "name: " + json.dumps(name)]
-        if description.strip():
-            front.append("description: " + json.dumps(description.strip()))
-        if trig:
-            front.append("triggers: [" + ", ".join(json.dumps(t) for t in trig)
-                         + "]")
-        # scope + globs JSON-encoded too — a glob like '*.py' / '**/*.py' starts
-        # with a YAML indicator char (*, [, {) and would otherwise break the
-        # whole frontmatter (dropping all metadata → always-apply + undeletable).
-        front.append("scope: " + json.dumps((scope or "global").lower()))
-        front.append(f"alwaysApply: {str(bool(always)).lower()}")
-        if gl:
-            front.append("globs: [" + ", ".join(json.dumps(g) for g in gl) + "]")
-        # Unified metadata: cross-links (kind:name) + freshness stamp. Body stays
-        # untouched — a rule is still a terse directive, this is frontmatter only.
-        from aiforge_core.runtime import artifact_links as _al
-        norm_links = _al.normalize_links(links)
-        if norm_links:
-            front.append(_al.yaml_line(norm_links))
-        front.append("updated_at: " + json.dumps(
-            _dt.datetime.now(_dt.UTC).replace(microsecond=0).isoformat()))
-        front.append("---")
+        front = _rule_frontmatter(name, description, gl, trig, scope, always, links)
         path = d / f"{slug}.md"
         # Atomic — a concurrent reader never sees a half-write, and a second
         # writer of the same rule never blends its body into ours.
@@ -180,6 +183,22 @@ def write_rule(name: str, body: str, *, globs: list[str] | None = None,
         return {"ok": True, "name": name, "path": str(path)}
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
+
+
+def _unlink_rule_file(src: str, roots) -> "str | None":
+    """Unlink a rule's backing file if it lives under one of ``roots``. Returns
+    the path removed, or None (no source / out of bounds / already gone). Raises
+    on a real unlink failure the caller surfaces."""
+    if not src:
+        return None
+    p = Path(src)
+    if p.resolve().parent not in roots:
+        return None
+    try:
+        p.unlink()
+    except FileNotFoundError:
+        return None
+    return str(p)
 
 
 def delete_rule(name: str) -> dict:
@@ -193,19 +212,12 @@ def delete_rule(name: str) -> dict:
     for r in load_global_rules():
         if r.name != name:
             continue
-        src = getattr(r, "source", "")
-        if not src:
-            continue
-        p = Path(src)
         try:
-            if p.resolve().parent not in roots:
-                continue
-            p.unlink()
-            removed.append(str(p))
-        except FileNotFoundError:
-            pass
+            got = _unlink_rule_file(getattr(r, "source", ""), roots)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
+        if got:
+            removed.append(got)
     if not removed:
         return {"ok": False, "error": f"no deletable rule named {name!r}"}
     return {"ok": True, "name": name, "removed": removed}
@@ -244,24 +256,21 @@ def load_global_and_builtin() -> list[Rule]:
     return list(by_name.values())
 
 
-def load_rules(repo_root: str | Path) -> list[Rule]:
-    """Rules de-duped by name, precedence (later wins): BUILT-IN defaults →
-    operator global (~/.aiforge/rules) → repo-local. A CUSTOM rule always
-    overrides a shipped default of the same name. Soft — missing dirs → []."""
+def _load_builtin_rules(by_name: dict) -> None:
+    """Layer 1 (lowest): shipped default rules, tagged source=builtin."""
     from dataclasses import replace as _replace
-    root = Path(repo_root)
-    by_name: dict[str, Rule] = {}
-    # 1. built-in defaults (lowest).
     bdir = _builtin_rules_dir()
-    if bdir.is_dir():
-        for path in sorted(bdir.glob("*.md")) + sorted(bdir.glob("*.mdc")):
-            r = _parse_rule_file(path)
-            if r is not None:
-                by_name[r.name] = _replace(r, source="builtin")
-    # 2. operator global (custom).
-    for r in load_global_rules():
-        by_name[r.name] = r
-    # 3. repo-local (most specific).
+    if not bdir.is_dir():
+        return
+    for path in sorted(bdir.glob("*.md")) + sorted(bdir.glob("*.mdc")):
+        r = _parse_rule_file(path)
+        if r is not None:
+            by_name[r.name] = _replace(r, source="builtin")
+
+
+def _load_repo_local_rules(root: Path, by_name: dict) -> None:
+    """Layer 3 (most specific): repo-local rule files + the bare .cursorrules /
+    AGENTS.md always-on rules."""
     for pattern in (".aiforge/rules/*.md", ".cursor/rules/*.mdc",
                     ".cursor/rules/*.md"):
         for path in sorted(root.glob(pattern)):
@@ -270,14 +279,26 @@ def load_rules(repo_root: str | Path) -> list[Rule]:
                 by_name[r.name] = r
     for name in (".cursorrules", "AGENTS.md"):
         path = root / name
-        if path.is_file():
-            try:
-                body = path.read_text(encoding="utf-8").strip()
-            except OSError:
-                continue
-            if body:
-                by_name[name] = Rule(name=name, globs=(), always=True,
-                                     body=body, source=str(path))
+        if not path.is_file():
+            continue
+        try:
+            body = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if body:
+            by_name[name] = Rule(name=name, globs=(), always=True, body=body,
+                                 source=str(path))
+
+
+def load_rules(repo_root: str | Path) -> list[Rule]:
+    """Rules de-duped by name, precedence (later wins): BUILT-IN defaults →
+    operator global (~/.aiforge/rules) → repo-local. A CUSTOM rule always
+    overrides a shipped default of the same name. Soft — missing dirs → []."""
+    by_name: dict[str, Rule] = {}
+    _load_builtin_rules(by_name)                       # 1. built-in (lowest)
+    for r in load_global_rules():                      # 2. operator global
+        by_name[r.name] = r
+    _load_repo_local_rules(Path(repo_root), by_name)   # 3. repo-local (highest)
     return list(by_name.values())
 
 

@@ -80,6 +80,41 @@ def resolve_litellm(role: str) -> dict[str, Any]:
 _CLOUD_PROVIDERS_ORDERED: tuple[str, ...] = ()
 
 
+def _escalation_candidates(role: str) -> list[str]:
+    """Provider names to try, pinned-first then the default order, deduped."""
+    pinned = (os.environ.get(f"AIFORGE_{role.upper()}_CLOUD_PROVIDER")
+              or os.environ.get("AIFORGE_CLOUD_PROVIDER"))
+    candidates: list[str] = [pinned.lower()] if pinned else []
+    for name in _CLOUD_PROVIDERS_ORDERED:
+        if name not in candidates:
+            candidates.append(name)
+    return candidates
+
+
+def _escalation_entry(name: str, role: str, primary_provider: str) -> "dict | None":
+    """A resolve_litellm-shaped cfg for one candidate provider, or None to skip
+    it (it IS the primary, unknown, keyless, or has no blind-usable default
+    model)."""
+    if name == primary_provider or name not in PROVIDERS:
+        return None
+    prov = PROVIDERS[name]
+    # Skip providers we have no key for — they'd 401 immediately.
+    api_key = os.environ.get(prov["api_key_env"]) or prov["api_key_default"]
+    if not api_key:
+        return None
+    model = prov.get("default_model")
+    if not model:
+        # No usable default model (e.g. openai_compatible needs a per-role
+        # base_url + model). Can't blind-escalate to it — skip.
+        return None
+    if not any(model.startswith(p) for p in KNOWN_PREFIXES):
+        model = f"{prov['litellm_prefix']}/{model}"
+    base_url = (os.environ.get(f"AIFORGE_{role.upper()}_{name.upper()}_BASE_URL")
+                or prov.get("base_url"))
+    return {"model_id": model, "api_base": base_url, "api_key": api_key,
+            "_provider": name}
+
+
 def cloud_escalation_chain(role: str) -> list[dict[str, Any]]:
     """Return cloud-provider configs to try after the primary fails.
 
@@ -97,47 +132,42 @@ def cloud_escalation_chain(role: str) -> list[dict[str, Any]]:
     if os.environ.get("AIFORGE_ESCALATE_DISABLE", "0") in ("1", "true"):
         return []
     primary_provider = _row_for(role)["provider"]
-    pinned = (
-        os.environ.get(f"AIFORGE_{role.upper()}_CLOUD_PROVIDER")
-        or os.environ.get("AIFORGE_CLOUD_PROVIDER")
-    )
-    candidates: list[str] = []
-    if pinned:
-        candidates.append(pinned.lower())
+    out: list[dict[str, Any]] = []
+    for name in _escalation_candidates(role):
+        entry = _escalation_entry(name, role, primary_provider)
+        if entry is not None:
+            out.append(entry)
+    return out
+
+
+def _dead_local_candidates(role: str) -> list[str]:
+    """Provider names for the dead-primary fallback, pinned-first then default
+    order, deduped."""
+    pinned = (os.environ.get(f"AIFORGE_{role.upper()}_LOCAL_DEAD_FALLBACK")
+              or os.environ.get("AIFORGE_LOCAL_DEAD_FALLBACK"))
+    candidates: list[str] = [pinned.lower()] if pinned else []
     for name in _CLOUD_PROVIDERS_ORDERED:
         if name not in candidates:
             candidates.append(name)
-    out: list[dict[str, Any]] = []
-    for name in candidates:
-        if name == primary_provider:
-            continue
-        if name not in PROVIDERS:
-            continue
-        prov = PROVIDERS[name]
-        # Skip providers we have no key for — they'd 401 immediately.
-        api_key = os.environ.get(prov["api_key_env"]) or prov["api_key_default"]
-        if not api_key:
-            continue
-        # Build an ad-hoc resolve_litellm-shaped dict with the provider's
-        # default model — caller can override via env if needed.
-        prefix = prov["litellm_prefix"]
-        model = prov.get("default_model")
-        if not model:
-            # No usable default model (e.g. openai_compatible needs a per-role
-            # base_url + model). Can't blind-escalate to it — skip.
-            continue
-        if not any(model.startswith(p) for p in KNOWN_PREFIXES):
-            model = f"{prefix}/{model}"
-        base_url = (
-            os.environ.get(f"AIFORGE_{role.upper()}_{name.upper()}_BASE_URL")
-            or prov.get("base_url")
-        )
-        entry: dict[str, Any] = {
-            "model_id": model, "api_base": base_url, "api_key": api_key,
-            "_provider": name,
-        }
-        out.append(entry)
-    return out
+    return candidates
+
+
+def _dead_local_entry(name: str) -> "dict | None":
+    """A cloud-shaped cfg for one fallback provider, or None to skip (unknown,
+    keyless, or no blind-usable default model)."""
+    prov = PROVIDERS.get(name)
+    if prov is None:
+        return None
+    api_key = os.environ.get(prov["api_key_env"]) or prov["api_key_default"]
+    if not api_key:
+        return None
+    model = prov.get("default_model")
+    if not model:
+        return None   # no usable default model → can't use as dead-local fallback
+    if not any(model.startswith(p) for p in KNOWN_PREFIXES):
+        model = f"{prov['litellm_prefix']}/{model}"
+    return {"model_id": model, "api_base": prov.get("base_url"),
+            "api_key": api_key, "_provider": name}
 
 
 def cloud_default_for_local(role: str) -> dict[str, Any] | None:
@@ -151,34 +181,8 @@ def cloud_default_for_local(role: str) -> dict[str, Any] | None:
     """
     if os.environ.get("AIFORGE_ESCALATE_DISABLE", "0") in ("1", "true"):
         return None
-    pinned = (
-        os.environ.get(f"AIFORGE_{role.upper()}_LOCAL_DEAD_FALLBACK")
-        or os.environ.get("AIFORGE_LOCAL_DEAD_FALLBACK")
-    )
-    candidates: list[str] = []
-    if pinned:
-        candidates.append(pinned.lower())
-    for name in _CLOUD_PROVIDERS_ORDERED:
-        if name not in candidates:
-            candidates.append(name)
-    for name in candidates:
-        prov = PROVIDERS.get(name)
-        if prov is None:
-            continue
-        api_key = os.environ.get(prov["api_key_env"]) or prov["api_key_default"]
-        if not api_key:
-            continue
-        prefix = prov["litellm_prefix"]
-        model = prov.get("default_model")
-        if not model:
-            continue   # no usable default model → can't use as dead-local fallback
-        if not any(model.startswith(p) for p in KNOWN_PREFIXES):
-            model = f"{prefix}/{model}"
-        entry: dict[str, Any] = {
-            "model_id": model,
-            "api_base": prov.get("base_url"),
-            "api_key": api_key,
-            "_provider": name,
-        }
-        return entry
+    for name in _dead_local_candidates(role):
+        entry = _dead_local_entry(name)
+        if entry is not None:
+            return entry
     return None

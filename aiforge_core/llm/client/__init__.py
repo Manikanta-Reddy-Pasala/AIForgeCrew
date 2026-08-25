@@ -335,6 +335,38 @@ def _looks_like_a_model_error(shipped: dict) -> bool:
     return isinstance(exc, urllib.error.HTTPError) and 400 <= exc.code < 500
 
 
+def _attempt_payload(ep: Endpoint, messages: list[dict], attempt: int,
+                     fast_role: bool, temperature, max_tokens, top_p, extras):
+    """The request body for one empty-retry attempt.
+
+    Attempt 0: coax /no_think for fast/direct-output roles (a reasoning model
+    would otherwise return EMPTY for a role that wants a plain answer). Later
+    attempts: the last post came back EMPTY, so append '/no_think' (Qwen/DeepSeek
+    honour it → skip the reasoning phase) and PROGRESSIVELY widen max_tokens
+    (×2, ×3, …) so a still-thinking model has room left to emit the answer.
+    """
+    if attempt == 0:
+        base = _append_no_think(messages) if fast_role else messages
+        return _build_body(ep, base, temperature, max_tokens, top_p, extras)
+    mt = min(int((max_tokens or 4096) * (attempt + 1)), 32768)
+    return _build_body(ep, _append_no_think(messages), temperature, mt,
+                       top_p, extras)
+
+
+def _note_transport_failure(shipped: "dict | None", exc: Exception) -> None:
+    """Record a transport failure's diagnosis on ``shipped`` so the exhausted
+    path can reason about it. Whether the prompt REACHED the model decides which
+    diagnosis is worth making: only a model-lifecycle 4xx ("no models loaded",
+    "model not found") says anything about the configured model; a refused
+    connection or a read timeout does not — and a shipped timeout must never be
+    re-issued."""
+    if shipped is None:
+        return
+    if _shipped_timeout(exc):
+        shipped["timeout"] = True
+    shipped["exc"] = exc
+
+
 def _try_post(ep: Endpoint, messages: list[dict],
               *, temperature, max_tokens, top_p, extras,
               timeout_s: int, role: str,
@@ -346,82 +378,44 @@ def _try_post(ep: Endpoint, messages: list[dict],
     garbage. Caller decides whether to escalate / fall back.
 
     A 200-OK with empty / think-only content is intermittent on self-hosted
-    reasoning models (qwen3-coder in particular): the same prompt re-issued to
-    the SAME endpoint usually returns real content. With a single-model setup
-    there is no fallback provider to fall over to, so retrying the same
-    endpoint here is the only thing that turns a dropped learner capture or a
-    stalled generation back into a real answer. Retry count is
+    reasoning models: the same prompt re-issued to the SAME endpoint usually
+    returns real content. With a single-model setup there is no fallback
+    provider, so retrying here is the only thing that turns a dropped learner
+    capture or a stalled generation back into a real answer. Retry count is
     AIFORGE_LLM_EMPTY_RETRIES (default 2 → up to 3 total posts).
     """
     empty_retries = (max(0, _int_env("AIFORGE_LLM_EMPTY_RETRIES", 3))
                      if empty_retries is None else max(0, empty_retries))
-    # Fast/direct-output roles (learner/enhancer/triage/…) want a plain answer,
-    # not a reasoning trace — if the configured model is a reasoning one it
-    # returns EMPTY. Pre-empt that: coax /no_think from the FIRST attempt so
-    # these roles don't burn a round discovering the empty. Thinking roles
-    # (planner/architect/…) are untouched — they NEED the reasoning phase.
     fast_role = _is_fast_role(role)
     for attempt in range(empty_retries + 1):
-        if attempt == 0:
-            base = _append_no_think(messages) if fast_role else messages
-            payload = _build_body(ep, base, temperature, max_tokens,
-                                  top_p, extras)
-        else:
-            # Last post came back EMPTY. A reasoning model (qwen*-reasoning,
-            # deepseek-r1) systematically spends its whole budget THINKING and
-            # emits empty content — re-posting the identical body just repeats
-            # that. Coax a DIRECT answer: append '/no_think' (Qwen/DeepSeek honor
-            # it → skip the reasoning phase) and PROGRESSIVELY widen max_tokens
-            # each retry (×2, ×3, …) so a still-thinking model always has room
-            # left to emit the answer instead of us giving up on empty.
-            _mt = min(int((max_tokens or 4096) * (attempt + 1)), 32768)
-            payload = _build_body(ep, _append_no_think(messages), temperature,
-                                  _mt, top_p, extras)
+        payload = _attempt_payload(ep, messages, attempt, fast_role,
+                                   temperature, max_tokens, top_p, extras)
         _meter_tok: list = [None]
         try:
-            body = _post_with_retry(ep, payload, timeout_s,
-                                    role=role, source=source,
-                                    meter=_meter_tok)
+            body = _post_with_retry(ep, payload, timeout_s, role=role,
+                                    source=source, meter=_meter_tok)
         except _LLMCancelled:
             raise
         except (OSError, ValueError) as _texc:
-            # ValueError covers a non-JSON 200 (proxy HTML error page,
-            # truncated / streaming body) so a malformed response falls back to
-            # the next provider instead of crashing complete(). Transport
-            # errors are NOT retried here — _post_with_retry already exhausted
-            # its own transport retries; escalate to the next provider instead.
-            #
-            # Remember whether the prompt REACHED the model, though: this
-            # returns None, and the exhausted-path RuntimeError below used to
-            # discard the cause entirely, so the chat loop's own retry sweep
-            # (AIFORGE_CHAT_LLM_RETRIES, default 5) re-issued the identical
-            # completion five more times — six abandoned generations on a box
-            # that could not finish one, which is the storm this whole change
-            # is about.
-            if shipped is not None and _shipped_timeout(_texc):
-                shipped["timeout"] = True
-            if shipped is not None:
-                # Keep the LAST transport failure. What killed the chain
-                # decides which diagnosis is even worth making: only a
-                # model-lifecycle 4xx ("no models loaded", "model not found")
-                # says anything about the configured model. A refused
-                # connection or a read timeout does not.
-                shipped["exc"] = _texc
+            # ValueError covers a non-JSON 200 (proxy HTML error page, truncated
+            # / streaming body) so a malformed response falls back to the next
+            # provider instead of crashing complete(). Transport errors are NOT
+            # retried here — _post_with_retry already exhausted its own; escalate
+            # to the next provider instead.
+            _note_transport_failure(shipped, _texc)
             return None
-        # The token from THIS attempt, so the cost lands on the minute and
-        # turn that paid for it (same rule as a failure).
+        # The token from THIS attempt, so the cost lands on the minute and turn
+        # that paid for it (same rule as a failure).
         _record_usage(role, body, _meter_tok[0])
         text = _extract_text(body)
         # "[]"/"{}" is a valid answer only for fast/structured roles (learner
         # etc.), never for conversational chat/doer output.
         if not _is_garbage(text, allow_empty_json=fast_role):
             return text, body
-        # A 200-OK that carries no usable content is a FAILED request: it cost
-        # a generation, it is about to be re-posted, and this loop is the
-        # documented-common failure on self-hosted reasoning models. It raises
-        # nothing, so the transport could not count it — count it here, with
-        # the same `empty` label the ADK path uses (escalating_llm/_wrapper),
-        # or the two meters give opposite verdicts about the same endpoint.
+        # A 200-OK that carries no usable content is a FAILED request: it cost a
+        # generation, it is about to be re-posted, and it raises nothing, so the
+        # transport could not count it — count it here with the same `empty`
+        # label the ADK path uses, or the two meters disagree about the endpoint.
         _record_empty(_meter_tok[0])
         _log.warning(
             "llm.empty_response",
