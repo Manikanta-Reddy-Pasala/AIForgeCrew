@@ -42,7 +42,7 @@ def _replace_same_named_jobs(name: str, path: str, jobs_store,
     return replaced
 
 
-def _t_create_job_script(args: dict, cwd: str) -> dict:
+def _t_create_job_script(args: dict, _cwd: str) -> dict:
     """JOB-BUILDER finalize: write the approved script to the local
     ~/.aiforge/jobs folder and register a cron job that RUNS it (deterministic
     — no ticket, no LLM per fire). Args: name, cron, script, optional
@@ -88,7 +88,7 @@ def _t_create_job_script(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-def _t_ensure_runtime(args: dict, cwd: str) -> dict:
+def _t_ensure_runtime(args: dict, _cwd: str) -> dict:
     """Install + verify missing language runtimes / build tools so the
     agent can actually build & run the project."""
     try:
@@ -111,7 +111,7 @@ def _t_project(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-def _t_set_repo_folder(args: dict, cwd: str) -> dict:
+def _t_set_repo_folder(args: dict, _cwd: str) -> dict:
     """Persist the local FOLDER for a repo so tickets/pipeline runs for that
     repo resolve to it — ``repo`` = the project name, ``path`` = its absolute
     local folder. Use when the user says 'use /x/y for repo foo' or 'repo foo
@@ -127,7 +127,7 @@ def _t_set_repo_folder(args: dict, cwd: str) -> dict:
     return repo_map.set_path(repo, path)
 
 
-def _t_set_repo_root(args: dict, cwd: str) -> dict:
+def _t_set_repo_root(args: dict, _cwd: str) -> dict:
     """Persist the GLOBAL base folder that holds all repos — ``path`` = the
     directory whose subfolders are repos (a ticket for project ``foo`` resolves
     to ``<path>/foo``). Use when the user says 'all repos live under /x' or
@@ -142,7 +142,7 @@ def _t_set_repo_root(args: dict, cwd: str) -> dict:
     return repo_map.set_default_root(path)
 
 
-def _t_list_repos(args: dict, cwd: str) -> dict:
+def _t_list_repos(args: dict, _cwd: str) -> dict:
     """List the configured repo folders: the global base + explicit per-repo
     paths + the git repos found under the base."""
     from aiforge_core.config import repo_map
@@ -161,7 +161,7 @@ def _t_list_repos(args: dict, cwd: str) -> dict:
             "repos_under_root": found}
 
 
-def _t_set_integration_default(args: dict, cwd: str) -> dict:
+def _t_set_integration_default(args: dict, _cwd: str) -> dict:
     """Persist a user-stated DEFAULT so later tool calls auto-fill it —
     ``tool`` = jira | confluence, ``value`` = the project key (jira) or space
     key (confluence). Deterministic: stored in the integrations config, read by
@@ -183,14 +183,14 @@ def _t_set_integration_default(args: dict, cwd: str) -> dict:
             "note": f"{tool} calls will now default {field}={value} when omitted"}
 
 
-def _t_resolve_repo(args: dict, cwd: str) -> dict:
+def _t_resolve_repo(args: dict, _cwd: str) -> dict:
     """Resolve a loosely-typed repo/service/folder name to its local path
     (tolerates case, spaces, missing hyphens, typos)."""
     from aiforge_core.config import repo_map
     return repo_map.resolve(args.get("name") or args.get("repo") or "")
 
 
-def _t_context_gather(args: dict, cwd: str) -> dict:
+def _t_context_gather(args: dict, _cwd: str) -> dict:
     """Assemble a cross-entity dossier (a Jira ticket + its linked Confluence
     pages + images, or vice versa) in PARALLEL, cache it in the context folder,
     and refresh only when the entity changed. Use when asked to explain/

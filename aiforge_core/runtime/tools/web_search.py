@@ -280,7 +280,7 @@ def _ddg_scrape(query: str, limit: int) -> dict:
             "note": "no results (query too narrow, or DDG markup changed)"}
 
 
-def web_search(args: dict, cwd: str | None = None) -> dict:
+def web_search(args: dict, _cwd: str | None = None) -> dict:
     """Search the open web. Uses a keyed provider (Tavily/Brave) when
     AIFORGE_TAVILY_API_KEY / AIFORGE_BRAVE_API_KEY is set — more reliable than
     HTML scraping — otherwise falls back to keyless DuckDuckGo. ``query``
@@ -301,7 +301,7 @@ def web_search(args: dict, cwd: str | None = None) -> dict:
     return _ddg_scrape(query, limit)
 
 
-def web_fetch(args: dict, cwd: str | None = None) -> dict:
+def web_fetch(args: dict, _cwd: str | None = None) -> dict:
     """Fetch one web page and return its readable text (HTML tags, scripts and
     styles stripped). ``url`` required, optional ``max_chars`` (default 6000)."""
     if _disabled():

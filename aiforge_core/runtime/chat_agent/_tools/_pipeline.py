@@ -9,7 +9,7 @@ from ._shared import _chat_run_id, _coerce_int
 # agent). All degrade soft: if the dep (playwright / jupyter_client) or import
 # is unavailable, the handler returns {"ok": False, "error": ...} instead of
 # raising into the chat loop.
-def _t_mcp(args: dict, cwd: str) -> dict:
+def _t_mcp(args: dict, _cwd: str) -> dict:
     try:
         from aiforge_core.runtime.tools.mcp_client import mcp
         return mcp(str(args.get("command") or ""),
@@ -51,7 +51,7 @@ def _t_ipython(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-def _t_delegate(args: dict, cwd: str) -> dict:
+def _t_delegate(args: dict, _cwd: str) -> dict:
     try:
         from aiforge_core.runtime.tools.delegation import delegate_to_agent
         kwargs: dict = {}

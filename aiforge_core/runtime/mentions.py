@@ -112,7 +112,7 @@ def _url_block(url: str) -> str:
         return f"@{url} → (could not fetch: {exc})"
 
 
-def _problems_block(cwd: str) -> str:
+def _problems_block(_cwd: str) -> str:
     """Best-effort workspace diagnostics — run the repo's typecheck and
     surface failures. ``typecheck()`` resolves its own root."""
     try:

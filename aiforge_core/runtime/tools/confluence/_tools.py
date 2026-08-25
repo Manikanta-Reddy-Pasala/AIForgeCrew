@@ -26,7 +26,7 @@ def _request(method, path, **kw):
 
 # ─────────────────────────── tools ──────────────────────────────────
 
-def confluence_search(args: dict, cwd: str | None = None) -> dict:
+def confluence_search(args: dict, _cwd: str | None = None) -> dict:
     """Find pages. ``cql`` (raw CQL) OR ``query`` (full-text). ``limit``."""
     cql = (args.get("cql") or "").strip()
     if not cql and args.get("query"):
@@ -86,7 +86,7 @@ def _read_attachments(args: dict, doc_id) -> list:
     return _fetch(str(doc_id)) or []
 
 
-def confluence_read(args: dict, cwd: str | None = None) -> dict:
+def confluence_read(args: dict, _cwd: str | None = None) -> dict:
     """Read a page (storage XHTML body). By ``id``, or ``title`` (+ optional
     ``space`` key)."""
     pid = _resolve_page_id(args)
@@ -196,7 +196,7 @@ def confluence_attach(args: dict, cwd: str | None = None) -> dict:
     return _upload_attachment(str(pid), filename, data, ct)
 
 
-def confluence_children(args: dict, cwd: str | None = None) -> dict:
+def confluence_children(args: dict, _cwd: str | None = None) -> dict:
     """List the child pages of a Confluence page. Required: ``id``."""
     pid = str(args.get("id") or "").strip()
     if not pid:
@@ -235,7 +235,7 @@ def confluence_resolve_space(args: dict, cwd: str | None = None) -> dict:
     return fuzzy_pick(name, cands, value_key="key")
 
 
-def confluence_spaces(args: dict, cwd: str | None = None) -> dict:
+def confluence_spaces(args: dict, _cwd: str | None = None) -> dict:
     """List the spaces the token can see (key, name, type)."""
     r = _request("GET", "/rest/api/space",
                  params={"limit": int(args.get("limit", 50)),
@@ -248,7 +248,7 @@ def confluence_spaces(args: dict, cwd: str | None = None) -> dict:
     return {"ok": True, "spaces": out, "count": len(out)}
 
 
-def confluence_page_by_title(args: dict, cwd: str | None = None) -> dict:
+def confluence_page_by_title(args: dict, _cwd: str | None = None) -> dict:
     """Find a page by exact ``title`` within a ``space`` (key). Returns id +
     version — the handle you need to update or comment on it."""
     space = (args.get("space") or default_space() or "").strip()
@@ -271,7 +271,7 @@ def confluence_page_by_title(args: dict, cwd: str | None = None) -> dict:
             "url": _page_url(p)}
 
 
-def confluence_labels(args: dict, cwd: str | None = None) -> dict:
+def confluence_labels(args: dict, _cwd: str | None = None) -> dict:
     """Read the labels on a page. Required: ``id``."""
     pid = str(args.get("id") or "").strip()
     if not pid:
@@ -286,7 +286,7 @@ def confluence_labels(args: dict, cwd: str | None = None) -> dict:
     return {"ok": True, "id": pid, "labels": labels}
 
 
-def confluence_add_label(args: dict, cwd: str | None = None) -> dict:
+def confluence_add_label(args: dict, _cwd: str | None = None) -> dict:
     """Add one or more labels to a page. Required: ``id``, ``labels`` (list or
     comma string)."""
     pid = str(args.get("id") or "").strip()
@@ -303,7 +303,7 @@ def confluence_add_label(args: dict, cwd: str | None = None) -> dict:
     return {"ok": True, "id": pid, "added": labels}
 
 
-def confluence_comments(args: dict, cwd: str | None = None) -> dict:
+def confluence_comments(args: dict, _cwd: str | None = None) -> dict:
     """Read the comments on a page. Required: ``id``."""
     pid = str(args.get("id") or "").strip()
     if not pid:
@@ -324,7 +324,7 @@ def confluence_comments(args: dict, cwd: str | None = None) -> dict:
     return {"ok": True, "id": pid, "count": len(out), "comments": out}
 
 
-def confluence_comment(args: dict, cwd: str | None = None) -> dict:
+def confluence_comment(args: dict, _cwd: str | None = None) -> dict:
     """Add a comment to a page. Required: ``id`` (page id), ``body`` (storage
     XHTML or plain text)."""
     pid = str(args.get("id") or "").strip()
@@ -345,7 +345,7 @@ def confluence_comment(args: dict, cwd: str | None = None) -> dict:
     return {"ok": True, "id": d.get("id"), "page_id": pid}
 
 
-def confluence_descendants(args: dict, cwd: str | None = None) -> dict:
+def confluence_descendants(args: dict, _cwd: str | None = None) -> dict:
     """List ALL descendant pages of a page (deep, not just direct children).
     Required: ``id``."""
     pid = str(args.get("id") or "").strip()

@@ -265,7 +265,7 @@ def _read_log(path: str) -> str:
         return ""
 
 
-def stop_service(args: dict, cwd: str | None = None) -> dict:
+def stop_service(args: dict, _cwd: str | None = None) -> dict:
     """Stop a service started by :func:`serve`, by ``pid``. Kills the whole
     process group (TERM then KILL)."""
     try:
@@ -278,7 +278,7 @@ def stop_service(args: dict, cwd: str | None = None) -> dict:
     return {"ok": True, "stopped": True, "pid": pid}
 
 
-def list_services(args: dict | None = None, cwd: str | None = None) -> dict:
+def list_services(args: dict | None = None, _cwd: str | None = None) -> dict:
     """List services started this session + whether each is still alive."""
     _reap()        # drop dead/expired before listing
     out = []

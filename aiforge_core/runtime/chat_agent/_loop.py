@@ -1908,7 +1908,7 @@ def _emit_loop_prelude(st):
                "text": f"🔌 native tool-calling active ({_ntools} tools)"}
 
 
-def _step_prologue(st, n, cwd, role, complete_fn, session_id, builder):
+def _step_prologue(st, n, _cwd, role, complete_fn, session_id, builder):
     """Per-step prologue up to a parsed reply: cap/deadline/cancel guards, builder
     nudge, steering drain, condense+usage, the model completion, and the stuck-
     output guard. Returns ``(out, signal)`` with signal 'return'/'continue'/None."""

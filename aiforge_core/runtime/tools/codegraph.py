@@ -284,7 +284,7 @@ def _build_timeout_s() -> int:
         return 180
 
 
-def _trusted_existing(cwd, repo_canon: str) -> bool | None:
+def _trusted_existing(_cwd, repo_canon: str) -> bool | None:
     """Whether an EXISTING index can be trusted without building.
 
     Integrity-verifies ONCE per repo (cached) so a corrupt index left by a

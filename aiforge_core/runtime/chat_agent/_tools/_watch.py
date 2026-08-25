@@ -366,7 +366,7 @@ def _schedule_create(args: dict, jobs_parse, jobs_store) -> dict:
             "note": "Each run files a ticket with this instruction."}
 
 
-def _t_schedule_task(args: dict, cwd: str) -> dict:
+def _t_schedule_task(args: dict, _cwd: str) -> dict:
     """Create / list / cancel a recurring task in the jobs scheduler.
 
     The scheduler already existed; it just had no door from chat. Each run

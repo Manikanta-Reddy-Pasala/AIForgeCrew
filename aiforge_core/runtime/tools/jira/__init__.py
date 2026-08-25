@@ -113,7 +113,7 @@ def _search_page(jql: str, start: int, page: int, flds: str) -> dict:
                             "fields": flds})
 
 
-def jira_search(args: dict, cwd: str | None = None) -> dict:
+def jira_search(args: dict, _cwd: str | None = None) -> dict:
     """Find issues. ``jql`` (raw JQL) OR ``query`` (full-text).
 
     ``limit`` = how many to return (default 50). Pass ``limit="all"`` (or 0) to
@@ -186,7 +186,7 @@ def _issue_view(d: dict, fields: dict) -> dict:
             "url": _issue_url(d.get("key", ""))}
 
 
-def jira_read(args: dict, cwd: str | None = None) -> dict:
+def jira_read(args: dict, _cwd: str | None = None) -> dict:
     """Read an issue by ``key`` (e.g. ENG-123). Returns fields + comments."""
     key = (args.get("key") or args.get("id") or "").strip()
     if not key:
@@ -239,7 +239,7 @@ def _time_rollup(key: str) -> dict | None:
     return None
 
 
-def jira_worklog(args: dict, cwd: str | None = None) -> dict:
+def jira_worklog(args: dict, _cwd: str | None = None) -> dict:
     """Read the time LOGGED against an issue by ``key`` — every worklog entry
     (who, how much, when, comment) plus the estimate/spent rollup. Answers
     "how much time has been recorded on ENG-123 and by whom"."""
@@ -265,7 +265,7 @@ def jira_worklog(args: dict, cwd: str | None = None) -> dict:
             "tracking": _time_rollup(key), "url": _issue_url(key)}
 
 
-def jira_log_work(args: dict, cwd: str | None = None) -> dict:
+def jira_log_work(args: dict, _cwd: str | None = None) -> dict:
     """Record time against an issue. Required: ``key`` and ``time_spent``
     (Jira duration, e.g. '2h 30m' or '1d'). Optional: ``comment``, ``started``
     (ISO8601; defaults to server now)."""
@@ -288,7 +288,7 @@ def jira_log_work(args: dict, cwd: str | None = None) -> dict:
             "url": _issue_url(key)}
 
 
-def jira_create(args: dict, cwd: str | None = None) -> dict:
+def jira_create(args: dict, _cwd: str | None = None) -> dict:
     """Create an issue. Required: ``project`` (key), ``summary``. Optional:
     ``issuetype`` (name, default 'Task'), ``description``, ``priority`` (name),
     ``labels`` (list), ``assignee`` (name), ``parent`` (key, for sub-tasks)."""
@@ -393,7 +393,7 @@ def jira_update(args: dict, cwd: str | None = None) -> dict:
             "transitioned": bool(transitioned), "written": written}
 
 
-def jira_comments(args: dict, cwd: str | None = None) -> dict:
+def jira_comments(args: dict, _cwd: str | None = None) -> dict:
     """READ every comment on an issue by ``key`` — author, body, timestamps.
 
     Exists because the only comment tool used to be the WRITE one
@@ -429,7 +429,7 @@ def jira_comments(args: dict, cwd: str | None = None) -> dict:
             "url": _issue_url(key)}
 
 
-def jira_comment(args: dict, cwd: str | None = None) -> dict:
+def jira_comment(args: dict, _cwd: str | None = None) -> dict:
     """WRITE a NEW comment onto an issue. Required: ``key``, ``body``.
 
     To READ existing comments use ``jira_comments`` (plural) — this posts.
@@ -450,7 +450,7 @@ def jira_comment(args: dict, cwd: str | None = None) -> dict:
             "written": {"comment": str(args["body"])[:2000]}}
 
 
-def jira_transitions(args: dict, cwd: str | None = None) -> dict:
+def jira_transitions(args: dict, _cwd: str | None = None) -> dict:
     """List the workflow transitions currently available for an issue
     (id + name + target status). Required: ``key``."""
     key = (args.get("key") or args.get("id") or "").strip()
@@ -466,7 +466,7 @@ def jira_transitions(args: dict, cwd: str | None = None) -> dict:
     return {"ok": True, "key": key, "transitions": trs}
 
 
-def jira_transition(args: dict, cwd: str | None = None) -> dict:
+def jira_transition(args: dict, _cwd: str | None = None) -> dict:
     """Move an issue through its workflow (e.g. To Do → In Progress → Done).
     Required: ``key`` + ``transition`` (a transition id, its name, or the target
     status name — matched case-insensitively). Optional ``comment``."""
@@ -502,7 +502,7 @@ def jira_transition(args: dict, cwd: str | None = None) -> dict:
             "url": _issue_url(key)}
 
 
-def jira_assign(args: dict, cwd: str | None = None) -> dict:
+def jira_assign(args: dict, _cwd: str | None = None) -> dict:
     """Assign an issue to a user. Required: ``key``, ``assignee`` (username;
     ``"-1"`` / ``"unassigned"`` clears the assignee)."""
     key = (args.get("key") or args.get("id") or "").strip()
@@ -520,7 +520,7 @@ def jira_assign(args: dict, cwd: str | None = None) -> dict:
             "url": _issue_url(key)}
 
 
-def jira_link_issues(args: dict, cwd: str | None = None) -> dict:
+def jira_link_issues(args: dict, _cwd: str | None = None) -> dict:
     """Link two issues. Required: ``inward`` + ``outward`` (issue keys) and
     ``type`` (link-type name, e.g. 'Blocks', 'Relates', 'Duplicate'). Semantics:
     inward <type> outward (e.g. inward BLOCKS outward)."""

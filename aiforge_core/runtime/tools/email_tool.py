@@ -165,7 +165,7 @@ def _smtp_open(c: dict):
     return srv
 
 
-def email_send(args: dict, cwd: str | None = None) -> dict:
+def email_send(args: dict, _cwd: str | None = None) -> dict:
     """Send an email via SMTP. ``args``: ``to`` (str|list, required),
     ``subject``, ``body`` (plain text); optional ``html``, ``cc``, ``bcc``."""
     if _disabled():
@@ -307,7 +307,7 @@ def _collect_messages(srv, folder: str, *, unseen: bool, query: str,
     return out
 
 
-def email_read(args: dict, cwd: str | None = None) -> dict:
+def email_read(args: dict, _cwd: str | None = None) -> dict:
     """Fetch recent/matching emails via IMAP. ``args``: optional ``folder``
     (default INBOX), ``limit`` (default 10), ``query``/``search`` (substring
     matched against subject+from), ``unseen_only`` (bool). Newest first."""

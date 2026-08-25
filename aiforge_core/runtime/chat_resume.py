@@ -305,7 +305,7 @@ def _brief_block(title, items, cap, budget, body):
     return budget - used
 
 
-def build_brief(row: dict, cwd: str = "") -> str:
+def build_brief(row: dict, _cwd: str = "") -> str:
     """The resume briefing for a stopped turn, or "" when there is nothing
     worth saying (a turn that stopped before doing anything is just a retry).
 

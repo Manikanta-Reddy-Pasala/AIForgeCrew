@@ -25,7 +25,7 @@ def _t_memory_lookup(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-def _t_search_chat_sessions(args: dict, cwd: str) -> dict:
+def _t_search_chat_sessions(args: dict, _cwd: str) -> dict:
     """Search PRIOR chat sessions' message content — recall what you discussed
     with the user in past conversations. Local + cheap (one SQLite scan)."""
     try:
@@ -326,7 +326,7 @@ def _preference_lines() -> list[str]:
     return lines
 
 
-def _preferences_context(cwd: str) -> str:
+def _preferences_context(_cwd: str) -> str:
     """The user's captured PREFERENCES (global defaults/conventions), injected
     every turn so a once-stated preference is always honoured and never
     re-asked. Stored as ``pref:``-tagged units by preference_capture; embedded

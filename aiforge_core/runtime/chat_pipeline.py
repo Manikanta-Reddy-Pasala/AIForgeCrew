@@ -306,7 +306,7 @@ def _team_change_events(cwd: str, seq_start_sha: str, enhancer_blocked) -> list:
         return []
 
 
-def _guard_edit_claim(msg: str, cwd: str, seq_start_sha: str, enhancer_blocked,
+def _guard_edit_claim(msg: str, _cwd: str, seq_start_sha: str, enhancer_blocked,
                       change_events: list) -> str:
     """The promoted answer can claim it "applied fixes" while the diff is EMPTY
     (the same hallucination the simple loop guards). When it asserts an edit but

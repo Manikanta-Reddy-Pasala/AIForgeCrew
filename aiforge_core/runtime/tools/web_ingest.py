@@ -151,7 +151,7 @@ def _write_dossier(url: str, title: str, text: str, engine: str,
     return page_path, None
 
 
-def web_crawl(args: dict, cwd: str | None = None) -> dict:
+def web_crawl(args: dict, _cwd: str | None = None) -> dict:
     """Fetch ``url`` → markdown → ``work/web/<slug>/page.md``. Optional
     ``max_chars`` bounds the returned preview (full text is on disk).
     ``sanctioned: True`` bypasses the AIFORGE_ALLOW_WEB_FETCH gate — set

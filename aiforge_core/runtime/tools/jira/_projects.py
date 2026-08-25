@@ -13,7 +13,7 @@ from ._format import _TIME_FIELDS, _issue_summary
 
 # ─────────────── projects · boards · sprints · dashboards · me ───────────────
 
-def jira_remote_links(args: dict, cwd: str | None = None) -> dict:
+def jira_remote_links(args: dict, _cwd: str | None = None) -> dict:
     """Remote/web links on an issue (Confluence pages, external URLs). Required:
     ``key``. Returns each link's title + url, and any Confluence page id parsed
     from a wiki URL — the cross-reference a dossier follows into Confluence."""
@@ -64,7 +64,7 @@ def jira_resolve_project(args: dict, cwd: str | None = None) -> dict:
     return fuzzy_pick(name, cands, value_key="key")
 
 
-def jira_myself(args: dict, cwd: str | None = None) -> dict:
+def jira_myself(args: dict, _cwd: str | None = None) -> dict:
     """The authenticated user (name, account id, email) — resolve "me"/"my"."""
     r = _request("GET", "/rest/api/2/myself")
     if not r["ok"]:
@@ -77,7 +77,7 @@ def jira_myself(args: dict, cwd: str | None = None) -> dict:
             "active": d.get("active")}
 
 
-def jira_projects(args: dict, cwd: str | None = None) -> dict:
+def jira_projects(args: dict, _cwd: str | None = None) -> dict:
     """List the projects the token can see (key, name, id, lead)."""
     r = _request("GET", "/rest/api/2/project",
                  params={"maxResults": int(args.get("limit", 50))})
@@ -91,7 +91,7 @@ def jira_projects(args: dict, cwd: str | None = None) -> dict:
     return {"ok": True, "projects": out, "count": len(out)}
 
 
-def jira_boards(args: dict, cwd: str | None = None) -> dict:
+def jira_boards(args: dict, _cwd: str | None = None) -> dict:
     """List Agile boards (scrum/kanban). Optional ``project`` filter. Needs the
     Jira Software (Agile) REST API."""
     params = {"maxResults": int(args.get("limit", 50))}
@@ -107,7 +107,7 @@ def jira_boards(args: dict, cwd: str | None = None) -> dict:
     return {"ok": True, "boards": out, "count": len(out)}
 
 
-def jira_sprints(args: dict, cwd: str | None = None) -> dict:
+def jira_sprints(args: dict, _cwd: str | None = None) -> dict:
     """List sprints on a board. Required: ``board_id``. Optional ``state``
     (active|closed|future)."""
     bid = str(args.get("board_id") or args.get("board") or "").strip()
@@ -127,7 +127,7 @@ def jira_sprints(args: dict, cwd: str | None = None) -> dict:
     return {"ok": True, "sprints": out, "count": len(out)}
 
 
-def jira_sprint_issues(args: dict, cwd: str | None = None) -> dict:
+def jira_sprint_issues(args: dict, _cwd: str | None = None) -> dict:
     """Issues in a sprint. Required: ``sprint_id``. Optional ``time`` to include
     estimate/spent per issue."""
     sid = str(args.get("sprint_id") or args.get("sprint") or "").strip()
@@ -149,7 +149,7 @@ def jira_sprint_issues(args: dict, cwd: str | None = None) -> dict:
             "total": data.get("total")}
 
 
-def jira_dashboards(args: dict, cwd: str | None = None) -> dict:
+def jira_dashboards(args: dict, _cwd: str | None = None) -> dict:
     """List dashboards visible to the token (id, name, url)."""
     r = _request("GET", "/rest/api/2/dashboard",
                  params={"maxResults": int(args.get("limit", 50))})
@@ -163,7 +163,7 @@ def jira_dashboards(args: dict, cwd: str | None = None) -> dict:
     return {"ok": True, "dashboards": out, "count": len(out)}
 
 
-def jira_dashboard_read(args: dict, cwd: str | None = None) -> dict:
+def jira_dashboard_read(args: dict, _cwd: str | None = None) -> dict:
     """Read one dashboard + its gadgets by ``id``."""
     did = str(args.get("id") or args.get("dashboard_id") or "").strip()
     if not did:
@@ -183,7 +183,7 @@ def jira_dashboard_read(args: dict, cwd: str | None = None) -> dict:
             "url": d.get("view") or d.get("self"), "gadgets": gadgets}
 
 
-def jira_dashboard_create(args: dict, cwd: str | None = None) -> dict:
+def jira_dashboard_create(args: dict, _cwd: str | None = None) -> dict:
     """Create a dashboard. Required: ``name``. Optional ``description``,
     ``share`` ('private' default | 'authenticated' | 'global'). Uses the Jira
     Cloud dashboard API (v3); on Jira Server/DC, dashboards can't be created via

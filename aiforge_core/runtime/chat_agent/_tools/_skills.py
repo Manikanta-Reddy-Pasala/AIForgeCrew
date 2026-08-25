@@ -75,7 +75,7 @@ def _t_learn_workflow(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-def _t_editor(args: dict, cwd: str) -> dict:
+def _t_editor(args: dict, _cwd: str) -> dict:
     from aiforge_core.runtime.tools.editor import editor
     vr = args.get("view_range")
     if isinstance(vr, list):
@@ -198,22 +198,22 @@ def _t_multi_edit(args: dict, cwd: str) -> dict:
     return {"ok": True, "files": written, "edits_applied": len(edits)}
 
 
-def _t_typecheck(args: dict, cwd: str) -> dict:
+def _t_typecheck(args: dict, _cwd: str) -> dict:
     from aiforge_core.runtime.tools.typecheck import typecheck
     return typecheck()
 
 
-def _t_format(args: dict, cwd: str) -> dict:
+def _t_format(args: dict, _cwd: str) -> dict:
     from aiforge_core.runtime.tools.format import format as _fmt
     return _fmt(str(args.get("path") or "."))
 
 
-def _t_lsp(args: dict, cwd: str) -> dict:
+def _t_lsp(args: dict, _cwd: str) -> dict:
     from aiforge_core.runtime.tools.lsp import lsp
     return lsp(command=str(args.get("command") or ""), path=str(args.get("path") or ""),
                line=_coerce_int(args.get("line"), 0), character=_coerce_int(args.get("character"), 0))
 
 
-def _t_run_tests(args: dict, cwd: str) -> dict:
+def _t_run_tests(args: dict, _cwd: str) -> dict:
     from aiforge_core.runtime.tools.test_runner import run_tests
     return run_tests(mode=str(args.get("mode") or "fast"), pattern=str(args.get("pattern") or ""))

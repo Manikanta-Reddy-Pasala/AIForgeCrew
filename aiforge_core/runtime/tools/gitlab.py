@@ -122,7 +122,7 @@ def _issue_summary(d: dict) -> dict:
 
 # ─────────────────────────── tools ──────────────────────────────────
 
-def gitlab_search(args: dict, cwd: str | None = None) -> dict:
+def gitlab_search(args: dict, _cwd: str | None = None) -> dict:
     """Find issues. ``query`` (or ``search``) full-text. Optional ``project``
     (defaults to GITLAB_PROJECT — omit to search ALL accessible issues),
     ``state`` (opened|closed|all, default all), ``labels`` (comma/list),
@@ -173,7 +173,7 @@ def _addressed(args: dict) -> tuple[str, str, dict | None]:
     return proj, enc, ierr
 
 
-def gitlab_read(args: dict, cwd: str | None = None) -> dict:
+def gitlab_read(args: dict, _cwd: str | None = None) -> dict:
     """Read an issue by ``project`` + ``iid`` (the #number). Returns fields +
     comments. ``project`` defaults to GITLAB_PROJECT."""
     proj, enc, err = _addressed(args)
@@ -192,7 +192,7 @@ def gitlab_read(args: dict, cwd: str | None = None) -> dict:
             "comments": _issue_notes(proj, enc), "url": d.get("web_url")}
 
 
-def gitlab_create(args: dict, cwd: str | None = None) -> dict:
+def gitlab_create(args: dict, _cwd: str | None = None) -> dict:
     """Create an issue. Required: ``project`` (or GITLAB_PROJECT), ``title``.
     Optional: ``description``, ``labels`` (list/csv), ``assignee_ids`` (list)."""
     proj = _proj_id(args)
@@ -221,7 +221,7 @@ def gitlab_create(args: dict, cwd: str | None = None) -> dict:
             "written": {"title": args.get("title"), "description": args.get("description")}}
 
 
-def gitlab_update(args: dict, cwd: str | None = None) -> dict:
+def gitlab_update(args: dict, _cwd: str | None = None) -> dict:
     """Update an issue. Required: ``project`` + ``iid``. Provide any of
     ``title``, ``description``, ``labels`` (list/csv), ``state_event``
     (close|reopen), or a raw ``fields`` dict (merged last, wins)."""
@@ -262,7 +262,7 @@ def gitlab_update(args: dict, cwd: str | None = None) -> dict:
                         "state_event") if args.get(k) is not None}}
 
 
-def gitlab_comment(args: dict, cwd: str | None = None) -> dict:
+def gitlab_comment(args: dict, _cwd: str | None = None) -> dict:
     """Add a comment (note) to an issue. Required: ``project`` + ``iid``,
     ``body``."""
     proj = _proj_id(args)
@@ -285,7 +285,7 @@ def gitlab_comment(args: dict, cwd: str | None = None) -> dict:
             "written": {"comment": str(args["body"])[:2000]}}
 
 
-def gitlab_mr_create(args: dict, cwd: str | None = None) -> dict:
+def gitlab_mr_create(args: dict, _cwd: str | None = None) -> dict:
     """Open a merge request. Required: ``project`` (or GITLAB_PROJECT),
     ``source_branch``, ``title``. Optional: ``target_branch`` (default 'main'),
     ``description``, ``labels`` (list/csv), ``remove_source_branch``."""
@@ -316,7 +316,7 @@ def gitlab_mr_create(args: dict, cwd: str | None = None) -> dict:
                         "source": src, "target": body["target_branch"]}}
 
 
-def gitlab_mr_comment(args: dict, cwd: str | None = None) -> dict:
+def gitlab_mr_comment(args: dict, _cwd: str | None = None) -> dict:
     """Comment on a merge request. Required: ``project`` + ``iid`` + ``body``."""
     proj = _proj_id(args)
     iid = str(args.get("iid") or args.get("id") or "").strip()
@@ -587,7 +587,7 @@ def _resolve_pipeline(proj: str, args: dict) -> "tuple[dict | None, dict | None]
     return _read_pipeline(proj, latest)
 
 
-def gitlab_pipelines(args: dict, cwd: str | None = None) -> dict:
+def gitlab_pipelines(args: dict, _cwd: str | None = None) -> dict:
     """READ: list recent CI pipelines. Optional ``project`` (defaults to
     GITLAB_PROJECT), ``ref``/``branch``, ``status``, ``sha``, ``limit``."""
     proj = _proj_id(args)
@@ -849,7 +849,7 @@ def _collect_jobs(out: dict, proj, status: str) -> tuple[list, list, bool]:
     return jobs, failed, True
 
 
-def gitlab_pipeline(args: dict, cwd: str | None = None, *,
+def gitlab_pipeline(args: dict, _cwd: str | None = None, *,
                     skip_jobs: bool = False) -> dict:
     """READ one CI pipeline: status, jobs, and the log tail of what failed.
 

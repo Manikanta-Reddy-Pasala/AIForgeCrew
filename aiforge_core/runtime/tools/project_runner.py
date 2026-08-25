@@ -163,7 +163,7 @@ def detect(cwd: str) -> dict:
             "note": "no recognised project markers" if not stacks else ""}
 
 
-def _plan_maven(cwd: str) -> tuple[list[str], dict]:
+def _plan_maven(_cwd: str) -> tuple[list[str], dict]:
     return ["java", "mvn"], {
         "install": ["mvn -q -DskipTests dependency:resolve"],
         "build": ["mvn -q -DskipTests package"],

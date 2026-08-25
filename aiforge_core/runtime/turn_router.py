@@ -72,7 +72,7 @@ def _recent_context(history, n: int = 4) -> str:
     return "\n".join(out)
 
 
-def classify(prompt: str, history=None, cwd: str | None = None) -> str:
+def classify(prompt: str, history=None, _cwd: str | None = None) -> str:
     """Return ``"simple"`` or ``"complex"`` for ``prompt``. Deterministic
     trivial/greeting → simple; otherwise one cheap LLM call. Returns
     ``"complex"`` on any failure (safe default — never downgrade silently)."""
