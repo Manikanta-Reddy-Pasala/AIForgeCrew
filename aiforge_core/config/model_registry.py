@@ -107,49 +107,39 @@ def list_models() -> list[dict]:
     return [_public(r) for r in _load()]
 
 
+def _chain_candidate(r, want: str, want_host: str) -> bool:
+    """Whether registry row ``r`` is a usable fallback for the failed
+    ``(want, want_host)`` model.
+
+    A hand-edited registry can hold anything, so a non-dict / model-less row is
+    skipped. Exclusion is by CONNECTION, not model id: the same model on a
+    second box is the textbook redundancy setup, so only the row that IS the
+    failed endpoint is skipped (a row with no base_url resolves to the failed
+    host, so it counts as the same endpoint). Non-generative rows (embed /
+    reranker / gte / e5) are dropped so they don't burn a round trip."""
+    if not isinstance(r, dict):
+        return False
+    mid = str(r.get("model") or "").strip()
+    if not mid:
+        return False
+    row_host = str(r.get("base_url") or "").strip().rstrip("/").lower() or want_host
+    if mid.lower() == want and row_host == want_host:
+        return False
+    return _is_generative(mid)
+
+
 def chain_after(model: str, base_url: str = "") -> list[dict]:
     """The OTHER configured models, in registry order, as raw rows.
 
-    "I added four models; when the one chat picked stops answering it should
-    try the others" — the registry was only ever a selection list, so a dead
-    model was the end of the road on a single-provider install: the provider
-    fallback chain is for CLOUD escalation and is empty when there is no cloud
-    key, so nothing had anywhere to go.
-
-    Raw rows (api_key included) because the caller builds an Endpoint from
-    them. Rows without a usable model id are dropped, and the model already in
-    hand is never offered back to itself — retrying the same id is what just
-    failed.
+    "I added four models; when the one chat picked stops answering it should try
+    the others" — the registry was only ever a selection list, so a dead model
+    was the end of the road on a single-provider install (the provider fallback
+    chain is CLOUD escalation, empty with no cloud key). Raw rows (api_key
+    included) because the caller builds an Endpoint from them.
     """
     want = (model or "").strip().lower()
     want_host = (base_url or "").strip().rstrip("/").lower()
-    out: list[dict] = []
-    for r in _load():
-        # A hand-edited registry can hold anything. One malformed row must not
-        # take every other model down with it — the caller's blanket except
-        # turned an AttributeError here into "the chain is silently off".
-        if not isinstance(r, dict):
-            continue
-        mid = str(r.get("model") or "").strip()
-        if not mid:
-            continue
-        # Exclude by CONNECTION, not by model id. The same model served on a
-        # second box is the textbook redundancy setup and the best fallback
-        # there is — excluding it by name threw away the healthy copy along
-        # with the dead one. Only the row that IS the failed endpoint is
-        # skipped; a row with no base_url resolves to the failed host, so it
-        # is the same endpoint and is skipped too.
-        row_host = str(r.get("base_url") or "").strip().rstrip("/").lower() or want_host
-        if mid.lower() == want and row_host == want_host:
-            continue
-        # The real non-generative test, which already exists in this module:
-        # a substring check for "embed" let bge-reranker / gte-* / e5-* rows
-        # through, and each burns a full round trip to be told it cannot
-        # generate.
-        if not _is_generative(mid):
-            continue
-        out.append(dict(r))
-    return out
+    return [dict(r) for r in _load() if _chain_candidate(r, want, want_host)]
 
 
 def get_model(model_id: str) -> dict | None:
@@ -188,26 +178,32 @@ def add_model(*, label: str, model: str, base_url: str = "",
         return _public(row)
 
 
+def _apply_model_fields(r: dict, fields: dict) -> None:
+    """Apply the updatable fields onto registry row ``r`` in place, each with its
+    own validation/coercion. A key is overwritten only when a non-empty one is
+    supplied."""
+    for k in ("label", "model", "base_url"):
+        if fields.get(k) is not None:
+            r[k] = str(fields[k]).strip()
+    if fields.get("insecure_tls") is not None:
+        r["insecure_tls"] = bool(fields["insecure_tls"])
+    if fields.get("vision") in _VISION:
+        r["vision"] = fields["vision"]
+    if fields.get("thinking") in _THINKING:
+        r["thinking"] = fields["thinking"]
+    if fields.get("context_window") is not None:
+        r["context_window"] = max(0, int(fields["context_window"] or 0))
+    if fields.get("api_key"):
+        r["api_key"] = fields["api_key"]
+
+
 def update_model(model_id: str, **fields: Any) -> dict | None:
     with _LOCK:
         rows = _load()
         for r in rows:
             if r.get("id") != model_id:
                 continue
-            for k in ("label", "model", "base_url"):
-                if fields.get(k) is not None:
-                    r[k] = str(fields[k]).strip()
-            if fields.get("insecure_tls") is not None:
-                r["insecure_tls"] = bool(fields["insecure_tls"])
-            if fields.get("vision") in _VISION:
-                r["vision"] = fields["vision"]
-            if fields.get("thinking") in _THINKING:
-                r["thinking"] = fields["thinking"]
-            if fields.get("context_window") is not None:
-                r["context_window"] = max(0, int(fields["context_window"] or 0))
-            # Only overwrite the key when a non-empty one is supplied.
-            if fields.get("api_key"):
-                r["api_key"] = fields["api_key"]
+            _apply_model_fields(r, fields)
             _save(rows)
             return _public(r)
     return None
@@ -274,52 +270,66 @@ def _autodetect_ctx_enabled() -> bool:
     return os.environ.get("AIFORGE_AUTODETECT_CTX", "1") not in ("0", "false", "")
 
 
+def _explicit_role_window(role: "str | None") -> "tuple[int, str, str]":
+    """(per_model_window, base_url, api_key) for ``role``. The window is 0 when
+    no explicit per-model registry value is set; base_url/api_key are captured so
+    a later ctx probe can reach and auth to the same endpoint."""
+    if not role:
+        return 0, "", ""
+    try:
+        from aiforge_core.llm.router import resolve
+        ep = resolve(role)
+        base_url = getattr(ep, "base_url", "") or ""
+        api_key = getattr(ep, "api_key", "") or ""
+        return max(0, context_for(ep.model or "", base_url)), base_url, api_key
+    except Exception:  # noqa: BLE001
+        return 0, "", ""
+
+
+def _explicit_global_window() -> "int | None":
+    """The explicit global operator context_window (UI store or env), or None —
+    NOT the built-in default, so auto-detection can slot in below it."""
+    try:
+        from aiforge_core.config import runtime_settings
+        exp = runtime_settings.explicit("context_window")
+        return int(exp) if exp is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _autodetected_window(base_url: str, api_key: str) -> "int | None":
+    """The live endpoint's advertised window (capped 256K), or None when
+    autodetect is off, there is no base_url, or the probe soft-fails."""
+    if not (_autodetect_ctx_enabled() and base_url):
+        return None
+    try:
+        from aiforge_core.llm import health
+        det = health.probe_context_window(base_url, api_key=api_key)
+        return min(int(det), _CTX_CEILING) if det else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def effective_context_window(role: str | None = None) -> int:
     """The single source of truth for the input context window (tokens).
 
     Resolution order (first that yields a value wins) — an EXPLICIT operator
     choice ALWAYS beats auto-detection, which beats the static default:
-
-      1. explicit operator setting:
-         a. the per-model registry window for this role's model, else
-         b. the global ``runtime_settings`` store/env value (``explicit`` —
-            NOT the built-in default, so detection can slot in below it).
-      2. auto-detected window from the live endpoint's ``/v1/models`` (capped
-         256K), gated by ``AIFORGE_AUTODETECT_CTX`` (default on). Soft-fails.
-      3. static default (262144 = 256K).
+      1a. per-model registry window for this role's model, else
+      1b. the global ``runtime_settings`` explicit value, else
+      2.  auto-detected from the live endpoint's ``/v1/models`` (capped 256K),
+          gated by ``AIFORGE_AUTODETECT_CTX``, else
+      3.  the static default (262144 = 256K).
     """
-    base_url = ""
-    _api_key = ""            # the endpoint's key, so the ctx probe can auth
-    # 1a. explicit per-model registry window for this role.
-    if role:
-        try:
-            from aiforge_core.llm.router import resolve
-            ep = resolve(role)
-            base_url = getattr(ep, "base_url", "") or ""
-            _api_key = getattr(ep, "api_key", "") or ""
-            per = context_for(ep.model or "", base_url)
-            if per > 0:
-                return per
-        except Exception:  # noqa: BLE001
-            base_url = base_url or ""
-    # 1b. explicit global operator setting (UI store or env) — NOT the default.
-    try:
-        from aiforge_core.config import runtime_settings
-        exp = runtime_settings.explicit("context_window")
-        if exp is not None:
-            return int(exp)
-    except Exception:  # noqa: BLE001
-        pass
-    # 2. auto-detect from the live endpoint (soft-fail → skip).
-    if _autodetect_ctx_enabled() and base_url:
-        try:
-            from aiforge_core.llm import health
-            det = health.probe_context_window(base_url, api_key=_api_key)
-            if det:
-                return min(int(det), _CTX_CEILING)
-        except Exception:  # noqa: BLE001
-            pass
-    # 3. static default.
+    per, base_url, api_key = _explicit_role_window(role)
+    if per > 0:
+        return per
+    exp = _explicit_global_window()
+    if exp is not None:
+        return exp
+    det = _autodetected_window(base_url, api_key)
+    if det is not None:
+        return det
     return _CTX_STATIC_DEFAULT
 
 
