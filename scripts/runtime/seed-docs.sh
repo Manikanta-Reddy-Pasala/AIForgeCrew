@@ -39,6 +39,6 @@ for lib in "$@"; do
     continue
   fi
   echo "[seed-docs] $lib ⇐ $urls"
-  "$VENV_PYTHON" -m aiforge_core.runtime.maintenance_cli docs ingest \
+  "$VENV_PYTHON" -m aiforge_core.cli.maintenance docs ingest \
     "$lib" $urls || echo "[seed-docs] $lib failed (non-fatal)"
 done

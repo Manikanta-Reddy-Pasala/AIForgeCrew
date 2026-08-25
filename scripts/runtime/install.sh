@@ -3,7 +3,7 @@
 #
 # Steps:
 #   1. Ensure aiforge Postgres schema (tickets tables) via migration SQL.
-#   2. Install openai + psycopg into AIForgeCrew .venv.
+#   2. Install openai into AIForgeCrew .venv.
 #   3. Load LM Studio models at max context with 8h TTL.
 #   4. Install launchd plists.
 #
@@ -24,7 +24,7 @@ echo "    no migration file applied — first connection from aiforge-api create
 
 echo ">>> 2/4 installing python deps (via uv)"
 cd "$REPO" && /opt/homebrew/bin/uv pip install --python "$VENV/bin/python" \
-  openai 'psycopg[binary]' pgvector 2>&1 | tail -4
+  openai 2>&1 | tail -4
 
 echo ">>> 3/4 loading Doer model (always hot); Planner loads on-demand via memguard"
 "$LMS" unload --all 2>&1 | tail -1
