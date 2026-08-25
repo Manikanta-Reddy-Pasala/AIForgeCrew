@@ -30,8 +30,7 @@ def _vocab(c) -> set:
     v: set = set()
     try:
         for (txt,) in c.execute("SELECT text FROM memory_units"):
-            for w in _re.findall(r"[a-z0-9]{3,}", (txt or "").lower()):
-                v.add(w)
+            v.update(_re.findall(r"[a-z0-9]{3,}", (txt or "").lower()))
     except sqlite3.OperationalError:
         return set()
     _VOCAB_CACHE[dbp] = (time.time(), v)
