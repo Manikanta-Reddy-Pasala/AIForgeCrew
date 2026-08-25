@@ -72,11 +72,60 @@ def _save(cwd: str, rows: list[dict]) -> None:
         pass
 
 
+def _build_snapshot_tree(cwd: str, env: dict) -> "tuple[str | None, dict]":
+    """Stage the whole worktree into the temp index and write a tree. Returns
+    ``(tree_sha, {})`` on success, or ``(None, error_dict)``."""
+    # Initialize the temp index: from HEAD if it exists, else an EMPTY index (a
+    # brand-new workspace has no commit yet — without this the zero-byte temp
+    # file isn't a valid index and ``git add -A`` fails "index file smaller
+    # than expected").
+    if _has_head(cwd):
+        _git(cwd, "read-tree", "HEAD", env=env)
+    else:
+        _git(cwd, "read-tree", "--empty", env=env)
+    add = _git(cwd, "add", "-A", env=env)
+    if add.returncode != 0:
+        return None, {"ok": False, "error": f"git add failed: {add.stderr[:200]}"}
+    tree = _git(cwd, "write-tree", env=env)
+    if tree.returncode != 0:
+        return None, {"ok": False, "error": f"write-tree failed: {tree.stderr[:200]}"}
+    return tree.stdout.strip(), {}
+
+
+def _commit_snapshot_tree(cwd: str, tree_sha: str, label: str) -> "tuple[str | None, dict]":
+    """Commit ``tree_sha`` (parented on HEAD when there is one). Returns
+    ``(commit_sha, {})`` or ``(None, error_dict)``."""
+    msg = f"aiforge-checkpoint: {label or 'snapshot'}"
+    ct_args = ["commit-tree", tree_sha, "-m", msg]
+    if _has_head(cwd):
+        head = _git(cwd, "rev-parse", "HEAD").stdout.strip()
+        ct_args = ["commit-tree", tree_sha, "-p", head, "-m", msg]
+    ct = _git(cwd, *ct_args)
+    if ct.returncode != 0:
+        return None, {"ok": False, "error": f"commit-tree failed: {ct.stderr[:200]}"}
+    return ct.stdout.strip(), {}
+
+
+def _next_checkpoint_ref(cwd: str) -> str:
+    """The next ``refs/aiforge-ckpt/N`` ref, numbered from EXISTING refs (not the
+    sidecar length — a lost/corrupt sidecar would reuse an index and clobber a
+    live checkpoint)."""
+    existing = _git(cwd, "for-each-ref", "--format=%(refname)",
+                    "refs/aiforge-ckpt/").stdout.split()
+    max_n = 0
+    for r in existing:
+        try:
+            max_n = max(max_n, int(r.rsplit("/", 1)[-1]))
+        except (ValueError, IndexError):
+            continue
+    return f"refs/aiforge-ckpt/{max_n + 1}"
+
+
 def snapshot(cwd: str, label: str = "", when: str = "") -> dict:
     """Snapshot the whole working tree to a hidden ref. Non-intrusive.
 
-    ``when`` is an ISO timestamp the caller stamps (kept out of this module
-    so it stays deterministic/testable). Returns ``{ok, sha, label}`` or
+    ``when`` is an ISO timestamp the caller stamps (kept out of this module so it
+    stays deterministic/testable). Returns ``{ok, sha, label}`` or
     ``{ok: False, error}`` outside a git repo / on failure."""
     if not _is_repo(cwd):
         return {"ok": False, "error": "not_a_git_repo"}
@@ -84,46 +133,16 @@ def snapshot(cwd: str, label: str = "", when: str = "") -> dict:
     tmp.close()
     try:
         env = {"GIT_INDEX_FILE": tmp.name}
-        # Initialize the temp index: from HEAD if it exists, else an EMPTY
-        # index (a brand-new workspace has no commit yet — without this the
-        # zero-byte temp file isn't a valid index and ``git add -A`` fails
-        # with "index file smaller than expected").
-        if _has_head(cwd):
-            _git(cwd, "read-tree", "HEAD", env=env)
-        else:
-            _git(cwd, "read-tree", "--empty", env=env)
-        # Stage everything currently in the worktree (tracked + untracked).
-        add = _git(cwd, "add", "-A", env=env)
-        if add.returncode != 0:
-            return {"ok": False, "error": f"git add failed: {add.stderr[:200]}"}
-        tree = _git(cwd, "write-tree", env=env)
-        if tree.returncode != 0:
-            return {"ok": False, "error": f"write-tree failed: {tree.stderr[:200]}"}
-        tree_sha = tree.stdout.strip()
-        msg = f"aiforge-checkpoint: {label or 'snapshot'}"
-        ct_args = ["commit-tree", tree_sha, "-m", msg]
-        if _has_head(cwd):
-            head = _git(cwd, "rev-parse", "HEAD").stdout.strip()
-            ct_args = ["commit-tree", tree_sha, "-p", head, "-m", msg]
-        ct = _git(cwd, *ct_args)
-        if ct.returncode != 0:
-            return {"ok": False, "error": f"commit-tree failed: {ct.stderr[:200]}"}
-        sha = ct.stdout.strip()
-        rows = _load(cwd)
-        # Derive the next ref index from EXISTING refs, not the sidecar length
-        # — if the sidecar was lost/corrupt, length-based numbering would
-        # reuse an index and update-ref would clobber a live checkpoint.
-        existing = _git(cwd, "for-each-ref", "--format=%(refname)",
-                        "refs/aiforge-ckpt/").stdout.split()
-        max_n = 0
-        for r in existing:
-            try:
-                max_n = max(max_n, int(r.rsplit("/", 1)[-1]))
-            except (ValueError, IndexError):
-                continue
-        ref = f"refs/aiforge-ckpt/{max_n + 1}"
+        tree_sha, err = _build_snapshot_tree(cwd, env)
+        if tree_sha is None:
+            return err
+        sha, err = _commit_snapshot_tree(cwd, tree_sha, label)
+        if sha is None:
+            return err
+        ref = _next_checkpoint_ref(cwd)
         _git(cwd, "update-ref", ref, sha)
         row = {"sha": sha, "ref": ref, "label": label or "snapshot", "when": when}
+        rows = _load(cwd)
         rows.append(row)
         _save(cwd, rows)
         return {"ok": True, **row}
@@ -139,69 +158,72 @@ def list_checkpoints(cwd: str) -> list[dict]:
     return list(reversed(_load(cwd)))
 
 
+def _worktree_vs_snapshot(cwd: str, sha: str) -> "list[str]":
+    """Paths in the worktree now (tracked + untracked-not-ignored) but NOT in the
+    snapshot tree — the would-orphan set. NUL-delimited so paths with spaces or
+    newlines don't split wrong."""
+    now = {p for p in _git(cwd, "ls-files", "-z").stdout.split("\0") if p}
+    now |= {p for p in _git(cwd, "ls-files", "-o", "--exclude-standard", "-z")
+            .stdout.split("\0") if p}
+    snap = {p for p in _git(cwd, "ls-tree", "-r", "--name-only", "-z", sha)
+            .stdout.split("\0") if p}
+    return sorted(now - snap)
+
+
+def _restore_worktree(cwd: str, sha: str, targets: list) -> "dict | None":
+    """Restore ``targets`` from ``sha`` into the worktree (index untouched — the
+    non-intrusive ``git restore --worktree`` form), falling back to ``git
+    checkout`` on older git. Returns an error dict on failure, else None."""
+    co = _git(cwd, "restore", "--source", sha, "--worktree", "--", *targets)
+    if co.returncode != 0:
+        co = _git(cwd, "checkout", sha, "--", *targets)
+        if co.returncode != 0:
+            return {"ok": False, "error": f"restore failed: {co.stderr[:200]}"}
+    return None
+
+
+def _delete_orphans(cwd: str, left: list, paths: "list[str] | None") -> list:
+    """Delete would-orphan files (restricted to ``paths`` when given) so the tree
+    exactly matches the snapshot. Returns the deleted paths."""
+    def _under(p: str) -> bool:
+        if not paths:
+            return True
+        return any(p == t or p.startswith(t.rstrip("/") + "/") for t in paths)
+
+    deleted: list[str] = []
+    for rel in left:
+        if not _under(rel):
+            continue
+        try:
+            os.unlink(os.path.join(cwd, rel))
+            deleted.append(rel)
+        except OSError:
+            pass
+    return deleted
+
+
 def restore(cwd: str, sha: str, *, paths: list[str] | None = None,
             delete_orphans: bool = False) -> dict:
     """Restore snapshot paths to their checkpoint content.
 
-    Granularity (Cline-parity):
-      - ``paths=None`` (default): restore the whole tracked snapshot.
-      - ``paths=[...]``: restore ONLY those paths (a files-only / subset
-        restore) — everything else in the worktree is left as-is.
-
-    Orphans (files created AFTER the checkpoint, i.e. not in the snapshot
-    tree):
-      - ``delete_orphans=False`` (default): left untouched and reported in
-        ``left_in_place`` — the conservative behaviour.
-      - ``delete_orphans=True``: a full-state restore — orphaned files are
-        also deleted so the tree exactly matches the snapshot. When
-        ``paths`` is given, only orphans under those paths are deleted.
+    Granularity (Cline-parity): ``paths=None`` restores the whole tracked
+    snapshot; ``paths=[...]`` restores ONLY those paths. Orphans (files created
+    after the checkpoint): ``delete_orphans=False`` leaves them and reports them
+    in ``left_in_place``; ``delete_orphans=True`` deletes them (only under
+    ``paths`` when given) for an exact-match restore.
 
     Returns ``{ok, restored, left_in_place, deleted}``."""
     if not _is_repo(cwd):
         return {"ok": False, "error": "not_a_git_repo"}
     if not sha or _git(cwd, "cat-file", "-e", sha).returncode != 0:
         return {"ok": False, "error": "unknown_checkpoint"}
-    # Files in the worktree now but NOT in the snapshot tree → would-orphan.
-    # NUL-delimited so paths with spaces/newlines don't split wrong.
-    # tracked AND untracked-but-not-ignored — so a NEW untracked file created
-    # after the snapshot is correctly reported in left_in_place (was tracked-only).
-    now = {p for p in _git(cwd, "ls-files", "-z").stdout.split("\0") if p}
-    now |= {p for p in _git(cwd, "ls-files", "-o", "--exclude-standard", "-z")
-            .stdout.split("\0") if p}
-    snap = {p for p in _git(cwd, "ls-tree", "-r", "--name-only", "-z", sha)
-            .stdout.split("\0") if p}
-    left = sorted(now - snap)
-
-    # Restrict orphan handling to the requested subset when paths are given.
-    def _under(p: str) -> bool:
-        if not paths:
-            return True
-        return any(p == t or p.startswith(t.rstrip("/") + "/") for t in paths)
-
-    # Worktree-only restore — leave the real index untouched (``git checkout
-    # <sha> -- .`` would also rewrite the staging area). ``git restore
-    # --worktree`` is the non-intrusive form.
-    targets = list(paths) if paths else ["."]
-    co = _git(cwd, "restore", "--source", sha, "--worktree", "--", *targets)
-    if co.returncode != 0:
-        # Fallback for older git without ``restore``.
-        co = _git(cwd, "checkout", sha, "--", *targets)
-        if co.returncode != 0:
-            return {"ok": False, "error": f"restore failed: {co.stderr[:200]}"}
-
+    left = _worktree_vs_snapshot(cwd, sha)
+    err = _restore_worktree(cwd, sha, list(paths) if paths else ["."])
+    if err is not None:
+        return err
     deleted: list[str] = []
     if delete_orphans:
-        for rel in left:
-            if not _under(rel):
-                continue
-            try:
-                os.unlink(os.path.join(cwd, rel))
-                deleted.append(rel)
-            except OSError:
-                pass
+        deleted = _delete_orphans(cwd, left, paths)
         left = [p for p in left if p not in set(deleted)]
     return {"ok": True, "restored": sha, "left_in_place": left,
             "deleted": deleted}
-
-
-__all__ = ["snapshot", "list_checkpoints", "restore"]

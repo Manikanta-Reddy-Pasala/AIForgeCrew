@@ -68,124 +68,112 @@ def _restore_env(prior) -> None:
             os.environ[key] = val
 
 
+def _resolve_attachment_src(f: dict, fallback_base: str) -> "str | None":
+    """The on-disk source path for one attachment record: its ``abs_path``, else
+    ``fallback_base/<path>`` (tickets created before abs_path existed). None when
+    neither resolves to a file."""
+    src = f.get("abs_path")
+    if src and os.path.isfile(src):
+        return src
+    candidate = os.path.join(fallback_base, f.get("path") or "")
+    return candidate if os.path.isfile(candidate) else None
+
+
+def _copy_one_attachment(f: dict, dest_dir: str, fallback_base: str,
+                         ticket) -> bool:
+    """Copy one attachment into ``dest_dir``. Returns True on success; logs and
+    returns False when the record is malformed, the source is missing, or the
+    copy fails."""
+    if not isinstance(f, dict) or not f.get("name"):
+        return False
+    name = f["name"]
+    src = _resolve_attachment_src(f, fallback_base)
+    if not src:
+        log.warning("ticket=%s attachment missing on disk name=%r",
+                    ticket.identifier, name)
+        return False
+    import shutil
+    try:
+        shutil.copy2(src, os.path.join(dest_dir, name))
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("ticket=%s attachment copy failed name=%r: %s",
+                    ticket.identifier, name, exc)
+        return False
+
+
 def _materialize_attachments_in_worktree(ticket, worktree: str) -> None:
     """Copy operator-uploaded files into the per-ticket worktree.
 
     The API persists attachments under its own
-    ``AIFORGE_REPO_ROOT/.aiforge/ticket-files/{identifier}/`` (typically
-    a shared workspace). The runner then rebinds
-    ``AIFORGE_REPO_ROOT`` to a per-ticket git worktree. Without this copy
-    the Doer prompt's ``.aiforge/ticket-files/{id}/<name>`` relative
-    path resolves to a missing file inside the worktree.
-
-    Strategy: copy each upload by absolute path (stored as ``abs_path``
-    at upload time; falls back to the api's historical default base
-    for tickets created before that field existed). Skips silently
-    when the ticket has no attachments or the worktree is missing.
+    ``AIFORGE_REPO_ROOT/.aiforge/ticket-files/{identifier}/``; the runner then
+    rebinds ``AIFORGE_REPO_ROOT`` to a per-ticket git worktree. Without this copy
+    the Doer prompt's ``.aiforge/ticket-files/{id}/<name>`` relative path
+    resolves to a missing file inside the worktree. Skips silently when the
+    ticket has no attachments or the worktree is missing.
     """
-    import shutil
     if not worktree or not os.path.isdir(worktree):
         return
-    md = ticket.metadata or {}
-    files = md.get("attached_files") or []
+    files = (ticket.metadata or {}).get("attached_files") or []
     if not isinstance(files, list) or not files:
         return
-    dest_dir = os.path.join(
-        worktree, ".aiforge", "ticket-files", ticket.identifier,
-    )
+    dest_dir = os.path.join(worktree, ".aiforge", "ticket-files",
+                            ticket.identifier)
     os.makedirs(dest_dir, exist_ok=True)
     fallback_base = os.path.expanduser(os.environ.get(
-        "AIFORGE_TICKET_FILES_BASE", "~/codeRepo/Scheduler",
-    ))
-    copied = 0
-    for f in files:
-        if not isinstance(f, dict):
-            continue
-        name = f.get("name")
-        if not name:
-            continue
-        src = f.get("abs_path")
-        if not src or not os.path.isfile(src):
-            rel = f.get("path") or ""
-            candidate = os.path.join(fallback_base, rel)
-            src = candidate if os.path.isfile(candidate) else None
-        if not src:
-            log.warning(
-                "ticket=%s attachment missing on disk name=%r",
-                ticket.identifier, name,
-            )
-            continue
-        try:
-            shutil.copy2(src, os.path.join(dest_dir, name))
-            copied += 1
-        except Exception as exc:  # noqa: BLE001
-            log.warning(
-                "ticket=%s attachment copy failed name=%r: %s",
-                ticket.identifier, name, exc,
-            )
+        "AIFORGE_TICKET_FILES_BASE", "~/codeRepo/Scheduler"))
+    copied = sum(_copy_one_attachment(f, dest_dir, fallback_base, ticket)
+                 for f in files)
     if copied:
-        log.info(
-            "ticket=%s materialized %d attachment(s) into worktree",
-            ticket.identifier, copied,
-        )
+        log.info("ticket=%s materialized %d attachment(s) into worktree",
+                 ticket.identifier, copied)
 
 
-def _persist_ticket_media(ticket) -> None:
-    """Gap-10 wire-in: stash image attachments as an AFM
-    ``Observation_v2`` with ``media_refs`` populated.
+_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 
-    Vision sub #6 attaches images for the run, but the bytes vanished
-    once the ADK session torn down. Capturing the paths here gives a
-    durable record so future tickets can recall "we saw screenshot X
-    last time" via the same memory_block path the Doer already reads.
 
-    Soft-fail — never raises into the ticket loop. ``AIFORGE_VISION_PERSIST=0``
-    opts out.
-    """
-    if os.environ.get("AIFORGE_VISION_PERSIST", "1") in ("0", "false", ""):
-        return
-    md = ticket.metadata or {}
-    files = md.get("attached_files") or []
-    media_paths = [
-        str(f.get("path", "")) for f in files
-        if isinstance(f, dict)
-        and str(f.get("name", "")).lower().endswith(
-            (".png", ".jpg", ".jpeg", ".gif", ".webp"),
-        )
-    ]
-    media_paths = [p for p in media_paths if p]
-    if not media_paths:
-        return
-    if not ticket.project:
-        return
+def _ticket_media_paths(ticket) -> list[str]:
+    """The image-attachment paths on a ticket."""
+    files = (ticket.metadata or {}).get("attached_files") or []
+    paths = [str(f.get("path", "")) for f in files
+             if isinstance(f, dict)
+             and str(f.get("name", "")).lower().endswith(_IMAGE_EXTS)]
+    return [p for p in paths if p]
 
-    _media_summary = (
-        f"Ticket {ticket.identifier} included "
-        f"{len(media_paths)} image attachment(s): "
-        + ", ".join(p.rsplit("/", 1)[-1] for p in media_paths)
-    )
 
-    # Embedded (zero-infra) path — every sibling writer branches here on the
-    # default SQLite backend. Without this, the attachment observation was
-    # sent straight to bolt://…:7687 (fails/ImportErrors, swallowed) and the
-    # Doer never recalled prior screenshots. Mirror failure_memory's idiom.
-    # M5: the backend_select import + embedded() probe live INSIDE the try so
-    # a backend hiccup can't raise into the ticket loop ("never raises").
+def _persist_media_sqlite(summary: str, media_paths: list, ticket) -> bool:
+    """Write the media observation to the embedded SQLite store. Returns True
+    when the embedded backend handled it (so the caller stops), False to fall
+    through to the Neo4j path. Never raises."""
     try:
         from aiforge_core.memory import backend_select as _bsel
-        if _bsel.embedded():
-            from aiforge_core.memory import sqlite_memory as _sqlmem
-            _sqlmem.write_unit(
-                text=_media_summary, kind="attachment", source="adk_runner",
-                tags=[f"ticket:{ticket.identifier}", "kind:vision"],
-                repo=ticket.project, ticket=ticket.identifier,
-                metadata={"media_refs": media_paths},
-            )
-            return
+        if not _bsel.embedded():
+            return False
+        from aiforge_core.memory import sqlite_memory as _sqlmem
+        _sqlmem.write_unit(
+            text=summary, kind="attachment", source="adk_runner",
+            tags=[f"ticket:{ticket.identifier}", "kind:vision"],
+            repo=ticket.project, ticket=ticket.identifier,
+            metadata={"media_refs": media_paths})
     except Exception as exc:  # noqa: BLE001
         log.debug("vision persist[sqlite] failed: %s", exc)
-        return
+    return True     # embedded path OWNS the write (success OR swallowed error)
 
+
+def _ticket_event_time(ticket) -> "float | None":
+    """The ticket's created_at as epoch seconds, or None."""
+    try:
+        from aiforge_core.tickets.store import get as ticket_get
+        t = ticket_get(ticket.identifier)
+        created_at = getattr(t, "created_at", None)
+        return created_at.timestamp() if created_at is not None else None
+    except Exception:
+        return None
+
+
+def _persist_media_neo4j(summary: str, media_paths: list, ticket) -> None:
+    """Write the media observation to Neo4j (embedded, so embeddable + reachable
+    via vector recall). No-op when AFM/neo4j is absent. Never raises."""
     try:
         from aiforge_memory.features.memory.store import upsert_observation
         from neo4j import GraphDatabase
@@ -193,47 +181,26 @@ def _persist_ticket_media(ticket) -> None:
         return
     uri = os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687")
     user = os.environ.get("AIFORGE_NEO4J_USER", "neo4j")
-    pw = os.environ.get(
-        "AIFORGE_NEO4J_PASSWORD",
-        os.environ.get("NEO4J_PASSWORD", "password"),
-    )
+    pw = os.environ.get("AIFORGE_NEO4J_PASSWORD",
+                        os.environ.get("NEO4J_PASSWORD", "password"))
     try:
         drv = GraphDatabase.driver(uri, auth=(user, pw))
     except Exception as exc:  # noqa: BLE001
         log.debug("vision persist driver fail: %s", exc)
         return
     try:
-        try:
-            from aiforge_core.tickets.store import get as ticket_get
-            t = ticket_get(ticket.identifier)
-            created_at = getattr(t, "created_at", None)
-        except Exception:
-            created_at = None
-        event_time = None
-        if created_at is not None:
-            try:
-                event_time = created_at.timestamp()
-            except Exception:
-                event_time = None
-        _media_text = _media_summary
-        # embed so the observation is reachable via vector recall / PPR
-        # (was write-only without embed_vec). Soft on sidecar absence.
-        _media_vec = None
+        media_vec = None
         try:
             from aiforge_core.memory.embed import embed as _embed
-            _media_vec = _embed(_media_text)
+            media_vec = _embed(summary)
         except Exception:  # noqa: BLE001
-            _media_vec = None
+            media_vec = None
         upsert_observation(
-            drv, repo=ticket.project,
-            text=_media_text,
-            kind="attachment",
+            drv, repo=ticket.project, text=summary, kind="attachment",
             author="adk_runner",
             tags=[f"ticket:{ticket.identifier}", "kind:vision"],
-            media_refs=media_paths,
-            event_time=event_time,
-            embed_vec=_media_vec,
-        )
+            media_refs=media_paths, event_time=_ticket_event_time(ticket),
+            embed_vec=media_vec)
     except Exception as exc:  # noqa: BLE001
         log.debug("vision persist failed: %s", exc)
     finally:
@@ -241,3 +208,27 @@ def _persist_ticket_media(ticket) -> None:
             drv.close()
         except Exception:
             pass
+
+
+def _persist_ticket_media(ticket) -> None:
+    """Gap-10 wire-in: stash image attachments as an AFM ``Observation_v2`` with
+    ``media_refs`` populated, so future tickets can recall "we saw screenshot X
+    last time" via the same memory_block path the Doer reads. Vision sub #6
+    attaches images for the run, but the bytes vanish when the ADK session tears
+    down. Soft-fail — never raises into the ticket loop.
+    ``AIFORGE_VISION_PERSIST=0`` opts out."""
+    if os.environ.get("AIFORGE_VISION_PERSIST", "1") in ("0", "false", ""):
+        return
+    media_paths = _ticket_media_paths(ticket)
+    if not media_paths or not ticket.project:
+        return
+    summary = (f"Ticket {ticket.identifier} included {len(media_paths)} image "
+               f"attachment(s): "
+               + ", ".join(p.rsplit("/", 1)[-1] for p in media_paths))
+    # Embedded (zero-infra) path first — every sibling writer branches here on
+    # the default SQLite backend. Without it the observation went straight to
+    # bolt://…:7687 (fails/ImportErrors, swallowed) and the Doer never recalled
+    # prior screenshots.
+    if _persist_media_sqlite(summary, media_paths, ticket):
+        return
+    _persist_media_neo4j(summary, media_paths, ticket)

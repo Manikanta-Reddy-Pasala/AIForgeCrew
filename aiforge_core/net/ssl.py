@@ -114,13 +114,41 @@ def _host_of(url: str | None) -> str | None:
     return host.lower() if host else None
 
 
+_SERVICE_URL_KEYS = (
+    "AIFORGE_LM_BASE_URL", "AIFORGE_OPENAI_COMPAT_BASE_URL",
+    "AIFORGE_EMBED_URL", "AIFORGE_RERANK_URL",
+    "AIFORGE_API_BASE", "AIFORGE_MEMORY_URL",
+    "NEO4J_HTTP_URL", "NEO4J_URI",
+)
+
+
+def _mcp_endpoint_hosts(raw: str, add) -> None:
+    """Add hosts from the ``name=url,name=url`` MCP endpoints list."""
+    for pair in (raw or "").split(","):
+        pair = pair.strip()
+        if pair:
+            add(pair.split("=", 1)[1] if "=" in pair else pair)
+
+
+def _agent_config_hosts(add) -> None:
+    """Add per-role base_url hosts from the agent_config catalog. Best-effort —
+    never fail context resolution on a config read."""
+    try:
+        from aiforge_core.config import agent_config as _acfg
+        for row in (_acfg.load_all() or {}).values():
+            if isinstance(row, dict):
+                add(row.get("base_url"))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _configured_service_hosts() -> set[str]:
     """Hosts of the explicitly-configured AIForge service base-URLs.
 
-    Covers the model endpoint(s), embed/rerank sidecars, memory/neo4j
-    http, MCP servers and AIForge's own API. Anything an operator points
-    a base-url env var at counts as a host they control, so a custom DNS
-    name (not just a private IP) for the self-hosted box is trusted.
+    Covers the model endpoint(s), embed/rerank sidecars, memory/neo4j http, MCP
+    servers and AIForge's own API. Anything an operator points a base-url env var
+    at counts as a host they control, so a custom DNS name (not just a private
+    IP) for the self-hosted box is trusted.
     """
     hosts: set[str] = set()
 
@@ -130,31 +158,13 @@ def _configured_service_hosts() -> set[str]:
             hosts.add(h)
 
     env = os.environ
-    # Single-valued base-url style vars (exact + AIFORGE_<ROLE>_BASE_URL).
     for key, val in env.items():
         if key.endswith("_BASE_URL") and key.startswith("AIFORGE_"):
             _add(val)
-    for key in (
-        "AIFORGE_LM_BASE_URL", "AIFORGE_OPENAI_COMPAT_BASE_URL",
-        "AIFORGE_EMBED_URL", "AIFORGE_RERANK_URL",
-        "AIFORGE_API_BASE", "AIFORGE_MEMORY_URL",
-        "NEO4J_HTTP_URL", "NEO4J_URI",
-    ):
+    for key in _SERVICE_URL_KEYS:
         _add(env.get(key))
-    # Comma/equals list of MCP endpoints: "name=url,name=url".
-    for pair in (env.get("AIFORGE_MCP_ENDPOINTS", "") or "").split(","):
-        pair = pair.strip()
-        if not pair:
-            continue
-        _add(pair.split("=", 1)[1] if "=" in pair else pair)
-    # Configured per-role base_urls in the agent_config catalog.
-    try:  # best-effort; never fail context resolution on a config read.
-        from aiforge_core.config import agent_config as _acfg
-        for row in (_acfg.load_all() or {}).values():
-            if isinstance(row, dict):
-                _add(row.get("base_url"))
-    except Exception:  # noqa: BLE001
-        pass
+    _mcp_endpoint_hosts(env.get("AIFORGE_MCP_ENDPOINTS", ""), _add)
+    _agent_config_hosts(_add)
     return hosts
 
 
@@ -388,45 +398,28 @@ def _ip_is_non_public(ip: ipaddress._BaseAddress) -> bool:
     )
 
 
-def guard_public_url(url: str | None) -> str:
-    """Return ``url`` if it is safe to fetch, else raise :class:`SSRFBlocked`.
-
-    Safe = an ``http(s)`` URL whose host is a public IP, or a hostname whose
-    EVERY resolved address is public. Honours the
-    ``AIFORGE_SSRF_ALLOW_PRIVATE=1`` escape hatch (returns ``url`` unchecked).
-    A DNS resolution failure raises ``SSRFBlocked(kind="dns")`` — safer to
-    block than to fetch, though callers may downgrade that to a natural
-    ``urlopen`` error (see class docstring).
-    """
-    if _ssrf_allow_private():
-        return url or ""
+def _validated_host(url: str) -> "tuple[str, str]":
+    """(scheme, host) for a guardable url. Raises SSRFBlocked(kind="scheme") for
+    an empty url, a non-http(s) scheme, or a hostless url."""
     if not url:
         raise SSRFBlocked("empty url", kind="scheme")
     parts = urlsplit(url)
     scheme = (parts.scheme or "").lower()
     if scheme not in ("http", "https"):
         raise SSRFBlocked(f"scheme not allowed: {scheme or '(none)'}", kind="scheme")
-    host = parts.hostname
-    if not host:
+    if not parts.hostname:
         raise SSRFBlocked("url has no host", kind="scheme")
+    return scheme, parts.hostname
 
-    # IP literal → check directly (no DNS).
-    try:
-        literal = ipaddress.ip_address(host)
-    except ValueError:
-        literal = None
-    if literal is not None:
-        if _ip_is_non_public(literal):
-            raise SSRFBlocked(f"blocked non-public address: {literal}", kind="private")
-        return url
 
-    # Hostname → resolve every A/AAAA record and reject if ANY is non-public
-    # (defends a name that points at an internal IP).
-    port = parts.port or (443 if scheme == "https" else 80)
+def _resolved_addresses(host: str, port: int) -> list:
+    """Every A/AAAA address ``host`` resolves to. Raises SSRFBlocked(kind="dns")
+    when resolution fails or yields nothing usable."""
     try:
         infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except OSError as exc:
-        raise SSRFBlocked(f"dns resolution failed for {host}: {exc}", kind="dns") from exc
+        raise SSRFBlocked(f"dns resolution failed for {host}: {exc}",
+                          kind="dns") from exc
     addrs: list[ipaddress._BaseAddress] = []
     for info in infos:
         try:
@@ -435,11 +428,42 @@ def guard_public_url(url: str | None) -> str:
             continue
     if not addrs:
         raise SSRFBlocked(f"no addresses resolved for {host}", kind="dns")
-    for addr in addrs:
+    return addrs
+
+
+def guard_public_url(url: str | None) -> str:
+    """Return ``url`` if it is safe to fetch, else raise :class:`SSRFBlocked`.
+
+    Safe = an ``http(s)`` URL whose host is a public IP, or a hostname whose
+    EVERY resolved address is public. Honours the
+    ``AIFORGE_SSRF_ALLOW_PRIVATE=1`` escape hatch (returns ``url`` unchecked).
+    A DNS resolution failure raises ``SSRFBlocked(kind="dns")`` — safer to block
+    than to fetch, though callers may downgrade that to a natural ``urlopen``
+    error (see class docstring).
+    """
+    if _ssrf_allow_private():
+        return url or ""
+    scheme, host = _validated_host(url)
+
+    # IP literal → check directly (no DNS).
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        if _ip_is_non_public(literal):
+            raise SSRFBlocked(f"blocked non-public address: {literal}",
+                              kind="private")
+        return url
+
+    # Hostname → resolve every A/AAAA record and reject if ANY is non-public
+    # (defends a name that points at an internal IP).
+    port = urlsplit(url).port or (443 if scheme == "https" else 80)
+    for addr in _resolved_addresses(host, port):
         if _ip_is_non_public(addr):
             raise SSRFBlocked(
-                f"host {host} resolves to non-public address {addr}", kind="private"
-            )
+                f"host {host} resolves to non-public address {addr}",
+                kind="private")
     return url
 
 
