@@ -1,4 +1,4 @@
-export function AiForgeAgentsBlock({ m }: { m: any }) {
+export function AiForgeAgentsBlock({ m }: Readonly<{ m: any }>) {
   const plan = m.plan || {};
   const steps = plan.steps || [];
   const grounding = m.grounding || {};

@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 
-export function EnrichmentBlock({ enrichment }: { enrichment: any }) {
+export function EnrichmentBlock({ enrichment }: Readonly<{ enrichment: any }>) {
   const i = enrichment.intent || {};
   const focal = enrichment.focal_files || [];
   const ref = enrichment.reference_files || [];

@@ -1,7 +1,7 @@
 // ── OKR-DAG: the goal-oriented memory (objectives → key results → learnings)
 // OKF (Open Knowledge Format) meta for one concept node: a type badge, the
 // one-line description, tag chips, and link count (linked_krs = graph edges).
-export function OkfMeta({ n }: { n: any }) {
+export function OkfMeta({ n }: Readonly<{ n: any }>) {
   const tags: string[] = Array.isArray(n.tags) ? n.tags : [];
   const links: string[] = Array.isArray(n.linked_krs) ? n.linked_krs : [];
   return (

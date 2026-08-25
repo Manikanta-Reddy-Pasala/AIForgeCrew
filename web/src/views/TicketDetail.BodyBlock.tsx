@@ -7,7 +7,7 @@ import { Icon } from '../icons';
 // textarea + Save/Cancel that PATCHes the body.
 export function BodyBlock({
   identifier, body, onSaved,
-}: { identifier: string; body?: string; onSaved: () => void }) {
+}: Readonly<{ identifier: string; body?: string; onSaved: () => void }>) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(body || '');
   const [saving, setSaving] = useState(false);

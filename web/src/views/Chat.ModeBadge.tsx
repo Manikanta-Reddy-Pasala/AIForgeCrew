@@ -5,7 +5,7 @@ const MODE_CHIP: Record<string, { label: string; bg: string }> = {
   team: { label: 'Pipeline', bg: '#2f81f7' },
 };
 
-export function ModeBadge({ mode }: { mode?: string }) {
+export function ModeBadge({ mode }: Readonly<{ mode?: string }>) {
   const c = mode ? MODE_CHIP[mode] : undefined;
   if (!c) return null;   // simple (or unknown) → no chip
   return (

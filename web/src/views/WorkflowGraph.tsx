@@ -504,7 +504,7 @@ function KnowledgeGuide() {
   );
 }
 
-function ContextPanel({ ctx, ticket }: { ctx?: RunContext; ticket: string }) {
+function ContextPanel({ ctx, ticket }: Readonly<{ ctx?: RunContext; ticket: string }>) {
   const skills = ctx?.skills || [];
   const rules = ctx?.rules || [];
   const workflows = ctx?.workflows || [];
@@ -538,7 +538,7 @@ function ContextPanel({ ctx, ticket }: { ctx?: RunContext; ticket: string }) {
 }
 
 function CtxColumn({ title, color, items }:
-  { title: string; color: string; items: { name: string; tag?: string }[] }) {
+  Readonly<{ title: string; color: string; items: { name: string; tag?: string }[] }>) {
   return (
     <div style={{ minWidth: 160 }}>
       <div style={{ fontWeight: 600, color, marginBottom: 4 }}>

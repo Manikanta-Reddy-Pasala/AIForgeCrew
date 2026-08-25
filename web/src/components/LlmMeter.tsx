@@ -30,7 +30,7 @@ function rateTone(perMin: number): string {
  *  the base of its own bar, so a wall of red is legible at a glance without a
  *  second chart — and a bar that is entirely red (every attempt in that minute
  *  failed) cannot be mistaken for a busy one. */
-function Sparkline({ data, fails }: { data: number[]; fails?: number[] }) {
+function Sparkline({ data, fails }: Readonly<{ data: number[]; fails?: number[] }>) {
   // Scale on whatever HAPPENED in a minute, sends or failures. The backend
   // creates a bucket for a minute that is nothing but failures — a minute whose
   // only event was a call giving up is the most important one the meter can
@@ -61,10 +61,10 @@ function Sparkline({ data, fails }: { data: number[]; fails?: number[] }) {
   );
 }
 
-function Rows({ title, data, tone, fmt }: {
+function Rows({ title, data, tone, fmt }: Readonly<{
   title: string; data: Record<string, number>; tone?: string;
   fmt?: (n: number) => string;
-}) {
+}>) {
   const rows = Object.entries(data || {}).sort((a, b) => b[1] - a[1]).slice(0, 8);
   if (!rows.length) return null;
   return (
@@ -82,9 +82,9 @@ function Rows({ title, data, tone, fmt }: {
 /** One window's number, with the failed share underneath it. The failed count
  *  is a SUBSET of the number above, so it is shown as "of which", never
  *  subtracted — the requests were sent either way. */
-function Stat({ n, failed, label, show }: {
+function Stat({ n, failed, label, show }: Readonly<{
   n: string; failed: number; label: string; show: boolean;
-}) {
+}>) {
   return (
     <div>
       <span>{n}</span>

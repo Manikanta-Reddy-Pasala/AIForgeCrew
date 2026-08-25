@@ -447,7 +447,7 @@ export function EmailCard() {
 
 // ── Grouped panel: all integration cards, divider-separated ───────────────────
 // Collapsible. `defaultOpen` expands it (Settings page); collapsed elsewhere.
-export function IntegrationsPanel({ defaultOpen = false }: { defaultOpen?: boolean }) {
+export function IntegrationsPanel({ defaultOpen = false }: Readonly<{ defaultOpen?: boolean }>) {
   const [open, setOpen] = useState(defaultOpen);
   const divider = <div style={{ height: 1, background: 'var(--border, #2a2a2a)', margin: '16px 0' }} />;
   return (

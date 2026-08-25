@@ -30,9 +30,9 @@ function nextVision(v: RegistryModel['vision']): RegistryModel['vision'] {
 // Compact vision indicator. Static when `onCycle` is omitted; a click-to-cycle
 // pill (auto → yes → no) otherwise — replaces the full-width <select> that used
 // to dominate each model row.
-function VisionBadge({ v, onCycle }: {
+function VisionBadge({ v, onCycle }: Readonly<{
   v: RegistryModel['vision']; onCycle?: () => void;
-}) {
+}>) {
   const map = { yes: ['👁 vision', '#3fb950'], no: ['🚫 no vision', '#8b949e'],
                 auto: ['✨ vision: auto', '#6aa6ff'] } as const;
   const [txt, col] = map[v];
@@ -56,9 +56,9 @@ function nextThinking(v: RegistryModel['thinking']): RegistryModel['thinking'] {
 
 // Reasoning ("thinking") indicator — mirrors VisionBadge. Thinking models are
 // auto-picked for planning/review roles; fast (non-thinking) coders for the doer.
-function ThinkingBadge({ v, resolved, onCycle }: {
+function ThinkingBadge({ v, resolved, onCycle }: Readonly<{
   v: RegistryModel['thinking']; resolved?: boolean; onCycle?: () => void;
-}) {
+}>) {
   const map = { yes: ['🧠 thinking', '#d29922'], no: ['⚡ fast', '#8b949e'],
                 auto: [`✨ ${resolved ? '🧠' : '⚡'} auto`, '#6aa6ff'] } as const;
   const [txt, col] = map[v || 'auto'];
@@ -84,7 +84,7 @@ const DEFAULT_CTX = 131072;
 // (the model's own value, or the 128K default rendered muted). Click to edit;
 // commits on blur / Enter. Blank or 0 → clears the per-model override (falls
 // back to the 128K default).
-function CtxEdit({ value, onCommit }: { value: number; onCommit: (tokens: number) => void }) {
+function CtxEdit({ value, onCommit }: Readonly<{ value: number; onCommit: (tokens: number) => void }>) {
   const [editing, setEditing] = useState(false);
   const isDefault = !value || value <= 0;
   const shownK = Math.round((value || DEFAULT_CTX) / 1000);
@@ -198,7 +198,7 @@ export default function AgentSettings() {
 
   // Read-only: the system auto-decides each agent's model by capability whenever
   // the model set changes. This just SHOWS the decision + capabilities.
-  function RoleRow({ role }: { role: string }) {
+  function RoleRow({ role }: Readonly<{ role: string }>) {
     const sel = selectedId(role);
     const m = models.find(x => x.id === sel);
     const name = m?.label || config[role]?.model || '—';
@@ -304,7 +304,7 @@ function ApprovalsCard() {
   );
 }
 
-function ModelsCard({ models, reload }: { models: RegistryModel[]; reload: () => void }) {
+function ModelsCard({ models, reload }: Readonly<{ models: RegistryModel[]; reload: () => void }>) {
   const [label, setLabel] = useState('');
   const [model, setModel] = useState('');
   const [baseUrl, setBaseUrl] = useState('');

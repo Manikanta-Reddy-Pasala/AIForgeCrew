@@ -8,7 +8,7 @@ const SUBTASK_COLORS: Record<string, string> = {
   won: '#d4a72c', cancelled: '#5a6472',
 };
 
-export function SubtaskList({ items, onViewSpec }: { items: SubtaskItem[]; onViewSpec?: () => void }) {
+export function SubtaskList({ items, onViewSpec }: Readonly<{ items: SubtaskItem[]; onViewSpec?: () => void }>) {
   // Default COLLAPSED — the header line is the crisp, live at-a-glance view;
   // click to expand the full list.
   const [open, setOpen] = useState(false);

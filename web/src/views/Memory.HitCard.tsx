@@ -1,6 +1,6 @@
 import { truncate } from './Memory.helpers';
 
-export function HitCard({ h }: { h: any }) {
+export function HitCard({ h }: Readonly<{ h: any }>) {
   return (
     <div className="card" style={{ padding: '10px 12px' }}>
       <div className="row small muted" style={{ gap: 8, marginBottom: 4 }}>

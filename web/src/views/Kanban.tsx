@@ -168,11 +168,11 @@ export default function Kanban() {
 
 function Column({
   col, tickets, over,
-}: {
+}: Readonly<{
   col: { key: string; title: string; color: string };
   tickets: any[];
   over: boolean;
-}) {
+}>) {
   const { setNodeRef } = useDroppable({ id: `col:${col.key}` });
   return (
     <div
@@ -195,7 +195,7 @@ function Column({
   );
 }
 
-function DraggableCard({ t }: { t: any }) {
+function DraggableCard({ t }: Readonly<{ t: any }>) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: String(t.id) });
   const navigate = useNavigate();
   // Track drag distance so a click that didn't move (>4px) opens the

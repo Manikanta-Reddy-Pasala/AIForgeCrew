@@ -203,13 +203,13 @@ export default function Dashboard() {
 
 function Metric({
   label, value, sub, tone = '', spark,
-}: {
+}: Readonly<{
   label: string;
   value: string;
   sub?: string;
   tone?: '' | 'ok' | 'warn' | 'err';
   spark?: { x: number; v: number }[];
-}) {
+}>) {
   return (
     <div className={`metric ${tone}`}>
       <div className="metric-label">{label}</div>
@@ -238,7 +238,7 @@ function Metric({
   );
 }
 
-function Empty({ title, hint }: { title: string; hint: string }) {
+function Empty({ title, hint }: Readonly<{ title: string; hint: string }>) {
   return (
     <div className="empty">
       <div className="empty-icon">∅</div>

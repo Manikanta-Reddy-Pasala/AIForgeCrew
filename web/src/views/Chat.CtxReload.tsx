@@ -5,7 +5,7 @@ import { chatApi } from '../api';
 // Context-window (re)load control: type a context size in K and reload the
 // given model on the LM Studio host at that window. No preset sizes baked in
 // — the operator types any value; the backend enforces its own floor/ceiling.
-export function CtxReload({ model, onLoaded }: { model: string; onLoaded?: () => void }) {
+export function CtxReload({ model, onLoaded }: Readonly<{ model: string; onLoaded?: () => void }>) {
   const [k, setK] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const kn = Number(k);

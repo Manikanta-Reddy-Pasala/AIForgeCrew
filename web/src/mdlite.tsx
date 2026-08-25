@@ -53,8 +53,8 @@ export function copyText(text: string): Promise<void> {
  *  full answers, and user messages. */
 export function CopyButton(
   { text, label = 'Copy', title = 'Copy', className, style }:
-  { text: string; label?: string; title?: string;
-    className?: string; style?: React.CSSProperties },
+  Readonly<{ text: string; label?: string; title?: string;
+    className?: string; style?: React.CSSProperties }>,
 ) {
   const [done, setDone] = React.useState(false);
   const onCopy = React.useCallback(() => {
@@ -73,7 +73,7 @@ export function CopyButton(
 
 // Wraps a fenced-code <pre> and floats a Copy button in its top-right corner.
 function CodeFence({ body, children }:
-    { body: string; children: React.ReactNode }) {
+    Readonly<{ body: string; children: React.ReactNode }>) {
   return (
     <div className="mdlite-fence" style={{ position: 'relative' }}>
       <CopyButton text={body} title="Copy code" className="mdlite-copy"
@@ -132,7 +132,7 @@ function splitRow(line: string): string[] {
 }
 
 // ── block ───────────────────────────────────────────────────────────────────
-export function MdLite({ text }: { text: string }) {
+export function MdLite({ text }: Readonly<{ text: string }>) {
   if (!text) return null;
   const out: React.ReactNode[] = [];
   const lines = text.split('\n');

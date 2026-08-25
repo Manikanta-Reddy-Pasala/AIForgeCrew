@@ -146,7 +146,7 @@ function ThemeToggle() {
   );
 }
 
-function TopBar({ onToggleSidebar, collapsed }: { onToggleSidebar: () => void; collapsed?: boolean }) {
+function TopBar({ onToggleSidebar, collapsed }: Readonly<{ onToggleSidebar: () => void; collapsed?: boolean }>) {
   const loc = useLocation();
   const title = useTitle(loc.pathname);
   const tip = collapsed ? 'Show dashboard' : 'Hide dashboard';

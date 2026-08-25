@@ -30,7 +30,7 @@ export async function readAsBase64(file: File): Promise<string> {
 // so click-to-pick still works alongside drag. The browser sets
 // ``dataTransfer.files`` on drop; we forward both surfaces to the
 // same onFiles handler.
-export function DropZone({ onFiles }: { onFiles: (files: File[]) => void }) {
+export function DropZone({ onFiles }: Readonly<{ onFiles: (files: File[]) => void }>) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [hover, setHover] = useState(false);
   return (

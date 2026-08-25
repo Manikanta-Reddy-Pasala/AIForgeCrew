@@ -19,7 +19,7 @@ export function AssistantBubble({
   onRegenerate,
   stopped,
   onRerunFresh,
-}: {
+}: Readonly<{
   text: string;
   steps: AgentStep[];
   streaming: boolean;
@@ -31,7 +31,7 @@ export function AssistantBubble({
   stopped?: boolean;
   /** discard the partial work and run the request again from nothing */
   onRerunFresh?: () => void;
-}) {
+}>) {
   // Agent steps collapse by default once the turn is done (keeps the chat
   // clean — the plan/subtasks + final answer are what matter); auto-expanded
   // while streaming so the live flow is visible.

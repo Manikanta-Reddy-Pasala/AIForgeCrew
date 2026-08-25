@@ -12,7 +12,7 @@ import { GATE_INTENT_FLAG, GATE_INTENT_LABEL, FLAG_LABEL } from './Chat.helpers'
 // — never global (global needs the dedicated panel + confirm). The opt-in is the
 // ONLY thing that disables a gate; capture itself never does.
 
-export function CapturedPill({ item }: { item: CapturedItem }) {
+export function CapturedPill({ item }: Readonly<{ item: CapturedItem }>) {
   const rs = useContext(RuleStateCtx);
   // Hydrate from server truth so undo/rescope SURVIVE a reload: a persisted pill
   // whose id is gone from the index was deleted; otherwise use its current scope.

@@ -10,7 +10,7 @@ import { IMAGE_EXT, fmtSize } from './TicketDetail.helpers';
 // staged locally and applied in one PATCH on Save.
 export function AttachmentsBlock({
   identifier, files, onSaved,
-}: { identifier: string; files?: AttachedFile[]; onSaved: () => void }) {
+}: Readonly<{ identifier: string; files?: AttachedFile[]; onSaved: () => void }>) {
   const existing = Array.isArray(files) ? files : [];
   const [editing, setEditing] = useState(false);
   const [removed, setRemoved] = useState<Set<string>>(new Set());

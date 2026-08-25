@@ -15,7 +15,7 @@ const LABEL: Record<Kind, { title: string; one: string; blurb: string }> = {
   rules:     { title: 'Rules',     one: 'rule',     blurb: 'Always-on coding constraints the agents must obey. Memory, chats and tickets are NOT affected here.' },
 };
 
-export default function Library({ kind }: { kind: Kind }) {
+export default function Library({ kind }: Readonly<{ kind: Kind }>) {
   const qc = useQueryClient();
   const meta = LABEL[kind];
   const navigate = useNavigate();

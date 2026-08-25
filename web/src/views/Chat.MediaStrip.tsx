@@ -4,12 +4,12 @@ import { Icon } from '../icons';
 // Thumbnail strip of images attached to the session. Each shows the image, an
 // editable description (what makes it queryable when the model can't see it),
 // and a delete. A note clarifies whether the model can actually see images.
-export function MediaStrip({ media, vision, onDescribe, onDelete }: {
+export function MediaStrip({ media, vision, onDescribe, onDelete }: Readonly<{
   media: ChatMedia[];
   vision: boolean;
   onDescribe: (id: number, d: string) => void;
   onDelete: (id: number) => void;
-}) {
+}>) {
   if (!media.length) return null;
   const imgN = media.filter(m => (m.mime || '').startsWith('image/')).length;
   return (

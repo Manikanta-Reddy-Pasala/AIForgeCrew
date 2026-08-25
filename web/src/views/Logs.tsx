@@ -285,7 +285,7 @@ export default function Logs() {
 
 function RoleTab({
   label, active, highlighted, colour, count, onClick, allOk,
-}: {
+}: Readonly<{
   label: string;
   active: boolean;
   highlighted?: boolean;
@@ -293,7 +293,7 @@ function RoleTab({
   count: number;
   onClick: () => void;
   allOk: boolean;
-}) {
+}>) {
   return (
     <button type="button"
       onClick={onClick}

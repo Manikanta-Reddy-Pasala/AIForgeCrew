@@ -6,7 +6,7 @@ import { AgentStep, ChangeFile } from './Chat.types';
 
 // Small pill showing WHICH agent produced a step (team mode). Stable
 // color per role name so the eye can track each agent across steps.
-function AgentBadge({ role }: { role?: string }) {
+function AgentBadge({ role }: Readonly<{ role?: string }>) {
   if (!role) return null;
   let h = 0;
   for (let i = 0; i < role.length; i++) h = (h * 31 + role.charCodeAt(i)) % 360;
@@ -31,7 +31,7 @@ function AgentBadge({ role }: { role?: string }) {
 // A thought/reasoning step. Long chain-of-thought (reasoning models dump
 // their whole "Thinking Process…") is collapsed to one line so each
 // agent reads as a clean structured step; click to expand the full text.
-function ThoughtRow({ step }: { step: Extract<AgentStep, { kind: 'thought' }> }) {
+function ThoughtRow({ step }: Readonly<{ step: Extract<AgentStep, { kind: 'thought' }> }>) {
   // The PERSISTED path defaults this (Chat.helpers.toAgentStep), the live SSE
   // path does not — it copies evt.text straight off an `any`. That asymmetry
   // is exactly the state the subtask label was in before it took the chat view
@@ -70,7 +70,7 @@ function ThoughtRow({ step }: { step: Extract<AgentStep, { kind: 'thought' }> })
   );
 }
 
-function DiffBody({ diff }: { diff: string }) {
+function DiffBody({ diff }: Readonly<{ diff: string }>) {
   return (
     <pre style={{
       margin: 0, padding: '8px 10px', overflowX: 'auto',
@@ -89,7 +89,7 @@ function DiffBody({ diff }: { diff: string }) {
   );
 }
 
-function ChangeFileRow({ file }: { file: ChangeFile }) {
+function ChangeFileRow({ file }: Readonly<{ file: ChangeFile }>) {
   const [open, setOpen] = useState(false);
   const statusColor = file.status === 'added' ? 'var(--ok)'
     : file.status === 'deleted' ? 'var(--err)' : 'var(--accent)';
@@ -111,7 +111,7 @@ function ChangeFileRow({ file }: { file: ChangeFile }) {
   );
 }
 
-function ChangesView({ files, summary }: { files: ChangeFile[]; summary: { files: number; additions: number; deletions: number } }) {
+function ChangesView({ files, summary }: Readonly<{ files: ChangeFile[]; summary: { files: number; additions: number; deletions: number } }>) {
   return (
     <div style={{ border: '1px solid var(--border-1)', borderRadius: 'var(--r-md)', overflow: 'hidden', background: 'var(--bg-1)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', background: 'var(--bg-2)', fontSize: 'var(--fs-xs)', fontWeight: 600 }}>
@@ -128,7 +128,7 @@ function ChangesView({ files, summary }: { files: ChangeFile[]; summary: { files
   );
 }
 
-export function AgentStepRow({ step }: { step: AgentStep }) {
+export function AgentStepRow({ step }: Readonly<{ step: AgentStep }>) {
   if (step.kind === 'changes') {
     return <ChangesView files={step.files} summary={step.summary} />;
   }

@@ -2,7 +2,7 @@ import { SUBTASK_COLORS } from './TicketDetail.helpers';
 
 export function SubtaskProgress(
   { subtasks, progress, onRunParallel }:
-  { subtasks: any[]; progress?: { total: number; done: number; fraction: number; counts: Record<string, number> }; onRunParallel?: () => void },
+  Readonly<{ subtasks: any[]; progress?: { total: number; done: number; fraction: number; counts: Record<string, number> }; onRunParallel?: () => void }>,
 ) {
   const total = progress?.total ?? subtasks.length;
   const done = progress?.done ?? 0;

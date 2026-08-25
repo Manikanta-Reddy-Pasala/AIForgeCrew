@@ -10,7 +10,7 @@ import { api, type WorkflowSpec } from '../api';
 // switch routes. Posts to PUT /api/tickets/{id}/route which records
 // route_source='manual' so the change is auditable.
 
-export function RouteBadge({ t, onChanged }: { t: any; onChanged: () => void }) {
+export function RouteBadge({ t, onChanged }: Readonly<{ t: any; onChanged: () => void }>) {
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [pickedKind, setPickedKind] = useState<'code' | 'workflow'>(
