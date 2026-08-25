@@ -34,35 +34,37 @@ _RECAP_ACTION_RE = _re.compile(r"^\s*ACTION:\s*([A-Za-z0-9_]+)", _re.MULTILINE)
 _RECAP_PATH_RE = _re.compile(r'"(?:path|file|filename|target)"\s*:\s*"([^"]+)"')
 
 
+def _fold_recap_action(txt: str, files: list, seen: set, tallies: dict) -> None:
+    """Fold one assistant message's ACTION line into the recap accumulators: a
+    file-reading action contributes a de-duped basename, every other tool a
+    name×count tally."""
+    am = _RECAP_ACTION_RE.search(txt)
+    if not am:
+        return
+    pm = _RECAP_PATH_RE.search(txt)
+    if pm:
+        base = pm.group(1).rstrip("/").rsplit("/", 1)[-1]
+        if base and base not in seen:
+            seen.add(base)
+            files.append(base)
+    else:
+        tallies[am.group(1)] = tallies.get(am.group(1), 0) + 1
+
+
 def _progress_recap(convo: list, *, max_files: int = 15) -> str:
     """Compact recap of the DISTINCT actions already taken, so a stuck model can
     see its own progress and pick the NEXT step instead of repeating a done one.
 
     File-reading actions → a de-duped basename list ('read: A.java, B.java …');
-    every other tool → a name×count tally. Pure function of ``convo`` (scans the
-    assistant ACTION lines the loop appended), dependency-free, best-effort —
-    returns '' when there's nothing to recap."""
+    every other tool → a name×count tally. Pure function of ``convo``,
+    dependency-free, best-effort — '' when there's nothing to recap."""
     files: list[str] = []
     seen: set[str] = set()
     tallies: dict[str, int] = {}
     for m in convo:
-        if not isinstance(m, dict) or m.get("role") != "assistant":
-            continue
-        txt = m.get("content")
-        if not isinstance(txt, str):
-            continue
-        am = _RECAP_ACTION_RE.search(txt)
-        if not am:
-            continue
-        tool = am.group(1)
-        pm = _RECAP_PATH_RE.search(txt)
-        if pm:
-            base = pm.group(1).rstrip("/").rsplit("/", 1)[-1]
-            if base and base not in seen:
-                seen.add(base)
-                files.append(base)
-        else:
-            tallies[tool] = tallies.get(tool, 0) + 1
+        if isinstance(m, dict) and m.get("role") == "assistant" \
+                and isinstance(m.get("content"), str):
+            _fold_recap_action(m["content"], files, seen, tallies)
     parts: list[str] = []
     if files:
         shown = files[:max_files]
