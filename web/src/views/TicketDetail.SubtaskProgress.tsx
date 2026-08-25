@@ -23,7 +23,7 @@ export function SubtaskProgress(
             </span>
           ))}
           {onRunParallel && done < total && (
-            <button className="ghost sm" onClick={onRunParallel} disabled={anyRunning}
+            <button type="button" className="ghost sm" onClick={onRunParallel} disabled={anyRunning}
                     title="Run the subtasks concurrently, each in its own worktree, then merge">
               {anyRunning ? 'Running…' : '⇉ Run in parallel'}
             </button>

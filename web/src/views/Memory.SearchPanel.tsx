@@ -47,7 +47,7 @@ export function SearchPanel() {
           onChange={e => setQ(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') run(); }}
         />
-        <button onClick={run} disabled={busy || q.trim().length < 2}>
+        <button type="button" onClick={run} disabled={busy || q.trim().length < 2}>
           {busy ? 'Searching…' : 'Search'}
         </button>
       </div>

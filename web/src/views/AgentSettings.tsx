@@ -418,15 +418,15 @@ function ModelsCard({ models, reload }: { models: RegistryModel[]; reload: () =>
       </div>
       <div className="xs muted" style={{ marginTop: 6 }}>TLS verification is skipped for these endpoints (self-hosted / self-signed).</div>
       <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-        <button className="btn" onClick={add} disabled={busy}>
+        <button type="button" className="btn" onClick={add} disabled={busy}>
           {busy ? 'Adding…' : '+ Add model'}
         </button>
-        <button className="ghost" disabled={identifying || !baseUrl.trim()}
+        <button type="button" className="ghost" disabled={identifying || !baseUrl.trim()}
                 title="Contact the Base URL and list the models it serves"
                 onClick={identify}>
           {identifying ? 'Identifying…' : '🔍 Identify models from URL'}
         </button>
-        <button className="ghost" disabled={busy || syncing}
+        <button type="button" className="ghost" disabled={busy || syncing}
                 title="Populate this list from the models the agents are already configured with"
                 onClick={async () => {
                   setSyncing(true);
@@ -448,7 +448,7 @@ function ModelsCard({ models, reload }: { models: RegistryModel[]; reload: () =>
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {discovered.map(id => (
-              <button key={id} className="ghost sm" onClick={() => addDiscovered(id)}
+              <button type="button" key={id} className="ghost sm" onClick={() => addDiscovered(id)}
                       style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
                 + {id}
               </button>
@@ -473,12 +473,12 @@ function ModelsCard({ models, reload }: { models: RegistryModel[]; reload: () =>
               <ThinkingBadge v={m.thinking} resolved={m.has_thinking}
                              onCycle={() => setThinkingFor(m.id, nextThinking(m.thinking))} />
               <VisionBadge v={m.vision} onCycle={() => setVisionFor(m.id, nextVision(m.vision))} />
-              <button className="ghost sm" disabled={loadingId === m.id}
+              <button type="button" className="ghost sm" disabled={loadingId === m.id}
                       title="Load this model on the LM Studio host (no-op for cloud / non-LMS backends)"
                       onClick={() => loadOnServer(m)}>
                 {loadingId === m.id ? '…' : '⏏ Load'}
               </button>
-              <button className="ghost sm" style={{ color: 'var(--err)' }} onClick={() => del(m.id)}>✕</button>
+              <button type="button" className="ghost sm" style={{ color: 'var(--err)' }} onClick={() => del(m.id)}>✕</button>
             </div>
           ))}
         </div>

@@ -135,7 +135,7 @@ function ThemeToggle() {
   const [theme, toggle] = useTheme();
   const dark = theme === 'dark';
   return (
-    <button
+    <button type="button"
       className="icon"
       onClick={toggle}
       title={dark ? 'Switch to light theme' : 'Switch to dark theme'}
@@ -153,7 +153,7 @@ function TopBar({ onToggleSidebar, collapsed }: { onToggleSidebar: () => void; c
 
   return (
     <div className="topbar">
-      <button className="icon" onClick={onToggleSidebar} title={tip} aria-label={tip}>
+      <button type="button" className="icon" onClick={onToggleSidebar} title={tip} aria-label={tip}>
         <Icon.PanelLeft size={16} />
       </button>
       <div>

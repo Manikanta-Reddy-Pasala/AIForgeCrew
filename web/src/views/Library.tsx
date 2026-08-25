@@ -94,15 +94,15 @@ export default function Library({ kind }: { kind: Kind }) {
           <div className="subtitle">{items.length} {meta.one}{items.length === 1 ? '' : 's'} · {meta.blurb}</div>
         </div>
         <div className="row">
-          <button className="ghost" title={`Chat with an agent to build a ${meta.one}`}
+          <button type="button" className="ghost" title={`Chat with an agent to build a ${meta.one}`}
                   onClick={() => navigate(`/chat?builder=${meta.one}`)}>
             <Icon.Chat size={14} /> New {meta.one} via chat
           </button>
-          <button onClick={() => setCreating(c => !c)}>
+          <button type="button" onClick={() => setCreating(c => !c)}>
             {creating ? <><Icon.X size={14} /> Cancel</> : <><Icon.Plus size={14} /> New {meta.one}</>}
           </button>
           {items.length > 0 && (
-            <button className="ghost danger" title={`Delete every ${meta.one}`} onClick={clearAll}>
+            <button type="button" className="ghost danger" title={`Delete every ${meta.one}`} onClick={clearAll}>
               <Icon.Trash size={14} /> Clear all
             </button>
           )}
@@ -120,7 +120,7 @@ export default function Library({ kind }: { kind: Kind }) {
                 <input value={genPrompt} onChange={e => setGenPrompt(e.target.value)}
                   placeholder={`Describe the ${meta.one}, e.g. "how to add a Stripe webhook endpoint"`} />
               </label>
-              <button className="ghost" onClick={generate} disabled={generating}>
+              <button type="button" className="ghost" onClick={generate} disabled={generating}>
                 {generating ? 'Generating…' : <><Icon.Chat size={14} /> Generate draft</>}
               </button>
             </div>
@@ -149,8 +149,8 @@ export default function Library({ kind }: { kind: Kind }) {
                 placeholder={kind === 'rules' ? '# Title\n- imperative bullet the agent must follow' : 'Step-by-step instructions the agent follows…'} />
             </label>
             <div className="row" style={{ justifyContent: 'flex-end', gap: 8 }}>
-              <button className="ghost" onClick={() => { reset(); setCreating(false); }}>Cancel</button>
-              <button onClick={save}><Icon.Plus size={14} /> Save {meta.one}</button>
+              <button type="button" className="ghost" onClick={() => { reset(); setCreating(false); }}>Cancel</button>
+              <button type="button" onClick={save}><Icon.Plus size={14} /> Save {meta.one}</button>
             </div>
           </div>
         </div>
@@ -159,7 +159,7 @@ export default function Library({ kind }: { kind: Kind }) {
       {/* ── Default | Custom tabs ─────────────────────────────────── */}
       <div className="row" style={{ gap: 4, marginBottom: 16, borderBottom: '1px solid var(--border-1)' }}>
         {(['default', 'custom'] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)}
+          <button type="button" key={t} onClick={() => setTab(t)}
                   className={tab === t ? '' : 'ghost'}
                   style={{ borderRadius: '6px 6px 0 0', textTransform: 'capitalize',
                            fontWeight: tab === t ? 600 : 400 }}>
@@ -200,7 +200,7 @@ export default function Library({ kind }: { kind: Kind }) {
                     )}
                   </div>
                   <div className="row" style={{ gap: 8, alignItems: 'center' }}>
-                    <button className="ghost danger" title={`Delete ${meta.one}`}
+                    <button type="button" className="ghost danger" title={`Delete ${meta.one}`}
                       onClick={e => { e.stopPropagation(); del(it.name); }}
                       style={{ padding: '2px 8px' }}>
                       <Icon.Trash size={13} />

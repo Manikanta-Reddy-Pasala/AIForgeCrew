@@ -30,7 +30,7 @@ export function BodyBlock({
       <div className="card-header" style={{ display: 'flex', alignItems: 'center' }}>
         <h2 style={{ flex: 1 }}>Body</h2>
         {!editing && (
-          <button className="ghost sm" onClick={startEdit}>
+          <button type="button" className="ghost sm" onClick={startEdit}>
             <Icon.Edit size={14} /> Edit
           </button>
         )}
@@ -44,10 +44,10 @@ export function BodyBlock({
             style={{ width: '100%', fontFamily: 'inherit' }}
           />
           <div className="row" style={{ gap: 8, justifyContent: 'flex-end' }}>
-            <button className="ghost sm" onClick={() => setEditing(false)} disabled={saving}>
+            <button type="button" className="ghost sm" onClick={() => setEditing(false)} disabled={saving}>
               Cancel
             </button>
-            <button onClick={save} disabled={saving}>
+            <button type="button" onClick={save} disabled={saving}>
               <Icon.Send size={14} /> {saving ? 'Saving…' : 'Save'}
             </button>
           </div>

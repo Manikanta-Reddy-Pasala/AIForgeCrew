@@ -52,7 +52,7 @@ export function RouteBadge({ t, onChanged }: { t: any; onChanged: () => void }) 
 
   return (
     <div style={{ position: 'relative' }}>
-      <button
+      <button type="button"
         className="chip"
         title={`Route source: ${sourceLabel}${conf}`}
         onClick={() => setOpen(o => !o)}
@@ -101,8 +101,8 @@ export function RouteBadge({ t, onChanged }: { t: any; onChanged: () => void }) 
             </select>
           )}
           <div className="row" style={{ justifyContent: 'flex-end', gap: 8 }}>
-            <button className="ghost" onClick={() => setOpen(false)}>Cancel</button>
-            <button onClick={save} disabled={pending}>Save</button>
+            <button type="button" className="ghost" onClick={() => setOpen(false)}>Cancel</button>
+            <button type="button" onClick={save} disabled={pending}>Save</button>
           </div>
         </div>
       )}

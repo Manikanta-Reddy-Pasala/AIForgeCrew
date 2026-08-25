@@ -158,7 +158,7 @@ function LlmMeterInner() {
 
   return (
     <div className="llm-meter" ref={box}>
-      <button
+      <button type="button"
         className="llm-meter-pill"
         onClick={() => setOpen(o => !o)}
         aria-expanded={open}

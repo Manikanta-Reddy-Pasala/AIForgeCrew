@@ -95,7 +95,7 @@ export function CapturedPill({ item }: { item: CapturedItem }) {
         <option value="project">project</option>
         <option value="session">session</option>
       </select>
-      <button onClick={undo} disabled={busy}
+      <button type="button" onClick={undo} disabled={busy}
         style={{ marginLeft: 'auto', background: 'transparent',
           border: '1px solid var(--border-1)', borderRadius: 4,
           padding: '1px 8px', fontSize: 11, color: 'var(--fg-3)',
@@ -113,13 +113,13 @@ export function CapturedPill({ item }: { item: CapturedItem }) {
           ) : (
             <>
               <span>⚠ {GATE_INTENT_LABEL[item.gate_intent]}</span>
-              <button onClick={() => optIn('session')} disabled={busy}
+              <button type="button" onClick={() => optIn('session')} disabled={busy}
                 style={{ background: 'transparent', border: '1px solid #d4a72c',
                   borderRadius: 4, padding: '1px 8px', fontSize: 11,
                   color: '#d4a72c', cursor: busy ? 'default' : 'pointer' }}>
                 This session</button>
               {item.repo && (
-                <button onClick={() => optIn('project')} disabled={busy}
+                <button type="button" onClick={() => optIn('project')} disabled={busy}
                   style={{ background: 'transparent', border: '1px solid #d4a72c',
                     borderRadius: 4, padding: '1px 8px', fontSize: 11,
                     color: '#d4a72c', cursor: busy ? 'default' : 'pointer' }}>

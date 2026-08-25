@@ -218,7 +218,7 @@ export default function TicketDetail() {
                   <option key={s} value={s}>{s.replace('_', ' ')}</option>
                 ))}
               </select>
-              <button className="ghost sm danger" onClick={deleteTicket} style={{ marginLeft: 'auto' }}>
+              <button type="button" className="ghost sm danger" onClick={deleteTicket} style={{ marginLeft: 'auto' }}>
                 <Icon.Trash size={14} /> Delete
               </button>
             </div>
@@ -234,7 +234,7 @@ export default function TicketDetail() {
                 placeholder="Leave a comment for the crew…"
               />
               <div className="row" style={{ justifyContent: 'flex-end' }}>
-                <button onClick={postComment} disabled={!comment.trim()}>
+                <button type="button" onClick={postComment} disabled={!comment.trim()}>
                   <Icon.Send size={14} /> Post comment
                 </button>
               </div>

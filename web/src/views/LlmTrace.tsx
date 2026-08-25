@@ -120,7 +120,7 @@ export default function LlmTrace() {
                   {c.dur_ms != null ? `${c.dur_ms}ms` : ''}
                   {c.messages && ` · msgs=${c.messages.length}`}
                   {c.response != null && ` · resp=${c.response.length}c`}
-                  <button className="ghost sm" style={{ marginLeft: 8 }}
+                  <button type="button" className="ghost sm" style={{ marginLeft: 8 }}
                           onClick={() => setExpanded(s => ({...s, [i]: !open}))}>
                     {open ? 'collapse' : 'expand'}
                   </button>

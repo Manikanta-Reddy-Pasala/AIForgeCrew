@@ -24,12 +24,12 @@ export function OkrPanel() {
         <h2>🎯 OKR memory <span className="muted small">goal graph · Open Knowledge Format (OKF v0.1)</span></h2>
         <div className="row" style={{ gap: 6 }}>
           {g.counts && <span className="muted xs">{Object.entries(g.counts).map(([k, v]) => `${v} ${k}`).join(' · ')}</span>}
-          <button className="ghost sm" disabled={busy} onClick={async () => {
+          <button type="button" className="ghost sm" disabled={busy} onClick={async () => {
             setBusy(true);
             try { const r = await api.memoryOkrMigrate(); toast.success(`Seeded ${r.migrated} topics into the graph`); load(); }
             catch (e: any) { toast.error(e.message); } finally { setBusy(false); }
           }} title="Seed the graph from existing topic briefs">Seed from briefs</button>
-          <button className="ghost sm" onClick={load}>Refresh</button>
+          <button type="button" className="ghost sm" onClick={load}>Refresh</button>
         </div>
       </div>
       {nodes.length === 0 ? (
@@ -52,7 +52,7 @@ export function OkrPanel() {
                         <span className="muted xs"> · {kr.id}{kr.status ? ` · ${kr.status}` : ''}</span></span>
                       {kr.id === active
                         ? <span className="chip xs">active</span>
-                        : <button className="ghost sm" onClick={() => setActive(kr.id)}>set active</button>}
+                        : <button type="button" className="ghost sm" onClick={() => setActive(kr.id)}>set active</button>}
                     </div>
                     <OkfMeta n={kr} />
                   </div>

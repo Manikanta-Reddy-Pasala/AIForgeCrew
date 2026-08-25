@@ -59,7 +59,7 @@ export function AttachmentsBlock({
       <div className="card">
         <div className="card-header" style={{ display: 'flex', alignItems: 'center' }}>
           <h2 style={{ flex: 1 }}>Attachments</h2>
-          <button className="ghost sm" onClick={() => setEditing(true)}>
+          <button type="button" className="ghost sm" onClick={() => setEditing(true)}>
             <Icon.Edit size={14} /> Add
           </button>
         </div>
@@ -73,7 +73,7 @@ export function AttachmentsBlock({
       <div className="card-header" style={{ display: 'flex', alignItems: 'center' }}>
         <h2 style={{ flex: 1 }}>Attachments ({existing.length})</h2>
         {!editing && (
-          <button className="ghost sm" onClick={() => setEditing(true)}>
+          <button type="button" className="ghost sm" onClick={() => setEditing(true)}>
             <Icon.Edit size={14} /> Edit
           </button>
         )}
@@ -118,7 +118,7 @@ export function AttachmentsBlock({
                 )}
               </div>
               {editing && (
-                <button className="ghost sm danger" onClick={() => toggleRemove(f.name)}
+                <button type="button" className="ghost sm danger" onClick={() => toggleRemove(f.name)}
                   title={isRemoved ? 'Keep' : 'Remove'}>
                   {isRemoved ? 'Undo' : <Icon.Trash size={14} />}
                 </button>
@@ -135,7 +135,7 @@ export function AttachmentsBlock({
               {added.map((f, i) => (
                 <div key={i} className="small muted">
                   📎 {f.name} ({formatBytes(f.size)}){' '}
-                  <button className="ghost sm danger"
+                  <button type="button" className="ghost sm danger"
                     onClick={() => setAdded(prev => prev.filter(x => x.name !== f.name))}>
                     ×
                   </button>
@@ -144,8 +144,8 @@ export function AttachmentsBlock({
             </div>
           )}
           <div className="row" style={{ gap: 8, justifyContent: 'flex-end' }}>
-            <button className="ghost sm" onClick={reset} disabled={saving}>Cancel</button>
-            <button onClick={save} disabled={saving || !dirty}>
+            <button type="button" className="ghost sm" onClick={reset} disabled={saving}>Cancel</button>
+            <button type="button" onClick={save} disabled={saving || !dirty}>
               <Icon.Send size={14} /> {saving ? 'Saving…' : 'Save'}
             </button>
           </div>

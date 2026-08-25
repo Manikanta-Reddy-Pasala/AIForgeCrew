@@ -135,7 +135,7 @@ export default function Kanban() {
           <select value={roleFilter} onChange={e => setRoleFilter(e.target.value)} style={{ width: 150 }}>
             {roles.map(r => <option key={r} value={r}>{r || 'all roles'}</option>)}
           </select>
-          <button className="ghost" onClick={() => refetch()} disabled={isFetching}>
+          <button type="button" className="ghost" onClick={() => refetch()} disabled={isFetching}>
             <Icon.Refresh size={14} /> Refresh
           </button>
         </div>

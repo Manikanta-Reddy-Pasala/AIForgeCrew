@@ -184,13 +184,13 @@ export function SourcesPanel() {
           </label>
 
           {(kind === 'repo' || kind === 'docs') && (
-            <button onClick={validatePath} disabled={validating} className="ghost sm"
+            <button type="button" onClick={validatePath} disabled={validating} className="ghost sm"
                     title="Check the path resolves + has files BEFORE indexing"
                     style={{ alignSelf: 'flex-end', marginBottom: 1 }}>
               {validating ? 'Checking…' : 'Validate path'}
             </button>
           )}
-          <button onClick={handleAdd} disabled={adding} style={{ alignSelf: 'flex-end', marginBottom: 1 }}>
+          <button type="button" onClick={handleAdd} disabled={adding} style={{ alignSelf: 'flex-end', marginBottom: 1 }}>
             {adding ? 'Adding…' : 'Add'}
           </button>
         </div>
@@ -249,7 +249,7 @@ export function SourcesPanel() {
                   <td className="muted small">{relativeDate(s.last_indexed)}</td>
                   <td>
                     <div className="row tight" style={{ justifyContent: 'flex-end' }}>
-                      <button
+                      <button type="button"
                         className="ghost sm"
                         disabled={s.status === 'indexing'}
                         onClick={() => handleIndex(s.id)}
@@ -257,7 +257,7 @@ export function SourcesPanel() {
                       >
                         Index
                       </button>
-                      <button
+                      <button type="button"
                         className="ghost sm danger"
                         onClick={() => handleDelete(s.id, s.name || s.location)}
                         title="Delete this source"

@@ -84,7 +84,7 @@ export default function Jobs() {
           {CHAT_BUILDERS.map(b => {
             const I = Icon[b.icon];
             return (
-              <button
+              <button type="button"
                 key={b.kind}
                 className="ghost"
                 title={b.title}
@@ -94,7 +94,7 @@ export default function Jobs() {
               </button>
             );
           })}
-          <button onClick={() => setCreating(c => !c)}>
+          <button type="button" onClick={() => setCreating(c => !c)}>
             {creating ? <><Icon.X size={14} /> Cancel</> : <><Icon.Plus size={14} /> New job</>}
           </button>
         </div>
@@ -115,7 +115,7 @@ export default function Jobs() {
               />
             </label>
             <div className="row">
-              <button disabled={busy || !instructions.trim()} onClick={doPreview}>
+              <button type="button" disabled={busy || !instructions.trim()} onClick={doPreview}>
                 <Icon.Sparkles size={14} /> {busy ? 'Parsing…' : 'Preview'}
               </button>
             </div>
@@ -172,10 +172,10 @@ export default function Jobs() {
                     </select>
                   </label>
                   <div className="row" style={{ justifyContent: 'flex-end' }}>
-                    <button className="ghost" onClick={() => { setPreview(null); setDraft(null); }}>
+                    <button type="button" className="ghost" onClick={() => { setPreview(null); setDraft(null); }}>
                       Discard
                     </button>
-                    <button disabled={busy} onClick={doConfirm}>
+                    <button type="button" disabled={busy} onClick={doConfirm}>
                       <Icon.Check size={14} /> Confirm &amp; schedule
                     </button>
                   </div>
@@ -224,13 +224,13 @@ export default function Jobs() {
                         </span>}
                   </td>
                   <td className="nowrap">
-                    <button className="ghost" onClick={() => doRunNow(jb.id)}>
+                    <button type="button" className="ghost" onClick={() => doRunNow(jb.id)}>
                       Run now
                     </button>
-                    <button className="ghost" onClick={() => doToggle(jb)}>
+                    <button type="button" className="ghost" onClick={() => doToggle(jb)}>
                       {jb.enabled ? 'Pause' : 'Resume'}
                     </button>
-                    <button className="ghost" onClick={() => doDelete(jb.id)}>
+                    <button type="button" className="ghost" onClick={() => doDelete(jb.id)}>
                       <Icon.Trash size={14} /> Delete
                     </button>
                   </td>

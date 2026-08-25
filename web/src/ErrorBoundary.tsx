@@ -85,8 +85,8 @@ export class ErrorBoundary extends React.Component<
             {this.where() ? `\n\nin:\n${this.where()}` : ''}
           </pre>
           <div className="row" style={{ gap: 8 }}>
-            <button className="btn" onClick={this.reset}>Try again</button>
-            <button className="ghost" onClick={this.copy}
+            <button type="button" className="btn" onClick={this.reset}>Try again</button>
+            <button type="button" className="ghost" onClick={this.copy}
                     title="Copy the error, the path and the component stack">
               {this.state.copied ? '✓ Copied' : '⧉ Copy details'}
             </button>

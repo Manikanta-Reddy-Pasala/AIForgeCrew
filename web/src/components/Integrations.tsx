@@ -96,8 +96,8 @@ export function ConfluenceCard() {
             default (self-signed internal endpoints); set *_INSECURE_TLS=0 to
             re-enable per service. */}
         <div className="row" style={{ gap: 8 }}>
-          <button onClick={save} disabled={busy || !baseUrl.trim()}>Save</button>
-          <button className="ghost" onClick={test} disabled={busy}>Test connection</button>
+          <button type="button" onClick={save} disabled={busy || !baseUrl.trim()}>Save</button>
+          <button type="button" className="ghost" onClick={test} disabled={busy}>Test connection</button>
         </div>
         <div className="xs muted">
           Create a token in Confluence: avatar → Settings → Personal Access Tokens → Create token.
@@ -196,8 +196,8 @@ export function JiraCard() {
             default (self-signed internal endpoints); set *_INSECURE_TLS=0 to
             re-enable per service. */}
         <div className="row" style={{ gap: 8 }}>
-          <button onClick={save} disabled={busy || !baseUrl.trim()}>Save</button>
-          <button className="ghost" onClick={test} disabled={busy}>Test connection</button>
+          <button type="button" onClick={save} disabled={busy || !baseUrl.trim()}>Save</button>
+          <button type="button" className="ghost" onClick={test} disabled={busy}>Test connection</button>
         </div>
         <div className="xs muted">
           Create a token in Jira: avatar → Profile → Personal Access Tokens → Create token.
@@ -290,8 +290,8 @@ export function GitlabCard() {
             default (self-signed internal endpoints); set *_INSECURE_TLS=0 to
             re-enable per service. */}
         <div className="row" style={{ gap: 8 }}>
-          <button onClick={save} disabled={busy || !baseUrl.trim()}>Save</button>
-          <button className="ghost" onClick={test} disabled={busy}>Test connection</button>
+          <button type="button" onClick={save} disabled={busy || !baseUrl.trim()}>Save</button>
+          <button type="button" className="ghost" onClick={test} disabled={busy}>Test connection</button>
         </div>
         <div className="xs muted">
           Create a token in GitLab: avatar → Edit profile → Access Tokens (needs <code>read_api</code>, plus <code>api</code> for writes).
@@ -434,8 +434,8 @@ export function EmailCard() {
         </label>
 
         <div className="row" style={{ gap: 8 }}>
-          <button onClick={save} disabled={busy || (!smtpHost.trim() && !imapHost.trim())}>Save</button>
-          <button className="ghost" onClick={test} disabled={busy}>Test connection</button>
+          <button type="button" onClick={save} disabled={busy || (!smtpHost.trim() && !imapHost.trim())}>Save</button>
+          <button type="button" className="ghost" onClick={test} disabled={busy}>Test connection</button>
         </div>
         <div className="xs muted">
           Fill SMTP for sending, IMAP for reading — either or both. For Gmail/Outlook use an app password.
@@ -452,7 +452,7 @@ export function IntegrationsPanel({ defaultOpen = false }: { defaultOpen?: boole
   const divider = <div style={{ height: 1, background: 'var(--border, #2a2a2a)', margin: '16px 0' }} />;
   return (
     <div className="card" style={{ marginTop: 12 }}>
-      <button
+      <button type="button"
         className="ghost"
         onClick={() => setOpen(o => !o)}
         style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%',

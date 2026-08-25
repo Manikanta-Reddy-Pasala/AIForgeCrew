@@ -203,10 +203,10 @@ export default function Logs() {
                    onChange={e => setAutoScroll(e.target.checked)} />
             auto-scroll
           </label>
-          <button className="ghost" onClick={() => setPaused(p => !p)}>
+          <button type="button" className="ghost" onClick={() => setPaused(p => !p)}>
             {paused ? 'Resume' : 'Pause'}
           </button>
-          <button className="ghost" onClick={() => {
+          <button type="button" className="ghost" onClick={() => {
             setLines([]);
             setPerRoleCount(Object.fromEntries(ROLES.map(r => [r, 0])) as any);
           }}>Clear</button>
@@ -295,7 +295,7 @@ function RoleTab({
   allOk: boolean;
 }) {
   return (
-    <button
+    <button type="button"
       onClick={onClick}
       className="ghost"
       style={{

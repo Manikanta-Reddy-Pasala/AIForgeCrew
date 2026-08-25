@@ -172,10 +172,10 @@ export default function Tickets() {
           </div>
         </div>
         <div className="row">
-          <button onClick={() => setCreating(c => !c)}>
+          <button type="button" onClick={() => setCreating(c => !c)}>
             {creating ? <><Icon.X size={14} /> Cancel</> : <><Icon.Plus size={14} /> New ticket</>}
           </button>
-          <button
+          <button type="button"
             className="danger"
             title="Delete every ticket and reset the ONE-<n> counter. Memory, skills, workflows and rules are NOT touched."
             onClick={async () => {
@@ -338,7 +338,7 @@ export default function Tickets() {
                       fontSize: 12,
                     }}>
                       📎 {f.name} ({formatBytes(f.size)}){' '}
-                      <button
+                      <button type="button"
                         className="ghost"
                         style={{ padding: 0, marginLeft: 2, fontSize: 12 }}
                         onClick={() => setDraft({
@@ -445,8 +445,8 @@ export default function Tickets() {
             </div>
 
             <div className="row" style={{ justifyContent: 'flex-end' }}>
-              <button className="ghost" onClick={() => setCreating(false)}>Cancel</button>
-              <button onClick={submit} disabled={!draft.title.trim()}>
+              <button type="button" className="ghost" onClick={() => setCreating(false)}>Cancel</button>
+              <button type="button" onClick={submit} disabled={!draft.title.trim()}>
                 <Icon.Check size={14} /> Create ticket
               </button>
             </div>

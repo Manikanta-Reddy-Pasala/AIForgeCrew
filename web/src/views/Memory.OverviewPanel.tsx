@@ -66,7 +66,7 @@ export function OverviewPanel() {
         {!collapsed && (
           <div className="row tight" style={{ alignItems: 'center' }}>
             {ov && <span className="muted small">backend: <code>{ov.backend}</code></span>}
-            <button
+            <button type="button"
               className="danger"
               onClick={wipeAll}
               disabled={busy !== null}
@@ -114,7 +114,7 @@ export function OverviewPanel() {
                     <div className="muted xs" style={{ marginTop: 2 }}>{store.hint}</div>
                   </div>
                   <div className="row tight" style={{ alignItems: 'center', flexShrink: 0 }}>
-                    <button
+                    <button type="button"
                       className="ghost danger"
                       onClick={() => clearStore(store.key, store.label)}
                       disabled={busy !== null || unavailable}

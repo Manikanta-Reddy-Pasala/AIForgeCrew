@@ -105,16 +105,16 @@ export function NotesPanel() {
         </span>
       </div>
       <div className="row" style={{ gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
-        <button onClick={() => setAdding(a => !a)}>{adding ? 'Cancel' : '+ Note'}</button>
-        <button className="ghost" onClick={compact} disabled={busy}
+        <button type="button" onClick={() => setAdding(a => !a)}>{adding ? 'Cancel' : '+ Note'}</button>
+        <button type="button" className="ghost" onClick={compact} disabled={busy}
                 title="Fold only NEW/undone notes into topic briefs (originals archived, reversible)">
           Compact
         </button>
-        <button className="ghost" onClick={compactAll} disabled={busy || caStep !== null}
+        <button type="button" className="ghost" onClick={compactAll} disabled={busy || caStep !== null}
                 title="Redo EVERYTHING: tidy legacy + re-LLM every brief + rebuild OKR cards + re-ingest">
           {caStep !== null ? `⏳ ${caStep}` : 'Compact all'}
         </button>
-        <button className="ghost" onClick={load}>Refresh</button>
+        <button type="button" className="ghost" onClick={load}>Refresh</button>
         <input placeholder="filter by name / tag…" value={filter}
                onChange={e => setFilter(e.target.value)}
                style={{ marginLeft: 'auto', minWidth: 200 }} />
@@ -124,7 +124,7 @@ export function NotesPanel() {
           <input placeholder="title" value={title} onChange={e => setTitle(e.target.value)} />
           <textarea placeholder="markdown body…" value={text}
                     onChange={e => setText(e.target.value)} rows={5} />
-          <button onClick={create} disabled={busy || !title.trim() || !text.trim()}>
+          <button type="button" onClick={create} disabled={busy || !title.trim() || !text.trim()}>
             {busy ? 'Saving…' : 'Save note'}
           </button>
         </div>
@@ -174,7 +174,7 @@ export function NotesPanel() {
                             <span className="muted xs" style={{ whiteSpace: 'nowrap' }}>
                               {(f.created || '').slice(0, 10)}
                             </span>
-                            <button className="ghost sm" onClick={() => del(f.name)}
+                            <button type="button" className="ghost sm" onClick={() => del(f.name)}
                                     title="Delete">✕</button>
                           </div>
                         );
@@ -199,7 +199,7 @@ export function NotesPanel() {
                         overflow: 'auto', padding: 16, boxShadow: '0 12px 48px rgba(0,0,0,0.45)' }}>
             <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
               <strong>{open.title}</strong>
-              <button className="ghost sm" onClick={() => setOpen(null)}><Icon.X size={14} /> close</button>
+              <button type="button" className="ghost sm" onClick={() => setOpen(null)}><Icon.X size={14} /> close</button>
             </div>
             <div className="small muted" style={{ margin: '4px 0' }}>{open.file}</div>
             <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13, margin: 0 }}>{open.body}</pre>

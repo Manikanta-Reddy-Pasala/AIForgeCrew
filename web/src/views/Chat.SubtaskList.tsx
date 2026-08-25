@@ -38,7 +38,7 @@ export function SubtaskList({ items, onViewSpec }: { items: SubtaskItem[]; onVie
           ))}
           <span style={{ color: '#8892a0' }}>{pct}%</span>
           {onViewSpec && (
-            <button className="ghost xs" title="Preview SPEC.md (the plan's requirements)"
+            <button type="button" className="ghost xs" title="Preview SPEC.md (the plan's requirements)"
                     onClick={(e) => { e.stopPropagation(); onViewSpec(); }}
                     style={{ cursor: 'pointer', padding: '1px 6px', fontSize: 10, whiteSpace: 'nowrap' }}>
               📄 SPEC.md

@@ -23,7 +23,7 @@ export function CtxReload({ model, onLoaded }: { model: string; onLoaded?: () =>
         title="Context window in K tokens to (re)load this model at"
         onChange={e => setK(e.target.value)}
       />
-      <button
+      <button type="button"
         className="ghost sm"
         disabled={loading || !valid}
         title={model ? `Reload ${model} at ${k || '?'}K context (takes a few seconds)` : 'Pick a model first'}

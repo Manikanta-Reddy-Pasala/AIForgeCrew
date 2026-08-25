@@ -42,7 +42,7 @@ export function AutoApprovalsPanel() {
           <span style={{ color: 'var(--fg-2,#8892a0)' }}>
             {FLAG_LABEL[r.name] || r.name} · <span style={{ fontFamily: 'var(--font-mono)' }}>{r.label}</span>
           </span>
-          <button onClick={() => revoke(r)}
+          <button type="button" onClick={() => revoke(r)}
             style={{ marginLeft: 'auto', background: 'transparent',
               border: '1px solid var(--border-1)', borderRadius: 4,
               padding: '1px 8px', fontSize: 11, color: 'var(--fg-3)', cursor: 'pointer' }}>

@@ -54,7 +54,7 @@ export function MediaStrip({ media, vision, onDescribe, onDelete }: {
                 </div>
               )}
             </div>
-            <button className="ghost xs" title="Remove"
+            <button type="button" className="ghost xs" title="Remove"
                     style={{ padding: '0 4px', cursor: 'pointer' }}
                     onClick={() => onDelete(m.id)}>✕</button>
           </div>

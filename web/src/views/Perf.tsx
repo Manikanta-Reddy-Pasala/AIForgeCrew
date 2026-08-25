@@ -132,7 +132,7 @@ export default function Perf() {
             and grouped by kind of work — so you can see what dominates runtime.
           </div>
         </div>
-        <button className="ghost" onClick={() => load(true)}>Clear stats</button>
+        <button type="button" className="ghost" onClick={() => load(true)}>Clear stats</button>
       </div>
 
       <div className="small muted" style={{ marginBottom: 12 }}>
@@ -145,7 +145,7 @@ export default function Perf() {
           const on = active.has(f);
           const fam = families[f];
           return (
-            <button key={f} onClick={() => toggleFamily(f)}
+            <button type="button" key={f} onClick={() => toggleFamily(f)}
               style={{ fontSize: 12, borderRadius: 6, padding: '3px 10px',
                        border: `1px solid ${on ? FAMILY_COLOR[f] : 'var(--border-1)'}`,
                        background: on ? FAMILY_COLOR[f] : 'transparent',
@@ -172,7 +172,7 @@ export default function Perf() {
             const pctOfTotal = grandTotal > 0 ? (fam.total / grandTotal) * 100 : 0;
             return (
               <div key={f} className="card" style={{ padding: 0, overflow: 'hidden' }}>
-                <button onClick={() => toggleCollapse(f)}
+                <button type="button" onClick={() => toggleCollapse(f)}
                   style={{ width: '100%', textAlign: 'left', background: 'none', border: 'none',
                            padding: '10px 14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12 }}>
                   <span style={{ width: 12, color: 'var(--fg-3)' }}>{isCollapsed ? '▸' : '▾'}</span>

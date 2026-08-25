@@ -58,7 +58,7 @@ function ThoughtRow({ step }: { step: Extract<AgentStep, { kind: 'thought' }> })
       <AgentBadge role={step.role} />
       <span style={{ whiteSpace: 'pre-wrap', flex: 1 }}>{preview}</span>
       {long && (
-        <button
+        <button type="button"
           onClick={() => setOpen(o => !o)}
           className="ghost sm"
           style={{ flexShrink: 0, fontSize: 10, fontStyle: 'normal', padding: '0 6px' }}
@@ -95,7 +95,7 @@ function ChangeFileRow({ file }: { file: ChangeFile }) {
     : file.status === 'deleted' ? 'var(--err)' : 'var(--accent)';
   return (
     <div style={{ borderTop: '1px solid var(--border-0)' }}>
-      <button onClick={() => setOpen(o => !o)} style={{
+      <button type="button" onClick={() => setOpen(o => !o)} style={{
         width: '100%', display: 'flex', alignItems: 'center', gap: 8,
         padding: '6px 10px', background: 'transparent', border: 0, cursor: 'pointer',
         fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', textAlign: 'left',

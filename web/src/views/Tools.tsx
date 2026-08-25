@@ -106,11 +106,11 @@ export default function Tools() {
                         {s.url || '(no url)'} · {s.transport}
                       </div>
                     </div>
-                    <button className="ghost sm" disabled={busy === s.id} onClick={() => test(s)}>Test</button>
-                    <button className="ghost sm" disabled={busy === s.id} onClick={() => toggle(s)}>
+                    <button type="button" className="ghost sm" disabled={busy === s.id} onClick={() => test(s)}>Test</button>
+                    <button type="button" className="ghost sm" disabled={busy === s.id} onClick={() => toggle(s)}>
                       {s.enabled ? 'Disable' : 'Enable'}
                     </button>
-                    <button className="ghost sm danger" disabled={busy === s.id} onClick={() => uninstall(s)}>Remove</button>
+                    <button type="button" className="ghost sm danger" disabled={busy === s.id} onClick={() => uninstall(s)}>Remove</button>
                   </div>
                 ))}
               </div>
@@ -138,7 +138,7 @@ export default function Tools() {
                       ) : inst && c.id !== 'custom-http' ? (
                         <span className="xs" style={{ color: '#22c55e', fontWeight: 600 }}>✓ installed</span>
                       ) : (
-                        <button className="sm" disabled={busy === c.id} onClick={() => install(c)}>
+                        <button type="button" className="sm" disabled={busy === c.id} onClick={() => install(c)}>
                           {c.id === 'custom-http' ? 'Add…' : 'Install'}
                         </button>
                       )}

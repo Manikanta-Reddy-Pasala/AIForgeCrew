@@ -1235,11 +1235,11 @@ export default function Chat() {
       {/* ── Left sidebar: sessions list ─────────────────────────────────────── */}
       <div className="chat-sessions-sidebar">
         <div className="chat-sessions-header" style={{ display: 'flex', gap: 6 }}>
-          <button onClick={handleNewChat} disabled={busy} style={{ flex: 1 }}>
+          <button type="button" onClick={handleNewChat} disabled={busy} style={{ flex: 1 }}>
             <Icon.Plus size={13} /> New chat
           </button>
           {sessions.length > 0 && (
-            <button
+            <button type="button"
               className="danger"
               title="Delete every chat session. Memory, skills, workflows and rules are NOT touched."
               disabled={busy}
@@ -1310,13 +1310,13 @@ export default function Chat() {
               </div>
               {(!renaming || renaming.id !== s.id) && (
                 <div className="chat-session-actions">
-                  <button
+                  <button type="button"
                     title="Rename"
                     onClick={e => startRename(s, e)}
                   >
                     ✎
                   </button>
-                  <button
+                  <button type="button"
                     title="Delete"
                     onClick={e => { e.stopPropagation(); deleteSession(s.id); }}
                   >
@@ -1335,7 +1335,7 @@ export default function Chat() {
         <div className="chat-topbar">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, flex: 1 }}>
             {/* Title — click to rename (no separate button). */}
-            <button
+            <button type="button"
               onClick={() => activeSession && setRenaming({ id: activeSession.id, value: activeSession.title })}
               disabled={!activeSession}
               title={activeSession ? 'Click to rename' : undefined}
@@ -1365,14 +1365,14 @@ export default function Chat() {
           <div className="row" style={{ gap: 'var(--s-2)' }}>
             {/* Simple | Plan | Team mode toggle */}
             <div className="chat-mode-toggle" title="Simple: single agent · Plan: read-only, proposes a plan first · Team: full ADK planner→doer→learner pipeline">
-              <button
+              <button type="button"
                 className={chatMode === 'simple' ? 'active' : ''}
                 onClick={() => setChatMode('simple')}
                 disabled={busy}
               >
                 Simple
               </button>
-              <button
+              <button type="button"
                 className={chatMode === 'plan' ? 'active' : ''}
                 onClick={() => setChatMode('plan')}
                 disabled={busy}
@@ -1380,7 +1380,7 @@ export default function Chat() {
               >
                 Plan
               </button>
-              <button
+              <button type="button"
                 className={chatMode === 'team' ? 'active' : ''}
                 onClick={() => setChatMode('team')}
                 disabled={busy}
@@ -1512,7 +1512,7 @@ export default function Chat() {
             {/* Secondary actions tucked into an overflow menu — keeps the
                 header calm (just mode + model + ⋯). */}
             <div ref={menuRef} style={{ position: 'relative' }}>
-              <button className="ghost sm" onClick={() => setMenuOpen(o => !o)}
+              <button type="button" className="ghost sm" onClick={() => setMenuOpen(o => !o)}
                       title="More" aria-label="More actions"
                       style={{ fontSize: 18, lineHeight: 1, padding: '2px 8px' }}>⋯</button>
               {menuOpen && (
@@ -1548,18 +1548,18 @@ export default function Chat() {
                     Disable memory compaction
                   </label>
                   {activeSession && (
-                    <button style={menuBtn} onClick={() => { setMenuOpen(false); openCheckpoints(); }}>
+                    <button type="button" style={menuBtn} onClick={() => { setMenuOpen(false); openCheckpoints(); }}>
                       ↶ Checkpoints
                     </button>
                   )}
-                  <button style={menuBtn} onClick={() => { setMenuOpen(false); killAll(); }}
+                  <button type="button" style={menuBtn} onClick={() => { setMenuOpen(false); killAll(); }}
                           title="Force-stop every run + release the team lock">
                     ⚠ Reset stuck runs
                   </button>
                   {activeSession && (
                     <>
                       <div style={{ height: 1, background: 'var(--border-1)', margin: '4px 0' }} />
-                      <button style={{ ...menuBtn, color: 'var(--err)' }}
+                      <button type="button" style={{ ...menuBtn, color: 'var(--err)' }}
                               onClick={() => { setMenuOpen(false); deleteSession(activeSession.id); }}>
                         🗑 Delete conversation
                       </button>
@@ -1584,7 +1584,7 @@ export default function Chat() {
             <div className="empty-icon">💬</div>
             <h3>Start a conversation</h3>
             <p>Click <strong>New chat</strong> to begin, or select a past conversation from the sidebar.</p>
-            <button onClick={handleNewChat}>
+            <button type="button" onClick={handleNewChat}>
               <Icon.Plus size={14} /> New chat
             </button>
           </div>
@@ -1649,13 +1649,13 @@ export default function Chat() {
                             after, restoring the workspace to that turn's checkpoint. */}
                         {!busy && (
                           <div className="xs muted" style={{ marginTop: 4, display: 'flex', gap: 8 }}>
-                            <button className="ghost xs"
+                            <button type="button" className="ghost xs"
                                     title={msg === lastUserMsg
                                       ? 'Edit this message in the composer'
                                       : 'Edit & resend from here — replaces this and all later turns'}
                                     style={{ padding: '0 4px', cursor: 'pointer' }}
                                     onClick={() => editUserMessage(msg)}>✎ Edit</button>
-                            <button className="ghost xs" title="Copy"
+                            <button type="button" className="ghost xs" title="Copy"
                                     style={{ padding: '0 4px', cursor: 'pointer' }}
                                     onClick={() => copyText(msg.content)}>⧉ Copy</button>
                           </div>
@@ -1803,8 +1803,8 @@ export default function Chat() {
                   {/* Buttons FIRST — always reachable without scrolling past a
                       tall preview (the old layout buried them under the diff). */}
                   <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
-                    <button onClick={() => resolveApproval('approve')}>✓ Approve</button>
-                    <button className="danger" onClick={() => resolveApproval('reject')}>
+                    <button type="button" onClick={() => resolveApproval('approve')}>✓ Approve</button>
+                    <button type="button" className="danger" onClick={() => resolveApproval('reject')}>
                       {approvalNote.trim() ? '✗ Reject + send guidance' : '✗ Reject'}
                     </button>
                   </div>
@@ -1849,7 +1849,7 @@ export default function Chat() {
                 <ErrorBoundary fallback={(e, reset) => (
                   <div className="small muted" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <span>Tasks panel failed to render ({String(e.message).slice(0, 80)})</span>
-                    <button className="ghost xs" onClick={reset}>retry</button>
+                    <button type="button" className="ghost xs" onClick={reset}>retry</button>
                   </div>
                 )}>
                   <SubtaskList items={dockSubtasks} onViewSpec={openSpec} />
@@ -1872,7 +1872,7 @@ export default function Chat() {
                               padding: '18px 22px', boxShadow: '0 12px 40px rgba(0,0,0,0.5)' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
                     <strong>📄 SPEC.md</strong>
-                    <button className="ghost" style={{ cursor: 'pointer' }} onClick={() => setSpecModal(null)}>✕</button>
+                    <button type="button" className="ghost" style={{ cursor: 'pointer' }} onClick={() => setSpecModal(null)}>✕</button>
                   </div>
                   {specModal.loading ? <div className="muted">Loading…</div>
                     : <MdLite text={specModal.content} />}
@@ -1906,7 +1906,7 @@ export default function Chat() {
                   display: 'flex', alignItems: 'center', gap: 8,
                 }}>
                   <span>✎ Editing an earlier message — sending replaces it and every later turn, and restores the workspace to that turn.</span>
-                  <button className="ghost xs" style={{ cursor: 'pointer' }}
+                  <button type="button" className="ghost xs" style={{ cursor: 'pointer' }}
                           onClick={() => { setEditingFrom(null); setInput(''); }}>cancel</button>
                 </div>
               )}
@@ -1933,7 +1933,7 @@ export default function Chat() {
                   onKeyDown={onKey}
                   style={{ flex: 1, resize: 'vertical', minHeight: busy ? 34 : 64 }}
                 />
-                <button onClick={() => mediaInputRef.current?.click()} disabled={uploadingMedia}
+                <button type="button" onClick={() => mediaInputRef.current?.click()} disabled={uploadingMedia}
                         title={uploadingMedia ? 'Uploading & analyzing…' : 'Attach a file — image, PDF, Word, Excel, text — queryable all session'}
                         style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center' }}>
                   {uploadingMedia
@@ -1941,14 +1941,14 @@ export default function Chat() {
                     : <Icon.Paperclip size={15} />}
                 </button>
                 {busy && (
-                  <button onClick={stopRun} className="danger"
+                  <button type="button" onClick={stopRun} className="danger"
                           title="Stop all agents + processes for this run"
                           style={{ whiteSpace: 'nowrap' }}>
                     ■ Stop
                   </button>
                 )}
                 {canSteer ? (
-                  <button onClick={steer} disabled={!input.trim() || steering}
+                  <button type="button" onClick={steer} disabled={!input.trim() || steering}
                           title="Inject this guidance into the running agent without stopping it"
                           style={{ whiteSpace: 'nowrap' }}>
                     ↳ Steer
@@ -1957,7 +1957,7 @@ export default function Chat() {
                   // canSteer is false here only because pendingApproval is set
                   // (the review-edits gate — simple/plan only, team doesn't use
                   // it, so this is never actually a team-mode restriction).
-                  <button disabled
+                  <button type="button" disabled
                           title="Resolve the approval above before steering"
                           style={{ whiteSpace: 'nowrap' }}>
                     ↳ Steer
@@ -1965,7 +1965,7 @@ export default function Chat() {
                 ) : (
                   // Idle, or awaiting the user's reply — primary action sends a
                   // normal turn (FE1).
-                  <button onClick={() => send()} disabled={busy || !input.trim()}>
+                  <button type="button" onClick={() => send()} disabled={busy || !input.trim()}>
                     <Icon.Agents size={14} /> {awaitingReply ? 'Reply' : 'Run'}
                   </button>
                 )}
@@ -1980,7 +1980,7 @@ export default function Chat() {
                   <span className="small muted" style={{ flex: 1 }}>
                     Plan ready. Approve to execute it as a team build.
                   </span>
-                  <button onClick={() => {
+                  <button type="button" onClick={() => {
                             // FE3: remember the dismissal so loadSession (reload /
                             // session switch / Stop) doesn't resurrect the pill.
                             if (activeId !== null && planReady.msgId != null) {
@@ -1989,7 +1989,7 @@ export default function Chat() {
                             setPlanReady(null);
                           }} className="ghost"
                           style={{ whiteSpace: 'nowrap' }}>Dismiss</button>
-                  <button onClick={() => send(planReady.spec, 'team')}
+                  <button type="button" onClick={() => send(planReady.spec, 'team')}
                           title="Run the approved plan as a full team build"
                           style={{ whiteSpace: 'nowrap' }}>
                     ✓ Approve &amp; Execute
@@ -2016,19 +2016,19 @@ export default function Chat() {
                 style={{ flex: 1, minHeight: 96, resize: 'vertical',
                          fontSize: 14, lineHeight: 1.5, padding: 10 }}
               />
-              <button onClick={() => mediaInputRef.current?.click()} disabled={uploadingMedia}
+              <button type="button" onClick={() => mediaInputRef.current?.click()} disabled={uploadingMedia}
                       title="Attach a file — image, PDF, Word, Excel, text — starts a chat, queryable all session"
                       style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center' }}>
                 {uploadingMedia ? '…' : <Icon.Paperclip size={15} />}
               </button>
               {busy && (
-                <button onClick={stopRun} className="danger"
+                <button type="button" onClick={stopRun} className="danger"
                         title="Stop all agents + processes for this run"
                         style={{ whiteSpace: 'nowrap' }}>
                   ■ Stop
                 </button>
               )}
-              <button onClick={() => send()} disabled={busy || !input.trim()}>
+              <button type="button" onClick={() => send()} disabled={busy || !input.trim()}>
                 <Icon.Agents size={14} /> Run
               </button>
             </div>
@@ -2052,7 +2052,7 @@ export default function Chat() {
             }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
                 <strong>Workspace checkpoints</strong>
-                <button className="ghost sm" onClick={() => setCheckpoints(null)}><Icon.X size={12} /></button>
+                <button type="button" className="ghost sm" onClick={() => setCheckpoints(null)}><Icon.X size={12} /></button>
               </div>
               {checkpoints.length === 0 ? (
                 <div className="muted xs">No checkpoints yet. A snapshot is taken automatically before each turn (in a git repo).</div>
@@ -2068,8 +2068,8 @@ export default function Chat() {
                         <div className="muted xs" style={{ fontFamily: 'var(--font-mono)' }}>{c.when} · {c.sha.slice(0, 8)}</div>
                       </div>
                       <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                        <button className="ghost sm" onClick={() => restoreCheckpoint(c.sha)} title="Revert tracked files to this snapshot; keep files created after it">↶ Restore</button>
-                        <button className="ghost sm danger" onClick={() => restoreCheckpoint(c.sha, true)} title="Full restore: make the tree exactly match this snapshot — deletes files created after it">⤓ Full</button>
+                        <button type="button" className="ghost sm" onClick={() => restoreCheckpoint(c.sha)} title="Revert tracked files to this snapshot; keep files created after it">↶ Restore</button>
+                        <button type="button" className="ghost sm danger" onClick={() => restoreCheckpoint(c.sha, true)} title="Full restore: make the tree exactly match this snapshot — deletes files created after it">⤓ Full</button>
                       </div>
                     </div>
                   ))}

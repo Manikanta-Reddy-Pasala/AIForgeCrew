@@ -46,7 +46,7 @@ export function AssistantBubble({
       {subtasks && subtasks.length > 0 && <SubtaskList items={subtasks} />}
       {otherSteps.length > 0 && (
         <div style={{ marginBottom: text ? 8 : 0 }}>
-          <button
+          <button type="button"
             onClick={() => setShowSteps(v => !v)}
             style={{
               background: 'transparent', border: '1px solid var(--border-1)',
@@ -97,7 +97,7 @@ export function AssistantBubble({
           : <span className="muted xs">· {fmtElapsed(elapsedSec)}</span>)}
         {/* M2: copy the assistant's answer */}
         {!streaming && text && (
-          <button className="ghost xs" title="Copy the full answer"
+          <button type="button" className="ghost xs" title="Copy the full answer"
                   style={{ padding: '0 4px', cursor: 'pointer' }}
                   onClick={() => mdCopyText(text).then(
                     () => toast.success('Copied'), () => toast.error('Copy failed'))}>
@@ -109,7 +109,7 @@ export function AssistantBubble({
           // re-run, it is CONTINUED: the server carries over what already
           // landed and asks only for the remainder. Say which one this is, or
           // the user cannot tell the retry from a repeat.
-          <button className="ghost xs"
+          <button type="button" className="ghost xs"
                   title={stopped
                     ? 'Continue the stopped run — keeps the work that already landed and finishes what is pending'
                     : 'Re-run the previous request'}
@@ -119,7 +119,7 @@ export function AssistantBubble({
           </button>
         )}
         {!streaming && onRerunFresh && (
-          <button className="ghost xs"
+          <button type="button" className="ghost xs"
                   title="Ignore what the stopped run produced and start this request over"
                   style={{ padding: '0 4px', cursor: 'pointer' }}
                   onClick={onRerunFresh}>

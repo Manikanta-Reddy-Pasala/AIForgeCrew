@@ -405,10 +405,10 @@ export default function Home() {
         </div>
         {tab === 'agent' && (
           <div className="row" style={{ gap: 8 }}>
-            <button className="ghost" onClick={() => load()} disabled={loading}>
+            <button type="button" className="ghost" onClick={() => load()} disabled={loading}>
               <Icon.Refresh size={14} /> Reload
             </button>
-            <button
+            <button type="button"
               className="ghost"
               onClick={resetConfig}
               disabled={resetBusy}
@@ -425,7 +425,7 @@ export default function Home() {
         <div className="settings-banner">
           <Icon.Info size={14} />
           <span>{pageError}</span>
-          <button className="ghost sm" onClick={() => load()}>
+          <button type="button" className="ghost sm" onClick={() => load()}>
             Retry
           </button>
         </div>
@@ -434,7 +434,7 @@ export default function Home() {
       {/* ── Settings tabs: Agent | Integrations ──────────────────── */}
       <div className="row" style={{ gap: 4, marginBottom: 16, borderBottom: '1px solid var(--border-1)' }}>
         {(['agent', 'integrations'] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)}
+          <button type="button" key={t} onClick={() => setTab(t)}
                   className={tab === t ? '' : 'ghost'}
                   style={{ borderRadius: '6px 6px 0 0', textTransform: 'capitalize',
                            fontWeight: tab === t ? 600 : 400 }}>
@@ -465,7 +465,7 @@ function IntegrationsTab() {
     <div className="card">
       <div className="row" style={{ gap: 4, marginBottom: 12 }}>
         {(['jira', 'confluence', 'gitlab', 'email'] as const).map(s => (
-          <button key={s} onClick={() => setSub(s)}
+          <button type="button" key={s} onClick={() => setSub(s)}
                   className={sub === s ? '' : 'ghost'}
                   style={{ textTransform: 'capitalize', fontWeight: sub === s ? 600 : 400 }}>
             {label(s)}
@@ -679,11 +679,11 @@ function AgentLimitsCard() {
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
         <h2 style={{ fontSize: 14 }}>Agent limits</h2>
         <div className="row" style={{ gap: 8 }}>
-        <button className="ghost sm" onClick={noLimits} disabled={!loaded || busy}
+        <button type="button" className="ghost sm" onClick={noLimits} disabled={!loaded || busy}
                 title="Step cap and turn deadline both to 0 — nothing stops a turn but the agent itself, a stall, or Stop">
           ∞ No limits
         </button>
-        <button className="ghost sm" onClick={resetAll} disabled={!loaded || busy}
+        <button type="button" className="ghost sm" onClick={resetAll} disabled={!loaded || busy}
                 title="Forget the saved values so the env vars / built-in defaults apply again">
           ↺ Reset to defaults
         </button>
