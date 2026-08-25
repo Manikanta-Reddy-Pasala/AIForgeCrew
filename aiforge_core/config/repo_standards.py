@@ -255,28 +255,9 @@ def resolve_toolchain(lang: str, worktree: str | None = None) -> dict[str, str]:
     return out
 
 
-def check_toolchain(worktree: str | None,
-                    lang: str | None = None) -> list[str]:
-    """Preflight: which build tools the repo needs are ENTIRELY ABSENT from the
-    host (dynamic ``shutil.which`` — no hardcoded versions). Empty = tools present.
-
-    ``lang`` may be passed by the caller (``toolchain_brief`` already resolved
-    it) to avoid re-running ``detect_lang``'s tree walk twice per seed.
-
-    Only presence is checked here. VERSION mismatches (e.g. the repo compiles
-    with a newer JDK than the host has) are NOT guessed from build-file regex —
-    they surface dynamically at real build time, and the Doer is instructed to
-    read that actual error and report the install need (see the toolchain rule
-    in the doer prompt / seed). This keeps the check truthful and un-hardcoded:
-    a missing binary is unambiguous; a version requirement is whatever the build
-    tool itself reports when run.
-    """
-    if not worktree or not os.path.isdir(worktree):
-        return []
+def _check_jvm_toolchain(worktree, lang, is_maven, is_gradle):
+    """Missing JVM-family build tools (java/maven/gradle/standalone kotlinc)."""
     msgs: list[str] = []
-    is_maven = os.path.isfile(os.path.join(worktree, "pom.xml"))
-    is_gradle = bool(_glob.glob(os.path.join(worktree, "build.gradle*")))
-    lang = lang if lang is not None else detect_lang(worktree)
     jvm = is_maven or is_gradle or lang == "java"
     if jvm and not shutil.which("java"):
         msgs.append("No `java` on the host — install a JDK (the repo's build "
@@ -298,6 +279,12 @@ def check_toolchain(worktree: str | None,
             and not shutil.which("kotlinc")):
         msgs.append("Kotlin sources but no build driver and no `kotlinc` — "
                     "install the Kotlin compiler.")
+    return msgs
+
+
+def _check_native_toolchain(worktree, lang):
+    """Missing native/other build tools (rust, c/c++ + cmake/make, shell)."""
+    msgs: list[str] = []
     # Rust
     if os.path.isfile(os.path.join(worktree, "Cargo.toml")) \
             and not shutil.which("cargo"):
@@ -320,6 +307,33 @@ def check_toolchain(worktree: str | None,
     # exist and neither bash nor sh is present, which is essentially never).
     if lang == "shell" and not (shutil.which("bash") or shutil.which("sh")):
         msgs.append("Shell repo but no `bash`/`sh` — install bash.")
+    return msgs
+
+
+def check_toolchain(worktree: str | None,
+                    lang: str | None = None) -> list[str]:
+    """Preflight: which build tools the repo needs are ENTIRELY ABSENT from the
+    host (dynamic ``shutil.which`` — no hardcoded versions). Empty = tools present.
+
+    ``lang`` may be passed by the caller (``toolchain_brief`` already resolved
+    it) to avoid re-running ``detect_lang``'s tree walk twice per seed.
+
+    Only presence is checked here. VERSION mismatches (e.g. the repo compiles
+    with a newer JDK than the host has) are NOT guessed from build-file regex —
+    they surface dynamically at real build time, and the Doer is instructed to
+    read that actual error and report the install need (see the toolchain rule
+    in the doer prompt / seed). This keeps the check truthful and un-hardcoded:
+    a missing binary is unambiguous; a version requirement is whatever the build
+    tool itself reports when run.
+    """
+    if not worktree or not os.path.isdir(worktree):
+        return []
+    msgs: list[str] = []
+    is_maven = os.path.isfile(os.path.join(worktree, "pom.xml"))
+    is_gradle = bool(_glob.glob(os.path.join(worktree, "build.gradle*")))
+    lang = lang if lang is not None else detect_lang(worktree)
+    msgs += _check_jvm_toolchain(worktree, lang, is_maven, is_gradle)
+    msgs += _check_native_toolchain(worktree, lang)
     return msgs
 
 
@@ -384,24 +398,10 @@ def detect_lang(worktree_path: str) -> str:
 _LANG_CACHE: dict[str, str] = {}
 
 
-def _detect_lang_uncached(base: str) -> str:
-    if not os.path.isdir(base):
-        return ""
-    if os.path.isfile(os.path.join(base, "pom.xml")):
-        return "java"
-    if _glob.glob(os.path.join(base, "build.gradle*")):
-        return "java"
-    if os.path.isfile(os.path.join(base, "package.json")):
-        return "node"
-    if os.path.isfile(os.path.join(base, "go.mod")):
-        return "go"
-    if os.path.isfile(os.path.join(base, "Cargo.toml")):
-        return "rust"
-    if (
-        os.path.isfile(os.path.join(base, "pyproject.toml"))
-        or os.path.isfile(os.path.join(base, "requirements.txt"))
-    ):
-        return "python"
+def _detect_native_lang(base):
+    """C++/C (via sources or a make/cmake build with headers), shell, or a bare
+    Kotlin tree — the marker-less languages, checked after all build-file
+    markers. Returns the language or ''."""
     # C / C++ — C++ source/header wins (a C++ project usually also has .c/.h);
     # else any .c source OR a make/cmake build (headers-only C libs) → C.
     cpp_src = _glob.glob(os.path.join(base, "**", "*.cpp"), recursive=True) \
@@ -432,6 +432,27 @@ def _detect_lang_uncached(base: str) -> str:
             or _glob.glob(os.path.join(base, "**", "*.kts"), recursive=True):
         return "kotlin"
     return ""
+
+
+def _detect_lang_uncached(base: str) -> str:
+    if not os.path.isdir(base):
+        return ""
+    if os.path.isfile(os.path.join(base, "pom.xml")):
+        return "java"
+    if _glob.glob(os.path.join(base, "build.gradle*")):
+        return "java"
+    if os.path.isfile(os.path.join(base, "package.json")):
+        return "node"
+    if os.path.isfile(os.path.join(base, "go.mod")):
+        return "go"
+    if os.path.isfile(os.path.join(base, "Cargo.toml")):
+        return "rust"
+    if (
+        os.path.isfile(os.path.join(base, "pyproject.toml"))
+        or os.path.isfile(os.path.join(base, "requirements.txt"))
+    ):
+        return "python"
+    return _detect_native_lang(base)
 
 
 def get(repo_name: str, *, worktree: str | None = None) -> Standards:
