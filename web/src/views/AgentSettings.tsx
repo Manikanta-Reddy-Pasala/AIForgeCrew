@@ -2,7 +2,7 @@
 // agent just picks a model by name. No per-agent URLs/keys.
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import { chatApi, RegistryModel, AgentRole, AgentRoleConfig } from '../api';
+import { chatApi, RegistryModel, AgentRoleConfig } from '../api';
 import { clickable } from '../a11y';
 
 const ORCH: string[] = ['enhancer', 'architect', 'planner'];
