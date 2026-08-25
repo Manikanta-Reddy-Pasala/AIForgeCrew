@@ -48,6 +48,34 @@ def _build_delegate_agent(role: str):
     return None
 
 
+def _cleanup_delegate_sessions(session_id) -> None:
+    """Tear down the delegate's per-run tool sessions. A delegate inherits the
+    full Doer toolset (bash/kernel/browser) and would otherwise leak those
+    resources — this hand-rolled runner doesn't register the production runner's
+    finish callbacks."""
+    for mod, fn in (("bash", "destroy_session"),
+                    ("ipython_kernel", "destroy_kernel"),
+                    ("browser", "destroy_context")):
+        try:
+            m = __import__(f"aiforge_core.runtime.tools.{mod}", fromlist=[fn])
+            getattr(m, fn)(session_id)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def _drive_delegate(runner, session_id, content) -> list[str]:
+    """Run the delegate to completion, collecting its final-response text."""
+    output_parts: list[str] = []
+    async for event in runner.run_async(user_id="delegator",
+                                        session_id=session_id,
+                                        new_message=content):
+        if event.is_final_response():
+            txt = getattr(event, "text", "") or ""
+            if txt:
+                output_parts.append(txt)
+    return output_parts
+
+
 async def _run_delegate_async(
     role: str, prompt: str, timeout: int,
 ) -> dict[str, Any]:
@@ -60,66 +88,32 @@ async def _run_delegate_async(
         return {"ok": False, "error": "delegate_build_failed", "role": role}
 
     session_svc = InMemorySessionService()
-    runner = Runner(
-        agent=agent, app_name="aiforge-delegate",
-        session_service=session_svc, auto_create_session=True,
-    )
+    runner = Runner(agent=agent, app_name="aiforge-delegate",
+                    session_service=session_svc, auto_create_session=True)
     session = await session_svc.create_session(
-        app_name="aiforge-delegate", user_id="delegator",
-    )
-    content = gtypes.Content(
-        role="user", parts=[gtypes.Part.from_text(text=prompt)],
-    )
-    # Key the delegate's tool sessions to its run so we can tear them down —
-    # a delegate inherits the full Doer toolset (bash/kernel/browser) and
-    # would otherwise leak those per-run resources (this hand-rolled runner
-    # doesn't register the production runner's finish callbacks).
+        app_name="aiforge-delegate", user_id="delegator")
+    content = gtypes.Content(role="user",
+                             parts=[gtypes.Part.from_text(text=prompt)])
+    # Key the delegate's tool sessions to its run so we can tear them down.
     try:
         from aiforge_core.runtime.tools.bash import set_run_id as _bash_set_run_id
         _bash_set_run_id(session.id)
     except Exception:  # noqa: BLE001
         pass
 
-    def _cleanup_delegate_sessions() -> None:
-        for mod, fn in (("bash", "destroy_session"),
-                        ("ipython_kernel", "destroy_kernel"),
-                        ("browser", "destroy_context")):
-            try:
-                m = __import__(f"aiforge_core.runtime.tools.{mod}",
-                               fromlist=[fn])
-                getattr(m, fn)(session.id)
-            except Exception:  # noqa: BLE001
-                pass
-
-    async def _drive():
-        output_parts: list[str] = []
-        async for event in runner.run_async(
-            user_id="delegator", session_id=session.id, new_message=content,
-        ):
-            if event.is_final_response():
-                txt = getattr(event, "text", "") or ""
-                if txt:
-                    output_parts.append(txt)
-        return output_parts
-
     try:
-        output_parts = await asyncio.wait_for(_drive(), timeout=timeout)
+        output_parts = await asyncio.wait_for(
+            _drive_delegate(runner, session.id, content), timeout=timeout)
     except asyncio.TimeoutError:
         return {"ok": False, "error": "timeout", "role": role}
     finally:
-        _cleanup_delegate_sessions()
+        _cleanup_delegate_sessions(session.id)
 
     session = await session_svc.get_session(
-        app_name="aiforge-delegate", user_id="delegator",
-        session_id=session.id,
-    )
+        app_name="aiforge-delegate", user_id="delegator", session_id=session.id)
     state = dict(session.state or {})
-    return {
-        "ok": True,
-        "role": role,
-        "output": "\n".join(output_parts),
-        "state_keys": sorted(state.keys()),
-    }
+    return {"ok": True, "role": role, "output": "\n".join(output_parts),
+            "state_keys": sorted(state.keys())}
 
 
 def delegate_to_agent(

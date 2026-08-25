@@ -226,25 +226,19 @@ def vision_enabled(role: str = "chat", *, probe: bool = False) -> bool:
     return _VISION_CACHE.get(model, False)
 
 
-def ensure_vision_known(role: str = "chat") -> bool | None:
-    """Proactively DETERMINE + PERSIST a model's vision capability. Resolution:
-    settings override → registry explicit flag → NAME heuristic (persisted) →
-    cached probe → a live probe (persisted when definitive). Returns True/False
-    when known, None when it couldn't be resolved (no model / inconclusive
-    probe). Called at model-add, chat-model-set, session start and first turn so
-    a model's vision support is known BEFORE an image is ever attached — and
-    lazily identifies it mid-chat if still unknown."""
-    if _settings_override():
-        return True
+def _resolve_vision_model(role: str) -> "tuple[str, str]":
+    """(model, base_url) for ``role``, or ("", "") when it can't be resolved."""
     try:
         from aiforge_core.llm.router import resolve
         ep = resolve(role)
-        model = ep.model or ""
-        base_url = getattr(ep, "base_url", "") or ""
+        return ep.model or "", getattr(ep, "base_url", "") or ""
     except Exception:  # noqa: BLE001
-        return None
-    if not model:
-        return None
+        return "", ""
+
+
+def _registry_vision_flag(model: str, base_url: str) -> "bool | None":
+    """The registry's vision verdict for ``model``: an explicit yes/no flag, or a
+    NAME-heuristic match (persisted so it's durable). None when unresolved."""
     try:
         from aiforge_core.config import model_registry
         flag = model_registry.vision_for(model, base_url)
@@ -253,12 +247,29 @@ def ensure_vision_known(role: str = "chat") -> bool | None:
         if flag == "no":
             return False
         if model_registry.detect_capability(model, "vision"):
-            # Name heuristic recognises a VLM family — persist it so it's durable.
             model_registry.set_vision_flag(model, base_url, "yes")
             _VISION_CACHE[model] = True
             return True
     except Exception:  # noqa: BLE001
         pass
+    return None
+
+
+def ensure_vision_known(role: str = "chat") -> bool | None:
+    """Proactively DETERMINE + PERSIST a model's vision capability. Resolution:
+    settings override → registry explicit flag → NAME heuristic (persisted) →
+    cached probe → a live probe (persisted when definitive). Returns True/False
+    when known, None when it couldn't be resolved (no model / inconclusive
+    probe). Called at model-add, chat-model-set, session start and first turn so
+    a model's vision support is known BEFORE an image is ever attached."""
+    if _settings_override():
+        return True
+    model, base_url = _resolve_vision_model(role)
+    if not model:
+        return None
+    flag = _registry_vision_flag(model, base_url)
+    if flag is not None:
+        return flag
     if model in _VISION_CACHE:
         return _VISION_CACHE[model]
     # Genuinely unknown → probe now (caches only a DEFINITIVE result).
