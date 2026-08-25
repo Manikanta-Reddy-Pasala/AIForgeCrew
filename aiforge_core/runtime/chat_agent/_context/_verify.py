@@ -45,7 +45,7 @@ def _run_project_verify(cwd: str):
         return None, ""
 
 
-def _post_edit_syntax_error(name: str, args: dict, cwd: str) -> "str | None":
+def _post_edit_syntax_error(_name: str, args: dict, cwd: str) -> "str | None":
     """Syntax-check the file an edit tool just wrote. Returns an error string
     when broken, else None. Reuses the pipeline's language-agnostic syntax_guard
     (Python compile, js/java/go/… checkers, brace-balance fallback)."""

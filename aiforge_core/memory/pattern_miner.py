@@ -125,7 +125,7 @@ def _group_by_file_overlap(
     return dict(groups)
 
 
-def _synthesise(key: str, members: list[dict[str, Any]]) -> dict:
+def _synthesise(_key: str, members: list[dict[str, Any]]) -> dict:
     files: set[str] = set()
     tickets: list[str] = []
     success_count = 0

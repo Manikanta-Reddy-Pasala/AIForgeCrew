@@ -59,7 +59,7 @@ def _collect_run_output(res: dict) -> str:
     return "\n".join(p for p in parts if p).strip()
 
 
-def _raw_build_test_output(cwd: str, stacks: list) -> str:
+def _raw_build_test_output(cwd: str, _stacks: list) -> str:
     """Fallback: run the toolchain test/build command directly, capturing COMBINED
     stdout+stderr, so a maven/gradle compile error is never lost to the reconciler."""
     if os.path.exists(os.path.join(cwd, "pom.xml")):

@@ -62,7 +62,7 @@ def _scope_slug(s) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "-", str(s or "").strip()).strip("-")
 
 
-def _scope_of(node_type: str, meta: dict | None) -> str:
+def _scope_of(_node_type: str, meta: dict | None) -> str:
     """Derive a node's scope slug from its frontmatter: a project name, or ""
     for global. Solutions/sessions/objectives use ``workspace`` (or ``repo``);
     learnings additionally honour ``scope: repo:<name>``. Everything else is
@@ -116,7 +116,7 @@ def type_dir(node_type: str, scope: str = "") -> str:
     return d
 
 
-def _filename(node_type: str, node_id: str) -> str:
+def _filename(_node_type: str, node_id: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", str(node_id)).strip("-") or "node"
     return f"{safe}.md"
 

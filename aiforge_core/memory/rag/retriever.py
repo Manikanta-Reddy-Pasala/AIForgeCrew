@@ -84,7 +84,7 @@ def _rerank(query: str, hits: list[Hit], keep: int) -> list[Hit]:
 
 
 def retrieve_for_role_li(
-    store: Any,
+    _store: Any,
     role: str,
     query: str,
     parent_id: int | None,

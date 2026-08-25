@@ -550,7 +550,7 @@ def make_text_doer_node():
     return node(_text_doer_node, name="doer")
 
 
-def should_use_text_protocol(role: str = "doer") -> bool:
+def should_use_text_protocol(_role: str = "doer") -> bool:
     """Decide whether the Doer should run the TEXT protocol.
 
     ``AIFORGE_DOER_PROTOCOL``:

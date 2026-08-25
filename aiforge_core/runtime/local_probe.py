@@ -101,7 +101,7 @@ def is_alive(api_base: str) -> bool:
     return alive
 
 
-def maybe_substitute_primary(role: str, primary_cfg: dict) -> dict:
+def maybe_substitute_primary(_role: str, primary_cfg: dict) -> dict:
     """No-op now that ``openai_compatible`` is the only provider.
 
     This used to swap a dead local mlx-lm primary for a cloud default,

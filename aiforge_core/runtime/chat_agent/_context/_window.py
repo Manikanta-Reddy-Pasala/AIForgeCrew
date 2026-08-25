@@ -95,7 +95,7 @@ _CAVE_CONDENSE_FRACTION = 0.40     # cave (default) → compact at ~40% full
 _FULL_CONDENSE_FRACTION = 0.85     # cave opted OUT (strong model) → use window
 
 
-def _history_fraction(role: str | None = None) -> float:
+def _history_fraction(_role: str | None = None) -> float:
     """Fraction of the (post-reserve) window kept as LIVE history before an
     auto-condense fires. An explicit ``AIFORGE_CTX_HISTORY_FRACTION`` wins;
     otherwise cave mode (the standard default for the small local models this

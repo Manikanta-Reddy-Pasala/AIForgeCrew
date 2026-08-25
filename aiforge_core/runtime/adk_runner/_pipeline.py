@@ -571,7 +571,7 @@ def _ticket_state(ticket, scope_seed: list, rules_md: str,
     return state
 
 
-def _with_images(content, ticket, gtypes):
+def _with_images(content, ticket, _gtypes):
     """Sub #6 follow-up: inject multimodal image parts when the ticket has image
     attachments AND the Doer model supports vision."""
     try:

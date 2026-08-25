@@ -83,7 +83,7 @@ def _build_symbol_map(cwd: str, max_files: int = 200, max_syms: int = 12) -> str
     return _fmt_symbol_rows(base, rows, truncated=False)
 
 
-def _fmt_symbol_rows(base: str, rows: list, truncated: bool) -> str:
+def _fmt_symbol_rows(_base: str, rows: list, truncated: bool) -> str:
     if not rows:
         return ""
     cap = _repomap_max_chars()
@@ -169,7 +169,7 @@ def _regex_symbol_map(base: str) -> str:
             f"WORKING DIRECTORY: {base}\n{symmap}")
 
 
-def _tree_rows(root: str, dirs: list, files: list, base: str,
+def _tree_rows(root: str, _dirs: list, files: list, base: str,
                depth: int) -> list[str]:
     """One directory's lines: its own name (except at the root) then its files."""
     rel = os.path.relpath(root, base)

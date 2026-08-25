@@ -198,7 +198,7 @@ def _t_multi_edit(args: dict, cwd: str) -> dict:
     return {"ok": True, "files": written, "edits_applied": len(edits)}
 
 
-def _t_typecheck(args: dict, _cwd: str) -> dict:
+def _t_typecheck(_args: dict, _cwd: str) -> dict:
     from aiforge_core.runtime.tools.typecheck import typecheck
     return typecheck()
 

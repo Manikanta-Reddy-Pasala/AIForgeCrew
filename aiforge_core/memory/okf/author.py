@@ -186,7 +186,7 @@ def _save_learnings(learnings, g, title_to_oid: dict, repo) -> list:
     return made
 
 
-def extract_and_save(session_text: str, *, active_kr: str | None = None,
+def extract_and_save(session_text: str, *, _active_kr: str | None = None,
                      repo: str | None = None) -> dict:
     """LLM-extract objectives/KRs/learnings from ``session_text`` and save them
     as nodes (deduped by title). Each learning is CLASSIFIED by scope

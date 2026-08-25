@@ -232,7 +232,7 @@ def _bm25_hits(tier: str, wing_prefix: str | None,
 
 
 def retrieve_for_role_li(
-    store: Any,  # kept for API compat; ignored
+    _store: Any,  # kept for API compat; ignored
     role: str,
     query: str,
     parent_id: str | int | None,

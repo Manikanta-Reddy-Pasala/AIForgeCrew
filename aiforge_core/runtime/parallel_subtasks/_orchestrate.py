@@ -149,7 +149,7 @@ def _build_impls(cwd: str, impls: list, subs: list, run_one, prev_fails: int,
     return done, failed
 
 
-def _run_sequential(cwd: str, base_branch: str, subs: list, run_one, *,
+def _run_sequential(cwd: str, _base_branch: str, subs: list, run_one, *,
                     on_status=None, should_cancel=None, emit=None) -> dict:
     """SINGLE-BRANCH SEQUENTIAL build (Coordinator + dependent sub-agents). Each
     subtask runs directly in ``cwd`` — seeing the REAL prior committed files, so

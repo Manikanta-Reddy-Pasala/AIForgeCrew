@@ -576,7 +576,7 @@ def _status_metadata(state, v: _Verdict, pr_meta: dict, ci_meta: dict,
     }
 
 
-def _run_ticket(ticket, worktree: str) -> None:
+def _run_ticket(ticket, _worktree: str) -> None:
     """The pipeline run and everything that follows from its verdict."""
     memory_md = memory_block.fetch(ticket)
     # Enhancer + Validator run as proper ADK LlmAgents inside the pipeline (see

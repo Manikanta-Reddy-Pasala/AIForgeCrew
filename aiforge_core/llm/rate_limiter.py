@@ -334,7 +334,7 @@ def _shared():
         return None
 
 
-def _take(rpm: float, provider: "str | None") -> "tuple[bool, float]":
+def _take(rpm: float, _provider: "str | None") -> "tuple[bool, float]":
     """Claim one send. (claimed, seconds_until_room).
 
     Tries the SHARED window first — the whole point, since `run.sh` runs the

@@ -28,7 +28,7 @@ OUTPUT_KEY = "structural_plan"  # session-state key the Doer reads from
 TOOLS_FACTORY = None
 
 
-def build(model_factory):  # noqa: ARG001
+def build(_model_factory):  # noqa: ARG001
     """Architect is external; no ADK agent to build.
 
     Returning ``None`` lets pipeline-builder code branch on presence

@@ -296,7 +296,7 @@ def default_integration_test(repo_root: str) -> dict:
     return _build_or_test(repo_root)
 
 
-def _emit(ticket_id, slug, kind, body, md) -> None:
+def _emit(ticket_id, _slug, kind, body, md) -> None:
     if ticket_id is None:
         return
     try:
@@ -473,7 +473,7 @@ def _resolve_conflicts(repo: str, goal: str) -> bool:
     return True
 
 
-def _merge_branch(repo: str, base_branch: str, branch: str) -> tuple[bool, str]:
+def _merge_branch(repo: str, _base_branch: str, branch: str) -> tuple[bool, str]:
     """Merge ``branch`` into ``base_branch`` (checked out in ``repo``). Returns
     (ok, info). On conflict, RESOLVES the hunks (minimal-context) rather than
     dropping the subtask's work; aborts only if resolution fails."""

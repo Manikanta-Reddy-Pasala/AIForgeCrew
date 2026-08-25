@@ -251,7 +251,7 @@ def _summarize_or_excerpt(full: str, role: str) -> str:
     return full[:_DESC_CAP] + "\n… (truncated)"
 
 
-def describe_upload(path: str, filename: str, mime: str, role: str = "chat") -> str:
+def describe_upload(path: str, _filename: str, mime: str, role: str = "chat") -> str:
     """The text that makes an attachment queryable: a vision caption for an
     image, or — for a document — a size-selected excerpt/summary (small doc:
     raw text; large doc: map-reduce summary). docx image captions appended when

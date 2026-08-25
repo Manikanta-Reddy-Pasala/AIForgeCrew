@@ -40,7 +40,7 @@ def _slug(s: str) -> str:
     return _SLUG.sub("-", (s or "").lower()).strip("-")[:48] or "pref"
 
 
-def _existing_subjects(repo: str | None) -> list[str]:
+def _existing_subjects(_repo: str | None) -> list[str]:
     """Subjects (``pref:<subject>``) already stored — fed to the LLM so it maps
     a restatement onto the SAME memory instead of minting a new one."""
     try:

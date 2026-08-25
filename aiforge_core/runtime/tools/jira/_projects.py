@@ -64,7 +64,7 @@ def jira_resolve_project(args: dict, cwd: str | None = None) -> dict:
     return fuzzy_pick(name, cands, value_key="key")
 
 
-def jira_myself(args: dict, _cwd: str | None = None) -> dict:
+def jira_myself(_args: dict, _cwd: str | None = None) -> dict:
     """The authenticated user (name, account id, email) — resolve "me"/"my"."""
     r = _request("GET", "/rest/api/2/myself")
     if not r["ok"]:

@@ -1056,7 +1056,7 @@ def _poll_args(args: dict, pinned) -> dict:
     return out
 
 
-def _one_check(args: dict, cwd, pinned, good: dict, err: dict, checks: int,
+def _one_check(args: dict, cwd, pinned, good: dict, _err: dict, checks: int,
                started: float):
     """One poll. Returns ``(final_result_or_None, good, err, pinned)``."""
     res = gitlab_pipeline(_poll_args(args, pinned), cwd, skip_jobs=True)

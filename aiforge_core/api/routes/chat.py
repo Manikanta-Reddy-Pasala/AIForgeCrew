@@ -1020,7 +1020,7 @@ def _note_staleness_notice(cwd):
 
 
 def _pipeline_route(_pp, prompt, cwd, session_id, history, _with_resume, _path,
-                    _turn_t0, pctx):
+                    _turn_t0, _pctx):
     """The 3-agent orchestrator route (enhancer → architect → planner). A spec
     that splits into >=2 files runs the parallel team; otherwise it still writes
     SPEC.md (every pipeline-routed run tracks against one) and falls to best-of-N
@@ -1279,7 +1279,7 @@ def _run_capture_pass(_rc, prompt, repo, cwd, session_id):
         ex.shutdown(wait=False)
 
 
-def _rule_capture_pass(prompt, cwd, session_id, pctx):
+def _rule_capture_pass(prompt, cwd, session_id, _pctx):
     """Rule/Memory/Feedback capture (deterministic, always-on) — runs BEFORE any
     agent so a directive/fact/correction stated in passing is captured + applied.
     A pre-filter skips the LLM classify for ordinary turns; the classify itself is

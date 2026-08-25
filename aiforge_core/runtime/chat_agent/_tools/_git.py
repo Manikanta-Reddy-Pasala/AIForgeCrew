@@ -3,7 +3,7 @@ from __future__ import annotations
 from ._shared import _coerce_int, _git_cli
 
 
-def _t_git_status(args: dict, cwd: str) -> dict:
+def _t_git_status(_args: dict, cwd: str) -> dict:
     return _git_cli(["status", "--porcelain=v1", "-b"], cwd)
 
 

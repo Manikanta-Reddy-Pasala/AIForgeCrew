@@ -110,7 +110,7 @@ def apply_blob(entry: dict, body: bytes, *, peer_id: str = "") -> bool:
     return True
 
 
-def _accept_class_a(target: Path, entry: dict, body: bytes) -> bool:
+def _accept_class_a(target: Path, entry: dict, _body: bytes) -> bool:
     """True when this class A record may be written: create-only.
 
     Class A is *defined* as immutable and merged by union on a content hash

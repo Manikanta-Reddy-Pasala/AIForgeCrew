@@ -144,7 +144,7 @@ def _first_path(d) -> str:
     return ""
 
 
-def _paths(name: str, args: dict, result) -> list:
+def _paths(_name: str, args: dict, result) -> list:
     """Every workspace path this tool call names.
 
     Covers the single-path tools, ``multi_edit``'s edit list, and the parallel

@@ -1972,7 +1972,7 @@ def _run_action_path(st, step, n, cwd, session_id):
     return None
 
 
-def _dispatch_step(st, out, n, cwd, role, complete_fn, session_id, builder,
+def _dispatch_step(st, out, n, cwd, role, _complete_fn, session_id, builder,
                    strict_finish):
     """Process one parsed reply: FINAL / ask / continue handling, then the action
     path (stall guard, plan/approval/hook/scope gates, tool dispatch, post-tool

@@ -33,7 +33,7 @@ def _knn_rows(c, qvec, repo, limit: int) -> tuple[dict, list]:
                            params).fetchall()
 
 
-def _vec_recall(text, qvec, repo, limit: int, boost: set) -> list[dict]:
+def _vec_recall(_text, qvec, repo, limit: int, boost: set) -> list[dict]:
     """sqlite-vec KNN recall — semantic nearest-neighbours over the vec0 index.
     Over-fetches, then repo-scopes + applies the tag boost + dedups, matching
     :func:`recall`'s hit shape. Raises if the extension isn't loadable (no

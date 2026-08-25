@@ -142,7 +142,7 @@ def _t_set_repo_root(args: dict, _cwd: str) -> dict:
     return repo_map.set_default_root(path)
 
 
-def _t_list_repos(args: dict, _cwd: str) -> dict:
+def _t_list_repos(_args: dict, _cwd: str) -> dict:
     """List the configured repo folders: the global base + explicit per-repo
     paths + the git repos found under the base."""
     from aiforge_core.config import repo_map

@@ -172,7 +172,7 @@ def git_add_commit(message: str) -> dict:
 # back toward the real tools. Cheaper than letting one stray call kill a
 # 30-minute run.
 
-def todo_write(todos: str = "", **_kw) -> dict:
+def todo_write(_todos: str = "", **_kw) -> dict:
     """No-op planning scratchpad (Claude-Code TodoWrite). Accepted so a
     stray call doesn't abort the run; the plan already lives in state."""
     return {"ok": True, "note": "todo noted (no-op); use editor/bash to act"}
@@ -227,7 +227,7 @@ def glob(pattern: str = "*", path: str = ".") -> dict:
             "truncated": capped, "matches": sorted(matches)}
 
 
-def task(description: str = "", **_kw) -> dict:
+def task(_description: str = "", **_kw) -> dict:
     """No-op for Claude-Code Task/Agent spawns — the Doer already runs
     inside the pipeline; sub-agent spawning goes through delegate_to_agent,
     not this name. Accepted so a stray call doesn't abort the run."""
