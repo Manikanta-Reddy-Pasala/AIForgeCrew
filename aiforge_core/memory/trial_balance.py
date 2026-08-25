@@ -148,9 +148,8 @@ def _has_material_gap(result: dict) -> bool:
         if any(k in lname for k in ("large", "mismatch", "missing", "delta")):
             return True
     summary = result.get("summary") or {}
-    if isinstance(summary, dict):
-        if summary.get("hasMaterialGap") is True:
-            return True
+    if isinstance(summary, dict) and summary.get("hasMaterialGap") is True:
+        return True
     return False
 
 
