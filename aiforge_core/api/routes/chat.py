@@ -1172,6 +1172,45 @@ def _should_skip_enhance(auto_downgraded, route_pipeline, is_build_task,
     return skip
 
 
+def _plan_mode_route(_pp, _enriched, _enriched_history, cwd, role, session_id,
+                     quick):
+    """Plan mode: decompose into a STATIC plan (marked "planned", never executed),
+    run the plan-mode agent, and emit ``plan_ready`` BEFORE the terminal ``done``
+    reaches the client (hold the done, yield plan_ready, release it) so the UI
+    sees the approvable plan — one-click "Approve & Execute" re-sends this
+    enriched spec as a TEAM run (Gap B)."""
+    from aiforge_core.runtime.chat_agent import run_chat_agent
+    _subs = _pp._decompose(_enriched)       # Planner
+    if _subs:
+        # Plan mode shows a STATIC plan it never executes — mark them
+        # "planned" (not "pending") so the UI doesn't render them as
+        # stuck-forever pending-execution rows.
+        yield {"type": "subtasks", "items": [
+            {"slug": s.get("slug") or f"sub-{i+1}",
+             "goal": s.get("goal") or s.get("title") or "",
+             "status": "planned"}
+            for i, s in enumerate(_subs)]}
+    # Plan→approve→execute (Gap B): hand the approved spec to the UI so
+    # the user can one-click "Approve & Execute" — which re-sends this
+    # enriched spec as a TEAM run. Persisted so the button survives a
+    # reload until the plan is acted on. Emit plan_ready BEFORE the
+    # agent's terminal `done` reaches the client (hold the `done`, yield
+    # plan_ready, then release `done`) so the UI sees the plan, not a
+    # finished turn with no plan.
+    _pending_done = None
+    for _ev in run_chat_agent(_enriched_history, cwd=cwd, role=role,
+                              session_id=session_id, mode="plan",
+                              max_steps=_quick_step_cap(quick)):
+        if _ev.get("type") == "done":
+            _pending_done = _ev
+            continue
+        yield _ev
+    yield {"type": "plan_ready", "spec": _enriched}
+    if _pending_done is not None:
+        yield _pending_done
+    return
+
+
 def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
                        history):
     """Gather the (side-effecting) inputs to the task-type router and return its
@@ -2003,34 +2042,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                             "post it myself.]")
                 break
         if agent_mode == "plan":
-            _subs = _pp._decompose(_enriched)       # Planner
-            if _subs:
-                # Plan mode shows a STATIC plan it never executes — mark them
-                # "planned" (not "pending") so the UI doesn't render them as
-                # stuck-forever pending-execution rows.
-                yield {"type": "subtasks", "items": [
-                    {"slug": s.get("slug") or f"sub-{i+1}",
-                     "goal": s.get("goal") or s.get("title") or "",
-                     "status": "planned"}
-                    for i, s in enumerate(_subs)]}
-            # Plan→approve→execute (Gap B): hand the approved spec to the UI so
-            # the user can one-click "Approve & Execute" — which re-sends this
-            # enriched spec as a TEAM run. Persisted so the button survives a
-            # reload until the plan is acted on. Emit plan_ready BEFORE the
-            # agent's terminal `done` reaches the client (hold the `done`, yield
-            # plan_ready, then release `done`) so the UI sees the plan, not a
-            # finished turn with no plan.
-            _pending_done = None
-            for _ev in run_chat_agent(_enriched_history, cwd=cwd, role=role,
-                                      session_id=session_id, mode="plan",
-                                      max_steps=_quick_step_cap(body.quick)):
-                if _ev.get("type") == "done":
-                    _pending_done = _ev
-                    continue
-                yield _ev
-            yield {"type": "plan_ready", "spec": _enriched}
-            if _pending_done is not None:
-                yield _pending_done
+            yield from _plan_mode_route(_pp, _enriched, _enriched_history, cwd,
+                                        role, session_id, body.quick)
             return
         # Baseline commit so we can show a Changes diff after the single-agent run
         # (simple mode edits the working tree; the pipeline shows its own Changes).
