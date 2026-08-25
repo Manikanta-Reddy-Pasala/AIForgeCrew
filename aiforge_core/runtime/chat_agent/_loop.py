@@ -309,13 +309,10 @@ def _prepend_priority_blocks(sys_msg, asks, prefs, rules, analyze_mode,
     return sys_msg
 
 
-def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
-                 analyze_mode, builder, strict_finish, session_id):
-    """Build the ReAct conversation: assemble the budget-capped system prompt
-    (rules, prefs, banners, catalog/codegraph gates, multi-ask checklist, and
-    every dynamic context block via the shared bundle), fold history + vision
-    images into the message list. Returns
-    ``(convo, bundle, asks, dropped_playbooks)``."""
+def _seed_prompt(messages, cwd, readonly_mode):
+    """Seed the system prompt: extract the raw last-user message, load cave/rules/
+    prefs, format the core prompt, and apply the catalog + codegraph gates.
+    Returns (last_user, cave, rules, prefs, sys_msg)."""
     last_user = next(
         (_text_of(m) for m in reversed(messages)
          if (m.get("role") or "user") == "user" and m.get("content")), "")
@@ -346,6 +343,17 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
     # Without this block the tools are in TOOLS but absent from the catalog, so
     # the model never learns they exist.
     sys_msg += _codegraph_directive(cwd, readonly_mode)
+    return last_user, cave, rules, prefs, sys_msg
+
+
+def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
+                 analyze_mode, builder, strict_finish, session_id):
+    """Build the ReAct conversation: assemble the budget-capped system prompt
+    (rules, prefs, banners, catalog/codegraph gates, multi-ask checklist, and
+    every dynamic context block via the shared bundle), fold history + vision
+    images into the message list. Returns
+    ``(convo, bundle, asks, dropped_playbooks)``."""
+    last_user, cave, rules, prefs, sys_msg = _seed_prompt(messages, cwd, readonly_mode)
     # Multi-part message (simple mode has no enhancer/spec, so nothing else
     # tracks the parts): derive an ASK CHECKLIST and pin it HIGH in the
     # system prompt — the model must cover every part, not answer #1 and stop.
