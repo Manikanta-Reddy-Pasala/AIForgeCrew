@@ -242,6 +242,44 @@ def _api_search(query: str, limit: int) -> "list[dict] | None":
     return None
 
 
+def _ddg_endpoint(url: str, is_lite: bool, query: str, limit: int,
+                  prev_err: "str | None") -> "tuple[dict | None, str | None]":
+    """One DDG endpoint attempt → (hit_or_None, error). ``hit`` is the success
+    dict when results came back — flagged ``tls_verified: False`` when the RESULT
+    LIST itself came over an unverified connection (these urls are what the agent
+    fetches next, the worst place to be silent). None means fall through to the
+    next endpoint, keeping the freshest error."""
+    verified: list = []
+    try:
+        body = _get_retry(url, data=urllib.parse.urlencode(
+            {"q": query, "kl": "us-en"}).encode(), verified=verified)
+    except _NET_ERRORS as exc:
+        return None, str(exc)
+    results = _parse_lite(body, limit) if is_lite else _parse_html(body, limit)
+    if not results:
+        return None, prev_err
+    return {"ok": True, "query": query, "results": results,
+            "provider": "ddg-lite" if is_lite else "ddg",
+            **({} if not (verified and verified[0] is False)
+               else {"tls_verified": False})}, prev_err
+
+
+def _ddg_scrape(query: str, limit: int) -> dict:
+    """Keyless DuckDuckGo scrape, HARDENED: try the html endpoint (with one
+    retry), and on any error OR zero parsed results fall back to the lite
+    endpoint (simpler markup that survives html A/B changes + rate-limit 202s).
+    Only reports failure when BOTH endpoints come up empty/error."""
+    err: str | None = None
+    for url, is_lite in ((_DDG_HTML, False), (_DDG_LITE, True)):
+        hit, err = _ddg_endpoint(url, is_lite, query, limit, err)
+        if hit is not None:
+            return hit
+    if err:
+        return {"ok": False, "error": err, "query": query}
+    return {"ok": True, "results": [], "provider": "ddg",
+            "note": "no results (query too narrow, or DDG markup changed)"}
+
+
 def web_search(args: dict, cwd: str | None = None) -> dict:
     """Search the open web. Uses a keyed provider (Tavily/Brave) when
     AIFORGE_TAVILY_API_KEY / AIFORGE_BRAVE_API_KEY is set — more reliable than
@@ -260,35 +298,7 @@ def web_search(args: dict, cwd: str | None = None) -> dict:
     api = _api_search(query, limit)
     if api is not None:
         return {"ok": True, "query": query, "results": api, "provider": "api"}
-
-    # Keyless DDG scrape, HARDENED: try the html endpoint (with one retry), and
-    # on any error OR zero parsed results fall back to the lite endpoint (simpler
-    # markup that survives html-page A/B changes + rate-limit 202s). Only report
-    # failure when BOTH endpoints come up empty/error.
-    err: str | None = None
-    for url, is_lite in ((_DDG_HTML, False), (_DDG_LITE, True)):
-        _verified: list = []
-        try:
-            body = _get_retry(url, data=urllib.parse.urlencode(
-                {"q": query, "kl": "us-en"}).encode(), verified=_verified)
-        except _NET_ERRORS as exc:
-            err = str(exc)
-            continue
-        results = _parse_lite(body, limit) if is_lite \
-            else _parse_html(body, limit)
-        if results:
-            # Say it when the RESULT LIST itself came over an unverified
-            # connection. These urls are what the agent fetches next, so an
-            # attacker-substitutable result set reported as an ordinary success
-            # is the worst place for this to be silent.
-            return {"ok": True, "query": query, "results": results,
-                    "provider": "ddg-lite" if is_lite else "ddg",
-                    **({} if not (_verified and _verified[0] is False)
-                       else {"tls_verified": False})}
-    if err:
-        return {"ok": False, "error": err, "query": query}
-    return {"ok": True, "results": [], "provider": "ddg",
-            "note": "no results (query too narrow, or DDG markup changed)"}
+    return _ddg_scrape(query, limit)
 
 
 def web_fetch(args: dict, cwd: str | None = None) -> dict:
