@@ -139,6 +139,39 @@ def _attempt(subtask: dict, wt: str, slug: str, run_one, validate_one) -> dict:
             "detail": res, "validation": vres}
 
 
+def _retry_subtask(subtask: dict, last: dict, i: int) -> dict:
+    """The subtask dict for retry attempt ``i``, informed by the prior failure so
+    the next prompt says what went wrong instead of re-running blindly. A subtask
+    that STOPPED (hit the turn budget unfinished) was too big for one pass →
+    ``_too_big`` tells the retry to ship a minimal working CORE first."""
+    prev_err = (last.get("error")
+                or (last.get("validation") or {}).get("error")
+                or "the previous build/tests failed")
+    too_big = "(stopped:" in str(prev_err).lower() or bool(last.get("stopped"))
+    return {**subtask, "_retry_error": str(prev_err)[:800], "_retry_n": i,
+            "_too_big": too_big}
+
+
+def _run_with_retries(subtask: dict, wt: str, slug: str, base_branch: str,
+                      ticket_id, run_one, validate_one) -> "tuple[dict, int]":
+    """Run+validate the subtask, retrying (bounded) on failure/crash — subtasks
+    are the risky unit. The worktree is reset between attempts so nothing leaks
+    across tries. Returns ``(last_result, attempts_used_index)``."""
+    last: dict = {}
+    attempts = _retries() + 1
+    i = 0
+    for i in range(attempts):
+        if i > 0:
+            _reset_worktree(wt, base_branch)
+            subtask = _retry_subtask(subtask, last, i)
+            _emit(ticket_id, slug, "subtask_retry",
+                  f"{slug} retry {i}/{attempts - 1}", {"slug": slug, "attempt": i})
+        last = _attempt(subtask, wt, slug, run_one, validate_one)
+        if last["ok"]:
+            break
+    return last, i
+
+
 def _run_subtask(repo: str, base_branch: str, ticket_id: int | None,
                  subtask: dict, run_one, validate_one, on_status=None,
                  run_token: str | None = None, should_cancel=None) -> dict:
@@ -155,41 +188,15 @@ def _run_subtask(repo: str, base_branch: str, ticket_id: int | None,
         _update(ticket_id, slug, "failed", on_status)
         return {"slug": slug, "ok": False, "error": str(exc), "branch": None}
 
-    # Retry the whole run+validate on failure/crash — subtasks are the risky
-    # unit, so we keep trying (bounded) before giving up. Reset the worktree
-    # between attempts so nothing leaks across tries.
-    last: dict = {}
-    attempts = _retries() + 1
-    for i in range(attempts):
-        if i > 0:
-            _reset_worktree(wt, base_branch)
-            # REGENERATE informed by the failure — feed the prior error into the
-            # subtask so the next attempt's prompt says what went wrong, instead
-            # of blindly re-running the same prompt to the same dead end.
-            _prev_err = (last.get("error")
-                         or (last.get("validation") or {}).get("error")
-                         or "the previous build/tests failed")
-            # C (lightweight re-decompose): a subtask that STOPPED (hit the turn
-            # budget without finishing) was too big for one pass. Rather than
-            # blindly re-run, tell the retry to ship the CORE first — a minimal
-            # working slice — then extras only if room. Small models finish a
-            # scoped core where they thrash on the whole thing.
-            _too_big = "(stopped:" in str(_prev_err).lower() or bool(last.get("stopped"))
-            subtask = {**subtask, "_retry_error": str(_prev_err)[:800],
-                       "_retry_n": i, "_too_big": _too_big}
-            _emit(ticket_id, slug, "subtask_retry",
-                  f"{slug} retry {i}/{attempts - 1}", {"slug": slug, "attempt": i})
-        last = _attempt(subtask, wt, slug, run_one, validate_one)
-        if last["ok"]:
-            break
-
+    last, i = _run_with_retries(subtask, wt, slug, base_branch, ticket_id,
+                                run_one, validate_one)
     ok = last["ok"]
     _emit(ticket_id, slug,
           "subtask_validated" if last.get("validated") else "subtask_rejected",
           f"{slug} validation {'passed' if last.get('validated') else 'failed'}",
-          {"slug": slug, "validated": last.get("validated"),
-           "attempts": i + 1})
-    _files = (last.get("detail") or {}).get("files") if isinstance(last.get("detail"), dict) else None
+          {"slug": slug, "validated": last.get("validated"), "attempts": i + 1})
+    _files = ((last.get("detail") or {}).get("files")
+              if isinstance(last.get("detail"), dict) else None)
     _update(ticket_id, slug, "done" if ok else "failed", on_status, _files)
     return {"slug": slug, "ok": ok, "ran": last.get("ran"),
             "validated": last.get("validated"), "attempts": i + 1,
@@ -390,6 +397,38 @@ def _resolve_conflict_hunk(goal: str, path: str, head: str, incoming: str,
     return out.strip("\n")
 
 
+def _resolve_all_hunks(backup: str, goal: str, relpath: str, budget: int,
+                       attempt: int) -> str:
+    """Resolve every conflict hunk in ``backup`` with ``budget`` lines of
+    breadcrumb context; a hunk the model can't resolve falls back to keeping
+    HEAD. Returns the rewritten text (may still carry markers → caller widens)."""
+    new = backup
+    for m in _CONFLICT_RE.finditer(backup):
+        above, below = _hunk_breadcrumbs(backup, m.span(), budget)
+        res = _resolve_conflict_hunk(goal, relpath, m.group(1), m.group(2),
+                                     above, below, attempt)
+        if not res:
+            res = m.group(1)                    # fallback: keep HEAD
+        new = new.replace(m.group(0), res + "\n", 1)
+    return new
+
+
+def _still_conflicted(text: str) -> bool:
+    """True when the resolved text still carries git conflict markers."""
+    return "<<<<<<<" in text or "=======" in text or ">>>>>>>" in text
+
+
+def _syntax_ok(relpath: str, text: str) -> bool:
+    """Whether ``text`` passes the syntax guard for ``relpath`` (fails open on a
+    guard error)."""
+    try:
+        from aiforge_core.runtime.syntax_guard import validate_syntax
+        ok, _ = validate_syntax(relpath, text)
+        return ok
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def _resolve_file_conflicts(repo: str, relpath: str, goal: str,
                             max_attempts: int = 3) -> bool:
     """Widen-context-retry state machine for ONE conflicted file: resolve every
@@ -404,30 +443,19 @@ def _resolve_file_conflicts(repo: str, relpath: str, goal: str,
         return False
     budget = 5
     for attempt in range(1, max_attempts + 1):
-        new = backup
-        for m in _CONFLICT_RE.finditer(backup):
-            above, below = _hunk_breadcrumbs(backup, m.span(), budget)
-            res = _resolve_conflict_hunk(goal, relpath, m.group(1), m.group(2),
-                                         above, below, attempt)
-            if not res:
-                res = m.group(1)                    # fallback: keep HEAD
-            new = new.replace(m.group(0), res + "\n", 1)
-        if "<<<<<<<" in new or "=======" in new or ">>>>>>>" in new:
+        new = _resolve_all_hunks(backup, goal, relpath, budget, attempt)
+        if _still_conflicted(new):
             budget += 10
             continue                                # markers left → widen + retry
+        if not _syntax_ok(relpath, new):
+            budget += 10                            # syntax fail → widen + retry
+            continue
         try:
-            from aiforge_core.runtime.syntax_guard import validate_syntax
-            ok, _ = validate_syntax(relpath, new)
+            with open(fp, "w", encoding="utf-8") as fh:
+                fh.write(new)
+            return True
         except Exception:  # noqa: BLE001
-            ok = True
-        if ok:
-            try:
-                with open(fp, "w", encoding="utf-8") as fh:
-                    fh.write(new)
-                return True
-            except Exception:  # noqa: BLE001
-                return False
-        budget += 10                                # syntax fail → widen + retry
+            return False
     return False
 
 

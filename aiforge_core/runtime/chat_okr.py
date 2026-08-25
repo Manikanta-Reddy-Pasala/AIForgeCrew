@@ -160,6 +160,17 @@ def _window_chars(role: str) -> int:
         return 8000
 
 
+def _oversized_turn_slice(role: str, content: str, start_char: int,
+                          limit: int) -> "tuple[str, int, int]":
+    """Emit ONE slice of a turn bigger than the whole window and remember where
+    to resume — the turn is NOT consumed (returns turns_consumed=0) until its
+    last slice has been sent. Clipping once and marking it folded would drop most
+    of it."""
+    head = f"{role}: "
+    body_room = max(1, limit - len(head))
+    return head + content[:body_room], 0, (start_char or 0) + body_room
+
+
 def _transcript(turns: list[dict], limit: int,
                 start_char: int = 0) -> "tuple[str, int, int]":
     """Compact ``ROLE: content`` transcript of the OLDEST turns that fit in
@@ -177,9 +188,7 @@ def _transcript(turns: list[dict], limit: int,
     consumed. Clipping it once and marking it folded would drop most of it.
     """
     lines: list[str] = []
-    used = 0
-    taken = 0
-    part = 0
+    used = taken = 0
     for n, m in enumerate(turns):
         role = (m.get("role") or "user").strip().upper()
         content = (m.get("content") or "").strip()
@@ -193,14 +202,7 @@ def _transcript(turns: list[dict], limit: int,
         if lines and used + sep + len(line) > limit:
             break
         if not lines and len(line) > limit:
-            # OVERSIZED TURN — emit a slice and remember where to resume; the
-            # turn is not consumed until its last slice has been sent.
-            head = f"{role}: "
-            body_room = max(1, limit - len(head))
-            line = head + content[:body_room]
-            lines.append(line)
-            part = (start_char or 0) + body_room
-            return "\n\n".join(lines), 0, part
+            return _oversized_turn_slice(role, content, start_char, limit)
         lines.append(line)
         used += sep + len(line)
         taken += 1
@@ -517,30 +519,34 @@ def previous_session_id(exclude_session_id):
     return None
 
 
-def previous_session_brief(exclude_session_id, *, max_turns: int = 6,
-                           max_chars: int = 1200) -> str:
-    """A short continuity block from the MOST RECENT prior session (excluding the
-    current one) so the next chat carries the previous conversation forward. The
-    block is explicitly framed as supersedable — if the user's new ask
-    contradicts it, the new statement wins (and the OKR supersede policy applies
-    at the next compaction). Deterministic (no LLM — the tail of the prior
-    transcript). Empty when there is no prior session. Never raises."""
+def _most_recent_prior_session(exclude_session_id) -> "int | None":
+    """The id of the most recent session that is NOT ``exclude_session_id``, or
+    None. Soft-fails to None."""
     try:
         from aiforge_core.runtime import chat_store
         sessions = chat_store.list_sessions() or []
     except Exception as exc:  # noqa: BLE001
         log.debug("previous_session_brief list_sessions failed: %s", exc)
-        return ""
-    prior_id = None
+        return None
     for s in sessions:                       # list_sessions is newest-first
         sid = (s or {}).get("id")
-        if sid is None or sid == exclude_session_id:
-            continue
-        prior_id = sid
-        break
+        if sid is not None and sid != exclude_session_id:
+            return sid
+    return None
+
+
+def previous_session_brief(exclude_session_id, *, max_turns: int = 6,
+                           max_chars: int = 1200) -> str:
+    """A short continuity block from the MOST RECENT prior session (excluding the
+    current one) so the next chat carries the previous conversation forward. The
+    block is explicitly framed as supersedable — if the user's new ask
+    contradicts it, the new statement wins. Deterministic (no LLM — the tail of
+    the prior transcript). Empty when there is no prior session. Never raises."""
+    prior_id = _most_recent_prior_session(exclude_session_id)
     if prior_id is None:
         return ""
     try:
+        from aiforge_core.runtime import chat_store
         msgs = chat_store.get_messages(prior_id) or []
     except Exception as exc:  # noqa: BLE001
         log.debug("previous_session_brief get_messages failed: %s", exc)

@@ -199,12 +199,26 @@ def _memory_recall(cwd: str, query: str, limit: int = 6,
     return (_RECALL_PREAMBLE + body) if body else ""
 
 
+def _chat_recall_line(h: dict, drop_session: "int | None") -> "str | None":
+    """One prior-chat hit → a ``- [title] role: content`` line, or None to skip
+    (the immediate-prior session is already injected as prev-session — skip its
+    hits so it doesn't double-surface; older sessions still show)."""
+    if drop_session is not None and h.get("session_id") == drop_session:
+        return None
+    content = (h.get("content") or "").strip().replace("\n", " ")
+    if not content:
+        return None
+    title = h.get("session_title") or "chat"
+    role = h.get("role") or "user"
+    return f"- [{title}] {role}: {content}"
+
+
 def _chat_session_recall(query: str, session_id: "int | None",
                          limit: int = 4, drop_session: "int | None" = None) -> str:
     """Proactive recall from PRIOR CHAT SESSIONS — surface things the user
     discussed in OTHER conversations that may bear on this request, so simple
-    chat has continuity across sessions (not just within one). Cheap + local
-    (one SQLite scan). Best-effort: never breaks the turn."""
+    chat has continuity across sessions (not just within one). Cheap + local (one
+    SQLite scan). Best-effort: never breaks the turn."""
     q = (query or "").strip()
     if not q:
         return ""
@@ -216,18 +230,11 @@ def _chat_session_recall(query: str, session_id: "int | None",
         hits = []
     lines: list[str] = []
     for h in hits:
-        # the immediate-prior session is already injected as prev-session — skip
-        # its hits here so it doesn't double-surface (older sessions still show).
-        if drop_session is not None and h.get("session_id") == drop_session:
-            continue
-        content = (h.get("content") or "").strip().replace("\n", " ")
-        if not content:
-            continue
-        if len(lines) >= limit:
-            break
-        title = h.get("session_title") or "chat"
-        role = h.get("role") or "user"
-        lines.append(f"- [{title}] {role}: {content}")
+        line = _chat_recall_line(h, drop_session)
+        if line is not None:
+            lines.append(line)
+            if len(lines) >= limit:
+                break
     if not lines:
         return ""
     return ("RELEVANT PRIOR CHAT SESSIONS — things you discussed with the user "

@@ -61,6 +61,26 @@ _ELABORATE_PROMPT = {
 }
 
 
+def _already_structured(body: str) -> bool:
+    """True for a substantial, already-structured doc (>=400 chars, multi-line,
+    with list/heading markers) — leave those alone to avoid churn."""
+    return len(body) >= 400 and ("\n" in body) and any(
+        m in body for m in ("- ", "1.", "# ", "* "))
+
+
+def _strip_markdown_fence(out: str) -> str:
+    """Strip a stray ```markdown fence the model may have wrapped output in."""
+    if not out.startswith("```"):
+        return out
+    parts = out.split("```")
+    if len(parts) >= 2:
+        out = parts[1]
+        if out.lower().lstrip().startswith("markdown"):
+            out = out.lstrip()[8:]
+        out = out.strip()
+    return out
+
+
 def _elaborate_body(kind: str, body: str, *, name: str = "",
                     description: str = "") -> str:
     """Format+elaborate a rough ``body`` via the model. Best-effort: returns the
@@ -71,11 +91,7 @@ def _elaborate_body(kind: str, body: str, *, name: str = "",
     if os.environ.get("AIFORGE_BUILDER_ELABORATE", "1") in ("0", "false", "no"):
         return body
     prompt = _ELABORATE_PROMPT.get(kind)
-    if not prompt or not body:
-        return body
-    # Already a structured, non-trivial doc → leave it (avoid churn).
-    if len(body) >= 400 and ("\n" in body) and any(
-            m in body for m in ("- ", "1.", "# ", "* ")):
+    if not prompt or not body or _already_structured(body):
         return body
     ctx = (f"Name: {name}\n" if name else "") + \
           (f"Purpose: {description}\n" if description else "")
@@ -86,16 +102,7 @@ def _elaborate_body(kind: str, body: str, *, name: str = "",
             {"role": "user", "content": (ctx + "\nInput:\n" + body).strip()},
         ], max_tokens=900, temperature=0.2,
             timeout_s=int(os.environ.get("AIFORGE_BUILDER_ELABORATE_TIMEOUT_S", "45")))
-        out = (out or "").strip()
-        # Strip a stray ```markdown fence if the model wrapped it.
-        if out.startswith("```"):
-            parts = out.split("```")
-            if len(parts) >= 2:
-                out = parts[1]
-                if out.lower().lstrip().startswith("markdown"):
-                    out = out.lstrip()[8:]
-                out = out.strip()
-        return out or body
+        return _strip_markdown_fence((out or "").strip()) or body
     except Exception:  # noqa: BLE001 — elaboration is best-effort, never block save
         return body
 
