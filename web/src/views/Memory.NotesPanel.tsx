@@ -193,7 +193,8 @@ export function NotesPanel() {
              style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                       zIndex: 1000, padding: 20 }}>
-          <div onClick={e => e.stopPropagation()}
+          <div role="dialog" aria-modal="true" aria-label={open.title}
+               onClick={e => e.stopPropagation()}
                onKeyDown={e => e.stopPropagation()}
                style={{ background: 'var(--bg-0)', border: '1px solid var(--border-1)',
                         borderRadius: 10, maxWidth: 820, width: '100%', maxHeight: '85vh',

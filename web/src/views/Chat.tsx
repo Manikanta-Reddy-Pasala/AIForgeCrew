@@ -1881,7 +1881,8 @@ export default function Chat() {
               <div {...clickable(() => setSpecModal(null))} aria-label="Close"
                    style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
                             display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-                <div // Not a control: this panel exists only to stop the overlay's click
+                <div role="dialog" aria-modal="true" aria-label="SPEC.md"
+              // Not a control: this panel exists only to stop the overlay's click
               // from closing the dialog. A matching key handler keeps that
               // true for keyboard users without announcing it as a button.
               onClick={(e) => e.stopPropagation()}
@@ -2066,7 +2067,8 @@ export default function Chat() {
               display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50,
             }}
           >
-            <div onClick={e => e.stopPropagation()}
+            <div role="dialog" aria-modal="true" aria-label="Workspace checkpoints"
+                 onClick={e => e.stopPropagation()}
                  onKeyDown={e => e.stopPropagation()} style={{
               width: 'min(560px, 92vw)', maxHeight: '70vh', overflow: 'auto',
               background: 'var(--bg-0)', border: '1px solid var(--border-1)',
