@@ -18,9 +18,10 @@ def test_post_aborts_when_cancel_already_set():
     ev = threading.Event()
     ev.set()                       # Stop already pressed
     c.set_cancel_event(ev)
+    ep = _ep()
     try:
         with pytest.raises(c._LLMCancelled):
-            c._post(_ep(), b"{}", 5)
+            c._post(ep, b"{}", 5)
     finally:
         c.set_cancel_event(None)
 

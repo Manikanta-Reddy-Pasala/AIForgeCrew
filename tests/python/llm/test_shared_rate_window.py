@@ -646,11 +646,9 @@ def test_every_transaction_drops_a_wedged_connection(monkeypatch, op, prefix):
     _set_rpm(5)
     proxy = _InterruptOn(sw._conn(), prefix)
     monkeypatch.setattr(sw, "_conn", lambda: proxy)
+    call = (lambda: sw.force(5)) if op == "force" else (lambda: sw.writable())
     with pytest.raises(KeyboardInterrupt):
-        if op == "force":
-            sw.force(5)
-        else:
-            sw.writable()
+        call()
     assert proxy.fired is True
     assert proxy.closed is True, f"{op} left the connection wedged"
     monkeypatch.undo()

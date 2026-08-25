@@ -102,8 +102,9 @@ def test_timed_records_elapsed(tmp_path):
 
 
 def test_timed_records_on_exception(tmp_path):
+    cm = perf_recorder.timed("LLM", "boom")
     with pytest.raises(ValueError):
-        with perf_recorder.timed("LLM", "boom"):
+        with cm:
             raise ValueError("nope")
     rows = perf_recorder.aggregate()
     assert len(rows) == 1

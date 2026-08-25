@@ -57,5 +57,6 @@ def test_asyncio_timeout_cancels_a_hung_run():
             async for _ in _never_ends():
                 pass
 
+    coro = _body()
     with pytest.raises(TimeoutError):
-        asyncio.run(_body())
+        asyncio.run(coro)

@@ -177,8 +177,9 @@ def test_read_timeout_is_not_re_posted(monkeypatch):
     monkeypatch.delenv("AIFORGE_LLM_RETRY_TIMEOUT_MAX", raising=False)
     monkeypatch.setattr(_http, "_post", _timeout_post(calls, shipped=True))
     monkeypatch.setattr(_http.time, "sleep", lambda *_a: None)
+    ep = _endpoint()
     with pytest.raises(TimeoutError):
-        _http._post_with_retry(_endpoint(), b"{}", 20, role="triage",
+        _http._post_with_retry(ep, b"{}", 20, role="triage",
                                source="test")
     assert calls["n"] == 1
 
@@ -196,8 +197,9 @@ def test_a_timeout_that_never_reached_the_server_still_retries(monkeypatch):
     monkeypatch.setenv("AIFORGE_LLM_RETRY_BASE_S", "0")
     monkeypatch.setattr(_http, "_post", _timeout_post(calls, shipped=False))
     monkeypatch.setattr(_http.time, "sleep", lambda *_a: None)
+    ep = _endpoint()
     with pytest.raises(TimeoutError):
-        _http._post_with_retry(_endpoint(), b"{}", 20, role="triage",
+        _http._post_with_retry(ep, b"{}", 20, role="triage",
                                source="test")
     assert calls["n"] == 3
 
@@ -219,8 +221,9 @@ def test_timeout_retries_can_be_turned_back_on(monkeypatch):
     monkeypatch.setenv("AIFORGE_LLM_RETRY_BUDGET", "0")   # no deadline either
     monkeypatch.setattr(_http, "_post", lambda *a, **k: boom())
     monkeypatch.setattr(_http.time, "sleep", lambda *_a: None)
+    ep = _endpoint()
     with pytest.raises(TimeoutError):
-        _http._post_with_retry(_endpoint(), b"{}", 20, role="triage",
+        _http._post_with_retry(ep, b"{}", 20, role="triage",
                                source="test")
     assert calls["n"] == 3
 
@@ -246,8 +249,9 @@ def test_retry_budget_stops_a_slow_chain(monkeypatch):
     monkeypatch.setattr(_http.time, "monotonic", lambda: clock["t"])
     monkeypatch.setattr(_http.time, "sleep",
                         lambda s: clock.__setitem__("t", clock["t"] + s))
+    ep = _endpoint()
     with pytest.raises(OSError):
-        _http._post_with_retry(_endpoint(), b"{}", 20, role="triage",
+        _http._post_with_retry(ep, b"{}", 20, role="triage",
                                source="test")
     # budget = max(20*1.5, 20+10) = 30s. Attempt 2 would start at ~19.5s and
     # needs the FULL 20s, which does not fit — so it is never made.
@@ -546,8 +550,9 @@ def test_a_fast_failure_still_gets_every_retry(monkeypatch):
     monkeypatch.setattr(_http.time, "monotonic", lambda: clock["t"])
     monkeypatch.setattr(_http.time, "sleep",
                         lambda s: clock.__setitem__("t", clock["t"] + s))
+    ep = _endpoint()
     with pytest.raises(ConnectionRefusedError):
-        _http._post_with_retry(_endpoint(), b"{}", 20, role="triage",
+        _http._post_with_retry(ep, b"{}", 20, role="triage",
                                source="test")
     assert calls["n"] == 3
 
@@ -830,8 +835,9 @@ def test_every_failed_http_attempt_is_counted_at_the_wire(monkeypatch):
                         lambda *a, **k: (_ for _ in ()).throw(
                             ConnectionRefusedError("transient")))
     monkeypatch.setattr(_http.time, "sleep", lambda *_a: None)
+    ep = _endpoint()
     with pytest.raises(ConnectionRefusedError):
-        _http._post_with_retry(_endpoint(), b"{}", 1, role="doer",
+        _http._post_with_retry(ep, b"{}", 1, role="doer",
                                source="test")
     g = call_meter.global_snapshot(series=False)
     assert g["total"] == 3
@@ -930,9 +936,10 @@ def test_a_call_stopped_before_it_is_sent_counts_nothing(monkeypatch):
     ev = threading.Event()
     ev.set()                                   # already stopped
     token = _http._CANCEL.set(ev)
+    ep = _endpoint()
     try:
         with pytest.raises(_LLMCancelled):
-            _http._post(_endpoint(), b"{}", 1, role="doer")
+            _http._post(ep, b"{}", 1, role="doer")
     finally:
         _http._CANCEL.reset(token)
     g = call_meter.global_snapshot(series=False)

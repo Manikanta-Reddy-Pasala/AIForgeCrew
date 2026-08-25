@@ -197,8 +197,9 @@ def test_missing_client_is_rejected(monkeypatch, tmp_path):
     class _Req:
         client = None
 
+    req = _Req()
     with pytest.raises(HTTPException) as exc:
-        admin._require_loopback(_Req())
+        admin._require_loopback(req)
     assert exc.value.status_code == 403
 
 

@@ -98,17 +98,19 @@ def test_call_pds_compare_omits_header_when_no_biz(tmp_path: Path) -> None:
 
 def test_call_pds_compare_raises_on_non_2xx(tmp_path: Path) -> None:
     fake_resp = MagicMock(status_code=500, text="boom")
+    t_path, o_path = _xlsx(tmp_path, "t"), _xlsx(tmp_path, "o")
     with patch("httpx.post", return_value=fake_resp):
         with pytest.raises(OSError, match="500"):
-            tb.call_pds_compare(_xlsx(tmp_path, "t"), _xlsx(tmp_path, "o"))
+            tb.call_pds_compare(t_path, o_path)
 
 
 def test_call_pds_compare_wraps_transport_error(tmp_path: Path) -> None:
     import httpx
+    t_path, o_path = _xlsx(tmp_path, "t"), _xlsx(tmp_path, "o")
     with patch("httpx.post",
                side_effect=httpx.ConnectError("refused")):
         with pytest.raises(OSError, match="PDS unreachable"):
-            tb.call_pds_compare(_xlsx(tmp_path, "t"), _xlsx(tmp_path, "o"))
+            tb.call_pds_compare(t_path, o_path)
 
 
 def test_call_pds_compare_honours_env_base(
