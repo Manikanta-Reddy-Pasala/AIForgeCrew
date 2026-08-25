@@ -1695,6 +1695,57 @@ def _post_run_events(prompt, cwd, agent_mode, simple_sha):
             _af_log.debug("simple changes diff skipped: %s", exc)
 
 
+_DRAFT_ONLY_NOTE = (
+    "\n\n---\n[Deliverable = DRAFT ONLY. Produce the analysis/document as "
+    "markdown in your final answer. Do NOT publish — do not call "
+    "confluence_create/confluence_update/jira_create. Read tools (repos, web, "
+    "existing pages) are fine. I will review and post it myself.]")
+_PUBLISH_INTENT_RE = (
+    r"\b(publish it|publish the (page|doc|report)|go ahead and (publish|post)|"
+    r"actually (publish|create the (page|confluence))|post it to confluence)\b")
+
+
+def _augment_user_turn(m: dict, enriched, resume_brief, prompt, doc_task) -> None:
+    """Augment one user turn IN PLACE with the enhancer's interpretation (verbatim
+    words kept + a labelled restatement block, resume brief LAST) and, for a doc
+    task with no EXPLICIT publish intent, the DRAFT-ONLY guard."""
+    raw = (m.get("content") or "").strip()
+    # Keep the resume brief LAST: the restatement is of the WHOLE job, so after
+    # the brief it made the final thing the model reads "build everything" —
+    # directly after "do ONLY what is still missing".
+    brief_tail = ""
+    if resume_brief and raw.endswith(resume_brief):
+        raw = raw[:-len(resume_brief)].rstrip().rstrip("-").rstrip()
+        brief_tail = f"\n\n---\n{resume_brief}"
+    if enriched and enriched.strip() and enriched.strip() != raw:
+        m["content"] = (
+            f"{raw}\n\n---\n[Interpreted request — a context-enriched "
+            f"restatement; if it conflicts with my words above, my words win:]"
+            f"\n{enriched}{brief_tail}")
+    elif brief_tail:
+        m["content"] = f"{raw}{brief_tail}"
+    # DRAFT-ONLY for a doc task — EXPLICIT publish intent only ('post the
+    # findings' must NOT flip publishing on); a wrong write to the team wiki is
+    # unrecoverable.
+    if doc_task:
+        import re as _re
+        if not _re.search(_PUBLISH_INTENT_RE, (prompt or "").lower()):
+            m["content"] += _DRAFT_ONLY_NOTE
+
+
+def _fold_enriched_history(history, enriched, resume_brief, prompt, doc_task):
+    """Fold the enhancer's interpretation into the LAST user turn — AUGMENT, don't
+    replace: keep the user's verbatim words and attach the restatement as a
+    labelled block the model can cross-check (a distorted enhancement no longer
+    silently becomes the request). Returns the new history list."""
+    enriched_history = [dict(m) for m in history]
+    for m in reversed(enriched_history):
+        if m.get("role") == "user":
+            _augment_user_turn(m, enriched, resume_brief, prompt, doc_task)
+            break
+    return enriched_history
+
+
 def _commit_simple_baseline(cwd):
     """Commit the CURRENT working-tree state as this turn's diff baseline so the
     single-agent Changes view + the "did it write source?" gate reflect ONLY what
@@ -2134,53 +2185,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # follow-up ("yes"/"no"). The residual double-fold (recent turns appear
         # raw AND folded into the spec) is benign token redundancy, not semantic
         # harm; alternation stays intact and no turn is ever dropped.
-        _enriched_history = [dict(m) for m in history]
-        for _m in reversed(_enriched_history):
-            if _m.get("role") == "user":
-                # AUGMENT, don't replace: keep the user's verbatim words and
-                # attach the enhancer's interpretation as a clearly-labelled
-                # block the model can cross-check. A distorted/hallucinated
-                # enhancement no longer silently becomes the request (the raw
-                # ask is right there). If _enhance no-ops, skip the block.
-                _raw = (_m.get("content") or "").strip()
-                # Keep the resume brief LAST. The enhancer's restatement is a
-                # restatement of the WHOLE job, so leaving it after the brief
-                # made the final thing the model reads "here is everything to
-                # build" — directly after "do ONLY what is still missing".
-                _brief_tail = ""
-                if _resume_brief and _raw.endswith(_resume_brief):
-                    _raw = _raw[:-len(_resume_brief)].rstrip().rstrip("-").rstrip()
-                    _brief_tail = f"\n\n---\n{_resume_brief}"
-                if _enriched and _enriched.strip() and _enriched.strip() != _raw:
-                    _m["content"] = (
-                        f"{_raw}\n\n---\n[Interpreted request — a context-enriched "
-                        f"restatement; if it conflicts with my words above, my "
-                        f"words win:]\n{_enriched}{_brief_tail}")
-                elif _brief_tail:
-                    _m["content"] = f"{_raw}{_brief_tail}"
-                # DRAFT-ONLY for a doc/analysis task: the deliverable is the
-                # written analysis/document as markdown in the final answer. Do
-                # NOT publish to Confluence/Jira (no confluence_create/update,
-                # jira_create) unless the user EXPLICITLY says publish/post — a
-                # wrong or premature write to the team wiki is not recoverable.
-                if _doc_task:
-                    # EXPLICIT publish intent only — 'post the findings' / a
-                    # 'post-the-fact review' must NOT flip publishing on. Default
-                    # to draft (a wrong write to the team wiki is unrecoverable).
-                    _pub = bool(__import__("re").search(
-                        r"\b(publish it|publish the (page|doc|report)|"
-                        r"go ahead and (publish|post)|actually (publish|create "
-                        r"the (page|confluence))|post it to confluence)\b",
-                        (prompt or "").lower()))
-                    if not _pub:
-                        _m["content"] += (
-                            "\n\n---\n[Deliverable = DRAFT ONLY. Produce the "
-                            "analysis/document as markdown in your final answer. "
-                            "Do NOT publish — do not call confluence_create/"
-                            "confluence_update/jira_create. Read tools (repos, "
-                            "web, existing pages) are fine. I will review and "
-                            "post it myself.]")
-                break
+        _enriched_history = _fold_enriched_history(
+            history, _enriched, _resume_brief, prompt, _doc_task)
         if agent_mode == "plan":
             yield from _plan_mode_route(_pp, _enriched, _enriched_history, cwd,
                                         role, session_id, body.quick)
