@@ -70,11 +70,11 @@ export function ConfluenceCard() {
         {envManaged && <span style={{ color: 'var(--warn, #f59e0b)' }}> · currently set via env (overrides this form)</span>}
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 460 }}>
-        <label className="small">Base URL
+        <label className="small">Base URL{' '}
           <input style={inputStyle} placeholder="https://confluence.yourco.internal"
                  value={baseUrl} onChange={e => setBaseUrl(e.target.value)} />
         </label>
-        <label className="small">Auth
+        <label className="small">Auth{' '}
           <select style={inputStyle} value={authMode}
                   onChange={e => setAuthMode(e.target.value as 'pat' | 'basic')}>
             <option value="pat">Personal Access Token (Bearer) — recommended</option>
@@ -87,7 +87,7 @@ export function ConfluenceCard() {
                  value={token} onChange={e => setToken(e.target.value)} />
         </label>
         {authMode === 'basic' && (
-          <label className="small">Username
+          <label className="small">Username{' '}
             <input style={inputStyle} placeholder="you@company.com"
                    value={user} onChange={e => setUser(e.target.value)} />
           </label>
@@ -170,11 +170,11 @@ export function JiraCard() {
         {envManaged && <span style={{ color: 'var(--warn, #f59e0b)' }}> · currently set via env (overrides this form)</span>}
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 460 }}>
-        <label className="small">Base URL
+        <label className="small">Base URL{' '}
           <input style={inputStyle} placeholder="https://jira.yourco.internal"
                  value={baseUrl} onChange={e => setBaseUrl(e.target.value)} />
         </label>
-        <label className="small">Auth
+        <label className="small">Auth{' '}
           <select style={inputStyle} value={authMode}
                   onChange={e => setAuthMode(e.target.value as 'pat' | 'basic')}>
             <option value="pat">Personal Access Token (Bearer) — recommended</option>
@@ -187,7 +187,7 @@ export function JiraCard() {
                  value={token} onChange={e => setToken(e.target.value)} />
         </label>
         {authMode === 'basic' && (
-          <label className="small">Username
+          <label className="small">Username{' '}
             <input style={inputStyle} placeholder="you@company.com"
                    value={user} onChange={e => setUser(e.target.value)} />
           </label>
@@ -269,7 +269,7 @@ export function GitlabCard() {
         {envManaged && <span style={{ color: 'var(--warn, #f59e0b)' }}> · currently set via env (overrides this form)</span>}
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 460 }}>
-        <label className="small">Base URL
+        <label className="small">Base URL{' '}
           <input style={inputStyle} placeholder="https://gitlab.yourco.internal"
                  value={baseUrl} onChange={e => setBaseUrl(e.target.value)} />
         </label>
@@ -277,13 +277,13 @@ export function GitlabCard() {
           <input style={inputStyle} placeholder="group/subgroup/project  (or numeric id)"
                  value={project} onChange={e => setProject(e.target.value)} />
         </label>
-        <label className="small">Access Token
+        <label className="small">Access Token{' '}
           <input style={inputStyle} type="password"
                  placeholder={hasToken ? '•••••• (leave blank to keep)' : 'paste PAT / project / group token'}
                  value={token} onChange={e => setToken(e.target.value)} />
         </label>
         <label className="row small" style={{ gap: 6, alignItems: 'center' }}>
-          <input type="checkbox" checked={oauth} onChange={e => setOauth(e.target.checked)} />
+          <input type="checkbox" checked={oauth} onChange={e => setOauth(e.target.checked)} />{' '}
           Token is OAuth (send as Bearer instead of PRIVATE-TOKEN)
         </label>
         {/* TLS-verify toggle removed — integrations skip verification by
@@ -384,19 +384,19 @@ export function EmailCard() {
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 460 }}>
         <div className="small" style={{ fontWeight: 600, marginTop: 2 }}>SMTP (send)</div>
-        <label className="small">Host
+        <label className="small">Host{' '}
           <input style={inputStyle} placeholder="smtp.yourco.com"
                  value={smtpHost} onChange={e => setSmtpHost(e.target.value)} />
         </label>
-        <label className="small">Port
+        <label className="small">Port{' '}
           <input style={inputStyle} type="number"
                  value={smtpPort} onChange={e => setSmtpPort(Number(e.target.value) || 0)} />
         </label>
-        <label className="small">Username
+        <label className="small">Username{' '}
           <input style={inputStyle} placeholder="bot@yourco.com"
                  value={smtpUser} onChange={e => setSmtpUser(e.target.value)} />
         </label>
-        <label className="small">Password / app token
+        <label className="small">Password / app token{' '}
           <input style={inputStyle} type="password"
                  placeholder={hasSmtpPw ? '•••••• (leave blank to keep)' : 'paste password / app token'}
                  value={smtpPassword} onChange={e => setSmtpPassword(e.target.value)} />
@@ -406,30 +406,30 @@ export function EmailCard() {
                  value={smtpFrom} onChange={e => setSmtpFrom(e.target.value)} />
         </label>
         <label className="row small" style={{ gap: 6, alignItems: 'center' }}>
-          <input type="checkbox" checked={smtpStarttls} onChange={e => setSmtpStarttls(e.target.checked)} />
+          <input type="checkbox" checked={smtpStarttls} onChange={e => setSmtpStarttls(e.target.checked)} />{' '}
           STARTTLS (port 587) — uncheck for implicit SSL (port 465)
         </label>
 
         <div className="small" style={{ fontWeight: 600, marginTop: 6 }}>IMAP (read)</div>
-        <label className="small">Host
+        <label className="small">Host{' '}
           <input style={inputStyle} placeholder="imap.yourco.com"
                  value={imapHost} onChange={e => setImapHost(e.target.value)} />
         </label>
-        <label className="small">Port
+        <label className="small">Port{' '}
           <input style={inputStyle} type="number"
                  value={imapPort} onChange={e => setImapPort(Number(e.target.value) || 0)} />
         </label>
-        <label className="small">Username
+        <label className="small">Username{' '}
           <input style={inputStyle} placeholder="bot@yourco.com"
                  value={imapUser} onChange={e => setImapUser(e.target.value)} />
         </label>
-        <label className="small">Password / app token
+        <label className="small">Password / app token{' '}
           <input style={inputStyle} type="password"
                  placeholder={hasImapPw ? '•••••• (leave blank to keep)' : 'paste password / app token'}
                  value={imapPassword} onChange={e => setImapPassword(e.target.value)} />
         </label>
         <label className="row small" style={{ gap: 6, alignItems: 'center' }}>
-          <input type="checkbox" checked={imapSsl} onChange={e => setImapSsl(e.target.checked)} />
+          <input type="checkbox" checked={imapSsl} onChange={e => setImapSsl(e.target.checked)} />{' '}
           Use IMAP over SSL (port 993)
         </label>
 

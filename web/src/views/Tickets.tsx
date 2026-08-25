@@ -197,7 +197,7 @@ export default function Tickets() {
           <div className="card-header"><h2>New ticket</h2></div>
           <div className="stack">
             <label className="field">
-              Title
+              Title{' '}
               <input
                 placeholder="Short, descriptive summary"
                 value={draft.title}
@@ -207,19 +207,19 @@ export default function Tickets() {
             </label>
             <div className="grid grid-3">
               <label className="field">
-                Assignee
+                Assignee{' '}
                 <select value={draft.assignee_role} onChange={e => setDraft({ ...draft, assignee_role: e.target.value })}>
                   {ROLES.filter(Boolean).map(r => <option key={r} value={r}>{r}</option>)}
                 </select>
               </label>
               <label className="field">
-                Priority
+                Priority{' '}
                 <select value={draft.priority} onChange={e => setDraft({ ...draft, priority: e.target.value })}>
                   {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
                 </select>
               </label>
               <label className="field">
-                Project
+                Project{' '}
                 <input
                   placeholder="e.g. TallyConnector"
                   value={draft.project}
@@ -227,7 +227,7 @@ export default function Tickets() {
                 />
               </label>
               <label className="field">
-                Deploy + test
+                Deploy + test{' '}
                 <select
                   value={draft.deploy_target}
                   onChange={e => setDraft({ ...draft, deploy_target: e.target.value })}
@@ -240,7 +240,7 @@ export default function Tickets() {
               </label>
             </div>
             <label className="field">
-              Body
+              Body{' '}
               <textarea
                 rows={6}
                 placeholder="Context, acceptance, hints…"
@@ -276,7 +276,7 @@ export default function Tickets() {
             </label>
 
             <label className="field">
-              Attachments (comma-separated role names)
+              Attachments (comma-separated role names){' '}
               <input
                 placeholder="e.g. tally, oneshell"
                 value={draft.attachments}
@@ -358,19 +358,19 @@ export default function Tickets() {
                 <label className="row" style={{ gap: 4 }}>
                   <input type="radio" name="route_mode"
                     checked={draft.route_mode === 'auto'}
-                    onChange={() => setDraft({ ...draft, route_mode: 'auto' })} />
+                    onChange={() => setDraft({ ...draft, route_mode: 'auto' })} />{' '}
                   Auto-detect
                 </label>
                 <label className="row" style={{ gap: 4 }}>
                   <input type="radio" name="route_mode"
                     checked={draft.route_mode === 'code'}
-                    onChange={() => setDraft({ ...draft, route_mode: 'code' })} />
+                    onChange={() => setDraft({ ...draft, route_mode: 'code' })} />{' '}
                   Code task
                 </label>
                 <label className="row" style={{ gap: 4 }}>
                   <input type="radio" name="route_mode"
                     checked={draft.route_mode === 'workflow'}
-                    onChange={() => setDraft({ ...draft, route_mode: 'workflow' })} />
+                    onChange={() => setDraft({ ...draft, route_mode: 'workflow' })} />{' '}
                   Workflow
                 </label>
                 {draft.route_mode === 'workflow' && (
@@ -460,13 +460,13 @@ export default function Tickets() {
           <input placeholder="search id or title…" value={search} onChange={e => setSearch(e.target.value)} />
         </div>
         <label className="field">
-          Role
+          Role{' '}
           <select value={role} onChange={e => setRole(e.target.value)}>
             {ROLES.map(r => <option key={r} value={r}>{r || 'any'}</option>)}
           </select>
         </label>
         <label className="field">
-          Status
+          Status{' '}
           <select value={status} onChange={e => setStatus(e.target.value)}>
             {STATUSES.map(s => <option key={s} value={s}>{s || 'any'}</option>)}
           </select>

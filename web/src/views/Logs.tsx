@@ -200,7 +200,7 @@ export default function Logs() {
           </div>
           <label className="row" style={{ gap: 4, fontSize: 12, color: 'var(--fg-2)' }}>
             <input type="checkbox" checked={autoScroll}
-                   onChange={e => setAutoScroll(e.target.checked)} />
+                   onChange={e => setAutoScroll(e.target.checked)} />{' '}
             auto-scroll
           </label>
           <button type="button" className="ghost" onClick={() => setPaused(p => !p)}>

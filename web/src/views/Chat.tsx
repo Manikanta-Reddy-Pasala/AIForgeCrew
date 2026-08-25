@@ -1442,8 +1442,8 @@ export default function Chat() {
                     background: modelActive ? 'var(--ok, #22c55e)' : 'var(--warn, #f59e0b)',
                     flexShrink: 0,
                   }}
-                />
-                Model
+                />{' '}
+                Model{' '}
                 <select
                   className="chat-model-select"
                   value={selectedModel}
@@ -1489,7 +1489,7 @@ export default function Chat() {
             {chatMode === 'team' && orchOptions.length > 0 && (
               <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--fg-2)' }}
                      title="Model for the orchestrator (enhancer + planner) — the agents that analyze & split the task">
-                Orchestrator
+                Orchestrator{' '}
                 <select
                   className="chat-model-select"
                   value={orchModel}
@@ -1537,14 +1537,14 @@ export default function Chat() {
                     <label className="chat-menu-item" title="Run every agent instead of letting triage fast-path trivial requests."
                            style={menuItem}>
                       <input type="checkbox" checked={fullPipeline}
-                             onChange={e => toggleFullPipeline(e.target.checked)} disabled={busy} />
+                             onChange={e => toggleFullPipeline(e.target.checked)} disabled={busy} />{' '}
                       Force full pipeline
                     </label>
                   )}
                   <label className="chat-menu-item" title="Turn off the daily memory-compaction pass (recompact + dedupe + evening fold). Takes effect on next restart."
                          style={menuItem}>
                     <input type="checkbox" checked={compactionDisabled}
-                           onChange={e => toggleCompaction(e.target.checked)} disabled={busy} />
+                           onChange={e => toggleCompaction(e.target.checked)} disabled={busy} />{' '}
                     Disable memory compaction
                   </label>
                   {activeSession && (

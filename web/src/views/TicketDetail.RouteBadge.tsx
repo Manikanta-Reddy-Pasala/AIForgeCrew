@@ -78,13 +78,13 @@ export function RouteBadge({ t, onChanged }: Readonly<{ t: any; onChanged: () =>
             <label className="row" style={{ gap: 4 }}>
               <input type="radio"
                 checked={pickedKind === 'code'}
-                onChange={() => setPickedKind('code')} />
+                onChange={() => setPickedKind('code')} />{' '}
               Code task
             </label>
             <label className="row" style={{ gap: 4 }}>
               <input type="radio"
                 checked={pickedKind === 'workflow'}
-                onChange={() => setPickedKind('workflow')} />
+                onChange={() => setPickedKind('workflow')} />{' '}
               Workflow
             </label>
           </div>

@@ -405,7 +405,7 @@ function ModelsCard({ models, reload }: Readonly<{ models: RegistryModel[]; relo
         <label className="small">API key <span className="muted">(optional)</span>
           <input style={input} type="password" value={apiKey} placeholder="leave blank for none"
                  onChange={e => setApiKey(e.target.value)} /></label>
-        <label className="small">Vision
+        <label className="small">Vision{' '}
           <select style={input} value={vision} onChange={e => setVision(e.target.value as any)}>
             <option value="auto">Auto-detect</option>
             <option value="yes">Yes — supports images</option>

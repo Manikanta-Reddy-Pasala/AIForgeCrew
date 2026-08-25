@@ -301,8 +301,8 @@ export default function WorkflowGraph() {
         <div className="wf-mode">
           <div className="wf-mode-h">🔀 Pipeline <span className="muted">(team)</span></div>
           <div className="wf-mode-b">
-            Decompose → scaffold → <b>parallel Doers</b> (fresh context each) →
-            <b> reconcile loop</b> (test → repo-map-informed fix → escalate the
+            Decompose → scaffold → <b>parallel Doers</b> (fresh context each) →{' '}
+            <b>reconcile loop</b> (test → repo-map-informed fix → escalate the
             stuck residual → audit a wrong test) → integration test. Best for
             building or large multi-file tasks.
           </div>
@@ -312,7 +312,7 @@ export default function WorkflowGraph() {
           <div className="wf-mode-b">
             You don't have to pick. Simple/Plan detect a multi-file build (a build
             verb + a project noun, or “with tests”/“endpoints”) and route it
-            through the Pipeline automatically — the mode <b>right-sizes itself</b>
+            through the Pipeline automatically — the mode <b>right-sizes itself</b>{' '}
             to the task.
           </div>
         </div>

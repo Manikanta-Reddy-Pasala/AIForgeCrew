@@ -143,7 +143,7 @@ export function SourcesPanel() {
         <div style={{ marginBottom: 10, fontWeight: 600, fontSize: 'var(--fs-sm)', color: 'var(--fg-0)' }}>Add source</div>
         <div className="row" style={{ flexWrap: 'wrap', gap: 8, alignItems: 'flex-end' }}>
           <label className="field" style={{ minWidth: 130 }}>
-            Kind
+            Kind{' '}
             <select value={kind} onChange={e => { setKind(e.target.value); setLocation(''); setFile(null); setName(''); }}>
               {KIND_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
@@ -151,7 +151,7 @@ export function SourcesPanel() {
 
           {kind === 'file' ? (
             <label className="field" style={{ flex: 1, minWidth: 200 }}>
-              File
+              File{' '}
               <input
                 ref={fileInputRef}
                 type="file"

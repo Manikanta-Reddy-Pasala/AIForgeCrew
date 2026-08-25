@@ -105,7 +105,7 @@ export default function Jobs() {
           <div className="card-header"><h2>New job</h2></div>
           <div className="stack">
             <label className="field">
-              Describe the job in plain words
+              Describe the job in plain words{' '}
               <textarea
                 rows={3}
                 autoFocus
@@ -133,21 +133,21 @@ export default function Jobs() {
                 </p>
                 <div className="stack">
                   <label className="field">
-                    Name
+                    Name{' '}
                     <input
                       value={draft.name}
                       onChange={e => setDraft({ ...draft, name: e.target.value })}
                     />
                   </label>
                   <label className="field">
-                    Ticket title
+                    Ticket title{' '}
                     <input
                       value={draft.ticket_title}
                       onChange={e => setDraft({ ...draft, ticket_title: e.target.value })}
                     />
                   </label>
                   <label className="field">
-                    Ticket body (what the agent will do)
+                    Ticket body (what the agent will do){' '}
                     <textarea
                       rows={4}
                       value={draft.ticket_body}
@@ -155,14 +155,14 @@ export default function Jobs() {
                     />
                   </label>
                   <label className="field">
-                    Cron
+                    Cron{' '}
                     <input
                       value={draft.cron}
                       onChange={e => setDraft({ ...draft, cron: e.target.value })}
                     />
                   </label>
                   <label className="field">
-                    Type
+                    Type{' '}
                     <select
                       value={draft.kind || 'ticket'}
                       onChange={e => setDraft({ ...draft, kind: e.target.value as 'ticket' | 'agent' })}
