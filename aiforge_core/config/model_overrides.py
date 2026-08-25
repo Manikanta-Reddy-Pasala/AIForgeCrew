@@ -127,48 +127,49 @@ _GENERATIVE_ROLES: frozenset[str] = frozenset({
 })
 
 
+def _apply_judge_overrides(cfg, override: dict) -> None:
+    """Apply the short-answer-judge recipe (system_suffix + max_output_tokens
+    cap) — non-generative roles ONLY, since it forbids thinking / truncates."""
+    suffix = override.get("system_suffix")
+    if suffix:
+        existing = cfg.system_instruction or ""
+        if suffix not in str(existing):
+            cfg.system_instruction = f"{existing}\n\n{suffix}".strip()
+    cap = override.get("max_output_tokens")
+    if cap and (not cfg.max_output_tokens or cfg.max_output_tokens > cap):
+        cfg.max_output_tokens = cap
+
+
 def apply(model_id: str | None, llm_request, role: str | None = None):
     """Return *llm_request* with the model's overrides applied.
 
     The ``system_suffix`` + ``max_output_tokens`` recipe is for short-answer
-    judges only — it forbids thinking / truncates output, which kneecaps a
-    long-output generative role, so it is SKIPPED for generative roles.
-    ``temperature`` is benign (low temp helps thinking models everywhere and
-    never truncates), so it applies to ALL roles. Returns the original
-    request untouched when no override matches, or when a generative role's
-    override carries nothing benign to apply. Never raises — a broken
-    override must not kill the pipeline.
+    judges only — it forbids thinking / truncates output, so it is SKIPPED for
+    generative roles. ``temperature`` is benign (low temp helps thinking models
+    everywhere and never truncates), so it applies to ALL roles. Returns the
+    original request untouched when no override matches, or when a generative
+    role's override carries nothing benign. Never raises — a broken override must
+    not kill the pipeline.
     """
     override = lookup(model_id)
     if not override:
         return llm_request
     generative = bool(role and role.lower() in _GENERATIVE_ROLES)
     has_temp = override.get("temperature") is not None
-    # Generative role + no benign (temperature) key => nothing to do.
     if generative and not has_temp:
-        return llm_request
+        return llm_request          # generative + no benign key → nothing to do
     try:
         req = llm_request.model_copy(deep=True)
         cfg = req.config
         if has_temp:
             cfg.temperature = override["temperature"]
         if not generative:
-            suffix = override.get("system_suffix")
-            if suffix:
-                existing = cfg.system_instruction or ""
-                if suffix not in str(existing):
-                    cfg.system_instruction = (
-                        f"{existing}\n\n{suffix}".strip())
-            cap = override.get("max_output_tokens")
-            if cap and (not cfg.max_output_tokens
-                        or cfg.max_output_tokens > cap):
-                cfg.max_output_tokens = cap
+            _apply_judge_overrides(cfg, override)
         log.debug("model_overrides.applied model=%s role=%s generative=%s",
                   model_id, role, generative)
         return req
     except Exception as exc:  # noqa: BLE001
-        log.warning("model_overrides.apply failed for %s: %s",
-                    model_id, exc)
+        log.warning("model_overrides.apply failed for %s: %s", model_id, exc)
         return llm_request
 
 
