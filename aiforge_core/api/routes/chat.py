@@ -2029,6 +2029,240 @@ def _apply_provisional_title(session_id, body, fresh_title) -> None:
     chat_store.rename_session(session_id, _prov)
 
 
+def _gen_title(prompt, session_id):
+    try:
+        from aiforge_core.runtime import chat_store as _cs
+        from aiforge_core.runtime import chat_title
+        # Titling is a ~20-token throwaway — route it to the cheap
+        # 'triage' role so it doesn't contend with the main turn on a
+        # serial local endpoint (was the big session role).
+        _t = chat_title.suggest_title(prompt, role="triage")
+        if _t:
+            _cs.rename_session(session_id, _t)
+    except Exception:  # noqa: BLE001 — titling must never break a run
+        pass
+
+def _auto_checkpoint(pc):
+    from aiforge_core.runtime import chat_store
+    # Snapshot the working dir at turn start so the user can roll back
+    # this turn's edits. Best-effort; gated by env. Runs INSIDE _gen
+    # (first, before streaming) so its git subprocesses don't delay the
+    # StreamingResponse from opening.
+    if os.environ.get("AIFORGE_CHAT_AUTO_CHECKPOINT", "1") in ("0", "false") \
+            or pc.team:
+        return
+    try:
+        import datetime as _dt
+
+        from aiforge_core.runtime import checkpoints
+        _snap = checkpoints.snapshot(
+            pc.cwd, label=f"before: {pc.prompt[:50]}",
+            when=_dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        # Stamp this turn's snapshot onto the user message so edit-resend
+        # can restore the workspace to exactly this turn's starting state.
+        if isinstance(_snap, dict) and _snap.get("ok") and _snap.get("sha"):
+            chat_store.set_message_checkpoint(pc._user_msg_id, _snap["sha"])
+    except Exception:  # noqa: BLE001
+        pass
+
+def _with_resume(pc, text):
+    """Attach the resume brief to a PLANNER-facing prompt/spec.
+
+    Every dispatch path plans from its own string — the enhanced spec, or
+    the raw prompt for the analysis fan-out — and `history` reaches most of
+    them as mere conversation context the planner is free to ignore. A
+    brief that only rides in `history` is a resume that works in one mode.
+    """
+    return f"{text}\n\n---\n{pc._resume_brief}" if pc._resume_brief else text
+
+def _events(pc):
+    pctx0 = {"done": False}
+    yield from _early_route_events(pc._cmd_help_text, pc.body, pc.history, pc.cwd, pc.role,
+                                   pc.session_id, pctx0)
+    if pctx0["done"]:
+        return
+    yield from _prelude_notices(pc._resume_brief, pc._cmd_expanded)
+    # Staleness auto-curation: a session bound to a jira/confluence
+    # context folder (cwd = work/<kind>/<key>) re-verifies that context's
+    # note when its updated_at crossed AIFORGE_NOTE_STALE_HOURS. The
+    # pre-check is cheap and network-free; the actual curation re-fetches
+    # the source, so it's HARD time-boxed (like the rule_capture pass
+    # below) — a dead Jira must never stall the chat turn. FAILS OPEN.
+    yield from _note_staleness_notice(pc.cwd)
+    # Rule / Memory / Feedback capture (deterministic, always-on) — runs
+    # BEFORE any agent, independent of the agent's model, so a directive /
+    # fact / correction stated in passing is captured + applied. FAILS OPEN:
+    # any error here is swallowed and the normal run proceeds.
+    pctx = {"done": False}
+    yield from _rule_capture_pass(pc.prompt, pc.cwd, pc.session_id, pctx)
+    if pctx["done"]:
+        return
+    # Team mode → full ADK agent flow (planner→…→learner) for complex
+    # builds. Simple mode → single conversational agent for quick work.
+    # Parallel team mode (AIFORGE_PARALLEL_SUBTASKS=1) → decompose then run
+    # subtasks CONCURRENTLY in isolated worktrees with live status.
+    from aiforge_core.runtime import parallel_subtasks as _pp
+    # AUTO-ESCALATE: simple/plan modes on a multi-file BUILD request route
+    # through the parallel pipeline — a single ReAct agent stalls on large
+    # builds (one huge-context call, no decomposition). Gated + heuristic so
+    # chit-chat / small edits still use the fast single-agent path.
+    # ── TASK-TYPE ROUTING — see aiforge_core.runtime.chat_router ──────────
+    # The heavy decision (which path handles this request) is a PURE function
+    # there; here we only gather its side-effecting inputs and dispatch:
+    #   • _psub_on   parallel capability (raw — escalation can fire off-team);
+    #   • _greenfield  is this a fresh/empty tree?;
+    #   • _fresh     NOT a follow-up (only fresh turns pay the LLM classify);
+    #   • _cat       the LLM class (chat|tracker|doc_analysis|code_build|
+    #                code_edit) or None → chat_router falls back to regex;
+    #   • _team_approvals  Pipeline-approvals ON → force the gated sequential
+    #                pipeline (the parallel path can't gate — J).
+    _rd = _decide_chat_route(_pp, pc.prompt, pc.agent_mode, pc.team,
+                             pc._parallel_team, pc.cwd, pc.history)
+    _doc_task = _rd.doc_task
+    _is_build_task = _rd.is_build_task
+    _build_escalate = _rd.build_escalate
+    _route_pipeline = _rd.route_pipeline
+    rctx = {"done": False}
+    yield from _dispatch_agent_route(
+        _rd, _pp, pc.prompt, pc.cwd, pc.session_id, pc.history, lambda t: _with_resume(pc, t), pc._path,
+        pc._turn_t0, pc.team, pc._resume_brief, rctx)
+    if rctx["done"]:
+        return
+    # SIMPLE and PLAN modes — the Enhancer is MANDATORY on the FIRST turn
+    # of a session (fresh context, referents to resolve, no memory pulled
+    # yet). On a FOLLOW-UP, re-running the enhancer (an LLM round-trip
+    # that also fires the memory recall inside `_enhance`) on every single
+    # message is wasted latency for the common case ("fix that", "add a
+    # test") — so reuse the same cheap classify already used to
+    # auto-downgrade team turns (turn_router.classify) and skip the
+    # enhancer when this follow-up is small. Any classify failure (or the
+    # first turn, or a build-escalate spec already in flight) keeps the
+    # enhancer mandatory — safe default, never silently under-enhance.
+    _skip_enhance = _should_skip_enhance(pc._auto_downgraded, _route_pipeline,
+                                         _is_build_task, pc.history, pc.prompt)
+    if pc._auto_downgraded:
+        yield {"type": "thought", "role": "router",
+               "text": "Small follow-up — handling directly (skipped the "
+                       "full pipeline for speed)."}
+    if not _skip_enhance:
+        yield {"type": "thought", "role": "enhancer",
+               "text": "Enhancing request + gathering context…"}
+    _enriched = _enhance_prompt(_pp, pc.prompt, pc.history, pc.cwd, _skip_enhance)
+    _enriched_history = _fold_enriched_history(
+        pc.history, _enriched, pc._resume_brief, pc.prompt, _doc_task)
+    if pc.agent_mode == "plan":
+        yield from _plan_mode_route(_pp, _enriched, _enriched_history, pc.cwd,
+                                    pc.role, pc.session_id, pc.body.quick)
+        return
+    # Baseline commit so we can show a Changes diff after the single-agent run
+    # (simple mode edits the working tree; the pipeline shows its own Changes).
+    # A fresh chat workspace is NOT a git repo — the old rev-parse/empty-tree
+    # dance then left _simple_sha unusable (git diff needs a real repo), so the
+    # Changes view silently vanished. _ensure_git_workspace git-inits + makes a
+    # committed baseline (no-op when cwd is already a repo, e.g. a pinned user
+    # project), so HEAD is ALWAYS a valid baseline to diff the run against.
+    # CRITICAL: commit the CURRENT working-tree state into the baseline so
+    # this turn's Changes diff + the "did it write source?" gate reflect ONLY
+    # what THIS turn does. A reused chat/ticket workspace (e.g. session-1)
+    # carries a previous task's uncommitted files; without this snapshot,
+    # `git status` reports THEM, so a no-code Jira/Q&A turn wrongly triggers
+    # the build/integration pipeline on stale files and the Changes view
+    # shows the previous ticket's edits.
+    _simple_sha, _skip_worktree = _commit_simple_baseline(pc.cwd)
+    _single_mode = "analyze" if _doc_task and pc.agent_mode != "plan" else pc.agent_mode
+    awaiting_ctx = {"awaiting": False}
+    yield from _single_agent_events(_enriched_history, pc.cwd, pc.role, pc.session_id,
+                                    _single_mode, pc.body.quick, awaiting_ctx)
+    # A turn that ended AWAITING user input (a REJECT/ASK) must NOT fall into
+    # the post-run integration build: on a turn with an earlier APPLIED edit,
+    # _turn_wrote_source() is True and the build fires AFTER the reject, holds
+    # the is_running slot and 409-blocks the user's next (resume) message.
+    if awaiting_ctx["awaiting"]:
+        return
+    yield from _post_run_events(pc.prompt, pc.cwd, pc.agent_mode, _simple_sha)
+
+def _produce(pc):
+    from aiforge_core.runtime import parallel_subtasks as _psub
+    from aiforge_core.runtime import chat_approve as _chat_approve, chat_runs
+    _PRODUCE_SEM.acquire()   # bounded — block until a producer slot frees
+    # Bind this producer thread to the session so LLM tracing (Langfuse
+    # sessions/scores) tags every generation with the run it belongs to.
+    # Covers ALL modes here (simple/plan run inline in this thread; team's
+    # _drive re-sets the env in its own thread). Env for cross-thread /
+    # subprocess reach; contextvar for concurrency-correct in-thread reads.
+    os.environ["AIFORGE_CURRENT_SESSION"] = str(pc.session_id)
+    # Hold the machine awake for the WHOLE turn, every mode. Team runs and
+    # jobs already do it for themselves; doing it here as well means the
+    # answer to "will my work survive me locking the screen" is yes for
+    # anything the user can start, not just the two slowest paths. The
+    # refcount makes the overlap free — nested holders share one child.
+    from aiforge_core.runtime.keep_awake import acquire as _awake_acquire
+    from aiforge_core.runtime.keep_awake import release as _awake_release
+    _awake_acquire()
+    from aiforge_core.runtime import request_context as _reqctx
+    _sess_token = _reqctx.set_session_id(pc.session_id)
+    # THE turn boundary for the request meter. Here, not inside the ReAct
+    # loop: the enhancer / team-downgrade classifier / capture probes below
+    # are requests this message caused, and resetting after them erased
+    # them from the count. Team mode never enters run_chat_agent at all, so
+    # a reset in the loop left its per-turn number cumulative for the whole
+    # session — a lifetime total presented as one message's cost.
+    _meter, _meter_token = _bind_turn_meter(pc.session_id)
+    # Bind the repo root to the turn's cwd so the codegraph gate (which some
+    # Doer-side call sites resolve via request_context.get_repo_root() with
+    # NO cwd) sees the SAME repo the tools run against. Without this, simple
+    # chat left the repo root unset and those sites fell back to "." (the
+    # AIForge process dir), so codegraph was mis-gated off the wrong folder.
+    _repo_token = _reqctx.set_repo_root(pc.cwd)
+    # Auto-route classify + its dependents, run HERE (already off the
+    # response-open path — see the note where `team`/`_parallel_team`
+    # were declared above) rather than in the synchronous request
+    # handler, so a slow/unreachable classify LLM never delays the
+    # StreamingResponse itself.
+    pc.team, pc._auto_downgraded = _maybe_downgrade_team(
+        pc.team, pc.prompt, pc.history, pc.cwd, pc.session_id)
+    pc._parallel_team = pc.team and _psub.enabled()
+    # Review-edits gate: OFF by default — file writes/patches auto-apply,
+    # no per-edit Approve/Reject prompt (the operator asked for no file-
+    # permission prompts). Re-enable per-request via body.review_edits, or
+    # globally with AIFORGE_CHAT_REVIEW_EDITS=1. Team/parallel mode never
+    # holds edits regardless (the full pipeline runs unattended).
+    _review_env = os.environ.get(
+        "AIFORGE_CHAT_REVIEW_EDITS", "0") in ("1", "true", "yes", "on")
+    _chat_approve.set_review_edits(
+        pc.session_id, (bool(pc.body.review_edits) or _review_env) and not pc.team)
+    # Record the EFFECTIVE run mode (after any team→simple downgrade) so the
+    # tool gate can honor the per-mode approval Settings toggle.
+    _eff_mode = "team" if pc.team else ("plan" if pc.agent_mode == "plan" else "simple")
+    _chat_approve.set_mode(pc.session_id, _eff_mode)
+    steps: list[dict] = []
+    final_text = ""
+    awaiting = False   # turn ended with a question / pause, not an outcome
+    _subtasks: list[dict] = []   # live subtask panel state, persisted so it
+    #                              survives a navigate-away / reload
+    # Mirror chat activity into the observability NDJSON so the Logs page
+    # shows live runs (the page tails orchestrator-<role>.ndjson).
+    _clog, emit = _setup_chat_logger()
+    _auto_checkpoint(pc)   # snapshot first (off the response-open path)
+    st = {"final_text": final_text, "awaiting": awaiting, "subtasks": _subtasks}
+    try:
+        _drive_produce_stream(lambda: _events(pc), st, steps, pc.run, pc.session_id,
+                              pc._turn_t0, pc._turn_mode, _clog, emit)
+    finally:
+        _finalize_produce_turn(
+            pc.session_id, pc.cwd, pc.prompt, st["final_text"], steps, st["awaiting"],
+            pc.team, pc._path, pc._turn_mode, pc._turn_t0, _meter, _meter_token, _reqctx,
+            _sess_token, _repo_token, pc.run, _awake_release)
+
+def _stream(pc):
+    from aiforge_core.runtime import chat_runs
+    # Tail the live run as SSE. A client disconnect only closes this
+    # subscriber — the producer thread keeps running.
+    q = pc.run.subscribe()
+    for ev in chat_runs.iter_subscription(pc.run, q):
+        yield f"data: {json.dumps(ev)}\n\n"
+
+
 @router.post("/api/chat/sessions/{session_id}/message")
 def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingResponse:
     """Append a user message, run the full-FS coding agent over the whole
@@ -2138,19 +2372,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     # the response nor lingers the stream. The client's post-turn session
     # refresh picks it up. Best-effort.
     if _fresh_title:
-        def _gen_title():
-            try:
-                from aiforge_core.runtime import chat_store as _cs
-                from aiforge_core.runtime import chat_title
-                # Titling is a ~20-token throwaway — route it to the cheap
-                # 'triage' role so it doesn't contend with the main turn on a
-                # serial local endpoint (was the big session role).
-                _t = chat_title.suggest_title(prompt, role="triage")
-                if _t:
-                    _cs.rename_session(session_id, _t)
-            except Exception:  # noqa: BLE001 — titling must never break a run
-                pass
-        _spawn(_gen_title, name="gen-title")
+        _spawn(lambda: _gen_title(prompt, session_id), name="gen-title")
 
     from aiforge_core.runtime import chat_cancel
     chat_cancel.start(session_id)
@@ -2166,27 +2388,6 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     # (needs the post-classify `team` value — see the auto-route note above).
     from aiforge_core.runtime import chat_approve as _chat_approve
 
-    def _auto_checkpoint():
-        # Snapshot the working dir at turn start so the user can roll back
-        # this turn's edits. Best-effort; gated by env. Runs INSIDE _gen
-        # (first, before streaming) so its git subprocesses don't delay the
-        # StreamingResponse from opening.
-        if os.environ.get("AIFORGE_CHAT_AUTO_CHECKPOINT", "1") in ("0", "false") \
-                or team:
-            return
-        try:
-            import datetime as _dt
-
-            from aiforge_core.runtime import checkpoints
-            _snap = checkpoints.snapshot(
-                cwd, label=f"before: {prompt[:50]}",
-                when=_dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-            # Stamp this turn's snapshot onto the user message so edit-resend
-            # can restore the workspace to exactly this turn's starting state.
-            if isinstance(_snap, dict) and _snap.get("ok") and _snap.get("sha"):
-                chat_store.set_message_checkpoint(_user_msg_id, _snap["sha"])
-        except Exception:  # noqa: BLE001
-            pass
 
     # Records which path the run actually took, so the persistence gate below
     # matches. ``driver`` is True ONLY once the sequential team ADK driver
@@ -2196,121 +2397,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     # persists + cleans up inline here.
     _path = {"parallel": False, "driver": False}
 
-    def _with_resume(text: str) -> str:
-        """Attach the resume brief to a PLANNER-facing prompt/spec.
 
-        Every dispatch path plans from its own string — the enhanced spec, or
-        the raw prompt for the analysis fan-out — and `history` reaches most of
-        them as mere conversation context the planner is free to ignore. A
-        brief that only rides in `history` is a resume that works in one mode.
-        """
-        return f"{text}\n\n---\n{_resume_brief}" if _resume_brief else text
-
-    def _events():
-        pctx0 = {"done": False}
-        yield from _early_route_events(_cmd_help_text, body, history, cwd, role,
-                                       session_id, pctx0)
-        if pctx0["done"]:
-            return
-        yield from _prelude_notices(_resume_brief, _cmd_expanded)
-        # Staleness auto-curation: a session bound to a jira/confluence
-        # context folder (cwd = work/<kind>/<key>) re-verifies that context's
-        # note when its updated_at crossed AIFORGE_NOTE_STALE_HOURS. The
-        # pre-check is cheap and network-free; the actual curation re-fetches
-        # the source, so it's HARD time-boxed (like the rule_capture pass
-        # below) — a dead Jira must never stall the chat turn. FAILS OPEN.
-        yield from _note_staleness_notice(cwd)
-        # Rule / Memory / Feedback capture (deterministic, always-on) — runs
-        # BEFORE any agent, independent of the agent's model, so a directive /
-        # fact / correction stated in passing is captured + applied. FAILS OPEN:
-        # any error here is swallowed and the normal run proceeds.
-        pctx = {"done": False}
-        yield from _rule_capture_pass(prompt, cwd, session_id, pctx)
-        if pctx["done"]:
-            return
-        # Team mode → full ADK agent flow (planner→…→learner) for complex
-        # builds. Simple mode → single conversational agent for quick work.
-        # Parallel team mode (AIFORGE_PARALLEL_SUBTASKS=1) → decompose then run
-        # subtasks CONCURRENTLY in isolated worktrees with live status.
-        from aiforge_core.runtime import parallel_subtasks as _pp
-        # AUTO-ESCALATE: simple/plan modes on a multi-file BUILD request route
-        # through the parallel pipeline — a single ReAct agent stalls on large
-        # builds (one huge-context call, no decomposition). Gated + heuristic so
-        # chit-chat / small edits still use the fast single-agent path.
-        # ── TASK-TYPE ROUTING — see aiforge_core.runtime.chat_router ──────────
-        # The heavy decision (which path handles this request) is a PURE function
-        # there; here we only gather its side-effecting inputs and dispatch:
-        #   • _psub_on   parallel capability (raw — escalation can fire off-team);
-        #   • _greenfield  is this a fresh/empty tree?;
-        #   • _fresh     NOT a follow-up (only fresh turns pay the LLM classify);
-        #   • _cat       the LLM class (chat|tracker|doc_analysis|code_build|
-        #                code_edit) or None → chat_router falls back to regex;
-        #   • _team_approvals  Pipeline-approvals ON → force the gated sequential
-        #                pipeline (the parallel path can't gate — J).
-        _rd = _decide_chat_route(_pp, prompt, agent_mode, team,
-                                 _parallel_team, cwd, history)
-        _doc_task = _rd.doc_task
-        _is_build_task = _rd.is_build_task
-        _build_escalate = _rd.build_escalate
-        _route_pipeline = _rd.route_pipeline
-        rctx = {"done": False}
-        yield from _dispatch_agent_route(
-            _rd, _pp, prompt, cwd, session_id, history, _with_resume, _path,
-            _turn_t0, team, _resume_brief, rctx)
-        if rctx["done"]:
-            return
-        # SIMPLE and PLAN modes — the Enhancer is MANDATORY on the FIRST turn
-        # of a session (fresh context, referents to resolve, no memory pulled
-        # yet). On a FOLLOW-UP, re-running the enhancer (an LLM round-trip
-        # that also fires the memory recall inside `_enhance`) on every single
-        # message is wasted latency for the common case ("fix that", "add a
-        # test") — so reuse the same cheap classify already used to
-        # auto-downgrade team turns (turn_router.classify) and skip the
-        # enhancer when this follow-up is small. Any classify failure (or the
-        # first turn, or a build-escalate spec already in flight) keeps the
-        # enhancer mandatory — safe default, never silently under-enhance.
-        _skip_enhance = _should_skip_enhance(_auto_downgraded, _route_pipeline,
-                                             _is_build_task, history, prompt)
-        if _auto_downgraded:
-            yield {"type": "thought", "role": "router",
-                   "text": "Small follow-up — handling directly (skipped the "
-                           "full pipeline for speed)."}
-        if not _skip_enhance:
-            yield {"type": "thought", "role": "enhancer",
-                   "text": "Enhancing request + gathering context…"}
-        _enriched = _enhance_prompt(_pp, prompt, history, cwd, _skip_enhance)
-        _enriched_history = _fold_enriched_history(
-            history, _enriched, _resume_brief, prompt, _doc_task)
-        if agent_mode == "plan":
-            yield from _plan_mode_route(_pp, _enriched, _enriched_history, cwd,
-                                        role, session_id, body.quick)
-            return
-        # Baseline commit so we can show a Changes diff after the single-agent run
-        # (simple mode edits the working tree; the pipeline shows its own Changes).
-        # A fresh chat workspace is NOT a git repo — the old rev-parse/empty-tree
-        # dance then left _simple_sha unusable (git diff needs a real repo), so the
-        # Changes view silently vanished. _ensure_git_workspace git-inits + makes a
-        # committed baseline (no-op when cwd is already a repo, e.g. a pinned user
-        # project), so HEAD is ALWAYS a valid baseline to diff the run against.
-        # CRITICAL: commit the CURRENT working-tree state into the baseline so
-        # this turn's Changes diff + the "did it write source?" gate reflect ONLY
-        # what THIS turn does. A reused chat/ticket workspace (e.g. session-1)
-        # carries a previous task's uncommitted files; without this snapshot,
-        # `git status` reports THEM, so a no-code Jira/Q&A turn wrongly triggers
-        # the build/integration pipeline on stale files and the Changes view
-        # shows the previous ticket's edits.
-        _simple_sha, _skip_worktree = _commit_simple_baseline(cwd)
-        _single_mode = "analyze" if _doc_task and agent_mode != "plan" else agent_mode
-        awaiting_ctx = {"awaiting": False}
-        yield from _single_agent_events(_enriched_history, cwd, role, session_id,
-                                        _single_mode, body.quick, awaiting_ctx)
-        # A turn that ended AWAITING user input (a REJECT/ASK) must NOT fall into
-        # the post-run integration build: on a turn with an earlier APPLIED edit,
-        # _turn_wrote_source() is True and the build fires AFTER the reject, holds
-        # the is_running slot and 409-blocks the user's next (resume) message.
-        if awaiting_ctx["awaiting"]:
-            return
-        yield from _post_run_events(prompt, cwd, agent_mode, _simple_sha)
 
     # The PRODUCER runs on a background daemon thread and publishes every event
     # into the per-session run registry (chat_runs). It NO LONGER yields to the
@@ -2321,88 +2408,19 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     # used internally, now applied to every mode. (chat_runs imported above for
     # the is_running concurrency guard.)
     run = chat_runs.start(session_id)
+    import types as _types
+    pc = _types.SimpleNamespace(
+        _cmd_help_text=_cmd_help_text, body=body, history=history, cwd=cwd,
+        role=role, session_id=session_id, _resume_brief=_resume_brief,
+        _cmd_expanded=_cmd_expanded, prompt=prompt, _turn_t0=_turn_t0, team=team,
+        _auto_downgraded=_auto_downgraded, _parallel_team=_parallel_team,
+        _path=_path, agent_mode=agent_mode, _turn_mode=_turn_mode, run=run,
+        _user_msg_id=_user_msg_id)
 
-    def _produce():
-        nonlocal team, _auto_downgraded, _parallel_team
-        _PRODUCE_SEM.acquire()   # bounded — block until a producer slot frees
-        # Bind this producer thread to the session so LLM tracing (Langfuse
-        # sessions/scores) tags every generation with the run it belongs to.
-        # Covers ALL modes here (simple/plan run inline in this thread; team's
-        # _drive re-sets the env in its own thread). Env for cross-thread /
-        # subprocess reach; contextvar for concurrency-correct in-thread reads.
-        os.environ["AIFORGE_CURRENT_SESSION"] = str(session_id)
-        # Hold the machine awake for the WHOLE turn, every mode. Team runs and
-        # jobs already do it for themselves; doing it here as well means the
-        # answer to "will my work survive me locking the screen" is yes for
-        # anything the user can start, not just the two slowest paths. The
-        # refcount makes the overlap free — nested holders share one child.
-        from aiforge_core.runtime.keep_awake import acquire as _awake_acquire
-        from aiforge_core.runtime.keep_awake import release as _awake_release
-        _awake_acquire()
-        from aiforge_core.runtime import request_context as _reqctx
-        _sess_token = _reqctx.set_session_id(session_id)
-        # THE turn boundary for the request meter. Here, not inside the ReAct
-        # loop: the enhancer / team-downgrade classifier / capture probes below
-        # are requests this message caused, and resetting after them erased
-        # them from the count. Team mode never enters run_chat_agent at all, so
-        # a reset in the loop left its per-turn number cumulative for the whole
-        # session — a lifetime total presented as one message's cost.
-        _meter, _meter_token = _bind_turn_meter(session_id)
-        # Bind the repo root to the turn's cwd so the codegraph gate (which some
-        # Doer-side call sites resolve via request_context.get_repo_root() with
-        # NO cwd) sees the SAME repo the tools run against. Without this, simple
-        # chat left the repo root unset and those sites fell back to "." (the
-        # AIForge process dir), so codegraph was mis-gated off the wrong folder.
-        _repo_token = _reqctx.set_repo_root(cwd)
-        # Auto-route classify + its dependents, run HERE (already off the
-        # response-open path — see the note where `team`/`_parallel_team`
-        # were declared above) rather than in the synchronous request
-        # handler, so a slow/unreachable classify LLM never delays the
-        # StreamingResponse itself.
-        team, _auto_downgraded = _maybe_downgrade_team(
-            team, prompt, history, cwd, session_id)
-        _parallel_team = team and _psub.enabled()
-        # Review-edits gate: OFF by default — file writes/patches auto-apply,
-        # no per-edit Approve/Reject prompt (the operator asked for no file-
-        # permission prompts). Re-enable per-request via body.review_edits, or
-        # globally with AIFORGE_CHAT_REVIEW_EDITS=1. Team/parallel mode never
-        # holds edits regardless (the full pipeline runs unattended).
-        _review_env = os.environ.get(
-            "AIFORGE_CHAT_REVIEW_EDITS", "0") in ("1", "true", "yes", "on")
-        _chat_approve.set_review_edits(
-            session_id, (bool(body.review_edits) or _review_env) and not team)
-        # Record the EFFECTIVE run mode (after any team→simple downgrade) so the
-        # tool gate can honor the per-mode approval Settings toggle.
-        _eff_mode = "team" if team else ("plan" if agent_mode == "plan" else "simple")
-        _chat_approve.set_mode(session_id, _eff_mode)
-        steps: list[dict] = []
-        final_text = ""
-        awaiting = False   # turn ended with a question / pause, not an outcome
-        _subtasks: list[dict] = []   # live subtask panel state, persisted so it
-        #                              survives a navigate-away / reload
-        # Mirror chat activity into the observability NDJSON so the Logs page
-        # shows live runs (the page tails orchestrator-<role>.ndjson).
-        _clog, emit = _setup_chat_logger()
-        _auto_checkpoint()   # snapshot first (off the response-open path)
-        st = {"final_text": final_text, "awaiting": awaiting, "subtasks": _subtasks}
-        try:
-            _drive_produce_stream(_events, st, steps, run, session_id,
-                                  _turn_t0, _turn_mode, _clog, emit)
-        finally:
-            _finalize_produce_turn(
-                session_id, cwd, prompt, st["final_text"], steps, st["awaiting"],
-                team, _path, _turn_mode, _turn_t0, _meter, _meter_token, _reqctx,
-                _sess_token, _repo_token, run, _awake_release)
-    _spawn(_produce, name="chat-produce")
+    _spawn(lambda: _produce(pc), name="chat-produce")
 
-    def _stream():
-        # Tail the live run as SSE. A client disconnect only closes this
-        # subscriber — the producer thread keeps running.
-        q = run.subscribe()
-        for ev in chat_runs.iter_subscription(run, q):
-            yield f"data: {json.dumps(ev)}\n\n"
 
-    return sse_response(_stream(), label=f"chat-session-{session_id}")
+    return sse_response(_stream(pc), label=f"chat-session-{session_id}")
 
 
 @router.get("/api/chat/sessions/{session_id}/attach")
