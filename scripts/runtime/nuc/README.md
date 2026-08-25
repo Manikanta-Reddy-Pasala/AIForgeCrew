@@ -8,10 +8,10 @@ Services that moved off Mac Studio launchd onto NUC systemd --user.
 Mac Studio 192.168.70.185          NUC 192.168.70.191 (static)
 ---------------------------------  ---------------------------------
 com.aiforge.lmstudio      (LLM)    aiforge-api.service      (FastAPI:8799)
-com.aiforge.embed-sidecar (LLM)    aiforge-file-indexer.*   (timer 30m)
-com.aiforge.graph-runner  (orch)   aiforge-reindex-daily.*  (timer 02:00)
-com.aiforge.caffeinate             aiforge-git-pull.*       (timer 10m)
-com.aiforge.pg-tunnel     (bridge) aiforge-repo-pull.*      (timer 5m, git pull)
+com.aiforge.embed-sidecar (LLM)    aiforge-git-pull.*       (timer 10m)
+com.aiforge.graph-runner  (orch)   aiforge-repo-pull.*      (timer 5m, git pull)
+com.aiforge.caffeinate             aiforge-memory-decay.*   (timer, decay)
+com.aiforge.pg-tunnel     (bridge)
 ```
 
 The pg-tunnel (MS→NUC postgres loopback) and reverse NUC→MS ssh tunnel
@@ -37,7 +37,7 @@ cp /path/to/AIForgeCrew/scripts/runtime/nuc/*.service ~/.config/systemd/user/
 cp /path/to/AIForgeCrew/scripts/runtime/nuc/*.timer   ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now aiforge-api
-for t in aiforge-file-indexer.timer aiforge-reindex-daily.timer aiforge-git-pull.timer \
+for t in aiforge-git-pull.timer aiforge-repo-pull.timer \
          aiforge-memory-decay.timer; do
     systemctl --user enable --now "$t"
 done

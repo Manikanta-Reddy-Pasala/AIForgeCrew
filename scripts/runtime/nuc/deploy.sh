@@ -62,10 +62,8 @@ for runner in aiforge-runner aiforge-graph-runner graph-runner; do
 done
 
 step "enable timers"
-for t in aiforge-file-indexer.timer aiforge-reindex-daily.timer \
-         aiforge-git-pull.timer aiforge-repo-pull.timer \
+for t in aiforge-git-pull.timer aiforge-repo-pull.timer \
          aiforge-memory-decay.timer aiforge-pr-comments.timer \
-         aiforge-pattern-miner.timer aiforge-symbol-embed.timer \
          aiforge-worktree-janitor.timer aiforge-lms-ensure.timer; do
     if [ -f "$UNIT_DST/$t" ]; then
         systemctl --user enable --now "$t" 2>/dev/null \
