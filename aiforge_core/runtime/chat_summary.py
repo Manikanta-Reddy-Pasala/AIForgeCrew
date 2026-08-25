@@ -74,6 +74,74 @@ def _transcript(messages: list[dict], limit: int) -> str:
     return text
 
 
+def _session_turns(chat_store, session_id) -> "tuple[list, str] | dict":
+    """(user/assistant turns, session_title) for a session, or an error dict."""
+    try:
+        messages = chat_store.get_messages(session_id)
+        session = chat_store.get_session(session_id) or {}
+    except Exception as exc:  # noqa: BLE001
+        log.debug("chat_summary chat_store failed: %s", exc)
+        return {"ok": False, "error": str(exc)}
+    turns = [m for m in (messages or [])
+             if isinstance(m, dict)
+             and (m.get("role") in ("user", "assistant"))
+             and (m.get("content") or "").strip()]
+    title = (session.get("title") or "").strip() or f"session {session_id}"
+    return turns, title
+
+
+def _generate_summary(_llm, turns, session_title) -> "str | dict":
+    """One cheap-tier LLM call over a capped transcript → the cleaned summary
+    text, or an error dict on failure."""
+    transcript = _transcript(turns, _int_env("AIFORGE_CHAT_SUMMARY_CHARS", 6000))
+    messages_llm = [
+        {"role": "system", "content": _SUMMARY_SYS},
+        {"role": "user", "content":
+            f"Summarize this chat session (title: {session_title}).\n\n"
+            + transcript}]
+    try:
+        raw = _llm.complete(
+            "learner", messages_llm,
+            max_tokens=_int_env("AIFORGE_CHAT_SUMMARY_MAX_TOKENS", 400),
+            temperature=0.0,
+            timeout_s=_int_env("AIFORGE_CHAT_SUMMARY_TIMEOUT_S", 60))
+    except Exception as exc:  # noqa: BLE001
+        log.debug("chat_summary llm failed: %s", exc)
+        return {"ok": False, "error": str(exc)}
+    summary = (raw or "").strip()
+    if summary.startswith("```"):        # drop an accidental wrapping ``` fence
+        import re
+        summary = re.sub(r"^```[a-zA-Z0-9]*\s*\n?", "", summary)
+        summary = re.sub(r"\n?```\s*$", "", summary).strip()
+    return summary
+
+
+def _persist_summary(md_store, _mw, session_id, session_title, summary: str,
+                     repo: str, tags: list) -> "tuple[int, list[str]]":
+    """Write the summary to (a) a browsable md file + local memory and (b) the
+    memory graph. Returns ``(written, errors)`` — each store soft-fails."""
+    written, errors = 0, []
+    try:
+        md_store.upsert_section(
+            source=f"chat-session:{session_id}",
+            title=f"Chat session {session_id}: {session_title}",
+            section_title="Summary", section_body=summary,
+            kind="chat_summary", tags=tags, repo=repo)
+        written += 1
+    except Exception as exc:  # noqa: BLE001
+        log.debug("chat_summary md_store failed: %s", exc)
+        errors.append(f"md_store: {exc}")
+    try:
+        _mw.memory_write(
+            text=f"CHAT SESSION {session_id} ({session_title}): {summary}",
+            kind="chat_summary", tags=tags, repo=repo)
+        written += 1
+    except Exception as exc:  # noqa: BLE001
+        log.debug("chat_summary memory_write failed: %s", exc)
+        errors.append(f"memory_write: {exc}")
+    return written, errors
+
+
 def summarize_session(session_id, repo: str, *, min_turns: int = 4) -> dict:
     """Summarize ONE chat session and persist it to md + the memory graph.
 
@@ -86,7 +154,6 @@ def summarize_session(session_id, repo: str, *, min_turns: int = 4) -> dict:
     """
     if _disabled():
         return {"ok": False, "skipped": "disabled"}
-
     repo = repo or os.environ.get("AIFORGE_AFM_REPO", "") or "repo"
     try:
         from aiforge_core.llm import client as _llm
@@ -97,86 +164,22 @@ def summarize_session(session_id, repo: str, *, min_turns: int = 4) -> dict:
         log.debug("chat_summary import failed: %s", exc)
         return {"ok": False, "error": str(exc)}
 
-    # ── Pull the session + its messages ─────────────────────────────────────
-    try:
-        messages = chat_store.get_messages(session_id)
-        session = chat_store.get_session(session_id) or {}
-    except Exception as exc:  # noqa: BLE001
-        log.debug("chat_summary chat_store failed: %s", exc)
-        return {"ok": False, "error": str(exc)}
-
-    turns = [m for m in (messages or [])
-             if isinstance(m, dict)
-             and (m.get("role") in ("user", "assistant"))
-             and (m.get("content") or "").strip()]
+    got = _session_turns(chat_store, session_id)
+    if isinstance(got, dict):
+        return got
+    turns, session_title = got
     if len(turns) < max(1, int(min_turns)):
         return {"ok": True, "skipped": "too_short"}
 
-    session_title = (session.get("title") or "").strip() or f"session {session_id}"
-
-    # ── One cheap-tier LLM call over a capped transcript ────────────────────
-    transcript = _transcript(turns, _int_env("AIFORGE_CHAT_SUMMARY_CHARS", 6000))
-    messages_llm = [
-        {"role": "system", "content": _SUMMARY_SYS},
-        {"role": "user", "content":
-            f"Summarize this chat session (title: {session_title}).\n\n"
-            + transcript},
-    ]
-    try:
-        raw = _llm.complete(
-            "learner", messages_llm,
-            max_tokens=_int_env("AIFORGE_CHAT_SUMMARY_MAX_TOKENS", 400),
-            temperature=0.0,
-            timeout_s=_int_env("AIFORGE_CHAT_SUMMARY_TIMEOUT_S", 60),
-        )
-    except Exception as exc:  # noqa: BLE001
-        log.debug("chat_summary llm failed: %s", exc)
-        return {"ok": False, "error": str(exc)}
-
-    summary = (raw or "").strip()
-    # Drop an accidental wrapping ``` fence.
-    if summary.startswith("```"):
-        import re
-        summary = re.sub(r"^```[a-zA-Z0-9]*\s*\n?", "", summary)
-        summary = re.sub(r"\n?```\s*$", "", summary).strip()
+    summary = _generate_summary(_llm, turns, session_title)
+    if isinstance(summary, dict):
+        return summary
     if not summary:
         return {"ok": True, "written": 0}
 
     tags = ["chat", "session", f"session:{session_id}"]
-    written = 0
-    errors: list[str] = []
-
-    # (a) Browsable md file + local memory. upsert keyed by source =
-    # ONE stable file per session, refreshed (not appended) as it grows.
-    try:
-        md_store.upsert_section(
-            source=f"chat-session:{session_id}",
-            title=f"Chat session {session_id}: {session_title}",
-            section_title="Summary",
-            section_body=summary,
-            kind="chat_summary",
-            tags=tags,
-            repo=repo,
-        )
-        written += 1
-    except Exception as exc:  # noqa: BLE001
-        log.debug("chat_summary md_store failed: %s", exc)
-        errors.append(f"md_store: {exc}")
-
-    # (b) The memory graph (Neo4j when configured; SQLite otherwise). Backend
-    # pure-text dedupe handles repeated writes of an unchanged summary.
-    try:
-        _mw.memory_write(
-            text=f"CHAT SESSION {session_id} ({session_title}): {summary}",
-            kind="chat_summary",
-            tags=tags,
-            repo=repo,
-        )
-        written += 1
-    except Exception as exc:  # noqa: BLE001
-        log.debug("chat_summary memory_write failed: %s", exc)
-        errors.append(f"memory_write: {exc}")
-
+    written, errors = _persist_summary(md_store, _mw, session_id, session_title,
+                                       summary, repo, tags)
     if errors and written == 0:
         return {"ok": False, "error": "; ".join(errors)}
     if errors:
