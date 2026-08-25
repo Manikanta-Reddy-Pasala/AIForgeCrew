@@ -80,12 +80,9 @@ def _ticket_local(identifier: str) -> dict | None:
 
 
 def _mcp_call(tool: str, args: dict) -> Any:
-    """Inline graph_rag MCP call via the existing sync helper."""
-    from aiforge_core.api.api import _call_mcp_sync  # type: ignore
-    raw = _call_mcp_sync(tool, args)
-    if isinstance(raw, str) and raw.startswith("error:"):
-        return None
-    return raw
+    """The graph_rag MCP backend was removed (SQLite-only build), so the graph
+    tool-call sources (sym_lookup / find_doc / related_memories) are no-ops."""
+    return None
 
 
 def _docs_lookup(library: str, text: str, *, top_k: int) -> list[dict]:

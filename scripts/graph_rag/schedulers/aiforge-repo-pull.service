@@ -1,8 +1,0 @@
-[Unit]
-Description=AIForge code repos pull (all under ~/codeRepo)
-After=network-online.target
-
-[Service]
-Type=oneshot
-Environment=AIFORGE_GRAPH_RAG=/home/mani/AIForgeCrew/scripts/graph_rag
-ExecStart=/bin/bash -lc 'for r in ~/codeRepo/*; do [ -d "$r/.git" ] || continue; git -C "$r" pull --ff-only || true; done'
