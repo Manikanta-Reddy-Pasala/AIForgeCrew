@@ -157,21 +157,22 @@ def set_force_full_pipeline(payload: dict) -> dict:
 
 @router.get("/api/runtime/compaction")
 def get_compaction() -> dict:
-    """Whether the daily memory-compaction pass is disabled.
+    """Whether memory compaction's LLM folds are turned off.
 
-    DISABLED BY DEFAULT: an UNSET flag reads as disabled (matches the boot
-    gate in ``api._start_daily_reindex`` and the boot-time fold guard in
-    ``memory.migrations._startup_compact``). Only an explicit ``0``/``false``/
-    ``no`` enables compaction."""
-    return {"disabled":
-            os.environ.get("AIFORGE_COMPACT_DISABLE", "1") in ("1", "true", "yes")}
+    ENABLED BY DEFAULT (unset ⇒ compaction ON): the rate limiter caps it at
+    compaction_rpm (default 5/min). One source of truth for the flag —
+    ``compact_window.disabled()`` — shared by the daily pass, the boot fold and
+    the sync-loop OKF fold. Only an explicit ``1``/``true``/``yes`` disables."""
+    from aiforge_core.runtime import compact_window as _cw
+    return {"disabled": _cw.disabled()}
 
 
 @router.put("/api/runtime/compaction")
 def set_compaction(payload: dict) -> dict:
-    """Enable/disable the daily memory-compaction pass (recompact + dedupe +
-    the evening fold). Disabled by default. Takes effect on the next process
-    boot; the running scheduler keeps its current registration until then."""
+    """Enable/disable ALL memory compaction LLM folds (the daily pass, the boot
+    fold and the sync-loop OKF fold — one switch). ENABLED by default. Takes
+    effect on the next process boot; the running scheduler keeps its current
+    registration until then, and the sync-loop fold picks it up live."""
     disabled = bool(payload.get("disabled"))
     val = "1" if disabled else "0"
     os.environ["AIFORGE_COMPACT_DISABLE"] = val

@@ -34,7 +34,7 @@ def _registered(monkeypatch, tmp_path, *, compaction="0", **env):
 
     Compaction is DISABLED BY DEFAULT now, so these scheduling-behaviour tests
     ENABLE it (``compaction="0"``) to exercise the registration path. Pass
-    ``compaction=None`` to test the real default (unset ⇒ disabled)."""
+    ``compaction=None`` to test the real default (unset ⇒ ENABLED now)."""
     api = _api(monkeypatch, tmp_path)
     if compaction is not None:               # after _api — it clears the knobs
         monkeypatch.setenv("AIFORGE_COMPACT_DISABLE", compaction)
@@ -442,35 +442,34 @@ def test_api_delegates_the_hour_parse_to_compact_window(monkeypatch):
     assert compact_window.at_hour() is None
 
 
-def test_compaction_disabled_by_default_registers_no_fold(monkeypatch, tmp_path):
-    """DISABLED BY DEFAULT: with AIFORGE_COMPACT_DISABLE unset the boot gate must
-    register NONE of the compaction jobs — the user's "it kicks in before the app
-    starts and burns LLM requests" report. Reindex + the cheap hourly jobs still
-    register (they are merkle-skip no-ops, no LLM)."""
+def test_compaction_enabled_by_default_registers_the_fold(monkeypatch, tmp_path):
+    """ENABLED BY DEFAULT (Option A): with AIFORGE_COMPACT_DISABLE unset the boot
+    gate registers the single evening daily-compact pass. The per-category rate
+    limiter caps it at compaction_rpm (5/min), so it can no longer burn a burst
+    of requests before the app is usable — the fix for the user's report."""
     tasks = _registered(monkeypatch, tmp_path, compaction=None)   # real default
-    for gone in ("daily-compact", "chat-compact", "session-okr-compact",
-                 "recompact-all"):
-        assert gone not in tasks
+    assert "daily-compact" in tasks
+    assert tasks["daily-compact"].at_hour == 18
     assert "reindex" in tasks                 # non-LLM maintenance still on
 
 
-def test_explicit_zero_re_enables_compaction(monkeypatch, tmp_path):
-    """Only an explicit 0/false/no turns it back on — matches the endpoint +
-    _startup_compact semantics."""
-    for on in ("0", "false", "no"):
-        tasks = _registered(monkeypatch, tmp_path, compaction=on)
-        assert "daily-compact" in tasks, on
+def test_explicit_one_disables_compaction(monkeypatch, tmp_path):
+    """Only an explicit 1/true/yes turns it OFF — matches the endpoint +
+    _startup_compact semantics; anything else (incl. unset) leaves it on."""
     for off in ("1", "true", "yes"):
         tasks = _registered(monkeypatch, tmp_path, compaction=off)
         assert "daily-compact" not in tasks, off
+    for on in ("0", "false", "no"):
+        tasks = _registered(monkeypatch, tmp_path, compaction=on)
+        assert "daily-compact" in tasks, on
 
 
 def test_boot_fold_runs_no_llm_when_compaction_disabled(monkeypatch, tmp_path):
     """The boot-time _startup_compact fold must NOT call the learner when
-    compaction is disabled (the default). Structural fold still runs, but every
+    compaction is explicitly disabled. Structural fold still runs, but every
     md_store.compact call is summarize=False — no LLM request fires at boot."""
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
-    monkeypatch.delenv("AIFORGE_COMPACT_DISABLE", raising=False)   # real default
+    monkeypatch.setenv("AIFORGE_COMPACT_DISABLE", "1")            # explicitly OFF
     monkeypatch.delenv("AIFORGE_STARTUP_COMPACT", raising=False)
     from aiforge_core.memory import md_store
     from aiforge_core.runtime import compact_window

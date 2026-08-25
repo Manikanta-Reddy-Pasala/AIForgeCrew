@@ -575,3 +575,36 @@ def test_knowledge_text_includes_learnings():
     kt = knowledge_text(note)
     assert "port is 8090" in kt
     assert "idle-unloads" in kt      # learning surfaced
+
+
+def test_consolidate_gate_disabled_skips_llm_deterministic(monkeypatch):
+    """AIFORGE_COMPACT_DISABLE=1 forces work_notes.consolidate down the
+    deterministic union+dedupe path — no LLM call — while preserving the fact.
+    This is the single switch that stops the sync-loop OKF fold's LLM calls
+    (the scheduler gate never covered that path)."""
+    from aiforge_core.runtime import work_notes
+    monkeypatch.setenv("AIFORGE_COMPACT_DISABLE", "1")
+
+    def _boom(*a, **k):                      # LLM path must NOT be reached
+        raise AssertionError("structured_complete called while compaction OFF")
+    monkeypatch.setattr(
+        "aiforge_core.llm.structured.structured_complete", _boom)
+
+    out = work_notes.consolidate({}, "cache TTL is 3600s", role="learner")
+    assert "cache TTL is 3600s" in (out.get("facts") or [])
+
+
+def test_consolidate_gate_outside_window_skips_llm(monkeypatch):
+    """allow_llm=False (the sync fold outside its evening window) also degrades
+    deterministically, even with compaction enabled."""
+    from aiforge_core.runtime import work_notes
+    monkeypatch.setenv("AIFORGE_COMPACT_DISABLE", "0")     # enabled
+
+    def _boom(*a, **k):
+        raise AssertionError("structured_complete called outside the window")
+    monkeypatch.setattr(
+        "aiforge_core.llm.structured.structured_complete", _boom)
+
+    out = work_notes.consolidate({}, "a durable fact", role="learner",
+                                 allow_llm=False)
+    assert "a durable fact" in (out.get("facts") or [])

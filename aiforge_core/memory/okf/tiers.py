@@ -441,9 +441,17 @@ def _fold(group: str, items: list[dict], role: str) -> dict:
         title = str((n.get("meta") or {}).get("title") or n.get("id") or "").strip()
         blocks.append((f"### {title}\n\n" if title else "")
                       + _unbulleted(n.get("body") or "").strip())
+    # The LLM distillation rides the same evening window as md_store's folds, so
+    # the "compact group" calls stop crowding the working day. Outside the
+    # window (or when compaction is off) consolidate degrades to a deterministic
+    # union+dedupe — the node still updates for the mesh; only the LLM refine
+    # waits. open_now() returns True whenever no daily pass is registered, so a
+    # machine without an evening schedule still folds anytime (no starvation).
+    from aiforge_core.runtime import compact_window as _cw
     return work_notes.consolidate(
         {}, "\n\n".join(b for b in blocks if b), role=role,
-        label=f"group '{group}' ({len(items)} node(s))")
+        label=f"group '{group}' ({len(items)} node(s))",
+        allow_llm=_cw.open_now())
 
 
 def _body(group: str, sections: dict, tags: list[str]) -> str:

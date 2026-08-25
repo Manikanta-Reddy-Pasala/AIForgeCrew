@@ -659,11 +659,13 @@ def _start_daily_reindex() -> None:
         hour = 3
     from aiforge_core.runtime import periodic as _pd
     _register_hourly_jobs(_pd, hour)
-    # Compaction is DISABLED BY DEFAULT (unset ⇒ off): every fold is LLM-heavy
-    # and used to spend requests before the app was even usable. Enable it
-    # explicitly from Settings (persists to runtime.env as
-    # AIFORGE_COMPACT_DISABLE=0). Reindex + hourly jobs still run regardless.
-    if os.environ.get("AIFORGE_COMPACT_DISABLE", "1") not in ("1", "true", "yes"):
+    # Compaction is ENABLED BY DEFAULT (Option A): the per-category rate limiter
+    # caps it at compaction_rpm (default 5/min), so it can no longer spend a
+    # burst of requests before the app is usable. Turn it OFF from Settings
+    # (persists AIFORGE_COMPACT_DISABLE=1). One source of truth for the flag:
+    # compact_window.disabled(). Reindex + hourly jobs run regardless.
+    from aiforge_core.runtime import compact_window as _cw
+    if not _cw.disabled():
         daily_hour = _compact_at_hour()
         if daily_hour is None:
             _register_legacy_compaction(_pd)

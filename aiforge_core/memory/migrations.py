@@ -426,13 +426,12 @@ def _startup_compact(out: dict) -> None:
         if mode in ("off", "0", "false", "no"):
             out["compact"] = {"skipped": "disabled"}
             return
-        # Compaction is DISABLED BY DEFAULT (AIFORGE_COMPACT_DISABLE unset ⇒ on).
-        # The same flag that gates the scheduler ALSO short-circuits the boot
-        # fold's LLM calls: this is the pass the user saw "kick in before the
-        # app starts" spending requests. Structural fold (file moves, capture
-        # sweep) still runs — only the per-brief summarize call is suppressed.
-        compaction_off = os.environ.get(
-            "AIFORGE_COMPACT_DISABLE", "1") in ("1", "true", "yes")
+        # Compaction is ENABLED BY DEFAULT now (the rate limiter caps it at
+        # compaction_rpm). The one flag — compact_window.disabled() — still
+        # short-circuits the boot fold's LLM calls when an operator turns it
+        # off. Structural fold (file moves, capture sweep) still runs — only the
+        # per-brief summarize call is suppressed.
+        compaction_off = compact_window.disabled()
         llm = (not compaction_off) and (
             mode == "always" or compact_window.open_now())
         r_repo = md_store.compact(group_by="repo", min_group=1, summarize=llm,

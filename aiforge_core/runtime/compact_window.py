@@ -19,6 +19,26 @@ from datetime import datetime
 log = logging.getLogger("aiforge.compact_window")
 
 
+def disabled() -> bool:
+    """True when memory compaction's LLM folds are turned OFF.
+
+    THE SINGLE SOURCE OF TRUTH for the on/off switch. Every compaction path —
+    the daily scheduled pass (api._start_daily_reindex), the boot fold
+    (migrations._startup_compact), the sync-loop OKF fold (okf.tiers) and the
+    brief consolidation (work_notes.consolidate) — reads it here, so the default
+    can never drift between them (it used to: the flag gated the scheduler and
+    the boot fold but NOT the sync-loop fold, which kept firing regardless).
+
+    ENABLED BY DEFAULT: an unset flag reads as ON. Compaction is safe to leave
+    on because the per-category rate limiter caps it at ``compaction_rpm``
+    (default 5/min) — it can no longer flood the provider or the working day.
+    Set ``AIFORGE_COMPACT_DISABLE=1`` to skip the LLM fold entirely (the cheap
+    structural folds — file moves, capture sweeps — still run).
+    """
+    return os.environ.get("AIFORGE_COMPACT_DISABLE", "0").strip().lower() in (
+        "1", "true", "yes")
+
+
 def at_hour() -> "int | None":
     """Local hour of the single daily compaction pass, or None when the daily
     schedule is off (explicit ``off``/``0``, or an explicit hourly interval)."""

@@ -160,11 +160,12 @@ export default function Chat() {
     catch { setFullPipeline(!next); }   // revert on failure
   }
 
-  // Compaction toggle: disable the daily memory-compaction pass entirely.
-  // Persisted server-side (runtime.env); takes effect on the next boot.
-  // DISABLED BY DEFAULT — seed the checkbox checked so it matches the real
-  // default (unset ⇒ disabled) before the GET resolves.
-  const [compactionDisabled, setCompactionDisabled] = useState(true);
+  // Compaction toggle: turn ALL memory compaction LLM folds off (the daily
+  // pass, the boot fold and the sync-loop OKF fold — one switch). Persisted
+  // server-side (runtime.env). ENABLED BY DEFAULT now — the rate limiter caps
+  // compaction at compaction_rpm (5/min) — so seed the checkbox UNCHECKED to
+  // match the real default (unset ⇒ enabled) before the GET resolves.
+  const [compactionDisabled, setCompactionDisabled] = useState(false);
   useEffect(() => {
     api.getCompaction().then(r => setCompactionDisabled(!!r.disabled)).catch(() => {});
   }, []);

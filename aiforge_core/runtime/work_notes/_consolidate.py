@@ -468,7 +468,8 @@ def _fold_chunks(cur: dict, chunks: list[str], role: str,
 
 
 def consolidate(existing: dict, new_content: str, *, role: str = "learner",
-                max_input_chars: int | None = None, label: str | None = None) -> dict:
+                max_input_chars: int | None = None, label: str | None = None,
+                allow_llm: bool = True) -> dict:
     """Fold ``new_content`` into ``existing`` OKR sections via an LLM that
     dedupes, resolves contradictions, and maps each item to its section.
 
@@ -493,6 +494,18 @@ def consolidate(existing: dict, new_content: str, *, role: str = "learner",
     text = (new_content or "").strip()
     if not text:
         return _normalized(cur)
+    # THE compaction on/off switch reaches every fold path through here. When an
+    # operator turns compaction off, skip the LLM entirely and merge
+    # deterministically (union + dedupe, no facts lost) — this is what stops the
+    # sync-loop OKF fold's "compact group" calls, which the scheduler gate never
+    # covered. When ON (the default), the per-category rate limiter still caps
+    # these calls at compaction_rpm.
+    from aiforge_core.runtime import compact_window as _cw
+    if _cw.disabled() or not allow_llm:
+        _why = "AIFORGE_COMPACT_DISABLE" if _cw.disabled() else "outside window"
+        _log.info("compact %s: LLM fold OFF (%s) — deterministic merge",
+                  label or f"role={role}", _why)
+        return _normalized(_deterministic_merge(existing or {}, new_content))
     max_input_chars, state_chars = _call_budget(role, max_input_chars)
     # Never collapse to a sliver: a big existing brief must still get a usable
     # chunk budget (else 25k of new text becomes 27 folds). Floor at 8k.
