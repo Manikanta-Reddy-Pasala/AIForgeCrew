@@ -27,7 +27,7 @@ def _ticket_brief(identifier: str) -> dict | None:
     return first
 
 
-def _ticket_local(identifier: str) -> dict | None:
+def _ticket_local(_identifier: str) -> dict | None:
     """Direct read from a local ticket store — SQLite-degraded no-op.
 
     This was a direct read from local Postgres tickets + recent events.
@@ -38,7 +38,7 @@ def _ticket_local(identifier: str) -> dict | None:
     return None
 
 
-def _mcp_call(tool: str, args: dict) -> Any:
+def _mcp_call(_tool: str, _args: dict) -> Any:
     """The graph_rag MCP backend was removed (SQLite-only build), so the graph
     tool-call sources (sym_lookup / find_doc / related_memories) are no-ops."""
     return None
@@ -90,7 +90,7 @@ def _unpack_mcp_rows(raw: Any) -> list[dict]:
     return [{"text": str(data)[:1500], "score": 0.5}]
 
 
-def _global_vector_recall(text: str, *, limit: int,
+def _global_vector_recall(_text: str, *, limit: int,
                           repo: str | None = None) -> list[dict]:
     """Global observation recall — was backed by an optional graph vector
     index that has been removed (SQLite-only build). The embedded SQLite

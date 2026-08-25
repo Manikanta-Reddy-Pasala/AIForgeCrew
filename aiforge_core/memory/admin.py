@@ -114,7 +114,7 @@ def memory_overview() -> dict:
 
 # ─────────────────────── graph sample (removed backend) ─────────────────────
 
-def graph_expand(store: str, node_id: str, limit: int = 40) -> dict:
+def graph_expand(_store: str, _node_id: str, _limit: int = 40) -> dict:
     """Neighborhood of ONE node in a graph store.
 
     The graph visualization backend was removed (SQLite-only build), so this
@@ -124,7 +124,7 @@ def graph_expand(store: str, node_id: str, limit: int = 40) -> dict:
     return {"available": False, "nodes": [], "edges": []}
 
 
-def graph_sample(store: str, limit: int = 60) -> dict:
+def graph_sample(_store: str, _limit: int = 60) -> dict:
     """Small node-link sample of ONE graph store.
 
     The graph visualization backend was removed (SQLite-only build), so this

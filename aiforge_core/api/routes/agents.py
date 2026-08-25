@@ -57,7 +57,7 @@ def _role_group(role: str) -> str:
     return "fanout" if role in _FANOUT_ROLES else "pipeline"
 
 
-def _role_activity(name: str) -> tuple:
+def _role_activity(_name: str) -> tuple:
     """``(last_activity_iso, lifetime_turns, active_tickets)``.
 
     SQLite-degraded: the per-role activity rollup was Postgres-only (used

@@ -17,8 +17,8 @@ log = logging.getLogger("aiforge.diff_impact")
 
 
 def impacted_tests(
-    repo: str,
-    changed_paths: list[str],
+    _repo: str,
+    _changed_paths: list[str],
     *,
     hops: int = 3,
     driver=None,

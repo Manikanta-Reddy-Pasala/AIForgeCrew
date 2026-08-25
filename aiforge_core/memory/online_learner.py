@@ -30,7 +30,7 @@ def migrate() -> bool:
     return False
 
 
-def record_step_trace(t: StepTrace) -> None:
+def record_step_trace(_t: StepTrace) -> None:
     return None
 
 
@@ -76,7 +76,7 @@ def add_attachment(*, ticket_id: str, filename: str, file_path: str,
     return False
 
 
-def attachments_for(ticket_id: str) -> list[dict]:
+def attachments_for(_ticket_id: str) -> list[dict]:
     return []
 
 

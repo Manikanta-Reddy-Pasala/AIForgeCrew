@@ -664,7 +664,7 @@ def _destroy_run_resources(session_id: str) -> None:
             log.debug("%s.%s failed: %s", module.rsplit(".", 1)[-1], fn, exc)
 
 
-def _dump_trajectory(session, ticket, initial_state: dict) -> None:
+def _dump_trajectory(session, _ticket, initial_state: dict) -> None:
     """Sub #15: dump the session trajectory to disk for replay-style
     debugging."""
     if os.environ.get("AIFORGE_TRAJECTORY_DUMP", "1") not in ("1", "true"):
