@@ -937,6 +937,329 @@ def _chat_summarize_session(cwd, session_id) -> None:
         pass
 
 
+def _setup_chat_logger():
+    """The shared "chat" observability logger + its emit fn, so the Logs "chat"
+    tab tails one file. Returns ``(clog, emit)`` — ``(None, None)`` if the
+    observability module is unavailable. (Don't stash a per-session ticket on the
+    process-wide singleton — concurrent sessions would clobber it; the caller
+    stamps ``session`` per emit.)"""
+    try:
+        from aiforge_core.observability.logging import emit, get_logger
+        return get_logger("chat"), emit
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+def _bind_turn_meter(session_id):
+    """Bind THE per-turn request-meter boundary here (not inside the ReAct loop):
+    the enhancer / team-downgrade classifier / capture probes below are requests
+    THIS message caused, and team mode never enters run_chat_agent at all — a
+    reset in the loop left its per-turn number cumulative for the session.
+    Returns ``(meter, meter_token)``; metering must never break a turn."""
+    try:
+        from aiforge_core.llm import call_meter as _meter
+        return _meter, _meter.bind_turn(_meter.turn_reset(session_id))
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+def _maybe_downgrade_team(team, prompt, history, cwd, session_id):
+    """Auto-route a small team follow-up down to simple mode. Run HERE (off the
+    response-open path) so a slow/unreachable classify LLM never delays the
+    StreamingResponse. Returns ``(team, auto_downgraded)``; routing must never
+    block a turn."""
+    if not team:
+        return team, False
+    try:
+        from aiforge_core.runtime import turn_router as _tr
+        if _tr.should_downgrade_team(prompt, history, cwd):
+            _af_log.info("chat: team turn auto-downgraded to simple "
+                         "(small follow-up) session=%s", session_id)
+            return False, True
+    except Exception as exc:  # noqa: BLE001
+        _af_log.debug("turn_router skipped: %s", exc)
+    return team, False
+
+
+_TERMINAL_SUBTASK = {"done", "failed", "skipped", "won", "planned"}
+
+
+def _drive_produce_stream(_events, st: dict, steps: list, run, session_id,
+                          turn_t0, turn_mode, clog, emit) -> None:
+    """Consume the producer's event stream: clean + route + publish each event,
+    honour a mid-stream Stop (coercing in-flight subtasks to a terminal state so
+    nothing reloads stuck — "planned" is a settled never-run plan state, left
+    alone), then emit the settled usage line, persist the subtask panel, and
+    guarantee exactly one terminal ``done``. Own try/except so a stream error
+    still surfaces error+done and the caller's finally persists what accumulated.
+    """
+    from aiforge_core.runtime import chat_cancel
+    st["emitted_done"] = False
+    try:
+        _consume_produce_events(_events, st, steps, run, session_id, turn_t0,
+                                turn_mode, clog, emit, chat_cancel)
+        _publish_final_usage(run, session_id, steps)
+        if st["subtasks"]:
+            steps.insert(0, {"type": "subtasks", "items": st["subtasks"]})
+        # The UI unblocks on a terminal `done`; a cancelled parallel/best-of-N run
+        # breaks before its synthesized one, so guarantee exactly one here when
+        # none was forwarded (non-cancel paths emit their own — don't double).
+        if not st["emitted_done"]:
+            run.publish({"type": "done"})
+            st["emitted_done"] = True
+    except Exception as exc:  # noqa: BLE001
+        run.publish({"type": "error", "text": str(exc)})
+        run.publish({"type": "done"})
+
+
+def _consume_produce_events(_events, st, steps, run, session_id, turn_t0,
+                            turn_mode, clog, emit, chat_cancel) -> None:
+    """Clean + route + publish each producer event, breaking on a mid-stream Stop
+    (coercing in-flight subtasks to a terminal state so nothing reloads stuck).
+    "planned" is a settled, never-run plan-mode state — NOT in-flight, left."""
+    for ev in _events():
+        ev = _clean_and_log_produce_event(ev, session_id, turn_t0, turn_mode,
+                                          clog, emit)
+        if ev is None:
+            continue
+        _route_produce_event(ev, st, steps)
+        run.publish(ev)
+        if chat_cancel.is_cancelled(session_id):
+            for row in st["subtasks"]:
+                if row.get("status") not in _TERMINAL_SUBTASK:
+                    row["status"] = "failed"
+            break
+
+
+def _clean_and_log_produce_event(ev, session_id, turn_t0, turn_mode, clog, emit):
+    """Sanitise + timestamp + log-mirror one producer event. Returns the event
+    (possibly rewritten) or None to DROP it.
+
+    Never surface leaked protocol scaffolding: a local model in native-FC mode
+    sometimes emits a fumbled tool call as plain content ("ARGS_JSON: {}", a bare
+    "ACTION:"). Strip marker-only noise from a non-ASK message; if nothing real
+    remains, drop it so it neither streams nor persists as the answer. Stamp the
+    terminal event's server-authoritative wall-clock and mirror substantive
+    events into the observability NDJSON."""
+    import time as _time
+    if ev.get("type") == "message" and not ev.get("awaiting_input"):
+        from aiforge_core.runtime.chat_agent._prompt import _strip_protocol_noise
+        clean = _strip_protocol_noise(ev.get("text") or "")
+        if not clean:
+            return None
+        if clean != ev.get("text"):
+            ev = {**ev, "text": clean}
+    if ev.get("type") == "done" and "elapsed_s" not in ev:
+        ev = {**ev, "elapsed_s": round(_time.time() - turn_t0, 2),
+              "mode": turn_mode}
+    if clog is not None and emit is not None and \
+            ev.get("type") in ("thought", "tool", "message", "error"):
+        try:
+            emit(clog, ev["type"], session=session_id, name=ev.get("name"),
+                 text=(ev.get("text") or "")[:200],
+                 tool_ok=(ev.get("result") or {}).get("ok")
+                 if isinstance(ev.get("result"), dict) else None)
+        except Exception:  # noqa: BLE001
+            pass
+    return ev
+
+
+def _route_produce_event(ev, st: dict, steps: list) -> None:
+    """Route one cleaned producer event into the turn accumulators. A plain
+    message becomes the persisted ``final_text``; a supplementary message /
+    thought / tool / error / changes / stopped marker / plan_ready / captured pill
+    is persisted as a step; subtasks/subtask_update maintain the live panel.
+    ("stopped" is a MARKER not a rendered step — it tells Retry there is work on
+    disk to resume; dropped, the resume silently never happens.)"""
+    etype = ev.get("type")
+    if etype == "message" and not ev.get("supplementary"):
+        st["final_text"] = ev.get("text", "")
+        st["awaiting"] = bool(ev.get("awaiting_input"))
+    elif (etype == "message" and ev.get("supplementary")
+          or etype in ("thought", "tool", "error", "changes", "stopped",
+                       "plan_ready", "captured")):
+        steps.append(ev)
+    elif etype == "subtasks":
+        st["subtasks"] = list(ev.get("items") or [])
+    elif etype == "subtask_update":
+        for row in st["subtasks"]:
+            if row.get("slug") == ev.get("slug"):
+                row["status"] = ev.get("status")
+    if etype == "done":
+        st["emitted_done"] = True
+
+
+def _reset_turn_context(_meter, _meter_token, _reqctx, _sess_token,
+                        _repo_token) -> None:
+    """Reset the per-turn meter boundary + the session/repo-root contextvars.
+    Each soft-fails independently."""
+    try:
+        if _meter is not None:
+            _meter.reset_turn(_meter_token)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        _reqctx.reset_session_id(_sess_token)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        _reqctx.reset_repo_root(_repo_token)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _persist_produce_turn(session_id, cwd, prompt, final_text, steps, awaiting,
+                          team, path, turn_mode, turn_t0, cancelled) -> None:
+    """Finish the session's cancel/approve/steer gates, persist the turn, and
+    kick the simple/plan memory writebacks (skipping cancelled turns and the
+    parallel-team path, whose own runners cover it)."""
+    import time as _time
+    from aiforge_core.runtime import chat_approve, chat_cancel, chat_interject
+    from aiforge_core.runtime import chat_persist
+    chat_cancel.finish(session_id)
+    chat_interject.clear(session_id)   # no stale steers next turn
+    chat_approve.finish(session_id)
+    chat_persist.persist_turn(
+        session_id=session_id, cwd=cwd, prompt=prompt, final_text=final_text,
+        steps=steps, team=(team or path["parallel"]), cancelled=cancelled,
+        awaiting=awaiting, mode=turn_mode, duration_s=_time.time() - turn_t0)
+    if not cancelled and not team and not path["parallel"]:
+        from functools import partial as _partial
+        from aiforge_core.runtime import background as _bg
+        # Single-chat (simple/plan) memory writeback on daemon threads — the team
+        # pipeline runs a Learner node itself; the inline path never did, so chat
+        # work never reached long-term memory. The boundary-gated per-session
+        # summary refreshes cross-session recall's graph copy every N turns.
+        _bg.spawn(_partial(_chat_learn_writeback, cwd, prompt, final_text, steps,
+                           session_id), name="chat-learn")
+        _bg.spawn(_partial(_chat_summarize_session, cwd, session_id),
+                  name="chat-summarize")
+
+
+def _finalize_produce_turn(session_id, cwd, prompt, final_text, steps, awaiting,
+                           team, path, _turn_mode, _turn_t0, _meter, _meter_token,
+                           _reqctx, _sess_token, _repo_token, run,
+                           _awake_release) -> None:
+    """The producer's finally: emit the turn-outcome Langfuse score, reset the
+    meter/session/repo-root state, and (for every mode EXCEPT the team driver,
+    which self-persists on its own thread) finish the cancel/approve/steer gates,
+    persist the turn and kick the simple/plan memory writebacks. Then wake
+    subscribers and release the keep-awake + producer-slot holds. Every side
+    channel soft-fails — the finally must never break a turn."""
+    import time as _time
+    from aiforge_core.runtime import chat_cancel
+    # Capture cancellation BEFORE finishing the token (finish pops
+    # it, after which is_cancelled always reads False).
+    cancelled = chat_cancel.is_cancelled(session_id)
+    # Emit one turn-outcome score per run so the Langfuse Scores view
+    # populates (0.0 stopped, 1.0 completed), tagged to this session.
+    # Side-channel: soft-fails, never affects the turn. Runs for every
+    # mode (this finally is hit inline for simple/plan/parallel and for
+    # a team run whether or not the ADK driver launched).
+    try:
+        from aiforge_core.integrations import langfuse_adapter as _lf
+        if _lf.enabled():
+            _lf.record_score(
+                name="turn_completed",
+                value=0.0 if cancelled else 1.0,
+                session_id=session_id,
+                comment="cancelled" if cancelled else "completed",
+                metadata={"mode": _turn_mode})
+    except Exception:  # noqa: BLE001 — tracing must never break a turn
+        pass
+    _reset_turn_context(_meter, _meter_token, _reqctx, _sess_token, _repo_token)
+    # TEAM mode: the background driver owns the run's lifetime AND its
+    # persistence (chat_pipeline._drive) — it survives a client
+    # disconnect and holds the real final answer, so we must NOT
+    # persist a partial here (and finishing the token here would
+    # orphan a still-running ADK run on Stop). SIMPLE mode runs inline
+    # in this producer thread, so finish + persist here.
+    # Parallel team mode is a self-contained generator (not the
+    # background ADK driver), so persist it inline like simple mode.
+    # The sequential fallback uses the team driver, which self-persists.
+    # Gate on whether that driver actually LAUNCHED — a team run that
+    # crashes in the pre-stream orchestrator (enhance/architect/
+    # decompose) never starts the driver, so it must clean up here too.
+    # TEAM mode: the background driver owns the run lifetime AND persistence
+    # (chat_pipeline._drive) — it survives a client disconnect and holds the real
+    # answer, so we must NOT persist a partial here (finishing the token would
+    # also orphan a still-running ADK run on Stop). SIMPLE/plan run inline here;
+    # parallel-team is a self-contained generator, so both persist inline. Gate
+    # on whether the driver actually LAUNCHED — a team run that crashes in the
+    # pre-stream orchestrator never starts it and must clean up here too.
+    if not path["driver"]:
+        _persist_produce_turn(session_id, cwd, prompt, final_text, steps,
+                              awaiting, team, path, _turn_mode, _turn_t0,
+                              cancelled)
+    # Wake every subscriber (this stream + any /attach) and close THIS
+    # run object (not by session id — a newer turn for the same session
+    # may have already replaced it in the registry). Done LAST so a
+    # re-attach during persistence still tails live.
+    run.finish()
+    try:
+        _awake_release()
+    except Exception:  # noqa: BLE001 — power policy never fails a turn
+        pass
+    try:
+        _PRODUCE_SEM.release()
+    except (ValueError, RuntimeError):   # never over-release
+        pass
+
+
+def _usage_step_text(calls: dict) -> str:
+    """The persisted ``⚡ N LLM requests`` line. Failed attempts are NAMED in the
+    same line (12 requests of which 7 failed is a retry storm; a bare "12" reads
+    thorough), and tokens-written sits next to the count (40 one-line steps and
+    one 6000-token essay are both "41 requests")."""
+    failed = int(calls.get("turn_failed") or 0)
+    out_tok = int(calls.get("turn_tokens_out") or 0)
+    tok_txt = (f", {out_tok / 1000:.1f}k tokens written" if out_tok >= 1000
+               else f", {out_tok} tokens written" if out_tok else "")
+    noun = "request" if calls["turn"] == 1 else "requests"
+    return (f"⚡ {calls['turn']} LLM {noun} for this message "
+            f"({calls['session']} in this chat"
+            + (f", {failed} failed" if failed else "") + tok_txt + ")")
+
+
+def _publish_final_usage(run, session_id, steps: list) -> None:
+    """Publish + persist the SETTLED per-turn LLM request/token count. The in-loop
+    ``usage`` events fire BEFORE each model call, so the last one under-reports by
+    the answer's own call (plus retries); this emits the true numbers once the run
+    is over. Also persisted as a step — the live badge dies with liveTurn a few
+    hundred ms later and usage events aren't persisted, so without this the number
+    the user is left looking at is gone from any reload. Failed attempts are named
+    in the same line (a retry storm reads like a thorough turn otherwise) and
+    tokens-written sits next to the count (40 one-line steps and one 6000-token
+    essay are both "41 requests"). Metering must never break a turn."""
+    # FINAL request count. The in-loop `usage` events fire BEFORE each
+    # model call, so the last one always under-reports by at least the
+    # answer's own call (plus any retry it needed). Emit the settled
+    # numbers once the run is over, so the count the user is left
+    # looking at is the true one.
+    try:
+        from aiforge_core.llm import call_meter as _cm
+        _calls = _cm.snapshot(session_id)
+        run.publish({"type": "usage", "llm_turn": _calls["turn"],
+                     "llm_session": _calls["session"],
+                     "llm_per_min": _calls["per_minute"],
+                     "llm_turn_failed": _calls.get("turn_failed", 0),
+                     "llm_failed_per_min":
+                         _calls.get("failed_per_minute", 0),
+                     "llm_turn_tokens_out":
+                         _calls.get("turn_tokens_out", 0),
+                     "final": True})
+        # …and PERSIST it as a step. The live badge dies with liveTurn
+        # a few hundred ms later (loadSession + setLiveTurn(null)), and
+        # usage events are not persisted — so without this the settled
+        # number the user is meant to be left looking at is gone from
+        # the transcript and from any later reload.
+        if _calls["turn"]:
+            steps.append({"type": "thought", "role": "system",
+                          "text": _usage_step_text(_calls)})
+    except Exception:  # noqa: BLE001 — metering must never break a turn
+        pass
+
+
 @router.post("/api/chat/sessions/{session_id}/message")
 def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingResponse:
     """Append a user message, run the full-FS coding agent over the whole
@@ -1854,11 +2177,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # them from the count. Team mode never enters run_chat_agent at all, so
         # a reset in the loop left its per-turn number cumulative for the whole
         # session — a lifetime total presented as one message's cost.
-        try:
-            from aiforge_core.llm import call_meter as _meter
-            _meter_token = _meter.bind_turn(_meter.turn_reset(session_id))
-        except Exception:  # noqa: BLE001 — metering must never break a turn
-            _meter, _meter_token = None, None
+        _meter, _meter_token = _bind_turn_meter(session_id)
         # Bind the repo root to the turn's cwd so the codegraph gate (which some
         # Doer-side call sites resolve via request_context.get_repo_root() with
         # NO cwd) sees the SAME repo the tools run against. Without this, simple
@@ -1870,16 +2189,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # were declared above) rather than in the synchronous request
         # handler, so a slow/unreachable classify LLM never delays the
         # StreamingResponse itself.
-        if team:
-            try:
-                from aiforge_core.runtime import turn_router as _tr
-                if _tr.should_downgrade_team(prompt, history, cwd):
-                    team = False
-                    _auto_downgraded = True
-                    _af_log.info("chat: team turn auto-downgraded to simple "
-                                 "(small follow-up) session=%s", session_id)
-            except Exception as _rexc:  # noqa: BLE001 — routing must never block a turn
-                _af_log.debug("turn_router skipped: %s", _rexc)
+        team, _auto_downgraded = _maybe_downgrade_team(
+            team, prompt, history, cwd, session_id)
         _parallel_team = team and _psub.enabled()
         # Review-edits gate: OFF by default — file writes/patches auto-apply,
         # no per-edit Approve/Reject prompt (the operator asked for no file-
@@ -1901,245 +2212,17 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         #                              survives a navigate-away / reload
         # Mirror chat activity into the observability NDJSON so the Logs page
         # shows live runs (the page tails orchestrator-<role>.ndjson).
-        try:
-            from aiforge_core.observability.logging import emit, get_logger
-            # ONE shared "chat" logger (so the Logs "chat" tab tails one file).
-            # Don't stash a per-session ticket on the process-wide singleton —
-            # concurrent sessions would clobber it; stamp `session` per emit below.
-            _clog = get_logger("chat")
-        except Exception:  # noqa: BLE001
-            _clog = None
-            emit = None  # type: ignore
+        _clog, emit = _setup_chat_logger()
         _auto_checkpoint()   # snapshot first (off the response-open path)
-        # Terminal subtask statuses — a cancelled run coerces any non-terminal
-        # row to "failed" so the persisted/reloaded panel never shows a row
-        # stuck pending/running after a Stop.
-        # "planned" is a settled, never-executed plan-mode state — NOT in-flight,
-        # so a cancel must not flip it to "failed".
-        _TERMINAL = {"done", "failed", "skipped", "won", "planned"}
-        emitted_done = False   # forwarded a terminal `done` yet?
+        st = {"final_text": final_text, "awaiting": awaiting, "subtasks": _subtasks}
         try:
-            for ev in _events():
-                # Never surface leaked protocol scaffolding to the user. A local
-                # model in native-FC mode sometimes emits a fumbled tool call as
-                # plain content ("ARGS_JSON: {}", a bare "ACTION:") — that reached
-                # the chat as a message bubble. Strip marker-only noise from any
-                # non-ASK message text; if nothing real remains, drop the event so
-                # it neither streams nor persists as the answer. This is the single
-                # choke point for both the client publish and the persisted
-                # final_text below.
-                if ev.get("type") == "message" and not ev.get("awaiting_input"):
-                    from aiforge_core.runtime.chat_agent._prompt import (
-                        _strip_protocol_noise,
-                    )
-                    _clean = _strip_protocol_noise(ev.get("text") or "")
-                    if not _clean:
-                        continue
-                    if _clean != ev.get("text"):
-                        ev = {**ev, "text": _clean}
-                # Stamp per-turn wall-clock on the terminal event so the UI shows
-                # time-taken for EVERY turn in ALL three modes (simple/plan/team),
-                # server-authoritative (the client timer is live-only).
-                if ev.get("type") == "done" and "elapsed_s" not in ev:
-                    ev = {**ev, "elapsed_s": round(_time.time() - _turn_t0, 2),
-                          "mode": _turn_mode}
-                if _clog is not None and emit is not None and \
-                        ev.get("type") in ("thought", "tool", "message", "error"):
-                    try:
-                        emit(_clog, ev["type"], session=session_id, name=ev.get("name"),
-                             text=(ev.get("text") or "")[:200],
-                             tool_ok=(ev.get("result") or {}).get("ok") if isinstance(ev.get("result"), dict) else None)
-                    except Exception:  # noqa: BLE001
-                        pass
-                if ev.get("type") == "message" and not ev.get("supplementary"):
-                    # A supplementary message (e.g. the build/integration report)
-                    # renders but must NOT replace the agent's own answer as the
-                    # persisted final_text — persist it as a step instead.
-                    final_text = ev.get("text", "")
-                    awaiting = bool(ev.get("awaiting_input"))
-                elif ev.get("type") == "message" and ev.get("supplementary") or ev.get("type") in ("thought", "tool", "error", "changes", "stopped"):
-                    # "stopped" is a MARKER, not a rendered step (the frontend's
-                    # toAgentStep drops it, isStoppedTurn reads it): it is how a
-                    # turn that ended without an answer tells Retry there is
-                    # work on disk to resume. Dropped here, the marker never
-                    # reached the transcript and the resume it exists for
-                    # silently did not happen.
-                    steps.append(ev)
-                elif ev.get("type") == "subtasks":
-                    _subtasks = list(ev.get("items") or [])
-                elif ev.get("type") == "subtask_update":
-                    for _s in _subtasks:
-                        if _s.get("slug") == ev.get("slug"):
-                            _s["status"] = ev.get("status")
-                elif ev.get("type") == "plan_ready":
-                    # Persist the approvable plan (Gap B) so the "Approve &
-                    # Execute" button survives a reload.
-                    steps.append(ev)
-                elif ev.get("type") == "captured":
-                    # Persist the capture pill so the inline "Saved RULE · scope"
-                    # note (change-scope / undo) survives a reload.
-                    steps.append(ev)
-                if ev.get("type") == "done":
-                    emitted_done = True
-                run.publish(ev)
-                if chat_cancel.is_cancelled(session_id):
-                    # Stop pressed mid-stream (parallel / best-of-N break out
-                    # BEFORE their synthesized `done`): reconcile any in-flight
-                    # subtask row to a terminal state so nothing reloads stuck.
-                    for _s in _subtasks:
-                        if _s.get("status") not in _TERMINAL:
-                            _s["status"] = "failed"
-                    break
-            # FINAL request count. The in-loop `usage` events fire BEFORE each
-            # model call, so the last one always under-reports by at least the
-            # answer's own call (plus any retry it needed). Emit the settled
-            # numbers once the run is over, so the count the user is left
-            # looking at is the true one.
-            try:
-                from aiforge_core.llm import call_meter as _cm
-                _calls = _cm.snapshot(session_id)
-                run.publish({"type": "usage", "llm_turn": _calls["turn"],
-                             "llm_session": _calls["session"],
-                             "llm_per_min": _calls["per_minute"],
-                             "llm_turn_failed": _calls.get("turn_failed", 0),
-                             "llm_failed_per_min":
-                                 _calls.get("failed_per_minute", 0),
-                             "llm_turn_tokens_out":
-                                 _calls.get("turn_tokens_out", 0),
-                             "final": True})
-                # …and PERSIST it as a step. The live badge dies with liveTurn
-                # a few hundred ms later (loadSession + setLiveTurn(null)), and
-                # usage events are not persisted — so without this the settled
-                # number the user is meant to be left looking at is gone from
-                # the transcript and from any later reload.
-                if _calls["turn"]:
-                    # Failed attempts are named in the same line, not netted
-                    # out of it: 12 requests of which 7 failed is a retry
-                    # storm, and a bare "12 requests" reads like a thorough
-                    # turn. Silent when nothing failed.
-                    _failed = int(_calls.get("turn_failed") or 0)
-                    # Tokens WRITTEN, next to the call count: 40 one-line
-                    # steps and one 6000-token essay are both "41 requests",
-                    # and only one of them is the thing worth shortening.
-                    _out_tok = int(_calls.get("turn_tokens_out") or 0)
-                    _tok_txt = (f", {_out_tok / 1000:.1f}k tokens written"
-                                if _out_tok >= 1000 else
-                                f", {_out_tok} tokens written" if _out_tok else "")
-                    steps.append({"type": "thought", "role": "system",
-                                  "text": f"⚡ {_calls['turn']} LLM "
-                                          f"{'request' if _calls['turn'] == 1 else 'requests'} "
-                                          f"for this message "
-                                          f"({_calls['session']} in this chat"
-                                          + (f", {_failed} failed" if _failed else "")
-                                          + _tok_txt
-                                          + ")"})
-            except Exception:  # noqa: BLE001 — metering must never break a turn
-                pass
-            # Persist the final subtask panel as a step so reload restores it.
-            if _subtasks:
-                steps.insert(0, {"type": "subtasks", "items": _subtasks})
-            # The UI unblocks on a terminal `done`. A cancelled parallel/
-            # best-of-N run breaks before its synthesized `done`, so guarantee
-            # exactly one here when none was forwarded (non-cancel paths already
-            # emit their own — don't double-emit).
-            if not emitted_done:
-                run.publish({"type": "done"})
-                emitted_done = True
-        except Exception as exc:  # noqa: BLE001
-            run.publish({"type": "error", "text": str(exc)})
-            run.publish({"type": "done"})
+            _drive_produce_stream(_events, st, steps, run, session_id,
+                                  _turn_t0, _turn_mode, _clog, emit)
         finally:
-            # Capture cancellation BEFORE finishing the token (finish pops
-            # it, after which is_cancelled always reads False).
-            cancelled = chat_cancel.is_cancelled(session_id)
-            # Emit one turn-outcome score per run so the Langfuse Scores view
-            # populates (0.0 stopped, 1.0 completed), tagged to this session.
-            # Side-channel: soft-fails, never affects the turn. Runs for every
-            # mode (this finally is hit inline for simple/plan/parallel and for
-            # a team run whether or not the ADK driver launched).
-            try:
-                from aiforge_core.integrations import langfuse_adapter as _lf
-                if _lf.enabled():
-                    _lf.record_score(
-                        name="turn_completed",
-                        value=0.0 if cancelled else 1.0,
-                        session_id=session_id,
-                        comment="cancelled" if cancelled else "completed",
-                        metadata={"mode": _turn_mode})
-            except Exception:  # noqa: BLE001 — tracing must never break a turn
-                pass
-            try:
-                if _meter is not None:
-                    _meter.reset_turn(_meter_token)
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                _reqctx.reset_session_id(_sess_token)
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                _reqctx.reset_repo_root(_repo_token)
-            except Exception:  # noqa: BLE001
-                pass
-            # TEAM mode: the background driver owns the run's lifetime AND its
-            # persistence (chat_pipeline._drive) — it survives a client
-            # disconnect and holds the real final answer, so we must NOT
-            # persist a partial here (and finishing the token here would
-            # orphan a still-running ADK run on Stop). SIMPLE mode runs inline
-            # in this producer thread, so finish + persist here.
-            # Parallel team mode is a self-contained generator (not the
-            # background ADK driver), so persist it inline like simple mode.
-            # The sequential fallback uses the team driver, which self-persists.
-            # Gate on whether that driver actually LAUNCHED — a team run that
-            # crashes in the pre-stream orchestrator (enhance/architect/
-            # decompose) never starts the driver, so it must clean up here too.
-            if not _path["driver"]:
-                chat_cancel.finish(session_id)
-                from aiforge_core.runtime import chat_interject
-                chat_interject.clear(session_id)   # no stale steers next turn
-                from aiforge_core.runtime import chat_approve, chat_persist
-                chat_approve.finish(session_id)
-                chat_persist.persist_turn(
-                    session_id=session_id, cwd=cwd, prompt=prompt,
-                    final_text=final_text, steps=steps,
-                    team=(team or _path["parallel"]),
-                    cancelled=cancelled, awaiting=awaiting,
-                    mode=_turn_mode, duration_s=_time.time() - _turn_t0)
-                # Single-chat (simple/plan) memory writeback. The team
-                # pipeline runs a Learner node + memory callbacks itself;
-                # the inline simple/plan path never did, so chat work never
-                # reached long-term memory. Distil + persist durable facts
-                # on a daemon thread (off the response path). Skip cancelled
-                # turns and the parallel-team path (its own runners cover it).
-                if not cancelled and not team and not _path["parallel"]:
-                    from functools import partial as _partial
-                    from aiforge_core.runtime import background as _bg
-                    _bg.spawn(_partial(_chat_learn_writeback, cwd, prompt,
-                                       final_text, steps, session_id),
-                              name="chat-learn")
-                    # Boundary-gated per-SESSION summary → browsable md file +
-                    # memory graph (Neo4j when configured). Refreshes an
-                    # upsert'd summary every N turns as the session grows (one
-                    # cheap-tier LLM call, capped) so cross-session recall goes
-                    # through unified_query's graph instead of a substring scan.
-                    # Best-effort on a daemon thread — a failure here must never
-                    # affect the turn.
-                    _bg.spawn(_partial(_chat_summarize_session, cwd,
-                                       session_id), name="chat-summarize")
-            # Wake every subscriber (this stream + any /attach) and close THIS
-            # run object (not by session id — a newer turn for the same session
-            # may have already replaced it in the registry). Done LAST so a
-            # re-attach during persistence still tails live.
-            run.finish()
-            try:
-                _awake_release()
-            except Exception:  # noqa: BLE001 — power policy never fails a turn
-                pass
-            try:
-                _PRODUCE_SEM.release()
-            except (ValueError, RuntimeError):   # never over-release
-                pass
-
+            _finalize_produce_turn(
+                session_id, cwd, prompt, st["final_text"], steps, st["awaiting"],
+                team, _path, _turn_mode, _turn_t0, _meter, _meter_token, _reqctx,
+                _sess_token, _repo_token, run, _awake_release)
     _spawn(_produce, name="chat-produce")
 
     def _stream():
