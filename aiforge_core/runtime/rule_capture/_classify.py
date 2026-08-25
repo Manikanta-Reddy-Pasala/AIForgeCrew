@@ -63,6 +63,37 @@ def _llm_complete(role: str, messages: list[dict], **kw) -> str:
     return complete(role, messages, **kw)
 
 
+def _next_string_state(ch: str, esc: bool) -> tuple[bool, bool]:
+    """Advance the inside-a-string scan by one char → ``(still_in_string, esc)``.
+    A backslash escapes the next char; an unescaped quote closes the string."""
+    if esc:
+        return True, False
+    if ch == "\\":
+        return True, True
+    return ch != '"', False
+
+
+def _first_balanced_span(text: str, start: int) -> str | None:
+    """The ``{...}`` substring starting at ``start``, brace-matched with string
+    awareness so braces inside a string value do not close the object early.
+    None when it never balances."""
+    depth = 0
+    in_str = esc = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            in_str, esc = _next_string_state(ch, esc)
+        elif ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
+
+
 def _extract_json(text: str) -> dict | None:
     """First balanced {...} object → dict, or None. String-aware brace match
     so braces inside string values don't confuse it."""
@@ -71,31 +102,14 @@ def _extract_json(text: str) -> dict | None:
     start = text.find("{")
     if start < 0:
         return None
-    depth = 0
-    in_str = False
-    esc = False
-    for i in range(start, len(text)):
-        ch = text[i]
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
-        elif ch == '"':
-            in_str = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    obj = json.loads(text[start:i + 1])
-                    return obj if isinstance(obj, dict) else None
-                except (ValueError, TypeError):
-                    return None
-    return None
+    span = _first_balanced_span(text, start)
+    if span is None:
+        return None
+    try:
+        obj = json.loads(span)
+    except (ValueError, TypeError):
+        return None
+    return obj if isinstance(obj, dict) else None
 
 
 def _parse_classification(raw: str) -> dict | None:

@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 
 from aiforge_core.config import _atomic
 
@@ -270,19 +271,59 @@ def _save_marker(done: dict) -> None:
         _atomic.write_text(_marker_path(), json.dumps(done))
 
 
+_NEO4J_FACT_QUERY = (
+    # ONLY durable MEMORY FACTS — NOT ingested repo content. Observation_v2 with
+    # kind IN (code, doc) is the RAG search index (thousands of source-file
+    # chunks); draining those would flood learnings with repo code. That index
+    # is regenerable (reindex), so skip it.
+    "MATCH (n) WHERE (n:Observation_v2 OR n:Decision_v2) "
+    "AND coalesce(n.kind, '') NOT IN ['code', 'doc', 'chunk'] "
+    "RETURN labels(n) AS labels, n.text AS text, n.repo AS repo, "
+    "n.tags AS tags, n.topic AS topic LIMIT $lim")
+
+
+def _neo4j_should_drain() -> bool:
+    """Drain ONLY when the Neo4j backend is actually selected, or
+    AIFORGE_MIGRATE_NEO4J=1 is set — so a normal embedded deploy never probes
+    7687 (that was the connection-refused log spam)."""
+    from aiforge_core.memory import backend_select
+    forced = os.environ.get("AIFORGE_MIGRATE_NEO4J", "").strip() in (
+        "1", "true", "yes")
+    return backend_select.memory_backend() == "neo4j" or forced
+
+
+def _topic_of(row) -> "str | None":
+    """The row's topic — explicit ``n.topic`` or the first ``topic:`` tag."""
+    tags = row.get("tags") or []
+    return row.get("topic") or next(
+        (t.split("topic:", 1)[1] for t in tags
+         if isinstance(t, str) and t.startswith("topic:")), None)
+
+
+def _capture_neo4j_row(row, md_store) -> bool:
+    """Re-capture one drained fact via md_store. True when it was captured."""
+    text = (row.get("text") or "").strip()
+    if not text:
+        return False
+    is_dec = "Decision_v2" in (row.get("labels") or [])
+    try:
+        md_store.capture(
+            "project_learning" if is_dec else "learning",
+            ("DECISION: " + text) if is_dec else text,
+            repo=row.get("repo") or "notes", topic=_topic_of(row),
+            source="migrate:neo4j")
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _neo4j_drain(limit: int = 5000) -> dict:
     """Best-effort ONE-SHOT export of old Neo4j memory into md captures, so a
     user who ran the Neo4j backend keeps their knowledge after switching to the
     embedded/OKR default. Reads Observation_v2 / Decision_v2 (text + repo +
     tags/topic) and re-captures each via md_store — which then rolls up into the
-    briefs + OKR via the other steps.
-
-    ONLY attempts a connection when the Neo4j backend is actually selected, or
-    AIFORGE_MIGRATE_NEO4J=1 is set — so a normal embedded deploy never probes
-    7687 (that was the connection-refused log spam). Soft-fail."""
-    from aiforge_core.memory import backend_select
-    force = os.environ.get("AIFORGE_MIGRATE_NEO4J", "").strip() in ("1", "true", "yes")
-    if backend_select.memory_backend() != "neo4j" and not force:
+    briefs + OKR via the other steps. Soft-fail."""
+    if not _neo4j_should_drain():
         return {"ok": True, "skipped": "neo4j not in use"}
     try:
         from neo4j import GraphDatabase
@@ -296,34 +337,9 @@ def _neo4j_drain(limit: int = 5000) -> dict:
 
     moved = 0
     try:
-        with drv.session() as s:
-            # ONLY durable MEMORY FACTS — NOT ingested repo content. Observation_v2
-            # with kind IN (code, doc) is the RAG search index (thousands of
-            # source-file chunks); draining those would flood learnings with repo
-            # code. That index is regenerable (reindex), so skip it.
-            rows = s.run(
-                "MATCH (n) WHERE (n:Observation_v2 OR n:Decision_v2) "
-                "AND coalesce(n.kind, '') NOT IN ['code', 'doc', 'chunk'] "
-                "RETURN labels(n) AS labels, n.text AS text, n.repo AS repo, "
-                "n.tags AS tags, n.topic AS topic LIMIT $lim", lim=limit)
-            for r in rows:
-                text = (r.get("text") or "").strip()
-                if not text:
-                    continue
-                is_dec = "Decision_v2" in (r.get("labels") or [])
-                tags = r.get("tags") or []
-                topic = r.get("topic") or next(
-                    (t.split("topic:", 1)[1] for t in tags
-                     if isinstance(t, str) and t.startswith("topic:")), None)
-                try:
-                    md_store.capture(
-                        "project_learning" if is_dec else "learning",
-                        ("DECISION: " + text) if is_dec else text,
-                        repo=r.get("repo") or "notes", topic=topic,
-                        source="migrate:neo4j")
-                    moved += 1
-                except Exception:  # noqa: BLE001
-                    continue
+        with drv.session() as sess:
+            for row in sess.run(_NEO4J_FACT_QUERY, lim=limit):
+                moved += _capture_neo4j_row(row, md_store)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"read: {exc}", "moved": moved}
     finally:
@@ -334,13 +350,63 @@ def _neo4j_drain(limit: int = 5000) -> dict:
     return {"ok": True, "moved": moved}
 
 
+# A real learning is a sentence; a drained chunk is source code. These match the
+# telltale code tokens; several hits (or one in a short body) flags a chunk.
+_CODE_TOKEN_RE = re.compile(
+    r"(?m)(^\s*(def |class |import |from \w+ import|public |private |func |"
+    r"function |const |let |var |return |package |#include|@\w+)|[{};]\s*$|"
+    r"=>|::|\bself\.|\bpublic static\b)")
+_SHORT_CODE_RE = re.compile(r"(def |import |class |[{};])")
+
+
+def _body_looks_like_code(body: str) -> bool:
+    """True when an OKR learning body reads as source code, not prose."""
+    hits = len(_CODE_TOKEN_RE.findall(body))
+    return hits >= 3 or (hits >= 1 and len(body) < 240
+                         and bool(_SHORT_CODE_RE.search(body)))
+
+
+def _purge_drained_md(md_store) -> int:
+    """Delete flat md files stamped ``source: migrate:neo4j``; return the count."""
+    removed = 0
+    for p in md_store.memory_dir().glob("*.md"):
+        try:
+            d = md_store._parse(p)
+        except Exception:  # noqa: BLE001
+            continue
+        if str(d.get("source") or "") != "migrate:neo4j":
+            continue
+        try:
+            p.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+def _purge_code_learnings(okr_store, out: dict) -> None:
+    """Remove OKR ``learning`` nodes whose body is source code; count the rest
+    as kept. Prose learnings, solutions, repo cards, tasks, scripts stay."""
+    import os as _os
+    for d in okr_store.load_all():
+        if d.get("type") != "learning":
+            continue
+        if not _body_looks_like_code(d.get("body") or ""):
+            out["kept_learnings"] += 1
+            continue
+        try:
+            _os.unlink(d["path"])
+            out["removed_okr_learnings"] += 1
+        except OSError:
+            pass
+
+
 def purge_migrated_code() -> dict:
     """Undo a buggy neo4j drain that captured repo CODE as learnings, WITHOUT
     touching real memory. Removes (1) flat md files stamped
     ``source: migrate:neo4j``, (2) OKR ``learning`` nodes whose body is clearly
     source code (not prose), then re-compacts briefs + rebuilds the index. Prose
     learnings, solutions, repo cards, tasks, scripts are KEPT. Soft-fail."""
-    import re
     out = {"removed_md": 0, "removed_okr_learnings": 0, "kept_learnings": 0}
     try:
         from aiforge_core.memory import md_store
@@ -348,43 +414,10 @@ def purge_migrated_code() -> dict:
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
 
-    # 1. flat md captured by the drain (per-note files + any it created)
-    for p in md_store.memory_dir().glob("*.md"):
-        try:
-            d = md_store._parse(p)
-        except Exception:  # noqa: BLE001
-            continue
-        if str(d.get("source") or "") == "migrate:neo4j":
-            try:
-                p.unlink()
-                out["removed_md"] += 1
-            except OSError:
-                pass
+    out["removed_md"] = _purge_drained_md(md_store)
+    _purge_code_learnings(okr_store, out)
 
-    # 2. OKR learnings whose BODY is source code, not prose. A real learning is a
-    # sentence; a drained chunk is code. Flag when several code tokens appear.
-    code_re = re.compile(
-        r"(?m)(^\s*(def |class |import |from \w+ import|public |private |func |"
-        r"function |const |let |var |return |package |#include|@\w+)|[{};]\s*$|"
-        r"=>|::|\bself\.|\bpublic static\b)")
-    for d in okr_store.load_all():
-        if d.get("type") != "learning":
-            continue
-        body = (d.get("body") or "")
-        hits = len(code_re.findall(body))
-        looks_code = hits >= 3 or (hits >= 1 and len(body) < 240
-                                   and re.search(r"(def |import |class |[{};])", body))
-        if looks_code:
-            try:
-                import os as _os
-                _os.unlink(d["path"])
-                out["removed_okr_learnings"] += 1
-            except OSError:
-                pass
-        else:
-            out["kept_learnings"] += 1
-
-    # 3. rebuild: re-compact remaining md into clean briefs + refresh the index
+    # rebuild: re-compact remaining md into clean briefs + refresh the index
     try:
         md_store.compact(group_by="topic", min_group=1, summarize=False,
                          archive_sources=True)
@@ -594,6 +627,36 @@ def dedupe_all() -> dict:
     return out
 
 
+def _notify_step(on_step, name: str, phase: str, result) -> None:
+    """Fire the progress callback for one step boundary; never let a reporting
+    error break the recompact."""
+    if not on_step:
+        return
+    try:
+        on_step(name, phase, result)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _run_recompact_step(i: int, total: int, name: str, fn, out: dict,
+                        on_step) -> None:
+    """Run one recompact step, recording its result (or crash) in ``out`` and
+    bracketing it with 'run'/'done' progress callbacks. Soft-fail — a crashed
+    step becomes ``{"ok": False, "error": …}`` and the rest still run."""
+    log.info("compact-all: [%d/%d] %s …", i, total, name)
+    _notify_step(on_step, name, "run", None)
+    try:
+        out[name] = fn()
+        if isinstance(out[name], dict) and out[name].get("ok") is False:
+            log.error("compact-all: step %s reported failure: %s",
+                      name, out[name].get("error") or out[name])
+    except Exception as exc:  # noqa: BLE001
+        out[name] = {"ok": False, "error": str(exc)}
+        log.exception("compact-all: step %s CRASHED: %s", name, exc)
+    log.info("compact-all: [%d/%d] %s done", i, total, name)
+    _notify_step(on_step, name, "done", out[name])
+
+
 def force_recompact_all(on_step=None) -> dict:
     """COMPACT ALL — redo EVERYTHING from scratch: tidy legacy/cryptic briefs,
     re-chunk (chonkie) + re-run the LLM over EVERY flat brief (not just new
@@ -674,26 +737,7 @@ def force_recompact_all(on_step=None) -> dict:
     ]
     log.info("compact-all: START (%d steps)", len(steps))
     for i, (name, fn) in enumerate(steps, 1):
-        log.info("compact-all: [%d/%d] %s …", i, len(steps), name)
-        if on_step:
-            try:
-                on_step(name, "run", None)
-            except Exception:  # noqa: BLE001
-                pass
-        try:
-            out[name] = fn()
-            if isinstance(out[name], dict) and out[name].get("ok") is False:
-                log.error("compact-all: step %s reported failure: %s",
-                          name, out[name].get("error") or out[name])
-        except Exception as exc:  # noqa: BLE001
-            out[name] = {"ok": False, "error": str(exc)}
-            log.exception("compact-all: step %s CRASHED: %s", name, exc)
-        log.info("compact-all: [%d/%d] %s done", i, len(steps), name)
-        if on_step:
-            try:
-                on_step(name, "done", out[name])
-            except Exception:  # noqa: BLE001
-                pass
+        _run_recompact_step(i, len(steps), name, fn, out, on_step)
     out["ok"] = True
     log.info("compact-all: DONE")
     return out

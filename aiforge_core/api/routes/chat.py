@@ -735,6 +735,29 @@ def chat_media_raw(media_id: int) -> FileResponse:
     return FileResponse(row["path"], media_type=row.get("mime") or "image/png")
 
 
+_DIGEST_ARG_KEYS = ("path", "file", "cmd", "command", "query", "pattern")
+
+
+def _step_mark(result) -> str:
+    """Tiny outcome marker for one tool result — ✓ / ✗ / nothing."""
+    if not isinstance(result, dict):
+        return ""
+    if result.get("ok") is False or result.get("error"):
+        return "✗"
+    return "✓" if result.get("ok") is True else ""
+
+
+def _step_arg(args) -> str:
+    """The one argument worth naming in the digest (the first of
+    path/file/cmd/command/query/pattern the call carried), kept short."""
+    if not isinstance(args, dict):
+        return ""
+    for k in _DIGEST_ARG_KEYS:
+        if args.get(k):
+            return str(args[k])[:48]
+    return ""
+
+
 def _step_digest(steps: list) -> str:
     """One compact line summarising what an assistant turn DID — tool calls +
     outcomes — so the next turn's history carries the agent's actions, not just
@@ -748,21 +771,8 @@ def _step_digest(steps: list) -> str:
         if not isinstance(s, dict) or s.get("type") != "tool":
             continue
         name = s.get("name") or "tool"
-        res = s.get("result") or {}
-        # Tiny outcome marker: ok / err / a key field, kept short.
-        mark = ""
-        if isinstance(res, dict):
-            if res.get("ok") is False or res.get("error"):
-                mark = "✗"
-            elif res.get("ok") is True:
-                mark = "✓"
-        arg = ""
-        a = s.get("args") or {}
-        if isinstance(a, dict):
-            for k in ("path", "file", "cmd", "command", "query", "pattern"):
-                if a.get(k):
-                    arg = str(a[k])[:48]
-                    break
+        arg = _step_arg(s.get("args") or {})
+        mark = _step_mark(s.get("result") or {})
         bits.append(f"{name}({arg}){mark}" if arg else f"{name}{mark}")
         if len(bits) >= 12:
             bits.append("…")
