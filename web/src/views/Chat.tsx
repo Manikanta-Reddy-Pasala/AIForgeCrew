@@ -34,6 +34,470 @@ function cwdLabel(cwd?: string | null): string {
   return cwd.length > 48 ? '…' + cwd.slice(-46) : cwd;
 }
 
+// ── SSE turn reducers (pure) ─────────────────────────────────────────────────
+// The stream pump applies one event at a time to the live turn. These are the
+// pure state transforms it uses — kept at module level so each stays a small,
+// independently-testable unit (and off the pump's cognitive-complexity budget).
+
+// Split a `\n\n`-delimited SSE block into its data lines and apply each.
+function dispatchSSEBlock(block: string, applyEvent: (line: string) => void) {
+  for (const line of block.split('\n')) {
+    if (line.startsWith('data: ')) applyEvent(line);
+  }
+}
+
+// Append a system-role thought step (used by the expired/auto-approved pills).
+function appendSystemThought(prev: LiveTurn, text: string): LiveTurn {
+  return { ...prev, steps: [...prev.steps,
+    { kind: 'thought' as const, role: 'system', text }] };
+}
+
+// Apply `fn` to the live turn only when one exists — the `prev ? … : prev`
+// guard, factored out so callers stay branch-free.
+function guardedUpdate(
+  setLiveTurn: React.Dispatch<React.SetStateAction<LiveTurn | null>>,
+  fn: (prev: LiveTurn) => LiveTurn,
+) {
+  setLiveTurn(prev => prev ? fn(prev) : prev);
+}
+
+// M5 audit-pill text for a captured-flag auto-approved action.
+function autoApprovedText(evt: any): string {
+  return `⚡ auto-approved ${evt.name} (flag: ${evt.flag}${evt.scope ? ' · ' + evt.scope : ''})`;
+}
+
+// Append a captured rule/memory/feedback pill to the live turn.
+function appendCaptured(prev: LiveTurn, evt: any): LiveTurn {
+  return {
+    ...prev,
+    captured: [...(prev.captured || []), {
+      id: evt.id, category: evt.category, scope: evt.scope,
+      text: evt.text || '', repo: evt.repo,
+      gate_intent: evt.gate_intent,
+    }],
+  };
+}
+
+// M3 context-window usage — MERGE, never replace: the end-of-turn event carries
+// only settled request counts, and overwriting would blank the context meter.
+function mergeUsage(prev: LiveTurn, evt: any): LiveTurn {
+  return { ...prev, usage: {
+    // budget 0 marks "no context reading yet" — the context bar is guarded on
+    // it, so a count-only event cannot render an empty "0k / 0k (0%)" meter.
+    ...(prev.usage || { pct: 0, chars: 0, budget: 0 }),
+    ...(evt.pct !== undefined ? {
+      pct: evt.pct, chars: evt.context_chars, budget: evt.budget_chars,
+      tokens: evt.context_tokens, windowTokens: evt.window_tokens,
+    } : {}),
+    ...(evt.llm_turn !== undefined ? {
+      llmTurn: evt.llm_turn, llmSession: evt.llm_session,
+      llmPerMin: evt.llm_per_min,
+      // `?? 0`, not the raw value: an API that predates these fields would
+      // otherwise leave the previous event's failure count standing.
+      llmTurnFailed: evt.llm_turn_failed ?? 0,
+      llmFailedPerMin: evt.llm_failed_per_min ?? 0,
+      llmTurnTokensOut: evt.llm_turn_tokens_out ?? 0,
+    } : {}),
+  } };
+}
+
+// A 'tool' event: flip the matching pending row to its real result (matched on
+// call_id), or append when there's no pending row (hook-blocked/rejected path).
+function reduceToolEvent(prev: LiveTurn, evt: any): LiveTurn {
+  const idx = evt.call_id !== undefined
+    ? prev.steps.findIndex(s => s.kind === 'tool' && s.pending && s.call_id === evt.call_id)
+    : -1;
+  if (idx !== -1) {
+    const steps = [...prev.steps];
+    steps[idx] = { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: evt.result || {}, role: evt.role, call_id: evt.call_id };
+    return { ...prev, steps };
+  }
+  return { ...prev, steps: [...prev.steps, { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: evt.result || {}, role: evt.role }] };
+}
+
+// A 'message' event: a supplementary report is an extra step; the primary
+// message replaces the answer text and ends streaming.
+function reduceMessageEvent(prev: LiveTurn, evt: any, onAwaiting: () => void): LiveTurn {
+  if (evt.supplementary) {
+    return { ...prev, steps: [...prev.steps, { kind: 'message' as const, text: evt.text, role: evt.role }] };
+  }
+  if (evt.awaiting_input) onAwaiting();
+  return { ...prev, text: evt.text, streaming: false, awaiting: !!evt.awaiting_input };
+}
+
+// Apply a subtask status update by slug (named so it stays off reduceTurn's
+// complexity budget).
+function withSubtaskStatus(subtasks: SubtaskItem[], slug: string, status: string): SubtaskItem[] {
+  return subtasks.map(s => s.slug === slug ? { ...s, status } : s);
+}
+
+// Append a plain step (thought/tool_start/changes) — the simple, guard-free
+// event types, resolved by a small lookup so reduceTurn stays flat.
+function appendStepFor(prev: LiveTurn, evt: any): LiveTurn | null {
+  if (evt.type === 'thought') {
+    return { ...prev, steps: [...prev.steps, { kind: 'thought' as const, text: evt.text, role: evt.role }] };
+  }
+  if (evt.type === 'tool_start') {
+    // Live "it's running" row — flipped to the real result by the matching
+    // 'tool' event (matched on call_id) instead of showing nothing while a
+    // slow bash/test/build runs.
+    return { ...prev, steps: [...prev.steps, { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: {}, role: evt.role, pending: true, call_id: evt.call_id }] };
+  }
+  if (evt.type === 'changes') {
+    return { ...prev, steps: [...prev.steps, { kind: 'changes' as const, files: evt.files || [], summary: evt.summary || { files: (evt.files || []).length, additions: 0, deletions: 0 } }] };
+  }
+  if (evt.type === 'error') {
+    return { ...prev, text: evt.text, steps: [...prev.steps, { kind: 'error' as const, text: evt.text }], streaming: false };
+  }
+  if (evt.type === 'done') {
+    return { ...prev, streaming: false };
+  }
+  return null;
+}
+
+// The live-turn "step" reducer (subtasks/thought/tool/changes/message/…).
+function reduceTurn(prev: LiveTurn | null, evt: any, onAwaiting: () => void): LiveTurn | null {
+  if (!prev) return prev;
+  if (evt.type === 'subtasks') {
+    return { ...prev, subtasks: evt.items || [] };
+  }
+  if (evt.type === 'subtask_update' && prev.subtasks) {
+    return { ...prev, subtasks: withSubtaskStatus(prev.subtasks, evt.slug, evt.status) };
+  }
+  if (evt.type === 'tool') {
+    return reduceToolEvent(prev, evt);
+  }
+  if (evt.type === 'message') {
+    return reduceMessageEvent(prev, evt, onAwaiting);
+  }
+  const stepped = appendStepFor(prev, evt);
+  return stepped !== null ? stepped : prev;
+}
+
+// The POST body for a send — mode/quick/resume/builder/edit flags folded in.
+function buildSendPayload(
+  q: string, runMode: ChatMode, builder: unknown, editFrom: number | null,
+  opts: { resume?: boolean } | undefined, reviewEdits: boolean, quickMode: boolean,
+): Record<string, unknown> {
+  return {
+    content: q, mode: builder ? 'simple' : runMode, review_edits: reviewEdits,
+    // Quick only applies to the single-agent modes; Team runs its own pipeline.
+    quick: runMode !== 'team' ? quickMode : false,
+    // Resume a stopped turn rather than redo it. The server also infers this
+    // when the same words are re-sent; the flag covers a rephrase.
+    ...(opts?.resume ? { resume: true } : {}),
+    ...(builder ? { builder } : {}),
+    ...(editFrom != null ? { edit_from_message_id: editFrom } : {}),
+  };
+}
+
+// Throw a descriptive error for a non-ok send POST (detail from JSON, then text).
+async function raiseForStatus(res: Response): Promise<void> {
+  if (res.ok) return;
+  let detail = '';
+  try { const b = await res.json(); detail = b?.detail || b?.error || ''; } catch { /* ignore */ }
+  try { if (!detail) detail = await res.text(); } catch { /* ignore */ }
+  throw new Error(`${res.status} ${res.statusText}${detail ? ' — ' + detail : ''}`);
+}
+
+// ── Topbar controls (extracted from Chat's return so each stays a small unit) ─
+
+// Simple | Plan | Team mode toggle.
+function ModeToggle({ chatMode, setChatMode, busy }: Readonly<{
+  chatMode: ChatMode; setChatMode: React.Dispatch<React.SetStateAction<ChatMode>>; busy: boolean;
+}>) {
+  return (
+    <div className="chat-mode-toggle" title="Simple: single agent · Plan: read-only, proposes a plan first · Team: full ADK planner→doer→learner pipeline">
+      <button type="button"
+        className={chatMode === 'simple' ? 'active' : ''}
+        onClick={() => setChatMode('simple')}
+        disabled={busy}
+      >
+        Simple
+      </button>
+      <button type="button"
+        className={chatMode === 'plan' ? 'active' : ''}
+        onClick={() => setChatMode('plan')}
+        disabled={busy}
+        title="Read-only: the agent inspects the repo and proposes a plan; switch to Simple/Team to execute"
+      >
+        Plan
+      </button>
+      <button type="button"
+        className={chatMode === 'team' ? 'active' : ''}
+        onClick={() => setChatMode('team')}
+        disabled={busy}
+      >
+        Team (full flow)
+      </button>
+    </div>
+  );
+}
+
+// Quick: one doer, hard step cap. Hidden in Team (nothing to cap).
+function QuickToggle({ chatMode, quickMode, setQuickMode, busy }: Readonly<{
+  chatMode: ChatMode; quickMode: boolean; setQuickMode: React.Dispatch<React.SetStateAction<boolean>>; busy: boolean;
+}>) {
+  if (chatMode === 'team') return null;
+  return (
+    <button
+      type="button"
+      onClick={() => setQuickMode(v => !v)}
+      disabled={busy}
+      title={quickMode
+        ? 'Quick ON — a single doer with a hard step cap. Best for a rename, a one-line fix or a question, where the agent\'s own exploration costs more than the change. Click to turn OFF.'
+        : 'Quick OFF — the agent works until it is done (normal). Turn ON for small asks that should not take minutes.'}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-xs)',
+        padding: '2px 8px', borderRadius: 999, cursor: 'pointer',
+        border: `1px solid ${quickMode ? 'var(--accent,#2f81f7)' : 'var(--border-1)'}`,
+        background: quickMode ? 'rgba(47,129,247,0.10)' : 'transparent',
+        color: quickMode ? 'var(--accent,#2f81f7)' : 'var(--fg-2)',
+      }}
+    >
+      {quickMode ? '⚡' : '🐢'} Quick {quickMode ? 'on' : 'off'}
+    </button>
+  );
+}
+
+// Per-mode approval toggle — pause for Approve/Reject in this mode.
+function ApprovalsToggle({ approvalsOn, toggleApprovals, modeApprovalKey, chatMode }: Readonly<{
+  approvalsOn: boolean; toggleApprovals: () => void;
+  modeApprovalKey: (m: ChatMode) => 'chat' | 'plan' | 'pipeline'; chatMode: ChatMode;
+}>) {
+  return (
+    <button
+      type="button"
+      onClick={toggleApprovals}
+      title={approvalsOn
+        ? `Approvals ON for ${modeApprovalKey(chatMode)} — pauses for Approve/Reject on risky/file-changing tools. Click to turn OFF.`
+        : `Approvals OFF for ${modeApprovalKey(chatMode)} — runs uninterrupted (hard-denied actions + destructive deletes still confirm). Click to turn ON.`}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-xs)',
+        padding: '2px 8px', borderRadius: 999, cursor: 'pointer',
+        border: `1px solid ${approvalsOn ? 'var(--ok,#22c55e)' : 'var(--border-1)'}`,
+        background: approvalsOn ? 'rgba(34,197,94,0.10)' : 'transparent',
+        color: approvalsOn ? 'var(--ok,#22c55e)' : 'var(--fg-2)',
+      }}
+    >
+      {approvalsOn ? '🛡' : '⚡'} Approvals {approvalsOn ? 'on' : 'off'}
+    </button>
+  );
+}
+
+// Model selector — less relevant in team mode, so hidden there.
+function ModelSelect({ chatMode, busy, modelActive, setModelActive, selectedModel,
+                       setSelectedModel, chatProvider, modelOptions }: Readonly<{
+  chatMode: ChatMode; busy: boolean; modelActive: boolean;
+  setModelActive: React.Dispatch<React.SetStateAction<boolean>>;
+  selectedModel: string; setSelectedModel: React.Dispatch<React.SetStateAction<string>>;
+  chatProvider: string; modelOptions: ChatModelEntry[];
+}>) {
+  if (chatMode === 'team') return null;
+  return (
+    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--fg-2)' }}>
+      <span
+        title={modelActive ? 'Model is loaded and active' : 'Model is not currently loaded'}
+        style={{
+          display: 'inline-block',
+          width: 8,
+          height: 8,
+          borderRadius: '50%',
+          background: modelActive ? 'var(--ok, #22c55e)' : 'var(--warn, #f59e0b)',
+          flexShrink: 0,
+        }}
+      />{' '}
+      Model{' '}
+      <select
+        className="chat-model-select"
+        value={selectedModel}
+        onChange={async e => {
+          const newModel = e.target.value;
+          setSelectedModel(newModel);
+          try {
+            const res = await chatApi.setChatModel(newModel, chatProvider || undefined);
+            setModelActive(res.active);
+            if (res.active) {
+              toast.success('Model updated');
+            } else {
+              const label = modelOptions.find(o => o.id === newModel)?.label || newModel;
+              toast.warning(`${label} is not loaded — it may fail or take time to load`);
+            }
+          } catch (err: any) {
+            toast.error(`Failed to set model: ${err.message}`);
+          }
+        }}
+        disabled={busy || modelOptions.length === 0}
+        title="Chat model"
+      >
+        {modelOptions.length === 0 ? (
+          <option value="" disabled>
+            no active models — load one in LM Studio / configure on Home
+          </option>
+        ) : (
+          modelOptions.map(opt => (
+            <option key={opt.id} value={opt.id}>
+              {opt.label}
+            </option>
+          ))
+        )}
+      </select>
+    </label>
+  );
+}
+
+// Orchestrator model (enhancer + planner) — shown in team mode where they run.
+function OrchSelect({ chatMode, orchOptions, orchModel, setOrchModel, chatProvider, busy }: Readonly<{
+  chatMode: ChatMode; orchOptions: { id: string; label: string }[]; orchModel: string;
+  setOrchModel: React.Dispatch<React.SetStateAction<string>>; chatProvider: string; busy: boolean;
+}>) {
+  if (!(chatMode === 'team' && orchOptions.length > 0)) return null;
+  return (
+    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--fg-2)' }}
+           title="Model for the orchestrator (enhancer + planner) — the agents that analyze & split the task">
+      Orchestrator{' '}
+      <select
+        className="chat-model-select"
+        value={orchModel}
+        disabled={busy}
+        onChange={async e => {
+          const m = e.target.value;
+          setOrchModel(m);
+          try {
+            await chatApi.setOrchestratorModel(m, chatProvider || undefined);
+            toast.success('Orchestrator model updated (enhancer + planner)');
+          } catch (err: any) { toast.error(err.message); }
+        }}
+      >
+        {orchOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+      </select>
+      <CtxReload model={orchModel} />
+    </label>
+  );
+}
+
+// Secondary actions tucked into an overflow (⋯) menu.
+function OverflowMenu({ menuRef, menuOpen, setMenuOpen, chatMode, selectedModel, setModelActive,
+                        fullPipeline, toggleFullPipeline, busy, compactionDisabled, toggleCompaction,
+                        activeSession, openCheckpoints, killAll, deleteSession }: Readonly<{
+  menuRef: React.RefObject<HTMLDivElement | null>; menuOpen: boolean;
+  setMenuOpen: React.Dispatch<React.SetStateAction<boolean>>; chatMode: ChatMode;
+  selectedModel: string; setModelActive: React.Dispatch<React.SetStateAction<boolean>>;
+  fullPipeline: boolean; toggleFullPipeline: (next: boolean) => void; busy: boolean;
+  compactionDisabled: boolean; toggleCompaction: (next: boolean) => void;
+  activeSession: ChatSession | null; openCheckpoints: () => void; killAll: () => void;
+  deleteSession: (id: number) => void;
+}>) {
+  return (
+    <div ref={menuRef} style={{ position: 'relative' }}>
+      <button type="button" className="ghost sm" onClick={() => setMenuOpen(o => !o)}
+              title="More" aria-label="More actions"
+              style={{ fontSize: 18, lineHeight: 1, padding: '2px 8px' }}>⋯</button>
+      {menuOpen && (
+        <div role="menu" style={{
+          position: 'absolute', right: 0, top: '110%', zIndex: 40, minWidth: 210,
+          background: 'var(--bg-0)', border: '1px solid var(--border-1)',
+          borderRadius: 8, padding: 6, boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
+          display: 'flex', flexDirection: 'column', gap: 2,
+        }}>
+          {chatMode !== 'team' && selectedModel && (
+            <div className="chat-menu-item" style={{ ...menuItem, justifyContent: 'space-between' }}
+                 title="Reload this model at a chosen context window (K tokens)">
+              <span>Reload model @ ctx</span>
+              <CtxReload model={selectedModel} onLoaded={() => setModelActive(true)} />
+            </div>
+          )}
+          {chatMode === 'team' && (
+            <label className="chat-menu-item" title="Run every agent instead of letting triage fast-path trivial requests."
+                   style={menuItem}>
+              <input type="checkbox" checked={fullPipeline}
+                     onChange={e => toggleFullPipeline(e.target.checked)} disabled={busy} />{' '}
+              Force full pipeline
+            </label>
+          )}
+          <label className="chat-menu-item" title="Turn off the daily memory-compaction pass (recompact + dedupe + evening fold). Takes effect on next restart."
+                 style={menuItem}>
+            <input type="checkbox" checked={compactionDisabled}
+                   onChange={e => toggleCompaction(e.target.checked)} disabled={busy} />{' '}
+            Disable memory compaction
+          </label>
+          {activeSession && (
+            <button type="button" style={menuBtn} onClick={() => { setMenuOpen(false); openCheckpoints(); }}>
+              ↶ Checkpoints
+            </button>
+          )}
+          <button type="button" style={menuBtn} onClick={() => { setMenuOpen(false); killAll(); }}
+                  title="Force-stop every run + release the team lock">
+            ⚠ Reset stuck runs
+          </button>
+          {activeSession && (
+            <>
+              <div style={{ height: 1, background: 'var(--border-1)', margin: '4px 0' }} />
+              <button type="button" style={{ ...menuBtn, color: 'var(--err)' }}
+                      onClick={() => { setMenuOpen(false); deleteSession(activeSession.id); }}>
+                🗑 Delete conversation
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Workspace checkpoints panel (#3) — a modal listing pre-turn git snapshots.
+type Checkpoint = { sha: string; label: string; when: string };
+function CheckpointsModal({ checkpoints, setCheckpoints, restoreCheckpoint }: Readonly<{
+  checkpoints: Checkpoint[] | null;
+  setCheckpoints: React.Dispatch<React.SetStateAction<Checkpoint[] | null>>;
+  restoreCheckpoint: (sha: string, deleteOrphans?: boolean) => void;
+}>) {
+  if (checkpoints === null) return null;
+  return (
+    <div
+      {...clickable(() => setCheckpoints(null))} aria-label="Close"
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50,
+      }}
+    >
+      <div role="dialog" aria-modal="true" aria-label="Workspace checkpoints"
+           onClick={e => e.stopPropagation()}
+           onKeyDown={e => e.stopPropagation()} style={{
+        width: 'min(560px, 92vw)', maxHeight: '70vh', overflow: 'auto',
+        background: 'var(--bg-0)', border: '1px solid var(--border-1)',
+        borderRadius: 10, padding: 16,
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+          <strong>Workspace checkpoints</strong>
+          <button type="button" className="ghost sm" onClick={() => setCheckpoints(null)}><Icon.X size={12} /></button>
+        </div>
+        {checkpoints.length === 0 ? (
+          <div className="muted xs">No checkpoints yet. A snapshot is taken automatically before each turn (in a git repo).</div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {checkpoints.map(c => (
+              <div key={c.sha} style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                gap: 8, padding: 8, border: '1px solid var(--border-0)', borderRadius: 6,
+              }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.label}</div>
+                  <div className="muted xs" style={{ fontFamily: 'var(--font-mono)' }}>{c.when} · {c.sha.slice(0, 8)}</div>
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                  <button type="button" className="ghost sm" onClick={() => restoreCheckpoint(c.sha)} title="Revert tracked files to this snapshot; keep files created after it">↶ Restore</button>
+                  <button type="button" className="ghost sm danger" onClick={() => restoreCheckpoint(c.sha, true)} title="Full restore: make the tree exactly match this snapshot — deletes files created after it">⤓ Full</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Chat component ─────────────────────────────────────────────────────────────
 
 export default function Chat() {
@@ -721,6 +1185,47 @@ export default function Chat() {
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
 
+    // Re-attach handshake (first event from /attach): if a run is live, bring
+    // the view back into the streaming state — busy spinner, a live turn for
+    // the replayed events to populate, and the elapsed timer seeded from the
+    // run's TRUE start so the duration is continuous (not reset).
+    function handleAttached(evt: any) {
+      if (!evt.running) return;
+      setBusy(true);
+      setLiveTurn(prev => prev ?? { role: 'assistant', text: '', steps: [], streaming: true });
+      sendStartRef.current = evt.started_at ? evt.started_at * 1000 : Date.now();
+      setElapsedSec(Math.max(0, Math.floor((Date.now() - sendStartRef.current) / 1000)));
+      if (timerRef.current !== null) clearInterval(timerRef.current);
+      timerRef.current = setInterval(() => {
+        setElapsedSec(Math.floor((Date.now() - sendStartRef.current) / 1000));
+      }, 1000);
+    }
+
+    // Inline "pill" events that only mutate the live turn (expired gate,
+    // auto-approved audit, usage meter, captured rule/memory). Returns whether
+    // the event was one of these (so applyEvent can stop).
+    function handlePillEvent(evt: any): boolean {
+      if (evt.type === 'approval_expired') {   // M4: gate timed out while away
+        setPendingApproval(null);
+        guardedUpdate(setLiveTurn, prev => appendSystemThought(prev,
+          `⏲ approval for ${evt.name} expired — action was not run`));
+        return true;
+      }
+      if (evt.type === 'auto_approved') {       // M5: captured-flag auto-approve
+        guardedUpdate(setLiveTurn, prev => appendSystemThought(prev, autoApprovedText(evt)));
+        return true;
+      }
+      if (evt.type === 'usage') {               // M3: context-window usage
+        guardedUpdate(setLiveTurn, prev => mergeUsage(prev, evt));
+        return true;
+      }
+      if (evt.type === 'captured') {            // deterministic capture pass pill
+        guardedUpdate(setLiveTurn, prev => appendCaptured(prev, evt));
+        return true;
+      }
+      return false;
+    }
+
     function applyEvent(raw: string) {
       const line = raw.startsWith('data: ') ? raw.slice(6) : raw;
       if (!line.trim()) return;
@@ -729,80 +1234,16 @@ export default function Chat() {
 
       // Heartbeat — keeps the SSE connection warm on a slow model. No-op.
       if (evt.type === 'ping') return;
+      if (evt.type === 'attached') { handleAttached(evt); return; }
 
-      // Re-attach handshake (first event from /attach): if a run is live,
-      // bring the view back into the streaming state — busy spinner, a live
-      // turn for the replayed events to populate, and the elapsed timer seeded
-      // from the run's TRUE start so the duration is continuous (not reset).
-      if (evt.type === 'attached') {
-        if (evt.running) {
-          setBusy(true);
-          setLiveTurn(prev => prev ?? { role: 'assistant', text: '', steps: [], streaming: true });
-          sendStartRef.current = evt.started_at ? evt.started_at * 1000 : Date.now();
-          setElapsedSec(Math.max(0, Math.floor((Date.now() - sendStartRef.current) / 1000)));
-          if (timerRef.current !== null) clearInterval(timerRef.current);
-          timerRef.current = setInterval(() => {
-            setElapsedSec(Math.floor((Date.now() - sendStartRef.current) / 1000));
-          }, 1000);
-        }
-        return;
-      }
-
-      // Approval gate (#1): the run is blocked server-side; surface the
-      // action + diff so the user can Approve/Reject. Cleared when the
-      // next tool/message event arrives (the run resumed).
+      // Approval gate (#1): the run is blocked server-side; surface the action
+      // + diff so the user can Approve/Reject. Cleared when the next
+      // tool/message event arrives (the run resumed).
       if (evt.type === 'approval') {
         setPendingApproval({ id: evt.id, sessionId, name: evt.name, args: evt.args || {}, reason: evt.reason, preview: evt.preview });
         return;
       }
       if (evt.type === 'tool' || evt.type === 'message') setPendingApproval(null);
-
-      // M4: a gate that timed out while the user was away — clear the card and
-      // leave an inline note so it's not a silent auto-reject.
-      if (evt.type === 'approval_expired') {
-        setPendingApproval(null);
-        setLiveTurn(prev => prev ? { ...prev, steps: [...prev.steps,
-          { kind: 'thought' as const, role: 'system',
-            text: `⏲ approval for ${evt.name} expired — action was not run` }] } : prev);
-        return;
-      }
-
-      // M5: an auto-approved (captured-flag) action — render the audit pill
-      // the backend emits for attributability (was dropped before).
-      if (evt.type === 'auto_approved') {
-        setLiveTurn(prev => prev ? { ...prev, steps: [...prev.steps,
-          { kind: 'thought' as const, role: 'system',
-            text: `⚡ auto-approved ${evt.name} (flag: ${evt.flag}${evt.scope ? ' · ' + evt.scope : ''})` }] } : prev);
-        return;
-      }
-
-      // M3: context-window usage — keep the latest on the live turn for the
-      // footer meter.
-      if (evt.type === 'usage') {
-        // MERGE, never replace: the end-of-turn event carries only the settled
-        // request counts, and overwriting would blank the context meter with it.
-        setLiveTurn(prev => prev ? { ...prev, usage: {
-          // budget 0 marks "no context reading yet" — the context bar is
-          // guarded on it, so a count-only event (Stop before the first
-          // in-loop usage) cannot render an empty "0k / 0k (0%)" meter.
-          ...(prev.usage || { pct: 0, chars: 0, budget: 0 }),
-          ...(evt.pct !== undefined ? {
-            pct: evt.pct, chars: evt.context_chars, budget: evt.budget_chars,
-            tokens: evt.context_tokens, windowTokens: evt.window_tokens,
-          } : {}),
-          ...(evt.llm_turn !== undefined ? {
-            llmTurn: evt.llm_turn, llmSession: evt.llm_session,
-            llmPerMin: evt.llm_per_min,
-            // `?? 0`, not the raw value: an API that predates these fields
-            // would otherwise leave the previous event's failure count
-            // standing on a turn that never reported one.
-            llmTurnFailed: evt.llm_turn_failed ?? 0,
-            llmFailedPerMin: evt.llm_failed_per_min ?? 0,
-            llmTurnTokensOut: evt.llm_turn_tokens_out ?? 0,
-          } : {}),
-        } } : prev);
-        return;
-      }
 
       // Plan ready (Gap B): a plan-mode run produced an approvable spec.
       if (evt.type === 'plan_ready') {
@@ -817,71 +1258,10 @@ export default function Chat() {
         return;
       }
 
-      // Rule/Memory/Feedback captured (deterministic capture pass): render an
-      // inline pill (change-scope / undo). Append to the live turn.
-      if (evt.type === 'captured') {
-        setLiveTurn(prev => prev ? {
-          ...prev,
-          captured: [...(prev.captured || []), {
-            id: evt.id, category: evt.category, scope: evt.scope,
-            text: evt.text || '', repo: evt.repo,
-            gate_intent: evt.gate_intent,
-          }],
-        } : prev);
-        return;
-      }
+      if (handlePillEvent(evt)) return;
 
-      setLiveTurn(prev => {
-        if (!prev) return prev;
-        if (evt.type === 'subtasks') {
-          return { ...prev, subtasks: evt.items || [] };
-        }
-        if (evt.type === 'subtask_update' && prev.subtasks) {
-          return { ...prev, subtasks: prev.subtasks.map(s =>
-            s.slug === evt.slug ? { ...s, status: evt.status } : s) };
-        }
-        if (evt.type === 'thought') {
-          return { ...prev, steps: [...prev.steps, { kind: 'thought' as const, text: evt.text, role: evt.role }] };
-        }
-        if (evt.type === 'tool_start') {
-          // Live "it's running" row — flipped to the real result by the
-          // matching 'tool' event below (matched on call_id) instead of
-          // showing nothing for however long a slow bash/test/build takes.
-          return { ...prev, steps: [...prev.steps, { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: {}, role: evt.role, pending: true, call_id: evt.call_id }] };
-        }
-        if (evt.type === 'tool') {
-          const idx = evt.call_id !== undefined
-            ? prev.steps.findIndex(s => s.kind === 'tool' && s.pending && s.call_id === evt.call_id)
-            : -1;
-          if (idx !== -1) {
-            const steps = [...prev.steps];
-            steps[idx] = { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: evt.result || {}, role: evt.role, call_id: evt.call_id };
-            return { ...prev, steps };
-          }
-          // No matching pending row (hook-blocked / rejected / cancelled path
-          // never emits tool_start) — append, same as before this change.
-          return { ...prev, steps: [...prev.steps, { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: evt.result || {}, role: evt.role }] };
-        }
-        if (evt.type === 'changes') {
-          return { ...prev, steps: [...prev.steps, { kind: 'changes' as const, files: evt.files || [], summary: evt.summary || { files: (evt.files || []).length, additions: 0, deletions: 0 } }] };
-        }
-        if (evt.type === 'message') {
-          // A supplementary message (build/integration report) is shown as an
-          // extra step — it must NOT replace the agent's actual answer text.
-          if (evt.supplementary) {
-            return { ...prev, steps: [...prev.steps, { kind: 'message' as const, text: evt.text, role: evt.role }] };
-          }
-          if (evt.awaiting_input) setTimeout(() => textareaRef.current?.focus(), 30);
-          return { ...prev, text: evt.text, streaming: false, awaiting: !!evt.awaiting_input };
-        }
-        if (evt.type === 'error') {
-          return { ...prev, text: evt.text, steps: [...prev.steps, { kind: 'error' as const, text: evt.text }], streaming: false };
-        }
-        if (evt.type === 'done') {
-          return { ...prev, streaming: false };
-        }
-        return prev;
-      });
+      setLiveTurn(prev => reduceTurn(prev, evt,
+        () => setTimeout(() => textareaRef.current?.focus(), 30)));
     }
 
     while (true) {
@@ -891,20 +1271,12 @@ export default function Chat() {
       const parts = buffer.split('\n\n');
       buffer = parts.pop() ?? '';
       for (const part of parts) {
-        if (part.trim()) {
-          for (const line of part.split('\n')) {
-            if (line.startsWith('data: ')) applyEvent(line);
-          }
-        }
+        if (part.trim()) dispatchSSEBlock(part, applyEvent);
       }
     }
 
     // Flush remaining buffer
-    if (buffer.trim()) {
-      for (const line of buffer.split('\n')) {
-        if (line.startsWith('data: ')) applyEvent(line);
-      }
-    }
+    if (buffer.trim()) dispatchSSEBlock(buffer, applyEvent);
   }
 
   // ── Re-attach to a run still in flight on the server ──────────────────────
@@ -1024,35 +1396,10 @@ export default function Chat() {
     // this is a mid-stream drop of a run that's alive server-side → reattach.
     // A failure BEFORE (a non-ok POST) is a real start error → show it.
     let streamOpened = false;
-    try {
-      const res = await fetch(chatSessionMessageURL(sessionId), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: q, mode: builder ? 'simple' : runMode, review_edits: reviewEdits,
-                               // Quick only applies to the single-agent modes;
-                               // Team runs its own pipeline and ignores it.
-                               quick: runMode !== 'team' ? quickMode : false,
-                               // Resume a stopped turn rather than redo it. The
-                               // server also infers this when the same words are
-                               // re-sent; the flag covers a rephrase.
-                               ...(opts?.resume ? { resume: true } : {}),
-                               ...(builder ? { builder } : {}),
-                               ...(editFrom != null ? { edit_from_message_id: editFrom } : {}) }),
-        signal: ctrl.signal,
-      });
 
-      if (!res.ok) {
-        let detail = '';
-        try { const b = await res.json(); detail = b?.detail || b?.error || ''; } catch { /* ignore */ }
-        try { if (!detail) detail = await res.text(); } catch { /* ignore */ }
-        throw new Error(`${res.status} ${res.statusText}${detail ? ' — ' + detail : ''}`);
-      }
-
-      streamOpened = true;
-      await pumpStream(res, sessionId);
-      reconnectRef.current = 0;   // clean completion — reset the retry budget
-
-      // Ensure streaming is cleared; freeze the elapsed timer
+    // Success tail: freeze the timer, reconcile to persisted messages, refresh
+    // the sidebar (auto-title on the first message lands from another thread).
+    async function finishSend() {
       if (timerRef.current !== null) {
         clearInterval(timerRef.current);
         timerRef.current = null;
@@ -1060,54 +1407,64 @@ export default function Chat() {
       const finalElapsed = Math.floor((Date.now() - sendStartRef.current) / 1000);
       setElapsedSec(finalElapsed);
       setLiveTurn(prev => prev ? { ...prev, streaming: false, elapsedSec: finalElapsed } : null);
-
-      // Re-fetch session messages to get persisted IDs and auto-title
       await loadSession(sessionId);
       setLiveTurn(null);
-
-      // Refresh sidebar (for auto-title on first message, and updated_at)
       if (isFirstMessage) {
         await loadSessions(true);
-        // The model-generated title lands from a concurrent thread; refresh
-        // again shortly to catch it if the run finished before titling did.
         setTimeout(() => loadSessions(true), 3000);
       } else {
-        // Silently update the session's updated_at in the list
         loadSessions(true);
       }
+    }
 
-    } catch (e: any) {
+    // Failure tail: Stop/navigate is not an error; a mid-stream drop of a still
+    // live run re-attaches (bounded); anything else renders a persistent error.
+    function handleSendError(e: any) {
       if (timerRef.current !== null) {
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
-      // User pressed Stop (or navigated away) — not an error.
       if (e?.name === 'AbortError') {
         setLiveTurn(prev => prev ? { ...prev, streaming: false } : null);
-      } else if (streamOpened && sessionId != null && reconnectRef.current < 3) {
+        return;
+      }
+      if (streamOpened && sessionId != null && reconnectRef.current < 3) {
         // The SSE dropped mid-run but the run is alive + replayable server-side.
-        // Re-attach instead of surfacing a spurious "network error". Bounded so a
-        // genuinely dead run still falls through to the error below. Done after
+        // Re-attach instead of surfacing a spurious "network error". Done after
         // this function's finally (which clears busy/abortRef) so attachToRun's
         // busy guard passes.
         reconnectRef.current += 1;
         setLiveTurn(prev => prev ? { ...prev, streaming: true } : prev);
         setTimeout(() => { if (activeIdRef.current === sessionId) attachToRun(sessionId); }, 900);
-      } else {
-        reconnectRef.current = 0;
-        const finalElapsed = Math.floor((Date.now() - sendStartRef.current) / 1000);
-        setElapsedSec(finalElapsed);
-        // Render a PERSISTENT error turn — even when the failure happened before
-        // any stream event created a live turn (e.g. a non-ok POST). Previously
-        // `prev ? … : null` left nothing on screen, so the error only flashed in
-        // a toast and vanished ("UI shows error and disappears"), forcing the
-        // user to dig server logs to see what actually failed.
-        const errText = `Agent error: ${e.message}`;
-        setLiveTurn(prev => prev
-          ? { ...prev, text: errText, streaming: false, elapsedSec: finalElapsed }
-          : { role: 'assistant', text: errText, steps: [], streaming: false, elapsedSec: finalElapsed });
-        toast.error(`Agent failed: ${e.message}`);
+        return;
       }
+      reconnectRef.current = 0;
+      const finalElapsed = Math.floor((Date.now() - sendStartRef.current) / 1000);
+      setElapsedSec(finalElapsed);
+      // Render a PERSISTENT error turn — even when the failure happened before
+      // any stream event created a live turn (e.g. a non-ok POST), so the error
+      // stays on screen instead of only flashing in a toast.
+      const errText = `Agent error: ${e.message}`;
+      setLiveTurn(prev => prev
+        ? { ...prev, text: errText, streaming: false, elapsedSec: finalElapsed }
+        : { role: 'assistant', text: errText, steps: [], streaming: false, elapsedSec: finalElapsed });
+      toast.error(`Agent failed: ${e.message}`);
+    }
+
+    try {
+      const res = await fetch(chatSessionMessageURL(sessionId), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildSendPayload(q, runMode, builder, editFrom, opts, reviewEdits, quickMode)),
+        signal: ctrl.signal,
+      });
+      await raiseForStatus(res);
+      streamOpened = true;
+      await pumpStream(res, sessionId);
+      reconnectRef.current = 0;   // clean completion — reset the retry budget
+      await finishSend();
+    } catch (e: any) {
+      handleSendError(e);
     } finally {
       abortRef.current = null;
       setBusy(false);
@@ -1380,211 +1737,22 @@ export default function Chat() {
             )}
           </div>
           <div className="row" style={{ gap: 'var(--s-2)' }}>
-            {/* Simple | Plan | Team mode toggle */}
-            <div className="chat-mode-toggle" title="Simple: single agent · Plan: read-only, proposes a plan first · Team: full ADK planner→doer→learner pipeline">
-              <button type="button"
-                className={chatMode === 'simple' ? 'active' : ''}
-                onClick={() => setChatMode('simple')}
-                disabled={busy}
-              >
-                Simple
-              </button>
-              <button type="button"
-                className={chatMode === 'plan' ? 'active' : ''}
-                onClick={() => setChatMode('plan')}
-                disabled={busy}
-                title="Read-only: the agent inspects the repo and proposes a plan; switch to Simple/Team to execute"
-              >
-                Plan
-              </button>
-              <button type="button"
-                className={chatMode === 'team' ? 'active' : ''}
-                onClick={() => setChatMode('team')}
-                disabled={busy}
-              >
-                Team (full flow)
-              </button>
-            </div>
-
-            {/* Quick: one doer, hard step cap. Hidden in Team, which runs the
-                full pipeline and has nothing to cap. */}
-            {chatMode !== 'team' && (
-              <button
-                type="button"
-                onClick={() => setQuickMode(v => !v)}
-                disabled={busy}
-                title={quickMode
-                  ? 'Quick ON — a single doer with a hard step cap. Best for a rename, a one-line fix or a question, where the agent\'s own exploration costs more than the change. Click to turn OFF.'
-                  : 'Quick OFF — the agent works until it is done (normal). Turn ON for small asks that should not take minutes.'}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-xs)',
-                  padding: '2px 8px', borderRadius: 999, cursor: 'pointer',
-                  border: `1px solid ${quickMode ? 'var(--accent,#2f81f7)' : 'var(--border-1)'}`,
-                  background: quickMode ? 'rgba(47,129,247,0.10)' : 'transparent',
-                  color: quickMode ? 'var(--accent,#2f81f7)' : 'var(--fg-2)',
-                }}
-              >
-                {quickMode ? '⚡' : '🐢'} Quick {quickMode ? 'on' : 'off'}
-              </button>
-            )}
-
-            {/* Per-mode approval toggle — pause for Approve/Reject in this mode */}
-            <button
-              type="button"
-              onClick={toggleApprovals}
-              title={approvalsOn
-                ? `Approvals ON for ${modeApprovalKey(chatMode)} — pauses for Approve/Reject on risky/file-changing tools. Click to turn OFF.`
-                : `Approvals OFF for ${modeApprovalKey(chatMode)} — runs uninterrupted (hard-denied actions + destructive deletes still confirm). Click to turn ON.`}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-xs)',
-                padding: '2px 8px', borderRadius: 999, cursor: 'pointer',
-                border: `1px solid ${approvalsOn ? 'var(--ok,#22c55e)' : 'var(--border-1)'}`,
-                background: approvalsOn ? 'rgba(34,197,94,0.10)' : 'transparent',
-                color: approvalsOn ? 'var(--ok,#22c55e)' : 'var(--fg-2)',
-              }}
-            >
-              {approvalsOn ? '🛡' : '⚡'} Approvals {approvalsOn ? 'on' : 'off'}
-            </button>
-
-            {/* Model selector — less relevant in team mode, so hide it */}
-            {chatMode !== 'team' && (
-              <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--fg-2)' }}>
-                <span
-                  title={modelActive ? 'Model is loaded and active' : 'Model is not currently loaded'}
-                  style={{
-                    display: 'inline-block',
-                    width: 8,
-                    height: 8,
-                    borderRadius: '50%',
-                    background: modelActive ? 'var(--ok, #22c55e)' : 'var(--warn, #f59e0b)',
-                    flexShrink: 0,
-                  }}
-                />{' '}
-                Model{' '}
-                <select
-                  className="chat-model-select"
-                  value={selectedModel}
-                  onChange={async e => {
-                    const newModel = e.target.value;
-                    setSelectedModel(newModel);
-                    try {
-                      const res = await chatApi.setChatModel(newModel, chatProvider || undefined);
-                      setModelActive(res.active);
-                      if (res.active) {
-                        toast.success('Model updated');
-                      } else {
-                        const label = modelOptions.find(o => o.id === newModel)?.label || newModel;
-                        toast.warning(`${label} is not loaded — it may fail or take time to load`);
-                      }
-                    } catch (err: any) {
-                      toast.error(`Failed to set model: ${err.message}`);
-                    }
-                  }}
-                  disabled={busy || modelOptions.length === 0}
-                  title="Chat model"
-                >
-                  {modelOptions.length === 0 ? (
-                    <option value="" disabled>
-                      no active models — load one in LM Studio / configure on Home
-                    </option>
-                  ) : (
-                    modelOptions.map(opt => (
-                      <option key={opt.id} value={opt.id}>
-                        {opt.label}
-                      </option>
-                    ))
-                  )}
-                </select>
-              </label>
-            )}
-
-            {/* Cave mode (lean context) is auto-on for small windows — the
-                per-chat pill was removed; override lives in Settings. */}
-
-            {/* Orchestrator model — the enhancer + planner (layer-1 splitter).
-                Shown in team mode where those agents run. */}
-            {chatMode === 'team' && orchOptions.length > 0 && (
-              <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--fg-2)' }}
-                     title="Model for the orchestrator (enhancer + planner) — the agents that analyze & split the task">
-                Orchestrator{' '}
-                <select
-                  className="chat-model-select"
-                  value={orchModel}
-                  disabled={busy}
-                  onChange={async e => {
-                    const m = e.target.value;
-                    setOrchModel(m);
-                    try {
-                      await chatApi.setOrchestratorModel(m, chatProvider || undefined);
-                      toast.success('Orchestrator model updated (enhancer + planner)');
-                    } catch (err: any) { toast.error(err.message); }
-                  }}
-                >
-                  {orchOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
-                </select>
-                <CtxReload model={orchModel} />
-              </label>
-            )}
-
-            {/* Secondary actions tucked into an overflow menu — keeps the
-                header calm (just mode + model + ⋯). */}
-            <div ref={menuRef} style={{ position: 'relative' }}>
-              <button type="button" className="ghost sm" onClick={() => setMenuOpen(o => !o)}
-                      title="More" aria-label="More actions"
-                      style={{ fontSize: 18, lineHeight: 1, padding: '2px 8px' }}>⋯</button>
-              {menuOpen && (
-                <div role="menu" style={{
-                  position: 'absolute', right: 0, top: '110%', zIndex: 40, minWidth: 210,
-                  background: 'var(--bg-0)', border: '1px solid var(--border-1)',
-                  borderRadius: 8, padding: 6, boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
-                  display: 'flex', flexDirection: 'column', gap: 2,
-                }}>
-                  {/* Review-edits (hold every file change for Approve/Reject in
-                      simple/plan) is always on — the informational menu row was
-                      removed since it wasn't a toggle. */}
-                  {/* Reload the chat model at a chosen context window. */}
-                  {chatMode !== 'team' && selectedModel && (
-                    <div className="chat-menu-item" style={{ ...menuItem, justifyContent: 'space-between' }}
-                         title="Reload this model at a chosen context window (K tokens)">
-                      <span>Reload model @ ctx</span>
-                      <CtxReload model={selectedModel} onLoaded={() => setModelActive(true)} />
-                    </div>
-                  )}
-                  {chatMode === 'team' && (
-                    <label className="chat-menu-item" title="Run every agent instead of letting triage fast-path trivial requests."
-                           style={menuItem}>
-                      <input type="checkbox" checked={fullPipeline}
-                             onChange={e => toggleFullPipeline(e.target.checked)} disabled={busy} />{' '}
-                      Force full pipeline
-                    </label>
-                  )}
-                  <label className="chat-menu-item" title="Turn off the daily memory-compaction pass (recompact + dedupe + evening fold). Takes effect on next restart."
-                         style={menuItem}>
-                    <input type="checkbox" checked={compactionDisabled}
-                           onChange={e => toggleCompaction(e.target.checked)} disabled={busy} />{' '}
-                    Disable memory compaction
-                  </label>
-                  {activeSession && (
-                    <button type="button" style={menuBtn} onClick={() => { setMenuOpen(false); openCheckpoints(); }}>
-                      ↶ Checkpoints
-                    </button>
-                  )}
-                  <button type="button" style={menuBtn} onClick={() => { setMenuOpen(false); killAll(); }}
-                          title="Force-stop every run + release the team lock">
-                    ⚠ Reset stuck runs
-                  </button>
-                  {activeSession && (
-                    <>
-                      <div style={{ height: 1, background: 'var(--border-1)', margin: '4px 0' }} />
-                      <button type="button" style={{ ...menuBtn, color: 'var(--err)' }}
-                              onClick={() => { setMenuOpen(false); deleteSession(activeSession.id); }}>
-                        🗑 Delete conversation
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
+            <ModeToggle chatMode={chatMode} setChatMode={setChatMode} busy={busy} />
+            <QuickToggle chatMode={chatMode} quickMode={quickMode} setQuickMode={setQuickMode} busy={busy} />
+            <ApprovalsToggle approvalsOn={approvalsOn} toggleApprovals={toggleApprovals}
+                             modeApprovalKey={modeApprovalKey} chatMode={chatMode} />
+            <ModelSelect chatMode={chatMode} busy={busy} modelActive={modelActive}
+                         setModelActive={setModelActive} selectedModel={selectedModel}
+                         setSelectedModel={setSelectedModel} chatProvider={chatProvider}
+                         modelOptions={modelOptions} />
+            <OrchSelect chatMode={chatMode} orchOptions={orchOptions} orchModel={orchModel}
+                        setOrchModel={setOrchModel} chatProvider={chatProvider} busy={busy} />
+            <OverflowMenu menuRef={menuRef} menuOpen={menuOpen} setMenuOpen={setMenuOpen}
+                          chatMode={chatMode} selectedModel={selectedModel} setModelActive={setModelActive}
+                          fullPipeline={fullPipeline} toggleFullPipeline={toggleFullPipeline} busy={busy}
+                          compactionDisabled={compactionDisabled} toggleCompaction={toggleCompaction}
+                          activeSession={activeSession} openCheckpoints={openCheckpoints}
+                          killAll={killAll} deleteSession={deleteSession} />
           </div>
         </div>
 
@@ -2059,49 +2227,8 @@ export default function Chat() {
         )}
 
         {/* Checkpoints panel (#3) */}
-        {checkpoints !== null && (
-          <div
-            {...clickable(() => setCheckpoints(null))} aria-label="Close"
-            style={{
-              position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50,
-            }}
-          >
-            <div role="dialog" aria-modal="true" aria-label="Workspace checkpoints"
-                 onClick={e => e.stopPropagation()}
-                 onKeyDown={e => e.stopPropagation()} style={{
-              width: 'min(560px, 92vw)', maxHeight: '70vh', overflow: 'auto',
-              background: 'var(--bg-0)', border: '1px solid var(--border-1)',
-              borderRadius: 10, padding: 16,
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                <strong>Workspace checkpoints</strong>
-                <button type="button" className="ghost sm" onClick={() => setCheckpoints(null)}><Icon.X size={12} /></button>
-              </div>
-              {checkpoints.length === 0 ? (
-                <div className="muted xs">No checkpoints yet. A snapshot is taken automatically before each turn (in a git repo).</div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {checkpoints.map(c => (
-                    <div key={c.sha} style={{
-                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                      gap: 8, padding: 8, border: '1px solid var(--border-0)', borderRadius: 6,
-                    }}>
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.label}</div>
-                        <div className="muted xs" style={{ fontFamily: 'var(--font-mono)' }}>{c.when} · {c.sha.slice(0, 8)}</div>
-                      </div>
-                      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                        <button type="button" className="ghost sm" onClick={() => restoreCheckpoint(c.sha)} title="Revert tracked files to this snapshot; keep files created after it">↶ Restore</button>
-                        <button type="button" className="ghost sm danger" onClick={() => restoreCheckpoint(c.sha, true)} title="Full restore: make the tree exactly match this snapshot — deletes files created after it">⤓ Full</button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+        <CheckpointsModal checkpoints={checkpoints} setCheckpoints={setCheckpoints}
+                          restoreCheckpoint={restoreCheckpoint} />
 
       </div>
     </div>

@@ -101,6 +101,179 @@ function Stat({ n, failed, label, show }: Readonly<{
   );
 }
 
+// Close the panel on an outside click or Escape, but only while it is open.
+function useClickAway(
+  open: boolean,
+  box: React.RefObject<HTMLDivElement | null>,
+  setOpen: React.Dispatch<React.SetStateAction<boolean>>,
+) {
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+}
+
+// The pill/tooltip text, split by meter state (live · unreachable · idle).
+function meterTitleText(
+  u: LlmUsage | undefined, stale: boolean, down: boolean,
+  perMin: number, hour: number, failMin: number, failHour: number,
+): string {
+  if (u && !stale) {
+    return `${perMin} LLM request(s) in the last minute · ${u.last_15m} in 15 min · `
+      + `${hour} in the last hour · ${u.total} since the API started. `
+      + (failHour
+          ? `${failMin} of the last minute and ${failHour} of the last hour `
+            + 'came back with no answer (still counted — they went out). '
+          : '')
+      + 'Counted at the wire, retries included. Click for the breakdown.';
+  }
+  if (down) {
+    return 'LLM meter unreachable — this is not "no requests"';
+  }
+  return 'LLM requests sent by AIForge';
+}
+
+// The toolbar pill — live rate, hour count, failure/queue badges.
+function MeterPill({ open, setOpen, meterTitle, perMin, hour, u, stale, failMin, n }: Readonly<{
+  open: boolean; setOpen: React.Dispatch<React.SetStateAction<boolean>>; meterTitle: string;
+  perMin: number; hour: number; u: LlmUsage | undefined; stale: boolean; failMin: number;
+  n: (v: number) => string;
+}>) {
+  const live = !!u && !stale;
+  return (
+    <button type="button"
+      className="llm-meter-pill"
+      onClick={() => setOpen(o => !o)}
+      aria-expanded={open}
+      title={meterTitle}
+    >
+      <span className="llm-meter-bolt" style={{ color: rateTone(perMin) }}>⚡</span>
+      <span style={{ color: live ? rateTone(perMin) : 'var(--fg-2)' }}>{n(perMin)}/min</span>
+      <span className="llm-meter-sep">·</span>
+      <span>{n(hour)} 1h</span>
+      {live && failMin > 0 && (
+        // Failures are shown NEXT TO the rate, never subtracted from it: the
+        // requests were sent. "40/min · ✕38" is the reading that says retry
+        // storm; a rate with the failures quietly removed would read 2.
+        <span style={{ color: 'var(--err)' }} title={`${failMin} failed in the last minute`}>
+          · ✕{failMin}
+        </span>
+      )}
+      {live && u!.queued > 0 && (
+        // Being throttled is not the same as being slow. Say so, or a capped
+        // box reads as a broken one.
+        <span style={{ color: 'var(--warn)' }}
+              title={(u!.held_s ?? 0) > 0
+                ? `the provider rejected us — holding ${Math.round(u!.held_s!)}s`
+                : `${u!.queued} call(s) waiting on your ${u!.limit_rpm}/min ceiling`}>
+          · ⏳ {u!.queued}
+        </span>
+      )}
+    </button>
+  );
+}
+
+// The expandable panel's footnotes — ceilings, throttle holds, token totals.
+function MeterNotes({ u, down }: Readonly<{ u: LlmUsage | undefined; down: boolean }>) {
+  return (
+    <>
+      {!!u?.limit_rpm && (
+        <div className="llm-meter-note" style={{ color: 'var(--fg-2)' }}>
+          capped at {u.limit_rpm}/min{typeof u.limit_used === 'number'
+            ? ` · ${u.limit_used} used` : ''}{u.queued > 0
+            ? ` · ${u.queued} call(s) waiting` : ''} — Settings → Agent limits
+        </div>
+      )}
+      {u?.limit_scope === 'process' && (
+        // The ceiling is meant to be machine-wide. When the shared store is
+        // unavailable each process counts alone, so the real rate is this
+        // number TIMES the number of AIForge processes — which looks
+        // exactly like "the setting is not working".
+        <div className="llm-meter-note" style={{ color: 'var(--warn)' }}>
+          ⚠ counting THIS PROCESS ONLY — the shared window is unavailable,
+          so the machine-wide rate is a multiple of any ceiling you set, and
+          a provider rejection seen by one process will not hold the others.
+          See the aiforge.rate_limiter log for why.
+        </div>
+      )}
+      {(u?.held_s ?? 0) > 0 && (
+        // The reason the ⏳ badge can appear with NO ceiling set: the
+        // provider refused us and we are obeying it. Without this line an
+        // operator running limit_rpm=0 sees a queue with no explanation.
+        <div className="llm-meter-note" style={{ color: 'var(--warn)' }}>
+          the provider rejected us for sending too fast — holding{' '}
+          {Math.round(u!.held_s!)}s before the next call
+        </div>
+      )}
+      {!!(u?.tokens_out_60m ?? 0) && (
+        <div className="llm-meter-note" style={{ color: 'var(--fg-2)' }}>
+          {fmtK(u!.tokens_out_60m)} tokens written · {fmtK(u!.tokens_in_60m)} sent
+          &nbsp;(last hour, as the provider counted them)
+        </div>
+      )}
+      {/* Same quantity as the line above, so the same units: raw
+          integers here read as a third, unrelated "chat" row. */}
+      <Rows title="tokens written (last hour)"
+            data={u?.tokens_out_by_role || {}} fmt={fmtK} />
+      <Rows title="by role (last hour)" data={u?.by_role || {}} />
+      <Rows title="by model (last hour)" data={u?.by_model || {}} />
+      <Rows title="failed (last hour)" data={u?.by_fail_reason || {}}
+            tone="var(--err)" />
+
+      {u?.rate_capped && (
+        <div className="llm-meter-note">
+          rate buffer overflowed — the per-minute figure is a floor
+        </div>
+      )}
+      {down && <div className="llm-meter-note">meter unreachable</div>}
+    </>
+  );
+}
+
+// The expandable panel — per-window stats, sparkline, and footnotes.
+function MeterPanel({ u, stale, n, perMin, hour, failMin, failHour, series, failSeries, down }: Readonly<{
+  u: LlmUsage | undefined; stale: boolean; n: (v: number) => string;
+  perMin: number; hour: number; failMin: number; failHour: number;
+  series: number[] | null; failSeries: number[] | undefined; down: boolean;
+}>) {
+  const live = !!u && !stale;
+  return (
+    <div className="llm-meter-panel" role="dialog" aria-label="LLM requests">
+      <div className="llm-meter-head">
+        <b>LLM requests</b>
+        <span className="llm-meter-sub">every call at the wire — chat, pipeline, jobs, memory</span>
+      </div>
+
+      <div className="llm-meter-stats">
+        <Stat n={n(perMin)} failed={failMin} label="last min" show={live} />
+        <Stat n={n(u?.last_15m ?? 0)} failed={u?.failed_15m ?? 0}
+              label="last 15 min" show={live} />
+        <Stat n={n(hour)} failed={failHour} label="last hour" show={live} />
+        <Stat n={n(u?.total ?? 0)} failed={u?.failed ?? 0}
+              label="since start" show={live} />
+      </div>
+
+      {series && <>
+        <Sparkline data={series} fails={failSeries} />
+        <div className="llm-meter-label">
+          per minute, last 60 min{failHour ? ' — red = no answer' : ''}
+        </div>
+      </>}
+
+      <MeterNotes u={u} down={down} />
+    </div>
+  );
+}
+
 function LlmMeterInner() {
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement | null>(null);
@@ -124,19 +297,7 @@ function LlmMeterInner() {
     staleTime: 0,
   });
 
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
-    document.addEventListener('mousedown', onDoc);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDoc);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
+  useClickAway(open, box, setOpen);
 
   const u: LlmUsage | undefined = q.data;
   // An unreachable API must not read as a quiet one — but it must not read as
@@ -159,126 +320,15 @@ function LlmMeterInner() {
   const series = Array.isArray(u?.series_60m) ? u!.series_60m! : null;
   const failSeries = Array.isArray(u?.series_fail_60m) ? u!.series_fail_60m! : undefined;
 
-  let meterTitle: string;
-  if (u && !stale) {
-    meterTitle = `${perMin} LLM request(s) in the last minute · ${u.last_15m} in 15 min · `
-      + `${hour} in the last hour · ${u.total} since the API started. `
-      + (failHour
-          ? `${failMin} of the last minute and ${failHour} of the last hour `
-            + 'came back with no answer (still counted — they went out). '
-          : '')
-      + 'Counted at the wire, retries included. Click for the breakdown.';
-  } else if (down) {
-    meterTitle = 'LLM meter unreachable — this is not "no requests"';
-  } else {
-    meterTitle = 'LLM requests sent by AIForge';
-  }
+  const meterTitle = meterTitleText(u, stale, down, perMin, hour, failMin, failHour);
 
   return (
     <div className="llm-meter" ref={box}>
-      <button type="button"
-        className="llm-meter-pill"
-        onClick={() => setOpen(o => !o)}
-        aria-expanded={open}
-        title={meterTitle}
-      >
-        <span className="llm-meter-bolt" style={{ color: rateTone(perMin) }}>⚡</span>
-        <span style={{ color: u && !stale ? rateTone(perMin) : 'var(--fg-2)' }}>{n(perMin)}/min</span>
-        <span className="llm-meter-sep">·</span>
-        <span>{n(hour)} 1h</span>
-        {!!u && !stale && failMin > 0 && (
-          // Failures are shown NEXT TO the rate, never subtracted from it: the
-          // requests were sent. "40/min · ✕38" is the reading that says retry
-          // storm; a rate with the failures quietly removed would read 2.
-          <span style={{ color: 'var(--err)' }} title={`${failMin} failed in the last minute`}>
-            · ✕{failMin}
-          </span>
-        )}
-        {!!u && !stale && u.queued > 0 && (
-          // Being throttled is not the same as being slow. Say so, or a capped
-          // box reads as a broken one.
-          <span style={{ color: 'var(--warn)' }}
-                title={(u.held_s ?? 0) > 0
-                  ? `the provider rejected us — holding ${Math.round(u.held_s!)}s`
-                  : `${u.queued} call(s) waiting on your ${u.limit_rpm}/min ceiling`}>
-            · ⏳ {u.queued}
-          </span>
-        )}
-      </button>
-
+      <MeterPill open={open} setOpen={setOpen} meterTitle={meterTitle} perMin={perMin}
+                 hour={hour} u={u} stale={stale} failMin={failMin} n={n} />
       {open && (
-        <div className="llm-meter-panel" role="dialog" aria-label="LLM requests">
-          <div className="llm-meter-head">
-            <b>LLM requests</b>
-            <span className="llm-meter-sub">every call at the wire — chat, pipeline, jobs, memory</span>
-          </div>
-
-          <div className="llm-meter-stats">
-            <Stat n={n(perMin)} failed={failMin} label="last min" show={!!u && !stale} />
-            <Stat n={n(u?.last_15m ?? 0)} failed={u?.failed_15m ?? 0}
-                  label="last 15 min" show={!!u && !stale} />
-            <Stat n={n(hour)} failed={failHour} label="last hour" show={!!u && !stale} />
-            <Stat n={n(u?.total ?? 0)} failed={u?.failed ?? 0}
-                  label="since start" show={!!u && !stale} />
-          </div>
-
-          {series && <>
-            <Sparkline data={series} fails={failSeries} />
-            <div className="llm-meter-label">
-              per minute, last 60 min{failHour ? ' — red = no answer' : ''}
-            </div>
-          </>}
-
-          {!!u?.limit_rpm && (
-            <div className="llm-meter-note" style={{ color: 'var(--fg-2)' }}>
-              capped at {u.limit_rpm}/min{typeof u.limit_used === 'number'
-                ? ` · ${u.limit_used} used` : ''}{u.queued > 0
-                ? ` · ${u.queued} call(s) waiting` : ''} — Settings → Agent limits
-            </div>
-          )}
-          {u?.limit_scope === 'process' && (
-            // The ceiling is meant to be machine-wide. When the shared store is
-            // unavailable each process counts alone, so the real rate is this
-            // number TIMES the number of AIForge processes — which looks
-            // exactly like "the setting is not working".
-            <div className="llm-meter-note" style={{ color: 'var(--warn)' }}>
-              ⚠ counting THIS PROCESS ONLY — the shared window is unavailable,
-              so the machine-wide rate is a multiple of any ceiling you set, and
-              a provider rejection seen by one process will not hold the others.
-              See the aiforge.rate_limiter log for why.
-            </div>
-          )}
-          {(u?.held_s ?? 0) > 0 && (
-            // The reason the ⏳ badge can appear with NO ceiling set: the
-            // provider refused us and we are obeying it. Without this line an
-            // operator running limit_rpm=0 sees a queue with no explanation.
-            <div className="llm-meter-note" style={{ color: 'var(--warn)' }}>
-              the provider rejected us for sending too fast — holding{' '}
-              {Math.round(u!.held_s!)}s before the next call
-            </div>
-          )}
-          {!!(u?.tokens_out_60m ?? 0) && (
-            <div className="llm-meter-note" style={{ color: 'var(--fg-2)' }}>
-              {fmtK(u!.tokens_out_60m)} tokens written · {fmtK(u!.tokens_in_60m)} sent
-              &nbsp;(last hour, as the provider counted them)
-            </div>
-          )}
-          {/* Same quantity as the line above, so the same units: raw
-              integers here read as a third, unrelated "chat" row. */}
-          <Rows title="tokens written (last hour)"
-                data={u?.tokens_out_by_role || {}} fmt={fmtK} />
-          <Rows title="by role (last hour)" data={u?.by_role || {}} />
-          <Rows title="by model (last hour)" data={u?.by_model || {}} />
-          <Rows title="failed (last hour)" data={u?.by_fail_reason || {}}
-                tone="var(--err)" />
-
-          {u?.rate_capped && (
-            <div className="llm-meter-note">
-              rate buffer overflowed — the per-minute figure is a floor
-            </div>
-          )}
-          {down && <div className="llm-meter-note">meter unreachable</div>}
-        </div>
+        <MeterPanel u={u} stale={stale} n={n} perMin={perMin} hour={hour} failMin={failMin}
+                    failHour={failHour} series={series} failSeries={failSeries} down={down} />
       )}
     </div>
   );

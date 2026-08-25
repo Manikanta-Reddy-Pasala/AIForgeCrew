@@ -344,6 +344,24 @@ def count(now: float | None = None, *, cat: str | None = None) -> "int | None":
         return None
 
 
+def _binding_wait(db, now: float, global_ok: bool, cat_ok: bool,
+                  cat: str) -> "float | None":
+    """Seconds until every binding (full) window frees a slot — the LONGER of
+    the global and category ages-out, since a send needs both clear at once.
+    ``None`` when nothing is actually binding (raced empty)."""
+    waits: list[float] = []
+    if not global_ok:
+        og = db.execute("SELECT MIN(ts) FROM sends").fetchone()[0]
+        if og is not None:
+            waits.append((float(og) + 60.0) - now)
+    if not cat_ok:
+        oc = db.execute("SELECT MIN(ts) FROM sends WHERE cat = ?",
+                        (cat,)).fetchone()[0]
+        if oc is not None:
+            waits.append((float(oc) + 60.0) - now)
+    return max(waits) if waits else None
+
+
 def take(limit: int, now: float | None = None, *,
          cat: str = "chat", cat_limit: int = 0) -> "tuple[bool, float] | None":
     """Try to claim one send. Returns ``(claimed, seconds_to_wait)``.
@@ -406,17 +424,7 @@ def take(limit: int, now: float | None = None, *,
             # Full on at least one window. Wait until EVERY binding window has
             # room — the send needs the global AND the category clear at once,
             # so take the longer of the two ages-out.
-            waits: list[float] = []
-            if not global_ok:
-                og = db.execute("SELECT MIN(ts) FROM sends").fetchone()[0]
-                if og is not None:
-                    waits.append((float(og) + 60.0) - now)
-            if not cat_ok:
-                oc = db.execute("SELECT MIN(ts) FROM sends WHERE cat = ?",
-                                (cat,)).fetchone()[0]
-                if oc is not None:
-                    waits.append((float(oc) + 60.0) - now)
-            wait_s = max(waits) if waits else None
+            wait_s = _binding_wait(db, now, global_ok, cat_ok, cat)
             db.execute("COMMIT")
         except BaseException:
             # BaseException, not Exception: a KeyboardInterrupt (Ctrl-C into

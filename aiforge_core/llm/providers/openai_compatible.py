@@ -189,6 +189,63 @@ _NATIVE_TOOL = [{"type": "function", "function": {
                    "required": []}}}]
 
 
+def _probe_native_call(url: str, model: str, headers: dict, choice: str,
+                       ctx, timeout: float | None) -> dict:
+    """One native-tool probe request under a single ``tool_choice`` mode.
+    Returns what the endpoint actually did (tool_calls / content / error).
+    Never raises."""
+    import urllib.error
+    body = json.dumps({
+        "model": model,
+        "messages": [{"role": "user",
+                      "content": "Call the aiforge_ping tool with ack='ok'."}],
+        "tools": _NATIVE_TOOL,
+        "tool_choice": choice,
+        "max_tokens": 64,
+    }).encode()
+    try:
+        req = urllib.request.Request(url, data=body, headers=headers,
+                                     method="POST")
+        with urllib.request.urlopen(
+                req, timeout=_probe_timeout(timeout), context=ctx) as r:
+            payload = json.loads(r.read())
+        ch0 = (payload.get("choices") or [{}])[0]
+        msg = ch0.get("message") or {}
+        return {
+            "ok": True,
+            "tool_calls": bool(msg.get("tool_calls")),
+            "finish_reason": ch0.get("finish_reason"),
+            "content_preview": (msg.get("content") or "")[:160],
+        }
+    except urllib.error.HTTPError as exc:
+        try:
+            err_body = exc.read()[:400].decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001
+            err_body = ""
+        return {"ok": False, "http": exc.code, "error": err_body}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)[:400]}
+
+
+def _probe_native_verdict(results: dict) -> str:
+    """Human-readable verdict from the two per-mode probe results. 'auto' is the
+    mode the RUNTIME uses; 'required' is only the probe's forcing mode."""
+    got_tool_calls = any(r.get("tool_calls") for r in results.values())
+    auto = results.get("auto", {})
+    if auto.get("tool_calls"):
+        return "native tool-calling works (tool_calls returned for tool_choice=auto)"
+    if auto.get("ok"):
+        return ("the endpoint answered but returned plain content, NOT a "
+                "tool_call, for tool_choice=auto — this model ignores tools, "
+                "so native tool-calling will not work here")
+    if got_tool_calls:
+        return ("tool_choice=auto failed but tool_choice=required returned a "
+                "tool_call — the endpoint supports tools but not the 'auto' "
+                "mode the runtime uses")
+    return ("no tool_call under either mode — see the error/http fields; "
+            "the endpoint likely rejects the tools payload")
+
+
 def probe_native(base_url: str, model: str, api_key: str | None = None,
                  timeout: float | None = None, insecure: bool = False) -> dict:
     """Native tool-calling test-connection. POSTs a real one-tool request to
@@ -203,11 +260,11 @@ def probe_native(base_url: str, model: str, api_key: str | None = None,
     exact question ``_native._probe_native`` hides behind an optimistic default:
     does THIS model, at THIS url, return tool_calls for a tools request?
     """
-    import urllib.error
     if not base_url or not base_url.strip():
         return {"ok": False, "error": "base_url required"}
     if not model or not model.strip():
         return {"ok": False, "error": "model required"}
+    model = model.strip()
     url = base_url.strip().rstrip("/") + "/chat/completions"
     headers = {"Content-Type": _APPLICATION_JSON,
                "Accept": _APPLICATION_JSON, "User-Agent": _user_agent()}
@@ -219,58 +276,15 @@ def probe_native(base_url: str, model: str, api_key: str | None = None,
     ctx = _ssl_insecure() if skip_tls else _ssl_context_for(url)
     log.info("probe_native -> url=%s model=%s tls=%s", url, model, tls_mode)
 
-    results: dict = {}
-    for choice in ("auto", "required"):
-        body = json.dumps({
-            "model": model.strip(),
-            "messages": [{"role": "user",
-                          "content": "Call the aiforge_ping tool with ack='ok'."}],
-            "tools": _NATIVE_TOOL,
-            "tool_choice": choice,
-            "max_tokens": 64,
-        }).encode()
-        try:
-            req = urllib.request.Request(url, data=body, headers=headers,
-                                         method="POST")
-            with urllib.request.urlopen(
-                    req, timeout=_probe_timeout(timeout), context=ctx) as r:
-                payload = json.loads(r.read())
-            ch0 = (payload.get("choices") or [{}])[0]
-            msg = ch0.get("message") or {}
-            results[choice] = {
-                "ok": True,
-                "tool_calls": bool(msg.get("tool_calls")),
-                "finish_reason": ch0.get("finish_reason"),
-                "content_preview": (msg.get("content") or "")[:160],
-            }
-        except urllib.error.HTTPError as exc:
-            try:
-                err_body = exc.read()[:400].decode("utf-8", "replace")
-            except Exception:  # noqa: BLE001
-                err_body = ""
-            results[choice] = {"ok": False, "http": exc.code, "error": err_body}
-        except Exception as exc:  # noqa: BLE001
-            results[choice] = {"ok": False, "error": str(exc)[:400]}
-
-    got_tool_calls = any(r.get("tool_calls") for r in results.values())
-    # "auto" is the mode the RUNTIME uses; "required" is only the probe's forcing
-    # mode. Native FC is USABLE iff auto returns a tool_call.
+    results: dict = {
+        choice: _probe_native_call(url, model, headers, choice, ctx, timeout)
+        for choice in ("auto", "required")
+    }
+    # Native FC is USABLE iff auto returns a tool_call.
     auto = results.get("auto", {})
-    if auto.get("tool_calls"):
-        verdict = "native tool-calling works (tool_calls returned for tool_choice=auto)"
-    elif auto.get("ok"):
-        verdict = ("the endpoint answered but returned plain content, NOT a "
-                   "tool_call, for tool_choice=auto — this model ignores tools, "
-                   "so native tool-calling will not work here")
-    elif got_tool_calls:
-        verdict = ("tool_choice=auto failed but tool_choice=required returned a "
-                   "tool_call — the endpoint supports tools but not the 'auto' "
-                   "mode the runtime uses")
-    else:
-        verdict = ("no tool_call under either mode — see the error/http fields; "
-                   "the endpoint likely rejects the tools payload")
-    return {"ok": bool(auto.get("tool_calls")), "model": model.strip(),
-            "url": url, "verdict": verdict, "results": results}
+    return {"ok": bool(auto.get("tool_calls")), "model": model,
+            "url": url, "verdict": _probe_native_verdict(results),
+            "results": results}
 
 
 register_provider(OpenAICompatibleProvider())

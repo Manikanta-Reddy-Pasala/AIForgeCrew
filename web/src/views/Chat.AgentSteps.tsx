@@ -131,6 +131,49 @@ function ChangesView({ files, summary }: Readonly<{ files: ChangeFile[]; summary
   );
 }
 
+// One tool-call step: name(args) → result snippet, tinted by pending/ok/error.
+function ToolStepRow({ step }: Readonly<{ step: Extract<AgentStep, { kind: 'tool' }> }>) {
+  const res = step.result as any;
+  const ok = res?.ok !== false && !res?.error;
+  let snippet: string;
+  if (step.pending) snippet = 'running…';
+  else if (ok) snippet = res?.output ? String(res.output).slice(0, 120) : 'ok';
+  else snippet = res?.error ? String(res.error).slice(0, 120) : 'error';
+  const toolTextColor = (step.pending || ok) ? 'var(--fg-1)' : 'var(--err)';
+  let arrowColor: string;
+  if (step.pending) arrowColor = 'var(--fg-2, var(--fg-1))';
+  else if (ok) arrowColor = 'var(--ok)';
+  else arrowColor = 'var(--err)';
+  return (
+    <div style={{
+      display: 'flex', gap: 6, alignItems: 'flex-start',
+      padding: '5px 10px',
+      background: 'var(--bg-1)',
+      border: '1px solid var(--border-0)',
+      borderRadius: 'var(--r-sm)',
+      fontSize: 'var(--fs-xs)',
+      lineHeight: 1.5,
+      fontFamily: 'var(--font-mono)',
+      color: toolTextColor,
+    }}>
+      <span style={{ flexShrink: 0, marginTop: 1 }}>{step.pending ? '⏳' : '🔧'}</span>
+      <AgentBadge role={step.role} />
+      <span>
+        <strong>{step.name}</strong>
+        {'('}
+        {Object.entries(step.args as Record<string, unknown>).slice(0, 3).map(([k, v], i) =>
+          `${i > 0 ? ', ' : ''}${k}=${JSON.stringify(v).slice(0, 40)}`
+        ).join('')}
+        {')'}
+        {' → '}
+        <span style={{ color: arrowColor }}>
+          {snippet}
+        </span>
+      </span>
+    </div>
+  );
+}
+
 export function AgentStepRow({ step }: Readonly<{ step: AgentStep }>) {
   if (step.kind === 'changes') {
     return <ChangesView files={step.files} summary={step.summary} />;
@@ -139,45 +182,7 @@ export function AgentStepRow({ step }: Readonly<{ step: AgentStep }>) {
     return <ThoughtRow step={step} />;
   }
   if (step.kind === 'tool') {
-    const res = step.result as any;
-    const ok = res?.ok !== false && !res?.error;
-    let snippet: string;
-    if (step.pending) snippet = 'running…';
-    else if (ok) snippet = res?.output ? String(res.output).slice(0, 120) : 'ok';
-    else snippet = res?.error ? String(res.error).slice(0, 120) : 'error';
-    const toolTextColor = (step.pending || ok) ? 'var(--fg-1)' : 'var(--err)';
-    let arrowColor: string;
-    if (step.pending) arrowColor = 'var(--fg-2, var(--fg-1))';
-    else if (ok) arrowColor = 'var(--ok)';
-    else arrowColor = 'var(--err)';
-    return (
-      <div style={{
-        display: 'flex', gap: 6, alignItems: 'flex-start',
-        padding: '5px 10px',
-        background: 'var(--bg-1)',
-        border: '1px solid var(--border-0)',
-        borderRadius: 'var(--r-sm)',
-        fontSize: 'var(--fs-xs)',
-        lineHeight: 1.5,
-        fontFamily: 'var(--font-mono)',
-        color: toolTextColor,
-      }}>
-        <span style={{ flexShrink: 0, marginTop: 1 }}>{step.pending ? '⏳' : '🔧'}</span>
-        <AgentBadge role={step.role} />
-        <span>
-          <strong>{step.name}</strong>
-          {'('}
-          {Object.entries(step.args as Record<string, unknown>).slice(0, 3).map(([k, v], i) =>
-            `${i > 0 ? ', ' : ''}${k}=${JSON.stringify(v).slice(0, 40)}`
-          ).join('')}
-          {')'}
-          {' → '}
-          <span style={{ color: arrowColor }}>
-            {snippet}
-          </span>
-        </span>
-      </div>
-    );
+    return <ToolStepRow step={step} />;
   }
   if (step.kind === 'error') {
     return (

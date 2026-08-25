@@ -132,6 +132,206 @@ function splitRow(line: string): string[] {
 }
 
 // ── block ───────────────────────────────────────────────────────────────────
+// Each block handler consumes one or more lines starting at `i` and returns the
+// rendered node plus the next line index and next key counter — or null when
+// this handler does not apply. MdLite is then a thin dispatcher over them.
+type Block = { node: React.ReactNode; next: number; k: number } | null;
+
+// Color for one line of a unified-diff fence (+/-/@@ headers).
+function diffLineStyle(ln: string): { color?: string; background?: string } {
+  if (ln.startsWith('+++') || ln.startsWith('---') || /^(diff |index )/.test(ln)) {
+    return { color: 'var(--fg-3)' };
+  }
+  if (ln.startsWith('+')) {
+    return { color: 'var(--ok, #3fb950)', background: 'rgba(63,185,80,0.10)' };
+  }
+  if (ln.startsWith('-')) {
+    return { color: 'var(--err, #e5534b)', background: 'rgba(229,83,75,0.10)' };
+  }
+  if (ln.startsWith('@@')) {
+    return { color: '#6aa6ff' };
+  }
+  return {};
+}
+
+// Color a unified-diff fence (+/-/@@) line-by-line instead of a flat <code>
+// block, so an approval preview's code changes read like a diff.
+function renderDiffFence(body: string, k: number): React.ReactNode {
+  return (
+    <CodeFence key={`p-${k}`} body={body}>
+    <pre data-lang="diff" style={{
+      whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+      fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.45,
+    }}>
+      {body.split('\n').map((ln, j) => {
+        const { color, background } = diffLineStyle(ln);
+        // key=index: immutable fence text rendered once; diff lines
+        // legitimately duplicate and never reorder. (S6479 exception)
+        return <div key={j} style={{ color, background, padding: '0 4px' }}>{ln || ' '}</div>;
+      })}
+    </pre>
+    </CodeFence>
+  );
+}
+
+// fenced code (```lang ... ```)
+function fenceBlock(lines: string[], i: number, k: number): Block {
+  const line = lines[i];
+  if (!/^\s*```/.test(line)) return null;
+  const lang = line.replace(/^\s*```/, '').trim();
+  const end = lines.findIndex((l, j) => j > i && /^\s*```/.test(l));
+  const stop = end === -1 ? lines.length : end;
+  const body = lines.slice(i + 1, stop).join('\n');
+  const node = lang === 'diff' ? renderDiffFence(body, k) : (
+    <CodeFence key={`p-${k}`} body={body}>
+    <pre data-lang={lang || undefined}>
+      <code>{body}</code>
+    </pre>
+    </CodeFence>
+  );
+  return { node, next: stop + 1, k: k + 1 };
+}
+
+// heading (# … ######)
+function headingBlock(lines: string[], i: number, k: number): Block {
+  const h = /^(#{1,6})\s+(\S.*|)$/.exec(lines[i]);
+  if (!h) return null;
+  const lvl = h[1].length;
+  const Tag = (`h${lvl}` as keyof JSX.IntrinsicElements);
+  return { node: <Tag key={`h-${k}`}>{renderInline(h[2], `h-${k + 1}`)}</Tag>,
+           next: i + 1, k: k + 1 };
+}
+
+// horizontal rule
+function hrBlock(lines: string[], i: number, k: number): Block {
+  if (!/^\s*([-*_])\1{2,}\s*$/.test(lines[i])) return null;
+  return { node: <hr key={`hr-${k}`} />, next: i + 1, k: k + 1 };
+}
+
+// GFM table: header row + |---|---| separator
+function tableBlock(lines: string[], i: number, k: number): Block {
+  const line = lines[i];
+  if (!(line.includes('|') && i + 1 < lines.length &&
+        /^[\s:|-]*$/.test(lines[i + 1]) && lines[i + 1].includes('-'))) return null;
+  const header = splitRow(line);
+  let j = i + 2;
+  const rows: string[][] = [];
+  while (j < lines.length && lines[j].includes('|') && lines[j].trim()) {
+    rows.push(splitRow(lines[j]));
+    j++;
+  }
+  const node = (
+    // key=index throughout this table: a pure render of immutable parsed
+    // text — header/cell text and whole rows legitimately duplicate (a
+    // content key would collide) and column/row order is positional and
+    // never reorders. (S6479 exception)
+    <table key={`tb-${k}`} className="md-table">
+      <thead><tr>{header.map((c, ci) => <th key={ci}>{renderInline(c, `th-${k + 1}-${ci}`)}</th>)}</tr></thead>
+      <tbody>
+        {rows.map((r, ri) => (
+          <tr key={ri}>{header.map((_, ci) => <td key={ci}>{renderInline(r[ci] ?? '', `td-${k + 1}-${ri}-${ci}`)}</td>)}</tr>
+        ))}
+      </tbody>
+    </table>
+  );
+  return { node, next: j, k: k + 1 };
+}
+
+// blockquote (collapse consecutive > lines)
+function blockquoteBlock(lines: string[], i: number, k: number): Block {
+  if (!/^\s*>\s?/.test(lines[i])) return null;
+  const buf: string[] = [];
+  let j = i;
+  while (j < lines.length && /^\s*>\s?/.test(lines[j])) {
+    buf.push(lines[j].replace(/^\s*>\s?/, ''));
+    j++;
+  }
+  return { node: <blockquote key={`bq-${k}`}>{renderInline(buf.join(' '), `bq-${k + 1}`)}</blockquote>,
+           next: j, k: k + 1 };
+}
+
+// ordered list (1. 2. …). Keep numbered items in ONE list across blank lines —
+// LLM output routinely blank-separates items, and breaking there made each item
+// its own <ol> that restarts at 1 (every item showed "1"). Honor the source's
+// first number via `start` so a list that begins at N renders from N.
+function orderedListBlock(lines: string[], i: number, k: number): Block {
+  const line = lines[i];
+  if (!/^\s*\d+\.\s+/.test(line)) return null;
+  const startNum = parseInt(line.match(/^\s*(\d+)\./)?.[1] ?? '1', 10) || 1;
+  const items: string[] = [];
+  let j = i;
+  while (j < lines.length) {
+    if (/^\s*\d+\.\s+/.test(lines[j])) {
+      items.push(lines[j].replace(/^\s*\d+\.\s+/, ''));
+      j++;
+    } else if (lines[j].trim() === '' && /^\s*\d+\.\s+/.test(lines[j + 1] ?? '')) {
+      j++;                       // skip a blank line BETWEEN numbered items
+    } else {
+      break;
+    }
+  }
+  const node = (
+    <ol key={`ol-${k}`} start={startNum}>
+      {/* key=index: immutable parsed items, may duplicate, never reorder. (S6479 exception) */}
+      {items.map((it, idx) => <li key={idx}>{renderInline(it, `oli-${k + 1}-${idx}`)}</li>)}
+    </ol>
+  );
+  return { node, next: j, k: k + 1 };
+}
+
+// unordered list (- or *)
+function unorderedListBlock(lines: string[], i: number, k: number): Block {
+  if (!/^\s*[-*]\s+/.test(lines[i])) return null;
+  const items: string[] = [];
+  let j = i;
+  while (j < lines.length && /^\s*[-*]\s+/.test(lines[j])) {
+    items.push(lines[j].replace(/^\s*[-*]\s+/, ''));
+    j++;
+  }
+  const node = (
+    <ul key={`ul-${k}`}>
+      {/* key=index: immutable parsed items, may duplicate, never reorder. (S6479 exception) */}
+      {items.map((it, idx) => <li key={idx}>{renderInline(it, `li-${k + 1}-${idx}`)}</li>)}
+    </ul>
+  );
+  return { node, next: j, k: k + 1 };
+}
+
+// paragraph: gather until a blank line or a block starter. Always applies (the
+// dispatcher's fallback), so it never returns null.
+function paragraphBlock(lines: string[], i: number, k: number): NonNullable<Block> {
+  const pLines: string[] = [];
+  let j = i;
+  while (
+    j < lines.length &&
+    lines[j].trim() &&
+    !/^\s*```/.test(lines[j]) &&
+    !/^#{1,6}\s/.test(lines[j]) &&
+    !/^\s*>\s?/.test(lines[j]) &&
+    !/^\s*\d+\.\s+/.test(lines[j]) &&
+    !/^\s*[-*]\s+/.test(lines[j])
+  ) {
+    pLines.push(lines[j]);
+    j++;
+  }
+  // Preserve intentional soft line breaks inside a paragraph (the container is
+  // no longer white-space:pre-wrap) while still running each line through the
+  // inline tokenizer.
+  const node = (
+    <p key={`para-${k}`}>
+      {/* key=index: soft-wrapped lines of one immutable paragraph; positional,
+          may duplicate, never reorder. (S6479 exception) */}
+      {pLines.map((pl, idx) => (
+        <React.Fragment key={idx}>
+          {idx > 0 && <br />}
+          {renderInline(pl, `p-${k + 1}-${idx}`)}
+        </React.Fragment>
+      ))}
+    </p>
+  );
+  return { node, next: j, k: k + 1 };
+}
+
 export function MdLite({ text }: Readonly<{ text: string }>) {
   if (!text) return null;
   const out: React.ReactNode[] = [];
@@ -139,187 +339,18 @@ export function MdLite({ text }: Readonly<{ text: string }>) {
   let i = 0;
   let k = 0;
   while (i < lines.length) {
-    const line = lines[i];
-
-    // fenced code (```lang ... ```)
-    if (/^\s*```/.test(line)) {
-      const lang = line.replace(/^\s*```/, '').trim();
-      const end = lines.findIndex((l, j) => j > i && /^\s*```/.test(l));
-      const stop = end === -1 ? lines.length : end;
-      const body = lines.slice(i + 1, stop).join('\n');
-      if (lang === 'diff') {
-        // Color a unified-diff fence (+/-/@@) line-by-line instead of a flat
-        // <code> block, so an approval preview's code changes read like a diff.
-        out.push(
-          <CodeFence key={`p-${k++}`} body={body}>
-          <pre data-lang="diff" style={{
-            whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-            fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.45,
-          }}>
-            {body.split('\n').map((ln, j) => {
-              let color: string | undefined;
-              let background: string | undefined;
-              if (ln.startsWith('+++') || ln.startsWith('---') || /^(diff |index )/.test(ln)) {
-                color = 'var(--fg-3)';
-              } else if (ln.startsWith('+')) {
-                color = 'var(--ok, #3fb950)'; background = 'rgba(63,185,80,0.10)';
-              } else if (ln.startsWith('-')) {
-                color = 'var(--err, #e5534b)'; background = 'rgba(229,83,75,0.10)';
-              } else if (ln.startsWith('@@')) {
-                color = '#6aa6ff';
-              }
-              // key=index: immutable fence text rendered once; diff lines
-              // legitimately duplicate and never reorder. (S6479 exception)
-              return <div key={j} style={{ color, background, padding: '0 4px' }}>{ln || ' '}</div>;
-            })}
-          </pre>
-          </CodeFence>,
-        );
-        i = stop + 1;
-        continue;
-      }
-      out.push(
-        <CodeFence key={`p-${k++}`} body={body}>
-        <pre data-lang={lang || undefined}>
-          <code>{body}</code>
-        </pre>
-        </CodeFence>,
-      );
-      i = stop + 1;
-      continue;
-    }
-
-    // heading (# … ######)
-    const h = /^(#{1,6})\s+(\S.*|)$/.exec(line);
-    if (h) {
-      const lvl = h[1].length;
-      const Tag = (`h${lvl}` as keyof JSX.IntrinsicElements);
-      out.push(<Tag key={`h-${k++}`}>{renderInline(h[2], `h-${k}`)}</Tag>);
-      i++;
-      continue;
-    }
-
-    // horizontal rule
-    if (/^\s*([-*_])\1{2,}\s*$/.test(line)) {
-      out.push(<hr key={`hr-${k++}`} />);
-      i++;
-      continue;
-    }
-
-    // GFM table: header row + |---|---| separator
-    if (line.includes('|') && i + 1 < lines.length &&
-        /^[\s:|-]*$/.test(lines[i + 1]) &&
-        lines[i + 1].includes('-')) {
-      const header = splitRow(line);
-      i += 2;
-      const rows: string[][] = [];
-      while (i < lines.length && lines[i].includes('|') && lines[i].trim()) {
-        rows.push(splitRow(lines[i]));
-        i++;
-      }
-      out.push(
-        // key=index throughout this table: a pure render of immutable parsed
-        // text — header/cell text and whole rows legitimately duplicate (a
-        // content key would collide) and column/row order is positional and
-        // never reorders. (S6479 exception)
-        <table key={`tb-${k++}`} className="md-table">
-          <thead><tr>{header.map((c, j) => <th key={j}>{renderInline(c, `th-${k}-${j}`)}</th>)}</tr></thead>
-          <tbody>
-            {rows.map((r, ri) => (
-              <tr key={ri}>{header.map((_, ci) => <td key={ci}>{renderInline(r[ci] ?? '', `td-${k}-${ri}-${ci}`)}</td>)}</tr>
-            ))}
-          </tbody>
-        </table>,
-      );
-      continue;
-    }
-
-    // blockquote (collapse consecutive > lines)
-    if (/^\s*>\s?/.test(line)) {
-      const buf: string[] = [];
-      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
-        buf.push(lines[i].replace(/^\s*>\s?/, ''));
-        i++;
-      }
-      out.push(<blockquote key={`bq-${k++}`}>{renderInline(buf.join(' '), `bq-${k}`)}</blockquote>);
-      continue;
-    }
-
-    // ordered list (1. 2. …). Keep numbered items in ONE list across blank
-    // lines — LLM output routinely blank-separates items, and breaking there
-    // made each item its own <ol> that restarts at 1 (every item showed "1").
-    // Honor the source's first number via `start` so a list that begins at N
-    // renders from N.
-    if (/^\s*\d+\.\s+/.test(line)) {
-      const startNum = parseInt(line.match(/^\s*(\d+)\./)?.[1] ?? '1', 10) || 1;
-      const items: string[] = [];
-      while (i < lines.length) {
-        if (/^\s*\d+\.\s+/.test(lines[i])) {
-          items.push(lines[i].replace(/^\s*\d+\.\s+/, ''));
-          i++;
-        } else if (lines[i].trim() === '' && /^\s*\d+\.\s+/.test(lines[i + 1] ?? '')) {
-          i++;                       // skip a blank line BETWEEN numbered items
-        } else {
-          break;
-        }
-      }
-      out.push(
-        <ol key={`ol-${k++}`} start={startNum}>
-          {/* key=index: immutable parsed items, may duplicate, never reorder. (S6479 exception) */}
-          {items.map((it, j) => <li key={j}>{renderInline(it, `oli-${k}-${j}`)}</li>)}
-        </ol>,
-      );
-      continue;
-    }
-
-    // unordered list (- or *)
-    if (/^\s*[-*]\s+/.test(line)) {
-      const items: string[] = [];
-      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^\s*[-*]\s+/, ''));
-        i++;
-      }
-      out.push(
-        <ul key={`ul-${k++}`}>
-          {/* key=index: immutable parsed items, may duplicate, never reorder. (S6479 exception) */}
-          {items.map((it, j) => <li key={j}>{renderInline(it, `li-${k}-${j}`)}</li>)}
-        </ul>,
-      );
-      continue;
-    }
-
-    // blank line → paragraph break
-    if (!line.trim()) { i++; continue; }
-
-    // paragraph: gather until a blank line or a block starter
-    const pLines: string[] = [];
-    while (
-      i < lines.length &&
-      lines[i].trim() &&
-      !/^\s*```/.test(lines[i]) &&
-      !/^#{1,6}\s/.test(lines[i]) &&
-      !/^\s*>\s?/.test(lines[i]) &&
-      !/^\s*\d+\.\s+/.test(lines[i]) &&
-      !/^\s*[-*]\s+/.test(lines[i])
-    ) {
-      pLines.push(lines[i]);
-      i++;
-    }
-    // Preserve intentional soft line breaks inside a paragraph (the
-    // container is no longer white-space:pre-wrap) while still running each
-    // line through the inline tokenizer.
-    out.push(
-      <p key={`para-${k++}`}>
-        {/* key=index: soft-wrapped lines of one immutable paragraph; positional,
-            may duplicate, never reorder. (S6479 exception) */}
-        {pLines.map((pl, j) => (
-          <React.Fragment key={j}>
-            {j > 0 && <br />}
-            {renderInline(pl, `p-${k}-${j}`)}
-          </React.Fragment>
-        ))}
-      </p>,
-    );
+    if (!lines[i].trim()) { i++; continue; }   // blank line → paragraph break
+    const r = fenceBlock(lines, i, k)
+      ?? headingBlock(lines, i, k)
+      ?? hrBlock(lines, i, k)
+      ?? tableBlock(lines, i, k)
+      ?? blockquoteBlock(lines, i, k)
+      ?? orderedListBlock(lines, i, k)
+      ?? unorderedListBlock(lines, i, k)
+      ?? paragraphBlock(lines, i, k);
+    out.push(r.node);
+    i = r.next;
+    k = r.k;
   }
   return <>{out}</>;
 }
