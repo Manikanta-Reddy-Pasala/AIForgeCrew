@@ -1017,6 +1017,138 @@ def _note_staleness_notice(cwd):
         _af_log.debug("note staleness pass skipped: %s", _nexc2)
 
 
+def _pipeline_route(_pp, prompt, cwd, session_id, history, _with_resume, _path,
+                    _turn_t0, pctx):
+    """The 3-agent orchestrator route (enhancer → architect → planner). A spec
+    that splits into >=2 files runs the parallel team; otherwise it still writes
+    SPEC.md (every pipeline-routed run tracks against one) and falls to best-of-N
+    (opt-in) or the sequential team. Enhancer recall is SCOPED to this session's
+    repo so an unrelated task can't bleed into the build spec. Sets
+    ``pctx["done"]`` on the parallel / best-of-N returns."""
+    # Orchestrator (layer 1) = 3 agents: enhancer → architect → planner.
+    # SCOPE the enhancer's memory recall to THIS session's repo — without
+    # a repo, unified_query runs its repo-agnostic sources (prior chat
+    # sessions + global vector) and an UNRELATED task bleeds into the
+    # build spec (a "mathx" build decomposed into game/storage). The
+    # contamination guard in unified_query only fires with a repo set.
+    from aiforge_core.runtime.chat_agent import _chat_repo_key as _crk
+    _pl_repo = _crk(cwd)
+    _spec = _pp._enhance(prompt, history=history, cwd=cwd, repo=_pl_repo)  # 1. clean spec
+    _files = _pp._architect(_spec, cwd=cwd)  # 2. design file structure
+    _subs = _pp._plan_files(_files) if len(_files) >= 2 \
+        else _pp._decompose(_spec)          # 3. split (per file, or plan)
+    if len(_subs) >= 2:
+        _path["parallel"] = True
+        yield from _pp.stream_parallel_team(_with_resume(_spec), cwd=cwd,
+                                            subtasks=_subs,
+                                            enhanced=True, session_id=session_id)
+        # stream_parallel_team emits no terminal `done`; synthesize one
+        # so a UI waiting on `done` doesn't hang (exactly one — the
+        # exception path in _gen only fires on error).
+        yield {"type": "done"}
+        return
+    # Couldn't split into ≥2 distinct files → it's really ONE task.
+    # STILL write SPEC.md (user requirement: every pipeline-routed run
+    # tracks against a spec): only stream_parallel_team used to write
+    # it, so the <2-subtask fallbacks (best-of-N / sequential / single
+    # agent) ran spec-less — 'sometimes there is no SPEC.md'.
+    try:
+        _spec_doc = _pp._render_spec_md(_spec, _subs)
+        with open(os.path.join(cwd, "SPEC.md"), "w",
+                  encoding="utf-8") as _fh:
+            _fh.write(_spec_doc)
+        yield {"type": "thought", "role": "planner",
+               "text": "Wrote SPEC.md (single-task plan) — the run "
+                       "builds and is verified against it."}
+    except Exception as _sexc:  # noqa: BLE001 — visible, never silent
+        yield {"type": "thought", "role": "planner",
+               "text": f"⚠ SPEC.md write failed: {_sexc}"}
+    # Best-of-N (Gap C, opt-in): when AIFORGE_BEST_OF_N is set, run the
+    # single task N independent times in isolated worktrees, grade each,
+    # keep the best. Otherwise fall back to the sequential team pipeline
+    # so the user always gets a result. Default flow (flag unset) is
+    # unchanged.
+    if os.environ.get("AIFORGE_BEST_OF_N"):
+        from aiforge_core.runtime import best_of_n as _bon
+        _af_log.info("parallel decompose <2 subtasks — best-of-N route")
+        _path["parallel"] = True
+        # Best-of-N never drains the steer queue (nothing in
+        # best_of_n.py touches chat_interject), so mark the run
+        # UNSTEERABLE before dispatching. Without this the /steer
+        # endpoint answered {"queued": true}, the UI rendered the
+        # steer as accepted, and the message was silently dropped at
+        # end of turn — the endpoint's own docstring promises it
+        # reports "unsupported" instead.
+        from aiforge_core.runtime import chat_interject as _chat_interject
+        _chat_interject.set_steerable(session_id, False)
+        yield from _bon.stream_best_of_n(_with_resume(_spec), cwd,
+                                         session_id=session_id)
+        # stream_best_of_n emits no terminal `done`; synthesize one so a
+        # UI waiting on `done` doesn't hang (exactly one).
+        yield {"type": "done"}
+        return
+    _af_log.info("parallel decompose <2 subtasks — sequential fallback")
+
+
+def _doc_task_route(prompt, cwd, session_id, _with_resume, pctx):
+    """Route a doc/analysis task. Multi-repo analysis fans OUT (one read-only
+    explore agent per repo, then synthesize); a single repo naming MANY files is
+    PLANNED into bounded read-only groups; otherwise it falls through to the
+    single research agent (yielding only the router notice). READ-ONLY + bounded,
+    so no _psub_on gate. Sets ``pctx["done"]`` on the fan-out / planned returns."""
+    from aiforge_core.runtime import analysis_pipeline as _ap
+    # Multi-repo analysis fans OUT (one read-only explore agent per repo,
+    # in parallel, then synthesize a draft). A single-repo/topic analysis
+    # or a plain doc task stays on the single research agent below.
+    try:
+        from aiforge_core.runtime import analysis_pipeline as _ap
+        _fan, _ana_repos, _ana_topics = _ap.should_fan_out(prompt, cwd)
+    except Exception:  # noqa: BLE001 — never break routing on the probe
+        _fan, _ana_repos, _ana_topics = (False, [], [])
+    # No _psub_on gate: analysis fan-out is READ-ONLY + bounded, and its
+    # concurrency already respects AIFORGE_PARALLEL_SUBTASKS_MAX (=1 →
+    # sequential). Gating on _psub_on left a single agent seeing only
+    # cwd, silently dropping the other repos.
+    if _fan:
+        yield from _ap.stream_analysis_team(
+            _with_resume(prompt), cwd=cwd, session_id=session_id,
+            repos=_ana_repos, topics=_ana_topics)
+        pctx["done"] = True
+        return
+    # Single repo but the task names MANY real files → PLAN it into
+    # bounded read-only groups (discover→batch-read→synthesize), one
+    # explore agent each. A flat many-file analysis is exactly what a
+    # local model can't track on one agent; planning keeps every step
+    # inside its ceiling. Disable with AIFORGE_ANALYSIS_MIN_FILES=999.
+    try:
+        _plan, _ana_groups, _ana_topics2 = _ap.plan_single_repo(prompt, cwd)
+    except Exception:  # noqa: BLE001 — never break routing on the probe
+        _plan, _ana_groups, _ana_topics2 = (False, [], [])
+    if _plan:
+        _nfiles = sum(len(g.get("files") or []) for g in _ana_groups)
+        yield {"type": "thought", "role": "router",
+               "text": (f"Doc/analysis on one repo spanning {_nfiles} "
+                        f"files — planning into {len(_ana_groups)} bounded "
+                        "read-only groups (discover → batch-read → "
+                        "synthesize), one explore agent each, so a local "
+                        "model never faces a flat multi-file sweep.")}
+        yield from _ap.stream_analysis_planned(
+            _with_resume(prompt), cwd=cwd, session_id=session_id,
+            groups=_ana_groups, topics=_ana_topics2)
+        pctx["done"] = True
+        return
+    yield {"type": "thought", "role": "router",
+           "text": "Doc/analysis task (analysis or a doc/Confluence "
+                   "deliverable) — routing to the single research agent, "
+                   "NOT the code build pipeline. No file tree, tests, or "
+                   "PR; the output is the analysis/document (draft)."}
+# (the team not-route_pipeline notice — approvals-sequential vs in-place
+# edit — is emitted above via chat_router's _rd.notice.)
+# Review-edits is a simple/plan-only feature (forced on there). Team /
+# parallel / best-of-N runners run the full pipeline and don't hold
+# edits — left as-is by design, no notice (avoids per-run noise).
+
+
 def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
                        history):
     """Gather the (side-effecting) inputs to the task-type router and return its
@@ -1741,118 +1873,16 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         _route_pipeline = _rd.route_pipeline
         if _rd.notice:
             yield {"type": "thought", "role": "router", "text": _rd.notice}
+        pctx2 = {"done": False}
         if _doc_task:
-            # Multi-repo analysis fans OUT (one read-only explore agent per repo,
-            # in parallel, then synthesize a draft). A single-repo/topic analysis
-            # or a plain doc task stays on the single research agent below.
-            try:
-                from aiforge_core.runtime import analysis_pipeline as _ap
-                _fan, _ana_repos, _ana_topics = _ap.should_fan_out(prompt, cwd)
-            except Exception:  # noqa: BLE001 — never break routing on the probe
-                _fan, _ana_repos, _ana_topics = (False, [], [])
-            # No _psub_on gate: analysis fan-out is READ-ONLY + bounded, and its
-            # concurrency already respects AIFORGE_PARALLEL_SUBTASKS_MAX (=1 →
-            # sequential). Gating on _psub_on left a single agent seeing only
-            # cwd, silently dropping the other repos.
-            if _fan:
-                yield from _ap.stream_analysis_team(
-                    _with_resume(prompt), cwd=cwd, session_id=session_id,
-                    repos=_ana_repos, topics=_ana_topics)
+            yield from _doc_task_route(prompt, cwd, session_id, _with_resume, pctx2)
+            if pctx2["done"]:
                 return
-            # Single repo but the task names MANY real files → PLAN it into
-            # bounded read-only groups (discover→batch-read→synthesize), one
-            # explore agent each. A flat many-file analysis is exactly what a
-            # local model can't track on one agent; planning keeps every step
-            # inside its ceiling. Disable with AIFORGE_ANALYSIS_MIN_FILES=999.
-            try:
-                _plan, _ana_groups, _ana_topics2 = _ap.plan_single_repo(prompt, cwd)
-            except Exception:  # noqa: BLE001 — never break routing on the probe
-                _plan, _ana_groups, _ana_topics2 = (False, [], [])
-            if _plan:
-                _nfiles = sum(len(g.get("files") or []) for g in _ana_groups)
-                yield {"type": "thought", "role": "router",
-                       "text": (f"Doc/analysis on one repo spanning {_nfiles} "
-                                f"files — planning into {len(_ana_groups)} bounded "
-                                "read-only groups (discover → batch-read → "
-                                "synthesize), one explore agent each, so a local "
-                                "model never faces a flat multi-file sweep.")}
-                yield from _ap.stream_analysis_planned(
-                    _with_resume(prompt), cwd=cwd, session_id=session_id,
-                    groups=_ana_groups, topics=_ana_topics2)
-                return
-            yield {"type": "thought", "role": "router",
-                   "text": "Doc/analysis task (analysis or a doc/Confluence "
-                           "deliverable) — routing to the single research agent, "
-                           "NOT the code build pipeline. No file tree, tests, or "
-                           "PR; the output is the analysis/document (draft)."}
-        # (the team not-route_pipeline notice — approvals-sequential vs in-place
-        # edit — is emitted above via chat_router's _rd.notice.)
-        # Review-edits is a simple/plan-only feature (forced on there). Team /
-        # parallel / best-of-N runners run the full pipeline and don't hold
-        # edits — left as-is by design, no notice (avoids per-run noise).
         if _route_pipeline:
-            # Orchestrator (layer 1) = 3 agents: enhancer → architect → planner.
-            # SCOPE the enhancer's memory recall to THIS session's repo — without
-            # a repo, unified_query runs its repo-agnostic sources (prior chat
-            # sessions + global vector) and an UNRELATED task bleeds into the
-            # build spec (a "mathx" build decomposed into game/storage). The
-            # contamination guard in unified_query only fires with a repo set.
-            from aiforge_core.runtime.chat_agent import _chat_repo_key as _crk
-            _pl_repo = _crk(cwd)
-            _spec = _pp._enhance(prompt, history=history, cwd=cwd, repo=_pl_repo)  # 1. clean spec
-            _files = _pp._architect(_spec, cwd=cwd)  # 2. design file structure
-            _subs = _pp._plan_files(_files) if len(_files) >= 2 \
-                else _pp._decompose(_spec)          # 3. split (per file, or plan)
-            if len(_subs) >= 2:
-                _path["parallel"] = True
-                yield from _pp.stream_parallel_team(_with_resume(_spec), cwd=cwd,
-                                                    subtasks=_subs,
-                                                    enhanced=True, session_id=session_id)
-                # stream_parallel_team emits no terminal `done`; synthesize one
-                # so a UI waiting on `done` doesn't hang (exactly one — the
-                # exception path in _gen only fires on error).
-                yield {"type": "done"}
+            yield from _pipeline_route(_pp, prompt, cwd, session_id, history,
+                                       _with_resume, _path, _turn_t0, pctx2)
+            if pctx2["done"]:
                 return
-            # Couldn't split into ≥2 distinct files → it's really ONE task.
-            # STILL write SPEC.md (user requirement: every pipeline-routed run
-            # tracks against a spec): only stream_parallel_team used to write
-            # it, so the <2-subtask fallbacks (best-of-N / sequential / single
-            # agent) ran spec-less — 'sometimes there is no SPEC.md'.
-            try:
-                _spec_doc = _pp._render_spec_md(_spec, _subs)
-                with open(os.path.join(cwd, "SPEC.md"), "w",
-                          encoding="utf-8") as _fh:
-                    _fh.write(_spec_doc)
-                yield {"type": "thought", "role": "planner",
-                       "text": "Wrote SPEC.md (single-task plan) — the run "
-                               "builds and is verified against it."}
-            except Exception as _sexc:  # noqa: BLE001 — visible, never silent
-                yield {"type": "thought", "role": "planner",
-                       "text": f"⚠ SPEC.md write failed: {_sexc}"}
-            # Best-of-N (Gap C, opt-in): when AIFORGE_BEST_OF_N is set, run the
-            # single task N independent times in isolated worktrees, grade each,
-            # keep the best. Otherwise fall back to the sequential team pipeline
-            # so the user always gets a result. Default flow (flag unset) is
-            # unchanged.
-            if os.environ.get("AIFORGE_BEST_OF_N"):
-                from aiforge_core.runtime import best_of_n as _bon
-                _af_log.info("parallel decompose <2 subtasks — best-of-N route")
-                _path["parallel"] = True
-                # Best-of-N never drains the steer queue (nothing in
-                # best_of_n.py touches chat_interject), so mark the run
-                # UNSTEERABLE before dispatching. Without this the /steer
-                # endpoint answered {"queued": true}, the UI rendered the
-                # steer as accepted, and the message was silently dropped at
-                # end of turn — the endpoint's own docstring promises it
-                # reports "unsupported" instead.
-                _chat_interject.set_steerable(session_id, False)
-                yield from _bon.stream_best_of_n(_with_resume(_spec), cwd,
-                                                 session_id=session_id)
-                # stream_best_of_n emits no terminal `done`; synthesize one so a
-                # UI waiting on `done` doesn't hang (exactly one).
-                yield {"type": "done"}
-                return
-            _af_log.info("parallel decompose <2 subtasks — sequential fallback")
         if team and not _doc_task:
             # Sequential team pipeline already has its own ADK enhancer agent;
             # don't double-enhance here. Mark the driver launched ONLY here —
