@@ -117,46 +117,54 @@ def _probe_timeout(explicit: float | None) -> float:
         return 15.0
 
 
+def _probe_tls_plan(url: str, insecure: bool) -> "tuple[bool, str]":
+    """(skip_tls, tls_mode_label) for a probe. Skip TLS verify when explicitly
+    asked OR for a trusted-internal host (self-hosted LAN box, self-signed cert
+    is normal there); public hosts always verify."""
+    from .._ssl import auto_relax_internal as _ssl_auto_relax
+    is_https = url.lower().startswith("https://")
+    auto = (not insecure) and _ssl_auto_relax(url)
+    skip_tls = is_https and (insecure or auto)
+    tls_mode = (("skip-verify(auto-internal)" if auto else "skip-verify(CERT_NONE)")
+                if skip_tls else "verify" if is_https else "plain-http")
+    return skip_tls, tls_mode
+
+
+def _probe_models(payload) -> list:
+    """The model ids from a /models payload's ``data`` list."""
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list):
+        return []
+    return [m.get("id") for m in data if isinstance(m, dict) and m.get("id")]
+
+
 def probe(base_url: str, api_key: str | None = None,
           timeout: float | None = None, insecure: bool = False) -> dict:
-    """Test-connection helper for the home page. GETs ``{base}/models``
-    and returns ``{ok, models: [ids], error?}``. Never raises.
+    """Test-connection helper for the home page. GETs ``{base}/models`` and
+    returns ``{ok, models: [ids], error?}``. Never raises.
 
-    ``insecure=True`` skips TLS verification for THIS probe only — the
-    operator explicitly ticked "skip TLS verify" for a self-signed /
-    internal HTTPS endpoint they're deliberately testing. It never
-    relaxes any other host.
+    ``insecure=True`` skips TLS verification for THIS probe only — the operator
+    explicitly ticked "skip TLS verify" for a self-signed / internal HTTPS
+    endpoint they're deliberately testing. It never relaxes any other host.
     """
     if not base_url or not base_url.strip():
         return {"ok": False, "error": "base_url required", "models": []}
     url = _ensure_v1(base_url.strip()) + "/models"
-    is_https = url.lower().startswith("https://")
     headers = {"Accept": "application/json", "User-Agent": _user_agent()}
     has_token = bool(api_key and api_key.strip() and api_key.strip() != _NO_TOKEN)
     if has_token:
         headers["Authorization"] = f"Bearer {api_key.strip()}"
-    from .._ssl import auto_relax_internal as _ssl_auto_relax
-    from .._ssl import context_for as _ssl_context_for
-    from .._ssl import insecure_context as _ssl_insecure
-    # Skip TLS verify when explicitly asked OR for a trusted-internal host
-    # (self-hosted LAN box, self-signed cert is normal there). Public hosts
-    # always verify. See net.ssl.auto_relax_internal.
-    auto = (not insecure) and _ssl_auto_relax(url)
-    skip_tls = is_https and (insecure or auto)
-    # Diagnostic: shows the EXACT url hit, whether TLS verification was
-    # skipped (and why), and token presence (never the token itself). Grep
-    # the API logs for "probe ->" to confirm the running build's behaviour.
-    tls_mode = (("skip-verify(auto-internal)" if auto else "skip-verify(CERT_NONE)")
-                if skip_tls else "verify" if is_https else "plain-http")
+    skip_tls, tls_mode = _probe_tls_plan(url, insecure)
+    # Diagnostic: the EXACT url hit, whether TLS was skipped (and why), token
+    # presence (never the token). Grep the API logs for "probe ->".
     log.info("probe -> url=%s insecure_flag=%s tls=%s token=%s",
              url, insecure, tls_mode, "yes" if has_token else "no")
+    from .._ssl import context_for as _ssl_context_for
+    from .._ssl import insecure_context as _ssl_insecure
     try:
-        # Inside the try so a bad CA bundle path (FileNotFoundError) is
-        # reported as a clean {ok: False, error} instead of raising.
-        if skip_tls:
-            ctx = _ssl_insecure()
-        else:
-            ctx = _ssl_context_for(url)
+        # Inside the try so a bad CA bundle path (FileNotFoundError) is reported
+        # as a clean {ok: False, error} instead of raising.
+        ctx = _ssl_insecure() if skip_tls else _ssl_context_for(url)
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(
                 req, timeout=_probe_timeout(timeout), context=ctx) as r:
@@ -165,12 +173,7 @@ def probe(base_url: str, api_key: str | None = None,
         log.warning("probe FAILED url=%s tls=%s: %s", url, tls_mode, exc)
         return {"ok": False, "error": str(exc), "models": []}
     log.info("probe OK url=%s tls=%s", url, tls_mode)
-    data = payload.get("data") if isinstance(payload, dict) else None
-    models = []
-    if isinstance(data, list):
-        models = [m.get("id") for m in data
-                  if isinstance(m, dict) and m.get("id")]
-    return {"ok": True, "models": models}
+    return {"ok": True, "models": _probe_models(payload)}
 
 
 register_provider(OpenAICompatibleProvider())

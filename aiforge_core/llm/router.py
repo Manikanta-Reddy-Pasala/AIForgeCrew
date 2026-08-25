@@ -142,50 +142,17 @@ def _local_ctx_window(role: str) -> int:
         return _LOCAL_CTX_DEFAULT
 
 
-def escalate(role: str, *, reason: str = "context_overflow",
-             est_tokens: int | None = None,
-             threshold: float = 0.8) -> Endpoint | None:
-    """Auto-flip ``role`` to a cloud provider when local won't fit.
+def _overflow_needs_escalation(role: str, est_tokens: "int | None",
+                              threshold: float) -> bool:
+    """Whether a context_overflow reason warrants escalation: the estimate must
+    exist AND exceed ``local_ctx * threshold``."""
+    if est_tokens is None:
+        return False
+    return est_tokens > int(_local_ctx_window(role) * threshold)
 
-    Triggers (any of):
-      - reason == 'context_overflow' AND est_tokens > local_ctx * threshold
-      - reason in {'quality', 'timeout', 'breaker_close'}
 
-    Returns the chosen cloud Endpoint, or ``None`` when no cloud
-    provider is configured/available (caller stays on primary).
-
-    Honoured envs:
-      - ``AIFORGE_ESCALATE_DISABLE=1``  hard-disable escalation
-      - ``AIFORGE_<ROLE>_CLOUD_PROVIDER=ollama_cloud`` pin cloud target
-      - ``AIFORGE_CLOUD_PROVIDER=...``  global cloud preference
-
-    Decision is intentionally side-effect-free — caller (client.py)
-    should log it. The router does not mutate process state.
-    """
-    import os
-    if os.environ.get("AIFORGE_ESCALATE_DISABLE", "0") in ("1", "true"):
-        return None
-    primary = resolve(role)
-    # Already on cloud — nothing to do.
-    if primary.provider in _CLOUD_PROVIDERS:
-        return None
-
-    if reason == "context_overflow":
-        if est_tokens is None:
-            return None
-        if est_tokens <= int(_local_ctx_window(role) * threshold):
-            return None
-
-    # Pick cloud target: per-role override > global > first available.
-    pinned = (
-        os.environ.get(f"AIFORGE_{role.upper()}_CLOUD_PROVIDER")
-        or os.environ.get("AIFORGE_CLOUD_PROVIDER")
-    )
-    candidates: list[str] = []
-    if pinned:
-        candidates.append(pinned.lower())
-    candidates.extend(_CLOUD_PROVIDERS)
-
+def _first_available_cloud(role: str, candidates: list) -> "Endpoint | None":
+    """The first candidate provider that is configured, available and healthy."""
     from . import health as _health
     for name in candidates:
         prov = _providers.get(name)
@@ -195,6 +162,35 @@ def escalate(role: str, *, reason: str = "context_overflow",
             continue
         return prov.endpoint(role)
     return None
+
+
+def escalate(role: str, *, reason: str = "context_overflow",
+             est_tokens: int | None = None,
+             threshold: float = 0.8) -> Endpoint | None:
+    """Auto-flip ``role`` to a cloud provider when local won't fit.
+
+    Triggers (any of): reason == 'context_overflow' AND est_tokens >
+    local_ctx * threshold; reason in {'quality', 'timeout', 'breaker_close'}.
+    Returns the chosen cloud Endpoint, or None when no cloud provider is
+    configured/available. Side-effect-free — caller (client.py) logs it.
+
+    Honoured envs: ``AIFORGE_ESCALATE_DISABLE=1``,
+    ``AIFORGE_<ROLE>_CLOUD_PROVIDER``, ``AIFORGE_CLOUD_PROVIDER``.
+    """
+    import os
+    if os.environ.get("AIFORGE_ESCALATE_DISABLE", "0") in ("1", "true"):
+        return None
+    if resolve(role).provider in _CLOUD_PROVIDERS:
+        return None                       # already on cloud — nothing to do
+    if reason == "context_overflow" and not _overflow_needs_escalation(
+            role, est_tokens, threshold):
+        return None
+    # Pick cloud target: per-role override > global > first available.
+    pinned = (os.environ.get(f"AIFORGE_{role.upper()}_CLOUD_PROVIDER")
+              or os.environ.get("AIFORGE_CLOUD_PROVIDER"))
+    candidates: list[str] = [pinned.lower()] if pinned else []
+    candidates.extend(_CLOUD_PROVIDERS)
+    return _first_available_cloud(role, candidates)
 
 
 def list_providers() -> list[dict]:

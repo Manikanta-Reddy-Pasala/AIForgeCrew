@@ -391,6 +391,29 @@ def _due(t: _Task, now_mono: float, now_dt: datetime) -> float:
         return 3600.0
 
 
+def _run_due_tasks(nm: float, nd) -> None:
+    """Fire every task due within ~1s. A task's fire failure never kills the
+    loop."""
+    for t in list(_TASKS):
+        if _due(t, nm, nd) <= 1.0:
+            try:
+                _fire(t, nd)
+            except Exception as exc:  # noqa: BLE001 — never kill the loop
+                log.warning("periodic task %s fire failed: %s", t.name, exc)
+
+
+def _periodic_loop() -> None:
+    while True:
+        now_mono, now_dt = time.monotonic(), datetime.now()
+        # Sleep until the SOONEST due task, capped so at_hour tasks are
+        # re-evaluated and new registrations get picked up. Floor keeps the loop
+        # cheap when idle (daily tasks → capped at 1h); a task due sooner still
+        # fires within ~1s.
+        wait = min((_due(t, now_mono, now_dt) for t in _TASKS), default=3600.0)
+        time.sleep(max(1.0, min(wait, 3600.0)))
+        _run_due_tasks(time.monotonic(), datetime.now())
+
+
 def start() -> None:
     """Launch the single periodic loop (idempotent). No-op when disabled or no
     tasks are registered."""
@@ -401,29 +424,8 @@ def start() -> None:
         if _started or not _TASKS:
             return
         _started = True
-
-    def _loop() -> None:
-        while True:
-            now_mono, now_dt = time.monotonic(), datetime.now()
-            # sleep until the SOONEST due task, capped so at_hour tasks are
-            # re-evaluated and new registrations get picked up.
-            wait = min((_due(t, now_mono, now_dt) for t in _TASKS),
-                       default=3600.0)
-            # Floor keeps the loop cheap when idle (daily tasks → capped at 1h so
-            # new registrations + at_hour re-eval happen); a task due sooner still
-            # fires within ~1s.
-            time.sleep(max(1.0, min(wait, 3600.0)))
-            nm = time.monotonic()
-            nd = datetime.now()
-            for t in list(_TASKS):
-                if _due(t, nm, nd) <= 1.0:
-                    try:
-                        _fire(t, nd)
-                    except Exception as exc:  # noqa: BLE001 — never kill the loop
-                        log.warning("periodic task %s fire failed: %s", t.name, exc)
-
     from aiforge_core.runtime import background as _bg
-    _bg.spawn(_loop, name="periodic-loop")
+    _bg.spawn(_periodic_loop, name="periodic-loop")
 
 
 __all__ = ["register", "start"]

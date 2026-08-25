@@ -98,6 +98,22 @@ def _parse_command_md(text: str) -> tuple[str, str]:
     return desc, (body or "").strip()
 
 
+def _load_command_md(child: Path) -> "Command | None":
+    """Parse one ``<name>.md`` into a Command, or None (not a readable md file,
+    parse error, or empty body)."""
+    if child.suffix != ".md" or not child.is_file():
+        return None
+    try:
+        desc, body = _parse_command_md(
+            child.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:  # noqa: BLE001
+        return None
+    if not body:
+        return None
+    return Command(name=child.stem, description=desc, body=body,
+                   source=str(child))
+
+
 def _scan_dir(root: Path) -> list[Command]:
     """Read ``<root>/*.md`` — one command per markdown file (stem = name)."""
     out: list[Command] = []
@@ -105,17 +121,9 @@ def _scan_dir(root: Path) -> list[Command]:
         return out
     try:
         for child in sorted(root.iterdir()):
-            if child.suffix != ".md" or not child.is_file():
-                continue
-            try:
-                desc, body = _parse_command_md(
-                    child.read_text(encoding="utf-8", errors="ignore"))
-            except Exception:  # noqa: BLE001
-                continue
-            if not body:
-                continue
-            out.append(Command(name=child.stem, description=desc,
-                               body=body, source=str(child)))
+            cmd = _load_command_md(child)
+            if cmd is not None:
+                out.append(cmd)
     except Exception:  # noqa: BLE001
         return out
     return out
