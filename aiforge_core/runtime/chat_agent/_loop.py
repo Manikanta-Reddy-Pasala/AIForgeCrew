@@ -559,6 +559,44 @@ def _retry_completion(complete_fn, role, convo, session_id, exc,
     return out
 
 
+def _invoke_tool(fn, name, args, cwd):
+    """Run one tool fn under a scoped sandbox-root override (reset in finally)
+    with perf recording; KeyError/Exception become an error result."""
+    _perf_t0 = time.perf_counter()
+    # Strong tools resolve through sandbox.root(); scope the override to
+    # the workspace root (NOT the raw cwd, so it can't escape an
+    # AIFORGE_WORKSPACE_DIR jail) and ALWAYS reset it in finally so a
+    # reused thread can't leak this session's dir into the next.
+    _root_tok = None
+    if name in _ROOT_SCOPED_TOOLS:
+        try:
+            from aiforge_core.runtime import sandbox as _sb
+            _root_tok = _sb.set_root_override(_scoped_root(cwd))
+        except Exception:  # noqa: BLE001
+            _root_tok = None
+    try:
+        result = fn(args, cwd)
+    except KeyError as exc:
+        result = {"ok": False, "error": f"missing arg: {exc}"}
+    except Exception as exc:  # noqa: BLE001
+        result = {"ok": False, "error": str(exc)}
+    finally:
+        if _root_tok is not None:
+            try:
+                from aiforge_core.runtime import sandbox as _sb
+                _sb.reset_root_override(_root_tok)
+            except Exception:  # noqa: BLE001
+                pass
+    try:
+        from aiforge_core.runtime import perf_recorder
+        perf_recorder.record(
+            _perf_family(name), name,
+            (time.perf_counter() - _perf_t0) * 1000.0)
+    except Exception:  # noqa: BLE001 — perf must never break a run
+        pass
+    return result
+
+
 def _dispatch_tool(name, args, cwd, n, _hook_block):
     """Dispatch one tool call: honour a PreToolUse hook block / unknown tool,
     else emit ``tool_start`` and run ``fn(args, cwd)`` under a scoped sandbox
@@ -579,38 +617,7 @@ def _dispatch_tool(name, args, cwd, n, _hook_block):
         # instead of appending a second, duplicate row.
         yield {"type": "tool_start", "name": name, "args": args,
                "call_id": n}
-        _perf_t0 = time.perf_counter()
-        # Strong tools resolve through sandbox.root(); scope the override to
-        # the workspace root (NOT the raw cwd, so it can't escape an
-        # AIFORGE_WORKSPACE_DIR jail) and ALWAYS reset it in finally so a
-        # reused thread can't leak this session's dir into the next.
-        _root_tok = None
-        if name in _ROOT_SCOPED_TOOLS:
-            try:
-                from aiforge_core.runtime import sandbox as _sb
-                _root_tok = _sb.set_root_override(_scoped_root(cwd))
-            except Exception:  # noqa: BLE001
-                _root_tok = None
-        try:
-            result = fn(args, cwd)
-        except KeyError as exc:
-            result = {"ok": False, "error": f"missing arg: {exc}"}
-        except Exception as exc:  # noqa: BLE001
-            result = {"ok": False, "error": str(exc)}
-        finally:
-            if _root_tok is not None:
-                try:
-                    from aiforge_core.runtime import sandbox as _sb
-                    _sb.reset_root_override(_root_tok)
-                except Exception:  # noqa: BLE001
-                    pass
-        try:
-            from aiforge_core.runtime import perf_recorder
-            perf_recorder.record(
-                _perf_family(name), name,
-                (time.perf_counter() - _perf_t0) * 1000.0)
-        except Exception:  # noqa: BLE001 — perf must never break a run
-            pass
+        result = _invoke_tool(fn, name, args, cwd)
     return result
 
 
@@ -872,6 +879,29 @@ def _may_extend(st, n):
     return True
 
 
+def _cap_stop_reason(st):
+    """The user-facing reason string when the step cap stops a run, naming the
+    knob that actually applied (Quick max_steps / unattended cap / safety cap)."""
+    if st.caller_cap is not None:
+        _why = (f"(stopped: used up Quick mode's {st.safety}-step "
+                "budget — send it again with Quick off, or raise "
+                "AIFORGE_CHAT_QUICK_STEPS)")
+    elif st.unattended:
+        # The operator may have set the step cap to 0; saying
+        # "raise the step cap" would send them to a knob that is
+        # already off and had no say in this stop.
+        _why = (f"(stopped: hit the {st.safety}-step cap for runs with "
+                "nobody watching — raise the background step cap in "
+                "Settings → Agent limits, or "
+                "AIFORGE_CHAT_UNATTENDED_CAP)")
+    else:
+        _why = ("(stopped: hit the runaway safety cap — raise the "
+                "step cap in Settings → Agent limits, or "
+                "AIFORGE_CHAT_SAFETY_CAP; 0 = no limit — if this "
+                "was real work)")
+    return _why
+
+
 def _step_cap_guard(st, n):
     """Runaway step-cap check: a turn still producing new work extends its step
     budget (after a forced condense); otherwise stop, naming the knob that
@@ -901,23 +931,7 @@ def _step_cap_guard(st, n):
             # turn is bounded by its caller's max_steps, so pointing the
             # user at the Settings cap sends them to a number that had no
             # say — and with the cap set to 0 that number is already off.
-            if st.caller_cap is not None:
-                _why = (f"(stopped: used up Quick mode's {st.safety}-step "
-                        "budget — send it again with Quick off, or raise "
-                        "AIFORGE_CHAT_QUICK_STEPS)")
-            elif st.unattended:
-                # The operator may have set the step cap to 0; saying
-                # "raise the step cap" would send them to a knob that is
-                # already off and had no say in this stop.
-                _why = (f"(stopped: hit the {st.safety}-step cap for runs with "
-                        "nobody watching — raise the background step cap in "
-                        "Settings → Agent limits, or "
-                        "AIFORGE_CHAT_UNATTENDED_CAP)")
-            else:
-                _why = ("(stopped: hit the runaway safety cap — raise the "
-                        "step cap in Settings → Agent limits, or "
-                        "AIFORGE_CHAT_SAFETY_CAP; 0 = no limit — if this "
-                        "was real work)")
+            _why = _cap_stop_reason(st)
             yield {"type": "message", "text": _why}
             yield {"type": "done"}
             return "return"
@@ -1143,12 +1157,10 @@ def _claim_guard(st, step, cwd, readonly_mode, builder, _wt_fp0):
     return None
 
 
-def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
-                  cwd, _asks, _wt_fp0):
-    """Handle a FINAL step: builder-not-finalized nudge, implicit-final doer
-    nudge, multi-ask completeness gate, claim-vs-reality guard, and the
-    progress-gated verify→fix loop — then accept (fire stop + emit the answer).
-    Returns "continue"/"return"."""
+def _final_nudges(st, step, builder, strict_finish, _asks):
+    """Pre-accept FINAL nudges: builder-not-finalized reminder, implicit-final
+    doer nudge (strict_finish), and the one-time multi-ask completeness gate.
+    Returns continue to loop again, or None to proceed."""
     # In a builder session, a "final" BEFORE the finalize tool succeeded
     # means the model narrated/stalled ("let me test what's happening…")
     # instead of building the artifact — don't end the interview with
@@ -1200,6 +1212,18 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
             "resend it unchanged as FINAL. If any is missing, do the "
             "missing work now (ACTIONs as needed) and produce ONE "
             "complete FINAL covering all parts, numbered."})
+        return "continue"
+    return None
+
+
+def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
+                  cwd, _asks, _wt_fp0):
+    """Handle a FINAL step: builder-not-finalized nudge, implicit-final doer
+    nudge, multi-ask completeness gate, claim-vs-reality guard, and the
+    progress-gated verify→fix loop — then accept (fire stop + emit the answer).
+    Returns "continue"/"return"."""
+    _sig = yield from _final_nudges(st, step, builder, strict_finish, _asks)
+    if _sig == "continue":
         return "continue"
     _sig = yield from _claim_guard(st, step, cwd, readonly_mode, builder, _wt_fp0)
     if _sig == "continue":
@@ -1508,6 +1532,24 @@ def _record_edit(st, name, args, result, cwd):
                     f"wrote has a syntax error; fix it before continuing:\n{_pe[:600]}"})
 
 
+def _record_read(st, name, sig, result, _long_chain_help):
+    """Count a landed READ as new progress the first time its signature is seen
+    (feeds the extension budget), and remember it for the duplicate-read guard."""
+    if (name in _READ_OBS_TOOLS and not (
+            isinstance(result, dict) and result.get("ok") is False)):
+        # F2: counted OUTSIDE the _long_chain_help gate —
+        # AIFORGE_CHAT_STUCK_RECOVERIES=0 turns off the duplicate-read
+        # NUDGE, and must not silently delete half the progress signal with
+        # it (a read-only research turn would never extend on that box).
+        if sig not in st.read_sigs_ever:
+            st.reads_new += 1        # real progress: knowledge it did not have
+            st.read_sigs_ever[sig] = True
+            while len(st.read_sigs_ever) > _ACTION_SIG_MAX:
+                st.read_sigs_ever.popitem(last=False)
+        if _long_chain_help:
+            st.read_sigs_seen.add(sig)
+
+
 def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     """Post-tool bookkeeping: PostToolUse hook, emit the tool result, count landed
     reads/edits (feeding the progress + verify gates), post-edit syntax self-
@@ -1524,19 +1566,7 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     # Loop-engineering bookkeeping: count edits that actually LANDED (gates
     # the verify-on-final loop — a 0-edit Q&A turn is never test-gated).
     # Remember a successful read so a later identical re-read short-circuits.
-    if (name in _READ_OBS_TOOLS and not (
-            isinstance(result, dict) and result.get("ok") is False)):
-        # F2: counted OUTSIDE the _long_chain_help gate —
-        # AIFORGE_CHAT_STUCK_RECOVERIES=0 turns off the duplicate-read
-        # NUDGE, and must not silently delete half the progress signal with
-        # it (a read-only research turn would never extend on that box).
-        if sig not in st.read_sigs_ever:
-            st.reads_new += 1        # real progress: knowledge it did not have
-            st.read_sigs_ever[sig] = True
-            while len(st.read_sigs_ever) > _ACTION_SIG_MAX:
-                st.read_sigs_ever.popitem(last=False)
-        if _long_chain_help:
-            st.read_sigs_seen.add(sig)
+    _record_read(st, name, sig, result, _long_chain_help)
     yield from _record_edit(st, name, args, result, cwd)
     # Builder finalize: a successful create_job_script / learn_skill /
     # learn_workflow / remember_rule ends the interview. Signal the UI so it
