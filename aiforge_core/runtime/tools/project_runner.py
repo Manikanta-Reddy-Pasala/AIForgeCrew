@@ -69,6 +69,45 @@ def _node_framework(cwd: str) -> str:
     return "node"
 
 
+_TEST_FILE_SUFFIXES = ("_test.go", ".test.js", ".test.ts", ".spec.ts",
+                       "Test.java", "Tests.java")
+
+
+def _looks_like_test_file(fname: str) -> bool:
+    """True when a filename is recognisably a test across the supported stacks."""
+    fl = fname.lower()
+    if fname.startswith("test_") and fname.endswith(".py"):
+        return True
+    if fname.endswith(_TEST_FILE_SUFFIXES):
+        return True
+    if fname.endswith(".rs") and "test" in fl:
+        return True
+    return "test" in fl and fl.endswith((".c", ".cpp", ".cc", ".cxx"))
+
+
+def _has_test_files(cwd: str) -> bool:
+    """Walk (bounded to depth 4) for a file that looks like a test."""
+    for root, dirs, files in os.walk(cwd):
+        dirs[:] = [d for d in dirs if d not in {
+            ".git", "node_modules", ".venv", "venv", "target", "build", "dist"}]
+        if any(_looks_like_test_file(f) for f in files):
+            return True
+        if root.count(os.sep) - cwd.count(os.sep) >= 4:   # bound the walk
+            dirs[:] = []
+    return False
+
+
+def _node_has_test_script(cwd: str) -> bool:
+    """A real package.json "test" script (not the npm-init placeholder)?"""
+    try:
+        import json as _j
+        pkg = _j.loads(open(os.path.join(cwd, "package.json")).read())
+        t = ((pkg.get("scripts") or {}).get("test") or "")
+        return bool(t) and "no test specified" not in t
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _has_tests(cwd: str, stacks: list[str]) -> bool:
     """Best-effort: does the project have a runnable test setup?"""
     if os.path.isdir(os.path.join(cwd, "src", "test")):   # maven/gradle
@@ -76,32 +115,23 @@ def _has_tests(cwd: str, stacks: list[str]) -> bool:
     if os.path.isdir(os.path.join(cwd, "tests")) or os.path.isdir(
             os.path.join(cwd, "test")):
         return True
-    for root, dirs, files in os.walk(cwd):
-        dirs[:] = [d for d in dirs if d not in {
-            ".git", "node_modules", ".venv", "venv", "target", "build", "dist"}]
-        for f in files:
-            _fl = f.lower()
-            if (f.startswith("test_") and f.endswith(".py")) \
-                    or f.endswith("_test.go") or f.endswith(".test.js") \
-                    or f.endswith(".test.ts") or f.endswith(".spec.ts") \
-                    or f.endswith("Test.java") or f.endswith("Tests.java") \
-                    or f.endswith(".rs") and "test" in _fl \
-                    or (("test" in _fl) and _fl.endswith(
-                        (".c", ".cpp", ".cc", ".cxx"))):
-                return True
-        if root.count(os.sep) - cwd.count(os.sep) >= 4:   # bound the walk
-            dirs[:] = []
-    # Node with a real "test" script (not the npm-init placeholder)?
+    if _has_test_files(cwd):
+        return True
     if any(s.startswith("node") for s in stacks):
-        try:
-            import json as _j
-            pkg = _j.loads(open(os.path.join(cwd, "package.json")).read())
-            t = ((pkg.get("scripts") or {}).get("test") or "")
-            if t and "no test specified" not in t:
-                return True
-        except Exception:  # noqa: BLE001
-            pass
+        return _node_has_test_script(cwd)
     return False
+
+
+def _detect_native_stack(cwd: str) -> "str | None":
+    """The C/C++ build stack for a tree with no higher-level manifest: a CMake
+    or Make build file, else bare C/C++ sources. None when none apply."""
+    if _has(cwd, "CMakeLists.txt"):
+        return "cmake"
+    if _has(cwd, "Makefile", "makefile", "GNUmakefile"):
+        return "make"
+    if _has_ext(cwd, _CPP_EXTS + _C_EXTS):
+        return "cpp" if _has_ext(cwd, _CPP_EXTS) else "c"
+    return None
 
 
 def detect(cwd: str) -> dict:
@@ -123,100 +153,111 @@ def detect(cwd: str) -> dict:
     # (CMake / Make) or bare sources. Only when no higher-level stack already
     # claimed the tree (a Python/Node repo may carry an incidental Makefile).
     if not stacks:
-        if _has(cwd, "CMakeLists.txt"):
-            stacks.append("cmake")
-        elif _has(cwd, "Makefile", "makefile", "GNUmakefile"):
-            stacks.append("make")
-        elif _has_ext(cwd, _CPP_EXTS + _C_EXTS):
-            stacks.append("cpp" if _has_ext(cwd, _CPP_EXTS) else "c")
+        native = _detect_native_stack(cwd)
+        if native:
+            stacks.append(native)
     return {"ok": True, "stacks": stacks, "cwd": cwd,
             "has_tests": _has_tests(cwd, stacks),
             "note": "no recognised project markers" if not stacks else ""}
 
 
+def _plan_maven(cwd: str) -> tuple[list[str], dict]:
+    return ["java", "mvn"], {
+        "install": ["mvn -q -DskipTests dependency:resolve"],
+        "build": ["mvn -q -DskipTests package"],
+        "test": ["mvn -q test"],
+        "run": ["mvn -q spring-boot:run"]}
+
+
+def _plan_gradle(cwd: str) -> tuple[list[str], dict]:
+    gradlew = os.path.exists(os.path.join(cwd, "gradlew"))
+    g = "./gradlew" if gradlew else "gradle"
+    tools = ["java"] + ([] if gradlew else ["gradle"])
+    return tools, {"install": [f"{g} dependencies"], "build": [f"{g} build -x test"],
+                   "test": [f"{g} test"], "run": [f"{g} bootRun"]}
+
+
+def _plan_node(stack: str, cwd: str) -> tuple[list[str], dict]:
+    pm = _node_pm(cwd)
+    fw = stack.split(":", 1)[1] if ":" in stack else "node"
+    inst = {"npm": "npm install", "yarn": "yarn install",
+            "pnpm": "pnpm install"}[pm]
+    run_script = "dev" if fw in ("next", "vite", "react-scripts", "react",
+                                 "vue") else "start"
+    return ["node", pm], {
+        "install": [inst], "build": [f"{pm} run build"],
+        "test": [f"{pm} test --silent" if pm == "npm" else f"{pm} test"],
+        "run": [f"{pm} run {run_script}"]}
+
+
+def _plan_python(cwd: str) -> tuple[list[str], dict]:
+    inst = ("pip install -r requirements.txt"
+            if os.path.exists(os.path.join(cwd, "requirements.txt"))
+            else "pip install -e .")
+    entry = next((f for f in ("main.py", "app.py", "manage.py", "run.py")
+                  if os.path.exists(os.path.join(cwd, f))), "main.py")
+    return ["python3", "pip"], {
+        "install": [inst], "build": ["python -m compileall -q ."],
+        "test": ["python -m pytest -q"], "run": [f"python {entry}"]}
+
+
+def _plan_cpp(stack: str) -> tuple[list[str], dict]:
+    # Bare sources, no build file: compile EVERYTHING into one binary and run it
+    # (a generated test main asserts + exits non-zero on failure). g++ compiles C
+    # and C++; the -std picks a modern default. Shell $(find …) works because
+    # _exec runs with shell=True.
+    cxx = "g++ -std=c++17" if stack == "cpp" else "gcc -std=c11"
+    srcs = (r"$(find . -path ./build -prune -o "
+            r"\( -name '*.c' -o -name '*.cpp' -o -name '*.cc' -o -name '*.cxx' \) "
+            r"-print)")
+    compile_cmd = f"{cxx} -O0 -o ./a.out {srcs}"
+    tool = "g++" if stack == "cpp" else "gcc"
+    return [tool], {"install": [], "build": [compile_cmd],
+                    "test": [f"{compile_cmd} && ./a.out"], "run": ["./a.out"]}
+
+
+# Stacks whose plan needs no cwd/self inspection — a constant (tools, cmds) map.
+_STATIC_PLANS: dict[str, tuple[list[str], dict]] = {
+    "go": (["go"], {"install": ["go mod download"], "build": ["go build ./..."],
+                    "test": ["go test ./..."], "run": ["go run ."]}),
+    "rust": (["cargo"], {"install": ["cargo fetch"], "build": ["cargo build"],
+                         "test": ["cargo test"], "run": ["cargo run"]}),
+    "make": (["make"], {"install": [], "build": ["make"],
+                        # try a `test`/`check` target; fall back to a plain build
+                        # so a Makefile without a test target still gates.
+                        "test": ["make test 2>/dev/null || make check 2>/dev/null || make"],
+                        "run": ["make run"]}),
+    "cmake": (["cmake", "make"], {
+        "install": [],
+        "build": ["cmake -S . -B build && cmake --build build"],
+        "test": ["cmake -S . -B build && cmake --build build && "
+                 "ctest --test-dir build --output-on-failure"],
+        "run": ["cmake --build build --target run"]}),
+}
+
+
+def _stack_plan(stack: str, cwd: str) -> "tuple[list[str], dict] | None":
+    """(tools, {action: commands}) for one stack, or None when unknown."""
+    if stack == "maven":
+        return _plan_maven(cwd)
+    if stack == "gradle":
+        return _plan_gradle(cwd)
+    if stack.startswith("node"):
+        return _plan_node(stack, cwd)
+    if stack == "python":
+        return _plan_python(cwd)
+    if stack in ("c", "cpp"):
+        return _plan_cpp(stack)
+    return _STATIC_PLANS.get(stack)
+
+
 def _plan(stack: str, action: str, cwd: str) -> tuple[list[str], list[str]]:
     """Return (tools_needed, commands) for one stack + action."""
-    gradlew = os.path.exists(os.path.join(cwd, "gradlew"))
-    if stack == "maven":
-        tools = ["java", "mvn"]
-        cmds = {
-            "install": ["mvn -q -DskipTests dependency:resolve"],
-            "build": ["mvn -q -DskipTests package"],
-            "test": ["mvn -q test"],
-            "run": ["mvn -q spring-boot:run"],
-        }
-        return tools, cmds.get(action, [])
-    if stack == "gradle":
-        g = "./gradlew" if gradlew else "gradle"
-        tools = ["java"] + ([] if gradlew else ["gradle"])
-        cmds = {
-            "install": [f"{g} dependencies"],
-            "build": [f"{g} build -x test"],
-            "test": [f"{g} test"],
-            "run": [f"{g} bootRun"],
-        }
-        return tools, cmds.get(action, [])
-    if stack.startswith("node"):
-        pm = _node_pm(cwd)
-        fw = stack.split(":", 1)[1] if ":" in stack else "node"
-        tools = ["node", pm]
-        inst = {"npm": "npm install", "yarn": "yarn install", "pnpm": "pnpm install"}[pm]
-        run_script = "dev" if fw in ("next", "vite", "react-scripts", "react", "vue") else "start"
-        cmds = {
-            "install": [inst],
-            "build": [f"{pm} run build"],
-            "test": [f"{pm} test --silent" if pm == "npm" else f"{pm} test"],
-            "run": [f"{pm} run {run_script}"],
-        }
-        return tools, cmds.get(action, [])
-    if stack == "python":
-        tools = ["python3", "pip"]
-        inst = ("pip install -r requirements.txt"
-                if os.path.exists(os.path.join(cwd, "requirements.txt"))
-                else "pip install -e .")
-        entry = next((f for f in ("main.py", "app.py", "manage.py", "run.py")
-                      if os.path.exists(os.path.join(cwd, f))), "main.py")
-        cmds = {
-            "install": [inst],
-            "build": ["python -m compileall -q ."],
-            "test": ["python -m pytest -q"],
-            "run": [f"python {entry}"],
-        }
-        return tools, cmds.get(action, [])
-    if stack == "go":
-        return ["go"], {"install": ["go mod download"], "build": ["go build ./..."],
-                        "test": ["go test ./..."], "run": ["go run ."]}.get(action, [])
-    if stack == "rust":
-        return ["cargo"], {"install": ["cargo fetch"], "build": ["cargo build"],
-                           "test": ["cargo test"], "run": ["cargo run"]}.get(action, [])
-    if stack == "make":
-        return ["make"], {"install": [], "build": ["make"],
-                          # try a `test`/`check` target; fall back to a plain
-                          # build so a Makefile without a test target still gates.
-                          "test": ["make test 2>/dev/null || make check 2>/dev/null || make"],
-                          "run": ["make run"]}.get(action, [])
-    if stack == "cmake":
-        return ["cmake", "make"], {
-            "install": [],
-            "build": ["cmake -S . -B build && cmake --build build"],
-            "test": ["cmake -S . -B build && cmake --build build && "
-                     "ctest --test-dir build --output-on-failure"],
-            "run": ["cmake --build build --target run"]}.get(action, [])
-    if stack in ("c", "cpp"):
-        # Bare sources, no build file: compile EVERYTHING into one binary and run
-        # it (a generated test main asserts + exits non-zero on failure). g++
-        # compiles C and C++; the -std picks a modern default. Shell $(find …)
-        # works because _exec runs with shell=True.
-        cxx = "g++ -std=c++17" if stack == "cpp" else "gcc -std=c11"
-        srcs = (r"$(find . -path ./build -prune -o "
-                r"\( -name '*.c' -o -name '*.cpp' -o -name '*.cc' -o -name '*.cxx' \) "
-                r"-print)")
-        compile_cmd = f"{cxx} -O0 -o ./a.out {srcs}"
-        tool = "g++" if stack == "cpp" else "gcc"
-        return [tool], {"install": [], "build": [compile_cmd],
-                        "test": [f"{compile_cmd} && ./a.out"],
-                        "run": ["./a.out"]}.get(action, [])
-    return [], []
+    plan = _stack_plan(stack, cwd)
+    if plan is None:
+        return [], []
+    tools, cmds = plan
+    return tools, cmds.get(action, [])
 
 
 def _exec(cmd: str, cwd: str, timeout: int) -> dict:
