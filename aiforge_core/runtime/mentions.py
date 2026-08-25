@@ -131,18 +131,52 @@ def _problems_block(cwd: str) -> str:
             "test/typecheck tool to see diagnostics)")
 
 
-def expand(text: str, cwd: str) -> tuple[str, list[str]]:
-    """Resolve @-mentions in ``text``. Returns (context_block, tokens)."""
-    tokens = _MENTION_RE.findall(text or "")
-    if not tokens:
-        return "", []
-    # Dedupe preserving order.
+def _dedupe_order(tokens: list[str]) -> list[str]:
+    """Unique tokens, first-seen order preserved."""
     uniq: list[str] = []
     seen: set[str] = set()
     for tok in tokens:
         if tok not in seen:
             seen.add(tok)
             uniq.append(tok)
+    return uniq
+
+
+def _resolve_one(tok: str, cwd: str) -> str:
+    """The context block for a single @-mention — a problems dump, a fetched URL,
+    or a workspace file/dir (with the outside-workspace / not-found fallbacks)."""
+    low = tok.lower()
+    if low == "problems":
+        return _problems_block(cwd)
+    if _url_allowed(tok):
+        return _url_block(tok)
+    p = _resolve_path(cwd, tok.rstrip("/"))
+    if p is None:
+        return f"@{tok} → (outside workspace, skipped)"
+    if os.path.isdir(p):
+        return _dir_block(p, tok)
+    if os.path.isfile(p):
+        return _file_block(p, tok)
+    return f"@{tok} → (not found)"
+
+
+def _fit_block(block: str, total: int, total_cap: int) -> str | None:
+    """Trim ``block`` to the remaining char budget, or None when there is too
+    little room to bother (it is counted as omitted instead)."""
+    if not total_cap or total + len(block) <= total_cap:
+        return block
+    room = total_cap - total
+    if room > 200:
+        return block[:room] + "\n…(truncated to fit context)\n"
+    return None
+
+
+def expand(text: str, cwd: str) -> tuple[str, list[str]]:
+    """Resolve @-mentions in ``text``. Returns (context_block, tokens)."""
+    tokens = _MENTION_RE.findall(text or "")
+    if not tokens:
+        return "", []
+    uniq = _dedupe_order(tokens)
     max_n = _mentions_max()
     total_cap = _mentions_total_chars()
     blocks: list[str] = []
@@ -154,28 +188,10 @@ def expand(text: str, cwd: str) -> tuple[str, list[str]]:
         if len(resolved) >= max_n or (total_cap and total >= total_cap):
             omitted += 1
             continue
-        low = tok.lower()
-        if low == "problems":
-            block = _problems_block(cwd)
-        elif _url_allowed(tok):
-            block = _url_block(tok)
-        else:
-            p = _resolve_path(cwd, tok.rstrip("/"))
-            if p is None:
-                block = f"@{tok} → (outside workspace, skipped)"
-            elif os.path.isdir(p):
-                block = _dir_block(p, tok)
-            elif os.path.isfile(p):
-                block = _file_block(p, tok)
-            else:
-                block = f"@{tok} → (not found)"
-        if total_cap and total + len(block) > total_cap:
-            room = total_cap - total
-            if room > 200:
-                block = block[:room] + "\n…(truncated to fit context)\n"
-            else:
-                omitted += 1
-                continue
+        block = _fit_block(_resolve_one(tok, cwd), total, total_cap)
+        if block is None:
+            omitted += 1
+            continue
         blocks.append(block)
         resolved.append(tok)
         total += len(block)

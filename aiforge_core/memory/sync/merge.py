@@ -62,17 +62,13 @@ def _order(entry: dict) -> tuple[int, str, str]:
             _hash(entry))
 
 
-def plan_sync(local: list[dict], remote: list[dict]) -> dict:
-    """Decide what to fetch from a peer.
+def _local_b_by_ident(local: list[dict]) -> dict[tuple[str, str], dict]:
+    """Class-B locals keyed by identity, keeping the HIGHEST version per identity.
 
-    Returns ``{"want": [remote entries to fetch], "conflict": [{local, remote}]}``.
-    A conflicting entry may also appear in ``want`` when the remote is the winner.
+    One identity can appear twice locally (the same node held in two scopes);
+    the highest version is the one compared, matching the file
+    ``paths.node_paths`` would write to — see I1.
     """
-    have = {h for e in local if e.get("kind") == "A" and (h := e.get("hash"))}
-
-    # One identity can appear twice locally (the same node held in two scopes).
-    # The highest version is the one compared, matching the file
-    # ``paths.node_paths`` would write to — see I1.
     by_ident: dict[tuple[str, str], dict] = {}
     for e in local:
         if e.get("kind") != "B":
@@ -81,35 +77,46 @@ def plan_sync(local: list[dict], remote: list[dict]) -> dict:
         cur = by_ident.get(ident)
         if cur is None or _order(e) > _order(cur):
             by_ident[ident] = e
+    return by_ident
 
+
+def _classify_remote(r: dict, have: set, by_ident: dict, want: list,
+                     conflict: list) -> None:
+    """Route one remote entry into ``want`` / ``conflict`` (mutated in place)."""
+    if not r.get("hash"):
+        # Without a hash we can neither tell it apart from what we hold nor
+        # verify the blob on arrival. Treating it as already-present (the old
+        # behaviour, via None landing in `have`) silently dropped it.
+        _log.warning("sync: peer entry %s has no hash, skipping", r.get("path"))
+        return
+    if r.get("kind") == "A":
+        if r["hash"] not in have:
+            want.append(r)
+        return
+    cur = by_ident.get(_ident(r))
+    if cur is None:
+        want.append(r)
+        return
+    if cur.get("hash") == r.get("hash"):
+        return
+    if as_rev(cur.get("rev")) == as_rev(r.get("rev")):
+        conflict.append({"local": cur, "remote": r})
+    if _order(r) > _order(cur):
+        want.append(r)
+
+
+def plan_sync(local: list[dict], remote: list[dict]) -> dict:
+    """Decide what to fetch from a peer.
+
+    Returns ``{"want": [remote entries to fetch], "conflict": [{local, remote}]}``.
+    A conflicting entry may also appear in ``want`` when the remote is the winner.
+    """
+    have = {h for e in local if e.get("kind") == "A" and (h := e.get("hash"))}
+    by_ident = _local_b_by_ident(local)
     want: list[dict] = []
     conflict: list[dict] = []
-
     for r in remote:
-        if not r.get("hash"):
-            # Without a hash we can neither tell it apart from what we hold nor
-            # verify the blob on arrival. Treating it as already-present (the
-            # old behaviour, via None landing in `have`) silently dropped it.
-            _log.warning("sync: peer entry %s has no hash, skipping", r.get("path"))
-            continue
-
-        if r.get("kind") == "A":
-            if r["hash"] not in have:
-                want.append(r)
-            continue
-
-        cur = by_ident.get(_ident(r))
-        if cur is None:
-            want.append(r)
-            continue
-        if cur.get("hash") == r.get("hash"):
-            continue
-
-        if as_rev(cur.get("rev")) == as_rev(r.get("rev")):
-            conflict.append({"local": cur, "remote": r})
-        if _order(r) > _order(cur):
-            want.append(r)
-
+        _classify_remote(r, have, by_ident, want, conflict)
     return {"want": want, "conflict": conflict}
 
 
