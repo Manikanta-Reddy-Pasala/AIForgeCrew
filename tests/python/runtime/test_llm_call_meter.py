@@ -562,7 +562,7 @@ def test_a_shipped_timeout_is_marked_all_the_way_up(monkeypatch):
     re-issues the same completion five more times. complete() raises with the
     marker so the chat loop can tell "the box has this prompt" from "we never
     reached it"."""
-    import pytest as _pytest
+    import pytest
     from aiforge_core.llm import client as _client
     from aiforge_core.llm.client import _http
 
@@ -570,7 +570,7 @@ def test_a_shipped_timeout_is_marked_all_the_way_up(monkeypatch):
     monkeypatch.setenv("AIFORGE_LLM_RETRY_MAX", "1")
     monkeypatch.setattr(_http, "_post", _timeout_post(calls, shipped=True))
     monkeypatch.setattr(_http.time, "sleep", lambda *_a: None)
-    with _pytest.raises(RuntimeError) as ei:
+    with pytest.raises(RuntimeError) as ei:
         _client.complete("triage", [{"role": "user", "content": "hi"}],
                          timeout_s=5)
     assert "llm.exhausted" in str(ei.value)
@@ -579,7 +579,7 @@ def test_a_shipped_timeout_is_marked_all_the_way_up(monkeypatch):
 
 def test_a_timeout_we_never_sent_is_not_marked(monkeypatch):
     """The rate limiter giving up must stay retryable at every layer."""
-    import pytest as _pytest
+    import pytest
     from aiforge_core.llm import client as _client
     from aiforge_core.llm.client import _http
 
@@ -587,7 +587,7 @@ def test_a_timeout_we_never_sent_is_not_marked(monkeypatch):
     monkeypatch.setenv("AIFORGE_LLM_RETRY_MAX", "1")
     monkeypatch.setattr(_http, "_post", _timeout_post(calls, shipped=False))
     monkeypatch.setattr(_http.time, "sleep", lambda *_a: None)
-    with _pytest.raises(RuntimeError) as ei:
+    with pytest.raises(RuntimeError) as ei:
         _client.complete("triage", [{"role": "user", "content": "hi"}],
                          timeout_s=5)
     assert _client.shipped_timeout(ei.value) is False

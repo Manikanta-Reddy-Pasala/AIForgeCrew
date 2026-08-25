@@ -61,8 +61,8 @@ def test_list_providers_only_openai_compatible():
 def test_apply_profile_raises_no_profiles():
     # No profiles are bundled anymore.
     assert ac.profiles() == []
-    import pytest as _pt
-    with _pt.raises(ValueError):
+    import pytest
+    with pytest.raises(ValueError):
         ac.apply_profile("local")
 
 

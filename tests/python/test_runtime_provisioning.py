@@ -38,8 +38,8 @@ def test_unknown_role_defaults_openai_compatible_without_global(cfg):
     # get() stays strict for a genuinely-unknown role (observability
     # depends on the raise). "enhancer" is a real archetype now, so it
     # resolves instead of raising.
-    import pytest as _pt
-    with _pt.raises(ValueError):
+    import pytest
+    with pytest.raises(ValueError):
         cfg.get("some_future_role")
 
 
