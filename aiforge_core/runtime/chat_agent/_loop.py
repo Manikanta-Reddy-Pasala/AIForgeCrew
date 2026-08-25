@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import time
+import types
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -852,6 +853,25 @@ def _approval_gate(name, args, cwd, session_id, convo):
     return None
 
 
+def _may_extend(st, n):
+    """True when this turn EARNED another budget: extensions remain and it
+    produced NEW work (a landed edit, or a read of something not read before)
+    since the last one. Both counters are monotonic, so a spinning agent leaves
+    the mark unchanged and is stopped. Consumes one extension when True."""
+    if st.granted_at_step == n:
+        return True
+    if st.extensions_used >= st.ext_budget:
+        return False
+    _fp = _worktree_fingerprint(st.cwd) if st.wt_fp0 else ""
+    mark = (st.reads_new, st.edits_made, _fp)
+    if mark == st.progress_mark:
+        return False
+    st.extensions_used += 1
+    st.progress_mark = mark
+    st.granted_at_step = n
+    return True
+
+
 def run_chat_agent(
     messages: list[dict], *,
     cwd: str,
@@ -1057,35 +1077,6 @@ def run_chat_agent(
     # does not read as a change on the first check.
     _progress_mark = (0, 0, _wt_fp0)
 
-    def _may_extend() -> bool:
-        """True when this turn EARNED another budget: extensions remain and it
-        produced NEW work since the last one — a file edit that landed, or a
-        read of something it had not read before. Both counters are monotonic,
-        so an agent spinning (repeating itself, or emitting endless novel
-        `run_command` args that read and change nothing) leaves the mark
-        unchanged and is stopped for real. Consumes one extension when it
-        returns True."""
-        nonlocal _extensions_used, _progress_mark, _granted_at_step
-        if _granted_at_step == n:
-            # Both guards can expire on the same iteration. The second one is
-            # not a new failure — it is the same moment — so it rides the grant
-            # the first already paid for instead of hard-stopping the turn with
-            # extensions unspent.
-            return True
-        if _extensions_used >= _ext_budget:
-            return False
-        # The worktree fingerprint catches work done by tools we do not count:
-        # a `sed -i`, a build that writes artifacts, `git apply`. Without it a
-        # turn whose whole job is shell work scores zero forever. Measured only
-        # here — once per exhausted budget, not per step.
-        _fp = _worktree_fingerprint(cwd) if _wt_fp0 else ""
-        mark = (_reads_new, _edits_made, _fp)
-        if mark == _progress_mark:
-            return False
-        _extensions_used += 1
-        _progress_mark = mark
-        _granted_at_step = n
-        return True
 
     # One-time visibility: confirm native tool-calling is driving this run (every
     # tool call goes through native OpenAI function-calling, not the text
@@ -1098,26 +1089,40 @@ def run_chat_agent(
             _ntools = 0
         yield {"type": "thought", "role": "system",
                "text": f"🔌 native tool-calling active ({_ntools} tools)"}
+    st = types.SimpleNamespace(
+        convo=convo, safety=safety, turn_deadline=_turn_deadline,
+        condensed_notified=condensed_notified, continue_nudges=continue_nudges,
+        stuck_recoveries=stuck_recoveries, extensions_used=_extensions_used,
+        granted_at_step=_granted_at_step, reads_new=_reads_new,
+        edits_made=_edits_made, progress_mark=_progress_mark,
+        builder_nudged=_builder_nudged, builder_finalized=_builder_finalized,
+        builder_final_tries=_builder_final_tries, multiask_checked=_multiask_checked,
+        verify_rounds=_verify_rounds, verify_prev_fails=_verify_prev_fails,
+        verify_stalls=_verify_stalls, edit_claim_nudges=_edit_claim_nudges,
+        action_counts=action_counts, recent_outputs=recent_outputs,
+        read_sigs_seen=read_sigs_seen, read_sigs_ever=read_sigs_ever,
+        cap_base=_cap_base, ext_budget=_ext_budget, wt_fp0=_wt_fp0,
+        turn_budget_s=_turn_budget_s, long_chain_help=_long_chain_help, cwd=cwd)
     while True:
         n += 1
-        if _capped and n > safety:
+        if _capped and n > st.safety:
             # Runaway step cap. Before giving up, offer an extension to a turn
             # that is still producing new work — condense the history first so
             # the extra steps run in a clean window rather than a bloated one.
-            if _may_extend():
-                safety += _cap_base
-                _before_ext = len(convo)
-                convo = _compact_convo(convo, keep_recent=8, role=role,
+            if _may_extend(st, n):
+                st.safety += _cap_base
+                _before_ext = len(st.convo)
+                st.convo = _compact_convo(st.convo, keep_recent=8, role=role,
                                        complete_fn=complete_fn,
                                        session_id=session_id, force=True)
-                if len(convo) < _before_ext:
-                    read_sigs_seen.clear()   # results dropped → re-reads are valid
-                _did = ("condensed the history and " if len(convo) < _before_ext
+                if len(st.convo) < _before_ext:
+                    st.read_sigs_seen.clear()   # results dropped → re-reads are valid
+                _did = ("condensed the history and " if len(st.convo) < _before_ext
                         else "")
                 yield {"type": "thought", "role": "system",
                        "text": f"⏳ still making progress — {_did}extended the "
-                               f"step budget to {safety} "
-                               f"({_extensions_used}/{_ext_budget})"}
+                               f"step budget to {st.safety} "
+                               f"({st.extensions_used}/{_ext_budget})"}
             else:
                 _fire_stop("cap", cwd)
                 # Name the knob that ACTUALLY stopped this run. A Quick-mode
@@ -1125,19 +1130,19 @@ def run_chat_agent(
                 # user at the Settings cap sends them to a number that had no
                 # say — and with the cap set to 0 that number is already off.
                 if _caller_cap is not None:
-                    _why = (f"(stopped: used up Quick mode's {safety}-step "
+                    _why = (f"(stopped: used up Quick mode's {st.safety}-step "
                             "budget — send it again with Quick off, or raise "
                             "AIFORGE_CHAT_QUICK_STEPS)")
                 elif _unattended:
                     # The operator may have set the step cap to 0; saying
                     # "raise the step cap" would send them to a knob that is
                     # already off and had no say in this stop.
-                    _why = (f"(stopped: hit the {safety}-step cap for runs with "
+                    _why = (f"(stopped: hit the {st.safety}-step cap for runs with "
                             "nobody watching — raise the background step cap in "
                             "Settings → Agent limits, or "
                             "AIFORGE_CHAT_UNATTENDED_CAP)")
                 else:
-                    _why = ("(stopped: hit the runaway safety cap — raise the "
+                    _why = ("(stopped: hit the runaway st.safety cap — raise the "
                             "step cap in Settings → Agent limits, or "
                             "AIFORGE_CHAT_SAFETY_CAP; 0 = no limit — if this "
                             "was real work)")
@@ -1151,10 +1156,10 @@ def run_chat_agent(
         # Builder nudge (#7): a local model can interview forever and never emit
         # the finalize tool, leaving the session with no artifact. Once it has had
         # enough back-and-forth, inject a one-time reminder to finalize NOW.
-        if builder and not _builder_nudged and n >= _BUILDER_NUDGE_AFTER:
-            _builder_nudged = True
+        if builder and not st.builder_nudged and n >= _BUILDER_NUDGE_AFTER:
+            st.builder_nudged = True
             _fin = _BUILDER_FINALIZE_TOOL.get(builder, "the finalize tool")
-            convo.append({"role": "user", "content":
+            st.convo.append({"role": "user", "content":
                 f"[system reminder] You have gathered enough detail. Call "
                 f"`{_fin}` NOW with the collected values to finish — do not keep "
                 f"asking questions. If one required value is genuinely missing, "
@@ -1163,23 +1168,23 @@ def run_chat_agent(
         # below (before the model call). A second, earlier drain here used to win
         # the race and append an UNGUARDED user turn, creating two consecutive
         # user turns (breaks claude_local) — removed.
-        if _turn_deadline is not None and time.monotonic() > _turn_deadline:
+        if st.turn_deadline is not None and time.monotonic() > st.turn_deadline:
             # Same deal as the step cap: a turn still landing new work buys
             # another slice of wall clock instead of losing everything.
-            if _may_extend():
-                _turn_deadline = time.monotonic() + _turn_budget_s
-                _before_ext = len(convo)
-                convo = _compact_convo(convo, keep_recent=8, role=role,
+            if _may_extend(st, n):
+                st.turn_deadline = time.monotonic() + _turn_budget_s
+                _before_ext = len(st.convo)
+                st.convo = _compact_convo(st.convo, keep_recent=8, role=role,
                                        complete_fn=complete_fn,
                                        session_id=session_id, force=True)
-                if len(convo) < _before_ext:
-                    read_sigs_seen.clear()
-                _did = ("condensed the history and " if len(convo) < _before_ext
+                if len(st.convo) < _before_ext:
+                    st.read_sigs_seen.clear()
+                _did = ("condensed the history and " if len(st.convo) < _before_ext
                         else "")
                 yield {"type": "thought", "role": "system",
                        "text": f"⏳ still making progress — {_did}extended the "
                                f"turn by {int(_turn_budget_s)}s "
-                               f"({_extensions_used}/{_ext_budget})"}
+                               f"({st.extensions_used}/{_ext_budget})"}
             else:
                 _fire_stop("deadline", cwd)
                 yield {"type": "message",
@@ -1209,7 +1214,7 @@ def run_chat_agent(
                 # OBSERVATION we just appended after a tool step), MERGE the
                 # steer into it — two consecutive user turns break some
                 # providers (claude_local). Otherwise append a fresh user turn.
-                _last = convo[-1] if convo else None
+                _last = st.convo[-1] if st.convo else None
                 if _last is not None and _last.get("role") == "user":
                     _c = _last.get("content")
                     if isinstance(_c, list):
@@ -1222,24 +1227,24 @@ def run_chat_agent(
                     else:
                         _last["content"] = f"{_c or ''}\n\n{_directive}"
                 else:
-                    convo.append({"role": "user", "content": _directive})
+                    st.convo.append({"role": "user", "content": _directive})
                 for _k, _t in _items:
                     yield chat_steer.steer_event(_t)
         # Auto-condense the running history before the call so a long session
         # can't overflow the model's context window (MUST). Tell the user it
         # happened (one-time per condense) for transparency.
-        _before = len(convo)
-        convo = _compact_convo(convo, role=role, complete_fn=complete_fn,
+        _before = len(st.convo)
+        st.convo = _compact_convo(st.convo, role=role, complete_fn=complete_fn,
                                session_id=session_id)
-        if len(convo) < _before:
+        if len(st.convo) < _before:
             # The dropped turns took their tool RESULTS with them, so a read
             # whose output is no longer in the window is no longer a duplicate.
             # Without this the guard tells the model "you already ran this, its
             # result is above" about content the condense just deleted — and the
             # turn can never recover the file it is being refused.
-            read_sigs_seen.clear()
-        if len(convo) < _before and not condensed_notified:
-            condensed_notified = True   # notify ONCE, not every over-budget turn
+            st.read_sigs_seen.clear()
+        if len(st.convo) < _before and not st.condensed_notified:
+            st.condensed_notified = True   # notify ONCE, not every over-budget turn
             yield {"type": "thought", "role": "system",
                    "text": "⚙ condensed earlier context to stay within the window"}
         # M3: surface how full the context window is (char-estimate; ~4 chars/
@@ -1249,9 +1254,9 @@ def run_chat_agent(
         # the old raw-len/whole-convo version double-counted the per-turn
         # system prompt against a 14K estimate, so the meter jumped between
         # turns and collapsed to ~0 on image turns.
-        _sys_len = (len(_text_of(convo[0]))
-                    if convo and convo[0].get("role") == "system" else 0)
-        _ctx_chars = sum(len(_text_of(m)) for m in convo[1:])
+        _sys_len = (len(_text_of(st.convo[0]))
+                    if st.convo and st.convo[0].get("role") == "system" else 0)
+        _ctx_chars = sum(len(_text_of(m)) for m in st.convo[1:])
         _ctx_budget = _ctx_budget_chars(role, sys_chars=_sys_len)
         if _ctx_budget > 0:
             # ~4 chars/token → surface ABSOLUTE token counts (in k) alongside the
@@ -1293,10 +1298,10 @@ def run_chat_agent(
             except Exception:  # noqa: BLE001
                 _step_calls, _step_tok = None, None
         try:
-            out = _complete_cancellable(complete_fn, role, convo, session_id)
+            out = _complete_cancellable(complete_fn, role, st.convo, session_id)
         except Exception as exc:  # noqa: BLE001
             out = yield from _retry_completion(
-                complete_fn, role, convo, session_id, exc,
+                complete_fn, role, st.convo, session_id, exc,
                 _step_calls, _meter, _step_tok)
             if out is _RETRY_STOP:
                 return
@@ -1322,20 +1327,20 @@ def run_chat_agent(
         # re-emits an action it already ran — so FIRST recover with a progress
         # recap + "do the NEXT step" nudge (bounded); only give up if that keeps
         # failing. The old hard bail here discarded all the work done so far.
-        recent_outputs.append(out.strip())
-        if (len(recent_outputs) == _OUTPUT_REPEAT
-                and len(set(recent_outputs)) == 1):
-            if stuck_recoveries < _stuck_recovery_max():
-                stuck_recoveries += 1
-                recent_outputs.clear()          # fresh slate for the recovered plan
-                _recap = _progress_recap(convo)
+        st.recent_outputs.append(out.strip())
+        if (len(st.recent_outputs) == _OUTPUT_REPEAT
+                and len(set(st.recent_outputs)) == 1):
+            if st.stuck_recoveries < _stuck_recovery_max():
+                st.stuck_recoveries += 1
+                st.recent_outputs.clear()          # fresh slate for the recovered plan
+                _recap = _progress_recap(st.convo)
                 yield {"type": "thought", "role": "system",
                        "text": "↺ repeated output — recap + nudge to continue"}
                 # Append the repeated assistant turn BEFORE the nudge — else two
                 # consecutive user turns (the prior OBSERVATION + this nudge)
                 # break providers like claude_local.
-                convo.append({"role": "assistant", "content": out})
-                convo.append({"role": "user", "content":
+                st.convo.append({"role": "assistant", "content": out})
+                st.convo.append({"role": "user", "content":
                     "[loop guard — not the user] You repeated the SAME output — "
                     "that makes no progress. "
                     + (_recap + ". " if _recap else "")
@@ -1351,7 +1356,7 @@ def run_chat_agent(
             yield {"type": "done"}
             return
 
-        convo.append({"role": "assistant", "content": out})
+        st.convo.append({"role": "assistant", "content": out})
         step = _parse(out)
         if step["kind"] == "final":
             # In a builder session, a "final" BEFORE the finalize tool succeeded
@@ -1359,12 +1364,12 @@ def run_chat_agent(
             # instead of building the artifact — don't end the interview with
             # nothing created. Nudge it to call the finalize tool and continue the
             # loop (bounded so a model that truly can't finalize still exits).
-            if builder and not _builder_finalized and _builder_final_tries < 2:
-                _builder_final_tries += 1
+            if builder and not st.builder_finalized and st.builder_final_tries < 2:
+                st.builder_final_tries += 1
                 _fin = _BUILDER_FINALIZE_TOOL.get(builder, "the finalize tool")
                 if step.get("text"):
                     yield {"type": "thought", "text": step["text"]}
-                convo.append({"role": "user", "content":
+                st.convo.append({"role": "user", "content":
                     f"[system reminder] You stopped without creating the {builder}. "
                     f"Call `{_fin}` NOW with the collected values to finish — do "
                     f"not just narrate or 'test'. If ONE required value is genuinely "
@@ -1378,11 +1383,11 @@ def run_chat_agent(
             # exits. Interactive chat / generic callers (strict_finish=False) keep
             # bare prose as the legitimate answer — unchanged.
             if step.get("implicit") and strict_finish and not builder:
-                continue_nudges += 1
-                if continue_nudges <= 2:
+                st.continue_nudges += 1
+                if st.continue_nudges <= 2:
                     if step.get("text"):
                         yield {"type": "thought", "text": step["text"]}
-                    convo.append({"role": "user", "content":
+                    st.convo.append({"role": "user", "content":
                         "You narrated but did NOT emit an ACTION or an explicit "
                         "`FINAL:` line. Continue: take the next ACTION (tool call) "
                         "to make progress, or output `FINAL: <answer>` ONLY when "
@@ -1392,12 +1397,12 @@ def run_chat_agent(
             # multi-part message, make the model self-check its answer against
             # the checklist — the #1 simple-mode complaint is answering ask 1
             # and silently dropping the rest.
-            if _asks and not _multiask_checked and not builder:
-                _multiask_checked = True
+            if _asks and not st.multiask_checked and not builder:
+                st.multiask_checked = True
                 yield {"type": "thought", "role": "system",
                        "text": f"✔ checking all {len(_asks)} parts of the "
                                "request are addressed…"}
-                convo.append({"role": "user", "content":
+                st.convo.append({"role": "user", "content":
                     "[completeness check — not the user] The user's message "
                     f"contained {len(_asks)} distinct asks:\n"
                     + "\n".join(f"{i + 1}. {a}" for i, a in enumerate(_asks))
@@ -1422,19 +1427,19 @@ def run_chat_agent(
             _wt_now = (_worktree_fingerprint(cwd)
                        if _edit_claim_guard_enabled() else "")
             _no_landed_write = (_wt_now == "" or _wt_now == _wt_fp0)
-            if (not readonly_mode and not builder and _edits_made == 0
+            if (not readonly_mode and not builder and st.edits_made == 0
                     and _edit_claim_guard_enabled()
                     and _claims_file_edits(step.get("text") or "")
                     and _no_landed_write):
-                if _edit_claim_nudges < 2:
-                    _edit_claim_nudges += 1
+                if st.edit_claim_nudges < 2:
+                    st.edit_claim_nudges += 1
                     if step.get("text"):
                         yield {"type": "thought", "text": step["text"]}
                     yield {"type": "thought", "role": "system",
                            "text": "⚠ you described file edits but no write ran "
                                    "and nothing changed on disk — applying for "
                                    "real…"}
-                    convo.append({"role": "user", "content": _edit_claim_nudge()})
+                    st.convo.append({"role": "user", "content": _edit_claim_nudge()})
                     continue
                 step["text"] = _edit_claim_disclaimer(step.get("text") or "")
             # A + B: enforced verify→fix on FINAL (progress-gated). Only for an
@@ -1444,8 +1449,8 @@ def run_chat_agent(
             # improvement) accept the HONEST still-failing final rather than
             # churn. This gives simple/doer runs the pipeline's no-false-green
             # guarantee. Opt out: AIFORGE_CHAT_VERIFY_ON_FINAL=0.
-            if (not plan_mode and not builder and _edits_made > 0
-                    and _verify_rounds < _verify_max_rounds()
+            if (not plan_mode and not builder and st.edits_made > 0
+                    and st.verify_rounds < _verify_max_rounds()
                     and _verify_on_final_enabled()):
                 _vok, _vout = _run_project_verify(cwd)
                 if _vok is False:
@@ -1454,23 +1459,23 @@ def run_chat_agent(
                         _fails = _fail_count(_vout)
                     except Exception:  # noqa: BLE001
                         _fails = 1
-                    if _verify_prev_fails is not None and _fails >= _verify_prev_fails:
-                        _verify_stalls += 1
+                    if st.verify_prev_fails is not None and _fails >= st.verify_prev_fails:
+                        st.verify_stalls += 1
                     else:
-                        _verify_stalls = 0
-                    _verify_prev_fails = _fails
-                    if _verify_stalls < 2:
-                        _verify_rounds += 1
+                        st.verify_stalls = 0
+                    st.verify_prev_fails = _fails
+                    if st.verify_stalls < 2:
+                        st.verify_rounds += 1
                         yield {"type": "thought", "role": "system",
                                "text": f"✗ tests failing ({_fails}) — fixing "
-                                       f"(verify round {_verify_rounds}/"
+                                       f"(verify round {st.verify_rounds}/"
                                        f"{_verify_max_rounds()})…"}
-                        convo.append({"role": "user",
+                        st.convo.append({"role": "user",
                                       "content": _verify_fix_message(_vout)})
                         continue
                     yield {"type": "thought", "role": "system",
                            "text": f"⚠ tests still failing ({_fails}) after "
-                                   f"{_verify_rounds} fix rounds — stopping with "
+                                   f"{st.verify_rounds} fix rounds — stopping with "
                                    "the honest state."}
             # FINAL accepted on a multi-part turn: close out the tracker so
             # the dock never ends with stale pending items the model forgot
@@ -1501,8 +1506,8 @@ def run_chat_agent(
             _empty_final = step.get("reason") == "empty_final"
             if step.get("thought"):
                 yield {"type": "thought", "text": step["thought"]}
-            continue_nudges += 1
-            if continue_nudges > 2:
+            st.continue_nudges += 1
+            if st.continue_nudges > 2:
                 # It keeps not delivering — stop cleanly rather than loop to
                 # the safety cap.
                 _fire_stop("no_action", cwd)
@@ -1531,14 +1536,14 @@ def run_chat_agent(
                 # ACTION" is the exact opposite instruction, and the turn would
                 # end claiming success with nothing created.
                 _fin = _BUILDER_FINALIZE_TOOL.get(builder, "the finalize tool")
-                convo.append({"role": "user", "content":
+                st.convo.append({"role": "user", "content":
                               f"You signalled you were finished but never called "
                               f"`{_fin}`, so nothing was created. Call `{_fin}` NOW "
                               f"with the values you have collected."})
             elif _empty_final:
                 # The work is done; what is missing is the reply. "Emit an
                 # ACTION" is the wrong instruction for that.
-                convo.append({"role": "user", "content":
+                st.convo.append({"role": "user", "content":
                               "You signalled you were finished but wrote no "
                               "answer — the user saw nothing. Reply now with "
                               "`FINAL: <answer>` where <answer> tells them what "
@@ -1546,7 +1551,7 @@ def run_chat_agent(
                               "plain prose. Do not emit ACTION, THOUGHT or any "
                               "other marker."})
             else:
-                convo.append({"role": "user",
+                st.convo.append({"role": "user",
                               "content": "You described your next step but did NOT "
                               "emit an ACTION. Continue now — output the next ACTION "
                               "(tool call) to make progress, or `FINAL: <answer>` if "
@@ -1557,7 +1562,7 @@ def run_chat_agent(
             # "used up Quick mode's step budget" stop.
             continue
 
-        continue_nudges = 0   # a real action resets the narration guard
+        st.continue_nudges = 0   # a real action resets the narration guard
 
         # action
         name = step["tool"]
@@ -1576,11 +1581,11 @@ def run_chat_agent(
         # every read must make NEW progress. Cleared on any edit (a file just
         # written is worth re-reading). Disabled with the same env switch as the
         # recovery nudge (AIFORGE_CHAT_STUCK_RECOVERIES=0 → full legacy behaviour).
-        if _long_chain_help and name in _READ_OBS_TOOLS and sig in read_sigs_seen:
-            _recap = _progress_recap(convo)
+        if _long_chain_help and name in _READ_OBS_TOOLS and sig in st.read_sigs_seen:
+            _recap = _progress_recap(st.convo)
             yield {"type": "thought", "role": "system",
                    "text": f"⏭ duplicate read skipped ({name})"}
-            convo.append({"role": "user", "content":
+            st.convo.append({"role": "user", "content":
                 "OBSERVATION: [skipped — duplicate] You ALREADY ran this exact "
                 "read; its result is above and re-reading wastes a step. "
                 + (_recap + ". " if _recap else "")
@@ -1598,23 +1603,23 @@ def run_chat_agent(
         # strikes — and the stall guard would never fire on the very runaway
         # this table exists to catch. move_to_end on each touch makes the
         # eviction least-recently-SEEN instead.
-        action_counts[sig] = action_counts.get(sig, 0) + 1
-        action_counts.move_to_end(sig)
-        while len(action_counts) > _ACTION_SIG_MAX:
-            action_counts.popitem(last=False)
-        if action_counts[sig] >= _LOOP_REPEAT:
+        st.action_counts[sig] = st.action_counts.get(sig, 0) + 1
+        st.action_counts.move_to_end(sig)
+        while len(st.action_counts) > _ACTION_SIG_MAX:
+            st.action_counts.popitem(last=False)
+        if st.action_counts[sig] >= _LOOP_REPEAT:
             # A local model on a long chain re-issues an action it already ran —
             # most often re-reading a file it read earlier (it lost track over the
             # growing history), which the old hard bail turned into an abandoned
             # task. Recover FIRST: recap what's already done + point at the next
             # step (bounded); only give up if the model keeps repeating.
-            if stuck_recoveries < _stuck_recovery_max():
-                stuck_recoveries += 1
-                action_counts[sig] = 0          # clear this action's strike count
-                _recap = _progress_recap(convo)
+            if st.stuck_recoveries < _stuck_recovery_max():
+                st.stuck_recoveries += 1
+                st.action_counts[sig] = 0          # clear this action's strike count
+                _recap = _progress_recap(st.convo)
                 yield {"type": "thought", "role": "system",
                        "text": f"↺ repeated `{name}` — recap + nudge to continue"}
-                convo.append({"role": "user", "content":
+                st.convo.append({"role": "user", "content":
                     f"[loop guard — not the user] You already ran `{name}` with "
                     "these exact args and its result is ABOVE — repeating it makes "
                     "no progress. "
@@ -1647,7 +1652,7 @@ def run_chat_agent(
             result = {"ok": bool(_slug), "slug": _slug, "status": _st,
                       **({} if _slug else {"error": "missing 'slug'"})}
             yield {"type": "tool", "name": name, "args": args, "result": result}
-            convo.append({"role": "user",
+            st.convo.append({"role": "user",
                           "content": f"OBSERVATION: {json.dumps(result)}"})
             continue
 
@@ -1661,11 +1666,11 @@ def run_chat_agent(
                       "error": f"'{name}' is blocked in {_mname} mode "
                                f"(read-only). {_mtail}"}
             yield {"type": "tool", "name": name, "args": args, "result": result}
-            convo.append({"role": "user",
+            st.convo.append({"role": "user",
                           "content": f"OBSERVATION: {json.dumps(result)}"})
             continue
 
-        _sig = yield from _approval_gate(name, args, cwd, session_id, convo)
+        _sig = yield from _approval_gate(name, args, cwd, session_id, st.convo)
         if _sig == "return":
             return
         if _sig == "continue":
@@ -1707,7 +1712,7 @@ def run_chat_agent(
                 }
                 yield {"type": "tool", "name": name, "args": args,
                        "result": result}
-                convo.append({"role": "user",
+                st.convo.append({"role": "user",
                               "content": f"OBSERVATION: {json.dumps(result)}"})
                 continue
 
@@ -1730,17 +1735,17 @@ def run_chat_agent(
             # AIFORGE_CHAT_STUCK_RECOVERIES=0 turns off the duplicate-read
             # NUDGE, and must not silently delete half the progress signal with
             # it (a read-only research turn would never extend on that box).
-            if sig not in read_sigs_ever:
-                _reads_new += 1        # real progress: knowledge it did not have
-                read_sigs_ever[sig] = True
-                while len(read_sigs_ever) > _ACTION_SIG_MAX:
-                    read_sigs_ever.popitem(last=False)
+            if sig not in st.read_sigs_ever:
+                st.reads_new += 1        # real progress: knowledge it did not have
+                st.read_sigs_ever[sig] = True
+                while len(st.read_sigs_ever) > _ACTION_SIG_MAX:
+                    st.read_sigs_ever.popitem(last=False)
             if _long_chain_help:
-                read_sigs_seen.add(sig)
+                st.read_sigs_seen.add(sig)
         if name in _EDIT_TOOL_NAMES and not (
                 isinstance(result, dict) and result.get("ok") is False):
-            _edits_made += 1
-            read_sigs_seen.clear()   # a file just changed → re-reads are valid again
+            st.edits_made += 1
+            st.read_sigs_seen.clear()   # a file just changed → re-reads are valid again
             # D: post-edit self-check. Immediately syntax-check the file just
             # written and, if broken, hand the model the error THIS step (tight
             # feedback) instead of letting it surface only at the end-of-run test
@@ -1754,7 +1759,7 @@ def run_chat_agent(
                     yield {"type": "thought", "role": "system",
                            "text": f"⚠ syntax error in the file you just edited "
                                    f"— fix it now: {_pe[:160]}"}
-                    convo.append({"role": "user", "content":
+                    st.convo.append({"role": "user", "content":
                         "[automated syntax check — not the user] The file you just "
                         f"wrote has a syntax error; fix it before continuing:\n{_pe[:600]}"})
         # Builder finalize: a successful create_job_script / learn_skill /
@@ -1763,7 +1768,7 @@ def run_chat_agent(
         # re-fires the charter and the user is stuck building forever (and can be
         # walked into duplicate artifacts).
         if name in _FINALIZE_TOOLS and isinstance(result, dict) and result.get("ok"):
-            _builder_finalized = True
+            st.builder_finalized = True
             yield {"type": "builder_done", "kind": name}
         _obs_cap = _MAX_OBS_READ if name in _READ_OBS_TOOLS else _MAX_OBS
         # Content-READ tools: cut oversized documents at a STRUCTURE boundary
@@ -1781,6 +1786,6 @@ def run_chat_agent(
                  "APPLICABLE SKILL above specifies an output format, reproduce "
                  "it EXACTLY — no extra prose, headers, or table it does not "
                  "specify.") if _bundle.skills_md else ""
-        convo.append({"role": "user", "content": f"OBSERVATION: {obs}{_tail}"})
+        st.convo.append({"role": "user", "content": f"OBSERVATION: {obs}{_tail}"})
 
 
