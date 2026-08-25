@@ -178,7 +178,7 @@ export function chatMediaUpload(sessionId: number, file: File): Promise<ChatMedi
   const fd = new FormData();
   fd.append('file', file);
   return apiFetch(`/chat/sessions/${sessionId}/media`, { method: 'POST', body: fd })
-    .then(async r => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `upload failed (${r.status})`); return r.json(); });
+    .then(async r => { if (!r.ok) { throw new Error((await r.json().catch(() => ({}))).detail || `upload failed (${r.status})`); } return r.json(); });
 }
 export function chatMediaList(sessionId: number): Promise<{ media: ChatMedia[]; vision: boolean }> {
   return j(`/chat/sessions/${sessionId}/media`);

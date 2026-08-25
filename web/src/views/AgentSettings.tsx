@@ -102,7 +102,7 @@ function CtxEdit({ value, onCommit }: Readonly<{ value: number; onCommit: (token
       <input autoFocus type="number" min={0} step={8}
              value={draft} onChange={e => setDraft(e.target.value)}
              onBlur={commit}
-             onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(false); }}
+             onKeyDown={e => { if (e.key === 'Enter') { commit(); } if (e.key === 'Escape') { setEditing(false); } }}
              title="Context window in thousands of tokens (K). Blank/0 = 128K default."
              style={{ ...base, width: 64, border: '1px solid #6aa6ff' }} />
     );

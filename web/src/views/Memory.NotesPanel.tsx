@@ -131,8 +131,8 @@ export function NotesPanel() {
         </div>
       )}
       {(() => {
-        if (files === null) return <div className="muted small">Loading…</div>;
-        if (files.length === 0) return <div className="muted small">No notes yet — they appear after chat runs, or add one.</div>;
+        if (files === null) { return <div className="muted small">Loading…</div>; }
+        if (files.length === 0) { return <div className="muted small">No notes yet — they appear after chat runs, or add one.</div>; }
           const q = filter.trim().toLowerCase();
           const shown = files.filter(f => !q
             || cleanTitle(f).toLowerCase().includes(q)
