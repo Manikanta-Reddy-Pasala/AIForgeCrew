@@ -65,6 +65,40 @@ def _wait_budget() -> float:
         return 120.0
 
 
+def _read_error_body(response) -> str:
+    """The response body text, best-effort.
+
+    READ FIRST. httpx fires response hooks in _send_handling_redirects, BEFORE
+    the body is read — so ``response.text`` raises ResponseNotRead on every real
+    call, and only a MockTransport (which hands back a pre-buffered Response)
+    makes the other order look correct. Reading is idempotent with httpx's own
+    later read.
+    """
+    try:
+        response.read()
+        return response.text
+    except Exception:  # noqa: BLE001
+        try:
+            return response.text
+        except Exception:  # noqa: BLE001
+            return ""
+
+
+def _note_rate_limit(response, status: int, body: str, provider: str,
+                     _rl) -> None:
+    """Feed a rate-limit response's Retry-After back into the shared limiter."""
+    if not _is_rate_limit_body(status, body):
+        return
+    try:
+        ra = float(response.headers.get("Retry-After") or 0)
+    except Exception:  # noqa: BLE001
+        ra = 0.0
+    try:
+        _rl.note_rate_limited(ra, provider=provider)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _event_hooks(role: str | None, model: str | None, provider: str,
                  pending: list):
     """httpx event hooks that put this path under the SAME ceiling and meter
@@ -85,8 +119,7 @@ def _event_hooks(role: str | None, model: str | None, provider: str,
     def _on_request(request) -> None:
         # Order matches _post: throttle first, then count what is going out.
         try:
-            _rl.acquire_global(
-                max_wait_s=_wait_budget(), provider=provider)
+            _rl.acquire_global(max_wait_s=_wait_budget(), provider=provider)
         except Exception:  # noqa: BLE001 — a limiter fault must not kill a call
             pass
         try:
@@ -117,34 +150,12 @@ def _event_hooks(role: str | None, model: str | None, provider: str,
             pass
         if status < 400:
             return
-        body = ""
-        try:
-            # READ FIRST. httpx fires response hooks in _send_handling_redirects,
-            # BEFORE the body is read — so `response.text` here raises
-            # ResponseNotRead on every real call, and only a MockTransport (which
-            # hands back a pre-buffered Response) makes the other order look
-            # correct. Reading is idempotent with httpx's own later read.
-            response.read()
-            body = response.text
-        except Exception:  # noqa: BLE001
-            try:
-                body = response.text
-            except Exception:  # noqa: BLE001
-                body = ""
+        body = _read_error_body(response)
         try:
             _meter.record_failure(tok, f"http_{status}")
         except Exception:  # noqa: BLE001
             pass
-        if _is_rate_limit_body(status, body):
-            ra = 0.0
-            try:
-                ra = float(response.headers.get("Retry-After") or 0)
-            except Exception:  # noqa: BLE001
-                ra = 0.0
-            try:
-                _rl.note_rate_limited(ra, provider=provider)
-            except Exception:  # noqa: BLE001
-                pass
+        _note_rate_limit(response, status, body, provider, _rl)
 
     return {"request": [_on_request], "response": [_on_response]}
 
@@ -169,6 +180,61 @@ def _settle_pending(pending: list, reason: str) -> None:
         pending.clear()
 
 
+def _build_metered_client(base_url: str, timeout_s, role, model, provider,
+                          pending: list):
+    """An httpx client whose event hooks meter + throttle this path, or None to
+    fall back to the SDK default.
+
+    The OpenAI SDK builds its own httpx client that, by default, IGNORES
+    AIForge's TLS policy — so a self-hosted HTTPS/self-signed model endpoint
+    (AIFORGE_LLM_SSL_VERIFY=false / a CA bundle) fails with a bare "Connection
+    error" while the litellm fallback connects. And it files the traffic under
+    "OpenAI/Python", so an operator counting a user's calls silently misses
+    every structured extraction. This client fixes both: litellm's verify
+    policy, and our User-Agent + metering hooks.
+    """
+    try:
+        import httpx
+        from aiforge_core.net.ssl import httpx_verify
+        from aiforge_core.llm.user_agent import user_agent
+        return httpx.Client(verify=httpx_verify(base_url),
+                            timeout=timeout_s or 120,
+                            headers={"User-Agent": user_agent()},
+                            event_hooks=_event_hooks(role, model, provider,
+                                                     pending))
+    except Exception:  # noqa: BLE001 — fall back to the SDK default client
+        return None
+
+
+def _charge_one_unmetered(role, model, provider: str) -> None:
+    """No hooks means no ceiling on the sends about to happen. Charge ONE up
+    front: undercounting a retry is a smaller error than exempting this whole
+    path, which is the bug this file was rewritten to fix."""
+    try:
+        from aiforge_core.llm import rate_limiter as _rl
+        _rl.acquire_global(max_wait_s=_wait_budget(), provider=provider)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from aiforge_core.llm import call_meter as _meter
+        _meter.record(role, provider=provider, model=model)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _structured_max_tokens(max_tokens: int | None) -> int:
+    """The max_tokens to request, floored. A structured (JSON) reply truncated
+    by a too-small max_tokens raises IncompleteOutputException and forces the
+    fallback loop (noisy + a wasted call), so short extractions get a sensible
+    FLOOR — tunable via AIFORGE_STRUCTURED_MAX_TOKENS."""
+    import os
+    try:
+        floor = max(256, int(os.environ.get("AIFORGE_STRUCTURED_MAX_TOKENS", "4096")))
+    except (TypeError, ValueError):
+        floor = 4096
+    return max(int(max_tokens), floor) if max_tokens else floor
+
+
 def structured(*, base_url: str, api_key: str, model: str,
                messages: list[dict], response_model: type[BaseModel],
                max_retries: int = 2, max_tokens: int | None = None,
@@ -186,23 +252,9 @@ def structured(*, base_url: str, api_key: str, model: str,
     # (AIFORGE_LLM_SSL_VERIFY=false / a CA bundle) fails with a bare "Connection
     # error" while the litellm fallback connects. Hand OpenAI an httpx client
     # using the same verify policy litellm uses.
-    _http = None
     _pending: list = []
-    try:
-        import httpx
-        from aiforge_core.net.ssl import httpx_verify
-        from aiforge_core.llm.user_agent import user_agent
-        # Same endpoint, same credentials, same completions — but through the
-        # OpenAI SDK, so without this the gateway files this traffic under
-        # "OpenAI/Python" and an operator counting a user's calls silently
-        # misses every structured extraction.
-        _http = httpx.Client(verify=httpx_verify(base_url),
-                             timeout=timeout_s or 120,
-                             headers={"User-Agent": user_agent()},
-                             event_hooks=_event_hooks(role, model,
-                                                      provider, _pending))
-    except Exception:  # noqa: BLE001 — fall back to the SDK default client
-        _http = None
+    _http = _build_metered_client(base_url, timeout_s, role, model, provider,
+                                  _pending)
     _oai_kwargs = {"base_url": base_url, "api_key": api_key or "not-needed",
                    "timeout": timeout_s or 120,
                    # The SDK retries on its OWN (default 2) INSIDE the call
@@ -215,32 +267,10 @@ def structured(*, base_url: str, api_key: str, model: str,
     if _http is not None:
         _oai_kwargs["http_client"] = _http
     else:
-        # No hooks means no ceiling on the sends about to happen. Charge ONE
-        # up front: undercounting a retry is a smaller error than exempting
-        # this whole path, which is the bug this file was rewritten to fix.
-        try:
-            from aiforge_core.llm import rate_limiter as _rl
-            _rl.acquire_global(max_wait_s=_wait_budget(), provider=provider)
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            from aiforge_core.llm import call_meter as _meter
-            _meter.record(role, provider=provider, model=model)
-        except Exception:  # noqa: BLE001
-            pass
+        _charge_one_unmetered(role, model, provider)
     cli = instructor.from_openai(OpenAI(**_oai_kwargs),
                                  mode=instructor.Mode.MD_JSON)
-    import os
-    kwargs: dict = {}
-    # A structured (JSON) reply truncated by a too-small max_tokens raises
-    # IncompleteOutputException and forces the fallback loop (noisy + a wasted
-    # call). Give it a sensible FLOOR so short structured extractions don't get
-    # clipped — tunable via AIFORGE_STRUCTURED_MAX_TOKENS.
-    try:
-        _floor = max(256, int(os.environ.get("AIFORGE_STRUCTURED_MAX_TOKENS", "4096")))
-    except (TypeError, ValueError):
-        _floor = 4096
-    kwargs["max_tokens"] = max(int(max_tokens), _floor) if max_tokens else _floor
+    kwargs: dict = {"max_tokens": _structured_max_tokens(max_tokens)}
     if temperature is not None:
         kwargs["temperature"] = temperature
     try:

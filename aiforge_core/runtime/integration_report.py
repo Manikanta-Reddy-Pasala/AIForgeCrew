@@ -160,31 +160,44 @@ def _stdlib_names() -> frozenset:
     return _STDLIB
 
 
-def _third_party_imports(cwd: str) -> list[str]:
-    """Top-level third-party modules imported anywhere in the tree — so a bare
-    (marker-less) project's test venv can pip-install them (pygame, numpy, …)."""
-    import re as _re
-    _std = _stdlib_names()
-    pat = _re.compile(r"^\s*(?:import|from)\s+([a-zA-Z_][\w]*)", _re.MULTILINE)
+_IMPORT_SCAN_SKIP = (".git", ".venv", ".aiforge-venv", "node_modules",
+                     "__pycache__", ".aiforge-worktrees")
+
+
+def _imported_modules(cwd: str, pat, std: set) -> set[str]:
+    """Every non-stdlib top-level module name imported in any .py under ``cwd``."""
     mods: set[str] = set()
     for root, dirs, files in os.walk(cwd):
-        dirs[:] = [d for d in dirs if d not in (
-            ".git", ".venv", ".aiforge-venv", "node_modules", "__pycache__",
-            ".aiforge-worktrees")]
+        dirs[:] = [d for d in dirs if d not in _IMPORT_SCAN_SKIP]
         for f in files:
             if not f.endswith(".py"):
                 continue
             try:
-                with open(os.path.join(root, f), encoding="utf-8", errors="replace") as fh:
+                with open(os.path.join(root, f), encoding="utf-8",
+                          errors="replace") as fh:
                     src = fh.read()
             except Exception:  # noqa: BLE001
                 continue
-            for m in pat.findall(src):
-                if m and m not in _std:
-                    mods.add(m)
-    # a local package (a dir/… .py in the tree) isn't third-party.
-    local = {d for d in os.listdir(cwd)} if os.path.isdir(cwd) else set()
-    local |= {os.path.splitext(f)[0] for f in os.listdir(cwd)} if os.path.isdir(cwd) else set()
+            mods.update(m for m in pat.findall(src) if m and m not in std)
+    return mods
+
+
+def _local_names(cwd: str) -> set[str]:
+    """Top-level names that are LOCAL to the tree (a dir or a .py stem in
+    ``cwd``) — not third-party, so not something to pip-install."""
+    if not os.path.isdir(cwd):
+        return set()
+    entries = os.listdir(cwd)
+    return set(entries) | {os.path.splitext(f)[0] for f in entries}
+
+
+def _third_party_imports(cwd: str) -> list[str]:
+    """Top-level third-party modules imported anywhere in the tree — so a bare
+    (marker-less) project's test venv can pip-install them (pygame, numpy, …)."""
+    import re as _re
+    pat = _re.compile(r"^\s*(?:import|from)\s+([a-zA-Z_][\w]*)", _re.MULTILINE)
+    mods = _imported_modules(cwd, pat, _stdlib_names())
+    local = _local_names(cwd)
     return sorted(m for m in mods if m not in local)
 
 
@@ -215,86 +228,98 @@ def _python_test_files(cwd: str) -> list[str]:
     return out
 
 
+def _ensure_pytest_venv(cwd: str, venv: str, py: str, timeout: int) -> None:
+    """Make ``py`` a venv with pytest + the tree's deps importable, creating and
+    installing as needed. A PRIOR round may have created the venv but failed to
+    install pytest (a single bad dep name aborts the whole ``pip install``),
+    leaving a venv with no pytest and the gate permanently blind — so this checks
+    the pytest IMPORT, not just venv existence."""
+    import subprocess
+    import sys
+
+    def _has_pytest() -> bool:
+        if not os.path.exists(py):
+            return False
+        c = subprocess.run([py, "-c", "import pytest"],
+                           capture_output=True, timeout=60)
+        return c.returncode == 0
+
+    if _has_pytest():
+        return
+    if not os.path.exists(py):
+        subprocess.run([sys.executable, "-m", "venv", venv],
+                       capture_output=True, timeout=120)
+    # CORE test deps FIRST, in their own call that MUST succeed — the pytest
+    # plugins models reference via pyproject addopts (cov, asyncio, mock) so a
+    # `--cov`/`@pytest.mark.asyncio` config doesn't exit with "unrecognized
+    # arguments" and zero signal.
+    subprocess.run([py, "-m", "pip", "-q", "install", "pytest", "pytest-cov",
+                    "pytest-asyncio", "pytest-mock", "pytest-timeout", "ruff"],
+                   capture_output=True, timeout=timeout)
+    # Third-party imports BEST-EFFORT and one at a time — a single
+    # unresolvable/mis-detected name (a stray stdlib module, a private package)
+    # must NOT abort the whole install and strand pytest. Each failure is
+    # isolated; a genuinely-missing import just surfaces as a real test error.
+    for dep in _third_party_imports(cwd):
+        subprocess.run([py, "-m", "pip", "-q", "install", dep],
+                       capture_output=True, timeout=timeout)
+    req = os.path.join(cwd, "requirements.txt")
+    if os.path.exists(req):
+        subprocess.run([py, "-m", "pip", "-q", "install", "-r", req],
+                       capture_output=True, timeout=timeout)
+
+
+def _pytest_timeout_args() -> list[str]:
+    """Per-TEST timeout args (pytest-timeout). A generated ``while True`` worker
+    otherwise hangs the WHOLE run until the subprocess timeout, masking every
+    result; a per-test cap turns it into ONE visible "Timeout" the reconcile can
+    target. SIGALRM method (the default) reliably INTERRUPTS a CPU-bound loop —
+    pytest runs as its own subprocess on the main thread here."""
+    try:
+        ptt = max(3, int(os.environ.get("AIFORGE_PYTEST_TIMEOUT", "20")))
+    except ValueError:
+        ptt = 20
+    return ["--timeout", str(ptt)]
+
+
+def _run_pytest_capturing(py: str, cwd: str, env: dict, timeout: int):
+    """Run pytest, retrying once with addopts stripped when a broken CONFIG (a
+    plugin/addopts the tree can't satisfy → usage error, no tests collected)
+    stopped it from starting. Returns ``(returncode, combined_output)``."""
+    import subprocess
+    to = _pytest_timeout_args()
+    p = subprocess.run([py, "-m", "pytest", "-q", *to], cwd=cwd, env=env,
+                       capture_output=True, text=True, timeout=timeout)
+    out = p.stdout + p.stderr
+    config_broke = (p.returncode == 4
+                    or "unrecognized arguments" in out
+                    or "usage: pytest" in out.lower())
+    if config_broke:
+        p = subprocess.run(
+            [py, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+             "-o", "addopts=", *to], cwd=cwd, env=env,
+            capture_output=True, text=True, timeout=timeout)
+        out = p.stdout + p.stderr
+    return p.returncode, out
+
+
 def run_bare_python_tests(cwd: str, timeout: int = 300):
     """Run pytest on a bare (marker-less) Python tree via a managed venv that
     pip-installs pytest + the tree's third-party imports. Returns ``(ok, output)``
     or ``None`` when there are no tests (nothing to check). The venv lives at
     ``.aiforge-venv`` (git-ignored) and is reused across reconcile rounds."""
-    import subprocess
-    import sys
     if not _python_test_files(cwd):
         return None
     venv = os.path.join(cwd, ".aiforge-venv")
     py = os.path.join(venv, "bin", "python")
     try:
-        # (Re)ensure pytest itself is importable in the venv — a PRIOR round may
-        # have created the venv but failed to install pytest (a single bad dep
-        # name aborts the whole `pip install`), leaving a venv with no pytest and
-        # the gate permanently blind. So check import, not just venv existence.
-        def _has_pytest() -> bool:
-            if not os.path.exists(py):
-                return False
-            c = subprocess.run([py, "-c", "import pytest"],
-                               capture_output=True, timeout=60)
-            return c.returncode == 0
-        if not _has_pytest():
-            if not os.path.exists(py):
-                subprocess.run([sys.executable, "-m", "venv", venv],
-                               capture_output=True, timeout=120)
-            # CORE test deps FIRST, in their own call that MUST succeed — the
-            # pytest plugins models reference via pyproject addopts (cov, asyncio,
-            # mock) so a `--cov`/`@pytest.mark.asyncio` config doesn't exit with
-            # "unrecognized arguments" and zero signal.
-            subprocess.run([py, "-m", "pip", "-q", "install", "pytest",
-                            "pytest-cov", "pytest-asyncio", "pytest-mock",
-                            "pytest-timeout", "ruff"],
-                           capture_output=True, timeout=timeout)
-            # Third-party imports BEST-EFFORT and one at a time — a single
-            # unresolvable/mis-detected name (a stray stdlib module, a private
-            # package) must NOT abort the whole install and strand pytest. Each
-            # failure is isolated; a genuinely-missing import just surfaces as a
-            # real test error the reconcile can act on.
-            for dep in _third_party_imports(cwd):
-                subprocess.run([py, "-m", "pip", "-q", "install", dep],
-                               capture_output=True, timeout=timeout)
-            req = os.path.join(cwd, "requirements.txt")
-            if os.path.exists(req):
-                subprocess.run([py, "-m", "pip", "-q", "install", "-r", req],
-                               capture_output=True, timeout=timeout)
+        _ensure_pytest_venv(cwd, venv, py, timeout)
         env = dict(os.environ, SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy")
-        # Per-TEST timeout (pytest-timeout, installed above): a generated
-        # `while True` worker / accidental infinite loop otherwise hangs the WHOLE
-        # pytest run until the subprocess timeout, masking every result — the
-        # reconcile then sees nothing to fix and ships the hang. With a per-test
-        # cap the loop fails as ONE visible "Timeout" the reconcile can target.
-        # Default (signal/SIGALRM) method — pytest runs here as its OWN subprocess
-        # on the main thread, so SIGALRM reliably INTERRUPTS a CPU-bound `while
-        # True` (the thread method only reports, can't break a busy loop).
-        try:
-            _ptt = max(3, int(os.environ.get("AIFORGE_PYTEST_TIMEOUT", "20")))
-        except ValueError:
-            _ptt = 20
-        _to = ["--timeout", str(_ptt)]
-        p = subprocess.run([py, "-m", "pytest", "-q", *_to], cwd=cwd, env=env,
-                           capture_output=True, text=True, timeout=timeout)
-        out = p.stdout + p.stderr
-        # If pytest couldn't even START because of a broken CONFIG (a plugin/
-        # addopts the tree can't satisfy → usage error, no tests collected), retry
-        # once IGNORING addopts so we still get a real pass/fail the reconcile can
-        # act on. General: never let a config knob mask the actual test result.
-        _config_broke = (p.returncode == 4
-                         or "unrecognized arguments" in out
-                         or "usage: pytest" in out.lower())
-        if _config_broke:
-            p = subprocess.run(
-                [py, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-                 "-o", "addopts=", *_to], cwd=cwd, env=env,
-                capture_output=True, text=True, timeout=timeout)
-            out = p.stdout + p.stderr
-        ok = p.returncode == 0
+        rc, out = _run_pytest_capturing(py, cwd, env, timeout)
+        ok = rc == 0
         # LINT gate (Python leg): when tests otherwise PASS, run the real-bug ruff
-        # codes via the managed venv's ruff (installed above). The generic
-        # multi-language dispatch below handles other stacks.
+        # codes via the managed venv's ruff. The generic multi-language dispatch
+        # below handles other stacks.
         if ok and os.environ.get("AIFORGE_LINT_GATE", "1") not in ("0", "false"):
             lok, lout = _static_lint_python(cwd, py, env)
             if not lok:
@@ -321,13 +346,29 @@ def _static_lint_python(cwd, py, env):
     return True, ""
 
 
+def _dispatch_language_checks(cwd: str, files, has, run) -> None:
+    """Run each present language's native static check via the ``run`` helper."""
+    # TypeScript — the compiler IS the typecheck.
+    if files(".ts", ".tsx") and os.path.exists(os.path.join(cwd, "tsconfig.json")) and has("npx"):
+        run(["npx", "--yes", "tsc", "--noEmit"], "typescript typecheck", 180)
+    # plain JavaScript — syntax check each file (no compiler).
+    elif files(".js", ".mjs") and has("node"):
+        for f in files(".js", ".mjs")[:60]:
+            run(["node", "--check", f], f"js syntax {os.path.relpath(f, cwd)}", 20)
+    # Go — vet catches real bugs beyond compile.
+    if files(".go") and has("go"):
+        run(["go", "vet", "./..."], "go vet", 120)
+    # Rust — clippy if present (compile already typechecks; clippy adds real lints).
+    if files(".rs") and has("cargo"):
+        run(["cargo", "clippy", "--quiet"], "rust clippy", 180)
+
+
 def run_static_checks(cwd: str) -> tuple[bool, str]:
     """Language-native static checks for the stacks present — catches real bugs a
     test run can miss (undefined name, type error, bad ref). Best-effort: any tool
     that isn't installed is skipped. Returns ``(ok, output)``. Off with
     ``AIFORGE_LINT_GATE=0``. Compiled langs (Java/Go/Rust/Kotlin/C) are already
     typechecked by their build step, so here we cover the interpreted/loose ones."""
-    import glob
     import shutil
     import subprocess
     if os.environ.get("AIFORGE_LINT_GATE", "1") in ("0", "false"):
@@ -353,19 +394,7 @@ def run_static_checks(cwd: str) -> tuple[bool, str]:
             out += [os.path.join(root, f) for f in fs if f.endswith(exts)]
         return out
 
-    # TypeScript — the compiler IS the typecheck.
-    if _files(".ts", ".tsx") and os.path.exists(os.path.join(cwd, "tsconfig.json")) and _has("npx"):
-        _run(["npx", "--yes", "tsc", "--noEmit"], "typescript typecheck", 180)
-    # plain JavaScript — syntax check each file (no compiler).
-    elif _files(".js", ".mjs") and _has("node"):
-        for f in _files(".js", ".mjs")[:60]:
-            _run(["node", "--check", f], f"js syntax {os.path.relpath(f, cwd)}", 20)
-    # Go — vet catches real bugs beyond compile.
-    if _files(".go") and _has("go"):
-        _run(["go", "vet", "./..."], "go vet", 120)
-    # Rust — clippy if present (compile already typechecks; clippy adds real lints).
-    if _files(".rs") and _has("cargo"):
-        _run(["cargo", "clippy", "--quiet"], "rust clippy", 180)
+    _dispatch_language_checks(cwd, _files, _has, _run)
     if problems:
         return False, "\n\n=== static checks — fix these ===\n" + "\n\n".join(problems)
     return True, ""
@@ -373,6 +402,60 @@ def run_static_checks(cwd: str) -> tuple[bool, str]:
 
 _LINT_SKIP = {"node_modules", "venv", ".venv", "__pycache__", "target", "build",
               "dist", ".git", ".aiforge-venv", "vendor"}
+
+
+def _bare_python_report(cwd: str) -> "dict | None":
+    """The report for a bare Python tree (no build marker) WITH tests — run
+    pytest via a managed venv so we still report real pass/fail. None when there
+    is nothing to run here."""
+    bare = run_bare_python_tests(cwd)
+    if bare is None:
+        return None
+    ok, output = bare
+    # We ran pytest → the manual steps are PYTHON, not a re-detection race.
+    out = ["## Integration check — **python (pytest, no build marker)**", "",
+           f"- **tests (end-to-end):** {'✅ passed' if ok else '❌ failed'}"]
+    if not ok and output:
+        out.append("```\n" + output[-1400:] + "\n```")
+    out += ["", _manual_steps_md(cwd, "python")]
+    return {"ok": ok, "md": "\n".join(out)}
+
+
+def _run_build_step(cwd: str, project, manual: str,
+                    out: list) -> "tuple[bool, dict | None]":
+    """Append the build/compile result to ``out``. Returns
+    ``(build_ok, short_circuit_report)`` — the report is set (and build_ok is
+    False) only when the build toolchain is absent (can't auto-build)."""
+    build = project(action="build", cwd=cwd) or {}
+    berr = str(build.get("error") or "")
+    if not build.get("ok") and _absent(berr):
+        out += ["⚠ Build toolchain isn't installed on this host — can't auto-build.",
+                "", manual]
+        return False, {"ok": None, "md": "\n".join(out)}
+    out.append(f"- **build/compile:** {'✅ passed' if build.get('ok') else '❌ failed'}")
+    if not build.get("ok") and berr:
+        out.append("```\n" + berr[-1000:] + "\n```")
+    return bool(build.get("ok")), None
+
+
+def _run_test_step(cwd: str, stacks, has_tests, project, manual: str,
+                   build_ok: bool, out: list) -> "tuple[bool, dict | None]":
+    """Append the test result to ``out``, gating strictly on tests when present.
+    Returns ``(ok, short_circuit_report)`` — the report is set only when the test
+    toolchain is absent."""
+    if not has_tests(cwd, stacks):
+        out.append("- **tests:** _none found_ — add tests to verify behaviour.")
+        return build_ok, None
+    test = project(action="test", cwd=cwd) or {}
+    terr = str(test.get("error") or test.get("output") or "")
+    if not test.get("ok") and _absent(terr):
+        out += ["", "⚠ Test toolchain isn't installed on this host.", "", manual]
+        return build_ok, {"ok": None, "md": "\n".join(out)}
+    ok = bool(test.get("ok"))
+    out.append(f"- **tests (end-to-end):** {'✅ passed' if ok else '❌ failed'}")
+    if not ok and terr:
+        out.append("```\n" + terr[-1400:] + "\n```")
+    return ok, None
 
 
 def build_and_test_report(cwd: str) -> dict:
@@ -389,19 +472,9 @@ def build_and_test_report(cwd: str) -> dict:
 
     stacks = (detect(cwd) or {}).get("stacks") or []
     if not stacks:
-        # Bare Python (no pyproject/setup.py) but WITH tests → run pytest via a
-        # managed venv so we still report real pass/fail (not just "no markers").
-        bare = run_bare_python_tests(cwd)
+        bare = _bare_python_report(cwd)
         if bare is not None:
-            ok, output = bare
-            # We ran pytest → the manual steps are PYTHON, not a re-detection race.
-            py_manual = _manual_steps_md(cwd, "python")
-            out = ["## Integration check — **python (pytest, no build marker)**",
-                   "", f"- **tests (end-to-end):** {'✅ passed' if ok else '❌ failed'}"]
-            if not ok and output:
-                out.append("```\n" + output[-1400:] + "\n```")
-            out += ["", py_manual]
-            return {"ok": ok, "md": "\n".join(out)}
+            return bare
         return {"ok": None, "md": "## Integration check\n\nNo build markers "
                 "found here.\n\n" + manual}
 
@@ -410,32 +483,13 @@ def build_and_test_report(cwd: str) -> dict:
     manual = _manual_steps_md(cwd, _STACK_TO_LANG.get(str(stacks[0]).lower()))
     out = [f"## Integration check — detected: **{', '.join(stacks)}**", ""]
 
-    # 1. compile / build
-    build = project(action="build", cwd=cwd) or {}
-    berr = str(build.get("error") or "")
-    if not build.get("ok") and _absent(berr):
-        out += ["⚠ Build toolchain isn't installed on this host — can't auto-build.",
-                "", manual]
-        return {"ok": None, "md": "\n".join(out)}
-    out.append(f"- **build/compile:** {'✅ passed' if build.get('ok') else '❌ failed'}")
-    if not build.get("ok") and berr:
-        out.append("```\n" + berr[-1000:] + "\n```")
-
-    # 2. tests (end-to-end) — gate strictly on tests when present.
-    ok = bool(build.get("ok"))
-    if _has_tests(cwd, stacks):
-        test = project(action="test", cwd=cwd) or {}
-        terr = str(test.get("error") or test.get("output") or "")
-        if not test.get("ok") and _absent(terr):
-            out += ["", "⚠ Test toolchain isn't installed on this host.", "", manual]
-            return {"ok": None, "md": "\n".join(out)}
-        ok = bool(test.get("ok"))
-        out.append(f"- **tests (end-to-end):** {'✅ passed' if ok else '❌ failed'}")
-        if not ok and terr:
-            out.append("```\n" + terr[-1400:] + "\n```")
-    else:
-        out.append("- **tests:** _none found_ — add tests to verify behaviour.")
-
+    build_ok, short = _run_build_step(cwd, project, manual, out)
+    if short is not None:
+        return short
+    ok, short = _run_test_step(cwd, stacks, _has_tests, project, manual,
+                               build_ok, out)
+    if short is not None:
+        return short
     out += ["", manual]      # always show how the user can re-run it themselves
     return {"ok": ok, "md": "\n".join(out)}
 

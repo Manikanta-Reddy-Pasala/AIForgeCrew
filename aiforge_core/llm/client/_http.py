@@ -148,14 +148,11 @@ def _post_ctx(ep: Endpoint):
     return _ssl_context_for(base)
 
 
-def _post_cancellable(ep: Endpoint, payload: bytes, timeout_s: int,
-                      cancel, sent: "list | None" = None) -> dict:
-    """POST via http.client so a watcher thread can close the connection the
-    instant ``cancel`` fires — interrupting an otherwise-blocking generation.
-    Used only when a cancel token is bound for this thread."""
+def _open_connection(ep: Endpoint, url: str, timeout_s: int):
+    """An http.client connection for ``url`` honouring the endpoint's TLS
+    context. Returns ``(conn, path)`` — ``path`` carries any query string."""
     import http.client
     from urllib.parse import urlparse
-    url = f"{ep.base_url.rstrip('/')}/chat/completions"
     p = urlparse(url)
     host, port = p.hostname, (p.port or (443 if p.scheme == "https" else 80))
     path = p.path or "/"
@@ -166,17 +163,46 @@ def _post_cancellable(ep: Endpoint, payload: bytes, timeout_s: int,
                                            context=_post_ctx(ep))
     else:
         conn = http.client.HTTPConnection(host, port, timeout=timeout_s)
-    stop = threading.Event()
+    return conn, path
 
+
+def _cancel_watcher(conn, cancel, stop: "threading.Event") -> None:
+    """Start a daemon that closes ``conn`` the instant ``cancel`` fires,
+    unblocking ``getresponse()`` on the main thread."""
     def _watch():
         while not stop.wait(0.15):
             if cancel.is_set():
                 try:
-                    conn.close()   # unblocks getresponse() on the main thread
+                    conn.close()
                 except Exception:  # noqa: BLE001
                     pass
                 return
     threading.Thread(target=_watch, daemon=True).start()
+
+
+def _read_http_response(conn, url: str) -> dict:
+    """Read + parse the response body. Mimics urllib's HTTPError on a >=400 so
+    the retry classifier handles it identically, and treats a 200-OK error body
+    as transient."""
+    resp = conn.getresponse()
+    data = resp.read()
+    if resp.status >= 400:
+        raise urllib.error.HTTPError(
+            url, resp.status, resp.reason, resp.headers, io.BytesIO(data))
+    body = json.loads(data)
+    _raise_if_model_dropped(body)   # 200-OK error body → transient
+    return body
+
+
+def _post_cancellable(ep: Endpoint, payload: bytes, timeout_s: int,
+                      cancel, sent: "list | None" = None) -> dict:
+    """POST via http.client so a watcher thread can close the connection the
+    instant ``cancel`` fires — interrupting an otherwise-blocking generation.
+    Used only when a cancel token is bound for this thread."""
+    url = f"{ep.base_url.rstrip('/')}/chat/completions"
+    conn, path = _open_connection(ep, url, timeout_s)
+    stop = threading.Event()
+    _cancel_watcher(conn, cancel, stop)
     try:
         if cancel.is_set():
             raise _LLMCancelled("cancelled before request")
@@ -188,16 +214,7 @@ def _post_cancellable(ep: Endpoint, payload: bytes, timeout_s: int,
         # they surface as a bare TimeoutError from http.client.
         if sent is not None:
             sent[0] = True
-        resp = conn.getresponse()
-        data = resp.read()
-        if resp.status >= 400:
-            # Mimic urllib's HTTPError so the retry classifier handles it the
-            # same way (5xx/429 retry, other 4xx permanent).
-            raise urllib.error.HTTPError(
-                url, resp.status, resp.reason, resp.headers, io.BytesIO(data))
-        _body = json.loads(data)
-        _raise_if_model_dropped(_body)   # 200-OK error body → transient
-        return _body
+        return _read_http_response(conn, url)
     except OSError as exc:
         if cancel.is_set():
             raise _LLMCancelled("cancelled mid-request") from exc
