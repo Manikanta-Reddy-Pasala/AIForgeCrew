@@ -1063,6 +1063,144 @@ def _condense_and_report(st, role, complete_fn, session_id, _meter):
                # as the provider reported them.
                "llm_turn_tokens_out": _calls.get("turn_tokens_out", 0)}
 
+def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
+                  cwd, _asks, _wt_fp0):
+    """Handle a FINAL step: builder-not-finalized nudge, implicit-final doer
+    nudge, multi-ask completeness gate, claim-vs-reality guard, and the
+    progress-gated verify→fix loop — then accept (fire stop + emit the answer).
+    Returns "continue"/"return"."""
+    # In a builder session, a "final" BEFORE the finalize tool succeeded
+    # means the model narrated/stalled ("let me test what's happening…")
+    # instead of building the artifact — don't end the interview with
+    # nothing created. Nudge it to call the finalize tool and continue the
+    # loop (bounded so a model that truly can't finalize still exits).
+    if builder and not st.builder_finalized and st.builder_final_tries < 2:
+        st.builder_final_tries += 1
+        _fin = _BUILDER_FINALIZE_TOOL.get(builder, "the finalize tool")
+        if step.get("text"):
+            yield {"type": "thought", "text": step["text"]}
+        st.convo.append({"role": "user", "content":
+            f"[system reminder] You stopped without creating the {builder}. "
+            f"Call `{_fin}` NOW with the collected values to finish — do "
+            f"not just narrate or 'test'. If ONE required value is genuinely "
+            f"missing, ask only for that, then finalize."})
+        return "continue"
+    # Doer guard: an IMPLICIT final (bare prose, no explicit `FINAL:`
+    # marker) from a work-producing run (strict_finish — the text-doer /
+    # subtask path) is almost always premature narration ("let me test…"),
+    # not a real answer. Nudge to act/finish instead of ending with no work.
+    # Bounded by continue_nudges so a model that truly can't finish still
+    # exits. Interactive chat / generic callers (strict_finish=False) keep
+    # bare prose as the legitimate answer — unchanged.
+    if step.get("implicit") and strict_finish and not builder:
+        st.continue_nudges += 1
+        if st.continue_nudges <= 2:
+            if step.get("text"):
+                yield {"type": "thought", "text": step["text"]}
+            st.convo.append({"role": "user", "content":
+                "You narrated but did NOT emit an ACTION or an explicit "
+                "`FINAL:` line. Continue: take the next ACTION (tool call) "
+                "to make progress, or output `FINAL: <answer>` ONLY when "
+                "the work is actually done. Do not just narrate or 'test'."})
+            return "continue"
+    # Multi-ask completeness gate (once): before accepting FINAL on a
+    # multi-part message, make the model self-check its answer against
+    # the checklist — the #1 simple-mode complaint is answering ask 1
+    # and silently dropping the rest.
+    if _asks and not st.multiask_checked and not builder:
+        st.multiask_checked = True
+        yield {"type": "thought", "role": "system",
+               "text": f"✔ checking all {len(_asks)} parts of the "
+                       "request are addressed…"}
+        st.convo.append({"role": "user", "content":
+            "[completeness check — not the user] The user's message "
+            f"contained {len(_asks)} distinct asks:\n"
+            + "\n".join(f"{i + 1}. {a}" for i, a in enumerate(_asks))
+            + "\nRe-read your answer above. If EVERY ask is addressed, "
+            "resend it unchanged as FINAL. If any is missing, do the "
+            "missing work now (ACTIONs as needed) and produce ONE "
+            "complete FINAL covering all parts, numbered."})
+        return "continue"
+    # Claim-vs-reality guard: the model asserts it edited/created files
+    # but landed ZERO edits this turn AND the working tree is unchanged
+    # (checked against every tool + any on-disk write, not just counted
+    # ones) — a hallucinated tool-use surfaced as prose (the frequent
+    # "I applied the fix to X / Confirmed Fixes Applied" with no diff).
+    # Nudge it to actually write (bounded); if it still won't, prepend an
+    # honest note so the user is never told a change landed that didn't.
+    # Opt out: AIFORGE_CHAT_EDIT_CLAIM_GUARD=0.
+    # Disk cross-check: "" = no git signal (honor the contract — NOT
+    # "clean"), so in a non-git workspace we rely on _edits_made==0 alone;
+    # with git, fire only when the tree is UNCHANGED (a real write would
+    # have dirtied it — an incidental dirty tree suppressing the guard is
+    # an accepted conservative miss).
+    _wt_now = (_worktree_fingerprint(cwd)
+               if _edit_claim_guard_enabled() else "")
+    _no_landed_write = (_wt_now == "" or _wt_now == _wt_fp0)
+    if (not readonly_mode and not builder and st.edits_made == 0
+            and _edit_claim_guard_enabled()
+            and _claims_file_edits(step.get("text") or "")
+            and _no_landed_write):
+        if st.edit_claim_nudges < 2:
+            st.edit_claim_nudges += 1
+            if step.get("text"):
+                yield {"type": "thought", "text": step["text"]}
+            yield {"type": "thought", "role": "system",
+                   "text": "⚠ you described file edits but no write ran "
+                           "and nothing changed on disk — applying for "
+                           "real…"}
+            st.convo.append({"role": "user", "content": _edit_claim_nudge()})
+            return "continue"
+        step["text"] = _edit_claim_disclaimer(step.get("text") or "")
+    # A + B: enforced verify→fix on FINAL (progress-gated). Only for an
+    # act-mode run that actually EDITED files with a real test suite —
+    # a Q&A turn (0 edits) or read-only plan mode is untouched. Keep
+    # looping while the failure count DROPS; once it stalls (2 rounds no
+    # improvement) accept the HONEST still-failing final rather than
+    # churn. This gives simple/doer runs the pipeline's no-false-green
+    # guarantee. Opt out: AIFORGE_CHAT_VERIFY_ON_FINAL=0.
+    if (not plan_mode and not builder and st.edits_made > 0
+            and st.verify_rounds < _verify_max_rounds()
+            and _verify_on_final_enabled()):
+        _vok, _vout = _run_project_verify(cwd)
+        if _vok is False:
+            try:
+                from aiforge_core.runtime.parallel_subtasks import _fail_count
+                _fails = _fail_count(_vout)
+            except Exception:  # noqa: BLE001
+                _fails = 1
+            if st.verify_prev_fails is not None and _fails >= st.verify_prev_fails:
+                st.verify_stalls += 1
+            else:
+                st.verify_stalls = 0
+            st.verify_prev_fails = _fails
+            if st.verify_stalls < 2:
+                st.verify_rounds += 1
+                yield {"type": "thought", "role": "system",
+                       "text": f"✗ tests failing ({_fails}) — fixing "
+                               f"(verify round {st.verify_rounds}/"
+                               f"{_verify_max_rounds()})…"}
+                st.convo.append({"role": "user",
+                              "content": _verify_fix_message(_vout)})
+                return "continue"
+            yield {"type": "thought", "role": "system",
+                   "text": f"⚠ tests still failing ({_fails}) after "
+                           f"{st.verify_rounds} fix rounds — stopping with "
+                           "the honest state."}
+    # FINAL accepted on a multi-part turn: close out the tracker so
+    # the dock never ends with stale pending items the model forgot
+    # to flip.
+    if _asks:
+        for _i in range(len(_asks)):
+            yield {"type": "subtask_update",
+                   "slug": f"part-{_i + 1}", "status": "done"}
+    _fire_stop("final", cwd)
+    yield {"type": "message", "text": _strip_reasoning_prefix(step["text"])}
+    yield {"type": "done"}
+    return "return"
+    return None
+
+
 def run_chat_agent(
     messages: list[dict], *,
     cwd: str,
@@ -1405,135 +1543,13 @@ def run_chat_agent(
         st.convo.append({"role": "assistant", "content": out})
         step = _parse(out)
         if step["kind"] == "final":
-            # In a builder session, a "final" BEFORE the finalize tool succeeded
-            # means the model narrated/stalled ("let me test what's happening…")
-            # instead of building the artifact — don't end the interview with
-            # nothing created. Nudge it to call the finalize tool and continue the
-            # loop (bounded so a model that truly can't finalize still exits).
-            if builder and not st.builder_finalized and st.builder_final_tries < 2:
-                st.builder_final_tries += 1
-                _fin = _BUILDER_FINALIZE_TOOL.get(builder, "the finalize tool")
-                if step.get("text"):
-                    yield {"type": "thought", "text": step["text"]}
-                st.convo.append({"role": "user", "content":
-                    f"[system reminder] You stopped without creating the {builder}. "
-                    f"Call `{_fin}` NOW with the collected values to finish — do "
-                    f"not just narrate or 'test'. If ONE required value is genuinely "
-                    f"missing, ask only for that, then finalize."})
+            _sig = yield from _handle_final(
+                st, step, builder, strict_finish, plan_mode, readonly_mode,
+                cwd, _asks, _wt_fp0)
+            if _sig == "return":
+                return
+            if _sig == "continue":
                 continue
-            # Doer guard: an IMPLICIT final (bare prose, no explicit `FINAL:`
-            # marker) from a work-producing run (strict_finish — the text-doer /
-            # subtask path) is almost always premature narration ("let me test…"),
-            # not a real answer. Nudge to act/finish instead of ending with no work.
-            # Bounded by continue_nudges so a model that truly can't finish still
-            # exits. Interactive chat / generic callers (strict_finish=False) keep
-            # bare prose as the legitimate answer — unchanged.
-            if step.get("implicit") and strict_finish and not builder:
-                st.continue_nudges += 1
-                if st.continue_nudges <= 2:
-                    if step.get("text"):
-                        yield {"type": "thought", "text": step["text"]}
-                    st.convo.append({"role": "user", "content":
-                        "You narrated but did NOT emit an ACTION or an explicit "
-                        "`FINAL:` line. Continue: take the next ACTION (tool call) "
-                        "to make progress, or output `FINAL: <answer>` ONLY when "
-                        "the work is actually done. Do not just narrate or 'test'."})
-                    continue
-            # Multi-ask completeness gate (once): before accepting FINAL on a
-            # multi-part message, make the model self-check its answer against
-            # the checklist — the #1 simple-mode complaint is answering ask 1
-            # and silently dropping the rest.
-            if _asks and not st.multiask_checked and not builder:
-                st.multiask_checked = True
-                yield {"type": "thought", "role": "system",
-                       "text": f"✔ checking all {len(_asks)} parts of the "
-                               "request are addressed…"}
-                st.convo.append({"role": "user", "content":
-                    "[completeness check — not the user] The user's message "
-                    f"contained {len(_asks)} distinct asks:\n"
-                    + "\n".join(f"{i + 1}. {a}" for i, a in enumerate(_asks))
-                    + "\nRe-read your answer above. If EVERY ask is addressed, "
-                    "resend it unchanged as FINAL. If any is missing, do the "
-                    "missing work now (ACTIONs as needed) and produce ONE "
-                    "complete FINAL covering all parts, numbered."})
-                continue
-            # Claim-vs-reality guard: the model asserts it edited/created files
-            # but landed ZERO edits this turn AND the working tree is unchanged
-            # (checked against every tool + any on-disk write, not just counted
-            # ones) — a hallucinated tool-use surfaced as prose (the frequent
-            # "I applied the fix to X / Confirmed Fixes Applied" with no diff).
-            # Nudge it to actually write (bounded); if it still won't, prepend an
-            # honest note so the user is never told a change landed that didn't.
-            # Opt out: AIFORGE_CHAT_EDIT_CLAIM_GUARD=0.
-            # Disk cross-check: "" = no git signal (honor the contract — NOT
-            # "clean"), so in a non-git workspace we rely on _edits_made==0 alone;
-            # with git, fire only when the tree is UNCHANGED (a real write would
-            # have dirtied it — an incidental dirty tree suppressing the guard is
-            # an accepted conservative miss).
-            _wt_now = (_worktree_fingerprint(cwd)
-                       if _edit_claim_guard_enabled() else "")
-            _no_landed_write = (_wt_now == "" or _wt_now == _wt_fp0)
-            if (not readonly_mode and not builder and st.edits_made == 0
-                    and _edit_claim_guard_enabled()
-                    and _claims_file_edits(step.get("text") or "")
-                    and _no_landed_write):
-                if st.edit_claim_nudges < 2:
-                    st.edit_claim_nudges += 1
-                    if step.get("text"):
-                        yield {"type": "thought", "text": step["text"]}
-                    yield {"type": "thought", "role": "system",
-                           "text": "⚠ you described file edits but no write ran "
-                                   "and nothing changed on disk — applying for "
-                                   "real…"}
-                    st.convo.append({"role": "user", "content": _edit_claim_nudge()})
-                    continue
-                step["text"] = _edit_claim_disclaimer(step.get("text") or "")
-            # A + B: enforced verify→fix on FINAL (progress-gated). Only for an
-            # act-mode run that actually EDITED files with a real test suite —
-            # a Q&A turn (0 edits) or read-only plan mode is untouched. Keep
-            # looping while the failure count DROPS; once it stalls (2 rounds no
-            # improvement) accept the HONEST still-failing final rather than
-            # churn. This gives simple/doer runs the pipeline's no-false-green
-            # guarantee. Opt out: AIFORGE_CHAT_VERIFY_ON_FINAL=0.
-            if (not plan_mode and not builder and st.edits_made > 0
-                    and st.verify_rounds < _verify_max_rounds()
-                    and _verify_on_final_enabled()):
-                _vok, _vout = _run_project_verify(cwd)
-                if _vok is False:
-                    try:
-                        from aiforge_core.runtime.parallel_subtasks import _fail_count
-                        _fails = _fail_count(_vout)
-                    except Exception:  # noqa: BLE001
-                        _fails = 1
-                    if st.verify_prev_fails is not None and _fails >= st.verify_prev_fails:
-                        st.verify_stalls += 1
-                    else:
-                        st.verify_stalls = 0
-                    st.verify_prev_fails = _fails
-                    if st.verify_stalls < 2:
-                        st.verify_rounds += 1
-                        yield {"type": "thought", "role": "system",
-                               "text": f"✗ tests failing ({_fails}) — fixing "
-                                       f"(verify round {st.verify_rounds}/"
-                                       f"{_verify_max_rounds()})…"}
-                        st.convo.append({"role": "user",
-                                      "content": _verify_fix_message(_vout)})
-                        continue
-                    yield {"type": "thought", "role": "system",
-                           "text": f"⚠ tests still failing ({_fails}) after "
-                                   f"{st.verify_rounds} fix rounds — stopping with "
-                                   "the honest state."}
-            # FINAL accepted on a multi-part turn: close out the tracker so
-            # the dock never ends with stale pending items the model forgot
-            # to flip.
-            if _asks:
-                for _i in range(len(_asks)):
-                    yield {"type": "subtask_update",
-                           "slug": f"part-{_i + 1}", "status": "done"}
-            _fire_stop("final", cwd)
-            yield {"type": "message", "text": _strip_reasoning_prefix(step["text"])}
-            yield {"type": "done"}
-            return
         if step["kind"] == "ask":
             # Agent is asking the user a question — show it + wait for the
             # next message (which answers it). awaiting_input flags the UI.
