@@ -180,7 +180,7 @@ export default function Logs() {
           <div className="subtitle">
             {anyOpen
               ? <><span style={{ color: 'var(--ok)' }}>● connected</span> — {shown.length.toLocaleString()} / {lines.length.toLocaleString()} lines</>
-              : <><span style={{ color: 'var(--warn)' }}>● reconnecting…</span></>}
+              : <span style={{ color: 'var(--warn)' }}>● reconnecting…</span>}
           </div>
         </div>
         <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
