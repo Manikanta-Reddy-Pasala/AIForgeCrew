@@ -17,6 +17,11 @@ import os
 
 from aiforge_core.config import languages as _languages
 
+_CPP = 'c/c++'
+_VENV = '.venv'
+_WORKTREES = '.aiforge-worktrees'
+_AIFORGE_VENV = '.aiforge-venv'
+
 # stderr fragments that mean the toolchain isn't installed here (→ give the
 # user manual steps instead of reporting a false failure).
 _TOOLCHAIN_ABSENT = (
@@ -36,7 +41,7 @@ _MANUAL: dict[str, list[str]] = {
     "java-gradle": ["./gradlew build", "./gradlew test"],
     "go": ["go build ./...", "go test ./..."],
     "rust": ["cargo build", "cargo test"],
-    "c/c++": [
+    _CPP: [
         "cmake -S . -B build && cmake --build build   # or: make",
         "ctest --test-dir build   # or run the produced test binary",
     ],
@@ -65,7 +70,7 @@ _STACK_TO_LANG = {
     "python": "python", "node": "node", "javascript": "node",
     "typescript": "node", "java": "java-maven", "maven": "java-maven",
     "gradle": "java-gradle", "go": "go", "golang": "go", "rust": "rust",
-    "cpp": "c/c++", "c": "c/c++", "php": "php", "ruby": "ruby", "shell": "shell",
+    "cpp": _CPP, "c": _CPP, "php": "php", "ruby": "ruby", "shell": "shell",
     "kotlin": "kotlin",
 }
 
@@ -80,14 +85,14 @@ _LANG_MARKERS = (
     (("package.json",), "node"),
     (("composer.json",), "php"),
     (("Gemfile",), "ruby"),
-    (("CMakeLists.txt", "Makefile"), "c/c++"),
+    (("CMakeLists.txt", "Makefile"), _CPP),
 )
 
 # Extension fallback in FIXED priority (python before node so a stray .js can't
 # shadow a Python project; kotlin last so nothing already-matched changes).
 _LANG_EXTS = (
     ("python", {".py"}), ("go", {".go"}), ("rust", {".rs"}),
-    ("java-maven", {".java"}), ("c/c++", {".c", ".cpp", ".cc", ".cxx"}),
+    ("java-maven", {".java"}), (_CPP, {".c", ".cpp", ".cc", ".cxx"}),
     ("php", {".php"}), ("ruby", {".rb"}),
     ("node", {".ts", ".tsx", ".js", ".mjs"}), ("shell", {".sh", ".bash"}),
     ("kotlin", {".kt", ".kts"}),
@@ -105,8 +110,8 @@ def _detect_lang(cwd: str) -> str | None:
     exts: set[str] = set()
     for root, dirs, files in os.walk(cwd):
         dirs[:] = [d for d in dirs if d not in (
-            ".git", ".venv", "venv", "node_modules", "target", "build", "dist",
-            ".aiforge-worktrees", "__pycache__")]
+            ".git", _VENV, "venv", "node_modules", "target", "build", "dist",
+            _WORKTREES, "__pycache__")]
         for f in files:
             exts.add(os.path.splitext(f)[1].lower())
     for lang, es in _LANG_EXTS:
@@ -157,8 +162,8 @@ def _stdlib_names() -> frozenset:
     return _STDLIB
 
 
-_IMPORT_SCAN_SKIP = (".git", ".venv", ".aiforge-venv", "node_modules",
-                     "__pycache__", ".aiforge-worktrees")
+_IMPORT_SCAN_SKIP = (".git", _VENV, _AIFORGE_VENV, "node_modules",
+                     "__pycache__", _WORKTREES)
 
 
 def _imported_modules(cwd: str, pat, std: set) -> set[str]:
@@ -199,7 +204,7 @@ def _third_party_imports(cwd: str) -> list[str]:
 
 
 _TEST_SKIP_DIRS = frozenset((
-    ".aiforge-venv", ".aiforge-worktrees", ".venv", "venv", "env",
+    _AIFORGE_VENV, _WORKTREES, _VENV, "venv", "env",
     "__pycache__", ".git", "node_modules", "site-packages", ".tox",
     ".pytest_cache", "build", "dist",
 ))
@@ -307,7 +312,7 @@ def run_bare_python_tests(cwd: str, timeout: int = 300):
     ``.aiforge-venv`` (git-ignored) and is reused across reconcile rounds."""
     if not _python_test_files(cwd):
         return None
-    venv = os.path.join(cwd, ".aiforge-venv")
+    venv = os.path.join(cwd, _AIFORGE_VENV)
     py = os.path.join(venv, "bin", "python")
     try:
         _ensure_pytest_venv(cwd, venv, py, timeout)
@@ -397,8 +402,8 @@ def run_static_checks(cwd: str) -> tuple[bool, str]:
     return True, ""
 
 
-_LINT_SKIP = {"node_modules", "venv", ".venv", "__pycache__", "target", "build",
-              "dist", ".git", ".aiforge-venv", "vendor"}
+_LINT_SKIP = {"node_modules", "venv", _VENV, "__pycache__", "target", "build",
+              "dist", ".git", _AIFORGE_VENV, "vendor"}
 
 
 def _bare_python_report(cwd: str) -> "dict | None":
