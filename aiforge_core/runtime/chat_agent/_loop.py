@@ -958,6 +958,105 @@ def _deadline_guard(st, n):
     return None
 
 
+def _drain_steering(st, session_id):
+    """Fold any user-injected mid-run steering/rejections into the working
+    context as ONE user turn before the next model call (merging into a trailing
+    user turn to avoid two-in-a-row), and surface each as a steer event."""
+    from aiforge_core.runtime import chat_interject
+    # Mid-run steering (Gap A): fold any user-injected guidance into the
+    # working context as a user turn BEFORE the next model call, so the
+    # agent adjusts course without a Stop + new turn. Surface it so the UI
+    # shows the steer was applied.
+    if session_id is not None:
+        _items = chat_interject.drain_items(session_id)
+        if _items:
+            from aiforge_core.runtime import chat_steer
+            _steers = [t for k, t in _items if k != "reject"]
+            _rejects = [t for k, t in _items if k == "reject"]
+            # ONE block for everything that drained together, so three
+            # queued messages cannot each claim to be the latest.
+            _parts = ([chat_steer.steer_block(_steers)] if _steers else [])
+            _parts += [chat_steer.reject_note(g) for g in _rejects]
+            _directive = "\n\n".join(p for p in _parts if p)
+            # If the last turn is already a user message (e.g. the
+            # OBSERVATION we just appended after a tool step), MERGE the
+            # steer into it — two consecutive user turns break some
+            # providers (claude_local). Otherwise append a fresh user turn.
+            _last = st.convo[-1] if st.convo else None
+            if _last is not None and _last.get("role") == "user":
+                _c = _last.get("content")
+                if isinstance(_c, list):
+                    # A VISION turn's content is a list of parts. `+=` on a
+                    # list extends it with the string's CHARACTERS: one
+                    # steer became 364 single-character parts, invisible to
+                    # _text_of (so the condenser and the context meter both
+                    # missed it) while still being sent.
+                    _c.append({"type": "text", "text": _directive})
+                else:
+                    _last["content"] = f"{_c or ''}\n\n{_directive}"
+            else:
+                st.convo.append({"role": "user", "content": _directive})
+            for _k, _t in _items:
+                yield chat_steer.steer_event(_t)
+
+def _condense_and_report(st, role, complete_fn, session_id, _meter):
+    """Auto-condense the running history to stay within the window (clearing the
+    duplicate-read guard + notifying once when it fires), then emit the context-
+    fullness + LLM-request usage snapshot."""
+    # Auto-condense the running history before the call so a long session
+    # can't overflow the model's context window (MUST). Tell the user it
+    # happened (one-time per condense) for transparency.
+    _before = len(st.convo)
+    st.convo = _compact_convo(st.convo, role=role, complete_fn=complete_fn,
+                           session_id=session_id)
+    if len(st.convo) < _before:
+        # The dropped turns took their tool RESULTS with them, so a read
+        # whose output is no longer in the window is no longer a duplicate.
+        # Without this the guard tells the model "you already ran this, its
+        # result is above" about content the condense just deleted — and the
+        # turn can never recover the file it is being refused.
+        st.read_sigs_seen.clear()
+    if len(st.convo) < _before and not st.condensed_notified:
+        st.condensed_notified = True   # notify ONCE, not every over-budget turn
+        yield {"type": "thought", "role": "system",
+               "text": "⚙ condensed earlier context to stay within the window"}
+    # M3: surface how full the context window is (char-estimate; ~4 chars/
+    # token) so the user can see they're approaching the condense point.
+    # MUST mirror _compact_convo's math exactly (history-only sum vs a
+    # budget that reserves the ACTUAL system prompt, list-safe _text_of) —
+    # the old raw-len/whole-convo version double-counted the per-turn
+    # system prompt against a 14K estimate, so the meter jumped between
+    # turns and collapsed to ~0 on image turns.
+    _sys_len = (len(_text_of(st.convo[0]))
+                if st.convo and st.convo[0].get("role") == "system" else 0)
+    _ctx_chars = sum(len(_text_of(m)) for m in st.convo[1:])
+    _ctx_budget = _ctx_budget_chars(role, sys_chars=_sys_len)
+    if _ctx_budget > 0:
+        # ~4 chars/token → surface ABSOLUTE token counts (in k) alongside the
+        # pct so the UI can show "120k / 256k" not just a bare percentage.
+        _ctx_tokens = _ctx_chars // 4
+        _win_tokens = _ctx_budget // 4
+        _calls = _meter.snapshot(session_id) if _meter is not None else {}
+        yield {"type": "usage", "context_chars": _ctx_chars,
+               "budget_chars": _ctx_budget,
+               "context_tokens": _ctx_tokens,
+               "window_tokens": _win_tokens,
+               "pct": min(100, round(_ctx_chars * 100 / _ctx_budget)),
+               # Requests actually sent to the LLM — this turn, this chat,
+               # and the machine-wide rate. "Why is one question 40 calls?"
+               "llm_turn": _calls.get("turn", 0),
+               "llm_session": _calls.get("session", 0),
+               "llm_per_min": _calls.get("per_minute", 0),
+               # How many of those requests came back with nothing. A
+               # subset of llm_turn, not an extra: "12 requests, 7 failing"
+               # is a retry storm, "12 requests" alone looks like a
+               # thorough turn.
+               "llm_turn_failed": _calls.get("turn_failed", 0),
+               "llm_failed_per_min": _calls.get("failed_per_minute", 0),
+               # Tokens the model has WRITTEN for this message so far,
+               # as the provider reported them.
+               "llm_turn_tokens_out": _calls.get("turn_tokens_out", 0)}
+
 def run_chat_agent(
     messages: list[dict], *,
     cwd: str,
@@ -1222,94 +1321,8 @@ def run_chat_agent(
         _sig = yield from _deadline_guard(st, n)
         if _sig == "return":
             return
-        # Mid-run steering (Gap A): fold any user-injected guidance into the
-        # working context as a user turn BEFORE the next model call, so the
-        # agent adjusts course without a Stop + new turn. Surface it so the UI
-        # shows the steer was applied.
-        if session_id is not None:
-            _items = chat_interject.drain_items(session_id)
-            if _items:
-                from aiforge_core.runtime import chat_steer
-                _steers = [t for k, t in _items if k != "reject"]
-                _rejects = [t for k, t in _items if k == "reject"]
-                # ONE block for everything that drained together, so three
-                # queued messages cannot each claim to be the latest.
-                _parts = ([chat_steer.steer_block(_steers)] if _steers else [])
-                _parts += [chat_steer.reject_note(g) for g in _rejects]
-                _directive = "\n\n".join(p for p in _parts if p)
-                # If the last turn is already a user message (e.g. the
-                # OBSERVATION we just appended after a tool step), MERGE the
-                # steer into it — two consecutive user turns break some
-                # providers (claude_local). Otherwise append a fresh user turn.
-                _last = st.convo[-1] if st.convo else None
-                if _last is not None and _last.get("role") == "user":
-                    _c = _last.get("content")
-                    if isinstance(_c, list):
-                        # A VISION turn's content is a list of parts. `+=` on a
-                        # list extends it with the string's CHARACTERS: one
-                        # steer became 364 single-character parts, invisible to
-                        # _text_of (so the condenser and the context meter both
-                        # missed it) while still being sent.
-                        _c.append({"type": "text", "text": _directive})
-                    else:
-                        _last["content"] = f"{_c or ''}\n\n{_directive}"
-                else:
-                    st.convo.append({"role": "user", "content": _directive})
-                for _k, _t in _items:
-                    yield chat_steer.steer_event(_t)
-        # Auto-condense the running history before the call so a long session
-        # can't overflow the model's context window (MUST). Tell the user it
-        # happened (one-time per condense) for transparency.
-        _before = len(st.convo)
-        st.convo = _compact_convo(st.convo, role=role, complete_fn=complete_fn,
-                               session_id=session_id)
-        if len(st.convo) < _before:
-            # The dropped turns took their tool RESULTS with them, so a read
-            # whose output is no longer in the window is no longer a duplicate.
-            # Without this the guard tells the model "you already ran this, its
-            # result is above" about content the condense just deleted — and the
-            # turn can never recover the file it is being refused.
-            st.read_sigs_seen.clear()
-        if len(st.convo) < _before and not st.condensed_notified:
-            st.condensed_notified = True   # notify ONCE, not every over-budget turn
-            yield {"type": "thought", "role": "system",
-                   "text": "⚙ condensed earlier context to stay within the window"}
-        # M3: surface how full the context window is (char-estimate; ~4 chars/
-        # token) so the user can see they're approaching the condense point.
-        # MUST mirror _compact_convo's math exactly (history-only sum vs a
-        # budget that reserves the ACTUAL system prompt, list-safe _text_of) —
-        # the old raw-len/whole-convo version double-counted the per-turn
-        # system prompt against a 14K estimate, so the meter jumped between
-        # turns and collapsed to ~0 on image turns.
-        _sys_len = (len(_text_of(st.convo[0]))
-                    if st.convo and st.convo[0].get("role") == "system" else 0)
-        _ctx_chars = sum(len(_text_of(m)) for m in st.convo[1:])
-        _ctx_budget = _ctx_budget_chars(role, sys_chars=_sys_len)
-        if _ctx_budget > 0:
-            # ~4 chars/token → surface ABSOLUTE token counts (in k) alongside the
-            # pct so the UI can show "120k / 256k" not just a bare percentage.
-            _ctx_tokens = _ctx_chars // 4
-            _win_tokens = _ctx_budget // 4
-            _calls = _meter.snapshot(session_id) if _meter is not None else {}
-            yield {"type": "usage", "context_chars": _ctx_chars,
-                   "budget_chars": _ctx_budget,
-                   "context_tokens": _ctx_tokens,
-                   "window_tokens": _win_tokens,
-                   "pct": min(100, round(_ctx_chars * 100 / _ctx_budget)),
-                   # Requests actually sent to the LLM — this turn, this chat,
-                   # and the machine-wide rate. "Why is one question 40 calls?"
-                   "llm_turn": _calls.get("turn", 0),
-                   "llm_session": _calls.get("session", 0),
-                   "llm_per_min": _calls.get("per_minute", 0),
-                   # How many of those requests came back with nothing. A
-                   # subset of llm_turn, not an extra: "12 requests, 7 failing"
-                   # is a retry storm, "12 requests" alone looks like a
-                   # thorough turn.
-                   "llm_turn_failed": _calls.get("turn_failed", 0),
-                   "llm_failed_per_min": _calls.get("failed_per_minute", 0),
-                   # Tokens the model has WRITTEN for this message so far,
-                   # as the provider reported them.
-                   "llm_turn_tokens_out": _calls.get("turn_tokens_out", 0)}
+        yield from _drain_steering(st, session_id)
+        yield from _condense_and_report(st, role, complete_fn, session_id, _meter)
         # This STEP's own send counter, bound for the duration of the step.
         # Not a delta of the session's turn count: that was inert for every
         # caller without a session (jobs, text_doer, the analysis fan-out —
