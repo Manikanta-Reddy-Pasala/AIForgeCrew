@@ -88,7 +88,7 @@ export default function Perf() {
       out[fam].max    = Math.max(out[fam].max, r.max_ms);
     });
     // Sort each family by total_ms desc.
-    FAMILY_KEYS.forEach(k => out[k].rows.sort((a, b) => b.total_ms - a.total_ms));
+    FAMILY_KEYS.forEach(k => { out[k].rows.sort((a, b) => b.total_ms - a.total_ms); });
     return out;
   }, [rows]);
 
