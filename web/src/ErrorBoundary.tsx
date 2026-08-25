@@ -29,7 +29,7 @@ export class ErrorBoundary extends React.Component<
       .filter(Boolean).slice(0, 4).join('\n');
   }
 
-  private copy = () => {
+  private readonly copy = () => {
     const text = [
       `path: ${typeof location !== 'undefined' ? location.pathname : '?'}`,
       `error: ${String(this.state.error?.message || this.state.error)}`,
