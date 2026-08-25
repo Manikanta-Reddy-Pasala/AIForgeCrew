@@ -1844,6 +1844,95 @@ def _emit_loop_prelude(st):
                "text": f"🔌 native tool-calling active ({_ntools} tools)"}
 
 
+def _step_prologue(st, n, cwd, role, complete_fn, session_id, builder):
+    """Per-step prologue up to a parsed reply: cap/deadline/cancel guards, builder
+    nudge, steering drain, condense+usage, the model completion, and the stuck-
+    output guard. Returns ``(out, signal)`` with signal 'return'/'continue'/None."""
+    from aiforge_core.runtime import chat_cancel
+    _sig = yield from _step_cap_guard(st, n)
+    if _sig == "return":
+        return None, "return"
+    if session_id is not None and chat_cancel.is_cancelled(session_id):
+        yield {"type": "error", "text": "stopped by user"}
+        yield {"type": "done"}
+        return None, "return"
+    _builder_nudge(st, builder, n)
+    _sig = yield from _deadline_guard(st, n)
+    if _sig == "return":
+        return None, "return"
+    yield from _drain_steering(st, session_id)
+    yield from _condense_and_report(st, role, complete_fn, session_id, st.meter)
+    out = yield from _run_completion(st, role, complete_fn, session_id, st.meter)
+    if out is _RETRY_STOP:
+        return None, "return"
+    _sig = yield from _stuck_output_guard(st, out)
+    if _sig == "return":
+        return None, "return"
+    if _sig == "continue":
+        return None, "continue"
+    return out, None
+
+
+def _dispatch_step(st, out, n, cwd, role, complete_fn, session_id, builder,
+                   strict_finish):
+    """Process one parsed reply: FINAL / ask / continue handling, then the action
+    path (stall guard, plan/approval/hook/scope gates, tool dispatch, post-tool
+    bookkeeping). Returns 'return'/'continue'/None."""
+    st.convo.append({"role": "assistant", "content": out})
+    step = _parse(out)
+    if step["kind"] == "final":
+        _sig = yield from _handle_final(
+            st, step, builder, strict_finish, st.plan_mode, st.readonly_mode,
+            cwd, st.asks, st.wt_fp0)
+        if _sig == "return":
+            return "return"
+        if _sig == "continue":
+            return "continue"
+    if step["kind"] == "ask":
+        # Agent is asking the user a question — show it + wait for the next
+        # message (which answers it). awaiting_input flags the UI.
+        yield {"type": "message", "awaiting_input": True, "text": step["text"]}
+        yield {"type": "done"}
+        return "return"
+    if step["kind"] == "continue":
+        _sig = yield from _handle_continue_step(st, step, builder, cwd)
+        if _sig == "return":
+            return "return"
+        if _sig == "continue":
+            return "continue"
+    st.continue_nudges = 0   # a real action resets the narration guard
+    # action
+    name = step["tool"]
+    # Coerce to a dict: a model can emit `ARGS_JSON: null` (or a JSON scalar)
+    # which parses to None/non-dict; every tool does `args.get(...)` and would
+    # crash. An empty dict lets the tool return its own instructive error.
+    args = step["args"] if isinstance(step["args"], dict) else {}
+    sig = name + "|" + json.dumps(args, sort_keys=True, default=str)
+    _sig = yield from _action_stall_guard(st, name, args, sig, st.long_chain_help)
+    if _sig == "return":
+        return "return"
+    if _sig == "continue":
+        return "continue"
+    if step.get("thought"):
+        yield {"type": "thought", "text": step["thought"]}
+    _sig = yield from _pre_dispatch_gates(st, name, args, st.readonly_mode,
+                                          st.analyze_mode)
+    if _sig == "continue":
+        return "continue"
+    _sig = yield from _approval_gate(name, args, cwd, session_id, st.convo)
+    if _sig == "return":
+        return "return"
+    if _sig == "continue":
+        return "continue"
+    _hb = yield from _pre_tool_checks(st, name, args, cwd, st.scope_globs)
+    if _hb == "continue":
+        return "continue"
+    result = yield from _dispatch_tool(name, args, cwd, n, _hb)
+    yield from _post_tool(st, name, args, result, cwd, sig, n,
+                          st.long_chain_help, st.bundle)
+    return None
+
+
 def run_chat_agent(
     messages: list[dict], *,
     cwd: str,
@@ -1874,91 +1963,15 @@ def run_chat_agent(
     yield from _emit_loop_prelude(st)
     while True:
         n += 1
-        _sig = yield from _step_cap_guard(st, n)
-        if _sig == "return":
-            return
-        if session_id is not None and chat_cancel.is_cancelled(session_id):
-            yield {"type": "error", "text": "stopped by user"}
-            yield {"type": "done"}
-            return
-        _builder_nudge(st, builder, n)
-        # (#16) Mid-run steering is drained in ONE place — the guarded block just
-        # below (before the model call). A second, earlier drain here used to win
-        # the race and append an UNGUARDED user turn, creating two consecutive
-        # user turns (breaks claude_local) — removed.
-        _sig = yield from _deadline_guard(st, n)
-        if _sig == "return":
-            return
-        yield from _drain_steering(st, session_id)
-        yield from _condense_and_report(st, role, complete_fn, session_id, st.meter)
-        out = yield from _run_completion(st, role, complete_fn, session_id, st.meter)
-        if out is _RETRY_STOP:
-            return
-
-        _sig = yield from _stuck_output_guard(st, out)
+        out, _sig = yield from _step_prologue(
+            st, n, cwd, role, complete_fn, session_id, builder)
         if _sig == "return":
             return
         if _sig == "continue":
             continue
-        st.convo.append({"role": "assistant", "content": out})
-        step = _parse(out)
-        if step["kind"] == "final":
-            _sig = yield from _handle_final(
-                st, step, builder, strict_finish, st.plan_mode, st.readonly_mode,
-                cwd, st.asks, st.wt_fp0)
-            if _sig == "return":
-                return
-            if _sig == "continue":
-                continue
-        if step["kind"] == "ask":
-            # Agent is asking the user a question — show it + wait for the
-            # next message (which answers it). awaiting_input flags the UI.
-            yield {"type": "message", "awaiting_input": True,
-                   "text": step["text"]}
-            yield {"type": "done"}
-            return
-
-        if step["kind"] == "continue":
-            _sig = yield from _handle_continue_step(st, step, builder, cwd)
-            if _sig == "return":
-                return
-            if _sig == "continue":
-                continue
-        st.continue_nudges = 0   # a real action resets the narration guard
-
-        # action
-        name = step["tool"]
-        # Coerce to a dict: a model can emit `ARGS_JSON: null` (or a JSON
-        # scalar) which parses to None/non-dict; every tool does `args.get(...)`
-        # and would crash. An empty dict lets the tool return its own
-        # instructive "missing 'url'"/"missing arg" so the model self-corrects.
-        args = step["args"] if isinstance(step["args"], dict) else {}
-        # Stuck-action loop: same tool+args repeated too many times → ask
-        # the user instead of looping to the safety cap.
-        sig = name + "|" + json.dumps(args, sort_keys=True, default=str)
-        _sig = yield from _action_stall_guard(st, name, args, sig, st.long_chain_help)
+        _sig = yield from _dispatch_step(
+            st, out, n, cwd, role, complete_fn, session_id, builder, strict_finish)
         if _sig == "return":
             return
         if _sig == "continue":
             continue
-        if step.get("thought"):
-            yield {"type": "thought", "text": step["thought"]}
-
-        _sig = yield from _pre_dispatch_gates(st, name, args, st.readonly_mode, st.analyze_mode)
-        if _sig == "continue":
-            continue
-        _sig = yield from _approval_gate(name, args, cwd, session_id, st.convo)
-        if _sig == "return":
-            return
-        if _sig == "continue":
-            continue
-
-        _hb = yield from _pre_tool_checks(st, name, args, cwd, st.scope_globs)
-        if _hb == "continue":
-            continue
-        _hook_block = _hb
-        result = yield from _dispatch_tool(name, args, cwd, n, _hook_block)
-        yield from _post_tool(st, name, args, result, cwd, sig, n,
-                              st.long_chain_help, st.bundle)
-
-
