@@ -392,7 +392,7 @@ def _resolve_conflict_hunk(goal: str, path: str, head: str, incoming: str,
             {"role": "user", "content": prompt}], max_tokens=2048) or ""
     except Exception:  # noqa: BLE001
         return ""
-    out = re.sub(r"^```\w*\n?|\n?```$", "", out.strip(), flags=re.M)
+    out = re.sub(r"(?:^```\w*\n?)|(?:\n?```$)", "", out.strip(), flags=re.M)
     out = re.sub(r"^\s*(<<<<<<<|=======|>>>>>>>).*$", "", out, flags=re.M)
     return out.strip("\n")
 
