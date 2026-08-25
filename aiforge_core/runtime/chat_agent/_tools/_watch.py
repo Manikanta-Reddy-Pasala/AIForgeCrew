@@ -359,7 +359,7 @@ def _schedule_create(args: dict, jobs_parse, jobs_store) -> dict:
             name=name, cron=cron, ticket_title=name[:120],
             ticket_body=instruction, project=args.get("project") or None,
             next_run_at=nxt, kind="ticket")
-    except Exception as exc:  # noqa: BLE001 — surface, never crash the turn
+    except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"could not schedule: {exc}"}
     return {"ok": True, "job_id": job.get("id"), "name": job.get("name"),
             "cron": cron, "next_run_at": job.get("next_run_at"),

@@ -248,7 +248,7 @@ def _write_index() -> str:
         _sync_io.write_atomic(Path(idx),
                               ("\n".join(lines).rstrip() + "\n").encode("utf-8"))
         return idx
-    except Exception:  # noqa: BLE001 — index is navigation, never block a save
+    except Exception:  # noqa: BLE001
         return ""
 
 

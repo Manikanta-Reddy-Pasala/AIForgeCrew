@@ -86,7 +86,7 @@ def _fetch_current(fn, args: dict, cwd: str, timeout: float = 4.0) -> dict:
     try:
         r = ex.submit(fn, args, cwd).result(timeout=timeout)
         return r if isinstance(r, dict) and r.get("ok") else {}
-    except Exception:  # noqa: BLE001 — timeout / read error → no diff, not a stall
+    except Exception:  # noqa: BLE001
         return {}
     finally:
         ex.shutdown(wait=False)

@@ -16,7 +16,7 @@ def _t_mcp(args: dict, _cwd: str) -> dict:
                    endpoint=args.get("endpoint"),
                    tool=args.get("tool"),
                    arguments=args.get("arguments"))
-    except Exception as exc:  # noqa: BLE001 — soft-fail, never crash the chat
+    except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
 
 

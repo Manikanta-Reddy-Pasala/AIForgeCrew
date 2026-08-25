@@ -204,7 +204,7 @@ def run_once() -> list[dict]:
     row = {"admin": base}
     try:
         row.update(sync_with(base, deadline))
-    except Exception as exc:  # noqa: BLE001 — a bad cycle is data, not a crash
+    except Exception as exc:  # noqa: BLE001
         _log.warning("sync: cycle failed for %s: %s", base, exc)
     return [row]
 

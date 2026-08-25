@@ -30,7 +30,7 @@ def _safe_embed(text: str) -> list:
     global _EMBED_WARNED
     try:
         return local_embed.embed(text)
-    except Exception as exc:                      # noqa: BLE001 — degrade, don't lose
+    except Exception as exc:                      # noqa: BLE001
         if not _EMBED_WARNED:
             _log.warning(
                 "embedder unavailable (%s); storing notes WITHOUT vectors — "

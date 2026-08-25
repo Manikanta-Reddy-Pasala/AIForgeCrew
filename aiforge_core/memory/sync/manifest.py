@@ -81,7 +81,7 @@ def _class_b_entry(p: Path, meta: dict, *, tomb: bool = False) -> dict | None:
     try:
         entry = {"path": _io.rel(p), "hash": _io.sha256_file(p), "kind": "B",
                  **fields}
-    except Exception:  # noqa: BLE001 — a bad record is dropped, the manifest survives
+    except Exception:  # noqa: BLE001
         _log.warning("sync: could not describe %s, skipping", p)
         return None
     if tomb:

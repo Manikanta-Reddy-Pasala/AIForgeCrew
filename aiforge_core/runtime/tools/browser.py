@@ -306,7 +306,7 @@ def browse(
                 "detail": str(exc)[:300]}
     try:
         return handler(page, args)
-    except Exception as exc:  # noqa: BLE001 — Playwright timeouts, etc.
+    except Exception as exc:  # noqa: BLE001
         emit("Browse", {"action": "error", "command": command,
                         "error": str(exc)[:300]})
         return {"ok": False, "error": "browser_op_failed",

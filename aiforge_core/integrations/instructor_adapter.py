@@ -274,7 +274,7 @@ def structured(*, base_url: str, api_key: str, model: str,
         out = cli.chat.completions.create(
             model=model, messages=list(messages),
             response_model=response_model, max_retries=max_retries, **kwargs)
-    except Exception as exc:  # noqa: BLE001 — count it, then re-raise unchanged
+    except Exception as exc:  # noqa: BLE001
         _settle_pending(_pending, "transport_" + type(exc).__name__[:24])
         raise
     finally:

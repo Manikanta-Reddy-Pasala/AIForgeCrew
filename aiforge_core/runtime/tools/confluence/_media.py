@@ -145,7 +145,7 @@ def _upload_attachment(pid: str, filename: str, data: bytes,
                               or "same file name" in msg.lower()):
             return {"ok": True, "filename": filename, "note": "exists"}
         return {"ok": False, "error": f"http {e.code}: {msg}"}
-    except Exception as exc:  # noqa: BLE001 — network/TLS, never fatal
+    except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
 
 

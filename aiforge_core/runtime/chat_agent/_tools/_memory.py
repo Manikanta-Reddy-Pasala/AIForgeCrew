@@ -294,7 +294,7 @@ def _cached_find_by_source(source: str) -> Path | None:
         try:
             if p.exists():
                 return p
-        except Exception:  # noqa: BLE001 — a bad cache entry is a miss, not a crash
+        except Exception:  # noqa: BLE001
             pass
     p = md_store._find_by_source(source)
     if p is not None:
@@ -315,7 +315,7 @@ def _is_pref_row(row) -> bool:
 def _preference_lines() -> list[str]:
     from aiforge_core.memory import sqlite_memory as _m
     lines: list[str] = []
-    with _m._conn() as c:  # noqa: SLF001 — internal read, best-effort
+    with _m._conn() as c:  # noqa: SLF001
         rows = c.execute(
             "SELECT text, tags FROM memory_units WHERE kind='preference' "
             "ORDER BY id DESC LIMIT 40").fetchall()

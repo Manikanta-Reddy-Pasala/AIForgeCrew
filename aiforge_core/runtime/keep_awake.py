@@ -115,7 +115,7 @@ def _start_locked() -> None:
     if not cmd:
         return
     try:
-        _proc = subprocess.Popen(          # noqa: S603 — fixed argv, no shell
+        _proc = subprocess.Popen(          # noqa: S603
             cmd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,

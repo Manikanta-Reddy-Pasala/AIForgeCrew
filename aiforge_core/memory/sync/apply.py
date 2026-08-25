@@ -54,7 +54,7 @@ def _body_fields(entry: dict, body: bytes) -> dict | None:
     try:
         text = body.decode("utf-8")
         meta = json.loads(text) if entry.get("tomb") else _nodes.parse_node(text).get("meta")
-    except Exception:  # noqa: BLE001 — a peer's bytes must not raise, only be refused
+    except Exception:  # noqa: BLE001
         return None
     if not isinstance(meta, dict):
         return None

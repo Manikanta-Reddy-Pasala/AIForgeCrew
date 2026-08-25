@@ -65,7 +65,7 @@ def set_repo_root(value: "str | os.PathLike | None"):
 def reset_repo_root(token) -> None:
     try:
         _REPO_ROOT.reset(token)
-    except Exception:  # noqa: BLE001 — wrong-context token, never fatal
+    except Exception:  # noqa: BLE001
         _REPO_ROOT.set(None)
 
 

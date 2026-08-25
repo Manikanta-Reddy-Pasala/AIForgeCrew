@@ -767,7 +767,7 @@ def _find_uvicorn_server():
     try:
         import asyncio
         tasks = asyncio.all_tasks()
-    except Exception:  # noqa: BLE001 — no running loop (TestClient, unit tests)
+    except Exception:  # noqa: BLE001
         return None
     for task in tasks:
         coro = task.get_coro()

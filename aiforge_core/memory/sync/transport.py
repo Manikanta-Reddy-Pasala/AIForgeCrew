@@ -253,7 +253,7 @@ def fetch_manifest(base_url: str, token: str = "") -> dict:
         body = _fetch(f"{base_url.rstrip('/')}/api/memory/sync/manifest",
                       token or _token(), MAX_MANIFEST_BYTES)
         data = json.loads(body)
-    except Exception as exc:  # noqa: BLE001 — an unreachable peer is expected, not exceptional
+    except Exception as exc:  # noqa: BLE001
         _log.info("sync: peer %s unreachable: %s", base_url, exc)
         return {}
     if not isinstance(data, dict):

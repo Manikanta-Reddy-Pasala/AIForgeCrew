@@ -364,7 +364,7 @@ def _post(ep: Endpoint, payload: bytes, timeout_s: int,
             _body = json.loads(resp.read())
             _raise_if_model_dropped(_body)   # 200-OK error body → transient
             return _body
-    except Exception as exc:  # noqa: BLE001 — count it, then re-raise unchanged
+    except Exception as exc:  # noqa: BLE001
         # A cancelled generation lands here too (_LLMCancelled is an
         # Exception): a request the user stopped is still a request that cost
         # the endpoint and produced no answer, and it carries its own

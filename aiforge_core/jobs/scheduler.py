@@ -79,7 +79,7 @@ def fire(job: dict, *, now: datetime | None = None) -> bool:
     try:
         claimed = store.claim(job["id"], expected_next_run_at=job["next_run_at"],
                               last_run_at=now_s, next_run_at=nxt)
-    except Exception as exc:  # noqa: BLE001 — advance failed, skip this slot
+    except Exception as exc:  # noqa: BLE001
         log.warning("jobs.fire advance failed job=%s: %s", job["id"], exc)
         return False
     if not claimed:

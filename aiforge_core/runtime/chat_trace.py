@@ -126,7 +126,7 @@ def read_turns(session_id: int) -> list[dict]:
                 continue
             try:
                 out.append(json.loads(line))
-            except Exception:  # noqa: BLE001 — skip a corrupt line, keep the rest
+            except Exception:  # noqa: BLE001
                 continue
         return out
     except Exception:  # noqa: BLE001

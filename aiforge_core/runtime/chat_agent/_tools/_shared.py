@@ -103,7 +103,7 @@ def _elaborate_body(kind: str, body: str, *, name: str = "",
         ], max_tokens=900, temperature=0.2,
             timeout_s=int(os.environ.get("AIFORGE_BUILDER_ELABORATE_TIMEOUT_S", "45")))
         return _strip_markdown_fence((out or "").strip()) or body
-    except Exception:  # noqa: BLE001 — elaboration is best-effort, never block save
+    except Exception:  # noqa: BLE001
         return body
 
 

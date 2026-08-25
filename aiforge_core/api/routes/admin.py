@@ -100,7 +100,7 @@ def _probe_admin(base_url: str) -> dict:
                 "entries": len(data.get("manifest") or []),
                 "id": str(data.get("admin") or ""),
                 "error": None, "probed": True}
-    except Exception as exc:  # noqa: BLE001 — an unreachable admin is a datum, not a failure
+    except Exception as exc:  # noqa: BLE001
         return {"reachable": False,
                 "latency_ms": int((time.monotonic() - started) * 1000),
                 "entries": None,

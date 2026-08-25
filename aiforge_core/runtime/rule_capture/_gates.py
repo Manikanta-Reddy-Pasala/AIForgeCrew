@@ -343,7 +343,7 @@ def list_flags() -> dict:
     try:
         if _prune_stale_session_flags(flags):
             _save_flags(flags)          # persist the cleanup
-    except Exception:  # noqa: BLE001 — pruning is best-effort, never break listing
+    except Exception:  # noqa: BLE001
         pass
     return {
         "global": {n: True for n, v in (flags.get("global") or {}).items() if v},

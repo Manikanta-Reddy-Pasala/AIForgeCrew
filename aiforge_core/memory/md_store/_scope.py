@@ -222,7 +222,7 @@ def _verdicts_by_index(entries, batch_len: int) -> dict:
     for it in entries:
         try:
             n = int(getattr(it, "index", -1))
-        except Exception:  # noqa: BLE001 — one unusable entry, not the batch
+        except Exception:  # noqa: BLE001
             continue
         if 0 <= n < batch_len and n not in verdicts:
             verdicts[n] = it

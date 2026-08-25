@@ -65,7 +65,7 @@ def _send(payload: dict) -> None:
                        auth=(os.environ.get("LANGFUSE_PUBLIC_KEY", ""),
                              os.environ.get("LANGFUSE_SECRET_KEY", "")),
                        timeout=5)
-    except Exception as exc:  # noqa: BLE001 — network down, never fatal
+    except Exception as exc:  # noqa: BLE001
         log.debug("langfuse ingest send failed: %s", exc)
         return
     if r.status_code >= 300 and r.status_code != 207:

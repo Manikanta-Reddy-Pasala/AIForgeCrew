@@ -748,7 +748,7 @@ def _brief_facts_by_topic() -> dict[str, list[str]]:
         try:
             parsed = work_notes.parse_note(
                 p.read_text(encoding="utf-8", errors="replace"))
-        except Exception:  # noqa: BLE001 — one unreadable brief, not a dead pass
+        except Exception:  # noqa: BLE001
             continue
         if (parsed["frontmatter"] or {}).get("kind") != "knowledge":
             continue

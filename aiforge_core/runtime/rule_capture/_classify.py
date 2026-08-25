@@ -169,7 +169,7 @@ def classify(message: str, *, repo: str | None = None,
              {"role": "user", "content": message.strip()[:4000]}],
             max_tokens=250, temperature=0.0, timeout_s=timeout,
         )
-    except Exception as exc:  # noqa: BLE001 — fail open, never break the turn
+    except Exception as exc:  # noqa: BLE001
         log.debug("rule_capture.classify llm error (none): %s", exc)
         return _none()
     c = _parse_classification(raw or "")

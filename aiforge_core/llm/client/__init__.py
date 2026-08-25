@@ -538,7 +538,7 @@ def complete_raw(role: str, messages: list[dict], *,
                                 source="native", meter=_meter_tok)
     except _LLMCancelled:
         raise
-    except Exception as exc:  # noqa: BLE001 — chain first, then re-raise
+    except Exception as exc:  # noqa: BLE001
         # THE DEFAULT CHAT PATH. AIFORGE_CHAT_TOOL_PROTOCOL defaults to
         # "native", so simple chat comes through HERE, not through complete().
         # A fallback chain that only existed on the other path was a fallback

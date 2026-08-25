@@ -93,7 +93,7 @@ def _external_syntax(path: str, content: str) -> tuple[bool, str] | None:
         try:
             proc = subprocess.run(argfn(binary, fp), capture_output=True,
                                   text=True, timeout=25)
-        except Exception:  # noqa: BLE001 — tool crash/timeout → skip, don't block
+        except Exception:  # noqa: BLE001
             return None
         if proc.returncode == 0:
             return True, ""

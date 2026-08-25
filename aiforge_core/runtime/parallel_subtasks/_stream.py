@@ -204,7 +204,7 @@ def _write_spec(prompt: str, subs: list, cwd: str, state: dict):
         yield {"type": "thought", "role": "planner",
                "text": f"Wrote SPEC.md ({len(subs)} subtasks) — the shared "
                        "requirements doc each subtask builds against."}
-    except Exception as exc:  # noqa: BLE001 — must be VISIBLE, not a debug log
+    except Exception as exc:  # noqa: BLE001
         # A silent skip here is how runs ended up spec-less with no trace
         # (unwritable cwd etc.) — surface it so the operator can fix the cause.
         log.warning("SPEC.md write failed in %s: %s", cwd, exc)

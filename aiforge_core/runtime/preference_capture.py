@@ -45,7 +45,7 @@ def _existing_subjects(_repo: str | None) -> list[str]:
     try:
         from aiforge_core.memory import sqlite_memory as _m
         subs = set()
-        with _m._conn() as c:  # noqa: SLF001 — internal read, best-effort
+        with _m._conn() as c:  # noqa: SLF001
             for r in c.execute("SELECT tags FROM memory_units").fetchall():
                 for t in (json.loads(r["tags"] or "[]") or []):
                     if isinstance(t, str) and t.startswith("pref:"):

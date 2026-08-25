@@ -36,7 +36,7 @@ def reset_root_override(token) -> None:
     :func:`set_root_override`)."""
     try:
         _ROOT_OVERRIDE.reset(token)
-    except Exception:  # noqa: BLE001 — wrong-context token, never fatal
+    except Exception:  # noqa: BLE001
         _ROOT_OVERRIDE.set(None)
 
 

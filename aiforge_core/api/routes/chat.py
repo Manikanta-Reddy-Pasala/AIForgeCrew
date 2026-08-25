@@ -1062,7 +1062,7 @@ def _pipeline_route(_pp, prompt, cwd, session_id, history, _with_resume, _path,
         yield {"type": "thought", "role": "planner",
                "text": "Wrote SPEC.md (single-task plan) — the run "
                        "builds and is verified against it."}
-    except Exception as _sexc:  # noqa: BLE001 — visible, never silent
+    except Exception as _sexc:  # noqa: BLE001
         yield {"type": "thought", "role": "planner",
                "text": f"⚠ SPEC.md write failed: {_sexc}"}
     # Best-of-N (Gap C, opt-in): when AIFORGE_BEST_OF_N is set, run the

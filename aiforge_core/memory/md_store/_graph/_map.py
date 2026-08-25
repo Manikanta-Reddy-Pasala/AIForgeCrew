@@ -161,7 +161,7 @@ def _propose_edges(batches: list[list[str]], role: str) -> tuple[list, int]:
                  {"role": "user", "content": "\n".join(batch)}],
                 _Edges, max_tokens=1200, max_retries=1, temperature=0.0)
             raw.extend(getattr(res, "edges", None) or [])
-        except Exception as exc:  # noqa: BLE001 — skip this batch, keep the rest
+        except Exception as exc:  # noqa: BLE001
             failed += 1
             _log.warning("map_scopes: batch %d/%d failed: %s", i, len(batches), exc)
     return raw, failed

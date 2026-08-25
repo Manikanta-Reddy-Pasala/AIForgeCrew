@@ -74,7 +74,7 @@ def _run_cli_tool(fn, tool_args):
     """Invoke one resolved CLI tool, print its JSON result (or error), and return the process exit code."""
     try:
         res = fn(tool_args, os.getcwd())
-    except Exception as exc:  # noqa: BLE001 — CLI surfaces, never tracebacks
+    except Exception as exc:  # noqa: BLE001
         print(json.dumps({"ok": False, "error": str(exc)}))
         return 2
     print(json.dumps(res, default=str))
