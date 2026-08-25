@@ -182,6 +182,17 @@ def _pdf_is_scanned(path: str, mime: str, extracted: str) -> bool:
     return _is_pdf(path, mime) and len((extracted or "").strip()) < 200
 
 
+def _page_scan_blobs(page) -> list:
+    """The image blobs of a scanned page that has NO extractable text layer.
+    Empty when the page has real text (no OCR needed) or no images / errors."""
+    try:
+        if (page.extract_text() or "").strip():
+            return []                      # real text layer → no OCR needed
+        return [im.data for im in page.images]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _pdf_ocr(path: str, role: str) -> str:
     """OCR a scanned PDF using the wired VISION model — no OCR engine, no new
     dependency. Each scanned page is a full-page image (``pypdf`` ``.images``);
@@ -196,15 +207,9 @@ def _pdf_ocr(path: str, role: str) -> str:
     cap = _int_env("AIFORGE_PDF_OCR_MAX_PAGES", 30)
     budget = _doc_char_budget()
     out: list[str] = []
-    used = 0
-    done = 0
-    for i, p in enumerate(r.pages[:_pdf_page_cap()]):
-        try:
-            if (p.extract_text() or "").strip():
-                continue                      # real text layer → no OCR needed
-            blobs = [im.data for im in p.images]
-        except Exception:  # noqa: BLE001
-            continue
+    used = done = 0
+    for i, page in enumerate(r.pages[:_pdf_page_cap()]):
+        blobs = _page_scan_blobs(page)
         if not blobs:
             continue
         if done >= cap:
@@ -368,15 +373,28 @@ def supported_attachment(mime: str, filename: str) -> bool:
     return ext in {".pdf", ".xlsx", ".docx"} | _TEXT_EXTS
 
 
+def _extract_document_text(tmp: str, mime: str, role: str) -> str:
+    """The text of a document temp file — a map-reduce summary / excerpt for a
+    normal doc, or vision-model OCR for a scanned (image-only) PDF."""
+    full = extract_text(tmp, mime).strip()
+    scanned = _pdf_is_scanned(tmp, mime, full)
+    if scanned:                           # image-only PDF → vision-model OCR
+        ocr = _pdf_ocr(tmp, role)
+        if ocr:
+            full = ocr
+    txt = _summarize_or_excerpt(full, role)
+    if not scanned:
+        txt = _with_doc_images(tmp, mime, txt, role)
+    return txt.strip()
+
+
 def analyze_attachment(filename: str, raw: bytes, role: str = "doer",
                        mime: str = "") -> dict:
     """Analyse one downloaded attachment (image OR document) for inclusion in a
     tool result. Returns ``{filename, description}`` — a vision caption for an
     image, or extracted text for a document. "" when nothing could be read."""
-    # Image → vision caption.
     if vision._detect_mime(raw) is not None or (mime or "").startswith("image/"):
         return {"filename": filename, "description": describe_bytes(raw, role)}
-    # Document → extracted text excerpt.
     import tempfile
     ext = os.path.splitext(filename or "")[1].lower() or ".bin"
     tmp = None
@@ -384,16 +402,8 @@ def analyze_attachment(filename: str, raw: bytes, role: str = "doer",
         with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as f:
             f.write(raw)
             tmp = f.name
-        full = extract_text(tmp, mime).strip()
-        scanned = _pdf_is_scanned(tmp, mime, full)
-        if scanned:                           # image-only PDF → vision-model OCR
-            ocr = _pdf_ocr(tmp, role)
-            if ocr:
-                full = ocr
-        txt = _summarize_or_excerpt(full, role)
-        if not scanned:
-            txt = _with_doc_images(tmp, mime, txt, role)
-        return {"filename": filename, "description": txt.strip()}
+        return {"filename": filename,
+                "description": _extract_document_text(tmp, mime, role)}
     except Exception:  # noqa: BLE001
         return {"filename": filename, "description": ""}
     finally:
