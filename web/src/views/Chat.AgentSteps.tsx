@@ -9,7 +9,7 @@ import { AgentStep, ChangeFile } from './Chat.types';
 function AgentBadge({ role }: Readonly<{ role?: string }>) {
   if (!role) return null;
   let h = 0;
-  for (let i = 0; i < role.length; i++) h = (h * 31 + role.charCodeAt(i)) % 360;
+  for (let i = 0; i < role.length; i++) h = (h * 31 + (role.codePointAt(i) ?? 0)) % 360;
   return (
     <span style={{
       flexShrink: 0,

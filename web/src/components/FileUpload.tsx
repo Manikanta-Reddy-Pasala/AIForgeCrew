@@ -15,11 +15,11 @@ export async function readAsBase64(file: File): Promise<string> {
   const buf = await file.arrayBuffer();
   const bytes = new Uint8Array(buf);
   let binary = '';
-  // Chunk to keep String.fromCharCode within safe arg-count limits on
+  // Chunk to keep String.fromCodePoint within safe arg-count limits on
   // larger files (~16MB+ would otherwise blow the stack).
   const CHUNK = 0x8000;
   for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode.apply(
+    binary += String.fromCodePoint.apply(
       null, Array.from(bytes.subarray(i, i + CHUNK)) as unknown as number[],
     );
   }
