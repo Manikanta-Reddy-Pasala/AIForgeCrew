@@ -605,7 +605,7 @@ export default function Chat() {
       .catch(() => setRuleLoaded(true));
     ruleFlags().then(setGateFlags).catch(() => {});
   }
-  useEffect(() => { refreshRules(); /* eslint-disable-next-line */ }, [activeId]);
+  useEffect(() => { refreshRules(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [activeId]);
   const ruleState: RuleState = {
     byId: ruleById, loaded: ruleLoaded, sessionId: activeId,
     flags: gateFlags, refresh: refreshRules,
