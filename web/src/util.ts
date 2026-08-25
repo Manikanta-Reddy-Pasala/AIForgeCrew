@@ -21,7 +21,7 @@ export function priorityClass(p: string): string {
 const TERMINAL = new Set(['done', 'cancelled', 'qa_failed']);
 
 export function formatDuration(sec: number | null | undefined): string {
-  if (sec == null || !isFinite(sec) || sec < 0) return '—';
+  if (sec == null || !Number.isFinite(sec) || sec < 0) return '—';
   const s = Math.round(sec);
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60), rs = s % 60;

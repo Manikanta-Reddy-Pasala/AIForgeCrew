@@ -32,19 +32,19 @@ export default function Trace() {
         const line: string = d.line || '';
         if (!line) return;
         // Step divider — open new card
-        const stepMatch = line.match(/Step (\d+)\s/);
+        const stepMatch = /Step (\d+)\s/.exec(line);
         if (stepMatch) {
-          const n = parseInt(stepMatch[1], 10);
+          const n = Number.parseInt(stepMatch[1], 10);
           setSteps(s => [...s, { n, started: Date.now(), lines: [] }]);
           return;
         }
         // Duration + tokens — attach to last card
-        const durMatch = line.match(/Step \d+: Duration ([\d.]+) seconds\| Input tokens: ([\d,]+) \| Output tokens: ([\d,]+)/);
+        const durMatch = /Step \d+: Duration ([\d.]+) seconds\| Input tokens: ([\d,]+) \| Output tokens: ([\d,]+)/.exec(line);
         if (durMatch) {
           setSteps(s => {
             if (s.length === 0) return s;
             const last = { ...s.at(-1) };
-            last.durationMs = parseFloat(durMatch[1]) * 1000;
+            last.durationMs = Number.parseFloat(durMatch[1]) * 1000;
             last.tokens = `in=${durMatch[2]} out=${durMatch[3]}`;
             return [...s.slice(0, -1), last];
           });

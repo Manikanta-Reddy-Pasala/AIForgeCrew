@@ -257,7 +257,7 @@ function blockquoteBlock(lines: string[], i: number, k: number): Block {
 function orderedListBlock(lines: string[], i: number, k: number): Block {
   const line = lines[i];
   if (!/^\s*\d+\.\s+/.test(line)) return null;
-  const startNum = parseInt(line.match(/^\s*(\d+)\./)?.[1] ?? '1', 10) || 1;
+  const startNum = Number.parseInt(/^\s*(\d+)\./.exec(line)?.[1] ?? '1', 10) || 1;
   const items: string[] = [];
   let j = i;
   while (j < lines.length) {
