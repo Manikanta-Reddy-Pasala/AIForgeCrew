@@ -178,7 +178,7 @@ def _extract_live_verifier(state: dict) -> dict | None:
     # Strip ```json fences then try whole-text + last balanced object.
     import re as _re
     fenced = _re.findall(
-        r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=_re.DOTALL,
+        r"```(?:json)?\s*(\{[^\}]*\})\s*```", text, flags=_re.DOTALL,
     )
     candidates = fenced[::-1]  # prefer the last (final answer)
     if text.startswith("{"):
