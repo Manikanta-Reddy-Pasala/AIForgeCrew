@@ -149,19 +149,20 @@ def _empty_sha() -> str:
     return hashlib.sha256(b"").hexdigest()
 
 
-def _compute_folder_hashes(
-    folder_files: dict[str, list[str]],
-    file_hashes: dict[str, str],
-) -> dict[str, str]:
-    """Bottom-up fold. Folder hash = sha256(sorted children hashes)."""
-    # Build folder tree explicitly so parents can hash child folders.
+def _all_folder_paths(folder_files: dict[str, list[str]]) -> set[str]:
+    """Every folder plus all its ancestor folders (so a parent can hash child
+    folders), including the root ``.``."""
     all_folders = set(folder_files.keys())
     for folder in list(all_folders):
         parts = Path(folder).parts
         for i in range(len(parts)):
             all_folders.add(str(Path(*parts[:i + 1])) or ".")
     all_folders.add(".")
+    return all_folders
 
+
+def _folder_children(all_folders: set[str]) -> dict[str, list[str]]:
+    """Map each folder → its immediate child folders."""
     children_of: dict[str, list[str]] = {f: [] for f in all_folders}
     for f in all_folders:
         if f == ".":
@@ -169,7 +170,16 @@ def _compute_folder_hashes(
         parent = str(Path(f).parent) or "."
         if parent in children_of and f not in children_of[parent]:
             children_of[parent].append(f)
+    return children_of
 
+
+def _compute_folder_hashes(
+    folder_files: dict[str, list[str]],
+    file_hashes: dict[str, str],
+) -> dict[str, str]:
+    """Bottom-up fold. Folder hash = sha256(sorted children hashes)."""
+    all_folders = _all_folder_paths(folder_files)
+    children_of = _folder_children(all_folders)
     out: dict[str, str] = {}
 
     def _hash(folder: str) -> str:
