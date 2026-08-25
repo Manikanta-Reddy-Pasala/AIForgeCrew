@@ -73,7 +73,7 @@ def _search_origin(h: dict) -> str:
     if ch in ("keyword", "linked"):
         return "md"
     src = str(h.get("source") or "")
-    if src.startswith("compacted:") or src.startswith("md:"):
+    if src.startswith(("compacted:", "md:")):
         return "md"
     return "other"
 

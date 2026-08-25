@@ -374,7 +374,7 @@ def confluence_test() -> dict:
     # Enrich auth errors with an actionable hint.
     err = str(r.get("error", ""))
     out = {**r, "auth": scheme, "base_url": _base()}
-    if err.startswith("http 401") or err.startswith("http 403"):
+    if err.startswith(("http 401", "http 403")):
         if scheme == "basic":
             out["hint"] = ("Using BASIC auth (User field is filled). A Personal "
                            "Access Token must be sent as Bearer — clear the User "

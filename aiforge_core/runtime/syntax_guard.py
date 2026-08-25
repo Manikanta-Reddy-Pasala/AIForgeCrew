@@ -134,7 +134,7 @@ def validate_syntax(path: str, content: str) -> tuple[bool, str]:
     # 1. Python — in-process compile() is authoritative and needs no toolchain.
     #    (Don't brace-count Python: delimiters inside string literals/comments —
     #    common in lexer/parser tests like ``assert scan("(")`` — aren't real.)
-    if path.endswith(".py") or path.endswith(".pyi"):
+    if path.endswith((".py", ".pyi")):
         try:
             compile(content, path, "exec")
         except SyntaxError as exc:

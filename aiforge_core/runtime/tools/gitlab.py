@@ -347,7 +347,7 @@ def gitlab_test() -> dict:
                 "user": d.get("username") or d.get("name")}
     err = str(r.get("error", ""))
     out = {**r, "auth": scheme, "base_url": _base()}
-    if err.startswith("http 401") or err.startswith("http 403"):
+    if err.startswith(("http 401", "http 403")):
         out["hint"] = ("Token rejected. Use a GitLab Personal/Project/Group "
                        "Access Token with at least 'read_api' (and 'api' for "
                        "writes) scope, not expired; Base URL must be the host "
