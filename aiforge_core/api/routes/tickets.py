@@ -409,7 +409,6 @@ def create_ticket(payload: TicketCreate) -> dict:
     return _ticket_out(t)
 
 
-@router.patch("/api/tickets/{identifier}")
 def _edited_attachments(t, payload) -> list:
     """Remove first, then add, then hand back the recomputed list. jsonb '||'
     shallow-merge replaces the whole attached_files key, so passing the FULL
@@ -447,6 +446,7 @@ def _patch_fields(payload) -> dict:
     return fields
 
 
+@router.patch("/api/tickets/{identifier}")
 def patch_ticket(identifier: str, payload: TicketPatch) -> dict:
     t = tickets_mod.get(identifier)
     if t is None:

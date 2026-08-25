@@ -33,7 +33,6 @@ except OSError:
     pass
 
 
-@router.get("/files/{identifier}/{name}")
 def _attachment_candidates(identifier: str, safe_name: str) -> list:
     """Ordered on-disk candidate paths for a ticket attachment: the recorded
     ``abs_path`` (the real per-ticket-worktree write location), then the
@@ -55,6 +54,7 @@ def _attachment_candidates(identifier: str, safe_name: str) -> list:
     return candidates
 
 
+@router.get("/files/{identifier}/{name}")
 def serve_ticket_file(identifier: str, name: str):
     """Serve a ticket attachment by (ticket, filename).
 

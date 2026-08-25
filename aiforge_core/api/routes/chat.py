@@ -199,7 +199,6 @@ def _model_env_override(role: str) -> dict | None:
     return None
 
 
-@router.get("/api/chat/models")
 def _chat_capable(mid: str) -> bool:
     """Embedding models are not chat-capable."""
     return bool(mid) and "embed" not in mid.lower()
@@ -237,6 +236,7 @@ def _merge_registry_and_served(served: "set | list") -> list:
     return sorted(out.values(), key=lambda m: (not m["active"], m["id"]))
 
 
+@router.get("/api/chat/models")
 def chat_models() -> dict:
     """Models the user can pick for the 'chat' slot.
 
@@ -518,7 +518,6 @@ def chat_session_list() -> list[dict]:
     return chat_store.list_sessions()
 
 
-@router.post("/api/chat/sessions/reset")
 def _sweep_orphan_session_dirs() -> int:
     """Belt-and-braces: rm -rf any orphaned ``session-*`` dirs under the managed
     workspace root (e.g. from a session whose row was already gone). Returns how
@@ -541,6 +540,7 @@ def _sweep_orphan_session_dirs() -> int:
     return removed
 
 
+@router.post("/api/chat/sessions/reset")
 def chat_sessions_reset() -> dict:
     """Delete ALL chat sessions + messages and reset the id sequence, AND rm -rf
     every managed session workspace so no stale files survive the clear."""
@@ -1769,7 +1769,6 @@ def _dispatch_agent_route(_rd, _pp, prompt, cwd, session_id, history,
     _route_pipeline = _rd.route_pipeline
     if _rd.notice:
         yield {"type": "thought", "role": "router", "text": _rd.notice}
-    rctx = {"done": False}
     if _doc_task:
         yield from _doc_task_route(prompt, cwd, session_id, _with_resume, rctx)
         if rctx["done"]:
@@ -1948,7 +1947,7 @@ def _expand_slash_command(session, body):
     return _cmd_expanded, _cmd_help_text
 
 
-def _apply_resume_brief(_rows, prompt, cwd, body, history) -> None:
+def _apply_resume_brief(_rows, prompt, cwd, body, history) -> str:
     """Fold a resume inventory (what a stopped turn landed / left pending) into
     the last user row of ``history`` ONLY — never into ``prompt`` (the routers,
     trivial short-circuit, rule-capture and title generator all read prompt).

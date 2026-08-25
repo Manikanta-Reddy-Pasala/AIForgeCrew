@@ -1218,7 +1218,6 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
     yield {"type": "message", "text": _strip_reasoning_prefix(step["text"])}
     yield {"type": "done"}
     return "return"
-    return None
 
 
 def _stuck_output_guard(st, out):
@@ -1330,7 +1329,6 @@ def _handle_continue_step(st, step, builder, cwd):
     # On a 6-step Quick turn the double charge turned one nudge into a
     # "used up Quick mode's step budget" stop.
     return "continue"
-    return None
 
 
 def _action_stall_guard(st, name, args, sig, _long_chain_help):

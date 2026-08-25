@@ -213,7 +213,6 @@ def agents_v2_config() -> dict:
     return out
 
 
-@router.post("/api/providers/test")
 def _saved_role_credentials(role: str, base_url: str, api_key: str | None,
                             insecure: bool) -> tuple[str, str | None, bool]:
     """Fill blanks from the role's SAVED config (env + stored row).
@@ -235,6 +234,7 @@ def _saved_role_credentials(role: str, base_url: str, api_key: str | None,
     return base_url, api_key, insecure or bool(rl.get("insecure_tls"))
 
 
+@router.post("/api/providers/test")
 def providers_test(body: _ProviderTestBody) -> dict:
     """Test-connection for the home page. Probes ``{base_url}/models`` and
     returns ``{ok, models[]}`` (or ``{ok:false, error}``).

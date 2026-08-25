@@ -30,12 +30,12 @@ class _McpUpdateBody(BaseModel):
     api_key: str | None = None
 
 
-@router.get("/api/mcp/catalog")
 def _default_dsn() -> str:
     from aiforge_core.config.env import default_pg_dsn
     return default_pg_dsn()
 
 
+@router.get("/api/mcp/catalog")
 def mcp_catalog() -> dict:
     """The curated MCP marketplace catalog (browse → one-click install)."""
     from aiforge_core.config import mcp_registry
