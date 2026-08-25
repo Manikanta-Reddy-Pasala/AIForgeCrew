@@ -190,6 +190,33 @@ def _expand_neighbors(src_id, hop, via, adj, nodes_by_id, neighbors,
             return
 
 
+def _bfs_neighbors(seed_ids: list, adj, nodes_by_id, max_neighbors: int,
+                   hops: int) -> list:
+    """Collect neighbour entries from the seeds, first hop then (for hops==2) a
+    second hop off the first-hop targets, capped at ``max_neighbors``. Edges are
+    deduped across seeds/hops via ``seen_pairs``."""
+    neighbors: list[dict] = []
+    seen_pairs: set[tuple[str, str, str]] = set()  # (src_id, tgt_id, relation)
+
+    def _expand(src_id: str, hop: int, via: "str | None"):
+        _expand_neighbors(src_id, hop, via, adj, nodes_by_id, neighbors,
+                          seen_pairs, max_neighbors)
+
+    for sid in seed_ids:
+        if len(neighbors) >= max_neighbors:
+            break
+        _expand(sid, 1, None)
+    if hops == 2 and len(neighbors) < max_neighbors:
+        # Snapshot first-hop targets so we don't mutate during iteration.
+        first_hop_ids = [n["node"]["id"] for n in neighbors
+                         if n["hop"] == 1 and n["node"].get("id")]
+        for sid in first_hop_ids:
+            if len(neighbors) >= max_neighbors:
+                break
+            _expand(sid, 2, sid)
+    return neighbors
+
+
 def graphify_lookup(query: str, hops: int = 1,
                     max_matches: int = 8,
                     max_neighbors: int = 25,
@@ -226,29 +253,7 @@ def graphify_lookup(query: str, hops: int = 1,
         return {"ok": True, "matches": [], "neighbors": [],
                 "note": "no matching nodes — try a label, file path, or substring"}
 
-    neighbors: list[dict] = []
-    seen_pairs: set[tuple[str, str, str]] = set()  # (src_id, tgt_id, relation)
-
-    def _expand(src_id: str, hop: int, via: str | None):
-        _expand_neighbors(src_id, hop, via, adj, nodes_by_id, neighbors,
-                          seen_pairs, max_neighbors)
-
-    for sid in seed_ids:
-        if len(neighbors) >= max_neighbors:
-            break
-        _expand(sid, 1, None)
-
-    if hops == 2 and len(neighbors) < max_neighbors:
-        # Snapshot first-hop targets so we don't mutate during iteration.
-        first_hop_ids = [
-            n["node"]["id"] for n in neighbors
-            if n["hop"] == 1 and n["node"].get("id")
-        ]
-        for sid in first_hop_ids:
-            if len(neighbors) >= max_neighbors:
-                break
-            _expand(sid, 2, sid)
-
+    neighbors = _bfs_neighbors(seed_ids, adj, nodes_by_id, max_neighbors, hops)
     matches_payload = [_summarise_node(nodes_by_id[i]) for i in seed_ids]
     return {"ok": True, "matches": matches_payload, "neighbors": neighbors}
 

@@ -118,6 +118,48 @@ def _candidates() -> dict:
     return cands
 
 
+def _fuzzy_exact(want: str, cands: dict, one, distinct) -> "dict | None":
+    """Normalized-exact match stage: a single (or all-aliased) exact hit wins;
+    several distinct exact hits are ambiguous. None → fall through to fuzzy."""
+    hit = [(n, v) for n, v in cands.items() if _norm(n) == want]
+    if hit and distinct(hit):
+        return {**one(hit[0][0], hit[0][1]), "match": "normalized"}
+    if len(hit) > 1:
+        return {"ok": False, "error": "ambiguous", "candidates": [n for n, _ in hit]}
+    return None
+
+
+def _fuzzy_close(want: str, cands: dict, cutoff: float, one, distinct) -> "dict | None":
+    """difflib fuzzy stage. A clear winner (only match, or a >=0.08 ratio gap, or
+    all-aliased) is picked; otherwise ambiguous. None → fall through to substring."""
+    import difflib
+    normmap: dict = {}
+    for n, v in cands.items():
+        normmap.setdefault(_norm(n), (n, v))
+    close = difflib.get_close_matches(want, list(normmap), n=3, cutoff=cutoff)
+    if not close:
+        return None
+    top = difflib.SequenceMatcher(None, want, close[0]).ratio()
+    second = (difflib.SequenceMatcher(None, want, close[1]).ratio()
+              if len(close) > 1 else 0.0)
+    picks = [normmap[c] for c in close]
+    if len(close) == 1 or top - second >= 0.08 or distinct(picks):
+        n, v = normmap[close[0]]
+        return {**one(n, v), "match": "fuzzy", "candidates": [p[0] for p in picks]}
+    return {"ok": False, "error": "ambiguous", "candidates": [p[0] for p in picks]}
+
+
+def _fuzzy_substring(want: str, cands: dict, one, distinct) -> dict:
+    """Substring stage (last resort): a single distinct containment hit wins."""
+    subs = [(n, v) for n, v in cands.items()
+            if want and (want in _norm(n) or _norm(n) in want)]
+    if subs and distinct(subs):
+        return {**one(subs[0][0], subs[0][1]), "match": "substring"}
+    if len(subs) > 1:
+        return {"ok": False, "error": "ambiguous", "candidates": [n for n, _ in subs]}
+    return {"ok": False, "error": "no match", "candidates": sorted(cands)[:10]}
+
+
 def fuzzy_pick(name: str, cands: dict, *, cutoff: float = 0.7,
                value_key: str = "value") -> dict:
     """Generic loose-name matcher shared by repo folders, Jira projects, and
@@ -126,7 +168,6 @@ def fuzzy_pick(name: str, cands: dict, *, cutoff: float = 0.7,
     fuzzy (difflib) → substring. Returns ``{ok, <value_key>, name, match}`` on a
     confident pick, else ``{ok:False, error, candidates}`` (ambiguous/none) so
     the caller can ask. Aliases (several names → same value) collapse to one hit."""
-    import difflib
     name = (name or "").strip()
     if not name:
         return {"ok": False, "error": "name required", "candidates": []}
@@ -137,39 +178,12 @@ def fuzzy_pick(name: str, cands: dict, *, cutoff: float = 0.7,
         return {"ok": True, value_key: val, "name": disp}
 
     def _distinct(pairs):
-        # collapse hits that point at the SAME value (name==key alias)
-        vals = {v for _, v in pairs}
-        return len(vals) == 1
+        return len({v for _, v in pairs}) == 1   # all point at the SAME value
+
     want = _norm(name)
-    hit = [(n, v) for n, v in cands.items() if _norm(n) == want]
-    if hit and _distinct(hit):
-        return {**_one(hit[0][0], hit[0][1]), "match": "normalized"}
-    if len(hit) > 1:
-        return {"ok": False, "error": "ambiguous",
-                "candidates": [n for n, _ in hit]}
-    normmap = {}
-    for n, v in cands.items():
-        normmap.setdefault(_norm(n), (n, v))
-    close = difflib.get_close_matches(want, list(normmap), n=3, cutoff=cutoff)
-    if close:
-        top = difflib.SequenceMatcher(None, want, close[0]).ratio()
-        second = (difflib.SequenceMatcher(None, want, close[1]).ratio()
-                  if len(close) > 1 else 0.0)
-        picks = [normmap[c] for c in close]
-        if len(close) == 1 or top - second >= 0.08 or _distinct(picks):
-            n, v = normmap[close[0]]
-            return {**_one(n, v), "match": "fuzzy",
-                    "candidates": [p[0] for p in picks]}
-        return {"ok": False, "error": "ambiguous",
-                "candidates": [p[0] for p in picks]}
-    subs = [(n, v) for n, v in cands.items()
-            if want and (want in _norm(n) or _norm(n) in want)]
-    if subs and _distinct(subs):
-        return {**_one(subs[0][0], subs[0][1]), "match": "substring"}
-    if len(subs) > 1:
-        return {"ok": False, "error": "ambiguous",
-                "candidates": [n for n, _ in subs]}
-    return {"ok": False, "error": "no match", "candidates": sorted(cands)[:10]}
+    return (_fuzzy_exact(want, cands, _one, _distinct)
+            or _fuzzy_close(want, cands, cutoff, _one, _distinct)
+            or _fuzzy_substring(want, cands, _one, _distinct))
 
 
 def resolve(name: str, *, cutoff: float = 0.7) -> dict:

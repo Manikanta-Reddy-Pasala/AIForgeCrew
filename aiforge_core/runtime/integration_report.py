@@ -70,13 +70,38 @@ _STACK_TO_LANG = {
 }
 
 
+# Authoritative marker files → language, most-specific first.
+_LANG_MARKERS = (
+    (("pom.xml",), "java-maven"),
+    (("build.gradle", "build.gradle.kts", "settings.gradle"), "java-gradle"),
+    (("go.mod",), "go"),
+    (("Cargo.toml",), "rust"),
+    (("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"), "python"),
+    (("package.json",), "node"),
+    (("composer.json",), "php"),
+    (("Gemfile",), "ruby"),
+    (("CMakeLists.txt", "Makefile"), "c/c++"),
+)
+
+# Extension fallback in FIXED priority (python before node so a stray .js can't
+# shadow a Python project; kotlin last so nothing already-matched changes).
+_LANG_EXTS = (
+    ("python", {".py"}), ("go", {".go"}), ("rust", {".rs"}),
+    ("java-maven", {".java"}), ("c/c++", {".c", ".cpp", ".cc", ".cxx"}),
+    ("php", {".php"}), ("ruby", {".rb"}),
+    ("node", {".ts", ".tsx", ".js", ".mjs"}), ("shell", {".sh", ".bash"}),
+    ("kotlin", {".kt", ".kts"}),
+)
+
+
 def _detect_lang(cwd: str) -> str | None:
     """Best-effort language. MARKER files win (a pyproject/go.mod/Cargo.toml is
-    authoritative); only when there's no marker do we fall back to extensions, and
-    then in a fixed priority so a stray .js can't shadow a Python project (the bug
-    that showed 'npm install' for a pytest project)."""
-    def has(*names: str) -> bool:
-        return any(os.path.exists(os.path.join(cwd, n)) for n in names)
+    authoritative); only when there's no marker do we fall back to extensions, in
+    a fixed priority so a stray .js can't shadow a Python project (the bug that
+    showed 'npm install' for a pytest project)."""
+    for names, lang in _LANG_MARKERS:
+        if any(os.path.exists(os.path.join(cwd, n)) for n in names):
+            return lang
     exts: set[str] = set()
     for root, dirs, files in os.walk(cwd):
         dirs[:] = [d for d in dirs if d not in (
@@ -84,35 +109,7 @@ def _detect_lang(cwd: str) -> str | None:
             ".aiforge-worktrees", "__pycache__")]
         for f in files:
             exts.add(os.path.splitext(f)[1].lower())
-    # 1) authoritative marker files, most-specific first
-    if has("pom.xml"):
-        return "java-maven"
-    if has("build.gradle", "build.gradle.kts", "settings.gradle"):
-        return "java-gradle"
-    if has("go.mod"):
-        return "go"
-    if has("Cargo.toml"):
-        return "rust"
-    if has("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"):
-        return "python"
-    if has("package.json"):
-        return "node"
-    if has("composer.json"):
-        return "php"
-    if has("Gemfile"):
-        return "ruby"
-    if has("CMakeLists.txt", "Makefile"):
-        return "c/c++"
-    # 2) no marker — extension fallback, fixed priority (python before node)
-    for lang, es in (("python", {".py"}), ("go", {".go"}), ("rust", {".rs"}),
-                     ("java-maven", {".java"}), ("c/c++", {".c", ".cpp", ".cc", ".cxx"}),
-                     ("php", {".php"}), ("ruby", {".rb"}),
-                     ("node", {".ts", ".tsx", ".js", ".mjs"}),
-                     ("shell", {".sh", ".bash"}),
-                     # Kotlin (first-class) placed LAST so no previously-matched
-                     # language changes — only a marker-less .kt/.kts tree that
-                     # matched nothing before now resolves to "kotlin".
-                     ("kotlin", {".kt", ".kts"})):
+    for lang, es in _LANG_EXTS:
         if exts & es:
             return lang
     return None
