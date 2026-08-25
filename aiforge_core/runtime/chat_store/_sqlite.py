@@ -45,6 +45,23 @@ CREATE INDEX IF NOT EXISTS chat_media_session ON chat_media(session_id, id);
 _NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 
 
+def _add_column_if_missing(c: "sqlite3.Connection", table: str, column: str,
+                           decl: str) -> None:
+    """Idempotent ``ALTER TABLE ADD COLUMN`` — SQLite has no ADD COLUMN IF NOT
+    EXISTS. Guarded by a table_info check AND a swallowed duplicate-column
+    error: two connections opened concurrently (the API TestClient runs the app
+    on a threadpool) can both read the pre-migration schema and both issue the
+    ALTER, and the loser must not abort with "duplicate column name"."""
+    cols = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+    if column in cols:
+        return
+    try:
+        c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+    except sqlite3.OperationalError as exc:
+        if "duplicate column name" not in str(exc).lower():
+            raise
+
+
 class _SqliteChatStore:
     name = "sqlite"
 
@@ -68,23 +85,17 @@ class _SqliteChatStore:
         try:
             c.executescript(_SQLITE_DDL)
             # Migrate pre-role databases (SQLite has no ADD COLUMN IF NOT EXISTS).
-            cols = {r[1] for r in c.execute("PRAGMA table_info(chat_sessions)")}
-            if "role" not in cols:
-                c.execute("ALTER TABLE chat_sessions ADD COLUMN role TEXT "
-                          "NOT NULL DEFAULT 'doer'")
+            _add_column_if_missing(c, "chat_sessions", "role",
+                                   "TEXT NOT NULL DEFAULT 'doer'")
             # Migrate pre-checkpoint message tables (edit-resend / restore-to-turn).
-            mcols = {r[1] for r in c.execute("PRAGMA table_info(chat_messages)")}
-            if "checkpoint_sha" not in mcols:
-                c.execute("ALTER TABLE chat_messages ADD COLUMN checkpoint_sha TEXT")
+            _add_column_if_missing(c, "chat_messages", "checkpoint_sha", "TEXT")
             # Per-turn run mode (simple|plan|team) — so the UI can badge which
             # mode each turn/session ran in (was composer-only, never persisted).
-            if "mode" not in mcols:
-                c.execute("ALTER TABLE chat_messages ADD COLUMN mode TEXT "
-                          "NOT NULL DEFAULT 'simple'")
+            _add_column_if_missing(c, "chat_messages", "mode",
+                                   "TEXT NOT NULL DEFAULT 'simple'")
             # Per-turn wall-clock seconds — so every turn (simple/plan/team)
             # shows its time-taken even after reload (client timer is live-only).
-            if "duration_s" not in mcols:
-                c.execute("ALTER TABLE chat_messages ADD COLUMN duration_s REAL")
+            _add_column_if_missing(c, "chat_messages", "duration_s", "REAL")
             yield c
             c.commit()
         finally:
