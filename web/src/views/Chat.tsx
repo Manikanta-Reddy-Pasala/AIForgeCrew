@@ -499,7 +499,7 @@ export default function Chat() {
       try {
         const msgs = res.messages || [];
         const lastAssistant = [...msgs].reverse().find((m: any) => m.role === 'assistant');
-        const isLastTurn = msgs.length > 0 && msgs[msgs.length - 1] === lastAssistant;
+        const isLastTurn = msgs.length > 0 && msgs.at(-1) === lastAssistant;
         if (lastAssistant && isLastTurn) {
           const pr = (lastAssistant.steps || []).find((s: any) => s?.type === 'plan_ready');
           // FE3: skip rehydration if the user already dismissed THIS plan.
@@ -1198,7 +1198,7 @@ export default function Chat() {
     mdCopyText(t).then(() => toast.success('Copied'),
                        () => toast.error('Copy failed'));
   }
-  const isLastTurn = messages.length > 0 && lastAssistantMsg === messages[messages.length - 1];
+  const isLastTurn = messages.length > 0 && lastAssistantMsg === messages.at(-1);
   const persistedAwaiting = !!(isLastTurn && lastAssistantMsg && msgAwaiting(lastAssistantMsg));
   // The current turn is waiting for the user to answer — Enter/primary button
   // must SEND a reply (a normal turn), not steer.

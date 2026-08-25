@@ -43,7 +43,7 @@ export default function Trace() {
         if (durMatch) {
           setSteps(s => {
             if (s.length === 0) return s;
-            const last = { ...s[s.length - 1] };
+            const last = { ...s.at(-1) };
             last.durationMs = parseFloat(durMatch[1]) * 1000;
             last.tokens = `in=${durMatch[2]} out=${durMatch[3]}`;
             return [...s.slice(0, -1), last];
@@ -53,7 +53,7 @@ export default function Trace() {
         // Regular line — attach to last card (or stray)
         setSteps(s => {
           if (s.length === 0) return [{ n: 0, started: Date.now(), lines: [line] }];
-          const last = { ...s[s.length - 1], lines: [...s[s.length - 1].lines, line] };
+          const last = { ...s.at(-1), lines: [...s.at(-1)!.lines, line] };
           return [...s.slice(0, -1), last];
         });
       } catch { /* ignore */ }
