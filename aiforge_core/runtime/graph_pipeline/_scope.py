@@ -8,6 +8,29 @@ from __future__ import annotations
 import os
 
 
+_SCOPE_SKIP_DIRS = {".git", "node_modules", ".venv", "target", "dist", "build",
+                    ".aiforge-worktrees", "__pycache__"}
+
+
+def _iter_scannable_rel_paths(base):
+    """Yield each file under ``base`` as a base-relative Path, skipping
+    vendor/build dirs. The skip check is on the path RELATIVE to base — not
+    p.parts. The ticket worktree lives UNDER .aiforge-worktrees/, so an absolute
+    p.parts check matched '.aiforge-worktrees' on EVERY file and skipped the
+    whole tree → "matches nothing" → scope wrongly cleared → empty pass
+    (ONE-163/164)."""
+    for p in base.rglob("*"):
+        if not p.is_file():
+            continue
+        try:
+            rel_path = p.relative_to(base)
+        except ValueError:
+            continue
+        if any(part in _SCOPE_SKIP_DIRS for part in rel_path.parts):
+            continue
+        yield rel_path
+
+
 def _globs_match_any_repo_file(globs: "list[str]", repo_root: "str | None" = None,
                               max_files: int = 4000) -> bool:
     """True if at least one file under the ticket's repo (worktree) matches any
@@ -22,22 +45,7 @@ def _globs_match_any_repo_file(globs: "list[str]", repo_root: "str | None" = Non
         from pathlib import Path
         base = Path(root)
         n = 0
-        _skip = {".git", "node_modules", ".venv", "target", "dist", "build",
-                 ".aiforge-worktrees", "__pycache__"}
-        for p in base.rglob("*"):
-            if not p.is_file():
-                continue
-            try:
-                rel_path = p.relative_to(base)
-            except ValueError:
-                continue
-            # Check _skip against the path RELATIVE to base — not p.parts. The
-            # ticket worktree lives UNDER .aiforge-worktrees/, so an absolute
-            # p.parts check matched '.aiforge-worktrees' on EVERY file and
-            # skipped the whole tree → "matches nothing" → scope wrongly
-            # cleared → Doer edited nothing (ONE-163/164 empty pass).
-            if any(part in _skip for part in rel_path.parts):
-                continue
+        for rel_path in _iter_scannable_rel_paths(base):
             n += 1
             if n > max_files:
                 return True                # too big to fully scan → don't clear

@@ -75,6 +75,27 @@ def _summarize(name: str, args: dict, result) -> "dict | None":
     return None
 
 
+def _fold_message_steps(m: dict, seen: dict, order: list) -> None:
+    """Fold one assistant message's tool steps into the dedup accumulators. A
+    later call to the SAME action updates its outcome (a retry that finally
+    succeeded shows as ok)."""
+    if not isinstance(m, dict) or m.get("role") != "assistant":
+        return
+    for s in (m.get("steps") or []):
+        if not isinstance(s, dict) or s.get("type") != "tool":
+            continue
+        entry = _summarize(s.get("name") or "", s.get("args") or {},
+                           s.get("result"))
+        if not entry:
+            continue
+        k = entry["key"]
+        if k in seen:
+            seen[k]["outcome"] = entry["outcome"]   # latest outcome wins
+        else:
+            seen[k] = entry
+            order.append(k)
+
+
 def ledger_items(session_id) -> list[dict]:
     """Deduped, in-order list of executed actions for the session. Later calls
     to the SAME action update its outcome (a retry that finally succeeded shows
@@ -87,21 +108,7 @@ def ledger_items(session_id) -> list[dict]:
     seen: dict[str, dict] = {}
     order: list[str] = []
     for m in msgs:
-        if not isinstance(m, dict) or m.get("role") != "assistant":
-            continue
-        for s in (m.get("steps") or []):
-            if not isinstance(s, dict) or s.get("type") != "tool":
-                continue
-            entry = _summarize(s.get("name") or "", s.get("args") or {},
-                               s.get("result"))
-            if not entry:
-                continue
-            k = entry["key"]
-            if k in seen:
-                seen[k]["outcome"] = entry["outcome"]   # latest outcome wins
-            else:
-                seen[k] = entry
-                order.append(k)
+        _fold_message_steps(m, seen, order)
     return [seen[k] for k in order]
 
 
@@ -183,6 +190,35 @@ def _verify_workflow(title: str, commands: list[str]) -> "dict | None":
         return None
 
 
+def _workflow_fields(verified, title: str, raw_cmds: list, slug: str):
+    """(name, description, steps, triggers, verified_note) from the LLM-verified
+    procedure, or the raw capture when no model refined it."""
+    if verified:
+        name = f"session-{_slug(verified.get('name') or title)}"
+        description = (verified.get("description") or f"Working steps: {title}")[:120]
+        steps = [str(s) for s in (verified.get("steps") or raw_cmds) if str(s).strip()]
+        triggers = [_slug(t) for t in (verified.get("triggers") or [slug]) if t][:4] or [slug]
+        return name, description, steps, triggers, ""
+    return (f"session-{slug}", f"Captured working steps: {title}"[:120], raw_cmds,
+            [slug], "\n\n_(unverified — no model reachable at capture time)_")
+
+
+def _capture_workflow_okr(session_id, cmds: list, title: str, repo: str,
+                          slug: str, tags: list) -> None:
+    """Also file a topic-tagged OKR note so the working procedure lands in the
+    topic briefs (write_workflow only mirrors it as kind=workflow)."""
+    try:
+        from aiforge_core.memory import md_store
+        summary = "; ".join(c["key"][4:][:60] for c in cmds[:6])
+        md_store.capture(
+            "workflow", f"{title}: {len(cmds)} working steps — {summary}",
+            repo=(repo if repo != "repo" else "notes"), topic=slug,
+            title=f"Working steps — {title}", tags=tags,
+            source=f"session:{session_id}")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def capture_working_workflow(session_id, repo: str = "repo") -> dict:
     """Auto-author a reusable WORKFLOW from the session's WORKING steps (the
     commands that succeeded, in order) and file it into OKR knowledge memory
@@ -216,18 +252,8 @@ def capture_working_workflow(session_id, repo: str = "repo") -> dict:
     verified = _verify_workflow(title, raw_cmds)
     if verified is not None and not verified.get("is_reusable", False):
         return {"ok": True, "skipped": "not_reusable"}
-    if verified:
-        name = f"session-{_slug(verified.get('name') or title)}"
-        description = (verified.get("description") or f"Working steps: {title}")[:120]
-        steps = [str(s) for s in (verified.get("steps") or raw_cmds) if str(s).strip()]
-        triggers = [_slug(t) for t in (verified.get("triggers") or [slug]) if t][:4] or [slug]
-        verified_note = ""
-    else:                                   # no model — save the raw capture
-        name = f"session-{slug}"
-        description = f"Captured working steps: {title}"[:120]
-        steps = raw_cmds
-        triggers = [slug]
-        verified_note = "\n\n_(unverified — no model reachable at capture time)_"
+    name, description, steps, triggers, verified_note = _workflow_fields(
+        verified, title, raw_cmds, slug)
     steps_md = "\n".join(f"{n + 1}. `{s}`" for n, s in enumerate(steps))
     files_md = ("\n\nFiles touched:\n"
                 + "\n".join(f"- {w['label']}" for w in writes)) if writes else ""
@@ -237,25 +263,14 @@ def capture_working_workflow(session_id, repo: str = "repo") -> dict:
     tags = ["session", "workflow", f"session:{session_id}"]
     if repo and repo != "repo":
         tags.append(f"repo:{repo}")
-    out = {"ok": False}
     try:
         from aiforge_core.runtime import workflows
         # write_workflow itself hard-runs/syntax-checks any scripts before save.
-        out = workflows.write_workflow(
-            name, description=description, body=body, triggers=triggers,
-            scope="global")
+        out = workflows.write_workflow(name, description=description, body=body,
+                                       triggers=triggers, scope="global")
     except Exception as exc:  # noqa: BLE001
         out = {"ok": False, "error": str(exc)}
-    # OKR topic note (proper tags) so the working procedure is in the briefs too.
-    try:
-        from aiforge_core.memory import md_store
-        summary = "; ".join(c["key"][4:][:60] for c in cmds[:6])
-        md_store.capture(
-            "workflow", f"{title}: {len(cmds)} working steps — {summary}",
-            repo=(repo if repo != "repo" else "notes"), topic=slug,
-            title=f"Working steps — {title}", tags=tags, source=f"session:{session_id}")
-    except Exception:  # noqa: BLE001
-        pass
+    _capture_workflow_okr(session_id, cmds, title, repo, slug, tags)
     return out
 
 
