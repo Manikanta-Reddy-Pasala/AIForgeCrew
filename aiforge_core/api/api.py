@@ -31,18 +31,15 @@ import threading
 from datetime import UTC, date as _date
 from typing import Any
 
-import psycopg
 from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
 
 from aiforge_core.config import env as _cfg
 from aiforge_core.runtime.background import spawn as _spawn
 from aiforge_core.config.env import (
-    AIFORGE_DSN,
     LM_STUDIO_BASE_URL,
     LOG_DIR,
     ROLES,
@@ -922,28 +919,6 @@ def _enforce_bind_security() -> None:
     _security_boot_guard()
 
 
-@app.on_event("startup")
-def _warn_default_db_creds() -> None:
-    """Soft, never-fatal: if the API is bound to a NON-loopback host but the
-    Postgres password is still the compose default, log a loud warning.
-    Doesn't hard-fail (could break a user's current run)."""
-    try:
-        if _is_loopback_host(_bind_host()):
-            return
-        weak: list[str] = []
-        dsn = os.environ.get("AIFORGE_DSN", "") + os.environ.get("AIFORGE_PG_URL", "")
-        if ":aiforgepass@" in dsn or os.environ.get("PG_PASSWORD", "") == "aiforgepass":
-            weak.append("Postgres")
-        if weak:
-            _af_log.warning(
-                "SECURITY: bound to non-loopback host %s with DEFAULT %s "
-                "password(s) — change them before LAN exposure.",
-                _bind_host(), " + ".join(weak),
-            )
-    except Exception:  # noqa: BLE001 — a warning must never crash boot
-        pass
-
-
 def _is_admin_path(path: str) -> bool:
     """The operator admin surface: the page and its data endpoint."""
     return path == "/admin" or path.startswith("/admin/") or path.startswith("/api/admin")
@@ -1109,11 +1084,6 @@ except Exception as _exc:
 
 
 # ─────────────────────────── Helpers ────────────────────────────────────
-# _db() lives in aiforge_core.api._shared (single source shared with route
-# modules, which cannot import api.py); re-exported here as the module-local
-# name every handler already uses.
-from aiforge_core.api._shared import _db  # noqa: E402
-
 _INDEX_HTML = 'index.html'
 
 

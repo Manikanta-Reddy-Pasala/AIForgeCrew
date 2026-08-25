@@ -14,7 +14,6 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from aiforge_core.api._shared import _db
 from aiforge_core.config import agent_config as _acfg
 from aiforge_core.config.env import ROLES
 
@@ -61,28 +60,12 @@ def _role_group(role: str) -> str:
 def _role_activity(name: str) -> tuple:
     """``(last_activity_iso, lifetime_turns, active_tickets)``.
 
-    Uses Postgres-specific SQL (FILTER). On the embedded SQLite backend it
-    degrades to nulls — the static role catalogue still renders, so the Agents /
-    Home views work everywhere.
+    SQLite-degraded: the per-role activity rollup was Postgres-only (used
+    ``FILTER``), so on the embedded SQLite backend it returns nulls — the
+    static role catalogue still renders, so the Agents / Home views work
+    everywhere.
     """
-    try:
-        with _db() as c, c.cursor() as cur:
-            cur.execute(
-                "SELECT MAX(created_at) AS last_activity, "
-                "COUNT(*) FILTER (WHERE kind='llm_turn') AS turns "
-                "FROM ticket_events WHERE agent_role = %s", (name,))
-            row = cur.fetchone() or {}
-            cur.execute(
-                "SELECT identifier, status FROM tickets "
-                "WHERE assignee_role = %s AND status IN "
-                "('todo','in_progress','in_review') ORDER BY created_at DESC",
-                (name,))
-            active = [{"identifier": r["identifier"], "status": r["status"]}
-                      for r in cur.fetchall()]
-        last = row.get("last_activity")
-        return (last.isoformat() if last else None, row.get("turns", 0), active)
-    except Exception:  # noqa: BLE001
-        return (None, 0, [])
+    return (None, 0, [])
 
 
 def _visible_roles() -> list[str]:

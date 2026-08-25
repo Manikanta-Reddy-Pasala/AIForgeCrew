@@ -1,9 +1,8 @@
 """Small cross-cutting helpers shared by api.py and the api/routes/ modules.
 
-Kept dependency-light (stdlib + env, plus the psycopg driver already required
-everywhere) so route modules can import it without pulling api.py back in (which
-would be circular). Add a helper here only when it's used by BOTH api.py and a
-route module.
+Kept dependency-light (stdlib + env) so route modules can import it without
+pulling api.py back in (which would be circular). Add a helper here only when
+it's used by BOTH api.py and a route module.
 """
 from __future__ import annotations
 
@@ -11,10 +10,6 @@ import os
 import re
 import threading
 
-import psycopg
-from psycopg.rows import dict_row
-
-from aiforge_core.config.env import AIFORGE_DSN
 from aiforge_core.config.paths import config_dir
 
 
@@ -22,11 +17,6 @@ def env_truthy(name: str) -> bool:
     """True when env var ``name`` is set to a truthy string (1/true/yes/on)."""
     return str(os.environ.get(name, "")).strip().lower() in (
         "1", "true", "yes", "on")
-
-
-def _db():
-    return psycopg.connect(AIFORGE_DSN, row_factory=dict_row, connect_timeout=5,
-                           options="-c statement_timeout=10000")
 
 
 def _ticket_files_base():
@@ -97,5 +87,5 @@ def _persist_env(key: str, value: str) -> None:
             f.write("\n".join(lines) + "\n")
 
 
-__all__ = ["env_truthy", "_db", "_ticket_files_base", "_persist_env",
+__all__ = ["env_truthy", "_ticket_files_base", "_persist_env",
            "_RUNTIME_ENV_PATH", "_RUNTIME_ENV_LOCK"]

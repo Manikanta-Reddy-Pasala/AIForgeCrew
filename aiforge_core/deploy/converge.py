@@ -90,11 +90,24 @@ def _container_exists(name: str) -> bool:
 
 
 def _pg_url() -> str:
-    # No baked-in credential: see config.env.default_pg_dsn. The literal this
-    # replaced shipped a working password in source control, and it was the
-    # DEFAULT — i.e. what ran wherever AIFORGE_PG_URL was unset.
-    from aiforge_core.config.env import default_pg_dsn
-    return os.environ.get("AIFORGE_PG_URL") or default_pg_dsn()
+    """DSN for the OLD dockerized ``aiforge-postgres`` we migrate OFF of.
+
+    Inlined (the shared config.env DSN helper was removed with Postgres) so
+    this one-time migration-read path carries no dependency on the deleted
+    helper. NO baked-in credential: the password comes only from the
+    environment; with none set the DSN is user-only — which is what the local
+    docker Postgres (loopback, trust/peer auth) wants and is honest about
+    carrying no secret.
+    """
+    if os.environ.get("AIFORGE_PG_URL"):
+        return os.environ["AIFORGE_PG_URL"]
+    user = os.environ.get("AIFORGE_PG_USER") or os.environ.get("USER") or "aiforge"
+    pwd = os.environ.get("AIFORGE_PG_PASSWORD") or ""
+    host = os.environ.get("AIFORGE_PG_HOST", "127.0.0.1")
+    port = os.environ.get("AIFORGE_PG_PORT", "5432")
+    db = os.environ.get("AIFORGE_PG_DB", "aiforge")
+    auth = f"{user}:{pwd}" if pwd else user
+    return f"postgresql://{auth}@{host}:{port}/{db}"
 
 
 def _migrate_pg_to_sqlite() -> bool:

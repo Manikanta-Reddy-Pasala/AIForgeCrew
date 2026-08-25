@@ -28,55 +28,14 @@ def _ticket_brief(identifier: str) -> dict | None:
 
 
 def _ticket_local(identifier: str) -> dict | None:
-    """Direct read from local Postgres tickets + recent events.
-    Bypasses graph_mcp's external-provider assumption."""
-    try:
-        import psycopg
-        from psycopg.rows import dict_row
+    """Direct read from a local ticket store — SQLite-degraded no-op.
 
-        from aiforge_core.config.env import AIFORGE_DSN
-    except Exception:
-        return None
-    # Only the DB round-trip is treated as "ticket unavailable" → None. The
-    # result-shaping below is deliberately OUTSIDE this narrow except: a renamed
-    # column / key typo (KeyError) must SURFACE (it propagates to the caller,
-    # which records it in the unified-query ``errors`` list) instead of being
-    # silently indistinguishable from a real DB outage.
-    try:
-        with psycopg.connect(AIFORGE_DSN, connect_timeout=2,
-                             row_factory=dict_row) as c, c.cursor() as cur:
-            cur.execute(
-                "SELECT id, identifier, title, status, body, "
-                "       to_char(created_at,'YYYY-MM-DD HH24:MI') AS created, "
-                "       to_char(updated_at,'YYYY-MM-DD HH24:MI') AS updated "
-                "FROM tickets WHERE identifier = %s LIMIT 1",
-                (identifier,),
-            )
-            t = cur.fetchone()
-            if not t:
-                return None
-            cur.execute(
-                "SELECT agent_role, kind, body, "
-                "       to_char(created_at,'HH24:MI:SS') AS ts "
-                "FROM ticket_events WHERE ticket_id = %s "
-                "ORDER BY created_at DESC LIMIT 8",
-                (t["id"],),
-            )
-            ev = cur.fetchall() or []
-    except (psycopg.Error, OSError):
-        return None
-    ev_lines = "\n".join(
-        f"  [{(e['ts'] or '?'):8s} {(e['agent_role'] or '?'):10s} {(e['kind'] or '?'):16s}] "
-        f"{((e['body'] or '')[:140]).replace(chr(10),' ')}"
-        for e in ev
-    )
-    text = (
-        f"{t['identifier']} · {t['status']} · {t['title']}\n"
-        f"Created: {t['created']} · Updated: {t['updated']}\n\n"
-        f"Body:\n{(t['body'] or '')[:600]}\n\n"
-        f"Recent events:\n{ev_lines or '(none)'}"
-    )
-    return {"text": text, "score": 1.0, "source_uri": f"ticket:{identifier}"}
+    This was a direct read from local Postgres tickets + recent events.
+    Postgres has been removed (SQLite-only build), so there is no local pg
+    ticket source: return None and let ``_ticket_brief`` fall back to the
+    graph_mcp proxy.
+    """
+    return None
 
 
 def _mcp_call(tool: str, args: dict) -> Any:

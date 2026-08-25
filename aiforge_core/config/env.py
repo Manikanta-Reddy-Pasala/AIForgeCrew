@@ -10,45 +10,9 @@ from dataclasses import dataclass, field
 from aiforge_core.config.paths import config_dir
 
 
-# ─────────────────────────────── DSNs ───────────────────────────────
-
-def default_pg_dsn() -> str:
-    """The local-dev Postgres DSN, assembled from env parts.
-
-    NOTHING SECRET IS BAKED IN. The literals this replaced shipped a working
-    credential pair in source control — one with a real password
-    (`aiforge:aiforgepass`), one with a developer's own username and NO
-    password at all, which is a database reachable without authentication.
-    Both were the DEFAULT, so they were what ran anywhere the env var was
-    unset.
-
-    The password comes only from the environment; with none set the DSN is
-    user-only, which is what a peer/trust-auth local socket wants and is
-    honest about carrying no secret.
-    """
-    user = os.environ.get("AIFORGE_PG_USER") or os.environ.get("USER") or "aiforge"
-    pwd = os.environ.get("AIFORGE_PG_PASSWORD") or ""
-    host = os.environ.get("AIFORGE_PG_HOST", "127.0.0.1")
-    port = os.environ.get("AIFORGE_PG_PORT", "5432")
-    db = os.environ.get("AIFORGE_PG_DB", "aiforge")
-    if not pwd and host not in ("127.0.0.1", "::1", "localhost"):
-        # Passwordless is only ever defensible over a loopback socket with
-        # peer/trust auth. Silently building a credential-free DSN for a REMOTE
-        # host means either a database open to the network, or a confusing auth
-        # failure at first use — say which, up front.
-        raise RuntimeError(
-            f"AIFORGE_PG_HOST={host!r} is not loopback, so AIFORGE_PG_PASSWORD "
-            "must be set (or pass a full AIFORGE_DSN). Refusing to build a "
-            "password-less DSN for a remote database.")
-    auth = f"{user}:{pwd}" if pwd else user
-    return f"postgresql://{auth}@{host}:{port}/{db}"
-
-
-AIFORGE_DSN = os.environ.get("AIFORGE_DSN") or default_pg_dsn()
-
 # ─────────────────────────── storage backend ───────────────────────────
-# SQLite-ONLY build. Postgres has been removed, so a stray AIFORGE_PG_URL /
-# AIFORGE_DSN left over from an old hybrid setup (shell export, .env,
+# SQLite-ONLY build. Postgres has been removed, so a stray AIFORGE_PG_URL
+# left over from an old hybrid setup (shell export, .env,
 # ~/.aiforge/runtime.env) can NEVER flip the app to a Postgres that no longer
 # exists — killing the "Postgres unreachable" spam at the source.
 AIFORGE_PG_URL = None

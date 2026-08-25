@@ -117,43 +117,17 @@ def snapshot(ticket: Optional[str] = None) -> dict:
 
 
 def rollup(group_by: str = "day", *, days_back: int = 30) -> list[dict]:
-    """SQL rollup over the ``llm_costs`` table.
+    """Persisted cost rollup — SQLite-degraded no-op.
 
-    ``group_by`` ∈ {"day", "role", "model", "ticket"} — KISS, one
-    GROUP BY clause per call. Returns ``[{key, calls, prompt_tokens,
-    completion_tokens, cost_usd}, ...]``. Empty list when the
-    table doesn't exist yet (cost tracking off / never fired).
+    ``group_by`` ∈ {"day", "role", "model", "ticket"}. The persisted rollup
+    was backed by a Postgres ``llm_costs`` table; Postgres has been removed
+    (SQLite-only build), so this returns an empty list. Live in-memory totals
+    are still available via :func:`snapshot`. The ``group_by`` contract is
+    still validated so a bad value fails loudly for the caller.
     """
     if group_by not in ("day", "role", "model", "ticket"):
         raise ValueError("group_by must be day|role|model|ticket")
-    expr = {
-        "day":    "to_char(date_trunc('day', created_at), 'YYYY-MM-DD')",
-        "role":   "COALESCE(role, '?')",
-        "model":  "COALESCE(model, '?')",
-        "ticket": "COALESCE(ticket, '?')",
-    }[group_by]
-    sql = (
-        f"SELECT {expr} AS key, "
-        " COUNT(*) AS calls,"
-        " COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,"
-        " COALESCE(SUM(completion_tokens), 0) AS completion_tokens,"
-        " COALESCE(SUM(cost_usd), 0)::float AS cost_usd "
-        " FROM llm_costs "
-        " WHERE created_at > NOW() - (%s || ' days')::interval "
-        f"GROUP BY {expr} "
-        " ORDER BY cost_usd DESC "
-        " LIMIT 200"
-    )
-    try:
-        import psycopg
-        from aiforge_core.config.env import AIFORGE_DSN
-        with psycopg.connect(AIFORGE_DSN, connect_timeout=2) as c, \
-             c.cursor() as cur:
-            cur.execute(sql, (str(days_back),))
-            cols = [d[0] for d in cur.description]
-            return [dict(zip(cols, r)) for r in cur.fetchall()]
-    except Exception:
-        return []
+    return []
 
 
 # ───────── helpers ─────────────────────────────────────────────────
@@ -173,35 +147,11 @@ def _persist(
     *, role: str, ticket: Optional[str], model: str, cost_usd: float,
     prompt_tokens: int, completion_tokens: int,
 ) -> None:
-    """Append one row to ``llm_costs`` Postgres table.
+    """Persist one cost row — SQLite-degraded no-op.
 
-    Schema (auto-created on first call):
-        CREATE TABLE IF NOT EXISTS llm_costs (
-          id BIGSERIAL PRIMARY KEY,
-          created_at TIMESTAMPTZ DEFAULT now(),
-          ticket TEXT, role TEXT, model TEXT,
-          prompt_tokens INT, completion_tokens INT,
-          cost_usd NUMERIC(10,6)
-        );
+    Per-call cost rows were appended to a Postgres ``llm_costs`` table.
+    Postgres has been removed (SQLite-only build), so persistence is a no-op;
+    live totals stay in memory (see :func:`snapshot`). ``record_call`` already
+    treats this write as best-effort.
     """
-    import psycopg
-    from aiforge_core.config.env import AIFORGE_DSN
-    with psycopg.connect(AIFORGE_DSN, connect_timeout=2) as c, \
-         c.cursor() as cur:
-        cur.execute(
-            "CREATE TABLE IF NOT EXISTS llm_costs ("
-            " id BIGSERIAL PRIMARY KEY,"
-            " created_at TIMESTAMPTZ DEFAULT now(),"
-            " ticket TEXT, role TEXT, model TEXT,"
-            " prompt_tokens INT, completion_tokens INT,"
-            " cost_usd NUMERIC(10,6))"
-        )
-        cur.execute(
-            "INSERT INTO llm_costs"
-            " (ticket, role, model, prompt_tokens,"
-            "  completion_tokens, cost_usd)"
-            " VALUES (%s,%s,%s,%s,%s,%s)",
-            (ticket, role, model,
-             prompt_tokens, completion_tokens, cost_usd),
-        )
-        c.commit()
+    return None

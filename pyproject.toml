@@ -11,7 +11,6 @@ description = "AIForgeCrew — autonomous AI dev team orchestrator (single-Postg
 requires-python = ">=3.11,<3.14"
 dependencies = [
   # Core runtime — required for the new aiforge_agents pipeline + UI.
-  "psycopg[binary]>=3.2",
   "pymongo>=4.6",
   "croniter>=2.0",
   "fastapi>=0.115",
