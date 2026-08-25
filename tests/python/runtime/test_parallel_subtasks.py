@@ -191,7 +191,7 @@ def test_plan_files_same_basename_distinct_slugs():
     assert len(set(slugs)) == 2, slugs            # unique within the plan
     assert slugs[0].startswith("db")              # base slug preserved for the first
     # distinct full paths still both present in the goals
-    assert {"a/db.py", "b/db.py"} == {p["goal"].split(":")[0] for p in plan}
+    assert {p["goal"].split(":")[0] for p in plan} == {"a/db.py", "b/db.py"}
 
 
 # ── CC1: run-unique worktree dirs + branches (concurrent runs don't collide) ──
