@@ -236,9 +236,9 @@ function DraggableCard({ t }: Readonly<{ t: any }>) {
 
 function TicketCard({
   t, dragging = false, className = '',
-}: {
+}: Readonly<{
   t: any; dragging?: boolean; className?: string;
-}) {
+}>) {
   return (
     <div className={`ticket-card ${priorityClass(t.priority)} ${dragging ? 'dragging' : ''} ${className}`}>
       <div className="tc-top">
