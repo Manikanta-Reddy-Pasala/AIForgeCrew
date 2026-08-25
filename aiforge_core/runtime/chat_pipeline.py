@@ -620,6 +620,152 @@ def _build_team_prompt(cwd, prompt, history, session_id, resume_brief):
     return prompt, team_state
 
 
+async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state):
+    _bind_team_session(session_id, q)
+    # Serialize the AIFORGE_REPO_ROOT mutation across concurrent team runs,
+    # cancellably + with feedback so a 2nd concurrent run doesn't stall its
+    # client silently behind a long-running first run.
+    my_lock_gen = _acquire_team_run_lock(session_id, cwd, raw_prompt,
+                                         started_at, q)
+    if my_lock_gen is None:
+        return                       # stopped while waiting — already handled
+    from aiforge_core.runtime import chat_interject
+    # Lock is held — everything from here is inside try/finally so the
+    # env mutation can't leak the lock if it raises.
+    prev_root = os.environ.get("AIFORGE_REPO_ROOT")
+    # Request-scoped repo root: the contextvar isolates concurrent chats on
+    # different repos (the env below is process-global and clobbers). The
+    # contextvar propagates into the ADK run (same async task/thread) and
+    # into asyncio.to_thread tool dispatch (which copies the context); the
+    # os.environ set is kept for the subprocess graph-runner path + as a
+    # cross-thread fallback for any executor that doesn't copy context.
+    root_token = None
+    steps: list[dict] = []
+    final_text = ""
+    # Subtask panel tracking: the Planner emits a plan (all pending); the
+    # Doer then executes it monolithically, so we don't get a per-subtask
+    # signal. We reconcile the panel to the RUN OUTCOME at the end (done on
+    # success, failed on error/stop) — otherwise the panel is frozen at
+    # "0/N pending" even after the run reports complete.
+    _sub_items: list[dict] | None = None
+    _run_ok = False
+    try:
+        os.environ["AIFORGE_REPO_ROOT"] = cwd
+        from aiforge_core.runtime import request_context
+        root_token = request_context.set_repo_root(cwd)
+        # Blocking first-time codegraph build for the pipeline's repo so the
+        # Doer's codegraph tools are available (a fresh repo has no index →
+        # tools silently dropped). Best-effort; never blocks the run on it.
+        try:
+            from aiforge_core.runtime.tools import codegraph as _cg
+            _cg.ensure_indexed(cwd)
+        except Exception:  # noqa: BLE001
+            pass
+        from google.adk.runners import Runner
+        from google.adk.sessions import InMemorySessionService
+        from google.genai import types as gtypes
+
+        from .pipeline import build_pipeline
+
+        # Baseline commit so we can show a Changes diff after a SEQUENTIAL
+        # team run too (the parallel path already emits one; this path never
+        # did). git-init + committed baseline makes HEAD a valid diff base
+        # even in a fresh, non-repo chat workspace.
+        _seq_start_sha = ""
+        try:
+            from .parallel_subtasks import _commit_turn_baseline
+            _seq_start_sha = _commit_turn_baseline(cwd)
+        except Exception:  # noqa: BLE001
+            _seq_start_sha = ""
+
+        # Full context by default — the Researcher + context gatherers feed
+        # the Planner so it decomposes into well-scoped subtasks (this IS
+        # useful, especially for splitting). Opt into a LEAN run with
+        # AIFORGE_CHAT_LEAN=1 when you want the Planner/subtasks fast on a
+        # slow local model (skips researcher + ctx_conventions; the Doer
+        # still has grep/read to pull repo context on demand).
+        _lean = os.environ.get("AIFORGE_CHAT_LEAN", "0") in ("1", "true")
+        pipeline = build_pipeline(
+            project=None,
+            skip_researcher=_lean,
+            skip_conventions=_lean,
+            skip_repomap=_lean,   # the repomap agent can runaway-loop on an
+                                  # empty chat workspace; lean skips it so the
+                                  # Planner (and subtask decomposition) runs.
+        )
+        svc = InMemorySessionService()
+        # Phantom-tool guard: a text-only agent (feedback/validator/learner)
+        # can emit a hallucinated function_call; without this ADK raises
+        # "Tool X not found" and the whole SequentialAgent pipeline aborts
+        # mid-flight. The plugin turns it into a graceful observation so the
+        # run survives to its answer.
+        _plugins = []
+        try:
+            from .tool_error_plugin import PhantomToolGuardPlugin
+            _plugins.append(PhantomToolGuardPlugin())
+        except Exception:  # noqa: BLE001 — resilience is best-effort
+            pass
+        runner = Runner(agent=pipeline, app_name="aiforge-chat",
+                        session_service=svc, auto_create_session=True,
+                        plugins=_plugins)
+        session = await svc.create_session(
+            app_name="aiforge-chat", user_id="chat",
+            state=_team_state,
+        )
+        content = gtypes.Content(
+            role="user", parts=[gtypes.Part.from_text(text=prompt)])
+        kw = dict(user_id="chat", session_id=session.id, new_message=content)
+        try:
+            from google.adk.agents.run_config import RunConfig
+            # High cap — a real multi-agent build legitimately needs
+            # many calls; the repeat_guard stops genuine stuck loops, so
+            # we don't rely on a low ceiling. Tune AIFORGE_CHAT_MAX_LLM_CALLS.
+            kw["run_config"] = RunConfig(max_llm_calls=int(
+                os.environ.get("AIFORGE_CHAT_MAX_LLM_CALLS", "600")))
+        except Exception:
+            pass
+        agen = runner.run_async(**kw)
+        evres = await _drive_run_events(agen, runner, q, session_id,
+                                        chat_interject, steps)
+        by_role, final = evres["by_role"], evres["final"]
+        _sub_items = evres["sub_items"] if evres["sub_items"] is not None else _sub_items
+        _enhancer_blocked_reason = evres["enhancer_blocked"]
+        msg, _change_events = await _compute_team_answer(
+            svc, session, by_role, final, _enhancer_blocked_reason,
+            cwd, _seq_start_sha)
+        final_text = msg
+        _run_ok = True
+        q.put({"type": "message", "text": msg})
+        for _ev in _change_events:
+            q.put(_ev)
+    except Exception as exc:  # noqa: BLE001
+        q.put({"type": "error", "text": f"pipeline: {exc}"})
+        # The turn ended with no answer, and whatever the run had already
+        # written is on disk. Same structural marker a Stop leaves, for the
+        # same reason: without it `chat_resume` reads this as a turn that
+        # finished normally, and Retry re-runs the whole pipeline from
+        # nothing — re-doing every edit the dead run made. Team mode is the
+        # expensive path to repeat.
+        q.put({"type": "stopped", "reason": "pipeline_error"})
+    finally:
+        _drive_teardown(root_token, my_lock_gen, prev_root, session_id, cwd,
+                        raw_prompt, final_text, steps, _sub_items, _run_ok,
+                        started_at, q)
+
+
+
+def _drive_awake(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state):
+    # A team run is minutes of work. Locking the screen and walking away
+    # used to let the box idle into sleep mid-run, which suspends the whole
+    # process: the model socket dies and everything already done waits to
+    # be re-done. The assertion lives in a child process, so it goes away
+    # with this run even if the API is killed outright.
+    from aiforge_core.runtime.keep_awake import keep_awake
+    with keep_awake(f"team run session={session_id}"):
+        _run_async_in_thread(lambda: _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state))
+
+
+
 def stream_chat_pipeline(prompt: str, *, cwd: str,
                          session_id: int | None = None,
                          history: list[dict] | None = None,
@@ -631,149 +777,7 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
     prompt, _team_state = _build_team_prompt(cwd, prompt, history, session_id,
                                              resume_brief)
 
-    async def _drive() -> None:
-        _bind_team_session(session_id, q)
-        # Serialize the AIFORGE_REPO_ROOT mutation across concurrent team runs,
-        # cancellably + with feedback so a 2nd concurrent run doesn't stall its
-        # client silently behind a long-running first run.
-        my_lock_gen = _acquire_team_run_lock(session_id, cwd, raw_prompt,
-                                             started_at, q)
-        if my_lock_gen is None:
-            return                       # stopped while waiting — already handled
-        from aiforge_core.runtime import chat_interject
-        # Lock is held — everything from here is inside try/finally so the
-        # env mutation can't leak the lock if it raises.
-        prev_root = os.environ.get("AIFORGE_REPO_ROOT")
-        # Request-scoped repo root: the contextvar isolates concurrent chats on
-        # different repos (the env below is process-global and clobbers). The
-        # contextvar propagates into the ADK run (same async task/thread) and
-        # into asyncio.to_thread tool dispatch (which copies the context); the
-        # os.environ set is kept for the subprocess graph-runner path + as a
-        # cross-thread fallback for any executor that doesn't copy context.
-        root_token = None
-        steps: list[dict] = []
-        final_text = ""
-        # Subtask panel tracking: the Planner emits a plan (all pending); the
-        # Doer then executes it monolithically, so we don't get a per-subtask
-        # signal. We reconcile the panel to the RUN OUTCOME at the end (done on
-        # success, failed on error/stop) — otherwise the panel is frozen at
-        # "0/N pending" even after the run reports complete.
-        _sub_items: list[dict] | None = None
-        _run_ok = False
-        try:
-            os.environ["AIFORGE_REPO_ROOT"] = cwd
-            from aiforge_core.runtime import request_context
-            root_token = request_context.set_repo_root(cwd)
-            # Blocking first-time codegraph build for the pipeline's repo so the
-            # Doer's codegraph tools are available (a fresh repo has no index →
-            # tools silently dropped). Best-effort; never blocks the run on it.
-            try:
-                from aiforge_core.runtime.tools import codegraph as _cg
-                _cg.ensure_indexed(cwd)
-            except Exception:  # noqa: BLE001
-                pass
-            from google.adk.runners import Runner
-            from google.adk.sessions import InMemorySessionService
-            from google.genai import types as gtypes
-
-            from .pipeline import build_pipeline
-
-            # Baseline commit so we can show a Changes diff after a SEQUENTIAL
-            # team run too (the parallel path already emits one; this path never
-            # did). git-init + committed baseline makes HEAD a valid diff base
-            # even in a fresh, non-repo chat workspace.
-            _seq_start_sha = ""
-            try:
-                from .parallel_subtasks import _commit_turn_baseline
-                _seq_start_sha = _commit_turn_baseline(cwd)
-            except Exception:  # noqa: BLE001
-                _seq_start_sha = ""
-
-            # Full context by default — the Researcher + context gatherers feed
-            # the Planner so it decomposes into well-scoped subtasks (this IS
-            # useful, especially for splitting). Opt into a LEAN run with
-            # AIFORGE_CHAT_LEAN=1 when you want the Planner/subtasks fast on a
-            # slow local model (skips researcher + ctx_conventions; the Doer
-            # still has grep/read to pull repo context on demand).
-            _lean = os.environ.get("AIFORGE_CHAT_LEAN", "0") in ("1", "true")
-            pipeline = build_pipeline(
-                project=None,
-                skip_researcher=_lean,
-                skip_conventions=_lean,
-                skip_repomap=_lean,   # the repomap agent can runaway-loop on an
-                                      # empty chat workspace; lean skips it so the
-                                      # Planner (and subtask decomposition) runs.
-            )
-            svc = InMemorySessionService()
-            # Phantom-tool guard: a text-only agent (feedback/validator/learner)
-            # can emit a hallucinated function_call; without this ADK raises
-            # "Tool X not found" and the whole SequentialAgent pipeline aborts
-            # mid-flight. The plugin turns it into a graceful observation so the
-            # run survives to its answer.
-            _plugins = []
-            try:
-                from .tool_error_plugin import PhantomToolGuardPlugin
-                _plugins.append(PhantomToolGuardPlugin())
-            except Exception:  # noqa: BLE001 — resilience is best-effort
-                pass
-            runner = Runner(agent=pipeline, app_name="aiforge-chat",
-                            session_service=svc, auto_create_session=True,
-                            plugins=_plugins)
-            session = await svc.create_session(
-                app_name="aiforge-chat", user_id="chat",
-                state=_team_state,
-            )
-            content = gtypes.Content(
-                role="user", parts=[gtypes.Part.from_text(text=prompt)])
-            kw = dict(user_id="chat", session_id=session.id, new_message=content)
-            try:
-                from google.adk.agents.run_config import RunConfig
-                # High cap — a real multi-agent build legitimately needs
-                # many calls; the repeat_guard stops genuine stuck loops, so
-                # we don't rely on a low ceiling. Tune AIFORGE_CHAT_MAX_LLM_CALLS.
-                kw["run_config"] = RunConfig(max_llm_calls=int(
-                    os.environ.get("AIFORGE_CHAT_MAX_LLM_CALLS", "600")))
-            except Exception:
-                pass
-            agen = runner.run_async(**kw)
-            evres = await _drive_run_events(agen, runner, q, session_id,
-                                            chat_interject, steps)
-            by_role, final = evres["by_role"], evres["final"]
-            _sub_items = evres["sub_items"] if evres["sub_items"] is not None else _sub_items
-            _enhancer_blocked_reason = evres["enhancer_blocked"]
-            msg, _change_events = await _compute_team_answer(
-                svc, session, by_role, final, _enhancer_blocked_reason,
-                cwd, _seq_start_sha)
-            final_text = msg
-            _run_ok = True
-            q.put({"type": "message", "text": msg})
-            for _ev in _change_events:
-                q.put(_ev)
-        except Exception as exc:  # noqa: BLE001
-            q.put({"type": "error", "text": f"pipeline: {exc}"})
-            # The turn ended with no answer, and whatever the run had already
-            # written is on disk. Same structural marker a Stop leaves, for the
-            # same reason: without it `chat_resume` reads this as a turn that
-            # finished normally, and Retry re-runs the whole pipeline from
-            # nothing — re-doing every edit the dead run made. Team mode is the
-            # expensive path to repeat.
-            q.put({"type": "stopped", "reason": "pipeline_error"})
-        finally:
-            _drive_teardown(root_token, my_lock_gen, prev_root, session_id, cwd,
-                            raw_prompt, final_text, steps, _sub_items, _run_ok,
-                            started_at, q)
-
-    def _drive_awake() -> None:
-        # A team run is minutes of work. Locking the screen and walking away
-        # used to let the box idle into sleep mid-run, which suspends the whole
-        # process: the model socket dies and everything already done waits to
-        # be re-done. The assertion lives in a child process, so it goes away
-        # with this run even if the API is killed outright.
-        from aiforge_core.runtime.keep_awake import keep_awake
-        with keep_awake(f"team run session={session_id}"):
-            _run_async_in_thread(_drive)
-
-    t = threading.Thread(target=_drive_awake, daemon=True)
+    t = threading.Thread(target=lambda: _drive_awake(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state), daemon=True)
     t.start()
     flags = {"errored": False, "stopped": False, "saw_real": False}
     yield from _tail_team_queue(q, flags)
