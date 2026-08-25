@@ -97,7 +97,9 @@ def sync_blob(digest: str) -> Response:
     return Response(content=path.read_bytes(), media_type="text/markdown")
 
 
-@router.post("/api/memory/sync/offer")
+@router.post("/api/memory/sync/offer", responses={
+    400: {"description": "Bad request"},
+    413: {"description": "Payload too large"}})
 async def sync_offer(request: Request) -> dict:
     """A spoke offers its manifest; we answer with what we do not hold."""
     payload = await _read_json(request)
@@ -108,7 +110,9 @@ async def sync_offer(request: Request) -> dict:
     return {"want": inbox.wanted(entries if isinstance(entries, list) else [])}
 
 
-@router.post("/api/memory/sync/push", responses={400: {"description": "Bad request"}})
+@router.post("/api/memory/sync/push", responses={
+    400: {"description": "Bad request"},
+    413: {"description": "Payload too large"}})
 async def sync_push(request: Request) -> dict:
     """A spoke sends one record we asked for. ``applied`` says whether it stuck."""
     payload = await _read_json(request)

@@ -383,7 +383,7 @@ def _ticket_out(t) -> dict:
     })
 
 
-@router.post("/api/tickets")
+@router.post("/api/tickets", responses={400: {"description": "Bad request"}})
 def create_ticket(payload: TicketCreate) -> dict:
     parent_id = _parent_id_of(payload.parent_identifier)
     md = dict(payload.metadata or {})

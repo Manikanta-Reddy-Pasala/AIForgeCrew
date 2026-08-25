@@ -72,7 +72,9 @@ def jobs_preview(payload: JobPreviewBody) -> dict:
     return jobs_parse.parse_instructions(payload.instructions)
 
 
-@router.post("/api/jobs", status_code=201, responses={400: {"description": "Bad request"}})
+@router.post("/api/jobs", status_code=201, responses={
+    400: {"description": "Bad request"},
+    503: {"description": "Service unavailable (croniter not installed)"}})
 def jobs_create(payload: JobCreate) -> dict:
     from aiforge_core.jobs import parse as jobs_parse, store as jobs_store
     _require_croniter()
@@ -88,7 +90,9 @@ def jobs_create(payload: JobCreate) -> dict:
         project=payload.project, next_run_at=nxt, kind=_kind)
 
 
-@router.post("/api/jobs/script", status_code=201, responses={400: {"description": "Bad request"}})
+@router.post("/api/jobs/script", status_code=201, responses={
+    400: {"description": "Bad request"},
+    503: {"description": "Service unavailable (croniter not installed)"}})
 def jobs_create_script(payload: JobScriptCreate) -> dict:
     """Finalize a script job: write the approved script to the local jobs
     folder and register a cron job that RUNS it (deterministic — no LLM per

@@ -155,7 +155,7 @@ def _role_view() -> dict:
             "stale_url": url if (is_admin and url) else ""}
 
 
-@router.get("/api/admin/sync-status")
+@router.get("/api/admin/sync-status", responses={403: {"description": "Forbidden (loopback-only)"}})
 def sync_status(request: Request, probe: Annotated[int, Query()] = 1) -> dict:
     _require_loopback(request)
     from aiforge_core.memory.sync import inbox as _inbox
@@ -175,7 +175,8 @@ def sync_status(request: Request, probe: Annotated[int, Query()] = 1) -> dict:
             "probed": bool(probe)}
 
 
-@router.get("/admin", response_class=HTMLResponse)
+@router.get("/admin", response_class=HTMLResponse,
+            responses={403: {"description": "Forbidden (loopback-only)"}})
 def admin_page(request: Request) -> HTMLResponse:
     # Gated identically to the JSON: a page that refuses to render while its
     # data endpoint answers the whole LAN would only LOOK protected.
