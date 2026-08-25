@@ -97,7 +97,7 @@ def _nearest_chain(briefs: list[dict], vecs: dict) -> list[dict]:
     while remaining:
         last = vecs[ordered[-1]["key"]]
         best_i = max(range(len(remaining)),
-                     key=lambda i: _cos(last, vecs[remaining[i]["key"]]))
+                     key=lambda i, last=last: _cos(last, vecs[remaining[i]["key"]]))
         ordered.append(remaining.pop(best_i))
     return ordered + tail
 
