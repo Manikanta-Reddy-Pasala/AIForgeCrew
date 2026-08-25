@@ -37,17 +37,11 @@ class TicketRoute:
 _DEFAULT_MIN_CONF: float = 0.6
 
 
-def _score(spec: WorkflowSpec, *,
-           text: str,
-           attachments: Iterable[str],
-           intent_action: str | None) -> tuple[float, list[str]]:
-    """Return (score, hit_reasons) for one spec against one ticket."""
-    text_lc = text.lower()
-    atts = set(attachments or [])
+def _apply_trigger_scores(triggers, text_lc, atts, intent_action):
+    """Score one spec's trigger table against the ticket text/attachments/intent.
+    Returns (score, hit_reasons)."""
     score = 0.0
     reasons: list[str] = []
-
-    triggers = spec.triggers or {}
     kws_any = triggers.get("keywords_any") or []
     if kws_any and any(kw.lower() in text_lc for kw in kws_any):
         score += 0.5
@@ -73,6 +67,17 @@ def _score(spec: WorkflowSpec, *,
         score += 0.2
         reasons.append(f"intent_action:{intent_action}")
 
+    return score, reasons
+
+
+def _score(spec: WorkflowSpec, *,
+           text: str,
+           attachments: Iterable[str],
+           intent_action: str | None) -> tuple[float, list[str]]:
+    """Return (score, hit_reasons) for one spec against one ticket."""
+    text_lc = text.lower()
+    atts = set(attachments or [])
+    score, reasons = _apply_trigger_scores(spec.triggers or {}, text_lc, atts, intent_action)
     return min(score, 1.0), reasons
 
 

@@ -93,6 +93,23 @@ def retrieve(kr_id: str | None = None, *, recent_sessions: int = 2,
     return out
 
 
+def _objective_block(o) -> str:
+    """Render the OBJECTIVE section (title + optional context)."""
+    return (f"<OBJECTIVE id=\"{o['id']}\">\n{o['title']}"
+            + (f"\n{o['context']}" if o.get("context") else "")
+            + "\n</OBJECTIVE>")
+
+
+def _active_task_block(kr) -> str:
+    """Render the ACTIVE_TASK section (id/title + optional status/metrics/body)."""
+    head = f"{kr['id']} · {kr['title']}"
+    if kr.get("status"):
+        head += f" [{kr['status']}]"
+    met = f"\nMetrics: {kr['metrics']}" if kr.get("metrics") else ""
+    body = f"\n{kr['body']}" if kr.get("body") else ""
+    return f"<ACTIVE_TASK>\n{head}{met}{body}\n</ACTIVE_TASK>"
+
+
 def compile_prompt(ctx: dict) -> str:
     """Render the retrieved context into a compact system-prompt block. Empty
     sections are dropped, so a bare graph yields an empty string."""
@@ -101,17 +118,10 @@ def compile_prompt(ctx: dict) -> str:
     parts: list[str] = []
     o = ctx.get("objective")
     if o:
-        parts.append(f"<OBJECTIVE id=\"{o['id']}\">\n{o['title']}"
-                     + (f"\n{o['context']}" if o.get("context") else "")
-                     + "\n</OBJECTIVE>")
+        parts.append(_objective_block(o))
     kr = ctx.get("active_kr")
     if kr:
-        head = f"{kr['id']} · {kr['title']}"
-        if kr.get("status"):
-            head += f" [{kr['status']}]"
-        met = f"\nMetrics: {kr['metrics']}" if kr.get("metrics") else ""
-        body = f"\n{kr['body']}" if kr.get("body") else ""
-        parts.append(f"<ACTIVE_TASK>\n{head}{met}{body}\n</ACTIVE_TASK>")
+        parts.append(_active_task_block(kr))
     learn = ctx.get("learnings") or []
     if learn:
         lines = "\n".join(f"- {l['rule']}" for l in learn)
