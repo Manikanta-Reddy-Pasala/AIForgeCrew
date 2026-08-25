@@ -130,7 +130,8 @@ export default function AgentSettings() {
   // then inherits the global default), which used to break the model+url
   // equality match and snap the select back to "— pick a model —".
   const [picked, setPicked] = useState<Record<string, string>>({});
-  const [, setAutoBusy] = useState(false);
+  const [autoBusy, setAutoBusy] = useState(false);
+  void autoBusy;
 
   async function loadModels() {
     try { setModels((await chatApi.models()).models); } catch { /* */ }

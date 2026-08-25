@@ -120,7 +120,8 @@ export default function Home() {
   // Test (bulk or per-row). One generic source: enter base_url + token,
   // Test, and every openai_compatible model dropdown fills from /v1/models —
   // no per-model hardcoding.
-  const [, setDiscoveredModels] = useState<string[]>([]);
+  const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
+  void discoveredModels;
 
   // bulk "apply to all" widget
   const [bulk, setBulk] = useState<BulkState>({
