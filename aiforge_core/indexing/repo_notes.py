@@ -116,9 +116,9 @@ def _layout(worktree: str) -> list[str]:
 
 
 _CLASS_MAPPING_RE = re.compile(
-    r'@RequestMapping\s*\(\s*(?:value\s*=\s*)?["]([^"]+)["]')
+    r'@RequestMapping\s*\(\s*(?:value\s*=\s*)?"([^"]+)"')
 _METHOD_MAPPING_RE = re.compile(
-    r'@(Get|Post|Put|Delete|Patch)Mapping\s*\(\s*(?:value\s*=\s*)?["]([^"]+)["]')
+    r'@(Get|Post|Put|Delete|Patch)Mapping\s*\(\s*(?:value\s*=\s*)?"([^"]+)"')
 
 
 def _controller_endpoints(content: str, cls_path: str) -> list[str]:
