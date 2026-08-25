@@ -92,7 +92,7 @@ def _registry_repos(prompt_low: str, add) -> None:
 def _prompt_path_repos(prompt: str, add) -> None:
     """Source 2: explicit filesystem paths in the prompt — ONLY if they are git
     repos (an analysis targets repos, not an incidental /etc/nginx mention)."""
-    for m in re.findall(r"(?:~|/)[\w./\-]+", prompt):
+    for m in re.findall(r"[~/][\w./\-]+", prompt):
         ap = os.path.abspath(os.path.expanduser(m.rstrip("/")))
         if _is_git_repo(ap):
             add(os.path.basename(ap), ap)
@@ -183,7 +183,7 @@ def extract_topics(prompt: str) -> list[str]:
     # Strip filesystem paths first — otherwise "analyze /home/ai/codeRepo/X and
     # /home/ai/codeRepo/Y" turns the path segments ("home", "codeRepo", the repo
     # names) into bogus "topics".
-    p = re.sub(r"(?:~|/)[\w./\-]+", " ", prompt or "")
+    p = re.sub(r"[~/][\w./\-]+", " ", prompt or "")
     m = re.search(
         r"\b(?:topics?|explore|analy[sz]e|cover(?:ing)?|about|on|including|"
         r"focus(?:ing)?\s+on)\b[:\s]+(.{3,240})", p, re.IGNORECASE)
