@@ -374,6 +374,51 @@ def _force_take(rpm: float) -> None:
             del _sends[:len(_sends) - cap]
 
 
+def _overrun_through(waited: float, max_wait_s: float, rpm: float,
+                     hold_s: float) -> None:
+    """Let a call past its wait budget proceed, accounting for the overrun.
+
+    A call let through past ``max_wait_s`` still left the box, so ``_force_take``
+    appends it to the window like any other send: waiters decide independently,
+    so several can overrun at once under load, and a window that did not count
+    them would keep reporting a box at its limit as idle.
+    """
+    log.warning(
+        "llm.rate_ceiling_overrun: waited %.1fs of a %.1fs budget "
+        "at llm_max_rpm=%g (hold %.1fs) — letting this call through "
+        "rather than failing it. Raise the ceiling in Settings -> "
+        "Agent limits if this is common.",
+        waited, max_wait_s, rpm, hold_s)
+    if rpm > 0:
+        _force_take(rpm)
+
+
+def _acquire_pass(provider) -> tuple[bool, float, float, float]:
+    """One evaluation of the global ceiling. Returns
+    ``(done, sleep_s, rpm, hold_s)``: ``done`` when the call may proceed now
+    (uncapped, or a slot was claimed); otherwise ``sleep_s`` is how long to
+    park before re-evaluating.
+
+    Re-reads the ceiling every pass so an operator who raises it mid-run is not
+    made to wait out the old number. HOLD FIRST, and claim only once it is
+    clear: claiming a slot and handing it back when a hold barred the send
+    needed a "give one back" that, with no ownership token, deleted the newest
+    row on the MACHINE — another process's real send — systematically
+    under-counting real traffic during exactly the holds we are already over
+    the provider's limit for.
+    """
+    rpm = global_rpm()
+    hold_s = held_for(provider)
+    window_s = 0.0
+    if hold_s <= 0:
+        if rpm <= 0:
+            return True, 0.0, rpm, hold_s
+        claimed, window_s = _take(rpm, provider)
+        if claimed:
+            return True, 0.0, rpm, hold_s
+    return False, max(hold_s, window_s), rpm, hold_s
+
+
 def acquire_global(*, max_wait_s: float = 120.0,
                    provider: "str | None" = None) -> float:
     """Block until the operator's global rate ceiling allows one more request.
@@ -408,45 +453,20 @@ def acquire_global(*, max_wait_s: float = 120.0,
     a box at its limit as idle.
     """
     global _waiting
-    rpm = global_rpm()
-    if rpm <= 0 and held_for(provider) <= 0:
+    if global_rpm() <= 0 and held_for(provider) <= 0:
         return 0.0
     waited = 0.0
     with _WAIT_LOCK:
         _waiting += 1
     try:
         while True:
-            # Re-read the ceiling every pass: an operator who raises it mid-run
-            # should not wait out the old number. (At most once per sleep step,
-            # so this is a settings read every few seconds per parked caller.)
-            rpm = global_rpm()
-            # HOLD FIRST, and claim only once it is clear. Claiming a slot and
-            # handing it back when a hold turned out to bar the send needed a
-            # "give one back" operation — and with no ownership token that
-            # deleted the newest row on the MACHINE, i.e. another process's
-            # real send. During a hold, which is exactly when we are already
-            # over the provider's limit, that made the shared window
-            # systematically under-count real traffic.
-            hold_s = held_for(provider)
-            window_s = 0.0
-            if hold_s <= 0:
-                if rpm <= 0:
-                    return waited
-                claimed, window_s = _take(rpm, provider)
-                if claimed:
-                    return waited
-            sleep_s = max(hold_s, window_s)
+            done, sleep_s, rpm, hold_s = _acquire_pass(provider)
+            if done:
+                return waited
             if sleep_s <= 0:
                 continue
             if waited + sleep_s > max_wait_s:
-                log.warning(
-                    "llm.rate_ceiling_overrun: waited %.1fs of a %.1fs budget "
-                    "at llm_max_rpm=%g (hold %.1fs) — letting this call through "
-                    "rather than failing it. Raise the ceiling in Settings -> "
-                    "Agent limits if this is common.",
-                    waited, max_wait_s, rpm, hold_s)
-                if rpm > 0:
-                    _force_take(rpm)
+                _overrun_through(waited, max_wait_s, rpm, hold_s)
                 return waited
             _step = min(sleep_s, 5.0)
             time.sleep(_step)
@@ -454,6 +474,39 @@ def acquire_global(*, max_wait_s: float = 120.0,
     finally:
         with _WAIT_LOCK:
             _waiting -= 1
+
+def _drain_bucket(buckets: dict, provider: str, limit: float, amount: float,
+                  sleeps: list, deducted: list) -> None:
+    """Try to take ``amount`` from one bucket: record the wait it demands, and
+    (when it had room) the deduction so a blocked sibling can refund it."""
+    b = _bucket(buckets, provider, limit)
+    s = b.take(amount)
+    sleeps.append(s)
+    if s <= 0.0:
+        deducted.append((b, amount))
+
+
+def _acquire_provider_pass(provider: str, rpm: float, tpm: float,
+                           tokens_estimate: int) -> float:
+    """One locked evaluation of ``provider``'s buckets. Returns 0.0 when the
+    call may proceed (every needed bucket had room), else the seconds to sleep
+    before retrying. Refunds any bucket that drained when another blocked us."""
+    sleeps: list[float] = []
+    deducted: list[tuple] = []   # (bucket, amount) that actually drained
+    if rpm > 0:
+        _drain_bucket(_RPM_BUCKETS, provider, rpm, 1.0, sleeps, deducted)
+    if tpm > 0 and tokens_estimate > 0:
+        _drain_bucket(_TPM_BUCKETS, provider, tpm, float(tokens_estimate),
+                      sleeps, deducted)
+    if all(s <= 0.0 for s in sleeps):
+        return 0.0
+    # One bucket had room and DEDUCTED, but another blocked us → we'll sleep +
+    # retry. REFUND the drained bucket(s), else each retry re-charges them and
+    # the RPM budget bleeds down while we wait on TPM (the old "no refund
+    # needed" comment was wrong — it ignored retries).
+    for b, amt in deducted:
+        b.tokens = min(b.capacity, b.tokens + amt)
+    return max(sleeps)
 
 
 def acquire(provider: str, *,
@@ -472,29 +525,9 @@ def acquire(provider: str, *,
     waited = 0.0
     while True:
         with lock:
-            sleeps: list[float] = []
-            deducted: list[tuple] = []   # (bucket, amount) that actually drained
-            if rpm > 0:
-                b = _bucket(_RPM_BUCKETS, provider, rpm)
-                s = b.take(1.0)
-                sleeps.append(s)
-                if s <= 0.0:
-                    deducted.append((b, 1.0))
-            if tpm > 0 and tokens_estimate > 0:
-                b = _bucket(_TPM_BUCKETS, provider, tpm)
-                s = b.take(float(tokens_estimate))
-                sleeps.append(s)
-                if s <= 0.0:
-                    deducted.append((b, float(tokens_estimate)))
-            if all(s <= 0.0 for s in sleeps):
-                return waited
-            # One bucket had room and DEDUCTED, but another blocked us → we'll
-            # sleep + retry. REFUND the drained bucket(s), else each retry
-            # re-charges them and the RPM budget bleeds down while we wait on TPM
-            # (the old "no refund needed" comment was wrong — it ignored retries).
-            for b, amt in deducted:
-                b.tokens = min(b.capacity, b.tokens + amt)
-            sleep_s = max(sleeps)
+            sleep_s = _acquire_provider_pass(provider, rpm, tpm, tokens_estimate)
+        if sleep_s <= 0.0:
+            return waited
         if waited + sleep_s > max_wait_s:
             raise TimeoutError(
                 f"rate limit on {provider}: would wait "
