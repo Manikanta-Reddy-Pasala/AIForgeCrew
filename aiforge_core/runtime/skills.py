@@ -84,36 +84,68 @@ def _slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", (name or "skill").lower()).strip("-") or "skill"
 
 
-def _parse_skill_md(text: str, default_name: str) -> Skill | None:
+def _split_frontmatter(text: str) -> tuple[dict, str]:
+    """Split a SKILL.md into its parsed YAML front-matter dict and its body. No
+    front-matter (or unparseable YAML) → ({}, whole text)."""
     m = _FRONTMATTER_RE.match(text or "")
+    if not m:
+        return {}, text or ""
     meta: dict = {}
-    body = text or ""
-    if m:
-        body = m.group(2).strip()
-        if yaml is not None:
-            try:
-                meta = yaml.safe_load(m.group(1)) or {}
-            except Exception:  # noqa: BLE001
-                meta = {}
-        if not isinstance(meta, dict):
+    if yaml is not None:
+        try:
+            meta = yaml.safe_load(m.group(1)) or {}
+        except Exception:  # noqa: BLE001
             meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    return meta, m.group(2).strip()
+
+
+def _skill_triggers(meta: dict) -> tuple:
+    """Lowercased trigger phrases from ``triggers`` / ``when_to_use`` (a list or
+    a comma string)."""
+    raw = meta.get("triggers") or meta.get("when_to_use") or []
+    if isinstance(raw, str):
+        raw = [t.strip() for t in raw.split(",")]
+    return tuple(str(t).lower() for t in raw if isinstance(t, str) and t.strip())
+
+
+def _parse_skill_md(text: str, default_name: str) -> Skill | None:
+    meta, body = _split_frontmatter(text)
     name = str(meta.get("name") or default_name).strip()
-    desc = str(meta.get("description") or "").strip()
-    triggers_raw = meta.get("triggers") or meta.get("when_to_use") or []
-    if isinstance(triggers_raw, str):
-        triggers_raw = [t.strip() for t in triggers_raw.split(",")]
-    triggers = tuple(str(t).lower() for t in triggers_raw
-                     if isinstance(t, str) and t.strip())
+    if not name or not body:
+        return None
     always = str(meta.get("always", "")).lower() in ("true", "yes", "1") \
         or str(meta.get("type", "")).lower() == "repo"
     try:
         priority = int(meta.get("priority", 0))
     except (TypeError, ValueError):
         priority = 0
-    if not name or not body:
+    return Skill(name=name,
+                 description=str(meta.get("description") or "").strip(),
+                 triggers=_skill_triggers(meta), body=body, source="",
+                 always=always, priority=priority)
+
+
+def _skill_md_path(child: Path) -> "Path | None":
+    """The SKILL markdown for one directory entry: ``<dir>/SKILL.md`` (dir form)
+    or a flat ``*.md`` file. None for anything else."""
+    if child.is_dir():
+        cand = child / "SKILL.md"
+        return cand if cand.is_file() else None
+    return child if child.suffix == ".md" else None
+
+
+def _load_skill_file(md: Path, default_name: str) -> "Skill | None":
+    """Parse one SKILL markdown file into a Skill, or None on any error."""
+    try:
+        sk = _parse_skill_md(md.read_text(encoding="utf-8", errors="ignore"),
+                             default_name=default_name)
+    except Exception:  # noqa: BLE001
         return None
-    return Skill(name=name, description=desc, triggers=triggers, body=body,
-                 source="", always=always, priority=priority)
+    if sk is None:
+        return None
+    return Skill(**{**sk.__dict__, "source": str(md)})
 
 
 def _scan_dir(root: Path) -> list[Skill]:
@@ -123,22 +155,12 @@ def _scan_dir(root: Path) -> list[Skill]:
         return out
     try:
         for child in sorted(root.iterdir()):
-            md: Path | None = None
-            if child.is_dir():
-                cand = child / "SKILL.md"
-                if cand.is_file():
-                    md = cand
-            elif child.suffix == ".md":
-                md = child
+            md = _skill_md_path(child)
             if md is None:
                 continue
-            try:
-                sk = _parse_skill_md(md.read_text(encoding="utf-8", errors="ignore"),
-                                     default_name=child.stem)
-            except Exception:  # noqa: BLE001
-                continue
+            sk = _load_skill_file(md, child.stem)
             if sk is not None:
-                out.append(Skill(**{**sk.__dict__, "source": str(md)}))
+                out.append(sk)
     except Exception:  # noqa: BLE001
         return out
     return out
@@ -386,6 +408,43 @@ def auto_context(query: str, cwd: str | None = None, k: int = 4) -> str:
     return render(select(query, cwd, k))
 
 
+def _skill_frontmatter(name: str, description: str, trig: list[str],
+                       scope: str) -> str:
+    """Render the OKF v0.1 SKILL.md front-matter block. ``type:`` is the one
+    required field; ``name`` doubles as the OKF title; triggers/scope are
+    preserved custom keys."""
+    import json as _json
+    front = "---\ntype: skill\n"
+    front += "name: " + _json.dumps(name) + "\n"
+    if description:
+        front += "description: " + _json.dumps(description.strip()) + "\n"
+    if trig:
+        front += "triggers: [" + ", ".join(_json.dumps(t) for t in trig) + "]\n"
+    front += "scope: " + _json.dumps((scope or "global").lower()) + "\n"
+    front += "---\n"
+    return front
+
+
+def _record_skill_memory(name: str, description: str, body: str,
+                         triggers: list[str] | None, scope: str,
+                         cwd: str | None) -> bool:
+    """Mirror the skill into knowledge memory so unified_query / the graph
+    surface it alongside facts. Best-effort — the SKILL.md is the executable
+    playbook; this entry just makes it retrievable cross-source."""
+    try:
+        from aiforge_core.runtime.tools.memory_write import memory_write as _mw
+        res = _mw(
+            text=f"SKILL: {name} — {description}".strip(" —")
+                 + (f"\n{body[:600]}" if body else ""),
+            kind="skill",
+            tags=["skill", scope]
+                 + ([t.strip().lower() for t in (triggers or [])][:5]),
+            decision=False, repo=_repo_name(cwd))
+        return bool(isinstance(res, dict) and res.get("ok", True))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def write_skill(name: str, description: str, body: str,
                 triggers: list[str] | None = None, *,
                 cwd: str | None = None, scope: str = "global") -> dict:
@@ -403,46 +462,15 @@ def write_skill(name: str, description: str, body: str,
     else:
         base = _global_dir()
     skill_dir = base / _slug(name)
-    fm = {"name": name}
-    if description:
-        fm["description"] = description.strip()
     trig = [t.strip().lower() for t in (triggers or []) if str(t).strip()]
-    import json as _json
-    # OKF v0.1: `type:` is the one required frontmatter field. `name` doubles as
-    # the OKF `title`; `triggers`/`scope` are preserved custom keys.
-    front = "---\n"
-    front += "type: skill\n"
-    front += "name: " + _json.dumps(fm["name"]) + "\n"
-    if description:
-        front += "description: " + _json.dumps(description.strip()) + "\n"
-    if trig:
-        front += "triggers: [" + ", ".join(_json.dumps(t) for t in trig) + "]\n"
-    front += "scope: " + _json.dumps((scope or "global").lower()) + "\n"
-    front += "---\n"
+    front = _skill_frontmatter(name, description, trig, scope)
     try:
         skill_dir.mkdir(parents=True, exist_ok=True)
         path = skill_dir / "SKILL.md"
         path.write_text(front + "\n" + body + "\n", encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
-    # Also record the learning in the knowledge memory so unified_query /
-    # the graph surface it alongside facts — the SKILL.md is the executable
-    # playbook, the memory entry makes it retrievable cross-source.
-    mem = False
-    try:
-        from aiforge_core.runtime.tools.memory_write import memory_write as _mw
-        repo = _repo_name(cwd)
-        res = _mw(
-            text=f"SKILL: {name} — {description}".strip(" —")
-                 + (f"\n{body[:600]}" if body else ""),
-            kind="skill",
-            tags=["skill", scope] + ([t.strip().lower() for t in (triggers or [])][:5]),
-            decision=False,
-            repo=repo,
-        )
-        mem = bool(isinstance(res, dict) and res.get("ok", True))
-    except Exception:  # noqa: BLE001
-        mem = False
+    mem = _record_skill_memory(name, description, body, triggers, scope, cwd)
     return {"ok": True, "name": name, "path": str(path), "memory": mem}
 
 
@@ -465,6 +493,25 @@ def _deletable_roots(cwd: str | None) -> list[Path]:
     return roots
 
 
+def _unlink_skill_file(src: str, roots) -> "str | None":
+    """Unlink one skill's backing file if it lives under a deletable root; also
+    drop a now-empty ``<name>/`` dir left by the SKILL.md form. Returns the path
+    removed, or None (synthetic/out-of-bounds/already gone). Raises OSError on a
+    real unlink failure the caller surfaces."""
+    if not src or src == "builtin":
+        return None                # no on-disk path (already gone / synthetic)
+    p = Path(src)
+    if not any(_within(p, r) for r in roots):
+        return None
+    try:
+        p.unlink()
+    except FileNotFoundError:
+        return None
+    if p.name == "SKILL.md" and p.parent.is_dir() and not any(p.parent.iterdir()):
+        p.parent.rmdir()
+    return str(p)
+
+
 def delete_skill(name: str, cwd: str | None = None) -> dict:
     """Delete the skill(s) named ``name`` by unlinking the backing file (custom
     OR shipped default). Bounded to the playbook dirs. Returns
@@ -477,22 +524,12 @@ def delete_skill(name: str, cwd: str | None = None) -> dict:
     for sk in load(cwd):
         if sk.name != name:
             continue
-        src = getattr(sk, "source", "")
-        if not src or src == "builtin":
-            continue  # no on-disk path to unlink (already gone / synthetic)
-        p = Path(src)
-        if not any(_within(p, r) for r in roots):
-            continue
         try:
-            p.unlink()
-            # drop the now-empty <name>/ dir left by the SKILL.md form
-            if p.name == "SKILL.md" and p.parent.is_dir() and not any(p.parent.iterdir()):
-                p.parent.rmdir()
-            removed.append(str(p))
-        except FileNotFoundError:
-            pass
+            got = _unlink_skill_file(getattr(sk, "source", ""), roots)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
+        if got:
+            removed.append(got)
     if not removed:
         return {"ok": False, "error": f"no deletable skill named {name!r}"}
     return {"ok": True, "name": name, "removed": removed}
