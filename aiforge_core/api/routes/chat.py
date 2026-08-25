@@ -984,6 +984,146 @@ def _maybe_downgrade_team(team, prompt, history, cwd, session_id):
 _TERMINAL_SUBTASK = {"done", "failed", "skipped", "won", "planned"}
 
 
+def _note_staleness_notice(cwd):
+    """Staleness auto-curation: a session bound to a jira/confluence context
+    folder re-verifies that note when it crosses AIFORGE_NOTE_STALE_HOURS. The
+    pre-check is cheap + network-free; the curation re-fetches the source so it
+    is HARD time-boxed — a dead Jira must never stall the turn. Yields a curator
+    thought ONLY when something actually drifted. FAILS OPEN."""
+    try:
+        from aiforge_core.runtime import note_curator as _nc
+        _stale_note = _nc.stale_note_path(cwd)
+        if _stale_note:
+            import concurrent.futures as _ncf
+            _cres = None
+            _nex = _ncf.ThreadPoolExecutor(max_workers=1)
+            try:
+                _nbudget = float(os.environ.get(
+                    "AIFORGE_NOTE_CURATE_BUDGET_S", "10"))
+                _cres = _nex.submit(_nc.curate_note,
+                                    _stale_note).result(timeout=_nbudget)
+            except Exception as _nexc:  # noqa: BLE001 — timeout/any → skip
+                _af_log.debug("note curation timed out/failed: %s", _nexc)
+            finally:
+                _nex.shutdown(wait=False)
+            # Visible only when something actually drifted — a silent
+            # freshness bump shouldn't add chat noise.
+            if _cres and _cres.get("ok") and _cres.get("changes"):
+                yield {"type": "thought", "role": "curator",
+                       "text": ("Auto-curated stale note "
+                                f"{os.path.basename(_stale_note)}: "
+                                + "; ".join(_cres["changes"]))}
+    except Exception as _nexc2:  # noqa: BLE001 — must never break a turn
+        _af_log.debug("note staleness pass skipped: %s", _nexc2)
+
+
+def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
+                       history):
+    """Gather the (side-effecting) inputs to the task-type router and return its
+    decision. The heavy which-path decision is a PURE function in chat_router;
+    here we only probe parallel capability, greenfield-ness, follow-up-ness, the
+    LLM task class (fresh turns only), and whether Pipeline-approvals force the
+    gated sequential path — each failing safe."""
+    try:
+        psub_on = _pp.enabled()
+    except Exception:  # noqa: BLE001
+        psub_on = parallel_team
+    try:
+        greenfield = _pp._is_greenfield(cwd)
+    except Exception:  # noqa: BLE001
+        greenfield = True
+    try:
+        from aiforge_core.runtime import turn_router as _tr2
+        fresh = not _tr2.is_followup(history)
+    except Exception:  # noqa: BLE001
+        fresh = True
+    cat = None
+    if fresh:
+        try:
+            from aiforge_core.runtime import task_router as _tr
+            cat = _tr.classify_task(prompt, history=history, cwd=cwd)
+        except Exception:  # noqa: BLE001 — never break routing on the classifier
+            cat = None
+    team_approvals = bool(team)   # fail safe → gated sequential
+    try:
+        from aiforge_core.config import approval_settings as _aps
+        team_approvals = bool(team and _aps.required("team"))
+    except Exception:  # noqa: BLE001
+        pass
+    from aiforge_core.runtime import chat_router as _cr
+    return _cr.decide(
+        prompt, agent_mode=agent_mode, team=team, psub_on=psub_on,
+        greenfield=greenfield, fresh=fresh, cat=cat,
+        team_approvals=team_approvals,
+        auto_escalate=os.environ.get("AIFORGE_AUTO_ESCALATE", "1")
+        not in ("0", "false"))
+
+
+def _run_capture_pass(_rc, prompt, repo, cwd, session_id):
+    """Classify → store one capture, HARD wall-clock bounded so a degraded LLM
+    can never stall the turn. Returns ``(cls, stored, intent)`` or None (no
+    capture / timeout / "none" category). Recognition-only gate intent — sets NO
+    flag; the UI offers an explicit opt-in. Fully fail-open + fail-fast."""
+    import concurrent.futures as _cf
+
+    def _capture_pass():
+        c = _rc.classify(prompt, repo=repo, session_id=session_id)
+        if c.get("category") == "none":
+            return None
+        stored = _rc.store(c, repo=repo, session_id=session_id, repo_root=cwd)
+        return c, stored, _rc.recognize_gate_intent(c)
+
+    ex = _cf.ThreadPoolExecutor(max_workers=1)
+    try:
+        budget = float(os.environ.get("AIFORGE_CAPTURE_BUDGET_S", "6"))
+        return ex.submit(_capture_pass).result(timeout=budget)
+    except Exception as exc:  # noqa: BLE001 — timeout/any → no capture
+        _af_log.debug("rule_capture pass timed out/failed: %s", exc)
+        return None
+    finally:
+        ex.shutdown(wait=False)
+
+
+def _rule_capture_pass(prompt, cwd, session_id, pctx):
+    """Rule/Memory/Feedback capture (deterministic, always-on) — runs BEFORE any
+    agent so a directive/fact/correction stated in passing is captured + applied.
+    A pre-filter skips the LLM classify for ordinary turns; the classify itself is
+    HARD wall-clock bounded. Yields a ``captured`` event and, for a PURE capture
+    with no actionable task, a terminal ack + ``done`` (setting ``pctx["done"]``
+    so the caller returns). FAILS OPEN."""
+    try:
+        from aiforge_core.runtime import rule_capture as _rc
+        _repo = _rc.repo_key(cwd) or "repo"
+        # PRE-FILTER: only spend an LLM classify when the message carries a
+        # preference/directive cue. Ordinary turns ("hi", "fix the bug")
+        # skip the classifier entirely — no per-turn LLM cost.
+        if _rc.should_classify(prompt):
+            import concurrent.futures as _cf
+
+            _res = _run_capture_pass(_rc, prompt, _repo, cwd, session_id)
+            if _res is not None:
+                _cls, _stored, _intent = _res
+                _ev = {"type": "captured", "id": _stored.get("id"),
+                       "category": _cls["category"], "scope": _cls["scope"],
+                       "text": _cls.get("canonical", ""), "repo": _repo}
+                if _intent:
+                    _ev["gate_intent"] = _intent     # UI offers opt-in pill
+                yield _ev
+                # PURE capture (no actionable task) → brief ack, skip the
+                # agent — UNLESS a deterministic actionable-intent backstop
+                # fires (e.g. "...and now fix the bug"): never drop a real
+                # task on the classifier's say-so.
+                if not _cls.get("task_present", True) \
+                        and not _rc.looks_actionable(prompt):
+                    yield {"type": "message",
+                           "text": f"Got it — saved as {_cls['category']} "
+                                   f"({_cls['scope']})."}
+                    yield {"type": "done"}
+                    return
+    except Exception as _exc:  # noqa: BLE001 — capture must never break a turn
+        _af_log.debug("rule_capture pre-agent pass failed: %s", _exc)
+
+
 def _drive_produce_stream(_events, st: dict, steps: list, run, session_id,
                           turn_t0, turn_mode, clog, emit) -> None:
     """Consume the producer's event stream: clean + route + publish each event,
@@ -1565,88 +1705,15 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # pre-check is cheap and network-free; the actual curation re-fetches
         # the source, so it's HARD time-boxed (like the rule_capture pass
         # below) — a dead Jira must never stall the chat turn. FAILS OPEN.
-        try:
-            from aiforge_core.runtime import note_curator as _nc
-            _stale_note = _nc.stale_note_path(cwd)
-            if _stale_note:
-                import concurrent.futures as _ncf
-                _cres = None
-                _nex = _ncf.ThreadPoolExecutor(max_workers=1)
-                try:
-                    _nbudget = float(os.environ.get(
-                        "AIFORGE_NOTE_CURATE_BUDGET_S", "10"))
-                    _cres = _nex.submit(_nc.curate_note,
-                                        _stale_note).result(timeout=_nbudget)
-                except Exception as _nexc:  # noqa: BLE001 — timeout/any → skip
-                    _af_log.debug("note curation timed out/failed: %s", _nexc)
-                finally:
-                    _nex.shutdown(wait=False)
-                # Visible only when something actually drifted — a silent
-                # freshness bump shouldn't add chat noise.
-                if _cres and _cres.get("ok") and _cres.get("changes"):
-                    yield {"type": "thought", "role": "curator",
-                           "text": ("Auto-curated stale note "
-                                    f"{os.path.basename(_stale_note)}: "
-                                    + "; ".join(_cres["changes"]))}
-        except Exception as _nexc2:  # noqa: BLE001 — must never break a turn
-            _af_log.debug("note staleness pass skipped: %s", _nexc2)
+        yield from _note_staleness_notice(cwd)
         # Rule / Memory / Feedback capture (deterministic, always-on) — runs
         # BEFORE any agent, independent of the agent's model, so a directive /
         # fact / correction stated in passing is captured + applied. FAILS OPEN:
         # any error here is swallowed and the normal run proceeds.
-        try:
-            from aiforge_core.runtime import rule_capture as _rc
-            _repo = _rc.repo_key(cwd) or "repo"
-            # PRE-FILTER: only spend an LLM classify when the message carries a
-            # preference/directive cue. Ordinary turns ("hi", "fix the bug")
-            # skip the classifier entirely — no per-turn LLM cost.
-            if _rc.should_classify(prompt):
-                import concurrent.futures as _cf
-
-                def _capture_pass():
-                    _c = _rc.classify(prompt, repo=_repo, session_id=session_id)
-                    if _c.get("category") == "none":
-                        return None
-                    _s = _rc.store(_c, repo=_repo, session_id=session_id,
-                                   repo_root=cwd)
-                    # Recognition ONLY: detect a possible gate-disable request so
-                    # the UI can OFFER an explicit opt-in. It sets NO flag.
-                    _i = _rc.recognize_gate_intent(_c)
-                    return _c, _s, _i
-
-                # HARD wall-clock bound on the whole capture pass so a degraded
-                # LLM can never stall the chat turn. Fully fail-open + fail-fast.
-                _res = None
-                _ex = _cf.ThreadPoolExecutor(max_workers=1)
-                try:
-                    _budget = float(os.environ.get("AIFORGE_CAPTURE_BUDGET_S", "6"))
-                    _res = _ex.submit(_capture_pass).result(timeout=_budget)
-                except Exception as _cexc:  # noqa: BLE001 — timeout/any → no capture
-                    _af_log.debug("rule_capture pass timed out/failed: %s", _cexc)
-                finally:
-                    _ex.shutdown(wait=False)
-
-                if _res is not None:
-                    _cls, _stored, _intent = _res
-                    _ev = {"type": "captured", "id": _stored.get("id"),
-                           "category": _cls["category"], "scope": _cls["scope"],
-                           "text": _cls.get("canonical", ""), "repo": _repo}
-                    if _intent:
-                        _ev["gate_intent"] = _intent     # UI offers opt-in pill
-                    yield _ev
-                    # PURE capture (no actionable task) → brief ack, skip the
-                    # agent — UNLESS a deterministic actionable-intent backstop
-                    # fires (e.g. "...and now fix the bug"): never drop a real
-                    # task on the classifier's say-so.
-                    if not _cls.get("task_present", True) \
-                            and not _rc.looks_actionable(prompt):
-                        yield {"type": "message",
-                               "text": f"Got it — saved as {_cls['category']} "
-                                       f"({_cls['scope']})."}
-                        yield {"type": "done"}
-                        return
-        except Exception as _exc:  # noqa: BLE001 — capture must never break a turn
-            _af_log.debug("rule_capture pre-agent pass failed: %s", _exc)
+        pctx = {"done": False}
+        yield from _rule_capture_pass(prompt, cwd, session_id, pctx)
+        if pctx["done"]:
+            return
         # Team mode → full ADK agent flow (planner→…→learner) for complex
         # builds. Simple mode → single conversational agent for quick work.
         # Parallel team mode (AIFORGE_PARALLEL_SUBTASKS=1) → decompose then run
@@ -1666,41 +1733,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         #                code_edit) or None → chat_router falls back to regex;
         #   • _team_approvals  Pipeline-approvals ON → force the gated sequential
         #                pipeline (the parallel path can't gate — J).
-        _psub_on = False
-        try:
-            _psub_on = _pp.enabled()
-        except Exception:  # noqa: BLE001
-            _psub_on = _parallel_team
-        _greenfield = True
-        try:
-            _greenfield = _pp._is_greenfield(cwd)
-        except Exception:  # noqa: BLE001
-            _greenfield = True
-        try:
-            from aiforge_core.runtime import turn_router as _tr2
-            _fresh = not _tr2.is_followup(history)
-        except Exception:  # noqa: BLE001
-            _fresh = True
-        _cat = None
-        if _fresh:
-            try:
-                from aiforge_core.runtime import task_router as _tr
-                _cat = _tr.classify_task(prompt, history=history, cwd=cwd)
-            except Exception:  # noqa: BLE001 — never break routing on the classifier
-                _cat = None
-        _team_approvals = bool(team)   # fail safe → gated sequential
-        try:
-            from aiforge_core.config import approval_settings as _aps
-            _team_approvals = bool(team and _aps.required("team"))
-        except Exception:  # noqa: BLE001
-            pass
-        from aiforge_core.runtime import chat_router as _cr
-        _rd = _cr.decide(
-            prompt, agent_mode=agent_mode, team=team, psub_on=_psub_on,
-            greenfield=_greenfield, fresh=_fresh, cat=_cat,
-            team_approvals=_team_approvals,
-            auto_escalate=os.environ.get("AIFORGE_AUTO_ESCALATE", "1")
-            not in ("0", "false"))
+        _rd = _decide_chat_route(_pp, prompt, agent_mode, team,
+                                 _parallel_team, cwd, history)
         _doc_task = _rd.doc_task
         _is_build_task = _rd.is_build_task
         _build_escalate = _rd.build_escalate
