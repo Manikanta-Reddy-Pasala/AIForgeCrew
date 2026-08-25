@@ -195,6 +195,101 @@ def _reconcile_dropped_index(dropped, repo: str) -> None:
             pass
 
 
+def _load_brief_sections(path) -> dict:
+    """The brief's sections, or empty ones when it does not exist yet.
+
+    The empty shape is built FRESH per call — a shared module constant would
+    hand every new brief the same list objects, so one brief's facts would show
+    up in the next one.
+
+    Provenance survives a write-time fact fold: this path ADDS a fact, it does
+    not consume captures, so what the brief already claims must stay claimed (a
+    peer is waiting on it to tidy up).
+    """
+    if not path.exists():
+        return {"facts": [], "body": "", "learnings": [], "key_results": [],
+                "sources": [], "title": ""}
+    b = _parse_brief(path.read_text(encoding="utf-8", errors="replace"))
+    return {"facts": b["facts"], "body": b["body"],
+            "learnings": b["learnings"], "key_results": b["key_results"],
+            "sources": b["sources"], "title": b["title"]}
+
+
+def _supersede_key(fact: str) -> str | None:
+    """W1: the ``key`` a new ``key: value`` fact supersedes.
+
+    Generic prose leaders (note:/todo:) are excluded, and a key whose value
+    still holds a ':' is rejected — that kills "note: the port: …" grabbing the
+    wrong key.
+    """
+    kp = _KEY_PREFIX_RE.match(fact)
+    if not kp:
+        return None
+    key = kp.group(1).strip().lower()
+    if key in _KEY_DENY or ":" in fact.split(":", 1)[1]:
+        return None
+    return key
+
+
+def _superseded_by(fact: str, new_key: str | None):
+    """Predicate: does this new fact replace an existing one?
+
+    W6 prefix-extend prune — the new fact EXTENDS the old at a WORD boundary
+    (so "config set" is NOT pruned by "config setup"). PREFIX-ANCHORED +
+    length-gated, NOT bare substring: bare containment silently deletes
+    distinct/opposite facts ("retries 3x" swallowed by "no retries 3x here")
+    and short tokens ("auth" by "reauth…").
+    """
+    def _drop(f: str) -> bool:
+        fb = _fact_body(f)
+        if (len(fb) >= 8 and fb != fact and fact.startswith(fb)
+                and fact[len(fb):len(fb) + 1] in ("", " ")):
+            return True
+        if new_key:                                # W1 supersede same key
+            mm = _KEY_PREFIX_RE.match(fb)
+            return bool(mm and mm.group(1).strip().lower() == new_key)
+        return False
+    return _drop
+
+
+def _unindex_dropped(dropped: list, slug: str) -> None:
+    """Reconcile the search index: a fact superseded/pruned from the brief must
+    also leave the index, else recall keeps surfacing the stale value until the
+    next dedupe sweep (audit STORING HIGH-1). Facts under 12 chars are skipped —
+    a substring match would over-delete."""
+    for df in dropped:
+        body = _fact_body(df)
+        if len(body) < 12:
+            continue
+        try:
+            from aiforge_core.memory import backend_select, sqlite_memory
+            if backend_select.embedded():
+                sqlite_memory.delete_by_text_contains(
+                    body, repo=slug, exclude_kind="knowledge")
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _seed_ticket_key(fact: str, key_results: list) -> None:
+    """W2: seed a jira/issue key into Key Results (the measurable work) —
+    skipping encoding/standard tokens (UTF-8, SHA-256) and deduping on a word
+    boundary so ABC-12 isn't masked by an existing ABC-123."""
+    for tk in _TICKET_RE.findall(fact):
+        if tk.split("-", 1)[0] in _TICKET_DENY:
+            continue
+        if not any(re.search(rf"\b{re.escape(tk)}\b", k) for k in key_results):
+            key_results.append(fact if len(fact) <= 140 else tk)
+        return
+
+
+def _bound_facts(facts: list, body: str) -> None:
+    """Past ``_BRIEF_CAP`` drop the OLDEST facts first — the consolidated body
+    is the keeper."""
+    while len(facts) > 1 and \
+            (len(body) + sum(len(f) + 3 for f in facts)) > _BRIEF_CAP:
+        facts.pop(0)
+
+
 def _brief_upsert(repo: str, text: str, *, topic: str | None = None) -> None:
     """Fold ``text`` into ``compacted-<repo>.md`` immediately (no LLM), as a
     deduped item under the OKR ``## Facts`` section. Creates the brief (OKR
@@ -214,86 +309,23 @@ def _brief_upsert(repo: str, text: str, *, topic: str | None = None) -> None:
     fact = text.replace("\n", " ").strip()
     item = (f"[{topic}] " if topic else "") + fact
     with _WRITE_LOCK:
-        facts: list[str] = []
-        body = ""
-        learnings: list[str] = []
-        key_results: list[str] = []
-        sources: list[str] = []
-        title = ""
-        if path.exists():
-            raw = path.read_text(encoding="utf-8", errors="replace")
-            b = _parse_brief(raw)
-            facts, body = b["facts"], b["body"]
-            learnings, title = b["learnings"], b["title"]
-            key_results = b["key_results"]
-            # Provenance survives a write-time fact fold: this path adds a fact,
-            # it does not consume captures, so what the brief already claims
-            # must stay claimed (a peer is waiting on it to tidy up).
-            sources = b["sources"]
+        sec = _load_brief_sections(path)
+        facts, body = sec["facts"], sec["body"]
         # already captured (contained in an existing fact) or folded into prose
         if any(fact in _fact_body(f) for f in facts) or (fact and fact in body):
             return
-        # W6: the new fact EXTENDS an existing shorter one → drop the short.
-        # PREFIX-ANCHORED + length-gated, NOT bare substring — bare containment
-        # silently deletes distinct/opposite facts ("retries 3x" swallowed by
-        # "no retries 3x here") and short tokens ("auth" by "reauth…").
-        # W1: a new `key: value` supersedes the stale value for the SAME key —
-        # but generic prose leaders (note:/todo:) are excluded, and a key whose
-        # value still holds a ':' is rejected (kills "note: the port: …" grabbing
-        # the wrong key).
-        kp = _KEY_PREFIX_RE.match(fact)
-        new_key = kp.group(1).strip().lower() if kp else None
-        if new_key and (new_key in _KEY_DENY
-                        or ":" in fact.split(":", 1)[1]):
-            new_key = None
-
-        def _keep(f: str) -> bool:
-            fb = _fact_body(f)
-            # W6 prefix-extend prune — the new fact EXTENDS the old at a WORD
-            # boundary (so "config set" is NOT pruned by "config setup").
-            if (len(fb) >= 8 and fb != fact and fact.startswith(fb)
-                    and fact[len(fb):len(fb) + 1] in ("", " ")):
-                return False
-            if new_key:                                # W1 supersede same key
-                mm = _KEY_PREFIX_RE.match(fb)
-                if mm and mm.group(1).strip().lower() == new_key:
-                    return False
-            return True
-
-        dropped = [f for f in facts if not _keep(f)]
-        facts = [f for f in facts if _keep(f)]
+        drop = _superseded_by(fact, _supersede_key(fact))
+        dropped = [f for f in facts if drop(f)]
+        facts = [f for f in facts if not drop(f)]
         facts.append(item)
-        # Reconcile the search index: a fact superseded/pruned from the brief
-        # must also leave the index, else recall keeps surfacing the stale value
-        # until the next dedupe sweep (audit STORING HIGH-1).
-        for _df in dropped:
-            _dfb = _fact_body(_df)
-            if len(_dfb) < 12:
-                continue        # too short → a substring match would over-delete
-            try:
-                from aiforge_core.memory import backend_select, sqlite_memory
-                if backend_select.embedded():
-                    sqlite_memory.delete_by_text_contains(
-                        _dfb, repo=slug, exclude_kind="knowledge")
-            except Exception:  # noqa: BLE001
-                pass
-        # W2: seed a jira/issue key into Key Results (the measurable work) —
-        # skipping encoding/standard tokens (UTF-8, SHA-256) and deduping on a
-        # word boundary so ABC-12 isn't masked by an existing ABC-123.
-        for tk in _TICKET_RE.findall(fact):
-            if tk.split("-", 1)[0] in _TICKET_DENY:
-                continue
-            if not any(re.search(rf"\b{re.escape(tk)}\b", k) for k in key_results):
-                key_results.append(fact if len(fact) <= 140 else tk)
-            break
-        # bound: drop OLDEST facts first (consolidated body is the keeper)
-        while len(facts) > 1 and \
-                (len(body) + sum(len(f) + 3 for f in facts)) > _BRIEF_CAP:
-            facts.pop(0)
+        _unindex_dropped(dropped, slug)
+        _seed_ticket_key(fact, sec["key_results"])
+        _bound_facts(facts, body)
         path.write_text(
-            _render_brief(repo, facts=facts, body_md=body, learnings=learnings,
-                          title=title, key_results=key_results,
-                          sources=sources),
+            _render_brief(repo, facts=facts, body_md=body,
+                          learnings=sec["learnings"], title=sec["title"],
+                          key_results=sec["key_results"],
+                          sources=sec["sources"]),
             encoding="utf-8")
 
 

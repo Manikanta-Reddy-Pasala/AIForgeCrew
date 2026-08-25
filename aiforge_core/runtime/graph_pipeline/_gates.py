@@ -66,69 +66,83 @@ async def _triage_gate(ctx):  # type: ignore[no-untyped-def]
     _trace(":GraphRoute", {"complexity": complexity, "route": route})
 
 
+def _wall_clock_kill(state) -> bool:
+    """Seed the loop start on the first pass, then bail if the whole loop has
+    run past the budget. Independent of LOC churn, so it protects a slow model
+    that's looping without making (or losing) lines."""
+    if DOER_MAX_WALL_S <= 0:
+        return False
+    start = state.get("doer_loop_started_at")
+    now = time.time()
+    if not start:
+        state["doer_loop_started_at"] = now
+        return False
+    return (now - float(start)) > DOER_MAX_WALL_S
+
+
+def _exhaustion_reason(wall_kill: bool, cap_out: bool, max_iters: int,
+                       state) -> str:
+    if wall_kill:
+        return "wall-clock budget"
+    if cap_out:
+        return f"iteration ceiling ({max_iters})"
+    return str(state.get("loop_budget_reason", "loc plateau"))
+
+
+# Per-iteration quality signals, cleared before the NEXT Doer pass so its
+# Feedback gate reasons ONLY over the tools that fire THAT iteration.
+_PER_ITER_KEYS = (
+    "tests_ok", "typecheck_ok", "lint_ok",
+    # `doer_incomplete` is written when a Doer turn stops early or lands zero
+    # edits, and the Feedback quality gate turns it into a hard fail. Nothing
+    # ever cleared it, so ONE bad turn made the pass-exit unreachable for the
+    # rest of the run AND for the replanned attempt: the loop then ground to
+    # its ceiling with a green tree and a model saying "pass" every iteration.
+    "doer_incomplete",
+    # The repeat guard counts identical (tool, args) calls for the whole RUN.
+    # `run_tests` with byte-identical args is the normal case once per
+    # iteration, so from iteration 4 the guard short-circuited it — and ADK
+    # still fires the after-tool callback, which recorded the green suite as
+    # tests_ok=False.
+    "_repeat_counts",
+)
+
+
 async def _loop_gate(ctx):  # type: ignore[no-untyped-def]
     state = ctx.state
     iters = int(state.get("doer_iters", 0) or 0) + 1
     state["doer_iters"] = iters
     kill = bool(state.get("loop_budget_kill"))
-    # Wall-clock kill — seed the loop start on the first pass, then bail if
-    # the whole loop has run past the budget. Independent of LOC churn, so it
-    # protects a slow model that's looping without making (or losing) lines.
-    wall_kill = False
-    if DOER_MAX_WALL_S > 0:
-        start = state.get("doer_loop_started_at")
-        now = time.time()
-        if not start:
-            state["doer_loop_started_at"] = now
-        elif (now - float(start)) > DOER_MAX_WALL_S:
-            wall_kill = True
+    wall_kill = _wall_clock_kill(state)
     max_iters = _effective_max_iters(state)
     cap_out = iters >= max_iters
-    if _feedback_passed(state) or kill or wall_kill or cap_out:
-        if (kill or wall_kill or cap_out) and not _feedback_passed(state):
-            # Progress stalled / budget spent but work exists. Mark the
-            # verdict ``partial`` so the runner ships the partial diff as a
-            # PR (status review) instead of replaying the
-            # whole pipeline. (Was the LoopAgent before-callback's job;
-            # the migration moved the exit here but dropped the verdict.)
-            # The ceiling is spent work too. Leaving THIS branch's verdict as
-            # a plain `fail` meant the validator's "don't replan a stalled
-            # loop" guard did not fire, so the whole pipeline re-ran and hit
-            # the same ceiling again — double the iterations for the same
-            # result, on the exhaustion path that is by far the most common
-            # when iterations are fast.
-            reason = ("wall-clock budget" if wall_kill
-                      else f"iteration ceiling ({max_iters})" if cap_out
-                      else str(state.get("loop_budget_reason", "loc plateau")))
-            state["feedback_verdict"] = f"partial loop_budget_kill: {reason}"
-        ctx.route = ROUTE_EXIT
-        _trace(":LoopExit", {"iters": iters, "max_iters": max_iters,
-                             "kill": kill, "wall_kill": wall_kill})
-    else:
-        # Another Doer iteration is about to run. Clear the per-iteration
-        # quality signals so this next pass's Feedback gate reasons ONLY
-        # over the tools that fire THIS iteration — a stale tests_ok=True
-        # from a green iter-1 must not let a regressed iter-2 (that never
-        # re-ran the tests) sail through. Mirrors the validator replan
-        # reset (see _validator_gate). NOT cleared on the exit branch —
-        # the Validator needs the final pass's values.
-        _clear_state(state, (
-            "tests_ok", "typecheck_ok", "lint_ok",
-            # `doer_incomplete` is written when a Doer turn stops early or
-            # lands zero edits, and the Feedback quality gate turns it into a
-            # hard fail. Nothing ever cleared it, so ONE bad turn made the
-            # pass-exit unreachable for the rest of the run AND for the
-            # replanned attempt: the loop then ground to its ceiling with a
-            # green tree and a model saying "pass" every iteration.
-            "doer_incomplete",
-            # The repeat guard counts identical (tool, args) calls for the
-            # whole RUN. `run_tests` with byte-identical args is the normal
-            # case once per iteration, so from iteration 4 the guard
-            # short-circuited it — and ADK still fires the after-tool
-            # callback, which recorded the green suite as tests_ok=False.
-            "_repeat_counts",
-        ))
+    passed = _feedback_passed(state)
+    if not (passed or kill or wall_kill or cap_out):
+        # Another Doer iteration is about to run. NOT cleared on the exit
+        # branch — the Validator needs the final pass's values. Mirrors the
+        # validator replan reset (see _validator_gate).
+        _clear_state(state, _PER_ITER_KEYS)
         ctx.route = ROUTE_LOOP
+        _trace(":LoopContinue", {"iters": iters, "max_iters": max_iters})
+        return
+    if not passed:
+        # Progress stalled / budget spent but work exists. Mark the verdict
+        # ``partial`` so the runner ships the partial diff as a PR (status
+        # review) instead of replaying the whole pipeline. (Was the LoopAgent
+        # before-callback's job; the migration moved the exit here but dropped
+        # the verdict.)
+        # The ceiling is spent work too. Leaving THIS branch's verdict as a
+        # plain `fail` meant the validator's "don't replan a stalled loop"
+        # guard did not fire, so the whole pipeline re-ran and hit the same
+        # ceiling again — double the iterations for the same result, on the
+        # exhaustion path that is by far the most common when iterations are
+        # fast.
+        state["feedback_verdict"] = ("partial loop_budget_kill: "
+                                     + _exhaustion_reason(wall_kill, cap_out,
+                                                          max_iters, state))
+    ctx.route = ROUTE_EXIT
+    _trace(":LoopExit", {"iters": iters, "max_iters": max_iters,
+                         "kill": kill, "wall_kill": wall_kill})
 
 
 async def _validator_gate(ctx):  # type: ignore[no-untyped-def]
@@ -233,6 +247,103 @@ async def _gap_gate(ctx):  # type: ignore[no-untyped-def]
         ctx.route = ROUTE_RESEARCH_OK
 
 
+def _plan_object(raw) -> dict | None:
+    """The Planner's JSON blob, from a bare object, a fenced one, or one
+    embedded in markdown prose. None when nothing parses."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text[:4].lower() == "json":
+            text = text[4:]
+    try:
+        obj = json.loads(text)
+    except Exception:  # noqa: BLE001
+        start, end = text.find("{"), text.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        try:
+            obj = json.loads(text[start:end + 1])
+        except Exception:  # noqa: BLE001
+            return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _tests_declared(obj: dict) -> bool:
+    """Does the plan DECLARE a test bar?
+
+    ``tests_declared`` is what AIFORGE_STRICT_TEST_GATE keys on — and nothing
+    in the codebase ever wrote it, so that gate was inert: an operator could
+    switch it on and get no strictness at all. The plan is the one place the
+    bar is stated.
+    """
+    declared = obj.get("tests_declared")
+    if declared is not None:
+        return bool(declared)
+    acceptance = json.dumps(obj.get("acceptance")
+                            or obj.get("acceptance_criteria") or "")
+    return ("test" in acceptance.lower()
+            or any("test" in str(st.get("acceptance", "")).lower()
+                   for st in (obj.get("subtickets") or [])
+                   if isinstance(st, dict)))
+
+
+def _plan_globs(obj: dict) -> list[str]:
+    """Every scope glob the plan declares, top-level and per-subticket."""
+    globs: list[str] = []
+    top = obj.get("scope_allowlist_globs")
+    if isinstance(top, list):
+        globs += [str(g) for g in top if g]
+    for st in obj.get("subtickets") or []:
+        if isinstance(st, dict) and isinstance(
+                st.get("scope_allowlist_globs"), list):
+            globs += [str(g) for g in st["scope_allowlist_globs"] if g]
+    return globs
+
+
+def _merge_seeded(state, globs: list[str]) -> list[str]:
+    """Operator-seeded globs live in a SEPARATE durable key — the runner writes
+    both keys at init. Replans clear scope_allowlist_globs (so the rejected
+    plan's globs don't widen scope forever) but never the seeded key; the live
+    key is the back-compat fallback."""
+    seeded = state.get("scope_allowlist_globs_seeded")
+    if not isinstance(seeded, list):
+        seeded = state.get("scope_allowlist_globs")
+    if isinstance(seeded, list):
+        globs = list(seeded) + [g for g in globs if g not in seeded]
+    seen: set = set()
+    return [g for g in globs if not (g in seen or seen.add(g))]
+
+
+def _usable_scope(merged: list[str]) -> list[str]:
+    """FAIL-OPEN on a bad plan: if the (non-empty) globs match ZERO files in the
+    actual repo they are wrong for THIS repo's layout (a common failure when the
+    architect assumes a src/... layout, or another repo's paths). An allowlist
+    that matches nothing blocks EVERY Doer edit → no changes → loc-plateau kill
+    + a spurious scope_violation. Treat it as no-scope (allow the whole
+    worktree — which is already the per-ticket sandbox)."""
+    if merged and not _globs_match_any_repo_file(merged):
+        log.warning("scope globs match NO file in the repo — clearing "
+                    "(fail-open to repo scope): %s", merged)
+        return []
+    return merged
+
+
+def _refresh_scoped_rules(state, merged: list[str]) -> None:
+    """Re-match glob-scoped repo rules against the plan-widened scope so
+    file-scoped rules the operator seed didn't reach now load (Cursor
+    semantics: rules follow the files being touched). Rules are additive
+    context — a failure never blocks the plan."""
+    try:
+        from .. import repo_rules
+        refreshed = repo_rules.collect(_repo_root_for_scope(), merged)
+        if refreshed:
+            state["rules_md"] = refreshed
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def _plan_promote(ctx):  # type: ignore[no-untyped-def]
     """Promote structured fields out of the Planner's raw ``plan_md``.
 
@@ -243,86 +354,17 @@ async def _plan_promote(ctx):  # type: ignore[no-untyped-def]
     an unparseable plan leaves state untouched.
     """
     state = ctx.state
-    raw = state.get("plan_md")
-    if not isinstance(raw, str) or not raw.strip():
+    obj = _plan_object(state.get("plan_md"))
+    if obj is None:
         return
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text[:4].lower() == "json":
-            text = text[4:]
     try:
-        obj = json.loads(text)
-    except Exception:
-        # plan may be markdown with an embedded JSON object — best-effort
-        start, end = text.find("{"), text.rfind("}")
-        if start < 0 or end <= start:
-            return
-        try:
-            obj = json.loads(text[start:end + 1])
-        except Exception:
-            return
-    if not isinstance(obj, dict):
-        return
-    # Does the plan DECLARE a test bar? `tests_declared` is what
-    # AIFORGE_STRICT_TEST_GATE keys on — and nothing in the codebase ever
-    # wrote it, so that gate was inert: an operator could switch it on and get
-    # no strictness at all. The plan is the one place the bar is stated.
-    try:
-        _decl = obj.get("tests_declared")
-        if _decl is None:
-            _acc = json.dumps(obj.get("acceptance") or obj.get(
-                "acceptance_criteria") or "")
-            _decl = ("test" in _acc.lower()
-                     or any("test" in str(st.get("acceptance", "")).lower()
-                            for st in (obj.get("subtickets") or [])
-                            if isinstance(st, dict)))
-        state["tests_declared"] = bool(_decl)
+        state["tests_declared"] = _tests_declared(obj)
     except Exception:  # noqa: BLE001 — never let this break plan promotion
         pass
-    globs: list[str] = []
-    top = obj.get("scope_allowlist_globs")
-    if isinstance(top, list):
-        globs += [str(g) for g in top if g]
-    for st in obj.get("subtickets") or []:
-        if isinstance(st, dict):
-            sg = st.get("scope_allowlist_globs")
-            if isinstance(sg, list):
-                globs += [str(g) for g in sg if g]
-    # Operator-seeded globs live in a SEPARATE durable key — the runner
-    # writes both keys at init. Replans clear scope_allowlist_globs (so
-    # the rejected plan's globs don't widen scope forever) but never the
-    # seeded key. Fall back to the live key for back-compat.
-    seeded = state.get("scope_allowlist_globs_seeded")
-    if not isinstance(seeded, list):
-        seeded = state.get("scope_allowlist_globs")
-    if isinstance(seeded, list):
-        globs = list(seeded) + [g for g in globs if g not in seeded]
-    # dedupe, keep order
-    seen: set = set()
-    merged = [g for g in globs if not (g in seen or seen.add(g))]
-    # FAIL-OPEN on a bad plan: if the (non-empty) globs match ZERO files in the
-    # actual repo, they're wrong for THIS repo's layout (a common failure when
-    # the architect assumes a src/... layout, or a different repo's paths). An
-    # allowlist that matches nothing blocks EVERY Doer edit → no changes →
-    # loc-plateau kill + a spurious scope_violation. Treat it as no-scope
-    # (allow the whole worktree — which is already the per-ticket sandbox).
-    if merged and not _globs_match_any_repo_file(merged):
-        log.warning("scope globs match NO file in the repo — clearing "
-                    "(fail-open to repo scope): %s", merged)
-        merged = []
+    merged = _usable_scope(_merge_seeded(state, _plan_globs(obj)))
     if merged:
         state["scope_allowlist_globs"] = merged
-        # Re-match glob-scoped repo rules against the plan-widened scope
-        # so file-scoped rules the operator seed didn't reach now load
-        # (Cursor semantics: rules follow the files being touched).
-        try:
-            from .. import repo_rules
-            refreshed = repo_rules.collect(_repo_root_for_scope(), merged)
-            if refreshed:
-                state["rules_md"] = refreshed
-        except Exception:
-            pass  # rules are additive context — never block the plan
+        _refresh_scoped_rules(state, merged)
 
 
 def _clear_state(state, keys) -> None:

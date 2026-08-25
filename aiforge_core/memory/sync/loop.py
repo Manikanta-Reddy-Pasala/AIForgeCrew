@@ -87,42 +87,52 @@ def sync_with(base_url: str, deadline: float | None = None) -> dict:
     return result
 
 
-def _pull(base_url: str, result: dict, deadline: float | None = None) -> None:
-    """The admin's manifest, blobs and bookkeeping, accumulated into ``result``."""
-    from aiforge_core.memory.sync import apply, manifest, merge, role, transport
+def _preserve_conflicts(base_url: str, plan: dict, result: dict,
+                        deadline, transport, apply) -> None:
+    """Keep the copy the merge is about to discard.
 
-    remote = transport.fetch_manifest(base_url)
-    if not remote:
-        return
-    result["ok"] = True
-
-    # The admin states its own id in every manifest response, so a spoke learns
-    # whose fold to trust (``okf.tiers._trusted_origin``) without the operator
-    # configuring the same fact twice.
-    admin = role.remember_admin_id(str(remote.get("admin") or ""))
-
-    local = manifest.build()
-    plan = merge.plan_sync(local, _ingest(remote.get("manifest") or []))
-
-    # A conflicting remote entry that also appears in `want` is the winner, so
-    # the local copy is what is about to be lost; otherwise the local copy stays
-    # and the remote's text is the version nothing else preserves.
+    A conflicting remote entry that also appears in ``want`` is the winner, so
+    the LOCAL copy is what is about to be lost; otherwise the local copy stays
+    and the remote's text is the version nothing else preserves.
+    """
     winning = {str(e.get("hash") or "") for e in plan["want"]}
     for pair in plan["conflict"]:
         if _spent(deadline):
-            break
+            return
         losing_body = None
         if str(pair["remote"].get("hash") or "") not in winning:
-            losing_body = transport.fetch_blob(base_url,
-                                               str(pair["remote"].get("hash") or ""))
+            losing_body = transport.fetch_blob(
+                base_url, str(pair["remote"].get("hash") or ""))
             if losing_body is None:
                 continue      # nothing fetched, nothing to preserve
         if apply.keep_conflict(pair["local"], losing_body):
             result["conflicts"] += 1
 
-    # Counted locally, not off `result`: `result["rejected"]` already carries
-    # the PUSH phase's rejections, so using it here under-reported (and could
-    # negate) how many entries the pull still owes the next cycle.
+
+def _apply_one(entry: dict, body, admin: str, apply) -> bool:
+    """``admin`` is load-bearing, not bookkeeping: apply refuses any class B
+    entry whose ``origin`` is not the machine that served it, so dropping it
+    would let the admin forge a spoke's nodes and tombstones. It also means an
+    admin whose id we have not learned yet applies nothing this cycle rather
+    than everything."""
+    try:
+        return apply.apply_blob(entry, body, peer_id=admin)
+    except OSError as exc:
+        # One unwritable record — a 400-character key is "File name too long" —
+        # used to abort the cycle: every later entry was discarded, and it is
+        # re-advertised forever, so this must be per-entry.
+        _log.warning("sync: could not apply %s: %s", entry.get("path"), exc)
+        return False
+
+
+def _fetch_wanted(base_url: str, plan: dict, result: dict, admin: str,
+                  deadline, transport, apply) -> None:
+    """Fetch + apply each wanted blob.
+
+    ``got`` is counted locally, not off ``result``: ``result["rejected"]``
+    already carries the PUSH phase's rejections, so using it here under-reported
+    (and could negate) how many entries the pull still owes the next cycle.
+    """
     got = 0
     for entry in plan["want"]:
         if _spent(deadline):
@@ -135,27 +145,32 @@ def _pull(base_url: str, result: dict, deadline: float | None = None) -> None:
             _log.warning("sync: cycle budget spent part-way through the pull — "
                          "%d entries left for the next cycle",
                          len(plan["want"]) - got)
-            break
+            return
         got += 1
         body = transport.fetch_blob(base_url, str(entry.get("hash") or ""))
         if body is None:
             result["rejected"] += 1
             continue
-        try:
-            # admin is load-bearing, not bookkeeping: apply refuses any class B
-            # entry whose `origin` is not the machine that served it, so
-            # dropping it here would let the admin forge a spoke's nodes and
-            # tombstones. It also means an admin whose id we have not learned
-            # yet applies nothing this cycle rather than everything.
-            applied = apply.apply_blob(entry, body, peer_id=admin)
-        except OSError as exc:
-            # One unwritable record — a 400-character key is "File name too
-            # long" — used to abort the cycle: every later entry was discarded,
-            # and it is re-advertised forever, so this must be per-entry.
-            _log.warning("sync: could not apply %s: %s", entry.get("path"), exc)
-            applied = False
+        applied = _apply_one(entry, body, admin, apply)
         result["applied" if applied else "rejected"] += 1
 
+
+def _pull(base_url: str, result: dict, deadline: float | None = None) -> None:
+    """The admin's manifest, blobs and bookkeeping, accumulated into ``result``."""
+    from aiforge_core.memory.sync import apply, manifest, merge, role, transport
+
+    remote = transport.fetch_manifest(base_url)
+    if not remote:
+        return
+    result["ok"] = True
+    # The admin states its own id in every manifest response, so a spoke learns
+    # whose fold to trust (``okf.tiers._trusted_origin``) without the operator
+    # configuring the same fact twice.
+    admin = role.remember_admin_id(str(remote.get("admin") or ""))
+    plan = merge.plan_sync(manifest.build(),
+                           _ingest(remote.get("manifest") or []))
+    _preserve_conflicts(base_url, plan, result, deadline, transport, apply)
+    _fetch_wanted(base_url, plan, result, admin, deadline, transport, apply)
     _log.info("sync: admin=%s pushed=%d applied=%d rejected=%d conflicts=%d",
               admin or "?", result["pushed"], result["applied"],
               result["rejected"], result["conflicts"])

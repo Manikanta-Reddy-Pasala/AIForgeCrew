@@ -48,6 +48,86 @@ def _is_git_repo(path: str) -> bool:
     return os.path.isdir(os.path.join(path, ".git"))
 
 
+# Common words that are ALSO real repo names (web/api/pos/core/bot/...) —
+# matching them in prose spuriously pulls a repo in. Require a specific name.
+_COMMON_REPO_WORDS = {"web", "api", "app", "pos", "core", "bot", "cli", "crud",
+                      "ui", "db", "lib", "docs", "server", "client", "code",
+                      "main", "test"}
+
+
+def _repo_named_in(prompt_low: str, name: str) -> bool:
+    """Does the prompt name this repo?
+
+    A SPECIFIC name (len>=4, not a common word) is a real signal on a plain
+    mention. A common/short name (core/web/pos/erp) matches too much in prose,
+    so it needs a repo CUE — backticks around it, or the word
+    "repo"/"repository" adjacent — so an EXPLICITLY named short repo ("the
+    `core` repo") is still recovered.
+    """
+    esc = re.escape(name)
+    if (len(name) >= 4 and name not in _COMMON_REPO_WORDS
+            and re.search(r"\b" + esc + r"\b", prompt_low)):
+        return True
+    return bool(re.search(r"`\s*" + esc + r"\s*`", prompt_low)
+                or re.search(r"\b" + esc + r"\b[\s\w]{0,12}\brepo", prompt_low)
+                or re.search(r"\brepo(?:sitor(?:y|ies))?\b[\s\w]{0,12}\b"
+                             + esc + r"\b", prompt_low))
+
+
+def _registry_repos(prompt_low: str, add) -> None:
+    """Source 1: registry names (repos.json) mentioned in the prompt."""
+    try:
+        from aiforge_core.config import repo_map as _rm
+        paths = (_rm.list_all() or {}).get("paths") or {}
+    except Exception:  # noqa: BLE001 — registry optional
+        return
+    for name, path in paths.items():
+        nlow = str(name).strip().lower()
+        if nlow and _repo_named_in(prompt_low, nlow):
+            add(str(name), str(path))
+
+
+def _prompt_path_repos(prompt: str, add) -> None:
+    """Source 2: explicit filesystem paths in the prompt — ONLY if they are git
+    repos (an analysis targets repos, not an incidental /etc/nginx mention)."""
+    for m in re.findall(r"(?:~|/)[\w./\-]+", prompt):
+        ap = os.path.abspath(os.path.expanduser(m.rstrip("/")))
+        if _is_git_repo(ap):
+            add(os.path.basename(ap), ap)
+
+
+def _child_repos(cwd: str, add) -> None:
+    """Source 3: child git repos of a pinned PARENT."""
+    try:
+        if not os.path.isdir(cwd):
+            return
+        for entry in sorted(os.listdir(cwd)):
+            child = os.path.join(cwd, entry)
+            if _is_git_repo(child):
+                add(entry, child)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _disambiguate_names(repos: list[dict]) -> None:
+    """Two repos both named `api` collide as subtask slugs, which makes the
+    panel flip both rows together. Suffix a collision with its parent dir."""
+    counts: dict[str, int] = {}
+    for r in repos:
+        counts[r["name"]] = counts.get(r["name"], 0) + 1
+    for r in repos:
+        if counts[r["name"]] > 1:
+            parent = os.path.basename(os.path.dirname(r["path"])) or "?"
+            r["name"] = f"{r['name']} ({parent})"
+
+
+def _repo_cap() -> int:
+    try:
+        return max(2, int(os.environ.get("AIFORGE_ANALYSIS_MAX_REPOS", "12")))
+    except (TypeError, ValueError):
+        return 12
+
+
 def identify_repos(prompt: str, cwd: str) -> list[dict]:
     """Resolve which repositories this analysis spans, as ``[{name, path}]``.
 
@@ -65,84 +145,30 @@ def identify_repos(prompt: str, cwd: str) -> list[dict]:
             return
         ap = os.path.abspath(os.path.expanduser(path))
         if os.path.isdir(ap) and ap not in found:
-            found[ap] = {"name": name or os.path.basename(ap.rstrip("/")), "path": ap}
+            found[ap] = {"name": name or os.path.basename(ap.rstrip("/")),
+                         "path": ap}
 
-    p = prompt or ""
-    plow = p.lower()
-    try:
-        cap = max(2, int(os.environ.get("AIFORGE_ANALYSIS_MAX_REPOS", "12")))
-    except (TypeError, ValueError):
-        cap = 12
-    # Common words that are ALSO real repo names (web/api/pos/core/bot/...) —
-    # matching them in prose spuriously pulls a repo in. Require a specific name.
-    _common = {"web", "api", "app", "pos", "core", "bot", "cli", "crud", "ui",
-               "db", "lib", "docs", "server", "client", "code", "main", "test"}
-
-    # 1. registry names mentioned in the prompt. A SPECIFIC name (len>=4, not a
-    #    common word) is a real signal on a plain mention. A common/short name
-    #    (core/web/pos/erp) matches too much in prose, so require a repo CUE —
-    #    backticks around it, or the word "repo"/"repository" adjacent — so an
-    #    EXPLICITLY named short repo ("the `core` repo") is still recovered.
-    try:
-        from aiforge_core.config import repo_map as _rm
-        paths = (_rm.list_all() or {}).get("paths") or {}
-        for name, path in paths.items():
-            nlow = str(name).strip().lower()
-            if not nlow:
-                continue
-            esc = re.escape(nlow)
-            word = re.search(r"\b" + esc + r"\b", plow)
-            specific = len(nlow) >= 4 and nlow not in _common
-            cued = (re.search(r"`\s*" + esc + r"\s*`", plow)
-                    or re.search(r"\b" + esc + r"\b[\s\w]{0,12}\brepo",
-                                 plow)
-                    or re.search(r"\brepo(?:sitor(?:y|ies))?\b[\s\w]{0,12}\b"
-                                 + esc + r"\b", plow))
-            if (specific and word) or cued:
-                _add(str(name), str(path))
-    except Exception:  # noqa: BLE001 — registry optional
-        pass
-
-    # 2. explicit filesystem paths in the prompt — ONLY if they are git repos
-    #    (an analysis targets repos, not an incidental /etc/nginx mention).
-    for m in re.findall(r"(?:~|/)[\w./\-]+", p):
-        ap = os.path.abspath(os.path.expanduser(m.rstrip("/")))
-        if _is_git_repo(ap):
-            _add(os.path.basename(ap), ap)
-
-    # 3. child git repos of a pinned PARENT — ONLY when the prompt named nothing
-    #    specific (sources 1+2 empty). Otherwise "summarize repoA" in a parent
-    #    holding 10 checkouts would fan out over all 10.
+    prompt = prompt or ""
+    _registry_repos(prompt.lower(), _add)
+    _prompt_path_repos(prompt, _add)
     if not found:
-        try:
-            if os.path.isdir(cwd):
-                for entry in sorted(os.listdir(cwd)):
-                    child = os.path.join(cwd, entry)
-                    if _is_git_repo(child):
-                        _add(entry, child)
-        except Exception:  # noqa: BLE001
-            pass
+        # ONLY when the prompt named nothing specific (sources 1+2 empty).
+        # Otherwise "summarize repoA" in a parent holding 10 checkouts would
+        # fan out over all 10.
+        _child_repos(cwd, _add)
+    if not found:
+        # 4. fallback — the pinned folder itself
+        return [{"name": os.path.basename(os.path.abspath(cwd).rstrip("/"))
+                 or "repo", "path": os.path.abspath(cwd)}]
 
-    if found:
-        out = list(found.values())
-        if len(out) > cap:
-            _log.warning("identify_repos: capped %d repos to %d (set "
-                         "AIFORGE_ANALYSIS_MAX_REPOS)", len(out), cap)
-            out = out[:cap]
-        # Disambiguate duplicate basenames (two repos both named `api`) — the
-        # name is used as the subtask slug, and a collision makes the panel flip
-        # both rows together. Suffix collisions with the parent dir.
-        _seen: dict[str, int] = {}
-        for r in out:
-            _seen[r["name"]] = _seen.get(r["name"], 0) + 1
-        for r in out:
-            if _seen[r["name"]] > 1:
-                _parent = os.path.basename(os.path.dirname(r["path"])) or "?"
-                r["name"] = f"{r['name']} ({_parent})"
-        return out
-    # 4. fallback — the pinned folder itself
-    return [{"name": os.path.basename(os.path.abspath(cwd).rstrip("/")) or "repo",
-             "path": os.path.abspath(cwd)}]
+    out = list(found.values())
+    cap = _repo_cap()
+    if len(out) > cap:
+        _log.warning("identify_repos: capped %d repos to %d (set "
+                     "AIFORGE_ANALYSIS_MAX_REPOS)", len(out), cap)
+        out = out[:cap]
+    _disambiguate_names(out)
+    return out
 
 
 def extract_topics(prompt: str) -> list[str]:

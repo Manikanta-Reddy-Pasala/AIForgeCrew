@@ -116,31 +116,40 @@ def _fact_map(facts: list[str]) -> dict[str, str]:
     return out
 
 
+def _jira_facts(key: str) -> dict | None:
+    from aiforge_core.runtime.tools import jira
+    r = jira.jira_read({"key": key, "attachments": "false"}, None)
+    if not r.get("ok"):
+        return None
+    return {"status": r.get("status") or "",
+            "assignee": r.get("assignee") or "",
+            "priority": r.get("priority") or "",
+            "title": r.get("summary") or ""}
+
+
+def _confluence_facts(key: str) -> dict | None:
+    from aiforge_core.runtime.tools import confluence
+    r = confluence.confluence_read({"id": key, "attachments": "false"}, None)
+    if not r.get("ok"):
+        return None
+    return {"title": r.get("title") or "",
+            "version": str(r.get("version") or "")}
+
+
+_LIVE_SOURCES = {"jira": _jira_facts, "confluence": _confluence_facts}
+
+
 def _live_facts(kind: str, key: str) -> dict | None:
     """Re-fetch the source entity via the existing integration tools (their
     soft-error contract included). None = source not reachable/configured —
     which means 'leave the facts alone', not an error."""
+    fetch = _LIVE_SOURCES.get(kind)
+    if fetch is None:
+        return None
     try:
-        if kind == "jira":
-            from aiforge_core.runtime.tools import jira
-            r = jira.jira_read({"key": key, "attachments": "false"}, None)
-            if not r.get("ok"):
-                return None
-            return {"status": r.get("status") or "",
-                    "assignee": r.get("assignee") or "",
-                    "priority": r.get("priority") or "",
-                    "title": r.get("summary") or ""}
-        if kind == "confluence":
-            from aiforge_core.runtime.tools import confluence
-            r = confluence.confluence_read(
-                {"id": key, "attachments": "false"}, None)
-            if not r.get("ok"):
-                return None
-            return {"title": r.get("title") or "",
-                    "version": str(r.get("version") or "")}
+        return fetch(key)
     except Exception:  # noqa: BLE001
         return None
-    return None
 
 
 def _sanctioned_host(url: str) -> bool:
@@ -201,6 +210,81 @@ def curate_note(path: str, cwd: str | None = None) -> dict:
                 "error": str(exc)}
 
 
+def _note_identity(parsed: dict, path: str) -> tuple[str, str]:
+    """``(kind, key)`` — from the frontmatter, or derived from the note's folder
+    for a legacy note that has none."""
+    from aiforge_core.runtime import work_context
+    fm = parsed["frontmatter"]
+    kind = str(fm.get("kind") or "")
+    key = str(fm.get("key") or "")
+    if kind and key:
+        return kind, key
+    ctx = work_context.context_for_path(os.path.dirname(path))
+    return (kind or ctx[0], key or ctx[1]) if ctx else (kind, key)
+
+
+def _set_fact(facts: list, field: str, value: str) -> None:
+    """Rewrite (or add) the fact line for ``field`` in place, order preserved."""
+    pat = re.compile(rf"^{re.escape(field)}\s*:", re.IGNORECASE)
+    for i, f in enumerate(facts):
+        if pat.match(str(f)):
+            facts[i] = f"{field}: {value}"
+            return
+    facts.append(f"{field}: {value}")
+
+
+def _apply_fact_drift(facts: list, live: dict, changes: list) -> None:
+    """Fold the live source's fields into the note's Facts. ``title`` is handled
+    against the H1 instead."""
+    have = _fact_map(facts)
+    for field, new in live.items():
+        if field == "title" or not new:
+            continue
+        old = have.get(field, "")
+        if new != old:
+            changes.append(f"{field} {old or '(unset)'} → {new}")
+            _set_fact(facts, field, new)
+
+
+def _retitled(parsed: dict, live: dict, changes: list) -> str | None:
+    """The note's new H1 when the live title moved. Ticket titles render as
+    "KEY — summary", so only the summary part is diffed."""
+    new_title = live.get("title") or ""
+    old_title = parsed["title"]
+    plain_old = old_title.split("—", 1)[-1].strip() if old_title else ""
+    if not (new_title and plain_old and new_title != plain_old
+            and new_title != old_title):
+        return None
+    changes.append(f"title {plain_old} → {new_title}")
+    return old_title.replace(plain_old, new_title, 1)
+
+
+def _is_local_ref(s: str) -> bool:
+    """"[" covers both cross-ref forms — canonical relative md file links
+    ([kind/key](../../…/ticket.md)) and legacy [[kind/key]] wiki refs: local
+    refs are the curator's own filesystem, not HTTP targets."""
+    return s.startswith("[")
+
+
+def _flag_dead_links(links: list, changes: list) -> list:
+    """Suffix a dead link, never delete it — the ref stays as evidence.
+
+    A "(dead)"-suffixed entry still starts with http(s):// so it passes
+    normalize_links' scheme filter and is persisted verbatim.
+    """
+    flagged = []
+    for lk in links:
+        s = str(lk)
+        if s.endswith(_DEAD_SUFFIX) or _is_local_ref(s):
+            flagged.append(s)
+        elif re.match(r"^https?://", s, re.IGNORECASE) and _link_dead(s):
+            flagged.append(s + _DEAD_SUFFIX)
+            changes.append(f"link dead: {s}")
+        else:
+            flagged.append(s)
+    return flagged
+
+
 def _curate(path: str) -> dict:
     # Path jail FIRST — this runs as an ungated chat tool, so the work-root
     # containment check is the only thing between it and arbitrary files.
@@ -210,78 +294,34 @@ def _curate(path: str) -> dict:
     if not os.path.isfile(path):
         return {"ok": False, "updated": False, "changes": [],
                 "error": f"no note at {path}"}
-    from aiforge_core.runtime import work_context, work_notes
+    from aiforge_core.runtime import work_notes
     with open(path, encoding="utf-8") as fh:
         parsed = work_notes.parse_note(fh.read())
-    fm = parsed["frontmatter"]
     sec = parsed["sections"]
-    kind = str(fm.get("kind") or "")
-    key = str(fm.get("key") or "")
-    if not kind or not key:
-        # Legacy note without frontmatter — derive identity from its folder.
-        ctx = work_context.context_for_path(os.path.dirname(path))
-        if ctx:
-            kind, key = kind or ctx[0], key or ctx[1]
+    kind, key = _note_identity(parsed, path)
 
     changes: list[str] = []
     updates: dict = {}
     facts = list(sec.get("facts") or [])
-    learnings = list(sec.get("learnings") or [])
 
-    # ── Fact drift vs the live source (jira/confluence only, best-effort).
+    # Fact drift vs the live source (jira/confluence only, best-effort).
     live = _live_facts(kind, key) if kind in ("jira", "confluence") else None
     if live:
-        have = _fact_map(facts)
-        for field, new in live.items():
-            if field == "title":
-                continue        # handled below against the H1, not Facts
-            old = have.get(field, "")
-            if new and new != old:
-                changes.append(f"{field} {old or '(unset)'} → {new}")
-                # rewrite (or add) the fact line in place, order preserved
-                pat = re.compile(rf"^{re.escape(field)}\s*:", re.IGNORECASE)
-                for i, f in enumerate(facts):
-                    if pat.match(str(f)):
-                        facts[i] = f"{field}: {new}"
-                        break
-                else:
-                    facts.append(f"{field}: {new}")
-        new_title = live.get("title") or ""
-        old_title = parsed["title"]
-        # ticket titles render as "KEY — summary"; only diff the summary part
-        plain_old = old_title.split("—", 1)[-1].strip() if old_title else ""
-        if new_title and plain_old and new_title != plain_old \
-                and new_title != old_title:
-            changes.append(f"title {plain_old} → {new_title}")
-            updates["title"] = old_title.replace(plain_old, new_title, 1)
+        _apply_fact_drift(facts, live, changes)
+        title = _retitled(parsed, live, changes)
+        if title is not None:
+            updates["title"] = title
     if facts != list(sec.get("facts") or []):
         updates["facts"] = facts
 
-    # ── Dead-link flagging: suffix, never delete (the ref stays as evidence).
     links = list(sec.get("links") or [])
-    flagged = []
-    for lk in links:
-        s = str(lk)
-        # "[" covers both cross-ref forms — canonical relative md file links
-        # ([kind/key](../../…/ticket.md)) and legacy [[kind/key]] wiki refs:
-        # local refs are the curator's own filesystem, not HTTP targets.
-        if s.endswith(_DEAD_SUFFIX) or s.startswith("["):
-            flagged.append(s)
-            continue
-        if re.match(r"^https?://", s, re.IGNORECASE) and _link_dead(s):
-            flagged.append(s + _DEAD_SUFFIX)
-            changes.append(f"link dead: {s}")
-        else:
-            flagged.append(s)
+    flagged = _flag_dead_links(links, changes)
     if flagged != links:
-        # a "(dead)"-suffixed entry still starts with http(s):// so it passes
-        # normalize_links' scheme filter and is persisted verbatim.
         updates["links"] = flagged
 
-    for c in changes:
-        learnings.append(f"{_today()}: {c} (auto-curated)")
     if changes:
-        updates["learnings"] = learnings
+        updates["learnings"] = list(sec.get("learnings") or []) + [
+            f"{_today()}: {c} (auto-curated)" for c in changes]
 
     # Always write: even a no-change pass bumps updated_at so staleness
     # doesn't re-trigger the curator on every subsequent turn.

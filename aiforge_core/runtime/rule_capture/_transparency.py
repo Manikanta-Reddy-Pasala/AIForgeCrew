@@ -73,20 +73,22 @@ def looks_actionable(message: str) -> bool:
 
 # ─────────────────────────── transparency: list/rescope/undo ────────
 
+def _visible_to(item: dict, repo: str | None) -> bool:
+    """Global items always; a PROJECT item only for its own repo."""
+    if item.get("undone"):
+        return False
+    return not (repo is not None and item.get("scope") == "project"
+                and item.get("repo") != repo)
+
+
 def list_captured(repo: str | None = None, session_id=None) -> list[dict]:
     """Captured items for the transparency UI. Global items always; project
     items filtered by ``repo`` when given; plus this session's ephemeral
     items."""
     out: list[dict] = []
     try:
-        idx = _load_index()
-        for it in idx.get("items", {}).values():
-            if it.get("undone"):
-                continue
-            if repo is not None:
-                if it.get("scope") == "project" and it.get("repo") != repo:
-                    continue
-            out.append(it)
+        out = [it for it in _load_index().get("items", {}).values()
+               if _visible_to(it, repo)]
     except Exception as exc:  # noqa: BLE001
         log.debug("rule_capture.list_captured failed: %s", exc)
     if session_id is not None:
@@ -152,6 +154,35 @@ def undo(rid: str) -> bool:
     return True
 
 
+def _find_item(rid: str) -> tuple[dict | None, bool]:
+    """``(item, in_session)`` — the captured item, from the session store or the
+    persistent index."""
+    with _LOCK:
+        for items in _SESSION_ITEMS.values():
+            for it in items:
+                if it.get("id") == rid:
+                    return dict(it), True
+    it = _load_index().get("items", {}).get(rid)
+    return (dict(it) if it else None), False
+
+
+def _drop_session_item(rid: str) -> None:
+    with _LOCK:
+        for items in _SESSION_ITEMS.values():
+            for i, it in enumerate(list(items)):
+                if it.get("id") == rid:
+                    items.pop(i)
+                    return
+
+
+def _drop_indexed_item(found: dict, rid: str) -> None:
+    _remove_storage(found)
+    with _LOCK, _file_lock(_index_path()):
+        idx = _load_index()
+        idx.get("items", {}).pop(rid, None)
+        _save_index(idx)
+
+
 def rescope(rid: str, new_scope: str, *, repo_root: str | None = None) -> dict:
     """Re-file a captured item under a new scope, preserving its id. Also MOVES
     any gate flag it enabled to the new scope (clear old, set new) so the
@@ -160,57 +191,30 @@ def rescope(rid: str, new_scope: str, *, repo_root: str | None = None) -> dict:
     new_scope = (new_scope or "").strip().lower()
     if new_scope not in _VALID_SCOPES:
         return {"ok": False, "error": f"invalid scope: {new_scope}"}
-
-    # Locate the item (session store or persistent index).
-    found: dict | None = None
-    in_session = False
-    with _LOCK:
-        for items in _SESSION_ITEMS.values():
-            for it in items:
-                if it.get("id") == rid:
-                    found = dict(it)
-                    in_session = True
-                    break
-            if found:
-                break
-    if found is None:
-        idx = _load_index()
-        it = idx.get("items", {}).get(rid)
-        if it:
-            found = dict(it)
+    found, in_session = _find_item(rid)
     if found is None:
         return {"ok": False, "error": "not found"}
-
     if found.get("scope") == new_scope:
-        return {"id": rid, "scope": new_scope, "category": found.get("category")}
+        return {"id": rid, "scope": new_scope,
+                "category": found.get("category")}
 
     old_flags = list(found.get("applied_flags") or [])
-
     # Remove the old storage + clear old gate flags, then re-store under the new
     # scope with the same id.
     _clear_applied_flags(found)
     if in_session:
-        with _LOCK:
-            for items in _SESSION_ITEMS.values():
-                for i, it in enumerate(list(items)):
-                    if it.get("id") == rid:
-                        items.pop(i)
+        _drop_session_item(rid)
     else:
-        _remove_storage(found)
-        with _LOCK, _file_lock(_index_path()):
-            idx = _load_index()
-            idx.get("items", {}).pop(rid, None)
-            _save_index(idx)
-
-    c = {"category": found.get("category"), "scope": new_scope,
-         "canonical": found.get("canonical")}
-    res = _do_store(c, rid=rid, repo=found.get("repo"),
+        _drop_indexed_item(found, rid)
+    res = _do_store({"category": found.get("category"), "scope": new_scope,
+                     "canonical": found.get("canonical")},
+                    rid=rid, repo=found.get("repo"),
                     session_id=found.get("session_id"), repo_root=repo_root)
     # Move each gate flag to the new scope (recorded onto the new item). A move
     # to global is refused unless explicitly confirmed → the gate stays enabled.
     for entry in old_flags:
         set_gate_flag(entry.get("name"), scope=new_scope,
-                      repo=found.get("repo"), session_id=found.get("session_id"),
-                      rule_id=rid)
+                      repo=found.get("repo"),
+                      session_id=found.get("session_id"), rule_id=rid)
     return {"id": rid, "scope": new_scope, "category": found.get("category"),
             "location": res.get("location")}

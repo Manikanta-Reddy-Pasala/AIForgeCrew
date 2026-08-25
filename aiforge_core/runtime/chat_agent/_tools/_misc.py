@@ -3,6 +3,45 @@ from __future__ import annotations
 import re
 
 
+def _trial_run_script(path: str, jobs_scripts) -> dict:
+    """TEST BEFORE SCHEDULE: run the script once. A wrong JQL/filter would
+    otherwise be scheduled as-is and fire forever doing nothing. On failure the
+    orphan script is deleted too, so a rejected build leaves nothing behind.
+
+    ``{"ok": True, "stdout": …}`` when it ran, otherwise the tool's error dict.
+    """
+    trial = jobs_scripts.run_script(path)
+    if trial.get("ok"):
+        return {"ok": True, "stdout": trial.get("stdout")}
+    jobs_scripts.delete_script(path)
+    return {"ok": False, "tested": True,
+            "error": ("trial run FAILED (exit "
+                      f"{trial.get('returncode')}) — job NOT "
+                      "scheduled. Fix the script and retry.\n"
+                      f"STDOUT:\n{trial.get('stdout', '')}\n"
+                      f"STDERR:\n{trial.get('stderr', '')}")}
+
+
+def _replace_same_named_jobs(name: str, path: str, jobs_store,
+                             jobs_scripts) -> list:
+    """DEDUPE: drop any existing job(s) with the same name (and their script
+    files) instead of piling up duplicates that all fire. Best-effort — a
+    dedupe failure never blocks the create."""
+    replaced = []
+    try:
+        for j in jobs_store.list_jobs():
+            if str(j.get("name") or "").strip().lower() != name.lower():
+                continue
+            sp = j.get("script_path")
+            if sp and sp != path and jobs_scripts.is_within_jobs_dir(sp):
+                jobs_scripts.delete_script(sp)
+            jobs_store.delete(j["id"])
+            replaced.append(j["id"])
+    except Exception:  # noqa: BLE001
+        pass
+    return replaced
+
+
 def _t_create_job_script(args: dict, cwd: str) -> dict:
     """JOB-BUILDER finalize: write the approved script to the local
     ~/.aiforge/jobs folder and register a cron job that RUNS it (deterministic
@@ -22,45 +61,27 @@ def _t_create_job_script(args: dict, cwd: str) -> dict:
             return {"ok": False,
                     "error": f"invalid or unschedulable cron: {cron!r}"}
         path = jobs_scripts.write_script(name, script)
-        # TEST BEFORE SCHEDULE: run the script once. A wrong JQL/filter would
-        # otherwise be scheduled as-is and fire forever doing nothing. On
-        # failure, DON'T schedule and DON'T leave an orphan script. `skip_test`
-        # (default off) is the escape for destructive/time-sensitive scripts.
+        # `skip_test` (default off) is the escape for destructive or
+        # time-sensitive scripts.
+        tested = not bool(args.get("skip_test"))
         trial_output = None
-        if not bool(args.get("skip_test")):
-            trial = jobs_scripts.run_script(path)
-            if not trial.get("ok"):
-                jobs_scripts.delete_script(path)
-                return {"ok": False, "tested": True,
-                        "error": ("trial run FAILED (exit "
-                                  f"{trial.get('returncode')}) — job NOT "
-                                  "scheduled. Fix the script and retry.\n"
-                                  f"STDOUT:\n{trial.get('stdout', '')}\n"
-                                  f"STDERR:\n{trial.get('stderr', '')}")}
-            trial_output = trial.get("stdout")
-        # DEDUPE: replace any existing job(s) with the same name (+ their
-        # script files) instead of piling up duplicates that all fire.
-        replaced = []
-        try:
-            for j in jobs_store.list_jobs():
-                if str(j.get("name") or "").strip().lower() == name.lower():
-                    sp = j.get("script_path")
-                    if sp and sp != path and jobs_scripts.is_within_jobs_dir(sp):
-                        jobs_scripts.delete_script(sp)
-                    jobs_store.delete(j["id"])
-                    replaced.append(j["id"])
-        except Exception:  # noqa: BLE001 — dedupe is best-effort, never block create
-            pass
-        nxt = jobs_parse.next_runs(cron, n=1)[0]
+        if tested:
+            trial = _trial_run_script(path, jobs_scripts)
+            if not trial["ok"]:
+                return trial
+            trial_output = trial["stdout"]
+        replaced = _replace_same_named_jobs(name, path, jobs_store,
+                                            jobs_scripts)
         job = jobs_store.create(
             name=name, cron=cron, ticket_title=name,
             ticket_body=(str(args.get("description") or "").strip()
                          or f"Runs script: {path}"),
-            next_run_at=nxt, kind="script", script_path=path)
+            next_run_at=jobs_parse.next_runs(cron, n=1)[0],
+            kind="script", script_path=path)
         return {"ok": True, "job_id": job["id"], "script_path": path,
                 "human_schedule": jobs_parse.human_schedule(cron),
                 "next_run_at": job["next_run_at"],
-                "tested": not bool(args.get("skip_test")),
+                "tested": tested,
                 "trial_output": trial_output,
                 "replaced_jobs": replaced}
     except Exception as exc:  # noqa: BLE001

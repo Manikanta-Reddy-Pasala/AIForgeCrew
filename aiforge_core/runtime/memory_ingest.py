@@ -90,6 +90,39 @@ def _iter_files(root: Path, exts: set[str]):
                 yield Path(dirpath) / fn
 
 
+def _count_indexable(p: Path, sample: list) -> tuple[int, int]:
+    """Capped counts of code and doc files under ``p``; fills ``sample`` with up
+    to 8 relative code-file paths. Capped at 5000 each — a clear signal, not a
+    full census, so a huge tree doesn't stall the pre-flight."""
+    code = doc = 0
+    for f in _iter_files(p, _CODE_EXT):
+        code += 1
+        if len(sample) < 8:
+            sample.append(str(f.relative_to(p)))
+        if code >= 5000:
+            break
+    for _ in _iter_files(p, _ALL_DOC_EXT):
+        doc += 1
+        if doc >= 5000:
+            break
+    return code, doc
+
+
+def _validate_path_target(p: Path, resolved: str, out: dict) -> str | None:
+    """Fill the exists/is_dir/readable flags; return an error message when the
+    target cannot be indexed, or None when it is a readable directory."""
+    out["exists"] = p.exists()
+    if not p.exists():
+        return (f"path does not exist (resolved to {resolved}). Use an ABSOLUTE "
+                f"path to the repo root; a relative path resolves against the "
+                f"api's working directory.")
+    out["is_dir"] = p.is_dir()
+    if not p.is_dir():
+        return f"not a directory: {resolved}"
+    out["readable"] = os.access(str(p), os.R_OK)
+    return None
+
+
 def validate_path(location: str) -> dict:
     """Pre-flight a repo/dir path BEFORE indexing so the user can see whether
     the process can actually reach it. Returns the RESOLVED absolute path (what
@@ -106,31 +139,12 @@ def validate_path(location: str) -> dict:
             return out
         p = Path(loc).expanduser()
         out["resolved"] = str(p.resolve()) if p.exists() else str(p.absolute())
-        out["exists"] = p.exists()
-        if not p.exists():
-            out["message"] = (f"path does not exist (resolved to {out['resolved']}). "
-                              f"Use an ABSOLUTE path to the repo root; a relative "
-                              f"path resolves against the api's working directory.")
+        err = _validate_path_target(p, out["resolved"], out)
+        if err:
+            out["message"] = err
             return out
-        out["is_dir"] = p.is_dir()
-        if not p.is_dir():
-            out["message"] = f"not a directory: {out['resolved']}"
-            return out
-        out["readable"] = os.access(str(p), os.R_OK)
-        # Count (capped) — walk stops early once we have a clear signal.
-        code = doc = 0
-        for f in _iter_files(p, _CODE_EXT):
-            code += 1
-            if len(out["sample"]) < 8:
-                out["sample"].append(str(f.relative_to(p)))
-            if code >= 5000:
-                break
-        for _ in _iter_files(p, _ALL_DOC_EXT):
-            doc += 1
-            if doc >= 5000:
-                break
-        out["code_files"] = code
-        out["doc_files"] = doc
+        code, doc = _count_indexable(p, out["sample"])
+        out["code_files"], out["doc_files"] = code, doc
         if code == 0 and doc == 0:
             out["message"] = (f"0 indexable files under {out['resolved']} — the "
                               f"directory is empty from the api's view. On a "

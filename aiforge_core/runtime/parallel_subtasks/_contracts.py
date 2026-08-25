@@ -30,6 +30,25 @@ def _path_to_module(path: str) -> str:
     return p.replace("/", ".").strip(".")
 
 
+def _first_json_object(blob: str):
+    """The first COMPLETE ``{...}`` object in ``blob``, brace-balanced so
+    trailing prose after the declaration does not break the parse. None when
+    there is no balanced object or it does not parse."""
+    import json as _json
+    depth = 0
+    for i, ch in enumerate(blob):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return _json.loads(blob[:i + 1])
+                except Exception:  # noqa: BLE001
+                    return None
+    return None
+
+
 def _write_contract_sidecar(worktree: str, subtask: dict, out: str) -> None:
     """Parse the worker's ``===CONTRACT=== {json}`` interface declaration and
     persist it under ``.aiforge-contracts/`` so the merger has a language-agnostic,
@@ -39,23 +58,8 @@ def _write_contract_sidecar(worktree: str, subtask: dict, out: str) -> None:
     m = _re.search(r"===CONTRACT===\s*(\{.*)", out, _re.DOTALL)
     if not m:
         return
-    blob = m.group(1)
-    # brace-balance to the first complete object
-    depth = 0
-    end = -1
-    for i, ch in enumerate(blob):
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                end = i + 1
-                break
-    if end < 0:
-        return
-    try:
-        obj = _json.loads(blob[:end])
-    except Exception:  # noqa: BLE001
+    obj = _first_json_object(m.group(1))
+    if obj is None:
         return
     path = str(subtask.get("path") or "")
     slug = str(subtask.get("slug") or _path_to_module(path) or "sub")
@@ -89,48 +93,61 @@ def _clean_symbol(s: str) -> str:
     return ""
 
 
-def _blackboard_from_contracts(cwd: str):
-    """Read the declared contract sidecars → (exposes{mod:set}, consumes[(cons,tgt,name)]).
-    Returns None when no contracts were declared (→ AST fallback)."""
+def _read_contract_files(cdir: str) -> list[dict]:
+    """Every readable contract sidecar in ``cdir``."""
     import json as _json
-    cdir = os.path.join(cwd, _CONTRACT_DIR)
-    if not os.path.isdir(cdir):
-        return None
-    exposes: dict[str, set] = {}
-    raw: list[dict] = []
+    out = []
     for f in os.listdir(cdir):
         if not f.endswith(".json"):
             continue
         try:
-            with open(os.path.join(cdir, f), encoding="utf-8", errors="replace") as fh:
-                rec = _json.load(fh)
+            with open(os.path.join(cdir, f), encoding="utf-8",
+                      errors="replace") as fh:
+                out.append(_json.load(fh))
         except Exception:  # noqa: BLE001
             continue
+    return out
+
+
+def _declared_exposes(records: list[dict]) -> dict[str, set]:
+    exposes: dict[str, set] = {}
+    for rec in records:
         mod = rec.get("module") or ""
-        names = set()
-        for e in rec.get("exposes") or []:
-            _n = _clean_symbol(e)
-            if _n:
-                names.add(_n)
-        if mod:
-            exposes[mod] = names
-        raw.append(rec)
-    if not exposes:
-        return None
+        if not mod:
+            continue
+        exposes[mod] = {n for n in (_clean_symbol(e)
+                                    for e in (rec.get("exposes") or [])) if n}
+    return exposes
+
+
+def _declared_consumes(records: list[dict], mods: set) -> list[tuple]:
+    """``(consumer, target, name)`` for each declared import, with the target
+    matched loosely by last segment when the full name is not known."""
     consumes: list[tuple[str, str, str]] = []
-    mods = set(exposes)
-    for rec in raw:
+    for rec in records:
         cons = rec.get("module") or ""
         for tgtmod, names in (rec.get("consumes") or {}).items():
+            last = str(tgtmod).split(".")[-1]
             tgt = (tgtmod if tgtmod in mods
-                   else next((m for m in mods if m.split(".")[-1] == str(tgtmod).split(".")[-1]), None))
+                   else next((m for m in mods if m.split(".")[-1] == last), None))
             if not tgt:
                 continue
-            for n in (names or []):
-                _n = _clean_symbol(n)
-                if _n:
-                    consumes.append((cons, tgt, _n))
-    return exposes, consumes
+            consumes.extend((cons, tgt, n) for n in
+                            (_clean_symbol(x) for x in (names or [])) if n)
+    return consumes
+
+
+def _blackboard_from_contracts(cwd: str):
+    """Read the declared contract sidecars → (exposes{mod:set}, consumes[(cons,tgt,name)]).
+    Returns None when no contracts were declared (→ AST fallback)."""
+    cdir = os.path.join(cwd, _CONTRACT_DIR)
+    if not os.path.isdir(cdir):
+        return None
+    records = _read_contract_files(cdir)
+    exposes = _declared_exposes(records)
+    if not exposes:
+        return None
+    return exposes, _declared_consumes(records, set(exposes))
 
 
 def _is_test_subtask(s: dict) -> bool:
@@ -171,16 +188,16 @@ def _matching_tests_for(cwd: str, impl_path: str) -> str:
 
 def _merge_aggs(a: dict, b: dict) -> dict:
     """Combine two run_parallel aggregates (test phase + impl phase)."""
-    a = a or {}
-    b = b or {}
-    total = (a.get("total", 0) or 0) + (b.get("total", 0) or 0)
-    done = (a.get("done", 0) or 0) + (b.get("done", 0) or 0)
+    a, b = a or {}, b or {}
+
+    def _sum(key: str) -> int:
+        return (a.get(key) or 0) + (b.get(key) or 0)
+
     return {
         "ok": bool(a.get("ok", True)) and bool(b.get("ok", True)),
-        "total": total, "done": done,
-        "failed": (a.get("failed", 0) or 0) + (b.get("failed", 0) or 0),
-        "validated": (a.get("validated", 0) or 0) + (b.get("validated", 0) or 0),
-        "merged": (a.get("merged", 0) or 0) + (b.get("merged", 0) or 0),
+        "total": _sum("total"), "done": _sum("done"),
+        "failed": _sum("failed"), "validated": _sum("validated"),
+        "merged": _sum("merged"),
         "conflicts": (a.get("conflicts") or []) + (b.get("conflicts") or []),
         "review": b.get("review") or a.get("review") or "done",
     }

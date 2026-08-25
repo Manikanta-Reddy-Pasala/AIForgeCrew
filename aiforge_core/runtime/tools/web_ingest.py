@@ -55,19 +55,23 @@ def _slug_for(url: str) -> str:
     return f"{s}-{hashlib.sha1(clean.encode('utf-8')).hexdigest()[:8]}"
 
 
-def web_crawl(args: dict, cwd: str | None = None) -> dict:
-    """Fetch ``url`` → markdown → ``work/web/<slug>/page.md``. Optional
-    ``max_chars`` bounds the returned preview (full text is on disk).
-    ``sanctioned: True`` bypasses the AIFORGE_ALLOW_WEB_FETCH gate — set
-    ONLY by the researcher wrapper (the role's sanctioned egress, parity
-    with its ungated web_read); the chat path stays gated like web_fetch."""
-    if not isinstance(args, dict):
-        return {"ok": False, "error": "missing 'url' (args must be a JSON object)"}
+def _crawl_gate(args: dict) -> dict | None:
+    """Every reason this crawl must not happen, or None to proceed.
+
+    ``sanctioned: True`` bypasses the AIFORGE_ALLOW_WEB_FETCH gate — set ONLY
+    by the researcher wrapper (the role's sanctioned egress, parity with its
+    ungated web_read); the chat path stays gated like web_fetch.
+
+    SSRF guard: web_crawl is available to every agent (not just the
+    researcher), so a model-supplied URL must not pivot to cloud metadata
+    (169.254.169.254), loopback services or the private LAN — this applies to
+    BOTH the crawl4ai browser engine and the plain-fetch fallback. A pure DNS
+    failure is left to the engine to surface as a natural error.
+    """
     from aiforge_core.runtime.tools import web_search as _ws
     if _ws._disabled():
         return {"ok": False, "error": "web_search_disabled"}
-    sanctioned = args.get("sanctioned") is True
-    if not sanctioned and not _ws._fetch_allowed():
+    if args.get("sanctioned") is not True and not _ws._fetch_allowed():
         return {"ok": False,
                 "error": "web fetch disabled (set AIFORGE_ALLOW_WEB_FETCH=1)"}
     url = (args.get("url") or "").strip()
@@ -75,61 +79,60 @@ def web_crawl(args: dict, cwd: str | None = None) -> dict:
         return {"ok": False, "error": "missing 'url'"}
     if not re.match(r"^https?://", url, re.IGNORECASE):
         return {"ok": False, "error": "url must be http(s)"}
-    # SSRF guard: web_crawl is now available to every agent (not just the
-    # researcher), so a model-supplied URL must not pivot to cloud metadata
-    # (169.254.169.254), loopback services or the private LAN — applies to
-    # BOTH the crawl4ai browser engine and the plain-fetch fallback below. A
-    # pure DNS failure is left to the engine to surface as a natural error.
     from aiforge_core.net.ssl import SSRFBlocked, guard_public_url
     try:
         guard_public_url(url)
     except SSRFBlocked as exc:
         if exc.kind != "dns":
             return {"ok": False, "error": f"blocked (ssrf): {exc}"}
+    return None
+
+
+def _crawl4ai_text(url: str) -> tuple[str, str]:
+    """``(text, title)`` from the browser engine, or empty on any failure —
+    the plain fetch below still works."""
+    if os.environ.get("AIFORGE_WEB_CRAWLER", "auto").strip().lower() == "fallback":
+        return "", ""
     try:
-        max_chars = int(args.get("max_chars", 3000))
-    except (TypeError, ValueError):
-        max_chars = 3000
+        from aiforge_core.integrations import crawl4ai_adapter
+        if not crawl4ai_adapter.available():
+            return "", ""
+        res = crawl4ai_adapter.crawl(url)
+        return (res.get("markdown") or "").strip(), (res.get("title") or "")
+    except Exception:  # noqa: BLE001
+        return "", ""
 
-    engine = "crawl4ai"
-    title = ""
-    text = ""
-    tls_verified = True
-    prefer = os.environ.get("AIFORGE_WEB_CRAWLER", "auto").strip().lower()
-    if prefer != "fallback":
-        try:
-            from aiforge_core.integrations import crawl4ai_adapter
-            if crawl4ai_adapter.available():
-                res = crawl4ai_adapter.crawl(url)
-                text = (res.get("markdown") or "").strip()
-                title = res.get("title") or ""
-        except Exception:  # noqa: BLE001 — plain fetch below still works
-            text = ""
-    if not text:
-        engine = "fetch"
-        r = _ws._fetch_readable(url, 200_000)   # gate already applied above
-        if not r.get("ok"):
-            return r
-        text = r.get("text") or ""
-        title = r.get("title") or title
-        # Carry the TLS downgrade through. This dossier is written so LATER
-        # SESSIONS reuse it, so a page fetched over an unverified connection
-        # that records nothing about it is the dangerous direction: the
-        # provenance is gone by the time anyone reads the note.
-        if r.get("tls_verified") is False:
-            tls_verified = False
-    if not text.strip():
-        return {"ok": False, "error": "page fetched but no readable text"}
 
+def _fetch_page(url: str) -> tuple[dict, str, str, bool]:
+    """``(error_or_empty, text, title, tls_verified)`` from the plain fetch.
+
+    The TLS downgrade is carried through: this dossier is written so LATER
+    SESSIONS reuse it, so a page fetched over an unverified connection that
+    records nothing about it is the dangerous direction — the provenance is
+    gone by the time anyone reads the note.
+    """
+    from aiforge_core.runtime.tools import web_search as _ws
+    r = _ws._fetch_readable(url, 200_000)   # gate already applied by the caller
+    if not r.get("ok"):
+        return r, "", "", True
+    return ({}, r.get("text") or "", r.get("title") or "",
+            r.get("tls_verified") is not False)
+
+
+def _write_dossier(url: str, title: str, text: str, engine: str,
+                   tls_verified: bool) -> tuple[str, dict | None]:
+    """Persist the page as a standard managed note. ``(page_path, error)``.
+
+    The managed-note envelope (frontmatter + OKR sections) makes this dossier
+    parseable/curatable like the jira/confluence ones; the full page text rides
+    along untouched as the note body. The URL is sanitized — credentials and
+    token values are never persisted.
+    """
     from aiforge_core.runtime import work_context, work_notes
-    safe_url = _sanitize_url(url)   # never persist credentials/token values
+    safe_url = _sanitize_url(url)
     slug = _slug_for(url)
     ctx = work_context.context_dir("web", slug)
     page_path = os.path.join(ctx, "page.md")
-    meta_path = os.path.join(ctx, "meta.json")
-    # Standard managed-note envelope (frontmatter + OKR sections) so this
-    # dossier is parseable/curatable like the jira/confluence ones; the full
-    # page text rides along untouched as the note body.
     note = work_notes.render_note(
         "web", slug, title=title or safe_url, source_url=safe_url,
         facts=[f"title: {title or safe_url}", f"chars: {len(text)}",
@@ -139,14 +142,51 @@ def web_crawl(args: dict, cwd: str | None = None) -> dict:
         links=[safe_url], body_md=text)
     try:
         _atomic.write_text(page_path, note)
-        _atomic.write_text(meta_path, json.dumps(
+        _atomic.write_text(os.path.join(ctx, "meta.json"), json.dumps(
             {"url": safe_url, "title": title, "engine": engine,
              "fetched_at": int(time.time()), "chars": len(text),
              **({} if tls_verified else {"tls_verified": False})}, indent=1))
     except OSError as exc:
-        return {"ok": False, "error": f"saved nothing: {exc}"}
-    return {"ok": True, "path": page_path, "url": safe_url, "title": title,
-            "engine": engine, "chars": len(text),
+        return page_path, {"ok": False, "error": f"saved nothing: {exc}"}
+    return page_path, None
+
+
+def web_crawl(args: dict, cwd: str | None = None) -> dict:
+    """Fetch ``url`` → markdown → ``work/web/<slug>/page.md``. Optional
+    ``max_chars`` bounds the returned preview (full text is on disk).
+    ``sanctioned: True`` bypasses the AIFORGE_ALLOW_WEB_FETCH gate — set
+    ONLY by the researcher wrapper (the role's sanctioned egress, parity
+    with its ungated web_read); the chat path stays gated like web_fetch."""
+    if not isinstance(args, dict):
+        return {"ok": False,
+                "error": "missing 'url' (args must be a JSON object)"}
+    blocked = _crawl_gate(args)
+    if blocked is not None:
+        return blocked
+    url = (args.get("url") or "").strip()
+    try:
+        max_chars = int(args.get("max_chars", 3000))
+    except (TypeError, ValueError):
+        max_chars = 3000
+
+    engine = "crawl4ai"
+    tls_verified = True
+    text, title = _crawl4ai_text(url)
+    if not text:
+        engine = "fetch"
+        err, text, fetched_title, tls_verified = _fetch_page(url)
+        if err:
+            return err
+        title = fetched_title or title
+    if not text.strip():
+        return {"ok": False, "error": "page fetched but no readable text"}
+
+    page_path, write_err = _write_dossier(url, title, text, engine,
+                                          tls_verified)
+    if write_err is not None:
+        return write_err
+    return {"ok": True, "path": page_path, "url": _sanitize_url(url),
+            "title": title, "engine": engine, "chars": len(text),
             **({} if tls_verified else {"tls_verified": False}),
             "preview": text[:max_chars],
             "note": "full page saved — file_read the path for more; "

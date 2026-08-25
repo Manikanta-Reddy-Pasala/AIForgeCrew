@@ -126,6 +126,72 @@ def record_failure(
             pass
 
 
+def _validator_dict(vv) -> dict:
+    if not isinstance(vv, str):
+        return vv or {}
+    try:
+        import json
+        return json.loads(vv)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _feedback_token(fb) -> str:
+    """Feedback's contract is "verdict token on the FIRST LINE, rationale
+    below" — the raw value is e.g. "pass\\nlooks good", never exactly "pass".
+    Comparing the leading token (not the whole string) is what keeps every
+    clean pass from writing a fake failure."""
+    if not isinstance(fb, str) or not fb.split():
+        return ""
+    return fb.split()[0].lower()
+
+
+def _is_terminal_failure(validator_verdict: str, state) -> bool:
+    """A failure that is about to be RE-PLANNED is not recorded — the Validator
+    runs once PER attempt, so a mid-replan write would pile up near-duplicate
+    failure observations. Only the TERMINAL pass (replan budget spent) records."""
+    try:
+        from .graph_pipeline import MAX_REPLANS
+    except Exception:  # noqa: BLE001
+        MAX_REPLANS = 1
+    failing = validator_verdict in {"request_changes", "reject", "fail"}
+    replan_count = int(state.get("replan_count", 0) or 0)
+    return not (failing and replan_count < MAX_REPLANS)
+
+
+def _ticket_stub(identifier: str, title: str, repo: str):
+    """A lightweight stand-in for the ticket record_failure expects."""
+    class _T:
+        pass
+    t = _T()
+    t.identifier = identifier
+    t.title = title
+    t.project = repo
+    return t
+
+
+def _record_from_state(state) -> None:
+    ticket_identifier = state.get("ticket_identifier", "")
+    repo = (state.get("ticket_project")
+            or os.environ.get("AIFORGE_AFM_REPO", "") or "")
+    if not (ticket_identifier and repo):
+        return
+    vv_parsed = _validator_dict(state.get("validator_verdict") or "")
+    validator_verdict = vv_parsed.get("verdict") or ""
+    fb_token = _feedback_token(state.get("feedback_verdict") or "")
+    # Pass only when both in-loop AND validator approve.
+    if fb_token in {"pass", "pass_with_warnings"} \
+            and validator_verdict in {"approve", ""}:
+        return
+    if not _is_terminal_failure(validator_verdict, state):
+        return          # not terminal — a re-planned attempt may pass
+    record_failure(
+        _ticket_stub(ticket_identifier, state.get("ticket_title", ""), repo),
+        verdict=fb_token or "fail",
+        reason=(vv_parsed.get("rationale") or "")[:280],
+        review_verdict=validator_verdict or None)
+
+
 def make_failure_memory_after_callback():
     """Return an ADK ``after_agent_callback`` for the Validator.
 
@@ -141,64 +207,7 @@ def make_failure_memory_after_callback():
         if os.environ.get("AIFORGE_FAILURE_MEMORY", "1") in {"0", "false", ""}:
             return None
         try:
-            import json
-            state = callback_context.state
-            ticket_identifier = state.get("ticket_identifier", "")
-            repo = (
-                state.get("ticket_project")
-                or os.environ.get("AIFORGE_AFM_REPO", "")
-                or ""
-            )
-            if not (ticket_identifier and repo):
-                return None
-            fb = state.get("feedback_verdict") or ""
-            vv = state.get("validator_verdict") or ""
-            if isinstance(vv, str):
-                try:
-                    vv_parsed = json.loads(vv)
-                except Exception:
-                    vv_parsed = {}
-            else:
-                vv_parsed = vv or {}
-            validator_verdict = (vv_parsed.get("verdict") or "")
-            # Feedback's contract is "verdict token on the FIRST LINE,
-            # rationale below" — the raw value is e.g. "pass\nlooks good",
-            # never exactly "pass". Compare the leading token, not the
-            # whole string, or every clean pass writes a fake failure.
-            fb_token = (fb.split()[0].lower() if isinstance(fb, str)
-                        and fb.split() else "")
-            # Pass only when both in-loop AND validator approve.
-            ok = fb_token in {"pass", "pass_with_warnings"} \
-                and validator_verdict in {"approve", ""}
-            if ok:
-                return None
-
-            # Don't record a failure that's about to be re-planned — the
-            # Validator runs once PER attempt, so a mid-replan write would
-            # pile up near-duplicate failure observations. Only the
-            # TERMINAL validator pass (replan budget spent) records.
-            try:
-                from .graph_pipeline import MAX_REPLANS
-            except Exception:
-                MAX_REPLANS = 1
-            failing = validator_verdict in {"request_changes", "reject", "fail"}
-            replan_count = int(state.get("replan_count", 0) or 0)
-            if failing and replan_count < MAX_REPLANS:
-                return None  # not terminal — a re-planned attempt may pass
-
-            # Build a lightweight stub for record_failure.
-            class _T:
-                pass
-            t = _T()
-            t.identifier = ticket_identifier
-            t.title = state.get("ticket_title", "")
-            t.project = repo
-            verdict = fb_token or "fail"
-            reason = (vv_parsed.get("rationale") or "")[:280]
-            record_failure(
-                t, verdict=verdict, reason=reason,
-                review_verdict=validator_verdict or None,
-            )
+            _record_from_state(callback_context.state)
         except Exception as exc:  # noqa: BLE001
             log.debug("failure_memory callback: %s", exc)
         return None

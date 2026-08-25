@@ -61,57 +61,64 @@ def _llm_fn():
     return _f
 
 
+def _skip_reason(state, repo: str, traj: str) -> str | None:
+    """Why this run should NOT be mined, or None to proceed."""
+    if _is_disabled():
+        return "disabled"
+    if not _passed(state):
+        return "not a passing run"
+    if not repo:
+        return "no repo"
+    if not traj:
+        return "no trajectory"
+    return None
+
+
+def _embed_fn():
+    """The embedder, or a no-op when it is unavailable."""
+    try:
+        from aiforge_core.memory.embed import embed as embed_fn  # type: ignore
+        return embed_fn
+    except Exception:  # noqa: BLE001
+        return lambda _t: None
+
+
+def _event_time_for(tid) -> float | None:
+    """Bi-temporal: stamp event_time from the ticket's created_at when we can,
+    so the mined facts are valid_at the real work time."""
+    if not tid:
+        return None
+    try:
+        from aiforge_core.tickets.store import get as ticket_get
+        t = ticket_get(tid)
+        created = getattr(t, "created_at", None) if t else None
+        return created.timestamp() if created is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def run_consolidation(state) -> dict:
     """Synchronous body — extract/decide/apply/reflect over the run.
     Returns a small status dict; never raises."""
     try:
-        if _is_disabled():
-            return {"skipped": "disabled"}
-        if not _passed(state):
-            return {"skipped": "not a passing run"}
         repo = (state.get("ticket_project")
                 or os.environ.get("AIFORGE_AFM_REPO", "") or "")
-        if not repo:
-            return {"skipped": "no repo"}
-        traj = _trajectory_text(state)
-        if not traj:
-            return {"skipped": "no trajectory"}
-
+        traj = _trajectory_text(state) if repo else ""
+        skip = _skip_reason(state, repo, traj)
+        if skip:
+            return {"skipped": skip}
         from .learner_persist import _open_driver
         driver = _open_driver()
         if driver is None:
             return {"skipped": "no neo4j driver (embedded mode)"}
-
-        try:
-            from aiforge_core.memory.embed import embed as embed_fn  # type: ignore
-        except Exception:  # noqa: BLE001
-            def embed_fn(_t):  # type: ignore
-                return None
-
-        tags: list[str] = []
         tid = state.get("ticket_identifier")
-        if tid:
-            tags.append(f"ticket:{tid}")
-        # bi-temporal: stamp event_time from the ticket's created_at when we
-        # can, so the mined facts are valid_at the real work time.
-        event_time = None
-        if tid:
-            try:
-                from aiforge_core.tickets.store import get as ticket_get
-                t = ticket_get(tid)
-                ca = getattr(t, "created_at", None) if t else None
-                if ca is not None:
-                    event_time = ca.timestamp()
-            except Exception:  # noqa: BLE001
-                event_time = None
-
         try:
             from aiforge_memory.features.memory import consolidate as _C
             return _C.consolidate(
-                driver, repo=repo, trajectory_text=traj,
-                llm_fn=_llm_fn(), embed_fn=embed_fn,
-                author="consolidator", tags=tags, event_time=event_time,
-            )
+                driver, repo=repo, trajectory_text=traj, llm_fn=_llm_fn(),
+                embed_fn=_embed_fn(), author="consolidator",
+                tags=([f"ticket:{tid}"] if tid else []),
+                event_time=_event_time_for(tid))
         finally:
             try:
                 driver.close()

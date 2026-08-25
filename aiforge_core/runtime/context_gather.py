@@ -207,6 +207,105 @@ def _md_for(kind: str, ent: dict) -> str:
     return "\n".join(lines)
 
 
+def _cached_dossier(base: str, dossier_md: str, meta: dict, kind: str,
+                    key: str, live_updated, force: bool) -> dict | None:
+    """The stored dossier, unless we can PROVE it is stale.
+
+    Reuse it when the entity is unchanged OR when the freshness probe was
+    inconclusive (live_updated is None — offline / not configured), rather than
+    throwing a good cache away and erroring on the re-fetch.
+    """
+    if force or not meta or not os.path.exists(dossier_md):
+        return None
+    if not (live_updated is None or meta.get("updated") == live_updated):
+        return None
+    try:
+        with open(dossier_md, encoding="utf-8") as fh:
+            body = fh.read()
+    except OSError:
+        body = ""
+    return {"ok": True, "cached": True, "refreshed": False, "kind": kind,
+            "key": key, "dir": base, "dossier": body,
+            "artifacts": meta.get("artifacts", [])}
+
+
+def _read_primary(kind: str, key: str, role: str) -> tuple[dict, list]:
+    """Phase 1: the primary read (+ its links, in parallel)."""
+    if kind != "jira":
+        return _read_confluence(key, role), []
+    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
+        f_primary = ex.submit(_read_jira, key, role)
+        f_links = ex.submit(_jira_links, key)
+        return f_primary.result(), f_links.result()
+
+
+def _fan_out(reader, ids: list, role: str, skind: str, base: str,
+             artifacts: list) -> tuple[list, bool]:
+    """Phase 2: read the cross-linked entities IN PARALLEL and write each one.
+    Returns ``(secondaries, partial)`` — ``partial`` when any fetch failed, so
+    the caller does not stamp the cache as complete."""
+    secondaries: list[tuple[str, dict]] = []
+    partial = False
+    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
+        futs = {ex.submit(reader, i, role): i for i in ids}
+        for fut in as_completed(futs):
+            ident = futs[fut]
+            try:
+                ent = fut.result()
+            except Exception:  # noqa: BLE001
+                partial = True
+                continue
+            if not ent.get("ok"):
+                partial = True
+                continue
+            secondaries.append((skind, ent))
+            fn = f"{skind}-{_slug(ident)}.md"
+            _write(os.path.join(base, fn), _md_for(skind, ent))
+            artifacts.append(fn)
+    return secondaries, partial
+
+
+def _render_dossier(kind: str, key: str, primary: dict,
+                    secondaries: list) -> str:
+    """Merge into one dossier. The merged text is the BODY of a standard
+    managed note (same envelope as ticket.md/page.md) so the dossier carries
+    machine-readable identity + links up top."""
+    from aiforge_core.runtime import work_notes
+    parts = [f"_gathered {len(secondaries)} linked item(s)_", "",
+             _md_for(kind, primary)]
+    for skind, ent in secondaries:
+        parts.append("\n\n---\n")
+        parts.append(f"## Linked {skind}\n")
+        parts.append(_md_for(skind, ent))
+    return work_notes.render_note(
+        kind, key, title=f"Dossier — {kind}:{key}",
+        source_url=primary.get("url") or "",
+        objective=primary.get("summary") or primary.get("title") or "",
+        facts=[f"linked items: {len(secondaries)}"],
+        links=([primary.get("url") or ""]
+               + [f"[[{sk}/{ent.get('key') or ent.get('id')}]]"
+                  for sk, ent in secondaries if ent.get("key") or ent.get("id")]),
+        body_md="\n".join(parts))
+
+
+def _capture_dossier(kind: str, key: str, primary: dict, secondaries: list,
+                     base: str) -> None:
+    """Memory via md_store.capture: writes a per-context md note (repo=key) AND
+    mirrors to the DB — so it flows through the SAME repo-axis compaction /
+    write-time brief as every other memory (compacted-<key>.md), instead of a
+    DB-only row. Recalled next time under this ticket/page key."""
+    try:
+        from aiforge_core.memory import md_store
+        md_store.capture(
+            "project_learning",
+            f"DOSSIER {kind}:{key} — "
+            f"{primary.get('summary') or primary.get('title') or ''}"
+            f" (+{len(secondaries)} linked item(s); files in {base}).",
+            repo=key, topic=f"{kind}-dossier")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def gather(kind: str, key: str, *, force: bool = False,
            role: str = "chat") -> dict:
     """Assemble (and cache) the cross-entity dossier for ``(kind, key)``.
@@ -220,107 +319,32 @@ def gather(kind: str, key: str, *, force: bool = False,
     base = wc.context_dir(kind, key)
     dossier_md = os.path.join(base, "dossier.md")
     meta_path = os.path.join(base, ".dossier.json")
-
-    # ── Cache + freshness: reuse the stored dossier unless the entity changed.
     meta = _load_json(meta_path)
     live_updated = _primary_updated(kind, key)
-    # Serve the cached dossier unless we can PROVE it's stale: reuse it when the
-    # entity is unchanged OR when the freshness probe was inconclusive
-    # (live_updated is None — offline / not configured), rather than throwing a
-    # good cache away and erroring on the re-fetch.
-    if (not force) and meta and os.path.exists(dossier_md) \
-            and (live_updated is None or meta.get("updated") == live_updated):
-        try:
-            with open(dossier_md, encoding="utf-8") as fh:
-                body = fh.read()
-        except OSError:
-            body = ""
-        return {"ok": True, "cached": True, "refreshed": False,
-                "kind": kind, "key": key, "dir": base, "dossier": body,
-                "artifacts": meta.get("artifacts", [])}
+    cached = _cached_dossier(base, dossier_md, meta, kind, key, live_updated,
+                             force)
+    if cached is not None:
+        return cached
 
-    # ── Fresh gather. Phase 1: primary read (+ its links, in parallel).
-    artifacts: list[str] = []
-    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
-        if kind == "jira":
-            f_primary = ex.submit(_read_jira, key, role)
-            f_links = ex.submit(_jira_links, key)
-            primary = f_primary.result()
-            links = f_links.result()
-        else:
-            primary = _read_confluence(key, role)
-            links = []
-
+    primary, links = _read_primary(kind, key, role)
     if not primary.get("ok"):
         # e.g. jira_not_configured — record nothing, surface the reason.
         return {"ok": False, "error": primary.get("error", "read_failed"),
                 "kind": kind, "key": key, "dir": base}
+    primary_file = "ticket.md" if kind == "jira" else "page.md"
+    _write(os.path.join(base, primary_file), _note_for(kind, key, primary, links))
+    artifacts: list[str] = [primary_file]
 
-    _write(os.path.join(base, "ticket.md" if kind == "jira" else "page.md"),
-           _note_for(kind, key, primary, links))
-    artifacts.append("ticket.md" if kind == "jira" else "page.md")
-
-    # ── Phase 2: fan out the cross-linked entities IN PARALLEL, then merge.
-    secondaries: list[tuple[str, dict]] = []
-    partial = False   # a linked fetch failed → don't stamp the cache as complete
     if kind == "jira":
-        conf_ids = _detect_confluence_ids(primary, links)
-        with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
-            futs = {ex.submit(_read_confluence, cid, role): cid
-                    for cid in conf_ids}
-            for fut in as_completed(futs):
-                cid = futs[fut]
-                try:
-                    ent = fut.result()
-                except Exception:  # noqa: BLE001
-                    partial = True
-                    continue
-                if ent.get("ok"):
-                    secondaries.append(("confluence", ent))
-                    fn = f"confluence-{_slug(cid)}.md"
-                    _write(os.path.join(base, fn), _md_for("confluence", ent))
-                    artifacts.append(fn)
-                else:
-                    partial = True
+        secondaries, partial = _fan_out(
+            _read_confluence, _detect_confluence_ids(primary, links), role,
+            "confluence", base, artifacts)
     else:
-        jkeys = _detect_jira_keys(primary, key)
-        with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
-            futs = {ex.submit(_read_jira, jk, role): jk for jk in jkeys}
-            for fut in as_completed(futs):
-                jk = futs[fut]
-                try:
-                    ent = fut.result()
-                except Exception:  # noqa: BLE001
-                    partial = True
-                    continue
-                if ent.get("ok"):
-                    secondaries.append(("jira", ent))
-                    fn = f"jira-{_slug(jk)}.md"
-                    _write(os.path.join(base, fn), _md_for("jira", ent))
-                    artifacts.append(fn)
-                else:
-                    partial = True
+        secondaries, partial = _fan_out(
+            _read_jira, _detect_jira_keys(primary, key), role, "jira", base,
+            artifacts)
 
-    # ── Merge into one dossier + stamp the cache. The merged text is the
-    # BODY of a standard managed note (same envelope as ticket.md/page.md) so
-    # the dossier carries machine-readable identity + links up top.
-    parts = [f"_gathered {len(secondaries)} linked item(s)_", "",
-             _md_for(kind, primary)]
-    for skind, ent in secondaries:
-        parts.append("\n\n---\n")
-        parts.append(f"## Linked {skind}\n")
-        parts.append(_md_for(skind, ent))
-    from aiforge_core.runtime import work_notes
-    dossier = work_notes.render_note(
-        kind, key, title=f"Dossier — {kind}:{key}",
-        source_url=primary.get("url") or "",
-        objective=primary.get("summary") or primary.get("title") or "",
-        facts=[f"linked items: {len(secondaries)}"],
-        links=([primary.get("url") or ""]
-               + [f"[[{sk}/{ent.get('key') or ent.get('id')}]]"
-                  for sk, ent in secondaries
-                  if ent.get("key") or ent.get("id")]),
-        body_md="\n".join(parts))
+    dossier = _render_dossier(kind, key, primary, secondaries)
     _write(dossier_md, dossier)
     # Stamp the cache with the live `updated` ONLY on a complete gather. If a
     # linked fetch failed, leave `updated` null so the next request re-gathers
@@ -328,23 +352,8 @@ def gather(kind: str, key: str, *, force: bool = False,
     # authoritative).
     _write(meta_path, json.dumps({
         "updated": None if partial else live_updated,
-        "artifacts": artifacts, "links": len(secondaries), "partial": partial,
-    }))
-
-    # ── Memory via md_store.capture: writes a per-context md note (repo=key)
-    # AND mirrors to the DB — so it flows through the SAME repo-axis compaction /
-    # write-time brief as every other memory (compacted-<key>.md), instead of a
-    # DB-only row. Recalled next time under this ticket/page key.
-    try:
-        from aiforge_core.memory import md_store
-        md_store.capture(
-            "project_learning",
-            f"DOSSIER {kind}:{key} — {primary.get('summary') or primary.get('title') or ''}"
-            f" (+{len(secondaries)} linked item(s); files in {base}).",
-            repo=key, topic=f"{kind}-dossier")
-    except Exception:  # noqa: BLE001
-        pass
-
+        "artifacts": artifacts, "links": len(secondaries), "partial": partial}))
+    _capture_dossier(kind, key, primary, secondaries, base)
     return {"ok": True, "cached": False, "refreshed": bool(meta),
             "kind": kind, "key": key, "dir": base, "dossier": dossier,
             "artifacts": artifacts, "linked": len(secondaries)}

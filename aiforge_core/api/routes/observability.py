@@ -110,62 +110,87 @@ def llm_usage(series: bool = True) -> dict:
     return call_meter.global_snapshot(series=bool(series))
 
 
+async def _tail_lines(path: str, n: int = 200) -> list[str]:
+    """The last ``n`` lines, read OFF the event loop — an append-only log can be
+    large, and a blocking read here stalls EVERY other request the server is
+    serving, not just this stream. deque(maxlen) holds only the tail instead of
+    materialising the whole (unbounded) file."""
+    import collections as _coll
+
+    def _sync():
+        with open(path, encoding="utf-8") as f:
+            return list(_coll.deque(f, maxlen=n))
+    return await asyncio.to_thread(_sync)
+
+
+async def _read_from(path: str, offset: int) -> str:
+    def _sync():
+        with open(path, encoding="utf-8") as f:
+            f.seek(offset)
+            return f.read()
+    return await asyncio.to_thread(_sync)
+
+
+def _sse_lines(text: str):
+    for line in text.splitlines():
+        line = line.strip()
+        if line:
+            yield f"data: {line}\n\n"
+
+
+async def _backfill(path: str):
+    """Yield the recent history on connect so the page shows something
+    immediately instead of a blank "waiting for events…". Returns nothing; the
+    caller re-reads the size."""
+    for line in await _tail_lines(path):
+        line = line.strip()
+        if line:
+            yield f"data: {line}\n\n"
+
+
+def _size_of(path: str) -> int:
+    return os.path.getsize(path) if os.path.exists(path) else 0
+
+
+async def _poll_appends(path: str, last_size: int):
+    """Yield each new line as the file grows."""
+    while True:
+        await asyncio.sleep(1.5)
+        size = _size_of(path)
+        if size <= last_size:
+            continue
+        chunk = await _read_from(path, last_size)
+        last_size = size
+        for event in _sse_lines(chunk):
+            yield event
+
+
+async def _tail_forever(path: str):
+    """Backfill the recent history, then poll for appends until cancelled."""
+    last_size = 0
+    if os.path.exists(path):
+        try:
+            async for chunk in _backfill(path):
+                yield chunk
+        except Exception:  # noqa: BLE001
+            pass
+        last_size = _size_of(path)
+    try:
+        async for event in _poll_appends(path, last_size):
+            yield event
+    except asyncio.CancelledError:
+        # RE-RAISE. Swallowing it tells asyncio the task ended normally, so
+        # shutdown/disconnect handling stops waiting on a stream that was
+        # actually cancelled.
+        raise
+
+
 @router.get("/api/logs/{role}/stream")
 def stream_role_log(role: str):
     # Accept any role (sanitised) — an unknown role just tails an empty file
     # rather than 404-ing the tab. Prevents path traversal.
     role = re.sub(r"[^a-z0-9_]", "", (role or "").lower()) or "adk_runner"
-    path = _resolve_role_log(role)
-
-    async def gen():
-        # Backfill the last ~200 lines on connect so the page shows recent
-        # history immediately instead of a blank "waiting for events…".
-        last_size = 0
-        if os.path.exists(path):
-            try:
-                import collections as _coll
-                # deque(maxlen) holds only the last 200 lines instead of
-                # materialising the whole (append-only, unbounded) log file.
-                def _tail_sync():
-                    # Off the event loop: an append-only log can be large, and
-                    # a blocking read here stalls EVERY other request the
-                    # server is serving, not just this stream.
-                    with open(path, encoding="utf-8") as f:
-                        return list(_coll.deque(f, maxlen=200))
-                tail = await asyncio.to_thread(_tail_sync)
-                last_size = os.path.getsize(path)
-                for line in tail:
-                    line = line.strip()
-                    if line:
-                        yield f"data: {line}\n\n"
-            except Exception:  # noqa: BLE001
-                last_size = os.path.getsize(path) if os.path.exists(path) else 0
-        try:
-            while True:
-                await asyncio.sleep(1.5)
-                if not os.path.exists(path):
-                    continue
-                sz = os.path.getsize(path)
-                if sz <= last_size:
-                    continue
-                def _read_from(offset: int) -> str:
-                    with open(path, encoding="utf-8") as f:
-                        f.seek(offset)
-                        return f.read()
-                chunk = await asyncio.to_thread(_read_from, last_size)
-                last_size = sz
-                for line in chunk.splitlines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    yield f"data: {line}\n\n"
-        except asyncio.CancelledError:
-            # RE-RAISE. Swallowing it tells asyncio the task ended normally,
-            # so shutdown/disconnect handling stops waiting on a stream that
-            # was actually cancelled.
-            raise
-
-    return sse_response(gen())
+    return sse_response(_tail_forever(_resolve_role_log(role)))
 
 
 # ─────────────────────────── Ticket trace SSE ───────────────────────────
@@ -174,6 +199,86 @@ def stream_role_log(role: str):
 # The UI /trace/:id view subscribes and renders Step/Action/Observation as
 # it arrives so ops can watch a run in progress and decide whether to
 # intervene (cancel ticket, swap model, add hint).
+
+
+# Scope management via structured NDJSON events. Both legacy (graph_runner.*)
+# and current (adk_runner.*) event names are accepted so older + newer runs
+# both stream cleanly.
+_TRACE_START_MARKERS = ('"event": "graph_runner.start"',
+                        '"event":"graph_runner.start"',
+                        '"event": "adk_runner.start"',
+                        '"event":"adk_runner.start"')
+_TRACE_DONE_MARKERS = ('"event": "graph_runner.done"',
+                       '"event":"graph_runner.done"',
+                       '"event": "adk_runner.done"',
+                       '"event":"adk_runner.done"')
+
+
+async def _tail_proc(path: str, host: str, lines: int = 500):
+    """A ``tail -F`` on ``path``, over ssh when a remote host is configured.
+
+    Local unless AIFORGE_GRAPH_RUNNER_HOST is set — the api now runs on the
+    same host as the graph-runner, so ssh-to-self was the previous bug.
+    """
+    argv = (["ssh", "-o", "ConnectTimeout=5", host, f"tail -Fn{lines} {path}"]
+            if host else ["tail", f"-Fn{lines}", path])
+    return await asyncio.create_subprocess_exec(
+        *argv, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL)
+
+
+async def _pump_into(queue, path: str, host: str) -> None:
+    """Feed every line of ``path`` into ``queue``; None marks this tail's end."""
+    proc = await _tail_proc(path, host)
+    try:
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                await asyncio.sleep(0.3)
+                continue
+            await queue.put(line.decode("utf-8", "replace").rstrip("\n"))
+    finally:
+        try:
+            proc.kill()
+            await proc.wait()   # reap — don't leak a zombie
+        except Exception:  # noqa: BLE001
+            pass
+        await queue.put(None)
+
+
+def _trace_scope(raw: str, identifier: str, in_ctx: bool) -> tuple[bool, bool]:
+    """``(in_ctx, emit)`` for one raw line, tracking this ticket's run window."""
+    quoted = f'"{identifier}"'
+    if any(m in raw for m in _TRACE_START_MARKERS):
+        return (quoted in raw), False
+    if any(m in raw for m in _TRACE_DONE_MARKERS) and quoted in raw:
+        return False, True          # emit the closing line, then leave scope
+    return in_ctx, in_ctx
+
+
+async def _merged_trace(log: str, err: str, host: str, identifier: str):
+    """One tail per file, interleaved via a queue so either stream can deliver
+    a line as soon as it arrives."""
+    queue: asyncio.Queue = asyncio.Queue()
+    tasks = [asyncio.create_task(_pump_into(queue, log, host)),
+             asyncio.create_task(_pump_into(queue, err, host))]
+    in_ctx = False
+    try:
+        while True:
+            raw = await queue.get()
+            if raw is None:
+                return
+            in_ctx, emit = _trace_scope(raw, identifier, in_ctx)
+            if emit:
+                yield f"data: {json.dumps({'line': raw})}\n\n"
+    except asyncio.CancelledError:
+        # RE-RAISE after the `finally` has run its cleanup. Swallowing it
+        # reports a normal completion for a task that was cancelled, so the
+        # caller stops waiting on a teardown that never signalled.
+        raise
+    finally:
+        for t in tasks:
+            t.cancel()
 
 
 @router.get("/api/trace/{identifier}/stream")
@@ -187,94 +292,11 @@ def stream_ticket_trace(identifier: str):
     host = os.environ.get("AIFORGE_GRAPH_RUNNER_HOST", "").strip()
     log = os.environ.get(
         "AIFORGE_GRAPH_RUNNER_LOG",
-        os.path.expanduser("~/.aiforge/logs/graph-runner.log"),
-    )
+        os.path.expanduser("~/.aiforge/logs/graph-runner.log"))
     err = os.environ.get(
         "AIFORGE_GRAPH_RUNNER_ERR",
-        os.path.expanduser("~/.aiforge/logs/graph-runner.err"),
-    )
-
-    async def gen():
-        # One tail per file; interleave via a queue so either stream
-        # can deliver a line as soon as it arrives. Run tail locally unless
-        # AIFORGE_GRAPH_RUNNER_HOST is set — the api now runs on the same
-        # host as the graph-runner, so ssh-to-self was the previous bug.
-        queue: asyncio.Queue[str | None] = asyncio.Queue()
-
-        async def pump(path: str) -> None:
-            if host:
-                proc = await asyncio.create_subprocess_exec(
-                    "ssh", "-o", "ConnectTimeout=5", host,
-                    f"tail -Fn500 {path}",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-            else:
-                proc = await asyncio.create_subprocess_exec(
-                    "tail", "-Fn500", path,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-            try:
-                while True:
-                    line = await proc.stdout.readline()
-                    if not line:
-                        await asyncio.sleep(0.3)
-                        continue
-                    await queue.put(line.decode("utf-8", "replace").rstrip("\n"))
-            finally:
-                try:
-                    proc.kill()
-                    await proc.wait()   # reap — don't leak a zombie
-                except Exception: pass
-                await queue.put(None)
-
-        tasks = [
-            asyncio.create_task(pump(log)),
-            asyncio.create_task(pump(err)),
-        ]
-        in_ctx = False
-        try:
-            while True:
-                raw = await queue.get()
-                if raw is None:
-                    break
-
-                # Scope management via structured NDJSON events. Accept
-                # both legacy (graph_runner.*) and current (adk_runner.*)
-                # event names so older + newer runs both stream cleanly.
-                _START_MARKERS = (
-                    '"event": "graph_runner.start"',
-                    '"event":"graph_runner.start"',
-                    '"event": "adk_runner.start"',
-                    '"event":"adk_runner.start"',
-                )
-                _DONE_MARKERS = (
-                    '"event": "graph_runner.done"',
-                    '"event":"graph_runner.done"',
-                    '"event": "adk_runner.done"',
-                    '"event":"adk_runner.done"',
-                )
-                if any(m in raw for m in _START_MARKERS):
-                    in_ctx = (f'"{identifier}"' in raw)
-                elif any(m in raw for m in _DONE_MARKERS) and \
-                     f'"{identifier}"' in raw:
-                    yield f"data: {json.dumps({'line': raw})}\n\n"
-                    in_ctx = False
-                    continue
-
-                if in_ctx:
-                    yield f"data: {json.dumps({'line': raw})}\n\n"
-        except asyncio.CancelledError:
-            # RE-RAISE after the `finally` has run its cleanup. Swallowing it
-            # reports a normal completion for a task that was cancelled, so
-            # the caller stops waiting on a teardown that never signalled.
-            raise
-        finally:
-            for t in tasks:
-                t.cancel()
-
-    return sse_response(gen())
+        os.path.expanduser("~/.aiforge/logs/graph-runner.err"))
+    return sse_response(_merged_trace(log, err, host, identifier))
 
 
 # ─────────────────────────── LLM call trace ─────────────────────────────
@@ -286,54 +308,44 @@ def stream_ticket_trace(identifier: str):
 # stdout noise.
 
 
+def _is_llm_call_for(raw: str, identifier: str) -> bool:
+    """An ``llm.call`` NDJSON line for this ticket, in either JSON spacing."""
+    return (('"event": "llm.call"' in raw or '"event":"llm.call"' in raw)
+            and (f'"ticket": "{identifier}"' in raw
+                 or f'"ticket":"{identifier}"' in raw))
+
+
+async def _llm_trace_lines(err: str, host: str, identifier: str):
+    proc = await _tail_proc(err, host, lines=2000)
+    try:
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                await asyncio.sleep(0.3)
+                continue
+            raw = line.decode("utf-8", "replace").rstrip("\n")
+            if _is_llm_call_for(raw, identifier):
+                yield f"data: {raw}\n\n"
+    except asyncio.CancelledError:
+        # RE-RAISE after the `finally` has run its cleanup. Swallowing it
+        # reports a normal completion for a task that was cancelled, so the
+        # caller stops waiting on a teardown that never signalled.
+        raise
+    finally:
+        try:
+            proc.kill()
+            await proc.wait()   # reap — don't leak a zombie
+        except Exception:  # noqa: BLE001
+            pass
+
+
 @router.get("/api/llm-trace/{identifier}/stream")
 def stream_llm_trace(identifier: str):
     err = os.environ.get(
         "AIFORGE_GRAPH_RUNNER_ERR",
-        os.path.expanduser("~/.aiforge/logs/graph-runner.err"),
-    )
+        os.path.expanduser("~/.aiforge/logs/graph-runner.err"))
     host = os.environ.get("AIFORGE_GRAPH_RUNNER_HOST", "").strip()
-
-    async def gen():
-        if host:
-            proc = await asyncio.create_subprocess_exec(
-                "ssh", "-o", "ConnectTimeout=5", host,
-                f"tail -Fn2000 {err}",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-        else:
-            proc = await asyncio.create_subprocess_exec(
-                "tail", "-Fn2000", err,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-        needle_event = '"event": "llm.call"'
-        needle_event_compact = '"event":"llm.call"'
-        needle_ticket = f'"ticket": "{identifier}"'
-        needle_ticket_compact = f'"ticket":"{identifier}"'
-        try:
-            while True:
-                line = await proc.stdout.readline()
-                if not line:
-                    await asyncio.sleep(0.3)
-                    continue
-                raw = line.decode("utf-8", "replace").rstrip("\n")
-                if (needle_event in raw or needle_event_compact in raw) and \
-                   (needle_ticket in raw or needle_ticket_compact in raw):
-                    yield f"data: {raw}\n\n"
-        except asyncio.CancelledError:
-            # RE-RAISE after the `finally` has run its cleanup. Swallowing it
-            # reports a normal completion for a task that was cancelled, so
-            # the caller stops waiting on a teardown that never signalled.
-            raise
-        finally:
-            try:
-                proc.kill()
-                await proc.wait()   # reap — don't leak a zombie
-            except Exception: pass
-
-    return sse_response(gen())
+    return sse_response(_llm_trace_lines(err, host, identifier))
 
 
 @router.get("/api/llm-trace/{identifier}")

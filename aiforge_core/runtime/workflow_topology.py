@@ -142,44 +142,50 @@ def _base_nodes() -> list[dict]:
     return out
 
 
+def _ticket_events(ticket: str) -> list:
+    try:
+        from aiforge_core.tickets import store as _store
+        t = _store.get(ticket)
+        return _store.comments(t.id, 1000) if t else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _absorb_injected(meta: dict, context: dict, seen: dict) -> None:
+    """Accumulate context_injected metadata, de-duped by name — a replan
+    re-injects the same skills, and each should show once."""
+    for bucket in ("skills", "rules", "workflows"):
+        for item in (meta.get(bucket) or []):
+            name = item.get("name") if isinstance(item, dict) else None
+            if name and name not in seen[bucket]:
+                seen[bucket].add(name)
+                context[bucket].append(item)
+
+
+def _event_times(events: list, context: dict) -> dict:
+    """``{role or stage: latest event time}``; fills ``context`` on the way."""
+    last: dict[str, str] = {}
+    seen: dict[str, set] = {"skills": set(), "rules": set(), "workflows": set()}
+    for e in events:
+        meta = e.get("metadata") or {}
+        if (e.get("kind") or "") == "context_injected":
+            _absorb_injected(meta, context, seen)
+            continue
+        role = e.get("agent_role") or ""
+        ts = e.get("created_at")
+        ts = ts.isoformat() if hasattr(ts, "isoformat") else ts
+        for key in {role, meta.get("stage") or role}:
+            if key:
+                last[key] = ts
+    return last
+
+
 def _overlay_ticket(nodes: list[dict], ticket: str) -> dict:
     """Mark nodes done/active from the ticket's events AND attach the skills /
     rules / workflows the run injected. Returns a run-level ``context`` summary
     (``{skills, rules, workflows}``) the UI renders as a legend."""
     context: dict[str, list] = {"skills": [], "rules": [], "workflows": []}
-    try:
-        from aiforge_core.tickets import store as _store
-        t = _store.get(ticket)
-        if not t:
-            return context
-        events = _store.comments(t.id, 1000)
-    except Exception:
-        return context
-    # role/stage -> latest event time
-    last: dict[str, str] = {}
-    # Accumulate context_injected metadata across all such events, de-duped by
-    # name (a replan re-injects the same skills — show each once).
-    seen: dict[str, set] = {"skills": set(), "rules": set(), "workflows": set()}
-    for e in events:
-        role = e.get("agent_role") or ""
-        meta = e.get("metadata") or {}
-        if (e.get("kind") or "") == "context_injected":
-            for bucket in ("skills", "rules", "workflows"):
-                for item in (meta.get(bucket) or []):
-                    if not isinstance(item, dict):
-                        continue
-                    name = item.get("name")
-                    if not name or name in seen[bucket]:
-                        continue
-                    seen[bucket].add(name)
-                    context[bucket].append(item)
-            continue
-        stage = meta.get("stage") or role
-        ts = e.get("created_at")
-        ts = ts.isoformat() if hasattr(ts, "isoformat") else ts
-        for key in {role, stage}:
-            if key:
-                last[key] = ts
+    last = _event_times(_ticket_events(ticket), context)
     for n in nodes:
         role = _NODE_ROLE.get(n["id"])
         hit = last.get(n["id"]) or (last.get(role) if role else None)

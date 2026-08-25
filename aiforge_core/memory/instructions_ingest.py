@@ -84,6 +84,16 @@ def _repo_hint(path: Path) -> str | None:
     return path.parent.name or None
 
 
+def _walk_for_names(base: Path, nameset: set, found: dict) -> None:
+    """Recursive scan of one root, skipping heavy build/vendor dirs."""
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        for fn in filenames:
+            if fn in nameset:
+                p = Path(dirpath) / fn
+                found[str(p.resolve())] = p
+
+
 def discover(roots: list[str], names: tuple[str, ...] = DEFAULT_NAMES) -> list[Path]:
     """Find instruction files (``names``) under each root (recursive, skipping
     heavy build/vendor dirs). De-duplicated, sorted."""
@@ -91,17 +101,11 @@ def discover(roots: list[str], names: tuple[str, ...] = DEFAULT_NAMES) -> list[P
     found: dict[str, Path] = {}
     for root in roots:
         base = Path(os.path.expanduser(root))
-        if base.is_file() and base.name in nameset:
-            found[str(base.resolve())] = base
-            continue
-        if not base.is_dir():
-            continue
-        for dirpath, dirnames, filenames in os.walk(base):
-            dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
-            for fn in filenames:
-                if fn in nameset:
-                    p = Path(dirpath) / fn
-                    found[str(p.resolve())] = p
+        if base.is_file():
+            if base.name in nameset:
+                found[str(base.resolve())] = base
+        elif base.is_dir():
+            _walk_for_names(base, nameset, found)
     return [found[k] for k in sorted(found)]
 
 
@@ -114,6 +118,60 @@ def _wipe_memory() -> dict:
     from aiforge_core.memory import admin
     stores = [s for s in admin.CLEARABLE if s != "chat"]
     return {s: admin.clear_store(s) for s in stores}
+
+
+def _existing_files(files: list[str] | None, roots: list[str] | None,
+                    names: tuple[str, ...]) -> list[Path]:
+    """The instruction files to read: explicit paths plus whatever the roots
+    scan finds, de-duped by resolved path."""
+    paths: list[Path] = [Path(os.path.expanduser(f)) for f in (files or [])]
+    if roots:
+        paths += discover(roots, names)
+    seen: set[str] = set()
+    real: list[Path] = []
+    for p in paths:
+        rp = str(p.resolve()) if p.exists() else ""
+        if rp and rp not in seen and p.is_file():
+            seen.add(rp)
+            real.append(p)
+    return real
+
+
+def _capture_sections(md_store, path: Path, text: str, out: dict) -> None:
+    """Capture each section of one instruction file.
+
+    Scoped by REPO, not per-heading. Passing the heading as ``topic`` would mint
+    one compacted-<heading>.md brief per section (dozens of briefs from one file
+    = proliferation). The heading is preserved inside the fact text instead, so
+    all of a repo's sections fold into its single compacted-<repo>.md brief. The
+    scope classifier may still promote a genuinely cross-project fact to the
+    global (shared) brief.
+    """
+    repo = _repo_hint(path)
+    for heading, body in _split_sections(text):
+        out["sections"] += 1
+        fact = f"{heading}\n{body}" if heading else body
+        if len(fact.strip()) < _MIN_SECTION_CHARS:
+            out["skipped"] += 1
+            continue
+        try:
+            md_store.capture("learning", fact, repo=repo,
+                             title=(heading or path.name)[:70],
+                             source=f"instructions:{path.name}")
+            out["captured"] += 1
+        except Exception as exc:  # noqa: BLE001 — one bad section never aborts
+            out.setdefault("errors", []).append(f"{path}#{heading}: {exc}")
+
+
+def _distil_briefs(md_store, out: dict) -> None:
+    try:
+        md_store.compact(group_by="repo", min_group=1, summarize=True,
+                         model_role="learner", archive_sources=False)
+        md_store.compact(group_by="topic", min_group=1, summarize=True,
+                         model_role="learner", archive_sources=True)
+        md_store.ingest_dir()
+    except Exception as exc:  # noqa: BLE001
+        out.setdefault("errors", []).append(f"compact: {exc}")
 
 
 def ingest_instruction_files(
@@ -131,62 +189,22 @@ def ingest_instruction_files(
     Returns ``{ok, files, sections, captured, skipped, briefs, cleared}``."""
     from aiforge_core.memory import md_store
 
-    paths: list[Path] = [Path(os.path.expanduser(f)) for f in (files or [])]
-    if roots:
-        paths += discover(roots, names)
-    # de-dup, keep only existing files
-    seen: set[str] = set()
-    real: list[Path] = []
-    for p in paths:
-        rp = str(p.resolve()) if p.exists() else ""
-        if rp and rp not in seen and p.is_file():
-            seen.add(rp)
-            real.append(p)
+    real = _existing_files(files, roots, names)
     if not real:
         return {"ok": False, "error": "no instruction files found", "files": 0}
-
     out: dict = {"files": len(real), "sections": 0, "captured": 0,
                  "skipped": 0, "cleared": None}
     if clear:
         out["cleared"] = _wipe_memory()
-
     for path in real:
         try:
             text = path.read_text(encoding="utf-8")
         except OSError as exc:
             out.setdefault("errors", []).append(f"{path}: {exc}")
             continue
-        repo = _repo_hint(path)
-        for heading, body in _split_sections(text):
-            out["sections"] += 1
-            fact = f"{heading}\n{body}" if heading else body
-            if len(fact.strip()) < _MIN_SECTION_CHARS:
-                out["skipped"] += 1
-                continue
-            # Scope by REPO, not per-heading. Passing the heading as `topic` would
-            # mint one compacted-<heading>.md brief per section (dozens of briefs
-            # from one file = proliferation). The heading is preserved inside the
-            # fact text instead, so all of a repo's sections fold into its single
-            # compacted-<repo>.md brief. The scope classifier may still promote a
-            # genuinely cross-project fact to the global (shared) brief.
-            try:
-                md_store.capture(
-                    "learning", fact, repo=repo,
-                    title=(heading or path.name)[:70],
-                    source=f"instructions:{path.name}")
-                out["captured"] += 1
-            except Exception as exc:  # noqa: BLE001 — one bad section never aborts
-                out.setdefault("errors", []).append(f"{path}#{heading}: {exc}")
-
+        _capture_sections(md_store, path, text, out)
     if compact:
-        try:
-            md_store.compact(group_by="repo", min_group=1, summarize=True,
-                             model_role="learner", archive_sources=False)
-            md_store.compact(group_by="topic", min_group=1, summarize=True,
-                             model_role="learner", archive_sources=True)
-            md_store.ingest_dir()
-        except Exception as exc:  # noqa: BLE001
-            out.setdefault("errors", []).append(f"compact: {exc}")
+        _distil_briefs(md_store, out)
     try:
         out["briefs"] = len(md_store.iter_briefs())
     except OSError:

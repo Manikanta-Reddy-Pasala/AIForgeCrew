@@ -455,6 +455,77 @@ def _module_cap_for(paths: list[str]) -> tuple[list[str], int]:
     return code, cap
 
 
+_SYMBOL_DECL_RE = re.compile(
+    r"\b(?:class|struct|def|fn|func|type|enum|interface|trait)"
+    r"\s+([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _plan_path(f: dict) -> str:
+    return str(f.get("path") or "").strip().lstrip("/")
+
+
+def _api_symbols(module: dict) -> list[str]:
+    """Bare identifiers declared in a module's api, so we can tell WHICH module
+    references another's type."""
+    names = []
+    for a in (module.get("api") or []):
+        m = _SYMBOL_DECL_RE.search(str(a))
+        if m:
+            names.append(m.group(1))
+    return names
+
+
+def _user_of(helper: dict, mods: list[dict]) -> dict | None:
+    """The module whose api text NAMES one of ``helper``'s declared types."""
+    symbols = _api_symbols(helper)
+    if not symbols:
+        return None
+    for u in mods:
+        if u is helper:
+            continue
+        utext = " ".join(str(x) for x in u["api"])
+        if any(re.search(r"\b" + re.escape(s) + r"\b", utext) for s in symbols):
+            return u
+    return None
+
+
+def _coupled_pair(mods: list[dict]) -> tuple | None:
+    """``(helper, user)`` — the helper's type NAME appears in the user's api
+    text, so the helper folds INTO the user. Smallest helper first."""
+    best = None
+    for h in mods:
+        u = _user_of(h, mods)
+        if u is not None and (best is None or len(h["api"]) < len(best[0]["api"])):
+            best = (h, u)
+    return best
+
+
+def _fold_into(helper: dict, user: dict) -> None:
+    for a in helper["api"]:
+        if a not in user["api"]:
+            user["api"].append(a)
+    if helper["purpose"]:
+        user["purpose"] = (user["purpose"] + "; "
+                           + helper["purpose"]).strip("; ")[:250]
+
+
+def _merge_modules(mods: list[dict], cap: int, compiled: bool) -> list[dict]:
+    """Fold modules until the cap is met (and, for compiled languages, until no
+    coupled pair remains). No coupling → fold smallest into largest."""
+    while len(mods) > 1:
+        pair = _coupled_pair(mods)
+        over = len(mods) > cap
+        if not over and not (compiled and pair):
+            break
+        if pair is None:
+            order = sorted(mods, key=lambda m: len(m["api"]))
+            pair = (order[0], order[-1])
+        helper, user = pair
+        _fold_into(helper, user)
+        mods.remove(helper)
+    return mods
+
+
 def _coalesce_code_modules(files: list[dict]) -> tuple[list[dict], int]:
     """HARD-enforce the module cap the architect keeps IGNORING in its re-ask:
     deterministically merge excess NON-test code modules down to the cap, at PLAN
@@ -462,75 +533,95 @@ def _coalesce_code_modules(files: list[dict]) -> tuple[list[dict], int]:
     of every merged module's ``api``) — they just live in fewer files; the module
     contract + SPEC api-contract carry the merged mapping, so a test importing a
     moved symbol still resolves. Tests / manifests / config files are untouched.
-    Returns ``(new_files, n_modules_removed)`` (0 when already within the cap)."""
-    def _p(f):
-        return str(f.get("path") or "").strip().lstrip("/")
-    paths = [_p(f) for f in files]
-    code_paths, cap = _module_cap_for(paths)
+    Returns ``(new_files, n_modules_removed)`` (0 when already within the cap).
+
+    COUPLING-AWARE: a HELPER (a module whose type is REFERENCED in another
+    module's api — e.g. LRUCache's api names DoublyLinkedList/Node) folds INTO
+    its user, so the helper lands in the file that uses it → no cross-module
+    constructor/type mismatch. For COMPILED languages this runs even WITHIN the
+    count cap (a coupled pair at exactly the cap is the exact failure mode); for
+    looser languages it only fires to hit the count cap.
+    """
+    code_paths, cap = _module_cap_for([_plan_path(f) for f in files])
     compiled = any(p.rsplit(".", 1)[-1].lower() in _COMPILED_CODE_EXTS
                    for p in code_paths)
     code_set = set(code_paths)
-    code = [f for f in files if _p(f) in code_set]
-    others = [f for f in files if _p(f) not in code_set]
-    n = len(code)
-
-    def _symbols(f) -> list[str]:
-        # bare identifier after class/struct/def/fn/type/enum/interface, so we can
-        # tell WHICH module references another's type.
-        names: list[str] = []
-        for a in (f.get("api") or []):
-            m = re.search(r"\b(?:class|struct|def|fn|func|type|enum|interface|"
-                           r"trait)\s+([A-Za-z_][A-Za-z0-9_]*)", str(a))
-            if m:
-                names.append(m.group(1))
-        return names
-
-    def _coupled(ms) -> "tuple | None":
-        # (helper, user): helper's type NAME appears in user's api text → fold
-        # helper INTO user. Smallest helper first.
-        best = None
-        for h in ms:
-            hs = _symbols(h)
-            if not hs:
-                continue
-            for u in ms:
-                if u is h:
-                    continue
-                utext = " ".join(str(x) for x in u["api"])
-                if any(re.search(r"\b" + re.escape(s) + r"\b", utext) for s in hs):
-                    if best is None or len(h["api"]) < len(best[0]["api"]):
-                        best = (h, u)
-        return best
-
-    # COUPLING-AWARE merge. Fold a HELPER (a module whose type is REFERENCED in
-    # another module's api — e.g. LRUCache's api names DoublyLinkedList/Node) INTO
-    # its user, so the helper lands in the file that uses it → no cross-module
-    # constructor/type mismatch. For COMPILED languages this runs even WITHIN the
-    # count cap (a coupled pair at exactly the cap is the exact failure mode);
-    # for looser languages it only fires to hit the count cap. No coupling → fold
-    # smallest into largest to reach the cap.
+    code = [f for f in files if _plan_path(f) in code_set]
+    others = [f for f in files if _plan_path(f) not in code_set]
     if len(code) <= cap and not compiled:
         return files, 0
-    mods = [{"path": _p(f), "purpose": str(f.get("purpose") or ""),
-             "api": list(f.get("api") or [])} for f in code]
-    while len(mods) > 1:
-        pair = _coupled(mods)
-        over = len(mods) > cap
-        if not over and not (compiled and pair):
-            break
-        if pair is None:
-            order = sorted(mods, key=lambda m: len(m["api"]))
-            pair = (order[0], order[-1])
-        h, u = pair
-        for a in h["api"]:
-            if a not in u["api"]:
-                u["api"].append(a)
-        if h["purpose"]:
-            u["purpose"] = (u["purpose"] + "; " + h["purpose"]).strip("; ")[:250]
-        mods.remove(h)
+    mods = _merge_modules(
+        [{"path": _plan_path(f), "purpose": str(f.get("purpose") or ""),
+          "api": list(f.get("api") or [])} for f in code],
+        cap, compiled)
     merged = [{"path": m["path"], "purpose": m["purpose"] or "combined module",
                "api": m["api"]} for m in mods]
-    return others + merged, n - len(merged)
+    return others + merged, len(code) - len(merged)
+
+
+def _importable_py_path(p: str, issues: list[str]) -> str:
+    """HYPHEN sanitize: a Python module file with a hyphen in its stem
+    (`task-queue.py`) is UNIMPORTABLE — `import task-queue` is a syntax error —
+    so an isolated worker writes it and every `from .task-queue import …` fails.
+    The stem's hyphens become underscores (dir parts + extension untouched); the
+    architect's api/imports reference the module NAME, which the doer derives
+    from this path."""
+    if p.rsplit(".", 1)[-1].lower() != "py" or "-" not in os.path.basename(p):
+        return p
+    d, b = os.path.split(p)
+    stem, _dot, ext = b.rpartition(".")
+    fixed = os.path.join(d, stem.replace("-", "_") + "." + ext)
+    issues.append(f"invalid python module name {p!r} → {fixed!r} "
+                  "(hyphens aren't importable)")
+    return fixed
+
+
+def _sanitized_files(files: list[dict], issues: list[str]) -> list[dict]:
+    """Drop escaping paths and duplicates, fix un-importable module names."""
+    seen: set[str] = set()
+    clean: list[dict] = []
+    for f in files:
+        p = str(f.get("path") or "").strip().lstrip("/")
+        if not p:
+            continue
+        if p.startswith("..") or "/../" in f"/{p}/":
+            issues.append(f"path escapes the workspace: {p!r} (dropped)")
+            continue
+        p = _importable_py_path(p, issues)
+        if p in seen:
+            issues.append(f"duplicate path: {p!r} (deduped)")
+            continue
+        seen.add(p)
+        clean.append({**f, "path": p})
+    return clean
+
+
+def _plan_shape_issues(paths: list[str]) -> list[str]:
+    """The soft defects a semantic re-ask should fix."""
+    issues: list[str] = []
+    exts = {p.rsplit(".", 1)[-1].lower() for p in paths if "." in p}
+    code_exts = exts & _PLAN_CODE_EXTS
+    if len(paths) > 40:
+        issues.append(f"{len(paths)} files is a dump, not a plan — collapse "
+                      "coupled concerns (aim well under 40)")
+    # Over-fragmentation gate: too many NON-TEST code modules → the architect
+    # atomised a coupled subsystem. Re-ask to consolidate (coarser = safer on a
+    # local model; finer split diverges and won't reconcile).
+    code_modules, cap = _module_cap_for(paths)
+    if len(code_modules) > cap:
+        issues.append(
+            f"{len(code_modules)} code modules is over-fragmented for one build "
+            f"— CONSOLIDATE coupled logic into at most {cap} cohesive modules "
+            "(e.g. ONE queue.py, not core.py + queue_ordering.py + worker_retry.py). "
+            "Give a separate file only to a genuinely DECOUPLED concern "
+            "(persistence, CLI/entrypoint). Keep every test + the manifest.")
+    if code_exts and not any("test" in p.lower() for p in paths):
+        issues.append("plan has code modules but NO test files — every code "
+                      "module needs a test file in the SAME plan")
+    if len(code_exts - {"js", "ts", "tsx"}) > 2:
+        issues.append(f"plan mixes {sorted(code_exts)} languages — a single "
+                      "build uses the spec's one stack")
+    return issues
 
 
 def _validate_plan(files: list[dict]) -> tuple[list[dict], list[str]]:
@@ -541,57 +632,8 @@ def _validate_plan(files: list[dict]) -> tuple[list[dict], list[str]]:
     paths) are FIXED in the sanitized list; soft defects (no tests, language
     soup, absurd size) are reported for a semantic reask."""
     issues: list[str] = []
-    seen: set[str] = set()
-    clean: list[dict] = []
-    for f in files:
-        p = str(f.get("path") or "").strip().lstrip("/")
-        if not p:
-            continue
-        if p.startswith("..") or "/../" in f"/{p}/":
-            issues.append(f"path escapes the workspace: {p!r} (dropped)")
-            continue
-        # HYPHEN sanitize: a Python module file with a hyphen in its stem
-        # (`task-queue.py`) is UNIMPORTABLE — `import task-queue` is a syntax
-        # error — so an isolated worker writes it and every `from .task-queue
-        # import …` fails. Rename the stem's hyphens to underscores (dir parts +
-        # extension untouched); the architect's api/imports reference the module
-        # NAME, which the doer derives from this path.
-        if p.rsplit(".", 1)[-1].lower() == "py" and "-" in os.path.basename(p):
-            d, b = os.path.split(p)
-            stem, _dot, ext = b.rpartition(".")
-            fixed = os.path.join(d, stem.replace("-", "_") + "." + ext)
-            issues.append(f"invalid python module name {p!r} → {fixed!r} "
-                          "(hyphens aren't importable)")
-            p = fixed
-        if p in seen:
-            issues.append(f"duplicate path: {p!r} (deduped)")
-            continue
-        seen.add(p)
-        clean.append({**f, "path": p})
-    paths = [f["path"] for f in clean]
-    exts = {p.rsplit(".", 1)[-1].lower() for p in paths if "." in p}
-    code_exts = exts & _PLAN_CODE_EXTS
-    if len(paths) > 40:
-        issues.append(f"{len(paths)} files is a dump, not a plan — collapse "
-                      "coupled concerns (aim well under 40)")
-    # Over-fragmentation gate: too many NON-TEST code modules → the architect
-    # atomised a coupled subsystem. Re-ask to consolidate (coarser = safer on a
-    # local model; finer split diverges and won't reconcile).
-    _code_modules, _cap = _module_cap_for(paths)
-    if len(_code_modules) > _cap:
-        issues.append(
-            f"{len(_code_modules)} code modules is over-fragmented for one build "
-            f"— CONSOLIDATE coupled logic into at most {_cap} cohesive modules "
-            "(e.g. ONE queue.py, not core.py + queue_ordering.py + worker_retry.py). "
-            "Give a separate file only to a genuinely DECOUPLED concern "
-            "(persistence, CLI/entrypoint). Keep every test + the manifest.")
-    if code_exts and not any("test" in p.lower() for p in paths):
-        issues.append("plan has code modules but NO test files — every code "
-                      "module needs a test file in the SAME plan")
-    if len(code_exts - {"js", "ts", "tsx"}) > 2:
-        issues.append(f"plan mixes {sorted(code_exts)} languages — a single "
-                      "build uses the spec's one stack")
-    return clean, issues
+    clean = _sanitized_files(files, issues)
+    return clean, issues + _plan_shape_issues([f["path"] for f in clean])
 
 
 class _ArchFileSpec(BaseModel):
@@ -602,6 +644,48 @@ class _ArchFileSpec(BaseModel):
 
 class _ArchitectPlan(BaseModel):
     files: list[_ArchFileSpec] = []
+
+
+def _ask_architect(msg: str) -> list[dict]:
+    from aiforge_core.llm.structured import structured_complete
+    plan = structured_complete("architect", [
+        {"role": "system", "content": _ARCHITECT_SYS},
+        {"role": "user", "content": msg}],
+        _ArchitectPlan, max_tokens=4000, timeout_s=_orchestrator_timeout_s())
+    return [{"path": f.path, "purpose": f.purpose, "api": f.api}
+            for f in plan.files if (f.path or "").strip()]
+
+
+def _reask_plan(user_msg: str, files: list[dict],
+                issues: list[str]) -> tuple[list[dict], list[str]]:
+    """PLAN GATE: the architect is a single point of failure — give the model
+    ONE semantic reask naming the exact defects. Hard defects (dupes, escapes)
+    are sanitized either way; a still-broken retry ships the sanitized plan with
+    a warning rather than stalling the run."""
+    log.warning("architect plan issues (reasking once): %s", issues)
+    retry, retry_issues = _validate_plan(_ask_architect(
+        user_msg + "\n\nYOUR PREVIOUS PLAN HAD DEFECTS — produce a "
+        "corrected plan fixing EVERY one of these:\n- " + "\n- ".join(issues)))
+    if retry and len(retry_issues) < len(issues):
+        files, issues = retry, retry_issues
+    if issues:
+        log.warning("architect plan still imperfect after reask "
+                    "(shipping sanitized): %s", issues)
+    return files, issues
+
+
+def _hard_cap_modules(files: list[dict]) -> list[dict]:
+    """The re-ask is ADVISORY and local models routinely ignore it — so if the
+    plan STILL over-fragments, coalesce the excess modules deterministically
+    (plan-time, symbol-preserving) rather than fan out an uncompilable split.
+    Disable with AIFORGE_ARCHITECT_HARD_CAP=0."""
+    if os.environ.get("AIFORGE_ARCHITECT_HARD_CAP", "1") in ("0", "false"):
+        return files
+    files, removed = _coalesce_code_modules(files)
+    if removed:
+        log.info("architect over-fragmented past the cap — coalesced "
+                 "%d module(s) deterministically (symbols preserved)", removed)
+    return files
 
 
 def _architect(spec: str, *, cwd: str | None = None) -> list[dict]:
@@ -618,47 +702,10 @@ def _architect(spec: str, *, cwd: str | None = None) -> list[dict]:
         log.debug("architect context gather failed: %s", exc)
     user_msg = spec + (("\n\n" + context) if context else "")
     try:
-        from aiforge_core.llm.structured import structured_complete
-
-        def _ask(msg: str) -> list[dict]:
-            plan = structured_complete("architect", [
-                {"role": "system", "content": _ARCHITECT_SYS},
-                {"role": "user", "content": msg}],
-                _ArchitectPlan, max_tokens=4000,
-                timeout_s=_orchestrator_timeout_s())
-            return [{"path": f.path, "purpose": f.purpose, "api": f.api}
-                    for f in plan.files if (f.path or "").strip()]
-
-        files = _ask(user_msg)
-        # PLAN GATE: the architect is a single point of failure — validate the
-        # plan structurally BEFORE the fan-out, and give the model ONE semantic
-        # reask naming the exact defects. Hard defects (dupes, escapes) are
-        # sanitized either way; a still-broken retry ships the sanitized plan
-        # with a warning rather than stalling the run.
-        files, issues = _validate_plan(files)
+        files, issues = _validate_plan(_ask_architect(user_msg))
         if issues:
-            log.warning("architect plan issues (reasking once): %s", issues)
-            retry = _ask(user_msg
-                         + "\n\nYOUR PREVIOUS PLAN HAD DEFECTS — produce a "
-                           "corrected plan fixing EVERY one of these:\n- "
-                         + "\n- ".join(issues))
-            retry, retry_issues = _validate_plan(retry)
-            if retry and len(retry_issues) < len(issues):
-                files, issues = retry, retry_issues
-            if issues:
-                log.warning("architect plan still imperfect after reask "
-                            "(shipping sanitized): %s", issues)
-        # HARD cap: the re-ask above is ADVISORY and local models routinely ignore
-        # it — so if the plan STILL over-fragments, coalesce the excess modules
-        # deterministically (plan-time, symbol-preserving) rather than fan out an
-        # uncompilable split. Disable with AIFORGE_ARCHITECT_HARD_CAP=0.
-        if os.environ.get("AIFORGE_ARCHITECT_HARD_CAP", "1") not in ("0", "false"):
-            files, _removed = _coalesce_code_modules(files)
-            if _removed:
-                log.info("architect over-fragmented past the cap — coalesced "
-                         "%d module(s) deterministically (symbols preserved)",
-                         _removed)
-        return files
+            files, issues = _reask_plan(user_msg, files, issues)
+        return _hard_cap_modules(files)
     except Exception as exc:  # noqa: BLE001
         log.warning("architect step failed: %s", exc)
         return []

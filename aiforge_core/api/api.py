@@ -191,7 +191,6 @@ def _ensure_model_context_on_boot() -> None:
     best-effort; AIFORGE_NO_CTX_RELOAD=1 skips, AIFORGE_LM_CONTEXT sets target."""
     if os.environ.get("AIFORGE_NO_CTX_RELOAD"):
         return
-    import threading
 
     def _work():
         try:
@@ -1066,9 +1065,14 @@ def _install_access_log_filter() -> None:
     if not muted:
         return
     log = logging.getLogger("uvicorn.access")
-    # Module-level class → isinstance matches across reloads, so a re-import
-    # (tests, a hot reload) never stacks a second copy.
-    if not any(isinstance(f, _MuteHighFrequencyPolls) for f in log.filters):
+    # Match by CLASS NAME, not isinstance. A module reload (the test suite does
+    # several, and uvicorn --reload does it in dev) rebinds this module's
+    # `_MuteHighFrequencyPolls` to a BRAND NEW class object, so the filter
+    # installed by the previous incarnation is not an instance of it — the
+    # isinstance guard passed every time and stacked another filter on the
+    # process-wide `uvicorn.access` logger. Reached 40 in one suite run.
+    if not any(type(f).__name__ == "_MuteHighFrequencyPolls"
+               for f in log.filters):
         log.addFilter(_MuteHighFrequencyPolls(muted))
 
 

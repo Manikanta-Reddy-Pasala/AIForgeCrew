@@ -70,6 +70,64 @@ def _pick_runner() -> tuple[str, str] | None:
     return None
 
 
+def _pytest_cmd(tool: str, mode: str, pattern: str) -> list:
+    if mode == "discover":
+        cmd = [tool, "--collect-only", "-q"]
+    else:
+        cmd = [tool, "-q", "--no-header"]
+        if mode == "fast":
+            cmd.append("--lf")
+    return cmd + (["-k", pattern] if pattern else [])
+
+
+def _jest_cmd(tool: str, mode: str, pattern: str) -> list:
+    cmd = [tool, "test", "--silent"]
+    if mode == "discover":
+        cmd += ["--", "--listTests"]
+    elif mode == "fast":
+        cmd += ["--", "--onlyFailures"]
+    return cmd + (["--", "--testNamePattern", pattern] if pattern else [])
+
+
+def _maven_cmd(tool: str, mode: str, pattern: str) -> list:
+    if mode == "discover":
+        return [tool, "-q", "test", "-DskipTests"]
+    cmd = [tool, "-q", "test"]
+    return cmd + ([f"-Dtest={pattern}"] if pattern else [])
+
+
+def _gradle_cmd(tool: str, mode: str, pattern: str) -> list:
+    return [tool, "test"] + (["--tests", pattern] if pattern else [])
+
+
+def _cargo_cmd(tool: str, mode: str, pattern: str) -> list:
+    if mode == "discover":
+        return [tool, "test", "--", "--list"]
+    return [tool, "test", "--quiet"] + ([pattern] if pattern else [])
+
+
+def _go_cmd(tool: str, mode: str, pattern: str) -> list:
+    if mode == "discover":
+        return [tool, "test", "./...", "-list", ".*"]
+    return [tool, "test", "./..."] + (["-run", pattern] if pattern else [])
+
+
+_TEST_COMMANDS = {
+    "python": _pytest_cmd, "node": _jest_cmd, "java-maven": _maven_cmd,
+    "java-gradle": _gradle_cmd, "rust": _cargo_cmd, "go": _go_cmd,
+}
+
+
+def _shard(cmd: list, lang: str, mode: str) -> list:
+    """Opt-in parallel/shard mode (gap A8a). Default off → unchanged."""
+    if os.environ.get("AIFORGE_TEST_PARALLEL") != "1" or mode == "discover":
+        return cmd
+    workers_env = os.environ.get("AIFORGE_TEST_WORKERS")
+    workers = int(workers_env) if (workers_env or "").isdigit() else None
+    return build_test_command(cmd, framework=lang, parallel=True,
+                              workers=workers)
+
+
 def run_tests(
     mode: str = "fast",
     pattern: str = "",
@@ -91,75 +149,20 @@ def run_tests(
     if pick is None:
         return {"ok": False, "error": "no_language"}
     lang, tool = pick
-    if shutil.which(tool.split("/")[-1]) is None and \
-            shutil.which(tool) is None:
+    if shutil.which(tool.split("/")[-1]) is None and shutil.which(tool) is None:
         return {"ok": False, "error": "missing_tool", "tool": tool}
-
-    cmd: list[str]
-    if lang == "python":
-        cmd = [tool, "-q", "--no-header"]
-        if mode == "fast":
-            cmd.append("--lf")
-        elif mode == "discover":
-            cmd = [tool, "--collect-only", "-q"]
-        if pattern:
-            cmd += ["-k", pattern]
-    elif lang == "node":
-        cmd = [tool, "test", "--silent"]
-        if mode == "discover":
-            cmd += ["--", "--listTests"]
-        elif mode == "fast":
-            cmd += ["--", "--onlyFailures"]
-        if pattern:
-            cmd += ["--", "--testNamePattern", pattern]
-    elif lang in {"java-maven"}:
-        cmd = [tool, "-q", "test"]
-        if pattern:
-            cmd += [f"-Dtest={pattern}"]
-        if mode == "discover":
-            cmd = [tool, "-q", "test", "-DskipTests"]
-    elif lang == "java-gradle":
-        cmd = [tool, "test"]
-        if pattern:
-            cmd += ["--tests", pattern]
-    elif lang == "rust":
-        cmd = [tool, "test", "--quiet"]
-        if mode == "discover":
-            cmd = [tool, "test", "--", "--list"]
-        if pattern:
-            cmd.append(pattern)
-    elif lang == "go":
-        cmd = [tool, "test", "./..."]
-        if mode == "discover":
-            cmd = [tool, "test", "./...", "-list", ".*"]
-        if pattern:
-            cmd += ["-run", pattern]
-    else:
+    build = _TEST_COMMANDS.get(lang)
+    if build is None:
         return {"ok": False, "error": "no_language"}
-
-    # Opt-in parallel/shard mode (gap A8a). Default off → unchanged.
-    if os.environ.get("AIFORGE_TEST_PARALLEL") == "1" and mode != "discover":
-        workers_env = os.environ.get("AIFORGE_TEST_WORKERS")
-        workers = int(workers_env) if (workers_env or "").isdigit() else None
-        cmd = build_test_command(
-            cmd, framework=lang, parallel=True, workers=workers,
-        )
-
+    cmd = _shard(build(tool, mode, pattern), lang, mode)
     try:
-        p = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=900,
-            cwd=str(root()),
-        )
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=900,
+                           cwd=str(root()))
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "timeout", "language": lang}
-    return {
-        "ok": p.returncode == 0,
-        "language": lang,
-        "mode": mode,
-        "exit_code": p.returncode,
-        "stdout": p.stdout[-4000:],
-        "stderr": p.stderr[-4000:],
-    }
+    return {"ok": p.returncode == 0, "language": lang, "mode": mode,
+            "exit_code": p.returncode, "stdout": p.stdout[-4000:],
+            "stderr": p.stderr[-4000:]}
 
 
 __all__ = ["run_tests", "build_test_command"]

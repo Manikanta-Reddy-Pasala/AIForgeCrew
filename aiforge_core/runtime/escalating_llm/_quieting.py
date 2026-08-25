@@ -13,6 +13,37 @@ import os
 log = logging.getLogger("aiforge.escalating_llm")
 
 
+def _unclosed(text: str) -> tuple[bool, list[str]]:
+    """``(inside a string, the closers still owed)`` after walking ``text``."""
+    stack: list[str] = []
+    in_str = False
+    esc = False
+    closing = {"{": "}", "[": "]"}
+    for ch in text:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append(closing[ch])
+        elif ch in "}]" and stack and stack[-1] == ch:
+            stack.pop()
+    return in_str, stack
+
+
+def _parses(text: str) -> bool:
+    try:
+        json.loads(text)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _repair_json(s: str) -> str:
     """Best-effort repair of truncated / malformed tool-call argument JSON.
 
@@ -25,41 +56,15 @@ def _repair_json(s: str) -> str:
     """
     if not s or not s.strip():
         return "{}"
-    try:
-        json.loads(s)
+    if _parses(s):
         return s
-    except Exception:  # noqa: BLE001
-        pass
     t = s.strip()
-    # Walk the string tracking string-state + bracket stack.
-    stack: list[str] = []
-    in_str = False
-    esc = False
-    closing = {"{": "}", "[": "]"}
-    for ch in t:
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
-        else:
-            if ch == '"':
-                in_str = True
-            elif ch in "{[":
-                stack.append(closing[ch])
-            elif ch in "}]" and stack and stack[-1] == ch:
-                stack.pop()
+    in_str, stack = _unclosed(t)
     if in_str:
-        t += '"'        # close the unterminated string
+        t += '"'                      # close the unterminated string
     while stack:
-        t += stack.pop()  # close open objects/arrays
-    try:
-        json.loads(t)
-        return t
-    except Exception:  # noqa: BLE001
-        return "{}"
+        t += stack.pop()              # close open objects/arrays
+    return t if _parses(t) else "{}"
 
 
 def _install_adk_toolarg_repair() -> None:
@@ -90,69 +95,85 @@ def _install_adk_toolarg_repair() -> None:
     _quiet_adk_tracebacks()
 
 
+def _disable_litellm_callbacks(_l) -> None:
+    """Kill LiteLLM's phone-home telemetry (defaults True → posts anonymous
+    usage to PostHog) and every callback list. Network+telemetry lockdown: no
+    unsolicited egress."""
+    try:
+        _l.telemetry = False
+    except Exception:  # noqa: BLE001
+        pass
+    _l.suppress_debug_info = True
+    _l.set_verbose = False
+    _l.success_callback = []
+    _l.failure_callback = []
+    _l._async_success_callback = []
+    _l._async_failure_callback = []
+
+
+def _silence_litellm_loggers() -> None:
+    for name in ("LiteLLM", "litellm", "LiteLLM Router", "LiteLLM Proxy"):
+        lg = logging.getLogger(name)
+        lg.setLevel(logging.CRITICAL)
+        lg.propagate = False
+    try:
+        from litellm._logging import verbose_logger as _vl
+        _vl.setLevel(logging.CRITICAL)
+        _vl.propagate = False
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _neutralise_logging_worker() -> None:
+    """FULLY neutralise the async LoggingWorker.
+
+    It spawns a persistent background task bound to whatever event loop is
+    running; the team pipeline creates a NEW loop per run and closes it,
+    orphaning the worker → "Task was destroyed but it is pending" / "Event loop
+    is closed" / "task_done() too many times" spam. Every entry point becomes a
+    no-op so it never starts a task or processes one — we don't use litellm's
+    async callbacks anyway.
+    """
+    try:
+        from litellm.litellm_core_utils import logging_worker as _lw
+
+        def _drop(self, async_coroutine=None, *a, **k):  # noqa: ANN001
+            try:
+                if async_coroutine is not None:
+                    async_coroutine.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+        async def _anoop(self, *a, **k):  # noqa: ANN001
+            return None
+
+        _lw.LoggingWorker.ensure_initialized_and_enqueue = _drop
+        _lw.LoggingWorker.enqueue = _drop
+        _lw.LoggingWorker.start = lambda self, *a, **k: None
+        _lw.LoggingWorker.flush = _anoop
+        _lw.LoggingWorker._flush_on_exit = lambda self, *a, **k: None
+        gw = getattr(_lw, "GLOBAL_LOGGING_WORKER", None)
+        if gw is None:
+            return
+        try:
+            if getattr(gw, "_worker_task", None) is not None:
+                gw._worker_task.cancel()
+            gw._worker_task = None
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _quiet_litellm() -> None:
     """Silence litellm's noisy internal logging worker (the async callback
     queue spams ERROR/Task-never-retrieved tracebacks when the run loop is
     cancelled — e.g. on Stop). Idempotent, best-effort."""
     try:
         import litellm as _l
-        # Kill LiteLLM's phone-home telemetry (defaults True → posts anonymous
-        # usage to PostHog). Network+telemetry lockdown: no unsolicited egress.
-        try:
-            _l.telemetry = False
-        except Exception:  # noqa: BLE001
-            pass
-        _l.suppress_debug_info = True
-        _l.set_verbose = False
-        _l.success_callback = []
-        _l.failure_callback = []
-        _l._async_success_callback = []
-        _l._async_failure_callback = []
-        for name in ("LiteLLM", "litellm", "LiteLLM Router", "LiteLLM Proxy"):
-            lg = logging.getLogger(name)
-            lg.setLevel(logging.CRITICAL)
-            lg.propagate = False
-        try:
-            from litellm._logging import verbose_logger as _vl
-            _vl.setLevel(logging.CRITICAL)
-            _vl.propagate = False
-        except Exception:  # noqa: BLE001
-            pass
-        # FULLY neutralise the async LoggingWorker. It spawns a persistent
-        # background task bound to whatever event loop is running; the team
-        # pipeline creates a NEW loop per run and closes it, orphaning the
-        # worker → "Task was destroyed but it is pending" / "Event loop is
-        # closed" / "task_done() too many times" spam. No-op every entry
-        # point so it never starts a task or processes one (we don't use
-        # litellm's async callbacks anyway).
-        try:
-            from litellm.litellm_core_utils import logging_worker as _lw
-
-            def _drop(self, async_coroutine=None, *a, **k):  # noqa: ANN001
-                try:
-                    if async_coroutine is not None:
-                        async_coroutine.close()
-                except Exception:  # noqa: BLE001
-                    pass
-
-            async def _anoop(self, *a, **k):  # noqa: ANN001
-                return None
-
-            _lw.LoggingWorker.ensure_initialized_and_enqueue = _drop
-            _lw.LoggingWorker.enqueue = _drop
-            _lw.LoggingWorker.start = lambda self, *a, **k: None
-            _lw.LoggingWorker.flush = _anoop
-            _lw.LoggingWorker._flush_on_exit = lambda self, *a, **k: None
-            gw = getattr(_lw, "GLOBAL_LOGGING_WORKER", None)
-            if gw is not None:
-                try:
-                    if getattr(gw, "_worker_task", None) is not None:
-                        gw._worker_task.cancel()
-                    gw._worker_task = None
-                except Exception:  # noqa: BLE001
-                    pass
-        except Exception:  # noqa: BLE001
-            pass
+        _disable_litellm_callbacks(_l)
+        _silence_litellm_loggers()
+        _neutralise_logging_worker()
     except Exception:  # noqa: BLE001
         pass
 

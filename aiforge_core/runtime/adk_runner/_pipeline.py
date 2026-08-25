@@ -329,6 +329,66 @@ def _run_live_verifier(ticket, pr_url: str) -> dict | None:
             os.environ["PR_URL"] = prev_pr
 
 
+def _key_stateful_tools(session_id: str) -> None:
+    """Key the stateful tools (bash session, browser context, IPython kernel) to
+    THIS run so the destroy_* calls actually match them — otherwise each mints a
+    per-call id and leaks (browser/ipython did exactly this)."""
+    import importlib
+    for mod, fn in (("bash", "set_run_id"), ("browser", "set_run_id"),
+                    ("ipython_kernel", "set_run_id")):
+        try:
+            getattr(importlib.import_module(
+                f"aiforge_core.runtime.tools.{mod}"), fn)(session_id)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _run_kwargs(session_id: str, content) -> dict:
+    """Cap LLM calls like the main pipeline — a single agent with bash + a
+    retry-heavy deploy/verify recipe (live_verifier) could otherwise spin many
+    calls bounded only by the wall-clock timeout."""
+    kwargs: dict = {"user_id": "aiforge-runner", "session_id": session_id,
+                    "new_message": content}
+    try:
+        from google.adk.agents.run_config import RunConfig
+        kwargs["run_config"] = RunConfig(
+            max_llm_calls=int(os.environ.get("AIFORGE_MAX_LLM_CALLS", "600")))
+    except Exception as exc:  # noqa: BLE001
+        log.debug("single-agent RunConfig unavailable: %s", exc)
+    return kwargs
+
+
+async def _session_state(session_svc, session_id: str) -> dict:
+    try:
+        session = await session_svc.get_session(
+            app_name="aiforge", user_id="aiforge-runner", session_id=session_id)
+        return dict(session.state or {})
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+async def _drive_single(runner, session_svc, session_id: str,
+                        kwargs: dict) -> dict:
+    """Run to completion under the pipeline deadline; on an abort recover the
+    PARTIAL state instead of hanging / crashing (mirrors the pipeline path)."""
+    deadline = _pipeline_deadline_s()
+    cm = (asyncio.timeout(deadline) if deadline and deadline > 0
+          else contextlib.nullcontext())
+    try:
+        async with cm:
+            async for _event in runner.run_async(**kwargs):
+                pass
+        return await _session_state(session_svc, session_id)
+    except Exception as exc:  # noqa: BLE001 — deadline or max_llm_calls trip
+        is_deadline = isinstance(exc, TimeoutError)
+        log.warning("single-agent run aborted (%s)%s — partial state",
+                    type(exc).__name__, " [deadline]" if is_deadline else "")
+        state = await _session_state(session_svc, session_id)
+        state["_pipeline_abort"] = ("deadline" if is_deadline
+                                    else type(exc).__name__)
+        return state
+
+
 async def _run_single_agent(agent, prompt: str, *, ticket=None) -> dict:
     """Drive a one-agent pipeline and return final session state. Used
     for the post-PR live_verifier — no condenser plugins (single turn)."""
@@ -337,75 +397,21 @@ async def _run_single_agent(agent, prompt: str, *, ticket=None) -> dict:
     from google.genai import types as gtypes
 
     session_svc = InMemorySessionService()
-    runner = Runner(
-        agent=agent, app_name="aiforge",
-        session_service=session_svc, auto_create_session=True,
-    )
+    runner = Runner(agent=agent, app_name="aiforge",
+                    session_service=session_svc, auto_create_session=True)
     initial_state: dict[str, Any] = {}
     if ticket is not None:
         initial_state["ticket_identifier"] = getattr(ticket, "identifier", "") or ""
         initial_state["ticket_project"] = getattr(ticket, "project", "") or ""
     session = await session_svc.create_session(
         app_name="aiforge", user_id="aiforge-runner",
-        state=initial_state or None,
-    )
-    content = gtypes.Content(
-        role="user", parts=[gtypes.Part.from_text(text=prompt)],
-    )
-    # Key the stateful tools (bash session, browser context, IPython kernel) to
-    # THIS run so the destroy_* calls below actually match them — otherwise each
-    # mints a per-call id and leaks (browser/ipython did exactly this).
-    for _mod, _fn in (("bash", "set_run_id"), ("browser", "set_run_id"),
-                      ("ipython_kernel", "set_run_id")):
-        try:
-            import importlib
-            getattr(importlib.import_module(
-                f"aiforge_core.runtime.tools.{_mod}"), _fn)(session.id)
-        except Exception:  # noqa: BLE001
-            pass
+        state=initial_state or None)
+    content = gtypes.Content(role="user",
+                             parts=[gtypes.Part.from_text(text=prompt)])
+    _key_stateful_tools(session.id)
     try:
-        # Cap LLM calls like the main pipeline — a single agent with bash + a
-        # retry-heavy deploy/verify recipe (live_verifier) could otherwise spin
-        # many calls bounded only by the wall-clock timeout.
-        _sa_kwargs: dict = {"user_id": "aiforge-runner",
-                            "session_id": session.id, "new_message": content}
-        try:
-            from google.adk.agents.run_config import RunConfig
-            _sa_kwargs["run_config"] = RunConfig(
-                max_llm_calls=int(os.environ.get("AIFORGE_MAX_LLM_CALLS", "600")))
-        except Exception as exc:  # noqa: BLE001
-            log.debug("single-agent RunConfig unavailable: %s", exc)
-        _deadline = _pipeline_deadline_s()
-        _cm = (asyncio.timeout(_deadline) if _deadline and _deadline > 0
-               else contextlib.nullcontext())
-        try:
-            async with _cm:
-                async for event in runner.run_async(**_sa_kwargs):
-                    if event.is_final_response():
-                        pass
-            session = await session_svc.get_session(
-                app_name="aiforge", user_id="aiforge-runner",
-                session_id=session.id,
-            )
-            return dict(session.state or {})
-        except Exception as exc:  # noqa: BLE001
-            # Overall-deadline timeout or max_llm_calls trip — recover partial
-            # state instead of hanging / crashing (mirrors the pipeline path).
-            is_deadline = isinstance(exc, TimeoutError)
-            log.warning("single-agent run aborted (%s)%s — partial state",
-                        type(exc).__name__,
-                        " [deadline]" if is_deadline else "")
-            try:
-                session = await session_svc.get_session(
-                    app_name="aiforge", user_id="aiforge-runner",
-                    session_id=session.id,
-                )
-                state = dict(session.state or {})
-            except Exception:  # noqa: BLE001
-                state = {}
-            state["_pipeline_abort"] = "deadline" if is_deadline else \
-                type(exc).__name__
-            return state
+        return await _drive_single(runner, session_svc, session.id,
+                                   _run_kwargs(session.id, content))
     finally:
         try:
             from aiforge_core.runtime.tools.bash import destroy_session
@@ -440,6 +446,252 @@ def _emit_ambiguous_rule_notice(ticket, ambiguous: list) -> None:
                        getattr(ticket, "identifier", ticket.id), exc)
 
 
+def _glob_list(raw) -> list[str]:
+    """A glob allowlist, from a newline string or an already-parsed list."""
+    if isinstance(raw, str):
+        raw = [g.strip() for g in raw.splitlines() if g.strip()]
+    return [str(g) for g in raw if g] if isinstance(raw, list) else []
+
+
+def _collect_repo_rules(ticket, scope_seed: list) -> str:
+    """Glob-scoped repo rules (Cursor-style), collected BEFORE the build so a
+    repo that carries rules files skips the paid ctx_conventions LLM branch
+    entirely — the rules ARE the conventions, for free."""
+    try:
+        from aiforge_core.runtime import repo_rules
+        query = ""
+        if ticket is not None:
+            query = (f"{getattr(ticket, 'title', '') or ''}\n"
+                     f"{getattr(ticket, 'body', '') or ''}")
+        rules_md, ambiguous = repo_rules.collect_or_ask(
+            os.environ.get("AIFORGE_REPO_ROOT", ""), scope_seed, query)
+        if ticket is not None:
+            _emit_ambiguous_rule_notice(ticket, ambiguous)
+        return rules_md
+    except Exception as exc:  # noqa: BLE001
+        log.debug("repo_rules collect failed: %s", exc)
+        return ""
+
+
+def _emit_rules_injected(ticket, scope_seed: list) -> None:
+    """Workflow-transparency: record which repo rules applied to this ticket's
+    scope so the Workflow UI can surface them."""
+    try:
+        from aiforge_core.runtime import observability as _obs
+        from aiforge_core.runtime import repo_rules
+        names = repo_rules.matched_names(
+            os.environ.get("AIFORGE_REPO_ROOT", ""), scope_seed)
+        tid = getattr(ticket, "id", None)
+        if tid is not None and names:
+            _obs.emit_context_injected(ticket_id=tid, agent_role="pipeline",
+                                       rules=names)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("context_injected.emit (rules) failed: %s", exc)
+
+
+def _toolchain_md() -> str:
+    """Host-verified toolchain (python3 vs python, ./mvnw vs mvn, …) so the Doer
+    uses the right commands instead of re-discovering them by trial-and-error
+    every ticket. Cheap + cached (shutil.which); never blocks a run."""
+    try:
+        from aiforge_core.config import repo_standards as _rstd
+        from aiforge_core.runtime.sandbox import root as _root
+        return _rstd.toolchain_brief(str(_root())) or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _user_prefs_md() -> str:
+    """Durable user preferences (gap #9) — global, cross-repo, so the agent
+    honours "I always want X" without being re-told.
+
+    BOTH stores are merged: the Neo4j preferences block (pro backend) AND the
+    embedded sqlite ``pref:`` units chat_capture writes — else a preference set
+    in chat on the embedded backend never reached the doer (it writes sqlite,
+    this read only Neo4j).
+    """
+    parts = []
+    try:
+        from aiforge_core.runtime import user_prefs as _up
+        block = _up.preferences_block()
+        if block:
+            parts.append(block)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from aiforge_core.runtime.chat_agent import _preferences_context
+        block = _preferences_context(os.environ.get("AIFORGE_REPO_ROOT") or ".")
+        if block:
+            parts.append(block)
+    except Exception:  # noqa: BLE001
+        pass
+    return "\n\n".join(parts)
+
+
+def _ticket_state(ticket, scope_seed: list, rules_md: str,
+                  memory_md: str) -> dict:
+    """The session state seeded from the ticket."""
+    state: dict[str, Any] = {
+        "ticket_identifier": getattr(ticket, "identifier", "") or "",
+        "ticket_project": getattr(ticket, "project", "") or "",
+        "ticket_title": getattr(ticket, "title", "") or "",
+        # RAW ASK for the enhancer degenerate-output guard (pipeline.py): the
+        # guard compares state['enhanced_body'] against this and restores it
+        # when the rewrite collapsed / dropped every named anchor.
+        "raw_ask": ((getattr(ticket, "title", "") or "") + "\n"
+                    + (getattr(ticket, "body", "") or "")).strip(),
+    }
+    # C6 scope enforcement: the UI stores the operator's allowlist in
+    # ticket.metadata. Without this seed, scope_guard / verify_scope / the
+    # Validator's rule 2 all judged a permanently-empty field.
+    clean = _glob_list((getattr(ticket, "metadata", None) or {})
+                       .get("scope_allowlist_globs"))
+    if clean:
+        state["scope_allowlist_globs"] = clean
+        # Durable copy for plan_promote: replans clear the live key
+        # (plan-derived globs are per-plan) but the operator's seed must
+        # survive every epoch.
+        state["scope_allowlist_globs_seeded"] = list(clean)
+    if rules_md:
+        # plan_promote re-matches once the plan widens the globs. Injected via
+        # {rules_md?} in prompts.
+        state["rules_md"] = rules_md
+        _emit_rules_injected(ticket, scope_seed)
+    # Pre-flight memory recall — seeded as STATE, not stitched into the seed
+    # prompt: ONE {memory_brief_md?} instruction copy per consuming agent
+    # (enhancer/planner/doer/verify_risk) instead of 60-120 history replays.
+    # Also replaces the ctx_memory LLM agent, which re-queried the same
+    # backends.
+    if memory_md:
+        state["memory_brief_md"] = memory_md
+    for key, value in (("toolchain_md", _toolchain_md()),
+                       ("user_prefs_md", _user_prefs_md())):
+        if value:
+            state[key] = value
+    return state
+
+
+def _with_images(content, ticket, gtypes):
+    """Sub #6 follow-up: inject multimodal image parts when the ticket has image
+    attachments AND the Doer model supports vision."""
+    try:
+        from aiforge_core.config.agent_config import load_all as get_config
+        from aiforge_core.runtime.vision_adk import inject_image_parts
+        doer_model = (get_config().get("doer", {}) or {}).get("model", "")
+        images = [str(f.get("path", ""))
+                  for f in ((ticket.metadata or {}).get("attached_files") or [])
+                  if isinstance(f, dict) and f.get("path")
+                  and str(f.get("name", "")).lower().endswith(
+                      (".png", ".jpg", ".jpeg", ".gif", ".webp"))]
+        if not images:
+            return content
+        injected = inject_image_parts([content], doer_model, images)
+        return injected[0] if injected and injected[0] is not content else content
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.debug("vision_adk.inject failed: %s", exc)
+        return content
+
+
+def _pipeline_run_config():
+    """Hard ceiling on total LLM calls for the whole pipeline run.
+
+    A local model (Qwen) can thrash — ONE-7 made 383 calls across 52 minutes and
+    wrote ZERO files, spinning on read/think without ever committing an edit.
+    ADK's default cap is high enough that it never tripped. Bounding it means a
+    stuck local Doer aborts (and lands the ticket as blocked) instead of burning
+    an hour. The v6 Workflow graph is wider than the old Sequential pipeline —
+    triage + 4 context branches + 3 verifiers + the Doer loop (≤3×) + a possible
+    verifier-replan AND validator-replan each re-running planner/verify/doer. A
+    healthy full+replan run can use ~120-160 calls, so the old 120 ceiling
+    tripped mid-Doer exactly on the harder tickets. Tune via
+    AIFORGE_MAX_LLM_CALLS.
+    """
+    try:
+        from google.adk.agents.run_config import RunConfig
+        return RunConfig(
+            max_llm_calls=int(os.environ.get("AIFORGE_MAX_LLM_CALLS", "600")))
+    except Exception as exc:  # noqa: BLE001
+        log.debug("RunConfig unavailable: %s", exc)
+        return None
+
+
+async def _drive_pipeline(runner, session_svc, session_id: str,
+                          content) -> dict:
+    """Run to completion under the deadline; on any abort recover the partial
+    state and tag it so the caller treats this as a soft FAIL rather than a hard
+    crash. A stuck local Doer that hit the cap (or the wall-clock deadline)
+    lands the ticket as blocked with its partial state instead of hanging."""
+    kwargs: dict[str, Any] = {"user_id": "aiforge-runner",
+                              "session_id": session_id, "new_message": content}
+    run_config = _pipeline_run_config()
+    if run_config is not None:
+        kwargs["run_config"] = run_config
+    deadline = _pipeline_deadline_s()
+    cm = (asyncio.timeout(deadline) if deadline and deadline > 0
+          else contextlib.nullcontext())
+    try:
+        async with cm:
+            async for _event in runner.run_async(**kwargs):
+                pass    # session.state mutated; drained for completeness
+        return await _session_state(session_svc, session_id)
+    except Exception as exc:  # noqa: BLE001
+        name = type(exc).__name__
+        is_limit = "LlmCallsLimit" in name or "max_llm_calls" in str(exc)
+        is_deadline = isinstance(exc, TimeoutError)
+        log.warning("pipeline run aborted (%s)%s — returning partial state",
+                    name, " [llm-cap]" if is_limit
+                    else (" [deadline]" if is_deadline else ""))
+        state = await _session_state(session_svc, session_id)
+        state["feedback_verdict"] = "fail"
+        state["_pipeline_abort"] = "deadline" if is_deadline else name
+        return state
+
+
+def _destroy_run_resources(session_id: str) -> None:
+    """Best-effort cleanup of everything keyed to this run. Each failure is
+    swallowed so the runner still returns (e.g. when tmux isn't installed)."""
+    for module, fn in (("aiforge_core.runtime.tools.bash", "destroy_session"),
+                       ("aiforge_core.runtime.tools.browser", "destroy_context"),
+                       ("aiforge_core.runtime.tools.ipython_kernel",
+                        "destroy_kernel"),
+                       ("aiforge_core.runtime.docker_sandbox",
+                        "destroy_container")):
+        try:
+            import importlib
+            getattr(importlib.import_module(module), fn)(session_id)
+        except Exception as exc:  # noqa: BLE001 — best-effort cleanup
+            log.debug("%s.%s failed: %s", module.rsplit(".", 1)[-1], fn, exc)
+
+
+def _dump_trajectory(session, ticket, initial_state: dict) -> None:
+    """Sub #15: dump the session trajectory for replay-style debugging, and
+    (gap-11) index a one-line-per-event summary into AFM as a queryable
+    ``Note_v2`` so future tickets can rerank "have we run something like this
+    before?" without re-reading raw JSON."""
+    if os.environ.get("AIFORGE_TRAJECTORY_DUMP", "1") not in ("1", "true"):
+        return
+    try:
+        from aiforge_core.runtime.trajectory import (
+            dump_trajectory,
+            index_trajectory_to_memory,
+        )
+        ticket_id = (initial_state.get("ticket_identifier")
+                     if initial_state else None) or "unknown"
+        dump_out = dump_trajectory(
+            ticket_id, session.id, list(getattr(session, "events", []) or []),
+            dict(session.state or {}))
+        if not (dump_out.get("ok") and ticket is not None and ticket.project):
+            return
+        idx = index_trajectory_to_memory(trajectory_path=dump_out["path"],
+                                         repo=ticket.project,
+                                         ticket_identifier=ticket_id)
+        if not idx.get("ok"):
+            log.debug("trajectory.index_skipped: %s",
+                      idx.get("error", "unknown"))
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.debug("trajectory.dump_failed: %s", exc)
+
+
 async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
                         ticket=None, memory_md: str = "") -> dict:
     """Drive one ADK pipeline run and return the final session state.
@@ -458,298 +710,33 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
     from google.adk.sessions import InMemorySessionService
     from google.genai import types as gtypes
 
-    # Glob-scoped repo rules (Cursor-style): collected BEFORE the build so
-    # a repo that carries rules files skips the paid ctx_conventions LLM
-    # branch entirely — the rules ARE the conventions, for free.
-    _scope_seed: list = []
-    if ticket is not None:
-        _raw_globs = (getattr(ticket, "metadata", None) or {}).get(
-            "scope_allowlist_globs")
-        if isinstance(_raw_globs, str):
-            _raw_globs = [g.strip() for g in _raw_globs.splitlines()
-                          if g.strip()]
-        if isinstance(_raw_globs, list):
-            _scope_seed = [str(g) for g in _raw_globs if g]
-    rules_md = ""
-    try:
-        from aiforge_core.runtime import repo_rules
-        _query = ""
-        if ticket is not None:
-            _query = (f"{getattr(ticket, 'title', '') or ''}\n"
-                      f"{getattr(ticket, 'body', '') or ''}")
-        rules_md, _ambiguous_rules = repo_rules.collect_or_ask(
-            os.environ.get("AIFORGE_REPO_ROOT", ""), _scope_seed, _query)
-        if ticket is not None:
-            _emit_ambiguous_rule_notice(ticket, _ambiguous_rules)
-    except Exception as exc:  # noqa: BLE001
-        log.debug("repo_rules collect failed: %s", exc)
-
+    scope_seed = (_glob_list((getattr(ticket, "metadata", None) or {})
+                             .get("scope_allowlist_globs"))
+                  if ticket is not None else [])
+    rules_md = _collect_repo_rules(ticket, scope_seed)
     pipeline = build_pipeline(
         skip_researcher=skip_researcher,
-        # only skip when the rules will actually be SEEDED (ticket path);
-        # a ticket-less run must keep the ctx_conventions branch or it
-        # gets neither rules nor conventions.
+        # only skip when the rules will actually be SEEDED (ticket path); a
+        # ticket-less run must keep the ctx_conventions branch or it gets
+        # neither rules nor conventions.
         skip_conventions=bool(rules_md and ticket is not None),
-        project=getattr(ticket, "project", None) if ticket else None,
-    )
+        project=getattr(ticket, "project", None) if ticket else None)
     session_svc = InMemorySessionService()
-    plugins = _build_context_plugins()
-    runner = Runner(
-        agent=pipeline, app_name="aiforge",
-        session_service=session_svc, auto_create_session=True,
-        plugins=plugins,
-    )
-    initial_state: dict[str, Any] = {}
-    if ticket is not None:
-        initial_state["ticket_identifier"] = getattr(ticket, "identifier", "") or ""
-        initial_state["ticket_project"] = getattr(ticket, "project", "") or ""
-        initial_state["ticket_title"] = getattr(ticket, "title", "") or ""
-        # RAW ASK for the enhancer degenerate-output guard (pipeline.py):
-        # the guard compares state['enhanced_body'] against this and restores
-        # it when the rewrite collapsed / dropped every named anchor.
-        initial_state["raw_ask"] = ((getattr(ticket, "title", "") or "")
-                                    + "\n" + (getattr(ticket, "body", "") or "")).strip()
-        # C6 scope enforcement: the UI stores the operator's allowlist in
-        # ticket.metadata. Without this seed, scope_guard / verify_scope /
-        # the Validator's rule 2 all judged a permanently-empty field.
-        _md = getattr(ticket, "metadata", None) or {}
-        _globs = _md.get("scope_allowlist_globs")
-        if isinstance(_globs, str):
-            _globs = [g.strip() for g in _globs.splitlines() if g.strip()]
-        _clean: list = []
-        if isinstance(_globs, list) and _globs:
-            _clean = [str(g) for g in _globs if g]
-            initial_state["scope_allowlist_globs"] = _clean
-            # Durable copy for plan_promote: replans clear the live key
-            # (plan-derived globs are per-plan) but the operator's seed
-            # must survive every epoch.
-            initial_state["scope_allowlist_globs_seeded"] = list(_clean)
-        # Glob-scoped repo rules collected above (pre-build, drives
-        # skip_conventions). plan_promote re-matches once the plan
-        # widens the globs. Injected via {rules_md?} in prompts.
-        if rules_md:
-            initial_state["rules_md"] = rules_md
-            # Workflow-transparency: record which repo rules applied to this
-            # ticket's scope so the Workflow UI can surface them. Best-effort.
-            try:
-                from aiforge_core.runtime import observability as _obs
-                _rule_names = repo_rules.matched_names(
-                    os.environ.get("AIFORGE_REPO_ROOT", ""), _scope_seed)
-                _tid = getattr(ticket, "id", None)
-                if _tid is not None and _rule_names:
-                    _obs.emit_context_injected(
-                        ticket_id=_tid, agent_role="pipeline",
-                        rules=_rule_names)
-            except Exception as exc:  # noqa: BLE001
-                log.debug("context_injected.emit (rules) failed: %s", exc)
-        # Pre-flight memory recall — seeded as STATE, not stitched into
-        # the seed prompt: ONE {memory_brief_md?} instruction copy per
-        # consuming agent (enhancer/planner/doer/verify_risk) instead
-        # of 60-120 history replays. Also replaces the ctx_memory LLM
-        # agent, which re-queried the identical backends.
-        if memory_md:
-            initial_state["memory_brief_md"] = memory_md
-        # Host-verified toolchain (python3 vs python, ./mvnw vs mvn, …) —
-        # seeded as STATE so the Doer uses the right commands instead of
-        # re-discovering them by trial-and-error every ticket. Cheap +
-        # cached (shutil.which); soft-fails to nothing.
-        try:
-            from aiforge_core.config import repo_standards as _rstd
-            from aiforge_core.runtime.sandbox import root as _root
-            _tb = _rstd.toolchain_brief(str(_root()))
-            if _tb:
-                initial_state["toolchain_md"] = _tb
-        except Exception:  # noqa: BLE001 — never block a run on probing
-            pass
-        # Durable user preferences (gap #9) — global, cross-repo. Seeded so
-        # the agent honours "I always want X" without being re-told. Merge BOTH
-        # stores: the Neo4j preferences block (pro backend) AND the embedded
-        # sqlite `pref:` units that chat_capture writes — else a preference set
-        # in chat on the embedded backend never reached the doer (it writes
-        # sqlite, this read only Neo4j).
-        try:
-            _pref_parts = []
-            try:
-                from aiforge_core.runtime import user_prefs as _up
-                _pb = _up.preferences_block()
-                if _pb:
-                    _pref_parts.append(_pb)
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                from aiforge_core.runtime.chat_agent import _preferences_context
-                _sb = _preferences_context(os.environ.get("AIFORGE_REPO_ROOT") or ".")
-                if _sb:
-                    _pref_parts.append(_sb)
-            except Exception:  # noqa: BLE001
-                pass
-            if _pref_parts:
-                initial_state["user_prefs_md"] = "\n\n".join(_pref_parts)
-        except Exception:  # noqa: BLE001
-            pass
+    runner = Runner(agent=pipeline, app_name="aiforge",
+                    session_service=session_svc, auto_create_session=True,
+                    plugins=_build_context_plugins())
+    initial_state = (_ticket_state(ticket, scope_seed, rules_md, memory_md)
+                     if ticket is not None else {})
     session = await session_svc.create_session(
         app_name="aiforge", user_id="aiforge-runner",
-        state=initial_state or None,
-    )
-    # Key the stateful tools to THIS run so their destroy_* (bash/browser/
-    # ipython) below match — else each mints a per-call id and leaks.
-    for _mod in ("bash", "browser", "ipython_kernel"):
-        try:
-            import importlib
-            importlib.import_module(
-                f"aiforge_core.runtime.tools.{_mod}").set_run_id(session.id)
-        except Exception:  # noqa: BLE001
-            pass
-    content = gtypes.Content(
-        role="user", parts=[gtypes.Part.from_text(text=prompt)],
-    )
-    # Sub #6 follow-up: inject multimodal image parts when ticket has
-    # image attachments AND the Doer model supports vision.
+        state=initial_state or None)
+    _key_stateful_tools(session.id)
+    content = gtypes.Content(role="user",
+                             parts=[gtypes.Part.from_text(text=prompt)])
     if ticket is not None:
-        try:
-            from aiforge_core.config.agent_config import load_all as get_config
-            from aiforge_core.runtime.vision_adk import inject_image_parts
-
-            cfg = get_config()
-            doer_model = (cfg.get("doer", {}) or {}).get("model", "")
-            md = ticket.metadata or {}
-            images = [
-                str(f.get("path", "")) for f in (md.get("attached_files") or [])
-                if isinstance(f, dict)
-                and str(f.get("name", "")).lower().endswith(
-                    (".png", ".jpg", ".jpeg", ".gif", ".webp"),
-                )
-                and f.get("path")
-            ]
-            if images:
-                injected = inject_image_parts([content], doer_model, images)
-                if injected and injected[0] is not content:
-                    content = injected[0]
-        except Exception as exc:  # noqa: BLE001 — best-effort
-            log.debug("vision_adk.inject failed: %s", exc)
-    # Hard ceiling on total LLM calls for the whole pipeline run. A
-    # local model (Qwen) can thrash — ONE-7 made 383 calls across 52
-    # minutes and wrote ZERO files, spinning on read/think without ever
-    # committing an edit. ADK's default cap is high enough that this
-    # never tripped. Bounding it means a stuck local Doer aborts (and
-    # lands the ticket as blocked) instead of burning an hour. The v6
-    # Workflow graph is wider than the old
-    # Sequential pipeline — triage + 4 context branches + 3 verifiers +
-    # the Doer loop (≤3×) + a possible verifier-replan AND validator-replan
-    # each re-running planner/verify/doer. A healthy full+replan run can
-    # use ~120-160 calls, so the old 120 ceiling tripped mid-Doer exactly
-    # on the harder tickets. 220 leaves headroom. Tune via
-    # AIFORGE_MAX_LLM_CALLS.
-    run_config = None
+        content = _with_images(content, ticket, gtypes)
     try:
-        from google.adk.agents.run_config import RunConfig
-        run_config = RunConfig(
-            max_llm_calls=int(os.environ.get("AIFORGE_MAX_LLM_CALLS", "600")),
-        )
-    except Exception as exc:  # noqa: BLE001
-        log.debug("RunConfig unavailable: %s", exc)
-    try:
-        _run_kwargs: dict[str, Any] = dict(
-            user_id="aiforge-runner",
-            session_id=session.id, new_message=content,
-        )
-        if run_config is not None:
-            _run_kwargs["run_config"] = run_config
-        _deadline = _pipeline_deadline_s()
-        _cm = (asyncio.timeout(_deadline) if _deadline and _deadline > 0
-               else contextlib.nullcontext())
-        async with _cm:
-            async for event in runner.run_async(**_run_kwargs):
-                if event.is_final_response():
-                    pass  # session.state mutated; drained for completeness
-        session = await session_svc.get_session(
-            app_name="aiforge", user_id="aiforge-runner",
-            session_id=session.id,
-        )
-        return dict(session.state or {})
-    except Exception as exc:  # noqa: BLE001
-        # max_llm_calls trip, overall-deadline timeout, or any mid-run ADK
-        # error — recover the partial session state and tag it so the caller
-        # treats this as a soft FAIL rather than a hard crash. A stuck local
-        # Doer that hit the cap (or the wall-clock deadline) lands the ticket
-        # as blocked with its partial state instead of hanging forever.
-        name = type(exc).__name__
-        is_limit = "LlmCallsLimit" in name or "max_llm_calls" in str(exc)
-        is_deadline = isinstance(exc, TimeoutError)
-        log.warning(
-            "pipeline run aborted (%s)%s — returning partial state",
-            name,
-            " [llm-cap]" if is_limit else (" [deadline]" if is_deadline else ""),
-        )
-        try:
-            session = await session_svc.get_session(
-                app_name="aiforge", user_id="aiforge-runner",
-                session_id=session.id,
-            )
-            state = dict(session.state or {})
-        except Exception:  # noqa: BLE001
-            state = {}
-        state["feedback_verdict"] = "fail"
-        state["_pipeline_abort"] = "deadline" if is_deadline else name
-        return state
+        return await _drive_pipeline(runner, session_svc, session.id, content)
     finally:
-        # Best-effort tmux session cleanup for the Doer's persistent bash
-        # (sub-project #1, see runtime/tools/bash.py). Failure is swallowed
-        # so the runner still returns even when tmux isn't installed.
-        try:
-            from aiforge_core.runtime.tools.bash import destroy_session
-            destroy_session(session.id)
-        except Exception as exc:  # noqa: BLE001 — best-effort cleanup
-            log.debug("bash.destroy_session failed: %s", exc)
-        try:
-            from aiforge_core.runtime.tools.browser import (
-                destroy_context as destroy_browser,
-            )
-            destroy_browser(session.id)
-        except Exception as exc:  # noqa: BLE001 — best-effort cleanup
-            log.debug("browser.destroy_context failed: %s", exc)
-        try:
-            from aiforge_core.runtime.tools.ipython_kernel import (
-                destroy_kernel,
-            )
-            destroy_kernel(session.id)
-        except Exception as exc:  # noqa: BLE001 — best-effort cleanup
-            log.debug("ipython.destroy_kernel failed: %s", exc)
-        try:
-            from aiforge_core.runtime.docker_sandbox import (
-                destroy_container,
-            )
-            destroy_container(session.id)
-        except Exception as exc:  # noqa: BLE001 — best-effort cleanup
-            log.debug("docker_sandbox.destroy_container failed: %s", exc)
-        # Sub #15: dump session trajectory for replay-style debugging.
-        # Gap-11 (2026-05-23): also index a one-line-per-event summary
-        # into AFM as a queryable ``Note_v2`` so future tickets can
-        # rerank "have we run something like this before?" against past
-        # runs without re-reading raw JSON.
-        if os.environ.get("AIFORGE_TRAJECTORY_DUMP", "1") in ("1", "true"):
-            try:
-                from aiforge_core.runtime.trajectory import (
-                    dump_trajectory,
-                    index_trajectory_to_memory,
-                )
-                ticket_id = (initial_state.get("ticket_identifier")
-                             if initial_state else None) or "unknown"
-                events = list(getattr(session, "events", []) or [])
-                dump_out = dump_trajectory(
-                    ticket_id, session.id,
-                    events, dict(session.state or {}),
-                )
-                if dump_out.get("ok") and ticket is not None and ticket.project:
-                    idx = index_trajectory_to_memory(
-                        trajectory_path=dump_out["path"],
-                        repo=ticket.project,
-                        ticket_identifier=ticket_id,
-                    )
-                    if not idx.get("ok"):
-                        log.debug(
-                            "trajectory.index_skipped: %s",
-                            idx.get("error", "unknown"),
-                        )
-            except Exception as exc:  # noqa: BLE001 — best-effort
-                log.debug("trajectory.dump_failed: %s", exc)
+        _destroy_run_resources(session.id)
+        _dump_trajectory(session, ticket, initial_state)

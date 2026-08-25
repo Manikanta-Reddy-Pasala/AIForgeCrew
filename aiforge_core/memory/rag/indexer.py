@@ -75,43 +75,44 @@ def _chunk_generic(text: str) -> list[str]:
     return out
 
 
+def _chunk_python_regex(text: str) -> list[tuple[str, str]]:
+    """Fallback when tree-sitter is unavailable: split on top-level `def` /
+    `class` headers and pack into chunk-sized pieces."""
+    chunks: list[tuple[str, str]] = []
+    buf = ""
+    for seg in re.split(r"(?m)^(def |class |async def )", text):
+        buf += seg
+        if len(buf) >= CHUNK_CHARS:
+            chunks.append(("<module>", buf))
+            buf = ""
+    if buf:
+        chunks.append(("<module>", buf))
+    return chunks or [("<module>", text)]
+
+
+def _walk_definitions(node, name_stack: list, text: str,
+                      chunks: list[tuple[str, str]]) -> None:
+    """Collect every function/class body, qualified by its enclosing names."""
+    if node.type in ("function_definition", "class_definition"):
+        name_node = node.child_by_field_name("name")
+        name = name_node.text.decode() if name_node else "?"
+        chunks.append((".".join(name_stack + [name]),
+                       text[node.start_byte:node.end_byte]))
+        name_stack = name_stack + [name]
+    for child in node.children:
+        _walk_definitions(child, name_stack, text, chunks)
+
+
 def _chunk_python(text: str) -> list[tuple[str, str]]:
     """Return list of (symbol, chunk). Tree-sitter optional; fallback = regex."""
     try:
         import tree_sitter_python as tspy
         from tree_sitter import Language, Parser
-    except Exception:
-        # Fallback: split by top-level `def ` / `class ` headers
-        parts = re.split(r"(?m)^(def |class |async def )", text)
-        chunks: list[tuple[str, str]] = []
-        buf = ""
-        for seg in parts:
-            buf += seg
-            if len(buf) >= CHUNK_CHARS:
-                chunks.append(("<module>", buf))
-                buf = ""
-        if buf:
-            chunks.append(("<module>", buf))
-        return chunks or [("<module>", text)]
-
+    except Exception:  # noqa: BLE001
+        return _chunk_python_regex(text)
     parser = Parser(Language(tspy.language()))
-    tree = parser.parse(text.encode())
     chunks: list[tuple[str, str]] = []
-
-    def walk(node, name_stack):
-        if node.type in ("function_definition", "class_definition"):
-            name_node = node.child_by_field_name("name")
-            name = name_node.text.decode() if name_node else "?"
-            qname = ".".join(name_stack + [name])
-            start, end = node.start_byte, node.end_byte
-            chunks.append((qname, text[start:end]))
-            for child in node.children:
-                walk(child, name_stack + [name])
-        else:
-            for child in node.children:
-                walk(child, name_stack)
-
-    walk(tree.root_node, [])
+    _walk_definitions(parser.parse(text.encode()).root_node, [], text, chunks)
     return chunks or [("<module>", text)]
 
 
@@ -129,45 +130,55 @@ class ReindexResult:
     chunks: int
 
 
-def reindex_repo(store: "Store", *, repo: str, repo_root: Path,
-                 sources: list[str] | None = None) -> ReindexResult:
-    sources = sources or DEFAULT_SOURCES
-    # Clear existing T4 for this repo
-    with store._connect() as c, c.cursor() as cur:
-        cur.execute("DELETE FROM memories WHERE tier='t4' AND wing=%s", (f"code/{repo}",))
-        c.commit()
+def _indexable(p: Path, repo_root: Path) -> bool:
+    """A real file, not in an excluded dir, and under 1 MB — bigger files are
+    rarely useful for retrieval."""
+    if not p.is_file():
+        return False
+    rel = p.relative_to(repo_root).as_posix()
+    if any(exc in rel + "/" for exc in _EXCLUDES):
+        return False
+    try:
+        return p.stat().st_size <= 1_000_000
+    except OSError:
+        return False
 
+
+def _files_to_index(repo_root: Path, sources: list[str]) -> set:
     seen: set[Path] = set()
     for pat in sources:
         for p in repo_root.glob(pat):
-            if not p.is_file():
-                continue
-            rel = p.relative_to(repo_root).as_posix()
-            if any(exc in rel + "/" for exc in _EXCLUDES):
-                continue
-            # Skip very large files (>1 MB) — rarely useful for retrieval
-            try:
-                if p.stat().st_size > 1_000_000:
-                    continue
-            except OSError:
-                continue
-            seen.add(p.resolve())
+            if _indexable(p, repo_root):
+                seen.add(p.resolve())
+    return seen
 
-    total_chunks = 0
-    for f in sorted(seen):
-        try:
-            text = f.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        rel = str(f.relative_to(repo_root))
-        file_chunks = _chunk_for_path(rel, text)
-        for idx, (symbol, chunk) in enumerate(file_chunks):
-            # Ensure per-chunk uniqueness of `source` so upsert-by-source doesn't
-            # collapse multi-chunk files to a single row.
-            sym = symbol if len(file_chunks) == 1 else f"{symbol}:{idx}"
-            store.upsert_code_chunk(
-                repo=repo, path=rel, symbol=sym, text=chunk,
-                metadata={"lang": rel.split(".")[-1], "chunk_index": idx},
-            )
-            total_chunks += 1
+
+def _index_one_file(store: "Store", repo: str, repo_root: Path, f: Path) -> int:
+    """Chunk + upsert one file; returns how many chunks landed."""
+    try:
+        text = f.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    rel = str(f.relative_to(repo_root))
+    file_chunks = _chunk_for_path(rel, text)
+    for idx, (symbol, chunk) in enumerate(file_chunks):
+        # Per-chunk uniqueness of `source`, so upsert-by-source doesn't collapse
+        # a multi-chunk file to a single row.
+        sym = symbol if len(file_chunks) == 1 else f"{symbol}:{idx}"
+        store.upsert_code_chunk(
+            repo=repo, path=rel, symbol=sym, text=chunk,
+            metadata={"lang": rel.split(".")[-1], "chunk_index": idx})
+    return len(file_chunks)
+
+
+def reindex_repo(store: "Store", *, repo: str, repo_root: Path,
+                 sources: list[str] | None = None) -> ReindexResult:
+    # Clear existing T4 for this repo
+    with store._connect() as c, c.cursor() as cur:
+        cur.execute("DELETE FROM memories WHERE tier='t4' AND wing=%s",
+                    (f"code/{repo}",))
+        c.commit()
+    seen = _files_to_index(repo_root, sources or DEFAULT_SOURCES)
+    total_chunks = sum(_index_one_file(store, repo, repo_root, f)
+                       for f in sorted(seen))
     return ReindexResult(files=len(seen), chunks=total_chunks)

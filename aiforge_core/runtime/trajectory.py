@@ -200,6 +200,32 @@ def list_trajectories(ticket_id: str | int | None = None) -> list[str]:
     return [str(p) for p in sorted(root.rglob("*.json"))]
 
 
+def _part_snippet(part: dict) -> str:
+    """One event part rendered for the summary — a tool call, its response, or
+    plain text. "" for a part carrying none of those."""
+    if part.get("function_call"):
+        fc = part["function_call"]
+        return f"call {fc.get('name')}({_short(fc.get('args'))})"
+    if part.get("function_response"):
+        fr = part["function_response"]
+        return f"resp {fr.get('name')} → {_short(fr.get('response'))}"
+    if part.get("text"):
+        return _short(part["text"])
+    return ""
+
+
+def _event_snippets(ev: dict) -> list[str]:
+    """The signal-dense slots of one event, falling back to its flat ``text`` /
+    ``tool_name`` when it carries no structured parts."""
+    out = [snip for snip in
+           (_part_snippet(p) for p in (ev.get("parts") or [])
+            if isinstance(p, dict)) if snip]
+    if out:
+        return out
+    text = ev.get("text") or ev.get("tool_name") or ""
+    return [_short(text)] if text else []
+
+
 def _summarize_trajectory(events: list[dict]) -> str:
     """Render a short trajectory summary suitable for AFM Note_v2 body.
 
@@ -211,31 +237,11 @@ def _summarize_trajectory(events: list[dict]) -> str:
     for ev in events:
         if not isinstance(ev, dict):
             continue
-        author = ev.get("author") or ev.get("agent_name") or ev.get("role")
-        snippet_parts: list[str] = []
-        for part in ev.get("parts") or []:
-            if not isinstance(part, dict):
-                continue
-            if part.get("function_call"):
-                fc = part["function_call"]
-                snippet_parts.append(
-                    f"call {fc.get('name')}({_short(fc.get('args'))})"
-                )
-            elif part.get("function_response"):
-                fr = part["function_response"]
-                snippet_parts.append(
-                    f"resp {fr.get('name')} → {_short(fr.get('response'))}"
-                )
-            elif part.get("text"):
-                snippet_parts.append(_short(part["text"]))
-        if not snippet_parts:
-            text = ev.get("text") or ev.get("tool_name") or ""
-            if text:
-                snippet_parts.append(_short(text))
-        if not snippet_parts:
+        snippets = _event_snippets(ev)
+        if not snippets:
             continue
-        joined = " | ".join(snippet_parts)[:240]
-        lines.append(f"{author or '?'}: {joined}")
+        author = ev.get("author") or ev.get("agent_name") or ev.get("role")
+        lines.append(f"{author or '?'}: {' | '.join(snippets)[:240]}")
     return "\n".join(lines[:80])
 
 

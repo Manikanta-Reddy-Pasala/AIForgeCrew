@@ -32,7 +32,6 @@ def _xhtml_to_md(xhtml: str) -> str:
     """Light Confluence storage-XHTML → readable markdown, so the approval
     preview shows formatted text instead of raw ``<p>…</ac:…>`` tags."""
     import html
-    import re
     s = xhtml or ""
     for i in range(6, 0, -1):                       # headings
         s = re.sub(rf"<h{i}[^>]*>(.*?)</h{i}>",

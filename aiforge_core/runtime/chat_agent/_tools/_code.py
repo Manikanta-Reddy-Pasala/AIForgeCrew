@@ -66,44 +66,44 @@ def _resolve_doc(path: str, cwd: str) -> str | None:
     return None
 
 
+_PAGINATION_NOTES = {
+    "approx": ("page numbers are APPROXIMATE (char-estimated — this file has no "
+               "reliable page breaks, so they may not match a Word viewer's "
+               "printed pages)"),
+    "word": ("total page count is Word's own; the text mapped to each page is "
+             "an approximate slice, so a specific page's content may be "
+             "slightly off"),
+}
+
+
 def _t_summarize_doc(args: dict, cwd: str) -> dict:
     """Summarise an attached/loaded document (pdf / docx / xlsx). Optional
     ``pages`` (e.g. "10-20", "3,5,7-9") summarises ONLY those pages/sections via
     the map-reduce summariser, so a 400-page report can be read section by
     section. No ``pages`` → the whole document."""
     import os as _os
-    path = str(args.get("path") or args.get("file") or args.get("filename") or "").strip()
-    pages = str(args.get("pages") or "").strip() or None
-    role = str(args.get("role") or "chat").strip() or "chat"
+    path = str(args.get("path") or args.get("file")
+               or args.get("filename") or "").strip()
     if not path:
         return {"ok": False, "error": "need a file path/name"}
     fp = _resolve_doc(path, cwd)
     if not fp:
         return {"ok": False, "error": f"file not found: {path}"}
     from aiforge_core.runtime import doc_extract, doc_summarize
+    pages = str(args.get("pages") or "").strip() or None
+    role = str(args.get("role") or "chat").strip() or "chat"
     name = _os.path.basename(fp)
-    _pages, kind = doc_extract.paginate(fp, "")
-    total = len(_pages)
-    if kind == "approx":
-        note = ("page numbers are APPROXIMATE (char-estimated — this file has no "
-                "reliable page breaks, so they may not match a Word viewer's "
-                "printed pages)")
-    elif kind == "word":
-        note = ("total page count is Word's own; the text mapped to each page is "
-                "an approximate slice, so a specific page's content may be "
-                "slightly off")
-    else:
-        note = None
+    paged, kind = doc_extract.paginate(fp, "")
+    total = len(paged)
+    note = _PAGINATION_NOTES.get(kind)
     # Out-of-range page request → don't fail silently; tell the model the real
     # page count so it can relay that instead of retrying blindly.
-    if pages:
-        idx = doc_extract.parse_page_spec(pages, total)
-        if not idx:
-            return {"ok": False, "file": name, "page_count": total,
-                    "pagination": kind, "note": note,
-                    "error": f"requested pages {pages!r} are out of range — "
-                             f"{name} has {total} page(s)"
-                             + (f" ({note})" if note else "")}
+    if pages and not doc_extract.parse_page_spec(pages, total):
+        return {"ok": False, "file": name, "page_count": total,
+                "pagination": kind, "note": note,
+                "error": f"requested pages {pages!r} are out of range — "
+                         f"{name} has {total} page(s)"
+                         + (f" ({note})" if note else "")}
     summary = doc_summarize.summarize_document(fp, role=role, pages=pages)
     if not summary:
         scope = f" for pages {pages}" if pages else ""
@@ -116,6 +116,42 @@ def _t_summarize_doc(args: dict, cwd: str) -> dict:
     return out
 
 
+_RENAME_EXTS = (".py", ".ts", ".tsx", ".js", ".jsx", ".java", ".go", ".rs",
+                ".c", ".cpp", ".h", ".cs", ".rb", ".php", ".kt", ".scala",
+                ".swift")
+_RENAME_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "dist", "build",
+                     "__pycache__"}
+
+
+def _source_files(root: str):
+    """Every source file under ``root``, vendor/build dirs pruned."""
+    import os as _os
+    for dp, dn, fns in _os.walk(root):
+        dn[:] = [d for d in dn if d not in _RENAME_SKIP_DIRS]
+        for fn in fns:
+            if fn.endswith(_RENAME_EXTS):
+                yield _os.path.join(dp, fn)
+
+
+def _rename_in_file(fpath: str, pat, new: str, dry: bool) -> int:
+    """Occurrences in this file; rewrites it unless ``dry``. 0 when unreadable
+    or unmatched."""
+    try:
+        with open(fpath, encoding="utf-8", errors="replace") as fh:
+            txt = fh.read()
+    except Exception:  # noqa: BLE001
+        return 0
+    count = len(pat.findall(txt))
+    if not count or dry:
+        return count
+    try:
+        with open(fpath, "w", encoding="utf-8") as fh:
+            fh.write(pat.sub(new, txt))
+    except Exception:  # noqa: BLE001
+        return 0
+    return count
+
+
 def _t_rename_symbol(args: dict, cwd: str) -> dict:
     import os as _os
     import re as _re
@@ -123,37 +159,20 @@ def _t_rename_symbol(args: dict, cwd: str) -> dict:
     new = str(args.get("new_name") or "")
     if not name or not new:
         return {"ok": False, "error": "need 'name' and 'new_name'"}
-    dry = args.get("dry_run", True)
+    dry = bool(args.get("dry_run", True))
     base = str(args.get("path") or ".")
     root_p = base if _os.path.isabs(base) else _os.path.join(cwd or ".", base)
     pat = _re.compile(r"\b" + _re.escape(name) + r"\b")
-    _EXT = (".py", ".ts", ".tsx", ".js", ".jsx", ".java", ".go", ".rs", ".c",
-            ".cpp", ".h", ".cs", ".rb", ".php", ".kt", ".scala", ".swift")
     hits, changed = [], 0
-    for dp, dn, fns in _os.walk(root_p):
-        dn[:] = [d for d in dn if d not in (".git", "node_modules", ".venv",
-                 "venv", "dist", "build", "__pycache__")]
-        for fn in fns:
-            if not fn.endswith(_EXT):
-                continue
-            fpath = _os.path.join(dp, fn)
-            try:
-                with open(fpath, encoding="utf-8", errors="replace") as fh:
-                    txt = fh.read()
-            except Exception:  # noqa: BLE001
-                continue
-            c = len(pat.findall(txt))
-            if not c:
-                continue
-            hits.append({"file": _os.path.relpath(fpath, cwd or "."),
-                         "occurrences": c})
-            if not dry:
-                try:
-                    with open(fpath, "w", encoding="utf-8") as fh:
-                        fh.write(pat.sub(new, txt))
-                    changed += c
-                except Exception:  # noqa: BLE001
-                    pass
-    return {"ok": True, "name": name, "new_name": new, "dry_run": bool(dry),
-            "files": hits, "total_occurrences": sum(h["occurrences"] for h in hits),
+    for fpath in _source_files(root_p):
+        count = _rename_in_file(fpath, pat, new, dry)
+        if not count:
+            continue
+        hits.append({"file": _os.path.relpath(fpath, cwd or "."),
+                     "occurrences": count})
+        if not dry:
+            changed += count
+    return {"ok": True, "name": name, "new_name": new, "dry_run": dry,
+            "files": hits,
+            "total_occurrences": sum(h["occurrences"] for h in hits),
             "applied": (0 if dry else changed)}
