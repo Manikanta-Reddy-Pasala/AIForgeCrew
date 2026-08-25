@@ -245,7 +245,7 @@ def _summarize_or_excerpt(full: str, role: str) -> str:
         return full
     from aiforge_core.runtime import doc_summarize
     summary = doc_summarize.summarize_text(full, role).strip()
-    if summary and summary != full[:len(summary)]:
+    if summary and not full.startswith(summary):
         return (f"SUMMARY (auto-generated from {len(full)} chars of extracted "
                 f"text):\n{summary}")
     return full[:_DESC_CAP] + "\n… (truncated)"
