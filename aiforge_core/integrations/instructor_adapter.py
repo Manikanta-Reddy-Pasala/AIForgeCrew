@@ -172,7 +172,7 @@ def _settle_pending(pending: list, reason: str) -> None:
         return
     try:
         from aiforge_core.llm import call_meter as _meter
-        for tok in list(pending):
+        for tok in pending:
             _meter.record_failure(tok, reason)
     except Exception:  # noqa: BLE001 — metering never breaks a call
         pass

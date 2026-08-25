@@ -239,7 +239,7 @@ def _record_applied_flag(rule_id: str, name: str, scope: str,
 
 def _clear_applied_flags(item: dict) -> None:
     """Revoke every gate flag a captured item enabled (re-enabling the gate)."""
-    for entry in list(item.get("applied_flags") or []):
+    for entry in item.get("applied_flags") or []:
         try:
             clear_gate_flag(entry.get("name"), scope=entry.get("scope") or "",
                             repo=entry.get("repo"),
@@ -313,7 +313,7 @@ def _prune_stale_session_flags(flags: dict) -> bool:
         live = {str(s.get("id")) for s in (chat_store.list_sessions() or [])}
     except Exception:  # noqa: BLE001 — can't confirm liveness → leave as-is
         return False
-    stale = [s for s in list(session_flags) if str(s) not in live]
+    stale = [s for s in session_flags if str(s) not in live]
     for s in stale:
         session_flags.pop(s, None)
     if stale:

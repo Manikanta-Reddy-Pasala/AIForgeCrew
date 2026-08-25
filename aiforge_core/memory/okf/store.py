@@ -347,7 +347,7 @@ def _migrate_legacy_dir(node_type: str, legacy: str) -> int:
     many moved. The dir is removed when it ends up empty."""
     import shutil
     moved = 0
-    for f in list(os.listdir(legacy)):
+    for f in os.listdir(legacy):
         if not f.endswith(".md"):
             continue
         src = os.path.join(legacy, f)
@@ -390,7 +390,7 @@ def _fold_session_nodes_to_global() -> int:
     """Rewrite every node under a phantom ``session-<id>`` scope into GLOBAL
     (fresh id, old file dropped); return how many moved."""
     moved = 0
-    for d in list(load_all()):
+    for d in load_all():
         if not _SESSION_SCOPE_RE.match(str(_scope_label_from_path(d.get("path", "")))):
             continue
         meta = dict(d.get("meta") or {})
@@ -411,7 +411,7 @@ def _remove_empty_session_dirs() -> int:
     if not os.path.isdir(pdir):
         return 0
     dirs = 0
-    for n in list(os.listdir(pdir)):
+    for n in os.listdir(pdir):
         if not _SESSION_SCOPE_RE.match(n):
             continue
         sub = os.path.join(pdir, n)
