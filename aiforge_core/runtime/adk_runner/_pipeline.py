@@ -638,9 +638,14 @@ async def _drive_pipeline(runner, session_svc, session_id: str,
         name = type(exc).__name__
         is_limit = "LlmCallsLimit" in name or "max_llm_calls" in str(exc)
         is_deadline = isinstance(exc, TimeoutError)
+        if is_limit:
+            _why = " [llm-cap]"
+        elif is_deadline:
+            _why = " [deadline]"
+        else:
+            _why = ""
         log.warning("pipeline run aborted (%s)%s — returning partial state",
-                    name, " [llm-cap]" if is_limit
-                    else (" [deadline]" if is_deadline else ""))
+                    name, _why)
         state = await _session_state(session_svc, session_id)
         state["feedback_verdict"] = "fail"
         state["_pipeline_abort"] = "deadline" if is_deadline else name

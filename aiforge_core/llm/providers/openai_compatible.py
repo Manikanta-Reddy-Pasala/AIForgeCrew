@@ -125,8 +125,12 @@ def _probe_tls_plan(url: str, insecure: bool) -> "tuple[bool, str]":
     is_https = url.lower().startswith("https://")
     auto = (not insecure) and _ssl_auto_relax(url)
     skip_tls = is_https and (insecure or auto)
-    tls_mode = (("skip-verify(auto-internal)" if auto else "skip-verify(CERT_NONE)")
-                if skip_tls else "verify" if is_https else "plain-http")
+    if skip_tls:
+        tls_mode = "skip-verify(auto-internal)" if auto else "skip-verify(CERT_NONE)"
+    elif is_https:
+        tls_mode = "verify"
+    else:
+        tls_mode = "plain-http"
     return skip_tls, tls_mode
 
 

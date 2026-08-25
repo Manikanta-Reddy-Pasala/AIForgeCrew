@@ -80,9 +80,11 @@ def _impl_path_for_test(test_path: str, name: str, ext: str,
     tests/ dir)."""
     d = os.path.dirname(test_path)
     if ext.lower() == ".java":
-        return (test_path.replace("/test/", "/main/").rsplit("/", 1)[0]
-                + f"/{name}{ext}") if "/test/" in test_path \
-            else (impl_dirs[0] + f"/{name}{ext}" if impl_dirs else f"{name}{ext}")
+        if "/test/" in test_path:
+            return test_path.replace("/test/", "/main/").rsplit("/", 1)[0] + f"/{name}{ext}"
+        if impl_dirs:
+            return impl_dirs[0] + f"/{name}{ext}"
+        return f"{name}{ext}"
     if impl_dirs:
         return f"{impl_dirs[0]}/{name}{ext}".lstrip("/")
     # strip a trailing tests/ segment

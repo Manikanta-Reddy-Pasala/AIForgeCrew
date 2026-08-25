@@ -1554,8 +1554,12 @@ def _usage_step_text(calls: dict) -> str:
     one 6000-token essay are both "41 requests")."""
     failed = int(calls.get("turn_failed") or 0)
     out_tok = int(calls.get("turn_tokens_out") or 0)
-    tok_txt = (f", {out_tok / 1000:.1f}k tokens written" if out_tok >= 1000
-               else f", {out_tok} tokens written" if out_tok else "")
+    if out_tok >= 1000:
+        tok_txt = f", {out_tok / 1000:.1f}k tokens written"
+    elif out_tok:
+        tok_txt = f", {out_tok} tokens written"
+    else:
+        tok_txt = ""
     noun = "request" if calls["turn"] == 1 else "requests"
     return (f"⚡ {calls['turn']} LLM {noun} for this message "
             f"({calls['session']} in this chat"

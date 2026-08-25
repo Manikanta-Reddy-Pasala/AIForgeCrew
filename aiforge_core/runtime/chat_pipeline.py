@@ -97,8 +97,12 @@ def _part_events(author: str, part) -> list[dict]:
     fr = getattr(part, "function_response", None)
     if fr is not None:
         resp = getattr(fr, "response", None)
-        summary = resp if isinstance(resp, str) else (
-            str(resp)[:200] if resp is not None else "")
+        if isinstance(resp, str):
+            summary = resp
+        elif resp is not None:
+            summary = str(resp)[:200]
+        else:
+            summary = ""
         out.append({"type": "thought", "role": author,
                     "text": f"{getattr(fr, 'name', '?')} → {summary}"})
     return out

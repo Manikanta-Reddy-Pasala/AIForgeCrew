@@ -298,8 +298,11 @@ def _detect_node(repo: Path) -> tuple[list[str], str, str]:
             stack.append(label.capitalize())
     scripts = obj.get("scripts") or {}
     entry = scripts.get("dev") or scripts.get("start") or ""
-    entry_cmd = f"npm install && npm run {('dev' if 'dev' in scripts else 'start')}" \
-        if entry else "npm install && npm start"
+    if entry:
+        _script = "dev" if "dev" in scripts else "start"
+        entry_cmd = f"npm install && npm run {_script}"
+    else:
+        entry_cmd = "npm install && npm start"
     return stack, entry_cmd, "npm install"
 
 
