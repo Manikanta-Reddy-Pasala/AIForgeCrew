@@ -1149,6 +1149,29 @@ def _doc_task_route(prompt, cwd, session_id, _with_resume, pctx):
 # edits — left as-is by design, no notice (avoids per-run noise).
 
 
+def _should_skip_enhance(auto_downgraded, route_pipeline, is_build_task,
+                         history, prompt) -> bool:
+    """Whether the Enhancer can be skipped this turn. Mandatory on the first turn
+    (fresh context, referents to resolve). Skippable ONLY for a SIMPLE follow-up
+    — there the history-fold carries the context and a second LLM round-trip +
+    memory recall is wasted latency. A COMPLEX follow-up, a build task, or a
+    classify FAILURE keeps it mandatory; never silently under-enhance."""
+    skip = auto_downgraded and not route_pipeline
+    if skip or route_pipeline:
+        return skip
+    try:
+        from aiforge_core.runtime import turn_router as _tr2
+        if _tr2.is_followup(history) and not is_build_task:
+            try:
+                cls = _tr2.classify(prompt, history=history)
+            except Exception:  # noqa: BLE001 — classify blew up → enhance
+                cls = "complex"
+            return cls == "simple"
+    except Exception as exc:  # noqa: BLE001 — never block a turn
+        _af_log.debug("enhancer skip-check failed: %s", exc)
+    return skip
+
+
 def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
                        history):
     """Gather the (side-effecting) inputs to the task-type router and return its
@@ -1884,20 +1907,15 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             if pctx2["done"]:
                 return
         if team and not _doc_task:
-            # Sequential team pipeline already has its own ADK enhancer agent;
-            # don't double-enhance here. Mark the driver launched ONLY here —
-            # so a crash in the parallel pre-steps above (which never reach this
-            # line) still persists + cleans up inline in _gen's finally.
-            # A DOC/ANALYSIS task falls through to the single research agent
-            # below (not this code pipeline), even in team mode.
+            # Sequential team pipeline has its own ADK enhancer; don't double-
+            # enhance. Mark the driver launched ONLY here so a crash in the
+            # parallel pre-steps above still persists + cleans up inline in the
+            # producer's finally. A DOC/ANALYSIS task falls through to the single
+            # research agent below even in team mode. The resume brief goes in as
+            # its own argument so raw_prompt stays the user's actual request.
             _path["driver"] = True
-            # The brief goes in as its OWN argument, not folded into the
-            # prompt: the pipeline keeps `raw_prompt` as the user's actual
-            # request for persistence, memory and recall, and appends the brief
-            # only to what the planner reads.
             yield from stream_chat_pipeline(prompt, cwd=cwd,
-                                            session_id=session_id,
-                                            history=history,
+                                            session_id=session_id, history=history,
                                             started_at=_turn_t0,
                                             resume_brief=_resume_brief)
             return
@@ -1911,27 +1929,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # enhancer when this follow-up is small. Any classify failure (or the
         # first turn, or a build-escalate spec already in flight) keeps the
         # enhancer mandatory — safe default, never silently under-enhance.
-        _skip_enhance = _auto_downgraded and not _route_pipeline
-        if not _skip_enhance and not _route_pipeline:
-            try:
-                from aiforge_core.runtime import turn_router as _tr2
-                # Skip the enhancer ONLY for a SIMPLE follow-up ("fix that",
-                # "add a test") — there the history-fold below carries the
-                # context and a second LLM round-trip + memory recall is wasted
-                # latency. A COMPLEX follow-up ("no, use postgres instead") or a
-                # classify FAILURE keeps the enhancer MANDATORY — it resolves the
-                # referent against the prior turns instead of running on the raw
-                # prompt (skipping it there under-serves the request). A genuine
-                # multi-file build follow-up also enhances.
-                if _tr2.is_followup(history) and not _is_build_task:
-                    try:
-                        _cls = _tr2.classify(prompt, history=history)
-                    except Exception:  # noqa: BLE001 — classify blew up → enhance
-                        _cls = "complex"
-                    if _cls == "simple":
-                        _skip_enhance = True
-            except Exception as _sexc:  # noqa: BLE001 — never block a turn
-                _af_log.debug("enhancer skip-check failed: %s", _sexc)
+        _skip_enhance = _should_skip_enhance(_auto_downgraded, _route_pipeline,
+                                             _is_build_task, history, prompt)
         if _auto_downgraded:
             yield {"type": "thought", "role": "router",
                    "text": "Small follow-up — handling directly (skipped the "
