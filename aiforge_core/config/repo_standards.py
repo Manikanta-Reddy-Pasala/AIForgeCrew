@@ -5,29 +5,15 @@ repo?" — used by every Doer tool that builds, tests, lints, formats,
 or refactors. Replaces the patchwork of hardcoded ``mvn`` lines in
 ``ga_tools/{lint,tests,java_refactor}.py``.
 
-Storage layout (KISS, DB-backed for durability + cross-machine
-sync, with per-worktree YAML fallback):
+Storage layout (KISS): per-language defaults, overlaid by a
+per-worktree YAML file:
 
-1. **Neo4j ``:Repo``** node carries the canonical fields::
+**``.aiforge/aiforge.conf.yml``** in the worktree provides a
+per-tree override for ad-hoc experiments. Worktree YAML wins on
+conflict — operators iterate locally without touching the defaults.
 
-       (:Repo {
-         name UNIQUE,
-         lang, stack[], dockerfile, ports[], entry_cmd,
-         build_cmd,    compile_cmd,    test_cmd,
-         lint_cmd,     format_cmd,     security_scan_cmd,
-         conventions[], forbidden_patterns[], env_vars[],
-         acceptance_criteria[],
-         updated_at
-       })
-
-2. **``.aiforge/aiforge.conf.yml``** in the worktree provides a
-   per-tree override for ad-hoc experiments. Worktree YAML wins on
-   conflict — operators iterate locally without touching the
-   shared catalogue.
-
-Public surface (KISS, four functions):
+Public surface (KISS):
 - ``get(repo_name, *, worktree=None) -> Standards``
-- ``upsert(repo_name, **fields) -> Standards``
 - ``render(std) -> str``
 - ``apply_to_env(std)`` — lift ``lint_cmd`` / ``test_cmd`` / etc.
   into env so legacy ga_tools that read AIFORGE_LINT_CMD pick them
@@ -70,7 +56,7 @@ class Standards:
     env_vars: list[str] = field(default_factory=list)
     acceptance_criteria: list[str] = field(default_factory=list)
     # Provenance.
-    source: str = "default"  # 'neo4j' | 'worktree' | 'merged' | 'default'
+    source: str = "default"  # 'worktree' | 'auto-detect' | 'default'
 
 
 # Sensible per-language defaults so brand-new repos still work
@@ -463,16 +449,14 @@ def get(repo_name: str, *, worktree: str | None = None) -> Standards:
 
     Resolution order (highest priority last):
       1. Per-language defaults (always present)
-      2. Neo4j ``:Repo`` row (if catalog indexed)
-      3. ``<worktree>/.aiforge/aiforge.conf.yml`` (operator override)
+      2. ``<worktree>/.aiforge/aiforge.conf.yml`` (operator override)
     """
     std = Standards(name=repo_name)
-    _apply(std, _from_neo4j(repo_name))
     if worktree:
         _apply(std, _from_worktree(worktree))
-    # Last-resort lang fallback: only fire when neither Neo4j nor the
-    # worktree YAML supplied an explicit ``lang``. Don't override an
-    # operator-set lang — that's the whole point of the override layer.
+    # Last-resort lang fallback: only fire when the worktree YAML did not
+    # supply an explicit ``lang``. Don't override an operator-set lang —
+    # that's the whole point of the override layer.
     if not (std.lang or "").strip() and worktree:
         guessed = detect_lang(worktree)
         if guessed:
@@ -483,28 +467,6 @@ def get(repo_name: str, *, worktree: str | None = None) -> Standards:
     if not std.source:
         std.source = "default"
     return std
-
-
-def upsert(repo_name: str, **fields_to_update: Any) -> Standards:
-    """Persist ``fields_to_update`` onto the ``:Repo`` node.
-
-    Returns the freshly-loaded manifest. Best-effort: silently
-    no-ops when Neo4j is unreachable.
-    """
-    if not repo_name.strip():
-        raise ValueError("repo_name required")
-    valid = {f.name for f in fields(Standards)} - {"source"}
-    payload = {
-        k: v for k, v in fields_to_update.items()
-        if k in valid and v not in (None, "", [])
-    }
-    if not payload:
-        return get(repo_name)
-    try:
-        _persist_to_neo4j(repo_name, payload)
-    except Exception as exc:
-        print(f"[repo_standards] persist failed: {exc}")
-    return get(repo_name)
 
 
 def render(std: Standards) -> str:
@@ -581,35 +543,13 @@ def _apply_defaults(std: Standards, worktree: str | None = None) -> None:
         return
     # Static defaults, then overlay the host-resolved toolchain (python3 vs
     # python, ./mvnw vs mvn, yarn vs npm) so the injected commands match the
-    # machine and the Doer never re-discovers them. Operator/Neo4j/worktree
+    # machine and the Doer never re-discovers them. Operator/worktree
     # values set earlier still win — we only fill EMPTY fields.
     merged = dict(_DEFAULTS_BY_LANG[lang_key])
     merged.update(resolve_toolchain(lang_key, worktree))
     for k, v in merged.items():
         if not getattr(std, k):
             setattr(std, k, v)
-
-
-def _from_neo4j(repo_name: str) -> dict | None:
-    try:
-        from aiforge_core.memory.rag.neo4j_memory import _get_driver
-    except ImportError:
-        return None
-    cy = (
-        "MATCH (r:Repo {name: $name}) "
-        "RETURN r{.*} AS row LIMIT 1"
-    )
-    try:
-        with _get_driver().session() as sess:
-            rec = sess.run(cy, name=repo_name).single()
-    except Exception as exc:
-        print(f"[repo_standards] neo4j read failed: {exc}")
-        return None
-    if not rec:
-        return None
-    row = dict(rec["row"] or {})
-    row["source"] = "neo4j"
-    return _coerce(row)
 
 
 def _from_worktree(worktree: str) -> dict | None:
@@ -649,14 +589,3 @@ def _coerce(row: dict) -> dict:
                 v = []
         out[k] = v
     return out
-
-
-def _persist_to_neo4j(repo_name: str, payload: dict) -> None:
-    from aiforge_core.memory.rag.neo4j_memory import _get_driver
-    cy = (
-        "MERGE (r:Repo {name: $name}) "
-        "SET r += $payload, r.updated_at = datetime() "
-        "RETURN r.name AS name"
-    )
-    with _get_driver().session() as sess:
-        sess.run(cy, name=repo_name, payload=payload).consume()

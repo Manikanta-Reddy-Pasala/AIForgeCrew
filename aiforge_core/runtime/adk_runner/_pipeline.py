@@ -669,30 +669,17 @@ def _destroy_run_resources(session_id: str) -> None:
 
 
 def _dump_trajectory(session, ticket, initial_state: dict) -> None:
-    """Sub #15: dump the session trajectory for replay-style debugging, and
-    (gap-11) index a one-line-per-event summary into AFM as a queryable
-    ``Note_v2`` so future tickets can rerank "have we run something like this
-    before?" without re-reading raw JSON."""
+    """Sub #15: dump the session trajectory to disk for replay-style
+    debugging."""
     if os.environ.get("AIFORGE_TRAJECTORY_DUMP", "1") not in ("1", "true"):
         return
     try:
-        from aiforge_core.runtime.trajectory import (
-            dump_trajectory,
-            index_trajectory_to_memory,
-        )
+        from aiforge_core.runtime.trajectory import dump_trajectory
         ticket_id = (initial_state.get("ticket_identifier")
                      if initial_state else None) or "unknown"
-        dump_out = dump_trajectory(
+        dump_trajectory(
             ticket_id, session.id, list(getattr(session, "events", []) or []),
             dict(session.state or {}))
-        if not (dump_out.get("ok") and ticket is not None and ticket.project):
-            return
-        idx = index_trajectory_to_memory(trajectory_path=dump_out["path"],
-                                         repo=ticket.project,
-                                         ticket_identifier=ticket_id)
-        if not idx.get("ok"):
-            log.debug("trajectory.index_skipped: %s",
-                      idx.get("error", "unknown"))
     except Exception as exc:  # noqa: BLE001 — best-effort
         log.debug("trajectory.dump_failed: %s", exc)
 

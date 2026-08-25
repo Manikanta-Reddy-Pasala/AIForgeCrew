@@ -5,18 +5,16 @@ the Learner to summarize at the end. Useful for "remember this
 specific gotcha I just hit so the next ticket against the same repo
 skips it" — a Letta-class ``core_memory_replace`` analogue.
 
-Persisted via the same AFM ``upsert_observation`` path the Learner
-uses, so dedupe + event_time + media_refs all work the same. Repo is
-inferred from ``AIFORGE_REPO_ROOT`` (which adk_runner now pins per
-ticket via ``ensure_branch_and_worktree``), so the fact lands on the
-right project automatically.
+Persisted via the same SQLite memory store the Learner uses, so dedupe
++ media_refs work the same. Repo is inferred from ``AIFORGE_REPO_ROOT``
+(which adk_runner now pins per ticket via ``ensure_branch_and_worktree``),
+so the fact lands on the right project automatically.
 
 Safety: writes are soft-fail. Any error logs + returns
 ``{"ok": False, "error": ...}`` — never raises into the agent loop.
 """
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
 from typing import Any
@@ -144,8 +142,7 @@ def _feed_brief(kind: str, text: str, repo: str | None, tags: list,
 
 def _write_sqlite(text: str, kind: str, decision: bool, source: str,
                   tags: list, media_refs, repo) -> dict[str, Any]:
-    """Embedded (zero-infra) path — persist to the SQLite memory store instead
-    of Neo4j/AFM."""
+    """Embedded (zero-infra) path — persist to the SQLite memory store."""
     try:
         from aiforge_core.memory import sqlite_memory as _sqlmem
         rid = _sqlmem.write_unit(
@@ -158,86 +155,6 @@ def _write_sqlite(text: str, kind: str, decision: bool, source: str,
     return {"ok": True, "id": rid,
             "label": "Decision_v2" if decision else "Observation_v2",
             "deduped": rid == 0}
-
-
-def _upsert_fns():
-    """``(upsert_decision, upsert_observation)`` or None — the module moved in
-    a AiForgeMemory refactor, so both locations are supported."""
-    try:
-        from aiforge_memory.features.memory.store import (
-            upsert_decision, upsert_observation,
-        )
-    except ImportError:
-        try:
-            from aiforge_memory.memory.store import (  # type: ignore
-                upsert_decision, upsert_observation,
-            )
-        except ImportError:
-            return None
-    return upsert_decision, upsert_observation
-
-
-def _neo4j_driver_or_error():
-    """``(driver, error)`` — the driver, or the reason it is unavailable."""
-    try:
-        from neo4j import GraphDatabase
-    except ImportError:
-        return None, "neo4j_driver_missing"
-    uri = os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687")
-    user = os.environ.get("AIFORGE_NEO4J_USER", "neo4j")
-    pw = os.environ.get("AIFORGE_NEO4J_PASSWORD",
-                        os.environ.get("NEO4J_PASSWORD", "password"))
-    try:
-        return GraphDatabase.driver(uri, auth=(user, pw)), None
-    except Exception as exc:  # noqa: BLE001
-        return None, f"neo4j_connect: {exc}"
-
-
-def _embedded_vector(text: str, embed_vec):
-    """F5: embed so ingested chunks are vector-recallable (mirrors
-    failure_memory / learner_persist). Soft-fail: sidecar down → write without a
-    vector rather than crash the agent loop. A caller (batch ingest) may pass a
-    PRECOMPUTED vector to skip the per-write round-trip — a single-doc embed is
-    ~2s on CPU, so batching the whole file at the ingest layer is ~orders faster
-    for a big repo."""
-    if embed_vec is not None:
-        return embed_vec
-    try:
-        from aiforge_core.memory.embed import embed as _embed
-        return _embed(text)
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _write_neo4j(text: str, kind: str, decision: bool, source: str, tags: list,
-                 media_refs, repo, embed_vec) -> dict[str, Any]:
-    fns = _upsert_fns()
-    if fns is None:
-        return {"ok": False, "error": "aiforge_memory_not_installed"}
-    upsert_decision, upsert_observation = fns
-    drv, err = _neo4j_driver_or_error()
-    if drv is None:
-        return {"ok": False, "error": err}
-    try:
-        if decision:
-            out = upsert_decision(drv, repo=repo, title=text[:120] or "decision",
-                                  body=text, rationale="doer-self-write",
-                                  author=source, tags=tags)
-            label, deduped = "Decision_v2", False
-        else:
-            out = upsert_observation(
-                drv, repo=repo, text=text, kind=kind, author=source, tags=tags,
-                media_refs=media_refs or [],
-                embed_vec=_embedded_vector(text, embed_vec))
-            label, deduped = "Observation_v2", bool(out.get("deduped"))
-    except Exception as exc:  # noqa: BLE001
-        log.warning("memory_write failed: %s", exc)
-        return {"ok": False, "error": f"upsert_failed: {exc}"}
-    finally:
-        with contextlib.suppress(Exception):
-            drv.close()
-    _feed_brief(kind, text, repo, tags, source)
-    return {"ok": True, "id": out.get("id"), "label": label, "deduped": deduped}
 
 
 def _memory_write_impl(
@@ -264,9 +181,9 @@ def _memory_write_impl(
         decision: when True, write as a ``Decision_v2`` instead of
             ``Observation_v2``. Use for "we decided to do X over Y";
             otherwise leave False.
-        source: writer label recorded on the unit (SQLite ``source`` /
-            Neo4j ``author``). Defaults to ``"doer"``; ingest passes
-            ``"ingest"`` so chunks aren't mislabeled as Doer self-writes.
+        source: writer label recorded on the unit (SQLite ``source``).
+            Defaults to ``"doer"``; ingest passes ``"ingest"`` so chunks
+            aren't mislabeled as Doer self-writes.
 
     Returns:
         ``{"ok": True, "id": str, "label": "Observation_v2" |
@@ -280,12 +197,7 @@ def _memory_write_impl(
     if err:
         return {"ok": False, "error": err}
     tags = _write_tags(tags, source)
-
-    from aiforge_core.memory import backend_select as _bsel
-    if _bsel.embedded():
-        return _write_sqlite(text, kind, decision, source, tags, media_refs, repo)
-    return _write_neo4j(text, kind, decision, source, tags, media_refs, repo,
-                        embed_vec)
+    return _write_sqlite(text, kind, decision, source, tags, media_refs, repo)
 
 
 __all__ = ["memory_write"]

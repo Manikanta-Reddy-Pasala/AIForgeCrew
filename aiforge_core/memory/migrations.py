@@ -6,13 +6,11 @@ Chain (order matters):
   1. md_store.migrate_to_okr     — legacy flat brief format → OKR envelope
   2. okf.migrate_from_briefs     — compacted-<topic>.md briefs → OKR learnings
   3. okf.store.migrate_scoped    — flat okf/<type>/ → global/ + projects/<repo>/
-  4. neo4j_drain                 — old Neo4j Observation/Decision nodes → md
-                                   captures (which then roll up into 2+3)
-  5. peers_out_of_okf            — okf/peers/<origin>/ → peers/<origin>/ (the
+  4. peers_out_of_okf            — okf/peers/<origin>/ → peers/<origin>/ (the
                                    two-tier compaction layout)
 
-Steps 1 and 3 are cheap + safe to run every boot (they no-op once done). Steps 2
-and 4 are ONE-SHOT — guarded by a marker file so a re-run can't undo later
+Steps 1 and 3 are cheap + safe to run every boot (they no-op once done). Step 2
+is ONE-SHOT — guarded by a marker file so a re-run can't undo later
 curation (e.g. re-seeding briefs a user already reclassified). The marker lives
 at ``<memory>/okr/.migrations.json``. All steps soft-fail; a migration never
 blocks startup.
@@ -277,85 +275,6 @@ def _save_marker(done: dict) -> None:
         _atomic.write_text(_marker_path(), json.dumps(done))
 
 
-_NEO4J_FACT_QUERY = (
-    # ONLY durable MEMORY FACTS — NOT ingested repo content. Observation_v2 with
-    # kind IN (code, doc) is the RAG search index (thousands of source-file
-    # chunks); draining those would flood learnings with repo code. That index
-    # is regenerable (reindex), so skip it.
-    "MATCH (n) WHERE (n:Observation_v2 OR n:Decision_v2) "
-    "AND coalesce(n.kind, '') NOT IN ['code', 'doc', 'chunk'] "
-    "RETURN labels(n) AS labels, n.text AS text, n.repo AS repo, "
-    "n.tags AS tags, n.topic AS topic LIMIT $lim")
-
-
-def _neo4j_should_drain() -> bool:
-    """Drain ONLY when the Neo4j backend is actually selected, or
-    AIFORGE_MIGRATE_NEO4J=1 is set — so a normal embedded deploy never probes
-    7687 (that was the connection-refused log spam)."""
-    from aiforge_core.memory import backend_select
-    forced = os.environ.get("AIFORGE_MIGRATE_NEO4J", "").strip() in (
-        "1", "true", "yes")
-    return backend_select.memory_backend() == "neo4j" or forced
-
-
-def _topic_of(row) -> "str | None":
-    """The row's topic — explicit ``n.topic`` or the first ``topic:`` tag."""
-    tags = row.get("tags") or []
-    return row.get("topic") or next(
-        (t.split("topic:", 1)[1] for t in tags
-         if isinstance(t, str) and t.startswith("topic:")), None)
-
-
-def _capture_neo4j_row(row, md_store) -> bool:
-    """Re-capture one drained fact via md_store. True when it was captured."""
-    text = (row.get("text") or "").strip()
-    if not text:
-        return False
-    is_dec = "Decision_v2" in (row.get("labels") or [])
-    try:
-        md_store.capture(
-            "project_learning" if is_dec else "learning",
-            ("DECISION: " + text) if is_dec else text,
-            repo=row.get("repo") or "notes", topic=_topic_of(row),
-            source="migrate:neo4j")
-        return True
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _neo4j_drain(limit: int = 5000) -> dict:
-    """Best-effort ONE-SHOT export of old Neo4j memory into md captures, so a
-    user who ran the Neo4j backend keeps their knowledge after switching to the
-    embedded/OKR default. Reads Observation_v2 / Decision_v2 (text + repo +
-    tags/topic) and re-captures each via md_store — which then rolls up into the
-    briefs + OKR via the other steps. Soft-fail."""
-    if not _neo4j_should_drain():
-        return {"ok": True, "skipped": "neo4j not in use"}
-    try:
-        from neo4j import GraphDatabase
-
-        from aiforge_core.memory import md_store
-        from aiforge_core.memory.neo4j_conn import neo4j_params
-        uri, user, pw = neo4j_params()
-        drv = GraphDatabase.driver(uri, auth=(user, pw))
-    except Exception as exc:  # noqa: BLE001 — no driver / unreachable
-        return {"ok": False, "error": f"connect: {exc}"}
-
-    moved = 0
-    try:
-        with drv.session() as sess:
-            for row in sess.run(_NEO4J_FACT_QUERY, lim=limit):
-                moved += _capture_neo4j_row(row, md_store)
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": f"read: {exc}", "moved": moved}
-    finally:
-        try:
-            drv.close()
-        except Exception:  # noqa: BLE001
-            pass
-    return {"ok": True, "moved": moved}
-
-
 # A real learning is a sentence; a drained chunk is source code. These match the
 # telltale code tokens; several hits (or one in a short body) flags a chunk.
 _CODE_TOKEN_RE = re.compile(
@@ -542,13 +461,6 @@ def _one_shot_steps(out: dict, done: set) -> None:
         out["peers_out_of_okf"] = r
         if r.get("ok"):
             done.add("peers_out_of_okf")
-    if "neo4j_drain" not in done:
-        r = _neo4j_drain()
-        out["neo4j_drain"] = r
-        # Mark done when it actually ran, and also when there was nothing to
-        # drain (neo4j unused) — otherwise it retries forever.
-        if r.get("skipped") or r.get("ok"):
-            done.add("neo4j_drain")
 
 
 def _dag_steps(out: dict, done: set) -> None:

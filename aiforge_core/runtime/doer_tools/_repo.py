@@ -48,19 +48,8 @@ def repo_map(focus: str = "", token_budget: int = 1024) -> dict:
     if not digest:
         return {"ok": False, "error": "empty map (repo too small or "
                 "aider/tree-sitter unavailable)", "digest": ""}
-    # Enrich with Graphify INFERRED call/use edges that tree-sitter alone
-    # misses — the file paths the aider digest surfaced are the seed.
-    # Soft: empty string when Neo4j/Graphify is unavailable.
-    try:
-        from aiforge_core.memory.code_context import graph_neighbours
-        files = _digest_file_paths(digest)
-        neighbours = graph_neighbours(files) if files else ""
-    except Exception:  # noqa: BLE001
-        neighbours = ""
-    if neighbours:
-        digest = f"{digest}\n\n{neighbours}"
     return {"ok": True, "focus": focus, "digest": digest,
-            "engine": "aider-treesitter-pagerank+graphify"}
+            "engine": "aider-treesitter-pagerank"}
 
 
 def _digest_file_paths(digest: str) -> list[str]:

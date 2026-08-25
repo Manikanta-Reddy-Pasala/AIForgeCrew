@@ -4,8 +4,6 @@ Subcommands (all idempotent, all best-effort, all log+exit-0 on
 soft errors so a failed timer firing doesn't cascade):
 
     aiforge-maint memory decay       → memory.decay.run()
-    aiforge-maint memory mine        → memory.pattern_miner.run()
-    aiforge-maint index symbols [--repo NAME]  → index.symbol_embed.backfill()
     aiforge-maint index merkle <path>          → index.merkle.build()
     aiforge-maint docs ingest <library> <url>  → index.docs_index.ingest()
     aiforge-maint cost snapshot                → runtime.cost.snapshot() print
@@ -57,26 +55,12 @@ def _cmd_memory_decay(args) -> int:
     return 0
 
 
-def _cmd_memory_mine(args) -> int:
-    from aiforge_core.memory import pattern_miner
-    out = pattern_miner.run()
-    print(json.dumps({"cmd": "memory.mine", **out}))
-    return 0
-
-
 def _cmd_memory_reembed(args) -> int:
     """Backfill vectors for notes written while the embedder was unavailable
     (stored with the ``[]`` sentinel) and re-embed after a model/backend switch."""
     from aiforge_core.memory import sqlite_memory
     out = sqlite_memory.reembed_all()
     print(json.dumps({"cmd": "memory.reembed", **out}))
-    return 0
-
-
-def _cmd_index_symbols(args) -> int:
-    from aiforge_core.indexing import symbol_embed
-    out = symbol_embed.backfill(repo=args.repo, batch=args.batch)
-    print(json.dumps({"cmd": "index.symbols", "repo": args.repo, **out}))
     return 0
 
 
@@ -97,34 +81,6 @@ def _cmd_docs_ingest(args) -> int:
     return 0
 
 
-def _cmd_index_purge_noise(args) -> int:
-    """Drop pre-existing :Symbol/:Chunk/:File/:Memory nodes whose
-    file_path matches the shared noise filter (target/, build/,
-    node_modules/, .pyc/.class/.jar/...). One-shot cleanup; the
-    indexers already skip these going forward."""
-    from aiforge_core.indexing.noise import EXCLUDE_DIR_TOKENS, PURGE_CYPHER
-    try:
-        from aiforge_core.memory.rag.neo4j_memory import _get_driver
-    except Exception as exc:
-        print(json.dumps({"error": f"neo4j driver: {exc}"})); return 0
-    tokens = list(EXCLUDE_DIR_TOKENS)
-    if args.dry_run:
-        print(json.dumps({
-            "dry_run": True, "tokens": tokens,
-            "cypher": PURGE_CYPHER.strip(),
-        }))
-        return 0
-    out: list[dict] = []
-    with _get_driver().session() as s:
-        for r in s.run(PURGE_CYPHER, tokens=tokens):
-            out.append({"token": r["tok"], "purged": int(r["purged"])})
-    print(json.dumps({
-        "purged_total": sum(r["purged"] for r in out),
-        "by_token": out,
-    }))
-    return 0
-
-
 def _cmd_memory_migrate_okr(args) -> int:
     from aiforge_core.memory import md_store
     print(json.dumps(md_store.migrate_to_okr()))
@@ -139,20 +95,6 @@ def _cmd_repo_notes(args) -> int:
         print(json.dumps({"repo": args.repo, "error": str(exc)[:300]}))
         return 0
     print(json.dumps({"repo": args.repo, "wrote": path}))
-    return 0
-
-
-def _cmd_repo_learn(args) -> int:
-    from aiforge_core.indexing.repo_learn import learn_repo
-    kinds = [k.strip() for k in (args.kinds or "").split(",") if k.strip()]
-    try:
-        result = learn_repo(
-            args.repo, kinds=kinds or None,
-            limit=args.limit, sleep_s=args.sleep_s,
-        )
-    except Exception as exc:
-        result = {"repo": args.repo, "error": str(exc)[:400]}
-    print(json.dumps(result))
     return 0
 
 
@@ -174,7 +116,6 @@ def main(argv: list[str] | None = None) -> int:
     mem = sub.add_parser("memory")
     mem_sub = mem.add_subparsers(dest="action", required=True)
     mem_sub.add_parser("decay").set_defaults(func=_cmd_memory_decay)
-    mem_sub.add_parser("mine").set_defaults(func=_cmd_memory_mine)
     mem_sub.add_parser("reembed",
                        help="backfill vectors for notes stored without an "
                             "embedding (model was unavailable at write time)"
@@ -186,19 +127,9 @@ def main(argv: list[str] | None = None) -> int:
 
     idx = sub.add_parser("index")
     idx_sub = idx.add_subparsers(dest="action", required=True)
-    sym = idx_sub.add_parser("symbols")
-    sym.add_argument("--repo", default=None)
-    sym.add_argument("--batch", type=int, default=200)
-    sym.set_defaults(func=_cmd_index_symbols)
     mk = idx_sub.add_parser("merkle")
     mk.add_argument("path")
     mk.set_defaults(func=_cmd_index_merkle)
-    pn = idx_sub.add_parser("purge-noise",
-                            help="drop pre-indexed noise from Neo4j "
-                                 "(target/, build/, .pyc, etc.)")
-    pn.add_argument("--dry-run", action="store_true",
-                    help="print tokens + Cypher, do not delete")
-    pn.set_defaults(func=_cmd_index_purge_noise)
 
     rn = sub.add_parser("repo")
     rn_sub = rn.add_subparsers(dest="action", required=True)
@@ -208,19 +139,6 @@ def main(argv: list[str] | None = None) -> int:
                                 "kafka/nats, collections, build cmds)")
     nt.add_argument("repo")
     nt.set_defaults(func=_cmd_repo_notes)
-
-    lr = rn_sub.add_parser("learn",
-                           help="LLM-summarise every controller/service/"
-                                "repository file in the repo and persist "
-                                "to T2 memory (idempotent via sha1)")
-    lr.add_argument("repo")
-    lr.add_argument("--kinds", default="controller,service,service_impl,repository",
-                    help="comma-separated subset of kinds to process")
-    lr.add_argument("--limit", type=int, default=None,
-                    help="max files per run (chunk via cron)")
-    lr.add_argument("--sleep", type=float, default=0.0, dest="sleep_s",
-                    help="seconds between LLM calls (rate limit)")
-    lr.set_defaults(func=_cmd_repo_learn)
 
     docs = sub.add_parser("docs")
     docs_sub = docs.add_subparsers(dest="action", required=True)

@@ -78,8 +78,6 @@ class TestGetAutoDetect:
     ) -> None:
         """AC: with only pyproject.toml and no Neo4j/YAML lang, get() returns
         the python defaults — including the stricter compileall command."""
-        # Stub the Neo4j read so we don't depend on a running DB.
-        monkeypatch.setattr(rs, "_from_neo4j", lambda name: None)
         # Pin the host toolchain probe so the assertion is deterministic on any
         # box — get() overlays the resolved python exe (python3 vs python), so
         # a host with only python3 correctly yields "python3 -m compileall".
@@ -98,7 +96,6 @@ class TestGetAutoDetect:
     def test_node_repo_default_compile_cmd(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(rs, "_from_neo4j", lambda name: None)
         (tmp_path / "package.json").write_text("{}", encoding="utf-8")
         std = rs.get("nodebox", worktree=str(tmp_path))
         assert std.lang == "node"
@@ -108,7 +105,6 @@ class TestGetAutoDetect:
     def test_go_repo_default_compile_cmd(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(rs, "_from_neo4j", lambda name: None)
         (tmp_path / "go.mod").write_text("module x", encoding="utf-8")
         std = rs.get("gobox", worktree=str(tmp_path))
         assert std.lang == "go"
@@ -119,7 +115,6 @@ class TestGetAutoDetect:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """AC: Java repo without YAML still gets mvn — no regression."""
-        monkeypatch.setattr(rs, "_from_neo4j", lambda name: None)
         (tmp_path / "pom.xml").write_text("<project/>", encoding="utf-8")
         std = rs.get("javabox", worktree=str(tmp_path))
         assert std.lang == "java"
@@ -129,7 +124,6 @@ class TestGetAutoDetect:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """AC: defaults safety — no markers, no fallback to mvn."""
-        monkeypatch.setattr(rs, "_from_neo4j", lambda name: None)
         std = rs.get("mystery", worktree=str(tmp_path))
         assert std.lang == ""
         assert std.compile_cmd == ""
@@ -142,7 +136,6 @@ class TestGetAutoDetect:
         Tree has both pom.xml (would auto-detect java) AND a YAML that
         says lang=python — the YAML must win.
         """
-        monkeypatch.setattr(rs, "_from_neo4j", lambda name: None)
         (tmp_path / "pom.xml").write_text("<project/>", encoding="utf-8")
         aiforge_dir = tmp_path / ".aiforge"
         aiforge_dir.mkdir()
@@ -158,7 +151,6 @@ class TestGetAutoDetect:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The ONE-84 repro: Python sandbox repo + YAML compile_cmd."""
-        monkeypatch.setattr(rs, "_from_neo4j", lambda name: None)
         (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
         aiforge_dir = tmp_path / ".aiforge"
         aiforge_dir.mkdir()

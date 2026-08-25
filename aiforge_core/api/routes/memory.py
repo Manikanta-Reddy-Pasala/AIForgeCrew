@@ -49,48 +49,10 @@ def _spawn_reindex_all() -> None:
                     "aiforge_core.runtime.memory_ingest", "--all"])
 
 
-def _neo4j_stats() -> dict:
-    """Node counts per label from the graph (one row per label, plus a
-    grand total). Soft — returns zeros on any driver error."""
-    try:
-        from neo4j import GraphDatabase
-
-        from aiforge_core.memory.neo4j_conn import neo4j_params
-        uri, user, pw = neo4j_params()
-        drv = GraphDatabase.driver(uri, auth=(user, pw))
-    except Exception as exc:  # noqa: BLE001
-        # Don't echo the raw driver error — it can embed the bolt URI / creds.
-        return {"backend": "neo4j", "total": 0, "wings": [],
-                "error": type(exc).__name__}
-    try:
-        with drv.session() as s:
-            total = s.run("MATCH (n) RETURN count(n) AS n").single()["n"]
-            rows = s.run(
-                "MATCH (n) UNWIND labels(n) AS label "
-                "RETURN label, count(*) AS n ORDER BY n DESC LIMIT 30"
-            )
-            wings = [
-                {"tier": "graph", "wing": r["label"], "n": r["n"], "embedded": r["n"]}
-                for r in rows
-            ]
-        return {"backend": "neo4j", "total": int(total), "wings": wings}
-    except Exception as exc:  # noqa: BLE001
-        # Don't echo the raw driver error — it can embed the bolt URI / creds.
-        return {"backend": "neo4j", "total": 0, "wings": [],
-                "error": type(exc).__name__}
-    finally:
-        try:
-            drv.close()
-        except Exception:
-            pass
-
-
 @router.get("/api/memory/stats")
 def memory_stats() -> dict:
     from aiforge_core.memory import backend_select as _bsel
     backend = _bsel.memory_backend()
-    if backend == "neo4j":
-        return _neo4j_stats()
     if backend == "sqlite":
         from aiforge_core.memory import sqlite_memory as _sqlmem
         s = _sqlmem.stats()
@@ -114,8 +76,8 @@ def memory_stats() -> dict:
 def _search_origin(h: dict) -> str:
     """Bucket a unified-query hit for the UI/API split.
 
-    ``vector`` — retrieved by the semantic embedding index (sqlite-vec KNN /
-    Neo4j vector). ``md`` — backed by / retrieved from a markdown memory file
+    ``vector`` — retrieved by the semantic embedding index (sqlite-vec KNN).
+    ``md`` — backed by / retrieved from a markdown memory file
     (keyword-BM25 over md text, brief rows, link expansion). ``other`` —
     everything else (afm bundle, ticket, graphify, cross-repo…)."""
     ch = str(h.get("channel") or "").strip()
@@ -174,12 +136,12 @@ def memory_search(q: str = Query(..., min_length=2),
         return {"query": q, "used_sources": res.get("used_sources", []),
                 "groups": groups, "hits": flat}
 
-    if backend in ("sqlite", "neo4j"):
+    if backend == "sqlite":
         # Full HYBRID (same as the agents' memory_lookup): semantic KNN
         # (sqlite-vec) + keyword/BM25 + spell-correction + link expansion.
         from aiforge_core.memory import unified_query as _uq
         res = _uq.query(q, role=role, limit=top_k)
-        tier = "embedded" if backend == "sqlite" else "graph"
+        tier = "embedded"
         flat = [_shape(h, tier) for h in res.get("hits", [])]
         grp = [_shape(h, tier) for h in res.get("ranked", res.get("hits", []))]
         return _grouped(flat, grp, res)

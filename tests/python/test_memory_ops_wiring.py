@@ -1,36 +1,8 @@
-"""Tests for the memory ops wiring: central Neo4j conn params + the
-post-PR fire-and-forget delta ingest."""
+"""Tests for the memory ops wiring: the post-PR fire-and-forget delta
+ingest."""
 from __future__ import annotations
 
-from aiforge_core.memory.neo4j_conn import neo4j_params
 from aiforge_core.runtime import git_pr
-
-# ── neo4j_params fallback chain ─────────────────────────────────────────
-
-def test_neo4j_params_prefers_aiforge_env(monkeypatch) -> None:
-    monkeypatch.setenv("AIFORGE_NEO4J_URI", "bolt://a:1")
-    monkeypatch.setenv("AIFORGE_NEO4J_USER", "ua")
-    monkeypatch.setenv("AIFORGE_NEO4J_PASSWORD", "pa")
-    monkeypatch.setenv("NEO4J_PASSWORD", "pb")
-    assert neo4j_params() == ("bolt://a:1", "ua", "pa")
-
-
-def test_neo4j_params_falls_back_to_plain_env(monkeypatch) -> None:
-    for k in ("AIFORGE_NEO4J_URI", "AIFORGE_NEO4J_USER",
-              "AIFORGE_NEO4J_PASSWORD"):
-        monkeypatch.delenv(k, raising=False)
-    monkeypatch.setenv("NEO4J_URI", "bolt://b:2")
-    monkeypatch.setenv("NEO4J_USER", "ub")
-    monkeypatch.setenv("NEO4J_PASSWORD", "pb")
-    assert neo4j_params() == ("bolt://b:2", "ub", "pb")
-
-
-def test_neo4j_params_defaults(monkeypatch) -> None:
-    for k in ("AIFORGE_NEO4J_URI", "AIFORGE_NEO4J_USER",
-              "AIFORGE_NEO4J_PASSWORD", "NEO4J_URI", "NEO4J_USER",
-              "NEO4J_PASSWORD"):
-        monkeypatch.delenv(k, raising=False)
-    assert neo4j_params() == ("bolt://127.0.0.1:7687", "neo4j", "password")
 
 
 # ── post-PR delta ingest ────────────────────────────────────────────────

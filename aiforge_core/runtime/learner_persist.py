@@ -2,27 +2,22 @@
 
 The Learner archetype emits ``state['facts_json']`` — a JSON array of
 ``{text, about, tags}`` dicts — only on ``feedback_verdict.verdict ==
-'pass'``. This module wires those facts into Neo4j by:
+'pass'``. This module wires those facts into the embedded SQLite memory
+store:
 
-1. Writing each fact as an ``:Observation_v2`` node via AiForgeMemory's
-   ``upsert_observation`` helper (kind=``learning``, tags + ticket id).
-2. Optionally writing a ``:Decision_v2`` node when the fact text starts
-   with ``DECISION:`` — keeps the small bar for promoting an
-   observation into a durable architectural choice.
-3. Linking each new node to the ticket's ``:Repo`` (whichever repo
-   ``ticket.project`` resolves to) via the ``RECORDS`` edge.
-
-Without this callback the Learner's output is dropped on the floor —
-the agents/learner.py docstring references a "server-side write_fact
-plugin" that never landed in this codebase. Memory stayed near-empty
-(1 observation + 1 note + 0 decisions) across 8 days of ticket runs.
+1. Writing each fact as a ``learning`` unit via ``sqlite_memory``
+   (tags + ticket id).
+2. Writing a ``decision`` unit when the fact text starts with
+   ``DECISION:`` — keeps the small bar for promoting an observation into
+   a durable architectural choice.
+3. Mirroring every fact into md memory so it rolls up into the topic /
+   project briefs.
 
 Wire as the Learner agent's ``after_agent_callback`` in
 ``runtime/pipeline.py``.
 
 Env knobs:
   AIFORGE_LEARNER_PERSIST_DISABLE=1   skip persistence (debug)
-  AIFORGE_NEO4J_URI / USER / PASSWORD legacy AFM connection vars
 """
 from __future__ import annotations
 
@@ -65,22 +60,6 @@ def _coerce_facts(raw: Any) -> list[dict]:
     return [item for item in raw if isinstance(item, dict)]
 
 
-def _open_driver():
-    """Connect to Neo4j with the same env vars AiForgeMemory uses.
-    Returns ``None`` on import / connection failure."""
-    try:
-        from neo4j import GraphDatabase
-    except ImportError:
-        return None
-    from aiforge_core.memory.neo4j_conn import neo4j_params
-    uri, user, pw = neo4j_params()
-    try:
-        return GraphDatabase.driver(uri, auth=(user, pw))
-    except Exception as exc:  # noqa: BLE001
-        log.warning("learner_persist.driver_failed: %s", exc)
-        return None
-
-
 def _write_one_fact_sqlite(fact: dict, repo: str, ticket_identifier,
                            session_id: str, event_time, sqlmem, out: dict) -> None:
     """Write one fact as a SQLite unit (decision for DECISION: prefix, else
@@ -113,8 +92,8 @@ def _persist_facts_embedded(
     session_id: str, event_time: float | None,
 ) -> dict:
     """SQLite-backed Learner persistence (zero-infra). DECISION: facts
-    become ``decision`` units, the rest ``learning`` units. Mirrors the
-    Neo4j path's result-dict shape; soft-fails per fact."""
+    become ``decision`` units, the rest ``learning`` units. Soft-fails
+    per fact."""
     from aiforge_core.memory import sqlite_memory as _sqlmem
     out = {"written_observations": 0, "written_decisions": 0, "errors": []}
     for fact in facts:
@@ -144,11 +123,11 @@ def _mirror_one_fact(f, repo: str, session_id: str, md) -> None:
 
 
 def _mirror_facts_to_md(facts: list, repo: str, session_id: str) -> None:
-    """Mirror every fact to an md memory (repo + topic stamped) REGARDLESS of
-    backend — the DB/Neo4j write alone never reaches the md compactor, so a
-    learning not written to md never rolls up into the project brief or topic
-    notes. DECISION:-prefixed facts are repo-scoped project learnings; the rest
-    are general learnings. Best-effort, never raises."""
+    """Mirror every fact to an md memory (repo + topic stamped) — the SQLite
+    write alone never reaches the md compactor, so a learning not written to md
+    never rolls up into the project brief or topic notes. DECISION:-prefixed
+    facts are repo-scoped project learnings; the rest are general learnings.
+    Best-effort, never raises."""
     try:
         from aiforge_core.memory import md_store as _md
         for f in facts:
@@ -250,131 +229,6 @@ def _update_repo_card(facts: list, repo: str, event_time: "float | None") -> Non
         pass
 
 
-def _load_afm_store(out: dict, driver):
-    """Import AFM's (recall_observations, upsert_decision, upsert_observation)
-    — the module was renamed in AiForgeMemory commit 32d86ad, so try both. On
-    failure, records the error in ``out``, closes ``driver`` and returns None."""
-    try:
-        from aiforge_memory.features.memory.store import (
-            recall_observations, upsert_decision, upsert_observation)
-        return recall_observations, upsert_decision, upsert_observation
-    except ImportError:
-        pass
-    try:
-        from aiforge_memory.memory.store import (  # type: ignore
-            recall_observations, upsert_decision, upsert_observation)
-        return recall_observations, upsert_decision, upsert_observation
-    except ImportError:
-        out["errors"].append("aiforge_memory_not_installed")
-        try:
-            driver.close()
-        except Exception:
-            pass
-        return None
-
-
-def _envf(key: str, default: float) -> float:
-    try:
-        return float(os.environ.get(key, str(default)))
-    except (ValueError, TypeError):
-        return default
-
-
-def _load_embed_fn():
-    """The embedding fn for semantic dedupe, or None (disabled via env, or the
-    bge-m3 sidecar import failed). Pure-text dedupe at AFM stays active either
-    way."""
-    if os.environ.get("AIFORGE_SEMANTIC_DEDUPE", "1") in {"0", "false", ""}:
-        return None
-    try:
-        from aiforge_core.memory.embed import embed as embed_fn  # type: ignore
-        return embed_fn
-    except Exception as exc:  # noqa: BLE001
-        log.debug("semantic dedupe disabled — embed import failed: %s", exc)
-        return None
-
-
-def _nearest_existing(driver, repo: str, text: str, embed_fn,
-                      recall_observations) -> "tuple[list, str | None, float]":
-    """(embed_vec, similar_id, similar_score) for one fact — the nearest existing
-    Observation_v2 in the same repo by cosine similarity. Empty/none when there
-    is no embed fn, the text is a DECISION, embedding fails, or recall fails."""
-    if embed_fn is None or text.startswith(_DECISION_PREFIX):
-        return None, None, 0.0
-    try:
-        embed_vec = embed_fn(text)
-    except Exception as exc:  # noqa: BLE001
-        log.debug("embed failed for fact: %s", exc)
-        return None, None, 0.0
-    if not embed_vec:
-        return None, None, 0.0
-    try:
-        hits = recall_observations(driver, repo=repo, query_vec=embed_vec, k=1)
-    except Exception as exc:  # noqa: BLE001
-        log.debug("recall_observations failed: %s", exc)
-        hits = []
-    if not hits:
-        return embed_vec, None, 0.0
-    top = hits[0]
-    return embed_vec, top.get("id"), float(top.get("score") or 0.0)
-
-
-def _write_one_fact(fact: dict, *, driver, repo: str, ticket_identifier,
-                    session_id: str, event_time, embed_fn, hard: float,
-                    soft: float, store, out: dict) -> None:
-    """Semantic-dedupe + upsert one fact into Neo4j (Observation_v2 or
-    Decision_v2), recording the outcome on ``out``.
-
-    Thresholds: sim >= ``hard`` (0.95) -> skip as a duplicate; ``hard`` > sim >=
-    ``soft`` (0.85) -> still write, but tag ``superseded-check:<id>`` and mark the
-    stale near-dup superseded (last-write-wins, so it stops co-surfacing)."""
-    recall_observations, upsert_decision, upsert_observation = store
-    text = (fact.get("text") or "").strip()
-    if not text:
-        return
-    about = fact.get("about") or []
-    tags = list(fact.get("tags") or [])
-    if ticket_identifier:
-        tags.append(f"ticket:{ticket_identifier}")
-        refs = list(about) + [f"ticket:{ticket_identifier}"]
-    else:
-        refs = list(about)
-
-    embed_vec, similar_id, similar_score = _nearest_existing(
-        driver, repo, text, embed_fn, recall_observations)
-
-    if similar_id and similar_score >= hard:
-        # Hard-duplicate — skip the upsert entirely. AFM upsert_observation
-        # would have bumped seen_count if texts matched exactly; for paraphrases
-        # we don't touch the existing node and simply count it.
-        out.setdefault("skipped_semantic_dupes", 0)
-        out["skipped_semantic_dupes"] += 1
-        log.info(
-            "learner_persist.skip_semantic_dupe repo=%s score=%.3f existing=%s",
-            repo, similar_score, similar_id)
-        return
-    supersedes_ids: list[str] = []
-    if similar_id and similar_score >= soft:
-        tags.append(f"superseded-check:{similar_id}")
-        supersedes_ids = [similar_id]
-
-    try:
-        if text.startswith(_DECISION_PREFIX):
-            title = text[len(_DECISION_PREFIX):].strip()[:120] or "decision"
-            upsert_decision(driver, repo=repo, title=title, body=text,
-                            rationale="learner-emit", author="learner",
-                            session_id=session_id, tags=tags, refs=refs)
-            out["written_decisions"] += 1
-        else:
-            upsert_observation(driver, repo=repo, text=text, kind="learning",
-                               author="learner", session_id=session_id,
-                               tags=tags, refs=refs, embed_vec=embed_vec,
-                               event_time=event_time, supersedes=supersedes_ids)
-            out["written_observations"] += 1
-    except Exception as exc:  # noqa: BLE001
-        out["errors"].append(f"upsert_failed: {exc}")
-
-
 def persist_facts(
     *,
     facts: list[dict],
@@ -383,15 +237,13 @@ def persist_facts(
     session_id: str = "",
     event_time: float | None = None,
 ) -> dict:
-    """Persist a list of Learner-emitted facts into Neo4j as
-    Observation_v2 (default) or Decision_v2 (DECISION: prefix).
+    """Persist a list of Learner-emitted facts into the embedded SQLite
+    memory store as ``learning`` (default) or ``decision`` (DECISION:
+    prefix) units.
 
-    ``event_time`` (gap-7) is the epoch-seconds timestamp of when the
-    underlying ticket / run actually happened. When supplied it lands
-    on every Observation_v2 we write, separate from the ingest
-    ``created_at``, so bi-temporal Cypher hops (``WHERE
-    o.event_time > datetime('2025-...')``) work. Decisions don't carry
-    event_time yet; they're typically "decided now".
+    ``event_time`` is the epoch-seconds timestamp of when the underlying
+    ticket / run actually happened. When supplied it lands on every unit
+    we write, separate from the ingest ``created_at``.
 
     Returns ``{written_observations, written_decisions, errors}``.
     Soft-fails on any backend error — never raises into the agent loop.
@@ -407,44 +259,12 @@ def persist_facts(
     _author_okr_solutions(facts, repo, ticket_identifier, event_time)
     _update_repo_card(facts, repo, event_time)
 
-    # Embedded (zero-infra) path — write learnings to the SQLite memory store
-    # instead of Neo4j/AFM. Same result-dict shape, never raises.
-    from aiforge_core.memory import backend_select as _bsel
-    if _bsel.embedded():
-        return _persist_facts_embedded(
-            facts=facts, repo=repo, ticket_identifier=ticket_identifier,
-            session_id=session_id, event_time=event_time)
+    # Embedded (zero-infra) path — write learnings to the SQLite memory store.
+    return _persist_facts_embedded(
+        facts=facts, repo=repo, ticket_identifier=ticket_identifier,
+        session_id=session_id, event_time=event_time)
 
-    driver = _open_driver()
-    if driver is None:
-        out["errors"].append("neo4j_unreachable")
-        return out
-    store = _load_afm_store(out, driver)
-    if store is None:
-        return out
 
-    embed_fn = _load_embed_fn()
-    hard = _envf("AIFORGE_SEMANTIC_DEDUPE_HARD", 0.95)
-    soft = _envf("AIFORGE_SEMANTIC_DEDUPE_SOFT", 0.85)
-    try:
-        for fact in facts:
-            _write_one_fact(fact, driver=driver, repo=repo,
-                            ticket_identifier=ticket_identifier,
-                            session_id=session_id, event_time=event_time,
-                            embed_fn=embed_fn, hard=hard, soft=soft,
-                            store=store, out=out)
-    finally:
-        try:
-            driver.close()
-        except Exception:
-            pass
-
-    log.info(
-        "learner_persist: repo=%s ticket=%s observations=%d decisions=%d errors=%d",
-        repo, ticket_identifier or "-",
-        out["written_observations"], out["written_decisions"],
-        len(out["errors"]))
-    return out
 def _ticket_event_time(ticket_identifier: str) -> "float | None":
     """Lift a ticket's created_at into an Observation_v2.event_time timestamp so
     bi-temporal queries can hop by "when did this happen?" separate from the
