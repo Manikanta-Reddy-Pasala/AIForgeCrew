@@ -224,7 +224,6 @@ def _ingest_ticket_external_refs(ticket) -> None:
     if not refs:
         return
     # External-ref ingestion backend removed — nothing to persist to.
-    return
 
 
 class _Verdict:

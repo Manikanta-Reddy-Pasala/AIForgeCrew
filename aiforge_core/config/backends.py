@@ -39,4 +39,3 @@ def boot_log() -> None:
 def require_data_backends() -> None:
     """No-op — this is a SQLite-only build, so there is no external data
     backend to require. Kept as a stable boot-time call site."""
-    return
