@@ -70,24 +70,8 @@ def _parse_cli_args(raw: str) -> "tuple[dict | None, int | None]":
         return None, 3
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = list(sys.argv[1:] if argv is None else argv)
-    if not args or args[0] in ("-h", "--help"):
-        print(__doc__)
-        return 0
-    readonly, tools = _callable_names()
-    if args[0] == "--list":
-        for n in sorted(tools):
-            if n in readonly or _allow_writes():
-                print(n)
-        return 0
-    name = args[0]
-    fn, err = _resolve_cli_tool(name, tools, readonly)
-    if err is not None:
-        return err
-    tool_args, err = _parse_cli_args(args[1] if len(args) > 1 else "{}")
-    if err is not None:
-        return err
+def _run_cli_tool(fn, tool_args):
+    """Invoke one resolved CLI tool, print its JSON result (or error), and return the process exit code."""
     try:
         res = fn(tool_args, os.getcwd())
     except Exception as exc:  # noqa: BLE001 — CLI surfaces, never tracebacks
@@ -95,6 +79,32 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     print(json.dumps(res, default=str))
     return 0 if not (isinstance(res, dict) and res.get("ok") is False) else 2
+
+
+def _run_list(tools, readonly):
+    """Print every callable tool name (write tools only when writes are allowed)."""
+    for n in sorted(tools):
+        if n in readonly or _allow_writes():
+            print(n)
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    readonly, tools = _callable_names()
+    if args[0] == "--list":
+        return _run_list(tools, readonly)
+    name = args[0]
+    fn, err = _resolve_cli_tool(name, tools, readonly)
+    if err is not None:
+        return err
+    tool_args, err = _parse_cli_args(args[1] if len(args) > 1 else "{}")
+    if err is not None:
+        return err
+    return _run_cli_tool(fn, tool_args)
 
 
 if __name__ == "__main__":

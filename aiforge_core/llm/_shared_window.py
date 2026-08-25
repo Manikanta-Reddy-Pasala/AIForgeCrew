@@ -471,6 +471,29 @@ def set_hold(key: str, until_ts: float, cap: "float | None" = None) -> None:
             _degrade(exc)
 
 
+def _drop_poisoned_hold(db, keys, marks, now, cap, left):
+    """A hold beyond the cap was written before a clock moved: delete poisoned rows, re-query the real MAX, and return the seconds left (busy contention preserves the current hold, not a false clear)."""
+    try:
+        db.execute("DELETE FROM holds WHERE until > ?", (now + _cap(cap),))
+        # RE-QUERY. MAX() across the keys means a poisoned catch-all row
+        # can outrank a perfectly good provider hold, so returning 0 here
+        # sent one call into a wall the server had already named.
+        row = db.execute(
+            f"SELECT MAX(until) FROM holds WHERE k IN ({marks})",  # noqa: S608
+            keys).fetchone()
+    except Exception as exc:  # noqa: BLE001
+        # Busy is not "no hold". Several processes write holds at once
+        # during a 429 storm, so treating contention here as "clear to
+        # send" discards a legitimate hold at the worst moment — the same
+        # class of bug as the poisoned row this branch exists to clean up.
+        if _busy(exc):
+            return max(0.0, min(left, _cap(cap)))
+        return 0.0
+    if not row or row[0] is None:
+        return 0.0
+    return max(0.0, min(float(row[0]) - now, _cap(cap)))
+
+
 def hold_left(keys: "tuple[str, ...]", now: float | None = None,
               cap: "float | None" = None) -> "float | None":
     """Seconds left on the longest hold matching any of ``keys``."""
@@ -494,25 +517,7 @@ def hold_left(keys: "tuple[str, ...]", now: float | None = None,
         # Written before a clock moved. Reading it as a hold would park every
         # caller for the length of the step; leaving it would keep swallowing
         # real holds (see set_hold). Drop it and carry on unheld.
-        try:
-            db.execute("DELETE FROM holds WHERE until > ?", (now + _cap(cap),))
-            # RE-QUERY. MAX() across the keys means a poisoned catch-all row
-            # can outrank a perfectly good provider hold, so returning 0 here
-            # sent one call into a wall the server had already named.
-            row = db.execute(
-                f"SELECT MAX(until) FROM holds WHERE k IN ({marks})",  # noqa: S608
-                keys).fetchone()
-        except Exception as exc:  # noqa: BLE001
-            # Busy is not "no hold". Several processes write holds at once
-            # during a 429 storm, so treating contention here as "clear to
-            # send" discards a legitimate hold at the worst moment — the same
-            # class of bug as the poisoned row this branch exists to clean up.
-            if _busy(exc):
-                return max(0.0, min(left, _cap(cap)))
-            return 0.0
-        if not row or row[0] is None:
-            return 0.0
-        return max(0.0, min(float(row[0]) - now, _cap(cap)))
+        return _drop_poisoned_hold(db, keys, marks, now, cap, left)
     return max(0.0, left)
 
 

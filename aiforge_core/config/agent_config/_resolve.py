@@ -14,6 +14,42 @@ from ._state import (
 )
 
 
+def _env_default_row():
+    """The AIFORGE_DEFAULT_* env one-endpoint default, or None when unset."""
+    prov = os.environ.get("AIFORGE_DEFAULT_PROVIDER")
+    if prov:
+        return {
+            "provider": prov,
+            "model": os.environ.get("AIFORGE_DEFAULT_MODEL", ""),
+            "base_url": os.environ.get("AIFORGE_DEFAULT_BASE_URL"),
+            "api_key": os.environ.get("AIFORGE_DEFAULT_API_KEY"),
+            "insecure_tls": os.environ.get(
+                "AIFORGE_DEFAULT_INSECURE_TLS", "").strip().lower()
+                in ("1", "true", "yes", "on"),
+        }
+    return None
+
+
+def _borrow_configured_row(disk):
+    """Last resort: borrow a CONFIGURED role's endpoint (preferred order, then
+    any non-underscore role) so an unconfigured internal role gets a REAL model
+    instead of the placeholder. None when nothing is configured."""
+    # LAST RESORT: no explicit _default and no env → borrow a CONFIGURED role's
+    # endpoint so an unconfigured internal role (e.g. `validator`, which isn't a
+    # UI-configurable archetype) inherits a REAL local model instead of the
+    # `local-model-unconfigured` placeholder — which points litellm at OpenAI's
+    # default and 401s ("Incorrect API key: not-needed"), killing the team flow.
+    for pref in ("doer", "chat", "verifier", "planner", "architect"):
+        r = disk.get(pref)
+        if isinstance(r, dict) and r.get("provider") and r.get("model"):
+            return r
+    for k, r in disk.items():
+        if (not k.startswith("_") and isinstance(r, dict)
+                and r.get("provider") and r.get("model")):
+            return r
+    return None
+
+
 def _global_default_row() -> dict[str, Any] | None:
     """The operator's one-endpoint default for EVERY role.
 
@@ -36,31 +72,10 @@ def _global_default_row() -> dict[str, Any] | None:
                 return d
         except Exception:  # noqa: BLE001
             disk = {}
-    prov = os.environ.get("AIFORGE_DEFAULT_PROVIDER")
-    if prov:
-        return {
-            "provider": prov,
-            "model": os.environ.get("AIFORGE_DEFAULT_MODEL", ""),
-            "base_url": os.environ.get("AIFORGE_DEFAULT_BASE_URL"),
-            "api_key": os.environ.get("AIFORGE_DEFAULT_API_KEY"),
-            "insecure_tls": os.environ.get(
-                "AIFORGE_DEFAULT_INSECURE_TLS", "").strip().lower()
-                in ("1", "true", "yes", "on"),
-        }
-    # LAST RESORT: no explicit _default and no env → borrow a CONFIGURED role's
-    # endpoint so an unconfigured internal role (e.g. `validator`, which isn't a
-    # UI-configurable archetype) inherits a REAL local model instead of the
-    # `local-model-unconfigured` placeholder — which points litellm at OpenAI's
-    # default and 401s ("Incorrect API key: not-needed"), killing the team flow.
-    for pref in ("doer", "chat", "verifier", "planner", "architect"):
-        r = disk.get(pref)
-        if isinstance(r, dict) and r.get("provider") and r.get("model"):
-            return r
-    for k, r in disk.items():
-        if (not k.startswith("_") and isinstance(r, dict)
-                and r.get("provider") and r.get("model")):
-            return r
-    return None
+    env_row = _env_default_row()
+    if env_row is not None:
+        return env_row
+    return _borrow_configured_row(disk)
 
 
 def _defaults() -> dict[str, dict[str, Any]]:
