@@ -718,7 +718,7 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
         )
         content = gtypes.Content(
             role="user", parts=[gtypes.Part.from_text(text=prompt)])
-        kw = dict(user_id="chat", session_id=session.id, new_message=content)
+        kw = {"user_id": "chat", "session_id": session.id, "new_message": content}
         try:
             from google.adk.agents.run_config import RunConfig
             # High cap — a real multi-agent build legitimately needs
