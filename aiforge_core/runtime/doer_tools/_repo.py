@@ -298,48 +298,66 @@ def git_blame(path: str, start: int = 0, end: int = 0) -> dict:
     return _git(argv)
 
 
+_RENAME_EXTS = (".py", ".ts", ".tsx", ".js", ".jsx", ".java", ".go", ".rs",
+                ".c", ".cpp", ".h", ".cs", ".rb", ".php", ".kt", ".scala",
+                ".swift")
+_RENAME_SKIP_DIRS = (".git", "node_modules", ".venv", "venv", "dist", "build",
+                     "__pycache__")
+
+
+def _rename_in_one_file(fp: str, pat, new_name: str, dry_run: bool) -> int:
+    """Count (and, unless dry_run, apply) the rename in one file. Returns the
+    number of occurrences, or 0 when unreadable / unmatched."""
+    import os as _os
+    try:
+        with open(fp, encoding="utf-8", errors="replace") as fh:
+            txt = fh.read()
+    except Exception:  # noqa: BLE001
+        return 0
+    c = len(pat.findall(txt))
+    if not c or dry_run:
+        return c
+    try:
+        with open(fp, "w", encoding="utf-8") as fh:
+            fh.write(pat.sub(new_name, txt))
+        record_touch(fp)
+    except Exception:  # noqa: BLE001
+        return 0
+    return c
+
+
+def _iter_rename_targets(root_p: str):
+    """Yield every code file under ``root_p``, vendor/build dirs pruned."""
+    import os as _os
+    for dirpath, dirnames, filenames in _os.walk(root_p):
+        dirnames[:] = [d for d in dirnames if d not in _RENAME_SKIP_DIRS]
+        for fn in filenames:
+            if fn.endswith(_RENAME_EXTS):
+                yield _os.path.join(dirpath, fn)
+
+
 def rename_symbol(name: str, new_name: str, path: str = ".",
                   dry_run: bool = True) -> dict:
     """Whole-word rename of an identifier across code files under ``path``.
     TEXT-based (word-boundary) — precise for unique identifiers, but review the
     diff for false hits in strings/comments. ``dry_run`` (default) only reports
     what WOULD change; pass dry_run=false to apply. Not an LSP semantic rename."""
+    import os as _os
     import re
     if not name or not new_name:
         return {"ok": False, "error": "need 'name' and 'new_name'"}
     root_p = str(resolve_inside_root(path))
     pat = re.compile(r"\b" + re.escape(name) + r"\b")
-    _EXT = (".py", ".ts", ".tsx", ".js", ".jsx", ".java", ".go", ".rs",
-            ".c", ".cpp", ".h", ".cs", ".rb", ".php", ".kt", ".scala", ".swift")
-    import os as _os
     hits: list[dict] = []
     changed = 0
-    for dirpath, dirnames, filenames in _os.walk(root_p):
-        dirnames[:] = [d for d in dirnames
-                       if d not in (".git", "node_modules", ".venv", "venv",
-                                    "dist", "build", "__pycache__")]
-        for fn in filenames:
-            if not fn.endswith(_EXT):
-                continue
-            fp = _os.path.join(dirpath, fn)
-            try:
-                with open(fp, encoding="utf-8", errors="replace") as fh:
-                    txt = fh.read()
-            except Exception:  # noqa: BLE001
-                continue
-            c = len(pat.findall(txt))
-            if not c:
-                continue
-            rel = _os.path.relpath(fp, str(root()))
-            hits.append({"file": rel, "occurrences": c})
-            if not dry_run:
-                try:
-                    with open(fp, "w", encoding="utf-8") as fh:
-                        fh.write(pat.sub(new_name, txt))
-                    changed += c
-                    record_touch(fp)
-                except Exception:  # noqa: BLE001
-                    pass
+    for fp in _iter_rename_targets(root_p):
+        c = _rename_in_one_file(fp, pat, new_name, dry_run)
+        if not c:
+            continue
+        hits.append({"file": _os.path.relpath(fp, str(root())),
+                     "occurrences": c})
+        if not dry_run:
+            changed += c
     total = sum(h["occurrences"] for h in hits)
     return {"ok": True, "name": name, "new_name": new_name,
             "dry_run": dry_run, "files": hits, "total_occurrences": total,
