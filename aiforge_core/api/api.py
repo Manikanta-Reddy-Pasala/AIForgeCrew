@@ -849,14 +849,28 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
-def _security_boot_guard(hosts: list[str] | None = None) -> None:
-    """Refuse to boot when a shell-running control plane is listening on a
-    non-loopback address without a token. Raises ``RuntimeError`` — called from
-    a startup hook (where the REAL bind is observable) AND directly
-    unit-testable by passing ``hosts``."""
-    token = _api_token()
-    boot_log = logging.getLogger("aiforge.boot")
+def _compute_exposed_hosts(hosts, token, boot_log):
+    """The non-loopback hosts this process is actually exposed on (observed binds, or the AIFORGE_BIND_HOST fallback with a warning when no token)."""
+    observed = _observed_bind_hosts() if hosts is None else list(hosts)
+    if observed:
+        exposed = [h for h in observed if not _is_loopback_host(h)]
+    else:
+        # Nothing to observe (TestClient, gunicorn, an embedder): fall back to
+        # the pre-boot hint and SAY SO, because the fallback is the thing that
+        # used to be trusted silently.
+        env_host = _bind_host()
+        exposed = [] if _is_loopback_host(env_host) else [env_host]
+        if not token:
+            boot_log.warning(
+                "could not observe the real listening address; falling back to "
+                "AIFORGE_BIND_HOST=%s for the security guard — if this process "
+                "actually binds a non-loopback address, set AIFORGE_API_TOKEN.",
+                env_host)
+    return exposed
 
+
+def _log_sync_openness(boot_log):
+    """Log whether the open (credential-less) memory-sync endpoints are reachable only from loopback (info) or bound to a non-loopback host (warning)."""
     if _sync_open():
         # Not a refusal — it is the documented default (see ``_sync_open``) —
         # but the severity depends entirely on what this box is bound to, so the
@@ -876,21 +890,18 @@ def _security_boot_guard(hosts: list[str] | None = None) -> None:
                 "or set AIFORGE_SYNC_AUTH=1 here and AIFORGE_API_TOKEN on every "
                 "machine.", _bound)
 
-    observed = _observed_bind_hosts() if hosts is None else list(hosts)
-    if observed:
-        exposed = [h for h in observed if not _is_loopback_host(h)]
-    else:
-        # Nothing to observe (TestClient, gunicorn, an embedder): fall back to
-        # the pre-boot hint and SAY SO, because the fallback is the thing that
-        # used to be trusted silently.
-        env_host = _bind_host()
-        exposed = [] if _is_loopback_host(env_host) else [env_host]
-        if not token:
-            boot_log.warning(
-                "could not observe the real listening address; falling back to "
-                "AIFORGE_BIND_HOST=%s for the security guard — if this process "
-                "actually binds a non-loopback address, set AIFORGE_API_TOKEN.",
-                env_host)
+
+
+def _security_boot_guard(hosts: list[str] | None = None) -> None:
+    """Refuse to boot when a shell-running control plane is listening on a
+    non-loopback address without a token. Raises ``RuntimeError`` — called from
+    a startup hook (where the REAL bind is observable) AND directly
+    unit-testable by passing ``hosts``."""
+    token = _api_token()
+    boot_log = logging.getLogger("aiforge.boot")
+
+    _log_sync_openness(boot_log)
+    exposed = _compute_exposed_hosts(hosts, token, boot_log)
     if not exposed:
         return
     where = ", ".join(exposed)

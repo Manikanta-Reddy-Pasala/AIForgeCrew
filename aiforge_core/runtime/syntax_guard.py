@@ -106,6 +106,24 @@ def _external_syntax(path: str, content: str) -> tuple[bool, str] | None:
         shutil.rmtree(d, ignore_errors=True)
 
 
+def _fallback_syntax_check(path, content):
+    """Brace-balance truncation heuristic (+ a Java/Kotlin python-kwargs sniff) for languages with no installed syntax checker. Returns (ok, error_msg)."""
+    # 3. Fallback — brace-balance truncation heuristic (+ Java/Kotlin kwarg sniff)
+    #    for languages with no installed checker.
+    for opener, closer in _PAIRS:
+        n_open = content.count(opener)
+        n_close = content.count(closer)
+        if n_open != n_close:
+            return False, f"unbalanced {opener}{closer} ({n_open} vs {n_close})"
+
+    if path.endswith((".java", ".kt")):
+        if _KWARG_PATTERN.search(content) and "(" in content:
+            if not _ANNOTATION_PATTERN.search(content):
+                return False, "java/kotlin: looks like Python-style kwargs in call"
+
+    return True, ""
+
+
 def validate_syntax(path: str, content: str) -> tuple[bool, str]:
     """Return ``(ok, error_msg)`` — empty error on the happy path. Language-aware
     (see module docstring). Best-effort: a missing toolchain degrades to the
@@ -128,20 +146,7 @@ def validate_syntax(path: str, content: str) -> tuple[bool, str]:
     if ext_res is not None:
         return ext_res
 
-    # 3. Fallback — brace-balance truncation heuristic (+ Java/Kotlin kwarg sniff)
-    #    for languages with no installed checker.
-    for opener, closer in _PAIRS:
-        n_open = content.count(opener)
-        n_close = content.count(closer)
-        if n_open != n_close:
-            return False, f"unbalanced {opener}{closer} ({n_open} vs {n_close})"
-
-    if path.endswith((".java", ".kt")):
-        if _KWARG_PATTERN.search(content) and "(" in content:
-            if not _ANNOTATION_PATTERN.search(content):
-                return False, "java/kotlin: looks like Python-style kwargs in call"
-
-    return True, ""
+    return _fallback_syntax_check(path, content)
 
 
 # Code-file extensions, sourced from the language registry (DRY — same set the

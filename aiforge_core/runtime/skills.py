@@ -207,6 +207,20 @@ def _tokens(text: str) -> set[str]:
     return set(_WORD_RE.findall((text or "").lower()))
 
 
+def _best_stem_match(q, stok):
+    """Best fractional match of token q against set stok: a shared >=4-char prefix scores 0.9, else a difflib ratio >=0.8 (typo tolerance). Returns the best score."""
+    import difflib
+    best = 0.0
+    for s in stok:
+        if len(q) >= 4 and len(s) >= 4 and (s.startswith(q) or q.startswith(s)):
+            best = max(best, 0.9)
+        elif len(q) >= 4 and abs(len(q) - len(s)) <= 3:
+            r = difflib.SequenceMatcher(None, q, s).ratio()
+            if r >= 0.8:
+                best = max(best, r)
+    return best
+
+
 def _fuzzy_overlap(qtok: set[str], stok: set[str]) -> float:
     """Token overlap tolerant of inflections and typos — an exact token is
     worth 1.0; otherwise the best stem hit (``deploy``≈``deployment``, one
@@ -214,21 +228,12 @@ def _fuzzy_overlap(qtok: set[str], stok: set[str]) -> float:
     0.8, catches ``comit``≈``commit``) scores fractionally. This is what lets
     a QUESTION that doesn't use a playbook's exact trigger words still find
     it."""
-    import difflib
     score = 0.0
     for q in qtok:
         if q in stok:
             score += 1.0
             continue
-        best = 0.0
-        for s in stok:
-            if len(q) >= 4 and len(s) >= 4 and (s.startswith(q) or q.startswith(s)):
-                best = max(best, 0.9)
-            elif len(q) >= 4 and abs(len(q) - len(s)) <= 3:
-                r = difflib.SequenceMatcher(None, q, s).ratio()
-                if r >= 0.8:
-                    best = max(best, r)
-        score += best
+        score += _best_stem_match(q, stok)
     return score
 
 
