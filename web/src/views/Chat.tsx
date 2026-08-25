@@ -171,7 +171,7 @@ function reduceTurn(prev: LiveTurn | null, evt: any, onAwaiting: () => void): Li
     return reduceMessageEvent(prev, evt, onAwaiting);
   }
   const stepped = appendStepFor(prev, evt);
-  return stepped !== null ? stepped : prev;
+  return stepped ?? prev;
 }
 
 // The POST body for a send — mode/quick/resume/builder/edit flags folded in.
