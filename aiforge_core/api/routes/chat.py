@@ -1893,7 +1893,6 @@ def _commit_simple_baseline(cwd):
     return _simple_sha, _skip_worktree
 
 
-@router.post("/api/chat/sessions/{session_id}/message")
 def _apply_edit_resend(session, session_id, body) -> None:
     """Edit-and-resend: restore the workspace to the edited turn's checkpoint
     (only for a session's OWN isolated scratch — a shared context dir or real
@@ -2026,6 +2025,7 @@ def _apply_provisional_title(session_id, body, fresh_title) -> None:
     chat_store.rename_session(session_id, _prov)
 
 
+@router.post("/api/chat/sessions/{session_id}/message")
 def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingResponse:
     """Append a user message, run the full-FS coding agent over the whole
     session history (Claude-CLI-style: many tool steps, builds repos),
