@@ -137,6 +137,39 @@ def _graph_snapshot() -> dict:
 
 # ─────────────────────────────── overview ───────────────────────────────────
 
+def _graph_facts_section(counts: dict, content_obs: int) -> dict:
+    """The graph_facts section — ingested code/doc Observation_v2 do NOT count
+    as facts, so subtract them from the Observation_v2 tally and the total."""
+    section = {"available": True, "labels": counts,
+               "total": sum(counts.values())}
+    if "Observation_v2" in counts and content_obs:
+        counts["Observation_v2"] = max(0, counts["Observation_v2"] - content_obs)
+        if not counts["Observation_v2"]:
+            counts.pop("Observation_v2")
+    section["total"] = max(0, section["total"] - content_obs)
+    return section
+
+
+def _chunks_section(counts: dict, obs_kinds: dict, content_obs: int) -> dict:
+    """The chunks section — fold ingested code/doc Observation_v2 in as the
+    content chunks."""
+    section = {"available": True, "labels": counts,
+               "total": sum(counts.values())}
+    if content_obs:
+        for k in _CHUNK_KINDS:
+            if obs_kinds.get(k):
+                counts[f"code/doc:{k}"] = obs_kinds[k]
+        section["total"] += content_obs
+    return section
+
+
+def _symbols_section(counts: dict, snap: dict) -> dict:
+    """The symbols section — carries its relationship-type counts too."""
+    return {"available": True, "labels": counts, "total": sum(counts.values()),
+            "relationships": {t: snap["rels"].get(t, 0) for t in _SYMBOL_RELS
+                              if snap["rels"].get(t, 0)}}
+
+
 def _graph_sections() -> dict:
     """Build the four graph datasource sections. If the graph isn't configured
     or is unreachable, each section soft-fails to available:False (never raises)."""
@@ -158,29 +191,12 @@ def _graph_sections() -> dict:
     for store in ("graph_facts", "symbols", "chunks"):
         counts = {lbl: labels.get(lbl, 0) for lbl in _GRAPH_LABELS[store]
                   if labels.get(lbl, 0)}
-        section = {"available": True, "labels": counts,
-                   "total": sum(counts.values())}
         if store == "graph_facts":
-            # Don't count ingested code/doc content as "facts".
-            if "Observation_v2" in counts and content_obs:
-                counts["Observation_v2"] = max(
-                    0, counts["Observation_v2"] - content_obs)
-                if not counts["Observation_v2"]:
-                    counts.pop("Observation_v2")
-            section["total"] = max(0, section["total"] - content_obs)
-        if store == "chunks":
-            # Fold ingested code/doc Observation_v2 in as the content chunks.
-            if content_obs:
-                for k in _CHUNK_KINDS:
-                    if obs_kinds.get(k):
-                        counts[f"code/doc:{k}"] = obs_kinds[k]
-                section["total"] = section["total"] + content_obs
-        if store == "symbols":
-            section["relationships"] = {
-                t: snap["rels"].get(t, 0) for t in _SYMBOL_RELS
-                if snap["rels"].get(t, 0)
-            }
-        out[store] = section
+            out[store] = _graph_facts_section(counts, content_obs)
+        elif store == "chunks":
+            out[store] = _chunks_section(counts, obs_kinds, content_obs)
+        else:
+            out[store] = _symbols_section(counts, snap)
     out["graphify"] = {"available": True, "count": snap["graphify"]}
     return out
 

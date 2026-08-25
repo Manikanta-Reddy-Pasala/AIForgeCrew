@@ -47,6 +47,47 @@ def _resolve_repo_root(repo_root: str | None) -> Path:
     return here.parents[2]  # AIForgeCrew/ from aiforge_core/runtime/
 
 
+def _build_indexes(nodes: list) -> tuple[dict, dict, dict]:
+    """(nodes_by_id, file_index, label_index) from the node list. file_index is
+    keyed by source_file, label_index by lowercased label."""
+    nodes_by_id: dict[str, dict] = {n["id"]: n for n in nodes if "id" in n}
+    file_index: dict[str, list[str]] = defaultdict(list)
+    label_index: dict[str, list[str]] = defaultdict(list)
+    for n in nodes:
+        nid = n.get("id")
+        if not nid:
+            continue
+        sf = n.get("source_file") or ""
+        if sf:
+            file_index[sf].append(nid)
+        lab = (n.get("label") or "").strip()
+        if lab:
+            label_index[lab.lower()].append(nid)
+    return nodes_by_id, file_index, label_index
+
+
+def _build_adjacency(links: list) -> dict:
+    """Undirected adjacency: each link yields an ``out`` edge on its source and
+    an ``in`` edge on its target, so a lookup from either end sees it."""
+    adj: dict[str, list[dict]] = defaultdict(list)
+    for ln in links:
+        s = ln.get("source") or ln.get("_src")
+        t = ln.get("target") or ln.get("_tgt")
+        if not s or not t:
+            continue
+        rel = ln.get("relation") or ln.get("type") or "unknown"
+        weight = float(ln.get("weight", 1.0) or 1.0)
+        conf = ln.get("confidence") or ""
+        loc = ln.get("source_location", "")
+        adj[s].append({"_to": t, "relation": rel, "weight": weight,
+                       "confidence": conf, "direction": "out",
+                       "source_location": loc})
+        adj[t].append({"_to": s, "relation": rel, "weight": weight,
+                       "confidence": conf, "direction": "in",
+                       "source_location": loc})
+    return adj
+
+
 def _load(repo_root: Path) -> tuple[dict, dict, dict, dict]:
     """Return (nodes_by_id, adj, file_index, label_index). Cached per root."""
     key = str(repo_root)
@@ -59,47 +100,30 @@ def _load(repo_root: Path) -> tuple[dict, dict, dict, dict]:
         raise FileNotFoundError(f"graphify-out/graph.json not found under {repo_root}")
 
     g = json.loads(gpath.read_text())
-    nodes = g.get("nodes") or []
-    links = g.get("links") or g.get("edges") or []
-
-    nodes_by_id: dict[str, dict] = {n["id"]: n for n in nodes if "id" in n}
-    adj: dict[str, list[dict]] = defaultdict(list)
-    file_index: dict[str, list[str]] = defaultdict(list)
-    label_index: dict[str, list[str]] = defaultdict(list)
-
-    for n in nodes:
-        nid = n.get("id")
-        if not nid:
-            continue
-        sf = n.get("source_file") or ""
-        if sf:
-            file_index[sf].append(nid)
-        lab = (n.get("label") or "").strip()
-        if lab:
-            label_index[lab.lower()].append(nid)
-
-    for ln in links:
-        s = ln.get("source") or ln.get("_src")
-        t = ln.get("target") or ln.get("_tgt")
-        if not s or not t:
-            continue
-        rel = ln.get("relation") or ln.get("type") or "unknown"
-        weight = float(ln.get("weight", 1.0) or 1.0)
-        conf = ln.get("confidence") or ""
-        adj[s].append({"_to": t, "relation": rel, "weight": weight,
-                       "confidence": conf, "direction": "out",
-                       "source_location": ln.get("source_location", "")})
-        adj[t].append({"_to": s, "relation": rel, "weight": weight,
-                       "confidence": conf, "direction": "in",
-                       "source_location": ln.get("source_location", "")})
+    nodes_by_id, file_index, label_index = _build_indexes(g.get("nodes") or [])
+    adj = _build_adjacency(g.get("links") or g.get("edges") or [])
 
     _CACHE[key] = (nodes_by_id, dict(adj), dict(file_index), dict(label_index))
     return _CACHE[key]
 
 
+def _substring_matches(index: dict, needle: str, add, out: list, limit: int,
+                       key_lower: bool) -> bool:
+    """Add every node whose index key contains ``needle`` (via ``add``). Returns
+    True once ``out`` has reached ``limit`` so the caller can stop early."""
+    for key, nids in index.items():
+        if needle in (key.lower() if key_lower else key):
+            for nid in nids:
+                add(nid)
+                if len(out) >= limit:
+                    return True
+    return False
+
+
 def _match_nodes(query: str, nodes_by_id, file_index, label_index,
                  limit: int) -> list[str]:
-    """Resolve query → list of node IDs, ordered by match quality."""
+    """Resolve query → list of node IDs, ordered by match quality: exact id,
+    exact source_file, exact label, then substring in source_file / labels."""
     q = query.strip()
     qlow = q.lower()
     seen: set[str] = set()
@@ -110,31 +134,18 @@ def _match_nodes(query: str, nodes_by_id, file_index, label_index,
             seen.add(nid)
             out.append(nid)
 
-    # 1. Exact node id (rare but precise)
-    if q in nodes_by_id:
+    if q in nodes_by_id:                     # 1. exact node id
         _add(q)
-    # 2. Exact source_file match
-    for nid in file_index.get(q, []):
+    for nid in file_index.get(q, []):        # 2. exact source_file
         _add(nid)
-    # 3. Exact label match (case-insensitive)
-    for nid in label_index.get(qlow, []):
+    for nid in label_index.get(qlow, []):    # 3. exact label (case-insensitive)
         _add(nid)
     if len(out) >= limit:
         return out[:limit]
-    # 4. Substring match in source_file
-    for sf, nids in file_index.items():
-        if qlow in sf.lower():
-            for nid in nids:
-                _add(nid)
-                if len(out) >= limit:
-                    return out
-    # 5. Substring match in labels
-    for lab, nids in label_index.items():
-        if qlow in lab:
-            for nid in nids:
-                _add(nid)
-                if len(out) >= limit:
-                    return out
+    # 4. substring in source_file, then 5. substring in labels
+    if _substring_matches(file_index, qlow, _add, out, limit, key_lower=True):
+        return out[:limit]
+    _substring_matches(label_index, qlow, _add, out, limit, key_lower=False)
     return out[:limit]
 
 
@@ -148,6 +159,35 @@ def _summarise_node(n: dict) -> dict:
         "community": n.get("community"),
         "file_type": n.get("file_type"),
     }
+
+
+def _expand_neighbors(src_id, hop, via, adj, nodes_by_id, neighbors,
+                      seen_pairs, max_neighbors) -> None:
+    """Append one node's not-yet-seen neighbour edges into ``neighbors`` (and
+    record them in ``seen_pairs``), stopping once ``max_neighbors`` is reached.
+    Mutates ``neighbors`` / ``seen_pairs`` in place — the BFS driver shares them
+    across seeds and hops."""
+    for edge in adj.get(src_id, []):
+        tgt = edge["_to"]
+        key = (src_id, tgt, edge["relation"])
+        if key in seen_pairs:
+            continue
+        seen_pairs.add(key)
+        tgt_node = nodes_by_id.get(tgt)
+        if not tgt_node:
+            continue
+        neighbors.append({
+            "node": _summarise_node(tgt_node),
+            "relation": edge["relation"],
+            "weight": edge["weight"],
+            "confidence": edge["confidence"],
+            "direction": edge["direction"],
+            "hop": hop,
+            "via": via,
+            "source_location": edge["source_location"],
+        })
+        if len(neighbors) >= max_neighbors:
+            return
 
 
 def graphify_lookup(query: str, hops: int = 1,
@@ -190,27 +230,8 @@ def graphify_lookup(query: str, hops: int = 1,
     seen_pairs: set[tuple[str, str, str]] = set()  # (src_id, tgt_id, relation)
 
     def _expand(src_id: str, hop: int, via: str | None):
-        for edge in adj.get(src_id, []):
-            tgt = edge["_to"]
-            key = (src_id, tgt, edge["relation"])
-            if key in seen_pairs:
-                continue
-            seen_pairs.add(key)
-            tgt_node = nodes_by_id.get(tgt)
-            if not tgt_node:
-                continue
-            neighbors.append({
-                "node": _summarise_node(tgt_node),
-                "relation": edge["relation"],
-                "weight": edge["weight"],
-                "confidence": edge["confidence"],
-                "direction": edge["direction"],
-                "hop": hop,
-                "via": via,
-                "source_location": edge["source_location"],
-            })
-            if len(neighbors) >= max_neighbors:
-                return
+        _expand_neighbors(src_id, hop, via, adj, nodes_by_id, neighbors,
+                          seen_pairs, max_neighbors)
 
     for sid in seed_ids:
         if len(neighbors) >= max_neighbors:
