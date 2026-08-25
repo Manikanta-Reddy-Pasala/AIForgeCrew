@@ -1484,6 +1484,32 @@ def _pre_tool_checks(st, name, args, cwd, _scope_globs):
     return _hook_block
 
 
+def _record_edit(st, name, args, result, cwd):
+    """When an edit tool landed: bump the edit counter, invalidate the duplicate-
+    read guard, and run a post-edit syntax self-check that surfaces + feeds back
+    any error this step. Yields the syntax-warning events."""
+    if name in _EDIT_TOOL_NAMES and not (
+            isinstance(result, dict) and result.get("ok") is False):
+        st.edits_made += 1
+        st.read_sigs_seen.clear()   # a file just changed → re-reads are valid again
+        # D: post-edit self-check. Immediately syntax-check the file just
+        # written and, if broken, hand the model the error THIS step (tight
+        # feedback) instead of letting it surface only at the end-of-run test
+        # gate. Best-effort + opt-out (AIFORGE_CHAT_POST_EDIT_CHECK=0).
+        if os.environ.get("AIFORGE_CHAT_POST_EDIT_CHECK", "1") not in ("0", "false"):
+            try:
+                _pe = _post_edit_syntax_error(name, args, cwd)
+            except Exception:  # noqa: BLE001
+                _pe = None
+            if _pe:
+                yield {"type": "thought", "role": "system",
+                       "text": f"⚠ syntax error in the file you just edited "
+                               f"— fix it now: {_pe[:160]}"}
+                st.convo.append({"role": "user", "content":
+                    "[automated syntax check — not the user] The file you just "
+                    f"wrote has a syntax error; fix it before continuing:\n{_pe[:600]}"})
+
+
 def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     """Post-tool bookkeeping: PostToolUse hook, emit the tool result, count landed
     reads/edits (feeding the progress + verify gates), post-edit syntax self-
@@ -1513,26 +1539,7 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
                 st.read_sigs_ever.popitem(last=False)
         if _long_chain_help:
             st.read_sigs_seen.add(sig)
-    if name in _EDIT_TOOL_NAMES and not (
-            isinstance(result, dict) and result.get("ok") is False):
-        st.edits_made += 1
-        st.read_sigs_seen.clear()   # a file just changed → re-reads are valid again
-        # D: post-edit self-check. Immediately syntax-check the file just
-        # written and, if broken, hand the model the error THIS step (tight
-        # feedback) instead of letting it surface only at the end-of-run test
-        # gate. Best-effort + opt-out (AIFORGE_CHAT_POST_EDIT_CHECK=0).
-        if os.environ.get("AIFORGE_CHAT_POST_EDIT_CHECK", "1") not in ("0", "false"):
-            try:
-                _pe = _post_edit_syntax_error(name, args, cwd)
-            except Exception:  # noqa: BLE001
-                _pe = None
-            if _pe:
-                yield {"type": "thought", "role": "system",
-                       "text": f"⚠ syntax error in the file you just edited "
-                               f"— fix it now: {_pe[:160]}"}
-                st.convo.append({"role": "user", "content":
-                    "[automated syntax check — not the user] The file you just "
-                    f"wrote has a syntax error; fix it before continuing:\n{_pe[:600]}"})
+    yield from _record_edit(st, name, args, result, cwd)
     # Builder finalize: a successful create_job_script / learn_skill /
     # learn_workflow / remember_rule ends the interview. Signal the UI so it
     # can drop this session's builder mode — otherwise every later message
@@ -1619,11 +1626,10 @@ def _builder_nudge(st, builder, n):
             f"asking questions. If one required value is genuinely missing, "
             f"ask ONLY for that, then finalize."})
 
-def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
-                      session_id, mode, scope_globs, builder, strict_finish):
-    """Assemble everything the ReAct loop needs (native detection, mode/read-only
-    flags, scope allowlist, budget-capped convo, cap/deadline/extension budgets,
-    the request meter and every per-turn counter) into one st namespace."""
+def _resolve_complete_fn(complete_fn, role):
+    """Resolve the completion fn: when the caller injected none, use the default
+    and swap in native OpenAI tool-calling if the model/role supports it. Returns
+    (complete_fn, native_on)."""
     _native_on = False
     if complete_fn is None:
         from aiforge_core.llm.client import complete as complete_fn  # type: ignore
@@ -1642,6 +1648,39 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         except Exception:  # noqa: BLE001 — native must never break the turn
             pass
 
+    return complete_fn, _native_on
+
+
+def _compute_caps(max_steps, session_id):
+    """Compute the step-cap budget: the operator/default cap, a positive caller
+    max_steps override, the unattended fallback, and the effective safety cap.
+    Returns (cap_base, caller_cap, unattended, safety, capped)."""
+    _cap_base = _safety_cap()
+    # Only a POSITIVE max_steps is a caller's budget. 0 keeps its historical
+    # meaning — "unset, use the default" — rather than becoming a one-step turn.
+    _caller_cap = max_steps if isinstance(max_steps, int) and max_steps > 0 else None
+    # 0 = NO step cap (Settings → Agent limits, or AIFORGE_CHAT_SAFETY_CAP=0).
+    # The turn then ends the way a turn normally ends: the agent finishes, a
+    # stall guard fires, the wall-clock deadline hits, or the user hits Stop.
+    #
+    # …but Stop is gated on a session id (see the cancel check below), so an
+    # UNATTENDED run — the jobs scheduler, the analysis fan-out, the subtask
+    # runners, text_doer — has no brake at all once the cap is off. "No limits"
+    # is a promise to someone sitting in front of a chat; those runs keep a cap.
+    _unattended = _cap_base <= 0 and _caller_cap is None and session_id is None
+    if _unattended:
+        _cap_base = _unattended_cap()
+    safety = _caller_cap or _cap_base
+    _capped = safety > 0
+    return _cap_base, _caller_cap, _unattended, safety, _capped
+
+
+def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
+                      session_id, mode, scope_globs, builder, strict_finish):
+    """Assemble everything the ReAct loop needs (native detection, mode/read-only
+    flags, scope allowlist, budget-capped convo, cap/deadline/extension budgets,
+    the request meter and every per-turn counter) into one st namespace."""
+    complete_fn, _native_on = _resolve_complete_fn(complete_fn, role)
     from aiforge_core.runtime import chat_approve, chat_cancel, chat_interject
     from aiforge_core.runtime.tools import tool_policy
     chat_cancel.set_active(session_id)
@@ -1665,23 +1704,8 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     # budget — honour it exactly and never auto-extend it. Only the
     # operator-level cap (Settings → env → default) is extendable, and only on
     # an interactive turn (see _ext_budget below).
-    _cap_base = _safety_cap()
-    # Only a POSITIVE max_steps is a caller's budget. 0 keeps its historical
-    # meaning — "unset, use the default" — rather than becoming a one-step turn.
-    _caller_cap = max_steps if isinstance(max_steps, int) and max_steps > 0 else None
-    # 0 = NO step cap (Settings → Agent limits, or AIFORGE_CHAT_SAFETY_CAP=0).
-    # The turn then ends the way a turn normally ends: the agent finishes, a
-    # stall guard fires, the wall-clock deadline hits, or the user hits Stop.
-    #
-    # …but Stop is gated on a session id (see the cancel check below), so an
-    # UNATTENDED run — the jobs scheduler, the analysis fan-out, the subtask
-    # runners, text_doer — has no brake at all once the cap is off. "No limits"
-    # is a promise to someone sitting in front of a chat; those runs keep a cap.
-    _unattended = _cap_base <= 0 and _caller_cap is None and session_id is None
-    if _unattended:
-        _cap_base = _unattended_cap()
-    safety = _caller_cap or _cap_base
-    _capped = safety > 0
+    _cap_base, _caller_cap, _unattended, safety, _capped = _compute_caps(
+        max_steps, session_id)
     # Wall-clock turn backstop. The 2000-step cap is not a real stopping
     # point on a slow local model — 2000 steps × seconds-to-minutes each is
     # effectively "forever" from the user's chair. This deadline bounds the
@@ -1873,34 +1897,9 @@ def _step_prologue(st, n, cwd, role, complete_fn, session_id, builder):
     return out, None
 
 
-def _dispatch_step(st, out, n, cwd, role, complete_fn, session_id, builder,
-                   strict_finish):
-    """Process one parsed reply: FINAL / ask / continue handling, then the action
-    path (stall guard, plan/approval/hook/scope gates, tool dispatch, post-tool
-    bookkeeping). Returns 'return'/'continue'/None."""
-    st.convo.append({"role": "assistant", "content": out})
-    step = _parse(out)
-    if step["kind"] == "final":
-        _sig = yield from _handle_final(
-            st, step, builder, strict_finish, st.plan_mode, st.readonly_mode,
-            cwd, st.asks, st.wt_fp0)
-        if _sig == "return":
-            return "return"
-        if _sig == "continue":
-            return "continue"
-    if step["kind"] == "ask":
-        # Agent is asking the user a question — show it + wait for the next
-        # message (which answers it). awaiting_input flags the UI.
-        yield {"type": "message", "awaiting_input": True, "text": step["text"]}
-        yield {"type": "done"}
-        return "return"
-    if step["kind"] == "continue":
-        _sig = yield from _handle_continue_step(st, step, builder, cwd)
-        if _sig == "return":
-            return "return"
-        if _sig == "continue":
-            return "continue"
-    st.continue_nudges = 0   # a real action resets the narration guard
+def _run_action_path(st, step, n, cwd, session_id):
+    """The action path for a tool step: stall guard, plan/approval/hook/scope
+    gates, tool dispatch and post-tool bookkeeping. Returns return/continue/None."""
     # action
     name = step["tool"]
     # Coerce to a dict: a model can emit `ARGS_JSON: null` (or a JSON scalar)
@@ -1931,6 +1930,37 @@ def _dispatch_step(st, out, n, cwd, role, complete_fn, session_id, builder,
     yield from _post_tool(st, name, args, result, cwd, sig, n,
                           st.long_chain_help, st.bundle)
     return None
+
+
+def _dispatch_step(st, out, n, cwd, role, complete_fn, session_id, builder,
+                   strict_finish):
+    """Process one parsed reply: FINAL / ask / continue handling, then the action
+    path (stall guard, plan/approval/hook/scope gates, tool dispatch, post-tool
+    bookkeeping). Returns 'return'/'continue'/None."""
+    st.convo.append({"role": "assistant", "content": out})
+    step = _parse(out)
+    if step["kind"] == "final":
+        _sig = yield from _handle_final(
+            st, step, builder, strict_finish, st.plan_mode, st.readonly_mode,
+            cwd, st.asks, st.wt_fp0)
+        if _sig == "return":
+            return "return"
+        if _sig == "continue":
+            return "continue"
+    if step["kind"] == "ask":
+        # Agent is asking the user a question — show it + wait for the next
+        # message (which answers it). awaiting_input flags the UI.
+        yield {"type": "message", "awaiting_input": True, "text": step["text"]}
+        yield {"type": "done"}
+        return "return"
+    if step["kind"] == "continue":
+        _sig = yield from _handle_continue_step(st, step, builder, cwd)
+        if _sig == "return":
+            return "return"
+        if _sig == "continue":
+            return "continue"
+    st.continue_nudges = 0   # a real action resets the narration guard
+    return (yield from _run_action_path(st, step, n, cwd, session_id))
 
 
 def run_chat_agent(
