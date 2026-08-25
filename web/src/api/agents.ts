@@ -62,14 +62,16 @@ export interface LlmSettings {
 // the env var / built-in default.
 export type LlmSettingsInput = Partial<LlmSettings> & { unset?: string[] };
 
+export type ModelTriState = 'auto' | 'yes' | 'no';
+
 export interface RegistryModel {
   id: string;
   label: string;
   model: string;
   base_url: string;
   insecure_tls: boolean;
-  vision: 'auto' | 'yes' | 'no';
-  thinking: 'auto' | 'yes' | 'no';
+  vision: ModelTriState;
+  thinking: ModelTriState;
   has_vision: boolean;
   has_thinking: boolean;
   context_window: number;
@@ -81,8 +83,8 @@ export interface ModelInput {
   base_url?: string;
   api_key?: string;
   insecure_tls?: boolean;
-  vision?: 'auto' | 'yes' | 'no';
-  thinking?: 'auto' | 'yes' | 'no';
+  vision?: ModelTriState;
+  thinking?: ModelTriState;
   context_window?: number;
 }
 
