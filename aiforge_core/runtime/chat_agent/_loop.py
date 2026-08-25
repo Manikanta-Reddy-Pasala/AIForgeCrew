@@ -958,6 +958,29 @@ def _deadline_guard(st, n):
     return None
 
 
+def _append_directive(st, _directive):
+    """Append a steer/reject directive as a user turn — merged into a trailing
+    user turn (list-safe for a vision turn) to avoid two consecutive user turns
+    that break some providers, else a fresh turn."""
+    # If the last turn is already a user message (e.g. the
+    # OBSERVATION we just appended after a tool step), MERGE the
+    # steer into it — two consecutive user turns break some
+    # providers (claude_local). Otherwise append a fresh user turn.
+    _last = st.convo[-1] if st.convo else None
+    if _last is not None and _last.get("role") == "user":
+        _c = _last.get("content")
+        if isinstance(_c, list):
+            # A VISION turn's content is a list of parts. `+=` on a
+            # list extends it with the string's CHARACTERS: one
+            # steer became 364 single-character parts, invisible to
+            # _text_of (so the condenser and the context meter both
+            # missed it) while still being sent.
+            _c.append({"type": "text", "text": _directive})
+        else:
+            _last["content"] = f"{_c or ''}\n\n{_directive}"
+    else:
+        st.convo.append({"role": "user", "content": _directive})
+
 def _drain_steering(st, session_id):
     """Fold any user-injected mid-run steering/rejections into the working
     context as ONE user turn before the next model call (merging into a trailing
@@ -978,24 +1001,7 @@ def _drain_steering(st, session_id):
             _parts = ([chat_steer.steer_block(_steers)] if _steers else [])
             _parts += [chat_steer.reject_note(g) for g in _rejects]
             _directive = "\n\n".join(p for p in _parts if p)
-            # If the last turn is already a user message (e.g. the
-            # OBSERVATION we just appended after a tool step), MERGE the
-            # steer into it — two consecutive user turns break some
-            # providers (claude_local). Otherwise append a fresh user turn.
-            _last = st.convo[-1] if st.convo else None
-            if _last is not None and _last.get("role") == "user":
-                _c = _last.get("content")
-                if isinstance(_c, list):
-                    # A VISION turn's content is a list of parts. `+=` on a
-                    # list extends it with the string's CHARACTERS: one
-                    # steer became 364 single-character parts, invisible to
-                    # _text_of (so the condenser and the context meter both
-                    # missed it) while still being sent.
-                    _c.append({"type": "text", "text": _directive})
-                else:
-                    _last["content"] = f"{_c or ''}\n\n{_directive}"
-            else:
-                st.convo.append({"role": "user", "content": _directive})
+            _append_directive(st, _directive)
             for _k, _t in _items:
                 yield chat_steer.steer_event(_t)
 
