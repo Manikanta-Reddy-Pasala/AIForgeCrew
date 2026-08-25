@@ -119,7 +119,8 @@ def _event_hooks(role: str | None, model: str | None, provider: str,
     def _on_request(request) -> None:
         # Order matches _post: throttle first, then count what is going out.
         try:
-            _rl.acquire_global(max_wait_s=_wait_budget(), provider=provider)
+            _rl.acquire_global(max_wait_s=_wait_budget(), provider=provider,
+                               role=role)
         except Exception:  # noqa: BLE001 — a limiter fault must not kill a call
             pass
         try:
@@ -212,7 +213,8 @@ def _charge_one_unmetered(role, model, provider: str) -> None:
     path, which is the bug this file was rewritten to fix."""
     try:
         from aiforge_core.llm import rate_limiter as _rl
-        _rl.acquire_global(max_wait_s=_wait_budget(), provider=provider)
+        _rl.acquire_global(max_wait_s=_wait_budget(), provider=provider,
+                           role=role)
     except Exception:  # noqa: BLE001
         pass
     try:

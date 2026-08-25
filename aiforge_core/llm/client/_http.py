@@ -321,7 +321,9 @@ def _post(ep: Endpoint, payload: bytes, timeout_s: int,
         max_wait_s=float(_int_env("AIFORGE_LLM_MAX_WAIT_S", 120)),
         # Provider-scoped: a 429 from a cloud gateway must not stall the local
         # mlx server, which declares no rate limit at all.
-        provider=ep.provider)
+        provider=ep.provider,
+        # Role picks the category sub-ceiling (compaction vs chat).
+        role=role)
     if throttled is not None:
         throttled[0] = _throttled
     # ONE meter token for BOTH paths, and the failure counted here rather than

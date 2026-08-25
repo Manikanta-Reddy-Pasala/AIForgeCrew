@@ -44,7 +44,12 @@ export interface LlmSettings {
   chat_turn_deadline_s: number;
   chat_cap_extensions: number;
   chat_unattended_cap: number;
+  /** machine-wide GLOBAL ceiling across every category (0 = no ceiling) */
   llm_max_rpm: number;
+  /** sub-ceiling for memory/compaction (learner) LLM calls (0 = only global) */
+  compaction_rpm: number;
+  /** sub-ceiling for chat + all other LLM calls (0 = only global) */
+  chat_rpm: number;
   /** seconds to wait after the PROVIDER rejects us for sending too fast and
    *  sends no Retry-After (0 = ordinary exponential backoff) */
   llm_rate_limit_backoff_s: number;

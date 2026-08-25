@@ -212,10 +212,22 @@ def _cap(cap: "float | None") -> float:
     return min(c * 1.5 + 5.0, _MAX_HOLD_S)
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS sends (ts REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS sends (ts REAL NOT NULL, cat TEXT NOT NULL DEFAULT 'chat');
 CREATE INDEX IF NOT EXISTS sends_ts ON sends (ts);
 CREATE TABLE IF NOT EXISTS holds (k TEXT PRIMARY KEY, until REAL NOT NULL);
 """
+
+
+def _migrate_cat(db: "sqlite3.Connection") -> None:
+    """Add the ``cat`` column to a ``sends`` table created before per-category
+    ceilings existed. Idempotent: a fresh table already has it (see _SCHEMA), so
+    this only fires on an upgrade over an old ``llm_rate.db``. A pre-existing row
+    predates categories, so it counts as 'chat' (the busy interactive bucket) —
+    the conservative default that never under-counts the compaction bucket.
+    """
+    cols = {r[1] for r in db.execute("PRAGMA table_info(sends)").fetchall()}
+    if "cat" not in cols:
+        db.execute("ALTER TABLE sends ADD COLUMN cat TEXT NOT NULL DEFAULT 'chat'")
 
 
 def path() -> str:
@@ -267,6 +279,7 @@ def _init(db: "sqlite3.Connection") -> None:
     for attempt in range(_INIT_TRIES):
         try:
             db.executescript(_SCHEMA)
+            _migrate_cat(db)
             return
         except Exception:  # noqa: BLE001
             if attempt == _INIT_TRIES - 1:
@@ -303,15 +316,25 @@ def _conn() -> "sqlite3.Connection | None":
     return db
 
 
-def count(now: float | None = None) -> "int | None":
-    """Sends in the last 60s across every process, or None if unavailable."""
+def count(now: float | None = None, *, cat: str | None = None) -> "int | None":
+    """Sends in the last 60s across every process, or None if unavailable.
+
+    ``cat=None`` counts every category (the global window); a category name
+    counts only that bucket.
+    """
     db = _conn()
     if db is None:
         return None
     now = time.time() if now is None else now
     try:
-        cur = db.execute("SELECT COUNT(*) FROM sends WHERE ts > ? AND ts <= ?",
-                         (now - 60.0, now + 1.0))
+        if cat is None:
+            cur = db.execute(
+                "SELECT COUNT(*) FROM sends WHERE ts > ? AND ts <= ?",
+                (now - 60.0, now + 1.0))
+        else:
+            cur = db.execute(
+                "SELECT COUNT(*) FROM sends WHERE ts > ? AND ts <= ? AND cat = ?",
+                (now - 60.0, now + 1.0, cat))
         n = int(cur.fetchone()[0])
         _healthy()
         return n
@@ -321,14 +344,21 @@ def count(now: float | None = None) -> "int | None":
         return None
 
 
-def take(limit: int, now: float | None = None) -> "tuple[bool, float] | None":
+def take(limit: int, now: float | None = None, *,
+         cat: str = "chat", cat_limit: int = 0) -> "tuple[bool, float] | None":
     """Try to claim one send. Returns ``(claimed, seconds_to_wait)``.
 
-    ``(True, 0.0)`` — counted, go. ``(False, n)`` — the window is full and the
-    oldest send ages out in ``n`` seconds. ``None`` — the shared store had no
-    opinion; use the in-process window.
+    ``(True, 0.0)`` — counted, go. ``(False, n)`` — a window is full and frees
+    in ``n`` seconds. ``None`` — the shared store had no opinion; use the
+    in-process window.
 
-    The delete, the count and the insert are ONE transaction on purpose. Split
+    TWO ceilings, enforced together. ``limit`` is the machine-wide GLOBAL cap
+    (every category); ``cat_limit`` is the sub-cap for THIS ``cat`` (0 = the
+    category is unbounded, only the global applies). A send is admitted only
+    when BOTH have room, and when blocked the wait is the longest of the
+    binding windows — you need both clear at once.
+
+    The delete, the counts and the insert are ONE transaction on purpose. Split
     across statements, two processes both read "14 of 15" and both send.
     """
     db = _conn()
@@ -336,6 +366,7 @@ def take(limit: int, now: float | None = None) -> "tuple[bool, float] | None":
         return None
     _live = now is None
     now = time.time() if now is None else now
+    wait_s: "float | None" = None
     try:
         try:
             db.execute(_BEGIN_IMMEDIATE)
@@ -361,12 +392,31 @@ def take(limit: int, now: float | None = None) -> "tuple[bool, float] | None":
             db.execute("DELETE FROM sends WHERE ts <= ? OR ts > ?",
                        (now - 60.0, now + 1.0))
             n = int(db.execute("SELECT COUNT(*) FROM sends").fetchone()[0])
-            if n < limit:
-                db.execute("INSERT INTO sends (ts) VALUES (?)", (now,))
+            nc = (int(db.execute("SELECT COUNT(*) FROM sends WHERE cat = ?",
+                                 (cat,)).fetchone()[0])
+                  if cat_limit > 0 else 0)
+            global_ok = limit <= 0 or n < limit
+            cat_ok = cat_limit <= 0 or nc < cat_limit
+            if global_ok and cat_ok:
+                db.execute("INSERT INTO sends (ts, cat) VALUES (?, ?)",
+                           (now, cat))
                 db.execute("COMMIT")
                 _healthy()
                 return True, 0.0
-            oldest = db.execute("SELECT MIN(ts) FROM sends").fetchone()[0]
+            # Full on at least one window. Wait until EVERY binding window has
+            # room — the send needs the global AND the category clear at once,
+            # so take the longer of the two ages-out.
+            waits: list[float] = []
+            if not global_ok:
+                og = db.execute("SELECT MIN(ts) FROM sends").fetchone()[0]
+                if og is not None:
+                    waits.append((float(og) + 60.0) - now)
+            if not cat_ok:
+                oc = db.execute("SELECT MIN(ts) FROM sends WHERE cat = ?",
+                                (cat,)).fetchone()[0]
+                if oc is not None:
+                    waits.append((float(oc) + 60.0) - now)
+            wait_s = max(waits) if waits else None
             db.execute("COMMIT")
         except BaseException:
             # BaseException, not Exception: a KeyboardInterrupt (Ctrl-C into
@@ -386,12 +436,12 @@ def take(limit: int, now: float | None = None) -> "tuple[bool, float] | None":
         _degrade(exc)
         return None
     _healthy()
-    if oldest is None:                      # raced empty; caller retries
+    if wait_s is None:                      # raced empty; caller retries
         return False, 0.0
-    return False, max(0.0, (float(oldest) + 60.0) - now)
+    return False, max(0.0, wait_s)
 
 
-def force(limit: int, now: float | None = None) -> bool:
+def force(limit: int, now: float | None = None, *, cat: str = "chat") -> bool:
     """Count a send that is going out regardless (the overrun path).
 
     It left the box, so it belongs in the window whatever the count says —
@@ -419,7 +469,7 @@ def force(limit: int, now: float | None = None) -> bool:
             # returned True having deleted its own send.
             db.execute("DELETE FROM sends WHERE ts <= ? OR ts > ?",
                        (now - 60.0, now + 1.0))
-            db.execute("INSERT INTO sends (ts) VALUES (?)", (now,))
+            db.execute("INSERT INTO sends (ts, cat) VALUES (?, ?)", (now, cat))
             db.execute(
                 "DELETE FROM sends WHERE rowid IN ("
                 "  SELECT rowid FROM sends ORDER BY ts DESC LIMIT -1 OFFSET ?)",

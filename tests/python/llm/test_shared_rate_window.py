@@ -179,7 +179,7 @@ def test_a_broken_store_still_throttles(monkeypatch):
     _set_rpm(2)
     assert rl.acquire_global() == 0.0
     assert rl.acquire_global() == 0.0
-    claimed, wait = rl._take(2, None)
+    claimed, wait = rl._take(2, "chat", 0, None)
     assert claimed is False and wait > 0
 
 
@@ -194,7 +194,7 @@ _CHILD = textwrap.dedent("""
     for _ in range({tries}):
         # max_wait_s=0 so a blocked caller returns immediately rather than
         # parking: we are counting who got a SLOT, not who waited.
-        claimed, _wait = rl._take({rpm}, None)
+        claimed, _wait = rl._take({rpm}, "chat", 0, None)
         if claimed:
             got += 1
     print(json.dumps({{"got": got}}))
@@ -473,7 +473,7 @@ def test_contention_never_promotes_a_caller_to_its_own_window(monkeypatch):
 
     # …and the limiter does NOT fall through to its private window.
     _set_rpm(2)
-    claimed, wait = rl._take(2, None)
+    claimed, wait = rl._take(2, "chat", 0, None)
     assert claimed is False, "contention handed out a slot anyway"
     assert wait > 0
 
@@ -487,7 +487,7 @@ def test_a_genuinely_broken_store_still_falls_back(monkeypatch):
     monkeypatch.setattr(sw, "_conn", lambda: _Broken())
     assert sw.take(2) is None
     _set_rpm(2)
-    assert rl._take(2, None)[0] is True     # the in-process window serves it
+    assert rl._take(2, "chat", 0, None)[0] is True     # the in-process window serves it
 
 
 # ── the three the second review round measured ──────────────────────
@@ -824,7 +824,7 @@ def test_a_missed_forced_send_falls_back_instead_of_vanishing(monkeypatch):
     _set_rpm(5)
     monkeypatch.setattr(sw, "force", lambda *a, **k: False)
     before = len(rl._sends)
-    rl._force_take(5)
+    rl._force_take(5, "chat")
     assert len(rl._sends) == before + 1, "a missed forced send was lost entirely"
 
 
@@ -834,7 +834,7 @@ def test_a_successful_forced_send_is_not_double_counted(monkeypatch):
     _set_rpm(5)
     monkeypatch.setattr(sw, "force", lambda *a, **k: True)
     before = len(rl._sends)
-    rl._force_take(5)
+    rl._force_take(5, "chat")
     assert len(rl._sends) == before
     assert sw.count() == 0          # our fake swallowed it; nothing else added
 

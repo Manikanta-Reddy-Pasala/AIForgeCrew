@@ -19,6 +19,12 @@ def _clean(monkeypatch, tmp_path):
     # clock can exercise, since the cross-process window must use wall time.
     # The shared window has its own suite: test_shared_rate_window.py.
     monkeypatch.setenv("AIFORGE_LLM_SHARED_WINDOW", "0")
+    # This file tests the GLOBAL ceiling in isolation. Neutralise the per-
+    # category sub-ceilings (default chat=15/compaction=5) so they never
+    # confound a pure-global assertion; the tests that exercise categories set
+    # them explicitly.
+    monkeypatch.setenv("AIFORGE_CHAT_RPM", "0")
+    monkeypatch.setenv("AIFORGE_COMPACTION_RPM", "0")
     from aiforge_core.config import _filecache
     _filecache.clear()
     rl._RPM_BUCKETS.clear()
@@ -30,12 +36,33 @@ def _clean(monkeypatch, tmp_path):
 
 
 def test_zero_means_no_ceiling(monkeypatch):
+    # "No ceiling at all" now means zeroing the global AND both category
+    # sub-ceilings — they are independent knobs, and the default chat_rpm=15
+    # would otherwise still throttle the un-roled calls below.
     monkeypatch.setenv("AIFORGE_LLM_MAX_RPM", "0")
+    monkeypatch.setenv("AIFORGE_CHAT_RPM", "0")
+    monkeypatch.setenv("AIFORGE_COMPACTION_RPM", "0")
     from aiforge_core.config import runtime_settings as rs
-    rs.set_many({"llm_max_rpm": 0})
+    rs.set_many({"llm_max_rpm": 0, "chat_rpm": 0, "compaction_rpm": 0})
     assert rl.global_rpm() == 0
     for _ in range(50):
         assert rl.acquire_global() == 0.0        # never blocks
+
+
+def test_compaction_subceiling_independent_of_global(monkeypatch):
+    # A compaction (learner) call is capped by compaction_rpm even when the
+    # global ceiling has plenty of room — background folding must never crowd
+    # out chat. With shared window off we exercise the in-process gate.
+    monkeypatch.setenv("AIFORGE_LLM_SHARED_WINDOW", "0")
+    from aiforge_core.config import runtime_settings as rs
+    rs.set_many({"llm_max_rpm": 100, "compaction_rpm": 3, "chat_rpm": 100})
+    rl.reset_global()
+    for _ in range(3):
+        assert rl._take(100, "compaction", 3, "p")[0] is True
+    blocked, wait = rl._take(100, "compaction", 3, "p")
+    assert blocked is False and wait > 0     # compaction bucket full
+    # chat is unaffected — its own bucket still has room under the same global
+    assert rl._take(100, "chat", 100, "p")[0] is True
 
 
 def _fake_clock(monkeypatch):

@@ -116,7 +116,9 @@ def _resolved_limits(provider: str,
 # backwards. call_meter's own 60s ring made this exact choice for this exact
 # reason.
 _WINDOW_LOCK = threading.Lock()
-_sends: "list[float]" = []
+# (timestamp, category) per send. The category ("compaction" | "chat") carries
+# the per-bucket sub-ceiling; the list length is still the global count.
+_sends: "list[tuple[float, str]]" = []
 # Set by note_rate_limited: monotonic instant before which nothing may be sent
 # to THAT PROVIDER because it said we are over its limit. Keyed, because the
 # common setup is a cloud gateway for the doer and a local mlx/LM Studio for
@@ -185,6 +187,43 @@ def global_rpm() -> float:
             return _DEFAULT_GLOBAL_RPM
 
 
+#: Roles whose LLM traffic is memory/compaction, not interactive. These share
+#: the SEPARATE, smaller "compaction" sub-ceiling so background folding can
+#: never crowd out a user's chat. "learner" is the only memory-side sender
+#: today (okf tiers, work_notes.consolidate, the boot fold all run as it); add
+#: future memory roles here.
+_COMPACTION_ROLES = frozenset({"learner"})
+
+_DEFAULT_COMPACTION_RPM = 5.0
+_DEFAULT_CHAT_RPM = 15.0
+
+
+def _category(role: "str | None") -> str:
+    """Which sub-ceiling this call counts against: 'compaction' or 'chat'."""
+    return "compaction" if role in _COMPACTION_ROLES else "chat"
+
+
+def _cat_rpm(cat: str) -> float:
+    """The per-category ceiling in requests/minute; 0 = that category is bounded
+    only by the global ceiling. Resolves stored setting -> env -> default, like
+    :func:`global_rpm`.
+    """
+    if cat == "compaction":
+        setting, env, default = "compaction_rpm", "AIFORGE_COMPACTION_RPM", \
+            _DEFAULT_COMPACTION_RPM
+    else:
+        setting, env, default = "chat_rpm", "AIFORGE_CHAT_RPM", _DEFAULT_CHAT_RPM
+    try:
+        from aiforge_core.config import runtime_settings as _rs
+        return max(0.0, float(_rs.get(setting)))
+    except Exception:  # noqa: BLE001 — never let a settings read block a call
+        raw = os.environ.get(env)
+        try:
+            return max(0.0, float(raw)) if raw else default
+        except (TypeError, ValueError):
+            return default
+
+
 def waiting() -> int:
     """How many callers are queued on the global ceiling right now — the
     number that turns "why is this slow" into "you capped it"."""
@@ -211,7 +250,7 @@ def _trim_locked(now: float) -> None:
     ``_WINDOW_LOCK``."""
     cut = now - 60.0
     i = 0
-    while i < len(_sends) and _sends[i] <= cut:
+    while i < len(_sends) and _sends[i][0] <= cut:
         i += 1
     if i:
         del _sends[:i]
@@ -343,8 +382,14 @@ def _shared():
         return None
 
 
-def _take(rpm: float, _provider: "str | None") -> "tuple[bool, float]":
-    """Claim one send. (claimed, seconds_until_room).
+def _take(rpm: float, cat: str, cat_rpm: float,
+          _provider: "str | None") -> "tuple[bool, float]":
+    """Claim one send against BOTH the global ceiling (``rpm``) and this call's
+    category ceiling (``cat_rpm``). (claimed, seconds_until_room).
+
+    Either ceiling of 0 means "unbounded on that axis". A send is claimed only
+    when both have room; when blocked the wait is the longer of the binding
+    windows, since both must be clear at once.
 
     Tries the SHARED window first — the whole point, since `run.sh` runs the
     API, the team-pipeline runner and the boot-time fold as separate processes
@@ -352,39 +397,57 @@ def _take(rpm: float, _provider: "str | None") -> "tuple[bool, float]":
     process's own window whenever the shared store has no opinion, so a locked
     or unwritable file throttles slightly worse rather than not at all.
     """
+    glimit = _limit(rpm) if rpm > 0 else 0
+    climit = _limit(cat_rpm) if cat_rpm > 0 else 0
     sw = _shared()
     if sw is not None:
-        got = sw.take(_limit(rpm))
+        got = sw.take(glimit, cat=cat, cat_limit=climit)
         if got is not None:
             return got
     with _WINDOW_LOCK:
         now = _now()
         _trim_locked(now)
-        if len(_sends) < _limit(rpm):
-            _sends.append(now)
+        n = len(_sends)
+        nc = sum(1 for _, c in _sends if c == cat) if climit > 0 else 0
+        global_ok = glimit <= 0 or n < glimit
+        cat_ok = climit <= 0 or nc < climit
+        if global_ok and cat_ok:
+            _sends.append((now, cat))
             return True, 0.0
-        return False, max(0.0, (_sends[0] + 60.0) - now)
+        waits: list[float] = []
+        if not global_ok:
+            waits.append((_sends[0][0] + 60.0) - now)
+        if not cat_ok:
+            oc = next((ts for ts, c in _sends if c == cat), None)
+            if oc is not None:
+                waits.append((oc + 60.0) - now)
+        if not waits:                       # raced empty; caller retries
+            return False, 0.0
+        return False, max(0.0, max(waits))
 
 
-def _force_take(rpm: float) -> None:
-    """Count a send that is going out past the wait budget anyway."""
+def _force_take(rpm: float, cat: str) -> None:
+    """Count a send (of category ``cat``) going out past the wait budget."""
     sw = _shared()
     # USE THE RETURN VALUE. force() reports a miss precisely so it is not lost,
     # and dropping it here returned before the fallback too — so under
     # saturation 0.8% of forced sends (100% during a cooldown) were counted in
     # neither window. Under-counting is the direction that PERMITS extra sends
     # later, which is the failure this module exists to prevent.
-    if sw is not None and sw.force(_limit(rpm)):
+    # An unbounded global axis (rpm<=0) must not trim the window to 1: pass a
+    # cap large enough to be a no-op so the count still describes real traffic
+    # (the category axis, or a later lowered ceiling, may still read it).
+    cap = _limit(rpm) if rpm > 0 else 1_000_000_000
+    if sw is not None and sw.force(cap, cat=cat):
         return
     with _WINDOW_LOCK:
-        _sends.append(_now())
-        cap = _limit(rpm)
+        _sends.append((_now(), cat))
         if len(_sends) > cap:
             del _sends[:len(_sends) - cap]
 
 
 def _overrun_through(waited: float, max_wait_s: float, rpm: float,
-                     hold_s: float) -> None:
+                     hold_s: float, cat: str, cat_rpm: float) -> None:
     """Let a call past its wait budget proceed, accounting for the overrun.
 
     A call let through past ``max_wait_s`` still left the box, so ``_force_take``
@@ -394,19 +457,23 @@ def _overrun_through(waited: float, max_wait_s: float, rpm: float,
     """
     log.warning(
         "llm.rate_ceiling_overrun: waited %.1fs of a %.1fs budget "
-        "at llm_max_rpm=%g (hold %.1fs) — letting this call through "
-        "rather than failing it. Raise the ceiling in Settings -> "
+        "at llm_max_rpm=%g, %s_rpm=%g (hold %.1fs) — letting this call "
+        "through rather than failing it. Raise the ceiling in Settings -> "
         "Agent limits if this is common.",
-        waited, max_wait_s, rpm, hold_s)
-    if rpm > 0:
-        _force_take(rpm)
+        waited, max_wait_s, rpm, cat, cat_rpm, hold_s)
+    # Count the send whenever EITHER axis is bounded — the category cap can bind
+    # while the global is unlimited, and an uncounted overrun there reads as an
+    # idle bucket.
+    if rpm > 0 or cat_rpm > 0:
+        _force_take(rpm, cat)
 
 
-def _acquire_pass(provider) -> tuple[bool, float, float, float]:
-    """One evaluation of the global ceiling. Returns
+def _acquire_pass(provider, cat: str,
+                  cat_rpm: float) -> tuple[bool, float, float, float]:
+    """One evaluation of the global + category ceilings. Returns
     ``(done, sleep_s, rpm, hold_s)``: ``done`` when the call may proceed now
-    (uncapped, or a slot was claimed); otherwise ``sleep_s`` is how long to
-    park before re-evaluating.
+    (uncapped on both axes, or a slot was claimed); otherwise ``sleep_s`` is
+    how long to park before re-evaluating.
 
     Re-reads the ceiling every pass so an operator who raises it mid-run is not
     made to wait out the old number. HOLD FIRST, and claim only once it is
@@ -420,17 +487,24 @@ def _acquire_pass(provider) -> tuple[bool, float, float, float]:
     hold_s = held_for(provider)
     window_s = 0.0
     if hold_s <= 0:
-        if rpm <= 0:
+        if rpm <= 0 and cat_rpm <= 0:
             return True, 0.0, rpm, hold_s
-        claimed, window_s = _take(rpm, provider)
+        claimed, window_s = _take(rpm, cat, cat_rpm, provider)
         if claimed:
             return True, 0.0, rpm, hold_s
     return False, max(hold_s, window_s), rpm, hold_s
 
 
 def acquire_global(*, max_wait_s: float = 120.0,
-                   provider: "str | None" = None) -> float:
-    """Block until the operator's global rate ceiling allows one more request.
+                   provider: "str | None" = None,
+                   role: "str | None" = None) -> float:
+    """Block until the operator's rate ceilings allow one more request.
+
+    ``role`` selects the category sub-ceiling: memory/compaction roles (see
+    :data:`_COMPACTION_ROLES`) count against the small ``compaction_rpm``
+    bucket, everything else against ``chat_rpm``; both also count against the
+    machine-wide ``llm_max_rpm``. A call is released only when both its category
+    and the global window have room.
 
     Returns the seconds spent waiting (0 when uncapped and unheld).
 
@@ -462,20 +536,22 @@ def acquire_global(*, max_wait_s: float = 120.0,
     a box at its limit as idle.
     """
     global _waiting
-    if global_rpm() <= 0 and held_for(provider) <= 0:
+    cat = _category(role)
+    cat_rpm = _cat_rpm(cat)
+    if global_rpm() <= 0 and cat_rpm <= 0 and held_for(provider) <= 0:
         return 0.0
     waited = 0.0
     with _WAIT_LOCK:
         _waiting += 1
     try:
         while True:
-            done, sleep_s, rpm, hold_s = _acquire_pass(provider)
+            done, sleep_s, rpm, hold_s = _acquire_pass(provider, cat, cat_rpm)
             if done:
                 return waited
             if sleep_s <= 0:
                 continue
             if waited + sleep_s > max_wait_s:
-                _overrun_through(waited, max_wait_s, rpm, hold_s)
+                _overrun_through(waited, max_wait_s, rpm, hold_s, cat, cat_rpm)
                 return waited
             _step = min(sleep_s, 5.0)
             time.sleep(_step)

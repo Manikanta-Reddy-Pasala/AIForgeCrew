@@ -253,8 +253,13 @@ class _RuntimeSettingsBody(BaseModel):
     chat_cap_extensions: int | None = Field(None, ge=0, le=50)
     # ge=1: a background run has no Stop button, so it is never uncapped.
     chat_unattended_cap: int | None = Field(None, ge=1, le=1_000_000)
-    # 0 = no ceiling.
+    # 0 = no ceiling. This is the machine-wide GLOBAL cap; the two sub-ceilings
+    # below carve it up per category.
     llm_max_rpm: int | None = Field(None, ge=0, le=100_000)
+    # Per-category sub-ceilings. compaction = memory/learner folding (small so it
+    # never starves chat); chat = everything else. 0 = only the global applies.
+    compaction_rpm: int | None = Field(None, ge=0, le=100_000)
+    chat_rpm: int | None = Field(None, ge=0, le=100_000)
     # Rate-limit response knobs. Bounds MUST match _BOUNDS in runtime_settings:
     # this validator is the only write path, so a mismatch here makes the
     # store's own bound unreachable and the UI 422s on a value it offers.

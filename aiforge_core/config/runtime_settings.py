@@ -117,7 +117,21 @@ _SPEC: dict[str, tuple[str, int]] = {
     # when the account allows more; 0 disables OUR throttle entirely. (Was 60,
     # which over-sent on the common single-key setup before the operator ever
     # opened Settings.)
-    "llm_max_rpm": ("AIFORGE_LLM_MAX_RPM", 15),
+    # The machine-wide GLOBAL cap across every category (chat + compaction +
+    # everything else). 20 by default. The two sub-ceilings below carve this up:
+    # compaction (memory folding) gets a small slice so it can never crowd out a
+    # user's chat, and chat/other gets the rest. 0 disables OUR throttle.
+    "llm_max_rpm": ("AIFORGE_LLM_MAX_RPM", 20),
+    # Sub-ceiling for memory/compaction LLM calls (okf tier folds,
+    # work_notes.consolidate, the boot fold — everything on the "learner" role).
+    # 5 rpm by default: bounded background distillation that never floods the
+    # provider or starves chat. 0 = disable compaction's own throttle (still
+    # bounded by llm_max_rpm). Set to a small number, NOT 0, to slow it; the
+    # separate AIFORGE_COMPACT_DISABLE hard-off skips the LLM entirely.
+    "compaction_rpm": ("AIFORGE_COMPACTION_RPM", 5),
+    # Sub-ceiling for chat + all other (non-compaction) LLM calls. 15 rpm by
+    # default. 0 = bounded only by the global llm_max_rpm.
+    "chat_rpm": ("AIFORGE_CHAT_RPM", 15),
     # How long to wait after a provider REJECTS us for sending too fast (a 429,
     # or a 4xx whose body names a rate limit) when it did not send a
     # Retry-After. The provider is counting a minute; a sub-second backoff just
@@ -154,6 +168,8 @@ _BOUNDS: dict[str, tuple[int, int]] = {
     "chat_cap_extensions": (0, 50),
     "chat_unattended_cap": (1, 1_000_000),
     "llm_max_rpm": (0, 100_000),
+    "compaction_rpm": (0, 100_000),
+    "chat_rpm": (0, 100_000),
     # lo=0: fall back to the ordinary exponential backoff.
     "llm_rate_limit_backoff_s": (0, 3_600),
     # lo=1: a cap of 0 would mean "obey no rejection at all", which is not a
