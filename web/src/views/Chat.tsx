@@ -500,6 +500,14 @@ function CheckpointsModal({ checkpoints, setCheckpoints, restoreCheckpoint }: Re
 
 // ── Chat component ─────────────────────────────────────────────────────────────
 
+// M2: copy with uniform feedback. Uses mdlite.copyText, which falls back to a
+// hidden-textarea execCommand when the clipboard API is unavailable (plain
+// HTTP on a LAN IP) — so Copy works everywhere, not only over HTTPS.
+function copyText(t: string) {
+  mdCopyText(t).then(() => toast.success('Copied'),
+                     () => toast.error('Copy failed'));
+}
+
 export default function Chat() {
   // Sessions list
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -1176,6 +1184,47 @@ export default function Chat() {
     if (e.key === 'Escape') { setRenaming(null); }
   }
 
+  // Re-attach handshake (first event from /attach): if a run is live, bring
+  // the view back into the streaming state — busy spinner, a live turn for
+  // the replayed events to populate, and the elapsed timer seeded from the
+  // run's TRUE start so the duration is continuous (not reset).
+  function handleAttached(evt: any) {
+    if (!evt.running) return;
+    setBusy(true);
+    setLiveTurn(prev => prev ?? { role: 'assistant', text: '', steps: [], streaming: true });
+    sendStartRef.current = evt.started_at ? evt.started_at * 1000 : Date.now();
+    setElapsedSec(Math.max(0, Math.floor((Date.now() - sendStartRef.current) / 1000)));
+    if (timerRef.current !== null) clearInterval(timerRef.current);
+    timerRef.current = setInterval(() => {
+      setElapsedSec(Math.floor((Date.now() - sendStartRef.current) / 1000));
+    }, 1000);
+  }
+
+  // Inline "pill" events that only mutate the live turn (expired gate,
+  // auto-approved audit, usage meter, captured rule/memory). Returns whether
+  // the event was one of these (so applyEvent can stop).
+  function handlePillEvent(evt: any): boolean {
+    if (evt.type === 'approval_expired') {   // M4: gate timed out while away
+      setPendingApproval(null);
+      guardedUpdate(setLiveTurn, prev => appendSystemThought(prev,
+        `⏲ approval for ${evt.name} expired — action was not run`));
+      return true;
+    }
+    if (evt.type === 'auto_approved') {       // M5: captured-flag auto-approve
+      guardedUpdate(setLiveTurn, prev => appendSystemThought(prev, autoApprovedText(evt)));
+      return true;
+    }
+    if (evt.type === 'usage') {               // M3: context-window usage
+      guardedUpdate(setLiveTurn, prev => mergeUsage(prev, evt));
+      return true;
+    }
+    if (evt.type === 'captured') {            // deterministic capture pass pill
+      guardedUpdate(setLiveTurn, prev => appendCaptured(prev, evt));
+      return true;
+    }
+    return false;
+  }
+
   // ── SSE stream pump (shared by send + reattach) ───────────────────────────
   // Reads the SSE body to completion, applying each event to the live turn.
   // Used both by a fresh `send` and by `attachToRun` (resume after navigating
@@ -1184,47 +1233,6 @@ export default function Chat() {
     const reader = res.body!.getReader();
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
-
-    // Re-attach handshake (first event from /attach): if a run is live, bring
-    // the view back into the streaming state — busy spinner, a live turn for
-    // the replayed events to populate, and the elapsed timer seeded from the
-    // run's TRUE start so the duration is continuous (not reset).
-    function handleAttached(evt: any) {
-      if (!evt.running) return;
-      setBusy(true);
-      setLiveTurn(prev => prev ?? { role: 'assistant', text: '', steps: [], streaming: true });
-      sendStartRef.current = evt.started_at ? evt.started_at * 1000 : Date.now();
-      setElapsedSec(Math.max(0, Math.floor((Date.now() - sendStartRef.current) / 1000)));
-      if (timerRef.current !== null) clearInterval(timerRef.current);
-      timerRef.current = setInterval(() => {
-        setElapsedSec(Math.floor((Date.now() - sendStartRef.current) / 1000));
-      }, 1000);
-    }
-
-    // Inline "pill" events that only mutate the live turn (expired gate,
-    // auto-approved audit, usage meter, captured rule/memory). Returns whether
-    // the event was one of these (so applyEvent can stop).
-    function handlePillEvent(evt: any): boolean {
-      if (evt.type === 'approval_expired') {   // M4: gate timed out while away
-        setPendingApproval(null);
-        guardedUpdate(setLiveTurn, prev => appendSystemThought(prev,
-          `⏲ approval for ${evt.name} expired — action was not run`));
-        return true;
-      }
-      if (evt.type === 'auto_approved') {       // M5: captured-flag auto-approve
-        guardedUpdate(setLiveTurn, prev => appendSystemThought(prev, autoApprovedText(evt)));
-        return true;
-      }
-      if (evt.type === 'usage') {               // M3: context-window usage
-        guardedUpdate(setLiveTurn, prev => mergeUsage(prev, evt));
-        return true;
-      }
-      if (evt.type === 'captured') {            // deterministic capture pass pill
-        guardedUpdate(setLiveTurn, prev => appendCaptured(prev, evt));
-        return true;
-      }
-      return false;
-    }
 
     function applyEvent(raw: string) {
       const line = raw.startsWith('data: ') ? raw.slice(6) : raw;
@@ -1547,13 +1555,6 @@ export default function Chat() {
     setInput(msg.content);
     setEditingFrom(msg.id > 0 ? msg.id : null);
     setTimeout(() => textareaRef.current?.focus(), 30);
-  }
-  // M2: copy with uniform feedback. Uses mdlite.copyText, which falls back to a
-  // hidden-textarea execCommand when the clipboard API is unavailable (plain
-  // HTTP on a LAN IP) — so Copy works everywhere, not only over HTTPS.
-  function copyText(t: string) {
-    mdCopyText(t).then(() => toast.success('Copied'),
-                       () => toast.error('Copy failed'));
   }
   const isLastTurn = messages.length > 0 && lastAssistantMsg === messages.at(-1);
   const persistedAwaiting = !!(isLastTurn && lastAssistantMsg && msgAwaiting(lastAssistantMsg));
