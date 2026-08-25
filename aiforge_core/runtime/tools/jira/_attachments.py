@@ -19,6 +19,44 @@ def _max_images() -> int:
         return 4
 
 
+def _resolve_save_dir(save_ctx: tuple | None):
+    """The folder to persist attachments into for ``save_ctx = (kind, key)``, or
+    None (no save-ctx, or the work-context lookup failed)."""
+    if not save_ctx:
+        return None
+    try:
+        from aiforge_core.runtime import work_context as _wc
+        return _wc.attachments_dir(save_ctx[0], save_ctx[1])
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _fetch_one_attachment(a: dict, role: str, save_dir, chat_media) -> "dict | None":
+    """Download + analyse one attachment (and save it when ``save_dir`` is set).
+    None when the entry is unusable/unsupported; otherwise an info dict (which
+    carries an ``error`` key when the download or analysis failed)."""
+    if not isinstance(a, dict):
+        return None
+    mime = (a.get("mimeType") or "").lower()
+    url = a.get("content")
+    name = a.get("filename") or "attachment"
+    if not url or not chat_media.supported_attachment(mime, name):
+        return None
+    try:
+        import urllib.parse as _up
+        got = _http.http_get_bytes(url, headers=_headers(), timeout=_TIMEOUT_S,
+                                   context=_ssl_ctx(),
+                                   allow_host=_up.urlsplit(_base()).hostname)
+        if not got.get("ok"):
+            return {"filename": name, "description": "", "error": got.get("error")}
+        info = chat_media.analyze_attachment(name, got["bytes"], role, mime=mime)
+        if save_dir:
+            info["path"] = _save_attachment(save_dir, name, got["bytes"])
+        return info
+    except Exception as exc:  # noqa: BLE001
+        return {"filename": name, "description": "", "error": str(exc)}
+
+
 def _fetch_attachments(attachments: list, role: str = "doer",
                        save_ctx: tuple | None = None) -> list[dict]:
     """Download issue attachments — images AND documents (pdf/xlsx/docx/text) —
@@ -31,40 +69,14 @@ def _fetch_attachments(attachments: list, role: str = "doer",
     if cap <= 0 or not attachments:
         return []
     from aiforge_core.runtime import chat_media
-    save_dir = None
-    if save_ctx:
-        try:
-            from aiforge_core.runtime import work_context as _wc
-            save_dir = _wc.attachments_dir(save_ctx[0], save_ctx[1])
-        except Exception:  # noqa: BLE001
-            save_dir = None
+    save_dir = _resolve_save_dir(save_ctx)
     out: list[dict] = []
     for a in attachments:
         if len(out) >= cap:
             break
-        if not isinstance(a, dict):
-            continue
-        mime = (a.get("mimeType") or "").lower()
-        url = a.get("content")
-        name = a.get("filename") or "attachment"
-        if not url or not chat_media.supported_attachment(mime, name):
-            continue
-        try:
-            import urllib.parse as _up
-            got = _http.http_get_bytes(url, headers=_headers(),
-                                       timeout=_TIMEOUT_S, context=_ssl_ctx(),
-                                       allow_host=_up.urlsplit(_base()).hostname)
-            if not got.get("ok"):
-                out.append({"filename": name, "description": "",
-                            "error": got.get("error")})
-                continue
-            info = chat_media.analyze_attachment(name, got["bytes"],
-                                                 role, mime=mime)
-            if save_dir:
-                info["path"] = _save_attachment(save_dir, name, got["bytes"])
+        info = _fetch_one_attachment(a, role, save_dir, chat_media)
+        if info is not None:
             out.append(info)
-        except Exception as exc:  # noqa: BLE001
-            out.append({"filename": name, "description": "", "error": str(exc)})
     return out
 
 

@@ -156,34 +156,38 @@ def _ctx_neg_ttl() -> float:
     return 600.0
 
 
+def _ctx_of(entry: object) -> int:
+    """The advertised context length of one model entry, or 0. Guards against
+    ``bool`` (an int subclass) sneaking in as a length."""
+    if not isinstance(entry, dict):
+        return 0
+    for field in _CTX_FIELDS:
+        v = entry.get(field)
+        if isinstance(v, bool):
+            continue
+        if isinstance(v, (int, float)) and v > 0:
+            return int(v)
+    return 0
+
+
 def _extract_ctx_len(body: object) -> int | None:
     """Pull the model's advertised context length from a ``/v1/models`` body.
     Handles the OpenAI-style ``{"data": [ {...} ]}`` envelope and a bare model
     dict. Returns the capped int, or None when no known field is present."""
-    def _ctx_of(entry: object) -> int:
-        if not isinstance(entry, dict):
-            return 0
-        for field in _CTX_FIELDS:
-            v = entry.get(field)
-            if isinstance(v, bool):        # guard: bool is an int subclass
-                continue
-            if isinstance(v, (int, float)) and v > 0:
-                return int(v)
-        return 0
+    if not isinstance(body, dict):
+        return None
     try:
-        if isinstance(body, dict):
-            data = body.get("data")
-            if isinstance(data, list) and data:
-                # Take the MAX context across ALL loaded models — a big primary
-                # (qwen 256K) + a smaller escalation model (ornith 64K) are both
-                # loaded; report the big one, not whichever is data[0].
-                best = max((_ctx_of(e) for e in data), default=0)
-                return min(best, _CTX_CEILING) if best > 0 else None
+        data = body.get("data")
+        if isinstance(data, list) and data:
+            # Take the MAX context across ALL loaded models — a big primary
+            # (qwen 256K) + a smaller escalation model (ornith 64K) are both
+            # loaded; report the big one, not whichever is data[0].
+            best = max((_ctx_of(e) for e in data), default=0)
+        else:
             best = _ctx_of(body)
-            return min(best, _CTX_CEILING) if best > 0 else None
     except Exception:  # noqa: BLE001
         return None
-    return None
+    return min(best, _CTX_CEILING) if best > 0 else None
 
 
 def _probe_ctx_window(base_url: str, api_key: str = "") -> int | None:

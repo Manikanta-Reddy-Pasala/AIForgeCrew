@@ -103,6 +103,60 @@ def file_read(path: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def _truncation_refusal(p, path: str, content: str) -> "dict | None":
+    """Refuse to overwrite an EXISTING non-trivial file with a drastically
+    smaller one. A local model that "rewrites" a file it read often drops most
+    of it (e.g. PartiesWorkflow 558→13 lines) — on a real repo that silently
+    destroys code. Returns the refusal dict, or None to allow the write. Tunable
+    via AIFORGE_TRUNCATE_MIN_LINES / AIFORGE_TRUNCATE_KEEP_FRAC;
+    AIFORGE_ALLOW_TRUNCATION=1 bypasses (an intentional full rewrite)."""
+    if os.environ.get("AIFORGE_ALLOW_TRUNCATION", "0") in ("1", "true"):
+        return None
+    if not (p.exists() and p.is_file()):
+        return None
+    try:
+        old = p.read_text(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        old = ""
+    old_lines = old.count("\n") + 1 if old else 0
+    new_lines = content.count("\n") + 1 if content else 0
+    try:
+        min_lines = int(os.environ.get("AIFORGE_TRUNCATE_MIN_LINES", "25"))
+        frac = float(os.environ.get("AIFORGE_TRUNCATE_KEEP_FRAC", "0.5"))
+    except ValueError:
+        min_lines, frac = 25, 0.5
+    if old_lines >= min_lines and new_lines < old_lines * frac:
+        return {
+            "ok": False,
+            "error": (f"refused: would shrink existing {path} from "
+                      f"{old_lines} to {new_lines} lines "
+                      f"(>{int((1 - frac) * 100)}% loss — likely a "
+                      "truncated rewrite)."),
+            "hint": ("make the change with file_patch/edit (targeted "
+                     "replace) instead of rewriting the whole file; if a "
+                     "full rewrite is truly intended, keep ALL existing "
+                     "code you are not changing."),
+        }
+    return None
+
+
+def _syntax_refusal(path: str, content: str) -> "dict | None":
+    """Run :func:`syntax_guard.validate_syntax`; return a rejection dict when the
+    draft fails so the Doer can self-correct next turn instead of leaking corrupt
+    output to disk. None when OK or bypassed (AIFORGE_DOER_SKIP_SYNTAX=1)."""
+    if os.environ.get("AIFORGE_DOER_SKIP_SYNTAX", "0") in ("1", "true"):
+        return None
+    ok, err = validate_syntax(path, content)
+    if ok:
+        return None
+    return {
+        "ok": False,
+        "error": f"syntax_invalid: {err}",
+        "hint": ("fix the syntax and call file_write again; "
+                 "or call memory_lookup if you need symbol info"),
+    }
+
+
 def file_write(path: str, content: str) -> dict:
     """Create or overwrite a UTF-8 text file relative to the repo root.
 
@@ -113,48 +167,10 @@ def file_write(path: str, content: str) -> dict:
     """
     try:
         p = resolve_inside_root(path)
-        # ANTI-TRUNCATION GUARD: refuse to overwrite an EXISTING non-trivial file
-        # with a drastically smaller one. A local model that "rewrites" a file it
-        # read often drops most of it (e.g. PartiesWorkflow 558→13 lines) — on a
-        # real repo that silently destroys code. Force a targeted file_patch/edit
-        # instead. Tunable: AIFORGE_TRUNCATE_MIN_LINES / AIFORGE_TRUNCATE_KEEP_FRAC;
-        # AIFORGE_ALLOW_TRUNCATION=1 bypasses (e.g. an intentional full rewrite).
-        if os.environ.get("AIFORGE_ALLOW_TRUNCATION", "0") not in ("1", "true") \
-                and p.exists() and p.is_file():
-            try:
-                _old = p.read_text(encoding="utf-8", errors="replace")
-            except Exception:  # noqa: BLE001
-                _old = ""
-            _old_lines = _old.count("\n") + 1 if _old else 0
-            _new_lines = content.count("\n") + 1 if content else 0
-            try:
-                _min = int(os.environ.get("AIFORGE_TRUNCATE_MIN_LINES", "25"))
-                _frac = float(os.environ.get("AIFORGE_TRUNCATE_KEEP_FRAC", "0.5"))
-            except ValueError:
-                _min, _frac = 25, 0.5
-            if _old_lines >= _min and _new_lines < _old_lines * _frac:
-                return {
-                    "ok": False,
-                    "error": (f"refused: would shrink existing {path} from "
-                              f"{_old_lines} to {_new_lines} lines "
-                              f"(>{int((1 - _frac) * 100)}% loss — likely a "
-                              "truncated rewrite)."),
-                    "hint": ("make the change with file_patch/edit (targeted "
-                             "replace) instead of rewriting the whole file; if a "
-                             "full rewrite is truly intended, keep ALL existing "
-                             "code you are not changing."),
-                }
-        if os.environ.get("AIFORGE_DOER_SKIP_SYNTAX", "0") not in ("1", "true"):
-            ok, err = validate_syntax(path, content)
-            if not ok:
-                return {
-                    "ok": False,
-                    "error": f"syntax_invalid: {err}",
-                    "hint": (
-                        "fix the syntax and call file_write again; "
-                        "or call memory_lookup if you need symbol info"
-                    ),
-                }
+        refusal = _truncation_refusal(p, path, content) or \
+            _syntax_refusal(path, content)
+        if refusal is not None:
+            return refusal
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
         record_touch(path)
@@ -287,14 +303,50 @@ _GREP_DEFAULT_EXCLUDES = (
 )
 
 
+def _grep_command(target, pattern: str) -> tuple[list[str], bool]:
+    """The search command + whether ripgrep is in use. ripgrep when available
+    (10-100x faster), else ``grep -RnE`` — both produce ``path:lineno:text`` so
+    the model can't tell the difference."""
+    rg = shutil.which("rg")
+    if rg:
+        cmd = [rg, "--no-heading", "--with-filename", "--line-number",
+               "--max-count", "200", "--max-filesize", "1M",
+               "-e", pattern, str(target)]
+        for ex in _GREP_DEFAULT_EXCLUDES:
+            cmd[1:1] = ["--glob", f"!{ex}"]
+        return cmd, True
+    excludes = []
+    for ex in _GREP_DEFAULT_EXCLUDES:
+        excludes += [f"--exclude-dir={ex}"]
+    return ["grep", "-RnE", *excludes, "--", pattern, str(target)], False
+
+
+def _parse_grep_hits(out: str) -> list[dict]:
+    """Parse ``path:lineno:text`` rows into ``{file, line, text}`` (repo-relative
+    file, capped text), first 200 lines only."""
+    hits: list[dict] = []
+    repo_root = str(root())
+    for line in out.splitlines()[:200]:
+        # Split only twice so a colon in code lands in `text`, not the
+        # path/lineno fields.
+        parts = line.split(":", 2)
+        if len(parts) < 3:
+            continue
+        file_abs, lineno, text = parts
+        rel = (file_abs[len(repo_root):].lstrip("/")
+               if file_abs.startswith(repo_root) else file_abs)
+        hits.append({"file": rel, "line": int(lineno) if lineno.isdigit() else 0,
+                     "text": text[:240]})
+    return hits
+
+
 def grep_repo(pattern: str, path: str = ".") -> dict:
     """Recursive regex search over the repo. Returns matching ``{file,
     line, text}`` rows.
 
     Uses ripgrep when available (10-100x faster on large trees), falls
-    back to ``grep -RnE``. Both produce the same shape so the model
-    can't tell the difference. Output capped at 200 hits / 8 KB to
-    keep the agent context small.
+    back to ``grep -RnE``. Output capped at 200 hits / 8 KB to keep the
+    agent context small.
 
     Args:
       pattern: extended regex (anchors, groups, alternation OK).
@@ -309,47 +361,21 @@ def grep_repo(pattern: str, path: str = ".") -> dict:
     if not target.exists():
         return {"ok": False, "error": f"not found: {path}"}
 
-    rg = shutil.which("rg")
-    if rg:
-        cmd = [rg, "--no-heading", "--with-filename", "--line-number",
-               "--max-count", "200", "--max-filesize", "1M",
-               "-e", pattern, str(target)]
-        for ex in _GREP_DEFAULT_EXCLUDES:
-            cmd[1:1] = ["--glob", f"!{ex}"]
-    else:
-        excludes = []
-        for ex in _GREP_DEFAULT_EXCLUDES:
-            excludes += [f"--exclude-dir={ex}"]
-        cmd = ["grep", "-RnE", *excludes, "--", pattern, str(target)]
-
+    cmd, rg = _grep_command(target, pattern)
     try:
-        proc = subprocess.run(
-            cmd, capture_output=True, timeout=30, cwd=root(),
-        )
+        proc = subprocess.run(cmd, capture_output=True, timeout=30, cwd=root())
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "timeout"}
     except FileNotFoundError as exc:
         return {"ok": False, "error": f"binary missing: {exc}"}
 
     out = proc.stdout.decode("utf-8", "replace")
-    hits: list[dict] = []
-    repo_root = str(root())
-    for line in out.splitlines()[:200]:
-        # rg/grep both emit `path:lineno:text`. Split only twice so a
-        # colon in code lands in `text`, not the path/lineno fields.
-        parts = line.split(":", 2)
-        if len(parts) < 3:
-            continue
-        file_abs, lineno, text = parts
-        rel = file_abs[len(repo_root):].lstrip("/") if file_abs.startswith(repo_root) else file_abs
-        hits.append({"file": rel, "line": int(lineno) if lineno.isdigit() else 0,
-                     "text": text[:240]})
     return {
         "ok": True,
         "pattern": pattern,
         "path": path or ".",
         "engine": "rg" if rg else "grep",
-        "hits": hits,
+        "hits": _parse_grep_hits(out),
         "truncated": len(out.splitlines()) > 200,
     }
 

@@ -197,6 +197,63 @@ def load_agents(path: Path | None = None) -> dict[str, AgentContract]:
     return out
 
 
+def _identity_violations(role: str, c) -> list[str]:
+    """Runtime / backend / ctx_window checks for one contract's identity."""
+    v: list[str] = []
+    if c.identity.runtime not in _KNOWN_RUNTIMES:
+        v.append(f"{role}: unknown runtime {c.identity.runtime!r} "
+                 f"(expected one of {sorted(_KNOWN_RUNTIMES)})")
+    if c.identity.backend not in _KNOWN_BACKENDS:
+        v.append(f"{role}: unknown backend {c.identity.backend!r} "
+                 f"(expected one of {sorted(_KNOWN_BACKENDS)})")
+    if c.identity.ctx_window <= 0:
+        v.append(f"{role}: ctx_window must be positive, got {c.identity.ctx_window}")
+    return v
+
+
+def _limit_violations(role: str, c) -> list[str]:
+    """max_turns / max_wall_s range checks."""
+    v: list[str] = []
+    if not (_TURNS_MIN <= c.contract.max_turns <= _TURNS_MAX):
+        v.append(f"{role}: max_turns {c.contract.max_turns} outside "
+                 f"[{_TURNS_MIN}, {_TURNS_MAX}]")
+    if not (_WALL_MIN_S <= c.contract.max_wall_s <= _WALL_MAX_S):
+        v.append(f"{role}: max_wall_s {c.contract.max_wall_s} outside "
+                 f"[{_WALL_MIN_S}, {_WALL_MAX_S}]")
+    return v
+
+
+def _tools_violations(role: str, c) -> list[str]:
+    """allowed / forbidden consistency checks."""
+    v: list[str] = []
+    allowed_set = set(c.tools.allowed)
+    forbidden_set = set() if c.tools.forbidden_is_all else set(c.tools.forbidden)
+    overlap = allowed_set & forbidden_set
+    if overlap:
+        v.append(f"{role}: tools appear in both allowed and forbidden: "
+                 f"{sorted(overlap)}")
+    if c.tools.forbidden_is_all and allowed_set:
+        v.append(f"{role}: forbidden=ALL but allowed list is non-empty "
+                 f"({sorted(allowed_set)})")
+    return v
+
+
+def _memory_io_violations(role: str, c) -> list[str]:
+    """memory scope + contract inputs/outputs presence checks."""
+    v: list[str] = []
+    if c.memory.read_scope not in _VALID_READ_SCOPES:
+        v.append(f"{role}: memory.read_scope {c.memory.read_scope!r} "
+                 f"not in {sorted(_VALID_READ_SCOPES)}")
+    ws = c.memory.write_scope
+    if not isinstance(ws, str) or not ws.strip():
+        v.append(f"{role}: memory.write_scope must be non-empty")
+    if not c.contract.inputs:
+        v.append(f"{role}: contract.inputs must be non-empty")
+    if not c.contract.outputs:
+        v.append(f"{role}: contract.outputs must be non-empty")
+    return v
+
+
 def validate_contracts(contracts: dict[str, AgentContract]) -> list[str]:
     """Return a list of human-readable violations (empty list = OK).
 
@@ -205,61 +262,24 @@ def validate_contracts(contracts: dict[str, AgentContract]) -> list[str]:
     """
     violations: list[str] = []
     for role, c in contracts.items():
-        if c.identity.runtime not in _KNOWN_RUNTIMES:
-            violations.append(
-                f"{role}: unknown runtime {c.identity.runtime!r} "
-                f"(expected one of {sorted(_KNOWN_RUNTIMES)})"
-            )
-        if c.identity.backend not in _KNOWN_BACKENDS:
-            violations.append(
-                f"{role}: unknown backend {c.identity.backend!r} "
-                f"(expected one of {sorted(_KNOWN_BACKENDS)})"
-            )
-        if c.identity.ctx_window <= 0:
-            violations.append(
-                f"{role}: ctx_window must be positive, got {c.identity.ctx_window}"
-            )
-        if not (_TURNS_MIN <= c.contract.max_turns <= _TURNS_MAX):
-            violations.append(
-                f"{role}: max_turns {c.contract.max_turns} outside "
-                f"[{_TURNS_MIN}, {_TURNS_MAX}]"
-            )
-        if not (_WALL_MIN_S <= c.contract.max_wall_s <= _WALL_MAX_S):
-            violations.append(
-                f"{role}: max_wall_s {c.contract.max_wall_s} outside "
-                f"[{_WALL_MIN_S}, {_WALL_MAX_S}]"
-            )
-
-        allowed_set = set(c.tools.allowed)
-        forbidden_set = (
-            set() if c.tools.forbidden_is_all else set(c.tools.forbidden)
-        )
-        overlap = allowed_set & forbidden_set
-        if overlap:
-            violations.append(
-                f"{role}: tools appear in both allowed and forbidden: "
-                f"{sorted(overlap)}"
-            )
-        if c.tools.forbidden_is_all and allowed_set:
-            violations.append(
-                f"{role}: forbidden=ALL but allowed list is non-empty "
-                f"({sorted(allowed_set)})"
-            )
-
-        if c.memory.read_scope not in _VALID_READ_SCOPES:
-            violations.append(
-                f"{role}: memory.read_scope {c.memory.read_scope!r} "
-                f"not in {sorted(_VALID_READ_SCOPES)}"
-            )
-        ws = c.memory.write_scope
-        if not isinstance(ws, str) or not ws.strip():
-            violations.append(f"{role}: memory.write_scope must be non-empty")
-
-        if not c.contract.inputs:
-            violations.append(f"{role}: contract.inputs must be non-empty")
-        if not c.contract.outputs:
-            violations.append(f"{role}: contract.outputs must be non-empty")
+        violations += _identity_violations(role, c)
+        violations += _limit_violations(role, c)
+        violations += _tools_violations(role, c)
+        violations += _memory_io_violations(role, c)
     return violations
+
+
+def _entry_tool_name(entry: dict) -> "str | None":
+    """The tool name of one schema entry — a top-level ``name`` or, for a
+    ``{"type": "function", "function": {...}}`` wrapper, the function's name."""
+    name = entry.get("name")
+    if isinstance(name, str):
+        return name
+    if entry.get("type") == "function":
+        fn = entry.get("function")
+        if isinstance(fn, dict) and isinstance(fn.get("name"), str):
+            return fn["name"]
+    return None
 
 
 def tools_schema_for_role(
@@ -291,14 +311,8 @@ def tools_schema_for_role(
     for entry in full_schema:
         if not isinstance(entry, dict):
             continue
-        name = entry.get("name")
-        if not isinstance(name, str):
-            fn = entry.get("function") if entry.get("type") == "function" else None
-            if isinstance(fn, dict):
-                name = fn.get("name")
-        if not isinstance(name, str):
-            continue
-        if name in forbidden:
+        name = _entry_tool_name(entry)
+        if name is None or name in forbidden:
             continue
         if allowed and name not in allowed:
             continue
