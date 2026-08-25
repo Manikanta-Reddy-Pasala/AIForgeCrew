@@ -236,6 +236,27 @@ def providers_test(body: _ProviderTestBody) -> dict:
     return probe(base_url, api_key, insecure=insecure)
 
 
+def _key_for_base_url(base_url: str) -> str | None:
+    """The saved API key of any role whose endpoint uses ``base_url`` — the UI
+    masks the secret, so a per-model test recovers it from the role config that
+    shares the URL. None when no saved role matches (a keyless local server)."""
+    want = (base_url or "").rstrip("/")
+    try:
+        roles = _acfg.archetypes()
+    except Exception:  # noqa: BLE001
+        return None
+    for role in roles:
+        try:
+            rl = _acfg.resolve_litellm(role)
+        except Exception:  # noqa: BLE001
+            continue
+        if (rl.get("api_base") or "").rstrip("/") == want:
+            k = rl.get("api_key")
+            if k and k != "not-needed":
+                return k
+    return None
+
+
 class _NativeTestBody(_ProviderTestBody):
     model: str | None = Field(
         None, description="Model id to test; falls back to the saved model "
@@ -264,6 +285,11 @@ def providers_test_native(body: _NativeTestBody) -> dict:
             model = (_acfg.resolve_litellm(body.role).get("model") or "").strip()
         except Exception:  # noqa: BLE001
             model = ""
+    # No explicit token and no role to borrow it from (a per-MODEL test button):
+    # the UI never echoes the secret, so recover it from whichever saved role
+    # points at this same base_url. Keys live on role rows, not model rows.
+    if not api_key and base_url:
+        api_key = _key_for_base_url(base_url)
     logging.getLogger("aiforge.api").info(
         "POST /api/providers/test-native role=%s base_url=%s model=%s tls=%s",
         body.role, base_url, model, insecure)

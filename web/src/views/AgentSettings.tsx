@@ -317,6 +317,9 @@ function ModelsCard({ models, reload }: Readonly<{ models: RegistryModel[]; relo
   const [identifying, setIdentifying] = useState(false);
   const [discovered, setDiscovered] = useState<string[]>([]);
   const [loadingId, setLoadingId] = useState('');
+  const [testingId, setTestingId] = useState('');
+  const [nativeResult, setNativeResult] =
+    useState<Record<string, { ok: boolean; verdict: string }>>({});
   const input = { width: '100%', padding: '6px 8px', fontSize: 13 };
 
   async function add() {
@@ -383,6 +386,22 @@ function ModelsCard({ models, reload }: Readonly<{ models: RegistryModel[]; relo
       // LM Studio host is configured — loading only applies to an LMS server).
       toast.error(`Load failed: ${e.message}`);
     } finally { setLoadingId(''); }
+  }
+  // Send a REAL native tool-calling request to this model and report whether it
+  // returns a tool_calls reply. This is why "the model doesn't respond": chat
+  // sends 100+ tools, so a model/endpoint that only answers a bare request (a
+  // plain curl works) fails here. The verdict names the exact cause.
+  async function testNativeFor(m: RegistryModel) {
+    setTestingId(m.id);
+    try {
+      const r = await chatApi.testNative(m.base_url || '', m.model);
+      setNativeResult(s => ({ ...s, [m.id]: { ok: !!r.ok, verdict: r.verdict } }));
+      if (r.ok) toast.success('Native tool-calling works');
+      else toast.error('Native tool-calling failed — see the note under the model');
+    } catch (e: any) {
+      setNativeResult(s => ({ ...s, [m.id]: { ok: false, verdict: e?.message || 'test failed' } }));
+      toast.error(`Test failed: ${e?.message || 'unknown'}`);
+    } finally { setTestingId(''); }
   }
   async function del(id: string) {
     if (!window.confirm('Remove this model?')) return;
@@ -462,8 +481,9 @@ function ModelsCard({ models, reload }: Readonly<{ models: RegistryModel[]; relo
       {models.length > 0 && (
         <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 6 }}>
           {models.map(m => (
-            <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 10,
+            <div key={m.id} style={{ display: 'flex', flexDirection: 'column', gap: 4,
                                      padding: '6px 8px', border: '1px solid var(--border-1)', borderRadius: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <div style={{ minWidth: 0, flex: 1 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap',
                               overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.label}</div>
@@ -475,12 +495,23 @@ function ModelsCard({ models, reload }: Readonly<{ models: RegistryModel[]; relo
               <ThinkingBadge v={m.thinking} resolved={m.has_thinking}
                              onCycle={() => setThinkingFor(m.id, nextThinking(m.thinking))} />
               <VisionBadge v={m.vision} onCycle={() => setVisionFor(m.id, nextVision(m.vision))} />
+              <button type="button" className="ghost sm" disabled={testingId === m.id}
+                      title="Send a real native tool-calling request to this model and report whether it returns a tool_calls reply — the diagnostic for 'the model doesn't respond' in chat."
+                      onClick={() => testNativeFor(m)}>
+                {testingId === m.id ? '…' : '🔧 Test tools'}
+              </button>
               <button type="button" className="ghost sm" disabled={loadingId === m.id}
                       title="Load this model on the LM Studio host (no-op for cloud / non-LMS backends)"
                       onClick={() => loadOnServer(m)}>
                 {loadingId === m.id ? '…' : '⏏ Load'}
               </button>
               <button type="button" className="ghost sm" style={{ color: 'var(--err)' }} onClick={() => del(m.id)}>✕</button>
+              </div>
+              {nativeResult[m.id] && (
+                <div className="xs" style={{ color: nativeResult[m.id].ok ? 'var(--ok, #3fb950)' : 'var(--err)' }}>
+                  {nativeResult[m.id].ok ? '✓ ' : '✕ '}{nativeResult[m.id].verdict}
+                </div>
+              )}
             </div>
           ))}
         </div>

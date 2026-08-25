@@ -30,6 +30,18 @@ export const api = {
     apiFetch(`/agents/models/${id}`, { method: 'DELETE' }).then(r => {
       if (!r.ok && r.status !== 204) throw new Error(`${r.status} ${r.statusText}`);
     }),
+  // Native tool-calling test: sends a real tools request to {base_url}/chat/
+  // completions (the exact chat url) and reports whether the model returns a
+  // tool_calls reply. Diagnoses "the model doesn't respond" when native FC is
+  // on. Key is recovered server-side from a saved role sharing the base_url.
+  testNative: (base_url: string, model: string) =>
+    j<{ ok: boolean; model: string; url: string; verdict: string;
+        results: Record<string, { ok: boolean; tool_calls?: boolean;
+          finish_reason?: string; content_preview?: string; http?: number;
+          error?: string }> }>('/providers/test-native', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base_url, model, insecure_tls: true }),
+    }),
   applyModel: (id: string, roles: string[]) =>
     j<{ applied: string[]; errors: Record<string, string> }>(`/agents/models/${id}/apply`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
