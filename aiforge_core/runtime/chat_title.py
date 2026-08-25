@@ -15,7 +15,7 @@ import re
 # the engine retries the run at every length before giving up. `++` never
 # gives characters back, which is exactly right for a strip and turns the
 # scan linear.
-_BAD = re.compile(r'(?:^["\'`\s]++)|(?:["\'`\s]++$)')
+_BAD = re.compile(r'^["\'`\s]++|["\'`\s]++$')
 
 # A reasoning model (triage role) emits chain-of-thought first; capped at a few
 # tokens it leaks TRUNCATED CoT ("Thinking Process:", "The user is asking…") that

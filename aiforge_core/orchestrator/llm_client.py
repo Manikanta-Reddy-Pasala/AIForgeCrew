@@ -35,7 +35,7 @@ from aiforge_core.llm import complete as _complete
 # the engine retries the run at every length before giving up. `++` never
 # gives characters back, which is exactly right for a strip and turns the
 # scan linear.
-_FENCE = re.compile(r"(?:^`{3,}+(?:json)?\s*+\n?)|(?:\n?`{3,}+\s*+$)", re.MULTILINE)
+_FENCE = re.compile(r"^`{3,}+(?:json)?\s*+\n?|\n?`{3,}+\s*+$", re.MULTILINE)
 _JSON_OBJ_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 

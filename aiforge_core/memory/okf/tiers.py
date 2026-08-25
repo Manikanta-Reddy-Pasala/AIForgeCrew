@@ -75,7 +75,7 @@ _BULLET_RE = re.compile(r"^\s*[-*]\s+")
 # the engine retries the run at every length before giving up. `++` never
 # gives characters back, which is exactly right for a strip and turns the
 # scan linear.
-_EDGE_PUNCT_RE = re.compile(r"(?:^\W++)|(?:\W++$)")
+_EDGE_PUNCT_RE = re.compile(r"^\W++|\W++$")
 
 
 # ── bookkeeping ───────────────────────────────────────────────────────────
