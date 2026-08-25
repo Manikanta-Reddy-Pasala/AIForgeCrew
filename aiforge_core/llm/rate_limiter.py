@@ -160,10 +160,19 @@ def _now() -> float:
     return time.monotonic()
 
 
+#: Machine-wide default requests-per-minute ceiling when nothing overrides it.
+#: A real default the limiter enforces out of the box — conservative enough for
+#: the common single-key / free-tier gateway. Override via the ``llm_max_rpm``
+#: setting or ``AIFORGE_LLM_MAX_RPM``; set either to 0 to disable the ceiling.
+_DEFAULT_GLOBAL_RPM = 15.0
+
+
 def global_rpm() -> float:
     """Operator-set ceiling on model requests per minute; 0 = no ceiling.
 
-    Resolves stored setting -> env -> default, like every other runtime knob.
+    Resolves stored setting -> env -> built-in default (15), like every other
+    runtime knob. The default is enforced, not merely advisory: with nothing
+    set the ceiling is 15 rpm, not unlimited.
     """
     try:
         from aiforge_core.config import runtime_settings as _rs
@@ -171,9 +180,9 @@ def global_rpm() -> float:
     except Exception:  # noqa: BLE001 — never let a settings read block a call
         raw = os.environ.get("AIFORGE_LLM_MAX_RPM")
         try:
-            return max(0.0, float(raw)) if raw else 0.0
+            return max(0.0, float(raw)) if raw else _DEFAULT_GLOBAL_RPM
         except (TypeError, ValueError):
-            return 0.0
+            return _DEFAULT_GLOBAL_RPM
 
 
 def waiting() -> int:

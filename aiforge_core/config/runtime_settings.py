@@ -111,13 +111,13 @@ _SPEC: dict[str, tuple[str, int]] = {
     # Retry-After. Declining to self-throttle is a statement about our own
     # preference, not permission to ignore a server that has refused us.
     #
-    # 60, raised from 30 WITH the move to a machine-wide window and not
-    # separately. 30 was chosen when each process got 30 of its own, so on the
-    # ordinary two- or three-process box the honest equivalent is higher, not
-    # the same number silently meaning a third of the throughput. It still has
-    # to cover a 10-40 call turn while the memory fold and the pipeline run
-    # alongside it.
-    "llm_max_rpm": ("AIFORGE_LLM_MAX_RPM", 60),
+    # 15 by default — a conservative machine-wide ceiling that keeps the box
+    # under the free-tier / shared-gateway limits most operators actually run
+    # against, out of the box. Raise it in Settings (or via AIFORGE_LLM_MAX_RPM)
+    # when the account allows more; 0 disables OUR throttle entirely. (Was 60,
+    # which over-sent on the common single-key setup before the operator ever
+    # opened Settings.)
+    "llm_max_rpm": ("AIFORGE_LLM_MAX_RPM", 15),
     # How long to wait after a provider REJECTS us for sending too fast (a 429,
     # or a 4xx whose body names a rate limit) when it did not send a
     # Retry-After. The provider is counting a minute; a sub-second backoff just
