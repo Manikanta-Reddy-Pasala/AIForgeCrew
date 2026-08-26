@@ -140,6 +140,51 @@ def _registered_endpoint(row: dict, seed: dict) -> dict | None:
         return None
 
 
+def _tls_of(row: dict, fallback: bool) -> bool:
+    """An EXPLICIT per-role insecure_tls wins — including a deliberate ``false``
+    that keeps strict TLS. Only a row that omits it inherits ``fallback``."""
+    return (bool(row["insecure_tls"]) if row.get("insecure_tls") is not None
+            else bool(fallback))
+
+
+def _row_on_own_endpoint(seed: dict, row: dict, provider: str,
+                         own: dict) -> dict:
+    """The row resolved onto the endpoint its MODEL is registered with."""
+    return {
+        "provider": provider,
+        "model": row.get("model") or seed["model"],
+        "base_url": own["base_url"],
+        "api_key": row.get("api_key") or own.get("api_key"),
+        "insecure_tls": _tls_of(row, bool(own.get("insecure_tls"))),
+    }
+
+
+def _row_inheriting_seed(seed: dict, row: dict, provider: str,
+                         row_base: str | None) -> dict:
+    """The row with the seed's connection filled in behind it.
+
+    Only inherit the seed's key when the row points at the SAME host (a
+    different base_url is a different trust domain — don't leak the global
+    cloud token to it). Since openai_compatible is the only provider,
+    same_provider is always True, so the host check is what actually gates it.
+    Compare HOSTNAMES (not the raw URL) so a trailing slash / case /
+    explicit-port difference for the same endpoint doesn't wrongly drop it.
+    """
+    same_provider = provider == seed["provider"]
+    same_host = (not row_base) or (_host_of(row_base)
+                                   == _host_of(seed.get("base_url")))
+    inherit_key = same_provider and same_host
+    return {
+        "provider": provider,
+        "model": row.get("model") or seed["model"],
+        "base_url": row_base or (seed.get("base_url") if same_provider else None),
+        "api_key": row.get("api_key") or (
+            seed.get("api_key") if inherit_key else None),
+        "insecure_tls": _tls_of(
+            row, same_provider and bool(seed.get("insecure_tls"))),
+    }
+
+
 def _merged_row(seed: dict, row: dict) -> dict:
     """``seed`` (the global-default row) overlaid with a per-role ``row``.
 
@@ -149,43 +194,19 @@ def _merged_row(seed: dict, row: dict) -> dict:
     operator's global endpoint and silently send every role back to
     http://127.0.0.1:1234 — the "I set one URL but it probes localhost" bug.
     An explicit per-role base_url still wins (lets us run mlx-lm on per-role
-    ports); the endpoint is inherited only when the provider matches the seed
-    (don't paste a cloud URL onto a local row).
+    ports).
+
+    Before the seed gets a say, though, the model REGISTRY does: a row with no
+    URL whose model is registered against a specific endpoint resolves THERE,
+    so a model added from a second server is never called on the first one's
+    host.
     """
     provider = row.get("provider") or seed["provider"]
-    same_provider = provider == seed["provider"]
     row_base = row.get("base_url")
     own = _registered_endpoint(row, seed) if not row_base else None
     if own:
-        return {
-            "provider": provider,
-            "model": row.get("model") or seed["model"],
-            "base_url": own["base_url"],
-            "api_key": row.get("api_key") or own.get("api_key"),
-            "insecure_tls": (bool(row["insecure_tls"])
-                             if row.get("insecure_tls") is not None
-                             else bool(own.get("insecure_tls"))),
-        }
-    # Only inherit the seed's key when the row points at the SAME host (a
-    # different base_url is a different trust domain — don't leak the global
-    # cloud token to it). Since openai_compatible is the only provider,
-    # same_provider is always True, so the host check is what actually gates
-    # it. Compare HOSTNAMES (not the raw URL) so a trailing slash / case /
-    # explicit-port difference for the same endpoint doesn't wrongly drop it.
-    same_host = (not row_base) or (_host_of(row_base)
-                                   == _host_of(seed.get("base_url")))
-    return {
-        "provider": provider,
-        "model": row.get("model") or seed["model"],
-        "base_url": row_base or (seed.get("base_url") if same_provider else None),
-        "api_key": row.get("api_key") or (
-            seed.get("api_key") if (same_provider and same_host) else None),
-        # Respect an EXPLICIT per-role insecure_tls (incl. a deliberate
-        # ``false`` to keep strict TLS) — only inherit when the row omits it.
-        "insecure_tls": (bool(row["insecure_tls"])
-                         if row.get("insecure_tls") is not None
-                         else (same_provider and bool(seed.get("insecure_tls")))),
-    }
+        return _row_on_own_endpoint(seed, row, provider, own)
+    return _row_inheriting_seed(seed, row, provider, row_base)
 
 
 def _apply_disk_rows(cfg: dict, disk: dict, gd: dict | None) -> None:
