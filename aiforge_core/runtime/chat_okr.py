@@ -511,24 +511,46 @@ def compact_session(session_id, *, repo: str | None = None,
     return {"ok": True, "captured": captured, "remaining": remaining}
 
 
-def previous_session_id(exclude_session_id):
-    """The id of the MOST RECENT prior session (excluding the current), or None.
-    Used so recall can exclude exactly what previous_session_brief already
-    injects — without dropping OLDER sessions' recall. Never raises."""
+def _session_cwd(session_id) -> "str | None":
+    """A session's stored cwd, or None. Never raises."""
+    if session_id is None:
+        return None
     try:
         from aiforge_core.runtime import chat_store
-        for s in (chat_store.list_sessions() or []):   # newest-first
-            sid = (s or {}).get("id")
-            if sid is not None and sid != exclude_session_id:
-                return sid
+        s = chat_store.get_session(session_id) or {}
     except Exception:  # noqa: BLE001
-        pass
-    return None
+        return None
+    cwd = (s.get("cwd") or "").strip()
+    return cwd or None
 
 
-def _most_recent_prior_session(exclude_session_id) -> "int | None":
+def _same_project(a: "str | None", b: "str | None") -> bool:
+    """True when two session cwds are the SAME working tree. Two unpinned chats
+    each get their own ``chat-workspaces/session-<id>`` dir, so they are NOT the
+    same project — which is exactly the case that must not carry work forward."""
+    if not a or not b:
+        return False
+    try:
+        return os.path.realpath(a) == os.path.realpath(b)
+    except Exception:  # noqa: BLE001
+        return a == b
+
+
+def previous_session_id(exclude_session_id, *, cwd: "str | None" = None):
+    """The id of the MOST RECENT prior session (excluding the current), or None.
+    Used so recall can exclude exactly what previous_session_brief already
+    injects — without dropping OLDER sessions' recall. With ``cwd``, applies the
+    SAME same-project filter as :func:`previous_session_brief`, so the two never
+    disagree about which session was carried forward. Never raises."""
+    return _most_recent_prior_session(exclude_session_id, cwd=cwd)
+
+
+def _most_recent_prior_session(exclude_session_id, *,
+                               cwd: "str | None" = None) -> "int | None":
     """The id of the most recent session that is NOT ``exclude_session_id``, or
-    None. Soft-fails to None."""
+    None. When ``cwd`` is given, only sessions pinned to that SAME working tree
+    qualify — a different project's session is never "the previous session".
+    Soft-fails to None."""
     try:
         from aiforge_core.runtime import chat_store
         sessions = chat_store.list_sessions() or []
@@ -537,19 +559,35 @@ def _most_recent_prior_session(exclude_session_id) -> "int | None":
         return None
     for s in sessions:                       # list_sessions is newest-first
         sid = (s or {}).get("id")
-        if sid is not None and sid != exclude_session_id:
-            return sid
+        if sid is None or sid == exclude_session_id:
+            continue
+        if cwd and not _same_project((s or {}).get("cwd"), cwd):
+            continue
+        return sid
     return None
 
 
-def previous_session_brief(exclude_session_id, *, max_turns: int = 6,
-                           max_chars: int = 1200) -> str:
-    """A short continuity block from the MOST RECENT prior session (excluding the
-    current one) so the next chat carries the previous conversation forward. The
-    block is explicitly framed as supersedable — if the user's new ask
-    contradicts it, the new statement wins. Deterministic (no LLM — the tail of
-    the prior transcript). Empty when there is no prior session. Never raises."""
-    prior_id = _most_recent_prior_session(exclude_session_id)
+def previous_session_brief(exclude_session_id, *, cwd: "str | None" = None,
+                           max_turns: int = 6, max_chars: int = 1200) -> str:
+    """A short REFERENCE block from the most recent prior session in the SAME
+    project, so a follow-up asked in a new chat still has its context.
+
+    Two hard limits, both about not inheriting somebody else's job:
+
+    * **Same project only.** Pass ``cwd`` (the current session's) and only a
+      prior session pinned to that same working tree qualifies. Two unpinned
+      chats live in their own ``chat-workspaces/session-<id>`` dirs, so nothing
+      is carried between them — that path is how one chat's task (a repo it was
+      editing) turned up as the next chat's work. Knowledge still crosses
+      sessions, through memory recall and the ``memory_lookup`` /
+      ``search_chat_sessions`` tools; only unasked-for TASK CONTINUATION stops.
+    * **Notes, not a work order.** The block is framed as reference and
+      supersedable: the model answers the user's current ask and does not resume,
+      continue, or re-run anything described in it.
+
+    Deterministic (no LLM — the tail of the prior transcript). Empty when there
+    is no qualifying prior session. Never raises."""
+    prior_id = _most_recent_prior_session(exclude_session_id, cwd=cwd)
     if prior_id is None:
         return ""
     try:
@@ -563,8 +601,11 @@ def previous_session_brief(exclude_session_id, *, max_turns: int = 6,
              and (m.get("content") or "").strip()]
     if not turns:
         return ""
-    lines = [f"PREVIOUS SESSION {prior_id} (continuity — if the user's new ask "
-             "contradicts this, the new statement supersedes it):"]
+    lines = [f"PREVIOUS SESSION {prior_id} — REFERENCE ONLY (same project). "
+             "Notes and conclusions from an earlier conversation, for context. "
+             "Do NOT resume, continue, or re-run any task described here, and "
+             "do not edit files because of it — answer the user's CURRENT "
+             "request only. If it contradicts the new ask, the new ask wins:"]
     for m in turns[-max(1, max_turns):]:
         role = (m.get("role") or "user").strip().upper()
         content = " ".join((m.get("content") or "").split())

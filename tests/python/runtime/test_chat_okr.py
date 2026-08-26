@@ -572,3 +572,56 @@ def test_batch_scope_chunks_beyond_the_batch_size(monkeypatch, mem):
     assert len(out) == n
     assert sum(calls) == n
     assert [o["topic"] for o in out] == [f"item-{i}" for i in range(n)]
+
+
+def test_previous_session_brief_skips_other_project(monkeypatch, mem, tmp_path):
+    """A prior session in a DIFFERENT working tree is not "the previous
+    session" — that carry-forward is how one chat's task became the next
+    chat's work (two unpinned chats each own a chat-workspaces/session-N dir).
+    """
+    from aiforge_core.runtime import chat_okr
+    other = tmp_path / "session-72"
+    mine = tmp_path / "session-73"
+    other.mkdir()
+    mine.mkdir()
+    monkeypatch.setattr(
+        "aiforge_core.runtime.chat_store.list_sessions",
+        lambda: [{"id": 72, "cwd": str(other)}])
+    monkeypatch.setattr(
+        "aiforge_core.runtime.chat_store.get_messages",
+        lambda sid: [{"role": "user", "content": "fix the gpsd ublox config"}])
+    assert chat_okr.previous_session_brief(73, cwd=str(mine)) == ""
+
+
+def test_previous_session_brief_carries_same_project(monkeypatch, mem, tmp_path):
+    from aiforge_core.runtime import chat_okr
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(
+        "aiforge_core.runtime.chat_store.list_sessions",
+        lambda: [{"id": 9, "cwd": str(tmp_path / "elsewhere")},
+                 {"id": 8, "cwd": str(repo)}])
+    monkeypatch.setattr(
+        "aiforge_core.runtime.chat_store.get_messages",
+        lambda sid: ([{"role": "user", "content": "we chose the SQLite backend"}]
+                     if sid == 8 else
+                     [{"role": "user", "content": "unrelated gpsd work"}]))
+    out = chat_okr.previous_session_brief(10, cwd=str(repo))
+    assert "SQLite" in out
+    assert "gpsd" not in out                      # the other project's session
+    assert "REFERENCE ONLY" in out
+    assert "do NOT resume" in out.replace("Do NOT resume", "do NOT resume")
+
+
+def test_previous_session_id_applies_same_cwd_filter(monkeypatch, mem, tmp_path):
+    """previous_session_id picks what the brief picked — otherwise recall drops
+    a session that was never injected."""
+    from aiforge_core.runtime import chat_okr
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(
+        "aiforge_core.runtime.chat_store.list_sessions",
+        lambda: [{"id": 9, "cwd": str(tmp_path / "elsewhere")},
+                 {"id": 8, "cwd": str(repo)}])
+    assert chat_okr.previous_session_id(10, cwd=str(repo)) == 8
+    assert chat_okr.previous_session_id(10) == 9          # unfiltered, as before

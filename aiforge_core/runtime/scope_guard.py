@@ -236,4 +236,52 @@ def make_scope_guard_callback():
     return _cb
 
 
-__all__ = ["make_scope_guard_callback"]
+# ── chat workspace jail ────────────────────────────────────────────────────
+# A chat session's cwd is a DEFAULT, not a sandbox: a mutating file tool given
+# an absolute path writes wherever it points. That is how a session opened to
+# ask about one thing ended up editing an unrelated repo it had only READ about
+# (in recall). Opt-in via AIFORGE_CHAT_WORKSPACE_JAIL=1: mutating file tools may
+# then only write inside the session's own cwd. Off by default — a session
+# pinned to a repo often has legitimate reasons to write a sibling path, and
+# turning this on globally would break those.
+_JAIL_ENV = "AIFORGE_CHAT_WORKSPACE_JAIL"
+_JAIL_OFF = ("", "0", "false", "no", "off")
+
+
+def workspace_jail_on() -> bool:
+    """True when the chat workspace jail is enabled (opt-in)."""
+    return (os.environ.get(_JAIL_ENV, "0") or "").strip().lower() not in _JAIL_OFF
+
+
+def outside_workspace(tool_name: str, args: dict, cwd: str | None) -> list[str]:
+    """The paths ``tool_name`` wants to WRITE that resolve outside ``cwd``.
+
+    Empty when the jail is off, when there is no cwd, or when every target is
+    inside it. Only the mutating file tools in :data:`_PATH_EXTRACTORS` are
+    inspected — reads elsewhere stay allowed (looking at another repo is fine;
+    editing it unasked is the bug). Relative paths resolve against ``cwd``, so
+    they are inside by construction; an absolute path is what gets caught.
+    Symlinks are resolved, so a link inside the workspace pointing out is
+    blocked too. Soft-fail: any error → [] (never block on a matcher bug).
+
+    Same KNOWN LIMIT as the glob guard above: shell tools are not parsed.
+    """
+    if not cwd or not workspace_jail_on():
+        return []
+    try:
+        root = os.path.realpath(str(cwd))
+    except Exception as exc:  # noqa: BLE001
+        log.debug("workspace jail: bad cwd %r (allow): %s", cwd, exc)
+        return []
+    out: list[str] = []
+    for raw in _path_from_args(tool_name, args or {}):
+        try:
+            target = os.path.realpath(os.path.join(root, str(raw)))
+        except Exception:  # noqa: BLE001
+            continue
+        if target != root and not target.startswith(root + os.sep):
+            out.append(str(raw))
+    return out
+
+
+__all__ = ["make_scope_guard_callback", "outside_workspace", "workspace_jail_on"]
