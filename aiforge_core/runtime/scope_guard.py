@@ -240,24 +240,32 @@ def make_scope_guard_callback():
 # A chat session's cwd is a DEFAULT, not a sandbox: a mutating file tool given
 # an absolute path writes wherever it points. That is how a session opened to
 # ask about one thing ended up editing an unrelated repo it had only READ about
-# (in recall). Opt-in via AIFORGE_CHAT_WORKSPACE_JAIL=1: mutating file tools may
-# then only write inside the session's own cwd. Off by default — a session
-# pinned to a repo often has legitimate reasons to write a sibling path, and
-# turning this on globally would break those.
+# (in recall). ON by default: mutating file tools may only write inside the
+# session's own cwd. AIFORGE_CHAT_WORKSPACE_JAIL=0 turns it off for a session
+# that legitimately writes outside its cwd (a sibling repo, a path elsewhere on
+# the box) — the refusal names the workspace, so a run that hits it says exactly
+# what to set.
 _JAIL_ENV = "AIFORGE_CHAT_WORKSPACE_JAIL"
-_JAIL_OFF = ("", "0", "false", "no", "off")
+_JAIL_OFF = ("0", "false", "no", "off")
 
 
 def workspace_jail_on() -> bool:
-    """True when the chat workspace jail is enabled (opt-in)."""
-    return (os.environ.get(_JAIL_ENV, "0") or "").strip().lower() not in _JAIL_OFF
+    """True when the chat workspace jail is enabled (the default)."""
+    val = (os.environ.get(_JAIL_ENV, "1") or "").strip().lower()
+    # Explicit empty ("JAIL=") reads as unset, not as off — an env var cleared
+    # by a wrapper script must not silently drop the guard.
+    return (val or "1") not in _JAIL_OFF
 
 
 def outside_workspace(tool_name: str, args: dict, cwd: str | None) -> list[str]:
     """The paths ``tool_name`` wants to WRITE that resolve outside ``cwd``.
 
-    Empty when the jail is off, when there is no cwd, or when every target is
-    inside it. Only the mutating file tools in :data:`_PATH_EXTRACTORS` are
+    Empty when the jail is off (AIFORGE_CHAT_WORKSPACE_JAIL=0), when there is
+    no cwd, or when every target is inside it. A session with no cwd is NOT
+    jailed — there is nothing to jail it to; the guard is the cwd, so a caller
+    that wants the boundary must give the session one.
+
+    Only the mutating file tools in :data:`_PATH_EXTRACTORS` are
     inspected — reads elsewhere stay allowed (looking at another repo is fine;
     editing it unasked is the bug). Relative paths resolve against ``cwd``, so
     they are inside by construction; an absolute path is what gets caught.

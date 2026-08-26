@@ -1503,7 +1503,8 @@ def _pre_tool_checks(st, name, args, cwd, _scope_globs):
     except Exception:  # noqa: BLE001 — hooks must never break dispatch
         _hook_block = None
 
-    # Workspace jail (opt-in, AIFORGE_CHAT_WORKSPACE_JAIL=1). The session's cwd
+    # Workspace jail (on by default, AIFORGE_CHAT_WORKSPACE_JAIL=0 opts out).
+    # The session's cwd
     # is otherwise only a DEFAULT: an absolute path in a mutating file tool
     # writes anywhere. Refuse WITHOUT writing and tell the model why, so an
     # off-topic recall can never turn into an edit in a repo the user never
@@ -1519,7 +1520,9 @@ def _pre_tool_checks(st, name, args, cwd, _scope_globs):
             "blocked_paths": _jailed, "workspace": cwd,
             "hint": ("Write refused: the path is outside this session's "
                      f"workspace ({cwd}). Write inside it, or ask the user to "
-                     "point this chat at that project first."),
+                     "point this chat at that project. If writing there is "
+                     "genuinely intended, the operator can set "
+                     "AIFORGE_CHAT_WORKSPACE_JAIL=0 — do not assume it; ask."),
         }
         yield {"type": "tool", "name": name, "args": args, "result": result}
         st.convo.append({"role": "user",

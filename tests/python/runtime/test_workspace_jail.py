@@ -1,9 +1,10 @@
-"""Opt-in workspace jail: a chat may not WRITE outside its own cwd.
+"""Workspace jail: a chat may not WRITE outside its own cwd.
 
 The cwd a session runs in was only a default — an absolute path handed to a
 mutating file tool wrote wherever it pointed, which is how a chat that merely
-READ about another repo (in recall) went on to edit it. With
-``AIFORGE_CHAT_WORKSPACE_JAIL=1`` those writes are refused before they happen.
+READ about another repo (in recall) went on to edit it. Those writes are now
+refused before they happen. ON by default; ``AIFORGE_CHAT_WORKSPACE_JAIL=0``
+opts a session out.
 
 Reads are deliberately NOT jailed: looking at another repo is useful, editing
 it unasked is the bug.
@@ -17,11 +18,27 @@ def _args(path):
     return {"path": path, "content": "x"}
 
 
-def test_off_by_default(monkeypatch, tmp_path):
+def test_on_by_default(monkeypatch, tmp_path):
     monkeypatch.delenv("AIFORGE_CHAT_WORKSPACE_JAIL", raising=False)
-    assert scope_guard.workspace_jail_on() is False
+    assert scope_guard.workspace_jail_on() is True
     assert scope_guard.outside_workspace(
-        "file_write", _args("/somewhere/else/x.py"), str(tmp_path)) == []
+        "file_write", _args("/somewhere/else/x.py"), str(tmp_path)) \
+        == ["/somewhere/else/x.py"]
+
+
+def test_explicit_opt_out(monkeypatch, tmp_path):
+    """A session that legitimately writes outside its cwd can turn it off."""
+    for off in ("0", "false", "no", "off"):
+        monkeypatch.setenv("AIFORGE_CHAT_WORKSPACE_JAIL", off)
+        assert scope_guard.workspace_jail_on() is False, off
+        assert scope_guard.outside_workspace(
+            "file_write", _args("/somewhere/else/x.py"), str(tmp_path)) == []
+
+
+def test_empty_value_is_not_off(monkeypatch, tmp_path):
+    """A wrapper that clears the var must not silently drop the guard."""
+    monkeypatch.setenv("AIFORGE_CHAT_WORKSPACE_JAIL", "")
+    assert scope_guard.workspace_jail_on() is True
 
 
 def test_blocks_absolute_path_outside(monkeypatch, tmp_path):
