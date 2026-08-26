@@ -15,7 +15,18 @@ from aiforge_core.memory.sync import status
 
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch):
+    """Isolate the config dir, the quiet state, and the log path.
+
+    ``api.py`` sets ``propagate = False`` on the ``aiforge`` logger so that its
+    diagnostics print regardless of uvicorn's config. That is correct for the
+    product and invisible to caplog, whose handler sits on the root logger — so
+    once any test in the run has imported the API, every assertion here about a
+    log line silently passes on zero records. Propagation is restored for the
+    duration of each test rather than the product changed.
+    """
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    family = logging.getLogger("aiforge")
+    monkeypatch.setattr(family, "propagate", True)
     status.reset()
     yield
     status.reset()
