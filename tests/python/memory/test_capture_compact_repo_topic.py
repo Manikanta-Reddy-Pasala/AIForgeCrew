@@ -132,6 +132,15 @@ def test_session_notes_fold_into_topic_not_repo(cfg, monkeypatch):
     # their own topic files (see test_new_topic_needs_the_floor below) — this
     # test is about the AXIS, not about admission.
     monkeypatch.setenv("AIFORGE_TOPIC_MIN_FACTS", "1")
+    # …and not about the LABELLER. A note with no explicit topic gets its slug
+    # from _topic_labels, which reaches for a model when nothing on disk matches;
+    # that call returning {} (no model, or one whose client raises) sends both
+    # notes to _NO_TOPIC, which compact() drops — so this read 2 next to a
+    # reachable model and 0 without one. Pin it: the axis is the subject.
+    from aiforge_core.memory.md_store import _compact
+    monkeypatch.setattr(_compact, "_topic_labels",
+                        lambda files, role: {d["file"]: "chat-sessions"
+                                             for d in files})
     rt = m.compact(group_by="topic", min_group=1, summarize=False, dry_run=True)
     assert rt["files_in"] == 2
 

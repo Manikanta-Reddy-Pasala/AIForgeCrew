@@ -32,9 +32,12 @@ build:
 
     # ---------- tests -> sonar/ ----------
     # pytest-cov is NOT in [dev]; --with injects it without touching pyproject.
+    # No -m here on purpose: the live-only markers are deselected by default in
+    # pyproject's addopts, so this job cannot drift out of sync with them. A -m
+    # on the command line REPLACES that default — which is how a stale marker
+    # list ran the tmux / GA / graphify tests on a runner that has none of them.
     - >
       uv run --with pytest-cov pytest
-      -m "not live_sidecar and not live_llm and not live_repomix and not live_tmux and not live_jupyter and not live_ga and not live_graph and not live_aider"
       -q
       --junitxml=test-results/junit.xml
       --cov=aiforge_core --cov=scripts
