@@ -20,10 +20,43 @@ from __future__ import annotations
 
 import base64
 import json
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 router = APIRouter()
+
+# One admin may serve several independent fleets. The group names which, and it
+# rides every call: a query parameter on the two GETs, a body field on the two
+# POSTs (where it travels beside the peer id it belongs to).
+GroupQ = Annotated[str, Query(description="Group to sync with; omit when ungrouped")]
+
+
+def _scope(name: str):
+    """Enter the caller's group, or refuse the name.
+
+    An unknown group is **404 naming the known ones**, never a silently created
+    directory: auto-creation is exactly how a client-side typo becomes a second
+    pool that looks like a working sync until somebody asks why two machines
+    cannot see each other. An unusable name is 400 — it could not have been a
+    directory component in the first place.
+
+    An empty name is the ungrouped deployment and yields a no-op scope, so every
+    route below reads the same whether or not this admin has groups.
+    """
+    from aiforge_core.memory.sync import group
+
+    name = (name or "").strip()
+    if not name:
+        return group.scoped("")
+    if not group.is_valid(name):
+        raise HTTPException(400, f"{name!r} is not a usable group name")
+    rows = group.known()
+    if name not in rows:
+        raise HTTPException(
+            404, f"no such group: {name}. This admin publishes: "
+                 f"{', '.join(rows) or '(none — it is ungrouped)'}")
+    return group.scoped(name)
 
 # Largest request body either POST route will read. The push payload is one
 # blob, base64-encoded (+33%) inside a small JSON envelope; the offer is a
@@ -68,8 +101,23 @@ async def _read_json(request: Request) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
-@router.get("/api/memory/sync/manifest")
-def sync_manifest() -> dict:
+@router.get("/api/memory/sync/groups")
+def sync_groups() -> dict:
+    """What a client may join. Open, like the rest of this surface.
+
+    Discovery is what stops an operator configuring the same fact on every
+    machine: a client already knows the admin's url, so the list is one hop
+    away and it picks from that rather than restating it locally.
+    """
+    from aiforge_core.memory.sync import group, identity
+
+    return {"groups": group.known(), "admin": identity.self_id()}
+
+
+@router.get("/api/memory/sync/manifest", responses={
+    400: {"description": "Bad group name"},
+    404: {"description": "No such group"}})
+def sync_manifest(group: GroupQ = "") -> dict:
     """What a spoke may pull, plus who we are.
 
     ``admin`` is how a spoke learns whose fold to trust without the operator
@@ -77,28 +125,35 @@ def sync_manifest() -> dict:
     """
     from aiforge_core.memory.sync import identity, inbox, role
 
-    return {"manifest": inbox.downstream(), "admin": identity.self_id(),
-            "role": role.role()}
+    with _scope(group):
+        return {"manifest": inbox.downstream(), "admin": identity.self_id(),
+                "role": role.role(), "group": group}
 
 
-@router.get("/api/memory/sync/blob/{digest}", responses={404: {"description": "Not found"}})
-def sync_blob(digest: str) -> Response:
+@router.get("/api/memory/sync/blob/{digest}", responses={
+    400: {"description": "Bad group name"},
+    404: {"description": "Not found"}})
+def sync_blob(digest: str, group: GroupQ = "") -> Response:
     from aiforge_core.memory.sync import inbox
     from aiforge_core.memory.sync import manifest as _man
 
     digest = (digest or "").strip().lower()
-    if digest not in {str(e.get("hash") or "") for e in inbox.downstream()}:
-        # Not "no such file": a hash we hold but do not advertise is one a spoke
-        # has no business reading back — its own raw notes, or another spoke's.
-        raise HTTPException(404, f"no blob: {digest}")
-    path = _man.path_for_hash(digest)
-    if path is None:
-        raise HTTPException(404, f"no blob: {digest}")
-    return Response(content=path.read_bytes(), media_type="text/markdown")
+    with _scope(group):
+        if digest not in {str(e.get("hash") or "") for e in inbox.downstream()}:
+            # Not "no such file": a hash we hold but do not advertise is one a
+            # spoke has no business reading back — its own raw notes, another
+            # spoke's, or (now) another GROUP's, which is why the membership
+            # test is made inside the scope rather than against the whole tree.
+            raise HTTPException(404, f"no blob: {digest}")
+        path = _man.path_for_hash(digest)
+        if path is None:
+            raise HTTPException(404, f"no blob: {digest}")
+        return Response(content=path.read_bytes(), media_type="text/markdown")
 
 
 @router.post("/api/memory/sync/offer", responses={
     400: {"description": "Bad request"},
+    404: {"description": "No such group"},
     413: {"description": "Payload too large"}})
 async def sync_offer(request: Request) -> dict:
     """A spoke offers its manifest; we answer with what we do not hold."""
@@ -106,12 +161,14 @@ async def sync_offer(request: Request) -> dict:
     from aiforge_core.memory.sync import inbox
 
     entries = payload.get("entries")
-    inbox.seen(str(payload.get("peer") or ""))
-    return {"want": inbox.wanted(entries if isinstance(entries, list) else [])}
+    with _scope(str(payload.get("group") or "")):
+        inbox.seen(str(payload.get("peer") or ""))
+        return {"want": inbox.wanted(entries if isinstance(entries, list) else [])}
 
 
 @router.post("/api/memory/sync/push", responses={
     400: {"description": "Bad request"},
+    404: {"description": "No such group"},
     413: {"description": "Payload too large"}})
 async def sync_push(request: Request) -> dict:
     """A spoke sends one record we asked for. ``applied`` says whether it stuck."""
@@ -123,5 +180,6 @@ async def sync_push(request: Request) -> dict:
     except Exception:  # noqa: BLE001 — undecodable bytes are a refused record
         raise HTTPException(400, "body is not valid base64") from None
     entry = payload.get("entry")
-    return {"applied": inbox.accept(str(payload.get("peer") or ""),
-                                    entry if isinstance(entry, dict) else {}, body)}
+    with _scope(str(payload.get("group") or "")):
+        return {"applied": inbox.accept(str(payload.get("peer") or ""),
+                                        entry if isinstance(entry, dict) else {}, body)}

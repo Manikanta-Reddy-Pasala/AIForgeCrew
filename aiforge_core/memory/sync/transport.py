@@ -65,6 +65,19 @@ MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_MANIFEST_ENTRIES = 20_000
 
 
+def _q(group: str) -> str:
+    """The group as a query-string fragment, or "" when ungrouped.
+
+    Quoted, because the name reaches here from configuration and a value that
+    needs escaping must never silently address a different route. The admin
+    validates it again anyway — this is about not sending nonsense, not about
+    trusting what comes back.
+    """
+    from urllib.parse import quote
+
+    return f"?group={quote(group, safe='')}" if group else ""
+
+
 def _headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
@@ -178,7 +191,32 @@ def _fetch(url: str, token: str, limit: int, *, method: str = "GET",
     return out.get("body")
 
 
-def offer(base_url: str, entries: list[dict]) -> list[dict] | None:
+def fetch_groups(base_url: str) -> list[str] | None:
+    """What the admin publishes. ``None`` when it could not be reached.
+
+    ``None`` and ``[]`` are different answers and every caller must tell them
+    apart: ``[]`` is a reachable ungrouped admin (sync normally), ``None`` is an
+    admin that is down (do nothing this cycle, and do not let discovery decide
+    anything on the strength of an empty list).
+    """
+    import json
+
+    from aiforge_core.memory.sync import status
+
+    try:
+        raw = _fetch(f"{base_url.rstrip('/')}/api/memory/sync/groups", _token(),
+                     MAX_MANIFEST_BYTES)
+        data = json.loads(raw)
+    except Exception as exc:  # noqa: BLE001 — an unreachable admin is expected
+        status.note_failure(base_url, f"{type(exc).__name__}: {exc}"[:200])
+        return None
+    rows = data.get("groups") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return None
+    return [str(g) for g in rows][:MAX_MANIFEST_ENTRIES]
+
+
+def offer(base_url: str, entries: list[dict], group: str = "") -> list[dict] | None:
     """POST our manifest to the admin; return the entries it wants.
 
     ``None`` means the admin could not be reached or answered nonsense — the
@@ -188,13 +226,16 @@ def offer(base_url: str, entries: list[dict]) -> list[dict] | None:
     """
     import json
 
-    body = json.dumps({"peer": _self_id(), "entries": entries}).encode()
+    from aiforge_core.memory.sync import status
+
+    body = json.dumps({"peer": _self_id(), "group": group,
+                       "entries": entries}).encode()
     try:
         raw = _fetch(f"{base_url.rstrip('/')}/api/memory/sync/offer", _token(),
                      MAX_MANIFEST_BYTES, method="POST", payload=body)
         data = json.loads(raw)
     except Exception as exc:  # noqa: BLE001 — an unreachable admin is expected
-        _log.info("sync: admin %s did not accept the offer: %s", base_url, exc)
+        status.note_failure(base_url, f"{type(exc).__name__}: {exc}"[:200])
         return None
     want = data.get("want") if isinstance(data, dict) else None
     if not isinstance(want, list):
@@ -210,7 +251,7 @@ def offer(base_url: str, entries: list[dict]) -> list[dict] | None:
     return rows
 
 
-def push_blob(base_url: str, entry: dict, body: bytes) -> bool:
+def push_blob(base_url: str, entry: dict, body: bytes, group: str = "") -> bool:
     """POST one record the admin asked for. False on any failure.
 
     The bytes travel base64 inside JSON rather than as a raw body with the entry
@@ -221,15 +262,17 @@ def push_blob(base_url: str, entry: dict, body: bytes) -> bool:
     import base64
     import json
 
-    payload = json.dumps({"peer": _self_id(), "entry": entry,
+    from aiforge_core.memory.sync import status
+
+    payload = json.dumps({"peer": _self_id(), "group": group, "entry": entry,
                           "body": base64.b64encode(body).decode()}).encode()
     try:
         raw = _fetch(f"{base_url.rstrip('/')}/api/memory/sync/push", _token(),
                      MAX_MANIFEST_BYTES, method="POST", payload=payload)
         data = json.loads(raw)
     except Exception as exc:  # noqa: BLE001 — retried on the next cycle
-        _log.info("sync: push of %s to %s failed: %s", entry.get("path"),
-                  base_url, exc)
+        status.note_failure(base_url, f"{type(exc).__name__}: {exc}"[:200])
+        _log.debug("sync: push of %s to %s failed", entry.get("path"), base_url)
         return False
     return bool(isinstance(data, dict) and data.get("applied"))
 
@@ -241,7 +284,7 @@ def _self_id() -> str:
     return identity.self_id()
 
 
-def fetch_manifest(base_url: str, token: str = "") -> dict:
+def fetch_manifest(base_url: str, token: str = "", group: str = "") -> dict:
     """GET the admin's manifest. Returns {} when it is unreachable or absurd.
 
     ``token`` defaults to whatever this machine is configured with (``_token``);
@@ -249,13 +292,16 @@ def fetch_manifest(base_url: str, token: str = "") -> dict:
     """
     import json
 
+    from aiforge_core.memory.sync import status
+
     try:
-        body = _fetch(f"{base_url.rstrip('/')}/api/memory/sync/manifest",
+        body = _fetch(f"{base_url.rstrip('/')}/api/memory/sync/manifest{_q(group)}",
                       token or _token(), MAX_MANIFEST_BYTES)
         data = json.loads(body)
     except Exception as exc:  # noqa: BLE001
-        _log.info("sync: peer %s unreachable: %s", base_url, exc)
+        status.note_failure(base_url, f"{type(exc).__name__}: {exc}"[:200])
         return {}
+    status.note_success(base_url)
     if not isinstance(data, dict):
         return {}
     for field in ("manifest", "roster"):
@@ -276,16 +322,22 @@ def fetch_manifest(base_url: str, token: str = "") -> dict:
     return data
 
 
-def fetch_blob(base_url: str, digest: str, token: str = "") -> bytes | None:
+def fetch_blob(base_url: str, digest: str, token: str = "",
+               group: str = "") -> bytes | None:
     """GET one blob by hash. Returns None on any failure; retried next cycle."""
+    from aiforge_core.memory.sync import status
+
     try:
-        return _fetch(f"{base_url.rstrip('/')}/api/memory/sync/blob/{digest}",
-                      token or _token(), MAX_BLOB_BYTES)
+        return _fetch(
+            f"{base_url.rstrip('/')}/api/memory/sync/blob/{digest}{_q(group)}",
+            token or _token(), MAX_BLOB_BYTES)
     except Exception as exc:  # noqa: BLE001 — retried on the next cycle
-        _log.info("sync: blob %s from %s failed: %s", digest[:8], base_url, exc)
+        status.note_failure(base_url, f"{type(exc).__name__}: {exc}"[:200])
+        _log.debug("sync: blob %s from %s failed", digest[:8], base_url)
         return None
 
 
-__all__ = ["fetch_manifest", "fetch_blob", "offer", "push_blob", "TIMEOUT",
+__all__ = ["fetch_manifest", "fetch_blob", "fetch_groups", "offer",
+           "push_blob", "TIMEOUT",
            "REQUEST_DEADLINE", "MAX_BLOB_BYTES", "MAX_MANIFEST_BYTES",
            "MAX_MANIFEST_ENTRIES"]
