@@ -3,7 +3,7 @@
 Three retry layers sit on top of each other — the transport re-attempts a
 broken call (AIFORGE_LLM_RETRY_MAX, 3), the client re-posts an empty answer
 (AIFORGE_LLM_EMPTY_RETRIES, 3 → 4 posts) and the chat loop sweeps again
-(AIFORGE_CHAT_LLM_RETRIES, 5). They MULTIPLY, and every one of those
+(AIFORGE_CHAT_LLM_RETRIES, 8). They MULTIPLY, and every one of those
 generations ships the whole prompt and produces an answer nobody reads. A
 model that is failing for a structural reason does not answer better on the
 twentieth try.
@@ -61,7 +61,7 @@ def test_the_ceiling_can_be_lifted(monkeypatch):
 
 def test_a_bad_ceiling_value_falls_back_to_the_default(monkeypatch):
     monkeypatch.setenv("AIFORGE_CHAT_MAX_GENERATIONS_PER_STEP", "not-a-number")
-    assert _loop._max_gen_per_step() == 6
+    assert _loop._max_gen_per_step() == 10
 
 
 def test_the_ceiling_bounds_the_PRODUCT_not_the_sweep_count(monkeypatch):
@@ -165,4 +165,4 @@ def test_a_negative_ceiling_is_not_read_as_no_ceiling(monkeypatch):
     """-1 reads as "tighter than 0", but 0 means DISABLED — clamping a
     negative to 0 removed the bound the operator was trying to tighten."""
     monkeypatch.setenv("AIFORGE_CHAT_MAX_GENERATIONS_PER_STEP", "-1")
-    assert _loop._max_gen_per_step() == 6
+    assert _loop._max_gen_per_step() == 10

@@ -30,20 +30,22 @@ def _max_gen_per_step() -> int:
 
     Retrying a call that is failing for a structural reason does not produce a
     better answer, it produces the same non-answer again at full price — and
-    the layers multiply: 3 transport attempts x 4 empty re-posts x 5 sweeps is
-    sixty generations for one step. This is the ceiling on that product.
-    Generous enough that a genuinely flaky local model still recovers; 0
-    disables the ceiling and restores the old per-layer behaviour.
+    the layers multiply: 5 transport attempts x 4 empty re-posts x 8 sweeps is
+    a hundred and sixty generations for one step. This is the ceiling on that
+    product. Raised to 10 (from 6) so a genuinely unavailable model — one that
+    is reloading or briefly unreachable — gets the fuller retry budget the
+    sweeps below now ask for, while still bounding a structurally-failing call;
+    0 disables the ceiling and restores the old per-layer behaviour.
     """
     try:
-        _v = int(os.environ.get("AIFORGE_CHAT_MAX_GENERATIONS_PER_STEP", "6"))
+        _v = int(os.environ.get("AIFORGE_CHAT_MAX_GENERATIONS_PER_STEP", "10"))
     except ValueError:
-        return 6
+        return 10
     # A NEGATIVE value reads as "tighter than zero" and used to clamp to 0,
     # which means DISABLED — the opposite of what the operator typed. Only an
     # explicit 0 turns the ceiling off; anything else nonsensical falls back to
     # the default rather than silently removing the bound.
-    return _v if _v >= 0 else 6
+    return _v if _v >= 0 else 10
 
 
 def _codegraph_directive(cwd, readonly_mode) -> str:
@@ -451,11 +453,11 @@ def _retry_plan(exc, _step_calls):
     an unserved-model config error) plus the per-step budget and a config-error
     message. Returns ``(retries, budget, cfg_error)``."""
     _cfg_error = ""
-    _retries = 5
+    _retries = 8
     try:
-        _retries = max(0, int(os.environ.get("AIFORGE_CHAT_LLM_RETRIES", "5")))
+        _retries = max(0, int(os.environ.get("AIFORGE_CHAT_LLM_RETRIES", "8")))
     except ValueError:
-        _retries = 5
+        _retries = 8
     # BOUND THE PRODUCT, not this layer alone. Below this sweep the
     # client already re-posts an empty answer (AIFORGE_LLM_EMPTY_RETRIES,
     # default 3 → 4 posts) and the transport retries a broken one
@@ -530,7 +532,7 @@ def _retry_completion(complete_fn, role, convo, session_id, exc,
     # busy, a one-off empty/4xx). Retry a few times before surfacing, and
     # never show the raw `llm.exhausted role=chat …` stack; give a plain,
     # actionable message.
-    # AIFORGE_CHAT_LLM_RETRIES tunes the retry count (default 5) — a
+    # AIFORGE_CHAT_LLM_RETRIES tunes the retry count (default 8) — a
     # local model that's loading/busy often needs a few passes.
     _retries, _budget, _cfg_error = _retry_plan(exc, _step_calls)
     def _over_budget() -> bool:
