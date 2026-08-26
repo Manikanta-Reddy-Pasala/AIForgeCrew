@@ -111,6 +111,24 @@ def test_recall_formats_block(store):
     assert "kafka" in block.lower()          # content
 
 
+def test_recall_block_forbids_resuming_the_other_session(store):
+    """Cross-session recall is REFERENCE. Without this framing the agent read a
+    prior session's unfinished work as its own job and went off-topic (editing
+    another repo entirely)."""
+    _s_kafka, _s_redis, s_cur = _seed(store)
+    from aiforge_core.runtime import chat_agent
+    block = chat_agent._chat_session_recall("kafka retries", s_cur)
+    assert "REFERENCE ONLY" in block
+    assert "do NOT resume" in block
+    assert "CURRENT request" in block
+
+
+def test_memory_recall_preamble_forbids_resuming_recalled_work():
+    from aiforge_core.runtime.chat_agent._context import _recall
+    assert "not a work queue" in _recall._RECALL_PREAMBLE
+    assert "do not resume" in _recall._RECALL_PREAMBLE
+
+
 def test_recall_empty_when_no_hits(store):
     _seed(store)
     from aiforge_core.runtime import chat_agent

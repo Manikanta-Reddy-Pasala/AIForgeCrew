@@ -124,7 +124,7 @@ def _append_session_blocks(add, cwd, messages, session_id, role):
 
 
 def _append_learning_recall(add, bundle, last_user, session_id, proactive,
-                            is_init, prev_session_on):
+                            is_init, prev_session_on, cwd=None):
     """Append self-learning recall: in FULL mode dump memory recall + prior-chat
     hits (excluding the prev-session already injected); in LITE dump recall only
     on the opening turn and otherwise point the model at the memory tools."""
@@ -145,7 +145,9 @@ def _append_learning_recall(add, bundle, last_user, session_id, proactive,
             if _prev_session_on:
                 try:
                     from aiforge_core.runtime import chat_okr as _cokr
-                    _drop = _cokr.previous_session_id(session_id)
+                    # Same cwd filter the brief used — otherwise this drops a
+                    # DIFFERENT session than the one that was injected.
+                    _drop = _cokr.previous_session_id(session_id, cwd=cwd)
                 except Exception:  # noqa: BLE001
                     _drop = None
             add("chat-recall", _chat_session_recall(
@@ -180,25 +182,35 @@ def _append_recall_blocks(add, bundle, cwd, last_user, messages, session_id,
     # redundant — the recall bundle already carries a prior-chat source and the
     # prev-session block carries the immediate prior conversation — so skip it to
     # avoid surfacing the same session twice (audit R6).
-    _prev_session_on = (_is_init and session_id is not None
-                        and os.environ.get("AIFORGE_SESSION_PREV_CONTEXT", "1") != "0")
+    # PREVIOUS SESSION continuity — at session START, carry the last SAME-PROJECT
+    # conversation forward so a follow-up asked in a NEW chat has its context
+    # (the tail of that session, framed REFERENCE-ONLY — no resuming its task, and
+    # a contradicting new ask wins). Built FIRST, because whether it is non-empty
+    # is what decides the recall exclusion below; a different project's session no
+    # longer qualifies, so the brief is often "" and that session's recall hits
+    # must then NOT be dropped. Cheap local scan, opening turn only;
+    # AIFORGE_SESSION_PREV_CONTEXT=0 disables. Kept in cave too — it's quality
+    # continuity, not growing history; the cap trims it only if the window is
+    # genuinely tight.
+    _prev_brief = ""
+    if (_is_init and session_id is not None
+            and os.environ.get("AIFORGE_SESSION_PREV_CONTEXT", "1") != "0"):
+        try:
+            from aiforge_core.runtime import chat_okr as _cokr
+            _prev_brief = _cokr.previous_session_brief(session_id, cwd=cwd) or ""
+        except Exception:  # noqa: BLE001 — continuity must never break a turn
+            _prev_brief = ""
+    # When the block IS injected, the separate chat-session recall below is
+    # redundant for that one session — the recall bundle already carries a
+    # prior-chat source and the prev-session block carries the conversation — so
+    # skip it there to avoid surfacing the same session twice (audit R6).
+    _prev_session_on = bool(_prev_brief)
     # Self-learning recall — EVERY turn, keyed to the CURRENT user message
     # (from the shared bundle). Cave mode pulls fewer hits.
     _append_learning_recall(add, _bundle, last_user, session_id,
-                            _proactive, _is_init, _prev_session_on)
-    # PREVIOUS SESSION continuity — at session START, carry the last
-    # conversation forward so a follow-up asked in a NEW chat has its context
-    # (the tail of the prior session, framed as SUPERSEDABLE — a contradicting
-    # new ask wins). Cheap local scan, opening turn only; AIFORGE_SESSION_PREV_
-    # CONTEXT=0 disables. Kept in cave too — it's quality continuity, not
-    # growing history; the cap trims it only if the window is genuinely tight.
-    if _prev_session_on:
-        try:
-            from aiforge_core.runtime import chat_okr as _cokr
-            add("prev-session",
-                           _cokr.previous_session_brief(session_id))
-        except Exception:  # noqa: BLE001 — continuity must never break a turn
-            pass
+                            _proactive, _is_init, _prev_session_on, cwd)
+    if _prev_brief:
+        add("prev-session", _prev_brief)
     _img_blocks = _append_session_blocks(add, cwd, messages, session_id, role)
     return _img_blocks
 
@@ -1490,6 +1502,29 @@ def _pre_tool_checks(st, name, args, cwd, _scope_globs):
             _hook_block = _pre
     except Exception:  # noqa: BLE001 — hooks must never break dispatch
         _hook_block = None
+
+    # Workspace jail (opt-in, AIFORGE_CHAT_WORKSPACE_JAIL=1). The session's cwd
+    # is otherwise only a DEFAULT: an absolute path in a mutating file tool
+    # writes anywhere. Refuse WITHOUT writing and tell the model why, so an
+    # off-topic recall can never turn into an edit in a repo the user never
+    # mentioned in this chat.
+    try:
+        from aiforge_core.runtime import scope_guard as _sg_jail
+        _jailed = _sg_jail.outside_workspace(name, args or {}, cwd)
+    except Exception:  # noqa: BLE001 — never break dispatch
+        _jailed = []
+    if _jailed:
+        result = {
+            "ok": False, "error": "outside_workspace",
+            "blocked_paths": _jailed, "workspace": cwd,
+            "hint": ("Write refused: the path is outside this session's "
+                     f"workspace ({cwd}). Write inside it, or ask the user to "
+                     "point this chat at that project first."),
+        }
+        yield {"type": "tool", "name": name, "args": args, "result": result}
+        st.convo.append({"role": "user",
+                         "content": f"OBSERVATION: {json.dumps(result)}"})
+        return "continue"
 
     # Scope allowlist enforcement (autonomous Doer path). Reject a
     # mutating file tool whose resolved target path is outside the
