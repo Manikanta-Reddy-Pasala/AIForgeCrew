@@ -183,3 +183,55 @@ async def sync_push(request: Request) -> dict:
     with _scope(str(payload.get("group") or "")):
         return {"applied": inbox.accept(str(payload.get("peer") or ""),
                                         entry if isinstance(entry, dict) else {}, body)}
+
+
+@router.get("/api/memory/sync/status")
+def sync_status() -> dict:
+    """Everything the settings screen needs, in one call.
+
+    Served from the record the cycle writes rather than probed live. A UI must
+    not be the thing that discovers the admin is down: a probe on a page load is
+    a twenty-second hang the moment it matters, and the answer it would give is
+    already on disk.
+    """
+    from aiforge_core.memory.sync import group, redact, role, status
+
+    row = dict(status.read())
+    row.setdefault("state", "no-admin" if not role.admin_url() else "unknown")
+    row.setdefault("admin", role.admin_url())
+    row.setdefault("group", group.selected())
+    row.setdefault("groups_available", [])
+    row.setdefault("reachable", False)
+    row.setdefault("pending", 0)
+    row.setdefault("pushed_total", 0)
+    row.setdefault("blocked", {})
+    row.setdefault("last_ok", None)
+    row.setdefault("last_error", None)
+    row["role"] = role.role()
+    row["rules"] = redact.explain()
+    row["recent_blocks"] = status.blocks()[:20]
+    return row
+
+
+@router.put("/api/memory/sync/group", responses={400: {"description": "Bad name"}})
+async def choose_group(request: Request) -> dict:
+    """This client joins a group. Persisted, so the choice survives a restart."""
+    payload = await _read_json(request)
+    from aiforge_core.memory.sync import group
+
+    try:
+        return {"group": group.choose(str(payload.get("group") or ""))}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+
+
+@router.post("/api/memory/sync/now")
+def sync_now() -> dict:
+    """Run one cycle on demand. Returns the rows the cycle produced.
+
+    ``run_once`` never raises and bounds itself with the same cycle budget the
+    daemon uses, so this cannot become a way to hang the API.
+    """
+    from aiforge_core.memory.sync import loop
+
+    return {"rows": loop.run_once()}

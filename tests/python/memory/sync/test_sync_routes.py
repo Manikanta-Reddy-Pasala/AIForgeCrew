@@ -347,3 +347,55 @@ def test_an_offer_into_an_unknown_group_is_404(monkeypatch, tmp_path):
     r = TestClient(api.app).post("/api/memory/sync/offer",
                                  json={"peer": "ms", "group": "typo", "entries": []})
     assert r.status_code == 404
+
+
+# ── status and the client-side controls ──────────────────────────────────
+
+def test_status_route_serves_the_record(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import status
+
+    status.record(state="ok", admin="http://nuc:8799", reachable=True,
+                  group="cellular", groups_available=["cellular"], pending=2)
+
+    row = TestClient(api.app).get("/api/memory/sync/status").json()
+    assert row["group"] == "cellular"
+    assert row["pending"] == 2
+    assert row["role"] in ("admin", "spoke")
+    assert [s["stage"] for s in row["rules"]] == ["secrets", "private", "noise"]
+
+
+def test_status_route_on_a_machine_that_has_never_synced(monkeypatch, tmp_path):
+    """Every field the UI reads is present even with no record on disk."""
+    api = _fresh_api(monkeypatch, tmp_path)
+
+    row = TestClient(api.app).get("/api/memory/sync/status").json()
+    assert row["state"] in ("unknown", "no-admin")
+    assert row["groups_available"] == []
+    assert row["pending"] == 0
+    assert row["recent_blocks"] == []
+
+
+def test_status_route_reports_what_the_filter_held_back(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import status
+
+    status.record_block("O-02", "secrets.aws_key", "shaped like an aws key")
+
+    row = TestClient(api.app).get("/api/memory/sync/status").json()
+    assert row["recent_blocks"][0]["rule"] == "secrets.aws_key"
+
+
+def test_choosing_a_group_persists_it(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import group
+
+    r = TestClient(api.app).put("/api/memory/sync/group", json={"group": "cellular"})
+    assert r.status_code == 200
+    assert group.selected() == "cellular"
+
+
+def test_choosing_an_unusable_group_is_refused(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    r = TestClient(api.app).put("/api/memory/sync/group", json={"group": "../etc"})
+    assert r.status_code == 400
