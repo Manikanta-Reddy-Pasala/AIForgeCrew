@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -15,6 +16,8 @@ from ._registry import (TOOLS, _ANALYZE_BANNER, _BUILDER_FINALIZE_TOOL, _BUILDER
 from ._preview import (_diff_preview)
 from ._prompt import (_SYSTEM, _parse, _strip_reasoning_prefix)
 from ._context import (_CANCELLED, _EDIT_TOOL_NAMES, _LOOP_REPEAT, _OUTPUT_REPEAT, _WEB_LOOKUP_DIRECTIVE, _cap_system_prompt, _cave_mode, _chat_session_recall, _claims_file_edits, _compact_convo, _complete_cancellable, _compress_prompt, _ctx_budget_chars, _ctx_on, _edit_claim_disclaimer, _edit_claim_guard_enabled, _edit_claim_nudge, _fire_stop, _has_web_intent, _post_edit_syntax_error, _progress_recap, _extension_budget, _repo_name, _stuck_recovery_max, _run_project_verify, _safety_cap, _split_asks, _sys_prompt_budget_chars, _unattended_cap, _text_of, _turn_deadline_s, _verify_fix_message, _verify_max_rounds, _verify_on_final_enabled, _worktree_fingerprint)
+
+_log = logging.getLogger("aiforge.chat_agent")
 
 _THE_FINALIZE_TOOL = 'the finalize tool'
 
@@ -1242,6 +1245,78 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
     return None
 
 
+def _is_clean_tree(cwd) -> bool:
+    """True only when ``cwd`` IS a git repo AND has nothing uncommitted.
+
+    Deliberately NOT ``_worktree_fingerprint(cwd) == ""``: that helper returns
+    "" for a clean tree *and* for "not a git repo / git unavailable", and its
+    own docstring warns that "" means "no signal", never "clean". Reusing it
+    here would let a tier-2 prediction act automatically in a directory with no
+    undo at all — precisely the case the clean-tree rule exists to exclude.
+
+    Anything unclear answers False, which costs an offer instead of an action.
+    """
+    if not cwd:
+        return False
+    try:
+        out = subprocess.run(["git", "status", "--porcelain"], cwd=str(cwd),
+                             capture_output=True, text=True, timeout=5)
+    except Exception:  # noqa: BLE001 — a git hiccup must never break the turn
+        return False
+    return out.returncode == 0 and not out.stdout.strip()
+
+
+def _turn_summary(st) -> str:
+    """One line naming what this turn actually did, for the prediction prompt.
+
+    Read off ``action_counts``, which the loop already maintains — the
+    alternative is a second tally that drifts from the first.
+    """
+    try:
+        counts = getattr(st, "action_counts", None) or {}
+        names = [str(k) for k, v in counts.items() if v]
+    except Exception:  # noqa: BLE001
+        return ""
+    return ", ".join(names[:8])
+
+
+def _last_user_message(st) -> str:
+    try:
+        for m in reversed(list(getattr(st, "convo", []) or [])):
+            if isinstance(m, dict) and m.get("role") == "user":
+                # _text_of takes the whole MESSAGE, not its content: it handles
+                # the multimodal list form a vision turn rewrites content into.
+                return _text_of(m)[:2000]
+    except Exception:  # noqa: BLE001 — a malformed convo predicts nothing
+        return ""
+    return ""
+
+
+def _predict_next_step(message: str, did: str, cwd):
+    """The prediction, or None. Split out so a test can replace exactly this."""
+    from aiforge_core.runtime import next_step
+
+    return next_step.predict({"message": message, "did": did,
+                              "repo": _repo_name(str(cwd or "")),
+                              "clean_tree": _is_clean_tree(cwd)})
+
+
+def _emit_suggestion(message: str, did: str, cwd):
+    """Yield at most one ``suggestion`` event. Never raises.
+
+    Emitted AFTER the answer and before ``done`` — the same ordering
+    ``plan_ready`` uses. The user reads what they asked for either way, so a
+    prediction that is slow, wrong or broken costs them nothing.
+    """
+    try:
+        p = _predict_next_step(message, did, cwd)
+    except Exception as exc:  # noqa: BLE001 — a prediction never breaks a turn
+        _log.debug("next_step: prediction skipped: %s", exc)
+        return
+    if p is not None:
+        yield p.as_event()
+
+
 def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
                   cwd, _asks, _wt_fp0):
     """Handle a FINAL step: builder-not-finalized nudge, implicit-final doer
@@ -1266,6 +1341,7 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
                    "slug": f"part-{_i + 1}", "status": "done"}
     _fire_stop("final", cwd)
     yield {"type": "message", "text": _strip_reasoning_prefix(step["text"])}
+    yield from _emit_suggestion(_last_user_message(st), _turn_summary(st), cwd)
     yield {"type": "done"}
     return "return"
 
