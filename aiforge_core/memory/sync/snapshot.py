@@ -57,7 +57,7 @@ def _now_stamp() -> str:
     return time.strftime("%Y-%m-%dT%H%M%SZ", time.gmtime())
 
 
-def take(root: Path, stamp: str = "") -> str:
+def take(root: Path, stamp: str = "", *, protect: str = "") -> str:
     """Snapshot ``root``'s syncable subtrees. Returns the stamp. Never raises.
 
     A snapshot that cannot be taken must not stop the fold or the pull it
@@ -76,7 +76,7 @@ def take(root: Path, stamp: str = "") -> str:
             if src.is_dir():
                 shutil.copytree(src, target / name, copy_function=os.link,
                                 dirs_exist_ok=True)
-        _prune(root)
+        _prune(root, protect=protect)
     except OSError as exc:
         _log.warning("sync: could not snapshot %s: %s", root, exc)
     return stamp
@@ -93,8 +93,19 @@ def listing(root: Path) -> list[dict]:
     return sorted(rows, key=lambda r: r["stamp"], reverse=True)
 
 
-def _prune(root: Path) -> None:
+def _prune(root: Path, *, protect: str = "") -> None:
+    """Drop the oldest snapshots beyond ``keep()``.
+
+    ``protect`` is never pruned. ``revert`` takes a safety snapshot before it
+    restores, and without this that snapshot's prune deleted the very snapshot
+    being restored FROM — the live tree was then removed and nothing came back.
+    Not an edge case either: reverting to the OLDEST snapshot hits it at any
+    ``keep`` value, and "roll back as far as I can" is the commonest reason to
+    revert at all.
+    """
     for row in listing(root)[keep():]:
+        if row["stamp"] == protect:
+            continue
         try:
             shutil.rmtree(_dir(Path(root)) / row["stamp"])
         except OSError as exc:
@@ -113,7 +124,13 @@ def revert(root: Path, to: str, *, stamp: str = "") -> str:
     if not to or not source.is_dir():
         raise FileNotFoundError(f"no such snapshot: {to}")
 
-    replaced = take(root, stamp or _now_stamp())
+    replaced = take(root, stamp or _now_stamp(), protect=to)
+    if not source.is_dir():
+        # Defence in depth. The prune above is told to spare ``to``, but a
+        # revert that has lost its source must refuse BEFORE the live tree is
+        # removed: a half-applied revert leaves neither state.
+        raise FileNotFoundError(
+            f"snapshot {to} disappeared before it could be restored")
     for name in SUBTREES:
         live = root / name
         if live.is_dir():

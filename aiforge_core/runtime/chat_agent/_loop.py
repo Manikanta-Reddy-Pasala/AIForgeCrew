@@ -1293,9 +1293,18 @@ def _last_user_message(st) -> str:
 
 
 def _predict_next_step(message: str, did: str, cwd):
-    """The prediction, or None. Split out so a test can replace exactly this."""
-    from aiforge_core.runtime import next_step
+    """The prediction, or None. Split out so a test can replace exactly this.
 
+    The kill switch is honoured BEFORE the context is gathered. ``_is_clean_tree``
+    shells out to git on every turn end, so building the argument first meant a
+    disabled feature still paid for a subprocess per turn — "off" has to mean
+    it costs nothing, not merely that it emits nothing.
+    """
+    from aiforge_core.runtime import next_step
+    from aiforge_core.runtime.next_step import _predict as _np
+
+    if _np._disabled():
+        return None
     return next_step.predict({"message": message, "did": did,
                               "repo": _repo_name(str(cwd or "")),
                               "clean_tree": _is_clean_tree(cwd)})

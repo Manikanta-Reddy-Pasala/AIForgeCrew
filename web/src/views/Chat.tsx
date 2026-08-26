@@ -818,6 +818,14 @@ export default function Chat() {
   // The predicted next step for the turn that just ended. Cleared when a new
   // send starts: a stale suggestion under a new question is worse than none.
   const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
+  // True while the CURRENT turn was started by a suggestion rather than by the
+  // user. Its own suggestion is then downgraded to an offer, so an auto-action
+  // can never chain into another one — one hop from a human, never a loop.
+  const fromSuggestion = useRef(false);
+  // Set by the chip just before it sends, read once by send(). A ref rather
+  // than state: send() must observe it in the same tick, and a state update
+  // would not have landed yet.
+  const sentFromSuggestion = useRef(false);
   const [checkpoints, setCheckpoints] = useState<Array<{ sha: string; label: string; when: string }> | null>(null);
   // Edit-and-resend: the user-message id whose turn we're replacing (history is
   // truncated there + workspace restored to that turn's checkpoint on send).
@@ -1302,10 +1310,13 @@ export default function Chat() {
       // its own slot rather than folded into the message: it is about the turn
       // that just ended, and it is cleared the moment a new one starts.
       if (evt.type === 'suggestion') {
+        // A turn the user did not start never auto-acts: one hop from a human,
+        // never a loop of the assistant answering itself.
+        const chained = fromSuggestion.current;
         setSuggestion({
           id: evt.id, action: evt.action, tool: evt.tool || '',
           confidence: evt.confidence, rationale: evt.rationale || '',
-          verdict: evt.verdict,
+          verdict: chained ? 'OFFER' : evt.verdict,
         });
         return;
       }
@@ -1397,6 +1408,10 @@ export default function Chat() {
     // A suggestion is about the turn that just ended. Leaving it under a new
     // question is worse than showing none at all.
     setSuggestion(null);
+    // Only a send the chip made counts as chained; a send the user typed does
+    // not, so typing after an auto-action restores normal behaviour.
+    fromSuggestion.current = sentFromSuggestion.current;
+    sentFromSuggestion.current = false;
     // Abort any in-flight attach probe on this session first — an unresolved
     // attach (kicked off by mount/selectSession) would otherwise keep its fetch
     // alive and, on resolve, run its finally (setBusy(false) + loadSession +
@@ -2221,7 +2236,11 @@ export default function Chat() {
                   means nothing happened. */}
               {suggestion && !busy && (
                 <SuggestionChip s={suggestion}
-                                onSend={(text) => { setSuggestion(null); send(text); }} />
+                                onSend={(text) => {
+                                  setSuggestion(null);
+                                  sentFromSuggestion.current = true;
+                                  send(text);
+                                }} />
               )}
               {/* Plan→approve→execute (Gap B): one-click run the approved plan
                   as a team build. */}

@@ -7,6 +7,8 @@ has.
 """
 from __future__ import annotations
 
+import shutil
+
 import pytest
 
 from aiforge_core.memory.sync import _io, snapshot
@@ -245,3 +247,53 @@ def test_an_idle_pull_does_not_churn_the_revert_points(tmp_path, monkeypatch):
     _hub.run_once(monkeypatch, spoke, admin)
 
     assert snapshot.listing(_io.root()) == []
+
+
+def test_reverting_to_the_oldest_snapshot_does_not_destroy_it(tree, monkeypatch):
+    """The safety snapshot ``revert`` takes first must never prune the snapshot
+    it is about to restore FROM.
+
+    Found in review: ``take()`` prunes to ``keep()``, so reverting to the oldest
+    snapshot deleted the source, and the restore then found nothing — after the
+    live tree had already been removed. The whole received tree was lost, and
+    "roll back as far as I can" is the commonest reason to revert at all.
+    """
+    monkeypatch.setenv("AIFORGE_SYNC_SNAPSHOTS", "2")
+    oldest = snapshot.take(tree, "2026-08-26T100000Z")
+    snapshot.take(tree, "2026-08-26T100001Z")
+    _io.write_atomic(tree / "mesh" / "nuc" / "M-01.md", b"a bad fold")
+
+    snapshot.revert(tree, oldest, stamp="2026-08-26T110000Z")
+
+    assert (tree / "mesh" / "nuc" / "M-01.md").read_text() == "one"
+
+
+def test_reverting_with_only_one_snapshot_kept_still_restores(tree, monkeypatch):
+    """The same bug at its sharpest: keep=1 meant the safety snapshot evicted
+    the source before it was read."""
+    monkeypatch.setenv("AIFORGE_SYNC_SNAPSHOTS", "1")
+    only = snapshot.take(tree, "2026-08-26T100000Z")
+    _io.write_atomic(tree / "mesh" / "nuc" / "M-01.md", b"a bad fold")
+
+    snapshot.revert(tree, only, stamp="2026-08-26T110000Z")
+
+    assert (tree / "mesh" / "nuc" / "M-01.md").read_text() == "one"
+    assert (tree / "mesh").is_dir(), "the live tree must never be left removed"
+
+
+def test_a_revert_whose_source_vanishes_leaves_the_tree_alone(tree, monkeypatch):
+    """Defence in depth: if the source is gone for any reason, refuse BEFORE
+    removing the live tree. A half-applied revert is worse than none."""
+    stamp = snapshot.take(tree, "2026-08-26T100000Z")
+    real_take = snapshot.take
+
+    def _take_then_sabotage(root, s="", *, protect=""):
+        out = real_take(root, s, protect=protect)
+        shutil.rmtree(tree / snapshot.DIR / stamp, ignore_errors=True)
+        return out
+
+    monkeypatch.setattr(snapshot, "take", _take_then_sabotage)
+    with pytest.raises(FileNotFoundError):
+        snapshot.revert(tree, stamp, stamp="2026-08-26T110000Z")
+
+    assert (tree / "mesh" / "nuc" / "M-01.md").read_text() == "one"

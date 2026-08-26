@@ -191,3 +191,15 @@ def test_the_history_limit_is_bounded(monkeypatch, tmp_path):
     client = _api(monkeypatch, tmp_path)
     assert client.get("/api/chat/suggestions?limit=99999").status_code == 200
     assert client.get("/api/chat/suggestions?limit=0").status_code == 200
+
+
+def test_the_kill_switch_costs_nothing_not_merely_emits_nothing(monkeypatch):
+    """_is_clean_tree shells out to git on every turn end. Building the
+    prediction context before honouring the switch meant a disabled feature
+    still paid for a subprocess per turn."""
+    calls = []
+    monkeypatch.setattr(_loop, "_is_clean_tree", lambda cwd: calls.append(cwd) or False)
+    monkeypatch.setenv("AIFORGE_PREDICT_DISABLE", "1")
+
+    assert list(_loop._emit_suggestion("hi", "read_file", "/repo")) == []
+    assert calls == []
