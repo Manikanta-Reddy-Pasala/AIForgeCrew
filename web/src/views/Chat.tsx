@@ -8,6 +8,8 @@ import { ErrorBoundary } from '../ErrorBoundary';
 import { AgentStep, SubtaskItem, RuleState, RuleStateCtx, LiveTurn, ChatMode, BuilderKind, PendingApproval } from './Chat.types';
 import { menuBtn, menuItem, LS_SESSION_KEY, LS_MODEL_KEY, LS_MODE_KEY, BUILDER_KINDS, BUILDER_LABELS, LS_BUILDER_KEY, relTime, dateTimeLabel, toAgentStep, msgAwaiting, getDismissedPlans, addDismissedPlan, isStoppedTurn, fmtTokens } from './Chat.helpers';
 import { SubtaskList } from './Chat.SubtaskList';
+import SuggestionChip from './Chat.SuggestionChip';
+import type { Suggestion } from '../api/chat';
 import { ModeBadge } from './Chat.ModeBadge';
 import { CtxReload } from './Chat.CtxReload';
 import { AutoApprovalsPanel } from './Chat.AutoApprovalsPanel';
@@ -813,6 +815,9 @@ export default function Chat() {
   // Plan→approve→execute (Gap B): set when a plan-mode run emits a plan_ready
   // event carrying the approved spec the user can one-click execute as a team run.
   const [planReady, setPlanReady] = useState<{ spec: string; msgId?: number } | null>(null);
+  // The predicted next step for the turn that just ended. Cleared when a new
+  // send starts: a stale suggestion under a new question is worse than none.
+  const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
   const [checkpoints, setCheckpoints] = useState<Array<{ sha: string; label: string; when: string }> | null>(null);
   // Edit-and-resend: the user-message id whose turn we're replacing (history is
   // truncated there + workspace restored to that turn's checkpoint on send).
@@ -1293,6 +1298,18 @@ export default function Chat() {
       }
       if (evt.type === 'tool' || evt.type === 'message') setPendingApproval(null);
 
+      // The predicted next step, emitted after the reply it follows. Held in
+      // its own slot rather than folded into the message: it is about the turn
+      // that just ended, and it is cleared the moment a new one starts.
+      if (evt.type === 'suggestion') {
+        setSuggestion({
+          id: evt.id, action: evt.action, tool: evt.tool || '',
+          confidence: evt.confidence, rationale: evt.rationale || '',
+          verdict: evt.verdict,
+        });
+        return;
+      }
+
       // Plan ready (Gap B): a plan-mode run produced an approvable spec.
       if (evt.type === 'plan_ready') {
         setPlanReady({ spec: evt.spec || '' });
@@ -1377,6 +1394,9 @@ export default function Chat() {
                       opts?: { resume?: boolean }) {
     const q = (overrideContent ?? input).trim();
     if (!q || busy) return;
+    // A suggestion is about the turn that just ended. Leaving it under a new
+    // question is worse than showing none at all.
+    setSuggestion(null);
     // Abort any in-flight attach probe on this session first — an unresolved
     // attach (kicked off by mount/selectSession) would otherwise keep its fetch
     // alive and, on resolve, run its finally (setBusy(false) + loadSession +
@@ -2195,6 +2215,14 @@ export default function Chat() {
                   );
                 })()}
               </div>
+              {/* The predicted next step for the turn that just ended. Shown
+                  whether it was ACTED on or is being OFFERED — a chip that
+                  appeared only for questions would teach the user that no chip
+                  means nothing happened. */}
+              {suggestion && !busy && (
+                <SuggestionChip s={suggestion}
+                                onSend={(text) => { setSuggestion(null); send(text); }} />
+              )}
               {/* Plan→approve→execute (Gap B): one-click run the approved plan
                   as a team build. */}
               {planReady && !busy && (

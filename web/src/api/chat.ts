@@ -236,3 +236,19 @@ export function chatSessionSteer(id: number, content: string): Promise<{ queued:
     .then(r => r.ok ? r.json() : { queued: false })
     .catch(() => ({ queued: false }));
 }
+
+
+/** A predicted next step, emitted after the reply it follows.
+ *
+ * ``args`` are deliberately absent from the wire shape: the sentence is what
+ * the user reads, and the argument values are the half that may carry a
+ * credential.
+ */
+export interface Suggestion {
+  id: string;
+  action: string;
+  tool: string;
+  confidence: number;
+  rationale: string;
+  verdict: 'ACT' | 'OFFER';
+}

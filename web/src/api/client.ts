@@ -120,6 +120,12 @@ export const api = {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ group }),
     }),
+  // Both answers are recorded. A dismissal is the clearer signal of the two.
+  suggestionOutcome: (id: string, accepted: boolean) =>
+    j<{ ok: boolean }>(`/chat/suggestion/${encodeURIComponent(id)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accepted }),
+    }),
   syncNow: () => j<{ rows: SyncRow[] }>('/memory/sync/now', { method: 'POST' }),
   // Naming an admin makes this machine a spoke. An empty url clears it, which
   // hands the decision back to AIFORGE_ADMIN_URL — and with neither set, this

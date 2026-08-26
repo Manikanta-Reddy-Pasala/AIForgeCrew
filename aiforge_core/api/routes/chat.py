@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from typing import Annotated
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from aiforge_core.api.routes._sse import sse_response
@@ -2719,3 +2719,48 @@ def chat_session_ticket(session_id: int, body: _SessionTicketBody) -> dict:
     )
     return {"ticket": t.identifier, "ticket_id": t.id, "project": project,
             "trace_url": f"/api/tickets/{t.identifier}/events/stream"}
+
+
+@router.post("/api/chat/suggestion/{prediction_id}")
+async def suggestion_outcome(prediction_id: str, request: Request) -> dict:
+    """Record what the user did with a predicted next step.
+
+    BOTH answers are recorded. A feature that learns only from its successes
+    drifts, and a dismissal is the clearer signal of the two — it says the
+    prediction was wrong about this user, which is exactly what the next one
+    needs to know.
+
+    An unknown id is a no-op rather than a 404: a chip in a browser tab left
+    open across a restart is not an error the user can do anything about.
+
+    Accepting an OFFER deliberately does NOT execute anything here. The chip
+    sends the action back as an ordinary chat message, so it passes through the
+    same approval gates, the same tool policy and the same transcript as
+    anything else the user asks for. A second execution path that bypassed
+    those gates is the hole this feature must not open.
+    """
+    from aiforge_core.runtime import next_step
+
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001 — a bodyless click is a dismissal
+        payload = {}
+    accepted = bool((payload or {}).get("accepted"))
+    next_step.outcome(prediction_id, accepted,
+                      edited=str((payload or {}).get("edited") or ""))
+    return {"ok": True, "accepted": accepted}
+
+
+@router.get("/api/chat/suggestions")
+def suggestion_history(limit: int = 20) -> dict:
+    """What has been predicted and what the user did with it.
+
+    The counters that answer "is this feature good enough to extend to the
+    pipeline" — which is the decision the design deliberately left open.
+    """
+    from aiforge_core.runtime import next_step
+
+    rows = next_step.history(max(1, min(int(limit or 20), 200)))
+    return {"suggestions": rows,
+            "accepted": sum(1 for r in rows if r.get("accepted") is True),
+            "dismissed": sum(1 for r in rows if r.get("accepted") is False)}
