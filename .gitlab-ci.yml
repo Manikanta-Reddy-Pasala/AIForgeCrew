@@ -1,0 +1,146 @@
+# AIForgeCrew — build stage that emits sonar/ and blackduck/ folders
+# Build once, scan twice: the scan jobs consume the artifacts, they don't rebuild.
+
+stages:
+  - build
+  - scan
+
+variables:
+  UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+build:
+  image: python:3.12
+  stage: build
+  tags: [restricted-online]
+  extends: [.default_rules]
+  cache:
+    key: "uv-$CI_COMMIT_REF_SLUG"
+    paths:
+      - .uv-cache/
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+    - . "$HOME/.local/bin/env"
+  script:
+    - mkdir -p sonar blackduck test-results
+
+    # ---------- deps + package ----------
+    # --frozen => resolve from uv.lock exactly (Black Duck must see the SHIPPED versions)
+    - uv sync --all-extras --dev --frozen
+    - uv run --with build python -m build --sdist --wheel
+
+    # ---------- tests -> sonar/ ----------
+    # pytest-cov is NOT in [dev]; --with injects it without touching pyproject.
+    - >
+      uv run --with pytest-cov pytest
+      -m "not live_sidecar and not live_neo4j and not live_llm and not live_repomix"
+      -q
+      --junitxml=test-results/junit.xml
+      --cov=aiforge_core --cov=scripts
+      --cov-report=xml:sonar/coverage.xml
+      --cov-report=term
+    - cp test-results/junit.xml sonar/junit.xml
+
+    # ---------- frontend (Sonar reads web/src; skip if no web/) ----------
+    - |
+      if [ -f web/package.json ]; then
+        (cd web && npm ci --no-audit --no-fund && npm run build)
+      fi
+
+    # ---------- sonar/sonar-project.properties ----------
+    - |
+      cat > sonar/sonar-project.properties <<EOF
+      sonar.projectKey=aiforgecrew
+      sonar.projectName=AIForgeCrew
+      sonar.projectVersion=${CI_COMMIT_SHORT_SHA}
+      sonar.sources=aiforge_core,scripts,web/src
+      sonar.tests=tests
+      sonar.sourceEncoding=UTF-8
+      sonar.python.version=3.12
+      sonar.python.coverage.reportPaths=sonar/coverage.xml
+      sonar.python.xunit.reportPath=sonar/junit.xml
+      sonar.exclusions=**/node_modules/**,**/.venv/**,**/.worktrees/**,**/web/dist/**,**/__pycache__/**,**/*.min.js,**/.uv-cache/**
+      sonar.scm.provider=git
+      EOF
+
+    # ---------- blackduck/ ----------
+    # Detect's PIP detector wants a flat pinned requirements.txt; uv export makes one from the lock.
+    - uv export --frozen --all-extras --no-hashes --format requirements-txt -o blackduck/requirements.txt
+    - uv export --frozen --all-extras --no-dev --no-hashes --format requirements-txt -o blackduck/requirements-prod.txt
+    - cp uv.lock pyproject.toml blackduck/
+    - |
+      if [ -f web/package-lock.json ]; then
+        mkdir -p blackduck/web && cp web/package.json web/package-lock.json blackduck/web/
+      fi
+    # CycloneDX SBOM of the ACTUAL resolved venv (catches transitive pins the lock text hides)
+    - uv run --with cyclonedx-bom cyclonedx-py environment .venv -o blackduck/sbom.cyclonedx.json
+    - cp dist/*.whl dist/*.tar.gz blackduck/ 2>/dev/null || true
+    - ls -R sonar blackduck
+
+  artifacts:
+    name: "$CI_PROJECT_NAME-$CI_COMMIT_SHORT_SHA"
+    when: always
+    expire_in: 1 week
+    paths:
+      - dist/
+      - sonar/
+      - blackduck/
+      - test-results/
+    reports:
+      junit: test-results/junit.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: sonar/coverage.xml
+  coverage: '/^TOTAL\s+.*\s+(\d+(?:\.\d+)?)%$/'
+
+
+sonarqube:
+  stage: scan
+  image: sonarsource/sonar-scanner-cli:latest
+  tags: [restricted-online]
+  extends: [.default_rules]
+  needs: [build]
+  variables:
+    SONAR_USER_HOME: "$CI_PROJECT_DIR/.sonar"
+    GIT_DEPTH: "0"          # blame/new-code needs full history
+  cache:
+    key: "sonar-$CI_COMMIT_REF_SLUG"
+    paths: [.sonar/cache]
+  script:
+    - >
+      sonar-scanner
+      -Dproject.settings=sonar/sonar-project.properties
+      -Dsonar.host.url=$SONAR_HOST_URL
+      -Dsonar.token=$SONAR_TOKEN
+  allow_failure: true
+
+
+blackduck:
+  stage: scan
+  image: eclipse-temurin:17-jre
+  tags: [restricted-online]
+  extends: [.default_rules]
+  needs: [build]
+  script:
+    - apt-get update && apt-get install -y --no-install-recommends curl bash ca-certificates git
+    - curl -fsSL https://detect.blackduck.com/detect10.sh -o /tmp/detect.sh && chmod +x /tmp/detect.sh
+    - >
+      bash /tmp/detect.sh
+      --blackduck.url=$BLACKDUCK_URL
+      --blackduck.api.token=$BLACKDUCK_TOKEN
+      --detect.project.name=AIForgeCrew
+      --detect.project.version.name=$CI_COMMIT_REF_NAME
+      --detect.source.path=$CI_PROJECT_DIR
+      --detect.tools=DETECTOR,SIGNATURE_SCAN
+      --detect.detector.search.depth=2
+      --detect.pip.requirements.path=blackduck/requirements.txt
+      --detect.excluded.directories=.venv,node_modules,.uv-cache,.sonar,web/dist,.worktrees,dist
+      --detect.cleanup=false
+      --detect.output.path=$CI_PROJECT_DIR/blackduck/detect-out
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - blackduck/detect-out/
+  allow_failure: true
