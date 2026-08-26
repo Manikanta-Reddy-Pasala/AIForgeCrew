@@ -281,6 +281,26 @@ class _ChatModelBody(BaseModel):
                             "TEAM mode (all agents) uses this model")
 
 
+def _endpoint_for_picked_model(model: str, cur: dict) -> tuple:
+    """``(base_url, api_key, insecure_tls)`` for the model being picked.
+
+    The model's OWN endpoint wins. Models are registered one by one, each with
+    its own base_url, so a model added from a second server must be called on
+    that server: carrying the chat slot's CURRENT base_url across a model change
+    sent every request for the new model to the previous model's host, which
+    answers 404/400 for an id it has never served. The slot's current connection
+    is the fallback only when the registry has no row that says otherwise — an
+    env-pinned model, one registered without a URL, or an id served from two
+    endpoints (which must not be guessed between).
+
+    ``api_key`` of None is meaningful: ``set_role`` keeps the stored key.
+    """
+    conn = _model_registry.connection_for(model) or {}
+    return (conn.get("base_url") or cur.get("base_url"),
+            conn.get("api_key"),
+            bool(conn.get("insecure_tls") if conn else cur.get("insecure_tls")))
+
+
 @router.put("/api/chat/model", responses={400: {"description": "Bad request"}})
 def chat_model_set(body: _ChatModelBody) -> dict:
     """Persist the chat slot's model + report whether it's active (served
@@ -288,17 +308,7 @@ def chat_model_set(body: _ChatModelBody) -> dict:
     but flagged so the UI can warn."""
     cur = _acfg.get("chat") if "chat" in _acfg.archetypes() else {}
     provider = body.provider or cur.get("provider") or "local"
-    # The picked model's OWN endpoint. Models are registered one by one, each
-    # with its own base_url, so a model added from a second server must be
-    # called on that server: carrying the chat slot's current base_url across a
-    # model change sent every request for the new model to the FIRST model's
-    # host, which answers 404/400 for an id it has never served. Falls back to
-    # the slot's current connection only when the registry has no row that says
-    # otherwise (an env-pinned model, or one registered without a URL).
-    _conn = _model_registry.connection_for(body.model) or {}
-    _base = _conn.get("base_url") or cur.get("base_url")
-    _key = _conn.get("api_key")            # None → set_role keeps the stored one
-    _tls = bool(_conn.get("insecure_tls") if _conn else cur.get("insecure_tls"))
+    _base, _key, _tls = _endpoint_for_picked_model(body.model, cur)
     try:
         cfg = _acfg.set_role("chat", provider, body.model,
                              base_url=_base, api_key=_key, insecure_tls=_tls)
