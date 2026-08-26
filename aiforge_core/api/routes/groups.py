@@ -49,20 +49,24 @@ async def create_group(request: Request) -> dict:
         raise HTTPException(400, str(exc)) from None
 
 
-@router.get("/api/admin/groups/{name}/snapshots",
+# The group is a QUERY parameter rather than a path segment so that one pair of
+# routes covers both shapes: an ungrouped admin has a tree worth reverting too,
+# and `/api/admin/groups//snapshots` is not a URL — the empty segment simply
+# does not route, which left the commonest deployment with no way in.
+@router.get("/api/admin/memory/snapshots",
             responses={404: {"description": "No such group"}})
-def group_snapshots(name: str) -> dict:
+def memory_snapshots(group: str = "") -> dict:
     from aiforge_core.memory.sync import _io, snapshot
 
-    with _grouped(name):
-        return {"group": name, "snapshots": snapshot.listing(_io.root()),
+    with _grouped(group):
+        return {"group": group, "snapshots": snapshot.listing(_io.root()),
                 "keep": snapshot.keep()}
 
 
-@router.post("/api/admin/groups/{name}/revert", responses={
+@router.post("/api/admin/memory/revert", responses={
     404: {"description": "No such group or snapshot"}})
-async def group_revert(name: str, request: Request) -> dict:
-    """Roll this group's received tree back to a snapshot.
+async def memory_revert(request: Request, group: str = "") -> dict:
+    """Roll a received tree back to a snapshot.
 
     The state being replaced is itself snapshotted first (``snapshot.revert``),
     so a revert to the wrong stamp is a recoverable mistake rather than a
@@ -72,9 +76,9 @@ async def group_revert(name: str, request: Request) -> dict:
 
     payload = await request.json()
     to = str((payload or {}).get("to") or "").strip()
-    with _grouped(name):
+    with _grouped(group):
         try:
             replaced = snapshot.revert(_io.root(), to)
         except FileNotFoundError as exc:
             raise HTTPException(404, str(exc)) from None
-    return {"group": name, "reverted_to": to, "previous_state": replaced}
+    return {"group": group, "reverted_to": to, "previous_state": replaced}
