@@ -32,7 +32,7 @@ from aiforge_core.memory.sync.redact import _text
 # prefix identifies an AWS access key id" is knowledge and must sync.
 _SHAPES: tuple[tuple[str, re.Pattern], ...] = (
     ("aws_key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
-    ("github_pat", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{50,}\b")),
+    ("github_pat", re.compile(r"\bgithub_pat_\w{50,}\b")),
     ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b")),
     ("slack_token", re.compile(r"\bxox[abpr]-[A-Za-z0-9-]{10,}\b")),
     ("google_key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),

@@ -25,7 +25,7 @@ def _entry(origin: str, key: str, body: bytes, path: str) -> dict:
             "hash": hashlib.sha256(body).hexdigest(), "path": path}
 
 
-@pytest.fixture()
+@pytest.fixture
 def tree(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
@@ -78,7 +78,7 @@ def test_an_existing_authored_note_is_left_byte_for_byte(tree, monkeypatch):
     monkeypatch.setattr("aiforge_core.memory.sync.paths.target_for", lambda e: note)
 
     assert apply.apply_blob(entry, body, peer_id="ms") is False
-    assert (note.read_bytes(), note.stat().st_mtime_ns) == before
+    assert before == (note.read_bytes(), note.stat().st_mtime_ns)
 
 
 def test_a_tombstone_below_okf_is_still_allowed(tree, monkeypatch):

@@ -26,7 +26,7 @@ def _manifest_keys(admin, group_name: str) -> list[str]:
             return sorted(str(e.get("key")) for e in manifest.build())
 
 
-@pytest.fixture()
+@pytest.fixture
 def fleet(tmp_path, monkeypatch):
     admin = _hub.node(monkeypatch, tmp_path, "nuc")
     _publish(admin, "cellular", "retail")

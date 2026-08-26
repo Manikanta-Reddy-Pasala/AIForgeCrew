@@ -3,8 +3,9 @@ import type {
   RegistryModel, ModelInput, LlmSettings, LlmSettingsInput,
   AgentRole, AgentRoleConfig, AgentRoleConfigInput, ProviderCatalog, LlmUsage,
 } from './agents';
-import type { MemorySource, MemoryOverview } from './memory';
-import type { SyncStatus, SyncRow } from './memory';
+import type {
+  MemorySource, MemoryOverview, SyncStatus, SyncRow,
+} from './memory';
 import type { WorkflowSpec, RoutePreview } from './workflows';
 import type { JobPreview, JobDraft, Job } from './jobs';
 

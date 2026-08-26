@@ -231,11 +231,13 @@ def test_assert_not_ours_follows_the_scope(tmp_path, monkeypatch):
     from aiforge_core.memory.sync import _io
 
     group = tmp_path / "md" / "groups" / "cellular"
+    scoped_note = group / "okf" / "O-01.md"
+    outside = tmp_path / "md" / "peers" / "ms" / "O-01.md"
     token = _io.push_scope(group)
     try:
         with pytest.raises(_io.AuthoredTreeError):
-            _io.assert_not_ours(group / "okf" / "O-01.md")
+            _io.assert_not_ours(scoped_note)
         # the unscoped tree is not what this scope protects
-        _io.assert_not_ours(tmp_path / "md" / "peers" / "ms" / "O-01.md")
+        _io.assert_not_ours(outside)
     finally:
         _io.pop_scope(token)

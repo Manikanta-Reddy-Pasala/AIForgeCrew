@@ -77,7 +77,7 @@ def _permitted(entries: list[dict], root) -> tuple[list[dict], dict]:
         path = root / str(entry.get("path") or "")
         try:
             node = nodes.parse_node(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, UnicodeDecodeError):
+        except (OSError, ValueError):   # UnicodeDecodeError is a ValueError
             blocked["filter.unreadable"] = blocked.get("filter.unreadable", 0) + 1
             continue
         verdict = redact.review(node)

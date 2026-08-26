@@ -12,7 +12,7 @@ import pytest
 from aiforge_core.memory.sync import _io, snapshot
 
 
-@pytest.fixture()
+@pytest.fixture
 def tree(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))

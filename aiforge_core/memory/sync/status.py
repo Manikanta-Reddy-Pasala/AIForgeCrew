@@ -97,6 +97,16 @@ def record(*, state: str, admin: str, reachable: bool, group: str = "",
     every failed cycle destroys the only thing that can answer it.
     """
     prev = read()
+    # Named rather than nested in the dict: "an explicit error wins, a success
+    # clears it, and a failure that says nothing keeps the last one we knew" is
+    # three rules, and reading them out of a one-line conditional is how the
+    # middle one gets dropped.
+    if error is not None:
+        last_error = error
+    elif reachable:
+        last_error = None
+    else:
+        last_error = prev.get("last_error")
     row = {
         "state": state,
         "admin": admin,
@@ -109,8 +119,7 @@ def record(*, state: str, admin: str, reachable: bool, group: str = "",
         "pushed_total": int(prev.get("pushed_total") or 0) + int(pushed),
         "blocked": _block_counts(),
         "last_ok": int(time.time()) if reachable else prev.get("last_ok"),
-        "last_error": error if error is not None else (
-            None if reachable else prev.get("last_error")),
+        "last_error": last_error,
         "at": int(time.time()),
     }
     try:

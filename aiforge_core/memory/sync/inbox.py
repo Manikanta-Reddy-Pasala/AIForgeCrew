@@ -181,7 +181,7 @@ def _passes_filter(peer_id: str, entry: dict, body: bytes) -> bool:
 
     try:
         verdict = redact.review(nodes.parse_node(body.decode("utf-8")))
-    except (UnicodeDecodeError, ValueError):
+    except ValueError:          # UnicodeDecodeError is one of these
         verdict = redact.Verdict(False, "filter.unreadable",
                                  "the pushed body could not be parsed")
     if verdict.send:
