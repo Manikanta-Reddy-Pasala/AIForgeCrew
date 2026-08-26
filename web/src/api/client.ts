@@ -121,6 +121,14 @@ export const api = {
       body: JSON.stringify({ group }),
     }),
   syncNow: () => j<{ rows: SyncRow[] }>('/memory/sync/now', { method: 'POST' }),
+  // Naming an admin makes this machine a spoke. An empty url clears it, which
+  // hands the decision back to AIFORGE_ADMIN_URL — and with neither set, this
+  // machine is the admin again.
+  syncSetAdmin: (url: string) =>
+    j<{ admin: string; pinned_by_env: boolean }>('/memory/sync/admin', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    }),
   memoryStats:  () => j<any>('/memory/stats'),
   memorySearch: (q: string, role = 'planner', topK = 12) =>
     j<{

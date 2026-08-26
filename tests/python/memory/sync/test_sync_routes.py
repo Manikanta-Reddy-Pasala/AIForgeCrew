@@ -399,3 +399,70 @@ def test_choosing_an_unusable_group_is_refused(monkeypatch, tmp_path):
     api = _fresh_api(monkeypatch, tmp_path)
     r = TestClient(api.app).put("/api/memory/sync/group", json={"group": "../etc"})
     assert r.status_code == 400
+
+
+# ── the admin url, set from the settings screen ──────────────────────────
+
+def test_the_groups_route_names_its_default(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import group
+
+    group.create("cellular")
+    group.create("retail")
+    assert TestClient(api.app).get("/api/memory/sync/groups").json()["default"] == "cellular"
+
+
+def test_setting_the_admin_url_persists_it(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import role
+
+    r = TestClient(api.app).put("/api/memory/sync/admin",
+                                json={"url": "http://nuc:8799/"})
+    assert r.status_code == 200
+    assert role.admin_url() == "http://nuc:8799"      # trailing slash stripped
+    assert role.role() == "spoke"                     # naming an admin makes us one
+
+
+def test_an_env_pinned_admin_url_wins_over_the_saved_one(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import role
+
+    TestClient(api.app).put("/api/memory/sync/admin", json={"url": "http://saved:8799"})
+    monkeypatch.setenv("AIFORGE_ADMIN_URL", "http://pinned:8799")
+    assert role.admin_url() == "http://pinned:8799"
+
+
+def test_clearing_the_admin_url_makes_this_machine_the_admin_again(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import role
+
+    client = TestClient(api.app)
+    client.put("/api/memory/sync/admin", json={"url": "http://nuc:8799"})
+    client.put("/api/memory/sync/admin", json={"url": ""})
+    assert role.admin_url() == ""
+    assert role.role() == "admin"
+
+
+def test_a_url_without_a_scheme_is_refused(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    r = TestClient(api.app).put("/api/memory/sync/admin", json={"url": "nuc:8799"})
+    assert r.status_code == 400
+    assert "http://" in r.json()["detail"]
+
+
+def test_naming_an_admin_is_refused_on_a_box_holding_the_admin_role(monkeypatch, tmp_path):
+    """A machine cannot be both — the same rule run.sh --admin-url enforces."""
+    api = _fresh_api(monkeypatch, tmp_path)
+    monkeypatch.setenv("AIFORGE_ROLE", "admin")
+    r = TestClient(api.app).put("/api/memory/sync/admin", json={"url": "http://nuc:8799"})
+    assert r.status_code == 400
+    assert "--spoke" in r.json()["detail"]
+
+
+def test_the_status_says_whether_the_settings_may_edit_these(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    monkeypatch.setenv("AIFORGE_ADMIN_URL", "http://pinned:8799")
+
+    row = TestClient(api.app).get("/api/memory/sync/status").json()
+    assert row["admin_pinned"] is True
+    assert row["group_pinned"] is False

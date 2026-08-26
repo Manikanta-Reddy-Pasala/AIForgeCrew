@@ -250,11 +250,6 @@ def run_once() -> list[dict]:
         return [_idle_row(base, "unreachable", group.selected())]
 
     chosen, state = group.resolve(advertised)
-    if state == group.NEEDS_SELECTION:
-        status.record(state=state, admin=base, reachable=True, group="",
-                      groups_available=advertised)
-        return [_idle_row(base, state)]
-
     deadline = time.monotonic() + CYCLE_BUDGET
     row = {"admin": base, "group": chosen, "state": state}
     try:

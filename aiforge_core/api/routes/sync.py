@@ -111,7 +111,12 @@ def sync_groups() -> dict:
     """
     from aiforge_core.memory.sync import group, identity
 
-    return {"groups": group.known(), "admin": identity.self_id()}
+    rows = group.known()
+    # ``default`` is what a client joins when nobody picks — the first group the
+    # operator published. Named in the response so the client does not have to
+    # know that "first" is the rule.
+    return {"groups": rows, "default": group.default_of(rows),
+            "admin": identity.self_id()}
 
 
 @router.get("/api/memory/sync/manifest", responses={
@@ -208,6 +213,10 @@ def sync_status() -> dict:
     row.setdefault("last_ok", None)
     row.setdefault("last_error", None)
     row["role"] = role.role()
+    # The screen has to distinguish "you may edit this" from "an operator pinned
+    # it in .env, and your edit would be ignored".
+    row["admin_pinned"] = bool(_env_admin())
+    row["group_pinned"] = bool(_env_group())
     row["rules"] = redact.explain()
     row["recent_blocks"] = status.blocks()[:20]
     return row
@@ -235,3 +244,36 @@ def sync_now() -> dict:
     from aiforge_core.memory.sync import loop
 
     return {"rows": loop.run_once()}
+
+
+@router.put("/api/memory/sync/admin", responses={400: {"description": "Refused"}})
+async def set_admin(request: Request) -> dict:
+    """Point this machine at an admin, from the settings screen.
+
+    ``AIFORGE_ADMIN_URL`` still wins when it is set, so an operator who pinned
+    it in ``.env`` is not overridden by a click; the saved value is for the
+    machine where nobody edits files. An empty url clears the saved value.
+
+    Runs one cycle straight away, so the screen can show the group list the new
+    admin publishes instead of asking the operator to wait for the next tick.
+    """
+    payload = await _read_json(request)
+    from aiforge_core.memory.sync import loop, role
+
+    try:
+        url = role.set_admin_url(str(payload.get("url") or ""))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return {"admin": url, "pinned_by_env": bool(_env_admin()), "rows": loop.run_once()}
+
+
+def _env_admin() -> str:
+    import os
+
+    return (os.environ.get("AIFORGE_ADMIN_URL") or "").strip()
+
+
+def _env_group() -> str:
+    import os
+
+    return (os.environ.get("AIFORGE_SYNC_GROUP") or "").strip()

@@ -79,11 +79,6 @@ def test_exactly_one_advertised_group_is_auto_selected_and_persisted():
     assert group.selected() == "cellular"
 
 
-def test_several_advertised_and_none_chosen_halts():
-    assert group.resolve(["cellular", "retail"]) == ("", group.NEEDS_SELECTION)
-    assert group.selected() == ""
-
-
 def test_a_chosen_group_survives_a_later_ambiguity():
     group.choose("cellular")
     assert group.resolve(["cellular", "retail"]) == ("cellular", group.OK)
@@ -151,3 +146,32 @@ def test_scoped_restores_the_root_even_when_the_body_raises():
 def test_scoped_refuses_an_invalid_name():
     with pytest.raises(ValueError), group.scoped("../etc"):
         pass
+
+
+# ── the default ──────────────────────────────────────────────────────────
+
+def test_the_default_is_the_first_group_published():
+    group.create("cellular")
+    group.create("retail")
+    assert group.default_of(group.known()) == "cellular"
+
+
+def test_several_advertised_and_none_chosen_takes_the_default():
+    """Refusing to sync until somebody picks was tried first. A machine that
+    quietly syncs nothing looks exactly like one that is syncing fine."""
+    assert group.resolve(["cellular", "retail"]) == ("cellular", group.DEFAULTED)
+    assert group.selected() == "cellular"
+
+
+def test_the_default_is_persisted_so_it_is_decided_once():
+    group.resolve(["cellular", "retail"])
+    assert group.resolve(["cellular", "retail"]) == ("cellular", group.OK)
+
+
+def test_an_explicit_choice_is_never_overridden_by_the_default():
+    group.choose("retail")
+    assert group.resolve(["cellular", "retail"]) == ("retail", group.OK)
+
+
+def test_default_of_an_empty_list_is_ungrouped():
+    assert group.default_of([]) == ""

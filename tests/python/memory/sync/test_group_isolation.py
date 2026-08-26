@@ -34,19 +34,19 @@ def fleet(tmp_path, monkeypatch):
     return admin, spoke
 
 
-def test_several_groups_halt_a_client_that_has_not_chosen(fleet, monkeypatch):
-    """Nothing is sent while the answer is ambiguous. Knowledge in the wrong
-    pool is not recoverable by choosing correctly later — that pool has already
-    folded it and served it onward."""
+def test_a_client_that_has_not_chosen_lands_in_the_admins_default(fleet, monkeypatch):
+    """The first group the admin published. Visible in Settings and movable —
+    a machine that quietly syncs nothing looks exactly like one that works."""
     admin, spoke = fleet
     _hub.activate(monkeypatch, spoke)
     _hub.author(spoke, "O-01", "the invoice parser rounds before tax")
 
     rows = _hub.run_once(monkeypatch, spoke, admin)
 
-    assert rows[0]["state"] == "needs-group-selection"
-    assert rows[0]["pushed"] == 0
-    assert _manifest_keys(admin, "cellular") == []
+    assert rows[0]["state"] == "group-defaulted"
+    assert rows[0]["group"] == "cellular"
+    assert rows[0]["pushed"] == 1
+    assert _manifest_keys(admin, "cellular") == ["O-01"]
     assert _manifest_keys(admin, "retail") == []
 
 

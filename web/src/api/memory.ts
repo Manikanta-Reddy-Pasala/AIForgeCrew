@@ -51,8 +51,9 @@ export interface MemoryOverview {
 /** ``state`` is what the settings panel reads to decide what to show. */
 export type SyncState =
   | 'ok'
+  /** Nobody picked, so the admin's first group was taken. Sync proceeds. */
+  | 'group-defaulted'
   | 'unreachable'
-  | 'needs-group-selection'
   | 'group-unknown'
   | 'no-admin'
   | 'unknown';
@@ -78,6 +79,10 @@ export interface SyncStatus {
   blocked: Record<string, number>;
   last_ok: number | null;
   last_error: string | null;
+  /** True when AIFORGE_ADMIN_URL / AIFORGE_SYNC_GROUP is pinned in .env, in
+   *  which case an edit here would be ignored and the field is read-only. */
+  admin_pinned: boolean;
+  group_pinned: boolean;
   rules: { stage: string; doc: string }[];
   recent_blocks: SyncBlock[];
 }

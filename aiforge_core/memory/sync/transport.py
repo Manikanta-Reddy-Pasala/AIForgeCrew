@@ -218,7 +218,14 @@ def fetch_groups(base_url: str) -> list[str] | None:
     rows = data.get("groups") if isinstance(data, dict) else None
     if not isinstance(rows, list):
         return None
-    return [str(g) for g in rows][:MAX_MANIFEST_ENTRIES]
+    rows = [str(g) for g in rows][:MAX_MANIFEST_ENTRIES]
+    # The admin names its own default. Honoured by putting it first, because
+    # ``group.default_of`` reads the head of the list — so the rule lives in one
+    # place and an admin that names nothing simply keeps its own order.
+    fav = str(data.get("default") or "")
+    if fav and fav in rows:
+        rows = [fav, *[g for g in rows if g != fav]]
+    return rows
 
 
 def _route_is_absent(exc: Exception) -> bool:

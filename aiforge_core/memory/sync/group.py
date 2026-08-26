@@ -38,7 +38,10 @@ _log = logging.getLogger("aiforge.sync")
 # States ``resolve`` can report. Mirrored into ``status.state``, so the settings
 # screen and the cycle agree on the vocabulary rather than each inventing one.
 OK = "ok"
-NEEDS_SELECTION = "needs-group-selection"
+# Reported when nothing was chosen and the admin's default was taken instead.
+# A distinct state, not an error: sync proceeds, and the settings screen says
+# which group it landed in so an operator can move it.
+DEFAULTED = "group-defaulted"
 UNKNOWN = "group-unknown"
 
 # Where each side keeps its half. Config, not memory: both describe this
@@ -72,6 +75,24 @@ def _choice_path() -> Path:
     d = Path(str(config_dir()))
     d.mkdir(parents=True, exist_ok=True)
     return d / _CHOICE_FILE
+
+
+def default_of(rows: list[str]) -> str:
+    """The group a client joins when nobody has chosen one: the FIRST published.
+
+    The admin's list is ordered by creation, so the first entry is the one the
+    operator set up first — the main pool on every deployment that has a main
+    pool. Making it the default is what lets a new machine sync out of the box
+    with nothing configured on it at all.
+
+    The alternative, refusing to sync until somebody picks, was tried first and
+    is safer in one narrow way: knowledge cannot land in a pool nobody intended.
+    It is worse in the way that actually bites, though — a machine that quietly
+    syncs nothing looks exactly like a machine that is syncing fine. Defaulting
+    is visible (the settings screen names the group and offers the others) and
+    reversible (``snapshot``), and it fails loudly rather than silently.
+    """
+    return rows[0] if rows else ""
 
 
 def known() -> list[str]:
@@ -142,10 +163,9 @@ def resolve(advertised: list[str]) -> tuple[str, str]:
     2. A cached choice. Kept even when it vanishes from the list — see below.
     3. Exactly one advertised group: select it and persist. This is the
        single-group deployment, and it needs no UI at all.
-    4. Several advertised and none chosen: ``NEEDS_SELECTION``. The caller must
-       send NOTHING this cycle. Knowledge landing in the wrong pool is not
-       recoverable by choosing correctly later, because the wrong pool has
-       already folded it and served it onward.
+    4. Several advertised and none chosen: the admin's DEFAULT (the first it
+       publishes), persisted, and reported as ``DEFAULTED`` so the settings
+       screen can say which group it landed in and offer the others.
     5. None advertised: ungrouped, the legacy behaviour.
 
     A cached choice that disappears from the list is **kept** and reported as
@@ -167,7 +187,10 @@ def resolve(advertised: list[str]) -> tuple[str, str]:
     if len(rows) == 1:
         return choose(rows[0]), OK
     if len(rows) > 1:
-        return "", NEEDS_SELECTION
+        # The admin's default, taken rather than refusing to sync — see
+        # ``default_of``. Persisted, so this decision is made once and is then
+        # an ordinary chosen group like any other.
+        return choose(default_of(rows)), DEFAULTED
     return "", OK
 
 
@@ -195,5 +218,6 @@ def scoped(name: str):
         _io.pop_scope(token)
 
 
-__all__ = ["OK", "NEEDS_SELECTION", "UNKNOWN", "GROUPS_DIR", "is_valid",
-           "known", "create", "selected", "choose", "resolve", "scoped"]
+__all__ = ["OK", "DEFAULTED", "UNKNOWN", "GROUPS_DIR",
+           "is_valid", "known", "default_of", "create", "selected",
+           "choose", "resolve", "scoped"]
