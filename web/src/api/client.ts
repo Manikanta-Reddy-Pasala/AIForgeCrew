@@ -4,6 +4,7 @@ import type {
   AgentRole, AgentRoleConfig, AgentRoleConfigInput, ProviderCatalog, LlmUsage,
 } from './agents';
 import type { MemorySource, MemoryOverview } from './memory';
+import type { SyncStatus, SyncRow } from './memory';
 import type { WorkflowSpec, RoutePreview } from './workflows';
 import type { JobPreview, JobDraft, Job } from './jobs';
 
@@ -108,6 +109,17 @@ export const api = {
   }),
   runParallel: (id: string) =>
     j<{ started: boolean; subtasks: number }>(`/tickets/${id}/run-parallel`, { method: 'POST' }),
+  // ── Memory sync (hub, groups, outbound filter) ──────────────────
+  // One read for the whole settings panel: the record the sync cycle writes,
+  // never a live probe — a page load must not be what discovers the admin is
+  // down, because that turns a render into a twenty-second hang.
+  syncStatus: () => j<SyncStatus>('/memory/sync/status'),
+  syncJoinGroup: (group: string) =>
+    j<{ group: string }>('/memory/sync/group', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ group }),
+    }),
+  syncNow: () => j<{ rows: SyncRow[] }>('/memory/sync/now', { method: 'POST' }),
   memoryStats:  () => j<any>('/memory/stats'),
   memorySearch: (q: string, role = 'planner', topK = 12) =>
     j<{

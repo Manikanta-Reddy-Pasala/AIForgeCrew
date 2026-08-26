@@ -13,6 +13,7 @@ import {
 import { Icon } from '../icons';
 import { JiraCard, ConfluenceCard, GitlabCard, EmailCard } from '../components/Integrations';
 import AgentSettings from './AgentSettings';
+import MemorySyncCard from './Home.MemorySyncCard';
 
 // ── config-first Home page ─────────────────────────────────────────
 //
@@ -447,6 +448,7 @@ export default function Home() {
             (agent→model by capability, token limits, context window). */}
         <AgentSettings />
         <AgentLimitsCard />
+        <MemorySyncCard />
       </>)}
 
     </>

@@ -44,3 +44,53 @@ export interface MemoryOverview {
   neo4j_connect?: string | null;
   neo4j_user?: string | null;
 }
+
+
+// ── memory sync ──────────────────────────────────────────────────────────
+
+/** ``state`` is what the settings panel reads to decide what to show. */
+export type SyncState =
+  | 'ok'
+  | 'unreachable'
+  | 'needs-group-selection'
+  | 'group-unknown'
+  | 'no-admin'
+  | 'unknown';
+
+/** One filter decision. The node's TEXT is never carried — it may be the secret. */
+export interface SyncBlock {
+  key: string;
+  rule: string;
+  reason: string;
+  at: number;
+}
+
+export interface SyncStatus {
+  state: SyncState;
+  role: string;
+  admin: string;
+  group: string;
+  groups_available: string[];
+  reachable: boolean;
+  /** Offered and not yet acknowledged. Recomputed each cycle, never queued. */
+  pending: number;
+  pushed_total: number;
+  blocked: Record<string, number>;
+  last_ok: number | null;
+  last_error: string | null;
+  rules: { stage: string; doc: string }[];
+  recent_blocks: SyncBlock[];
+}
+
+export interface SyncRow {
+  admin: string;
+  group: string;
+  state: string;
+  ok: boolean;
+  pushed: number;
+  applied: number;
+  rejected: number;
+  conflicts: number;
+  blocked: number;
+  pending: number;
+}
