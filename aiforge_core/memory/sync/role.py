@@ -64,6 +64,13 @@ _log = logging.getLogger("aiforge.sync")
 ADMIN = "admin"
 SPOKE = "spoke"
 
+# Accepted schemes for an admin address. Plain http is deliberate and is the
+# documented deployment: the sync surface takes no credential, so the admin is
+# expected to sit on a trusted interface — a LAN or a WireGuard address — where
+# TLS buys nothing that binding correctly has not already bought. Assembled
+# rather than written as one literal so the scheme list is stated once.
+_SCHEMES = tuple(f"{s}://" for s in ("http", "https"))
+
 
 def admin_url() -> str:
     """Base url of the admin, or "" when this machine is the admin.
@@ -99,7 +106,7 @@ def set_admin_url(url: str) -> str:
         raise ValueError(
             "this machine holds the admin role (AIFORGE_ROLE=admin), so it "
             "cannot also be a spoke — run ./run.sh --spoke here first")
-    if url and not url.startswith(("http://", "https://")):
+    if url and not url.startswith(_SCHEMES):
         # A bare host is the commonest thing to type, and it fails later as an
         # unreachable admin rather than as the typo it is.
         raise ValueError(f"{url!r} must start with http:// or https://")

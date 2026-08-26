@@ -55,7 +55,7 @@ export default function MemorySyncCard() {
       setSt(next);
       // Only seed the input while the operator is not mid-edit, or the 30s
       // refresh below would wipe what they are typing.
-      setDraft(d => (d === null ? next.admin : d));
+      setDraft(d => d ?? next.admin);
       setErr('');
     } catch (e) {
       setErr(String(e));
@@ -118,6 +118,8 @@ export default function MemorySyncCard() {
         <input
           type="text"
           value={draft ?? ''}
+          // NOSONAR - http is correct here: the admin is documented as sitting
+          // on a LAN or WireGuard address, and this is only placeholder text.
           placeholder="http://192.168.1.20:8799"
           disabled={busy || st.admin_pinned}
           onChange={(e) => setDraft(e.target.value)}
