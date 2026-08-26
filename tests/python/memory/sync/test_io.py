@@ -205,8 +205,9 @@ def test_assert_not_ours_refuses_a_write_into_okf(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
     from aiforge_core.memory.sync import _io
 
+    note = _io.root() / "okf" / "O-01.md"
     with pytest.raises(_io.AuthoredTreeError):
-        _io.assert_not_ours(_io.root() / "okf" / "O-01.md")
+        _io.assert_not_ours(note)
 
 
 def test_assert_not_ours_allows_a_tombstone(tmp_path, monkeypatch):
