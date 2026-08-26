@@ -209,6 +209,43 @@ def update_model(model_id: str, **fields: Any) -> dict | None:
     return None
 
 
+def connection_for(model: str, base_url: str = "") -> dict | None:
+    """The CONNECTION the user registered for ``model`` — its own endpoint, not
+    somebody else's.
+
+    Each registry row carries its own ``base_url``/key/TLS, but the paths that
+    only pass a MODEL ID around (picking a chat model, a role row saved without
+    a URL) used to fall back to whatever endpoint was already configured — so
+    selecting a model added from a SECOND server silently kept the FIRST
+    server's URL and every call went to a host that had never heard of it.
+
+    Returns ``{"base_url", "api_key", "insecure_tls"}``, or None when:
+      * the registry has no row for this model (the caller's own fallback is
+        then correct — it may be an env-pinned model that was never added), or
+      * several rows share the model id and ``base_url`` doesn't say which
+        (the same id served from two endpoints is exactly the case that must
+        not be guessed).
+    A row registered WITHOUT a base_url yields None too: it has no endpoint of
+    its own to prefer.
+    """
+    model = (model or "").strip()
+    if not model:
+        return None
+    want = (base_url or "").strip()
+    with _LOCK:
+        rows = [r for r in _load()
+                if (r.get("model") or "") == model
+                and (not want or (r.get("base_url") or "") == want)]
+    if len(rows) != 1:
+        return None
+    row = rows[0]
+    if not (row.get("base_url") or "").strip():
+        return None
+    return {"base_url": row["base_url"].strip(),
+            "api_key": row.get("api_key") or None,
+            "insecure_tls": bool(row.get("insecure_tls"))}
+
+
 def set_vision_flag(model: str, base_url: str, flag: str) -> bool:
     """Persist a resolved vision flag (``yes``/``no``) onto the row matched by
     model id (+ base_url when given). Used by the auto-detect path to make a
@@ -492,5 +529,6 @@ def auto_assign(roles: list) -> dict:
 
 
 __all__ = ["list_models", "get_model", "chain_after", "add_model",
+           "connection_for",
            "update_model", "remove_model", "vision_for", "apply_to_roles",
            "detect_capability", "suggest_assignments", "auto_assign"]

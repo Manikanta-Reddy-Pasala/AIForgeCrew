@@ -138,6 +138,29 @@ def _merged_row(seed: dict, row: dict) -> dict:
     provider = row.get("provider") or seed["provider"]
     same_provider = provider == seed["provider"]
     row_base = row.get("base_url")
+    # Before falling back to the seed, ask the model REGISTRY where THIS row's
+    # model actually lives. Each model is registered with its own base_url, so
+    # inheriting the global endpoint for a model that belongs to a different
+    # server sends its calls to a host that never served it. Only a row with no
+    # URL of its own reaches here, and connection_for returns None unless the
+    # registry names exactly one endpoint for the model — so an env-pinned or
+    # unregistered model keeps the old seed behaviour.
+    if not row_base:
+        try:
+            from aiforge_core.config import model_registry as _mr
+            _own = _mr.connection_for(row.get("model") or seed.get("model") or "")
+        except Exception:  # noqa: BLE001 — resolution must never break a call
+            _own = None
+        if _own:
+            return {
+                "provider": provider,
+                "model": row.get("model") or seed["model"],
+                "base_url": _own["base_url"],
+                "api_key": row.get("api_key") or _own.get("api_key"),
+                "insecure_tls": (bool(row["insecure_tls"])
+                                 if row.get("insecure_tls") is not None
+                                 else bool(_own.get("insecure_tls"))),
+            }
     # Only inherit the seed's key when the row points at the SAME host (a
     # different base_url is a different trust domain — don't leak the global
     # cloud token to it). Since openai_compatible is the only provider,

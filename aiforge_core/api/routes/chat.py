@@ -25,6 +25,7 @@ from aiforge_core.api.routes._sse import sse_response
 from pydantic import BaseModel, Field
 
 from aiforge_core.config import agent_config as _acfg
+from aiforge_core.config import model_registry as _model_registry
 from aiforge_core.runtime.background import spawn as _spawn
 from aiforge_core.tickets import store as tickets_mod
 from aiforge_core.config.paths import config_dir
@@ -287,21 +288,28 @@ def chat_model_set(body: _ChatModelBody) -> dict:
     but flagged so the UI can warn."""
     cur = _acfg.get("chat") if "chat" in _acfg.archetypes() else {}
     provider = body.provider or cur.get("provider") or "local"
+    # The picked model's OWN endpoint. Models are registered one by one, each
+    # with its own base_url, so a model added from a second server must be
+    # called on that server: carrying the chat slot's current base_url across a
+    # model change sent every request for the new model to the FIRST model's
+    # host, which answers 404/400 for an id it has never served. Falls back to
+    # the slot's current connection only when the registry has no row that says
+    # otherwise (an env-pinned model, or one registered without a URL).
+    _conn = _model_registry.connection_for(body.model) or {}
+    _base = _conn.get("base_url") or cur.get("base_url")
+    _key = _conn.get("api_key")            # None → set_role keeps the stored one
+    _tls = bool(_conn.get("insecure_tls") if _conn else cur.get("insecure_tls"))
     try:
-        # Preserve the chat endpoint's base_url / token / TLS opt-out — only
-        # the model id is changing here. api_key=None is preserved by
-        # set_role; insecure_tls must be passed through explicitly.
         cfg = _acfg.set_role("chat", provider, body.model,
-                             base_url=cur.get("base_url"),
-                             insecure_tls=bool(cur.get("insecure_tls")))
+                             base_url=_base, api_key=_key, insecure_tls=_tls)
         # Apply to ALL agents by default: the picked model also becomes the
         # global _default so TEAM mode (triage/planner/doer/…) uses it too —
         # otherwise electing a bigger model only changes single-agent chat.
         if body.apply_all:
             gd = _acfg.get("_default") if "_default" in _acfg.archetypes() else {}
             _acfg.set_role("_default", provider, body.model,
-                           base_url=cur.get("base_url") or gd.get("base_url"),
-                           insecure_tls=bool(cur.get("insecure_tls")))
+                           base_url=_base or gd.get("base_url"),
+                           api_key=_key, insecure_tls=_tls)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     served = _served_model_ids_for_role("chat")
