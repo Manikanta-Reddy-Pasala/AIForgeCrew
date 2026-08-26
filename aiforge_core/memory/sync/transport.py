@@ -208,12 +208,34 @@ def fetch_groups(base_url: str) -> list[str] | None:
                      MAX_MANIFEST_BYTES)
         data = json.loads(raw)
     except Exception as exc:  # noqa: BLE001 — an unreachable admin is expected
+        if _route_is_absent(exc):
+            _log.info("sync: admin %s has no group list — treating it as "
+                      "ungrouped", base_url)
+            status.note_success(base_url)
+            return []
         status.note_failure(base_url, f"{type(exc).__name__}: {exc}"[:200])
         return None
     rows = data.get("groups") if isinstance(data, dict) else None
     if not isinstance(rows, list):
         return None
     return [str(g) for g in rows][:MAX_MANIFEST_ENTRIES]
+
+
+def _route_is_absent(exc: Exception) -> bool:
+    """True for a 404 on the group list — an admin that predates groups.
+
+    Distinguished from every other failure on purpose. A 404 is a definite
+    answer ("this admin has no such route, so it is ungrouped") and the spoke
+    should carry on syncing exactly as it did before this feature existed.
+    Anything else — a refused connection, a timeout, a 500 — means we do not
+    KNOW, and a spoke that guesses "ungrouped" would push its knowledge into the
+    admin's ungrouped tree while the admin may in fact be running groups. That
+    is the wrong-pool failure the whole discovery step exists to prevent.
+    """
+    import httpx
+
+    return (isinstance(exc, httpx.HTTPStatusError)
+            and exc.response is not None and exc.response.status_code == 404)
 
 
 def offer(base_url: str, entries: list[dict], group: str = "") -> list[dict] | None:

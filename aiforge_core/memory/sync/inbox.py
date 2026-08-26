@@ -150,6 +150,12 @@ def accept(peer_id: str, entry: dict, body: bytes) -> bool:
         _log.warning("sync: spoke %s pushed a derived node (%s) — refused",
                      peer_id or "<unattributed>", entry.get("path"))
         return False
+    if (entry.get("kind") == "B" and not entry.get("tomb")
+            and not _passes_filter(peer_id, entry, body)):
+        # Tombstones are exempt for the reason ``push._permitted`` gives: a
+        # deletion carries no knowledge, and refusing one strands the node it
+        # was meant to remove.
+        return False
     try:
         return apply.apply_blob(entry, body, peer_id=peer_id)
     except OSError as exc:
@@ -157,6 +163,34 @@ def accept(peer_id: str, entry: dict, body: bytes) -> bool:
         # re-offers it next cycle and would fail identically forever otherwise.
         _log.warning("sync: could not apply pushed %s: %s", entry.get("path"), exc)
         return False
+
+
+def _passes_filter(peer_id: str, entry: dict, body: bytes) -> bool:
+    """Re-run the outbound filter on what a spoke pushed. Defence in depth.
+
+    The spoke is supposed to have filtered this already (``push._permitted``),
+    and a spoke on the current build always has. A spoke on an OLDER build has
+    not, and the admin is where such a node stops being one machine's problem
+    and becomes every machine's: the fold reads it, and what the fold produces
+    is what every other spoke pulls into the view its agents read.
+
+    The bytes are already in hand and every rule is a regex, so this costs
+    nothing worth measuring.
+    """
+    from aiforge_core.memory.okf import nodes
+    from aiforge_core.memory.sync import redact
+
+    try:
+        verdict = redact.review(nodes.parse_node(body.decode("utf-8")))
+    except (UnicodeDecodeError, ValueError):
+        verdict = redact.Verdict(False, "filter.unreadable",
+                                 "the pushed body could not be parsed")
+    if verdict.send:
+        return True
+    _log.warning("sync: refusing pushed node %s from %s: %s",
+                 entry.get("key") or entry.get("path"),
+                 peer_id or "<unattributed>", verdict.rule)
+    return False
 
 
 def downstream() -> list[dict]:

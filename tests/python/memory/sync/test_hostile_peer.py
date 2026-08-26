@@ -45,8 +45,10 @@ def _stub_transport(monkeypatch, entries, blobs, admin: str = "nuc"):
     monkeypatch.setattr(transport, "fetch_manifest",
                         lambda *a, **k: {"manifest": entries, "admin": admin})
     monkeypatch.setattr(transport, "fetch_blob",
-                        lambda base, digest, token="": blobs.get(str(digest).lower()))
+                        lambda base, digest, token="", group="":
+                        blobs.get(str(digest).lower()))
     # Nothing is pushed in these tests: they are about what ARRIVES.
+    monkeypatch.setattr(transport, "fetch_groups", lambda *_a, **_k: [])
     monkeypatch.setattr(transport, "offer", lambda *a, **k: [])
 
 
@@ -198,8 +200,13 @@ def test_one_unwritable_entry_does_not_abort_the_cycle(monkeypatch, tmp_path):
     monkeypatch.setattr(apply, "apply_blob", _boom)
     res = _sync(monkeypatch, entries, blobs)
 
-    assert res == {"ok": True, "pushed": 0, "applied": 1, "rejected": 1,
-                   "conflicts": 0}
+    # Compared field by field rather than as a whole dict: the row gained
+    # `blocked` and `pending` when the outbound filter and the status record
+    # arrived, and an exact-equality assertion turns every future addition to
+    # the row into a failure of a test that is about none of it.
+    assert res["ok"] is True
+    assert (res["pushed"], res["applied"], res["rejected"], res["conflicts"]) \
+        == (0, 1, 1, 0)
     assert (tmp_path / "md" / "captures" / "good.md").is_file()
 
 

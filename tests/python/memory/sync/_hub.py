@@ -92,46 +92,93 @@ def wire(monkeypatch, admin) -> None:
     import base64
     import json
 
-    def _fetch_manifest(base_url, token=""):
-        with serving(admin):
-            return admin["client"].get("/api/memory/sync/manifest").json()
+    def _params(group):
+        """The group as the real transport sends it: a query parameter."""
+        return {"group": group} if group else None
 
-    def _fetch_blob(base_url, digest, token=""):
+    def _fetch_groups(base_url):
         with serving(admin):
-            r = admin["client"].get(f"/api/memory/sync/blob/{digest}")
+            r = admin["client"].get("/api/memory/sync/groups")
+            return None if r.status_code != 200 else r.json().get("groups")
+
+    def _fetch_manifest(base_url, token="", group=""):
+        with serving(admin):
+            r = admin["client"].get("/api/memory/sync/manifest", params=_params(group))
+            return r.json() if r.status_code == 200 else {}
+
+    def _fetch_blob(base_url, digest, token="", group=""):
+        with serving(admin):
+            r = admin["client"].get(f"/api/memory/sync/blob/{digest}",
+                                    params=_params(group))
             return r.content if r.status_code == 200 else None
 
-    def _offer(base_url, entries):
+    def _offer(base_url, entries, group=""):
         from aiforge_core.memory.sync import identity
 
         peer = identity.self_id()
         with serving(admin):
             r = admin["client"].post("/api/memory/sync/offer",
-                                     json={"peer": peer, "entries": entries})
+                                     json={"peer": peer, "group": group,
+                                           "entries": entries})
             return None if r.status_code != 200 else r.json().get("want")
 
-    def _push_blob(base_url, entry, body):
+    def _push_blob(base_url, entry, body, group=""):
         from aiforge_core.memory.sync import identity
 
-        payload = {"peer": identity.self_id(), "entry": json.loads(json.dumps(entry)),
+        payload = {"peer": identity.self_id(), "group": group,
+                   "entry": json.loads(json.dumps(entry)),
                    "body": base64.b64encode(body).decode()}
         with serving(admin):
             r = admin["client"].post("/api/memory/sync/push", json=payload)
             return bool(r.status_code == 200 and r.json().get("applied"))
 
+    monkeypatch.setattr("aiforge_core.memory.sync.transport.fetch_groups", _fetch_groups)
     monkeypatch.setattr("aiforge_core.memory.sync.transport.fetch_manifest", _fetch_manifest)
     monkeypatch.setattr("aiforge_core.memory.sync.transport.fetch_blob", _fetch_blob)
     monkeypatch.setattr("aiforge_core.memory.sync.transport.offer", _offer)
     monkeypatch.setattr("aiforge_core.memory.sync.transport.push_blob", _push_blob)
 
 
-def cycle(monkeypatch, spoke, admin) -> dict:
+def cycle(monkeypatch, spoke, admin, *, group: str = "") -> dict:
     """One full cycle for ``spoke`` against ``admin``: push, then pull."""
     from aiforge_core.memory.sync import loop
 
     wire(monkeypatch, admin)
     activate(monkeypatch, spoke)
-    return loop.sync_with(spoke["admin_url"] or "http://admin")
+    return loop.sync_with(spoke["admin_url"] or "http://admin", group=group)
+
+
+def run_once(monkeypatch, spoke, admin) -> list:
+    """A full ``loop.run_once``: group discovery, resolution, then the cycle.
+
+    Use this rather than ``cycle`` when the test is about the GROUP — ``cycle``
+    is handed a group and skips the resolution that decides it.
+    """
+    from aiforge_core.memory.sync import loop
+
+    wire(monkeypatch, admin)
+    activate(monkeypatch, spoke)
+    return loop.run_once()
+
+
+def author(machine, key: str, body: str, *, rev: int = 1, scope: str = "") -> None:
+    """Write one authored node into this machine's own ``okf/``.
+
+    The body carries a file reference on purpose: the outbound filter
+    (``sync.redact``) holds back a node with no project signal at all, so a
+    fixture saying only "hello" would be filtered and every convergence
+    assertion would fail for a reason unrelated to what is under test.
+    """
+    from aiforge_core.memory.sync import _io
+
+    okf = _io.root() / "okf"
+    okf.mkdir(parents=True, exist_ok=True)
+    scope_line = f'scope: "{scope}"\n' if scope else ""
+    (okf / f"{key}.md").write_text(
+        f'---\ntype: learning\nid: "{key}"\norigin: "{machine["name"]}"\n'
+        f'rev: {rev}\nupdated_by: "{machine["name"]}"\n{scope_line}---\n\n'
+        f"{body}\n\nSee `aiforge_core/memory/sync/loop.py` — `run_once()`.\n",
+        encoding="utf-8")
 
 
 def write_capture(machine, name: str, text: str) -> None:
@@ -145,5 +192,5 @@ def capture_names(machine) -> set:
     return {p.name for p in d.glob("*.md")} if d.exists() else set()
 
 
-__all__ = ["node", "activate", "serving", "wire", "cycle", "write_capture",
-           "capture_names"]
+__all__ = ["node", "activate", "serving", "wire", "cycle", "run_once", "author",
+           "write_capture", "capture_names"]

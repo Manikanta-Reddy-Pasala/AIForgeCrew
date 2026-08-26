@@ -49,6 +49,50 @@ def _mine(entries: list[dict]) -> list[dict]:
             and paths.fold(str(e.get("origin") or "")) == me]
 
 
+def _permitted(entries: list[dict], root) -> tuple[list[dict], dict]:
+    """The entries the outbound filter allows, and a count per rule.
+
+    Run HERE, at the offer, rather than at the send: an entry that never enters
+    the offer is one the admin never learns exists. "We chose not to send it"
+    and "we told them about it and then declined" are different guarantees, and
+    only the first one is worth having.
+
+    A node that cannot be read is held back rather than sent — the filter has to
+    see the text to vouch for it, and an unreadable file is offered again next
+    cycle once it can be read.
+    """
+    from aiforge_core.memory.okf import nodes
+    from aiforge_core.memory.sync import redact, status
+
+    kept: list[dict] = []
+    blocked: dict[str, int] = {}
+    for entry in entries:
+        if entry.get("tomb"):
+            # A tombstone is a deletion, not knowledge: it is JSON, it carries
+            # no text that could leak, and filtering it means the deletion never
+            # reaches the admin — the node stays in the fold forever and the
+            # next pull bounces it back to the machine that deleted it.
+            kept.append(entry)
+            continue
+        path = root / str(entry.get("path") or "")
+        try:
+            node = nodes.parse_node(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError):
+            blocked["filter.unreadable"] = blocked.get("filter.unreadable", 0) + 1
+            continue
+        verdict = redact.review(node)
+        if verdict.send:
+            kept.append(entry)
+            continue
+        blocked[verdict.rule] = blocked.get(verdict.rule, 0) + 1
+        status.record_block(str(entry.get("key") or entry.get("path") or ""),
+                            verdict.rule, verdict.reason)
+    if blocked:
+        _log.info("sync: filter held back %d node(s): %s",
+                  sum(blocked.values()), blocked)
+    return kept, blocked
+
+
 # The bytes could not be produced. REJECT — the file is gone or unreadable, so
 # it owes the counter a rejection. SKIP — it was edited inside the round trip;
 # the next cycle offers the new bytes under their own hash, so it is neither a
@@ -80,7 +124,7 @@ def _read_verified_body(entry: dict, root, _io):
 
 
 def _push_wanted(base_url: str, want: list, result: dict, deadline,
-                 root, _io, transport) -> None:
+                 root, _io, transport, group: str = "") -> None:
     """Push each wanted entry, honouring the cycle budget. The budget stops the
     loop part-way and the rest are re-offered next cycle."""
     import time
@@ -96,11 +140,12 @@ def _push_wanted(base_url: str, want: list, result: dict, deadline,
         if body is _REJECT:
             result["rejected"] += 1
             continue
-        ok = transport.push_blob(base_url, entry, body)
+        ok = transport.push_blob(base_url, entry, body, group=group)
         result["pushed" if ok else "rejected"] += 1
 
 
-def run_once(base_url: str, deadline: float | None = None) -> dict:
+def run_once(base_url: str, deadline: float | None = None, *,
+             group: str = "") -> dict:
     """Offer and push one cycle's worth. Never raises.
 
     ``deadline`` is a ``time.monotonic`` stamp after which no further entry is
@@ -110,20 +155,28 @@ def run_once(base_url: str, deadline: float | None = None) -> dict:
     """
     from aiforge_core.memory.sync import _io, manifest, transport
 
-    result = {"ok": False, "offered": 0, "pushed": 0, "rejected": 0}
+    result = {"ok": False, "offered": 0, "pushed": 0, "rejected": 0,
+              "blocked": 0, "blocked_by_rule": {}, "pending": 0}
     try:
-        entries = _mine(manifest.build())
+        entries, blocked = _permitted(_mine(manifest.build()), _io.root())
         result["offered"] = len(entries)
-        want = transport.offer(base_url, entries)
+        result["blocked"] = sum(blocked.values())
+        result["blocked_by_rule"] = blocked
+        want = transport.offer(base_url, entries, group=group)
         if want is None:
             return result          # admin unreachable: nothing sent, no error
         result["ok"] = True
+        # What the admin asked for and has not acknowledged yet. Recomputed from
+        # the tree every cycle rather than queued, so a successful push makes it
+        # fall to zero by construction — there is no outbox to drift or clear.
+        result["pending"] = len(want)
         _push_wanted(base_url, want, result, deadline, _io.root(), _io,
-                     transport)
+                     transport, group)
     except Exception as exc:  # noqa: BLE001 — an unreachable admin is not our death
         _log.warning("sync: push to %s failed mid-cycle: %s", base_url, exc)
-    _log.info("sync: push offered=%d pushed=%d rejected=%d", result["offered"],
-              result["pushed"], result["rejected"])
+    _log.info("sync: push offered=%d pushed=%d rejected=%d blocked=%d",
+              result["offered"], result["pushed"], result["rejected"],
+              result["blocked"])
     return result
 
 
