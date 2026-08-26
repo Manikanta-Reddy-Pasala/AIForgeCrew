@@ -29,13 +29,12 @@ router = APIRouter()
 @router.get("/api/health")
 def health() -> dict:
     from aiforge_core.tickets.backend_factory import get_backend
-    status = {"ok": True, "postgres": False, "storage": None, "lm_studio": False}
+    status = {"ok": True, "storage": None, "lm_studio": False}
     try:
         be = get_backend()
         status["storage"] = be.name
         # Cheap reachability probe — an identifier that never exists.
         tickets_mod.get("__healthcheck__")
-        status["postgres"] = be.name == "postgres"
     except Exception:
         status["ok"] = False
     try:

@@ -463,3 +463,44 @@ def test_all_three_send_paths_route_through_govern_send():
                 "runtime/escalating_llm/_wrapper.py"):
         src = (root / rel).read_text()
         assert "govern_send(" in src, f"{rel} does not route through govern_send"
+
+
+def test_compaction_respects_its_ceiling_while_chat_overruns(monkeypatch):
+    """The split the operator asked for: interactive chat OVERRUNS a saturated
+    ceiling at ``max_wait_s`` rather than stall a user who is waiting; background
+    compaction/OKF (the 'learner' role) instead RESPECTS the ceiling — nobody is
+    waiting on memory folding, so it queues for its slot. Same saturated window,
+    same short caller bound: chat is let through at the bound; compaction waits
+    for the window to free."""
+    from aiforge_core.config import runtime_settings as rs
+    rs.set_many({"llm_max_rpm": 100, "compaction_rpm": 3, "chat_rpm": 3})
+    clock = _fake_clock(monkeypatch)
+    # Saturate BOTH category windows (3 each) — all have room, no clock advance.
+    for _ in range(3):
+        assert rl.acquire_global(role="learner", max_wait_s=5) == 0.0
+    for _ in range(3):
+        assert rl.acquire_global(role="doer", max_wait_s=5) == 0.0
+    # Chat with a short bound → the needed wait (a full window) already exceeds
+    # the 5s bound on the first pass, so it OVERRUNS immediately and is let
+    # through without waiting.
+    waited_chat = rl.acquire_global(role="doer", max_wait_s=5)
+    assert waited_chat < 5.0, waited_chat      # let through, did NOT wait the window
+    # Compaction with the SAME short bound → the strict-wait cap bumps it, so it
+    # QUEUES until the oldest compaction send ages out of the 60s window instead
+    # of overrunning. It waits the full window, far past the caller's 5s bound.
+    waited_comp = rl.acquire_global(role="learner", max_wait_s=5)
+    assert waited_comp > 55.0, waited_comp     # RESPECTED: waited for the window
+    assert waited_comp < 65.0, waited_comp     # released when the window aged out
+
+
+def test_compaction_strict_wait_can_be_disabled(monkeypatch):
+    """Setting the compaction cap to 0 falls back to the interactive overrun —
+    compaction is let through at the caller's bound like any other call."""
+    monkeypatch.setenv("AIFORGE_COMPACTION_RATE_LIMIT_CAP_S", "0")
+    from aiforge_core.config import runtime_settings as rs
+    rs.set_many({"llm_max_rpm": 100, "compaction_rpm": 3, "chat_rpm": 100})
+    clock = _fake_clock(monkeypatch)
+    for _ in range(3):
+        assert rl.acquire_global(role="learner", max_wait_s=5) == 0.0
+    waited = rl.acquire_global(role="learner", max_wait_s=5)
+    assert waited < 5.0, waited     # overruns/let-through at the bound, as chat does

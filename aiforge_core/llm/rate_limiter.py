@@ -156,6 +156,18 @@ def _hold_cap() -> float:
                              "AIFORGE_LLM_RATE_LIMIT_CAP_S", 60.0))
 
 
+def _compaction_hold_cap() -> float:
+    """How long a background compaction/OKF send may WAIT for its slot before it
+    is let through. Interactive chat deliberately overruns the ceiling rather
+    than stall a classifier a user is waiting on (see :func:`acquire_global`);
+    memory folding has no user waiting on it, so it strictly RESPECTS the
+    ceiling by queuing for its turn instead. A 5-rpm bucket frees a slot every
+    ~12s, so this is only the safety ceiling on a pathological wait. Set to 0 to
+    fall back to the interactive overrun."""
+    return max(0.0, _setting("compaction_rate_limit_cap_s",
+                             "AIFORGE_COMPACTION_RATE_LIMIT_CAP_S", 900.0))
+
+
 def _now() -> float:
     """The clock the ceiling runs on. Monotonic, never wall time — see above."""
     return time.monotonic()
@@ -537,6 +549,14 @@ def acquire_global(*, max_wait_s: float = 120.0,
     global _waiting
     cat = _category(role)
     cat_rpm = _cat_rpm(cat)
+    # Compaction/OKF is background — it must RESPECT its ceiling, never overrun
+    # it, because no user is waiting on memory folding. Give it a far larger wait
+    # budget so it QUEUES for its slot instead of being let through at the
+    # caller's short interactive bound. Interactive chat keeps the overrun below.
+    if cat == "compaction":
+        _comp_cap = _compaction_hold_cap()
+        if _comp_cap > 0:
+            max_wait_s = max(max_wait_s, _comp_cap)
     if global_rpm() <= 0 and cat_rpm <= 0 and held_for(provider) <= 0:
         return 0.0
     waited = 0.0
