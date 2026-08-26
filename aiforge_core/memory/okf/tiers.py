@@ -804,8 +804,8 @@ def _retire_own_mesh() -> dict:
     subtree is untidy; a deleted one is gone.
     """
     from aiforge_core.memory.okf import nodes
-    from aiforge_core.memory.sync import identity, merge, paths, role as _role
-    from aiforge_core.memory.sync import tombstone
+    from aiforge_core.memory.sync import identity, merge, paths, tombstone
+    from aiforge_core.memory.sync import role as _role
 
     me = paths.fold(identity.self_id())
     try:

@@ -33,8 +33,8 @@ from __future__ import annotations
 
 import logging
 
-from aiforge_core.memory.sync import transport
 from aiforge_core.config.paths import config_dir
+from aiforge_core.memory.sync import transport
 
 _log = logging.getLogger("aiforge.sync")
 
@@ -52,7 +52,6 @@ def _roll_path():
     state rather than memory because it is a fact about this machine's
     deployment, not knowledge, and it must never sync.
     """
-    import os
     from pathlib import Path
 
     d = Path(str(config_dir()))

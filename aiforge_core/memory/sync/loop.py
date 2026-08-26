@@ -175,8 +175,7 @@ def _fetch_wanted(base_url: str, plan: dict, result: dict, admin: str,
 def _pull(base_url: str, result: dict, deadline: float | None = None,
           group: str = "") -> None:
     """The admin's manifest, blobs and bookkeeping, accumulated into ``result``."""
-    from aiforge_core.memory.sync import (_io, apply, manifest, merge, role,
-                                          snapshot, transport)
+    from aiforge_core.memory.sync import _io, apply, manifest, merge, role, snapshot, transport
 
     remote = transport.fetch_manifest(base_url, group=group)
     if not remote:

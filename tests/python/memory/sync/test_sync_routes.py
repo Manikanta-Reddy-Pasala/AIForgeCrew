@@ -324,8 +324,8 @@ def test_a_push_lands_in_the_named_group_only(monkeypatch, tmp_path):
 
     group.create("cellular")
     group.create("retail")
-    body = ('---\ntype: knowledge\nid: "O-07"\norigin: "ms"\nrev: 1\n'
-            'updated_by: "ms"\n---\n\nthe parser is in `x/y.py`\n').encode()
+    body = (b'---\ntype: knowledge\nid: "O-07"\norigin: "ms"\nrev: 1\n'
+            b'updated_by: "ms"\n---\n\nthe parser is in `x/y.py`\n')
     entry = {"kind": "B", "origin": "ms", "key": "O-07", "rev": 1,
              "hash": hashlib.sha256(body).hexdigest(), "path": "peers/ms/O-07.md"}
 

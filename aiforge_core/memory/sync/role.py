@@ -56,8 +56,8 @@ import logging
 import os
 from pathlib import Path
 
-from aiforge_core.memory.sync import _io
 from aiforge_core.config.paths import config_dir
+from aiforge_core.memory.sync import _io
 
 _log = logging.getLogger("aiforge.sync")
 

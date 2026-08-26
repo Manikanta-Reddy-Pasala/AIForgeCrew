@@ -143,13 +143,11 @@ def test_scoped_restores_the_root_even_when_the_body_raises():
     from aiforge_core.memory.sync import _io
 
     before = _io.root()
-    with pytest.raises(RuntimeError):
-        with group.scoped("cellular"):
-            raise RuntimeError("boom")
+    with pytest.raises(RuntimeError), group.scoped("cellular"):
+        raise RuntimeError("boom")
     assert _io.root() == before
 
 
 def test_scoped_refuses_an_invalid_name():
-    with pytest.raises(ValueError):
-        with group.scoped("../etc"):
-            pass
+    with pytest.raises(ValueError), group.scoped("../etc"):
+        pass
