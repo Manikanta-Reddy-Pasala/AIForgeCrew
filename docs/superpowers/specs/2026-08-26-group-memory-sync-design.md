@@ -73,6 +73,15 @@ Resolution order on the client, highest first:
    to the wrong group, and nothing is logged on a loop.
 5. The admin advertises none ⇒ ungrouped, legacy behaviour.
 
+**An admin that 404s the group list is ungrouped; one that cannot be reached is
+not.** Discovered during implementation, and the distinction is load-bearing. A
+404 is a definite answer — this admin predates groups — and the client must
+carry on syncing exactly as before. Any other failure (refused connection,
+timeout, 500) means we do not *know*, and a client that guessed "ungrouped"
+would push into the admin's top-level tree while the admin may in fact be
+running groups. That is the wrong-pool failure discovery exists to prevent, so
+an unreachable admin sends nothing at all.
+
 A selected group that later disappears from the admin's list is **kept, not
 cleared**, and reported as `group-unknown`. Clearing it would silently re-run
 auto-select and move a machine's knowledge into a different pool because
@@ -197,6 +206,21 @@ tunable and each logged by name when it fires:
 * **below substance threshold** — too few non-boilerplate characters once
   bullets, headings and frontmatter are removed.
 
+**Project signal beats the length rule.** A note carrying a code span, a path or
+an identifier is judged only against a very low floor, never the substance
+threshold. Real knowledge here is often terse — "MongoDbService is mandatory" is
+the most valuable shape of note in this codebase and would not survive an
+80-character rule. Signal is the strong evidence and length is the weak one; the
+weak one must not override the strong one.
+
+Two implementation notes worth keeping, both found by the tests rather than the
+design: `re.IGNORECASE` turns `[A-Z][a-z]+` into "any letter", so one combined
+case-insensitive signal regex made every English word look like CamelCase and
+passed every idle search — the case-sensitive half stays case-sensitive. And
+**tombstones are exempt from the filter entirely**: a tombstone is class B, but
+it is a deletion rather than knowledge, carries no text that could leak, and
+filtering one strands the node it was meant to remove.
+
 Thresholds live in one constants block with the reasoning next to each, and are
 overridable by env for tuning without a release.
 
@@ -267,8 +291,13 @@ essentially free.
 `groups/<g>/.snapshots/<utc-stamp>/` by hardlink copy. Last N kept
 (`AIFORGE_SYNC_SNAPSHOTS`, default 10), oldest pruned.
 
-* `GET  /api/admin/groups/{g}/snapshots` — list, newest first, with counts
-* `POST /api/admin/groups/{g}/revert {"to": "<stamp>"}` — atomic swap back
+* `GET  /api/admin/memory/snapshots?group=<g>` — list, newest first, with counts
+* `POST /api/admin/memory/revert?group=<g>` with `{"to": "<stamp>"}` — swap back
+
+The group is a **query parameter, not a path segment**: an ungrouped admin has a
+received tree worth reverting too, and `/api/admin/groups//snapshots` is not a
+URL — the empty segment does not route, which would have left the commonest
+deployment with no way in. One pair of routes covers both shapes.
 
 A revert **snapshots the current state first**, so the revert is itself
 revertible and an operator cannot destroy state with one wrong call.
