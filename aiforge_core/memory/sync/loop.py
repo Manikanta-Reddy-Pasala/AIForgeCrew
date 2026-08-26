@@ -103,14 +103,26 @@ def _preserve_conflicts(base_url: str, plan: dict, result: dict,
     for pair in plan["conflict"]:
         if _spent(deadline):
             return
-        losing_body = None
-        if str(pair["remote"].get("hash") or "") not in winning:
-            losing_body = transport.fetch_blob(
-                base_url, str(pair["remote"].get("hash") or ""), group=group)
-            if losing_body is None:
-                continue      # nothing fetched, nothing to preserve
-        if apply.keep_conflict(pair["local"], losing_body):
+        kept = _preserve_one(base_url, pair, winning, group, transport, apply)
+        if kept:
             result["conflicts"] += 1
+
+
+def _preserve_one(base_url: str, pair: dict, winning: set, group: str,
+                  transport, apply) -> bool:
+    """Keep one losing copy. False when there was nothing to keep.
+
+    Split out of the loop above so the budget check and the per-pair decision
+    are each one idea — and so the fetch's "nothing came back" path is a return
+    rather than a ``continue`` two levels in.
+    """
+    remote_hash = str(pair["remote"].get("hash") or "")
+    losing_body = None
+    if remote_hash not in winning:
+        losing_body = transport.fetch_blob(base_url, remote_hash, group=group)
+        if losing_body is None:
+            return False      # nothing fetched, nothing to preserve
+    return bool(apply.keep_conflict(pair["local"], losing_body))
 
 
 def _apply_one(entry: dict, body, admin: str, apply) -> bool:
