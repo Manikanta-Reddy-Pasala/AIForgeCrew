@@ -18,11 +18,16 @@ export interface ChatModelEntry {
   id: string;
   label: string;
   active: boolean;
+  /** The endpoint this copy of the model is registered against. Two entries can
+   *  share `id` and differ only here — send it back when picking. */
+  base_url?: string;
 }
 
 export interface ChatModelsResponse {
   provider: string;
   current: string | null;
+  /** Endpoint of the currently selected copy — pairs with `current`. */
+  current_base_url?: string;
   current_active: boolean;
   models: ChatModelEntry[];
 }
@@ -79,11 +84,15 @@ export const chatApi = {
 
   chatModels: () => j<ChatModelsResponse>('/chat/models'),
 
-  setChatModel: (model: string, provider?: string) =>
+  // base_url says WHICH copy of the model: the same id can be registered
+  // against two servers, and without it the backend can only guess — which is
+  // how a model added from a second host kept being called on the first.
+  setChatModel: (model: string, provider?: string, baseUrl?: string) =>
     j<{ provider: string; model: string; active: boolean }>('/chat/model', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, ...(provider ? { provider } : {}) }),
+      body: JSON.stringify({ model, ...(provider ? { provider } : {}),
+                             ...(baseUrl ? { base_url: baseUrl } : {}) }),
     }),
 
   // (Re)load a model on the LM Studio host at a chosen context window.

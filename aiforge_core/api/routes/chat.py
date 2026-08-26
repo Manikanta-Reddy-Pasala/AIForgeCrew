@@ -210,10 +210,25 @@ def _chat_capable(mid: str) -> bool:
     return bool(mid) and "embed" not in mid.lower()
 
 
-def _registry_models(served: "set | list") -> "dict[str, dict]":
-    """Models the user CONFIGURED. Optional — an unavailable registry just
-    means the served list stands alone."""
-    out: dict[str, dict] = {}
+def _url_key(url: "str | None") -> str:
+    """Comparable form of a base_url (trailing slash / case are not identity)."""
+    return (url or "").strip().rstrip("/").lower()
+
+
+def _registry_models(served: "set | list", current_url: str = "") -> dict:
+    """Models the user CONFIGURED, keyed by (model id, ITS OWN base_url).
+
+    Keyed by the pair, not the id: the same model id registered against two
+    servers is TWO entries, and collapsing them on the id hid the second
+    registration completely — it could not be picked, so "use the copy on the
+    other host" was not expressible. Each entry carries its own ``base_url`` so
+    the pick can say which endpoint it means.
+
+    ``active`` is only meaningful for rows on the endpoint the served list came
+    from: an id served by host A says nothing about the same id on host B.
+    Optional — an unavailable registry just means the served list stands alone.
+    """
+    out: dict = {}
     try:
         from aiforge_core.config import model_registry
         rows = model_registry.list_models()
@@ -221,25 +236,32 @@ def _registry_models(served: "set | list") -> "dict[str, dict]":
         return out
     for r in rows:
         mid = (r.get("model") or "").strip()
-        if not _chat_capable(mid) or mid in out:
+        url = (r.get("base_url") or "").strip()
+        key = (mid, _url_key(url))
+        if not _chat_capable(mid) or key in out:
             continue
-        out[mid] = {"id": mid,
+        same_endpoint = not url or _url_key(url) == _url_key(current_url)
+        out[key] = {"id": mid, "base_url": url,
                     "label": (r.get("label") or mid.split("/")[-1]),
-                    "active": mid in served}
+                    "active": same_endpoint and mid in served}
     return out
 
 
-def _merge_registry_and_served(served: "set | list") -> list:
+def _merge_registry_and_served(served: "set | list",
+                               current_url: str = "") -> list:
     """Configured models UNION currently-served, active-first then by id.
 
     Split out of `chat_models`, which was building this list AND assembling the
     response around it — two jobs, and only this one has any logic in it.
     """
-    out = _registry_models(served)
+    out = _registry_models(served, current_url)
     for mid in served:
-        if _chat_capable(mid) and mid not in out:
-            out[mid] = {"id": mid, "label": mid.split("/")[-1], "active": True}
-    return sorted(out.values(), key=lambda m: (not m["active"], m["id"]))
+        if _chat_capable(mid) and (mid, _url_key(current_url)) not in out:
+            out[(mid, _url_key(current_url))] = {
+                "id": mid, "base_url": current_url or "",
+                "label": mid.split("/")[-1], "active": True}
+    return sorted(out.values(),
+                  key=lambda m: (not m["active"], m["id"], m["base_url"]))
 
 
 @router.get("/api/chat/models")
@@ -261,13 +283,17 @@ def chat_models() -> dict:
     served = _served_model_ids_for_role("chat")
     current = row.get("model")
 
-    models = _merge_registry_and_served(served)
+    models = _merge_registry_and_served(served, row.get("base_url") or "")
     # An env pin (AIFORGE_CHAT_MODEL / AIFORGE_DEFAULT_MODEL) overrides the
     # picker — surface it so the UI can show "env-pinned, picking won't apply".
     env_ovr = _model_env_override("chat") or _model_env_override("_default")
     return {
         "provider": provider,
         "current": current,
+        # WHICH copy is selected. With the same id registered against two
+        # servers, the id alone cannot say, and the picker would show the wrong
+        # row as current.
+        "current_base_url": row.get("base_url") or "",
         "current_active": (current in served) if served else True,
         "models": models,
         "env_override": env_ovr,
@@ -276,12 +302,18 @@ def chat_models() -> dict:
 
 class _ChatModelBody(BaseModel):
     model: str = Field(..., min_length=1)
+    # WHICH copy of that model. The same id can be registered against two
+    # servers; without this the pick is ambiguous and the endpoint can only be
+    # guessed — which is how a model on a second host kept being called on the
+    # first. The picker sends back the base_url it listed.
+    base_url: str | None = Field(None)
     provider: str | None = Field(None)
     apply_all: bool = Field(True, description="also set the global _default so "
                             "TEAM mode (all agents) uses this model")
 
 
-def _endpoint_for_picked_model(model: str, cur: dict) -> tuple:
+def _endpoint_for_picked_model(model: str, cur: dict,
+                               want_url: str = "") -> tuple:
     """``(base_url, api_key, insecure_tls)`` for the model being picked.
 
     The model's OWN endpoint wins. Models are registered one by one, each with
@@ -295,10 +327,31 @@ def _endpoint_for_picked_model(model: str, cur: dict) -> tuple:
 
     ``api_key`` of None is meaningful: ``set_role`` keeps the stored key.
     """
-    conn = _model_registry.connection_for(model) or {}
-    return (conn.get("base_url") or cur.get("base_url"),
+    conn = _model_registry.connection_for(model, want_url) or {}
+    # An explicit pick stands even when the registry can't confirm it: the
+    # caller named the endpoint, so honour it rather than falling back to the
+    # slot's current one.
+    return (conn.get("base_url") or want_url or cur.get("base_url"),
             conn.get("api_key"),
             bool(conn.get("insecure_tls") if conn else cur.get("insecure_tls")))
+
+
+def _env_pin_warning(cfg: dict, apply_all: bool) -> tuple:
+    """``(env_override, warning)`` for a pick an env var will overrule.
+
+    An AIFORGE_<ROLE>_MODEL pin wins on READ, so the value is persisted but the
+    running model does not change — without saying so, the picker looks like it
+    silently no-ops.
+    """
+    env_ovr = _model_env_override("chat")
+    if apply_all and not env_ovr:
+        env_ovr = _model_env_override("_default")
+    if env_ovr and env_ovr.get("model") != cfg.get("model"):
+        return env_ovr, (
+            f"saved, but {env_ovr['var']}={env_ovr['model']} is set and "
+            "overrides it — the running model won't change until that "
+            "env var is unset")
+    return env_ovr, None
 
 
 @router.put("/api/chat/model", responses={400: {"description": "Bad request"}})
@@ -308,7 +361,8 @@ def chat_model_set(body: _ChatModelBody) -> dict:
     but flagged so the UI can warn."""
     cur = _acfg.get("chat") if "chat" in _acfg.archetypes() else {}
     provider = body.provider or cur.get("provider") or "local"
-    _base, _key, _tls = _endpoint_for_picked_model(body.model, cur)
+    _base, _key, _tls = _endpoint_for_picked_model(
+        body.model, cur, body.base_url or "")
     try:
         cfg = _acfg.set_role("chat", provider, body.model,
                              base_url=_base, api_key=_key, insecure_tls=_tls)
@@ -323,17 +377,7 @@ def chat_model_set(body: _ChatModelBody) -> dict:
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     served = _served_model_ids_for_role("chat")
-    # WARN when an env pin will override this pick — the persisted value is
-    # saved but an AIFORGE_<ROLE>_MODEL env var wins on read, so the running
-    # model won't change. Without this the picker silently no-ops.
-    env_ovr = _model_env_override("chat")
-    if body.apply_all and not env_ovr:
-        env_ovr = _model_env_override("_default")
-    warning = None
-    if env_ovr and env_ovr.get("model") != cfg.get("model"):
-        warning = (f"saved, but {env_ovr['var']}={env_ovr['model']} is set and "
-                   "overrides it — the running model won't change until that "
-                   "env var is unset")
+    env_ovr, warning = _env_pin_warning(cfg, body.apply_all)
     # Model changed → re-identify its vision capability (background).
     try:
         from aiforge_core.runtime import vision_detect

@@ -319,12 +319,17 @@ function ModelSelect({ chatMode, busy, modelActive, setModelActive, selectedMode
       Model{' '}
       <select
         className="chat-model-select"
-        value={selectedModel}
+        value={modelOptionKey(
+          modelOptions.find(o => o.id === selectedModel) || { id: selectedModel })}
         onChange={async e => {
-          const newModel = e.target.value;
+          // The value carries the ENDPOINT as well as the id: two registered
+          // copies of one model differ only by base_url, and an id-only value
+          // made them indistinguishable in the DOM as well as on the wire.
+          const [newModel, pickedUrl] = e.target.value.split(MODEL_KEY_SEP);
           setSelectedModel(newModel);
           try {
-            const res = await chatApi.setChatModel(newModel, chatProvider || undefined);
+            const res = await chatApi.setChatModel(
+              newModel, chatProvider || undefined, pickedUrl || undefined);
             setModelActive(res.active);
             if (res.active) {
               toast.success('Model updated');
@@ -345,14 +350,33 @@ function ModelSelect({ chatMode, busy, modelActive, setModelActive, selectedMode
           </option>
         ) : (
           modelOptions.map(opt => (
-            <option key={opt.id} value={opt.id}>
-              {opt.label}
+            <option key={modelOptionKey(opt)} value={modelOptionKey(opt)}>
+              {modelOptionLabel(opt, modelOptions)}
             </option>
           ))
         )}
       </select>
     </label>
   );
+}
+
+// A model entry is identified by (id, endpoint), not by id alone: the same
+// model can be registered against two servers, and those are two different
+// things to pick. The separator is a control character so no URL can contain it.
+const MODEL_KEY_SEP = '\u001f';
+
+function modelOptionKey(opt: { id: string; base_url?: string }): string {
+  return `${opt.id}${MODEL_KEY_SEP}${opt.base_url || ''}`;
+}
+
+// Only show the endpoint when it actually disambiguates — labelling every
+// model with a URL is noise on the common single-server setup.
+function modelOptionLabel(opt: ChatModelEntry, all: ChatModelEntry[]): string {
+  const dupe = all.filter(o => o.id === opt.id).length > 1;
+  if (!dupe || !opt.base_url) return opt.label;
+  let host = opt.base_url;
+  try { host = new URL(opt.base_url).host; } catch { /* keep the raw string */ }
+  return `${opt.label} · ${host}`;
 }
 
 // Orchestrator model (enhancer + planner) — shown in team mode where they run.

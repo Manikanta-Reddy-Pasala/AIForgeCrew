@@ -157,3 +157,71 @@ def test_unregistered_model_still_inherits_the_seed(monkeypatch, tmp_path):
             "insecure_tls": True}
     merged = _resolve._merged_row(seed, {"model": "not-in-registry"})
     assert merged["base_url"] == "http://host-a:1234/v1"
+
+
+# ── the picker can express WHICH copy ──────────────────────────────────────
+
+def test_two_copies_of_one_model_are_two_pickable_entries(monkeypatch, tmp_path):
+    """Keyed on the id alone, the second registration vanished from the picker:
+    'use the copy on the other host' could not even be expressed."""
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    mr.add_model(label="local", model="qwen-a", base_url="http://host-a:1234/v1")
+    mr.add_model(label="remote", model="qwen-a", base_url="http://host-b:5678/v1")
+    from aiforge_core.api.routes import chat as chat_routes
+
+    entries = chat_routes._merge_registry_and_served(
+        served=["qwen-a"], current_url="http://host-a:1234/v1")
+    urls = sorted(e["base_url"] for e in entries)
+    assert urls == ["http://host-a:1234/v1", "http://host-b:5678/v1"]
+    # "served" came from host A, so it says nothing about the copy on host B.
+    by_url = {e["base_url"]: e for e in entries}
+    assert by_url["http://host-a:1234/v1"]["active"] is True
+    assert by_url["http://host-b:5678/v1"]["active"] is False
+
+
+def test_picking_names_the_endpoint(monkeypatch, tmp_path):
+    """With the endpoint on the request, the ambiguous id resolves."""
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    mr.add_model(label="local", model="qwen-a", base_url="http://host-a:1234/v1")
+    mr.add_model(label="remote", model="qwen-a", base_url="http://host-b:5678/v1",
+                 api_key="key-b")
+    from aiforge_core.api.routes import chat as chat_routes
+
+    saved: dict = {}
+    monkeypatch.setattr(chat_routes._acfg, "archetypes", lambda: ["chat"])
+    monkeypatch.setattr(chat_routes._acfg, "get",
+                        lambda role: {"provider": "openai_compatible",
+                                      "model": "qwen-a",
+                                      "base_url": "http://host-a:1234/v1"})
+    monkeypatch.setattr(chat_routes._acfg, "set_role",
+                        lambda role, provider, model, **kw:
+                            saved.setdefault(role, kw) or {"model": model, **kw})
+    monkeypatch.setattr(chat_routes, "_served_model_ids_for_role", lambda _r: [])
+    monkeypatch.setattr(chat_routes, "_model_env_override", lambda _r: None)
+
+    chat_routes.chat_model_set(chat_routes._ChatModelBody(
+        model="qwen-a", base_url="http://host-b:5678/v1", apply_all=False))
+    assert saved["chat"]["base_url"] == "http://host-b:5678/v1"
+    assert saved["chat"]["api_key"] == "key-b"
+
+
+def test_an_explicit_endpoint_is_honoured_even_if_unregistered(monkeypatch, tmp_path):
+    """The caller named the endpoint — that beats falling back to the slot's."""
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    from aiforge_core.api.routes import chat as chat_routes
+
+    saved: dict = {}
+    monkeypatch.setattr(chat_routes._acfg, "archetypes", lambda: ["chat"])
+    monkeypatch.setattr(chat_routes._acfg, "get",
+                        lambda role: {"provider": "openai_compatible",
+                                      "model": "qwen-a",
+                                      "base_url": "http://host-a:1234/v1"})
+    monkeypatch.setattr(chat_routes._acfg, "set_role",
+                        lambda role, provider, model, **kw:
+                            saved.setdefault(role, kw) or {"model": model, **kw})
+    monkeypatch.setattr(chat_routes, "_served_model_ids_for_role", lambda _r: [])
+    monkeypatch.setattr(chat_routes, "_model_env_override", lambda _r: None)
+
+    chat_routes.chat_model_set(chat_routes._ChatModelBody(
+        model="unlisted", base_url="http://host-c:9999/v1", apply_all=False))
+    assert saved["chat"]["base_url"] == "http://host-c:9999/v1"
