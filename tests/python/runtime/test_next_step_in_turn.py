@@ -101,3 +101,92 @@ def test_the_last_user_message_is_what_is_predicted_from():
 def test_a_conversation_with_no_user_turn_is_not_an_error():
     assert _loop._last_user_message(types.SimpleNamespace(convo=[])) == ""
     assert _loop._last_user_message(types.SimpleNamespace()) == ""
+
+
+# ── accept / dismiss ─────────────────────────────────────────────────────
+
+def _api(monkeypatch, tmp_path):
+    import importlib
+
+    monkeypatch.delenv("AIFORGE_PG_URL", raising=False)
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("AIFORGE_MEMORY_DB_PATH", str(tmp_path / "memory.db"))
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    monkeypatch.setenv("AIFORGE_MEMORY_BACKEND", "sqlite")
+    for k in ("AIFORGE_NEO4J_URI", "NEO4J_URI", "AIFORGE_API_TOKEN",
+              "AIFORGE_BIND_HOST"):
+        monkeypatch.delenv(k, raising=False)
+    import aiforge_core.config.env as envmod
+    importlib.reload(envmod)
+    import aiforge_core.api.api as api
+    importlib.reload(api)
+    from fastapi.testclient import TestClient
+    return TestClient(api.app)
+
+
+def _pending(pid="p-9"):
+    from aiforge_core.runtime.next_step import _store
+
+    _store.remember(_prediction(verdict=next_step.OFFER), {
+        "repo": "R", "message": "connect to the database"})
+    rows = _store._read()
+    rows[-1]["id"] = pid
+    _store._write(rows)
+
+
+def test_accepting_records_the_outcome(monkeypatch, tmp_path):
+    client = _api(monkeypatch, tmp_path)
+    _pending("p-9")
+
+    r = client.post("/api/chat/suggestion/p-9", json={"accepted": True})
+
+    assert r.status_code == 200
+    assert next_step.history(5)[0]["accepted"] is True
+
+
+def test_dismissing_records_it_too(monkeypatch, tmp_path):
+    """A feature that learns only from its wins drifts."""
+    client = _api(monkeypatch, tmp_path)
+    _pending("p-10")
+
+    client.post("/api/chat/suggestion/p-10", json={"accepted": False})
+
+    assert next_step.history(5)[0]["accepted"] is False
+
+
+def test_an_unknown_id_is_not_an_error(monkeypatch, tmp_path):
+    """A stale chip in a browser tab left open across a restart must not 500."""
+    client = _api(monkeypatch, tmp_path)
+    assert client.post("/api/chat/suggestion/p-gone",
+                       json={"accepted": True}).status_code == 200
+
+
+def test_a_bodyless_click_is_treated_as_a_dismissal(monkeypatch, tmp_path):
+    client = _api(monkeypatch, tmp_path)
+    _pending("p-11")
+
+    r = client.post("/api/chat/suggestion/p-11")
+
+    assert r.status_code == 200
+    assert r.json()["accepted"] is False
+
+
+def test_the_history_route_reports_the_counters(monkeypatch, tmp_path):
+    """The numbers that answer 'is this good enough to extend to the pipeline'."""
+    client = _api(monkeypatch, tmp_path)
+    _pending("p-12")
+    _pending("p-13")
+    client.post("/api/chat/suggestion/p-12", json={"accepted": True})
+    client.post("/api/chat/suggestion/p-13", json={"accepted": False})
+
+    row = client.get("/api/chat/suggestions").json()
+
+    assert row["accepted"] == 1
+    assert row["dismissed"] == 1
+    assert len(row["suggestions"]) == 2
+
+
+def test_the_history_limit_is_bounded(monkeypatch, tmp_path):
+    client = _api(monkeypatch, tmp_path)
+    assert client.get("/api/chat/suggestions?limit=99999").status_code == 200
+    assert client.get("/api/chat/suggestions?limit=0").status_code == 200
