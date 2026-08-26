@@ -81,7 +81,8 @@ def test_the_turn_summary_names_the_tools_that_ran():
     st = types.SimpleNamespace(action_counts={"read_file": 2, "grep": 1,
                                               "write_file": 0})
     summary = _loop._turn_summary(st)
-    assert "read_file" in summary and "grep" in summary
+    assert "read_file" in summary
+    assert "grep" in summary
     assert "write_file" not in summary, "a tool that never ran is not what we did"
 
 

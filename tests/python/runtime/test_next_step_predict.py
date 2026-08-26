@@ -94,7 +94,9 @@ def test_every_prediction_has_its_own_id(monkeypatch):
     _reply(monkeypatch, '{"action":"check it","tool":"","args":{},'
                         '"confidence":0.9,"rationale":"x"}')
     a, b = next_step.predict(_ctx()), next_step.predict(_ctx())
-    assert a.id and b.id and a.id != b.id
+    assert a.id
+    assert b.id
+    assert a.id != b.id
 
 
 def test_the_event_never_carries_argument_values(monkeypatch):

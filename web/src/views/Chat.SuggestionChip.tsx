@@ -19,7 +19,7 @@ import { api } from '../api/client';
 import type { Suggestion } from '../api/chat';
 
 export default function SuggestionChip(
-  { s, onSend }: { s: Suggestion; onSend: (text: string) => void },
+  { s, onSend }: Readonly<{ s: Suggestion; onSend: (text: string) => void }>,
 ) {
   const [gone, setGone] = useState(false);
   if (gone) return null;

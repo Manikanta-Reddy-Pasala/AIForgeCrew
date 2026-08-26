@@ -68,7 +68,7 @@ def _safe(text: str) -> bool:
 
     try:
         v = redact.review({"meta": {"title": ""}, "body": text})
-    except Exception:  # noqa: BLE001 — cannot judge it, do not store it
+    except Exception:  # noqa: BLE001 — cannot judge it so do not store it
         return False
     return bool(v.send or v.rule.startswith("noise."))
 
