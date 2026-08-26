@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import threading
 
+import pytest
+
 
 def test_sha256_file_hashes_the_bytes(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
@@ -149,3 +151,91 @@ def test_is_syncable_refuses_a_symlink(monkeypatch, tmp_path):
     assert _io.is_syncable(real) is True
     assert _io.is_syncable(link) is False
     assert _io.is_syncable(tmp_path / "absent.md") is False
+
+
+# ── the group scope ──────────────────────────────────────────────────────
+
+def test_scope_override_wins_over_env(tmp_path, monkeypatch):
+    """A scope repoints the tree without touching the process-wide env."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "base"))
+    from aiforge_core.memory.sync import _io
+
+    outer = _io.root()
+    token = _io.push_scope(tmp_path / "base" / "groups" / "cellular")
+    try:
+        assert _io.root() == tmp_path / "base" / "groups" / "cellular"
+    finally:
+        _io.pop_scope(token)
+    assert _io.root() == outer
+
+
+def test_scope_is_not_visible_to_another_context(tmp_path, monkeypatch):
+    """Two concurrent tasks in different groups do not see each other's root.
+
+    This is the whole reason the override is a ContextVar rather than an env
+    var: the API serves requests concurrently, and one group writing into
+    another's tree is the failure group isolation exists to prevent.
+    """
+    import asyncio
+
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "base"))
+    from aiforge_core.memory.sync import _io
+
+    seen: dict = {}
+
+    async def _task(name):
+        token = _io.push_scope(tmp_path / "base" / "groups" / name)
+        try:
+            await asyncio.sleep(0)          # yield, so the tasks interleave
+            seen[name] = _io.root()
+        finally:
+            _io.pop_scope(token)
+
+    async def _both():
+        await asyncio.gather(_task("a"), _task("b"))
+
+    asyncio.run(_both())
+    assert seen["a"] == tmp_path / "base" / "groups" / "a"
+    assert seen["b"] == tmp_path / "base" / "groups" / "b"
+
+
+# ── the authored tree ────────────────────────────────────────────────────
+
+def test_assert_not_ours_refuses_a_write_into_okf(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import _io
+
+    with pytest.raises(_io.AuthoredTreeError):
+        _io.assert_not_ours(_io.root() / "okf" / "O-01.md")
+
+
+def test_assert_not_ours_allows_a_tombstone(tmp_path, monkeypatch):
+    """okf/.tomb/ is the one legitimate network-driven write below okf/."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import _io
+
+    _io.assert_not_ours(_io.root() / "okf" / ".tomb" / "ms" / "O-01.json")
+
+
+def test_assert_not_ours_allows_peers_and_mesh(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import _io
+
+    _io.assert_not_ours(_io.root() / "peers" / "ms" / "O-01.md")
+    _io.assert_not_ours(_io.root() / "mesh" / "nuc" / "M-01.md")
+
+
+def test_assert_not_ours_follows_the_scope(tmp_path, monkeypatch):
+    """Inside a group scope the protected tree is THAT group's okf/."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    from aiforge_core.memory.sync import _io
+
+    group = tmp_path / "md" / "groups" / "cellular"
+    token = _io.push_scope(group)
+    try:
+        with pytest.raises(_io.AuthoredTreeError):
+            _io.assert_not_ours(group / "okf" / "O-01.md")
+        # the unscoped tree is not what this scope protects
+        _io.assert_not_ours(tmp_path / "md" / "peers" / "ms" / "O-01.md")
+    finally:
+        _io.pop_scope(token)
