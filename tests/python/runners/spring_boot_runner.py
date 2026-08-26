@@ -127,8 +127,12 @@ def start_service(worktree: str, log: object | None = None,
     )
     env["MAVEN_OPTS"] = "-Xmx512m -Xms128m"
 
+    # Default off THIS user's home, not one developer's: the hardcoded
+    # /home/mani/.aiforge wrote (or failed to write) somewhere unrelated on
+    # every other box.
     log_path = os.path.join(
-        os.environ.get("AIFORGE_HOME", "/home/mani/.aiforge"),
+        os.environ.get("AIFORGE_HOME") or os.path.join(
+            os.path.expanduser("~"), ".aiforge"),
         "logs", f"spring-boot-{os.path.basename(worktree)}.log",
     )
     os.makedirs(os.path.dirname(log_path), exist_ok=True)

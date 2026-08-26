@@ -6,8 +6,6 @@ import subprocess
 import threading
 import time
 
-import pytest
-
 from aiforge_core.runtime import chat_agent as ca
 from aiforge_core.runtime import chat_approve, checkpoints, mentions
 from aiforge_core.runtime.tools import command_risk, tool_policy
@@ -336,10 +334,9 @@ def test_mentions_symlink_escape_blocked(tmp_path, monkeypatch):
     ws = tmp_path / "ws"
     ws.mkdir()
     link = ws / "link.txt"
-    try:
-        _os.symlink(str(secret), str(link))
-    except (OSError, NotImplementedError):
-        pytest.skip("symlinks not supported here")
+    # No capability probe: this pins a SECURITY clamp, and a host that skipped
+    # it reported green while the escape went untested.
+    _os.symlink(str(secret), str(link))
     monkeypatch.setenv("AIFORGE_WORKSPACE_DIR", str(ws))
     block, _ = mentions.expand("read @link.txt", str(ws))
     assert "TOP-SECRET" not in block

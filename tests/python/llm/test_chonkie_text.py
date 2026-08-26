@@ -1,10 +1,12 @@
-"""Structure-aware text chunking for LLM-bound files — base-chonkie adapter,
-the smart observation truncation, and the memory doc-chunker upgrade."""
+"""chonkie-backed chunking. chonkie is a DECLARED extra and CI installs
+``--all-extras``, so these require it rather than skipping when it is
+absent: a skip made the result depend on how the venv was built, and the
+chunker could have stopped working everywhere without one run going red.
+(`make install` installs the extras for the same reason.)
+"""
 from __future__ import annotations
 
 import json
-
-import pytest
 
 from aiforge_core.integrations import chonkie_text_adapter as cta
 
@@ -14,16 +16,12 @@ _MD = ("# Guide\n\nIntro paragraph explaining the module.\n\n## Install\n\n"
 
 
 def test_chunk_text_structural():
-    if not cta.available():
-        pytest.skip("chonkie not installed")
     chunks = cta.chunk_text(_MD, chunk_tokens=120)
     assert len(chunks) > 2
     assert "".join(chunks) == _MD          # lossless partition
 
 
 def test_cut_at_structure_never_mid_slice():
-    if not cta.available():
-        pytest.skip("chonkie not installed")
     cut = cta.cut_at_structure(_MD, 800)
     assert len(cut) <= 800
     assert _MD.startswith(cut)             # a clean prefix, boundary-aligned
@@ -55,9 +53,7 @@ def test_smart_truncate_fallback_without_chonkie(monkeypatch):
 
 
 def test_memory_doc_chunker_uses_chonkie():
-    from aiforge_memory.features.chunk import chonkie_adapter, embed
-    if not chonkie_adapter.doc_available():
-        pytest.skip("chonkie not installed")
+    from aiforge_memory.features.chunk import embed
     chunks = embed._split_doc_smart(_MD, file_path="README.md")
     assert len(chunks) > 2
     idx, text0, l0, _ = chunks[0]

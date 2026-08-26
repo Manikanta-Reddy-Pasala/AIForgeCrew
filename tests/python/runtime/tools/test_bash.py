@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 import subprocess
 
 import pytest
@@ -71,9 +70,7 @@ def test_empty_command_rejected(repo_root):
 # ─── tmux path ──────────────────────────────────────────────────────────
 
 
-pytestmark_tmux = pytest.mark.skipif(
-    shutil.which("tmux") is None, reason="tmux not installed"
-)
+pytestmark_tmux = pytest.mark.live_tmux
 
 
 @pytestmark_tmux

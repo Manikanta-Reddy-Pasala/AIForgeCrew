@@ -98,7 +98,6 @@ def test_chain_pinned_unknown_provider_skipped(
 # ─── EscalatingLlm — retry decision logic ─────────────────────────────
 
 
-pytest.importorskip("google.adk")
 
 
 from aiforge_core.runtime.escalating_llm import EscalatingLlm, _is_empty  # noqa: E402

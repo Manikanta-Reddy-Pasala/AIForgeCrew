@@ -97,7 +97,6 @@ class TestRendersDigest:
     def test_empty_chat_files_with_other_files_returns_digest(self, tmp_path: Path) -> None:
         """AC: empty chat_files + ≥5 other_files yields a non-empty digest
         when aider is installed."""
-        pytest.importorskip("aider.repomap")
         _, other = _seed_repo(tmp_path, n_files=10)
         cfg = AiderMapConfig(
             root=tmp_path,
@@ -107,17 +106,16 @@ class TestRendersDigest:
             cache_dir=tmp_path / ".aider_cache",
         )
         digest = render_repo_map(cfg)
-        # Aider may decline if all files are tiny; treat empty as a soft
-        # skip rather than a hard failure (small synthetic repos can fail
-        # the ranking heuristic).
-        if not digest:
-            pytest.skip("Aider returned no digest for synthetic micro-repo")
+        # No soft skip: aider-chat and the tree-sitter grammar pack are DECLARED
+        # dependencies, so an empty digest means the repo map is broken on this
+        # install — which is exactly what this test exists to catch. A skip here
+        # made that failure invisible on whichever box hit it.
+        assert digest, "aider returned no digest — repo map broken on this install"
         # Expect at least one of our identifiers to surface.
         assert "func_" in digest or "Klass_" in digest
 
     def test_token_budget_approximately_respected(self, tmp_path: Path) -> None:
         """AC: digest token count (chars/4 heuristic) ≤ map_tokens × 1.2."""
-        pytest.importorskip("aider.repomap")
         chat, other = _seed_repo(tmp_path, n_files=14)
         budget = 256
         cfg = AiderMapConfig(
@@ -128,8 +126,7 @@ class TestRendersDigest:
             cache_dir=tmp_path / ".aider_cache",
         )
         digest = render_repo_map(cfg)
-        if not digest:
-            pytest.skip("Aider returned no digest for synthetic micro-repo")
+        assert digest, "aider returned no digest — repo map broken on this install"
         # ``main_model.token_count`` shim approximates as len(text)//4.
         approx_tokens = max(1, len(digest) // 4)
         # Aider's "no chat files" branch multiplies budget by map_mul_no_files

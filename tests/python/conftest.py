@@ -52,8 +52,15 @@ os.environ.setdefault("AIFORGE_UMEM_SUMMARIZE", "0")
 #
 # A fresh dir per pytest process (not a fixed name) so two concurrent runs — and
 # two successive ones — can't see each other's leftovers.
-os.environ.setdefault("AIFORGE_CONFIG_DIR",
-                      tempfile.mkdtemp(prefix="aiforge-test-"))
+#
+# Assigned, NOT setdefault: `run.sh` exports AIFORGE_CONFIG_DIR=~/.aiforge, so
+# any shell that had sourced it ran the whole suite against the operator's LIVE
+# config — reading their real rules/memory (host-dependent results) and writing
+# fixtures into it. The isolation has to be unconditional to be isolation.
+# AIFORGE_TEST_CONFIG_DIR overrides it for the rare case that wants a fixed path.
+os.environ["AIFORGE_CONFIG_DIR"] = (
+    os.environ.get("AIFORGE_TEST_CONFIG_DIR")
+    or tempfile.mkdtemp(prefix="aiforge-test-"))
 
 
 @pytest.fixture(autouse=True)

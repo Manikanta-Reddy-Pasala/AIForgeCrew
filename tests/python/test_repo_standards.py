@@ -114,11 +114,31 @@ class TestGetAutoDetect:
     def test_java_repo_default_compile_cmd(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """AC: Java repo without YAML still gets mvn — no regression."""
+        """AC: Java repo without YAML still gets mvn — no regression.
+
+        Pin the host probe like the python case above: get() overlays the
+        RESOLVED build tool, and _wrapper_or_path falls back to the './mvnw'
+        wrapper name when no maven is on PATH — so on a box without maven this
+        asserted the host, not the default.
+        """
+        monkeypatch.setattr(rs, "_first_on_path", lambda *a: "mvn")
+        monkeypatch.setattr(rs, "_TOOLCHAIN_CACHE", {})
         (tmp_path / "pom.xml").write_text("<project/>", encoding="utf-8")
         std = rs.get("javabox", worktree=str(tmp_path))
         assert std.lang == "java"
         assert std.compile_cmd == "mvn -q -DskipTests compile"
+
+    def test_java_repo_prefers_the_checked_in_wrapper(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A committed mvnw wins over a maven on PATH — that is the point of
+        the wrapper, and it is what a box WITHOUT maven falls back to."""
+        monkeypatch.setattr(rs, "_first_on_path", lambda *a: "mvn")
+        monkeypatch.setattr(rs, "_TOOLCHAIN_CACHE", {})
+        (tmp_path / "pom.xml").write_text("<project/>", encoding="utf-8")
+        (tmp_path / "mvnw").write_text("#!/bin/sh\n", encoding="utf-8")
+        std = rs.get("javabox2", worktree=str(tmp_path))
+        assert std.compile_cmd == "./mvnw -q -DskipTests compile"
 
     def test_unknown_repo_returns_empty_compile_cmd(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

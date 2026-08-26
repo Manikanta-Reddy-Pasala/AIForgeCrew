@@ -228,7 +228,6 @@ def test_wired_into_chat_agent_tools():
 
 
 def test_wired_into_doer_function_tools():
-    pytest.importorskip("google.adk")
     from aiforge_core.runtime import doer_tools
     names = {t.func.__name__ for t in doer_tools.adk_function_tools()}
     assert "email_send" in names

@@ -117,9 +117,33 @@ def _sections_dict(objective="", key_results=None, facts=None, links=None,
             "links": _as_items(links), "learnings": _as_items(learnings)}
 
 
+def _blob_facts(new_content: str) -> list[str]:
+    """A raw blob → one Fact per blank-line-separated block, junk lines dropped.
+
+    Flattening the WHOLE blob into a single fact used to lose all of it: the OKF
+    tiers prefix every node with a ``### title`` heading, so the flattened string
+    started with ``###`` and :data:`_JUNK_ITEM_RE` — which exists to strip
+    headings/rules/fences that leak in when a blob is folded without an LLM —
+    matched the entire thing and :func:`_dedupe_ci` dropped it. Since the daily
+    compaction window landed, that no-LLM path is the COMMON one, so every fold
+    outside the window rendered an empty note.
+
+    Splitting first means the junk filter removes the heading LINE it was aimed
+    at and the content under it survives as its own fact.
+    """
+    out: list[str] = []
+    for block in re.split(r"\n\s*\n", str(new_content or "")):
+        kept = [ln.strip() for ln in block.splitlines()
+                if ln.strip() and not _JUNK_ITEM_RE.match(ln.strip())]
+        fact = re.sub(r"\s+", " ", " ".join(kept)).strip()
+        if fact:
+            out.append(fact)
+    return out
+
+
 def _deterministic_merge(existing: dict, new_content: str) -> dict:
-    """No-LLM fallback: append the new content as a single deduped Fact and
-    dedupe every section. Never loses information, never reorders history."""
+    """No-LLM fallback: append the new content as deduped Facts and dedupe every
+    section. Never loses information, never reorders history."""
     out = {
         "objective": (existing.get("objective") or "").strip(),
         "key_results": _dedupe_ci(existing.get("key_results")),
@@ -127,9 +151,12 @@ def _deterministic_merge(existing: dict, new_content: str) -> dict:
         "links": _dedupe_ci(existing.get("links")),
         "learnings": _dedupe_ci(existing.get("learnings")),
     }
-    fact = re.sub(r"\s+", " ", (new_content or "").strip())
-    if fact and _ci_key(fact) not in {_ci_key(f) for f in out["facts"]}:
-        out["facts"].append(fact)
+    seen = {_ci_key(f) for f in out["facts"]}
+    for fact in _blob_facts(new_content):
+        k = _ci_key(fact)
+        if k and k not in seen:
+            seen.add(k)
+            out["facts"].append(fact)
     return out
 
 

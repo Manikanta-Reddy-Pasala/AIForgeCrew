@@ -7,7 +7,6 @@ workspace.
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
 import pytest
@@ -316,7 +315,6 @@ def test_fetch_url_handles_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_adk_function_tools_includes_new_tools() -> None:
     """Registry must expose grep_repo + fetch_url + their aliases."""
-    pytest.importorskip("google.adk")
     tools = dt.adk_function_tools()
     names = {t.func.__name__ for t in tools}
     assert "grep_repo" in names
@@ -359,8 +357,6 @@ def test_git_commit_success_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A staged change should produce a real commit; tool returns ok=True."""
-    if shutil.which("git") is None:
-        pytest.skip("git binary not on PATH")
     _git_init(tmp_path)
     # Need an initial commit so HEAD exists for diff.
     (tmp_path / "seed.txt").write_text("seed\n")
@@ -388,8 +384,6 @@ def test_git_commit_skips_when_nothing_staged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Empty working tree → skipped marker, no error, no new commit."""
-    if shutil.which("git") is None:
-        pytest.skip("git binary not on PATH")
     _git_init(tmp_path)
     (tmp_path / "seed.txt").write_text("seed\n")
     import subprocess as _sp
@@ -452,7 +446,6 @@ def test_git_commit_rejects_empty_message() -> None:
 
 def test_git_commit_in_function_tools_registry() -> None:
     """ADK registry must expose git_commit + its aliases."""
-    pytest.importorskip("google.adk")
     tools = dt.adk_function_tools()
     names = {t.func.__name__ for t in tools}
     assert "git_commit" in names
@@ -557,8 +550,6 @@ def test_git_commit_stages_all_worktree_changes(
 ) -> None:
     """Isolated worktree ⇒ everything changed is the agent's work: both a
     file-tool write AND a shell-written file get staged + committed."""
-    if shutil.which("git") is None:
-        pytest.skip("git binary not on PATH")
     _git_init(tmp_path)
     (tmp_path / "seed.txt").write_text("seed\n")
     import subprocess as _sp
@@ -588,8 +579,6 @@ def test_git_commit_stages_deletions(
 ) -> None:
     """A file written then removed in the worktree must be committed as a
     DELETION (the old touched-list path dropped deletes)."""
-    if shutil.which("git") is None:
-        pytest.skip("git binary not on PATH")
     _git_init(tmp_path)
     (tmp_path / "gone.txt").write_text("bye\n")
     import subprocess as _sp
@@ -617,8 +606,6 @@ def test_git_commit_excludes_artifacts_from_touched(
 ) -> None:
     """An artifact path recorded as touched must be filtered out of the
     staged set."""
-    if shutil.which("git") is None:
-        pytest.skip("git binary not on PATH")
     _git_init(tmp_path)
     (tmp_path / "seed.txt").write_text("seed\n")
     import subprocess as _sp

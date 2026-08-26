@@ -34,7 +34,7 @@ build:
     # pytest-cov is NOT in [dev]; --with injects it without touching pyproject.
     - >
       uv run --with pytest-cov pytest
-      -m "not live_sidecar and not live_neo4j and not live_llm and not live_repomix"
+      -m "not live_sidecar and not live_llm and not live_repomix and not live_tmux and not live_jupyter and not live_ga and not live_graph and not live_aider"
       -q
       --junitxml=test-results/junit.xml
       --cov=aiforge_core --cov=scripts

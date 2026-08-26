@@ -6,7 +6,7 @@ reduce (fold) both ran.
 """
 from __future__ import annotations
 
-import pytest
+import docx
 
 from aiforge_core.runtime import doc_summarize as ds
 
@@ -92,7 +92,6 @@ def test_parse_page_spec():
 
 def test_docx_page_segmentation(tmp_path):
     """docx splits into pages on manual page breaks; each page keeps its text."""
-    docx = pytest.importorskip("docx")
     from aiforge_core.runtime import doc_extract as de
     d = docx.Document()
     d.add_paragraph("page one content")
@@ -110,7 +109,6 @@ def test_docx_page_segmentation(tmp_path):
 
 
 def test_extract_pages_selects_range(tmp_path):
-    docx = pytest.importorskip("docx")
     from aiforge_core.runtime import doc_extract as de
     d = docx.Document()
     for i in range(1, 6):
@@ -133,7 +131,6 @@ def test_docx_sparse_breaks_fall_back_to_approx(tmp_path):
     that few pages (Word writes them sporadically) — it falls back to char-approx
     so a high page number still resolves instead of selecting nothing.
     Regression: session-29 'summarize pages 68-70' returned empty."""
-    docx = pytest.importorskip("docx")
     from aiforge_core.runtime import doc_extract as de
     d = docx.Document()
     for i in range(1, 1400):                       # ~220k chars ≈ 70 printed pages
@@ -171,7 +168,6 @@ def _docx_with_reported_pages(docx, tmp_path, n_paras, reported):
 def test_docx_honours_word_reported_page_count(tmp_path):
     """docx page count comes from Word's own docProps/app.xml <Pages> — the
     authoritative total. Regression: a 321-page doc was reported as 264."""
-    docx = pytest.importorskip("docx")
     from aiforge_core.runtime import doc_extract as de
     p = _docx_with_reported_pages(docx, tmp_path, 900, 321)
     assert de._docx_reported_pages(p) == 321
@@ -192,7 +188,6 @@ def test_split_into_n_exact_count():
 
 
 def test_docx_dense_breaks_stay_exact(tmp_path):
-    docx = pytest.importorskip("docx")
     from aiforge_core.runtime import doc_extract as de
     d = docx.Document()
     for i in range(1, 40):
@@ -207,9 +202,7 @@ def test_docx_dense_breaks_stay_exact(tmp_path):
 def test_summarize_doc_tool_out_of_range(monkeypatch, tmp_path):
     """The chat tool reports the real page count on an out-of-range request
     instead of returning empty (which made the model fumble)."""
-    docx = pytest.importorskip("docx")
     from aiforge_core.runtime.chat_agent._tools._code import _t_summarize_doc
-    import os
     d = docx.Document()
     d.add_paragraph("only a little content here")
     media = tmp_path / ".aiforge" / "media"
@@ -223,7 +216,6 @@ def test_summarize_doc_tool_out_of_range(monkeypatch, tmp_path):
 
 def test_summarize_document_page_range(monkeypatch, tmp_path):
     """summarize_document(pages=...) extracts ONLY the range, then summarises."""
-    docx = pytest.importorskip("docx")
     from aiforge_core.runtime import doc_summarize as ds
     monkeypatch.setattr("aiforge_core.llm.client.complete", _fake_complete([]))
     monkeypatch.setenv("AIFORGE_SUMMARY_WINDOW_CHARS", "60")

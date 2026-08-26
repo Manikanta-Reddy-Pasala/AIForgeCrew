@@ -34,12 +34,6 @@ def test_quiet_litellm_sets_telemetry_false(monkeypatch):
 
 def test_real_litellm_telemetry_off_after_boot():
     """If litellm is importable, calling _quiet_litellm() flips the real attr."""
-    try:
-        import litellm  # noqa: F401
-    except Exception:  # noqa: BLE001
-        import pytest
-
-        pytest.skip("litellm not installed")
     escalating_llm._quiet_litellm()
     import litellm as _l
 

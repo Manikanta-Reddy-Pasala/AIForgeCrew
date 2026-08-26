@@ -11,7 +11,10 @@ help:
 
 install:
 	uv venv .venv
-	.venv/bin/uv pip install -e ".[dev]"
+	# --all-extras, matching CI: tests require the declared extras (chonkie et
+	# al) instead of skipping when they are missing, so a dev venv that lacks
+	# them would go red on tests CI runs green.
+	.venv/bin/uv pip install -e ".[dev,xlsx,structured,crawl,chunking,embed-static]"
 
 test:
 	.venv/bin/pytest tests/python -v

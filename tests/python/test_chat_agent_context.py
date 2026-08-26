@@ -158,6 +158,14 @@ def test_memory_recall_skipped_when_not_init(tmp_path, monkeypatch):
 
 
 def test_rule_book_injected_into_system_prompt(tmp_path, monkeypatch):
+    # remember_rule elaborates the rule body through an LLM, so this asserted
+    # on a REAL call to whatever endpoint the host had configured: green next to
+    # a reachable model, red on a box without one (the body came back empty, so
+    # the rule text never reached the prompt). Stub it — the subject here is the
+    # PROMPT ASSEMBLY, not the model. AIFORGE_CONFIG_DIR is pinned alongside so
+    # the rule file lands in this test's sandbox explicitly, rather than relying
+    # on conftest's process-wide redirect.
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "mem"))
     monkeypatch.setenv("AIFORGE_MEMORY_BACKEND", "sqlite")
     monkeypatch.setenv("AIFORGE_MEMORY_DB_PATH", str(tmp_path / "m.db"))
@@ -166,6 +174,9 @@ def test_rule_book_injected_into_system_prompt(tmp_path, monkeypatch):
     from aiforge_core.memory import md_store
     importlib.reload(md_store)
     from aiforge_core.runtime import chat_agent
+    from aiforge_core.runtime.chat_agent._tools import _memory as _mem_tools
+    monkeypatch.setattr(_mem_tools, "_elaborate_body",
+                        lambda *a, **k: "NEVER delete prod data")
     chat_agent._t_remember_rule({"text": "NEVER delete prod data", "scope": "global"}, str(tmp_path))
     seen = {}
 

@@ -47,10 +47,7 @@ def _maybe_ga():
 
 
 _llmcore = _maybe_ga()
-pytestmark = pytest.mark.skipif(
-    _llmcore is None,
-    reason="GA llmcore.py not available on this host (set AIFORGE_GA_DIR or run on NUC)",
-)
+pytestmark = pytest.mark.live_ga
 
 
 # ─── Hermetic fake backend ─────────────────────────────────────────────

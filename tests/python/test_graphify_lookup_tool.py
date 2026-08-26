@@ -19,10 +19,7 @@ def _has_graph() -> bool:
     return (REPO_ROOT / "graphify-out" / "graph.json").is_file()
 
 
-pytestmark = pytest.mark.skipif(
-    not _has_graph(),
-    reason="graphify-out/graph.json not present — run `graphify update .` first",
-)
+pytestmark = pytest.mark.live_graph
 
 
 def test_label_query_returns_typed_neighbors():

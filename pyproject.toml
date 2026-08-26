@@ -167,8 +167,19 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
 addopts = "-ra"
+# A test that needs something not every box has is SELECTED by a marker, never
+# by sniffing the host at runtime: `-m "not live_*"` deselects the same tests on
+# every machine, while `skipif(shutil.which(...))` made the result depend on who
+# ran it (a green run on a box missing the tool proved nothing, and a test could
+# silently stop running everywhere). Anything DECLARED in this file — including
+# the extras CI installs with --all-extras — is required, not probed.
 markers = [
     "live_sidecar: requires embed/rerank sidecars running",
     "live_llm: requires planner LLM at AIFORGE_INTENT_LM_URL",
     "live_repomix: requires `repomix` binary on PATH",
+    "live_tmux: requires the `tmux` binary on PATH",
+    "live_jupyter: requires a runnable jupyter kernel on this host",
+    "live_ga: requires the GA checkout (AIFORGE_GA_DIR / the NUC)",
+    "live_graph: requires graphify-out/graph.json (run `graphify update .`)",
+    "live_aider: requires aider's tree-sitter grammars to map a synthetic repo",
 ]

@@ -4,11 +4,8 @@ baseline must NOT sweep the agent's own ``.aiforge-worktrees/`` artifacts
 ``.gitignore`` covering the artifacts."""
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
-
-import pytest
 
 from aiforge_core.runtime import parallel_subtasks as ps
 
@@ -29,8 +26,6 @@ def _init_repo(repo: Path) -> None:
 
 
 def test_commit_all_excludes_artifacts(tmp_path: Path) -> None:
-    if shutil.which("git") is None:
-        pytest.skip("git binary not on PATH")
     _init_repo(tmp_path)
     # Real work file + an agent artifact dir that must NOT be committed.
     (tmp_path / "real.py").write_text("x = 1\n")
@@ -48,8 +43,6 @@ def test_commit_all_excludes_artifacts(tmp_path: Path) -> None:
 
 
 def test_ensure_git_workspace_writes_gitignore(tmp_path: Path) -> None:
-    if shutil.which("git") is None:
-        pytest.skip("git binary not on PATH")
     ws = tmp_path / "ws"
     base = ps._ensure_git_workspace(str(ws))
     assert base  # a branch name

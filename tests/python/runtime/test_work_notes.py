@@ -609,3 +609,41 @@ def test_consolidate_gate_outside_window_skips_llm(monkeypatch):
     out = work_notes.consolidate({}, "a durable fact", role="learner",
                                  allow_llm=False)
     assert "a durable fact" in (out.get("facts") or [])
+
+
+def test_deterministic_merge_keeps_content_under_a_heading(monkeypatch):
+    """A blob whose first line is a markdown heading must not vanish.
+
+    The OKF tiers prefix every node with '### <title>'. Flattening the blob into
+    ONE fact made the fact start with '###', which the junk-line filter matched
+    and dropped — so with the LLM fold outside its daily window (the common
+    case) every mesh/view node rendered empty.
+    """
+    def boom(*a, **k):
+        raise RuntimeError("model down")
+    monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", boom)
+    out = work_notes.consolidate(
+        {}, "### L-01\n\nthe tunnel mtu is 1380", role="learner")
+    assert out["facts"] == ["the tunnel mtu is 1380"]
+
+
+def test_deterministic_merge_drops_junk_markers_not_their_content(monkeypatch):
+    """Headings and rules go; text a fence WRAPS is still content, so it stays.
+    The contract is 'never loses information' — only the markup markers die."""
+    def boom(*a, **k):
+        raise RuntimeError("model down")
+    monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", boom)
+    blob = ("### N-1\n\nfirst node body\n\n"
+            "### N-2\n\nsecond node body\n\n---\n\n```\nmvn -q test\n```")
+    out = work_notes.consolidate({}, blob, role="learner")
+    assert out["facts"] == ["first node body", "second node body", "mvn -q test"]
+
+
+def test_deterministic_merge_is_still_deduped_against_existing(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("model down")
+    monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", boom)
+    out = work_notes.consolidate(
+        {"facts": ["already known"]}, "### T\n\nalready known\n\nbrand new",
+        role="learner")
+    assert out["facts"] == ["already known", "brand new"]

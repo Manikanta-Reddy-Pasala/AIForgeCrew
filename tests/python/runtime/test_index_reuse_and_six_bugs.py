@@ -22,8 +22,6 @@ import io
 import subprocess
 import urllib.error
 
-import pytest
-
 
 # ─────────────────────── shared tiny helpers ───────────────────────────────
 def _valid_sqlite_bytes() -> bytes:
@@ -63,8 +61,8 @@ def test_aider_index_dir_shared_across_worktrees_then_memo_reused(tmp_path,
     """One repo → ONE persistent index dir (git-common-dir key) shared by every
     worktree, and a second identical render reuses the in-process memo instead
     of re-parsing."""
-    from aiforge_core.memory import code_context as cc
     from aiforge_core.indexing import aider_map as am
+    from aiforge_core.memory import code_context as cc
 
     repo = tmp_path / "svc"
     repo.mkdir()
@@ -103,8 +101,8 @@ def test_aider_real_render_persists_tags_cache_for_reuse(tmp_path, monkeypatch):
     """A real Aider render writes a persistent ``.aider.tags.cache.v4`` under the
     central index dir; a second render (in-proc memo cleared) reuses it and
     returns the same digest — the repo is not re-scanned from scratch."""
-    from aiforge_core.memory import code_context as cc
     from aiforge_core.indexing import aider_map as am
+    from aiforge_core.memory import code_context as cc
 
     repo = tmp_path / "app"
     (repo / "pkg").mkdir(parents=True)
@@ -125,8 +123,9 @@ def test_aider_real_render_persists_tags_cache_for_reuse(tmp_path, monkeypatch):
 
     chat = ["pkg/m0.py"]
     d1 = cc.aider_digest(str(repo), chat, token_budget=256, user_text="fn0 run")
-    if not d1:
-        pytest.skip("aider produced no map in this env (grammar/parse) ")
+    # Declared dependency, not a maybe: an empty map means the repo map is
+    # broken on this install, and skipping hid that on the boxes that hit it.
+    assert d1, "aider produced no map — repo map broken on this install"
 
     index_dir = cc._repo_index_dir(repo)
     cache_hits = list(index_dir.glob(".aider.tags.cache.v4*"))
@@ -203,7 +202,9 @@ def test_bug2_stemming_unifies_policy_singular_plural_and_ranks_it():
     """Bug2 — cross-chat search stemming: a 'policies' query finds a 'policy'
     doc (shared root) and the on-topic row ranks first."""
     from aiforge_core.runtime.chat_store._helpers import (
-        _rank_search, _stem_root, _tokens,
+        _rank_search,
+        _stem_root,
+        _tokens,
     )
     assert _stem_root("policies") == _stem_root("policy")
 
@@ -222,7 +223,9 @@ def test_bug3_okr_note_repairs_blank_kind_and_scrubs_scaffolding():
     'knowledge' and scaffolding-leak facts are scrubbed; the rendered note then
     validates clean."""
     from aiforge_core.runtime.work_notes._render import (
-        render_note, scrub_items, validate_note,
+        render_note,
+        scrub_items,
+        validate_note,
     )
     facts = scrub_items(["## Facts", "prod deploy needs a green CI run",
                          "Facts:", "-----",
@@ -252,7 +255,8 @@ def test_bug5_native_tool_choice_only_rejection_keeps_native_enabled():
     NOT permanently disable native FC: the endpoint still supports tools with
     'auto'. Guard = _tools_unsupported AND NOT _rejects_only_tool_choice."""
     from aiforge_core.runtime.chat_agent._native import (
-        _rejects_only_tool_choice, _tools_unsupported,
+        _rejects_only_tool_choice,
+        _tools_unsupported,
     )
     exc = _http_err(400, 'tool_choice "required" is not supported by this server')
     assert _rejects_only_tool_choice(exc) is True

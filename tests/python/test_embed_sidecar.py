@@ -8,21 +8,12 @@ import pytest
 SIDECAR = os.environ.get("EMBED_SIDECAR_URL", "http://127.0.0.1:8764")
 
 
-def _sidecar_up() -> bool:
-    try:
-        urllib.request.urlopen(f"{SIDECAR}/healthz", timeout=2)
-        return True
-    except Exception:
-        return False
-
-
-# Live contract test — hermetic skip when the sidecar isn't running so
-# the suite is green on dev boxes without the service stack.
-pytestmark = pytest.mark.skipif(
-    not _sidecar_up(),
-    reason=f"embed sidecar not reachable at {SIDECAR}; "
-           "start services/embed_sidecar to run this contract test",
-)
+# Live contract test: SELECTED by the marker, never by probing the host. The
+# probe here also reached out over the network at COLLECTION time — every run,
+# on every box, including the ones that then skipped the file. `-m "not
+# live_sidecar"` (what CI passes) deselects it identically everywhere; run it
+# with the sidecar up via `-m live_sidecar`.
+pytestmark = pytest.mark.live_sidecar
 
 
 def _post(path, body):

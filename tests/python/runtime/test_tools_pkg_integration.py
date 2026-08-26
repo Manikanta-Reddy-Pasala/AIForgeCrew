@@ -5,7 +5,6 @@ compose. Tmux-aware tests are skipped on dev boxes without tmux.
 """
 from __future__ import annotations
 
-import shutil
 import sys
 
 import pytest
@@ -63,9 +62,7 @@ def test_full_create_run_finish_chain(tmp_path, monkeypatch):
     assert done["terminate"] is True
 
 
-pytestmark_tmux = pytest.mark.skipif(
-    shutil.which("tmux") is None, reason="tmux not installed",
-)
+pytestmark_tmux = pytest.mark.live_tmux
 
 
 @pytestmark_tmux

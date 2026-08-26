@@ -31,9 +31,7 @@ def test_kernel_missing_soft_error(monkeypatch):
 
 _HAS_JUPYTER = ipy._jupyter_available() and shutil.which("python3")
 
-pytestmark_jupyter = pytest.mark.skipif(
-    not _HAS_JUPYTER, reason="jupyter_client not installed",
-)
+pytestmark_jupyter = pytest.mark.live_jupyter
 
 
 @pytestmark_jupyter

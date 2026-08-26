@@ -300,12 +300,12 @@ def test_a_configured_ca_bundle_is_used_on_the_doer_path(monkeypatch, tmp_path):
     """The remedy the code recommends — install the inspecting appliance's CA —
     did nothing here: this path used the stdlib default and never consulted the
     bundle, so every page came back through the unverified fallback instead."""
-    from aiforge_core.runtime.doer_tools import _web
-
     # A REAL bundle: ssl.create_default_context refuses an empty file, and a
     # helper that silently returns None on a bad path would make this test pass
     # while proving nothing.
-    certifi = pytest.importorskip("certifi")
+    import certifi
+
+    from aiforge_core.runtime.doer_tools import _web
     monkeypatch.setenv("AIFORGE_LLM_CA_BUNDLE", certifi.where())
     seen: list = []
 

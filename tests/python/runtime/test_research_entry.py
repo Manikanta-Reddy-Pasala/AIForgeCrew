@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from aiforge_core.runtime import parallel_stages as ps
 
 
@@ -22,6 +20,5 @@ def test_research_entry_is_noop_passthrough() -> None:
 
 
 def test_make_research_entry_node_named() -> None:
-    pytest.importorskip("google.adk")          # node() needs ADK
     n = ps.make_research_entry_node()
     assert n.name == "research_entry"
