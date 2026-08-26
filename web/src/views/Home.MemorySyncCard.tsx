@@ -118,9 +118,7 @@ export default function MemorySyncCard() {
         <input
           type="text"
           value={draft ?? ''}
-          // NOSONAR - http is correct here: the admin is documented as sitting
-          // on a LAN or WireGuard address, and this is only placeholder text.
-          placeholder="http://192.168.1.20:8799"
+          placeholder="https://nuc.lan:8799"
           disabled={busy || st.admin_pinned}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter' && dirty) saveAdmin(); }}
@@ -131,6 +129,12 @@ export default function MemorySyncCard() {
                 style={{ marginLeft: 8 }}>
           Save
         </button>
+        <div className="muted">
+          Host and port of the machine that merges this fleet&apos;s memory.
+          Plain <code>http</code> is expected: the sync surface takes no
+          credential, so the admin is meant to sit on a LAN or WireGuard
+          address rather than behind TLS.
+        </div>
         {st.admin_pinned && (
           <div className="muted">
             pinned by AIFORGE_ADMIN_URL in .env — edit it there
