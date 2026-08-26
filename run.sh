@@ -57,6 +57,13 @@
 #   --admin-page open that page without claiming the role (any machine)
 #   --spoke      give up the admin role: drops the persisted AIFORGE_ROLE so
 #                AIFORGE_ADMIN_URL decides again (how you MOVE the admin)
+#   --admin-url <url>
+#                name the memory admin this box syncs with, which makes it a
+#                spoke. Persisted to the env file like --admin/--spoke.
+#   --group <name>
+#                preselect the sync group. Only needed on a headless box that
+#                will never see the settings screen — a client normally
+#                discovers the admin's group list and picks from it there.
 #   --skip-web   don't (re)build the web UI
 #   --test       probe the configured model endpoint (OK/FAIL), then exit
 #   --reset-config  wipe ~/.aiforge/agent_config.json (backed up) so stale
@@ -166,6 +173,8 @@ DEV=0
 ADMIN=0                 # this machine IS the memory admin (--admin)
 ADMIN_PAGE=0            # just open /admin in a browser (--admin-page)
 UNADMIN=0               # give up a persisted admin role (--spoke)
+ADMIN_URL_SET=""        # name the admin this box syncs with (--admin-url)
+GROUP_SET=""            # preselect the sync group (--group)
 SKIP_WEB=0
 TEST=0
 # Default mode is config-driven: AIFORGE_MODE (from .env / the service env) →
@@ -191,6 +200,8 @@ while [[ $# -gt 0 ]]; do
     --install-model2vec|--install-semantic) INSTALL_MODEL2VEC=1 ;;  # install semantic memory (model2vec, ~30MB, NO torch). --install-semantic kept as an alias.
     --dev) DEV=1 ;;
     --admin) ADMIN=1; ADMIN_PAGE=1 ;;  # this box is THE memory admin (+ open its page)
+    --admin-url) ADMIN_URL_SET="${2:-}"; shift ;;  # name the admin (makes this a spoke)
+    --group) GROUP_SET="${2:-}"; shift ;;          # preselect the sync group
     --admin-page) ADMIN_PAGE=1 ;;      # open the sync admin page, claim nothing
     --spoke) UNADMIN=1 ;;              # drop a persisted admin role
     --skip-web) SKIP_WEB=1 ;;
@@ -232,20 +243,26 @@ _env_role_file="${ENV_FILE:-.env}"
 # under the umask, so a .env kept at 0600 (it holds AIFORGE_LM_API_KEY — see
 # .env.example) came back 0644 and world-readable. grep exiting 1 is "nothing
 # matched", not a failure, so it must not abort the rewrite under `set -e`.
-_write_role() {                       # $1 = value, or "" to only remove the line
-  local want="$1" f="$_env_role_file"
+_write_env_line() {                   # $1 = key, $2 = value ("" removes the line)
+  local key="$1" want="$2" f="$_env_role_file"
   if [[ -f "$f" ]]; then
     cp -p "$f" "$f.tmp" || return 1
     # Exit 1 is "no lines selected" and is fine. Exit 2 is a real failure — a
     # full disk, a quota — and the redirection has ALREADY truncated the tmp
     # file, so moving it over .env would replace the operator's API keys with
     # nothing. Narrowed to 1, and the tmp file is cleaned up either way.
-    grep -vE '^[[:space:]]*AIFORGE_ROLE=' "$f" > "$f.tmp" || [[ $? -eq 1 ]] \
+    grep -vE "^[[:space:]]*${key}=" "$f" > "$f.tmp" || [[ $? -eq 1 ]] \
       || { rm -f "$f.tmp"; return 1; }
     mv "$f.tmp" "$f" || { rm -f "$f.tmp"; return 1; }
   fi
-  [[ -n "$want" ]] && printf 'AIFORGE_ROLE=%s\n' "$want" >> "$f"
+  [[ -n "$want" ]] && printf '%s=%s\n' "$key" "$want" >> "$f"
   return 0
+}
+
+# One writer for every persisted line, so the role, the admin url and the group
+# cannot drift apart in how they are written, locked or cleaned up.
+_write_role() {                       # $1 = value, or "" to only remove the line
+  _write_env_line AIFORGE_ROLE "$1"
 }
 
 if [[ $ADMIN -eq 1 && $UNADMIN -eq 1 ]]; then
@@ -268,6 +285,43 @@ if [[ $ADMIN -eq 1 && -n "${AIFORGE_ADMIN_URL:-}" ]]; then
   echo "       A machine cannot be both. To just open the sync page: ./run.sh --admin-page" >&2
   echo "       To make THIS box the admin: remove AIFORGE_ADMIN_URL from ${ENV_FILE:-.env} first." >&2
   exit 2
+fi
+
+if [[ -n "$ADMIN_URL_SET" ]]; then
+  if [[ $ADMIN -eq 1 || "${AIFORGE_ROLE:-}" == "admin" ]]; then
+    # Refused, not silently ignored — the mirror of the rule --admin already
+    # enforces in the other direction. A box that is both stamps `derived: mesh`
+    # while also pushing to somebody else's hub, so knowledge crosses in both
+    # directions and two machines claim the same fold.
+    echo "error: --admin-url, but this box holds the admin role. A machine" >&2
+    echo "       cannot be both. Run ./run.sh --spoke here first." >&2
+    exit 2
+  fi
+  export AIFORGE_ADMIN_URL="$ADMIN_URL_SET"
+  if _write_env_line AIFORGE_ADMIN_URL "$ADMIN_URL_SET"; then
+    echo "  memory: recorded AIFORGE_ADMIN_URL=$ADMIN_URL_SET in $_env_role_file"
+  else
+    echo "  memory: WARNING — could not write $_env_role_file; this box will" >&2
+    echo "          forget its admin on the next restart" >&2
+  fi
+fi
+
+if [[ -n "$GROUP_SET" ]]; then
+  # The same alphabet sync.group.is_valid enforces: the name becomes a directory
+  # component on the admin, so it is refused here rather than repaired into some
+  # other group's name.
+  if [[ ! "$GROUP_SET" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    echo "error: '$GROUP_SET' is not a usable group name — it becomes a" >&2
+    echo "       directory component, so it takes [A-Za-z0-9_-]." >&2
+    exit 2
+  fi
+  export AIFORGE_SYNC_GROUP="$GROUP_SET"
+  if _write_env_line AIFORGE_SYNC_GROUP "$GROUP_SET"; then
+    echo "  memory: recorded AIFORGE_SYNC_GROUP=$GROUP_SET in $_env_role_file"
+  else
+    echo "  memory: WARNING — could not write $_env_role_file; this box will" >&2
+    echo "          rediscover its group on the next restart" >&2
+  fi
 fi
 
 if [[ $UNADMIN -eq 1 ]]; then
@@ -305,7 +359,11 @@ if [[ "$MODE" != "docker" ]]; then
       echo "          ./run.sh --spoke here once, then --admin on the new box."
     fi
   elif [[ -n "${AIFORGE_ADMIN_URL:-}" ]]; then
-    echo "  memory: spoke of $AIFORGE_ADMIN_URL"
+    if [[ -n "${AIFORGE_SYNC_GROUP:-}" ]]; then
+      echo "  memory: spoke of $AIFORGE_ADMIN_URL, group $AIFORGE_SYNC_GROUP (pinned)"
+    else
+      echo "  memory: spoke of $AIFORGE_ADMIN_URL (group discovered from the admin)"
+    fi
   elif [[ "${AIFORGE_ROLE:-}" == "spoke" ]]; then
     echo "  memory: WARNING — AIFORGE_ROLE=spoke but no AIFORGE_ADMIN_URL: this box"
     echo "          neither syncs nor merges. Set the url, or drop the role."

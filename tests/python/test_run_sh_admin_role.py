@@ -80,12 +80,20 @@ def _write_role_harness(env_file: Path, want: str) -> subprocess.CompletedProces
     The function is lifted out of the script rather than reimplemented, so this
     tests the shipped code: a copy would drift, and every bug below (a dropped
     file mode, a stray .tmp) was in the details of these four lines.
+
+    Both halves are lifted. ``_write_role`` became a thin wrapper over the
+    generic ``_write_env_line`` when --admin-url and --group needed the same
+    careful rewrite, and lifting only the wrapper leaves it calling a function
+    that is not there.
     """
     src = RUN_SH.read_text(encoding="utf-8")
+    generic = re.search(r"^_write_env_line\(\) \{.*?^\}$", src, re.S | re.M)
     body = re.search(r"^_write_role\(\) \{.*?^\}$", src, re.S | re.M)
+    assert generic, "run.sh no longer defines _write_env_line"
     assert body, "run.sh no longer defines _write_role"
     script = (f'set -euo pipefail\nENV_FILE="{env_file.name}"\n'
-              f'_env_role_file="${{ENV_FILE}}"\n{body.group(0)}\n'
+              f'_env_role_file="${{ENV_FILE}}"\n{generic.group(0)}\n'
+              f'{body.group(0)}\n'
               f'_write_role "{want}"\n')
     return subprocess.run(["bash", "-c", script], cwd=str(env_file.parent),
                           capture_output=True, text=True, timeout=30)
