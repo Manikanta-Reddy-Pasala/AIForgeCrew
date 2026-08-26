@@ -88,6 +88,7 @@ def test_the_admin_role_beats_a_stale_admin_url(monkeypatch, tmp_path):
         raise AssertionError("an admin must not sync outward")
 
     monkeypatch.setattr(transport, "fetch_manifest", _boom)
+    monkeypatch.setattr(transport, "fetch_groups", lambda *_a, **_k: [])
     monkeypatch.setattr(transport, "offer", _boom)
 
     assert loop.run_once() == []

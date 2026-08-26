@@ -6,6 +6,7 @@ those import them from here rather than growing their own copy.
 """
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import logging
@@ -22,16 +23,54 @@ _log = logging.getLogger("aiforge.sync")
 # so without this a read-only manifest build issues an mkdir syscall per file.
 _ROOTS: dict[tuple[str, str], Path] = {}
 
+# The group scope, when one is active. A ContextVar rather than an env var: the
+# API serves requests concurrently and ``AIFORGE_MEMORY_MD_DIR`` is
+# process-global, so two clients in different groups would race and one would
+# write into the other's tree — the exact failure group isolation exists to
+# prevent. A ContextVar is per-task by construction, so an ``await`` inside a
+# scoped handler cannot leak it to a handler serving somebody else.
+_SCOPE: contextvars.ContextVar = contextvars.ContextVar(
+    "aiforge_sync_root_scope", default=None)
+
+
+class AuthoredTreeError(Exception):
+    """A write was aimed at a tree whose only writer is the machine itself.
+
+    Raised rather than returned False: every caller is a per-record applier that
+    already refuses a record by exception or by a False return, and a silent
+    skip here would be indistinguishable from a successful write in the counters
+    the operator reads.
+    """
+
+
+def push_scope(directory: Path):
+    """Point ``root()`` at ``directory`` for this task. Returns a reset token."""
+    return _SCOPE.set(Path(directory))
+
+
+def pop_scope(token) -> None:
+    _SCOPE.reset(token)
+
 
 def root() -> Path:
     """The markdown memory tree — the source of truth this whole feature syncs.
 
-    Cached per selecting-env, not per process: tests (and a future multi-tree
-    host) swap ``AIFORGE_MEMORY_MD_DIR`` between calls, and a flat module-level
-    cache would serve one peer's tree to another. The cached value is only the
-    resolved path — every writer still mkdirs its own parents — so a root
-    deleted underneath us costs nothing.
+    A group scope wins when one is active (``push_scope``). On the admin every
+    group is a separate tree, and every module below this one addresses the tree
+    through this function alone, so scoping it here is what scopes all of them —
+    ``paths``, ``manifest``, ``merge``, ``apply``, ``inbox`` and ``tiers`` need
+    to know nothing about groups.
+
+    Otherwise: cached per selecting-env, not per process — tests (and a future
+    multi-tree host) swap ``AIFORGE_MEMORY_MD_DIR`` between calls, and a flat
+    module-level cache would serve one peer's tree to another. The cached value
+    is only the resolved path — every writer still mkdirs its own parents — so a
+    root deleted underneath us costs nothing.
     """
+    scoped = _SCOPE.get()
+    if scoped is not None:
+        return scoped
+
     from aiforge_core.memory.md_store import memory_dir
 
     key = (os.environ.get("AIFORGE_MEMORY_MD_DIR") or "",
@@ -77,6 +116,40 @@ def safe_target(relative: str) -> Path | None:
         _log.warning("sync: rejected out-of-tree path %s", relative)
         return None
     return target
+
+
+# The one directory below ``okf/`` a record arriving over the network may
+# legitimately create. A tombstone is already guarded to self-origin by
+# ``apply._accept_class_b``, and it is how a deletion propagates at all.
+_TOMB = ".tomb"
+
+
+def assert_not_ours(target: Path) -> None:
+    """Raise ``AuthoredTreeError`` if ``target`` lies inside the authored tree.
+
+    ``okf/`` has exactly one writer: the machine it belongs to. Corrupting it is
+    the failure this whole feature must be structurally incapable of — on the
+    client (its own notes) and on the admin (its own notes, and each group's).
+
+    ``paths.target_for`` already routes away from ``okf/``; this is the enforced
+    half of the same rule, checked at the point of the WRITE rather than at the
+    point of the decision. A future routing bug can then only ever cost a
+    refused record instead of reaching an authored note.
+
+    Scope-aware by construction: it asks ``root()``, so inside a group scope the
+    protected tree is that group's ``okf/``.
+    """
+    okf = (root() / "okf").resolve()
+    try:
+        resolved = Path(target).resolve()
+    except (OSError, ValueError):
+        # A path that cannot even be resolved is not one we are about to write.
+        return
+    if resolved != okf and okf not in resolved.parents:
+        return
+    if _TOMB in resolved.relative_to(okf).parts:
+        return
+    raise AuthoredTreeError(f"refusing to write inside the authored tree: {target}")
 
 
 def is_syncable(path: Path) -> bool:
@@ -175,6 +248,8 @@ def read_node_meta(path: Path) -> dict:
     return meta if isinstance(meta, dict) else {}
 
 
-__all__ = ["root", "sha256_file", "sha256_bytes", "rel", "safe_target", "is_syncable",
+__all__ = ["root", "push_scope", "pop_scope", "assert_not_ours",
+           "AuthoredTreeError",
+           "sha256_file", "sha256_bytes", "rel", "safe_target", "is_syncable",
            "iter_syncable", "write_atomic", "read_json", "write_json",
            "read_node_meta"]

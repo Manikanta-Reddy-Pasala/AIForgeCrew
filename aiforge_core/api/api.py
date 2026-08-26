@@ -79,6 +79,7 @@ from aiforge_core.api.routes import observability as _r_observability  # noqa: E
 from aiforge_core.api.routes import files as _r_files  # noqa: E402
 from aiforge_core.api.routes import sync as _r_sync  # noqa: E402
 from aiforge_core.api.routes import admin as _r_admin  # noqa: E402
+from aiforge_core.api.routes import groups as _r_groups  # noqa: E402
 app.include_router(_r_jobs.router)
 app.include_router(_r_repos.router)
 app.include_router(_r_library.router)
@@ -93,6 +94,7 @@ app.include_router(_r_runtime.router)
 app.include_router(_r_observability.router)
 app.include_router(_r_files.router)
 app.include_router(_r_sync.router)
+app.include_router(_r_groups.router)
 app.include_router(_r_admin.router)
 
 # Backwards-compat re-exports: private chat helpers relocated into

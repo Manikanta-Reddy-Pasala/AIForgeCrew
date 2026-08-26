@@ -54,3 +54,32 @@ def test_save_node_stamps_frontmatter(monkeypatch, tmp_path):
     assert node["meta"]["origin"] == "nuc"
     assert node["meta"]["rev"] == 1
     assert node["meta"]["updated_by"] == "nuc"
+
+
+def test_learning_the_admin_id_does_not_forget_the_saved_admin_url(tmp_path, monkeypatch):
+    """Both live in admin.json. Writing one as a whole-file replace dropped the
+    other, so a machine forgot its admin the moment it learned who it was."""
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    for k in ("AIFORGE_ADMIN_URL", "AIFORGE_ROLE", "AIFORGE_ADMIN_ID"):
+        monkeypatch.delenv(k, raising=False)
+    from aiforge_core.memory.sync import role
+
+    role.set_admin_url("http://nuc:8799")
+    role.remember_admin_id("hub")
+
+    assert role.admin_url() == "http://nuc:8799"
+    assert role.admin_id() == "hub"
+    assert role.role() == "spoke"
+
+
+def test_saving_an_admin_url_does_not_forget_the_learned_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg2"))
+    for k in ("AIFORGE_ADMIN_URL", "AIFORGE_ROLE", "AIFORGE_ADMIN_ID"):
+        monkeypatch.delenv(k, raising=False)
+    from aiforge_core.memory.sync import role
+
+    role.set_admin_url("http://nuc:8799")
+    role.remember_admin_id("hub")
+    role.set_admin_url("http://other:8799")
+
+    assert role.admin_id() == "hub"

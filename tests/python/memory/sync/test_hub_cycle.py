@@ -19,9 +19,15 @@ def _node(machine, relative: str, *, key: str, origin: str, by: str, rev: int,
           text: str) -> None:
     p = machine["home"] / "md" / relative
     p.parent.mkdir(parents=True, exist_ok=True)
+    # The body carries a file reference on purpose. The outbound filter
+    # (``sync.redact``) holds back a node with no project signal at all, so a
+    # fixture reading only "book learned something" would be filtered and every
+    # assertion below would fail for a reason that has nothing to do with the
+    # protocol these tests exist to exercise.
     p.write_text(
         f'---\ntype: learning\nid: "{key}"\norigin: "{origin}"\nrev: {rev}\n'
-        f'updated_by: "{by}"\n---\n\n{text}\n', encoding="utf-8")
+        f'updated_by: "{by}"\n---\n\n{text}, and the fix is in '
+        f'`aiforge_core/memory/sync/loop.py` — `run_once()`.\n', encoding="utf-8")
 
 
 def test_a_spokes_raw_captures_stay_on_the_spoke(monkeypatch, tmp_path):

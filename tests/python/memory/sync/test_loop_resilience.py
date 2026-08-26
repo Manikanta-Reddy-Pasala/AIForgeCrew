@@ -20,6 +20,7 @@ def _reachable(monkeypatch):
 
     monkeypatch.setattr(transport, "fetch_manifest",
                         lambda *_a, **_k: {"manifest": [], "admin": "hub"})
+    monkeypatch.setattr(transport, "fetch_groups", lambda *_a, **_k: [])
     monkeypatch.setattr(transport, "offer", lambda *_a, **_k: [])
 
 
@@ -72,6 +73,7 @@ def test_a_push_that_raises_does_not_cost_the_pull(monkeypatch, tmp_path):
     _reachable(monkeypatch)
     from aiforge_core.memory.sync import loop, transport
 
+    monkeypatch.setattr(transport, "fetch_groups", lambda *_a, **_k: [])
     monkeypatch.setattr(transport, "offer",
                         lambda *_a, **_k: (_ for _ in ()).throw(OSError(28, "No space")))
 
@@ -206,6 +208,7 @@ def test_a_wrong_shaped_manifest_response_is_survived(monkeypatch, tmp_path):
 
     body = json.dumps({"manifest": {"not": "a list"}, "admin": "hub"}).encode()
     monkeypatch.setattr(transport, "_fetch", lambda *_a, **_k: body)
+    monkeypatch.setattr(transport, "fetch_groups", lambda *_a, **_k: [])
     monkeypatch.setattr(transport, "offer", lambda *_a, **_k: [])
 
     rows = loop.run_once()
@@ -227,6 +230,7 @@ def test_the_row_survives_a_pull_that_fails_part_way(monkeypatch, tmp_path):
                             {"kind": "A", "path": "captures/a.md", "hash": "ab"}],
                             "admin": "hub"})
     monkeypatch.setattr(transport, "fetch_blob", lambda *_a, **_k: None)
+    monkeypatch.setattr(transport, "fetch_groups", lambda *_a, **_k: [])
     monkeypatch.setattr(transport, "offer", lambda *_a, **_k: [])
 
     rows = loop.run_once()

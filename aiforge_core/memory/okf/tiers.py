@@ -38,6 +38,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import shutil
 from pathlib import Path
 
 _MD = '**/*.md'
@@ -567,7 +568,7 @@ def _run_tier(*, directory: Path, prefix: str, derived: str,
 # ── tier 1 ────────────────────────────────────────────────────────────────
 
 def distil_mesh(*, role: str = _ROLE) -> dict:
-    """Fold every peer's authored knowledge, plus our own, into ``mesh/``.
+    """Fold authored knowledge into ``mesh/`` — once per group.
 
     Admin-only — the one step that is: the merge is LLM-expensive and
     non-deterministic, so two machines folding the same inbox produce two
@@ -575,11 +576,52 @@ def distil_mesh(*, role: str = _ROLE) -> dict:
     direction (OPEN — a machine with no admin configured IS the admin and must
     keep merging), so neither is restated here. Everything else about compaction
     stays local: see :func:`build_view` and ``md_store.compact``.
+
+    A hub may serve several groups, and each is a separate tree with separate
+    inputs: one fold reading them together would put one fleet's knowledge into
+    another fleet's view. An admin with no groups folds its one tree exactly as
+    before — that is the ungrouped deployment, and the loop degenerates to a
+    single pass.
     """
-    from aiforge_core.memory.sync import paths, role as _role
+    from aiforge_core.memory.sync import group as _group
+    from aiforge_core.memory.sync import role as _role
 
     if not _role.may_merge():
         return {"ok": True, "skipped": "not-admin", "admin": _role.admin_id()}
+
+    groups = _group.known()
+    if not groups:
+        return _distil_one(role=role)
+    return _distil_each(groups, role)
+
+
+def _distil_each(groups: list[str], role: str) -> dict:
+    """One fold per group, each inside that group's scope.
+
+    A fold that dies takes its own group's cycle and never the hub: the other
+    groups' knowledge is unrelated, and one bad tree must not stop every other
+    fleet converging.
+    """
+    from aiforge_core.memory.sync import group as _group
+
+    out: dict = {"ok": True, "groups": {}}
+    for name in groups:
+        try:
+            with _group.scoped(name):
+                out["groups"][name] = _distil_one(role=role)
+        except Exception as exc:  # noqa: BLE001 — one bad group is not the rest
+            _log.warning("tiers: mesh fold failed for group %s: %s", name, exc)
+            out["groups"][name] = {"ok": False, "error": str(exc)[:200]}
+    return out
+
+
+def _distil_one(*, role: str = _ROLE) -> dict:
+    """The fold itself, against whichever tree ``_io.root()`` currently names.
+
+    The admin-only check is the caller's (``distil_mesh``): re-checking it here
+    would run once per group and answer the same thing every time.
+    """
+    from aiforge_core.memory.sync import _io, paths, snapshot
 
     sources = (paths.okf_dir(), paths.peers_root())
     if _read_state().get("mesh") == _fingerprint(_tier1_dirs()):
@@ -610,6 +652,10 @@ def distil_mesh(*, role: str = _ROLE) -> dict:
         _save_state("mesh", _stamp())
         return {"ok": True, "skipped": "no-inputs", "inputs": 0}
     _log.info("tiers: mesh fold over %d authored node(s)", len(inputs))
+    # A revert point, taken before the fold replaces it. Hardlinked, so this
+    # costs inodes rather than bytes — which is what makes "before every fold"
+    # affordable, and affordability is what makes the snapshot exist at all.
+    snapshot.take(_io.root())
     result = _run_tier(directory=_own_mesh_dir(), prefix="M", derived=MESH,
                        inputs=inputs, role=role)
     # A run that dies half way records nothing and re-reads its inputs next cycle.
@@ -647,10 +693,47 @@ def build_view(*, role: str = _ROLE) -> dict:
     # okf/ in already, so passing all of it would merge the same facts twice.
     inputs = mesh + _unrepresented(_usable(_load((paths.okf_dir(),))), mesh)
     _log.info("tiers: view rebuild over %d node(s)", len(inputs))
-    result = _run_tier(directory=paths.view_dir(), prefix="V", derived=VIEW,
-                       inputs=inputs, role=role)
+    result = _build_view_atomically(inputs, role)
+    if not result.get("ok", True):
+        # A failed build leaves the previous view exactly where it was, so the
+        # fingerprint must NOT advance: the next cycle has to try again.
+        return result
     _save_state("view", fingerprint)
     return {**result, "inputs": len(inputs)}
+
+
+def _build_view_atomically(inputs: list[dict], role: str) -> dict:
+    """Build the view into a sibling directory and swap it in.
+
+    Never in place. ``view/`` is the working knowledge every agent reads, and an
+    in-place rebuild that dies part-way — a crash, an ENOSPC, a learner that
+    stops answering — left it half old and half new, which is strictly worse
+    than yesterday's view intact. The swap is two renames on one filesystem, so
+    there is no window where ``view/`` is missing for longer than a rename.
+
+    ``view.tmp`` and ``view.old`` sit BESIDE ``view/``, which is itself absent
+    from ``paths.node_roots()``, so neither is ever advertised to a peer.
+    """
+    from aiforge_core.memory.sync import paths
+
+    final = paths.view_dir()
+    staging = final.parent / "view.tmp"
+    previous = final.parent / "view.old"
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        result = _run_tier(directory=staging, prefix="V", derived=VIEW,
+                           inputs=inputs, role=role)
+    except Exception as exc:  # noqa: BLE001 — a failed build keeps the old view
+        shutil.rmtree(staging, ignore_errors=True)
+        _log.warning("tiers: view build failed, keeping the previous view: %s", exc)
+        return {"ok": False, "error": str(exc)[:200]}
+
+    shutil.rmtree(previous, ignore_errors=True)
+    if final.exists():
+        final.rename(previous)
+    staging.rename(final)
+    shutil.rmtree(previous, ignore_errors=True)
+    return result
 
 
 # ── the read side: what agents get from tier 2 ────────────────────────────
@@ -721,8 +804,8 @@ def _retire_own_mesh() -> dict:
     subtree is untidy; a deleted one is gone.
     """
     from aiforge_core.memory.okf import nodes
-    from aiforge_core.memory.sync import identity, merge, paths, role as _role
-    from aiforge_core.memory.sync import tombstone
+    from aiforge_core.memory.sync import identity, merge, paths, tombstone
+    from aiforge_core.memory.sync import role as _role
 
     me = paths.fold(identity.self_id())
     try:

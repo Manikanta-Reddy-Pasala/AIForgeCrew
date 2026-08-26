@@ -115,3 +115,63 @@ def test_with_no_view_the_mesh_itself_reaches_the_agent(mem):
     out = context_block(repo=None, query="redis evictions")
 
     assert "maxmemory-policy allkeys-lru" in out
+
+
+def test_a_failed_view_build_leaves_the_previous_view_intact(tmp_path, monkeypatch):
+    """view/ is what agents read. Half old and half new is worse than stale."""
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md"))
+    monkeypatch.setenv("AIFORGE_PEER_ID", "ms")
+    monkeypatch.delenv("AIFORGE_ADMIN_URL", raising=False)
+    from aiforge_core.memory.okf import tiers
+    from aiforge_core.memory.sync import _io, paths
+
+    view = paths.view_dir()
+    view.mkdir(parents=True, exist_ok=True)
+    (view / "V-01.md").write_text("the good view", encoding="utf-8")
+
+    mesh = paths.mesh_dir() / "ms"
+    mesh.mkdir(parents=True, exist_ok=True)
+    (mesh / "M-01.md").write_text(
+        '---\ntype: knowledge\nid: "M-01"\norigin: "ms"\nrev: 1\n'
+        'updated_by: "ms"\nderived: mesh\n---\n\nthe fold, in `loop.py`\n',
+        encoding="utf-8")
+
+    def _boom(**_kw):
+        raise RuntimeError("the learner is down")
+
+    monkeypatch.setattr(tiers, "_run_tier", _boom)
+    result = tiers.build_view()
+
+    assert result["ok"] is False
+    assert (view / "V-01.md").read_text() == "the good view"
+    assert not (view.parent / "view.tmp").exists()
+
+
+def test_a_failed_view_build_does_not_advance_the_fingerprint(tmp_path, monkeypatch):
+    """Otherwise the next cycle believes the view is current and never retries."""
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg2"))
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "md2"))
+    monkeypatch.setenv("AIFORGE_PEER_ID", "ms")
+    monkeypatch.delenv("AIFORGE_ADMIN_URL", raising=False)
+    from aiforge_core.memory.okf import tiers
+    from aiforge_core.memory.sync import paths
+
+    mesh = paths.mesh_dir() / "ms"
+    mesh.mkdir(parents=True, exist_ok=True)
+    (mesh / "M-01.md").write_text(
+        '---\ntype: knowledge\nid: "M-01"\norigin: "ms"\nrev: 1\n'
+        'updated_by: "ms"\nderived: mesh\n---\n\nthe fold, in `loop.py`\n',
+        encoding="utf-8")
+
+    calls = []
+
+    def _boom(**_kw):
+        calls.append(1)
+        raise RuntimeError("the learner is down")
+
+    monkeypatch.setattr(tiers, "_run_tier", _boom)
+    tiers.build_view()
+    tiers.build_view()
+
+    assert len(calls) == 2, "a failed build must be retried, not marked current"

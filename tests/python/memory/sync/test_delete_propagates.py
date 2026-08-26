@@ -44,7 +44,8 @@ def test_trashing_a_node_removes_it_from_the_admin(monkeypatch, tmp_path):
 
     admin = _hub.node(monkeypatch, tmp_path, "hub")
     spoke = _hub.node(monkeypatch, tmp_path, "nuc", admin_url="http://hub")
-    _learning(spoke, "L-01", "a transient test-session artifact")
+    _learning(spoke, "L-01", "a transient artifact of `run_once()` in "
+                             "`aiforge_core/memory/sync/loop.py`")
 
     _hub.cycle(monkeypatch, spoke, admin)
     landed = admin["home"] / "md" / "peers" / "nuc" / "L-01.md"

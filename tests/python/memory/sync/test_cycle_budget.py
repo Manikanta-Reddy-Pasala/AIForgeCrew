@@ -47,6 +47,7 @@ def sick_admin(monkeypatch, tmp_path):
 
     monkeypatch.setattr(transport, "fetch_manifest", _fat_manifest)
     monkeypatch.setattr(transport, "fetch_blob", _slow_blob)
+    monkeypatch.setattr(transport, "fetch_groups", lambda *_a, **_k: [])
     monkeypatch.setattr(transport, "offer", lambda *_a, **_k: [])
     monkeypatch.setattr(loop, "CYCLE_BUDGET", BUDGET)
     return loop
@@ -90,17 +91,23 @@ def test_the_push_is_bounded_by_the_same_budget(monkeypatch, tmp_path):
     for i in range(ENTRIES):
         (d / f"L-{i:03d}.md").write_text(
             f'---\ntype: learning\nid: "L-{i:03d}"\norigin: "book"\nrev: 1\n'
-            f'updated_by: "book"\n---\n\nbody {i}\n', encoding="utf-8")
+            # A file reference, because the outbound filter holds back a node
+            # with no project signal — "body 0" would be filtered and this test
+            # would measure a budget that never had anything to bound.
+            f'updated_by: "book"\n---\n\nbody {i} in '
+            f'`aiforge_core/memory/sync/loop.py` — `run_once()`\n',
+            encoding="utf-8")
 
     sent: list = []
 
-    def _slow_push(_base, entry, _body):
+    def _slow_push(_base, entry, _body, group=""):
         time.sleep(BLOB_DELAY)
         sent.append(entry)
         return True
 
+    monkeypatch.setattr(transport, "fetch_groups", lambda *_a, **_k: [])
     monkeypatch.setattr(transport, "offer",
-                        lambda _base, entries: list(entries))
+                        lambda _base, entries, group="": list(entries))
     monkeypatch.setattr(transport, "push_blob", _slow_push)
     monkeypatch.setattr(loop, "CYCLE_BUDGET", BUDGET)
 

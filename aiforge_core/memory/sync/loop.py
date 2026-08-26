@@ -57,7 +57,8 @@ def _spent(deadline: float | None) -> bool:
     return deadline is not None and time.monotonic() >= deadline
 
 
-def sync_with(base_url: str, deadline: float | None = None) -> dict:
+def sync_with(base_url: str, deadline: float | None = None, *,
+              group: str = "") -> dict:
     """Run one cycle against the admin: push first, then pull.
 
     ``deadline`` is a ``time.monotonic`` stamp after which the cycle stops
@@ -75,20 +76,23 @@ def sync_with(base_url: str, deadline: float | None = None) -> dict:
     """
     from aiforge_core.memory.sync import push
 
-    result = {"ok": False, "pushed": 0, "applied": 0, "rejected": 0, "conflicts": 0}
+    result = {"ok": False, "pushed": 0, "applied": 0, "rejected": 0,
+              "conflicts": 0, "blocked": 0, "pending": 0}
     try:
-        up = push.run_once(base_url, deadline)
+        up = push.run_once(base_url, deadline, group=group)
         result["pushed"] = up["pushed"]
         result["rejected"] += up["rejected"]
+        result["blocked"] = up.get("blocked", 0)
+        result["pending"] = up.get("pending", 0)
         result["ok"] = up["ok"]
-        _pull(base_url, result, deadline)
+        _pull(base_url, result, deadline, group)
     except Exception as exc:  # noqa: BLE001 — a misbehaving admin is not our death
         _log.warning("sync: admin %s failed mid-cycle: %s", base_url, exc)
     return result
 
 
 def _preserve_conflicts(base_url: str, plan: dict, result: dict,
-                        deadline, transport, apply) -> None:
+                        deadline, transport, apply, group: str = "") -> None:
     """Keep the copy the merge is about to discard.
 
     A conflicting remote entry that also appears in ``want`` is the winner, so
@@ -99,14 +103,26 @@ def _preserve_conflicts(base_url: str, plan: dict, result: dict,
     for pair in plan["conflict"]:
         if _spent(deadline):
             return
-        losing_body = None
-        if str(pair["remote"].get("hash") or "") not in winning:
-            losing_body = transport.fetch_blob(
-                base_url, str(pair["remote"].get("hash") or ""))
-            if losing_body is None:
-                continue      # nothing fetched, nothing to preserve
-        if apply.keep_conflict(pair["local"], losing_body):
+        kept = _preserve_one(base_url, pair, winning, group, transport, apply)
+        if kept:
             result["conflicts"] += 1
+
+
+def _preserve_one(base_url: str, pair: dict, winning: set, group: str,
+                  transport, apply) -> bool:
+    """Keep one losing copy. False when there was nothing to keep.
+
+    Split out of the loop above so the budget check and the per-pair decision
+    are each one idea — and so the fetch's "nothing came back" path is a return
+    rather than a ``continue`` two levels in.
+    """
+    remote_hash = str(pair["remote"].get("hash") or "")
+    losing_body = None
+    if remote_hash not in winning:
+        losing_body = transport.fetch_blob(base_url, remote_hash, group=group)
+        if losing_body is None:
+            return False      # nothing fetched, nothing to preserve
+    return bool(apply.keep_conflict(pair["local"], losing_body))
 
 
 def _apply_one(entry: dict, body, admin: str, apply) -> bool:
@@ -126,7 +142,7 @@ def _apply_one(entry: dict, body, admin: str, apply) -> bool:
 
 
 def _fetch_wanted(base_url: str, plan: dict, result: dict, admin: str,
-                  deadline, transport, apply) -> None:
+                  deadline, transport, apply, group: str = "") -> None:
     """Fetch + apply each wanted blob.
 
     ``got`` is counted locally, not off ``result``: ``result["rejected"]``
@@ -147,7 +163,8 @@ def _fetch_wanted(base_url: str, plan: dict, result: dict, admin: str,
                          len(plan["want"]) - got)
             return
         got += 1
-        body = transport.fetch_blob(base_url, str(entry.get("hash") or ""))
+        body = transport.fetch_blob(base_url, str(entry.get("hash") or ""),
+                                    group=group)
         if body is None:
             result["rejected"] += 1
             continue
@@ -155,11 +172,12 @@ def _fetch_wanted(base_url: str, plan: dict, result: dict, admin: str,
         result["applied" if applied else "rejected"] += 1
 
 
-def _pull(base_url: str, result: dict, deadline: float | None = None) -> None:
+def _pull(base_url: str, result: dict, deadline: float | None = None,
+          group: str = "") -> None:
     """The admin's manifest, blobs and bookkeeping, accumulated into ``result``."""
-    from aiforge_core.memory.sync import apply, manifest, merge, role, transport
+    from aiforge_core.memory.sync import _io, apply, manifest, merge, role, snapshot, transport
 
-    remote = transport.fetch_manifest(base_url)
+    remote = transport.fetch_manifest(base_url, group=group)
     if not remote:
         return
     result["ok"] = True
@@ -169,11 +187,25 @@ def _pull(base_url: str, result: dict, deadline: float | None = None) -> None:
     admin = role.remember_admin_id(str(remote.get("admin") or ""))
     plan = merge.plan_sync(manifest.build(),
                            _ingest(remote.get("manifest") or []))
-    _preserve_conflicts(base_url, plan, result, deadline, transport, apply)
-    _fetch_wanted(base_url, plan, result, admin, deadline, transport, apply)
+    if plan["want"] or plan["conflict"]:
+        # A revert point, taken only when something is actually about to change
+        # — an idle cycle must not churn the useful snapshots out of the window.
+        # A bad admin fold is then one call to undo locally, without waiting for
+        # the admin to be fixed first.
+        snapshot.take(_io.root())
+    _preserve_conflicts(base_url, plan, result, deadline, transport, apply, group)
+    _fetch_wanted(base_url, plan, result, admin, deadline, transport, apply, group)
     _log.info("sync: admin=%s pushed=%d applied=%d rejected=%d conflicts=%d",
               admin or "?", result["pushed"], result["applied"],
               result["rejected"], result["conflicts"])
+
+
+def _idle_row(base: str, state: str, group: str = "") -> dict:
+    """A cycle that decided not to talk. Same shape as a real one, so every
+    caller — the CLI, the tests, the settings screen — iterates one thing."""
+    return {"admin": base, "group": group, "state": state, "ok": state != "unreachable",
+            "pushed": 0, "applied": 0, "rejected": 0, "conflicts": 0,
+            "blocked": 0, "pending": 0}
 
 
 def run_once() -> list[dict]:
@@ -189,8 +221,13 @@ def run_once() -> list[dict]:
     would otherwise push its own knowledge to somebody else's admin while
     serving as an admin itself — knowledge crossing in both directions, and two
     machines both stamping ``derived: mesh``.
+
+    The GROUP is resolved before anything is sent. When the admin publishes
+    several and this machine has chosen none, the cycle stops here: knowledge
+    landing in the wrong pool is not recoverable by choosing correctly later,
+    because the wrong pool has already folded it and served it onward.
     """
-    from aiforge_core.memory.sync import role
+    from aiforge_core.memory.sync import group, role, status, transport
 
     if role.is_admin():
         return []
@@ -198,14 +235,32 @@ def run_once() -> list[dict]:
     if not base:
         # A spoke with nowhere to sync: explicitly configured (AIFORGE_ROLE=spoke)
         # with no admin named. Nothing to do, and nothing to warn about every
-        # cycle — the admin page shows the missing url.
+        # cycle — the settings screen shows the missing url.
+        status.record(state="no-admin", admin="", reachable=False)
         return []
+
+    advertised = transport.fetch_groups(base)
+    if advertised is None:
+        # Unreachable. ``transport`` has already decided whether that is worth a
+        # log line (``status.note_failure`` speaks only on a change), so nothing
+        # further is said here — this is the ordinary state of a laptop off the
+        # LAN, not an incident.
+        status.record(state="unreachable", admin=base, reachable=False,
+                      group=group.selected())
+        return [_idle_row(base, "unreachable", group.selected())]
+
+    chosen, state = group.resolve(advertised)
     deadline = time.monotonic() + CYCLE_BUDGET
-    row = {"admin": base}
+    row = {"admin": base, "group": chosen, "state": state}
     try:
-        row.update(sync_with(base, deadline))
+        row.update(sync_with(base, deadline, group=chosen))
     except Exception as exc:  # noqa: BLE001
         _log.warning("sync: cycle failed for %s: %s", base, exc)
+    status.record(state=state if row.get("ok") else "unreachable", admin=base,
+                  reachable=bool(row.get("ok")), group=chosen,
+                  groups_available=advertised,
+                  pending=int(row.get("pending") or 0),
+                  pushed=int(row.get("pushed") or 0))
     return [row]
 
 

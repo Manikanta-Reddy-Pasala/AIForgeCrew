@@ -105,6 +105,16 @@ def apply_blob(entry: dict, body: bytes, *, peer_id: str = "") -> bool:
     if entry.get("kind") != "B" and not _accept_class_a(target, entry, body):
         return False
 
+    try:
+        _io.assert_not_ours(target)
+    except _io.AuthoredTreeError as exc:
+        # ``target_for`` already routes away from okf/; this is the enforced
+        # half of the same rule. Reaching it means the routing was wrong, so the
+        # record is refused and counted rather than written into the one tree
+        # whose sole writer is this machine.
+        _log.warning("sync: %s", exc)
+        return False
+
     _io.write_atomic(target, body)
     _enforce_invariant(entry)
     return True

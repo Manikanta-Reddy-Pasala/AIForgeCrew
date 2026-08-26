@@ -380,3 +380,103 @@ def test_the_sync_cycle_runs_both_tiers_after_the_pass(mem, monkeypatch):
         loop.run_forever(interval=1)
 
     assert order == ["sync", "compact"]
+
+
+# ── one fold per group ────────────────────────────────────────────────────
+
+def _peer_note(root, origin: str, key: str, text: str) -> None:
+    d = root / "peers" / origin
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{key}.md").write_text(
+        f'---\ntype: learning\nid: "{key}"\norigin: "{origin}"\nrev: 1\n'
+        f'updated_by: "{origin}"\n---\n\n{text} in `x/y.py`\n', encoding="utf-8")
+
+
+def _admin_env(monkeypatch, tmp_path, name: str):
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / f"cfg-{name}"))
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / f"md-{name}"))
+    monkeypatch.setenv("AIFORGE_PEER_ID", "nuc")
+    for k in ("AIFORGE_ADMIN_URL", "AIFORGE_ROLE", "AIFORGE_SYNC_GROUPS"):
+        monkeypatch.delenv(k, raising=False)
+
+
+def test_the_admin_folds_each_group_separately(tmp_path, monkeypatch):
+    """One fold per group, each reading only that group's inputs. A single fold
+    over both trees would put one fleet's knowledge in another fleet's view."""
+    _admin_env(monkeypatch, tmp_path, "groups")
+    from aiforge_core.memory.okf import tiers
+    from aiforge_core.memory.sync import _io, group
+
+    group.create("cellular")
+    group.create("retail")
+    for name, key in (("cellular", "O-01"), ("retail", "O-02")):
+        with group.scoped(name):
+            _peer_note(_io.root(), "ms", key, f"a note for {name}")
+
+    seen: list = []
+    monkeypatch.setattr(
+        tiers, "_run_tier",
+        lambda **kw: seen.append(
+            (str(kw["directory"]),
+             sorted(str(n["meta"].get("id")) for n in kw["inputs"])))
+        or {"ok": True})
+
+    tiers.distil_mesh()
+
+    assert len(seen) == 2
+    assert any("groups/cellular" in d and keys == ["O-01"] for d, keys in seen)
+    assert any("groups/retail" in d and keys == ["O-02"] for d, keys in seen)
+
+
+def test_an_ungrouped_admin_folds_exactly_once(tmp_path, monkeypatch):
+    """The deployment that predates groups, unchanged and unmigrated."""
+    _admin_env(monkeypatch, tmp_path, "plain")
+    from aiforge_core.memory.okf import tiers
+    from aiforge_core.memory.sync import _io
+
+    _peer_note(_io.root(), "ms", "O-01", "a note")
+
+    calls: list = []
+    monkeypatch.setattr(tiers, "_run_tier",
+                        lambda **kw: calls.append(str(kw["directory"])) or {"ok": True})
+    tiers.distil_mesh()
+
+    assert len(calls) == 1
+    assert "groups/" not in calls[0]
+
+
+def test_one_groups_fold_failing_does_not_stop_the_others(tmp_path, monkeypatch):
+    """The other groups' knowledge is unrelated and must keep converging."""
+    _admin_env(monkeypatch, tmp_path, "partial")
+    from aiforge_core.memory.okf import tiers
+    from aiforge_core.memory.sync import _io, group
+
+    group.create("cellular")
+    group.create("retail")
+    for name in ("cellular", "retail"):
+        with group.scoped(name):
+            _peer_note(_io.root(), "ms", "O-01", f"a note for {name}")
+
+    def _sometimes(**kw):
+        if "cellular" in str(kw["directory"]):
+            raise RuntimeError("the learner is down")
+        return {"ok": True}
+
+    monkeypatch.setattr(tiers, "_run_tier", _sometimes)
+    out = tiers.distil_mesh()
+
+    assert out["groups"]["cellular"]["ok"] is False
+    assert out["groups"]["retail"]["ok"] is True
+
+
+def test_a_spoke_never_folds_whatever_the_groups_say(tmp_path, monkeypatch):
+    _admin_env(monkeypatch, tmp_path, "spoke")
+    monkeypatch.setenv("AIFORGE_ADMIN_URL", "http://nuc:8799")
+    from aiforge_core.memory.okf import tiers
+    from aiforge_core.memory.sync import group
+
+    group.create("cellular")
+    monkeypatch.setattr(tiers, "_run_tier",
+                        lambda **kw: pytest.fail("a spoke must not fold"))
+
+    assert tiers.distil_mesh()["skipped"] == "not-admin"

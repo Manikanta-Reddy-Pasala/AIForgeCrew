@@ -238,3 +238,231 @@ def test_a_body_that_is_not_json_is_a_400(monkeypatch, tmp_path):
         headers={"content-type": "application/json"})
 
     assert r.status_code == 400
+
+
+# ── groups ───────────────────────────────────────────────────────────────
+
+def _seed_group_merge(tmp_path, group_name: str, text: str, *, origin: str = "book") -> str:
+    """A tier-1 merge node inside ONE group's tree."""
+    body = (f'---\ntype: knowledge\nid: "M-09"\norigin: "{origin}"\nrev: 2\n'
+            f'updated_by: "{origin}"\nderived: mesh\n---\n\n{text}\n')
+    d = tmp_path / "md" / "groups" / group_name / "mesh" / origin
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "M-09.md").write_text(body, encoding="utf-8")
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
+def test_groups_route_lists_what_the_admin_publishes(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import group
+
+    group.create("cellular")
+    group.create("retail")
+
+    r = TestClient(api.app).get("/api/memory/sync/groups")
+    assert r.status_code == 200
+    assert r.json()["groups"] == ["cellular", "retail"]
+    assert r.json()["admin"] == "book"
+
+
+def test_groups_route_is_empty_when_ungrouped(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    assert TestClient(api.app).get("/api/memory/sync/groups").json()["groups"] == []
+
+
+def test_manifest_in_an_unknown_group_is_404_and_names_the_known_ones(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import group
+
+    group.create("cellular")
+    r = TestClient(api.app).get("/api/memory/sync/manifest", params={"group": "typo"})
+    assert r.status_code == 404
+    assert "cellular" in r.json()["detail"]
+
+
+def test_a_bad_group_name_on_a_route_is_400_not_a_new_directory(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    r = TestClient(api.app).get("/api/memory/sync/manifest", params={"group": "../etc"})
+    assert r.status_code == 400
+    assert not (tmp_path / "md" / "groups").exists()
+
+
+def test_manifest_in_a_known_group_reads_that_group_tree(monkeypatch, tmp_path):
+    """The route must serve the GROUP's tree, and the ungrouped one must not
+    see it — this is the assertion a leaked scope fails."""
+    api = _fresh_api(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import group
+
+    group.create("cellular")
+    _seed_group_merge(tmp_path, "cellular", "group knowledge")
+    client = TestClient(api.app)
+
+    rows = client.get("/api/memory/sync/manifest",
+                      params={"group": "cellular"}).json()["manifest"]
+    assert [e["key"] for e in rows] == ["M-09"]
+    assert client.get("/api/memory/sync/manifest").json()["manifest"] == []
+
+
+def test_a_blob_is_not_readable_from_another_group(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import group
+
+    group.create("cellular")
+    group.create("retail")
+    digest = _seed_group_merge(tmp_path, "cellular", "group knowledge")
+    client = TestClient(api.app)
+
+    assert client.get(f"/api/memory/sync/blob/{digest}",
+                      params={"group": "cellular"}).status_code == 200
+    assert client.get(f"/api/memory/sync/blob/{digest}",
+                      params={"group": "retail"}).status_code == 404
+
+
+def test_a_push_lands_in_the_named_group_only(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import group
+
+    group.create("cellular")
+    group.create("retail")
+    body = (b'---\ntype: knowledge\nid: "O-07"\norigin: "ms"\nrev: 1\n'
+            b'updated_by: "ms"\n---\n\nthe parser is in `x/y.py`\n')
+    entry = {"kind": "B", "origin": "ms", "key": "O-07", "rev": 1,
+             "hash": hashlib.sha256(body).hexdigest(), "path": "peers/ms/O-07.md"}
+
+    r = TestClient(api.app).post("/api/memory/sync/push", json={
+        "peer": "ms", "group": "cellular", "entry": entry,
+        "body": base64.b64encode(body).decode()})
+
+    assert r.json()["applied"] is True
+    assert (tmp_path / "md" / "groups" / "cellular" / "peers" / "ms" / "O-07.md").exists()
+    assert not (tmp_path / "md" / "groups" / "retail" / "peers" / "ms" / "O-07.md").exists()
+    assert not (tmp_path / "md" / "peers" / "ms" / "O-07.md").exists()
+
+
+def test_an_offer_into_an_unknown_group_is_404(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import group
+
+    group.create("cellular")
+    r = TestClient(api.app).post("/api/memory/sync/offer",
+                                 json={"peer": "ms", "group": "typo", "entries": []})
+    assert r.status_code == 404
+
+
+# ── status and the client-side controls ──────────────────────────────────
+
+def test_status_route_serves_the_record(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import status
+
+    status.record(state="ok", admin="http://nuc:8799", reachable=True,
+                  group="cellular", groups_available=["cellular"], pending=2)
+
+    row = TestClient(api.app).get("/api/memory/sync/status").json()
+    assert row["group"] == "cellular"
+    assert row["pending"] == 2
+    assert row["role"] in ("admin", "spoke")
+    assert [s["stage"] for s in row["rules"]] == ["secrets", "private", "noise"]
+
+
+def test_status_route_on_a_machine_that_has_never_synced(monkeypatch, tmp_path):
+    """Every field the UI reads is present even with no record on disk."""
+    api = _fresh_api(monkeypatch, tmp_path)
+
+    row = TestClient(api.app).get("/api/memory/sync/status").json()
+    assert row["state"] in ("unknown", "no-admin")
+    assert row["groups_available"] == []
+    assert row["pending"] == 0
+    assert row["recent_blocks"] == []
+
+
+def test_status_route_reports_what_the_filter_held_back(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import status
+
+    status.record_block("O-02", "secrets.aws_key", "shaped like an aws key")
+
+    row = TestClient(api.app).get("/api/memory/sync/status").json()
+    assert row["recent_blocks"][0]["rule"] == "secrets.aws_key"
+
+
+def test_choosing_a_group_persists_it(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import group
+
+    r = TestClient(api.app).put("/api/memory/sync/group", json={"group": "cellular"})
+    assert r.status_code == 200
+    assert group.selected() == "cellular"
+
+
+def test_choosing_an_unusable_group_is_refused(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    r = TestClient(api.app).put("/api/memory/sync/group", json={"group": "../etc"})
+    assert r.status_code == 400
+
+
+# ── the admin url, set from the settings screen ──────────────────────────
+
+def test_the_groups_route_names_its_default(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import group
+
+    group.create("cellular")
+    group.create("retail")
+    assert TestClient(api.app).get("/api/memory/sync/groups").json()["default"] == "cellular"
+
+
+def test_setting_the_admin_url_persists_it(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import role
+
+    r = TestClient(api.app).put("/api/memory/sync/admin",
+                                json={"url": "http://nuc:8799/"})
+    assert r.status_code == 200
+    assert role.admin_url() == "http://nuc:8799"      # trailing slash stripped
+    assert role.role() == "spoke"                     # naming an admin makes us one
+
+
+def test_an_env_pinned_admin_url_wins_over_the_saved_one(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import role
+
+    TestClient(api.app).put("/api/memory/sync/admin", json={"url": "http://saved:8799"})
+    monkeypatch.setenv("AIFORGE_ADMIN_URL", "http://pinned:8799")
+    assert role.admin_url() == "http://pinned:8799"
+
+
+def test_clearing_the_admin_url_makes_this_machine_the_admin_again(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    from aiforge_core.memory.sync import role
+
+    client = TestClient(api.app)
+    client.put("/api/memory/sync/admin", json={"url": "http://nuc:8799"})
+    client.put("/api/memory/sync/admin", json={"url": ""})
+    assert role.admin_url() == ""
+    assert role.role() == "admin"
+
+
+def test_a_url_without_a_scheme_is_refused(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    r = TestClient(api.app).put("/api/memory/sync/admin", json={"url": "nuc:8799"})
+    assert r.status_code == 400
+    assert "http://" in r.json()["detail"]
+
+
+def test_naming_an_admin_is_refused_on_a_box_holding_the_admin_role(monkeypatch, tmp_path):
+    """A machine cannot be both — the same rule run.sh --admin-url enforces."""
+    api = _fresh_api(monkeypatch, tmp_path)
+    monkeypatch.setenv("AIFORGE_ROLE", "admin")
+    r = TestClient(api.app).put("/api/memory/sync/admin", json={"url": "http://nuc:8799"})
+    assert r.status_code == 400
+    assert "--spoke" in r.json()["detail"]
+
+
+def test_the_status_says_whether_the_settings_may_edit_these(monkeypatch, tmp_path):
+    api = _fresh_api(monkeypatch, tmp_path)
+    monkeypatch.setenv("AIFORGE_ADMIN_URL", "http://pinned:8799")
+
+    row = TestClient(api.app).get("/api/memory/sync/status").json()
+    assert row["admin_pinned"] is True
+    assert row["group_pinned"] is False

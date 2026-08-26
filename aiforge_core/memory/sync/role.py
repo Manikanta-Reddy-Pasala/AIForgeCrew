@@ -56,23 +56,68 @@ import logging
 import os
 from pathlib import Path
 
-from aiforge_core.memory.sync import _io
 from aiforge_core.config.paths import config_dir
+from aiforge_core.memory.sync import _io
 
 _log = logging.getLogger("aiforge.sync")
 
 ADMIN = "admin"
 SPOKE = "spoke"
 
+# Accepted schemes for an admin address. Plain http is deliberate and is the
+# documented deployment: the sync surface takes no credential, so the admin is
+# expected to sit on a trusted interface — a LAN or a WireGuard address — where
+# TLS buys nothing that binding correctly has not already bought. Assembled
+# rather than written as one literal so the scheme list is stated once.
+_SCHEMES = tuple(f"{s}://" for s in ("http", "https"))
+
 
 def admin_url() -> str:
     """Base url of the admin, or "" when this machine is the admin.
+
+    ``AIFORGE_ADMIN_URL`` wins, then the value saved from the settings screen.
+    The env var stays authoritative so an operator who pins it in ``.env`` (or
+    passes ``./run.sh --admin-url``) cannot have it silently overridden by a
+    click; the saved value is for the machine where nobody edits files.
 
     A trailing slash is stripped here, once, because every caller concatenates a
     path onto it and ``//api/...`` is a 404 on some proxies and a redirect on
     others.
     """
-    return (os.environ.get("AIFORGE_ADMIN_URL") or "").strip().rstrip("/")
+    env = (os.environ.get("AIFORGE_ADMIN_URL") or "").strip()
+    if env:
+        return env.rstrip("/")
+    return str(_io.read_json(_state_path()).get("url") or "").strip().rstrip("/")
+
+
+def set_admin_url(url: str) -> str:
+    """Save the admin this machine syncs with. Returns what is now in effect.
+
+    Refused while ``AIFORGE_ROLE=admin`` is set, for the reason ``run.sh``
+    refuses ``--admin-url`` on the same box: a machine that is both stamps
+    ``derived: mesh`` while also pushing to somebody else's hub, so knowledge
+    crosses in both directions and two machines claim the same fold.
+
+    An empty string clears it, which hands the decision back to the env var —
+    and, with neither set, makes this machine the admin again.
+    """
+    url = (url or "").strip().rstrip("/")
+    if url and (os.environ.get("AIFORGE_ROLE") or "").strip().lower() == ADMIN:
+        raise ValueError(
+            "this machine holds the admin role (AIFORGE_ROLE=admin), so it "
+            "cannot also be a spoke — run ./run.sh --spoke here first")
+    if url and not url.startswith(_SCHEMES):
+        # A bare host is the commonest thing to type, and it fails later as an
+        # unreachable admin rather than as the typo it is.
+        raise ValueError(f"{url!r} must start with http:// or https://")
+    rec = dict(_io.read_json(_state_path()))
+    if url:
+        rec["url"] = url
+    else:
+        rec.pop("url", None)
+    _io.write_json(_state_path(), rec)
+    _log.info("sync: admin is now %s", url or "(unset)")
+    return admin_url()
 
 
 def role() -> str:
@@ -139,8 +184,14 @@ def remember_admin_id(value: str) -> str:
     slug = paths.fold(value)
     if not value or not paths.is_addressable(slug):
         return admin_id()
-    if slug != str(_io.read_json(_state_path()).get("id") or ""):
-        _io.write_json(_state_path(), {"id": slug})
+    rec = dict(_io.read_json(_state_path()))
+    if slug != str(rec.get("id") or ""):
+        # MERGED, not replaced. This file also holds the admin url saved from
+        # the settings screen, and writing ``{"id": ...}`` over it dropped that
+        # url on the first cycle after it was set — the machine forgot its admin
+        # the moment it learned who the admin was.
+        rec["id"] = slug
+        _io.write_json(_state_path(), rec)
         _log.info("sync: admin is %s", slug)
     return slug
 
@@ -162,5 +213,6 @@ def admin_id() -> str:
     return str(_io.read_json(_state_path()).get("id") or "")
 
 
-__all__ = ["ADMIN", "SPOKE", "admin_url", "role", "is_admin", "may_merge",
+__all__ = ["ADMIN", "SPOKE", "admin_url", "set_admin_url", "role",
+           "is_admin", "may_merge",
            "admin_id", "remember_admin_id"]
