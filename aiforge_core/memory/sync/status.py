@@ -69,6 +69,17 @@ def reset() -> None:
     _LAST.clear()
 
 
+def last_failure(admin: str) -> str:
+    """The most recent error seen for ``admin``, or "".
+
+    ``note_failure`` is called from deep inside the transport, where the error
+    text exists; ``record`` is called at the end of the cycle, where it does
+    not. Without this the settings screen said "unreachable" and offered no
+    reason at all — which is the one thing an operator opens that panel for.
+    """
+    return _LAST.get(admin, ("", 0.0))[0]
+
+
 def read() -> dict:
     return _io.read_json(_path())
 
@@ -106,7 +117,8 @@ def record(*, state: str, admin: str, reachable: bool, group: str = "",
     elif reachable:
         last_error = None
     else:
-        last_error = prev.get("last_error")
+        # The transport knows WHY, the cycle does not — see ``last_failure``.
+        last_error = last_failure(admin) or prev.get("last_error")
     row = {
         "state": state,
         "admin": admin,
@@ -134,11 +146,20 @@ def record_block(key: str, rule: str, reason: str) -> None:
 
     The KEY and the RULE, never the text. This file is written to disk, and a
     log that records the secret it caught is the leak it was meant to prevent.
+
+    **One row per (key, rule), refreshed rather than appended.** The filter runs
+    on every cycle, so a node that is held back stays held back — appending
+    would count the same note every half hour, and "blocked: 47" would mean one
+    note seen 47 times rather than 47 notes. It would also fill the ring with
+    copies of whichever note is oldest, pushing out the variety the operator
+    actually needs to see.
     """
     try:
+        key, rule = str(key), str(rule)
         rows = [r for r in (_io.read_json(_blocks_path()).get("blocks") or [])
-                if isinstance(r, dict)]
-        rows.append({"key": str(key), "rule": str(rule), "reason": str(reason),
+                if isinstance(r, dict)
+                and not (str(r.get("key")) == key and str(r.get("rule")) == rule)]
+        rows.append({"key": key, "rule": rule, "reason": str(reason),
                      "at": int(time.time())})
         _io.write_json(_blocks_path(), {"blocks": rows[-MAX_BLOCKS:]})
     except Exception as exc:  # noqa: BLE001 — bookkeeping is not the payload

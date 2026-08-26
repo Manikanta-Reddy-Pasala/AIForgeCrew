@@ -120,9 +120,10 @@ def check(node: dict) -> tuple[str, str]:
     text = _text.text_of(node)
     for name, pattern in _SHAPES:
         if pattern.search(text):
+            what = name.replace("_", " ")
+            article = "an" if what[0] in "aeiou" else "a"
             return (f"secrets.{name}",
-                    "the note contains something shaped like a "
-                    f"{name.replace('_', ' ')}")
+                    f"the note contains something shaped like {article} {what}")
     rule = _assignment_hit(text)
     if rule:
         return rule, "the note assigns a high-entropy value to a credential-shaped name"

@@ -154,3 +154,48 @@ def test_the_record_carries_a_count_per_rule():
     status.record_block("O-03", "noise.thin", "y")
     row = status.record(state="ok", admin="a", reachable=True)
     assert row["blocked"] == {"secrets.aws_key": 1, "noise.thin": 2}
+
+
+def test_a_node_held_back_every_cycle_is_counted_once():
+    """The filter runs every cycle, so a held-back node stays held back.
+    Appending would make "blocked: 47" mean one note seen 47 times."""
+    for _ in range(20):
+        status.record_block("O-02", "secrets.aws_key", "shaped like an aws key")
+
+    assert len(status.blocks()) == 1
+    assert status.record(state="ok", admin="a", reachable=True)["blocked"] == {
+        "secrets.aws_key": 1}
+
+
+def test_the_same_node_under_a_different_rule_is_its_own_row():
+    status.record_block("O-02", "secrets.aws_key", "x")
+    status.record_block("O-02", "noise.thin", "y")
+    assert len(status.blocks()) == 2
+
+
+def test_a_refreshed_block_moves_to_the_front():
+    """Most-recent-first has to mean most recently SEEN, or a note held back
+    for months sinks below one held back once and never again."""
+    status.record_block("O-01", "noise.thin", "x")
+    status.record_block("O-02", "noise.thin", "y")
+    status.record_block("O-01", "noise.thin", "x")
+
+    assert [b["key"] for b in status.blocks()] == ["O-01", "O-02"]
+
+
+def test_an_unreachable_record_carries_the_reason_the_transport_saw():
+    """"Unreachable" with no reason is the one thing the settings panel must
+    not show: the reason is the only actionable half."""
+    status.note_failure("http://nuc:8799", "ConnectError: connection refused")
+    row = status.record(state="unreachable", admin="http://nuc:8799",
+                        reachable=False, group="cellular")
+
+    assert row["last_error"] == "ConnectError: connection refused"
+
+
+def test_an_explicit_error_still_wins_over_the_transport_one():
+    status.note_failure("a", "ConnectError: refused")
+    row = status.record(state="unreachable", admin="a", reachable=False,
+                        error="something the cycle itself saw")
+
+    assert row["last_error"] == "something the cycle itself saw"
