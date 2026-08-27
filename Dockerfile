@@ -50,8 +50,11 @@ RUN if [ "$PREFETCH_EMBED_MODEL" = "1" ]; then \
 # ── runtime (slim: no compiler, no uv) ─────────────────────────────────
 FROM python:3.12-slim AS runtime
 # git/curl for worktrees & git_pr (model2vec is pure-numpy — no torch/libgomp).
+# tmux: the Doer's bash tool keeps one session per run so `cd` / `export`
+# survive between calls — prompts/doer.py promises a "persistent shell". Without
+# the binary every command is a fresh subprocess (BashFallback tmux_missing).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git curl ca-certificates \
+        git curl ca-certificates tmux \
     && rm -rf /var/lib/apt/lists/*
 
 # The agent operates on HOST-mounted repos owned by another uid; without this

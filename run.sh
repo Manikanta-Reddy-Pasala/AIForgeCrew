@@ -447,6 +447,60 @@ _ensure_access() {
 }
 _ensure_access
 
+# ── Persistent shell (tmux) ───────────────────────────────────────────
+# The Doer's bash tool keeps ONE tmux session per run — that is what makes
+# `cd`, `export` and `source .venv/bin/activate` survive BETWEEN bash() calls,
+# and prompts/doer.py advertises exactly that ("persistent shell"). With no
+# tmux binary the tool degrades to a stateless subprocess per call
+# (BashFallback reason=tmux_missing), so the state the model was told it has
+# silently isn't there. Install it best-effort under the same rules as the
+# access bootstrap: root, or a sudo that will NOT prompt; brew on macOS; never
+# block startup, never prompt. Opt out: AIFORGE_INSTALL_TMUX=0.
+_ensure_tmux() {
+  [[ "${AIFORGE_INSTALL_TMUX:-1}" == "0" ]] && return 0
+  command -v tmux >/dev/null 2>&1 && return 0
+
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    if command -v brew >/dev/null 2>&1; then
+      echo "==> tmux not found — installing (brew)…"
+      brew install tmux >/dev/null 2>&1 || true
+    fi
+  else
+    local SUDO=""
+    if [[ "$(id -u)" != "0" ]]; then
+      if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then SUDO="sudo -n"
+      else SUDO="skip"; fi
+    fi
+    if [[ "$SUDO" != "skip" ]]; then
+      echo "==> tmux not found — installing (persistent Doer shell)…"
+      # WSL included: the distro is an ordinary Linux userland, so its package
+      # manager is the right one. In Docker Desktop the CONTAINER needs it
+      # instead — that is the Dockerfile's apt line, not this.
+      if command -v apt-get >/dev/null 2>&1; then
+        $SUDO apt-get update -qq >/dev/null 2>&1 || true
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tmux >/dev/null 2>&1 || true
+      elif command -v dnf >/dev/null 2>&1; then
+        $SUDO dnf install -y -q tmux >/dev/null 2>&1 || true
+      elif command -v yum >/dev/null 2>&1; then
+        $SUDO yum install -y -q tmux >/dev/null 2>&1 || true
+      elif command -v apk >/dev/null 2>&1; then
+        $SUDO apk add --no-cache -q tmux >/dev/null 2>&1 || true
+      elif command -v pacman >/dev/null 2>&1; then
+        $SUDO pacman -S --noconfirm --needed tmux >/dev/null 2>&1 || true
+      elif command -v zypper >/dev/null 2>&1; then
+        $SUDO zypper --non-interactive install -y tmux >/dev/null 2>&1 || true
+      fi
+    fi
+  fi
+
+  if command -v tmux >/dev/null 2>&1; then
+    echo "==> tmux ready: $(command -v tmux)"
+  else
+    echo "==> tmux missing — the Doer's bash tool runs STATELESS (no cd/export persistence between calls). Install it: 'apt-get install tmux' / 'brew install tmux'." >&2
+  fi
+}
+_ensure_tmux
+
 # Minimum Node major the web build (vite 5) needs. An OLDER system Node is as
 # broken as none — vite refuses to run — so we treat it the same and fetch a
 # portable one.
