@@ -456,47 +456,81 @@ _ensure_access
 # silently isn't there. Install it best-effort under the same rules as the
 # access bootstrap: root, or a sudo that will NOT prompt; brew on macOS; never
 # block startup, never prompt. Opt out: AIFORGE_INSTALL_TMUX=0.
+_tmux_os_kind() {
+  # What KIND of box is this — the answer decides the package manager.
+  case "$(uname -s 2>/dev/null)" in
+    Darwin)                  echo "macos" ;;
+    FreeBSD|OpenBSD|NetBSD)  echo "bsd" ;;
+    MINGW*|MSYS*|CYGWIN*)    echo "windows" ;;   # Git Bash / MSYS2 / Cygwin
+    Linux)
+      # WSL is ordinary Linux userland — same package manager, worth naming in
+      # the log because "which layer needs tmux" is the usual confusion there
+      # (under Docker Desktop it is the CONTAINER, not the distro).
+      if grep -qiE "microsoft|wsl" /proc/version 2>/dev/null; then echo "wsl"
+      else echo "linux"; fi ;;
+    *)                       echo "unknown" ;;
+  esac
+}
+
+_tmux_install_cmd() {
+  # Echo the install command for THIS box (empty = no manager we can drive).
+  # $1 = os kind, $2 = sudo prefix ("" when root, "sudo -n", or "skip").
+  local kind="$1" SUDO="$2"
+  case "$kind" in
+    macos)
+      # Homebrew and MacPorts both refuse to run under sudo — no prefix here.
+      if   command -v brew >/dev/null 2>&1; then echo "brew install tmux"
+      elif command -v port >/dev/null 2>&1; then echo "port install tmux"
+      fi ;;
+    windows)
+      # MSYS2 ships tmux; Git Bash / Cygwin have no package manager to drive.
+      command -v pacman >/dev/null 2>&1 && echo "pacman -S --noconfirm --needed tmux" ;;
+    linux|wsl|bsd|unknown)
+      [[ "$SUDO" == "skip" ]] && return 0
+      if   command -v apt-get >/dev/null 2>&1; then echo "$SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tmux"
+      elif command -v dnf     >/dev/null 2>&1; then echo "$SUDO dnf install -y -q tmux"
+      elif command -v yum     >/dev/null 2>&1; then echo "$SUDO yum install -y -q tmux"
+      elif command -v zypper  >/dev/null 2>&1; then echo "$SUDO zypper --non-interactive install -y tmux"
+      elif command -v pacman  >/dev/null 2>&1; then echo "$SUDO pacman -S --noconfirm --needed tmux"
+      elif command -v apk     >/dev/null 2>&1; then echo "$SUDO apk add --no-cache -q tmux"
+      elif command -v pkg     >/dev/null 2>&1; then echo "$SUDO pkg install -y tmux"
+      fi ;;
+  esac
+}
+
 _ensure_tmux() {
   [[ "${AIFORGE_INSTALL_TMUX:-1}" == "0" ]] && return 0
   command -v tmux >/dev/null 2>&1 && return 0
 
-  if [[ "$(uname -s)" == "Darwin" ]]; then
-    if command -v brew >/dev/null 2>&1; then
-      echo "==> tmux not found — installing (brew)…"
-      brew install tmux >/dev/null 2>&1 || true
-    fi
-  else
-    local SUDO=""
-    if [[ "$(id -u)" != "0" ]]; then
-      if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then SUDO="sudo -n"
-      else SUDO="skip"; fi
-    fi
-    if [[ "$SUDO" != "skip" ]]; then
-      echo "==> tmux not found — installing (persistent Doer shell)…"
-      # WSL included: the distro is an ordinary Linux userland, so its package
-      # manager is the right one. In Docker Desktop the CONTAINER needs it
-      # instead — that is the Dockerfile's apt line, not this.
-      if command -v apt-get >/dev/null 2>&1; then
-        $SUDO apt-get update -qq >/dev/null 2>&1 || true
-        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tmux >/dev/null 2>&1 || true
-      elif command -v dnf >/dev/null 2>&1; then
-        $SUDO dnf install -y -q tmux >/dev/null 2>&1 || true
-      elif command -v yum >/dev/null 2>&1; then
-        $SUDO yum install -y -q tmux >/dev/null 2>&1 || true
-      elif command -v apk >/dev/null 2>&1; then
-        $SUDO apk add --no-cache -q tmux >/dev/null 2>&1 || true
-      elif command -v pacman >/dev/null 2>&1; then
-        $SUDO pacman -S --noconfirm --needed tmux >/dev/null 2>&1 || true
-      elif command -v zypper >/dev/null 2>&1; then
-        $SUDO zypper --non-interactive install -y tmux >/dev/null 2>&1 || true
-      fi
-    fi
+  local kind; kind="$(_tmux_os_kind)"
+
+  # Root installs directly; a normal user only through a sudo that will NOT
+  # prompt. macOS/MSYS2 managers run as the user, so the prefix is unused there.
+  local SUDO=""
+  if [[ "$kind" != "macos" && "$kind" != "windows" && "$(id -u)" != "0" ]]; then
+    if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then SUDO="sudo -n"
+    else SUDO="skip"; fi
+  fi
+
+  local cmd; cmd="$(_tmux_install_cmd "$kind" "$SUDO")"
+  if [[ -n "$cmd" ]]; then
+    echo "==> tmux not found ($kind) — installing (persistent Doer shell)…"
+    [[ "$kind" == "linux" || "$kind" == "wsl" ]] && command -v apt-get >/dev/null 2>&1 \
+      && { $SUDO apt-get update -qq >/dev/null 2>&1 || true; }
+    $cmd >/dev/null 2>&1 || true
   fi
 
   if command -v tmux >/dev/null 2>&1; then
     echo "==> tmux ready: $(command -v tmux)"
   else
-    echo "==> tmux missing — the Doer's bash tool runs STATELESS (no cd/export persistence between calls). Install it: 'apt-get install tmux' / 'brew install tmux'." >&2
+    local hint
+    case "$kind" in
+      macos)   hint="brew install tmux" ;;
+      windows) hint="use WSL, or MSYS2: pacman -S tmux" ;;
+      bsd)     hint="pkg install tmux" ;;
+      *)       hint="sudo apt-get install tmux  (or your distro's equivalent)" ;;
+    esac
+    echo "==> tmux missing ($kind) — the Doer's bash tool runs STATELESS (no cd/export persistence between calls). Install it: $hint" >&2
   fi
 }
 _ensure_tmux
