@@ -95,6 +95,29 @@ one job. What that verifies is **structure** — the File, Directory and Shortcu
 tables (`msiinfo export … File`). It does not verify behaviour, and cannot:
 nothing here executes Windows. Run the MSI on a Windows box before shipping it.
 
+## Step 1b — the portable bundles
+
+Same payload, no installer: unpack-and-run, with all state in the folder.
+
+```bash
+installer/portable/build-portable.sh --target macos            # .tar.gz
+installer/portable/build-portable.sh --target linux
+installer/portable/build-portable.sh --target windows          # .zip
+installer/portable/build-portable.sh --target linux --offline  # + CPython + wheels
+```
+
+Buildable from any host for any target — they are archives, not OS packages.
+The launcher sets `AIFORGE_APP_HOME`, `AIFORGE_DATA_HOME` **and**
+`AIFORGE_CONFIG_DIR` into the folder; that last one is the whole difference
+between portable and installed, and leaving it out would quietly scatter a
+"portable" app's memory into `~/.aiforge`.
+
+`--offline` vendors a standalone CPython (`UV_PYTHON_INSTALL_DIR` inside the
+bundle) and downloads every wheel for the TARGET platform, not the build host.
+If the wheel download cannot resolve (a source-only dependency, or an older uv
+without `pip download`), the build says so and produces the online bundle
+rather than a broken offline one.
+
 ## Step 2 — proving it
 
 ```bash

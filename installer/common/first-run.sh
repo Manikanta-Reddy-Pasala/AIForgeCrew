@@ -46,6 +46,14 @@ if [[ ! -f "$MARKER" || ! -x "$VENV/bin/aiforge" ]]; then
   # uv fetches a managed CPython when the host has none of the right version —
   # which is the normal case on Ubuntu 22.04 (3.10) and stock macOS (3.9).
   "$UV" venv --python "$PY_VERSION" "$VENV"
+  # A portable OFFLINE bundle carries every wheel it needs; --offline then means
+  # "resolve from the folder or fail loudly", which is the only honest behaviour
+  # on a machine that has no route to an index in the first place.
+  OFFLINE_ARGS=()
+  if [[ -n "${AIFORGE_WHEEL_DIR:-}" && -d "${AIFORGE_WHEEL_DIR}" ]]; then
+    OFFLINE_ARGS=(--offline --find-links "$AIFORGE_WHEEL_DIR")
+    echo "AIForge: installing from the bundled wheels (no network needed)."
+  fi
   # --find-links: aiforge-memory is vendored, ships beside the app wheel, and
   # exists on no index. Everything else still resolves from PyPI.
   #
@@ -55,7 +63,8 @@ if [[ ! -f "$MARKER" || ! -x "$VENV/bin/aiforge" ]]; then
   # them the app starts, serves every one of its routes, and then degrades
   # feature by feature at call time, which reads as "some pages don't work".
   # `uv sync --all-extras` is what the repo and CI use; this is that.
-  "$UV" pip install --python "$VENV/bin/python" --find-links "$APP_HOME" \
+  "$UV" pip install --python "$VENV/bin/python" ${OFFLINE_ARGS[@]+"${OFFLINE_ARGS[@]}"} \
+        --find-links "$APP_HOME" \
         "${WHEEL}[xlsx,structured,crawl,chunking,embed-static]"
   # Written last: a half-built venv must not look finished on the next launch.
   : > "$MARKER"

@@ -5,6 +5,23 @@ same `aiforge` command (`aiforge_core.cli.serve`), so the three cannot drift
 apart: the .app, the .msi and the .deb all start uvicorn plus the ticket runner
 and the memory sync loop, exactly as `run.sh` does.
 
+There are two shapes. **Installed** (below) puts the app on the machine and your
+data in your home directory. **Portable** unpacks anywhere and keeps everything —
+runtime, memory, tickets, chat — inside its own folder, so the folder IS the
+installation: copy it to a USB stick or another machine and it carries its
+history with it. No admin, nothing written outside it, delete the folder to
+remove it.
+
+```
+AIForge-<ver>-<os>-portable.tar.gz   (.zip on Windows)   ~20 MB
+  AIForge.command / AIForge.sh / AIForge.cmd   ← run this
+  app/    the payload
+  data/   runtime/ + config/  ← everything it writes
+```
+
+Add `--offline` at build time and it carries its own CPython and every wheel,
+so even the first run needs no network — the air-gapped case.
+
 | | macOS | Windows | Ubuntu / Debian |
 |---|---|---|---|
 | Artifact | `AIForge-<ver>.dmg` | `AIForge-<ver>.msi` | `aiforge_<ver>_amd64.deb` |

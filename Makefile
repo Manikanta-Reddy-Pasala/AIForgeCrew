@@ -1,4 +1,4 @@
-.PHONY: help install test test-docker ui clean installers installer-payload installer-deb installer-dmg installer-msi installer-verify
+.PHONY: help install test test-docker ui clean installers installer-payload installer-deb installer-dmg installer-msi installer-portable installer-verify
 
 help:
 	@echo "Dev targets:"
@@ -6,7 +6,8 @@ help:
 	@echo "  test      pytest tests/python"
 	@echo "  test-docker  the CI run, in a throwaway container (fresh clone + uv.lock)"
 	@echo "  ui        vite build (web/dist)"
-	@echo "  installers   .dmg + .msi + .deb into dist/installer (skips what it cannot build)"
+	@echo "  installers   .dmg + .msi + .deb + portable bundles into dist/installer"
+	@echo "  installer-portable  unpack-and-run bundles (state lives in the folder)"
 	@echo "  installer-verify  build the .deb AND install+serve it in a container"
 	@echo "  clean     remove caches + build artifacts"
 	@echo ""
@@ -50,7 +51,12 @@ installer-msi: installer-payload
 	  && installer/windows/build-msi.sh \
 	  || echo "skip .msi — no wixl (brew install msitools / apt-get install wixl)"
 
-installers: installer-deb installer-dmg installer-msi
+installer-portable: installer-payload
+	installer/portable/build-portable.sh --target macos
+	installer/portable/build-portable.sh --target linux
+	installer/portable/build-portable.sh --target windows
+
+installers: installer-deb installer-dmg installer-msi installer-portable
 	@ls -lh dist/installer/*.deb dist/installer/*.dmg dist/installer/*.msi 2>/dev/null || true
 
 # The only test that proves a package works: install it on a clean OS and hit
