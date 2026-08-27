@@ -1,14 +1,40 @@
-# AIForgeCrew — build stage that emits sonar/ and blackduck/ folders
-# Build once, scan twice: the scan jobs consume the artifacts, they don't rebuild.
+# AIForgeCrew — build stage that emits sonar/ and blackduck/ scan inputs.
+# The scans themselves come from the shared templates below (same ones
+# omni-server uses); this file only has to produce what they consume.
+
+include:
+  # SonarQube scan (same shared template omni-server uses)
+  - project: infrastructure/gitlab-ci-templates
+    file: [sonarqube/sonarqube-generic-template-ci.yml]
+    ref: 2.3.42
+    inputs:
+      image: docker.artifactory.internal/build-images/sonarqube-scanner:1.1.0
+  - project: 'infrastructure/gitlab-ci-templates'
+    file: 'blackduck/blackduck-generic-template-ci.yml'
+
+# ---- rules helpers (omni-server pattern) ----
+.rules_default:
+  rules:
+    - if: $CI_PIPELINE_SOURCE =~ /\b(pipeline|schedule)\b/
+      when: never
+
+.default_rules:
+  rules:
+    - !reference [.rules_default, rules]
+    - when: on_success
 
 stages:
   - build
-  - scan
+  - sast_analysis
+  - security_scan
+  - sca_analysis
 
 variables:
+  PIP_CACHE_DIR: ${CI_PROJECT_DIR}/.cache/pip
   UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
+# ---- build ----
 build:
   image: python:3.12
   stage: build
@@ -19,7 +45,11 @@ build:
     paths:
       - .uv-cache/
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
+    # tmux: the Doer's bash tool keeps ONE session per run, which is what makes
+    # `cd` / `export` persist between bash() calls. Without the binary those
+    # tests can only skip — and the pty-echo bug they now cover went unnoticed
+    # for exactly that reason. It is ~1MB; install it so CI really runs them.
+    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates tmux
     - curl -LsSf https://astral.sh/uv/install.sh | sh
     - . "$HOME/.local/bin/env"
   script:
@@ -29,9 +59,9 @@ build:
     # A runner that reuses its workspace can carry a HALF-UPDATED venv across
     # jobs — the symptom is an ImportError of a name one module of a package
     # imports from another module of the SAME package (e.g. litellm's utils.py
-    # importing DEFAULT_MINIMUM_PROMPT_CACHE_TOKEN_COUNT from its constants.py).
-    # uv sync repairs what it tracks, not a venv someone else half-wrote, so the
-    # env is recreated from scratch; .uv-cache still makes that fast.
+    # importing DEFAULT_MINIMUM_PROMPT_CACHE_TOKEN_COUNT from its constants.py,
+    # both of which ship in the pinned 1.98.0). uv sync repairs what it tracks,
+    # not a venv someone else half-wrote, so rebuild it; .uv-cache keeps it fast.
     # --frozen => resolve from uv.lock exactly (Black Duck must see the SHIPPED versions)
     - rm -rf .venv
     - uv sync --all-extras --dev --frozen
@@ -39,12 +69,14 @@ build:
 
     # ---------- tests -> sonar/ ----------
     # pytest-cov is NOT in [dev]; --with injects it without touching pyproject.
-    # No -m here on purpose: the live-only markers are deselected by default in
-    # pyproject's addopts, so this job cannot drift out of sync with them. A -m
-    # on the command line REPLACES that default — which is how a stale marker
-    # list ran the tmux / GA / graphify tests on a runner that has none of them.
-    # Those tests now also skip themselves when their binary/checkout is absent,
-    # so a pipeline that still passes its own -m reports skips, not failures.
+    #
+    # NO -m HERE ON PURPOSE. pyproject's addopts already deselects every
+    # live-only marker, and a -m on the command line REPLACES that list rather
+    # than adding to it — which is how this job ran the tmux / GA / graphify
+    # tests on a runner that had none of them and reported 20 failures that
+    # meant nothing. The old line also named `live_neo4j`, a marker this repo
+    # has never registered, while missing live_tmux / live_ga / live_jupyter /
+    # live_aider. Markers live in pyproject; this job just runs pytest.
     - >
       uv run --with pytest-cov pytest
       -q
@@ -55,9 +87,20 @@ build:
     - cp test-results/junit.xml sonar/junit.xml
 
     # ---------- frontend (Sonar reads web/src; skip if no web/) ----------
+    # python:3.12 has no node — `npm ci` there is "npm: command not found",
+    # which failed the whole job AFTER a green test run. Sonar analyses
+    # web/src as SOURCE, it never reads web/dist, and Black Duck gets
+    # package-lock.json copied below, so the built UI is not an input to
+    # either scan: build it when npm happens to be present, skip loudly
+    # otherwise. (Want the built UI in the artifacts? Install node in
+    # before_script — it is not needed for the scans.)
     - |
-      if [ -f web/package.json ]; then
+      if [ ! -f web/package.json ]; then
+        echo "no web/package.json — nothing to build"
+      elif command -v npm >/dev/null 2>&1; then
         (cd web && npm ci --no-audit --no-fund && npm run build)
+      else
+        echo "npm not on PATH — skipping the web build (Sonar reads web/src, not web/dist)"
       fi
 
     # ---------- sonar/sonar-project.properties ----------
@@ -105,54 +148,3 @@ build:
         coverage_format: cobertura
         path: sonar/coverage.xml
   coverage: '/^TOTAL\s+.*\s+(\d+(?:\.\d+)?)%$/'
-
-
-sonarqube:
-  stage: scan
-  image: sonarsource/sonar-scanner-cli:latest
-  tags: [restricted-online]
-  extends: [.default_rules]
-  needs: [build]
-  variables:
-    SONAR_USER_HOME: "$CI_PROJECT_DIR/.sonar"
-    GIT_DEPTH: "0"          # blame/new-code needs full history
-  cache:
-    key: "sonar-$CI_COMMIT_REF_SLUG"
-    paths: [.sonar/cache]
-  script:
-    - >
-      sonar-scanner
-      -Dproject.settings=sonar/sonar-project.properties
-      -Dsonar.host.url=$SONAR_HOST_URL
-      -Dsonar.token=$SONAR_TOKEN
-  allow_failure: true
-
-
-blackduck:
-  stage: scan
-  image: eclipse-temurin:17-jre
-  tags: [restricted-online]
-  extends: [.default_rules]
-  needs: [build]
-  script:
-    - apt-get update && apt-get install -y --no-install-recommends curl bash ca-certificates git
-    - curl -fsSL https://detect.blackduck.com/detect10.sh -o /tmp/detect.sh && chmod +x /tmp/detect.sh
-    - >
-      bash /tmp/detect.sh
-      --blackduck.url=$BLACKDUCK_URL
-      --blackduck.api.token=$BLACKDUCK_TOKEN
-      --detect.project.name=AIForgeCrew
-      --detect.project.version.name=$CI_COMMIT_REF_NAME
-      --detect.source.path=$CI_PROJECT_DIR
-      --detect.tools=DETECTOR,SIGNATURE_SCAN
-      --detect.detector.search.depth=2
-      --detect.pip.requirements.path=blackduck/requirements.txt
-      --detect.excluded.directories=.venv,node_modules,.uv-cache,.sonar,web/dist,.worktrees,dist
-      --detect.cleanup=false
-      --detect.output.path=$CI_PROJECT_DIR/blackduck/detect-out
-  artifacts:
-    when: always
-    expire_in: 1 week
-    paths:
-      - blackduck/detect-out/
-  allow_failure: true
