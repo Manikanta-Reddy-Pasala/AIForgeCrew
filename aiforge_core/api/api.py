@@ -1158,8 +1158,20 @@ def _normalize_query(query: str) -> str:
 
 # ─────────────────────────── Static UI ──────────────────────────────────
 # If the Vite production build exists, serve it at /ui/ and redirect "/" to it.
-_DIST = os.path.abspath(os.path.join(
-    os.path.dirname(__file__), "..", "..", "web", "dist"))
+#
+# Two places, in this order, because there are two ways this code runs:
+#   1. INSTALLED (wheel / .deb / .app / .msi) — the build copies web/dist into
+#      the package as aiforge_core/web_dist, because ../../web/dist from inside
+#      site-packages is nowhere at all. Without this the packaged app serves a
+#      working API and a 404 for its own UI.
+#   2. A REPO CHECKOUT — ../../web/dist, where `npm run build` puts it.
+_DIST_CANDIDATES = (
+    os.path.join(os.path.dirname(__file__), "..", "web_dist"),
+    os.path.join(os.path.dirname(__file__), "..", "..", "web", "dist"),
+)
+_DIST = next((os.path.abspath(p) for p in _DIST_CANDIDATES
+              if os.path.isdir(os.path.abspath(p))),
+             os.path.abspath(_DIST_CANDIDATES[-1]))
 
 if os.path.isdir(_DIST):
     # SPA fallback: any unknown path under /ui/ returns index.html so

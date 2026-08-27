@@ -88,3 +88,4 @@ aiforge_workspace/
 *.db-shm
 *.sqlite
 *.sqlite3
+aiforge_core/web_dist/

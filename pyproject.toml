@@ -141,6 +141,9 @@ embed-static = ["model2vec>=0.3", "sqlite-vec>=0.1"]
 #   uv run --with 'ragas<0.4' --with 'langchain-openai<1' python scripts/rag_eval.py
 
 [project.scripts]
+# What the installed packages run. Every OS package is a thin wrapper around
+# this one command, so the .deb, the .app and the .msi cannot drift apart.
+aiforge = "aiforge_core.cli.serve:main"
 aiforge-agents-tb = "aiforge_core.memory.trial_balance:main"
 aiforge-tool = "aiforge_core.runtime.tool_cli:main"
 aiforge-memory-instructions = "aiforge_core.memory.instructions_ingest:main"
@@ -155,6 +158,10 @@ include = ["aiforge_core*"]
 "aiforge_core" = [
     "runtime/builtin_playbooks/skills/*.md",
     "runtime/builtin_playbooks/workflows/*.md",
+    # The built UI, copied in by installer/build_payload.sh. Absent in a plain
+    # checkout — a repo run serves web/dist directly (see api.py's two
+    # candidates), so this pattern matching nothing is normal there.
+    "web_dist/**/*",
 ]
 
 [tool.ruff]
