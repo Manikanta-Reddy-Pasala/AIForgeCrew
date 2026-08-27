@@ -104,20 +104,11 @@ build:
       fi
 
     # ---------- sonar/sonar-project.properties ----------
-    - |
-      cat > sonar/sonar-project.properties <<EOF
-      sonar.projectKey=aiforgecrew
-      sonar.projectName=AIForgeCrew
-      sonar.projectVersion=${CI_COMMIT_SHORT_SHA}
-      sonar.sources=aiforge_core,scripts,web/src
-      sonar.tests=tests
-      sonar.sourceEncoding=UTF-8
-      sonar.python.version=3.12
-      sonar.python.coverage.reportPaths=sonar/coverage.xml
-      sonar.python.xunit.reportPath=sonar/junit.xml
-      sonar.exclusions=**/node_modules/**,**/.venv/**,**/.worktrees/**,**/web/dist/**,**/__pycache__/**,**/*.min.js,**/.uv-cache/**
-      sonar.scm.provider=git
-      EOF
+    # ONE source of truth: the scan template reads the root-level
+    # sonar-project.properties (its log prints THAT file's exclusions), so
+    # generating a second, divergent copy here just made the artifact lie
+    # about what was scanned. Copy the real one into the artifact instead.
+    - cp sonar-project.properties sonar/sonar-project.properties
 
     # ---------- blackduck/ ----------
     # Detect's PIP detector wants a flat pinned requirements.txt; uv export makes one from the lock.
