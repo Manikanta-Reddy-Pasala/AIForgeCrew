@@ -24,10 +24,22 @@ _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
 def jobs_dir() -> str:
-    """Absolute local folder holding user job scripts. Created on demand."""
+    """Absolute local folder holding user job scripts. Created on demand.
+
+    0700, and re-tightened if it is looser: this directory holds EXECUTABLES
+    that the scheduler runs unattended as this user. Left at the default 0755,
+    any other account on the box can read them — and on a box where the mode
+    ever allowed it, write one. The chmod is best-effort; an unreadable mode
+    change must not stop a job from being saved.
+    """
     cfg = str(config_dir())
     path = os.path.join(os.path.expanduser(cfg), "jobs")
-    os.makedirs(path, exist_ok=True)
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    try:
+        if os.stat(path).st_mode & 0o077:
+            os.chmod(path, 0o700)
+    except OSError:
+        pass
     return path
 
 

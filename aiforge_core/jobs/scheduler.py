@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 import threading
 import time
 from datetime import datetime
@@ -168,16 +169,43 @@ def _fire_script(job: dict) -> bool:
     return True
 
 
+def _job_workspace(job: dict) -> str:
+    """Create (and return) the directory an agent job works in.
+
+    The name is predictable and the parent is world-writable, so "make it if it
+    isn't there" is not enough: another local account can pre-create
+    ``/tmp/aiforge-job-<n>``, and ``exist_ok=True`` would happily hand the agent
+    a directory somebody else owns — everything the run writes, readable and
+    swappable by them. So the directory must be OURS: 0700, not a symlink, and
+    owned by this uid. When it is not, the run gets a fresh private directory
+    instead of refusing to work.
+    """
+    import tempfile
+
+    from aiforge_core.jobs import lifecycle
+    cwd = lifecycle.workspace_of(job)
+    if cwd:
+        try:
+            os.makedirs(cwd, mode=0o700, exist_ok=True)
+            st = os.lstat(cwd)
+            if (stat.S_ISDIR(st.st_mode) and not stat.S_ISLNK(st.st_mode)
+                    and st.st_uid == os.getuid()):
+                os.chmod(cwd, 0o700)
+                return cwd
+            log.warning("jobs.workspace %s is not ours — using a private one", cwd)
+        except OSError as exc:
+            log.warning("jobs.workspace %s unusable (%s) — using a private one",
+                        cwd, exc)
+    return tempfile.mkdtemp(prefix=f"aiforge-job-{job.get('id')}-")
+
+
 def _run_agent_job(job: dict, prompt: str) -> None:
     """Execute one agent job's request through the chat agent (full tool surface,
     autonomous — session_id=None, no approval gate). Records the outcome on
     ``last_error`` (None = ok). Never crashes the worker thread."""
     try:
-        import os
-        import tempfile
         from aiforge_core.runtime.chat_agent import run_chat_agent
-        cwd = os.path.join(tempfile.gettempdir(), f"aiforge-job-{job['id']}")
-        os.makedirs(cwd, exist_ok=True)
+        cwd = _job_workspace(job)
         final, err = "", None
         for ev in run_chat_agent([{"role": "user", "content": prompt}],
                                  cwd=cwd, role="chat", session_id=None):

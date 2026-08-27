@@ -22,6 +22,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
+import stat
 from datetime import datetime, timedelta
 
 log = logging.getLogger("aiforge.jobs")
@@ -119,6 +121,13 @@ def parse_until(raw, *, now: datetime | None = None) -> tuple[str | None, str | 
                 (m.group(2) or "m").lower(), 1)
             if minutes <= 0:
                 return None, f"`until={raw!r}` is not a future time."
+            # Clamp BEFORE the arithmetic. `until="99999999999999999999d"` is a
+            # number timedelta cannot hold, and it arrived as a string from a
+            # model or an API caller: unclamped it raised OverflowError out of
+            # here, which is a 500 on POST /api/jobs and an exception in the
+            # tool loop instead of the capped answer the next lines already
+            # give every other over-long horizon.
+            minutes = min(minutes, float(max_ttl_minutes()))
             end = now + timedelta(minutes=minutes)
         else:
             end = _parse_absolute(txt, now)
@@ -144,9 +153,24 @@ _KEEP_MAX_BYTES = 256 * 1024
 
 
 def workspace_of(job: dict) -> str:
-    """Where an agent job runs — must match adk/jobs/scheduler._run_agent_job."""
+    """Where an agent job runs — must match adk/jobs/scheduler._run_agent_job.
+
+    The id is forced through ``int`` and the result is checked to still be a
+    direct child of the temp dir. This path is handed to ``shutil.rmtree``: an
+    id of ``../../something`` would otherwise make "clean up the workspace"
+    delete a directory nobody asked about. Job ids come from a SQLite
+    AUTOINCREMENT column today, so this is a bound on tomorrow, not a bug
+    report — but the cost of the bound is one int() and the cost of not having
+    it is somebody's tree.
+    """
     import tempfile
-    return os.path.join(tempfile.gettempdir(), f"aiforge-job-{job.get('id')}")
+    try:
+        job_id = int(job.get("id"))
+    except (TypeError, ValueError):
+        return ""
+    root = os.path.realpath(tempfile.gettempdir())
+    path = os.path.join(root, f"aiforge-job-{job_id}")
+    return path if os.path.dirname(path) == root else ""
 
 
 def _is_in_flight(job: dict) -> bool:
@@ -165,14 +189,37 @@ def _is_in_flight(job: dict) -> bool:
 
 def _worth_keeping(src: str, name: str) -> bool:
     """A file is worth keeping iff it is a script we can vouch for: right
-    suffix, a real file (not a symlink out of the workspace), small enough to
-    be source rather than an artefact."""
+    suffix, not a symlink, small enough to be source rather than an artefact.
+
+    The symlink test is repeated at open time in :func:`_keep_one` — checking
+    here only tells us what the name pointed at a moment ago.
+    """
     if not name.endswith(_KEEP_SUFFIXES) or os.path.islink(src):
         return False
     try:
         return os.path.getsize(src) <= _KEEP_MAX_BYTES
     except OSError:
         return False
+
+
+def _usable_workspace(job: dict) -> str:
+    """The job's workspace, or "" when it is not one we may touch.
+
+    The workspace lives in the shared temp dir under a PREDICTABLE name, which
+    is the setup for the oldest trick there is: anyone who can write /tmp
+    pre-creates ``aiforge-job-<n>`` as a symlink to a directory of their
+    choosing, and this pass — which follows the name to copy scripts out and
+    then deletes it — becomes their exfiltration and their rm. ``isdir()``
+    follows symlinks, so the check has to be ``islink`` on the path itself
+    plus a realpath that still lands where we expect.
+    """
+    ws = workspace_of(job)
+    if not ws or os.path.islink(ws) or not os.path.isdir(ws):
+        return ""
+    if os.path.realpath(ws) != ws:
+        log.warning("jobs.close workspace is not what it claims to be: %s", ws)
+        return ""
+    return ws
 
 
 def _scripts_in(ws: str) -> list:
@@ -193,20 +240,40 @@ def _scripts_in(ws: str) -> list:
 
 
 def _keep_one(src: str, job: dict, dest_dir: str, slug: str) -> str | None:
-    """Copy one script into the jobs dir; return where it landed."""
-    import shutil
+    """Copy one script into the jobs dir; return where it landed.
+
+    Opened with ``O_NOFOLLOW`` and copied from that descriptor, so the symlink
+    test in :func:`_worth_keeping` cannot be raced: between listing the
+    workspace and reading it, whatever wrote those files could swap one for a
+    link at any path this user can read, and a plain ``copy2`` would follow it
+    and file the result as a script the job "wrote". The size is re-checked on
+    the same descriptor for the same reason.
+    """
     dest = os.path.join(dest_dir,
                         f"job-{job.get('id')}-{slug}-{os.path.basename(src)}")
+    fd = None
     try:
-        shutil.copy2(src, dest)
-        # 0o700, not 0o755: these land in the user's own ~/.aiforge/jobs and are
-        # run by this user's scheduler. Nothing else on the box needs to read —
-        # let alone execute — a script an agent wrote unattended.
-        os.chmod(dest, 0o700)
+        fd = os.open(src, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > _KEEP_MAX_BYTES:
+            return None
+        with os.fdopen(fd, "rb") as fsrc:
+            fd = None  # fdopen owns it now
+            # 0o700, not 0o755: these land in the user's own ~/.aiforge/jobs and
+            # are run by this user's scheduler. Nothing else on the box needs to
+            # read — let alone execute — a script an agent wrote unattended.
+            # O_EXCL: never write THROUGH an existing name (a symlink planted in
+            # the destination would otherwise redirect the write).
+            dfd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o700)
+            with os.fdopen(dfd, "wb") as fdst:
+                shutil.copyfileobj(fsrc, fdst, length=64 * 1024)
         return dest
     except OSError as exc:
         log.warning("jobs.close keep-script failed %s: %s", src, exc)
         return None
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 def _harvest_scripts(job: dict) -> list:
@@ -217,10 +284,8 @@ def _harvest_scripts(job: dict) -> list:
     where a script job can actually be pointed at it), and leaves nothing else —
     no half-cloned repos, no logs, no temp checkouts filling /tmp for weeks.
     """
-    import shutil
-
-    ws = workspace_of(job)
-    if not os.path.isdir(ws) or _is_in_flight(job):
+    ws = _usable_workspace(job)
+    if not ws or _is_in_flight(job):
         return []
     kept = []
     try:

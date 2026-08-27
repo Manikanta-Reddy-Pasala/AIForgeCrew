@@ -271,3 +271,144 @@ def test_a_run_still_in_flight_keeps_its_workspace(captured, monkeypatch, tmp_pa
     assert os.path.isdir(ws), "a working agent's directory is left alone"
     import shutil
     shutil.rmtree(ws, ignore_errors=True)
+
+
+# ─── the workspace is a shared-temp-dir attack surface ──────────────────
+#
+# The path is predictable and its parent is world-writable, and this pass both
+# READS scripts out of it and rm -rf's it. Each of these is the trick that
+# turns that into someone else's problem.
+
+
+def test_a_crafted_job_id_cannot_aim_the_cleanup_somewhere_else(tmp_path):
+    """workspace_of() feeds shutil.rmtree — an id has to be an id."""
+    for bad in ("../../etc", "1/../../..", "; rm -rf /", None, "abc"):
+        assert lifecycle.workspace_of({"id": bad}) == ""
+    good = lifecycle.workspace_of({"id": 7})
+    assert good.endswith("aiforge-job-7")
+
+
+def test_a_symlinked_workspace_is_refused_not_followed(captured, monkeypatch,
+                                                       tmp_path):
+    """Anyone who can write /tmp can pre-create the name as a link to a
+    directory they want copied out — and deleted."""
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "secrets.sh").write_text("#!/bin/sh\necho token\n")
+
+    j = _mk(kind="agent")
+    ws = lifecycle.workspace_of(j)
+    import os
+    if os.path.exists(ws):
+        import shutil
+        shutil.rmtree(ws, ignore_errors=True)
+    os.symlink(victim, ws)
+    try:
+        res = lifecycle.close_job(j, "reached its end time")
+        assert res["scripts_kept"] == [], "nothing is copied out of a planted link"
+        assert victim.exists(), "and the link target is NOT deleted"
+        assert (victim / "secrets.sh").exists()
+    finally:
+        os.unlink(ws)
+
+
+def test_a_symlinked_file_in_the_workspace_is_not_kept(captured, monkeypatch,
+                                                       tmp_path):
+    """Same trick one level down: a link named like a script."""
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    outside = tmp_path / "outside.sh"
+    outside.write_text("#!/bin/sh\necho private\n")
+
+    j = _mk(kind="agent")
+    ws = lifecycle.workspace_of(j)
+    import os
+    os.makedirs(ws, exist_ok=True)
+    os.symlink(outside, os.path.join(ws, "linked.sh"))
+    from pathlib import Path
+    Path(ws, "real.sh").write_text("#!/bin/sh\necho mine\n")
+
+    res = lifecycle.close_job(j, "expired")
+
+    kept = [os.path.basename(p) for p in res["scripts_kept"]]
+    assert any(k.endswith("real.sh") for k in kept)
+    assert not any("linked.sh" in k for k in kept)
+
+
+def test_kept_scripts_and_their_folder_are_owner_only(captured, monkeypatch,
+                                                      tmp_path):
+    """They are executables the scheduler runs unattended."""
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    j = _mk(kind="agent")
+    import os
+    ws = lifecycle.workspace_of(j)
+    os.makedirs(ws, exist_ok=True)
+    from pathlib import Path
+    Path(ws, "check.sh").write_text("#!/bin/sh\ntrue\n")
+
+    kept = lifecycle.close_job(j, "expired")["scripts_kept"]
+
+    assert kept
+    assert os.stat(kept[0]).st_mode & 0o077 == 0, "no group/other access"
+    from aiforge_core.jobs import scripts as jobs_scripts
+    assert os.stat(jobs_scripts.jobs_dir()).st_mode & 0o077 == 0
+
+
+def test_the_agent_workspace_is_created_private(monkeypatch, tmp_path):
+    """0700 from the start — the run's files are not readable by other accounts."""
+    import os
+    j = _mk(kind="agent")
+    ws = scheduler._job_workspace(j)
+    try:
+        assert os.stat(ws).st_mode & 0o077 == 0
+    finally:
+        import shutil
+        shutil.rmtree(ws, ignore_errors=True)
+
+
+def test_a_workspace_owned_by_somebody_else_is_not_reused(monkeypatch, tmp_path):
+    """exist_ok=True would hand the run a directory another account planted."""
+    import os
+    j = _mk(kind="agent")
+    monkeypatch.setattr(os, "getuid", lambda: os.stat(".").st_uid + 12345)
+    ws = scheduler._job_workspace(j)
+    try:
+        assert ws != lifecycle.workspace_of(j), "a private directory instead"
+        assert os.path.isdir(ws)
+    finally:
+        import shutil
+        shutil.rmtree(ws, ignore_errors=True)
+
+
+def test_a_file_swapped_for_a_link_after_the_check_is_still_not_copied(
+        captured, monkeypatch, tmp_path):
+    """The listing test is a snapshot; the open is the decision.
+
+    Simulates the race by letting a symlink through _worth_keeping — what a
+    swap between listing and reading looks like from _keep_one's side.
+    """
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setattr(lifecycle, "_worth_keeping", lambda src, name: True)
+    outside = tmp_path / "private.sh"
+    outside.write_text("#!/bin/sh\necho private\n")
+
+    j = _mk(kind="agent")
+    import os
+    ws = lifecycle.workspace_of(j)
+    os.makedirs(ws, exist_ok=True)
+    os.symlink(outside, os.path.join(ws, "swapped.sh"))
+
+    res = lifecycle.close_job(j, "expired")
+
+    assert res["scripts_kept"] == []
+    assert outside.read_text().startswith("#!/bin/sh"), "and it is left alone"
+
+
+def test_an_enormous_duration_is_capped_not_an_exception():
+    """`until="99999999999999999999d"` is a string from a model or an API
+    caller; unclamped the timedelta raised OverflowError — a 500, not an
+    answer."""
+    exp, err = lifecycle.parse_until("99999999999999999999d", now=NOW)
+    assert err is None
+    assert exp == (NOW + timedelta(minutes=lifecycle.max_ttl_minutes())
+                   ).isoformat(timespec="seconds")
