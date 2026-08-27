@@ -45,7 +45,24 @@ if [[ ! -f "$MARKER" || ! -x "$VENV/bin/aiforge" ]]; then
   chmod 700 "$DATA_HOME" 2>/dev/null || true
   # uv fetches a managed CPython when the host has none of the right version —
   # which is the normal case on Ubuntu 22.04 (3.10) and stock macOS (3.9).
-  "$UV" venv --python "$PY_VERSION" "$VENV"
+  #
+  # An UPGRADE lands here too: the new wheel's name does not match the marker,
+  # so this block runs again with a venv already in place. `uv venv` refuses to
+  # touch an existing one ("A virtual environment already exists"), which turned
+  # every upgrade into a dead launcher. So: create it only when it is not there,
+  # rebuild it only when it is broken, and otherwise install the new wheel into
+  # the venv that already works — which is also what makes an upgrade fast and
+  # survivable on a flaky connection.
+  if [[ ! -x "$VENV/bin/python" ]]; then
+    if [[ -d "$VENV" ]]; then
+      echo "AIForge: the runtime is incomplete — rebuilding it."
+      "$UV" venv --clear --python "$PY_VERSION" "$VENV"
+    else
+      "$UV" venv --python "$PY_VERSION" "$VENV"
+    fi
+  else
+    echo "AIForge: updating the existing runtime."
+  fi
   # A portable OFFLINE bundle carries every wheel it needs; --offline then means
   # "resolve from the folder or fail loudly", which is the only honest behaviour
   # on a machine that has no route to an index in the first place.

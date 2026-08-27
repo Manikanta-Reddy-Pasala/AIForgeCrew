@@ -47,8 +47,23 @@ if (-not (Test-Path $marker) -or -not (Test-Path $venvStart)) {
     New-Item -ItemType Directory -Force -Path $dataHome | Out-Null
     # uv downloads a managed CPython when the machine has none of the right
     # version, which on Windows is the normal case.
-    & $uv venv --python $pyVersion $venv
-    if ($LASTEXITCODE -ne 0) { throw "AIForge: could not create the runtime (uv venv exit $LASTEXITCODE)" }
+    #
+    # An UPGRADE lands here too: the new wheel's name does not match the marker,
+    # so this block runs again with a venv already in place. `uv venv` refuses
+    # to touch an existing one, which turned every upgrade into a dead
+    # launcher. Create when absent, rebuild when broken, otherwise install the
+    # new wheel into the runtime that already works.
+    if (-not (Test-Path $venvPy)) {
+        if (Test-Path $venv) {
+            Write-Host 'AIForge: the runtime is incomplete - rebuilding it.'
+            & $uv venv --clear --python $pyVersion $venv
+        } else {
+            & $uv venv --python $pyVersion $venv
+        }
+        if ($LASTEXITCODE -ne 0) { throw "AIForge: could not create the runtime (uv venv exit $LASTEXITCODE)" }
+    } else {
+        Write-Host 'AIForge: updating the existing runtime.'
+    }
     # --find-links: aiforge-memory is vendored, ships beside the app wheel and
     # exists on no index. Everything else still resolves from PyPI.
     #
