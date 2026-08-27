@@ -25,7 +25,8 @@ _SELECT_FROM_JOBS_WHERE_ID = 'SELECT * FROM jobs WHERE id=?'
 _LOCK = threading.Lock()
 
 _UPDATABLE = {"name", "cron", "ticket_title", "ticket_body", "project",
-              "enabled", "next_run_at", "last_error", "script_path"}
+              "enabled", "next_run_at", "last_error", "script_path",
+              "expires_at"}
 
 
 def now_iso() -> str:
@@ -62,7 +63,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   last_error TEXT,
   created_at TEXT NOT NULL,
   kind TEXT NOT NULL DEFAULT 'ticket',
-  script_path TEXT
+  script_path TEXT,
+  expires_at TEXT
 );
 """
 
@@ -71,9 +73,13 @@ CREATE TABLE IF NOT EXISTS jobs (
 # gains them without a manual migration. ``kind`` distinguishes ticket jobs
 # (fire → create a ticket for the agent pipeline) from script jobs (fire → run
 # a user-approved local script — deterministic ops, no LLM per tick).
+# ``expires_at`` is when the job CLOSES ITSELF (see jobs/lifecycle.py). NULL
+# means never — the explicit opt-out, not the default: everything created from
+# chat gets an end so a monitoring loop cannot outlive the thing it watches.
 _SQLITE_ADDED_COLUMNS = (
     ("kind", "TEXT NOT NULL DEFAULT 'ticket'"),
     ("script_path", "TEXT"),
+    ("expires_at", "TEXT"),
 )
 
 
@@ -121,15 +127,16 @@ class _SqliteJobStore:
 
     def create(self, *, name, cron, ticket_title, ticket_body,
                project=None, next_run_at, kind="ticket",
-               script_path=None) -> dict:
+               script_path=None, expires_at=None) -> dict:
         next_run_at = _norm_ts(next_run_at)
+        expires_at = _norm_ts(expires_at) if expires_at else None
         with _LOCK, self._conn() as con:
             cur = con.execute(
                 "INSERT INTO jobs (name, cron, ticket_title, ticket_body, "
-                "project, next_run_at, created_at, kind, script_path) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
+                "project, next_run_at, created_at, kind, script_path, "
+                "expires_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (name, cron, ticket_title, ticket_body, project,
-                 next_run_at, now_iso(), kind, script_path))
+                 next_run_at, now_iso(), kind, script_path, expires_at))
             r = con.execute(_SELECT_FROM_JOBS_WHERE_ID,
                             (cur.lastrowid,)).fetchone()
             return _row(r)
@@ -162,6 +169,17 @@ class _SqliteJobStore:
             rs = con.execute(
                 "SELECT * FROM jobs WHERE enabled=1 AND next_run_at<=? "
                 "ORDER BY id", (now,)).fetchall()
+            return [_row(r) for r in rs]
+
+    def expired_jobs(self, now) -> list[dict]:
+        """Jobs whose end time has passed — INCLUDING disabled ones, because a
+        paused loop is still a loop nobody closed. Same lexicographic-compare
+        trick as due_jobs; NULL expires_at never matches, which is what makes
+        `until=forever` mean forever."""
+        with self._conn() as con:
+            rs = con.execute(
+                "SELECT * FROM jobs WHERE expires_at IS NOT NULL "
+                "AND expires_at<=? ORDER BY id", (now,)).fetchall()
             return [_row(r) for r in rs]
 
     def mark_fired(self, job_id, *, last_run_at, next_run_at,
@@ -216,11 +234,12 @@ def reset_backend_for_tests():
 
 def create(*, name: str, cron: str, ticket_title: str, ticket_body: str,
            project: str | None = None, next_run_at: str,
-           kind: str = "ticket", script_path: str | None = None) -> dict:
+           kind: str = "ticket", script_path: str | None = None,
+           expires_at: str | None = None) -> dict:
     return _backend().create(
         name=name, cron=cron, ticket_title=ticket_title,
         ticket_body=ticket_body, project=project, next_run_at=next_run_at,
-        kind=kind, script_path=script_path)
+        kind=kind, script_path=script_path, expires_at=expires_at)
 
 
 def get(job_id: int) -> "dict | None":
@@ -251,6 +270,12 @@ def due_jobs(now: str) -> list[dict]:
     service was down is naturally 'due' at startup — catch-up-once falls
     out of this query plus mark_fired recomputing from *now*."""
     return _backend().due_jobs(now)
+
+
+def expired_jobs(now: str) -> list[dict]:
+    """Jobs past their end time, enabled or not. The scheduler sweeps these
+    through jobs.lifecycle.close_job — learning kept, script kept, row gone."""
+    return _backend().expired_jobs(now)
 
 
 def mark_fired(job_id: int, *, last_run_at: str, next_run_at: str,

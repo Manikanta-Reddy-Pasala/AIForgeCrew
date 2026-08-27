@@ -27,4 +27,7 @@ export interface Job extends JobDraft {
   last_error: string | null;
   created_at: string;
   human_schedule: string;
+  /** When the job closes itself (learning + scripts kept, row deleted).
+   *  null = never; chat-created loops default to two hours. */
+  expires_at: string | null;
 }

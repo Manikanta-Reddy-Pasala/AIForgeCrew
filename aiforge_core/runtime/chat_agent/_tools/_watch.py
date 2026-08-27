@@ -181,6 +181,30 @@ def _check_outcome(last: dict, until: str, rx, checks: int,
     return None
 
 
+def _too_long_for_a_watch(args: dict) -> dict | None:
+    """A watch longer than the ceiling is a JOB, and saying so beats clamping.
+
+    `_watch_limits` silently trims an over-long `timeout_s` to the ceiling, so
+    "monitor this for the next two hours" quietly became a 30-minute watch and
+    the agent then reported back as if it had watched for two. Refuse instead,
+    and name the tool that CAN do it — schedule_task carries its own `until`,
+    which is the same two hours expressed as a loop that outlives the turn.
+    """
+    ceiling = _env_int("AIFORGE_WATCH_MAX_SECONDS", 1800)
+    try:
+        asked = int(args.get("timeout_s") or 0)
+    except (TypeError, ValueError):
+        return None
+    if asked <= ceiling:
+        return None
+    return {"ok": False, "error":
+            f"a watch caps at {ceiling // 60} minutes (this one asked for "
+            f"{asked // 60}) — it holds the turn open the whole time. For "
+            "longer than that use schedule_task with `every_minutes` and "
+            f"`until` (e.g. until='{max(1, round(asked / 3600))}h'), which "
+            "keeps running after this chat ends."}
+
+
 def _t_watch_until(args: dict, cwd: str) -> dict:
     """Re-run one command until a condition holds, or the budget runs out.
 
@@ -193,6 +217,9 @@ def _t_watch_until(args: dict, cwd: str) -> dict:
     cmd = (args.get("cmd") or "").strip()
     if not cmd:
         return {"ok": False, "error": "watch_until needs a `cmd` to run."}
+    too_long = _too_long_for_a_watch(args)
+    if too_long is not None:
+        return too_long
     until = str(args.get("until") or "exit_zero")
     rx, cond_err = _compile_condition(until)
     if cond_err:
@@ -285,6 +312,9 @@ def _schedule_list(jobs_store) -> dict:
     return {"ok": True, "jobs": [
         {"id": j.get("id"), "name": j.get("name"), "cron": j.get("cron"),
          "kind": j.get("kind"), "next_run_at": j.get("next_run_at"),
+         # When it closes itself. None = never (an explicit `until=forever`),
+         # which is the one case worth telling the user about unprompted.
+         "expires_at": j.get("expires_at"),
          "enabled": j.get("enabled"),
          "failing": bool(j.get("last_error"))} for j in jobs_store.list_jobs()]}
 
@@ -305,8 +335,14 @@ def _schedule_cancel(args: dict, jobs_store) -> dict:
         return {"ok": False, "error":
                 f"job {job_id} is a {existing.get('kind')} job installed "
                 "outside chat — cancel it from the Jobs page."}
-    return ({"ok": True, "cancelled": job_id} if jobs_store.delete(job_id)
-            else {"ok": False, "error": f"no job {job_id}"})
+    # Closed through lifecycle, not a bare delete: a loop cancelled by hand is
+    # as worth remembering as one that timed out, and the residue is the same
+    # (learning kept, script kept, row gone).
+    from aiforge_core.jobs import lifecycle
+    res = lifecycle.close_job(existing, "cancelled from chat")
+    return ({"ok": True, "cancelled": job_id,
+             "learning_captured": res.get("learning_captured")}
+            if res.get("ok") else {"ok": False, "error": f"no job {job_id}"})
 
 
 def _schedule_validate_cron(cron: str, jobs_parse) -> "dict | None":
@@ -353,17 +389,33 @@ def _schedule_create(args: dict, jobs_parse, jobs_store) -> dict:
                     f"a job named {name!r} already exists (id {j.get('id')}, "
                     f"cron {j.get('cron')}). Cancel it first, or use another "
                     "name.", "job_id": j.get("id")}
+    # Every job gets an END. `until` carries the user's own words when they
+    # gave any ("until tomorrow", "for 3 days"); with none, the default TTL
+    # closes it — a loop set up during an incident must not outlive it.
+    from aiforge_core.jobs import lifecycle
+    expires_at, err = lifecycle.parse_until(args.get("until"))
+    if err:
+        return {"ok": False, "error": err}
     try:
         nxt = jobs_parse.next_runs(cron, n=1)[0]
         job = jobs_store.create(
             name=name, cron=cron, ticket_title=name[:120],
             ticket_body=instruction, project=args.get("project") or None,
-            next_run_at=nxt, kind="ticket")
+            next_run_at=nxt, kind="ticket", expires_at=expires_at)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"could not schedule: {exc}"}
+    note = "Each run files a ticket with this instruction."
+    if expires_at:
+        note += (f" It closes itself at {expires_at}"
+                 + ("" if args.get("until") else
+                    f" (nothing was said about how long, so the default "
+                    f"{lifecycle.default_ttl_minutes()} minutes applies — pass "
+                    f"`until` to change it)") + ".")
+    else:
+        note += " It NEVER closes itself — cancel it when it is done."
     return {"ok": True, "job_id": job.get("id"), "name": job.get("name"),
             "cron": cron, "next_run_at": job.get("next_run_at"),
-            "note": "Each run files a ticket with this instruction."}
+            "expires_at": expires_at, "note": note}
 
 
 def _t_schedule_task(args: dict, _cwd: str) -> dict:

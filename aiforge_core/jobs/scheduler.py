@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from datetime import datetime
 
@@ -22,6 +23,18 @@ except ImportError:  # pragma: no cover — dep missing → scheduler no-ops
 from aiforge_core.jobs import store
 
 log = logging.getLogger("aiforge.jobs")
+
+# Agent jobs whose worker thread is STILL RUNNING, by job id. A job can reach
+# its end time while its last run is mid-flight (fires 09:59, expires 10:00,
+# takes ten minutes); the close must not delete the workspace out from under
+# that thread. In-process only, which is exactly where the thread lives.
+_RUNNING: set = set()
+_RUNNING_LOCK = threading.Lock()
+
+
+def is_running(job_id) -> bool:
+    with _RUNNING_LOCK:
+        return job_id in _RUNNING
 
 
 def _tick_s() -> int:
@@ -56,6 +69,14 @@ def fire(job: dict, *, now: datetime | None = None) -> bool:
     (UI chip). Never raises."""
     now = now or datetime.now()
     now_s = now.isoformat(timespec="seconds")
+    # An expired job must not fire, even when something reaches fire() directly
+    # (run-now from the API, a tick racing the sweep). Closing here rather than
+    # returning False keeps the row from lingering until the next sweep.
+    exp = job.get("expires_at")
+    if exp and exp <= now_s:
+        from aiforge_core.jobs import lifecycle
+        lifecycle.close_job(job, "reached its end time")
+        return False
     # Compute the next slot defensively — an impossible-date cron
     # (e.g. "0 0 31 2 *") passes croniter.is_valid at save time but raises
     # here; disable such a job rather than crash the tick every 30s.
@@ -194,10 +215,21 @@ def _fire_agent(job: dict) -> bool:
         # needs it most: it fires while nobody is at the keyboard, so the box is
         # idling toward sleep the whole time it works. Screen lock is untouched.
         from aiforge_core.runtime.keep_awake import keep_awake
-        with keep_awake(f"job {job.get('id')}"):
-            _run_agent_job(job, prompt)
+        try:
+            with keep_awake(f"job {job.get('id')}"):
+                _run_agent_job(job, prompt)
+        finally:
+            with _RUNNING_LOCK:
+                _RUNNING.discard(job["id"])
 
-    _t.Thread(target=_run, name=f"jobs-agent-{job['id']}", daemon=True).start()
+    with _RUNNING_LOCK:
+        _RUNNING.add(job["id"])
+    try:
+        _t.Thread(target=_run, name=f"jobs-agent-{job['id']}", daemon=True).start()
+    except Exception:  # noqa: BLE001 — a thread that never started is not running
+        with _RUNNING_LOCK:
+            _RUNNING.discard(job["id"])
+        raise
     return True
 
 
@@ -206,6 +238,13 @@ def tick(now: datetime | None = None) -> int:
     """Fire everything due. One job's failure never blocks the rest.
     Returns the number of SUCCESSFUL fires."""
     now = now or datetime.now()
+    # Close what has ended BEFORE firing what is due: a job whose end time and
+    # next slot both passed in the same tick should close, not get one last run.
+    try:
+        from aiforge_core.jobs import lifecycle
+        lifecycle.close_expired(now)
+    except Exception as exc:  # noqa: BLE001 — the sweep never blocks the fires
+        log.warning("jobs.tick sweep crashed: %s", exc)
     fired = 0
     for job in store.due_jobs(now.isoformat(timespec="seconds")):
         try:

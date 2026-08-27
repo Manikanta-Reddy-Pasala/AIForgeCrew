@@ -242,8 +242,11 @@ def test_a_watch_nobody_can_stop_gets_a_short_leash(tmp_path, monkeypatch):
                         lambda a, c: {"ok": False, "code": 1, "stdout": "",
                                       "stderr": ""})
     monkeypatch.setattr(_watch.time, "sleep", lambda *_a: None)
+    # timeout_s stays INSIDE the 30-minute ceiling: an over-long watch is now
+    # refused outright (use schedule_task), which would short-circuit before
+    # the leash this test is about ever applied.
     res = _watch._t_watch_until(
-        {"cmd": "x", "max_checks": 999, "timeout_s": 999999, "interval_s": 1},
+        {"cmd": "x", "max_checks": 999, "timeout_s": 1800, "interval_s": 1},
         str(tmp_path))
     assert res["checks"] <= 5
 
@@ -290,3 +293,81 @@ def test_the_job_list_does_not_ship_script_stderr_to_the_model(jobs, tmp_path):
     assert row["failing"] is True
     assert "last_error" not in row
     assert "deploy.key" not in str(row)
+
+
+# ─── every scheduled loop ends ──────────────────────────────────────────
+
+
+def _create(tmp_path, **over):
+    args = {"action": "create", "name": "watch deploy",
+            "instruction": "tail the deploy log", "every_minutes": 15}
+    args.update(over)
+    return _watch._t_schedule_task(args, str(tmp_path))
+
+
+def test_a_job_created_without_until_closes_itself_in_two_hours(jobs, tmp_path):
+    """The forgotten-loop case: nobody said how long, so the tool decides."""
+    from datetime import datetime, timedelta
+    res = _create(tmp_path)
+    assert res["ok"] is True
+    end = datetime.fromisoformat(res["expires_at"])
+    assert timedelta(minutes=118) < end - datetime.now() <= timedelta(minutes=120)
+    assert "closes itself" in res["note"]
+    assert jobs.get(res["job_id"])["expires_at"] == res["expires_at"]
+
+
+def test_until_carries_the_users_own_words(jobs, tmp_path):
+    from datetime import datetime, timedelta
+    res = _create(tmp_path, until="tomorrow")
+    end = datetime.fromisoformat(res["expires_at"])
+    assert end.date() == (datetime.now() + timedelta(days=1)).date()
+    assert (end.hour, end.minute) == (23, 59)
+    # the user asked, so no lecture about the default
+    assert "default" not in res["note"]
+
+
+def test_forever_is_honoured_and_says_so(jobs, tmp_path):
+    res = _create(tmp_path, until="forever")
+    assert res["expires_at"] is None
+    assert "NEVER closes itself" in res["note"]
+    assert jobs.get(res["job_id"])["expires_at"] is None
+
+
+def test_an_unreadable_until_refuses_rather_than_guessing(jobs, tmp_path):
+    res = _create(tmp_path, until="whenever")
+    assert res["ok"] is False
+    assert "until" in res["error"]
+    assert jobs.list_jobs() == [], "nothing scheduled when the end is unclear"
+
+
+def test_the_list_shows_when_each_job_ends(jobs, tmp_path):
+    _create(tmp_path, until="3h")
+    row = _watch._t_schedule_task({"action": "list"}, str(tmp_path))["jobs"][0]
+    assert row["expires_at"]
+
+
+def test_cancelling_from_chat_keeps_the_learning(jobs, tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr("aiforge_core.memory.md_store.capture",
+                        lambda kind, text, **kw: seen.append((kind, text)))
+    job_id = _create(tmp_path)["job_id"]
+    res = _watch._t_schedule_task(
+        {"action": "cancel", "job_id": job_id}, str(tmp_path))
+    assert res["ok"] is True and res["learning_captured"] is True
+    assert jobs.get(job_id) is None
+    assert seen[0][0] == "learning"
+    assert "tail the deploy log" in seen[0][1]
+
+
+def test_a_watch_longer_than_the_ceiling_points_at_schedule_task(tmp_path):
+    """Clamping made the agent claim a two-hour watch it never did."""
+    res = _watch._t_watch_until(
+        {"cmd": "true", "timeout_s": 7200}, str(tmp_path))
+    assert res["ok"] is False
+    assert "schedule_task" in res["error"] and "until=" in res["error"]
+
+
+def test_a_watch_inside_the_ceiling_still_runs(tmp_path):
+    res = _watch._t_watch_until(
+        {"cmd": "true", "timeout_s": 60, "max_checks": 1}, str(tmp_path))
+    assert res["matched"] is True

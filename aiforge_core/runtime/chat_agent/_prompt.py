@@ -58,13 +58,19 @@ Tool arguments:
                 {{"interval_s": 15, "max_checks": 40, "timeout_s": 600}}.
                 until: exit_zero (default) | exit_nonzero | contains:TEXT |
                 not_contains:TEXT | regex:PATTERN. Stop interrupts it mid-wait.)
-- schedule_task {{"action": "create", "name": "nightly smoke", "instruction": "run the smoke suite and report failures", "cron": "0 2 * * *"}}
+- schedule_task {{"action": "create", "name": "nightly smoke", "instruction": "run the smoke suite and report failures", "cron": "0 2 * * *", "until": "forever"}}
+- schedule_task {{"action": "create", "name": "watch deploy errors", "instruction": "tail the deploy error log and report anything new", "every_minutes": 15, "until": "tomorrow"}}
                 (Do this LATER and REPEATEDLY — anything the user wants to
                 happen on a schedule rather than now. `cron` (5-field) or
                 `every_minutes`. action: create | list | cancel {{"job_id": N}}.
                 Each run files a ticket carrying the instruction, so it keeps
-                working after this chat ends. Use watch_until instead when the
-                user wants to WAIT for something now.)
+                working after this chat ends. `until` is how long it keeps
+                running: pass the user's words when they gave any ("until
+                tomorrow" / "for 3 days" / "next 2 hours"); omit it and the
+                job closes itself after 2 hours; "forever" ONLY when they
+                asked for something permanent. A close keeps the learning and
+                any script and deletes the job. Use watch_until instead when
+                the user wants to WAIT for something now.)
 - ensure_runtime {{"tools": ["java", "mvn"]}}    (install+verify missing tools)
 - project        {{"action": "build"}}    (detect+install+build/test/run:
                   maven, gradle, node/react/next/vite, python, go, rust)

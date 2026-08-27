@@ -81,10 +81,15 @@ CATALOG: dict = {
     "schedule_task": (
         "Run an instruction LATER and REPEATEDLY on a schedule (it outlives "
         "this chat; each run files a ticket). action: create | list | cancel. "
-        "Give `cron` (5-field) or `every_minutes`. For waiting on something "
-        "NOW, use watch_until instead.",
+        "Give `cron` (5-field) or `every_minutes`. `until` is HOW LONG it "
+        "keeps running — pass the user's own words when they said any "
+        "('until tomorrow' -> until='tomorrow', 'for 3 days' -> until='3d', "
+        "'2 hours' -> until='2h'); leave it out and the job closes itself "
+        "after 2 hours. Only 'forever' when the user asked for a permanent "
+        "job. Closing keeps a learning + any script and deletes the job. "
+        "For waiting on something NOW, use watch_until instead.",
         {"action": "s", "name": "s", "instruction": "s", "cron": "s",
-         "every_minutes": "i", "job_id": "i", "project": "s"}, ()),
+         "every_minutes": "i", "until": "s", "job_id": "i", "project": "s"}, ()),
     "project": ("Detect + build/test/run the project.", {"action": "s"},
                 ("action",)),
     "ensure_runtime": ("Install + verify missing toolchain binaries.",

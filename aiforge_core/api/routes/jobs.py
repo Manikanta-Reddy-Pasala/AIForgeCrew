@@ -32,6 +32,11 @@ class JobCreate(BaseModel):
     # the request through the chat agent (full jira/confluence/email tools, no
     # code framing) for operational tasks ("read Jira + email me").
     kind: str = Field("ticket")
+    # When the job closes ITSELF: a duration ("3h", "2d"), a day ("tomorrow"),
+    # an ISO date/time, or "forever". Omitted here means forever — a job made
+    # deliberately on the Jobs page is not the forgotten-loop case the default
+    # TTL exists for (that one is chat's `schedule_task`, which defaults to 2h).
+    until: str | None = None
 
 
 class JobScriptCreate(BaseModel):
@@ -51,6 +56,9 @@ class JobPatch(BaseModel):
     ticket_body: str | None = None
     project: str | None = None
     enabled: bool | None = None
+    # Extend or remove the end: "2d", "tomorrow", an ISO time — or "forever"
+    # to drop it entirely.
+    until: str | None = None
 
 
 def _require_croniter() -> None:
@@ -84,10 +92,17 @@ def jobs_create(payload: JobCreate) -> dict:
         raise HTTPException(400, f"invalid or unschedulable cron: {payload.cron!r}")
     nxt = jobs_parse.next_runs(payload.cron, n=1)[0]
     _kind = payload.kind if payload.kind in ("ticket", "agent") else "ticket"
+    expires_at = None
+    if payload.until:
+        from aiforge_core.jobs import lifecycle as jobs_lifecycle
+        expires_at, err = jobs_lifecycle.parse_until(payload.until)
+        if err:
+            raise HTTPException(400, err)
     return jobs_store.create(
         name=payload.name, cron=payload.cron,
         ticket_title=payload.ticket_title, ticket_body=payload.ticket_body,
-        project=payload.project, next_run_at=nxt, kind=_kind)
+        project=payload.project, next_run_at=nxt, kind=_kind,
+        expires_at=expires_at)
 
 
 @router.post("/api/jobs/script", status_code=201, responses={
@@ -154,6 +169,12 @@ def jobs_patch(job_id: int, payload: JobPatch) -> dict:
             raise HTTPException(400,
                                 f"invalid or unschedulable cron: {fields['cron']!r}")
         fields["next_run_at"] = jobs_parse.next_runs(fields["cron"], n=1)[0]
+    if "until" in fields:
+        from aiforge_core.jobs import lifecycle as jobs_lifecycle
+        expires_at, err = jobs_lifecycle.parse_until(fields.pop("until"))
+        if err:
+            raise HTTPException(400, err)
+        fields["expires_at"] = expires_at
     return jobs_store.update(job_id, **fields)
 
 
@@ -166,9 +187,16 @@ def jobs_delete(job_id: int) -> dict:
     # script FILE is left on disk on purpose: it's user-authored/approved
     # content the operator may want to reuse for a new job later, not
     # scheduler-owned state.
-    if not jobs_store.delete(job_id):
+    job = jobs_store.get(job_id)
+    if job is None:
         raise HTTPException(404, f"job {job_id} not found")
-    return {"ok": True}
+    # Same close as an expiry or a chat cancel: the learning is written, the
+    # scratch workspace goes, the script file stays.
+    from aiforge_core.jobs import lifecycle as jobs_lifecycle
+    res = jobs_lifecycle.close_job(job, "deleted from the Jobs page")
+    if not res["ok"]:
+        raise HTTPException(404, f"job {job_id} not found")
+    return {"ok": True, "learning_captured": res["learning_captured"]}
 
 
 @router.post("/api/jobs/{job_id}/run-now", responses={404: {"description": "Not found"}})

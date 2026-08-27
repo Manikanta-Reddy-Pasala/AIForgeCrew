@@ -67,6 +67,38 @@ Plan mode blocks everything not RO (`chat_agent._READONLY_TOOLS`, ~line 2000).
 | `mcp` | `{server, tool, args}` | call an MCP server tool | allow |
 | `delegate` / `delegate_to_agent` | `{agent, task}` | spawn a sub-agent (depth-capped) | allow |
 
+### Waiting & scheduling
+
+| Tool | Args | Does | Gate |
+|---|---|---|---|
+| `watch_until` | `{cmd, until, interval_s, max_checks, timeout_s, cmd_timeout}` | re-run one command until a condition holds — the loop is code, so a 30-check watch costs ONE model request | RISK (runs `cmd`) |
+| `schedule_task` | `{action: create\|list\|cancel, instruction, cron\|every_minutes, until, job_id}` | a recurring job that outlives the chat; each run files a ticket | allow |
+
+**Every loop ends.** `watch_until` holds the turn open, so it caps at 30 minutes
+(`AIFORGE_WATCH_MAX_SECONDS`) and refuses anything longer by name, pointing at
+`schedule_task` — silently clamping made the agent claim a two-hour watch it
+never ran.
+
+`schedule_task` outlives the chat, so it carries an END:
+
+- `until` takes the user's own words — `"tomorrow"` (through the end of that
+  day), `"3d"`, `"90m"`, an ISO date/time.
+- **Omitted, the job closes itself after 2 hours** (`AIFORGE_JOB_DEFAULT_TTL_MINUTES`).
+  A loop set up during an incident must not outlive the incident.
+- `until: "forever"` is the only way to get a job that never self-closes.
+- An explicit end is capped at 30 days (`AIFORGE_JOB_MAX_TTL_MINUTES`).
+
+**A close keeps the learning and the scripts, and nothing else** — the same for
+an expiry, a chat `cancel`, and a delete from the Jobs page
+(`aiforge_core/jobs/lifecycle.py`):
+
+- a memory capture records what the loop watched, how it ended, and whether it
+  was failing;
+- `*.sh` / `*.py` the job wrote are moved into `~/.aiforge/jobs`, where a script
+  job can be pointed at them;
+- the scratch workspace (`/tmp/aiforge-job-<id>`) is deleted, and so is the job
+  row — a disabled row is a loop nobody closed.
+
 ### Git / VCS
 
 | Tool | Args | Does | Gate |

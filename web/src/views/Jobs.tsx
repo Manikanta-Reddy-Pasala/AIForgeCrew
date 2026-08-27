@@ -206,6 +206,7 @@ export default function Jobs() {
                 <th>Schedule</th>
                 <th>Next run</th>
                 <th>Last run</th>
+                <th>Ends</th>
                 <th>Status</th>
                 <th></th>
               </tr>
@@ -218,6 +219,12 @@ export default function Jobs() {
                   <td className="small muted nowrap">{new Date(jb.next_run_at).toLocaleString()}</td>
                   <td className="small muted nowrap">
                     {jb.last_run_at ? new Date(jb.last_run_at).toLocaleString() : '—'}
+                  </td>
+                  {/* A loop nobody closed is the failure mode this column
+                      exists for: "never" is a choice you can now SEE. */}
+                  <td className="small muted nowrap"
+                      title={jb.expires_at ? 'Closes itself then — learning and scripts are kept' : 'Runs until cancelled'}>
+                    {jb.expires_at ? new Date(jb.expires_at).toLocaleString() : 'never'}
                   </td>
                   <td>
                     {jb.last_error
