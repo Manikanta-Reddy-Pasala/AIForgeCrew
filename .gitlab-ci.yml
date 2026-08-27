@@ -45,11 +45,15 @@ build:
     paths:
       - .uv-cache/
   before_script:
+    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
     # tmux: the Doer's bash tool keeps ONE session per run, which is what makes
     # `cd` / `export` persist between bash() calls. Without the binary those
     # tests can only skip — and the pty-echo bug they now cover went unnoticed
-    # for exactly that reason. It is ~1MB; install it so CI really runs them.
-    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates tmux
+    # for exactly that reason. ~1MB, so install it and let CI really run them.
+    # BEST-EFFORT on purpose: a restricted apt mirror that does not carry tmux
+    # must not take the pipeline down — before_script failing means no tests,
+    # no coverage.xml, and an artifact upload with nothing to upload.
+    - apt-get install -y --no-install-recommends tmux || echo 'tmux unavailable here - the persistent-shell tests will skip'
     - curl -LsSf https://astral.sh/uv/install.sh | sh
     - . "$HOME/.local/bin/env"
   script:
