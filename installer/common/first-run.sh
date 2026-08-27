@@ -48,7 +48,15 @@ if [[ ! -f "$MARKER" || ! -x "$VENV/bin/aiforge" ]]; then
   "$UV" venv --python "$PY_VERSION" "$VENV"
   # --find-links: aiforge-memory is vendored, ships beside the app wheel, and
   # exists on no index. Everything else still resolves from PyPI.
-  "$UV" pip install --python "$VENV/bin/python" --find-links "$APP_HOME" "$WHEEL"
+  #
+  # WITH THE EXTRAS. A bare wheel install pulls base dependencies only, and the
+  # extras are not optional in practice — they are semantic recall (model2vec +
+  # sqlite-vec), chunking, structured output and web crawl. Installed without
+  # them the app starts, serves every one of its routes, and then degrades
+  # feature by feature at call time, which reads as "some pages don't work".
+  # `uv sync --all-extras` is what the repo and CI use; this is that.
+  "$UV" pip install --python "$VENV/bin/python" --find-links "$APP_HOME" \
+        "${WHEEL}[xlsx,structured,crawl,chunking,embed-static]"
   # Written last: a half-built venv must not look finished on the next launch.
   : > "$MARKER"
   # Any older marker is a previous version's — remove it so the directory does

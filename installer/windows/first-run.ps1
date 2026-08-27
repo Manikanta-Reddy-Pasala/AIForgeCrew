@@ -51,7 +51,12 @@ if (-not (Test-Path $marker) -or -not (Test-Path $venvStart)) {
     if ($LASTEXITCODE -ne 0) { throw "AIForge: could not create the runtime (uv venv exit $LASTEXITCODE)" }
     # --find-links: aiforge-memory is vendored, ships beside the app wheel and
     # exists on no index. Everything else still resolves from PyPI.
-    & $uv pip install --python $venvPy --find-links $appHome $wheel.FullName
+    #
+    # WITH THE EXTRAS: a bare wheel install pulls base dependencies only, and
+    # the extras are semantic recall, chunking, structured output and crawl.
+    # Without them the app starts, serves every route, and then degrades
+    # feature by feature - which reads as "some pages do not work".
+    & $uv pip install --python $venvPy --find-links $appHome ($wheel.FullName + '[xlsx,structured,crawl,chunking,embed-static]')
     if ($LASTEXITCODE -ne 0) { throw "AIForge: could not install the app (uv pip exit $LASTEXITCODE)" }
     # Written last: a half-built venv must not look finished next launch.
     New-Item -ItemType File -Force -Path $marker | Out-Null
