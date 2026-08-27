@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 
-@pytest.fixture()
+@pytest.fixture
 def client(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
     monkeypatch.setenv("AIFORGE_JOBS_DB_PATH", str(tmp_path / "jobs.db"))
@@ -23,7 +23,7 @@ def client(monkeypatch, tmp_path):
     return TestClient(app)
 
 
-@pytest.fixture()
+@pytest.fixture
 def captured(monkeypatch):
     seen: list[str] = []
     monkeypatch.setattr("aiforge_core.memory.md_store.capture",
@@ -72,7 +72,8 @@ def test_delete_keeps_the_learning(client, captured):
     r = client.delete(f"/api/jobs/{job_id}")
     assert r.status_code == 200
     assert r.json() == {"ok": True, "learning_captured": True}
-    assert captured and "summarise yesterday" in captured[0]
+    assert captured
+    assert "summarise yesterday" in captured[0]
     assert client.get("/api/jobs").json() == []
 
 

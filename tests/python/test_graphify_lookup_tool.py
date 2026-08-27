@@ -57,7 +57,7 @@ _LINKS = [
 ]
 
 
-@pytest.fixture()
+@pytest.fixture
 def graph_root(tmp_path):
     """A repo root whose ``graphify-out/graph.json`` is the synthetic graph."""
     out = tmp_path / "graphify-out"

@@ -353,7 +353,8 @@ def test_cancelling_from_chat_keeps_the_learning(jobs, tmp_path, monkeypatch):
     job_id = _create(tmp_path)["job_id"]
     res = _watch._t_schedule_task(
         {"action": "cancel", "job_id": job_id}, str(tmp_path))
-    assert res["ok"] is True and res["learning_captured"] is True
+    assert res["ok"] is True
+    assert res["learning_captured"] is True
     assert jobs.get(job_id) is None
     assert seen[0][0] == "learning"
     assert "tail the deploy log" in seen[0][1]
@@ -364,7 +365,8 @@ def test_a_watch_longer_than_the_ceiling_points_at_schedule_task(tmp_path):
     res = _watch._t_watch_until(
         {"cmd": "true", "timeout_s": 7200}, str(tmp_path))
     assert res["ok"] is False
-    assert "schedule_task" in res["error"] and "until=" in res["error"]
+    assert "schedule_task" in res["error"]
+    assert "until=" in res["error"]
 
 
 def test_a_watch_inside_the_ceiling_still_runs(tmp_path):

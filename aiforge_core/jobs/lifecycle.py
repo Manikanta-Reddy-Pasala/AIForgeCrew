@@ -149,6 +149,66 @@ def workspace_of(job: dict) -> str:
     return os.path.join(tempfile.gettempdir(), f"aiforge-job-{job.get('id')}")
 
 
+def _is_in_flight(job: dict) -> bool:
+    """True while an agent job's worker thread still owns its workspace.
+
+    Closing the row mid-run is fine; pulling the directory out from under a
+    working agent is not. The next sweep finds nothing to do here, so the
+    leftover is bounded by one run.
+    """
+    try:
+        from aiforge_core.jobs import scheduler
+        return bool(scheduler.is_running(job.get("id")))
+    except Exception:  # noqa: BLE001 — never block the close
+        return False
+
+
+def _worth_keeping(src: str, name: str) -> bool:
+    """A file is worth keeping iff it is a script we can vouch for: right
+    suffix, a real file (not a symlink out of the workspace), small enough to
+    be source rather than an artefact."""
+    if not name.endswith(_KEEP_SUFFIXES) or os.path.islink(src):
+        return False
+    try:
+        return os.path.getsize(src) <= _KEEP_MAX_BYTES
+    except OSError:
+        return False
+
+
+def _scripts_in(ws: str) -> list:
+    """Script paths in the workspace, top level plus one directory down — the
+    depth where "the script it wrote" lives. Deeper is a checkout, and walking
+    a whole clone is not the job of a cleanup pass."""
+    found = []
+    for root, dirs, files in os.walk(ws):
+        if os.path.relpath(root, ws).count(os.sep) >= 1:
+            dirs[:] = []
+        for name in sorted(files):
+            if len(found) >= _KEEP_MAX_FILES:
+                return found
+            src = os.path.join(root, name)
+            if _worth_keeping(src, name):
+                found.append(src)
+    return found
+
+
+def _keep_one(src: str, job: dict, dest_dir: str, slug: str) -> str | None:
+    """Copy one script into the jobs dir; return where it landed."""
+    import shutil
+    dest = os.path.join(dest_dir,
+                        f"job-{job.get('id')}-{slug}-{os.path.basename(src)}")
+    try:
+        shutil.copy2(src, dest)
+        # 0o700, not 0o755: these land in the user's own ~/.aiforge/jobs and are
+        # run by this user's scheduler. Nothing else on the box needs to read —
+        # let alone execute — a script an agent wrote unattended.
+        os.chmod(dest, 0o700)
+        return dest
+    except OSError as exc:
+        log.warning("jobs.close keep-script failed %s: %s", src, exc)
+        return None
+
+
 def _harvest_scripts(job: dict) -> list:
     """Move the SCRIPTS out of a closing job's workspace, then bin the rest.
 
@@ -160,52 +220,18 @@ def _harvest_scripts(job: dict) -> list:
     import shutil
 
     ws = workspace_of(job)
-    if not os.path.isdir(ws):
+    if not os.path.isdir(ws) or _is_in_flight(job):
         return []
-    # A run still in flight owns this directory — closing the row is fine, but
-    # pulling the workspace out from under a working agent is not. The next
-    # sweep finds nothing to do here; the leftover is bounded by one run.
-    try:
-        from aiforge_core.jobs import scheduler
-        if scheduler.is_running(job.get("id")):
-            log.info("jobs.close workspace kept — job=%s still running",
-                     job.get("id"))
-            return []
-    except Exception:  # noqa: BLE001 — never block the close
-        pass
     kept = []
     try:
         from aiforge_core.jobs import scripts as jobs_scripts
         dest_dir = jobs_scripts.jobs_dir()
         slug = jobs_scripts.slugify(job.get("name") or "job")
-        for root, dirs, files in os.walk(ws):
-            # One level down is enough for "the script it wrote"; deeper is a
-            # checkout, and walking a whole clone to find .py files is not the
-            # job of a cleanup pass.
-            if os.path.relpath(root, ws).count(os.sep) >= 1:
-                dirs[:] = []
-            for fn in sorted(files):
-                if len(kept) >= _KEEP_MAX_FILES:
-                    break
-                src = os.path.join(root, fn)
-                if not fn.endswith(_KEEP_SUFFIXES) or os.path.islink(src):
-                    continue
-                try:
-                    if os.path.getsize(src) > _KEEP_MAX_BYTES:
-                        continue
-                    dest = os.path.join(dest_dir, f"job-{job.get('id')}-{slug}-{fn}")
-                    shutil.copy2(src, dest)
-                    if fn.endswith(".sh"):
-                        os.chmod(dest, 0o755)
-                    kept.append(dest)
-                except OSError as exc:
-                    log.warning("jobs.close keep-script failed %s: %s", src, exc)
+        kept = [d for d in (_keep_one(src, job, dest_dir, slug)
+                            for src in _scripts_in(ws)) if d]
     except Exception as exc:  # noqa: BLE001 — cleanup never blocks the close
         log.warning("jobs.close harvest failed job=%s: %s", job.get("id"), exc)
-    try:
-        shutil.rmtree(ws, ignore_errors=True)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("jobs.close workspace rm failed job=%s: %s", job.get("id"), exc)
+    shutil.rmtree(ws, ignore_errors=True)
     return kept
 
 

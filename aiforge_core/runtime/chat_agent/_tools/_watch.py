@@ -205,6 +205,31 @@ def _too_long_for_a_watch(args: dict) -> dict | None:
             "keeps running after this chat ends."}
 
 
+def _watch_setup(args: dict) -> tuple:
+    """``(cmd, until, rx, refusal)`` — every reason to refuse BEFORE the first
+    check runs, because each of them costs the whole budget to discover late."""
+    cmd = (args.get("cmd") or "").strip()
+    if not cmd:
+        return None, "", None, {"ok": False,
+                                "error": "watch_until needs a `cmd` to run."}
+    too_long = _too_long_for_a_watch(args)
+    if too_long is not None:
+        return None, "", None, too_long
+    until = str(args.get("until") or "exit_zero")
+    rx, cond_err = _compile_condition(until)
+    if cond_err:
+        return None, until, None, {"ok": False, "error": cond_err}
+    return cmd, until, rx, None
+
+
+def _stopped(checks: int, last: dict | None = None) -> dict:
+    res = {"ok": False, "stopped": True, "checks": checks,
+           "error": _STOPPED_BY_USER}
+    if last is not None:
+        res["last"] = _tail(last)
+    return res
+
+
 def _t_watch_until(args: dict, cwd: str) -> dict:
     """Re-run one command until a condition holds, or the budget runs out.
 
@@ -214,17 +239,9 @@ def _t_watch_until(args: dict, cwd: str) -> dict:
     """
     from .._shell import _t_run_command
     from aiforge_core.runtime import chat_cancel
-    cmd = (args.get("cmd") or "").strip()
-    if not cmd:
-        return {"ok": False, "error": "watch_until needs a `cmd` to run."}
-    too_long = _too_long_for_a_watch(args)
-    if too_long is not None:
-        return too_long
-    until = str(args.get("until") or "exit_zero")
-    rx, cond_err = _compile_condition(until)
-    if cond_err:
-        # Fail NOW, not after twenty checks discover the same thing.
-        return {"ok": False, "error": cond_err}
+    cmd, until, rx, refusal = _watch_setup(args)
+    if refusal is not None:
+        return refusal
     sid = chat_cancel.active()
     interval, max_checks, budget, per_cmd = _watch_limits(args, sid)
     started = time.monotonic()
@@ -232,20 +249,17 @@ def _t_watch_until(args: dict, cwd: str) -> dict:
     last: dict = {}
     while checks < max_checks:
         if sid is not None and chat_cancel.is_cancelled(sid):
-            return {"ok": False, "stopped": True, "checks": checks,
-                    "error": _STOPPED_BY_USER}
+            return _stopped(checks)
         checks += 1
         last = _t_run_command({"cmd": cmd, "timeout": per_cmd}, cwd)
-        done = _check_outcome(last, until, rx, checks,
-                              round(time.monotonic() - started, 1))
+        elapsed = round(time.monotonic() - started, 1)
+        done = _check_outcome(last, until, rx, checks, elapsed)
         if done is not None:
             return done
-        if round(time.monotonic() - started, 1) + interval > budget \
-                or checks >= max_checks:
+        if elapsed + interval > budget or checks >= max_checks:
             break
         if _watch_sleep(interval, sid):
-            return {"ok": False, "stopped": True, "checks": checks,
-                    "error": _STOPPED_BY_USER, "last": _tail(last)}
+            return _stopped(checks, last)
     return {"ok": False, "matched": False, "checks": checks,
             "elapsed_s": round(time.monotonic() - started, 1),
             "reason": f"gave up after {checks} check(s) — the condition "
@@ -364,6 +378,30 @@ def _schedule_validate_cron(cron: str, jobs_parse) -> "dict | None":
     return None
 
 
+def _duplicate_job(name: str, jobs_store) -> dict | None:
+    """A retry after a transient failure must not double-schedule: two rows with
+    the same name both fire every slot, so every run files two tickets."""
+    for j in jobs_store.list_jobs():
+        if (j.get("name") or "").strip().lower() == name.strip().lower():
+            return {"ok": False, "error":
+                    f"a job named {name!r} already exists (id {j.get('id')}, "
+                    f"cron {j.get('cron')}). Cancel it first, or use another "
+                    "name.", "job_id": j.get("id")}
+    return None
+
+
+def _schedule_note(expires_at: str | None, asked: bool, default_min: int) -> str:
+    """What the model should tell the user about when this job stops."""
+    note = "Each run files a ticket with this instruction."
+    if not expires_at:
+        return note + " It NEVER closes itself — cancel it when it is done."
+    note += f" It closes itself at {expires_at}"
+    if not asked:
+        note += (f" (nothing was said about how long, so the default "
+                 f"{default_min} minutes applies — pass `until` to change it)")
+    return note + "."
+
+
 def _schedule_create(args: dict, jobs_parse, jobs_store) -> dict:
     """Create a recurring ticket job from an instruction + cron."""
     instruction = (args.get("instruction") or args.get("prompt") or "").strip()
@@ -381,14 +419,9 @@ def _schedule_create(args: dict, jobs_parse, jobs_store) -> dict:
     bad = _schedule_validate_cron(cron, jobs_parse)
     if bad is not None:
         return bad
-    # A retry after a transient failure must not double-schedule: two rows with
-    # the same name both fire every slot, so every run files two tickets.
-    for j in jobs_store.list_jobs():
-        if (j.get("name") or "").strip().lower() == name.strip().lower():
-            return {"ok": False, "error":
-                    f"a job named {name!r} already exists (id {j.get('id')}, "
-                    f"cron {j.get('cron')}). Cancel it first, or use another "
-                    "name.", "job_id": j.get("id")}
+    dupe = _duplicate_job(name, jobs_store)
+    if dupe is not None:
+        return dupe
     # Every job gets an END. `until` carries the user's own words when they
     # gave any ("until tomorrow", "for 3 days"); with none, the default TTL
     # closes it — a loop set up during an incident must not outlive it.
@@ -404,15 +437,8 @@ def _schedule_create(args: dict, jobs_parse, jobs_store) -> dict:
             next_run_at=nxt, kind="ticket", expires_at=expires_at)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"could not schedule: {exc}"}
-    note = "Each run files a ticket with this instruction."
-    if expires_at:
-        note += (f" It closes itself at {expires_at}"
-                 + ("" if args.get("until") else
-                    f" (nothing was said about how long, so the default "
-                    f"{lifecycle.default_ttl_minutes()} minutes applies — pass "
-                    f"`until` to change it)") + ".")
-    else:
-        note += " It NEVER closes itself — cancel it when it is done."
+    note = _schedule_note(expires_at, bool(args.get("until")),
+                          lifecycle.default_ttl_minutes())
     return {"ok": True, "job_id": job.get("id"), "name": job.get("name"),
             "cron": cron, "next_run_at": job.get("next_run_at"),
             "expires_at": expires_at, "note": note}

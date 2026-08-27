@@ -18,7 +18,7 @@ def _tmp_db(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_JOBS_DB_PATH", str(tmp_path / "jobs.db"))
 
 
-@pytest.fixture()
+@pytest.fixture
 def captured(monkeypatch):
     """Collect the learnings instead of writing them to the real memory."""
     seen: list[dict] = []
@@ -97,7 +97,8 @@ def test_past_is_refused_not_silently_expired():
 def test_gibberish_explains_itself():
     exp, err = lifecycle.parse_until("when the vibes are right", now=NOW)
     assert exp is None
-    assert "until" in err and "forever" in err
+    assert "until" in err
+    assert "forever" in err
 
 
 def test_absurd_horizon_is_capped_not_honoured():
@@ -139,7 +140,8 @@ def test_close_keeps_the_learning_and_drops_the_row(captured):
     assert store.get(j["id"]) is None          # row gone
     assert captured[0]["kind"] == "learning"
     text = captured[0]["text"]
-    assert "watch errors" in text and "reached its end time" in text
+    assert "watch errors" in text
+    assert "reached its end time" in text
     assert "tail the error log" in text        # WHAT it watched survives
 
 
@@ -166,7 +168,8 @@ def test_a_broken_memory_does_not_strand_the_job(monkeypatch):
     monkeypatch.setattr("aiforge_core.memory.md_store.capture", _boom)
     j = _mk()
     res = lifecycle.close_job(j, "expired")
-    assert res["ok"] is True and res["learning_captured"] is False
+    assert res["ok"] is True
+    assert res["learning_captured"] is False
     assert store.get(j["id"]) is None
 
 
@@ -245,7 +248,8 @@ def test_close_keeps_scripts_out_of_the_workspace_and_deletes_the_rest(
 def test_close_without_a_workspace_is_not_an_error(captured):
     j = _mk()
     res = lifecycle.close_job(j, "expired")
-    assert res["ok"] is True and res["scripts_kept"] == []
+    assert res["ok"] is True
+    assert res["scripts_kept"] == []
 
 
 def test_a_run_still_in_flight_keeps_its_workspace(captured, monkeypatch, tmp_path):

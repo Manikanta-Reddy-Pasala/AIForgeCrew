@@ -93,7 +93,10 @@ def _cmd_repo_notes(args) -> int:
         path = generate_repo_notes(args.repo)
     except Exception as exc:
         print(json.dumps({"repo": args.repo, "error": str(exc)[:300]}))
-        return 0
+        # Exit NON-zero on the failure path: this printed {"error": ...} and
+        # then exited 0, so a shell (`... && next-step`) or a CI step read a
+        # failed note generation as success.
+        return 1
     print(json.dumps({"repo": args.repo, "wrote": path}))
     return 0
 

@@ -69,7 +69,8 @@ def _require_croniter() -> None:
         raise HTTPException(503, _CRONITER_HINT)
 
 
-@router.post("/api/jobs/preview")
+@router.post("/api/jobs/preview", responses={
+    503: {"description": "Service unavailable (croniter not installed)"}})
 def jobs_preview(payload: JobPreviewBody) -> dict:
     """NL instructions → parsed draft + human schedule + next runs.
     Saves NOTHING. Parse errors come back as {ok: False, error} so the
@@ -151,7 +152,10 @@ def jobs_list() -> list[dict]:
     return out
 
 
-@router.patch("/api/jobs/{job_id}", responses={400: {"description": "Bad request"}, 404: {"description": "Not found"}})
+@router.patch("/api/jobs/{job_id}", responses={
+    400: {"description": "Bad request"},
+    404: {"description": "Not found"},
+    503: {"description": "Service unavailable (croniter not installed)"}})
 def jobs_patch(job_id: int, payload: JobPatch) -> dict:
     from aiforge_core.jobs import parse as jobs_parse, store as jobs_store
     if jobs_store.get(job_id) is None:
@@ -199,7 +203,9 @@ def jobs_delete(job_id: int) -> dict:
     return {"ok": True, "learning_captured": res["learning_captured"]}
 
 
-@router.post("/api/jobs/{job_id}/run-now", responses={404: {"description": "Not found"}})
+@router.post("/api/jobs/{job_id}/run-now", responses={
+    404: {"description": "Not found"},
+    503: {"description": "Service unavailable (croniter not installed)"}})
 def jobs_run_now(job_id: int) -> dict:
     """Manual fire — same code path as the scheduler tick; works even
     when the job is paused."""
