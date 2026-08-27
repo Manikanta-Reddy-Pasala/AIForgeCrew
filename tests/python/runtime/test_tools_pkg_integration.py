@@ -5,6 +5,7 @@ compose. Tmux-aware tests are skipped on dev boxes without tmux.
 """
 from __future__ import annotations
 
+import shutil
 import sys
 
 import pytest
@@ -62,10 +63,19 @@ def test_full_create_run_finish_chain(tmp_path, monkeypatch):
     assert done["terminate"] is True
 
 
+# `live_tmux` SELECTS these (pyproject deselects them by default). The skipif
+# is the second half of the contract: our CI runners have no tmux binary, and a
+# job that overrides -m must report "skipped: no tmux" — a thing nobody can fix
+# by editing code — instead of four failures that read like a regression.
 pytestmark_tmux = pytest.mark.live_tmux
+_needs_tmux = pytest.mark.skipif(
+    shutil.which("tmux") is None,
+    reason="tmux binary not on PATH — install tmux to run the persistent-session tests",
+)
 
 
 @pytestmark_tmux
+@_needs_tmux
 def test_tmux_persistent_session_smoke(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_REPO_ROOT", str(tmp_path))
     from aiforge_core.runtime.tools import bash as bm

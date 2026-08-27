@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 
 import pytest
@@ -70,10 +71,19 @@ def test_empty_command_rejected(repo_root):
 # ─── tmux path ──────────────────────────────────────────────────────────
 
 
+# `live_tmux` SELECTS these (pyproject deselects them by default). The skipif
+# is the second half of the contract: our CI runners have no tmux binary, and a
+# job that overrides -m must report "skipped: no tmux" — a thing nobody can fix
+# by editing code — instead of four failures that read like a regression.
 pytestmark_tmux = pytest.mark.live_tmux
+_needs_tmux = pytest.mark.skipif(
+    shutil.which("tmux") is None,
+    reason="tmux binary not on PATH — install tmux to run the persistent-session tests",
+)
 
 
 @pytestmark_tmux
+@_needs_tmux
 def test_tmux_persists_cwd_across_calls(repo_root):
     run_id = "test-persist-cwd"
     try:
@@ -86,6 +96,7 @@ def test_tmux_persists_cwd_across_calls(repo_root):
 
 
 @pytestmark_tmux
+@_needs_tmux
 def test_tmux_persists_env_var(repo_root):
     run_id = "test-persist-env"
     try:
@@ -98,6 +109,7 @@ def test_tmux_persists_env_var(repo_root):
 
 
 @pytestmark_tmux
+@_needs_tmux
 def test_tmux_restart_wipes_state(repo_root):
     run_id = "test-restart"
     try:
@@ -110,6 +122,7 @@ def test_tmux_restart_wipes_state(repo_root):
 
 
 @pytestmark_tmux
+@_needs_tmux
 def test_tmux_destroy_session_cleans_up(repo_root):
     run_id = "test-destroy"
     bm.bash("true", _run_id=run_id)

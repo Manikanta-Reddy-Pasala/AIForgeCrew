@@ -26,7 +26,14 @@ build:
     - mkdir -p sonar blackduck test-results
 
     # ---------- deps + package ----------
+    # A runner that reuses its workspace can carry a HALF-UPDATED venv across
+    # jobs — the symptom is an ImportError of a name one module of a package
+    # imports from another module of the SAME package (e.g. litellm's utils.py
+    # importing DEFAULT_MINIMUM_PROMPT_CACHE_TOKEN_COUNT from its constants.py).
+    # uv sync repairs what it tracks, not a venv someone else half-wrote, so the
+    # env is recreated from scratch; .uv-cache still makes that fast.
     # --frozen => resolve from uv.lock exactly (Black Duck must see the SHIPPED versions)
+    - rm -rf .venv
     - uv sync --all-extras --dev --frozen
     - uv run --with build python -m build --sdist --wheel
 
@@ -36,6 +43,8 @@ build:
     # pyproject's addopts, so this job cannot drift out of sync with them. A -m
     # on the command line REPLACES that default — which is how a stale marker
     # list ran the tmux / GA / graphify tests on a runner that has none of them.
+    # Those tests now also skip themselves when their binary/checkout is absent,
+    # so a pipeline that still passes its own -m reports skips, not failures.
     - >
       uv run --with pytest-cov pytest
       -q

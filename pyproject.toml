@@ -181,6 +181,13 @@ addopts = "-ra -m 'not live_sidecar and not live_llm and not live_repomix and no
 # ran it (a green run on a box missing the tool proved nothing, and a test could
 # silently stop running everywhere). Anything DECLARED in this file — including
 # the extras CI installs with --all-extras — is required, not probed.
+#
+# The marker still decides SELECTION. What changed (2026-08-27) is what happens
+# when a pipeline passes its own -m and selects them anyway on a runner with no
+# tmux binary / no GA checkout: those tests carry a skipif that reports
+# "skipped: no tmux" instead of failing. A missing binary is not a regression
+# and nobody can fix it by editing code — but the skip reason names it, so the
+# tests cannot go quietly missing on a box that DOES have the tool.
 markers = [
     "live_sidecar: requires embed/rerank sidecars running",
     "live_llm: requires planner LLM at AIFORGE_INTENT_LM_URL",
