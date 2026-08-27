@@ -47,7 +47,18 @@ def _maybe_ga():
 
 
 _llmcore = _maybe_ga()
-pytestmark = pytest.mark.live_ga
+
+# The marker is what SELECTS these (they are deselected by default in
+# pyproject). The skipif is the module's own docstring contract: when the
+# tests are asked for on a box with no GA checkout, say so — don't die with
+# ``'NoneType' object has no attribute 'ToolClient'`` ten times over.
+pytestmark = [
+    pytest.mark.live_ga,
+    pytest.mark.skipif(
+        _llmcore is None,
+        reason="GA checkout not found — set AIFORGE_GA_DIR to a tree with llmcore.py",
+    ),
+]
 
 
 # ─── Hermetic fake backend ─────────────────────────────────────────────

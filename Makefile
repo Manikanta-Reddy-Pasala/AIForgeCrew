@@ -1,9 +1,10 @@
-.PHONY: help install test ui clean
+.PHONY: help install test test-docker ui clean
 
 help:
 	@echo "Dev targets:"
 	@echo "  install   .venv + uv pip install -e .[dev]"
 	@echo "  test      pytest tests/python"
+	@echo "  test-docker  the CI run, in a throwaway container (fresh clone + uv.lock)"
 	@echo "  ui        vite build (web/dist)"
 	@echo "  clean     remove caches + build artifacts"
 	@echo ""
@@ -18,6 +19,11 @@ install:
 
 test:
 	.venv/bin/pytest tests/python -v
+
+test-docker:
+	# Fresh environment: clean clone of HEAD, uv sync --frozen, plain pytest.
+	# Extra args: make test-docker ARGS="-m live_tmux"
+	scripts/test_in_docker.sh $(ARGS)
 
 ui:
 	cd web && npm install && npm run build

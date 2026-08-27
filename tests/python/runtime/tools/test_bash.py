@@ -119,3 +119,37 @@ def test_tmux_destroy_session_cleans_up(repo_root):
         capture_output=True,
     )
     assert proc.returncode != 0
+
+
+# ─── echoed-command stripping (no tmux needed) ──────────────────────────
+#
+# tmux types the command into a pty, so the pane echoes it back before the
+# output. Without stripping, every tmux-path bash() returned
+# "echo $FOO\nbar" where the stateless path returns "bar" — the tests below
+# pin the parser itself, so a box with no tmux still guards the contract.
+
+
+def test_strip_echoed_command_removes_the_echo():
+    assert bm._strip_echoed_command("echo $FOO\nping", "echo $FOO") == "ping"
+
+
+def test_strip_echoed_command_handles_a_wrapped_echo():
+    """A long command wraps across pane-width lines; all of it is the echo."""
+    cmd = "echo aaaaaaaaaa bbbbbbbbbb cccccccccc"
+    body = "echo aaaaaaaaaa bbbbbb\nbbbb cccccccccc\nout"
+    assert bm._strip_echoed_command(body, cmd) == "out"
+
+
+def test_strip_echoed_command_keeps_a_body_that_is_not_an_echo():
+    """No echo (or a mismatch) → not one byte of output is guessed away."""
+    assert bm._strip_echoed_command("ping", "echo $FOO") == "ping"
+    assert bm._strip_echoed_command("", "echo $FOO") == ""
+
+
+def test_strip_echoed_command_keeps_output_identical_to_the_command():
+    """`echo hi` printing `hi` twice keeps the second one."""
+    assert bm._strip_echoed_command("echo hi\nhi", "echo hi") == "hi"
+
+
+def test_strip_echoed_command_multiline_output_survives():
+    assert bm._strip_echoed_command("ls\na\nb\nc", "ls") == "a\nb\nc"

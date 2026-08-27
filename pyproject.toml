@@ -168,11 +168,13 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 testpaths = ["tests/python"]
 # Live-only tests are deselected BY DEFAULT, here — not by whoever remembers
 # to pass the right -m. A CI job running plain `pytest` (or an older -m
-# line) otherwise runs the tmux / GA / graphify tests on a box that has
-# none of those and reports 22 failures that mean nothing. Run them
-# deliberately with `pytest -m live_tmux` — a -m on the command line
-# replaces this one.
-addopts = "-ra -m 'not live_sidecar and not live_llm and not live_repomix and not live_tmux and not live_jupyter and not live_ga and not live_graph and not live_aider'"
+# line) otherwise runs the tmux / GA tests on a box that has neither and
+# reports failures that mean nothing. Run them deliberately with
+# `pytest -m live_tmux` — a -m on the command line replaces this one.
+# (The graphify lookup tests used to need the repo's own gitignored
+# graphify-out/; they now build a synthetic graph in tmp_path and run
+# everywhere, so there is no live_graph marker any more.)
+addopts = "-ra -m 'not live_sidecar and not live_llm and not live_repomix and not live_tmux and not live_jupyter and not live_ga and not live_aider'"
 # A test that needs something not every box has is SELECTED by a marker, never
 # by sniffing the host at runtime: `-m "not live_*"` deselects the same tests on
 # every machine, while `skipif(shutil.which(...))` made the result depend on who
@@ -186,6 +188,5 @@ markers = [
     "live_tmux: requires the `tmux` binary on PATH",
     "live_jupyter: requires a runnable jupyter kernel on this host",
     "live_ga: requires the GA checkout (AIFORGE_GA_DIR / the NUC)",
-    "live_graph: requires graphify-out/graph.json (run `graphify update .`)",
     "live_aider: requires aider's tree-sitter grammars to map a synthetic repo",
 ]

@@ -24,7 +24,6 @@ moving instead of crashing.
 from __future__ import annotations
 
 import json
-import os
 from collections import defaultdict
 from pathlib import Path
 
@@ -198,7 +197,7 @@ def _bfs_neighbors(seed_ids: list, adj, nodes_by_id, max_neighbors: int,
     neighbors: list[dict] = []
     seen_pairs: set[tuple[str, str, str]] = set()  # (src_id, tgt_id, relation)
 
-    def _expand(src_id: str, hop: int, via: "str | None"):
+    def _expand(src_id: str, hop: int, via: str | None):
         _expand_neighbors(src_id, hop, via, adj, nodes_by_id, neighbors,
                           seen_pairs, max_neighbors)
 
@@ -238,14 +237,17 @@ def graphify_lookup(query: str, hops: int = 1,
                        hop, via}]}`` on success.
       ``{ok: False, error}`` on failure.
     """
+    # Arguments are validated BEFORE the graph is touched: otherwise a bad
+    # ``hops`` on a checkout without graphify-out/ is reported as a load
+    # failure, which sends the caller after the wrong problem.
+    if hops not in (1, 2):
+        return {"ok": False, "error": f"hops must be 1 or 2, got {hops}"}
+
     try:
         root_path = _resolve_repo_root(repo_root)
         nodes_by_id, adj, file_index, label_index = _load(root_path)
     except (OSError, json.JSONDecodeError) as exc:
         return {"ok": False, "error": f"graphify graph load failed: {exc}"}
-
-    if hops not in (1, 2):
-        return {"ok": False, "error": f"hops must be 1 or 2, got {hops}"}
 
     seed_ids = _match_nodes(query, nodes_by_id, file_index, label_index,
                             max(1, max_matches))

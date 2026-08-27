@@ -171,6 +171,31 @@ def _drain_until_prompt(
     return last_seen, None, True
 
 
+def _strip_echoed_command(body: str, command: str) -> str:
+    r"""Drop the pane's echo of the command we just typed.
+
+    ``tmux send-keys`` types into a pty, so the shell echoes the command back
+    into the pane before its output. Everything between two prompt sentinels
+    therefore starts with the command itself, and every tmux-path bash() used
+    to hand the agent ``"echo $FOO\nbar"`` where the stateless path returns
+    ``"bar"``. The echo can be WRAPPED across pane-width lines, so lines are
+    consumed (whitespace-insensitively) until they account for the command —
+    and if they never do, the body is returned untouched rather than guessing.
+    """
+    if not body or not command.strip():
+        return body
+    target = "".join(command.split())
+    lines = body.split("\n")
+    acc = ""
+    for i, line in enumerate(lines):
+        acc += "".join(line.split())
+        if not target.startswith(acc):
+            return body            # not an echo — keep every byte
+        if acc == target:
+            return "\n".join(lines[i + 1:]).strip("\n")
+    return body                    # ran out of lines mid-echo: keep as-is
+
+
 def _kill_group_and_reap(proc) -> tuple[bytes, bytes]:
     """SIGKILL the process group and drain it, so we don't leak pipe FDs or
     leave a zombie accumulating across a long Doer run."""
@@ -317,8 +342,10 @@ def bash(
         )
         time.sleep(0.5)
         partial, _rc2, _t2 = _drain_until_prompt(name, 2)
+        partial = _strip_echoed_command(partial, command)
         return _err_result(command, "timeout",
                            stdout=partial[:_STDOUT_CAP_BYTES], truncated=True)
+    body = _strip_echoed_command(body, command)
     return {
         "ok": (rc == 0),
         "returncode": rc,
