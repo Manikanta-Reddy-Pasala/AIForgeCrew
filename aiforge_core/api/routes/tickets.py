@@ -232,6 +232,21 @@ def _derive_branch(identifier: str, title: str) -> str:
     return f"aiforge/{identifier}{('-' + slug) if slug else ''}"
 
 
+def _attachment_store_error(exc: OSError) -> HTTPException:
+    """Turn a filesystem failure under the ticket-files base into an error the
+    operator can act on. A bare OSError here surfaces as an opaque 500; the
+    real cause is almost always that the base dir is missing or is owned by
+    another uid (e.g. left root-owned by an earlier root-in-Docker deploy),
+    so name the directory and the reason.
+    """
+    return HTTPException(
+        500,
+        f"could not store attachments under {_ticket_files_base()}: "
+        f"{exc.strerror or exc} — the directory must exist and be writable "
+        f"by the user running the API",
+    )
+
+
 def _persist_ticket_attachments(
     identifier: str, files: list[AttachedFile],
 ) -> list[dict]:
@@ -240,12 +255,18 @@ def _persist_ticket_attachments(
     into the per-ticket worktree by absolute path. Returns a metadata-friendly
     list of ``{name, size, path, abs_path}`` — ``path`` is the worktree-view
     path the Doer prompt references; ``abs_path`` is the real persistent file.
+
+    Raises ``HTTPException(500)`` when the store is unwritable — callers treat
+    that as "the save failed", never as "saved without the files".
     """
     import base64
     from pathlib import Path as _Path
 
     target_dir = _ticket_files_base() / identifier
-    target_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise _attachment_store_error(exc) from exc
 
     out: list[dict] = []
     for f in files:
@@ -257,7 +278,10 @@ def _persist_ticket_attachments(
         except Exception:
             continue
         dest = target_dir / safe_name
-        dest.write_bytes(data)
+        try:
+            dest.write_bytes(data)
+        except OSError as exc:
+            raise _attachment_store_error(exc) from exc
         # Worktree-view path the Doer reads (the runner copies the file to
         # this same relative location inside the worktree). Decoupled from
         # the physical storage base so persistence can move without breaking
@@ -404,7 +428,19 @@ def create_ticket(payload: TicketCreate) -> dict:
         project=payload.project, labels=payload.labels, metadata=md or None,
         route=route, route_workflow=route_workflow,
         route_source=route_source, route_confidence=route_confidence)
-    _attach_files(t, payload.attached_files)
+    try:
+        _attach_files(t, payload.attached_files)
+    except HTTPException:
+        # The row is written before the files, so a failed upload used to
+        # 500 with the ticket already saved: the runner picked up the
+        # half-made ticket and every operator retry added another orphan.
+        # Attachments are part of the save — roll the row back and let the
+        # operator retry once the store is fixed.
+        try:
+            tickets_mod.delete(t.identifier)
+        except Exception:  # noqa: BLE001 — rollback is best-effort
+            _af_log.exception("rollback failed for %s", t.identifier)
+        raise
     _ensure_branch(t)
     return _ticket_out(t)
 

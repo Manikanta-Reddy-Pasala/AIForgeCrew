@@ -106,3 +106,63 @@ def test_serve_file_strips_path_traversal(tmp_path, monkeypatch):
     with pytest.raises(api_mod.HTTPException):
         api_mod.serve_ticket_file("ONE-1", "../secret.txt")
     assert secret.exists()
+
+
+# ── unwritable store: clear error, and no orphan ticket left behind ────────
+
+
+@pytest.fixture
+def unwritable_base(tmp_path, monkeypatch):
+    """A ticket-files base the API user cannot write into — the shape the
+    prod box was in after the root-in-Docker deploy left the dir root-owned.
+    """
+    base = tmp_path / "ticket-files"
+    base.mkdir()
+    base.chmod(0o500)  # r-x: mkdir of a per-ticket subdir fails
+    monkeypatch.setenv("AIFORGE_TICKET_FILES_DIR", str(base))
+    monkeypatch.delenv("AIFORGE_CONFIG_DIR", raising=False)
+    yield base
+    base.chmod(0o700)  # let tmp_path cleanup remove it
+
+
+def test_persist_raises_actionable_error_when_store_unwritable(unwritable_base):
+    files = [api_mod.AttachedFile(name="a.txt", size=3, content_b64=_b64(b"abc"))]
+    with pytest.raises(api_mod.HTTPException) as exc:
+        api_mod._persist_ticket_attachments("ONE-1", files)
+    assert exc.value.status_code == 500
+    # Names the directory and the reason so the operator can fix it.
+    assert str(unwritable_base) in exc.value.detail
+    assert "writable" in exc.value.detail
+
+
+def test_create_rolls_back_ticket_when_attachments_fail(unwritable_base, monkeypatch):
+    from aiforge_core.api.routes import tickets as tickets_route
+
+    created, deleted = [], []
+
+    class _T:
+        id, identifier, status, metadata = 1, "ONE-1", "todo", {}
+        title = body = branch = project = None
+        labels: list = []
+        assignee_role = active_role = parent_id = None
+        created_at = updated_at = completed_at = None
+        route, route_workflow, route_source, route_confidence = "code", None, "auto", 1.0
+
+    monkeypatch.setattr(tickets_route.tickets_mod, "create",
+                        lambda **kw: (created.append(kw), _T())[1])
+    monkeypatch.setattr(tickets_route.tickets_mod, "delete",
+                        lambda ident: (deleted.append(ident), True)[1])
+    monkeypatch.setattr(tickets_route, "_ensure_branch", lambda t: None)
+
+    payload = tickets_route.TicketCreate(
+        title="t", attached_files=[
+            api_mod.AttachedFile(name="a.txt", size=3, content_b64=_b64(b"abc"))],
+    )
+    with pytest.raises(api_mod.HTTPException) as exc:
+        tickets_route.create_ticket(payload)
+
+    assert exc.value.status_code == 500
+    assert created, "the row is still written first"
+    # The point of the fix: the failed save leaves nothing behind for the
+    # runner to claim, so a retry cannot pile up duplicates.
+    assert deleted == ["ONE-1"]
