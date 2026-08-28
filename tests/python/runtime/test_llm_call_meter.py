@@ -810,11 +810,13 @@ def test_fail_reason_labels_are_bounded():
     assert all(len(k) <= call_meter._LABEL_MAX for k in reasons)
 
 
-def test_reset_all_clears_the_rate_capped_flag():
+def test_reset_all_clears_the_rate_capped_flag(monkeypatch):
     """`_dropped_at` was missing from reset_all's `global` line, so the
     assignment bound a local and one overflowing test left every later snapshot
     claiming the per-minute figure was a floor."""
-    call_meter._dropped_at = call_meter.time.monotonic()
+    # setattr so the flag is restored even if an assertion below fails — a
+    # leaked _dropped_at is exactly the cross-test bleed this test is about.
+    monkeypatch.setattr(call_meter, "_dropped_at", call_meter.time.monotonic())
     assert call_meter.global_snapshot(series=False)["rate_capped"] is True
     call_meter.reset_all()
     assert call_meter.global_snapshot(series=False)["rate_capped"] is False

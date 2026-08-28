@@ -33,7 +33,10 @@ def test_model2vec_no_silent_fallback(monkeypatch):
 
     monkeypatch.setattr(m2, "_load", _boom)
     from aiforge_core.memory import local_embed
-    with pytest.raises(Exception):
+    # The load error must reach the caller AS-IS. A bare `Exception` here would
+    # also pass if embed() swallowed this and failed later for some unrelated
+    # reason — which is the silent fallback the test exists to forbid.
+    with pytest.raises(ImportError, match="model2vec not installed"):
         local_embed.embed("x")
 
 

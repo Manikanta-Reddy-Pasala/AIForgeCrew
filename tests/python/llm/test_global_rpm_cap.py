@@ -147,7 +147,9 @@ def test_a_rejection_with_retry_after_holds_only_that_long(monkeypatch):
 
 
 def test_reset_global_clears_the_parked_counter(monkeypatch):
-    rl._waiting = 3
+    # setattr, not a bare assignment: the counter is module state, and a test
+    # that leaves it dirty is charged to whichever test runs next.
+    monkeypatch.setattr(rl, "_waiting", 3)
     rl.reset_global()
     assert rl.waiting() == 0
 
