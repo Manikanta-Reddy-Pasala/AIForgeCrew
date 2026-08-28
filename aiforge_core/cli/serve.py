@@ -42,6 +42,22 @@ _LOOPS = (
 
 _IS_WINDOWS = os.name == "nt"
 
+# The app speaks plain HTTP and binds loopback by default. That is not an
+# oversight to be fixed with a scheme constant: there is no TLS here, and a
+# self-signed certificate for 127.0.0.1 buys a browser warning and a truststore
+# problem in exchange for nothing. Off-loopback is the case that matters, and it
+# is guarded where it belongs — _announce() refuses to stay quiet about a
+# non-loopback bind with no AIFORGE_API_TOKEN. Building the URL in ONE place
+# also stops the two copies of it drifting apart.
+_SCHEME = "http"
+
+
+def ui_url(host: str, port: int) -> str:
+    """The address to hand a human, with 0.0.0.0/:: shown as something they can
+    actually click."""
+    shown = "localhost" if host in ("0.0.0.0", "127.0.0.1", "::") else host
+    return f"{_SCHEME}://{shown}:{port}/ui/"
+
 
 def _env_int(name: str, default: int) -> int:
     try:
@@ -132,9 +148,8 @@ def _terminate(proc: subprocess.Popen) -> None:
 
 
 def _announce(host: str, port: int) -> None:
-    shown = "localhost" if host in ("0.0.0.0", "127.0.0.1", "::") else host
     print("")
-    print(f"  AIForge → http://{shown}:{port}/ui/")
+    print(f"  AIForge → {ui_url(host, port)}")
     print("  storage: SQLite + scoped-OKR memory under "
           f"{os.environ.get('AIFORGE_CONFIG_DIR') or '~/.aiforge'}")
     if host not in ("127.0.0.1", "::1", "localhost") \
@@ -157,7 +172,7 @@ def _open_browser_when_up(host: str, port: int, timeout: float = 30.0) -> None:
             s.settimeout(0.5)
             try:
                 if s.connect_ex((target, port)) == 0:
-                    webbrowser.open(f"http://{target}:{port}/ui/")
+                    webbrowser.open(ui_url(target, port))
                     return
             except OSError:
                 pass

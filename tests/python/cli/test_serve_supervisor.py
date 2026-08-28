@@ -167,3 +167,11 @@ def test_poll_intervals_come_from_the_environment(monkeypatch):
     assert serve._env_int("AIFORGE_RUNNER_POLL_SEC", 10) == 10
     monkeypatch.setenv("AIFORGE_RUNNER_POLL_SEC", "nonsense")
     assert serve._env_int("AIFORGE_RUNNER_POLL_SEC", 10) == 10
+
+
+def test_the_url_is_one_you_can_click():
+    """0.0.0.0 is not an address a human can open — and the URL is built in one
+    place so the printed one and the opened one cannot drift apart."""
+    assert serve.ui_url("0.0.0.0", 8799) == "http://localhost:8799/ui/"
+    assert serve.ui_url("127.0.0.1", 8799) == "http://localhost:8799/ui/"
+    assert serve.ui_url("192.168.1.10", 9000) == "http://192.168.1.10:9000/ui/"
