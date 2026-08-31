@@ -124,23 +124,3 @@ def _enumerate_repo_files(root: Path, exclude: set[str],
             if len(out) >= cap:
                 return out
     return out
-
-
-# ─────────────────── Compat shim (understander / legacy callers) ────────────
-def query(text: str, *, repo: str = "", token_budget: int = 4000) -> str:
-    """Thin compat wrapper for callers that use the old 1-arg API.
-
-    Tries the AiForgeMemory API first (if installed), otherwise falls back
-    to an empty string so the Understander degrades gracefully.
-    """
-    # Module renamed api/read.py → api/http.py in AiForgeMemory commit
-    # 32d86ad. Try the new name first, fall back to the old.
-    try:
-        try:
-            from aiforge_memory.api.http import context_bundle_for  # type: ignore
-        except ImportError:
-            from aiforge_memory.api.read import context_bundle_for  # type: ignore
-        return context_bundle_for(text, repo=repo, role="any",
-                                  token_budget=token_budget)
-    except Exception:
-        return ""

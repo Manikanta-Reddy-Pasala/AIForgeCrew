@@ -99,27 +99,6 @@ def _global_vector_recall(_text: str, *, limit: int,
     return []
 
 
-def _bundle_object(text: str, repo: str, role: str | None):
-    """The AFM ContextBundle, or None when the backend is unavailable.
-
-    Module renamed api/read.py → api/http.py in AiForgeMemory commit 32d86ad
-    (feature-vertical refactor). Both are supported so older installs don't
-    break the unified_query loop.
-    """
-    try:
-        from aiforge_memory.api.http import context_bundle_object
-    except Exception:  # noqa: BLE001
-        try:
-            from aiforge_memory.api.read import context_bundle_object
-        except Exception:  # noqa: BLE001
-            return None
-    try:
-        return context_bundle_object(text, repo=repo, role=role or "doer",
-                                     token_budget=1000)
-    except Exception:  # noqa: BLE001
-        return None
-
-
 def _chunk_score() -> float:
     """Code chunks are raw RAG evidence, DEMOTED below the curated sources
     (repo_map/conventions/notes and the OKR-DAG goal context): with a
@@ -187,43 +166,6 @@ def _observation_rows(observations, repo: str) -> list[dict]:
     return out
 
 
-def _afm_bundle(text: str, *, repo: str, role: str | None) -> list[dict]:
-    """Fan-out into AiForgeMemory ContextBundle and flatten its sections
-    into ranked rows. Section weights tuned so the most actionable bits
-    (relevant chunks > repo_map > conventions > notes/docs > observations)
-    surface first. Empty list on any backend failure.
-
-    Sections produced:
-    - repo_map        → 1 row, ranked-tag tree
-    - conventions_md  → 1 row, .cursorrules
-    - chunks          → up to 5 rows, one per anchor-file Chunk_v2
-    - notes           → up to 3 rows, MENTIONS-linked Note_v2
-    - docs            → up to 3 rows, MENTIONS-linked Doc_v2
-    - observations    → up to 3 rows, vector-recalled Observation_v2
-    """
-    b = _bundle_object(text, repo, role)
-    if b is None:
-        return []
-    out: list[dict] = []
-    # Highest-signal first: repo_map (structure summary), then conventions
-    # (project rules).
-    for value, name, score in ((b.repo_map, "repo_map", 0.95),
-                               (b.conventions_md, "conventions", 0.90)):
-        if value:
-            out.append({"text": f"[afm/{name}]\n{value[:1500]}",
-                        "group": f"afm:{name}", "score": score,
-                        "source_uri": f"afm://{repo}/{name}"})
-    out += _chunk_rows(b.chunks, repo)
-    out += _titled_rows(b.notes, repo=repo, label="note", group="afm:note",
-                        score=0.70, default_title="Note", cap=600,
-                        uri_kind="note")
-    out += _titled_rows(b.docs, repo=repo, label="doc", group="afm:doc",
-                        score=0.65, default_title="Doc", cap=600,
-                        uri_kind="doc")
-    out += _observation_rows(b.observations, repo)
-    return out
-
-
 def _chat_sessions(text: str, *, limit: int,
                    exclude_session: int | None = None) -> list[dict]:
     """Flatten prior chat-session message hits into ranked rows (gap F3).
@@ -261,52 +203,5 @@ def _chat_sessions(text: str, *, limit: int,
             # Per-MESSAGE uri (index-qualified) — distinct messages in one
             # session are NOT the same doc, so dedup must not collapse them.
             "source_uri": f"chat://{sid}/{i}",
-        })
-    return out
-
-
-def _cross_repo_links(text: str, *, repo: str) -> list[dict]:
-    """Surface AiForgeMemory CALLS_REPO edges touching ``repo`` (gap A7).
-
-    Cross-repo retrieval: a ticket scoped to repo X normally can't see
-    that repo Y calls into it. AiForgeMemory already computes these
-    ``(Repo)-[:CALLS_REPO {via, confidence}]->(Repo)`` edges; we read
-    them back via the link store and flatten to ranked rows so they
-    participate in unified ranking.
-
-    Reuses the same soft-fail import shim style as ``_afm_bundle`` —
-    returns ``[]`` on any backend/import failure (never raises). The
-    ``text`` arg is accepted for signature parity / future filtering but
-    edges are repo-scoped, not text-scoped.
-
-    Each row: ``{"text": "[xrepo] <from> --<via>--> <to> (conf <c>)",
-    "score": <c>, "source": "xrepo"}``.
-    """
-    try:
-        from aiforge_memory.api.commands._driver import driver
-        from aiforge_memory.features.link.store import list_edges
-    except Exception:
-        return []
-    try:
-        drv = driver()
-        edges = list_edges(drv, repo=repo) or []
-    except Exception:
-        return []
-
-    out: list[dict] = []
-    for e in edges:
-        if not isinstance(e, dict):
-            continue
-        src = e.get("src") or "?"
-        dst = e.get("dst") or "?"
-        via = e.get("via") or "?"
-        try:
-            conf = float(e.get("confidence") or 0.0)
-        except (TypeError, ValueError):
-            conf = 0.0
-        out.append({
-            "text": f"[xrepo] {src} --{via}--> {dst} (conf {conf:.2f})",
-            "score": conf,
-            "source": "xrepo",
         })
     return out

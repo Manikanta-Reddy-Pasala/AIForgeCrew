@@ -33,9 +33,7 @@ from ._ranking import (
     _rerank_top,  # noqa: F401
 )
 from ._sources import (
-    _afm_bundle,  # noqa: F401
     _chat_sessions,  # noqa: F401
-    _cross_repo_links,  # noqa: F401
     _docs_lookup,  # noqa: F401
     _global_vector_recall,  # noqa: F401
     _mcp_call,  # noqa: F401
@@ -65,7 +63,6 @@ class _RecallCtx:
         self.errors: list[str] = []
         self.raw_hits: list[dict] = []
         self.auto_ticket = ticket or (_TICKET_RE.search(text) or [None])[0]
-        self.afm_repo = repo or os.environ.get("AIFORGE_AFM_REPO", "").strip() or None
         self.cross_task = os.environ.get("AIFORGE_UMEM_CROSS_TASK", "0") == "1"
 
     def _repo_or_env(self):
@@ -236,22 +233,6 @@ def _src_external(ctx: "_RecallCtx") -> None:
         ctx.errors.append(f"external:{library}: {exc}")
 
 
-def _src_afm_bundle(ctx: "_RecallCtx") -> None:
-    """7) AiForgeMemory ContextBundle — code-graph RAG (chunks/repo_map/
-    conventions/notes/docs/vector observations). Repo from caller kwarg or
-    AIFORGE_AFM_REPO fallback."""
-    if not (ctx.afm_repo and os.environ.get("AIFORGE_AFM_BUNDLE_ENABLED", "1") == "1"):
-        return
-    try:
-        rows = ctx.pkg._afm_bundle(ctx.text, repo=ctx.afm_repo, role=ctx.role)
-        if rows:
-            ctx.used.append("afm_bundle")
-            ctx.raw_hits.extend(ctx.pkg._tag(rows, source="afm_bundle",
-                                             weight=ctx.weights["afm_bundle"]))
-    except Exception as exc:
-        ctx.errors.append(f"afm_bundle: {exc}")
-
-
 def _src_global_vector(ctx: "_RecallCtx") -> None:
     """7b) Global (repo-agnostic) Observation_v2 vector + fulltext recall.
 
@@ -273,23 +254,6 @@ def _src_global_vector(ctx: "_RecallCtx") -> None:
                                                  weight=ctx.weights["vector"]))
     except Exception as exc:  # noqa: BLE001
         ctx.errors.append(f"vector: {exc}")
-
-
-def _src_xrepo(ctx: "_RecallCtx") -> None:
-    """8) Cross-repo CALLS_REPO neighbours (gap A7). Surface "repo Y calls repo
-    X" edges AiForgeMemory computes so a ticket touching X sees its cross-repo
-    callers/callees. Needs a known repo; flag-guarded."""
-    xrepo_repo = ctx._repo_or_env()
-    if not (xrepo_repo and os.environ.get("AIFORGE_XREPO_ENABLED", "1") == "1"):
-        return
-    try:
-        rows = ctx.pkg._cross_repo_links(ctx.text, repo=xrepo_repo)
-        if rows:
-            ctx.used.append("xrepo")
-            ctx.raw_hits.extend(ctx.pkg._tag(rows, source="xrepo",
-                                             weight=ctx.weights["xrepo"]))
-    except Exception as exc:
-        ctx.errors.append(f"xrepo: {exc}")
 
 
 def _src_chat(ctx: "_RecallCtx") -> None:
@@ -314,8 +278,8 @@ def _src_chat(ctx: "_RecallCtx") -> None:
 
 _RECALL_SOURCES = (
     _src_sqlite_recall, _src_keyword, _src_recent, _src_ticket, _src_related,
-    _src_symbol, _src_graphify, _src_doc, _src_external, _src_afm_bundle,
-    _src_global_vector, _src_xrepo, _src_chat,
+    _src_symbol, _src_graphify, _src_doc, _src_external,
+    _src_global_vector, _src_chat,
 )
 
 
@@ -422,10 +386,10 @@ def query(
 ) -> dict:
     """Unified retrieval. Returns ``{hits, used_sources, errors}``.
 
-    ``repo`` (optional) — repository name in the AiForgeMemory graph (Repo.name).
-    When provided, enables source #7 (afm_bundle) which fetches code-graph
-    context: chunks, repo_map, conventions, notes/docs, vector-recalled
-    observations. Falls back to the ``AIFORGE_AFM_REPO`` env var when omitted.
+    ``repo`` (optional) — repository scope for the recall sources that take
+    one. Falls back to the ``AIFORGE_AFM_REPO`` env var when omitted. (The
+    Neo4j-backed AiForgeMemory bundle and cross-repo sources that used to key
+    off this were removed with the graph layer — this build is SQLite-only.)
 
     ``exclude_session`` / ``session_id`` (optional, aliases) — the CURRENT chat
     session id. Threaded into the chat source so proactive recall during a live

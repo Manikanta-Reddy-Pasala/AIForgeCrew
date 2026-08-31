@@ -28,10 +28,7 @@ _DEFAULT_WEIGHTS = {
     "graphify":   0.85,  # graphify concept-graph neighbours (graph.json)
     "doc":        0.6,
     "external":   0.5,
-    "afm_bundle": 1.1,   # AiForgeMemory ContextBundle (chunks + repo_map +
-                         # conventions + notes/docs + vector observations)
     "vector":     1.0,   # global (repo-agnostic) Observation_v2 vector/FT recall
-    "xrepo":      0.7,   # AiForgeMemory CALLS_REPO cross-repo edges
     "chat":       0.6,   # prior chat-session message content (chat_store)
     "keyword":    0.9,   # BM25 keyword/exact-id recall (FTS5), fused with vector
     "recent":     0.7,   # hot cache: most-recently-written units (fresh facts)

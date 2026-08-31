@@ -52,7 +52,7 @@ def _dedup(hits: list[dict]) -> list[dict]:
     highest-scored copy. Key priority:
 
     1. ``source_uri`` when present — the original intent was cross-source
-       SAME-doc dedup (the same doc arriving via find_doc AND afm_bundle).
+       SAME-doc dedup (the same doc arriving via two sources at once).
     2. else a FULL-text SHA1 hash of the normalized (strip+lower) body — so
        two DISTINCT facts that merely share a long boilerplate PREFIX are
        NOT collapsed (a 200-char-prefix key silently dropped recall).

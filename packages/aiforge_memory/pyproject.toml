@@ -5,13 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "aiforge-memory"
 version = "0.1.2"
-description = "AiForgeMemory — unified code memory: Repo / Service / File / Symbol + chunk vectors. Repomix + tree-sitter + LLM + Neo4j."
+description = "AiForgeMemory — unified code memory: Repo / Service / File / Symbol + chunk vectors. Repomix + tree-sitter + LLM."
 requires-python = ">=3.11"
 authors = [{name = "Manikanta Reddy Pasala"}]
 license = {text = "MIT"}
 readme = "README.md"
 dependencies = [
-  "neo4j>=5.20",
   "openai>=1.50",
   "httpx>=0.27",
   "PyYAML>=6.0",
@@ -39,9 +38,6 @@ ui = [
 # tslp>=1.x, unresolvable next to the RepoMap's 0.13 tag queries).
 chunking = ["chonkie>=1.0"]
 
-[project.scripts]
-aiforge-memory = "aiforge_memory.api.cli:main"
-
 [tool.setuptools.packages.find]
 include = ["aiforge_memory*"]
 
@@ -50,8 +46,6 @@ include = ["aiforge_memory*"]
 "aiforge_memory.features.file" = ["prompts/*.txt"]
 "aiforge_memory.features.service" = ["prompts/*.txt"]
 "aiforge_memory.features.symbol" = ["prompts/*.txt", "queries/*.scm"]
-"aiforge_memory.ui" = ["index.html"]
-"aiforge_memory.features.eval" = ["*.yaml"]
 
 [tool.ruff]
 line-length = 100
@@ -67,7 +61,6 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 testpaths = ["aiforge_memory"]
 addopts = "-ra"
 markers = [
-    "live_neo4j: requires Neo4j running at AIFORGE_NEO4J_URI",
     "live_llm: requires planner LLM at AIFORGE_INTENT_LM_URL",
     "live_repomix: requires `repomix` binary on PATH",
 ]

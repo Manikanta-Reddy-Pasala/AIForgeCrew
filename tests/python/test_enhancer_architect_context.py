@@ -3,8 +3,9 @@
 The Enhancer is mandatory in every chat mode: it fixes spelling/grammar,
 recalls context (memory + recent conversation + repo README), and folds it
 into a build spec. The Architect designs the file structure honoring the
-repo's skills/workflows/rules. Both are hermetic here — the LLM client and
-the memory backend are monkeypatched, so there is no network/Neo4j.
+repo's skills/workflows/rules. Both are hermetic here — the LLM client and the memory backend are
+monkeypatched, and AIFORGE_STRUCTURED_MODE=fallback keeps structured_complete
+on that patched seam, so there is no network.
 """
 from __future__ import annotations
 
@@ -13,6 +14,25 @@ import json
 import pytest
 
 from aiforge_core.runtime import parallel_subtasks as pp
+
+
+@pytest.fixture(autouse=True)
+def _force_the_seam_these_tests_patch(monkeypatch):
+    """Make these tests actually hermetic, which they claimed to be but were not.
+
+    `_architect` and `_enhance` go through `structured_complete`, and in its
+    default "auto" mode that uses the instructor adapter, which — by its own
+    comment — "talks to the endpoint directly (bypasses client.complete)". So
+    patching `llm.client.complete`, as every test here does, patched a seam the
+    code never reached: the call went to the real endpoint, burned the 180s
+    orchestrator timeout plus retries, and only then fell through to the patched
+    function. One test took 232 SECONDS, and its result depended on that timing
+    — it passed normally and FAILED under coverage, which is slower.
+
+    `fallback` mode routes structured_complete through client.complete, the seam
+    these tests patch and mean to exercise.
+    """
+    monkeypatch.setenv("AIFORGE_STRUCTURED_MODE", "fallback")
 
 
 # ─── Enhancer ─────────────────────────────────────────────────────────

@@ -35,7 +35,7 @@ heavy, so it comes up fast.
 `git pull && ./run.sh` — the first boot AUTO-migrates your data (Postgres →
 SQLite tickets/chat, Neo4j facts → OKR briefs, briefs → `compacted/` folder, okf
 DAG → `memory-archive/`) and removes the DB-infra containers (keeps Langfuse).
-Force a re-migrate anytime with `./run.sh --migrate`. No data loss; nothing to
+Force a re-converge anytime with `./run.sh --migrate`. No data loss; nothing to
 hand-edit.
 
 **Memory recall — hash (default) vs semantic:**
@@ -192,9 +192,13 @@ searching files.
 
 ## Data, security & where things live
 
-- **Storage:** `--lite` = SQLite under `~/.aiforge/`. Hybrid/`--docker` = Postgres
-  (tickets/chat/jobs) + Neo4j (memory). Set `AIFORGE_PG_URL` / `NEO4J_URI` to force
-  the pro backends.
+- **Storage:** SQLite under `~/.aiforge/`, in every mode including `--docker`.
+  There is no Postgres/Neo4j option any more: the drivers are not installed
+  (psycopg/pymongo are absent outright, neo4j is the `aiforge-memory[graph]`
+  extra), run.sh strips `AIFORGE_PG_URL` / `NEO4J_URI` from the environment on
+  boot, and `deploy/converge.py` comments them out of a stale `.env` and tears
+  down any leftover `aiforge-neo4j` / `aiforge-postgres` container. Setting
+  those variables does nothing.
 - **Config + user data:** `~/.aiforge/` (agent config, chat db, jobs, skills,
   workflows, rules, memory).
 - **Security:** by default the chat agent has **full unsandboxed filesystem + shell**

@@ -5,13 +5,17 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "aiforgecrew"
 version = "0.1.1"
-description = "AIForgeCrew — autonomous AI dev team orchestrator (single-Postgres runtime)"
+description = "AIForgeCrew — autonomous AI dev team orchestrator (single-SQLite runtime)"
 # Capped below 3.14: scipy/numpy (and other native deps) ship no 3.14 wheels
 # yet, so a 3.14 interpreter forces a from-source build that fails (meson).
 requires-python = ">=3.11,<3.14"
 dependencies = [
   # Core runtime — required for the new aiforge_agents pipeline + UI.
-  "pymongo>=4.6",
+  # (pymongo was declared here and imported by NOTHING — no `import pymongo`
+  # anywhere in aiforge_core, scripts or packages. The only "mongo" strings in
+  # the tree are topic keywords in the docs index and repo-notes, which
+  # describe OTHER people's codebases. Removed with dnspython, its only
+  # transitive dep. This build is SQLite-only.)
   "croniter>=2.0",
   "fastapi>=0.115",
   "uvicorn[standard]>=0.32",

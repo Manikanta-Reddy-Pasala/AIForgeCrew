@@ -36,7 +36,7 @@ or a cloud endpoint with a key. Hit **Test connection** to verify. Then use **Ch
 Single-mode: everything on the host, embedded **SQLite** (tickets + chat) + scoped
 **OKR Markdown memory** under `~/.aiforge/` — no infra Docker. Upgrading an old
 dockerized (Postgres/Neo4j) install? `git pull && ./run.sh` auto-migrates the data
-to SQLite/OKR and removes the DB containers (force with `./run.sh --migrate`).
+cleans stale PG/Neo4j env keys and removes leftover DB containers (force with `./run.sh --migrate`).
 
 Recall is **keyword + spell-correction** by default (no download). Add
 **semantic** vector KNN (meaning/paraphrase recall) once with
@@ -50,9 +50,9 @@ an OpenAI-compatible `/v1/embeddings` endpoint you already run:
 > container. Treat the chat box like a terminal.
 
 `./run.sh --dev` enables hot reload; `--port N` / `--host H` change the bind;
-`--migrate` re-migrates a prior install; `--install-model2vec` enables semantic recall (no torch).
+`--migrate` forces a re-converge (env cleanup + leftover container removal); `--install-model2vec` enables semantic recall (no torch).
 Mode is `AIFORGE_MODE`-driven (`lite` | `hybrid` | `docker`; a flag still wins):
-`--lite` runs **zero-Docker** (host + SQLite for everything). `--migrate` moves an
+`--lite` runs **zero-Docker** (host + SQLite for everything). `--migrate` re-runs an
 existing Postgres (chat + tickets) into the SQLite stores and removes the DB infra
 containers. `--with-langfuse` / `--stop-langfuse` manage the optional self-hosted
 LLM trace UI — allowed even in `--lite`, so tracing can be the only container.
@@ -93,7 +93,7 @@ LLM trace UI — allowed even in `--lite`, so tracing can be the only container.
   topic-organized, tagged (by topic **and** which agent wrote it), split-on-oversize
   with cross-links, and compacted hourly. Plus a session **execution ledger** ("don't
   redo what already ran") and auto-captured **working workflows**. Vector+text+graph
-  recall (SQLite embedded, or optional Neo4j) sits underneath, with code chunks
+  recall (SQLite embedded) sits underneath, with code chunks
   demoted. Details: **[OKR_MEMORY.md](docs/OKR_MEMORY.md)** ·
   **[SYSTEM_OVERVIEW.md](docs/SYSTEM_OVERVIEW.md#4-memory--knowledge)**.
 - **Context engineering** — auto-compaction near the window limit, fresh per-turn
@@ -152,7 +152,6 @@ AIFORGE_TOOL_POLICY            e.g. "run_command=ask,file_write=deny"
 AIFORGE_CAVE_MODE              1 = lean context for small local models
 AIFORGE_PARALLEL_SUBTASKS(_MAX)  pipeline fan-out (default on, 4)
 AIFORGE_LANGFUSE=1             self-host the trace UI (or LANGFUSE_HOST + keys)
-AIFORGE_PG_URL / NEO4J_URI     optional "pro" storage backends
 JIRA_BASE_URL / JIRA_TOKEN     Jira (also in UI → Settings → Integrations)
 CONFLUENCE_BASE_URL / _TOKEN   Confluence (same pattern; _USER ⇒ Basic auth)
 ```

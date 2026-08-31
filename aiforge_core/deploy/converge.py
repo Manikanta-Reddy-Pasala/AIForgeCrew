@@ -6,14 +6,25 @@ Windows launcher, or the API on boot) calls ``converge()``; the logic lives here
 once.
 
 Flow — idempotent, marker-guarded, DATA-SAFE:
-  1. detect a prior ``aiforge-postgres`` container
-  2. start postgres (to read from)
-  3. migrate Postgres chat+tickets → SQLite         (scripts/migrate_to_sqlite)
-  4. VERIFY it succeeded
-  5. ONLY then remove the DB-infra containers + their images + volumes
-     — this also tears down any lingering ``aiforge-neo4j`` container from a
-       prior hybrid setup. KEEP langfuse (its own postgres powers the trace UI)
-  6. clear a stale AIFORGE_PG_URL from .env, mark done (retry next run on failure)
+  1. always clear stale PG/Neo4j backend keys from the env files
+  2. if the box was already migrated, remove any DB-infra containers still
+     lingering + their images and volumes — this also tears down a leftover
+     ``aiforge-neo4j`` from a prior hybrid setup. KEEP langfuse (its own
+     postgres powers the trace UI)
+  3. if an UN-migrated ``aiforge-postgres`` is still present, report it and
+     leave it completely alone
+
+Postgres→SQLite MIGRATION WAS REMOVED. It had been broken for some time
+anyway: converge ran scripts/migrate_to_sqlite.py as a subprocess, and that
+script's first import (``_PgChatStore``) went away with Postgres support, so it
+exited 1 on every boot and converge retried the identical failure forever.
+Reviving it would mean shipping a psycopg dependency this build deliberately
+does not have, and the upgrade is not needed — so the path is gone rather than
+left pretending.
+
+What this must NEVER do is delete an un-migrated Postgres. Removal stays gated
+on the marker, which is only written when there was nothing to migrate; a box
+that still holds Postgres data keeps its container and volumes and is told so.
 
 Nothing here raises; every step soft-fails and is logged.
 """
@@ -87,41 +98,6 @@ def _docker_ok() -> bool:
 def _container_exists(name: str) -> bool:
     rc, out = _docker("ps", "-aq", "-f", f"name=^{name}$")
     return rc == 0 and bool(out.strip())
-
-
-def _pg_url() -> str:
-    """DSN for the OLD dockerized ``aiforge-postgres`` we migrate OFF of.
-
-    Inlined (the shared config.env DSN helper was removed with Postgres) so
-    this one-time migration-read path carries no dependency on the deleted
-    helper. NO baked-in credential: the password comes only from the
-    environment; with none set the DSN is user-only — which is what the local
-    docker Postgres (loopback, trust/peer auth) wants and is honest about
-    carrying no secret.
-    """
-    if os.environ.get("AIFORGE_PG_URL"):
-        return os.environ["AIFORGE_PG_URL"]
-    user = os.environ.get("AIFORGE_PG_USER") or os.environ.get("USER") or "aiforge"
-    pwd = os.environ.get("AIFORGE_PG_PASSWORD") or ""
-    host = os.environ.get("AIFORGE_PG_HOST", "127.0.0.1")
-    port = os.environ.get("AIFORGE_PG_PORT", "5432")
-    db = os.environ.get("AIFORGE_PG_DB", "aiforge")
-    auth = f"{user}:{pwd}" if pwd else user
-    return f"postgresql://{auth}@{host}:{port}/{db}"
-
-
-def _migrate_pg_to_sqlite() -> bool:
-    """Run scripts/migrate_to_sqlite (chat + tickets) as a subprocess with the
-    source PG url + lite mode. True on exit 0."""
-    env = dict(os.environ, AIFORGE_PG_URL=_pg_url(), AIFORGE_MODE="lite")
-    script = _repo_root() / "scripts" / "migrate_to_sqlite.py"
-    try:
-        r = subprocess.run([sys.executable, str(script)], env=env,
-                           cwd=str(_repo_root()), timeout=600)
-        return r.returncode == 0
-    except Exception as exc:  # noqa: BLE001
-        log.warning("converge: migrate_to_sqlite failed: %s", exc)
-        return False
 
 
 def _remove_infra_containers() -> list[str]:
@@ -225,25 +201,21 @@ def converge(*, force: bool = False) -> dict:
         _mark_done()                       # no docker → nothing to converge
         return {"skipped": "no docker"}
     if not _container_exists("aiforge-postgres"):
-        _mark_done()                       # no prior PG → nothing to migrate
+        _mark_done()                       # no prior PG → nothing to converge
         return {"skipped": "no aiforge-postgres"}
 
-    log.info("converge: prior dockerized Postgres detected — migrating to SQLite/OKR")
-    _docker("start", "aiforge-postgres")
-    import time
-    time.sleep(6)
-
-    if not _migrate_pg_to_sqlite():
-        log.error("converge: Postgres→SQLite FAILED — keeping Docker intact (retry next run)")
-        return {"ok": False, "step": "postgres_to_sqlite"}
-
-    log.info("converge: migration verified — removing DB-infra (KEEPING langfuse)")
-    removed = _remove_db_infra()
-    _clear_pg_from_env()
-    _mark_done()
-    log.info("converge: done — removed %d containers / %d images / %d volumes",
-             len(removed["containers"]), len(removed["images"]), len(removed["volumes"]))
-    return {"ok": True, "removed": removed}
+    # An un-migrated Postgres is still here. We do NOT migrate (the path was
+    # removed — see the module docstring) and we must NOT delete it: that
+    # container and its volumes are the only copy of that data. Leave
+    # everything alone, say so once, and do NOT write the marker — writing it
+    # would let the branch above remove these containers on the next boot.
+    log.warning(
+        "converge: an old 'aiforge-postgres' container is present. This build "
+        "is SQLite-only and no longer migrates from Postgres, so it has been "
+        "left untouched — nothing was read from it and nothing was deleted. "
+        "Its data is not visible to the app. Remove it yourself when you no "
+        "longer want it: docker rm -f aiforge-postgres")
+    return {"skipped": "legacy postgres present (not migrated, not removed)"}
 
 
 if __name__ == "__main__":
