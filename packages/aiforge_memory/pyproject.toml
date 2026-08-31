@@ -5,13 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "aiforge-memory"
 version = "0.1.2"
-description = "AiForgeMemory — unified code memory: Repo / Service / File / Symbol + chunk vectors. Repomix + tree-sitter + LLM + Neo4j."
+description = "AiForgeMemory — unified code memory: Repo / Service / File / Symbol + chunk vectors. Repomix + tree-sitter + LLM; optional Neo4j graph."
 requires-python = ">=3.11"
 authors = [{name = "Manikanta Reddy Pasala"}]
 license = {text = "MIT"}
 readme = "README.md"
 dependencies = [
-  "neo4j>=5.20",
+  # neo4j moved to the `graph` extra below — see the note there.
   "openai>=1.50",
   "httpx>=0.27",
   "PyYAML>=6.0",
@@ -21,6 +21,22 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The Neo4j-backed graph layer. NOT installed by default: this deployment is
+# SQLite-only — run.sh strips AIFORGE_NEO4J_* from the environment on boot and
+# api.py lists those keys in _RUNTIME_ENV_DB_KEYS so a stale .env cannot
+# restore them. The one live caller — _cross_repo_links in
+# aiforge_core/memory/unified_query/_sources.py — already wraps the driver in
+# try/except and returns [], so with no server to talk to it returned [] before
+# this change and returns [] after it.
+#
+# Every `from neo4j import GraphDatabase` in the package is INSIDE a function
+# (core/neo4j.py:45 and the live_neo4j-marked tests), so nothing imports the
+# driver at module load and dropping it from the default set breaks no import.
+# The Cypher schema in core/neo4j.py is plain strings and still imports fine.
+#
+# Install it back with `pip install aiforge-memory[graph]` if a Neo4j graph is
+# ever wanted again; the package's own live_neo4j tests need it.
+graph = ["neo4j>=5.20"]
 dev = [
   "pytest>=8.0",
   "ruff>=0.4",
