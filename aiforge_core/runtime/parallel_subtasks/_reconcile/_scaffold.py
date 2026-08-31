@@ -187,11 +187,18 @@ def _scaffold_stubs(cwd: str, subs: list) -> list:
     track: the tree + paths exist, so isolated workers can't invent divergent
     directory layouts and merges stay clean. Returns the paths scaffolded."""
     written: list = []
+    root = os.path.realpath(cwd)
     for s in subs:
         path = str(s.get("path") or "").lstrip("/").replace("..", "")
         if not path:
             continue
         dest = os.path.join(cwd, path)
+        # Stripping ".." out of the string is not containment: "../tmp/x.py"
+        # becomes "/tmp/x.py", which os.path.join treats as ABSOLUTE and hands
+        # back unchanged — a planned path (a model's output) that writes
+        # outside the workspace. Check where the path actually lands.
+        if os.path.commonpath([root, os.path.realpath(dest)]) != root:
+            continue
         if os.path.exists(dest):
             continue
         try:
