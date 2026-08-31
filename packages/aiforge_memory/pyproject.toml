@@ -31,12 +31,12 @@ ui = [
 ]
 # AST-aware code chunking (features/chunk/chonkie_adapter.py) — optional;
 # ingestion falls back to line windows when absent. NOTE: needs a newer
-# tree-sitter-language-pack than the monorepo root env (aider-chat pins an
+# tree-sitter-language-pack than the monorepo root env (the vendored RepoMap's
 # old one) — install this extra in the memory service's own env.
 # BASE chonkie: DOC chunking (RecursiveChunker, no tree-sitter). CODE
 # chunking needs NO extra at all — own AST packer over the core
 # tree-sitter-language-pack dep (chonkie's CodeChunker was removed: it needs
-# tslp>=1.x, unresolvable next to aider's ==0.13.0 pin).
+# tslp>=1.x, unresolvable next to the RepoMap's 0.13 tag queries).
 chunking = ["chonkie>=1.0"]
 
 [project.scripts]

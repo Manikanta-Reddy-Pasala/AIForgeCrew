@@ -4,8 +4,8 @@
 Distinct from the memory package's CodeChunker adapter: chonkie's
 ``RecursiveChunker`` splits on document structure (markdown headers →
 paragraphs → sentences → tokens) and needs NO tree-sitter — so unlike the
-CodeChunker (blocked by aider's tree-sitter-language-pack==0.13.0 exact
-pin) it works in the ROOT env, today, alongside aider.
+CodeChunker (which needs tree-sitter-language-pack>=1.x, while the vendored
+RepoMap's tag queries hold us at 0.13) it works in the ROOT env, today.
 
 Used wherever a FILE/page/document is being sent to the model and must be
 cut to a budget: cutting at a structure boundary keeps the last section

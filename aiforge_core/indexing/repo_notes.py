@@ -14,7 +14,7 @@ Scans the worktree to produce a structured markdown reference covering:
   - Cross-repo relations (HTTP base URLs called, shared NATS subjects,
     shared Kafka topics)
 
-KISS: ripgrep + tree-sitter through aider's RepoMap. No LLM call,
+KISS: ripgrep + tree-sitter through the vendored RepoMap. No LLM call,
 purely deterministic. Output is auto-regenerable.
 
 Public surface:

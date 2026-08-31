@@ -219,7 +219,7 @@ def build_context_branches(model_factory, *, skip_researcher: bool = False,
     # tool_call_id") — a DETERMINISTIC error that node-retry can't fix, so ONE
     # flaky branch trips ``error_shut_down`` and aborts the WHOLE graph (the join
     # never fires; planning/doing never runs). These branches are pure ENRICHMENT
-    # — the runner's pre-flight ``memory_brief_md`` + aider repo_map already seed
+    # — the runner's pre-flight ``memory_brief_md`` + repo_map already seed
     # the planner/doer context — so on a long/large run their crash risk outweighs
     # their value. AIFORGE_SKIP_CTX_BRANCHES=1 drops them entirely; the graph then
     # wires research_entry → planner directly (build_pipeline handles empty

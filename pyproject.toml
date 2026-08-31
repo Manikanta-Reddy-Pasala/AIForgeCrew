@@ -37,18 +37,24 @@ dependencies = [
   # Vendored into packages/aiforge_memory/ (was a git dependency); resolved
   # from the local path via [tool.uv.sources] below.
   "aiforge-memory",
-  # tree-sitter AST parsing behind aider's RepoMap (aiforge_core/memory/
+  # tree-sitter AST parsing behind the vendored RepoMap (aiforge_core/memory/
   # code_context.aider_digest) + memory/rag/indexer. Declared so `uv sync`
   # can't prune them. Core+grammar wheels are ABI-matched by uv's resolver.
   "tree-sitter>=0.21",
   "tree-sitter-java>=0.21",
   "tree-sitter-python>=0.21",
-  # aider's RepoMap (aider.repomap.RepoMap) drives the tree-sitter-backed
-  # repo digest via grep-ast's filename_to_lang + the tree-sitter-language-pack
-  # grammars. Declared so `uv sync` can't prune them out from under RepoMap.
-  "aider-chat>=0.86",
+  # The ranked repo digest (aiforge_core/indexing/repomap/, vendored from
+  # aider-chat 0.86.2 under Apache-2.0) needs exactly these: grep-ast's
+  # filename_to_lang + TreeContext, the tree-sitter-language-pack grammars,
+  # PageRank from networkx, the tags cache from diskcache and pygments for the
+  # lexer fallback on languages with no tree-sitter grammar. Declared so
+  # `uv sync` can't prune them out from under RepoMap. aider-chat itself is
+  # NOT a dependency — see aiforge_core/indexing/repomap/_vendor_repomap.py.
   "grep-ast>=0.9",
   "tree-sitter-language-pack>=0.13",
+  "networkx>=3.2",
+  "diskcache>=5.6",
+  "pygments>=2.20",
   # Doer runtime tools: execute_ipython_cell (jupyter kernel) + browse
   # (playwright). Declared here so `uv sync` stops pruning them — they
   # were previously hand-installed on the host and vanished on every sync.
@@ -66,16 +72,25 @@ dependencies = [
 ]
 
 # ── Security overrides (CVE remediation) ─────────────────────────────
-# aider-chat 0.86.2 EXACT-PINS a cohort of libraries (litellm, aiohttp,
-# starlette, urllib3, pillow, gitpython, requests, idna, soupsieve,
-# python-dotenv). 0.86.2 is the newest release, so there is no upgrade path
-# through it — and those pins hold two CRITICAL litellm CVEs (CVE-2026-35030,
-# CVE-2026-49468) plus ~60 HIGH findings that Trivy reports against uv.lock.
+# HISTORY: aider-chat 0.86.2 EXACT-PINNED a cohort of libraries (litellm,
+# aiohttp, starlette, urllib3, pillow, gitpython, requests, idna, soupsieve,
+# python-dotenv) and 0.86.2 was its newest release, so there was no upgrade
+# path through it — those pins held two CRITICAL litellm CVEs
+# (CVE-2026-35030, CVE-2026-49468) plus ~60 HIGH findings Trivy reported
+# against uv.lock. This whole block existed to force past them.
 #
-# We use aider for ONE thing: its bundled tree-sitter tag queries, via
-# `aider.repomap.RepoMap.get_tags_raw` (see treesitter_ingest). That path does
-# not touch litellm or the HTTP stack, so overriding the pins is safe for our
-# use even though it is not something aider itself supports.
+# aider-chat has since been REMOVED as a dependency (its one useful part, the
+# tree-sitter + PageRank RepoMap, is vendored under
+# aiforge_core/indexing/repomap/), so its pins no longer constrain anything.
+#
+# MEASURED after that removal (empty the list, re-resolve, diff the lock):
+# only `starlette` still CHANGES the resolution — everything else now lands on
+# the same version from our own direct constraints, and `gitpython` has left
+# the lock entirely (it was aider's). The rest are kept deliberately as FLOORS,
+# not because they are load-bearing today: they cost nothing, and without them
+# a future transitive pin can silently walk one of these back to a version with
+# a known CVE. Do not prune them just because the diff is empty right now.
+# Trivy reports 0 findings against uv.lock at every severity, before and after.
 #
 # litellm IS load-bearing for us directly (the ADK/team pipeline reaches the
 # model through LiteLlm), so this is a real upgrade, not a paper one — it is
@@ -89,12 +104,9 @@ override-dependencies = [
   # to force starlette past a bound its own framework set.
   "fastapi>=0.141.1",
   "starlette>=1.1.0",
-  # The actual blocker: aider pins importlib-metadata==7.2.1 while
-  # litellm>=1.84 needs >=8.0,<9. 7.x -> 8.x is API-stable for the
-  # entry-point/version lookups aider makes, so the pin is over-tight rather
-  # than load-bearing.
-  "importlib-metadata>=8.0.0,<9.0",
   "aiohttp>=3.14.3",
+  # gitpython left the lock with aider-chat; the floor stays in case anything
+  # pulls it back in.
   "gitpython>=3.1.49",
   "urllib3>=2.7.0",
   "pillow>=12.2.0",
@@ -124,7 +136,8 @@ structured = ["instructor>=1.3"]                  # pydantic-validated LLM outpu
 crawl = ["crawl4ai>=0.4"]                         # URL → markdown dossiers
 # BASE chonkie only (RecursiveChunker, no tree-sitter): structure-aware text
 # chunking for files/docs sent to the LLM + memory doc ingestion. The
-# CodeChunker variant stays blocked by aider's tree-sitter-language-pack pin.
+# CodeChunker variant needs tree-sitter-language-pack>=1.x; we hold 0.13 for
+# the vendored RepoMap's tag queries, so it stays out of scope.
 chunking = ["chonkie>=1.0"]
 # SEMANTIC memory: model2vec STATIC embeddings — real paraphrase recall, ~30 MB
 # model, NO torch (pure numpy) + the sqlite-vec ANN index (fast KNN vs the O(N)
@@ -134,9 +147,9 @@ chunking = ["chonkie>=1.0"]
 # torch — the ``api`` backend also gives semantic recall with zero local deps.)
 embed-static = ["model2vec>=0.3", "sqlite-vec>=0.1"]
 # tracing needs NO extra: the langfuse mirror posts to the REST ingestion
-# API with core httpx (the SDK's pins conflict with aider-chat).
+# API with core httpx (the SDK's pins conflicted with the old aider-chat dep).
 # NOTE: ragas (RAG eval, scripts/rag_eval.py + integrations/ragas_adapter.py)
-# is intentionally NOT an extra: its langchain pins conflict with aider-chat
+# is intentionally NOT an extra: its langchain pins conflicted with aider-chat
 # in one resolution universe. Run it as a dev-tool overlay instead:
 #   uv run --with 'ragas<0.4' --with 'langchain-openai<1' python scripts/rag_eval.py
 
@@ -158,6 +171,11 @@ include = ["aiforge_core*"]
 "aiforge_core" = [
     "runtime/builtin_playbooks/skills/*.md",
     "runtime/builtin_playbooks/workflows/*.md",
+    # Tree-sitter tag queries for the vendored RepoMap. get_scm_fname()
+    # resolves these via importlib.resources, so a wheel WITHOUT them yields a
+    # silently empty repo map rather than an error — they must ship.
+    "indexing/repomap/queries/*/*.scm",
+    "indexing/repomap/queries/*/README.md",
     # The built UI, copied in by installer/build_payload.sh. Absent in a plain
     # checkout — a repo run serves web/dist directly (see api.py's two
     # candidates), so this pattern matching nothing is normal there.
@@ -167,6 +185,12 @@ include = ["aiforge_core*"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# Vendored third-party source (aider-chat, Apache-2.0 — see NOTICE). Kept
+# byte-for-byte upstream apart from the shims listed in its docstring so it can
+# be re-synced against a newer aider release; reformatting it to our rules would
+# make every future diff unreadable. Our own wrapper (indexing/aider_map.py) IS
+# linted.
+extend-exclude = ["aiforge_core/indexing/repomap/_vendor_*.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -202,5 +226,5 @@ markers = [
     "live_tmux: requires the `tmux` binary on PATH",
     "live_jupyter: requires a runnable jupyter kernel on this host",
     "live_ga: requires the GA checkout (AIFORGE_GA_DIR / the NUC)",
-    "live_aider: requires aider's tree-sitter grammars to map a synthetic repo",
+    "live_aider: requires the tree-sitter grammars to map a synthetic repo",
 ]

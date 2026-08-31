@@ -1,7 +1,7 @@
 """Unit tests for aiforge_core.indexing.aider_map.
 
 Phase 2 of AIForgeCrew v5. Tests are fully offline — they exercise the
-RepoMap wrapper itself, not Aider's tree-sitter walk. When aider is not
+RepoMap wrapper itself, not the tree-sitter walk. When the grammars are not
 installed in the test venv we still verify the graceful-fallback path.
 """
 from __future__ import annotations
@@ -44,25 +44,27 @@ def _seed_repo(root: Path, n_files: int = 12) -> tuple[list[str], list[str]]:
 
 
 class TestGracefulFallback:
-    def test_returns_empty_when_aider_not_installed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """AC: render_repo_map returns "" if ``aider`` import fails."""
-        # Force the aider import to fail by inserting a sentinel that raises.
+    def test_returns_empty_when_repomap_not_importable(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """AC: render_repo_map returns "" if the RepoMap import fails."""
+        _MOD = "aiforge_core.indexing.repomap"
+
+        # Force the RepoMap import to fail by inserting a sentinel that raises.
         class _Boom:
             def find_module(self, *a, **kw):
                 return self
 
             def find_spec(self, name, *a, **kw):
-                if name.startswith("aider"):
-                    raise ImportError("simulated aider absence")
+                if name == _MOD or name.startswith(_MOD + "."):
+                    raise ImportError("simulated RepoMap absence")
                 return None
 
             def load_module(self, name):
-                raise ImportError("simulated aider absence")
+                raise ImportError("simulated RepoMap absence")
 
-        # Wipe any pre-imported aider modules so the import inside
+        # Wipe any pre-imported RepoMap modules so the import inside
         # render_repo_map re-resolves through our boom hook.
         for k in list(sys.modules):
-            if k == "aider" or k.startswith("aider."):
+            if k == _MOD or k.startswith(_MOD + "."):
                 monkeypatch.delitem(sys.modules, k)
         monkeypatch.setattr(sys, "meta_path", [_Boom(), *sys.meta_path])
 
@@ -77,7 +79,7 @@ class TestGracefulFallback:
         assert result == ""
 
     def test_returns_empty_when_repo_too_small(self, tmp_path: Path) -> None:
-        """AC: < 5 total files → empty string, no aider call."""
+        """AC: < 5 total files → empty string, no RepoMap call."""
         # Three files only; below the 5-file floor.
         for i in range(3):
             (tmp_path / f"f{i}.py").write_text("x = 1\n")
@@ -90,13 +92,13 @@ class TestGracefulFallback:
         assert render_repo_map(cfg) == ""
 
 
-# ─────────────────────────── 2. happy path (requires aider) ─────────────
+# ────────────────────── 2. happy path (requires grammars) ───────────────
 
 
 class TestRendersDigest:
     def test_empty_chat_files_with_other_files_returns_digest(self, tmp_path: Path) -> None:
         """AC: empty chat_files + ≥5 other_files yields a non-empty digest
-        when aider is installed."""
+        when the grammars are installed."""
         _, other = _seed_repo(tmp_path, n_files=10)
         cfg = AiderMapConfig(
             root=tmp_path,
@@ -106,11 +108,11 @@ class TestRendersDigest:
             cache_dir=tmp_path / ".aider_cache",
         )
         digest = render_repo_map(cfg)
-        # No soft skip: aider-chat and the tree-sitter grammar pack are DECLARED
+        # No soft skip: the vendored RepoMap and the grammar pack are DECLARED
         # dependencies, so an empty digest means the repo map is broken on this
         # install — which is exactly what this test exists to catch. A skip here
         # made that failure invisible on whichever box hit it.
-        assert digest, "aider returned no digest — repo map broken on this install"
+        assert digest, "RepoMap returned no digest — repo map broken on this install"
         # Expect at least one of our identifiers to surface.
         assert "func_" in digest or "Klass_" in digest
 
@@ -126,7 +128,7 @@ class TestRendersDigest:
             cache_dir=tmp_path / ".aider_cache",
         )
         digest = render_repo_map(cfg)
-        assert digest, "aider returned no digest — repo map broken on this install"
+        assert digest, "RepoMap returned no digest — repo map broken on this install"
         # ``main_model.token_count`` shim approximates as len(text)//4.
         approx_tokens = max(1, len(digest) // 4)
         # Aider's "no chat files" branch multiplies budget by map_mul_no_files

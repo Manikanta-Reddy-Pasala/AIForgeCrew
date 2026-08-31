@@ -1,8 +1,8 @@
 # Installing AIForge
 
 Two ways to run it. Both are **single-mode** (embedded SQLite + scoped-OKR
-Markdown memory — no Postgres/Neo4j) and include the full toolchain: aider
-RepoMap, the model2vec semantic embedder (static embeddings + sqlite-vec, **no
+Markdown memory — no Postgres/Neo4j) and include the full toolchain: the
+tree-sitter RepoMap, the model2vec semantic embedder (static embeddings + sqlite-vec, **no
 torch**), and the structured / crawl / chunking extras.
 
 | | Binary / native | Docker |
@@ -47,15 +47,17 @@ Optional:
 ./run.sh --port 9000 --host 0.0.0.0   # bind elsewhere (needs AIFORGE_API_TOKEN off-loopback)
 ```
 
-Only `git` + `curl` (or `wget`) need to pre-exist. `uv`, Node, python deps,
-aider and CodeGraph are installed automatically.
+Only `git` + `curl` (or `wget`) need to pre-exist. `uv`, Node, python deps and
+CodeGraph are installed automatically. (The RepoMap is vendored in-tree, so
+there is nothing to install for it — only its tree-sitter grammars, which come
+in with the python deps.)
 
 ---
 
 ## Docker mode
 
 One self-contained container. **All dependencies are baked into the image** —
-python deps, **aider**, the **model2vec** semantic stack (static embeddings +
+python deps, the **RepoMap** grammars, the **model2vec** semantic stack (static embeddings +
 sqlite-vec, **no torch**, embed model pre-downloaded), **structured / crawl /
 chunking**, plus the pre-built web UI. Nothing is fetched at run time.
 

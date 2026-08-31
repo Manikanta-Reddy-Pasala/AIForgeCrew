@@ -7,7 +7,7 @@ answer relevancy, + context precision when ground truths are given) using
 the SAME local endpoint as the judge — fully local, no cloud.
 
 Usage (ragas is a dev-tool OVERLAY, not a project extra — its langchain pins
-conflict with aider-chat in one resolution universe):
+conflict with the app's own pins in one resolution universe):
   uv run --with 'ragas<0.4' --with 'langchain-openai<1' \
       python scripts/rag_eval.py --repo AIForgeCrew \
       --questions eval/rag_questions.jsonl [--limit 8]
