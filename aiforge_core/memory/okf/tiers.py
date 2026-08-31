@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import shutil
 from pathlib import Path
@@ -859,6 +860,26 @@ def _retire_own_mesh() -> dict:
 
 # ── the one entry point the sync cycle calls ──────────────────────────────
 
+def disabled() -> bool:
+    """True when OKF compaction is turned OFF for this machine.
+
+    ``AIFORGE_COMPACT_DISABLE`` is the wrong switch for this: it stops the LLM
+    *fold* (``work_notes.consolidate`` degrades to a deterministic merge) while
+    every other part of the pass — the brief→node conversion, both tier walks,
+    the rewrites and the rev bumps they cause — keeps running and keeps pushing.
+    That is the right default for a machine that merely wants a quiet working
+    day; it is not an off switch for OKF itself.
+
+    This one is, and it is read per call rather than captured at import so that
+    flipping the flag takes effect on the NEXT cycle of an already-running
+    ``sync.loop`` — the daemon is supervised and long-lived, and a restart to
+    change a toggle is what made the last operator edit ``.env`` and bounce the
+    whole stack.
+    """
+    return os.environ.get("AIFORGE_OKF_DISABLE", "0").strip().lower() in (
+        "1", "true", "yes")
+
+
 def run_after_sync(*, role: str = _ROLE) -> dict:
     """Both tiers, once, after a sync pass — so this cycle's arrivals are in.
 
@@ -876,6 +897,10 @@ def run_after_sync(*, role: str = _ROLE) -> dict:
     cycle's own compaction output is in ``okf/`` in time for this cycle's fold
     and the next push.
     """
+    if disabled():
+        _log.info("okf: compaction OFF (AIFORGE_OKF_DISABLE) — no fold, no "
+                  "brief conversion, no tier walk this cycle")
+        return {"ok": True, "disabled": True}
     out: dict = {}
     try:
         out["retire"] = _retire_own_mesh()
@@ -898,5 +923,6 @@ def run_after_sync(*, role: str = _ROLE) -> dict:
     return out
 
 
-__all__ = ["MESH", "VIEW", "distil_mesh", "build_view", "run_after_sync",
+__all__ = ["MESH", "VIEW", "disabled", "distil_mesh", "build_view",
+           "run_after_sync",
            "view_nodes", "unrepresented"]

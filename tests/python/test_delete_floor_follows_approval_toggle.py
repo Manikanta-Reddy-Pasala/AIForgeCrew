@@ -63,7 +63,8 @@ def test_approvals_on_still_gates_the_same_delete(chat, cmd):
     approval_settings.set_mode("chat", True)
 
     gate, ddel, args = _gate(_loop, tool_policy, cmd, sid)
-    assert gate and ddel, f"{cmd!r} must still gate when approvals are ON"
+    assert gate, f"{cmd!r} must still gate when approvals are ON"
+    assert ddel, f"{cmd!r} must still read as a destructive delete"
     assert "confirm_delete" not in args
 
 
@@ -93,7 +94,8 @@ def test_turning_off_chat_does_not_relax_plan_or_pipeline(chat):
     for mode in ("plan", "team"):
         chat_approve.set_mode(sid, mode)
         gate, ddel, _ = _gate(_loop, tool_policy, "rm -rf build", sid)
-        assert gate and ddel, f"{mode} approvals are ON — it must still gate"
+        assert gate, f"{mode} approvals are ON — it must still gate"
+        assert ddel, f"{mode} must still read as a destructive delete"
 
     chat_approve.set_mode(sid, "simple")
     gate, _, _ = _gate(_loop, tool_policy, "rm -rf build", sid)

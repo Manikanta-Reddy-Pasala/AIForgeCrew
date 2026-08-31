@@ -648,80 +648,96 @@ def _dispatch_tool(name, args, cwd, n, _hook_block):
     return result
 
 
+_SHELL_TOOLS = ("run_command", "bash", "run_shell", "shell", "serve",
+                "watch_until")
+
+
+def _is_destructive_delete(cmd: str) -> bool:
+    """Whether ``cmd`` deletes, unless the env opt-in already allows deletes."""
+    try:
+        from aiforge_core.runtime.tools import delete_guard
+        return (not delete_guard.allow_delete(
+            ("AIFORGE_CHAT_ALLOW_DELETE", "AIFORGE_ALLOW_DELETE"))
+            and delete_guard.is_destructive_delete(cmd))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _commit_auto_approved(cmd: str, repo: str, session_id) -> bool:
+    """The scoped, revocable, audited "commit directly" opt-in.
+
+    Consulted REGARDLESS of the per-mode approval toggle. Gating it on
+    ``not _mode_approvals`` made it dead code: with approvals off nothing gates
+    anyway, so the flag — and the UI pill that sets it — could never have an
+    effect. It covers exactly one thing (a whole-command local git commit/add)
+    and every floor below still gates: DENY, destructive delete, forced review,
+    and any chained command (``is_commit_command`` rejects those). PUSH is
+    excluded here as it is in tool_gate — it updates a remote, so it always
+    asks.
+    """
+    try:
+        from aiforge_core.runtime import rule_capture as _rc
+        return bool(_rc.is_commit_command(cmd)
+                    and not re.search(r"\bgit\s+push\b", cmd, re.I)
+                    and _rc.flag_active("commit_auto_approve", repo=repo,
+                                        session_id=session_id))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _delete_pre_confirmed(cmd: str, repo: str, session_id,
+                          mode_approvals: bool) -> bool:
+    """Whether a destructive delete is already confirmed without asking.
+
+    Two ways, both requiring the mode's approvals to be OFF:
+
+    * the captured per-repo/session ``allow_delete`` opt-in. It stays
+      SUBORDINATE to the toggle — auto-confirming an ``rm -rf`` in a mode whose
+      approvals are ON is a far bigger relaxation than skipping a commit
+      prompt, and nothing asked for it.
+    * approvals being off in an INTERACTIVE run (``session_id`` is not None),
+      which is itself the confirmation. The delete floor used to ignore the
+      toggle entirely, which made the toggle feel broken: the guard matches the
+      whole command string, so routine remote maintenance —
+      ``ssh host 'docker rm -f c'``, ``kubectl delete pod``, ``git clean -fdx``
+      — kept prompting after approvals had been explicitly turned off.
+
+    An AUTONOMOUS run can never reach the second: ``approvals_required(None)``
+    is True by construction, so ``mode_approvals`` is True and both arms are
+    closed. Unattended runs stay guarded.
+    """
+    if mode_approvals:
+        return False
+    try:
+        from aiforge_core.runtime import rule_capture as _rc
+        if _rc.flag_active("allow_delete", repo=repo, session_id=session_id):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    if session_id is not None:
+        # Audited, not invisible — same rule as the commit bypass.
+        _log.warning("chat.delete_auto_confirmed reason=approvals_off "
+                     "session=%s cmd=%s", session_id, cmd[:200])
+        return True
+    return False
+
+
 def _command_gate_flags(name, args, cwd, session_id, _mode_approvals):
-    """For a shell-family tool, detect a destructive delete (unless approvals
-    are off for this interactive chat mode, or the allow_delete opt-in
-    auto-confirms it) and whether a scoped commit-auto-approve flag applies to a
-    whole-command git commit/add. May set args[confirm_delete].
-    Returns ``(destructive_del, auto_commit)``."""
-    _destructive_del = False
-    _auto_commit = False
-    if name in ("run_command", "bash", "run_shell", "shell", "serve",
-                "watch_until"):
-        _cmd = args.get("cmd") or args.get("command") or ""
-        try:
-            from aiforge_core.runtime.tools import delete_guard
-            _destructive_del = (not delete_guard.allow_delete(
-                ("AIFORGE_CHAT_ALLOW_DELETE", "AIFORGE_ALLOW_DELETE"))
-                and delete_guard.is_destructive_delete(_cmd))
-        except Exception:  # noqa: BLE001
-            _destructive_del = False
-        try:
-            from aiforge_core.runtime import rule_capture as _rc
-            _repo = _repo_name(cwd)
-            # commit_auto_approve is consulted REGARDLESS of the per-mode
-            # approval toggle. Gating it on ``not _mode_approvals`` made it
-            # dead code: with approvals off nothing gates anyway, so the
-            # flag — and the UI pill that sets it — could never have an
-            # effect. It is an explicit, scoped, revocable, audited opt-in
-            # for exactly one thing (a whole-command local git commit/add),
-            # and every floor below still gates: DENY, destructive delete,
-            # forced review, and any chained command (is_commit_command
-            # rejects those). PUSH is excluded here as it is in tool_gate —
-            # it updates a remote, so it always asks.
-            if _rc.is_commit_command(_cmd) \
-                    and not re.search(r"\bgit\s+push\b", _cmd, re.I) \
-                    and _rc.flag_active("commit_auto_approve", repo=_repo,
-                                        session_id=session_id):
-                _auto_commit = True
-            # allow_delete stays SUBORDINATE to the toggle: auto-confirming
-            # an `rm -rf` in a mode whose approvals are on is a far bigger
-            # relaxation than skipping a commit prompt, and nothing asked
-            # for it. Off, it is the captured per-repo/session opt-in.
-            if not _mode_approvals and _destructive_del and _rc.flag_active(
-                    "allow_delete", repo=_repo, session_id=session_id):
-                _destructive_del = False
-                args["confirm_delete"] = True
-        except Exception:  # noqa: BLE001
-            pass
-        # Approvals OFF in an INTERACTIVE chat run is itself the confirmation.
-        #
-        # Until now the destructive-delete floor ignored the toggle entirely,
-        # on the reasoning that auto-confirming `rm -rf` is a far bigger
-        # relaxation than skipping a commit prompt. In practice that made the
-        # toggle feel broken: the guard matches the whole command string, so
-        # ordinary remote maintenance — `ssh host 'docker rm -f c'`,
-        # `ssh host 'kubectl delete pod p'`, `git clean -fdx` — kept prompting
-        # after the operator had explicitly turned approvals off. The operator
-        # asked for this after seeing exactly that.
-        #
-        # The relaxation is deliberately narrow, and every other floor stands:
-        #   * session_id is None (an AUTONOMOUS ticket run) never reaches here
-        #     — approvals_required(None) is True by design, so _mode_approvals
-        #     is True and this branch cannot fire. Unattended runs stay guarded.
-        #   * it is per chat MODE: turning off Chat does not relax Plan or
-        #     Pipeline, each of which has its own toggle.
-        #   * a DENY policy still blocks, and the workspace jail, blanket-git
-        #     and server-start refusals are untouched.
-        # Setting confirm_delete is what carries the decision through to the
-        # shell tool's own delete refusal, which would otherwise still fire.
-        if not _mode_approvals and _destructive_del and session_id is not None:
-            _destructive_del = False
-            args["confirm_delete"] = True
-            # Audited, not invisible — same rule as the commit bypass.
-            _log.warning("chat.delete_auto_confirmed reason=approvals_off "
-                        "session=%s cmd=%s", session_id, _cmd[:200])
-    return _destructive_del, _auto_commit
+    """For a shell-family tool, detect a destructive delete (unless it is
+    already confirmed — see :func:`_delete_pre_confirmed`) and whether a scoped
+    commit-auto-approve flag applies to a whole-command git commit/add. May set
+    args[confirm_delete]. Returns ``(destructive_del, auto_commit)``."""
+    if name not in _SHELL_TOOLS:
+        return False, False
+    cmd = args.get("cmd") or args.get("command") or ""
+    repo = _repo_name(cwd)
+    destructive_del = _is_destructive_delete(cmd)
+    auto_commit = _commit_auto_approved(cmd, repo, session_id)
+    if destructive_del and _delete_pre_confirmed(cmd, repo, session_id,
+                                                 _mode_approvals):
+        destructive_del = False
+        args["confirm_delete"] = True
+    return destructive_del, auto_commit
 
 
 def _compute_gate_decision(name, args, cwd, session_id, verdict):
