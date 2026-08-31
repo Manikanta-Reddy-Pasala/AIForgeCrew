@@ -102,7 +102,11 @@ def _cmd_repo_notes(args) -> int:
 
 
 def _cmd_cost_snapshot(args) -> int:
-    from aiforge_core.runtime import cost
+    # `cost` lives under observability, not runtime. The wrong path made this
+    # command dead on arrival: main()'s catch-all printed the ImportError and
+    # returned 0 (cron-friendly), so it looked like a successful run that just
+    # happened to report an error.
+    from aiforge_core.observability import cost
     print(json.dumps(cost.snapshot(args.ticket)))
     return 0
 
