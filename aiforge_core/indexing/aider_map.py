@@ -1,27 +1,27 @@
-"""Embedded Aider RepoMap wrapper for the Doer hot-path.
+"""Ranked RepoMap wrapper for the Doer hot-path.
 
 Phase 2 of AIForgeCrew v5: surface a tree-sitter + PageRank ranked code map
-in the Doer system prompt without forking Aider. We instantiate
-``aider.repomap.RepoMap`` in-process, call ``get_repo_map`` with the ticket's
-allowed files (``chat_files``) plus the rest of the worktree (``other_files``)
-and return the rendered text digest.
+in the Doer system prompt. We instantiate
+``aiforge_core.indexing.repomap.RepoMap`` in-process (vendored from
+aider-chat 0.86.2, Apache-2.0 — the aider *package* was dropped for its
+CVE-bearing pins and 107-package dependency tree; see that module's
+docstring), call ``get_repo_map`` with the ticket's allowed files
+(``chat_files``) plus the rest of the worktree (``other_files``) and return
+the rendered text digest.
 
-Aider is an optional runtime dep — if the import fails (not installed in
-this venv, version skew, etc.) ``render_repo_map`` returns an empty string
-so callers can fall back gracefully. The Doer prompt is built behind the
-``AIFORGE_AIDER_REPOMAP_ENABLED`` env flag, so ``""`` simply omits the
-section.
+The tree-sitter grammars are an optional runtime dep — if the import fails
+(grammar pack absent, version skew, etc.) ``render_repo_map`` returns an
+empty string so callers can fall back gracefully. The Doer prompt is built
+behind the ``AIFORGE_AIDER_REPOMAP_ENABLED`` env flag, so ``""`` simply
+omits the section.
 
 Side-effect hygiene:
-- Aider's RepoMap calls ``io.tool_output`` / ``io.tool_error`` for verbose
+- RepoMap calls ``io.tool_output`` / ``io.tool_error`` for verbose
   / error logging. We pass a quiet shim that swallows everything; nothing
   reaches stdout / stderr.
-- Aider's progress bars (``Spinner``, ``tqdm``) only fire on the long
-  ``get_ranked_tags`` walk through tags-cache miss territory. We set
-  ``verbose=False`` and never construct a Spinner ourselves; ``tqdm`` from
-  ``aider.repomap`` only writes when ``sys.stderr.isatty()`` and the
-  worktree has > 100 files of cache misses, which is fine for orchestrator
-  use because launchd captures stderr to a file.
+- The upstream progress bars (``Spinner``, ``tqdm``) are no-op shims in the
+  vendored copy, so nothing writes to the console on the long
+  ``get_ranked_tags`` walk through tags-cache miss territory.
 - The tags cache (`.aider.tags.cache.v4`) is written under ``cache_dir``
   if provided, else under the worktree root. Set
   ``AIFORGE_AIDER_CACHE_DIR=/some/writable/path`` to redirect it.
@@ -33,7 +33,7 @@ import io as _stdio
 import os
 import threading
 
-# Aider's RepoMap.TAGS_CACHE_DIR is a PROCESS-GLOBAL class attribute. Two
+# RepoMap.TAGS_CACHE_DIR is a PROCESS-GLOBAL class attribute. Two
 # concurrent renders with a cache_dir override would trample each other's saved
 # value (A restores B's dir, etc). Serialize the override span under this lock.
 _MAP_LOCK = threading.Lock()
@@ -122,7 +122,7 @@ def _tags_cache_dir(cfg: "AiderMapConfig"):
 
 @contextlib.contextmanager
 def _tags_cache_redirected(repo_map_cls, cache_dir):
-    """Point aider's hardcoded ``<root>/.aider.tags.cache.v4`` at ``cache_dir``.
+    """Point RepoMap's hardcoded ``<root>/.aider.tags.cache.v4`` at ``cache_dir``.
 
     It can't be passed as an argument, so the class attribute is mutated —
     under a lock, and restored, so parallel callers don't trample each other.
@@ -151,7 +151,7 @@ def _run_repomap(repo_map_cls, cfg, chat_files, other_files, main_model,
                  aider_io) -> str:
     """Build the ranked digest.
 
-    stdout is suppressed: aider internals (and a third-party tree-sitter
+    stdout is suppressed: RepoMap internals (and a third-party tree-sitter
     grammar emitting "language not found" on import) write stray lines there.
     stderr goes to the per-role launchd log and is fine.
     """
@@ -168,12 +168,12 @@ def _run_repomap(repo_map_cls, cfg, chat_files, other_files, main_model,
 
 
 def render_repo_map(cfg: AiderMapConfig) -> str:
-    """Run Aider's RepoMap and return the ranked text digest.
+    """Run the ranked RepoMap and return its text digest.
 
     Returns an empty string if:
-    - Aider is not installed in this Python environment
+    - The tree-sitter grammar stack is unimportable in this environment
     - The repo is too small (< 5 files) to bother
-    - Aider returns ``None`` (its convention for "nothing useful to map")
+    - RepoMap returns ``None`` (its convention for "nothing useful to map")
     - Any internal exception is raised — we never propagate so the Doer
       prompt assembly cannot fail because of indexing.
     """
@@ -186,7 +186,7 @@ def render_repo_map(cfg: AiderMapConfig) -> str:
              file_count=total)
         return ""
     try:
-        from aider.repomap import RepoMap  # noqa: WPS433 (deliberately lazy)
+        from aiforge_core.indexing.repomap import RepoMap  # noqa: WPS433 (lazy)
     except Exception as exc:  # noqa: BLE001
         emit(log, _AIDER_REPOMAP_SKIPPED, reason="import_failed",
              error=str(exc)[:200])
@@ -309,7 +309,7 @@ def _resolve_cache_dir(root: Path) -> Path:
 
     When AIFORGE_AIDER_CACHE_DIR is set, return a per-repo subdir
     (``<override>/<repo_name>``) so multiple repos don't collide on a
-    single Aider tags-cache. AIForge never writes Aider artifacts into
+    single tags-cache. AIForge never writes RepoMap artifacts into
     canonical repo trees by default — cache lives under
     ~/.aiforge/aider-cache/<repo_name>/ on production NUC.
     """
@@ -320,12 +320,12 @@ def _resolve_cache_dir(root: Path) -> Path:
 
 
 class _StubMainModel:
-    """Aider's RepoMap calls ``main_model.token_count(text)`` to budget the
+    """RepoMap calls ``main_model.token_count(text)`` to budget the
     digest. We approximate at ``len(text)//4`` (industry-standard heuristic
     — same one tiktoken uses as a fallback). No real model load.
     """
 
-    # Aider also touches main_model.info / .name occasionally for verbose
+    # RepoMap also touches main_model.info / .name occasionally for verbose
     # logging; expose harmless attributes so getattr probes don't blow up.
     name = "aiforge-stub"
     info: dict = {}
@@ -337,9 +337,9 @@ class _StubMainModel:
 
 
 class _QuietIO:
-    """Drop-in shim for ``aider.io.InputOutput``. Swallows any console
+    """Drop-in shim for aider's ``InputOutput``. Swallows any console
     writes the RepoMap emits during walk / cache-rebuild. Returning empty
-    strings on prompt methods keeps Aider non-interactive.
+    strings on prompt methods keeps it non-interactive.
     """
 
     pretty = False

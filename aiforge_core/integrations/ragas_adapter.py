@@ -1,7 +1,7 @@
 """ragas adapter — RAG recall quality metrics.
 
 ragas is a dev-tool OVERLAY, not a project extra (its langchain pins conflict
-with aider-chat in one resolution universe): run consumers via
+with the app's own pins in one resolution universe): run consumers via
 ``uv run --with 'ragas<0.4' --with 'langchain-openai<1' …``.
 
 One capability: :func:`evaluate_recall` scores (question, contexts, answer)

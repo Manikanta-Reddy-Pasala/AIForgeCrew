@@ -134,7 +134,7 @@ export function SourcesPanel() {
       <div className="card-header">
         <h2>Sources</h2>
         <span className="muted small">
-          {sources.length} source{sources.length !== 1 ? 's' : ''} · add markdown or code — indexed on the go (Aider RepoMap + CodeGraph for code relations)
+          {sources.length} source{sources.length !== 1 ? 's' : ''} · add markdown or code — indexed on the go (RepoMap + CodeGraph for code relations)
         </span>
       </div>
 

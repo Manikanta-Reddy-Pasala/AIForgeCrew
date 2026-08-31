@@ -1,6 +1,6 @@
 # AIForge — DOCKER MODE (single-mode: embedded SQLite + scoped-OKR memory).
 #
-# One self-contained container: the app + ALL deps (aider, model2vec semantic,
+# One self-contained container: the app + ALL deps (RepoMap, model2vec semantic,
 # sqlite-vec, structured/crawl/chunking, pre-built UI) baked into the image —
 # nothing is fetched at run time. No Postgres/Neo4j/sidecars (that was the old
 # "pro" stack; the project is single-mode now).

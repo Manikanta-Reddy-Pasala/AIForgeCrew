@@ -1,0 +1,23 @@
+AIForgeCrew
+Copyright (c) OneShell Solutions
+
+This product includes software developed by third parties.
+
+────────────────────────────────────────────────────────────────────────
+aider-chat (https://github.com/Aider-AI/aider)
+Copyright (c) Paul Gauthier and aider contributors
+Licensed under the Apache License, Version 2.0.
+
+Vendored files, derived from aider-chat 0.86.2:
+
+  aiforge_core/indexing/repomap/_vendor_repomap.py   (from aider/repomap.py)
+  aiforge_core/indexing/repomap/_vendor_special.py   (from aider/special.py)
+  aiforge_core/indexing/repomap/queries/**           (from aider/queries/)
+
+Modifications: aider.dump.dump, aider.waiting.Spinner and tqdm replaced
+with no-op shims; aider.special inlined; the __main__ block and
+get_supported_languages_md() removed. See the module docstring for why.
+
+A copy of the Apache License 2.0 is at
+https://www.apache.org/licenses/LICENSE-2.0
+────────────────────────────────────────────────────────────────────────

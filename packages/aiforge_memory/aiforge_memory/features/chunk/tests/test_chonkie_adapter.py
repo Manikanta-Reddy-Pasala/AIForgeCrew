@@ -1,6 +1,6 @@
 """Smart-chunk adapter contract + the _split_code backend switch in embed.py.
 CODE chunking = OUR AST packer over tree-sitter-language-pack 0.13 (core
-dep, aider-compatible) — REAL here, no optional install needed."""
+dep, tslp-0.13-compatible) — REAL here, no optional install needed."""
 from __future__ import annotations
 
 from aiforge_memory.features.chunk import chonkie_adapter, embed

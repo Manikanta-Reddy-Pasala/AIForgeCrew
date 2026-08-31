@@ -8,10 +8,10 @@ upsert, embed sidecar):
 * DOC chunking — chonkie's ``RecursiveChunker`` (markdown headers →
   paragraphs → sentences). BASE chonkie only, no tree-sitter.
 * CODE chunking — OUR OWN AST chunker over ``tree_sitter_language_pack``
-  0.13 (the exact version aider pins, already a core dependency). Splits at
+  0.13 (the version the vendored RepoMap holds, already a core dep). Splits at
   TOP-LEVEL node boundaries (functions/classes/imports) and packs nodes to
   a token budget. This REPLACED chonkie's CodeChunker, which needs
-  tslp>=1.x and therefore could never run alongside aider.
+  tslp>=1.x and therefore could never run alongside the RepoMap grammars.
 
 Both raise on failure; ``embed.py`` owns the line-window fallback, so
 ingestion never breaks on a chunker problem.
@@ -61,7 +61,7 @@ def chunk_doc(text: str, *,
 
 def available() -> bool:
     """CODE chunking backend probe — needs only the tslp already shipped as
-    a core dep (aider pins ==0.13.0; ``get_parser`` exists there)."""
+    a core dep (held at 0.13.0; ``get_parser`` exists there)."""
     try:
         from tree_sitter_language_pack import get_parser  # noqa: F401
         return True

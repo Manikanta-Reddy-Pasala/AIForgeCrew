@@ -7,14 +7,14 @@
 #   • uv       — auto-installed via astral.sh if missing (needs curl or wget)
 #   • Node/npm — a portable Node is fetched into ~/.aiforge/node if missing
 #                (no sudo, no nvm; Linux/macOS x64+arm64). Pin: AIFORGE_NODE_VERSION
-#   • python + node deps, Aider RepoMap, CodeGraph — installed on first boot
+#   • python + node deps, RepoMap, CodeGraph — installed on first boot
 # You just need git + curl (or wget). Everything else is bootstrapped.
 #
 # TWO INSTALL MODES (see INSTALL.md):
 #   • BINARY / NATIVE (default) — runs on the host, full fs/shell/toolchain.
 #       ./run.sh                      # your user
 #       sudo ./run.sh                 # as root (full-filesystem access)
-#   • DOCKER — one self-contained container, all deps baked (aider, semantic/
+#   • DOCKER — one self-contained container, all deps baked (RepoMap, semantic/
 #       torch, sqlite-vec, extras, UI), the FULL host FS mounted at /host:
 #       ./run.sh --docker             # build + up the container
 #
@@ -24,7 +24,7 @@
 #       originals archived to archive/; global 'shared' + per-repo + topic briefs)
 #   • hybrid recall  (keyword/BM25 + spell-correct by default; add semantic
 #       vector KNN with --install-model2vec — optional, see below)
-#   • Aider RepoMap + CodeGraph  (code context — auto-installed)
+#   • RepoMap + CodeGraph  (code context — tree-sitter, in-tree)
 #   • api + team-pipeline runner on the host (full fs/shell/toolchain)
 # A prior dockerized install (Postgres/Neo4j) is auto-migrated to SQLite/OKR on
 # first boot and its DB containers/images/volumes removed (see
@@ -182,7 +182,7 @@ TEST=0
 # (zero-Docker, embedded SQLite) — matches the deploy-anywhere direction and
 # means a fresh clone never spins up Postgres/Neo4j containers unless the
 # operator explicitly asks (--hybrid / --docker / AIFORGE_MODE=hybrid).
-# SINGLE MODE: embedded SQLite + scoped-OKR memory + Aider RepoMap + CodeGraph,
+# SINGLE MODE: embedded SQLite + scoped-OKR memory + RepoMap + CodeGraph,
 # all on the host — no Docker infra. Kept as a var (always "lite") so the
 # converge/langfuse/lockdown blocks read the same name.
 MODE=lite
@@ -607,12 +607,12 @@ _npm_ci_resilient() {
 }
 
 # ── Single mode: SQLite on the host (no Docker infra to bring up) ─────────
-# The app runs on embedded SQLite + the scoped-OKR memory, with Aider RepoMap +
+# The app runs on embedded SQLite + the scoped-OKR memory, with RepoMap +
 # CodeGraph for code context. Nothing to start here — fall through to venv +
 # launch. (Tracing via --with-langfuse is the only optional Docker piece.)
 
 # ── DOCKER MODE (--docker) ─────────────────────────────────────────────
-# Build + run the self-contained single-mode container (all deps baked: aider,
+# Build + run the self-contained single-mode container (all deps baked: RepoMap,
 # model2vec semantic, sqlite-vec, structured/crawl/chunking, pre-built UI) with the
 # FULL host filesystem mounted at /host. No native venv/toolchain step. State
 # persists on the host under ${AIFORGE_DATA_DIR:-./data}/aiforge.
@@ -805,18 +805,18 @@ fi
 # stopping/removing leftover DB-infra — is handled inside the
 # converge module above, portably; nothing to do here.)
 
-# ── Aider RepoMap (optional but preferred) ────────────────────────────────
-# The chat/doer repo context uses Aider's tree-sitter + PageRank RepoMap for a
-# RANKED symbol map. Install best-effort — if it fails/absent the agent falls
-# back to the built-in regex symbol map (aiforge_core/runtime/chat_agent.py).
-# Skip with AIFORGE_SKIP_AIDER=1.
+# ── RepoMap grammars ──────────────────────────────────────────────────────
+# The chat/doer repo context uses a tree-sitter + PageRank RepoMap for a RANKED
+# symbol map. The mapper itself is vendored in-tree
+# (aiforge_core/indexing/repomap/, from aider-chat under Apache-2.0 — the
+# package was dropped for its CVE-bearing pins), so nothing is installed here;
+# its grammars come from tree-sitter-language-pack, a declared dependency that
+# `uv sync` above already installed. If the import fails the agent falls back
+# to the built-in regex symbol map (aiforge_core/runtime/chat_agent.py).
 if [[ "${AIFORGE_SKIP_AIDER:-0}" != "1" ]]; then
-  if ! .venv/bin/python -c "import aider.repomap" >/dev/null 2>&1; then
-    echo "==> installing Aider RepoMap (ranked symbol map)…"
-    uv pip install --python .venv/bin/python aider-chat >/dev/null 2>&1 \
-      && echo "==> aider RepoMap ready" \
-      || echo "==> aider install skipped (falling back to regex symbol map)"
-  fi
+  .venv/bin/python -c "import aiforge_core.indexing.repomap" >/dev/null 2>&1 \
+    && echo "==> RepoMap ready (tree-sitter + PageRank)" \
+    || echo "==> RepoMap unavailable (falling back to regex symbol map)"
 fi
 
 # ── Integration adapters (instructor / crawl4ai) ─────────────────────
@@ -1054,7 +1054,7 @@ fi
 
 echo ""
 echo "  AIForge → http://${HOST}:${PORT}/ui/   storage: SQLite + scoped-OKR memory"
-echo "  code context: Aider RepoMap + CodeGraph"
+echo "  code context: RepoMap + CodeGraph"
 [[ -n "${AIFORGE_WORKSPACE_DIR:-}" ]] \
   && echo "  chat fs scope: ${AIFORGE_WORKSPACE_DIR}" \
   || echo "  chat fs scope: UNRESTRICTED (set AIFORGE_WORKSPACE_DIR to clamp)"

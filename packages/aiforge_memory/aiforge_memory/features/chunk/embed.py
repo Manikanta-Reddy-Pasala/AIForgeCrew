@@ -179,7 +179,7 @@ def _split_doc_smart(text: str, *,
                      file_path: str) -> list[tuple[int, str, int, int]]:
     """DOC chunker with backend selection (same pattern as _split_code):
     chonkie's RecursiveChunker (structure-aware, BASE package — no
-    tree-sitter, so it runs in the main env alongside aider) when enabled +
+    tree-sitter, so it runs in the main env alongside the grammars) when enabled +
     installed, else the built-in heading-aware splitter. Adapter raises →
     fallback; ingestion never breaks."""
     if CHUNKER in ("auto", "chonkie"):

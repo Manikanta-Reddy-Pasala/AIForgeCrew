@@ -32,7 +32,7 @@ RUN_SH = Path(__file__).resolve().parents[2] / "run.sh"
 # web build, etc. and is about to launch the runner + uvicorn. Its absence is
 # how we prove a given invocation took an *early*-exit branch rather than
 # falling through to actually starting the stack.
-_LAUNCH_BANNER_SENTINEL = "code context: Aider RepoMap"
+_LAUNCH_BANNER_SENTINEL = "code context: RepoMap + CodeGraph"
 
 
 def _bash(script: Path, args: list[str], cwd: Path, extra_env: dict | None,
@@ -153,7 +153,7 @@ def test_test_flag_reaches_the_probe_not_the_launch_banner(tmp_path: Path) -> No
     source for it, we run the *real* run.sh in place, reusing this repo's
     already-installed .venv (so the bootstrap is a fast no-op), and isolate
     state via AIFORGE_CONFIG_DIR plus the SKIP_* toggles so it can't write into
-    the real ~/.aiforge or attempt aider/instructor/codegraph installs.
+    the real ~/.aiforge or attempt instructor/codegraph installs.
 
     The probe itself does one real HTTP GET to the configured model endpoint --
     this assertion tolerates either OK or FAIL (no LLM needs to be reachable

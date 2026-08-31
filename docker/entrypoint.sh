@@ -2,7 +2,7 @@
 # Container entrypoint for AIForge "docker mode" — single-mode (embedded SQLite +
 # scoped-OKR memory), all deps baked into the image. Mirrors the boot half of
 # run.sh (converge → api); it does NOT install a toolchain (the image already
-# has python deps, aider, semantic, node-built UI). All state lives under
+# has python deps, RepoMap, semantic, node-built UI). All state lives under
 # AIFORGE_CONFIG_DIR, a host-mounted volume, so it persists across restarts.
 set -euo pipefail
 

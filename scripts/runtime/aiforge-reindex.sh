@@ -2,7 +2,7 @@
 # Reindex hook — runs Graphify + Neo4j mirror for the canonical repo.
 #
 # DESIGN: NEVER writes inside the canonical code repo or any worktree.
-# All outputs land under $HOME/.aiforge/ — Aider cache, Graphify
+# All outputs land under $HOME/.aiforge/ — RepoMap tags cache, Graphify
 # artifacts, logs.
 #
 # Guards:

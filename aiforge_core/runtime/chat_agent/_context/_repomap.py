@@ -61,7 +61,7 @@ def _file_symbols(path: str, pattern, max_syms: int) -> list[str]:
 
 def _build_symbol_map(cwd: str, max_files: int = 200, max_syms: int = 12) -> str:
     """A lightweight, dependency-free repo map: each source file → its top-level
-    symbols (classes/functions/methods) via regex. Fast (no tree-sitter/aider),
+    symbols (classes/functions/methods) via regex. Fast (no tree-sitter),
     language-agnostic, so the agent navigates by SYMBOLS not blind `find`."""
     import re as _re
     base = str(_workspace_root() or cwd)
@@ -146,7 +146,7 @@ def _ranked_symbol_map(base: str) -> str:
     except Exception:  # noqa: BLE001
         return ""
     if not digest.strip():
-        return ""       # aider absent / timed out / empty → next strategy
+        return ""       # RepoMap absent / timed out / empty → next strategy
     digest = _capped(digest, "\n… (truncated — grep/find/list_dir for more)")
     return ("REPO MAP (ranked symbols via tree-sitter — the key functions/"
             "classes per file; navigate by these, don't blind-`find`):\n"

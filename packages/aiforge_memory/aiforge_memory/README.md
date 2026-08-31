@@ -167,7 +167,7 @@ Sources merged in priority order (lands in plan 7+8):
 1. Service runbook (build/test/portforward)              [hard]
 2. Anchor file summaries (≤200 tok each, top 8)          [hard]
 3. Symbol signatures + call neighbours (top 12)
-4. Aider RepoMap fragment (focal_files = anchor.files)
+4. RepoMap fragment (focal_files = anchor.files)
 5. Past tickets touching anchor files (Postgres join)
 6. T3 recipes (Memory)
 7. Repo runbook tail

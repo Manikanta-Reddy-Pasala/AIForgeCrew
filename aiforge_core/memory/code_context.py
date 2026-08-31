@@ -1,6 +1,7 @@
 """Code-context fetchers for the Doer prompt.
 
-**Aider RepoMap** — local in-process call to ``aider.repomap.RepoMap``.
+**RepoMap** — local in-process call to ``aiforge_core.indexing.repomap``
+(vendored from aider-chat, Apache-2.0; the package itself is not a dep).
 Tree-sitter PageRank-ranked tag digest. Hot path. Token-budgeted.
 
 Best-effort. If the lib is unavailable, the function returns "" and the
@@ -14,7 +15,7 @@ from typing import Any
 from aiforge_core.config.paths import config_dir
 
 
-# ─────────────── Aider RepoMap (process-local, hot path) ────────────────
+# ─────────────── RepoMap (process-local, hot path) ──────────────────────
 def _repo_index_dir(root) -> "Path":
     """Central, persistent per-repo index folder — ~/.aiforge/repo-index/<key>.
     Key = the repo's git common dir (shared by ALL worktrees of the repo) so a
@@ -50,15 +51,15 @@ def _repo_index_dir(root) -> "Path":
 def aider_digest(worktree: str, chat_files: list[str],
                  token_budget: int = 1024,
                  user_text: str = "") -> str:
-    """Run Aider's RepoMap on the worktree and return its ranked digest.
+    """Run the ranked RepoMap on the worktree and return its digest.
 
-    ``user_text`` is the raw natural-language request — aider extracts
+    ``user_text`` is the raw natural-language request — RepoMap extracts
     `mentioned_idents` (every word) and `mentioned_fnames` (basename
     matches against the repo) from it and uses them as PageRank
     personalisation. Without it the digest is generic top-K; with it
     the digest centres on what the user actually asked about.
 
-    Returns "" on any error (Aider not installed, repo too small, etc).
+    Returns "" on any error (grammars unavailable, repo too small, etc).
     Caller injects the result verbatim into the Doer system prompt.
     """
     if os.environ.get("AIFORGE_AIDER_REPOMAP_ENABLED", "1") != "1":

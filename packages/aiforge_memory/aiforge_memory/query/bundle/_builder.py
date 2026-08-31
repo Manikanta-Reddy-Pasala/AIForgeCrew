@@ -125,7 +125,7 @@ def query(
     if bundle.conventions_md:
         bundle.sources_used.append("conventions")
 
-    # Aider Repo Map
+    # Repo Map
     if file_paths:
         bundle.repo_map = _repo_map_for(
             driver, repo=repo, focal_paths=file_paths, errors=bundle.errors,

@@ -47,7 +47,7 @@ def repo_map(focus: str = "", token_budget: int = 1024) -> dict:
     )
     if not digest:
         return {"ok": False, "error": "empty map (repo too small or "
-                "aider/tree-sitter unavailable)", "digest": ""}
+                "tree-sitter grammars unavailable)", "digest": ""}
     return {"ok": True, "focus": focus, "digest": digest,
             "engine": "aider-treesitter-pagerank"}
 

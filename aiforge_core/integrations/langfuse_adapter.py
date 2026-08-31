@@ -1,7 +1,7 @@
 """langfuse adapter — mirror LLM calls to a self-hosted Langfuse server.
 
 SIMPLEST possible integration: NO SDK (the langfuse python SDK's pins
-conflict with aider-chat, same class as ragas) — we POST directly to the
+conflict with the app's own pins, same class as ragas) — we POST directly to the
 public ingestion REST API (``/api/public/ingestion``, basic-auth pk/sk),
 which both server v2 and v3 accept. httpx is already a core dependency, so
 tracing needs NO extra install at all.
