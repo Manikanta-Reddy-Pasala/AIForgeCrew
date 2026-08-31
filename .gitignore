@@ -11,7 +11,10 @@ Thumbs.db
 # Python
 __pycache__/
 *.py[cod]
-.venv/
+# No trailing slash: `.venv/` matches a DIRECTORY only, so a `.venv`
+# SYMLINK into a shared venv (a natural thing to do inside a worktree) was
+# not ignored and got committed once. Match both.
+.venv
 venv/
 .pytest_cache/
 .ruff_cache/

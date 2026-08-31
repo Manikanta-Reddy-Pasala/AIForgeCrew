@@ -6,6 +6,9 @@ helpers that back PATCH /api/tickets/{id} body+attachment editing.
 from __future__ import annotations
 
 import base64
+import errno
+import os
+from pathlib import Path
 
 import pytest
 
@@ -115,12 +118,35 @@ def test_serve_file_strips_path_traversal(tmp_path, monkeypatch):
 def unwritable_base(tmp_path, monkeypatch):
     """A ticket-files base the API user cannot write into — the shape the
     prod box was in after the root-in-Docker deploy left the dir root-owned.
+
+    The permission BITS alone do not create that shape. Root ignores DAC, so
+    in a root CI container `chmod(0o500)` is a no-op: `mkdir` succeeds, the
+    guard never trips, and this stopped testing anything. That is not
+    hypothetical — it is how it failed in CI ("DID NOT RAISE HTTPException"),
+    and it took its sibling down with it, which fell through to the happy path
+    and died on an unrelated AttributeError far from the real cause.
+
+    So deny it at the syscall boundary instead: the same PermissionError a
+    root-owned directory raises, on every uid, root included. The chmod stays
+    because it documents the prod shape and still does the real thing for a
+    non-root run.
     """
     base = tmp_path / "ticket-files"
     base.mkdir()
-    base.chmod(0o500)  # r-x: mkdir of a per-ticket subdir fails
+    base.chmod(0o500)  # r-x: mkdir of a per-ticket subdir fails (non-root)
     monkeypatch.setenv("AIFORGE_TICKET_FILES_DIR", str(base))
     monkeypatch.delenv("AIFORGE_CONFIG_DIR", raising=False)
+
+    real_mkdir = Path.mkdir
+
+    def _denied(self, *args, **kwargs):
+        # Only inside the base — everything else on the box still works.
+        if self == base or base in self.parents:
+            raise PermissionError(
+                errno.EACCES, os.strerror(errno.EACCES), str(self))
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", _denied)
     yield base
     base.chmod(0o700)  # let tmp_path cleanup remove it
 
@@ -142,6 +168,11 @@ def test_create_rolls_back_ticket_when_attachments_fail(unwritable_base, monkeyp
 
     class _T:
         id, identifier, status, metadata = 1, "ONE-1", "todo", {}
+        # `priority` is read by the response serializer. It was missing, so
+        # when the unwritable-store guard silently stopped firing under root
+        # this test failed with "'_T' object has no attribute 'priority'" —
+        # an error that says nothing about the rollback it is meant to check.
+        priority = "medium"
         title = body = branch = project = None
         labels: list = []
         assignee_role = active_role = parent_id = None
