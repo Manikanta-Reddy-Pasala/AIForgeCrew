@@ -45,9 +45,6 @@ def _load_runtime_env() -> None:
                 os.environ[key] = val
 
 
-_load_runtime_env()
-
-
 def _cmd_memory_decay(args) -> int:
     from aiforge_core.memory import decay
     out = decay.run()
@@ -112,6 +109,16 @@ def _cmd_cost_snapshot(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Sourced HERE, not at import. It used to run at module scope, which meant
+    # merely IMPORTING this module injected the operator's personal
+    # ~/.aiforge/runtime.env into os.environ for the whole process — a global
+    # side effect from an import. It surfaced as 16 unrelated triage tests
+    # failing in the full suite while passing alone: that file carries
+    # AIFORGE_FORCE_FULL_PIPELINE=1, so importing the maintenance CLI anywhere
+    # in the session forced every triage decision to the full pipeline.
+    # Only the CLI entry point wants this (cron jobs without systemd's
+    # EnvironmentFile), so only the CLI entry point does it.
+    _load_runtime_env()
     p = argparse.ArgumentParser(prog="aiforge-maint")
     sub = p.add_subparsers(dest="cmd", required=True)
 

@@ -9,10 +9,26 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 
 from aiforge_core.cli import maintenance as mnt
+
+_REPO = Path(__file__).resolve().parents[3]
+
+
+@pytest.fixture(autouse=True)
+def _never_source_the_operators_runtime_env(tmp_path_factory, monkeypatch):
+    """main() sources ~/.aiforge/runtime.env by design (cron jobs need it), and
+    _load_runtime_env writes straight into os.environ — so a test that calls
+    main() would import the OPERATOR's real config into the whole pytest
+    session. On this machine that file carries AIFORGE_FORCE_FULL_PIPELINE=1,
+    which forced every triage decision to the full pipeline and failed 16
+    unrelated tests that pass on their own. Point it at an empty file."""
+    empty = tmp_path_factory.mktemp("runtime_env") / "runtime.env"
+    empty.write_text("")
+    monkeypatch.setenv("AIFORGE_RUNTIME_ENV", str(empty))
 
 
 def _run(monkeypatch, capsys, argv):
@@ -39,6 +55,27 @@ def test_runtime_env_is_sourced_without_clobbering_explicit_env(tmp_path, monkey
 def test_runtime_env_missing_file_is_a_no_op(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_RUNTIME_ENV", str(tmp_path / "nope.env"))
     mnt._load_runtime_env()   # must not raise
+
+
+def test_importing_this_module_does_not_touch_the_environment():
+    """It used to source ~/.aiforge/runtime.env at MODULE scope, so importing
+    the maintenance CLI anywhere injected the operator's personal config into
+    the whole process. That showed up as 16 unrelated triage tests failing in
+    the full suite and passing alone — the file carries
+    AIFORGE_FORCE_FULL_PIPELINE=1, which forces every triage decision to the
+    full pipeline. Only main() may source it now."""
+    import subprocess
+    import sys
+    probe = (
+        "import os;"
+        "os.environ.pop('AIFORGE_FORCE_FULL_PIPELINE', None);"
+        "import aiforge_core.cli.maintenance;"
+        "print(os.environ.get('AIFORGE_FORCE_FULL_PIPELINE'))"
+    )
+    out = subprocess.run([sys.executable, "-c", probe], cwd=str(_REPO),
+                         capture_output=True, text=True, timeout=180)
+    assert out.stdout.strip() == "None", (
+        "importing the CLI leaked runtime.env into os.environ:\n" + out.stdout)
 
 
 # ── subcommands ───────────────────────────────────────────────────────
