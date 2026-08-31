@@ -72,7 +72,7 @@
 #                Docker piece; also AIFORGE_LANGFUSE=1 in .env)
 #   --stop-langfuse  stop the langfuse containers (traces are ephemeral)
 #   --with-graphify  install the `graphify` CLI (concept-graph tool)
-#   --migrate    force a (re-)converge: migrate a prior PG/Neo4j install →
+#   --migrate    force a (re-)converge: clear stale PG/Neo4j env keys and remove
 #                SQLite/OKR + remove docker, then start
 #   --install-model2vec  install semantic memory (model2vec static embeddings,
 #                ~30MB, NO torch), then start with it active. One-time.

@@ -35,7 +35,7 @@ heavy, so it comes up fast.
 `git pull && ./run.sh` — the first boot AUTO-migrates your data (Postgres →
 SQLite tickets/chat, Neo4j facts → OKR briefs, briefs → `compacted/` folder, okf
 DAG → `memory-archive/`) and removes the DB-infra containers (keeps Langfuse).
-Force a re-migrate anytime with `./run.sh --migrate`. No data loss; nothing to
+Force a re-converge anytime with `./run.sh --migrate`. No data loss; nothing to
 hand-edit.
 
 **Memory recall — hash (default) vs semantic:**

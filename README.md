@@ -36,7 +36,7 @@ or a cloud endpoint with a key. Hit **Test connection** to verify. Then use **Ch
 Single-mode: everything on the host, embedded **SQLite** (tickets + chat) + scoped
 **OKR Markdown memory** under `~/.aiforge/` — no infra Docker. Upgrading an old
 dockerized (Postgres/Neo4j) install? `git pull && ./run.sh` auto-migrates the data
-to SQLite/OKR and removes the DB containers (force with `./run.sh --migrate`).
+cleans stale PG/Neo4j env keys and removes leftover DB containers (force with `./run.sh --migrate`).
 
 Recall is **keyword + spell-correction** by default (no download). Add
 **semantic** vector KNN (meaning/paraphrase recall) once with
@@ -50,9 +50,9 @@ an OpenAI-compatible `/v1/embeddings` endpoint you already run:
 > container. Treat the chat box like a terminal.
 
 `./run.sh --dev` enables hot reload; `--port N` / `--host H` change the bind;
-`--migrate` re-migrates a prior install; `--install-model2vec` enables semantic recall (no torch).
+`--migrate` forces a re-converge (env cleanup + leftover container removal); `--install-model2vec` enables semantic recall (no torch).
 Mode is `AIFORGE_MODE`-driven (`lite` | `hybrid` | `docker`; a flag still wins):
-`--lite` runs **zero-Docker** (host + SQLite for everything). `--migrate` moves an
+`--lite` runs **zero-Docker** (host + SQLite for everything). `--migrate` re-runs an
 existing Postgres (chat + tickets) into the SQLite stores and removes the DB infra
 containers. `--with-langfuse` / `--stop-langfuse` manage the optional self-hosted
 LLM trace UI — allowed even in `--lite`, so tracing can be the only container.

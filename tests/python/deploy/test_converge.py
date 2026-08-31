@@ -129,30 +129,6 @@ def test_already_done_still_removes_lingering_infra(env, monkeypatch):
     assert out["cleaned"]["containers"] == ["aiforge-neo4j"]
 
 
-def test_a_failed_migration_keeps_docker_intact(env, monkeypatch):
-    monkeypatch.setattr(cv, "_docker", _Docker(containers={"aiforge-postgres"}))
-    monkeypatch.setattr(cv, "_migrate_pg_to_sqlite", lambda: False)
-    removed = []
-    monkeypatch.setattr(cv, "_remove_db_infra", lambda: removed.append(1) or {})
-    monkeypatch.setattr("time.sleep", lambda *_: None)
-    out = cv.converge()
-    assert out == {"ok": False, "step": "postgres_to_sqlite"}
-    assert not removed, "a failed migration must NOT delete the source data"
-    assert not cv._marker().exists(), "and must not mark itself done"
-
-
-def test_successful_migration_removes_infra_and_marks_done(env, monkeypatch):
-    monkeypatch.setattr(cv, "_docker", _Docker(containers={"aiforge-postgres"}))
-    monkeypatch.setattr(cv, "_migrate_pg_to_sqlite", lambda: True)
-    monkeypatch.setattr(cv, "_remove_db_infra",
-                        lambda: {"containers": ["aiforge-postgres"],
-                                 "volumes": ["v"], "images": ["i"]})
-    monkeypatch.setattr("time.sleep", lambda *_: None)
-    out = cv.converge()
-    assert out["ok"] is True
-    assert cv._marker().exists()
-
-
 def test_langfuse_is_never_in_the_infra_removal_set():
     """The one thing this teardown must never touch."""
     assert not any("langfuse" in n for n in cv._INFRA)
