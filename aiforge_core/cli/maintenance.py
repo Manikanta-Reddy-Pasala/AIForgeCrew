@@ -107,11 +107,6 @@ def _cmd_cost_snapshot(args) -> int:
     return 0
 
 
-def _cmd_codemem_ingest(args) -> int:
-    from aiforge_memory.api.cli import _cmd_ingest as _ing
-    return _ing(args)
-
-
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="aiforge-maint")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -157,14 +152,6 @@ def main(argv: list[str] | None = None) -> int:
     snap = co_sub.add_parser("snapshot")
     snap.add_argument("--ticket", default=None)
     snap.set_defaults(func=_cmd_cost_snapshot)
-
-    cm = sub.add_parser("codemem", help="codemem operator commands")
-    cm_sub = cm.add_subparsers(dest="action", required=True)
-    cm_ing = cm_sub.add_parser("ingest", help="Stage 1+2 ingest")
-    cm_ing.add_argument("repo")
-    cm_ing.add_argument("--path")
-    cm_ing.add_argument("--force", action="store_true")
-    cm_ing.set_defaults(func=_cmd_codemem_ingest)
 
     args = p.parse_args(argv)
     try:

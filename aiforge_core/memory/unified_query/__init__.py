@@ -55,9 +55,7 @@ from ._ranking import (
     _rerank_top,
 )
 from ._sources import (
-    _afm_bundle,
     _chat_sessions,
-    _cross_repo_links,
     _docs_lookup,
     _global_vector_recall,
     _mcp_call,

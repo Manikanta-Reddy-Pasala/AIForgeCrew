@@ -27,7 +27,7 @@ def _setup_ticket_workspace(ticket) -> tuple[str | None, dict]:
 
     # Capture BOTH env vars we override per-ticket so the finally can
     # restore them. AIFORGE_AFM_REPO scopes memory recall (unified_query
-    # afm_bundle/xrepo, memory_lookup, impacted_tests) to THIS ticket's
+    # memory_lookup, impacted_tests) to THIS ticket's
     # repo — without it those sources fall back to a process-global that
     # is never set (→ dead) or, if exported once, leaks another repo's
     # context into every ticket (the ONE-2 class bug).

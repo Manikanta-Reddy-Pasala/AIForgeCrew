@@ -55,9 +55,6 @@ ui = [
 # tslp>=1.x, unresolvable next to the RepoMap's 0.13 tag queries).
 chunking = ["chonkie>=1.0"]
 
-[project.scripts]
-aiforge-memory = "aiforge_memory.api.cli:main"
-
 [tool.setuptools.packages.find]
 include = ["aiforge_memory*"]
 
@@ -66,8 +63,6 @@ include = ["aiforge_memory*"]
 "aiforge_memory.features.file" = ["prompts/*.txt"]
 "aiforge_memory.features.service" = ["prompts/*.txt"]
 "aiforge_memory.features.symbol" = ["prompts/*.txt", "queries/*.scm"]
-"aiforge_memory.ui" = ["index.html"]
-"aiforge_memory.features.eval" = ["*.yaml"]
 
 [tool.ruff]
 line-length = 100

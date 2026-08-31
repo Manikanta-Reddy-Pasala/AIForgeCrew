@@ -20,7 +20,7 @@ def _recall_hits(ticket) -> "tuple[dict | None, str]":
         from aiforge_core.memory import unified_query as _uq
         text = f"{ticket.title}\n{ticket.body or ''}"
         # ticket.project doubles as the AiForgeMemory Repo.name for source #7
-        # (afm_bundle). Falls back to env when absent.
+        # Falls back to env when absent.
         result = _uq.query(text, ticket=ticket.identifier, limit=8,
                            repo=getattr(ticket, "project", None) or None)
         return result, text
