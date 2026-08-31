@@ -172,6 +172,24 @@ def test_cost_snapshot_imports_the_module_that_actually_exists():
     assert importlib.util.find_spec("aiforge_core.runtime.cost") is None
 
 
+def test_an_unexpected_failure_exits_non_zero(monkeypatch, capsys):
+    """The catch-all used to return 0 for every exception, which is what hid
+    two dead commands: each printed its ImportError and reported success. The
+    error line is still printed; only the false exit code is gone."""
+    def _boom(args):
+        raise RuntimeError("backend exploded")
+    monkeypatch.setattr(mnt, "_cmd_memory_decay", _boom)
+    rc = mnt.main(["memory", "decay"])
+    assert rc == 1, "a failing subcommand must not report success"
+    assert "backend exploded" in json.loads(capsys.readouterr().out)["error"], \
+        "the diagnostic a cron job relied on must still be printed"
+
+
+def test_a_successful_command_still_exits_zero(monkeypatch, capsys):
+    monkeypatch.setattr("aiforge_core.memory.decay.run", lambda: {"removed": 0})
+    assert mnt.main(["memory", "decay"]) == 0
+
+
 def test_unknown_command_is_rejected(monkeypatch):
     with pytest.raises(SystemExit):
         mnt.main(["not-a-command"])
