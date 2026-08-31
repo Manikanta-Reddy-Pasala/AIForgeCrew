@@ -93,6 +93,12 @@ def test_it_does_not_mark_done_while_postgres_is_still_there(env, monkeypatch):
 
 
 def test_it_says_so_rather_than_failing_silently(env, monkeypatch, caplog):
+    # `aiforge` is configured with propagate=False the moment anything imports
+    # the API or the structured logger, so in a full-suite run caplog's root
+    # handler sees NOTHING and this test passed only when run alone. Restore
+    # propagation for the duration rather than depending on import order.
+    import logging
+    monkeypatch.setattr(logging.getLogger("aiforge"), "propagate", True)
     monkeypatch.setattr(cv, "_docker", _Docker(containers={"aiforge-postgres"}))
     with caplog.at_level("WARNING"):
         cv.converge()
