@@ -25,6 +25,18 @@ def _syntax_ok(rel: str, content: str) -> bool:
         return True
 
 
+def _inside(cwd: str, rel: str) -> bool:
+    """Does ``rel`` actually land inside the workspace?
+
+    Stripping ".." out of the string is not containment: "../../etc/passwd"
+    becomes "//etc/passwd", which os.path.join returns UNCHANGED because it is
+    absolute — so a path the MODEL chose could read and overwrite a file
+    outside the workspace entirely. Check where it lands, not how it looks.
+    """
+    root = os.path.realpath(cwd)
+    return os.path.commonpath([root, os.path.realpath(os.path.join(cwd, rel))]) == root
+
+
 def _patched_content(content: str, seg: str, rel: str,
                      failures: list) -> str:
     """Apply this file's SEARCH/REPLACE blocks. A SEARCH that does not match
@@ -40,6 +52,9 @@ def _patched_content(content: str, seg: str, rel: str,
 def _apply_one_patch(cwd: str, rel: str, seg: str, failures: list) -> str | None:
     """Patch one file; returns its path when it was written."""
     rel = rel.lstrip("/").replace("..", "")
+    if not _inside(cwd, rel):
+        failures.append((rel, "path outside the workspace"))
+        return None
     fp = os.path.join(cwd, rel)
     if not os.path.isfile(fp):
         failures.append((rel, "file not found"))
@@ -224,7 +239,7 @@ def _write_whole_files(cwd: str, out: str, written: list) -> None:
     from .._runners import _parse_file_blocks
     for rel, content in _parse_file_blocks(out).items():
         rel = rel.lstrip("/").replace("..", "")
-        if not rel or not content.strip():
+        if not rel or not content.strip() or not _inside(cwd, rel):
             continue
         if not _syntax_ok(rel, content):
             continue
