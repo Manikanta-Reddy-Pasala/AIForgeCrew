@@ -409,7 +409,8 @@ def _reclassify_decisions(items: list[dict], repo_list: str) -> list:
 def _repo_name_match(node: dict, repo_set: set) -> str:
     """DETERMINISTIC repo-name assist: a local model reliably marks noise but
     rarely maps to a repo. If a repo NAME appears verbatim in the learning's
-    category/body (token ≥5 chars, so 'Cache' alone won't false-hit), that is
+    category/body (token 6+ chars, so a 5-letter
+    word like 'Cache' alone won't false-hit), that is
     the owner — generic name matching, no hardcoded service→repo table."""
     m = node.get("meta") or {}
     hay = (str(m.get("category") or "") + " "
@@ -417,7 +418,7 @@ def _repo_name_match(node: dict, repo_set: set) -> str:
     best = ""
     for rp in repo_set:
         key = rp.lower().replace("-", "")
-        if len(key) >= 5 and key in hay and len(key) > len(best):
+        if len(key) > 5 and key in hay and len(key) > len(best):
             best = rp
     return best
 
@@ -680,28 +681,6 @@ def build_repo_profiles() -> dict:
         if r.get("ok"):
             made += 1
     return {"ok": True, "profiles": made}
-
-
-def _brief_facts_by_topic() -> dict[str, list[str]]:
-    """Every knowledge brief's Facts, keyed by topic (split parts folded back)."""
-    import re
-
-    from aiforge_core.memory import md_store
-    from aiforge_core.runtime import work_notes
-    out: dict[str, list[str]] = {}
-    for p in md_store.iter_briefs():
-        topic = re.sub(r"-\d+$", "", p.stem[len("compacted-"):])
-        try:
-            parsed = work_notes.parse_note(
-                p.read_text(encoding="utf-8", errors="replace"))
-        except Exception:  # noqa: BLE001
-            continue
-        if (parsed["frontmatter"] or {}).get("kind") != "knowledge":
-            continue
-        facts = parsed["sections"].get("facts") or []
-        if facts:
-            out.setdefault(topic, []).extend(facts)
-    return out
 
 
 def migrate_from_briefs() -> dict:
