@@ -3,12 +3,24 @@ for human Approve/Reject on ``ask``-policy or review-gated tool calls.
 
 Three modes: Chat (simple), Plan, Pipeline (team). Each is a boolean
 "require approval". When OFF, the tool gate does NOT pause that mode's runs for
-approval (``ask`` and review-edits gates auto-allow); a hard ``deny`` policy
-still blocks, and a destructive-delete confirm still fires — those are safety
-floors, not chat-mode approvals. When ON (the default), behaviour is unchanged.
+approval (``ask`` and review-edits gates auto-allow). When ON (the default),
+behaviour is unchanged.
 
-Autonomous ticket runs (no chat session) are unaffected — they never had a
-human approver anyway. Stored at ``$AIFORGE_CONFIG_DIR/approval_settings.json``.
+A hard ``deny`` policy still blocks either way — that is a safety floor, not a
+chat-mode approval, and the toggle cannot lift it.
+
+DESTRUCTIVE DELETES: in an INTERACTIVE chat run, approvals-off IS the
+confirmation — see ``_command_gate_flags`` in runtime/chat_agent/_loop.py. It
+did not used to be, and the result was a toggle that felt broken: the delete
+guard matches the whole command string, so routine remote maintenance
+(``ssh host 'docker rm -f c'``, ``kubectl delete pod``, ``git clean -fdx``)
+kept prompting after the operator had explicitly turned approvals off. The
+relaxation is audited and scoped to the mode whose toggle is off.
+
+Autonomous ticket runs (no chat session) are unaffected in BOTH directions —
+they never had a human approver, so ``required(None)`` is True by construction
+and no toggle can relax a delete for an unattended run.
+Stored at ``$AIFORGE_CONFIG_DIR/approval_settings.json``.
 """
 from __future__ import annotations
 
