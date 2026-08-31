@@ -113,6 +113,29 @@ def _vec_enabled() -> bool:
 
 
 _VEC_WARNED = False
+_VEC_TRIGGER_NAMES = ("vec_memory_ai", "vec_memory_ad", "vec_memory_au")
+
+
+def _drop_vec_triggers(c) -> bool:
+    """Remove the vec0 sync triggers. Returns True if any existed.
+
+    Every trigger writes to ``vec_memory``, so while the extension is not
+    loaded on this connection they turn an ordinary INSERT into memory_units
+    into ``no such module: vec0``. Dropping them is persistent and cheap;
+    ``_init_vec`` recreates them (and backfills the gap) the next time a
+    connection does load sqlite-vec.
+    """
+    existed = False
+    for _t in _VEC_TRIGGER_NAMES:
+        try:
+            if c.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='trigger' "
+                    "AND name = ?", (_t,)).fetchone():
+                existed = True
+            c.execute(f"DROP TRIGGER IF EXISTS {_t}")
+        except sqlite3.OperationalError:
+            pass
+    return existed
 
 
 def _disable_vec(c, exc) -> None:
@@ -130,11 +153,40 @@ def _disable_vec(c, exc) -> None:
             "vec0 index (keyword/FTS recall still works). Install sqlite-vec to "
             "restore semantic recall.", exc)
         _VEC_WARNED = True
-    for _t in ("vec_memory_ai", "vec_memory_ad", "vec_memory_au"):
-        try:
-            c.execute(f"DROP TRIGGER IF EXISTS {_t}")
-        except sqlite3.OperationalError:
-            pass
+    _drop_vec_triggers(c)
+
+
+def _retire_vec_triggers_when_disabled(c) -> None:
+    """The vector backend is OFF, but the DB may still carry vec0 triggers from
+    an earlier run under a semantic backend.
+
+    Nothing loads the extension on this path, so those leftover triggers fail
+    EVERY memory write with ``no such module: vec0`` — and the ``_disable_vec``
+    rescue never runs, because it hangs off ``_init_vec``, which this branch
+    skips. That is how a note got lost: the store had been built under
+    ``model2vec`` and the process then came up with AIFORGE_EMBED_BACKEND unset,
+    whose default is ``hash``.
+
+    Retiring them is not a downgrade. Recall under a lexical backend uses the
+    brute-force cosine scan, never the ANN index, so while the backend is off
+    the index is pure liability.
+
+    On the way back, ``_init_vec``'s incremental backfill re-adds the rows
+    missed in the meantime — but only those whose stored vector matches the
+    active vec0 dimension. A row written while a LEXICAL backend was selected
+    carries that backend's vector, so if the two dimensions differ its insert
+    is skipped (deliberately: see the OperationalError branch in _init_vec) and
+    it stays out of the ANN index until ``aiforge-maint memory reembed``
+    re-embeds it with the active model. It is still stored, and still findable
+    by keyword/FTS throughout — which is the property that matters here.
+    """
+    if _drop_vec_triggers(c):
+        _log.info(
+            "vector backend is off (AIFORGE_EMBED_BACKEND=%s) but the store "
+            "carried vec0 sync triggers from an earlier semantic run — "
+            "retired them so writes land; they are recreated and backfilled "
+            "when a vector backend is selected again.",
+            os.environ.get("AIFORGE_EMBED_BACKEND", "hash"))
 
 
 def _init_vec(c) -> None:
@@ -209,6 +261,11 @@ def _conn() -> Iterator[sqlite3.Connection]:
                 # memory WRITE must not be lost for it — same rule _safe_embed
                 # already applies to the embedder — so degrade instead of raise.
                 _disable_vec(c, exc)
+        else:
+            # NOT a no-op: leftover triggers from a previous semantic run break
+            # every write on this path, and nothing above rescues it. See
+            # _retire_vec_triggers_when_disabled.
+            _retire_vec_triggers_when_disabled(c)
         yield c
         c.commit()
     finally:

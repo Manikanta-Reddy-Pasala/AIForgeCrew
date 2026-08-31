@@ -651,6 +651,14 @@ export AIFORGE_BROWSER_ALLOWLIST="${AIFORGE_BROWSER_ALLOWLIST:-127.0.0.1,localho
 export DO_NOT_TRACK="${DO_NOT_TRACK:-1}"
 export HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"
 export LITELLM_TELEMETRY="${LITELLM_TELEMETRY:-False}"
+# litellm fetches its model cost/context map from raw.githubusercontent.com on
+# EVERY import and warns when the fetch fails ("Failed to fetch remote model
+# cost map ... Falling back to local backup"). This is a local-model deployment,
+# so the call buys nothing: it is a startup network round-trip whose only
+# outcome is the backup map that ships inside the wheel — which is what the
+# failure already falls back to. Ask for the local map directly. Set this to
+# False to restore the fetch if you start pricing cloud models from here.
+export LITELLM_LOCAL_MODEL_COST_MAP="${LITELLM_LOCAL_MODEL_COST_MAP:-True}"
 
 # ── Maintenance commands (use the existing venv, no uv/deps step, then EXIT) ─
 # ./run.sh --dedupe | --recompact-all | --purge-code
