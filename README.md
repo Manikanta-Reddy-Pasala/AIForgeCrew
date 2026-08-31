@@ -93,7 +93,7 @@ LLM trace UI — allowed even in `--lite`, so tracing can be the only container.
   topic-organized, tagged (by topic **and** which agent wrote it), split-on-oversize
   with cross-links, and compacted hourly. Plus a session **execution ledger** ("don't
   redo what already ran") and auto-captured **working workflows**. Vector+text+graph
-  recall (SQLite embedded, or optional Neo4j) sits underneath, with code chunks
+  recall (SQLite embedded) sits underneath, with code chunks
   demoted. Details: **[OKR_MEMORY.md](docs/OKR_MEMORY.md)** ·
   **[SYSTEM_OVERVIEW.md](docs/SYSTEM_OVERVIEW.md#4-memory--knowledge)**.
 - **Context engineering** — auto-compaction near the window limit, fresh per-turn
@@ -152,7 +152,6 @@ AIFORGE_TOOL_POLICY            e.g. "run_command=ask,file_write=deny"
 AIFORGE_CAVE_MODE              1 = lean context for small local models
 AIFORGE_PARALLEL_SUBTASKS(_MAX)  pipeline fan-out (default on, 4)
 AIFORGE_LANGFUSE=1             self-host the trace UI (or LANGFUSE_HOST + keys)
-AIFORGE_PG_URL / NEO4J_URI     optional "pro" storage backends
 JIRA_BASE_URL / JIRA_TOKEN     Jira (also in UI → Settings → Integrations)
 CONFLUENCE_BASE_URL / _TOKEN   Confluence (same pattern; _USER ⇒ Basic auth)
 ```
