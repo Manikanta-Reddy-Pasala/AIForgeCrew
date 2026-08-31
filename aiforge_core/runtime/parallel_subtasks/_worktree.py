@@ -392,7 +392,12 @@ def _resolve_conflict_hunk(goal: str, path: str, head: str, incoming: str,
             {"role": "user", "content": prompt}], max_tokens=2048) or ""
     except Exception:  # noqa: BLE001
         return ""
-    out = re.sub(r"(?:^```\w*\n?)|(?:\n?```$)", "", out.strip(), flags=re.M)
+    # Strip surrounding BLANK LINES only — never leading spaces. The block is
+    # spliced back into the file verbatim, so eating the first line's indent
+    # breaks the very indentation the prompt asks the model to match, and the
+    # file then fails the syntax check that follows.
+    out = re.sub(r"(?:^[ \t]*```\w*\n?)|(?:\n?[ \t]*```[ \t]*$)", "",
+                 out.strip("\n").rstrip(), flags=re.M)
     out = re.sub(r"^\s*(<<<<<<<|=======|>>>>>>>).*$", "", out, flags=re.M)
     return out.strip("\n")
 
