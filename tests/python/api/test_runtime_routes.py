@@ -28,18 +28,33 @@ def client():
     return TestClient(app)
 
 
+_TOUCHED_ENV = ("AIFORGE_PRIMARY_BACKEND", "AIFORGE_DOER_PRIMARY_BACKEND",
+                "AIFORGE_FORCE_FULL_PIPELINE", "AIFORGE_COMPACT_DISABLE",
+                "AIFORGE_GEMINI_RPM", "AIFORGE_GEMINI_TPM",
+                "AIFORGE_LLM_MAX_WAIT_S")
+
+
 @pytest.fixture(autouse=True)
 def persisted(monkeypatch):
-    """Capture what would be written to runtime.env."""
+    """Capture what would be written to runtime.env.
+
+    These endpoints set ``os.environ`` DIRECTLY (that is the point — the flag
+    has to take effect in this process without a restart), so monkeypatch has
+    nothing to undo and a value set here would leak into every later test in
+    the session. Snapshot and restore them by hand.
+    """
     written: dict = {}
     monkeypatch.setattr(rt, "_persist_env",
                         lambda key, value: written.__setitem__(key, value))
-    for var in ("AIFORGE_PRIMARY_BACKEND", "AIFORGE_DOER_PRIMARY_BACKEND",
-                "AIFORGE_FORCE_FULL_PIPELINE", "AIFORGE_COMPACT_DISABLE",
-                "AIFORGE_GEMINI_RPM", "AIFORGE_GEMINI_TPM",
-                "AIFORGE_LLM_MAX_WAIT_S"):
-        monkeypatch.delenv(var, raising=False)
-    return written
+    saved = {var: os.environ.get(var) for var in _TOUCHED_ENV}
+    for var in _TOUCHED_ENV:
+        os.environ.pop(var, None)
+    yield written
+    for var, old in saved.items():
+        if old is None:
+            os.environ.pop(var, None)
+        else:
+            os.environ[var] = old
 
 
 @pytest.fixture()
