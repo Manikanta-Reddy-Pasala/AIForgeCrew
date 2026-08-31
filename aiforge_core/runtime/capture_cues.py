@@ -19,7 +19,7 @@ _CUE_RE = re.compile(
     r"always|never|from now on|going forward|whenever|"
     r"remember|prefer|preference|rule|convention|setting|"
     r"i (?:prefer|want|like)|make sure to|"
-    r"by default|default|use\s+\w+\s+(?:as|for)\b|set\s+\w|"
+    r"by default|default|use\s+\w+\s+(?:as|for)\b|set\s+\w+|"
     r"my (?:preference|setting|convention|default)|"
     r"don'?t|do not|auto[-\s]?approve|auto[-\s]?commit|"
     r"without asking|stop asking|no need to ask|commit directly|"
