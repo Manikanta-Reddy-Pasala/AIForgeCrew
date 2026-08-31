@@ -311,6 +311,23 @@ def _syntax_rejection(rel: str, content: str) -> str | None:
         return None
 
 
+def _inside(worktree: str, rel: str) -> bool:
+    """Does ``rel`` actually land inside the worktree?
+
+    Deleting ".." from the string is not containment: "/../etc/passwd.py"
+    becomes "/etc/passwd.py", which ``os.path.join`` returns UNCHANGED because
+    it is absolute — so a path the MODEL labelled its block with could
+    overwrite a file outside the subtask's worktree entirely. Check where it
+    lands, not how it looks.
+    """
+    try:
+        root = os.path.realpath(worktree)
+        dest = os.path.realpath(os.path.join(worktree, rel))
+        return os.path.commonpath([root, dest]) == root
+    except (ValueError, OSError):  # different drives / unresolvable
+        return False
+
+
 def _write_subtask_files(files: dict, worktree: str, scope: list):
     """``(written_files, rejected, syntax_error)``.
 
@@ -321,6 +338,9 @@ def _write_subtask_files(files: dict, worktree: str, scope: list):
     rejected: list[str] = []
     for rel, content in files.items():
         rel = rel.lstrip("/").replace("..", "")
+        if not _inside(worktree, rel):
+            rejected.append(rel)
+            continue
         if scope and not _in_scope(rel, scope):
             rejected.append(rel)
             continue
