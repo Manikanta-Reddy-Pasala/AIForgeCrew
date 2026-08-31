@@ -168,9 +168,20 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except Exception as exc:
+        # Exit NON-zero. This used to return 0 "cron-friendly — log error but
+        # exit 0", and that is precisely what hid two dead commands: `codemem
+        # ingest` imported a function that did not exist and `cost snapshot`
+        # imported the wrong module, and BOTH printed their ImportError and
+        # then reported success. A cron job that mails on failure stayed
+        # silent; `aiforge-maint ... && next-step` ran next-step.
+        #
+        # The error line is still printed, so nothing a cron job used to see is
+        # lost — only the lie about the exit code is. This matches the same
+        # decision already made for `repo notes`, which returns 1 on failure
+        # for exactly this reason.
         print(json.dumps({"cmd": getattr(args, "cmd", "?"),
                           "error": str(exc)[:400]}))
-        return 0  # cron-friendly — log error but exit 0
+        return 1
 
 
 if __name__ == "__main__":
