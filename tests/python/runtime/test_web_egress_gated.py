@@ -112,7 +112,18 @@ def test_browser_empty_allowlist_allows_when_opted_in(monkeypatch):
 # ── external-ingest gate (#8) — existing gate must skip when off ─────────
 
 def test_external_ingest_skipped_when_off(monkeypatch):
+    """The gate must return BEFORE reading the ticket's external refs.
+
+    This used to prove it by patching
+    `aiforge_memory.features.external_ingest.ingest_external_source` with a
+    boom. That module went with the Neo4j layer, and a STRING target makes
+    monkeypatch import it — `raising=False` forgives a missing attribute, not
+    a missing module, so the patch itself raised ImportError. The gate is now
+    checked at the seam that still exists: with the gate off, nothing may even
+    look at the refs.
+    """
     from aiforge_core.runtime import adk_runner
+    from aiforge_core.runtime.adk_runner import _orchestrate
 
     monkeypatch.setenv("AIFORGE_EXTERNAL_INGEST", "0")
 
@@ -121,16 +132,29 @@ def test_external_ingest_skipped_when_off(monkeypatch):
         metadata = {"external_refs": ["http://example.com/spec"]}
 
     def _boom(*a, **k):  # pragma: no cover
-        raise AssertionError("external_ingest driver invoked while gated off")
+        raise AssertionError("external refs read while the gate is off")
 
-    # If the gate is honoured, we return before importing/using the driver.
-    monkeypatch.setattr(
-        "aiforge_memory.features.external_ingest.ingest_external_source",
-        _boom,
-        raising=False,
-    )
-    # Should return quietly, invoking nothing.
+    monkeypatch.setattr(_orchestrate, "_external_refs", _boom)
+    adk_runner._ingest_ticket_external_refs(_Ticket())   # returns quietly
+
+
+def test_external_ingest_reads_refs_when_on(monkeypatch):
+    """The counterpart, so the test above cannot pass by the gate being stuck
+    on 'off' — with the flag enabled the refs ARE read."""
+    from aiforge_core.runtime import adk_runner
+    from aiforge_core.runtime.adk_runner import _orchestrate
+
+    monkeypatch.setenv("AIFORGE_EXTERNAL_INGEST", "1")
+    seen = []
+
+    class _Ticket:
+        project = "demo"
+        metadata = {"external_refs": ["http://example.com/spec"]}
+
+    monkeypatch.setattr(_orchestrate, "_external_refs",
+                        lambda t: seen.append(t) or [])
     adk_runner._ingest_ticket_external_refs(_Ticket())
+    assert seen, "with the gate ON the refs must be read"
 
 
 def test_external_ingest_gate_present_in_source():
