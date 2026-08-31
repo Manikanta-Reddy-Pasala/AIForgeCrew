@@ -649,9 +649,10 @@ def _dispatch_tool(name, args, cwd, n, _hook_block):
 
 
 def _command_gate_flags(name, args, cwd, session_id, _mode_approvals):
-    """For a shell-family tool, detect a destructive delete (unless the
-    allow_delete opt-in auto-confirms it) and whether a scoped commit-auto-approve
-    flag applies to a whole-command git commit/add. May set args[confirm_delete].
+    """For a shell-family tool, detect a destructive delete (unless approvals
+    are off for this interactive chat mode, or the allow_delete opt-in
+    auto-confirms it) and whether a scoped commit-auto-approve flag applies to a
+    whole-command git commit/add. May set args[confirm_delete].
     Returns ``(destructive_del, auto_commit)``."""
     _destructive_del = False
     _auto_commit = False
@@ -686,13 +687,40 @@ def _command_gate_flags(name, args, cwd, session_id, _mode_approvals):
             # allow_delete stays SUBORDINATE to the toggle: auto-confirming
             # an `rm -rf` in a mode whose approvals are on is a far bigger
             # relaxation than skipping a commit prompt, and nothing asked
-            # for it.
+            # for it. Off, it is the captured per-repo/session opt-in.
             if not _mode_approvals and _destructive_del and _rc.flag_active(
                     "allow_delete", repo=_repo, session_id=session_id):
                 _destructive_del = False
                 args["confirm_delete"] = True
         except Exception:  # noqa: BLE001
             pass
+        # Approvals OFF in an INTERACTIVE chat run is itself the confirmation.
+        #
+        # Until now the destructive-delete floor ignored the toggle entirely,
+        # on the reasoning that auto-confirming `rm -rf` is a far bigger
+        # relaxation than skipping a commit prompt. In practice that made the
+        # toggle feel broken: the guard matches the whole command string, so
+        # ordinary remote maintenance — `ssh host 'docker rm -f c'`,
+        # `ssh host 'kubectl delete pod p'`, `git clean -fdx` — kept prompting
+        # after the operator had explicitly turned approvals off. The operator
+        # asked for this after seeing exactly that.
+        #
+        # The relaxation is deliberately narrow, and every other floor stands:
+        #   * session_id is None (an AUTONOMOUS ticket run) never reaches here
+        #     — approvals_required(None) is True by design, so _mode_approvals
+        #     is True and this branch cannot fire. Unattended runs stay guarded.
+        #   * it is per chat MODE: turning off Chat does not relax Plan or
+        #     Pipeline, each of which has its own toggle.
+        #   * a DENY policy still blocks, and the workspace jail, blanket-git
+        #     and server-start refusals are untouched.
+        # Setting confirm_delete is what carries the decision through to the
+        # shell tool's own delete refusal, which would otherwise still fire.
+        if not _mode_approvals and _destructive_del and session_id is not None:
+            _destructive_del = False
+            args["confirm_delete"] = True
+            # Audited, not invisible — same rule as the commit bypass.
+            _log.warning("chat.delete_auto_confirmed reason=approvals_off "
+                        "session=%s cmd=%s", session_id, _cmd[:200])
     return _destructive_del, _auto_commit
 
 
