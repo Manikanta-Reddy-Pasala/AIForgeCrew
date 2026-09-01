@@ -38,8 +38,14 @@ def test_defaults(rs, monkeypatch):
         "chat_safety_cap": 0, "chat_turn_deadline_s": 0,
         "chat_cap_extensions": 2,
         "chat_unattended_cap": 2000,
-        # Global cap 20, carved into compaction (5) + chat (15) sub-ceilings.
-        "llm_max_rpm": 20,
+        # Global cap 15. NOT 20, and not the sum of the sub-ceilings below:
+        # compaction (5) + chat (15) already come to 20, so a global cap equal
+        # to their sum constrains nothing, and 20 was also exactly the limit on
+        # the gateway this ran against ("You've used 20 requests with this model
+        # in the last minute"). A ceiling has to sit STRICTLY under the
+        # provider's — two windows never agree on where a minute starts, so
+        # equal ones collide rather than merely touch.
+        "llm_max_rpm": 15,
         "compaction_rpm": 5,
         "chat_rpm": 15,
         "llm_rate_limit_backoff_s": 20,
