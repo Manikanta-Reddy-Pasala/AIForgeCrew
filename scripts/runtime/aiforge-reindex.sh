@@ -37,8 +37,15 @@ mkdir -p "$LOG_DIR" "$GRAPHIFY_OUT_BASE"
 LOG="$LOG_DIR/reindex-$REPO_NAME.log"
 GRAPHIFY_OUT="$GRAPHIFY_OUT_BASE/$REPO_NAME"
 
-PY="${AIFORGE_VENV:-/home/mani/AIForgeCrew/.venv}/bin/python"
-GRAPHIFY="${GRAPHIFY:-/home/mani/.local/bin/graphify}"
+# Resolve the interpreter + graphify from THIS checkout and the caller's PATH.
+# Hardcoded /home/mani/... paths meant that on any other box (the NUC runs as
+# `ai`) both were missing, so the hook exited having done nothing — silently,
+# because a git hook always exits 0.
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AIFORGE_REPO="$(cd "$HOOK_DIR/../.." && pwd)"
+PY="${AIFORGE_VENV:-$AIFORGE_REPO/.venv}/bin/python"
+[ -x "$PY" ] || PY="$(command -v python3 || true)"
+GRAPHIFY="${GRAPHIFY:-$(command -v graphify || echo "$HOME/.local/bin/graphify")}"
 
 (
   echo "=== $(date -Iseconds) reindex $REPO_NAME ==="
@@ -49,12 +56,12 @@ GRAPHIFY="${GRAPHIFY:-/home/mani/.local/bin/graphify}"
       timeout 600 "$GRAPHIFY" update . --out "$GRAPHIFY_OUT" 2>&1 | tail -3
   fi
 
+  # The Neo4j mirror step is gone with the graph layer — aiforge_core.indexing
+  # .graphify_loader no longer exists, so calling it only produced "No module
+  # named" in a log nobody reads. graphify's own artifacts under
+  # $GRAPHIFY_OUT are the output now.
   GJ="$GRAPHIFY_OUT/graph.json"
-  if [ -f "$GJ" ] && [ -x "$PY" ]; then
-    AIFORGE_NEO4J_URI="${AIFORGE_NEO4J_URI:-bolt://127.0.0.1:7687}" \
-      "$PY" -m aiforge_core.indexing.graphify_loader \
-      --graph "$GJ" --repo "$REPO_NAME" 2>&1 | tail -3
-  fi
+  [ -f "$GJ" ] && echo "    graph: $GJ"
 
   echo "=== done $SECONDS s ==="
 ) >>"$LOG" 2>&1 &
