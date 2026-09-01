@@ -32,9 +32,14 @@ def test_a_reversible_local_action_may_act(tool, args):
     assert _risk.verdict(tool, args, confidence=0.9, clean_tree=False) == _risk.ACT
 
 
-def test_a_plain_reply_with_no_tool_may_act():
-    """A prediction that only SAYS something has no blast radius at all."""
-    assert _risk.verdict("", {}, confidence=0.9, clean_tree=False) == _risk.ACT
+@pytest.mark.parametrize("tool", ["", "   ", None])
+def test_a_prediction_naming_no_tool_never_acts(tool):
+    """It does NOT "only say something" — the chip SENDS it as a chat message,
+    which starts a whole agent turn free to run any tool. Blast radius is a
+    turn, not zero. Believing otherwise is what re-ran a user's own question.
+    """
+    assert _risk.tier(tool, {}) == 3
+    assert _risk.verdict(tool, {}, confidence=0.99, clean_tree=True) == _risk.OFFER
 
 
 def test_low_confidence_never_acts_even_when_safe():

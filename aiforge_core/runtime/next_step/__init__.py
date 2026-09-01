@@ -44,6 +44,13 @@ def predict(ctx: dict) -> Prediction | None:
         row = _predict.raw_prediction(ctx or {})
         if row is None:
             return None
+        if _predict.is_restatement(row["action"], ctx or {}):
+            # A rewording of the request that just finished is not a next step,
+            # however sure the model is that it wants it. Dropped BEFORE the
+            # confidence floor, because this failure arrives at high confidence
+            # by construction: the model is right about what was wanted and
+            # wrong only about it still being wanted.
+            return None
         if row["confidence"] < _risk.min_confidence():
             # Below the floor nothing is emitted AT ALL, not even an offer: a
             # guess the model itself doubts is noise, and noise teaches the user

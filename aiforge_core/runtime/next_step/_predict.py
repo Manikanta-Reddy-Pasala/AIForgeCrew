@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import uuid
 
 log = logging.getLogger("aiforge.next_step")
@@ -25,11 +26,86 @@ _SYS = (
     'empty>","args":{...},"confidence":0.0-1.0,"rationale":"<one clause>"}. '
     "Be conservative: if the next step is not strongly implied by what just "
     "happened, return a confidence below 0.5. Never propose an action that "
-    "deletes data, pushes code, deploys, or spends money."
+    "deletes data, pushes code, deploys, or spends money.\n"
+    "MOST REQUESTS NEED NOTHING NEXT. If the request was already answered, say "
+    'so with {"action":"","confidence":0.0} — that is the expected reply, not '
+    "a failure. Never restate, rephrase, confirm or summarise what was just "
+    "asked or just done: repeating the request back is not a next step. A real "
+    "next step names the tool it would use; if you cannot name one, your "
+    "confidence must be below 0.5."
 )
 
 _MAX_EXAMPLES = 5
 _DEFAULT_TIMEOUT_S = 10
+
+# Words that carry no topic and so must not count as agreement between two
+# sentences. Deliberately short: this list only has to stop the commonest
+# connectives from inflating an overlap score.
+_STOPWORDS = frozenset({
+    "the", "and", "for", "with", "that", "this", "what", "which", "who", "how",
+    "why", "when", "where", "you", "your", "our", "are", "was", "were", "has",
+    "have", "had", "can", "could", "would", "should", "will", "just", "one",
+    "two", "please", "then", "than", "from", "into", "out", "off", "its",
+    "it's", "does", "did", "doing", "done", "not", "any", "all", "some",
+    "short", "sentence", "single", "exactly", "reply", "answer",
+})
+
+# Above this share of an action's content words appearing in the text it
+# followed, the "next step" is a rewording of what already happened. 0.7 was
+# picked against the three echoes actually observed in production (the worst
+# scored 0.8) while leaving a genuine follow-up like "run the tests for
+# chat_pipeline" after "fix the run lock in chat_pipeline" (0.67) alone.
+_RESTATEMENT_RATIO = 0.7
+_MIN_WORDS_TO_JUDGE = 3
+
+
+def _content_words(text: str) -> set[str]:
+    """Topic-bearing words of ``text``, crudely singularised.
+
+    Correct linguistics is not the goal and would not help: both sides are
+    normalised the same way, so a consistent mangling compares exactly as well
+    as a right one.
+    """
+    out: set[str] = set()
+    for raw in re.findall(r"[a-z0-9_./-]+", str(text or "").lower()):
+        word = raw.strip("./-")
+        if len(word) < 3 or word in _STOPWORDS:
+            continue
+        if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+            word = word[:-1]
+        out.add(word)
+    return out
+
+
+def _echoes(action: str, prior: str) -> bool:
+    """True when ``action`` is mostly a rewording of ``prior``."""
+    a = _content_words(action)
+    if len(a) < _MIN_WORDS_TO_JUDGE:
+        # Too little to judge, and guessing here would silently drop terse but
+        # perfectly good suggestions.
+        return False
+    p = _content_words(prior)
+    if not p:
+        return False
+    return len(a & p) / len(a) >= _RESTATEMENT_RATIO
+
+
+def is_restatement(action: str, ctx: dict) -> bool:
+    """True when the "next step" merely restates the turn that just ended.
+
+    The failure this exists for: asked for the next action after a request that
+    is already fully answered, a model reliably rephrases that request back —
+    observed on every one of the first three live predictions, each at
+    confidence 0.95. The chip then auto-sent it and the user's own question ran
+    a second time. Confidence cannot catch this; the model is not wrong about
+    what was wanted, only about it still being wanted.
+    """
+    text = str(action or "")
+    if not text.strip():
+        return False
+    c = ctx or {}
+    return _echoes(text, str(c.get("message") or "")) or \
+        _echoes(text, str(c.get("did") or ""))
 
 
 def _disabled() -> bool:

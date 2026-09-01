@@ -17,9 +17,10 @@ Three tiers:
    No degree of confidence makes an irreversible guess acceptable, so this tier
    is never acted on.
 
-An unrecognised tool falls in tier 3. The unknown case has to be the careful
-one, or every tool added after this file is a hole until somebody remembers to
-come back and classify it.
+An unrecognised tool falls in tier 3, and so does a prediction that names NO
+tool. The unknown case has to be the careful one, or every tool added after this
+file is a hole until somebody remembers to come back and classify it — and a
+prediction that cannot name what it would do is the most unknown case of all.
 """
 from __future__ import annotations
 
@@ -103,7 +104,13 @@ def tier(tool: str, args: dict) -> int:
     """1 = reversible and local, 2 = writes the workspace, 3 = neither."""
     name = str(tool or "").strip()
     if not name:
-        return 1                    # a prediction that only says something
+        # NOT tier 1. A prediction with no tool does not "only say something":
+        # the chip SENDS it as an ordinary chat message, which starts a whole
+        # agent turn free to run any tool it likes. Its blast radius is a turn,
+        # not zero. This is the same reasoning `_shell_tier` already applies to
+        # an empty command — a prediction that cannot say what it would do is
+        # not one to do — and it belongs here for the same reason.
+        return 3
     if name in _READ_ONLY:
         return 1
     if name in _WORKSPACE_WRITE:

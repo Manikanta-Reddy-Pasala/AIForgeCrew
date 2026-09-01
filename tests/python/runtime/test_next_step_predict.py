@@ -143,3 +143,78 @@ def test_another_repos_history_is_not_offered(monkeypatch):
     next_step.predict(_ctx())
 
     assert "something from elsewhere" not in str(seen["p"])
+
+
+# ── the echo: a "next step" that is the request over again ───────────────
+#
+# The production failure this guards. Asked what comes next after a request it
+# has already fully answered, the model rephrases that request back — it did so
+# on every one of the first three live predictions, each at confidence 0.95,
+# each with no tool. The chip auto-sent it and the user's own question ran a
+# second time. The floor cannot catch this: the model is not wrong about what
+# was wanted, only about it still being wanted.
+
+
+def test_a_restated_request_is_not_a_next_step(monkeypatch):
+    """Verbatim from ~/.aiforge/next_step_history.json on the NUC."""
+    _reply(monkeypatch, '{"action":"Explain what the run lock in chat_pipeline '
+                        'protects.","tool":"","args":{},"confidence":0.95,'
+                        '"rationale":"they asked about the run lock"}')
+    ctx = _ctx(message="In one short sentence: what does the run lock in "
+                       "chat_pipeline protect?",
+               did="explained the run lock")
+    assert next_step.predict(ctx) is None
+
+
+def test_a_restatement_of_what_was_done_is_dropped_too(monkeypatch):
+    _reply(monkeypatch, '{"action":"read deploy/env.py and report the host",'
+                        '"tool":"read_file","args":{"path":"deploy/env.py"},'
+                        '"confidence":0.95,"rationale":"x"}')
+    ctx = _ctx(message="what is in the deploy config?",
+               did="read deploy/env.py and reported the host")
+    assert next_step.predict(ctx) is None
+
+
+def test_high_confidence_does_not_rescue_an_echo(monkeypatch):
+    """Dropped BEFORE the floor, because this failure arrives at the top of the
+    confidence range by construction."""
+    _reply(monkeypatch, '{"action":"check the status of the cn-network-manager '
+                        'service","tool":"","args":{},"confidence":1.0,'
+                        '"rationale":"x"}')
+    ctx = _ctx(message="give me a shell command to check the status of the "
+                       "cn-network-manager service", did="gave the command")
+    assert next_step.predict(ctx) is None
+
+
+def test_a_genuine_follow_up_survives(monkeypatch):
+    """The guard must not eat real suggestions. This one shares most of its
+    subject with the request and is still a different action."""
+    _reply(monkeypatch, '{"action":"run the tests for chat_pipeline",'
+                        '"tool":"bash","args":{"cmd":"pytest tests/python"},'
+                        '"confidence":0.9,"rationale":"the fix needs proving"}')
+    ctx = _ctx(message="fix the run lock in chat_pipeline",
+               did="edited chat_pipeline.py")
+    p = next_step.predict(ctx)
+    assert p is not None
+    assert p.action == "run the tests for chat_pipeline"
+
+
+def test_a_terse_action_is_never_judged_an_echo(monkeypatch):
+    """Too few content words to compare. Guessing would silently drop good
+    short suggestions."""
+    _reply(monkeypatch, '{"action":"check it","tool":"read_file",'
+                        '"args":{"path":"x"},"confidence":0.9,"rationale":"x"}')
+    assert next_step.predict(_ctx(message="check it")) is not None
+
+
+def test_the_prompt_allows_no_next_step(monkeypatch):
+    """A model with no way to say "nothing is next" invents one."""
+    seen = {}
+    monkeypatch.setattr(_predict, "_llm",
+                        lambda role, msgs, **k: seen.update(p=msgs) or
+                        '{"action":"x","tool":"","args":{},"confidence":0.9,'
+                        '"rationale":"y"}')
+    next_step.predict(_ctx())
+    prompt = str(seen["p"])
+    assert '"confidence":0.0' in prompt
+    assert "restate" in prompt
