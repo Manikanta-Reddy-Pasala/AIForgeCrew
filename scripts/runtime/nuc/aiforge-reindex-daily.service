@@ -1,0 +1,10 @@
+[Unit]
+Description=AIForge daily reindex (memory sweep over registered repos)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/AIForgeCrew
+EnvironmentFile=%h/.aiforge/runtime.env
+# The sweep lives in memory_ingest --all, which merkle-skips any repo whose
+# content did not change since the last index.
+ExecStart=/bin/bash -lc "cd %h/AIForgeCrew && git pull --ff-only && .venv/bin/python -m aiforge_core.runtime.memory_ingest --all"

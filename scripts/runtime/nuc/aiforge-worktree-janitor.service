@@ -1,0 +1,9 @@
+[Unit]
+Description=AIForge worktree janitor (remove stale worktrees for terminal tickets)
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.aiforge/runtime.env
+ExecStart=%h/AIForgeCrew/scripts/runtime/aiforge-worktree-janitor.sh
+StandardOutput=append:%h/.aiforge/logs/worktree-janitor.log
+StandardError=append:%h/.aiforge/logs/worktree-janitor.log

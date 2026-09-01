@@ -14,6 +14,12 @@ com.aiforge.caffeinate             aiforge-memory-decay.*   (timer, decay)
 com.aiforge.pg-tunnel     (bridge)
 ```
 
+`AIFORGE_LMS_HOST` must name the Studio the way the NUC's `~/.ssh/config`
+does. That file keys the Studio's identity off `192.168.70.185` (and the
+`ms` / `mac-studio` aliases) with `IdentitiesOnly yes`; the `.lan` mDNS name
+matches no Host block, so ssh offers the default key, the Studio rejects it,
+and lms-ensure fails every tick with "Permission denied (publickey)".
+
 The pg-tunnel (MS→NUC postgres loopback) and reverse NUC→MS ssh tunnel
 (`lm-tunnel.service` on NUC, exposes MS LM Studio as NUC:1235) are the
 only cross-host glue. No rsync anywhere; code comes from GitHub.
@@ -38,7 +44,8 @@ cp /path/to/AIForgeCrew/scripts/runtime/nuc/*.timer   ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now aiforge-api
 for t in aiforge-git-pull.timer aiforge-repo-pull.timer \
-         aiforge-memory-decay.timer; do
+         aiforge-memory-decay.timer aiforge-lms-ensure.timer \
+         aiforge-worktree-janitor.timer aiforge-reindex-daily.timer; do
     systemctl --user enable --now "$t"
 done
 # Allow systemd user services to run without a logged-in session:

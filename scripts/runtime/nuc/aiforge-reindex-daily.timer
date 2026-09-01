@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the AIForge daily reindex at 02:00
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+Unit=aiforge-reindex-daily.service
+
+[Install]
+WantedBy=timers.target
