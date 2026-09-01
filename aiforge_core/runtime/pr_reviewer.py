@@ -89,8 +89,22 @@ def _llm_review(prompt: str) -> dict[str, Any]:
         return {}
     base = os.environ.get("AIFORGE_LM_BASE_URL", "http://127.0.0.1:1234/v1")
     api_key = os.environ.get("AIFORGE_LM_API_KEY", "lm-studio")
+    # Bound BEFORE the try: the failure handler below reads it, and an import
+    # that raises inside the try would otherwise leave it unbound there.
+    _tok = None
     try:
         from aiforge_core.llm.user_agent import user_agent
+        # Under the same ceiling as every other transport. This one calls
+        # litellm directly rather than going through llm.client, so it was
+        # spending the gateway's allowance without ever telling the limiter —
+        # the same hole the structured path had, in a path that fires per PR.
+        try:
+            from aiforge_core.llm import rate_limiter as _rl
+            _, _tok = _rl.govern_send(role="pr_reviewer",
+                                      provider="openai_compatible",
+                                      model=model, max_wait_s=60.0)
+        except Exception:  # noqa: BLE001 — a limiter fault must not skip a review
+            pass
         resp = litellm.completion(
             model=model,
             api_base=base, api_key=api_key,
@@ -100,6 +114,14 @@ def _llm_review(prompt: str) -> dict[str, Any]:
         )
         text = resp["choices"][0]["message"]["content"]
     except Exception as exc:  # noqa: BLE001
+        # Settle the meter token. A send counted at the gateway and never
+        # settled reads as a success, so the review that failed would be the
+        # one the operator cannot see.
+        try:
+            from aiforge_core.llm import call_meter as _meter
+            _meter.record_failure(_tok, "transport_" + type(exc).__name__[:24])
+        except Exception:  # noqa: BLE001 — metering never breaks a review
+            pass
         log.warning("pr_reviewer LLM failed: %s", exc)
         return {}
     return _extract_review_json(text)

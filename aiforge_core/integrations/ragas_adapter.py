@@ -15,9 +15,9 @@ from __future__ import annotations
 
 def available() -> bool:
     try:
-        import ragas            # noqa: F401
-        import datasets         # noqa: F401
+        import datasets  # noqa: F401
         import langchain_openai  # noqa: F401
+        import ragas  # noqa: F401
         return True
     except Exception:  # noqa: BLE001
         return False
@@ -64,15 +64,23 @@ def evaluate_recall(samples: list[dict], *, base_url: str, api_key: str,
     point these at the local LM Studio / office cluster."""
     from langchain_openai import ChatOpenAI, OpenAIEmbeddings
     from ragas import evaluate
-    from ragas.metrics import (answer_relevancy, context_precision,
-                               faithfulness)
+    from ragas.metrics import answer_relevancy, context_precision, faithfulness
+
+    # Both of these are the OpenAI SDK underneath, which stamps its own
+    # User-Agent unless default_headers overrides it — without this the judge
+    # and the embedder are the one pair of senders a gateway cannot attribute
+    # to AIForge at all.
+    from aiforge_core.llm.user_agent import user_agent as _ua
+    _headers = {"User-Agent": _ua()}
 
     judge = ChatOpenAI(base_url=base_url, api_key=api_key or "not-needed",
-                       model=model, temperature=0)
+                       model=model, temperature=0,
+                       default_headers=_headers)
     embeddings = OpenAIEmbeddings(
         base_url=embed_base_url or base_url, api_key=api_key or "not-needed",
         model=embed_model or "text-embedding-bge-m3",
-        check_embedding_ctx_length=False)
+        check_embedding_ctx_length=False,
+        default_headers=_headers)
 
     has_gt = all(s.get("ground_truth") for s in samples)
     metrics = [faithfulness, answer_relevancy]

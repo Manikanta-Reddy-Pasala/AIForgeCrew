@@ -597,11 +597,13 @@ def govern_send(*, role: "str | None" = None, provider: "str | None" = None,
          ``meter=False`` for a path that meters at a different point, e.g. the
          ADK path counts after the response so it can attach token usage).
 
-    THE THREE SEND PATHS ALL ROUTE THROUGH HERE:
+    THE SEND PATHS ALL ROUTE THROUGH HERE:
       * ``llm.client._http`` — the chat / wire path
       * ``integrations.instructor_adapter`` — structured extractions (this is
         the OKF / memory-compaction path, all on the 'learner' role)
       * ``runtime.escalating_llm`` — the ADK team-pipeline path
+      * ``runtime.pr_reviewer`` — the per-PR review call, which reaches litellm
+        directly rather than through ``llm.client``
     A NEW path that reaches a model MUST call this too. Skipping it makes that
     traffic BOTH uncapped and invisible — the exact defect that let memory
     compaction bypass the ceiling and never show on the meter. One place to add

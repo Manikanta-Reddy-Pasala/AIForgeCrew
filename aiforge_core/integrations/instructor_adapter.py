@@ -188,10 +188,15 @@ def _build_metered_client(base_url: str, timeout_s, role, model, provider,
     The OpenAI SDK builds its own httpx client that, by default, IGNORES
     AIForge's TLS policy — so a self-hosted HTTPS/self-signed model endpoint
     (AIFORGE_LLM_SSL_VERIFY=false / a CA bundle) fails with a bare "Connection
-    error" while the litellm fallback connects. And it files the traffic under
-    "OpenAI/Python", so an operator counting a user's calls silently misses
-    every structured extraction. This client fixes both: litellm's verify
-    policy, and our User-Agent + metering hooks.
+    error" while the litellm fallback connects. This client fixes that, and
+    carries the metering + throttling hooks.
+
+    It does NOT decide the User-Agent, though it sets one: the SDK puts its own
+    on every request it builds, and a per-request header beats an httpx client
+    default, so the header here loses. ``structured`` passes the real one as
+    ``default_headers``, which the SDK merges over its own. The header stays
+    here only for a caller that reaches this client without the SDK in front of
+    it.
     """
     try:
         import httpx
@@ -204,6 +209,38 @@ def _build_metered_client(base_url: str, timeout_s, role, model, provider,
                                                      pending))
     except Exception:  # noqa: BLE001 — fall back to the SDK default client
         return None
+
+
+def openai_kwargs(base_url: str, api_key: str, timeout_s) -> dict:
+    """The kwargs ``structured`` hands ``openai.OpenAI``.
+
+    Split out of ``structured`` so it can be tested without ``instructor``
+    installed. That matters: the bug this carries the fix for was invisible to
+    a test that grepped the module for "User-Agent", so the replacement builds
+    a real SDK request — and a test that SKIPS when an optional extra is
+    missing proves exactly as little as the grep did.
+    """
+    from aiforge_core.llm.user_agent import user_agent as _ua
+
+    return {
+        "base_url": base_url,
+        "api_key": api_key or "not-needed",
+        "timeout": timeout_s or 120,
+        # MUST be default_headers, not the http_client's `headers=`. The SDK
+        # stamps its own User-Agent on every request it builds, and a
+        # per-request header beats an httpx client default — so the metered
+        # client's header was silently discarded and this whole path went out
+        # as "OpenAI/Python <ver>", which is precisely what that client's
+        # docstring claimed it fixed. default_headers is merged OVER the SDK's
+        # own, so it is the one that survives. Verified against openai 2.20.0.
+        "default_headers": {"User-Agent": _ua()},
+        # The SDK retries on its OWN (default 2) INSIDE the call instructor is
+        # already reasking inside, and structured failures then fall through to
+        # `_fallback_complete`'s loop as well: three retry layers multiplying to
+        # up to nine sends for one extraction, each taking a ceiling slot. Our
+        # layers own the retrying; the SDK does not add a third.
+        "max_retries": _int_env("AIFORGE_STRUCTURED_SDK_RETRIES", 0),
+    }
 
 
 def _charge_one_unmetered(role, model, provider: str) -> None:
@@ -252,15 +289,7 @@ def structured(*, base_url: str, api_key: str, model: str,
     _pending: list = []
     _http = _build_metered_client(base_url, timeout_s, role, model, provider,
                                   _pending)
-    _oai_kwargs = {"base_url": base_url, "api_key": api_key or "not-needed",
-                   "timeout": timeout_s or 120,
-                   # The SDK retries on its OWN (default 2) INSIDE the call
-                   # instructor is already reasking inside, and structured
-                   # failures then fall through to `_fallback_complete`'s loop
-                   # as well: three retry layers multiplying to up to nine
-                   # sends for one extraction, each taking a ceiling slot. Our
-                   # layers own the retrying; the SDK does not add a third.
-                   "max_retries": _int_env("AIFORGE_STRUCTURED_SDK_RETRIES", 0)}
+    _oai_kwargs = openai_kwargs(base_url, api_key, timeout_s)
     if _http is not None:
         _oai_kwargs["http_client"] = _http
     else:

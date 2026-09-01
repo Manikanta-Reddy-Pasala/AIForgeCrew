@@ -158,15 +158,57 @@ def test_the_version_scan_reads_the_project_not_a_tool_section(tmp_path, monkeyp
     assert found == "9.9.9"
 
 
-def test_the_sdk_and_litellm_paths_are_attributed_too():
-    """The instructor path hits the SAME resolved endpoint through the OpenAI
-    SDK, so without a header it filed as "OpenAI/Python" — the single largest
-    hole, and live by default in the shipped image."""
+def test_the_structured_path_sends_our_agent_on_the_wire(monkeypatch, tmp_path):
+    """ON THE WIRE, not in the source.
+
+    The version of this test that only grepped the module for "User-Agent"
+    passed for the whole time the header was being discarded: the adapter set
+    it on the httpx client, and the OpenAI SDK stamps its OWN on every request
+    it builds, which wins. Every structured extraction went out as
+    "OpenAI/Python <ver>" while a green test said otherwise. So this one lets
+    the real SDK build a real request and reads the header off it.
+    """
+    import httpx
+    import openai
+    from openai._models import FinalRequestOptions
+
+    from aiforge_core.integrations import instructor_adapter as ia
+    from aiforge_core.llm import user_agent as ua
+
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+
+    # The adapter's OWN kwargs, driven through the REAL SDK — including the
+    # httpx client it builds, whose `headers=` is the thing that used to lose.
+    kwargs = ia.openai_kwargs("http://x/v1", "k", 30)
+    kwargs["http_client"] = httpx.Client(
+        headers={"User-Agent": ua.user_agent()},
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json={})))
+    request = openai.OpenAI(**kwargs)._build_request(
+        FinalRequestOptions.construct(
+            method="post", url="/chat/completions",
+            json_data={"model": "m", "messages": []}))
+
+    assert request.headers.get("user-agent") == ua.user_agent()
+    assert "OpenAI/Python" not in request.headers.get("user-agent", "")
+
+
+def test_the_litellm_review_path_is_attributed():
+    """litellm forwards extra_headers, so source is the honest check here —
+    there is no SDK client of ours to build a request from."""
     import inspect
-    from aiforge_core.integrations import instructor_adapter
+
     from aiforge_core.runtime import pr_reviewer
-    assert "User-Agent" in inspect.getsource(instructor_adapter)
     assert "User-Agent" in inspect.getsource(pr_reviewer)
+
+
+def test_the_ragas_judge_and_embedder_are_attributed():
+    """Both are the OpenAI SDK underneath and both stamp their own agent
+    without default_headers — the one pair a gateway could not attribute."""
+    import inspect
+
+    from aiforge_core.integrations import ragas_adapter
+    src = inspect.getsource(ragas_adapter)
+    assert src.count("default_headers") >= 2
 
 
 def test_the_model_probes_identify_themselves():
@@ -174,6 +216,7 @@ def test_the_model_probes_identify_themselves():
     Python-urllib caches the provider DOWN for 30s while it is answering
     completions perfectly well on the same host."""
     import inspect
+
     from aiforge_core.llm import health
     from aiforge_core.runtime import lm_health, local_probe
     for mod in (health, lm_health, local_probe):
