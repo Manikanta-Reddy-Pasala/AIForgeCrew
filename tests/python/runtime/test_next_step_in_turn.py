@@ -8,8 +8,13 @@ from aiforge_core.runtime import next_step
 from aiforge_core.runtime.chat_agent import _loop
 
 
-def _prediction(verdict=next_step.ACT, action="check it"):
-    return next_step.Prediction(id="p-1", action=action, tool="", args={},
+def _prediction(verdict=next_step.ACT, action="check it", tool="read_file"):
+    # A NAMED tool by default: `_risk` will not hand back ACT for a prediction
+    # that names none, so a toolless ACT is a combination `predict` can no
+    # longer produce, and a fixture that ships one tests a shape that cannot
+    # reach this code.
+    return next_step.Prediction(id="p-1", action=action, tool=tool,
+                                args={"path": "x/y.py"},
                                 confidence=0.9, rationale="a host was named",
                                 verdict=verdict)
 
@@ -203,3 +208,43 @@ def test_the_kill_switch_costs_nothing_not_merely_emits_nothing(monkeypatch):
 
     assert list(_loop._emit_suggestion("hi", "read_file", "/repo")) == []
     assert calls == []
+
+
+# ── the echo, all the way out to the wire ────────────────────────────────
+
+def test_a_toolless_prediction_reaches_the_wire_as_an_offer(monkeypatch, tmp_path):
+    """End to end, the shape that re-ran a user's own question. The chip
+    auto-sends an ACT, so the verdict on the wire is the whole difference
+    between a suggestion and a second turn."""
+    from aiforge_core.runtime.next_step import _predict as _np
+
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setattr(
+        _np, "_llm",
+        lambda *a, **k: '{"action":"pears and the price of them","tool":"",'
+                        '"args":{},"confidence":0.99,"rationale":"x"}')
+    monkeypatch.setattr(_loop, "_is_clean_tree", lambda *a, **k: True)
+
+    evs = list(_loop._emit_suggestion("what is a pear", "answered", "/repo"))
+
+    assert [e["type"] for e in evs] == ["suggestion"]
+    assert evs[0]["verdict"] == "OFFER"
+
+
+def test_an_echo_emits_no_event_at_all(monkeypatch, tmp_path):
+    """Not even an offer: the chip is meant to mean something."""
+    from aiforge_core.runtime.next_step import _predict as _np
+
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setattr(
+        _np, "_llm",
+        lambda *a, **k: '{"action":"Explain what the run lock in chat_pipeline '
+                        'protects.","tool":"read_file","args":{"path":"x"},'
+                        '"confidence":0.95,"rationale":"x"}')
+    monkeypatch.setattr(_loop, "_is_clean_tree", lambda *a, **k: True)
+
+    evs = list(_loop._emit_suggestion(
+        "In one short sentence: what does the run lock in chat_pipeline "
+        "protect?", "explained it", "/repo"))
+
+    assert evs == []
