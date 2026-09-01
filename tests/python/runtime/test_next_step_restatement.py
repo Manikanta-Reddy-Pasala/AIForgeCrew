@@ -196,3 +196,59 @@ def test_the_model_is_given_a_way_to_say_nothing_is_next():
 
 def test_the_prompt_still_asks_for_a_tool_name():
     assert "names the tool" in _predict._SYS
+
+
+# ── fail-open, on every path ─────────────────────────────────────────────
+#
+# This runs at the end of EVERY turn. The answer is already on the user's
+# screen, so a prediction that raises costs them a broken turn for nothing.
+# Each of these is a branch that only executes when something is already wrong.
+
+
+def test_a_junk_timeout_falls_back_to_the_default(monkeypatch):
+    monkeypatch.setenv("AIFORGE_PREDICT_TIMEOUT_S", "soon please")
+    assert _predict._timeout() == _predict._DEFAULT_TIMEOUT_S
+
+
+def test_a_numeric_timeout_is_honoured(monkeypatch):
+    monkeypatch.setenv("AIFORGE_PREDICT_TIMEOUT_S", "3")
+    assert _predict._timeout() == 3
+
+
+def test_an_unreadable_history_still_predicts(monkeypatch):
+    """No examples is not a reason to predict nothing — the learning loop is an
+    improvement to the prompt, not a precondition for having one."""
+    from aiforge_core.runtime.next_step import _store
+
+    monkeypatch.setattr(_store, "accepted",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("disk")))
+    _reply(monkeypatch, '{"action":"pears and their price","tool":"read_file",'
+                        '"args":{"path":"x"},"confidence":0.9,"rationale":"x"}')
+    assert next_step.predict(_ctx(message="something else entirely")) is not None
+
+
+def test_an_exploding_parser_is_simply_no_prediction(monkeypatch):
+    from aiforge_core.runtime.rule_capture import _classify
+
+    monkeypatch.setattr(_classify, "_extract_json",
+                        lambda *a, **k: (_ for _ in ()).throw(ValueError("x")))
+    _reply(monkeypatch, '{"action":"anything","tool":"","confidence":0.9}')
+    assert next_step.predict(_ctx()) is None
+
+
+def test_the_llm_helper_delegates_rather_than_building_a_second_client(monkeypatch):
+    """One place knows how this codebase reaches a model role."""
+    from aiforge_core.runtime import rule_capture
+
+    seen: dict = {}
+    monkeypatch.setattr(rule_capture, "_llm_complete",
+                        lambda role, msgs, **k: seen.update(role=role) or "{}")
+    _predict._llm("enhancer", [{"role": "user", "content": "x"}])
+    assert seen["role"] == "enhancer"
+
+
+def test_a_predict_that_raises_anywhere_yields_none(monkeypatch):
+    """The outermost net. Whatever breaks inside, a turn ends cleanly."""
+    monkeypatch.setattr(_predict, "raw_prediction",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    assert next_step.predict(_ctx()) is None

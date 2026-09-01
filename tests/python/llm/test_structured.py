@@ -99,3 +99,97 @@ def test_architect_uses_structured_path(monkeypatch, tmp_path):
     from aiforge_core.runtime import parallel_subtasks as ps
     files = ps._architect("build a store", cwd=str(tmp_path))
     assert files == [{"path": "db.py", "purpose": "store", "api": []}]
+
+
+# ── the adapter's own fail-open paths ────────────────────────────────────
+#
+# Every one of these executes only when something is ALREADY wrong. They are
+# the difference between "the structured path degraded" and "the turn died",
+# and none of them had a test.
+
+
+def test_availability_is_a_question_not_an_exception(monkeypatch):
+    """Callers branch on this to choose the fallback; it may never raise."""
+    import sys
+
+    from aiforge_core.integrations import instructor_adapter as ia
+    monkeypatch.setitem(sys.modules, "instructor", None)
+    assert ia.available() is False
+
+
+def test_a_junk_int_env_falls_back(monkeypatch):
+    from aiforge_core.integrations import instructor_adapter as ia
+    monkeypatch.setenv("AIFORGE_STRUCTURED_SDK_RETRIES", "lots")
+    assert ia._int_env("AIFORGE_STRUCTURED_SDK_RETRIES", 0) == 0
+    monkeypatch.setenv("AIFORGE_STRUCTURED_SDK_RETRIES", "2")
+    assert ia._int_env("AIFORGE_STRUCTURED_SDK_RETRIES", 0) == 2
+
+
+def test_a_junk_wait_budget_falls_back(monkeypatch):
+    from aiforge_core.integrations import instructor_adapter as ia
+    monkeypatch.setenv("AIFORGE_LLM_MAX_WAIT_S", "forever")
+    assert ia._wait_budget() == 120.0
+
+
+def test_an_unreadable_error_body_is_empty_not_a_crash():
+    """httpx fires response hooks BEFORE the body is read, so `.text` raises
+    ResponseNotRead on a real streamed response — the one case the mock
+    transport used in tests does NOT reproduce."""
+    from aiforge_core.integrations import instructor_adapter as ia
+
+    class _Unreadable:
+        def read(self):
+            raise RuntimeError("not read")
+
+        @property
+        def text(self):
+            raise RuntimeError("still not read")
+
+    assert ia._read_error_body(_Unreadable()) == ""
+
+
+def test_settling_nothing_is_not_an_error():
+    from aiforge_core.integrations import instructor_adapter as ia
+    ia._settle_pending([], "no_response")     # must not raise
+
+
+def test_a_broken_meter_cannot_break_a_settle(monkeypatch):
+    from aiforge_core.integrations import instructor_adapter as ia
+    from aiforge_core.llm import call_meter
+
+    monkeypatch.setattr(call_meter, "record_failure",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    ia._settle_pending(["tok"], "boom")       # must not raise
+
+
+def test_the_unmetered_charge_still_goes_through_the_gateway(monkeypatch):
+    """When the metered client cannot be built there are no per-send hooks, so
+    ONE charge is booked up front. Undercounting a retry is a smaller error than
+    exempting the whole path."""
+    from aiforge_core.integrations import instructor_adapter as ia
+    from aiforge_core.llm import rate_limiter as rl
+
+    rl.reset_global()
+    before = rl.global_used()
+    ia._charge_one_unmetered("learner", "m", "openai_compatible")
+    assert rl.global_used() == before + 1
+    rl.reset_global()
+
+
+def test_a_limiter_fault_does_not_stop_the_unmetered_charge(monkeypatch):
+    from aiforge_core.integrations import instructor_adapter as ia
+    from aiforge_core.llm import rate_limiter as rl
+
+    monkeypatch.setattr(rl, "govern_send",
+                        lambda **k: (_ for _ in ()).throw(RuntimeError("down")))
+    ia._charge_one_unmetered("learner", "m", "openai_compatible")   # no raise
+
+
+def test_a_max_tokens_floor_protects_short_extractions(monkeypatch):
+    """A truncated JSON reply raises IncompleteOutputException and forces the
+    fallback loop — a wasted call for the sake of a small number."""
+    from aiforge_core.integrations import instructor_adapter as ia
+    monkeypatch.delenv("AIFORGE_STRUCTURED_MAX_TOKENS", raising=False)
+    assert ia._structured_max_tokens(16) >= 4096
+    assert ia._structured_max_tokens(None) >= 4096
+    assert ia._structured_max_tokens(99999) == 99999

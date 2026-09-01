@@ -79,6 +79,7 @@ def test_the_saved_cap_bounds_a_hostile_retry_after(monkeypatch):
 def test_the_saved_backoff_is_what_the_transport_sleeps(monkeypatch):
     import io
     import urllib.error
+
     from aiforge_core.config import runtime_settings as rs
     from aiforge_core.llm.client import _http
     from aiforge_core.llm.types import Endpoint
@@ -95,3 +96,46 @@ def test_the_saved_backoff_is_what_the_transport_sleeps(monkeypatch):
         _http._post_with_retry(ep, b"{}", 600, role="learner", source="test")
     assert slept, slept
     assert 7.0 <= max(slept) <= 7.3, slept
+
+
+# ── the default that actually answers ────────────────────────────────────
+#
+# The ceiling was documented as 15 in two places and enforced as 20. The
+# operator's gateway allows 20 per model per minute, so the box was entitled to
+# send exactly the number that earns a rejection, and did — repeatedly, with
+# `llm.transport_retry label=rate_limited` on a "HTTP Error 400: Bad Request"
+# whose body reads "You've used 20 requests with this model in the last minute".
+
+
+def test_the_effective_default_is_the_documented_one():
+    """TWO sources of truth for one number, and the quiet one won.
+
+    ``global_rpm`` asks ``runtime_settings`` first, so its table's default is
+    what applies; ``_DEFAULT_GLOBAL_RPM`` is reached only if that read RAISES.
+    They disagreed (15 vs 20) and nothing failed — the docstring said 15 while
+    the wire got 20.
+    """
+    from aiforge_core.config import runtime_settings as rs
+    assert rs.get("llm_max_rpm") == rl._DEFAULT_GLOBAL_RPM
+    assert rl.global_rpm() == rl._DEFAULT_GLOBAL_RPM
+
+
+def test_the_ceiling_is_strictly_under_a_20_per_minute_gateway():
+    """UNDER, not equal. Two windows never agree on where a minute starts —
+    theirs opens at arrival on their clock, ours at send on ours — so equal
+    ceilings collide on the first boundary overlap rather than merely touching.
+    20/min is the limit on the gateway this actually failed against.
+    """
+    assert rl.global_rpm() < 20
+
+
+def test_the_sub_ceilings_cannot_outrun_the_global_one():
+    """chat 15 + compaction 5 summed to exactly the gateway's 20. With every
+    role pinned to one model, "each category is within its own slice" and "the
+    model is within its limit" are different statements — the global cap is
+    what makes the second one true, so it has to bind below their sum.
+    """
+    total = rl._cat_rpm("chat") + rl._cat_rpm("compaction")
+    assert rl.global_rpm() <= total, \
+        "a global ceiling above the sum of its parts constrains nothing"
+    assert rl.global_rpm() < 20

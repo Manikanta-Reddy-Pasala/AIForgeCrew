@@ -183,9 +183,15 @@ _DEFAULT_GLOBAL_RPM = 15.0
 def global_rpm() -> float:
     """Operator-set ceiling on model requests per minute; 0 = no ceiling.
 
-    Resolves stored setting -> env -> built-in default (15), like every other
-    runtime knob. The default is enforced, not merely advisory: with nothing
-    set the ceiling is 15 rpm, not unlimited.
+    Resolves stored setting -> env -> built-in default, like every other runtime
+    knob. The default is enforced, not merely advisory: with nothing set the
+    ceiling is :data:`_DEFAULT_GLOBAL_RPM`, not unlimited.
+
+    NOTE WHICH DEFAULT ANSWERS. ``runtime_settings`` supplies its own when
+    nothing is stored, so the constant below is reached only if that read
+    RAISES. The two used to disagree — this docstring promised 15 while the
+    table returned 20 — and the table won every time, silently, on a gateway
+    that allows exactly 20. A test now pins them together.
     """
     try:
         from aiforge_core.config import runtime_settings as _rs

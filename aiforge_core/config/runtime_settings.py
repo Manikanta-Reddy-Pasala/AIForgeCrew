@@ -118,10 +118,24 @@ _SPEC: dict[str, tuple[str, int]] = {
     # which over-sent on the common single-key setup before the operator ever
     # opened Settings.)
     # The machine-wide GLOBAL cap across every category (chat + compaction +
-    # everything else). 20 by default. The two sub-ceilings below carve this up:
-    # compaction (memory folding) gets a small slice so it can never crowd out a
-    # user's chat, and chat/other gets the rest. 0 disables OUR throttle.
-    "llm_max_rpm": ("AIFORGE_LLM_MAX_RPM", 20),
+    # everything else). The two sub-ceilings below carve this up: compaction
+    # (memory folding) gets a small slice so it can never crowd out a user's
+    # chat, and chat/other gets the rest. 0 disables OUR throttle.
+    #
+    # IT MUST STAY STRICTLY UNDER THE PROVIDER'S LIMIT, NOT EQUAL TO IT. This
+    # was 20 against a gateway that allows 20/min per model, and the sub-ceilings
+    # (chat 15 + compaction 5) sum to exactly that too — so with every role
+    # pinned to one model the box was entitled to send precisely the number that
+    # earns a rejection. Two windows counting the same minute never agree on
+    # where it starts: theirs opens at arrival on their clock, ours at send on
+    # ours, so equal ceilings collide on the first boundary overlap. Under, not
+    # equal.
+    #
+    # 15 is also what ``rate_limiter._DEFAULT_GLOBAL_RPM`` documents, and the
+    # two disagreed — this table is the one that answers, so its 20 silently
+    # won while the limiter's docstring promised 15. Kept in step by
+    # ``tests/python/llm/test_rate_limit_settings.py``.
+    "llm_max_rpm": ("AIFORGE_LLM_MAX_RPM", 15),
     # Sub-ceiling for memory/compaction LLM calls (okf tier folds,
     # work_notes.consolidate, the boot fold — everything on the "learner" role).
     # 5 rpm by default: bounded background distillation that never floods the
