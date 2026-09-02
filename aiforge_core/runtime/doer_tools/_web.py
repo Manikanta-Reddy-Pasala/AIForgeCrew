@@ -9,6 +9,7 @@ import logging
 import os
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 
 _log = logging.getLogger("aiforge.web")
 
@@ -89,7 +90,7 @@ def _do_fetch(url: str) -> dict:
     # field rather than inventing a second vocabulary for one meaning: the
     # model is about to act on this content, and "it could have been tampered
     # with in transit" is what it needs to know.
-    unverified = str(url).lower().startswith("http://")
+    unverified = urlsplit(str(url)).scheme.lower() == "http"
     try:
         req = urllib.request.Request(
             url, headers={"User-Agent": "AIForgeCrew-Doer/1.0"})
