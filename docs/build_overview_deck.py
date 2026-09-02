@@ -731,6 +731,154 @@ def tool_surface(prs):
         fill=WHITE, edge=LINE, size=12, sub_size=9.5, label_color=INK)
 
 
+def built_on(prs):
+    s = slide_base(
+        prs, "What it is built on",
+        "Borrow the engine, own the judgement. 186 packages, uv.lock pinned and shipped.",
+        "Dropped on purpose: pymongo (imported by nothing) and aider-chat "
+        "(its RepoMap vendored instead) — 212 -> 186 packages, and no pin pressure.")
+
+    layers = [
+        ("SERVICE", BLUE_T, BLUE,
+         ["FastAPI + uvicorn", "pydantic", "httpx", "croniter (jobs)"]),
+        ("MODEL ACCESS", GREEN_T, GREEN,
+         ["openai SDK", "litellm", "any OpenAI-compatible", "NO vendor tool-calling"]),
+        ("PIPELINE", PLUM_T, PLUM,
+         ["google-adk 2.1.x", "SequentialAgent", "LoopAgent", "git worktrees"]),
+        ("MEMORY + CODE", AMBER_T, AMBER,
+         ["SQLite + sqlite-vec", "tree-sitter", "vendored RepoMap", "model2vec embeddings"]),
+    ]
+    cw, gap = Inches(2.85), Inches(0.15)
+    for i, (name, f, e, items) in enumerate(layers):
+        x = Inches(0.75) + i * (cw + gap)
+        box(s, x, Inches(1.55), cw, Inches(0.58), name, "", fill=f, edge=e,
+            size=13)
+        for j, it in enumerate(items):
+            chip(s, x, Inches(2.25) + j * Inches(0.38), cw, it, edge=e,
+                 color=INK, size=9)
+
+    # the two things that are ours, not borrowed
+    box(s, Inches(0.75), Inches(3.95), Inches(6.05), Inches(1.35),
+        "The ReAct loop is ours",
+        "plain text THOUGHT / ACTION, not vendor function-calling —\n"
+        "so a 4-bit local model drives the same 109 tools a frontier model does",
+        fill=WHITE, edge=GREEN, size=14, sub_size=10.5, label_color=GREEN)
+    box(s, Inches(7.05), Inches(3.95), Inches(5.57), Inches(1.35),
+        "ADK drives the 19-role pipeline",
+        "SequentialAgent[ Planner, Verifier, LoopAgent[Doer, Feedback], Learner ]\n"
+        "pinned <2.2 — 2.3 added a Workflow validation that rejects the v6 graph",
+        fill=WHITE, edge=PLUM, size=14, sub_size=10.5, label_color=PLUM)
+
+    box(s, Inches(0.75), Inches(5.50), Inches(11.87), Inches(0.95),
+        "How a library gets in",
+        "it earns its place or it goes: sqlite-vec is CORE, not an extra, because without it every "
+        "memory write hit \"no such module: vec0\"  ·  aider-chat was dropped and its RepoMap "
+        "vendored under Apache-2.0, proven by a differential render of 7,640 identical bytes",
+        fill=SLATE_T, edge=SLATE, size=13, sub_size=9.5)
+
+
+def message_flow(prs):
+    s = slide_base(
+        prs, "What happens when you type a message",
+        "Two passes, opposite directions — then the loop.",
+        "Most messages skip the save step entirely: a cheap keyword pre-check decides, "
+        "so an ordinary turn costs no extra model call.")
+
+    box(s, Inches(0.75), Inches(1.55), Inches(1.95), Inches(0.70), "message",
+        "", fill=WHITE, edge=LINE, size=13, label_color=INK)
+    arrow(s, Inches(2.70), Inches(1.90), Inches(3.05), Inches(1.90))
+
+    # 1 — the write pass
+    box(s, Inches(3.05), Inches(1.42), Inches(9.57), Inches(0.96),
+        "1.  SAVE   —   anything here worth remembering?",
+        "pre-filter (free)  ->  classify  ->  rule | memory | feedback | none  +  scope"
+        "  ->  store\n"
+        "pure directive with no task?  ->  \"Got it, saved.\"  and the agent never runs",
+        fill=AMBER_T, edge=AMBER, size=13, sub_size=9.5)
+    arrow(s, Inches(7.8), Inches(2.38), Inches(7.8), Inches(2.62))
+
+    # 2 — the read pass
+    box(s, Inches(3.05), Inches(2.62), Inches(9.57), Inches(0.96),
+        "2.  GATHER   —   what do I already know that applies?",
+        "preferences  ·  rules (glob-matched)  ·  skills + workflows (relevance)  ·  "
+        "repo map  ·  memory recall\nassembled in ONE place, so adding a context source "
+        "touches one function",
+        fill=GREEN_T, edge=GREEN, size=13, sub_size=9.5)
+    arrow(s, Inches(7.8), Inches(3.58), Inches(7.8), Inches(3.82))
+
+    # 3 — the loop
+    box(s, Inches(3.05), Inches(3.82), Inches(9.57), Inches(0.62),
+        "3.  THE LOOP", "", fill=BLUE_T, edge=BLUE, size=13)
+    steps = [("think", ""), ("pick a tool", ""), ("safety gate", "approve / reject"),
+             ("run it", "diff shown"), ("observe", "condense if full")]
+    bw = Inches(1.82)
+    for i, (lab, sub) in enumerate(steps):
+        x = Inches(3.05) + i * (bw + Inches(0.11))
+        box(s, x, Inches(4.55), bw, Inches(0.68), lab, sub, fill=WHITE,
+            edge=BLUE, size=11, sub_size=8, label_color=BLUE)
+        if i < len(steps) - 1:
+            arrow(s, x + bw, Inches(4.89), x + bw + Inches(0.11), Inches(4.89))
+    text(s, Inches(3.05), Inches(5.30), Inches(9.57), Inches(0.24),
+         "repeats until FINAL, the step cap, the turn deadline, or Stop  —  "
+         "a stopped turn RESUMES, it does not restart",
+         size=9.5, color=MUTED, align=PP_ALIGN.CENTER)
+
+    arrow(s, Inches(7.8), Inches(5.58), Inches(7.8), Inches(5.82))
+    box(s, Inches(3.05), Inches(5.82), Inches(9.57), Inches(0.70),
+        "4.  REPLY   +   predicted next step",
+        "it ACTS on that prediction only inside the blast-radius table — otherwise it offers",
+        fill=SLATE_T, edge=SLATE, size=13, sub_size=9.5)
+
+
+def versus(prs):
+    s = slide_base(
+        prs, "Where it differs from the other agent tools",
+        "It adopts their formats rather than replacing them — then adds the two "
+        "things none of them do.",
+        "Named comparisons are the ones the codebase itself cites: the SKILL.md gaps vs "
+        "Hermes Agent / OpenClaw, and Cursor's glob-scoped rule format.")
+
+    box(s, Inches(0.75), Inches(1.52), Inches(11.87), Inches(0.78),
+        "Reads what your repo already has",
+        ".cursor/rules/*.mdc  ·  .cursorrules  ·  AGENTS.md  ·  SKILL.md "
+        "(agentskills.io)  —  no migration, no lock-in",
+        fill=GREEN_T, edge=GREEN, size=14, sub_size=10.5)
+
+    rows = [
+        ("Ticket → PR AND chat", "usually one or the other",
+         "one service does both, on the same tool registry"),
+        ("Model requirement", "vendor function-calling",
+         "plain-text ReAct — a 4-bit local model drives it"),
+        ("Memory store", "a vector DB to install, tune, back up",
+         "markdown + one SQLite file; grep it, delete it"),
+        ("Skill discovery", "trigger substring match",
+         "searched by RELEVANCE, so the right one is found"),
+        ("Gets better how", "you write the prompts",
+         "write_skill() / write_workflow() — it authors its own"),
+        ("Across machines", "per-machine, or a vendor cloud",
+         "fleet sync: groups, redaction, snapshot + revert"),
+        ("Telemetry", "usually on by default", "none, and none in the lock"),
+    ]
+    for i, (k, a, b) in enumerate(rows):
+        y = Inches(2.48) + i * Inches(0.58)
+        bg = s.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0.75), y,
+                                Inches(11.87), Inches(0.52))
+        bg.fill.solid()
+        bg.fill.fore_color.rgb = WHITE if i % 2 else RGBColor(0xF7, 0xF7, 0xF7)
+        bg.line.fill.background()
+        bg.shadow.inherit = False
+        text(s, Inches(0.90), y + Inches(0.14), Inches(2.6), Inches(0.3), k,
+             size=11, bold=True)
+        text(s, Inches(3.55), y + Inches(0.14), Inches(4.0), Inches(0.3), a,
+             size=10.5, color=MUTED)
+        text(s, Inches(7.70), y + Inches(0.14), Inches(4.8), Inches(0.3),
+             "▸ " + b, size=10.5, color=INK)
+    text(s, Inches(3.55), Inches(2.20), Inches(4.0), Inches(0.28),
+         "typical agent tool", size=11, bold=True, color=MUTED)
+    text(s, Inches(7.70), Inches(2.20), Inches(4.8), Inches(0.28),
+         "AIForgeCrew", size=11, bold=True, color=BLUE)
+
+
 def rules_skills_workflows(prs):
     s = slide_base(
         prs, "Rules, skills and workflows",
@@ -962,8 +1110,10 @@ def build():
     title_slide(prs)
     what_it_is(prs)
     architecture(prs)
+    built_on(prs)
     integrations(prs)
     chat_modes(prs)
+    message_flow(prs)
     ticket_pipeline(prs)
     tool_surface(prs)
     rules_skills_workflows(prs)
@@ -972,6 +1122,7 @@ def build():
     limits(prs)
     safety(prs)
     security(prs)
+    versus(prs)
     comparison(prs)
     deploy(prs)
     summary(prs)
