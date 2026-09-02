@@ -92,3 +92,10 @@ aiforge_workspace/
 *.sqlite
 *.sqlite3
 aiforge_core/web_dist/
+
+# CI build output: pytest's junit xml + the copies the Sonar scanner reads.
+# Untracked AND excluded from Sonar indexing (sonar-project.properties) — the
+# scanner would otherwise analyse the build's own reports as XML source.
+test-results/
+sonar/
+.scannerwork/

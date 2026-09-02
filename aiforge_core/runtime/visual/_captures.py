@@ -8,12 +8,19 @@ re-open an image the agent captured three steps ago.
 """
 from __future__ import annotations
 
+import itertools
 import os
 import time
 import uuid
 
 _KEEP = 300          # captures retained; oldest pruned beyond this
 _ID_LEN = 8
+
+# Per-process sequence appended to the id. A millisecond stamp alone is not
+# monotonic — a burst of captures inside one millisecond produced ids whose
+# order was decided by their random suffix, and the filename is what breaks a
+# same-mtime tie when pruning. ``next()`` on a count() is atomic under the GIL.
+_SEQ = itertools.count()
 
 
 def captures_dir() -> str:
@@ -24,15 +31,29 @@ def captures_dir() -> str:
     return path
 
 
-def _prune(dirpath: str) -> None:
-    """Drop the oldest captures past :data:`_KEEP`. Best-effort."""
+def _prune(dirpath: str, keep_path: str | None = None) -> None:
+    """Drop the oldest captures past :data:`_KEEP`. Best-effort.
+
+    Two guards against deleting the capture that was just taken — the one
+    failure this must never have, since its id has already been handed to the
+    caller:
+
+    * ``keep_path`` is excluded outright;
+    * ties are broken by FILENAME, not left to ``listdir`` order. Several
+      captures written inside one filesystem timestamp tick compare equal on
+      mtime alone, and a stable sort then preserves directory order, which is
+      arbitrary — so the newest could sort into the delete slice. The id
+      embeds a millisecond timestamp, so its name sorts chronologically.
+    """
     try:
         entries = [os.path.join(dirpath, n) for n in os.listdir(dirpath)
-                   if n.endswith(".png")]
-        if len(entries) <= _KEEP:
+                   if n.endswith(".png")
+                   and os.path.join(dirpath, n) != keep_path]
+        keep = _KEEP - 1 if keep_path else _KEEP
+        if len(entries) <= keep:
             return
-        entries.sort(key=lambda p: os.path.getmtime(p))
-        for old in entries[:len(entries) - _KEEP]:
+        entries.sort(key=lambda p: (os.path.getmtime(p), os.path.basename(p)))
+        for old in entries[:len(entries) - keep]:
             try:
                 os.remove(old)
             except OSError:
@@ -51,7 +72,11 @@ def save_capture(png: bytes, label: str = "ui") -> tuple[str, str] | tuple[None,
     audit are all still worth returning.
     """
     safe = "".join(c for c in (label or "ui") if c.isalnum() or c in "-_")[:24]
-    capture_id = f"{safe or 'ui'}-{int(time.time())}-{uuid.uuid4().hex[:_ID_LEN]}"
+    # Milliseconds + a sequence: a fixed-width, monotonic stamp makes the
+    # FILENAME sort chronologically, which is what breaks a same-tick mtime
+    # tie in _prune.
+    capture_id = (f"{safe or 'ui'}-{int(time.time() * 1000)}"
+                  f"-{next(_SEQ):06d}-{uuid.uuid4().hex[:_ID_LEN]}")
     try:
         dirpath = captures_dir()
         path = os.path.join(dirpath, f"{capture_id}.png")
@@ -59,7 +84,7 @@ def save_capture(png: bytes, label: str = "ui") -> tuple[str, str] | tuple[None,
             fh.write(png)
     except OSError:
         return None, None
-    _prune(dirpath)
+    _prune(dirpath, keep_path=path)
     return capture_id, path
 
 
