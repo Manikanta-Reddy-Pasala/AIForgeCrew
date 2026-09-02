@@ -89,37 +89,31 @@ def _playwright_available() -> bool:
         return False
 
 
-def _allowlist_ok(url: str) -> bool:
-    from urllib.parse import urlsplit
+def _matches_operator_allowlist(host: str, raw: str) -> bool:
+    """Exact-or-subdomain match of ``host`` against the operator's list.
 
-    host = (urlsplit(url).hostname or "").lower()
+    Matched against the HOSTNAME, never ``re.search`` over the whole URL —
+    that let ``http://169.254.169.254/#github.com`` match a ``github.com``
+    entry (SSRF to cloud IMDS via a fragment). A host the operator EXPLICITLY
+    allowlisted is trusted even if it is a LAN/loopback dev server; that is
+    the intended use of the browser tool.
+    """
+    for pattern in raw.split(","):
+        pattern = pattern.strip().lower()
+        if not pattern:
+            continue
+        if host == pattern or host.endswith("." + pattern):
+            return True
+    return False
 
-    # A host the current call vouched for (its own dev server) — checked before
-    # the operator allowlist and never persisted anywhere.
-    if host and host in _EXTRA_ALLOW.get():
-        return True
 
-    raw = os.environ.get("AIFORGE_BROWSER_ALLOWLIST", "").strip()
-    if raw:
-        # Match each allowlist entry against the HOSTNAME with exact-or-
-        # subdomain semantics — NOT ``re.search`` over the whole URL, which
-        # let ``http://169.254.169.254/#github.com`` match a ``github.com``
-        # entry (SSRF to cloud IMDS via a fragment). A host the operator
-        # EXPLICITLY allowlisted is trusted even if it's a LAN/loopback dev
-        # server — that is the intended use of the browser tool.
-        for pattern in raw.split(","):
-            pattern = pattern.strip().lower()
-            if not pattern:
-                continue
-            if host == pattern or host.endswith("." + pattern):
-                return True
-        return False
-
-    # Empty allowlist under the network lockdown: arbitrary browsing only when
-    # the operator opts in via AIFORGE_ALLOW_WEB_FETCH=1 — and even then the
-    # target is SSRF-guarded so a model-chosen URL can't pivot to cloud
-    # metadata / a private LAN host. (A pure DNS failure falls through to the
-    # browser, which will just fail to connect — it can't be an SSRF target.)
+def _open_browsing_ok(url: str) -> bool:
+    """With no operator allowlist, browsing is off unless the operator opts in
+    via ``AIFORGE_ALLOW_WEB_FETCH`` — and even then the target is SSRF-guarded
+    so a model-chosen URL cannot pivot to cloud metadata or a private LAN host.
+    A pure DNS failure falls through to the browser, which will simply fail to
+    connect: it cannot be an SSRF target.
+    """
     if str(os.environ.get("AIFORGE_ALLOW_WEB_FETCH", "0")).strip().lower() not in (
         "1", "true", "yes", "on",
     ):
@@ -128,9 +122,22 @@ def _allowlist_ok(url: str) -> bool:
     try:
         guard_public_url(url)
     except SSRFBlocked as exc:
-        if exc.kind != "dns":
-            return False
+        return exc.kind == "dns"
     return True
+
+
+def _allowlist_ok(url: str) -> bool:
+    from urllib.parse import urlsplit
+
+    host = (urlsplit(url).hostname or "").lower()
+    # A host the current call vouched for (its own dev server) — checked before
+    # the operator allowlist and never persisted anywhere.
+    if host and host in _EXTRA_ALLOW.get():
+        return True
+    raw = os.environ.get("AIFORGE_BROWSER_ALLOWLIST", "").strip()
+    if raw:
+        return _matches_operator_allowlist(host, raw)
+    return _open_browsing_ok(url)
 
 
 def _record(run_id: str, entry: dict[str, Any]) -> None:

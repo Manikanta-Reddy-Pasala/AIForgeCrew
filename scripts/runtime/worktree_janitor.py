@@ -74,37 +74,41 @@ def _worktrees(root: Path) -> "list[tuple[Path, Path]]":
     return out
 
 
+def _sweep_one(repo: Path, wt: Path, dry_run: bool) -> str:
+    """Decide and act on ONE worktree. Returns the counter to bump:
+    ``keep`` / ``removed`` / ``failed``."""
+    ident = wt.name
+    status = _ticket_status(ident)
+    label = f"[{repo.name}/{ident}] status={status or '?'}"
+    if status not in TERMINAL:
+        print(f"{label} -> keep")
+        return "kept"
+    if dry_run:
+        print(f"{label} -> WOULD remove")
+        return "removed"
+    res = _git(["worktree", "remove", "--force", str(wt)], repo)
+    if res is not None and res.returncode == 0:
+        print(f"{label} -> removed")
+        return "removed"
+    err = (res.stderr or "").strip().splitlines()[-1:] if res else []
+    print(f"{label} -> REMOVE FAILED {err[0] if err else ''}")
+    return "failed"
+
+
 def sweep(root: Path, *, dry_run: bool = False) -> dict:
     """Remove the finished tickets' worktrees under ``root``."""
-    removed, kept, failed = 0, 0, 0
+    counts = {"removed": 0, "kept": 0, "failed": 0}
     pairs = _worktrees(root)
     for repo, wt in pairs:
-        ident = wt.name
-        status = _ticket_status(ident)
-        label = f"[{repo.name}/{ident}] status={status or '?'}"
-        if status not in TERMINAL:
-            print(f"{label} -> keep")
-            kept += 1
-            continue
-        if dry_run:
-            print(f"{label} -> WOULD remove")
-            removed += 1
-            continue
-        res = _git(["worktree", "remove", "--force", str(wt)], repo)
-        if res is not None and res.returncode == 0:
-            print(f"{label} -> removed")
-            removed += 1
-        else:
-            err = (res.stderr or "").strip().splitlines()[-1:] if res else []
-            print(f"{label} -> REMOVE FAILED {err[0] if err else ''}")
-            failed += 1
+        counts[_sweep_one(repo, wt, dry_run)] += 1
     # Drop refs to worktrees already gone from disk (including the ones just
     # removed), once per repo.
     if not dry_run:
         for repo in dict.fromkeys(r for r, _ in pairs):
             _git(["worktree", "prune"], repo)
-    print(f"removed={removed} kept={kept} failed={failed}")
-    return {"removed": removed, "kept": kept, "failed": failed}
+    print(f"removed={counts['removed']} kept={counts['kept']} "
+          f"failed={counts['failed']}")
+    return counts
 
 
 def main(argv: "list[str] | None" = None) -> int:

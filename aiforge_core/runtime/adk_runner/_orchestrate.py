@@ -681,6 +681,9 @@ def main() -> int:
         # Announce the resolved backends only on polls that actually did work,
         # so an idle queue (a fresh process every ~10s) doesn't spam the log.
         backends.boot_log()
-        return 0
-    time.sleep(int(os.environ.get("AIFORGE_POLL_IDLE_S", "10")))
+    else:
+        time.sleep(int(os.environ.get("AIFORGE_POLL_IDLE_S", "10")))
+    # Always 0: "did work" and "queue was empty" are both successful polls, and
+    # the supervising loop (run.sh / docker entrypoint) restarts this process
+    # either way. A real failure propagates as an exception, which exits non-0.
     return 0

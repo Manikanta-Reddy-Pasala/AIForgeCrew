@@ -67,50 +67,35 @@ def _wait_ready(url: str, timeout_s: float) -> tuple[bool, str]:
         time.sleep(0.5)
 
 
-def _resolve_target(args: dict, cwd: str | None) -> tuple[str, dict | None, dict | None]:
-    """``(url, service, error)``.
+def _pick_alive(url: str, cmd: str,
+                alive: list[dict]) -> tuple[dict | None, dict | None]:
+    """``(service, error)`` for an already-running server, both None when
+    there is nothing to reuse.
 
-    ``service`` names the server being looked at — started OR reused — and is
-    echoed in the result on every path. Silence there was a trap: with an API
-    and a web UI both running, ``ui_check({"path": "/login"})`` would pick
-    whichever came first and report nothing about the choice, so the agent
-    would go and fix a login route in the backend whose 404 page it had just
-    screenshotted.
+    Ambiguity is refused rather than guessed: with an API and a web UI both
+    running, picking whichever came first meant ``ui_check({"path": "/login"})``
+    could screenshot the backend's 404 page and send the agent off to fix a
+    login route that was never broken.
     """
-    from aiforge_core.runtime.tools import serve as _serve
-
-    url = (args.get("url") or "").strip()
-    cmd = (args.get("cmd") or "").strip()
-    path = (args.get("path") or "").strip()
-
-    # A url AND a cmd is the common agent shape ("start it, it will be on
-    # 5173"). Honour the url when something already answers there, and fall
-    # through to starting the cmd when nothing does — returning "connection
-    # refused" while holding the command that fixes it is the kind of un-smooth
-    # this macro exists to remove.
-    if url and (not cmd or _wait_ready(url, _f(args, "reuse_probe_s", 1.0))[0]):
-        return _join(url, path), None, None
-
-    listed = _serve.list_services().get("services") or []
-    alive = [s for s in listed if s.get("alive") and s.get("url")]
     match = [s for s in alive if not cmd or s.get("cmd") == cmd]
-    if match:
-        if not url and not cmd and len(match) > 1:
-            return "", None, {
-                "ok": False, "error": "ambiguous_service",
-                "services": [{"pid": s.get("pid"), "url": s.get("url"),
-                              "cmd": s.get("cmd")} for s in match],
-                "hint": ("more than one server is running — pass url= or cmd= "
-                         "to say which one to look at")}
-        chosen = match[0]
-        return (_join(url or chosen["url"], path),
-                {"pid": chosen.get("pid"), "url": chosen.get("url"),
-                 "cmd": chosen.get("cmd"), "started": False}, None)
-    if not cmd:
-        return "", None, {
-            "ok": False, "error": "missing_url_or_cmd",
-            "hint": ("pass url= for a running app, or cmd= (e.g. "
-                     "'npm run dev') to have ui_check start it")}
+    if not match:
+        return None, None
+    if not url and not cmd and len(match) > 1:
+        return None, {
+            "ok": False, "error": "ambiguous_service",
+            "services": [{"pid": s.get("pid"), "url": s.get("url"),
+                          "cmd": s.get("cmd")} for s in match],
+            "hint": ("more than one server is running — pass url= or cmd= "
+                     "to say which one to look at")}
+    chosen = match[0]
+    return {"pid": chosen.get("pid"), "url": chosen.get("url"),
+            "cmd": chosen.get("cmd"), "started": False}, None
+
+
+def _start_service(args: dict, url: str, cmd: str, path: str,
+                   cwd: str | None) -> tuple[str, dict | None, dict | None]:
+    """Start ``cmd`` and work out the URL to open."""
+    from aiforge_core.runtime.tools import serve as _serve
 
     started = _serve.serve(
         {"cmd": cmd, "port": args.get("port"),
@@ -129,6 +114,41 @@ def _resolve_target(args: dict, cwd: str | None) -> tuple[str, dict | None, dict
                      "port= or url= so ui_check knows where to look"),
             "service": service}
     return _join(base, path), service, None
+
+
+def _resolve_target(args: dict, cwd: str | None) -> tuple[str, dict | None, dict | None]:
+    """``(url, service, error)``.
+
+    ``service`` names the server being looked at — started OR reused — and is
+    echoed in the result on every path, so the agent can see which one it got.
+    """
+    from aiforge_core.runtime.tools import serve as _serve
+
+    url = (args.get("url") or "").strip()
+    cmd = (args.get("cmd") or "").strip()
+    path = (args.get("path") or "").strip()
+
+    # A url AND a cmd is the common agent shape ("start it, it will be on
+    # 5173"). Honour the url when something already answers there, and fall
+    # through to starting the cmd when nothing does — returning "connection
+    # refused" while holding the command that fixes it is the kind of un-smooth
+    # this macro exists to remove.
+    if url and (not cmd or _wait_ready(url, _f(args, "reuse_probe_s", 1.0))[0]):
+        return _join(url, path), None, None
+
+    listed = _serve.list_services().get("services") or []
+    alive = [s for s in listed if s.get("alive") and s.get("url")]
+    reused, ambiguous = _pick_alive(url, cmd, alive)
+    if ambiguous is not None:
+        return "", None, ambiguous
+    if reused is not None:
+        return _join(url or reused["url"], path), reused, None
+    if not cmd:
+        return "", None, {
+            "ok": False, "error": "missing_url_or_cmd",
+            "hint": ("pass url= for a running app, or cmd= (e.g. "
+                     "'npm run dev') to have ui_check start it")}
+    return _start_service(args, url, cmd, path, cwd)
 
 
 def _join(base: str, path: str) -> str:
