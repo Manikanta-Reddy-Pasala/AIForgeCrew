@@ -731,6 +731,77 @@ def tool_surface(prs):
         fill=WHITE, edge=LINE, size=12, sub_size=9.5, label_color=INK)
 
 
+def rules_skills_workflows(prs):
+    s = slide_base(
+        prs, "Rules, skills and workflows",
+        "How the agent is taught — and how it teaches itself.",
+        "All three are markdown on disk, repo-local overriding global by name. "
+        "Ships with 3 rules, 4 skills and 1 workflow; the rest you write, or it writes.")
+
+    cols = [
+        ("RULES", "glob-scoped, deterministic\nzero LLM cost", BLUE_T, BLUE,
+         [".aiforge/rules/*.md",
+          ".cursor/rules/*.mdc",
+          ".cursorrules  (always)",
+          "AGENTS.md  (always)"],
+         "matched against the ticket's scope globs — in BOTH directions, so\n"
+         "src/** matches src/a/** — then rendered as one capped block into\n"
+         "the planner and doer prompts, replacing a paid LLM gathering call"),
+        ("SKILLS", "SKILL.md\nagentskills.io convention", GREEN_T, GREEN,
+         ["~/.aiforge/skills/<name>/",
+          "<repo>/.aiforge/skills/",
+          "<repo>/.claude/skills/",
+          "frontmatter + markdown body"],
+         "searched by RELEVANCE — description and trigger overlap, not a\n"
+         "substring match — so the right skill is discovered rather than\n"
+         "named. write_skill() authors one the moment something hard is solved"),
+        ("WORKFLOWS", "WORKFLOW.md\nsame machinery, own folder", PLUM_T, PLUM,
+         ["~/.aiforge/workflows/<name>/",
+          "<repo>/.aiforge/workflows/",
+          "<repo>/.claude/workflows/",
+          "end-to-end procedures"],
+         "skills are small reusable how-tos; workflows are the longer recipe —\n"
+         "\"how we cut a release\", \"how we triage a flaky test\". Added by\n"
+         "write_workflow(), or by dropping a file in by hand"),
+    ]
+    cw, gap = Inches(3.83), Inches(0.20)
+    for i, (name, tag, f, e, roots, note) in enumerate(cols):
+        x = Inches(0.75) + i * (cw + gap)
+        box(s, x, Inches(1.55), cw, Inches(0.68), name, tag,
+            fill=f, edge=e, size=15, sub_size=9)
+        for j, r in enumerate(roots):
+            chip(s, x, Inches(2.35) + j * Inches(0.36), cw, r, edge=e,
+                 color=INK, size=9)
+        text(s, x + Inches(0.05), Inches(3.85), cw - Inches(0.10),
+             Inches(1.0), note, size=9, color=MUTED)
+
+    # the always-on capture loop that feeds them
+    text(s, Inches(0.75), Inches(4.92), Inches(6), Inches(0.22),
+         "ALWAYS-ON CAPTURE  —  runs BEFORE the agent, on every chat message",
+         size=10, bold=True, color=MUTED)
+    steps = [
+        ("user message", ""),
+        ("classify", "ONE capped LLM pass"),
+        ("rule | memory\nfeedback | none", "+ scope, confidence"),
+        ("route + store", "repo rules · md_store\nmemory · in-session"),
+    ]
+    bw = Inches(2.70)
+    for i, (lab, sub) in enumerate(steps):
+        x = Inches(0.75) + i * (bw + Inches(0.28))
+        box(s, x, Inches(5.22), bw, Inches(0.78), lab, sub,
+            fill=AMBER_T if i else WHITE, edge=AMBER if i else LINE,
+            size=11.5, sub_size=8.5, label_color=None if i else INK)
+        if i < 3:
+            arrow(s, x + bw, Inches(5.61), x + bw + Inches(0.28), Inches(5.61))
+
+    box(s, Inches(0.75), Inches(6.15), Inches(11.87), Inches(0.55),
+        "A gate is NEVER disabled by the classifier",
+        "a directive stated in passing is captured deterministically instead of "
+        "hoping the model calls remember_rule — but disabling a commit or delete "
+        "gate stays a separate, scoped, revocable opt-in",
+        fill=RED_T, edge=RED, size=11.5, sub_size=9.5)
+
+
 def safety(prs):
     s = slide_base(
         prs, "Safety rails",
@@ -895,6 +966,7 @@ def build():
     chat_modes(prs)
     ticket_pipeline(prs)
     tool_surface(prs)
+    rules_skills_workflows(prs)
     memory(prs)
     central_memory(prs)
     limits(prs)
