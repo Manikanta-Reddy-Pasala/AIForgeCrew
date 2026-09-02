@@ -1,9 +1,10 @@
 """TLS posture of the Jira / Confluence / GitLab HTTP integrations.
 
-The default used to be INSECURE: `insecure_tls` was True whenever
-`{PREFIX}_INSECURE_TLS` was unset, so a stock install sent its bearer token
-to Jira over a connection whose certificate was never checked. These tests
-pin the corrected default and the CA-bundle path that replaces it.
+The default is INSECURE by the operator's explicit decision: an unset
+`{PREFIX}_INSECURE_TLS` skips verification, because these integrations point
+at internal, often self-signed, endpoints. These tests pin that default so it
+cannot drift silently in either direction, and pin the CA-bundle path — which
+keeps verification ON — as the better answer for the self-signed case.
 """
 from __future__ import annotations
 
@@ -26,7 +27,18 @@ def _conf(**_kw):
     return hi.integration_conf("jira", "JIRA")
 
 
-def test_verification_is_on_when_nothing_is_configured():
+def test_unset_skips_verification_by_design():
+    # The operator's deliberate default (see the module docstring). Pinned so
+    # the exposure it carries is a decision on record, not an accident: the
+    # bearer token travels over an unauthenticated connection.
+    conf = _conf()
+    assert conf["insecure_tls"] is True
+    assert hi.ssl_context(conf["insecure_tls"], conf["ca_bundle"]).verify_mode \
+        == ssl.CERT_NONE
+
+
+def test_explicit_zero_turns_verification_on(monkeypatch):
+    monkeypatch.setenv("JIRA_INSECURE_TLS", "0")
     conf = _conf()
     assert conf["insecure_tls"] is False
     # None = urllib's own default verification.
@@ -43,20 +55,8 @@ def test_explicit_opt_out_still_works(monkeypatch):
 
 
 @pytest.mark.parametrize("value", ["0", "false", "no", ""])
-def test_falsey_values_keep_verification_on(monkeypatch, value):
+def test_falsey_values_turn_verification_on(monkeypatch, value):
     monkeypatch.setenv("JIRA_INSECURE_TLS", value)
-    assert _conf()["insecure_tls"] is False
-
-
-def test_a_stored_flag_is_honoured(monkeypatch):
-    monkeypatch.setattr("aiforge_core.config.integrations.get",
-                        lambda _n: {"insecure_tls": True})
-    assert _conf()["insecure_tls"] is True
-
-
-def test_stored_flag_absent_means_verify(monkeypatch):
-    monkeypatch.setattr("aiforge_core.config.integrations.get",
-                        lambda _n: {"base_url": "https://jira.internal"})
     assert _conf()["insecure_tls"] is False
 
 

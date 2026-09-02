@@ -39,15 +39,14 @@ def integration_conf(name: str, env_prefix: str, *,
     stripped — a stray newline in an auth header yields a 401), ``ca_bundle``
     and ``insecure_tls``.
 
-    **TLS verification is ON by default.** It used to be OFF whenever
-    ``{PREFIX}_INSECURE_TLS`` was simply unset, so an ordinary install shipped
-    its Jira/Confluence/GitLab BEARER TOKEN over a connection whose certificate
-    was never checked — an on-path attacker could take the token and read or
-    write anything the integration can. Self-signed internal endpoints are why
-    that default existed; they are now served properly by ``{PREFIX}_CA_BUNDLE``
-    (or ``AIFORGE_CA_BUNDLE``), which keeps verification ON and anchors it to
-    the internal CA. ``{PREFIX}_INSECURE_TLS=1`` still turns verification off
-    for operators who want that, but it must now be asked for.
+    ``insecure_tls`` DEFAULTS TO TRUE: these integrations hit internal, often
+    self-signed, endpoints and the UI toggle was removed, so an unset
+    ``{PREFIX}_INSECURE_TLS`` skips verification. **Know what that costs** — the
+    integration's bearer token then travels over a connection whose certificate
+    nobody checked, so an on-path attacker on the route to your Jira can take
+    it. Prefer ``{PREFIX}_CA_BUNDLE`` (or ``AIFORGE_CA_BUNDLE``): verification
+    stays ON, anchored to the internal CA, which handles the self-signed case
+    without the exposure. ``{PREFIX}_INSECURE_TLS=0`` also forces verification.
 
     ``str_fields`` = extra ``(key, ENV)`` string fields (e.g.
     ``("default_project", "JIRA_DEFAULT_PROJECT")``); ``bool_fields`` = extra
@@ -66,10 +65,12 @@ def integration_conf(name: str, env_prefix: str, *,
     conf = {
         "base_url": _s("base_url", f"{env_prefix}_BASE_URL").rstrip("/"),
         "token": _s("token", f"{env_prefix}_TOKEN"),
-        # Unset means VERIFY. Only an explicit truthy env var, or the flag the
-        # operator stored for this integration, turns verification off.
-        "insecure_tls": (truthy(_ins) if _ins is not None
-                         else bool(stored.get("insecure_tls"))),
+        # Unset means SKIP VERIFY (operator's call, restored deliberately):
+        # these integrations point at internal, often self-signed, endpoints
+        # and the UI toggle for this was removed. `{PREFIX}_INSECURE_TLS=0`
+        # turns verification on, and `{PREFIX}_CA_BUNDLE` is the better answer
+        # — it keeps verification ON and anchors it to the internal CA.
+        "insecure_tls": _ins is None or truthy(_ins),
         "ca_bundle": (_s("ca_bundle", f"{env_prefix}_CA_BUNDLE")
                       or os.environ.get("AIFORGE_CA_BUNDLE", "").strip()),
     }

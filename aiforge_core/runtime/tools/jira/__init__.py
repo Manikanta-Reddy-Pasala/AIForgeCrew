@@ -9,8 +9,8 @@ Config (env):
                   for basic auth when JIRA_USER is also set
   JIRA_USER       (optional) username/email → switches to Basic auth
   JIRA_CA_BUNDLE=/path/ca.pem   trust an internal CA — verification STAYS ON
-  JIRA_INSECURE_TLS=1   skip TLS verify entirely (last resort: the auth
-                         token then travels over an unauthenticated channel)
+  JIRA_INSECURE_TLS=0   force TLS verify on (DEFAULT is to SKIP it: the auth
+                         token travels over an unauthenticated channel)
 
 Soft-error contract: every function returns ``{"ok": bool, ...}`` and never
 raises into the agent loop.

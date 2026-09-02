@@ -11,8 +11,8 @@ Config (env):
   GITLAB_PROJECT    (optional) default project — numeric id or URL path
                     ("group/sub/project"). Used when a call omits ``project``.
   GITLAB_CA_BUNDLE=/path/ca.pem   trust an internal CA — verification STAYS ON
-  GITLAB_INSECURE_TLS=1   skip TLS verify entirely (last resort: the auth
-                         token then travels over an unauthenticated channel)
+  GITLAB_INSECURE_TLS=0   force TLS verify on (DEFAULT is to SKIP it: the auth
+                         token travels over an unauthenticated channel)
 
 GitLab issues are addressed per-project by their ``iid`` (the number you see
 in the UI, e.g. #42), NOT the global id — every read/update/comment needs a
