@@ -36,10 +36,20 @@ def integration_conf(name: str, env_prefix: str, *,
     env-or-store + token-strip + insecure-TLS-by-default logic.
 
     Always returns ``base_url`` (trailing slash stripped), ``token`` (whitespace
-    stripped — a stray newline in an auth header yields a 401), and
-    ``insecure_tls`` (DEFAULT True; ``{PREFIX}_INSECURE_TLS=0`` re-enables verify
-    — integrations hit self-signed internal endpoints and the UI toggle was
-    removed). ``str_fields`` = extra ``(key, ENV)`` string fields (e.g.
+    stripped — a stray newline in an auth header yields a 401), ``ca_bundle``
+    and ``insecure_tls``.
+
+    **TLS verification is ON by default.** It used to be OFF whenever
+    ``{PREFIX}_INSECURE_TLS`` was simply unset, so an ordinary install shipped
+    its Jira/Confluence/GitLab BEARER TOKEN over a connection whose certificate
+    was never checked — an on-path attacker could take the token and read or
+    write anything the integration can. Self-signed internal endpoints are why
+    that default existed; they are now served properly by ``{PREFIX}_CA_BUNDLE``
+    (or ``AIFORGE_CA_BUNDLE``), which keeps verification ON and anchors it to
+    the internal CA. ``{PREFIX}_INSECURE_TLS=1`` still turns verification off
+    for operators who want that, but it must now be asked for.
+
+    ``str_fields`` = extra ``(key, ENV)`` string fields (e.g.
     ``("default_project", "JIRA_DEFAULT_PROJECT")``); ``bool_fields`` = extra
     ``(key, ENV)`` booleans (env truthy OR stored truthy, e.g. gitlab ``oauth``).
     """
@@ -56,7 +66,12 @@ def integration_conf(name: str, env_prefix: str, *,
     conf = {
         "base_url": _s("base_url", f"{env_prefix}_BASE_URL").rstrip("/"),
         "token": _s("token", f"{env_prefix}_TOKEN"),
-        "insecure_tls": _ins is None or truthy(_ins),
+        # Unset means VERIFY. Only an explicit truthy env var, or the flag the
+        # operator stored for this integration, turns verification off.
+        "insecure_tls": (truthy(_ins) if _ins is not None
+                         else bool(stored.get("insecure_tls"))),
+        "ca_bundle": (_s("ca_bundle", f"{env_prefix}_CA_BUNDLE")
+                      or os.environ.get("AIFORGE_CA_BUNDLE", "").strip()),
     }
     for key, env in str_fields:
         conf[key] = _s(key, env)
@@ -65,9 +80,24 @@ def integration_conf(name: str, env_prefix: str, *,
     return conf
 
 
-def ssl_context(insecure_tls: bool):
-    """An unverified TLS context when ``insecure_tls`` (self-signed internal
-    cert), else None (default verification)."""
+def ssl_context(insecure_tls: bool, ca_bundle: str = ""):
+    """The TLS context for an integration call, in order of preference:
+
+    * ``ca_bundle`` set → verification stays ON, anchored to that CA. This is
+      the right answer for a self-signed internal Jira/Confluence/GitLab, and
+      the reason the insecure default could be removed.
+    * ``insecure_tls`` → CERT_NONE. A deliberate, per-integration opt-out the
+      operator now has to ask for; it sends the auth token over a connection
+      nobody has authenticated.
+    * otherwise → None, meaning urllib's own default verification.
+    """
+    if ca_bundle:
+        try:
+            return ssl.create_default_context(cafile=ca_bundle)
+        except (OSError, ssl.SSLError) as exc:
+            # A bad path must not silently downgrade to "no verification".
+            raise ValueError(
+                f"CA bundle {ca_bundle!r} could not be loaded: {exc}") from exc
     if insecure_tls:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False

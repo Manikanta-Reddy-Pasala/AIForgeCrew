@@ -8,7 +8,9 @@ Config (env):
   JIRA_TOKEN      Personal Access Token (Bearer) — or the password/token
                   for basic auth when JIRA_USER is also set
   JIRA_USER       (optional) username/email → switches to Basic auth
-  JIRA_INSECURE_TLS=1   skip TLS verify for a self-signed internal cert
+  JIRA_CA_BUNDLE=/path/ca.pem   trust an internal CA — verification STAYS ON
+  JIRA_INSECURE_TLS=1   skip TLS verify entirely (last resort: the auth
+                         token then travels over an unauthenticated channel)
 
 Soft-error contract: every function returns ``{"ok": bool, ...}`` and never
 raises into the agent loop.

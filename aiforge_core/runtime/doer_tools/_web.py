@@ -84,11 +84,17 @@ def _do_fetch(url: str) -> dict:
         if exc.kind != "dns":
             return {"ok": False, "error": f"blocked (ssrf): {exc}"}
 
-    unverified = False
+    # A plain http:// page arrives over a channel nobody authenticated — the
+    # same fact the broken-TLS-chain path already reports. Say so with the same
+    # field rather than inventing a second vocabulary for one meaning: the
+    # model is about to act on this content, and "it could have been tampered
+    # with in transit" is what it needs to know.
+    unverified = str(url).lower().startswith("http://")
     try:
         req = urllib.request.Request(
             url, headers={"User-Agent": "AIForgeCrew-Doer/1.0"})
-        resp_cm, unverified = _open_web_response(req, url)
+        resp_cm, downgraded = _open_web_response(req, url)
+        unverified = unverified or downgraded
         with resp_cm as resp:
             blocked = _reguard_redirect(resp, url, guard_public_url, SSRFBlocked)
             if blocked is not None:
