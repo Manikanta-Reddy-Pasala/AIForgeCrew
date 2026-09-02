@@ -299,7 +299,25 @@ CATALOG: dict = {
                  {"task": "s", "agent": "s"}, ("task",)),
     "mcp": ("Call an MCP tool.",
             {"server": "s", "tool": "s", "args": "obj"}, ()),
-    "browse": ("Drive a headless browser.", {"url": "s", "action": "s"}, ()),
+    # The dispatcher's argument is `command`, not `action` — a schema naming
+    # the wrong key made every native browse tool-call arrive with no command.
+    "browse": ("Drive a headless browser: command = goto|screenshot|click|fill|"
+               "extract_text|viewport|wait_for|console|scroll|type|key_press|"
+               "close.",
+               {"command": "s", "url": "s", "selector": "s", "text": "s",
+                "path": "s", "width": "i", "height": "i", "state": "s",
+                "ms": "i", "full_page": "b"}, ("command",)),
+    # ── visual verification ──────────────────────────────────────────────
+    "ui_check": ("Open the running app in a headless browser, screenshot it, "
+                 "and report what a vision model SEES plus the page's console "
+                 "and network errors. Pass url= for an app already running, or "
+                 "cmd= to start it first.",
+                 {"url": "s", "cmd": "s", "path": "s", "port": "i",
+                  "width": "i", "height": "i", "full_page": "b",
+                  "settle_ms": "i", "ready_timeout_s": "i", "label": "s"}, ()),
+    "ui_ask": ("Ask the vision model a follow-up question about a capture "
+               "ui_check already took.",
+               {"capture_id": "s", "question": "s"}, ("capture_id",)),
 }
 
 

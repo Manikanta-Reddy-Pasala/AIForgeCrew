@@ -48,10 +48,14 @@ def test_mcp_handler_forwards_kwargs(monkeypatch):
 def test_browse_handler_forwards_kwargs_and_stable_run_id(monkeypatch):
     seen = {}
 
+    # Mirrors the real dispatcher's signature — including the viewport /
+    # wait_for / screenshot options the ui_check macro drives.
     def _fake_browse(command, *, url=None, path=None, selector=None, text=None,
                      x=None, y=None, button=None, key=None, dx=None, dy=None,
+                     width=None, height=None, state=None, ms=None,
+                     full_page=None, clear=None, errors_only=None,
                      _run_id=None):
-        seen.update(command=command, url=url, _run_id=_run_id)
+        seen.update(command=command, url=url, _run_id=_run_id, width=width)
         return {"ok": True}
 
     monkeypatch.setattr("aiforge_core.runtime.tools.browser.browse", _fake_browse)

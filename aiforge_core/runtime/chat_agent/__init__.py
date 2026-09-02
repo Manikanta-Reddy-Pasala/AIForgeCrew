@@ -182,6 +182,8 @@ from ._tools import (
     _chat_run_id,
     _t_mcp,
     _t_browse,
+    _t_ui_check,
+    _t_ui_ask,
     _t_ipython,
     _t_delegate,
 )

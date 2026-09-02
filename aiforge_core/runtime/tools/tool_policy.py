@@ -39,8 +39,12 @@ _VALID = {ALLOW, ASK, DENY}
 # operator's run_command=deny policy, and any PreToolUse hook matching
 # run_command: `watch_until {"cmd": "git push --force …"}` would have executed
 # twenty times, unattended.
+# ``ui_check`` starts the app it is about to look at, by handing its ``cmd``
+# to ``serve`` — the same shell. Leaving it out made it a hole straight past
+# the gate that serve itself sits behind: `ui_check {"cmd": "curl … | sh"}`
+# ran unassessed while the identical string via serve escalated to ASK.
 _CMD_TOOLS = {"run_command", "bash", "shell", "run_shell", "serve",
-              "watch_until"}
+              "watch_until", "ui_check"}
 _CMD_ARG_KEYS = ("cmd", "command", "input")
 
 # Tools that mutate something external/durable → default to ASK (human

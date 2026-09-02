@@ -649,7 +649,7 @@ def _dispatch_tool(name, args, cwd, n, _hook_block):
 
 
 _SHELL_TOOLS = ("run_command", "bash", "run_shell", "shell", "serve",
-                "watch_until")
+                "watch_until", "ui_check")
 
 
 def _is_destructive_delete(cmd: str) -> bool:
@@ -805,7 +805,7 @@ def _autonomous_decision(name, args, _destructive_del):
     # force-push in worktree-isolated autonomous runs).
     _danger = bool(_destructive_del)
     if not _danger and name in ("run_command", "run_shell", "serve",
-                                "bash", "shell", "watch_until"):
+                                "bash", "shell", "watch_until", "ui_check"):
         try:
             from aiforge_core.runtime.tools import command_risk
             _lvl = command_risk.assess(

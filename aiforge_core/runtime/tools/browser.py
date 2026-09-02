@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import contextvars
 import os
+import re
 import uuid
 from typing import Any
 
@@ -27,6 +28,15 @@ from ._trace import emit
 _RUN_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "browser_run_id", default=None)
 
+# Hosts an in-process caller vouches for, for the duration of ITS call — the
+# dev server ``ui_check`` just started, which no allowlist could name in
+# advance. A ContextVar rather than a mutated env var because the API serves
+# concurrent chats in threads: an env write is process-global, so one chat
+# would grant (and later revoke) a host out from under another. Same reasoning
+# as aiforge_core/runtime/request_context.
+_EXTRA_ALLOW: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
+    "browser_extra_allow", default=())
+
 
 def set_run_id(run_id: str | None) -> None:
     _RUN_ID.set(run_id)
@@ -35,8 +45,35 @@ def set_run_id(run_id: str | None) -> None:
 def _effective_run_id(explicit: str | None) -> str:
     return explicit or _RUN_ID.get() or "default"
 
+
+def allow_hosts(hosts: tuple[str, ...] | list[str]):
+    """Vouch for ``hosts`` in the current context. Returns the ContextVar token
+    — reset it in a ``finally`` so the grant dies with the call."""
+    clean = tuple(h.strip().lower() for h in hosts if h and h.strip())
+    return _EXTRA_ALLOW.set(_EXTRA_ALLOW.get() + clean)
+
+
+def reset_allow(token) -> None:
+    import contextlib
+    with contextlib.suppress(ValueError, LookupError):  # token from elsewhere
+        _EXTRA_ALLOW.reset(token)
+
 _SCREENSHOT_CAP_BYTES = 256 * 1024
 _TEXT_CAP_BYTES = 32 * 1024
+
+# Page-level diagnostics (console messages, uncaught JS errors, failed
+# requests) per run. A UI bug usually announces itself HERE rather than in the
+# DOM — a 404 on a JS chunk, a hydration mismatch, a thrown render error — so
+# the listeners are attached at context-creation time, BEFORE the first goto.
+# Attaching them later would miss every error the page threw while loading,
+# which is precisely the class of failure this exists to catch.
+_CONSOLE_RING = 200          # entries kept per run; oldest dropped
+_CONSOLE_TEXT_CAP = 500      # per-entry text cap
+_console: dict[str, list[dict[str, Any]]] = {}
+
+# Browser-initiated cancellations, not page defects.
+_ABORTED_RE = re.compile(r"(?i)ERR_ABORTED|ERR_CANCELED|ERR_CANCELLED"
+                         r"|net::ERR_BLOCKED_BY_CLIENT")
 
 # Module-level Playwright instances, keyed by ADK run_id.
 _contexts: dict[str, Any] = {}
@@ -56,6 +93,11 @@ def _allowlist_ok(url: str) -> bool:
     from urllib.parse import urlsplit
 
     host = (urlsplit(url).hostname or "").lower()
+
+    # A host the current call vouched for (its own dev server) — checked before
+    # the operator allowlist and never persisted anywhere.
+    if host and host in _EXTRA_ALLOW.get():
+        return True
 
     raw = os.environ.get("AIFORGE_BROWSER_ALLOWLIST", "").strip()
     if raw:
@@ -91,6 +133,72 @@ def _allowlist_ok(url: str) -> bool:
     return True
 
 
+def _record(run_id: str, entry: dict[str, Any]) -> None:
+    """Append one diagnostic entry, oldest-out at :data:`_CONSOLE_RING`.
+
+    Never raises: this runs inside a Playwright event callback, where an
+    exception would surface on an unrelated later call.
+    """
+    try:
+        buf = _console.setdefault(run_id, [])
+        text = str(entry.get("text") or "")[:_CONSOLE_TEXT_CAP]
+        entry["text"] = text
+        buf.append(entry)
+        if len(buf) > _CONSOLE_RING:
+            del buf[:len(buf) - _CONSOLE_RING]
+    except Exception:  # noqa: BLE001 — diagnostics must never break a page
+        pass
+
+
+def _attach_listeners(page: Any, run_id: str) -> None:
+    """Wire console / pageerror / requestfailed into the run's ring buffer."""
+    def _on_console(msg: Any) -> None:
+        try:
+            kind = msg.type
+        except Exception:  # noqa: BLE001
+            kind = "log"
+        _record(run_id, {"kind": "console", "level": str(kind),
+                         "text": str(getattr(msg, "text", "") or "")})
+
+    def _on_pageerror(err: Any) -> None:
+        _record(run_id, {"kind": "pageerror", "level": "error",
+                         "text": str(err)})
+
+    def _on_requestfailed(req: Any) -> None:
+        try:
+            failure = req.failure
+        except Exception:  # noqa: BLE001
+            failure = ""
+        text = str(failure or "request failed")
+        # A request the BROWSER cancelled — navigating away, an HMR socket torn
+        # down at page close — is routine, not a defect. Levelling it "error"
+        # would spend the agent's two fix rounds chasing a phantom.
+        level = "info" if _ABORTED_RE.search(text) else "error"
+        _record(run_id, {"kind": "requestfailed", "level": level,
+                         "url": str(getattr(req, "url", ""))[:300],
+                         "text": text})
+
+    for event, handler in (("console", _on_console),
+                           ("pageerror", _on_pageerror),
+                           ("requestfailed", _on_requestfailed)):
+        try:
+            page.on(event, handler)
+        except Exception:  # noqa: BLE001 — a driver without the event
+            continue
+
+
+def drain_console(run_id: str | None = None, *, clear: bool = True,
+                  errors_only: bool = False) -> list[dict[str, Any]]:
+    """Return the diagnostics collected for ``run_id`` (and clear them by
+    default, so a second page-load reports only its OWN errors)."""
+    rid = _effective_run_id(run_id)
+    buf = _console.get(rid) or []
+    out = [e for e in buf if not errors_only or e.get("level") == "error"]
+    if clear:
+        _console[rid] = []
+    return out
+
+
 def _teardown_globals() -> None:
     """Close + null the shared browser/playwright handles (best-effort)."""
     global _pw_handle, _browser
@@ -124,6 +232,8 @@ def _get_context(run_id: str) -> Any:
             _browser = _pw_handle.chromium.launch(headless=True)
         ctx = _browser.new_context()
         page = ctx.new_page()
+        _console[run_id] = []
+        _attach_listeners(page, run_id)
     except Exception:
         _teardown_globals()
         raise
@@ -134,6 +244,7 @@ def _get_context(run_id: str) -> Any:
 
 def destroy_context(run_id: str) -> None:
     """Close BrowserContext + cleanup global handles when last run is gone."""
+    _console.pop(run_id, None)
     pair = _contexts.pop(run_id, None)
     if pair is not None:
         ctx, _page = pair
@@ -159,8 +270,9 @@ def _goto(page: Any, url: str) -> dict[str, Any]:
     }
 
 
-def _screenshot(page: Any, path: str | None) -> dict[str, Any]:
-    png = page.screenshot(full_page=False)
+def _screenshot(page: Any, path: str | None,
+                full_page: bool = False) -> dict[str, Any]:
+    png = page.screenshot(full_page=bool(full_page))
     out_path = None
     if path:
         try:
@@ -176,6 +288,49 @@ def _screenshot(page: Any, path: str | None) -> dict[str, Any]:
         "png_b64": b64, "bytes": len(png),
         "truncated": len(png) > _SCREENSHOT_CAP_BYTES,
     }
+
+
+def _viewport(page: Any, width: int, height: int) -> dict[str, Any]:
+    """Resize the page. A screenshot at the driver's default 1280x720 says
+    nothing about the phone layout the user is complaining about."""
+    w, h = int(width or 0) or 1280, int(height or 0) or 800
+    page.set_viewport_size({"width": w, "height": h})
+    return {"ok": True, "width": w, "height": h}
+
+
+# Load states Playwright's wait_for_load_state accepts.
+_LOAD_STATES = ("load", "domcontentloaded", "networkidle")
+
+
+def _wait_for(page: Any, selector: str | None, state: str | None,
+              ms: int | None) -> dict[str, Any]:
+    """Wait for a selector, a load state, or a fixed delay — so a capture is
+    taken of the SETTLED page rather than a half-painted one."""
+    if selector:
+        page.wait_for_selector(selector, timeout=int(ms or 10000))
+        return {"ok": True, "waited": "selector", "selector": selector}
+    if state:
+        if state not in _LOAD_STATES:
+            return {"ok": False, "error": "unknown_state", "state": state,
+                    "allowed": list(_LOAD_STATES)}
+        page.wait_for_load_state(state, timeout=int(ms or 15000))
+        return {"ok": True, "waited": "state", "state": state}
+    page.wait_for_timeout(int(ms or 500))
+    return {"ok": True, "waited": "timeout", "ms": int(ms or 500)}
+
+
+def _console_cmd(run_id: str, clear: bool, errors_only: bool) -> dict[str, Any]:
+    entries = drain_console(run_id, clear=clear, errors_only=errors_only)
+    out: dict[str, Any] = {"ok": True, "count": len(entries), "entries": entries}
+    if not entries:
+        # Reading DRAINS, and ui_check drains on every capture so each check
+        # reports only its own page load. Empty therefore means "nothing since
+        # the last read", NOT "this page is clean" — a distinction an agent
+        # told to fix console errors will otherwise get exactly backwards.
+        out["note"] = ("empty: nothing logged since the last read. ui_check "
+                       "drains this buffer — the errors from the last check "
+                       "are in its result, not here.")
+    return out
 
 
 def _click(page: Any, selector: str) -> dict[str, Any]:
@@ -221,6 +376,27 @@ def _scroll(page: Any, dx: int, dy: int) -> dict[str, Any]:
     return {"ok": True, "dx": dx, "dy": dy}
 
 
+def screenshot_bytes(*, run_id: str | None = None,
+                     full_page: bool = False) -> tuple[bytes | None, str | None]:
+    """``(png_bytes, error)`` for an in-process caller (the ``ui_check`` macro).
+
+    Raw bytes rather than the base64 the ``screenshot`` COMMAND returns: that
+    field exists for the agent-facing dispatcher, and round-tripping a
+    quarter-megabyte image through base64 only to decode it again is waste.
+    """
+    if not _playwright_available():
+        return None, "playwright_missing"
+    rid = _effective_run_id(run_id)
+    try:
+        _ctx, page = _get_context(rid)
+    except Exception as exc:  # noqa: BLE001
+        return None, f"browser_launch_failed: {str(exc)[:200]}"
+    try:
+        return page.screenshot(full_page=bool(full_page)), None
+    except Exception as exc:  # noqa: BLE001
+        return None, f"screenshot_failed: {str(exc)[:200]}"
+
+
 # Arguments where an empty string is not a usable value (an address or a name),
 # unlike `text`, where "" is a legitimate thing to type.
 _NON_EMPTY_ARGS = frozenset({"url", "selector", "key"})
@@ -243,7 +419,12 @@ def _missing(args: dict, names: tuple, code: str) -> str | None:
 # command -> (required args, error code, handler taking (page, args))
 _BROWSE_COMMANDS = {
     "goto": (("url",), "missing_url", lambda page, a: _goto(page, a["url"])),
-    "screenshot": ((), "", lambda page, a: _screenshot(page, a.get("path"))),
+    "screenshot": ((), "", lambda page, a: _screenshot(page, a.get("path"),
+                                                       a.get("full_page"))),
+    "viewport": (("width", "height"), "missing_width_or_height",
+                 lambda page, a: _viewport(page, a["width"], a["height"])),
+    "wait_for": ((), "", lambda page, a: _wait_for(page, a.get("selector"),
+                                                   a.get("state"), a.get("ms"))),
     "click": (("selector",), "missing_selector",
               lambda page, a: _click(page, a["selector"])),
     "fill": (("selector", "text"), "missing_selector_or_text",
@@ -275,13 +456,22 @@ def browse(
     key: str | None = None,
     dx: int | None = None,
     dy: int | None = None,
+    width: int | None = None,
+    height: int | None = None,
+    state: str | None = None,
+    ms: int | None = None,
+    full_page: bool | None = None,
+    clear: bool | None = None,
+    errors_only: bool | None = None,
     _run_id: str | None = None,
 ) -> dict[str, Any]:
     """OpenHands-parity browser dispatcher.
 
-    Commands: ``goto``, ``screenshot``, ``click``, ``fill``, ``extract_text``,
-    ``mouse_click`` (x/y/button), ``key_press`` (key), ``type`` (text),
-    ``scroll`` (dx/dy), ``close``. Soft-error contract.
+    Commands: ``goto``, ``screenshot`` (path/full_page), ``click``, ``fill``,
+    ``extract_text``, ``mouse_click`` (x/y/button), ``key_press`` (key),
+    ``type`` (text), ``scroll`` (dx/dy), ``viewport`` (width/height),
+    ``wait_for`` (selector | state | ms), ``console`` (clear/errors_only),
+    ``close``. Soft-error contract.
     """
     if not _playwright_available():
         return {"ok": False, "error": "playwright_missing",
@@ -290,15 +480,27 @@ def browse(
     if command == "close":
         destroy_context(_run_id)
         return {"ok": True}
+    if command == "console":
+        # Reads the buffer only — deliberately does NOT create a context, so
+        # asking for diagnostics can never launch a browser.
+        return _console_cmd(_run_id, True if clear is None else bool(clear),
+                            bool(errors_only))
     spec = _BROWSE_COMMANDS.get(command)
     if spec is None:
         return {"ok": False, "error": "unknown_command", "command": command}
     required, code, handler = spec
     args = {"url": url, "path": path, "selector": selector, "text": text,
-            "x": x, "y": y, "button": button, "key": key, "dx": dx, "dy": dy}
+            "x": x, "y": y, "button": button, "key": key, "dx": dx, "dy": dy,
+            "width": width, "height": height, "state": state, "ms": ms,
+            "full_page": full_page}
     missing = _missing(args, required, code)
     if missing:
         return {"ok": False, "error": missing}
+    # Refuse a disallowed URL BEFORE launching anything. The check also lives
+    # in _goto (other callers reach it directly), but doing it only there meant
+    # a refused URL still paid for — and leaked — a whole headless Chromium.
+    if command == "goto" and not _allowlist_ok(str(url or "")):
+        return {"ok": False, "error": "url_not_in_allowlist", "url": url}
     try:
         _ctx, page = _get_context(_run_id)
     except Exception as exc:  # noqa: BLE001 — install/launch failures
