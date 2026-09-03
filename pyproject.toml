@@ -232,3 +232,12 @@ markers = [
     "live_ga: requires the GA checkout (AIFORGE_GA_DIR / the NUC)",
     "live_aider: requires the tree-sitter grammars to map a synthetic repo",
 ]
+
+[tool.coverage.run]
+# Record RELATIVE paths. Without this, coverage.xml carries the absolute path
+# of whatever machine produced it (<source>/Users/…/aiforge_core</source>) and
+# every filename is relative to THAT — so a scanner running anywhere else, the
+# Sonar container included, resolves /usr/src/__init__.py, matches nothing, and
+# reports 0% coverage while cheerfully importing the report. The failure is
+# silent: the sensor runs, finds the file, and still measures nothing.
+relative_files = true
