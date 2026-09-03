@@ -72,6 +72,22 @@ os.environ["AIFORGE_CONFIG_DIR"] = (
 # one place the attendance rule itself is pinned.
 os.environ.setdefault("AIFORGE_UNATTENDED_WRITES", "1")
 
+# The egress allowlist DEFAULTS TO DENY and is seeded from the integrations the
+# operator configured — a test box has none, so every fetch test would be
+# refused before reaching the behaviour it is actually checking. Allow the
+# RFC-2606 reserved domains (example.com/.org/.net and the .example TLD), which
+# exist precisely for documentation and tests and can never resolve to anything
+# real, plus x.io/ex.com which some older fixtures still use.
+#
+# Deliberately NOT a wildcard: a test that wants to prove the allowlist REFUSES
+# something has to be able to name a host that is off it, and
+# tests/python/config/test_egress_hosts.py + test_egress_policy.py override this
+# to test the list itself.
+os.environ.setdefault(
+    "AIFORGE_EGRESS_ALLOW_HOSTS",
+    "example.com,example.org,example.net,example,test,invalid,"
+    "x.io,ex.com,x.example")
+
 
 @pytest.fixture(autouse=True)
 def _reset_llm_ceiling():

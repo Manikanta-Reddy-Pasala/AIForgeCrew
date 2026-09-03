@@ -62,7 +62,7 @@ def get_rate_limits() -> dict:
 def set_rate_limit(payload: dict) -> dict:
     """Tighten/loosen a provider's RPM or TPM at runtime.
 
-    payload: ``{"provider": "gemini", "rpm": 30, "tpm": 500000}``.
+    payload: ``{"provider": "openai_compatible", "rpm": 30, "tpm": 500000}``.
     Either field optional; sets ``AIFORGE_<PROVIDER>_RPM/_TPM`` env
     + persists to runtime.env.
     """
@@ -98,8 +98,12 @@ def get_llm_backend() -> dict:
         "backend": value,
         "options": avail_names,
         "providers": providers,
-        # Legacy field for old UI builds; same as 'gemini' in options.
-        "gemini_available": "gemini" in avail_names,
+        # Legacy field for old UI builds. The bundled gemini provider was
+        # removed (a cloud endpoint that self-activated from an env var), so
+        # this is now always False. Kept rather than deleted because an old
+        # cached bundle reading `undefined` here renders differently than
+        # reading `false`.
+        "gemini_available": False,
     }
 
 
@@ -334,3 +338,44 @@ def runtime_cost(
         return {"group_by": group_by, "days_back": days_back,
                 "rows": _cost.rollup(group_by, days_back=days_back)}
     return _cost.snapshot(ticket)
+
+
+class EgressHostsBody(BaseModel):
+    extra_hosts: list[str] = Field(
+        default_factory=list,
+        description="Hosts to allow in ADDITION to the configured integrations. "
+                    "A full URL or a bare host[:port] both work; the host is "
+                    "what gets stored.")
+
+
+@router.get("/api/runtime/egress_hosts")
+def egress_hosts_get() -> dict:
+    """What this box may talk to, and where each entry came from.
+
+    Egress enforcement is always on and the list defaults to DENY, so the
+    screen has to show the DERIVED entries too — otherwise an operator adds
+    their Jira host by hand and is then surprised that deleting it changes
+    nothing."""
+    from aiforge_core.config import egress_hosts
+
+    return egress_hosts.describe()
+
+
+@router.put("/api/runtime/egress_hosts",
+            responses={400: {"description": "Bad request"}})
+def egress_hosts_put(body: EgressHostsBody) -> dict:
+    """Replace the operator's extra hosts. Derived entries are NOT editable
+    here — they follow the integration config, so the way to remove one is to
+    unconfigure the integration rather than to prune a list that will silently
+    regrow."""
+    from aiforge_core.config import egress_hosts
+
+    if len(body.extra_hosts) > 100:
+        raise HTTPException(status_code=400,
+                            detail="too many hosts (max 100)")
+    for raw in body.extra_hosts:
+        if len(str(raw)) > 253:      # max DNS name length
+            raise HTTPException(status_code=400,
+                                detail=f"host too long: {str(raw)[:40]}…")
+    saved = egress_hosts.set_stored_hosts(body.extra_hosts)
+    return {"ok": True, "extra_hosts": saved, **egress_hosts.describe()}

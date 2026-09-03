@@ -9,6 +9,19 @@ import type {
 import type { WorkflowSpec, RoutePreview } from './workflows';
 import type { JobPreview, JobDraft, Job } from './jobs';
 
+/** Where each allowed host came from. `derived` is read-only here: it follows
+ *  the integration config, so the way to remove one is to unconfigure the
+ *  integration rather than prune a list that will silently regrow. */
+export type EgressHosts = {
+  derived: string[];
+  extra_hosts: string[];
+  env: string[];
+  effective: string[];
+  /** The subset that may RECEIVE data. Hosts you add here are read-only:
+   *  adding a docs site must not also create somewhere to post to. */
+  writable: string[];
+};
+
 export const api = {
   health:   () => j<any>('/health'),
   // Machine-wide LLM request meter for the toolbar badge. `series=false` skips
@@ -16,6 +29,17 @@ export const api = {
   llmUsage: (series = true) =>
     j<LlmUsage>(`/llm/usage?series=${series ? 'true' : 'false'}`),
   agents:   () => j<any[]>('/agents'),
+  // ── Egress allowlist ───────────────────────────────────────────
+  // Enforcement is always on and the list defaults to DENY, so the GET returns
+  // the DERIVED entries too (the configured integrations + the model
+  // endpoint). The screen has to show them or an operator re-adds their Jira
+  // host by hand and then finds that deleting it changes nothing.
+  egressHosts: () => j<EgressHosts>('/runtime/egress_hosts'),
+  setEgressHosts: (extra_hosts: string[]) =>
+    j<EgressHosts & { ok: boolean }>('/runtime/egress_hosts', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ extra_hosts }),
+    }),
   // ── Model registry (simplified Settings) ────────────────────────
   models: () => j<{ models: RegistryModel[] }>('/agents/models'),
   addModel: (body: ModelInput) =>

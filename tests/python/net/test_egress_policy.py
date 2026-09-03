@@ -16,9 +16,27 @@ import pytest
 from aiforge_core.net import egress
 
 
+_TEST_HOSTS = {"jira.corp", "mail.corp", "langfuse.corp", "x.corp", "c.corp"}
+
+
+@pytest.fixture(autouse=True)
+def _allow_the_test_hosts(monkeypatch):
+    """These cases are about the POLICY (class switches, attendance, uploads),
+    not about which hosts are on the list — so put the fixture's hosts on both
+    lists. The lists' own behaviour, including the read-only/writable split, is
+    covered in tests/python/config/test_egress_hosts.py.
+
+    Both are needed: a host allowed only for READING is refused before the
+    attendance rule is ever consulted, which would make every write case here
+    pass for the wrong reason."""
+    monkeypatch.setenv("AIFORGE_EGRESS_ALLOW_HOSTS", ",".join(sorted(_TEST_HOSTS)))
+    monkeypatch.setattr("aiforge_core.config.egress_hosts.write_hosts",
+                        lambda: set(_TEST_HOSTS))
+
+
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
-    for var in ("AIFORGE_EGRESS_OFF", "AIFORGE_EGRESS_ALLOW_HOSTS",
+    for var in ("AIFORGE_EGRESS_OFF",
                 "AIFORGE_UNATTENDED_WRITES", "AIFORGE_UPLOAD_DISABLE",
                 "AIFORGE_INTEGRATION_DISABLE", "AIFORGE_EMAIL_DISABLE",
                 "AIFORGE_TELEMETRY_DISABLE", "AIFORGE_MCP_DISABLE"):
@@ -80,10 +98,40 @@ def test_each_class_has_its_own_switch(monkeypatch, kind):
 
 # ── destination allowlist ───────────────────────────────────────────────────
 
-def test_no_allowlist_means_no_restriction():
-    """Opt-in: an empty allowlist that denied everything would break every
-    install the moment it shipped."""
-    assert egress.host_allowed("https://anything.example") is True
+def test_an_unconfigured_host_is_refused_by_default(monkeypatch):
+    """INVERTED 2026-09-03 (was test_no_allowlist_means_no_restriction).
+
+    The allowlist began opt-in — empty meant "no restriction" — because a list
+    that defaulted to deny would break every install on upgrade. It now
+    defaults to DENY, and that breakage is handled by DERIVING the base list
+    from the integrations already configured rather than by allowing
+    everything."""
+    monkeypatch.delenv("AIFORGE_EGRESS_ALLOW_HOSTS", raising=False)
+    monkeypatch.setattr("aiforge_core.config.egress_hosts.allowed_hosts",
+                        set)
+    assert egress.host_allowed("https://anything.example") is False
+
+
+def test_this_machine_and_the_lan_never_need_a_list_entry(monkeypatch):
+    """A dev server is not egress. An operator who locks the box down must not
+    lose their own app, and must not have to allowlist it to get it back."""
+    monkeypatch.setattr("aiforge_core.config.egress_hosts.allowed_hosts", set)
+    for url in ("http://localhost:5173/", "http://127.0.0.1:8799/",
+                "http://192.168.1.20:3000/", "http://dev.lan/",
+                "http://host.docker.internal:8080/"):
+        assert egress.host_allowed(url) is True, url
+    # …but the metadata service is not "my network"
+    assert egress.host_allowed("http://169.254.169.254/latest/") is False
+
+
+def test_the_allowlist_fails_closed_when_it_cannot_be_read(monkeypatch):
+    """Everywhere else a broken probe fails OPEN so a turn is never lost. This
+    one decides whether bytes leave the machine."""
+    def _boom():
+        raise RuntimeError("store unreadable")
+
+    monkeypatch.setattr("aiforge_core.config.egress_hosts.allowed_hosts", _boom)
+    assert egress.host_allowed("https://jira.corp/x") is False
 
 
 def test_allowlist_matches_host_and_subdomain(monkeypatch):

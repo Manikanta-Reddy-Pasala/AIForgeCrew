@@ -87,7 +87,7 @@ def test_url_credentials_never_persisted(workdir, monkeypatch):
         lambda url, max_chars: {"ok": True, "url": url, "title": "t",
                                 "text": "body", "truncated": False})
     r = web_ingest.web_crawl(
-        {"url": "https://user:s3cret@h.io/doc?api_token=abc123"}, None)
+        {"url": "https://user:s3cret@example.com/doc?api_token=abc123"}, None)
     assert r["ok"]
     assert "s3cret" not in r["path"]
     assert "s3cret" not in r["url"]

@@ -128,7 +128,12 @@ def test_the_backend_defaults_to_local(client, providers):
     body = client.get("/api/runtime/llm_backend").json()
     assert body["backend"] == "local"
     assert body["options"] == ["local", "gemini"]
-    assert body["gemini_available"] is True
+    # CHANGED 2026-09-03: the bundled gemini provider was deleted (a cloud
+    # endpoint that switched itself on from AIFORGE_GOOGLE_API_KEY alone), so
+    # this legacy field is now a constant False. The fixture can still inject a
+    # provider NAMED gemini — `options` comes from the injected registry — but
+    # the route no longer claims the bundled one is available.
+    assert body["gemini_available"] is False
 
 
 def test_an_unavailable_configured_backend_falls_back_to_local(client, providers,

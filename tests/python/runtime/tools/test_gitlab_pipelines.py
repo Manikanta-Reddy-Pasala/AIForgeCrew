@@ -694,13 +694,13 @@ def test_parse_json_false_returns_text_that_would_otherwise_be_parsed():
     try:
         for body in (b'{"error": "terraform exploded"}', b"   ", b""):
             urllib.request.urlopen = _serve(body)
-            raw = H.http_request("GET", "http://x", headers={},
+            raw = H.http_request("GET", "https://gitlab.test/api", headers={},
                                  parse_json=False)
             assert raw["data"] == body.decode(), body
             # …and the default still parses, which is what every other caller
             # (jira, confluence, the gitlab JSON endpoints) depends on.
             urllib.request.urlopen = _serve(body)
-            parsed = H.http_request("GET", "http://x", headers={})
+            parsed = H.http_request("GET", "https://gitlab.test/api", headers={})
             if body.strip():
                 assert parsed["data"] == {"error": "terraform exploded"}
             else:
@@ -722,7 +722,7 @@ def test_a_non_json_body_is_still_returned_as_text_by_default():
     orig = urllib.request.urlopen
     urllib.request.urlopen = lambda *a, **k: _R()
     try:
-        out = H.http_request("GET", "http://x", headers={})
+        out = H.http_request("GET", "https://gitlab.test/api", headers={})
     finally:
         urllib.request.urlopen = orig
     assert out["data"] == "plain not json"
@@ -743,7 +743,7 @@ def test_http_request_reports_truncation():
     orig = urllib.request.urlopen
     urllib.request.urlopen = lambda *a, **k: _R()
     try:
-        out = H.http_request("GET", "http://x", headers={}, body_cap=100,
+        out = H.http_request("GET", "https://gitlab.test/api", headers={}, body_cap=100,
                              parse_json=False)
     finally:
         urllib.request.urlopen = orig

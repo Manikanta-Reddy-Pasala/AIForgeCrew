@@ -43,9 +43,12 @@ What this is NOT — and the docs must not claim otherwise:
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from urllib.parse import urlsplit
+
+_log = logging.getLogger("aiforge.egress")
 
 _TRUE = ("1", "true", "yes", "on")
 
@@ -90,28 +93,100 @@ _ATTENDED_WRITE_CLASSES = ("integration", "email")
 _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
+def is_local_host(host: str) -> bool:
+    """This machine or the LAN. Browsing or fetching these is not egress, so no
+    allowlist entry is ever needed for a dev server — an operator who locks the
+    box down must not lose their own app.
+
+    NOT link-local: 169.254.169.254 is the cloud metadata service, i.e. the
+    target the guards exist to keep out. "On my network" and "the thing that
+    hands out credentials" must not share a branch.
+    """
+    import ipaddress
+
+    if not host:
+        return False
+    host = host.strip("[]").lower()
+    if host in ("localhost", "localhost.localdomain", "host.docker.internal",
+                "host.containers.internal"):
+        return True
+    if host.endswith((".localhost", ".local", ".lan", ".internal")):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if ip.is_link_local:
+        return False
+    return bool(ip.is_loopback or ip.is_private or ip.is_unspecified)
+
+
 def _env_true(name: str) -> bool:
     return str(os.environ.get(name, "")).strip().lower() in _TRUE
 
 
-def _hosts_allowlist() -> tuple[str, ...]:
-    raw = (os.environ.get("AIFORGE_EGRESS_ALLOW_HOSTS") or "").strip()
-    return tuple(h.strip().lower() for h in raw.split(",") if h.strip())
-
-
-def host_allowed(url: str) -> bool:
-    """Whether ``url``'s host is on the operator's allowlist.
-
-    No allowlist configured = every declared destination is allowed; the
-    allowlist is opt-in, because an empty one that denied everything would
-    silently break every install on upgrade.
-    """
-    allow = _hosts_allowlist()
-    if not allow:
-        return True
+def _host_is_writable(url: str) -> bool:
+    """May we PUSH data to this host? Only the configured integrations, plus
+    this machine/LAN (a local dev server is not an exfiltration destination)."""
     try:
         host = (urlsplit(url).hostname or "").lower()
     except ValueError:
+        return False
+    if not host:
+        return False
+    if is_local_host(host):
+        return True
+    try:
+        from aiforge_core.config.egress_hosts import write_hosts
+        allow = write_hosts()
+    except Exception as exc:  # noqa: BLE001 — fail CLOSED, as with the read list
+        _log.warning("egress write-list unavailable — refusing %s (%s)",
+                     host, exc)
+        return False
+    return any(host == h or host.endswith("." + h) for h in allow)
+
+
+def _is_blocked_address(url: str) -> bool:
+    """Link-local, multicast and reserved literals — the SSRF targets. Kept
+    separate from ``is_local_host`` so "my LAN" and "the thing that hands out
+    cloud credentials" can never share a branch."""
+    import ipaddress
+
+    try:
+        host = (urlsplit(url).hostname or "").strip("[]").lower()
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return bool(ip.is_link_local or ip.is_multicast or ip.is_reserved)
+
+
+def host_allowed(url: str) -> bool:
+    """Whether ``url``'s host may be reached. DEFAULT DENY.
+
+    The allowlist is not optional and cannot be emptied into "allow all": it is
+    seeded from the integrations the operator already configured (see
+    config/egress_hosts.py), extended in Settings, and anything else is refused.
+    An unparseable host is refused too — we cannot match what we cannot read.
+
+    Loopback and the LAN bypass the list entirely; they are not egress.
+    """
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return False
+    if not host:
+        return False
+    if is_local_host(host):
+        return True
+    try:
+        from aiforge_core.config.egress_hosts import allowed_hosts
+        allow = allowed_hosts()
+    except Exception as exc:  # noqa: BLE001
+        # Fail CLOSED. Everywhere else a broken probe fails open so a turn is
+        # never lost, but this one decides whether bytes leave the machine, and
+        # "the allowlist would not load" is not a reason to send them.
+        _log.warning("egress allowlist unavailable — refusing %s (%s)",
+                     host, exc)
         return False
     return any(host == h or host.endswith("." + h) for h in allow)
 
@@ -161,6 +236,17 @@ def allow(kind: str, url: str = "", *, method: str = "GET",
                 "hint": ("file uploads are switched off on this install "
                          "(AIFORGE_UPLOAD_DISABLE).")}
     is_write = upload or method.upper() in _WRITE_METHODS
+    # A host the operator ADDED in Settings is readable, never writable. Adding
+    # a docs site to the allowlist must not also create somewhere to post our
+    # data — reading pulls bytes in, writing pushes ours out, and only the
+    # second one is exfiltration. Writable hosts come from integration config,
+    # which carries a credential and a deliberate setup step.
+    if is_write and url and not _host_is_writable(url):
+        return {"ok": False, "error": "host_not_writable",
+                "hint": ("this host is allowed for READING only. Hosts added "
+                         "in Settings cannot be written to; a destination that "
+                         "receives data has to be configured as an integration."
+                         )}
     if (is_write and kind in _ATTENDED_WRITE_CLASSES and not attended()
             and not _env_true("AIFORGE_UNATTENDED_WRITES")):
         # The gap this closes: approval is honoured in interactive chat, but an
@@ -234,6 +320,24 @@ def check(url: str = "") -> dict | None:
                 "hint": ("this install has no web search — fetching a search "
                          "engine's result page is the same thing. Ask the user "
                          "for a direct URL, or say what you could not verify.")}
+    # A blocked ADDRESS is refused with its real reason. Reaching this via the
+    # allowlist ("not on your list") would send the reader after the wrong
+    # problem entirely — 169.254.169.254 is not a host you forgot to add.
+    if url and _is_blocked_address(url):
+        return {"ok": False, "error": "blocked (ssrf): non-public address",
+                "hint": ("link-local / metadata addresses are refused "
+                         "regardless of the allowlist.")}
+    # The allowlist applies to PAGES too, not only to declared destinations.
+    # Otherwise "only the integrations are reachable" would be true of Jira and
+    # false of web_fetch, which is the wider hole of the two: the integration
+    # host is fixed config, while a page URL is written by the model.
+    if url and not host_allowed(url):
+        return {"ok": False, "error": "host_not_allowed",
+                "hint": ("this host is not on the egress allowlist. Allowed by "
+                         "default: the configured integrations, the model "
+                         "endpoint, and this machine/LAN. An operator can add "
+                         "a host in Settings -> Egress. Ask the user to add it "
+                         "or to paste the content.")}
     return None
 
 

@@ -108,33 +108,11 @@ def _matches_operator_allowlist(host: str, raw: str) -> bool:
 
 
 def _is_local_host(host: str) -> bool:
-    """This machine or the LAN — browsing these is not web egress.
-
-    Not just the five loopback literals: a dev server routinely lives on a LAN
-    IP, a container hostname, or a ``*.localhost`` vhost, and an operator who
-    locks the box down should not lose their own dev server. Anything that
-    resolves outside RFC1918/loopback/link-local is treated as egress.
-    """
-    import ipaddress
-
-    if not host:
-        return False
-    host = host.strip("[]").lower()
-    if host in ("localhost", "localhost.localdomain", "host.docker.internal",
-                "host.containers.internal"):
-        return True
-    if host.endswith((".localhost", ".local", ".lan", ".internal")):
-        return True
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    # NOT link-local: 169.254.169.254 is the cloud metadata service, i.e. the
-    # SSRF target this allowlist exists to keep out. "On my network" and "the
-    # thing that hands out credentials" must not share a branch.
-    if ip.is_link_local:
-        return False
-    return bool(ip.is_loopback or ip.is_private or ip.is_unspecified)
+    """Delegates to net.egress so there is ONE definition of "not egress".
+    Kept as a name here because the tests and the allowlist logic both use it;
+    two copies of this rule is how they drift and one becomes the hole."""
+    from aiforge_core.net import egress as _egress
+    return _egress.is_local_host(host)
 
 
 def _open_browsing_ok(url: str) -> bool:

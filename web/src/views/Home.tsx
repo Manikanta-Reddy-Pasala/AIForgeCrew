@@ -14,6 +14,7 @@ import { Icon } from '../icons';
 import { JiraCard, ConfluenceCard, GitlabCard, EmailCard } from '../components/Integrations';
 import AgentSettings from './AgentSettings';
 import MemorySyncCard from './Home.MemorySyncCard';
+import EgressCard from './Settings.EgressCard';
 
 // ── config-first Home page ─────────────────────────────────────────
 //
@@ -449,6 +450,7 @@ export default function Home() {
         <AgentSettings />
         <AgentLimitsCard />
         <MemorySyncCard />
+        <EgressCard />
       </>)}
 
     </>

@@ -21,7 +21,8 @@ class Endpoint:
     base_url: str       # full /v1 base, ready for /chat/completions
     api_key: str
     model: str
-    provider: str       # registry name, e.g. 'local' / 'gemini' / 'ollama_cloud'
+    provider: str       # registry name — 'openai_compatible' is the only
+                        # bundled one; see providers/__init__ for why
     role: str           # which agent role this was resolved for
     extras: dict        # provider-specific extra body fields
 
