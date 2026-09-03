@@ -88,71 +88,66 @@ def _integration_hosts() -> set[str]:
         if h:
             out.add(h)
 
-    def _probe(fn) -> None:
-        try:
-            fn()
-        except Exception as exc:  # noqa: BLE001
-            log.debug("egress host probe failed: %s", exc)
-
-    # 1. The service inventory net/ssl.py already keeps — model endpoint, embed
-    #    and rerank sidecars, memory http, AIForge's own API, MCP env list, the
-    #    generic AIFORGE_*_BASE_URL sweep, and per-role agent_config base_urls.
     def _from_ssl() -> None:
+        # The service inventory net/ssl.py already keeps — model endpoint, embed
+        # and rerank sidecars, memory http, AIForge's own API, the MCP env list,
+        # the generic AIFORGE_*_BASE_URL sweep and per-role agent_config rows.
         from aiforge_core.net.ssl import _configured_service_hosts
         out.update(_configured_service_hosts())
-    _probe(_from_ssl)
 
-    # 2. Credentialed integrations.
     def _jira() -> None:
         from aiforge_core.runtime.tools.jira._core import _base
         _add(_base())
-    _probe(_jira)
 
     def _confluence() -> None:
         from aiforge_core.runtime.tools.confluence._config import _base
         _add(_base())
-    _probe(_confluence)
 
     def _gitlab() -> None:
         from aiforge_core.runtime.tools.gitlab import _base
         _add(_base())
-    _probe(_gitlab)
 
     def _mail() -> None:
         from aiforge_core.runtime.tools import email_tool
         _add((email_tool._smtp_conf() or {}).get("host"))
         _add((email_tool._imap_conf() or {}).get("host"))
-    _probe(_mail)
 
-    # 3. MCP as the CLIENT resolves it — env list AND the marketplace registry.
-    #    Reading only the env var meant a one-click-installed server was refused
-    #    on every call.
     def _mcp() -> None:
+        # As the CLIENT resolves them: env list AND the marketplace registry.
+        # Reading only the env var meant a one-click-installed server was
+        # refused on every call.
         from aiforge_core.runtime.tools.mcp_client import _load_endpoints
         for url in (_load_endpoints() or {}).values():
             _add(url)
-    _probe(_mcp)
 
-    # 4. The model registry's rows — the escalation chain lives here, and
-    #    agent_config does not see it.
     def _registry() -> None:
+        # The escalation chain lives in the model registry, which agent_config
+        # does not see.
         from aiforge_core.config import model_registry
         for row in (model_registry.list_models() or []):
             if isinstance(row, dict):
                 _add(row.get("base_url"))
-    _probe(_registry)
 
-    # 5. The memory-sync admin, which may come from Settings rather than env.
     def _admin() -> None:
+        # May come from Settings rather than the environment.
         from aiforge_core.memory.sync import role
         _add(role.admin_url())
-    _probe(_admin)
 
-    # 6. Observability sinks.
-    for var in ("LANGFUSE_HOST", "AIFORGE_OTEL_ENDPOINT", "AIFORGE_PDS_API_BASE",
-                "AIFORGE_EMBED_API_URL", "AIFORGE_CODEMEM_LM_URL",
-                "AIFORGE_INTENT_LM_URL", "AIFORGE_PLANNER_LM_URL"):
-        _add(os.environ.get(var, ""))
+    def _sinks() -> None:
+        for var in ("LANGFUSE_HOST", "AIFORGE_OTEL_ENDPOINT",
+                    "AIFORGE_PDS_API_BASE", "AIFORGE_EMBED_API_URL",
+                    "AIFORGE_CODEMEM_LM_URL", "AIFORGE_INTENT_LM_URL",
+                    "AIFORGE_PLANNER_LM_URL"):
+            _add(os.environ.get(var, ""))
+
+    # Each probe is guarded SEPARATELY: one half-configured integration must not
+    # fail the box closed on everything at once, the model endpoint included.
+    for probe in (_from_ssl, _jira, _confluence, _gitlab, _mail, _mcp,
+                  _registry, _admin, _sinks):
+        try:
+            probe()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("egress host probe %s failed: %s", probe.__name__, exc)
     return {h for h in out if h}
 
 

@@ -135,13 +135,30 @@ def _env_true(name: str) -> bool:
     return str(os.environ.get(name, "")).strip().lower() in _TRUE
 
 
+def _host_of(value: str) -> str:
+    """Hostname from a URL *or* a bare ``host[:port]``.
+
+    Callers legitimately hold one or the other: an SMTP/IMAP config has a host,
+    an HTTP client has a URL. Without this they invented pseudo-schemes to get a
+    host through — which reads as an insecure-protocol finding — or passed the
+    bare host and had every check refuse it, because ``urlsplit("h.example")``
+    puts it in ``path`` and leaves ``hostname`` None.
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    if "://" not in raw:
+        raw = "//" + raw
+    try:
+        return (urlsplit(raw).hostname or "").strip().lower()
+    except ValueError:
+        return ""
+
+
 def _host_is_writable(url: str) -> bool:
     """May we PUSH data to this host? Only the configured integrations, plus
     this machine/LAN (a local dev server is not an exfiltration destination)."""
-    try:
-        host = (urlsplit(url).hostname or "").lower()
-    except ValueError:
-        return False
+    host = _host_of(url)
     if not host:
         return False
     if is_local_host(host):
@@ -149,7 +166,8 @@ def _host_is_writable(url: str) -> bool:
     try:
         from aiforge_core.config.egress_hosts import write_hosts
         allow = write_hosts()
-    except Exception as exc:  # noqa: BLE001 — fail CLOSED, as with the read list
+    except Exception as exc:  # noqa: BLE001
+        # Fail CLOSED, as with the read list.
         _log.warning("egress write-list unavailable — refusing %s (%s)",
                      host, exc)
         return False
@@ -180,10 +198,7 @@ def host_allowed(url: str) -> bool:
 
     Loopback and the LAN bypass the list entirely; they are not egress.
     """
-    try:
-        host = (urlsplit(url).hostname or "").lower()
-    except ValueError:
-        return False
+    host = _host_of(url)
     if not host:
         return False
     if is_local_host(host):

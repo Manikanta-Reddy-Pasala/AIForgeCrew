@@ -178,7 +178,7 @@ def email_send(args: dict, _cwd: str | None = None) -> dict:
     # it is its own egress class AND always a write: an unattended run cannot
     # send unless the operator opted in.
     from aiforge_core.net import egress as _egress
-    refusal = _egress.allow("email", f"smtp://{c['host']}", method="POST")
+    refusal = _egress.allow("email", c["host"], method="POST")
     if refusal is not None:
         return refusal
     to = _as_list(args.get("to"))
@@ -267,7 +267,7 @@ def _imap_connect(c: dict):
     # and it was the one email path the policy never saw — AIFORGE_EGRESS_OFF
     # closed send() and left read/search pulling message bodies into context.
     from aiforge_core.net import egress as _egress
-    _ref = _egress.allow("email", f"imap://{c.get('host', '')}")
+    _ref = _egress.allow("email", str(c.get("host") or ""))
     if _ref is not None:
         raise OSError(f"egress refused IMAP: {_ref.get('error')}")
     return (imaplib.IMAP4_SSL(c["host"], c["port"]) if c["ssl"]
