@@ -119,6 +119,22 @@ from aiforge_core.config import agent_config as _acfg  # noqa: E402,F401
 
 
 @app.on_event("startup")
+def _repair_config_permissions() -> None:
+    """Tighten an existing config dir before anything else reads it.
+
+    ``_atomic`` writes new files at 0600, but that never applied to the files
+    already on disk — ``agent_config.json`` was found holding a live api_key at
+    0644 long after that hardening landed, because nothing had rewritten it.
+    Runs first so a token is not world-readable for the length of a boot."""
+    try:
+        from aiforge_core.config import permissions
+        permissions.repair()
+    except Exception as exc:  # noqa: BLE001 — never block boot on this
+        logging.getLogger("aiforge.permissions").warning(
+            "permission repair skipped: %s", exc)
+
+
+@app.on_event("startup")
 def _guard_and_announce_backends() -> None:
     """FIRST boot step: in data-driven mode (AIFORGE_REQUIRE_DATA_BACKEND=1)
     abort LOUD if any data store still resolves to embedded SQLite, then log
