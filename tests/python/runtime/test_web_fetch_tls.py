@@ -207,8 +207,12 @@ def test_plain_http_is_still_allowed(monkeypatch):
     certificate in play and nothing to fall back from."""
     monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
     monkeypatch.delenv("AIFORGE_WEB_SEARCH_DISABLE", raising=False)
+    # NOT a `.local` host any more: that suffix stopped counting as "this
+    # network" when it turned out to wave through metadata.google.internal.
+    # Any allowed host makes the same point — the scheme is what is under test.
+    monkeypatch.setenv("AIFORGE_EGRESS_ALLOW_HOSTS", "intranet.example")
     _patch_ws_open(monkeypatch, lambda *a, **k: _Resp())
-    out = ws.web_fetch({"url": "http://intranet.local/page"})
+    out = ws.web_fetch({"url": "http://intranet.example/page"})
     assert out["ok"]
     assert "tls_verified" not in out
 

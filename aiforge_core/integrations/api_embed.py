@@ -80,6 +80,15 @@ def embed(text: str) -> list[float]:
            or os.environ.get("AIFORGE_LM_API_KEY") or "").strip()
     if key:
         headers["Authorization"] = f"Bearer {key}"
+    # Egress: this ships repo and memory TEXT off-box. The endpoint was already
+    # on the derived allowlist — by a probe whose result was never checked here,
+    # which is a permission that decorates rather than decides.
+    from aiforge_core.net import egress as _egress
+    _ref = _egress.allow("integration", _endpoint(), method="POST")
+    if _ref is not None:
+        raise RuntimeError(
+            f"embeddings API call refused by the egress policy: "
+            f"{_ref.get('error')} ({_endpoint()})")
     req = urllib.request.Request(_endpoint(), data=body, headers=headers,
                                  method="POST")
     try:

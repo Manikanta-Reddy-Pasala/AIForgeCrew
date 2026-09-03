@@ -140,6 +140,19 @@ def lookup_doc(library: str, query: str, *, top_k: int = 3) -> list[dict]:
 
 
 def _fetch(url: str) -> str:
+    # Egress + SSRF. This had neither, while taking an arbitrary URL from the
+    # `aiforge-maint docs ingest` CLI — the widest ungated fetcher in the tree.
+    from aiforge_core.net import egress as _egress
+    _ref = _egress.check(url)
+    if _ref is not None:
+        raise OSError(f"docs fetch refused: {_ref.get('error')} — "
+                      f"{_ref.get('hint', '')}")
+    from aiforge_core.net.ssl import SSRFBlocked, guard_public_url
+    try:
+        guard_public_url(url)
+    except SSRFBlocked as exc:
+        if exc.kind != "dns":
+            raise OSError(f"docs fetch blocked (ssrf): {exc}") from exc
     req = urllib.request.Request(url, headers={
         "User-Agent": "aiforge-docs-index/0.1",
     })

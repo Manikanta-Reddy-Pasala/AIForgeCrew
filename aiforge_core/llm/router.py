@@ -18,10 +18,13 @@ per-archetype model pins also apply.
 """
 from __future__ import annotations
 
+import logging
 import os
 
 from .types import Endpoint
 from . import providers as _providers
+
+_log = logging.getLogger("aiforge.router")
 
 
 def _global_default() -> str:

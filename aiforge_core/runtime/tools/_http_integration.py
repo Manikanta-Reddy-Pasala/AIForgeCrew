@@ -222,6 +222,14 @@ def http_get_bytes(url: str, *, headers: dict, timeout: int = 20,
                 return {"ok": False, "error": "host_not_allowed", "host": h}
         except Exception:  # noqa: BLE001
             return {"ok": False, "error": "bad_url"}
+    # ...and the egress policy regardless. `allow_host` is OPTIONAL, so it
+    # protects only the callers that remember it — the next one that forgets
+    # fetches an attacker's URL with the integration's Authorization header
+    # attached. This check does not depend on the caller being careful.
+    from aiforge_core.net import egress as _egress
+    _ref = _egress.allow("integration", url)
+    if _ref is not None:
+        return _ref
     req = urllib.request.Request(url, headers=headers, method="GET")
     handlers = [_StripAuthOnCrossHostRedirect()]
     if context is not None:

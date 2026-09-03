@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -38,10 +39,16 @@ log = logging.getLogger("aiforge.egress_hosts")
 _FILE = "egress.json"
 
 
-def _path() -> Path:
+def _path(*, create: bool = False) -> Path:
+    """``create`` only on WRITE. Reading used to mkdir, so on a config dir the
+    process cannot write, ``stored_hosts()`` raised — and because it is the
+    first operand of the union in ``allowed_hosts()``, the whole list died with
+    it, including the AIFORGE_EGRESS_ALLOW_HOSTS fallback that exists for
+    exactly that headless deployment. Fail-open on the file, never on the gate."""
     from aiforge_core.config.paths import config_dir
     d = Path(str(config_dir()))
-    d.mkdir(parents=True, exist_ok=True)
+    if create:
+        d.mkdir(parents=True, exist_ok=True)
     return d / _FILE
 
 
@@ -59,63 +66,105 @@ def _host_of(value: str) -> str:
 
 
 def _integration_hosts() -> set[str]:
-    """Hosts of the configured integrations. Each probe is guarded: a broken or
-    half-configured integration must not take the whole allowlist with it —
-    that would fail CLOSED on everything at once, including the model."""
+    """Hosts of everything this install is configured to talk to.
+
+    Derived from the CONSUMERS wherever one exists, not from a hand-kept list
+    of env names. The first version of this function WAS such a list, and it
+    was both wrong and short: it missed the MCP marketplace registry, the model
+    registry's escalation rows, a Settings-saved sync admin, and half the
+    sidecar env vars — each miss a feature that dies silently the moment the
+    list defaults to deny. Worse, ``net/ssl.py`` already maintained the correct
+    inventory (including a generic ``AIFORGE_*_BASE_URL`` sweep), so there were
+    two copies of one rule — which is the drift this codebase has been bitten by
+    before.
+
+    Every probe is guarded separately. One half-configured integration must not
+    fail the box closed on everything at once, the model endpoint included.
+    """
     out: set[str] = set()
 
-    def _add(fn) -> None:
+    def _add(value) -> None:
+        h = _host_of(str(value or ""))
+        if h:
+            out.add(h)
+
+    def _probe(fn) -> None:
         try:
-            out.add(_host_of(fn() or ""))
+            fn()
         except Exception as exc:  # noqa: BLE001
             log.debug("egress host probe failed: %s", exc)
 
-    try:
-        from aiforge_core.runtime.tools.jira._core import _base as _jira
-        _add(_jira)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        from aiforge_core.runtime.tools.confluence._config import _base as _conf
-        _add(_conf)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        from aiforge_core.runtime.tools.gitlab import _base as _gl
-        _add(_gl)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
+    # 1. The service inventory net/ssl.py already keeps — model endpoint, embed
+    #    and rerank sidecars, memory http, AIForge's own API, MCP env list, the
+    #    generic AIFORGE_*_BASE_URL sweep, and per-role agent_config base_urls.
+    def _from_ssl() -> None:
+        from aiforge_core.net.ssl import _configured_service_hosts
+        out.update(_configured_service_hosts())
+    _probe(_from_ssl)
+
+    # 2. Credentialed integrations.
+    def _jira() -> None:
+        from aiforge_core.runtime.tools.jira._core import _base
+        _add(_base())
+    _probe(_jira)
+
+    def _confluence() -> None:
+        from aiforge_core.runtime.tools.confluence._config import _base
+        _add(_base())
+    _probe(_confluence)
+
+    def _gitlab() -> None:
+        from aiforge_core.runtime.tools.gitlab import _base
+        _add(_base())
+    _probe(_gitlab)
+
+    def _mail() -> None:
         from aiforge_core.runtime.tools import email_tool
-        conf = email_tool._smtp_conf()
-        out.add(_host_of(str(conf.get("host") or "")))
-        imap = getattr(email_tool, "_imap_conf", None)
-        if imap is not None:
-            out.add(_host_of(str((imap() or {}).get("host") or "")))
-    except Exception:  # noqa: BLE001
-        pass
-    for var in ("LANGFUSE_HOST", "AIFORGE_LM_BASE_URL", "AIFORGE_EMBED_BASE_URL",
-                "AIFORGE_RERANK_BASE_URL", "AIFORGE_ADMIN_URL"):
-        out.add(_host_of(os.environ.get(var, "")))
-    # Remote MCP endpoints: "name=url,name=url"
-    for entry in (os.environ.get("AIFORGE_MCP_ENDPOINTS") or "").split(","):
-        if "=" in entry:
-            out.add(_host_of(entry.split("=", 1)[1]))
-    # Per-role model endpoints the operator set in the UI.
-    try:
-        from aiforge_core.config.agent_config._resolve import load_all
-        for row in (load_all() or {}).values():
+        _add((email_tool._smtp_conf() or {}).get("host"))
+        _add((email_tool._imap_conf() or {}).get("host"))
+    _probe(_mail)
+
+    # 3. MCP as the CLIENT resolves it — env list AND the marketplace registry.
+    #    Reading only the env var meant a one-click-installed server was refused
+    #    on every call.
+    def _mcp() -> None:
+        from aiforge_core.runtime.tools.mcp_client import _load_endpoints
+        for url in (_load_endpoints() or {}).values():
+            _add(url)
+    _probe(_mcp)
+
+    # 4. The model registry's rows — the escalation chain lives here, and
+    #    agent_config does not see it.
+    def _registry() -> None:
+        from aiforge_core.config import model_registry
+        for row in (model_registry.list_models() or []):
             if isinstance(row, dict):
-                out.add(_host_of(str(row.get("base_url") or "")))
-    except Exception:  # noqa: BLE001
-        pass
+                _add(row.get("base_url"))
+    _probe(_registry)
+
+    # 5. The memory-sync admin, which may come from Settings rather than env.
+    def _admin() -> None:
+        from aiforge_core.memory.sync import role
+        _add(role.admin_url())
+    _probe(_admin)
+
+    # 6. Observability sinks.
+    for var in ("LANGFUSE_HOST", "AIFORGE_OTEL_ENDPOINT", "AIFORGE_PDS_API_BASE",
+                "AIFORGE_EMBED_API_URL", "AIFORGE_CODEMEM_LM_URL",
+                "AIFORGE_INTENT_LM_URL", "AIFORGE_PLANNER_LM_URL"):
+        _add(os.environ.get(var, ""))
     return {h for h in out if h}
 
 
 def stored_hosts() -> list[str]:
-    """Extras added in Settings."""
-    p = _path()
-    if not p.exists():
+    """Extras added in Settings. Never raises: the env fallback has to survive
+    an unreadable store."""
+    try:
+        p = _path()
+        if not p.exists():
+            return []
+    except OSError as exc:
+        log.warning("egress store unreadable (%s) — extras treated as empty", exc)
         return []
     try:
         data = json.loads(p.read_text()) or {}
@@ -136,20 +185,78 @@ def set_stored_hosts(hosts: list[str]) -> list[str]:
     clean: list[str] = []
     for raw in hosts or []:
         h = _host_of(str(raw))
-        if h and h not in clean:
-            clean.append(h)
-    _atomic.write_text(_path(), json.dumps({"extra_hosts": clean}, indent=2))
+        if not h or h in clean:
+            continue
+        # Shape check. Suffix matching means one careless entry is the whole
+        # internet: "com" allows every .com, and a public suffix like
+        # "github.io" allows every user page on it. A single label is never a
+        # host you meant to name.
+        if h.count(".") < 1 or h.strip(".") != h:
+            raise ValueError(
+                f"{h!r} is not a specific enough host — give a full name like "
+                "docs.python.org, not a bare label or a suffix")
+        if any(c in h for c in "*?/ "):
+            raise ValueError(f"{h!r} is not a hostname (wildcards are not supported)")
+        if h.count(".") == 1:
+            # Matching is host-or-subdomain, so a two-label entry covers
+            # everything beneath it. That is right for "corp.example" and very
+            # wrong for a public suffix like "github.io", where it grants every
+            # user page. We cannot tell the two apart without a public-suffix
+            # list, so say so rather than guess.
+            log.warning("egress: %r also allows every subdomain — intended for "
+                        "your own domain, not a public suffix like github.io", h)
+        clean.append(h)
+    _atomic.write_text(_path(create=True),
+                       json.dumps({"extra_hosts": clean}, indent=2))
+    _invalidate()
     return clean
 
 
 def _env_hosts() -> set[str]:
-    raw = (os.environ.get("AIFORGE_EGRESS_ALLOW_HOSTS") or "").strip()
-    return {h for h in (_host_of(x) for x in raw.split(",")) if h}
+    """Read-only extras named in the environment.
+
+    Includes AIFORGE_BROWSER_ALLOWLIST: naming a host there is the same
+    deliberate operator act as adding one in Settings, so it should grant
+    READING. It must not grant writing, which is why these are here and not in
+    the derived set — an operator listing github.com to look at a page has not
+    asked for anything to be posted to it.
+    """
+    out: set[str] = set()
+    for var in ("AIFORGE_EGRESS_ALLOW_HOSTS", "AIFORGE_BROWSER_ALLOWLIST"):
+        raw = (os.environ.get(var) or "").strip()
+        out.update(h for h in (_host_of(x) for x in raw.split(",")) if h)
+    return out
+
+
+_CACHE: dict[str, tuple[float, set[str]]] = {}
+_CACHE_TTL_S = 5.0
+
+
+def _invalidate() -> None:
+    _CACHE.clear()
+
+
+def _derived_cached() -> set[str]:
+    """Derivation touches ~20 files and re-parses agent_config, and it runs on
+    EVERY outbound decision — twice for a write, since the read list and the
+    write list each derive. A few seconds of memoization keeps a Settings edit
+    feeling immediate (and a save invalidates outright) while taking the cost
+    off the hot path; measured 52 ms per call against a large agent_config."""
+    now = time.monotonic()
+    hit = _CACHE.get("derived")
+    if hit is not None and now - hit[0] < _CACHE_TTL_S:
+        return hit[1]
+    hosts = _integration_hosts()
+    _CACHE["derived"] = (now, hosts)
+    return hosts
 
 
 def allowed_hosts() -> set[str]:
-    """Every host that may be REACHED: derived + stored + env."""
-    return _integration_hosts() | set(stored_hosts()) | _env_hosts()
+    """Every host that may be REACHED: derived + stored + env.
+
+    Each source is computed independently so one failing cannot take the others
+    with it — the env fallback in particular has to survive a broken store."""
+    return _derived_cached() | set(stored_hosts()) | _env_hosts()
 
 
 def write_hosts() -> set[str]:
@@ -161,9 +268,19 @@ def write_hosts() -> set[str]:
     bytes in, writing pushes ours out. Keeping them apart means an operator can
     open up a doc site without also creating an exfiltration destination.
 
-    A destination that genuinely needs writes is an INTEGRATION: it is
-    configured with a base URL and a credential, which is a deliberate act with
-    a review attached, and its host is derived from that config.
+    What is on it, stated precisely rather than flatteringly: every host in the
+    DERIVED set. That is the credentialed integrations (Jira / Confluence /
+    GitLab / mail) AND the service endpoints this install cannot work without —
+    the model, the embed and rerank sidecars, MCP servers, the sync admin, the
+    observability sink. Those receive data by definition: an inference request
+    IS the prompt, and refusing to write to the model would stop the product.
+
+    So the honest boundary is not "credentialed" — it is "an endpoint the
+    operator configured for this system to USE, rather than a host they added
+    to read". Typing a model base_url in Settings does create a destination
+    that receives prompts; that is what choosing a model means, and it is why
+    the model endpoint belongs in .env / Settings review rather than in the
+    read-only extras box.
     """
     return _integration_hosts()
 
@@ -171,7 +288,7 @@ def write_hosts() -> set[str]:
 def describe() -> dict:
     """For the Settings UI: what is allowed and WHERE each entry came from, so
     an operator can see they do not need to re-add their Jira host by hand."""
-    derived = sorted(_integration_hosts())
+    derived = sorted(_derived_cached())
     stored = stored_hosts()
     env = sorted(_env_hosts())
     return {"derived": derived, "extra_hosts": stored, "env": env,

@@ -90,6 +90,19 @@ os.environ.setdefault(
 
 
 @pytest.fixture(autouse=True)
+def _no_stale_egress_derivation():
+    """The derived allowlist is memoized for a few seconds in production (it
+    touches ~20 files and runs on every outbound decision). A test that sets
+    CONFLUENCE_BASE_URL and immediately calls the tool would otherwise be judged
+    against the PREVIOUS test's configuration — a whole-suite source of
+    "passes alone, fails in a run"."""
+    from aiforge_core.config import egress_hosts as _eh
+    _eh._invalidate()
+    yield
+    _eh._invalidate()
+
+
+@pytest.fixture(autouse=True)
 def _reset_llm_ceiling():
     """Drop the rate ceiling's process-global state between tests.
 

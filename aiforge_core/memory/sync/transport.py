@@ -253,6 +253,16 @@ def offer(base_url: str, entries: list[dict], group: str = "") -> list[dict] | N
     is reachable and already holds everything, which is the steady state and
     must be distinguishable from a failure.
     """
+    # Egress: this POSTs the note tree off-box, so it answers to the same
+    # policy as every other outbound write. Returns the documented FAILURE
+    # value rather than raising — the caller's contract is "None means retry
+    # next cycle", and a lockdown is not a crash.
+    from aiforge_core.net import egress as _egress
+    _refusal = _egress.allow("sync", base_url, method="POST")
+    if _refusal is not None:
+        _log.warning("sync offer refused by egress policy: %s",
+                     _refusal.get("error"))
+        return None
     import json
 
     from aiforge_core.memory.sync import status
@@ -288,6 +298,12 @@ def push_blob(base_url: str, entry: dict, body: bytes, group: str = "") -> bool:
     identity is one more encoding for ``origin``/``key`` to disagree over. The
     cost is the ~33% base64 expansion, which the blob cap already accounts for.
     """
+    from aiforge_core.net import egress as _egress
+    _refusal = _egress.allow("sync", base_url, method="POST")
+    if _refusal is not None:
+        _log.warning("sync push refused by egress policy: %s",
+                     _refusal.get("error"))
+        return False
     import base64
     import json
 

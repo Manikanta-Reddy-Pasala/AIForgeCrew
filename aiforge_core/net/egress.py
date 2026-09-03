@@ -78,13 +78,15 @@ _CCTLD_RE = re.compile(
 
 # Destination classes with a DECLARED host. "web" is handled separately: its
 # host comes from the model, so it has its own, stricter default (off).
-_CLASSES = ("integration", "email", "telemetry", "mcp")
+_CLASSES = ("integration", "email", "telemetry", "mcp", "sync")
 
 # Classes where a WRITE means "this agent changed something in a system other
 # people use", which is what the human-approval rule exists for. Telemetry and
 # MCP are excluded on purpose: a trace POST is observability, and refusing it
 # in unattended runs would blind the pipeline — exactly the runs whose traces
 # matter most. Their control is the class switch, not attendance.
+# NOT "sync": the memory hub is an unattended background cycle by design —
+# requiring a human for it would simply switch fleet sync off.
 _ATTENDED_WRITE_CLASSES = ("integration", "email")
 
 # HTTP verbs that change something at the far end. A read pulls data toward us;
@@ -110,7 +112,15 @@ def is_local_host(host: str) -> bool:
     if host in ("localhost", "localhost.localdomain", "host.docker.internal",
                 "host.containers.internal"):
         return True
-    if host.endswith((".localhost", ".local", ".lan", ".internal")):
+    # `.localhost` only. `.local`, `.lan` and `.internal` were here and were a
+    # HOLE, not a convenience: `metadata.google.internal` is the canonical name
+    # of the cloud metadata service this function's own comment says it exists
+    # to keep out, and `vault.internal` / `*.svc.cluster.local` are the two
+    # things most worth exfiltrating to. A SUFFIX cannot tell you an address is
+    # on your machine; only an IP literal or the reserved `localhost` name can.
+    # A LAN dev server reached by NAME now needs an allowlist entry, which is a
+    # fair price for not shipping a metadata bypass.
+    if host.endswith(".localhost"):
         return True
     try:
         ip = ipaddress.ip_address(host)

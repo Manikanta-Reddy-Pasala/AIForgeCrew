@@ -263,6 +263,13 @@ def _first_bytes(msg_data) -> bytes:
 
 
 def _imap_connect(c: dict):
+    # Egress: reading mail is an outbound connection with a credential on it,
+    # and it was the one email path the policy never saw — AIFORGE_EGRESS_OFF
+    # closed send() and left read/search pulling message bodies into context.
+    from aiforge_core.net import egress as _egress
+    _ref = _egress.allow("email", f"imap://{c.get('host', '')}")
+    if _ref is not None:
+        raise OSError(f"egress refused IMAP: {_ref.get('error')}")
     return (imaplib.IMAP4_SSL(c["host"], c["port"]) if c["ssl"]
             else imaplib.IMAP4(c["host"], c["port"]))
 

@@ -66,6 +66,10 @@ def _reguard_redirect(resp, url: str, guard_public_url, ssrf_blocked) -> dict | 
             return {"ok": False, "error": "web_search_removed",
                     "hint": ("redirected to a search engine; this install has "
                              "no web search.")}
+        if not _egress.host_allowed(final):
+            return {"ok": False, "error": "host_not_allowed",
+                    "hint": (f"redirected to {final[:120]}, which is not on the "
+                             "egress allowlist.")}
         try:
             guard_public_url(final)
         except ssrf_blocked as exc:

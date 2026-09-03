@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import logging
 import os
 from typing import Iterator
 
@@ -57,6 +58,16 @@ def setup() -> bool:
     endpoint = os.environ.get(
         "AIFORGE_OTEL_ENDPOINT", "http://127.0.0.1:4318/v1/traces",
     )
+    # Egress: spans leave the box, so this is the telemetry class — the same
+    # one Langfuse answers to. It was skipped, so AIFORGE_TELEMETRY_DISABLE
+    # closed one sink and left the other exporting. Refused here means tracing
+    # simply does not start, which is the right shape: no half-configured
+    # exporter retrying against a wall.
+    from aiforge_core.net import egress as _egress
+    if _egress.allow("telemetry", endpoint, method="POST") is not None:
+        logging.getLogger("aiforge.otel").info(
+            "otel disabled: %s is not permitted by the egress policy", endpoint)
+        return False
     service_name = os.environ.get("AIFORGE_OTEL_SERVICE_NAME", "aiforge")
     provider = TracerProvider(resource=Resource.create({
         "service.name": service_name,

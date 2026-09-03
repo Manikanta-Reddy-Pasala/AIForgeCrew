@@ -377,5 +377,10 @@ def egress_hosts_put(body: EgressHostsBody) -> dict:
         if len(str(raw)) > 253:      # max DNS name length
             raise HTTPException(status_code=400,
                                 detail=f"host too long: {str(raw)[:40]}…")
-    saved = egress_hosts.set_stored_hosts(body.extra_hosts)
+    try:
+        saved = egress_hosts.set_stored_hosts(body.extra_hosts)
+    except ValueError as exc:
+        # A rejected shape is the operator's typo, not a server fault — and the
+        # message names what is wrong with which entry.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "extra_hosts": saved, **egress_hosts.describe()}

@@ -15,6 +15,17 @@ from aiforge_core.api.api import app
 
 
 @pytest.fixture(autouse=True)
+def _no_stale_derivation():
+    """The derived host set is memoized for a few seconds (it touches ~20 files
+    and runs on every outbound decision). A test that sets an env var and asks
+    immediately would otherwise read the previous answer."""
+    from aiforge_core.config import egress_hosts as _eh
+    _eh._invalidate()
+    yield
+    _eh._invalidate()
+
+
+@pytest.fixture(autouse=True)
 def _isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("AIFORGE_EGRESS_ALLOW_HOSTS", raising=False)

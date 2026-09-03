@@ -63,7 +63,11 @@ def _send(payload: dict) -> None:
     # telemetry channel in the system — it answers to the egress policy like
     # any other declared destination.
     from aiforge_core.net import egress as _egress
-    if host and _egress.allow("telemetry", host, method="POST") is not None:
+    # Pass the full INGEST URL, not the bare host: urlsplit on "langfuse.corp"
+    # yields hostname=None, so the check refused every send — telemetry off with
+    # the host correctly allowlisted, which no operator could have debugged.
+    _ingest = f"{host}/api/public/ingestion"
+    if host and _egress.allow("telemetry", _ingest, method="POST") is not None:
         return
     log = logging.getLogger("aiforge.langfuse")
     try:

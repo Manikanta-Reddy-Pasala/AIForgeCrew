@@ -14,6 +14,17 @@ from aiforge_core.config import egress_hosts
 
 
 @pytest.fixture(autouse=True)
+def _no_stale_derivation():
+    """The derived host set is memoized for a few seconds (it touches ~20 files
+    and runs on every outbound decision). A test that sets an env var and asks
+    immediately would otherwise read the previous answer."""
+    from aiforge_core.config import egress_hosts as _eh
+    _eh._invalidate()
+    yield
+    _eh._invalidate()
+
+
+@pytest.fixture(autouse=True)
 def _isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     for var in ("AIFORGE_EGRESS_ALLOW_HOSTS", "LANGFUSE_HOST",
@@ -153,3 +164,60 @@ def test_describe_names_the_writable_subset():
     d = egress_hosts.describe()
     assert "read-only.example" in d["effective"]
     assert "read-only.example" not in d["writable"]
+
+
+# ── the invariant: every consumer's hosts are on the list ───────────────────
+# This is the test that would have caught the original defect class in one go.
+# The first derivation was a hand-kept list of env names, so it missed the MCP
+# marketplace registry, the model registry, a Settings-saved sync admin and
+# several sidecars — each miss a feature that dies silently the moment the list
+# defaults to deny. Asserting against the CONSUMERS, rather than re-listing the
+# env vars here, means a new endpoint source fails this test instead of failing
+# in production.
+
+def test_every_mcp_endpoint_the_client_would_use_is_allowed(monkeypatch):
+    monkeypatch.setenv("AIFORGE_MCP_ENDPOINTS",
+                       "a=https://mcp-a.example/rpc,b=https://mcp-b.example/rpc")
+    from aiforge_core.runtime.tools.mcp_client import _load_endpoints
+
+    egress_hosts._invalidate()
+    allowed = egress_hosts.allowed_hosts()
+    for name, url in (_load_endpoints() or {}).items():
+        host = egress_hosts._host_of(url)
+        assert host in allowed, f"MCP endpoint {name} ({host}) would be refused"
+
+
+def test_every_model_endpoint_the_registry_holds_is_allowed():
+    from aiforge_core.config import model_registry
+
+    egress_hosts._invalidate()
+    allowed = egress_hosts.allowed_hosts()
+    for row in (model_registry.list_models() or []):
+        host = egress_hosts._host_of(str(row.get("base_url") or ""))
+        if host:
+            assert host in allowed, f"registry model host {host} would be refused"
+
+
+def test_the_sync_admin_is_allowed_even_when_set_from_settings(monkeypatch):
+    """role.admin_url() reads Settings as well as the env — deriving only the
+    env form left a Settings-saved admin unlisted, and the sync daemon would
+    have posted to a host the policy refused."""
+    from aiforge_core.memory.sync import role
+
+    monkeypatch.setattr(role, "admin_url", lambda: "https://hub.example:8799")
+    egress_hosts._invalidate()
+    assert "hub.example" in egress_hosts.allowed_hosts()
+
+
+def test_the_ssl_service_inventory_is_a_subset(monkeypatch):
+    """net/ssl.py already maintained the correct endpoint inventory. Deriving a
+    SECOND, shorter one beside it is what produced the original gaps, so pin
+    that the egress list never falls behind it."""
+    monkeypatch.setenv("AIFORGE_EMBED_URL", "http://embed.example:9000")
+    monkeypatch.setenv("AIFORGE_SOMETHING_BASE_URL", "http://svc.example:81")
+    from aiforge_core.net.ssl import _configured_service_hosts
+
+    egress_hosts._invalidate()
+    allowed = egress_hosts.allowed_hosts()
+    missing = _configured_service_hosts() - allowed
+    assert not missing, f"configured service hosts not on the egress list: {missing}"

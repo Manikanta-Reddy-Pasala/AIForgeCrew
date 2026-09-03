@@ -74,6 +74,13 @@ def call_pds_compare(
             "oneshellTb": (oneshell_path.name, o_fh,
                            "application/octet-stream"),
         }
+        # Egress: a multipart FILE upload. Uploads are writes even on a GET,
+        # and this one pushes file bodies to a host set by a single env var.
+        from aiforge_core.net import egress as _egress
+        _ref = _egress.allow("integration", url, method="POST", upload=True)
+        if _ref is not None:
+            raise OSError(f"upload refused by the egress policy: "
+                          f"{_ref.get('error')} ({url})")
         try:
             r = httpx.post(url, files=files, headers=headers,
                            timeout=timeout_s)

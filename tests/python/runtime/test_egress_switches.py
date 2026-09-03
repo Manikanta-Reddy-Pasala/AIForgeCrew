@@ -130,12 +130,14 @@ def test_browse_allowlist_is_the_operator_permission_but_hard_off_wins(monkeypat
 
 @pytest.mark.parametrize("url", [
     "http://localhost:5173/", "http://127.0.0.1:8080/", "http://[::1]:3000/",
-    "http://192.168.1.20:5173/",          # a LAN dev box
-    "http://host.docker.internal:8080/",  # a container host
+    "http://192.168.1.20:5173/",          # a LAN dev box, by IP
+    "http://host.docker.internal:8080/",  # a container host (exact name)
     "http://myapp.localhost:8080/",       # a Traefik-style vhost
-    "http://dev.lan:3000/",
 ])
 def test_local_dev_servers_stay_browsable_under_the_lockdown(monkeypatch, url):
+    """NOTE: a LAN box reached by NAME (dev.lan, foo.internal) is no longer
+    "local" — see test_a_name_suffix_cannot_prove_locality. Reach it by IP, or
+    allowlist it."""
     """The lockdown is about EGRESS. An operator who locks the box down and
     clears the browser allowlist (the natural thing to do) must not lose
     ui_check against their own dev server — that is a control doing something

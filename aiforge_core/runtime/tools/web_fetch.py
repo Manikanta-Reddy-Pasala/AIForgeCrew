@@ -84,11 +84,23 @@ class _GuardedRedirect(urllib.request.HTTPRedirectHandler):
         if _egress.looks_like_search(newurl):
             raise _refuse(
                 "redirect to a search engine refused: web search was removed")
+        # SSRF FIRST, so a metadata/private target is refused with the reason
+        # that actually matters. Ordering the allowlist ahead of it reported
+        # 169.254.169.254 as "not on your allowlist", which reads like a
+        # configuration gap and sends the next person after the wrong problem.
         try:
             guard_public_url(newurl)
         except SSRFBlocked as exc:
             if exc.kind != "dns":   # DNS failure surfaces as a normal error
                 raise _refuse(f"blocked after redirect (ssrf): {exc}") from exc
+        # Then the ALLOWLIST, on every hop. Checking only the URL we were handed
+        # makes a one-line open redirect on an allowed host into a fetch of
+        # anywhere: docs.example/r?to=evil.example passed, 302'd, and the body
+        # came back ok:True from a host that was never on the list.
+        if not _egress.host_allowed(newurl):
+            raise _refuse(
+                f"redirect to a host that is not on the egress allowlist: "
+                f"{newurl[:120]}")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 

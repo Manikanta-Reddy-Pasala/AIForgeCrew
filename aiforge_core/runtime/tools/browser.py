@@ -156,6 +156,13 @@ def _allowlist_ok(url: str) -> bool:
     # server — a control doing something nobody asked it to do.
     if _is_local_host(host):
         return True
+    # The EGRESS allowlist applies here too. Before the list defaulted to deny
+    # this was moot — everything was allowed, so browse and web_fetch agreed.
+    # Now they would disagree, and browse is the widest page tool in the system:
+    # web_fetch would refuse attacker.example while browse drove a real page
+    # there. An operator's browser allowlist narrows further; it cannot widen.
+    if not _egress.host_allowed(url):
+        return False
     raw = os.environ.get("AIFORGE_BROWSER_ALLOWLIST", "").strip()
     if raw:
         # An explicit operator allowlist IS the permission for those hosts —

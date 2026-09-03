@@ -20,6 +20,17 @@ _TEST_HOSTS = {"jira.corp", "mail.corp", "langfuse.corp", "x.corp", "c.corp"}
 
 
 @pytest.fixture(autouse=True)
+def _no_stale_derivation():
+    """The derived host set is memoized for a few seconds (it touches ~20 files
+    and runs on every outbound decision). A test that sets an env var and asks
+    immediately would otherwise read the previous answer."""
+    from aiforge_core.config import egress_hosts as _eh
+    _eh._invalidate()
+    yield
+    _eh._invalidate()
+
+
+@pytest.fixture(autouse=True)
 def _allow_the_test_hosts(monkeypatch):
     """These cases are about the POLICY (class switches, attendance, uploads),
     not about which hosts are on the list — so put the fixture's hosts on both
@@ -117,9 +128,18 @@ def test_this_machine_and_the_lan_never_need_a_list_entry(monkeypatch):
     lose their own app, and must not have to allowlist it to get it back."""
     monkeypatch.setattr("aiforge_core.config.egress_hosts.allowed_hosts", set)
     for url in ("http://localhost:5173/", "http://127.0.0.1:8799/",
-                "http://192.168.1.20:3000/", "http://dev.lan/",
+                "http://192.168.1.20:3000/", "http://app.localhost:8080/",
                 "http://host.docker.internal:8080/"):
         assert egress.host_allowed(url) is True, url
+    # NAME-based "local" suffixes are NOT local (changed 2026-09-03): `.local`,
+    # `.lan` and `.internal` were treated as this-network and that waved through
+    # `metadata.google.internal` — the canonical name of the cloud metadata
+    # service the guard exists to keep out — plus `vault.internal` and
+    # `*.svc.cluster.local`. A suffix cannot prove an address is on your machine.
+    for url in ("http://metadata.google.internal/computeMetadata/v1/",
+                "http://vault.internal/v1/secret", "http://dev.lan/",
+                "http://x.svc.cluster.local/"):
+        assert egress.host_allowed(url) is False, url
     # …but the metadata service is not "my network"
     assert egress.host_allowed("http://169.254.169.254/latest/") is False
 
