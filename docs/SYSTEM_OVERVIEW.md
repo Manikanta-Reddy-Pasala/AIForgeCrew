@@ -97,7 +97,7 @@ agent gets what) is **[TOOLS.md](TOOLS.md)**.
 | Confluence | read/create/update, spaces, page-by-title, labels, comments, descendants (`runtime/tools/confluence.py`) |
 | GitLab | issues + MRs, and CI pipelines: list / read one with failed-job logs / watch one to completion (`runtime/tools/gitlab.py`) |
 | Email | `email_send` (approval-gated) / `email_read` (`runtime/tools/email_tool.py`) |
-| Web | `web_search`, `web_fetch`, `web_crawl` → markdown dossier in `work/web/` (`runtime/tools/web_search.py`, `web_ingest.py`) |
+| Web | `web_fetch`, `web_crawl` → markdown dossier in `work/web/` (`runtime/tools/web_fetch.py`, `web_ingest.py`). NO web search — the query string was unfiltered outbound data (removed 2026-09-03) |
 | Memory / learning | `memory_lookup`, `memory_write`, `remember_rule`, skill + workflow search/learn |
 | Task tracking | `plan_progress` — live checklist for multi-part asks |
 | Resolvers | loose name → real thing: `resolve_repo`, `jira_resolve_project`, `confluence_resolve_space` |

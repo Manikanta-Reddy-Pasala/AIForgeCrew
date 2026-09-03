@@ -103,8 +103,22 @@ def _url_block(url: str) -> str:
             return f"@{url} → (could not fetch: {res.get('error', 'error')})"
     except Exception:  # noqa: BLE001
         pass
+    # FALLBACK, but not a bypass: this used to be a bare urlopen, so an import
+    # error in the line above turned the gated fetcher into an ungated one —
+    # the switch held only while nothing went wrong.
+    from aiforge_core.net import egress as _egress
+    refusal = _egress.check(url)
+    if refusal is not None:
+        return f"@{url} → (not fetched: {refusal.get('error')})"
     try:
         import urllib.request
+
+        from aiforge_core.net.ssl import SSRFBlocked, guard_public_url
+        try:
+            guard_public_url(url)
+        except SSRFBlocked as exc:
+            if exc.kind != "dns":
+                return f"@{url} → (blocked: {exc})"
         with urllib.request.urlopen(url, timeout=15) as r:  # noqa: S310
             data = r.read(_MAX_URL).decode("utf-8", "replace")
         return f"@{url} (url):\n{data}"

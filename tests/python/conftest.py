@@ -63,6 +63,16 @@ os.environ["AIFORGE_CONFIG_DIR"] = (
     or tempfile.mkdtemp(prefix="aiforge-test-"))
 
 
+# The suite is UNATTENDED by definition — no chat session, no approver — and
+# the egress policy refuses outward writes in that state (see
+# aiforge_core/net/egress.py). Almost every integration test drives a write
+# verb to a fake server, so without this the policy would mask what those tests
+# actually check. Declared once, here, rather than sprinkled through thirty
+# files: tests/python/net/test_egress_policy.py clears it explicitly and is the
+# one place the attendance rule itself is pinned.
+os.environ.setdefault("AIFORGE_UNATTENDED_WRITES", "1")
+
+
 @pytest.fixture(autouse=True)
 def _reset_llm_ceiling():
     """Drop the rate ceiling's process-global state between tests.

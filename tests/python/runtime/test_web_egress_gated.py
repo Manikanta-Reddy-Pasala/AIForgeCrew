@@ -1,11 +1,15 @@
 """Network+telemetry lockdown — arbitrary web egress is gated OFF by default.
 
-The ONLY sanctioned agent egress is the researcher's ``web_search`` (its own
+There is no web SEARCH; the remaining egress is a page read of a URL someone
+supplied. ``web_read`` is researcher-ONLY but no longer ungated — it answers to
+the same switches as everything else (the researcher's role scoping is its own
 flag) plus the LLM endpoint. ``fetch_url`` / ``http_get`` / ``web_fetch`` and
 the headless browser must refuse arbitrary URLs unless the operator opts in via
 ``AIFORGE_ALLOW_WEB_FETCH=1``.
 """
 from __future__ import annotations
+
+import pathlib
 
 import pytest
 
@@ -68,31 +72,29 @@ def test_fetch_url_proceeds_when_opted_in(monkeypatch):
     assert out["status"] == 200
 
 
-def test_web_search_unaffected_by_fetch_flag(monkeypatch):
-    """web_search is the researcher's allowed egress — the fetch gate must
-    not touch it. It routes through its own tool module (stubbed here)."""
-    monkeypatch.delenv("AIFORGE_ALLOW_WEB_FETCH", raising=False)
-    import aiforge_core.runtime.tools.web_search as _ws
+def test_no_web_search_tool_exists():
+    """Web SEARCH was removed (the query string was unfiltered outbound data).
+    Nothing may reintroduce it as a doer tool or a module function."""
+    import aiforge_core.runtime.tools.web_fetch as _wf
 
-    called = {}
-
-    def _stub(payload):
-        called["q"] = payload.get("query")
-        return {"ok": True, "results": [{"title": "t", "url": "u", "snippet": "s"}]}
-
-    monkeypatch.setattr(_ws, "web_search", _stub)
-    out = doer_tools.web_search("how to foo", k=3)
-    assert out["ok"] is True
-    assert called["q"] == "how to foo"
+    assert not hasattr(doer_tools, "web_search")
+    assert not hasattr(_wf, "web_search")
+    assert "duckduckgo" not in pathlib.Path(_wf.__file__).read_text().lower()
 
 
 # ── browser deny-by-default ─────────────────────────────────────────────
 
-def test_browser_empty_allowlist_denies(monkeypatch):
+def test_browser_empty_allowlist_denies_the_open_web(monkeypatch):
+    """CHANGED 2026-09-03: loopback is no longer denied here.
+
+    The lockdown is about EGRESS, and an operator who locks the box down and
+    clears the browser allowlist would otherwise lose ui_check against their
+    own dev server — a control doing something nobody asked for. An external
+    host is still denied without an allowlist or the fetch switch."""
     monkeypatch.delenv("AIFORGE_BROWSER_ALLOWLIST", raising=False)
     monkeypatch.delenv("AIFORGE_ALLOW_WEB_FETCH", raising=False)
     assert browser_tool._allowlist_ok("http://example.com") is False
-    assert browser_tool._allowlist_ok("http://127.0.0.1:8799") is False
+    assert browser_tool._allowlist_ok("http://127.0.0.1:8799") is True
 
 
 def test_browser_explicit_allowlist(monkeypatch):

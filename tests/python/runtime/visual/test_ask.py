@@ -61,11 +61,16 @@ def test_vision_failure_surfaces_the_hint(monkeypatch, capture):
 # ── readiness polling ────────────────────────────────────────────────────────
 
 def test_http_error_counts_as_ready(monkeypatch):
+    # A LOCAL target: the readiness probe used to GET whatever it was handed,
+    # ungated, in a retry loop — so ui_check with an external URL was a live
+    # outbound path. It now refuses a non-local target, and ui_check is for a
+    # dev server on this machine anyway.
     def _raise(*a, **kw):
-        raise urllib.error.HTTPError("http://x", 500, "boom", {}, None)
+        raise urllib.error.HTTPError("http://localhost:5173", 500, "boom", {},
+                                     None)
 
     monkeypatch.setattr("urllib.request.urlopen", _raise)
-    ready, _ = _macro._wait_ready("http://x", 5)
+    ready, _ = _macro._wait_ready("http://localhost:5173", 5)
     # A 500 IS the page worth screenshotting — often it is the bug itself.
     assert ready is True
 
@@ -76,6 +81,6 @@ def test_connection_refused_times_out(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", _raise)
     monkeypatch.setattr("time.sleep", lambda s: None)
-    ready, why = _macro._wait_ready("http://x", 0)
+    ready, why = _macro._wait_ready("http://localhost:5173", 0)
     assert ready is False
     assert "refused" in why

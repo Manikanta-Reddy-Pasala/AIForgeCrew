@@ -174,6 +174,13 @@ def email_send(args: dict, _cwd: str | None = None) -> dict:
     if not c["host"]:
         return {"ok": False,
                 "error": "email not configured (set AIFORGE_SMTP_HOST/USER/PASSWORD)"}
+    # Mail is the one channel that reaches a person who never asked for it, so
+    # it is its own egress class AND always a write: an unattended run cannot
+    # send unless the operator opted in.
+    from aiforge_core.net import egress as _egress
+    refusal = _egress.allow("email", f"smtp://{c['host']}", method="POST")
+    if refusal is not None:
+        return refusal
     to = _as_list(args.get("to"))
     if not to:
         return {"ok": False, "error": "missing 'to'"}

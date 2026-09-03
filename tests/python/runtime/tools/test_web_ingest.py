@@ -35,7 +35,7 @@ def test_fallback_engine_saves_dossier(workdir, monkeypatch):
     # force the plain-fetch engine and stub the network
     monkeypatch.setenv("AIFORGE_WEB_CRAWLER", "fallback")
     monkeypatch.setattr(
-        "aiforge_core.runtime.tools.web_search._fetch_readable",
+        "aiforge_core.runtime.tools.web_fetch._fetch_readable",
         lambda url, max_chars: {"ok": True, "url": url,
                                 "title": "Doc Title", "text": "hello world",
                                 "truncated": False})
@@ -59,7 +59,7 @@ def test_fallback_engine_saves_dossier(workdir, monkeypatch):
 def test_fetch_failure_propagates(workdir, monkeypatch):
     monkeypatch.setenv("AIFORGE_WEB_CRAWLER", "fallback")
     monkeypatch.setattr(
-        "aiforge_core.runtime.tools.web_search._fetch_readable",
+        "aiforge_core.runtime.tools.web_fetch._fetch_readable",
         lambda url, max_chars: {"ok": False, "error": "boom"})
     r = web_ingest.web_crawl({"url": "https://example.com"}, None)
     assert not r["ok"]
@@ -83,7 +83,7 @@ def test_slug_distinguishes_query_strings():
 def test_url_credentials_never_persisted(workdir, monkeypatch):
     monkeypatch.setenv("AIFORGE_WEB_CRAWLER", "fallback")
     monkeypatch.setattr(
-        "aiforge_core.runtime.tools.web_search._fetch_readable",
+        "aiforge_core.runtime.tools.web_fetch._fetch_readable",
         lambda url, max_chars: {"ok": True, "url": url, "title": "t",
                                 "text": "body", "truncated": False})
     r = web_ingest.web_crawl(
@@ -99,16 +99,27 @@ def test_url_credentials_never_persisted(workdir, monkeypatch):
     assert "REDACTED" in blob      # token PARAM kept, value scrubbed
 
 
-def test_sanctioned_bypasses_fetch_gate(monkeypatch, tmp_path):
-    """The researcher wrapper's sanctioned:true works with the gate OFF —
-    parity with its ungated web_read; the plain chat path stays gated."""
+def test_sanctioned_no_longer_bypasses_the_fetch_gate(monkeypatch, tmp_path):
+    """INVERTED on purpose (2026-09-03). `sanctioned: True` used to skip the
+    AIFORGE_ALLOW_WEB_FETCH gate for "the researcher wrapper" — but the doer
+    wrapper passed it unconditionally and web_crawl is in the BASE tool list,
+    so every role crawled any URL with the operator's switch off. With web
+    search removed, that was the widest remaining way to put a query string on
+    the wire. The flag is now accepted and ignored."""
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("AIFORGE_ALLOW_WEB_FETCH", raising=False)
     monkeypatch.setenv("AIFORGE_WEB_CRAWLER", "fallback")
     monkeypatch.setattr(
-        "aiforge_core.runtime.tools.web_search._fetch_readable",
+        "aiforge_core.runtime.tools.web_fetch._fetch_readable",
         lambda url, max_chars: {"ok": True, "url": url, "title": "t",
                                 "text": "body", "truncated": False})
+    monkeypatch.delenv("AIFORGE_WEB_FETCH_DISABLE", raising=False)
+    monkeypatch.delenv("AIFORGE_WEB_SEARCH_DISABLE", raising=False)
     assert not web_ingest.web_crawl({"url": "https://x.io/d"}, None)["ok"]
+    assert not web_ingest.web_crawl(
+        {"url": "https://x.io/d", "sanctioned": True}, None)["ok"]
+    # ...and with the switch ON, both forms work — the flag is simply inert.
+    monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
+    assert web_ingest.web_crawl({"url": "https://x.io/d"}, None)["ok"]
     assert web_ingest.web_crawl(
         {"url": "https://x.io/d", "sanctioned": True}, None)["ok"]

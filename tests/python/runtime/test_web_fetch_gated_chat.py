@@ -1,7 +1,8 @@
 """web_fetch (arbitrary URL) must obey the AIFORGE_ALLOW_WEB_FETCH lockdown —
-the chat agent's web_fetch routes through this. web_SEARCH stays allowed."""
+the chat agent's web_fetch routes through this. There is no web SEARCH any
+more; the per-path switch coverage lives in test_egress_switches.py."""
 from __future__ import annotations
-from aiforge_core.runtime.tools import web_search as ws
+from aiforge_core.runtime.tools import web_fetch as ws
 
 
 def test_web_fetch_gated_by_default(monkeypatch):

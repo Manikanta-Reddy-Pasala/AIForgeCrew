@@ -218,19 +218,27 @@ def test_dev_server_host_is_vouched_for_only_during_the_call(monkeypatch):
     fake = _FakeBrowser()
     _install(monkeypatch, fake)
 
+    dev = "http://localhost:5173/"
+
     def _shot(**kw):
-        # Mid-call the loopback dev server is reachable despite the allowlist…
-        seen["during"] = real._allowlist_ok("http://localhost:5173/")
+        # Mid-call the dev server is reachable despite the allowlist…
+        seen["during"] = real._allowlist_ok(dev)
+        seen["vouched"] = real._EXTRA_ALLOW.get()
         seen["other"] = real._allowlist_ok("http://169.254.169.254/")
         return b"PNG", None
 
     monkeypatch.setattr(real, "screenshot_bytes", _shot)
-    _macro.ui_check({"url": "http://localhost:5173/"})
+    _macro.ui_check({"url": dev})
     assert seen["during"] is True
     # …a host nobody vouched for is still refused, mid-call…
     assert seen["other"] is False
-    # …and the grant does not outlive the call.
-    assert real._allowlist_ok("http://localhost:5173/") is False
+    # …the vouch existed during the call…
+    assert "localhost" in seen["vouched"]
+    # …and the GRANT does not outlive it. (Asserted on the vouch set itself,
+    # not via _allowlist_ok: loopback is now allowed unconditionally — it is a
+    # dev server, not egress — so that check could no longer tell a live grant
+    # from an expired one.)
+    assert real._EXTRA_ALLOW.get() == ()
     import os
     assert os.environ["AIFORGE_BROWSER_ALLOWLIST"] == "github.com"
 

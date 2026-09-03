@@ -178,8 +178,11 @@ def _link_dead(url: str) -> bool:
         return False
     if not _sanctioned_host(url):
         try:
-            from aiforge_core.runtime.tools import web_search as _ws
-            if not _ws._fetch_allowed():
+            from aiforge_core.net import egress as _egress
+            # check(), not fetch_allowed(): the HOST may be operator config but
+            # the path and query are model-authored (agents write these notes),
+            # so the search refusal has to apply here too.
+            if _egress.check(url) is not None:
                 return False
         except Exception:  # noqa: BLE001
             return False

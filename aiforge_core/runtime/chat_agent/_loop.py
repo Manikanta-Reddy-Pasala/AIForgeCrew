@@ -415,7 +415,7 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
 
     # WEB-LOOKUP directive FIRST — it's short + critical, so it must outrank the
     # big optional blocks (repo-map/recall) under a tight window (blocks added
-    # LATER drop first). Without top priority the "you MUST web_search" nudge got
+    # LATER drop first). Without top priority the "no web access" notice got
     # trimmed exactly when context was full, and the model answered from stale
     # memory. Read-only tool → safe in plan/analyze too. (Detected on last_user;
     # a bare URL is excluded — it already routes to web_crawl.)
@@ -624,6 +624,29 @@ def _invoke_tool(fn, name, args, cwd):
     return result
 
 
+# Names a model reaches for when it wants to search. The capability was
+# removed (the query string is outbound data), and a bare "unknown tool" sends
+# the model round the alias carousel — web_search, search_web, websearch, google
+# — burning steps before it gives up and often answering from memory anyway.
+# Say what happened and what to do instead.
+_REMOVED_SEARCH_TOOLS = frozenset({
+    "web_search", "websearch", "search_web", "web_query", "google",
+    "google_search", "duckduckgo", "ddg_search", "internet_search",
+    "search_internet", "bing_search", "brave_search", "tavily_search",
+})
+
+
+def _unknown_tool_result(name) -> dict:
+    if str(name).strip().lower().replace("-", "_") in _REMOVED_SEARCH_TOOLS:
+        return {"ok": False, "error": "web_search_removed",
+                "hint": ("this install has no web search, by design — the "
+                         "query text is outbound data. Do not try another "
+                         "name for it, and do not fetch a search engine's URL "
+                         "either. Use what you can read here, or ask the user "
+                         "for a direct URL / the content itself.")}
+    return {"ok": False, "error": f"unknown tool: {name}"}
+
+
 def _dispatch_tool(name, args, cwd, n, _hook_block):
     """Dispatch one tool call: honour a PreToolUse hook block / unknown tool,
     else emit ``tool_start`` and run ``fn(args, cwd)`` under a scoped sandbox
@@ -634,7 +657,7 @@ def _dispatch_tool(name, args, cwd, n, _hook_block):
         result = {"ok": False, "blocked": "hook", "hook": _hook_block,
                   "error": f"'{name}' was blocked by a PreToolUse hook"}
     elif fn is None:
-        result = {"ok": False, "error": f"unknown tool: {name}"}
+        result = _unknown_tool_result(name)
     else:
         # Live "it's running" signal — a slow tool (bash/test/build) used
         # to show NOTHING until `fn` returned, so the UI looked stalled

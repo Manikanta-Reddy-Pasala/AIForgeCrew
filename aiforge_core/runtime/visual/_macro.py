@@ -40,13 +40,41 @@ def _i(args: dict, key: str, default: int) -> int:
     return int(_f(args, key, float(default)))
 
 
+def _probe_allowed(url: str) -> bool:
+    """May the readiness probe open this URL?
+
+    Defers to the browser's own allowlist so there is ONE answer to "may I open
+    this": that covers loopback and the LAN, a host vouched for the duration of
+    this call (the dev server `serve` just started), and the operator's own
+    allowlist — while still refusing the open web. Duplicating the rule here is
+    how the two drift apart and one of them becomes the hole.
+    """
+    try:
+        from aiforge_core.runtime.tools import browser as _browser
+        return bool(_browser._allowlist_ok(url))
+    except Exception:  # noqa: BLE001 — fail closed for a probe
+        return False
+
+
 def _wait_ready(url: str, timeout_s: float) -> tuple[bool, str]:
     """Poll ``url`` until the server answers ANYTHING.
 
     An HTTP error IS readiness — a 404 or a 500 proves something is listening
     and is a page worth screenshotting (often the very bug being chased).
     Only a connection failure means "not up yet".
+
+    EGRESS: this probe used to GET whatever URL it was handed, in a retry loop,
+    before any allowlist or switch was consulted — so `ui_check` with an
+    external URL was a live outbound path with a model-composed query string,
+    working fine under the documented lockdown. A non-loopback target now goes
+    through the same policy as every other page read.
     """
+    if not _probe_allowed(url):
+        return False, (
+            "refused: this URL is not a local/vouched dev server and web "
+            "access is off (see AIFORGE_ALLOW_WEB_FETCH / "
+            "AIFORGE_BROWSER_ALLOWLIST). ui_check is for a server on this "
+            "machine.")
     deadline = time.monotonic() + max(0.0, timeout_s)
     last = ""
     while True:
@@ -233,15 +261,21 @@ def ui_check(args: dict, cwd: str | None = None,
     if err is not None:
         return err
 
-    ready, why = _wait_ready(url, _f(args, "ready_timeout_s", _DEFAULT_READY_S))
-    if not ready:
-        return {"ok": False, "error": "server_not_reachable", "url": url,
-                "detail": why, "service": service,
-                "hint": ("nothing answered on that URL — check the service log "
-                         "or pass a longer ready_timeout_s")}
-
+    # Vouch FIRST, then probe. The readiness probe is an outbound GET like any
+    # other, so it now asks the browser allowlist whether it may open the URL —
+    # and the vouch (this call's own dev server) has to exist by then, or a
+    # non-loopback dev host is refused by the probe and never reaches the
+    # screenshot. Everything below is inside the try, so the vouch is still
+    # released on every path.
     allow_token = _browser.allow_hosts(_vouched_hosts(url, service))
     try:
+        ready, why = _wait_ready(url,
+                                 _f(args, "ready_timeout_s", _DEFAULT_READY_S))
+        if not ready:
+            return {"ok": False, "error": "server_not_reachable", "url": url,
+                    "detail": why, "service": service,
+                    "hint": ("nothing answered on that URL — check the service "
+                             "log or pass a longer ready_timeout_s")}
         nav_err = _navigate(_browser.browse, url, args, run_id)
         if nav_err is not None:
             return {"ok": False, "error": "navigation_failed", "url": url,

@@ -286,8 +286,6 @@ CATALOG: dict = {
                    {"query": "s", "limit": "i", "folder": "s",
                     "unseen_only": "b"}, ()),
     # ── web ──────────────────────────────────────────────────────────────
-    "web_search": ("Search the open web.", {"query": "s", "limit": "i"},
-                   ("query",)),
     "web_fetch": ("Read a page's text.", {"url": "s", "max_chars": "i"},
                   ("url",)),
     "web_crawl": ("Fetch a page as markdown + save to the web dossier.",

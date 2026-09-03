@@ -14,7 +14,7 @@ import urllib.error
 import pytest
 
 from aiforge_core.net.ssl import is_cert_error, web_tls_fallback_enabled
-from aiforge_core.runtime.tools import web_search as ws
+from aiforge_core.runtime.tools import web_fetch as ws
 
 
 def _cert_error():
@@ -36,6 +36,25 @@ class _Resp:
         return self
     def __exit__(self, *_a):
         return False
+
+
+def _patch_ws_open(monkeypatch, fn):
+    """Intercept web_fetch's HTTP call at its real seam.
+
+    The module opens through its own opener (so every redirect hop can be
+    re-guarded), not through ``urllib.request.urlopen``. Patching urlopen here
+    silently stopped intercepting anything and these tests fetched the live
+    internet instead of the fixture — a green suite proving nothing. ``fn`` is
+    called as ``fn(req, timeout=..., context=ctx)``, the old signature.
+    """
+    class _FakeOpener:
+        def __init__(self, ctx):
+            self._ctx = ctx
+
+        def open(self, req, timeout=None):
+            return fn(req, timeout=timeout, context=self._ctx)
+
+    monkeypatch.setattr(ws, "_opener", _FakeOpener)
 
 
 def test_a_cert_error_is_recognised_through_its_wrappers():
@@ -86,8 +105,7 @@ def test_web_fetch_refuses_a_private_target(monkeypatch):
     monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
     monkeypatch.delenv("AIFORGE_WEB_SEARCH_DISABLE", raising=False)
     called: list = []
-    monkeypatch.setattr(ws.urllib.request, "urlopen",
-                        lambda *a, **k: called.append(1) or _Resp())
+    _patch_ws_open(monkeypatch, lambda *a, **k: called.append(1) or _Resp())
     out = ws.web_fetch({"url": "http://169.254.169.254/latest/meta-data/"})
     assert out["ok"] is False
     assert "ssrf" in out["error"]
@@ -101,7 +119,7 @@ def test_the_verified_attempt_comes_first(monkeypatch):
         seen.append(context)
         return _Resp()
 
-    monkeypatch.setattr(ws.urllib.request, "urlopen", _open)
+    _patch_ws_open(monkeypatch, _open)
     verified: list = []
     ws._get("https://example.com", verified=verified)
     assert len(seen) == 1                    # no second, unverified attempt
@@ -122,7 +140,7 @@ def test_a_cert_failure_refetches_without_verification(monkeypatch):
             raise _cert_error()
         return _Resp()
 
-    monkeypatch.setattr(ws.urllib.request, "urlopen", _open)
+    _patch_ws_open(monkeypatch, _open)
     verified: list = []
     out = ws._get("https://inspected.example.com", verified=verified)
     assert "page" in out
@@ -138,7 +156,7 @@ def test_the_fallback_can_be_forbidden(monkeypatch):
     def _open(req, timeout=None, context=None):
         raise _cert_error()
 
-    monkeypatch.setattr(ws.urllib.request, "urlopen", _open)
+    _patch_ws_open(monkeypatch, _open)
     with pytest.raises(urllib.error.URLError):
         ws._get("https://inspected.example.com")
 
@@ -150,7 +168,7 @@ def test_a_non_cert_failure_is_never_retried_insecurely(monkeypatch):
         calls.append(context)
         raise ConnectionRefusedError("refused")
 
-    monkeypatch.setattr(ws.urllib.request, "urlopen", _open)
+    _patch_ws_open(monkeypatch, _open)
     with pytest.raises(ConnectionRefusedError):
         ws._get("https://down.example.com")
     assert len(calls) == 1
@@ -167,7 +185,7 @@ def test_web_fetch_reports_an_unverified_page(monkeypatch):
 
     monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
     monkeypatch.delenv("AIFORGE_WEB_SEARCH_DISABLE", raising=False)
-    monkeypatch.setattr(ws.urllib.request, "urlopen", _open)
+    _patch_ws_open(monkeypatch, _open)
     out = ws.web_fetch({"url": "https://inspected.example.com"})
     assert out["ok"]
     assert out["tls_verified"] is False
@@ -178,8 +196,7 @@ def test_a_verified_page_says_nothing_about_tls(monkeypatch):
     carry in its context forever. The exception is the thing worth stating."""
     monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
     monkeypatch.delenv("AIFORGE_WEB_SEARCH_DISABLE", raising=False)
-    monkeypatch.setattr(ws.urllib.request,
-                        "urlopen", lambda *a, **k: _Resp())
+    _patch_ws_open(monkeypatch, lambda *a, **k: _Resp())
     out = ws.web_fetch({"url": "https://example.com"})
     assert out["ok"]
     assert "tls_verified" not in out
@@ -190,7 +207,7 @@ def test_plain_http_is_still_allowed(monkeypatch):
     certificate in play and nothing to fall back from."""
     monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
     monkeypatch.delenv("AIFORGE_WEB_SEARCH_DISABLE", raising=False)
-    monkeypatch.setattr(ws.urllib.request, "urlopen", lambda *a, **k: _Resp())
+    _patch_ws_open(monkeypatch, lambda *a, **k: _Resp())
     out = ws.web_fetch({"url": "http://intranet.local/page"})
     assert out["ok"]
     assert "tls_verified" not in out
@@ -265,7 +282,7 @@ def test_the_env_gate_is_what_stops_the_retry_not_the_error(monkeypatch):
         calls.append(context)
         raise _cert_error()
 
-    monkeypatch.setattr(ws.urllib.request, "urlopen", _open)
+    _patch_ws_open(monkeypatch, _open)
     monkeypatch.setenv("AIFORGE_WEB_INSECURE_TLS", "0")
     with pytest.raises(urllib.error.URLError):
         ws._get("https://inspected.example.com")
@@ -342,7 +359,7 @@ def test_the_crawl_dossier_records_an_unverified_page(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
     monkeypatch.setenv("AIFORGE_WEB_CRAWLER", "fallback")
-    from aiforge_core.runtime.tools import web_search as _ws_mod
+    from aiforge_core.runtime.tools import web_fetch as _ws_mod
     monkeypatch.setattr(_ws_mod, "_fetch_readable",
                         lambda url, n: {"ok": True, "title": "Docs",
                                         "text": "body text here",
@@ -356,23 +373,3 @@ def test_the_crawl_dossier_records_an_unverified_page(monkeypatch, tmp_path):
         _os.path.dirname(out["path"]), "meta.json")).read())
     assert meta.get("tls_verified") is False
     assert "NOT VERIFIED" in open(out["path"]).read()
-
-
-def test_search_results_say_when_the_LIST_came_unverified(monkeypatch):
-    """These urls are what the agent fetches next. An attacker-substitutable
-    result set reported as an ordinary success is the worst place for silence."""
-    calls: list = []
-
-    def _open(req, timeout=None, context=None):
-        calls.append(context)
-        if len(calls) == 1:
-            raise _cert_error()
-        return _Resp(b'<a class="result__a" href="https://x.example/p">Hit</a>'
-                     b'<a class="result__snippet">snip</a>')
-
-    monkeypatch.delenv("AIFORGE_WEB_SEARCH_DISABLE", raising=False)
-    monkeypatch.setattr(ws, "_api_search", lambda *a, **k: None)
-    monkeypatch.setattr(ws.urllib.request, "urlopen", _open)
-    out = ws.web_search({"query": "anything"})
-    if out.get("ok") and out.get("results"):
-        assert out.get("tls_verified") is False

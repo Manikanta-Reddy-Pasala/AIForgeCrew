@@ -11,8 +11,7 @@ import urllib.request
 import uuid
 
 from .. import _http_integration as _http
-from ._config import (_TIMEOUT_S, _base, _conf, _configured, _ssl_ctx)
-
+from ._config import _TIMEOUT_S, _base, _conf, _configured, _ssl_ctx
 
 # ───────────────────── media → storage-format macros ────────────────────
 #
@@ -115,6 +114,14 @@ def _upload_attachment(pid: str, filename: str, data: bytes,
     an existing same-name attachment reports ok. Never raises."""
     if not _configured():
         return {"ok": False, "error": "confluence_not_configured"}
+    # An attachment is FILE CONTENT leaving the box, which is a bigger step
+    # than posting a sentence — it gets its own switch, and it is a write, so
+    # an unattended run has to be opted in.
+    from aiforge_core.net import egress as _egress
+    refusal = _egress.allow("integration", _conf().get("base_url") or "",
+                            method="POST", upload=True)
+    if refusal is not None:
+        return refusal
     boundary = "----aiforge" + uuid.uuid4().hex
     pre = (f"--{boundary}\r\n"
            f'Content-Disposition: form-data; name="file"; filename="{filename}"'
@@ -154,6 +161,18 @@ def _resolve_image_bytes(src: str, cwd: str | None) -> tuple[bytes, str] | None:
     local path is resolved against cwd. None on any failure (skip that image)."""
     ct = mimetypes.guess_type(src)[0] or "application/octet-stream"
     if re.match(r"^https?://", src, re.I):
+        # The <img src> is scraped from the page body the MODEL wrote, so this
+        # is a model-composed URL like any other — it was fetched with no gate
+        # and no SSRF guard, while the sibling attachment paths pin the host.
+        from aiforge_core.net import egress as _egress
+        if _egress.check(src) is not None:
+            return None
+        from aiforge_core.net.ssl import SSRFBlocked, guard_public_url
+        try:
+            guard_public_url(src)
+        except SSRFBlocked as exc:
+            if exc.kind != "dns":
+                return None
         try:
             got = _http.http_get_bytes(src, headers={
                 "User-Agent": "AIForgeCrew-Confluence/1.0"},

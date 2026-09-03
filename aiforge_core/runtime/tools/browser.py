@@ -107,6 +107,36 @@ def _matches_operator_allowlist(host: str, raw: str) -> bool:
     return False
 
 
+def _is_local_host(host: str) -> bool:
+    """This machine or the LAN — browsing these is not web egress.
+
+    Not just the five loopback literals: a dev server routinely lives on a LAN
+    IP, a container hostname, or a ``*.localhost`` vhost, and an operator who
+    locks the box down should not lose their own dev server. Anything that
+    resolves outside RFC1918/loopback/link-local is treated as egress.
+    """
+    import ipaddress
+
+    if not host:
+        return False
+    host = host.strip("[]").lower()
+    if host in ("localhost", "localhost.localdomain", "host.docker.internal",
+                "host.containers.internal"):
+        return True
+    if host.endswith((".localhost", ".local", ".lan", ".internal")):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    # NOT link-local: 169.254.169.254 is the cloud metadata service, i.e. the
+    # SSRF target this allowlist exists to keep out. "On my network" and "the
+    # thing that hands out credentials" must not share a branch.
+    if ip.is_link_local:
+        return False
+    return bool(ip.is_loopback or ip.is_private or ip.is_unspecified)
+
+
 def _open_browsing_ok(url: str) -> bool:
     """With no operator allowlist, browsing is off unless the operator opts in
     via ``AIFORGE_ALLOW_WEB_FETCH`` — and even then the target is SSRF-guarded
@@ -114,9 +144,8 @@ def _open_browsing_ok(url: str) -> bool:
     A pure DNS failure falls through to the browser, which will simply fail to
     connect: it cannot be an SSRF target.
     """
-    if str(os.environ.get("AIFORGE_ALLOW_WEB_FETCH", "0")).strip().lower() not in (
-        "1", "true", "yes", "on",
-    ):
+    from aiforge_core.net import egress as _egress
+    if not _egress.fetch_allowed():
         return False
     from aiforge_core.net.ssl import SSRFBlocked, guard_public_url
     try:
@@ -129,13 +158,35 @@ def _open_browsing_ok(url: str) -> bool:
 def _allowlist_ok(url: str) -> bool:
     from urllib.parse import urlsplit
 
+    from aiforge_core.net import egress as _egress
+
     host = (urlsplit(url).hostname or "").lower()
     # A host the current call vouched for (its own dev server) — checked before
-    # the operator allowlist and never persisted anywhere.
+    # the operator allowlist and never persisted anywhere. Loopback work
+    # (ui_check, a local dev server) is NOT web egress and stays available even
+    # under the lockdown; that is the whole point of vouching.
     if host and host in _EXTRA_ALLOW.get():
+        return True
+    # A search engine is refused here too: web search was removed, and driving
+    # one through a headless browser is the same capability with more steps.
+    if _egress.looks_like_search(url):
+        return False
+    # Loopback is not egress, whatever the switches say and whether or not the
+    # operator keeps an allowlist. Checked BEFORE the allowlist branch: an
+    # operator who locks the box down and clears the browser allowlist (the
+    # natural thing to do) would otherwise lose ui_check against their own dev
+    # server — a control doing something nobody asked it to do.
+    if _is_local_host(host):
         return True
     raw = os.environ.get("AIFORGE_BROWSER_ALLOWLIST", "").strip()
     if raw:
+        # An explicit operator allowlist IS the permission for those hosts —
+        # naming a host is a deliberate act, unlike a model-chosen URL, so it is
+        # not second-guessed by AIFORGE_ALLOW_WEB_FETCH. The HARD-off is
+        # different: it means this box must not talk out at all, and it wins
+        # over every allowlist.
+        if _egress.hard_off():
+            return False
         return _matches_operator_allowlist(host, raw)
     return _open_browsing_ok(url)
 

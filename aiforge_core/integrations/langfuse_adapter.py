@@ -59,6 +59,12 @@ def _send(payload: dict) -> None:
 
     import httpx
     host = (os.environ.get("LANGFUSE_HOST") or "").rstrip("/")
+    # This posts whole PROMPTS to a remote host, so it is the highest-content
+    # telemetry channel in the system — it answers to the egress policy like
+    # any other declared destination.
+    from aiforge_core.net import egress as _egress
+    if host and _egress.allow("telemetry", host, method="POST") is not None:
+        return
     log = logging.getLogger("aiforge.langfuse")
     try:
         r = httpx.post(f"{host}/api/public/ingestion", json=payload,

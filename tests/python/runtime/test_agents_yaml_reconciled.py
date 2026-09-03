@@ -48,7 +48,7 @@ def _ground_truth() -> set[str]:
     """Every real tool name (``FunctionTool.name`` == ``fn.__name__``).
 
     Union of the base (no-role) set AND role-injected tools (the researcher
-    gets web_search/web_read that aren't in the base list — role-scoped web)."""
+    gets web_read that isn't in the base list — role-scoped web)."""
     out: set[str] = set()
     for role in (None, "researcher"):
         for t in doer_tools.adk_function_tools(role=role):
@@ -151,14 +151,14 @@ def test_researcher_keeps_read_tools():
 
 
 def test_ctx_memory_scoped_to_memory_lookup_only():
-    # WHY: 66784fc deliberately added web_search + web_crawl to ctx_memory's
-    # allowlist in agents.yaml (stuck-recovery: search → crawl the best hit),
-    # so the set is no longer memory_lookup ALONE. What must still hold is:
+    # WHY: 66784fc deliberately added web tools to ctx_memory's allowlist in
+    # agents.yaml, so the set is no longer memory_lookup ALONE (web_search has
+    # since been removed entirely). What must still hold is:
     # memory_lookup is granted and nothing that reads/writes/executes the repo
     # is.
     names = _names(doer_tools.adk_function_tools(role="ctx_memory"))
     assert "memory_lookup" in names
-    assert names <= {"memory_lookup", "web_search", "web_crawl"}
+    assert names <= {"memory_lookup", "web_crawl"}
 
 
 def test_doer_keeps_full_working_surface():
@@ -166,11 +166,11 @@ def test_doer_keeps_full_working_surface():
     references the legacy read/write/exec tools heavily, so scoping would
     starve it. Guard that the full surface still carries the doer essentials."""
     names = _names(doer_tools.adk_function_tools())
-    # web_search/web_crawl ARE in the base surface now (66784fc); only the
-    # ungated web_read stays researcher-scoped.
+    # web_crawl IS in the base surface (66784fc); the ungated web_read stays
+    # researcher-scoped and web_search no longer exists.
     for t in ("project", "subtask_update", "serve", "editor",
               "run_shell", "file_write", "file_patch", "file_read",
-              "git_commit", "bash", "ensure_runtime", "web_search", "web_crawl"):
+              "git_commit", "bash", "ensure_runtime", "web_crawl"):
         assert t in names, f"doer full surface is missing {t}"
     assert "web_read" not in names, "ungated web_read stays researcher-only"
     # doer.py must remain unwired (full set) — not in the scoped set.

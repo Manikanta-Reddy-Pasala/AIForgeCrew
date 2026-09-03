@@ -1,14 +1,9 @@
 from __future__ import annotations
 
 
-def _t_web_search(args: dict, cwd: str) -> dict:
-    from aiforge_core.runtime.tools import web_search
-    return web_search.web_search(args, cwd)
-
-
 def _t_web_fetch(args: dict, cwd: str) -> dict:
-    from aiforge_core.runtime.tools import web_search
-    return web_search.web_fetch(args, cwd)
+    from aiforge_core.runtime.tools import web_fetch
+    return web_fetch.web_fetch(args, cwd)
 
 
 def _t_web_crawl(args: dict, cwd: str) -> dict:

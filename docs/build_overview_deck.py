@@ -286,7 +286,7 @@ def integrations(prs):
         ("GitLab",      "MRs · pipelines\njobs · files",    GREEN_T, GREEN, 6.45, 1.62),
         ("GitHub",      "pull requests",                    GREEN_T, GREEN, 9.30, 1.62),
         ("Email",       "send · read",                      AMBER_T, AMBER, 0.75, 5.05),
-        ("Web",         "search · fetch\ncrawl · browser",  AMBER_T, AMBER, 3.60, 5.05),
+        ("Web",         "fetch · crawl\nbrowser (no search)", AMBER_T, AMBER, 3.60, 5.05),
         ("MCP",         "any MCP server",                   PLUM_T, PLUM,   6.45, 5.05),
         ("Local host",  "shell · LSP · tests\ntypecheck · IPython", SLATE_T, SLATE, 9.30, 5.05),
     ]
@@ -702,7 +702,7 @@ def tool_surface(prs):
         ("VCS", AMBER_T, AMBER, ["git (targeted)", "github_pr", "gitlab MRs"]),
         ("Integrations", PLUM_T, PLUM,
          ["jira_* (21)", "confluence_* (14)", "gitlab_*", "email",
-          "web_search", "crawl", "browser", "MCP"]),
+          "web fetch", "crawl", "browser", "MCP"]),
         ("Memory", AMBER_T, AMBER,
          ["memory_lookup", "memory_write", "remember_rule", "skill search"]),
         ("Long-running", SLATE_T, SLATE,

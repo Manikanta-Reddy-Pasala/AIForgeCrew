@@ -16,7 +16,7 @@ from ._fs import (
     file_patch, file_read, file_write, grep_repo, list_dir, read_lines,
     run_shell,
 )
-from ._web import fetch_url, web_crawl, web_read, web_search
+from ._web import fetch_url, web_crawl, web_read
 from ._repo import (
     codegraph_callees, codegraph_callers, codegraph_explore, codegraph_impact,
     codegraph_query, git_blame, git_commit, git_diff, git_log, git_status,
@@ -122,19 +122,22 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
                         confluence_children, confluence_attach,
                         read_lines, rename_symbol]
     aliases = [read, write, patch, edit, str_replace, ls, shell, bash, run,
-               grep, search, http_get, web_fetch, web_crawl, web_search,
+               grep, search, http_get, web_fetch, web_crawl,
                commit, git_add_commit,
                todo_write, todowrite, glob, task]
     tools = [FunctionTool(func=fn)
              for fn in new_canonical + legacy_canonical + aliases]
     # Web egress:
     #   * web_fetch + web_crawl are in the base list — every agent gets them,
-    #     behind the AIFORGE_ALLOW_WEB_FETCH gate (SSRF-guarded).
-    #   * web_search (keyless DuckDuckGo query) is ALSO in the base list —
-    #     ungated so a stuck agent can search the web and then web_crawl the
-    #     best hit. Recovery flow: web_search(error) → web_crawl(url).
-    #   * web_read (UNGATED raw page read) stays RESEARCHER-only — the
-    #     researcher keeps the widest sanctioned egress.
+    #     behind the AIFORGE_ALLOW_WEB_FETCH gate + the AIFORGE_WEB_FETCH_DISABLE
+    #     hard-off (SSRF-guarded). web_crawl USED to skip that gate for every
+    #     role via a hardcoded sanctioned=True; it no longer does.
+    #   * there is NO web SEARCH tool: the query string is outbound data and
+    #     nothing filtered it, so the capability was removed (2026-09-03). An
+    #     agent reads a URL it was GIVEN; it cannot go looking for one.
+    #   * web_read (raw page read) stays RESEARCHER-only. It is no longer
+    #     UNGATED: an unattended pre-planner role with gate-free egress was the
+    #     widest hole in the system once search was removed.
     if role == "researcher":
         tools = tools + [FunctionTool(func=web_read)]
     tools = _apply_codegraph_gate(tools)

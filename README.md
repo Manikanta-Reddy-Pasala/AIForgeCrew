@@ -130,7 +130,7 @@ pick, with automatic cloud fail-over:
 | **Files** | `file_read` · `file_write` · `file_patch` · **`editor`** (syntax-checked, undo) · **`multi_edit`** (atomic batch) · `list_dir` |
 | **Search / code** | `grep` · `find` · **`lsp`** · `run_command` · **`run_tests`** · `typecheck` · `format` · `ipython` · `project` · `serve` |
 | **VCS** | targeted `git` · **`github_pr`** · GitLab MRs |
-| **Integrations** | `jira_*` (21) · `confluence_*` (14) · `gitlab_*` · email · `web_search`/`web_fetch`/`web_crawl` · `browser` · `mcp` · **`context_gather`** · resolvers |
+| **Integrations** | `jira_*` (21) · `confluence_*` (14) · `gitlab_*` · email · `web_fetch`/`web_crawl` (URL you supply — no web search) · `browser` · `mcp` · **`context_gather`** · resolvers |
 | **Memory / learning** | `memory_lookup` / `memory_write` · `remember_rule` · skill + workflow search/learn |
 | **Progress** | **`plan_progress`** (live checklist for multi-part asks) |
 

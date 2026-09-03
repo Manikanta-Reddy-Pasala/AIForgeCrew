@@ -1,4 +1,4 @@
-"""SSRF guard for the two ungated public-fetch paths + the shared helper.
+"""SSRF guard for the public-fetch paths + the shared helper.
 
 ``guard_public_url`` must block cloud-metadata (169.254.169.254), loopback,
 RFC-1918 and IPv6 loopback targets, and a hostname that RESOLVES to a private

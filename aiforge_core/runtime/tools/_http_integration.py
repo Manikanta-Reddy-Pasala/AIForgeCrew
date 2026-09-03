@@ -167,6 +167,15 @@ def http_request(method: str, url: str, *, headers: dict,
     log that happens to BE json into a dict, and an empty body into ``{}``. Never
     raises.
     """
+    # EGRESS POLICY. This is the single entry point for Jira, Confluence and
+    # GitLab, so one check here covers all three — including the case the
+    # approval gate never covered: an UNATTENDED run (ticket pipeline, cron
+    # job) has no approver, so tool_gate degrades ASK to allow and a write
+    # would go out with nobody watching.
+    from aiforge_core.net import egress as _egress
+    refusal = _egress.allow("integration", url, method=method)
+    if refusal is not None:
+        return refusal
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:

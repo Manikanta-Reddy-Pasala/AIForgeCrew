@@ -61,13 +61,11 @@ from ._fs import (
 )
 from ._web import (
     _FETCH_MAX_BYTES,
-    _FETCH_TIMEOUT_S,
+    _fetch_timeout_s,
     _do_fetch,
-    _web_fetch_allowed,
     fetch_url,
     web_crawl,
     web_read,
-    web_search,
 )
 from ._repo import (
     _digest_file_paths,
@@ -193,7 +191,7 @@ __all__ = [
     "codegraph_impact", "codegraph_callers", "codegraph_callees",
     "codegraph_explore", "codegraph_query",
     "memory_lookup", "memory_block", "graphify_lookup", "skill_search", "learn_skill",
-    "workflow_search", "learn_workflow", "web_search", "web_crawl",
+    "workflow_search", "learn_workflow", "web_crawl",
     "serve", "stop_service",
     "subtask_update",
     "confluence_search", "confluence_read", "confluence_create", "confluence_update",

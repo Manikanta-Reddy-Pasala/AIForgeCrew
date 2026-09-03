@@ -8,9 +8,11 @@ from .._tools import _cached_find_by_source, _chat_repo_key
 from ._repomap import _repo_name
 
 
-# WEB-lookup intent. STRONG cues explicitly ask for the open web → always force
-# web_search. WEAK cues ("latest version", "release notes") also mean the web —
-# BUT commonly appear in LOCAL-code questions too ("bump to the latest version in
+# WEB-lookup intent. STRONG cues explicitly ask for the open web → the model is
+# told it has no way to look it up (search was removed; a denied ask must not
+# become a confident answer from training data). WEAK cues ("latest version",
+# "release notes") also mean the web — BUT commonly appear in LOCAL-code
+# questions too ("bump to the latest version in
 # package.json", "what's the current version in my config"), so they only fire
 # when NO local-code indicator is present. A bare URL is in neither list — a URL
 # already routes to web_crawl/web_fetch.
@@ -20,8 +22,14 @@ _WEB_INTENT_STRONG_RE = re.compile(
     r"what'?s\s+new\s+in|recent\s+news|as\s+of\s+(today|now))\b",
     re.IGNORECASE)
 _WEB_INTENT_WEAK_RE = re.compile(
+    # "is X out yet", "when was X released", "did X ship", "has X reached 1.0"
+    # were all misses — and a miss is no tool, no directive and no hedge, so
+    # the model answered a time-varying question from training data.
     r"\b(latest\s+(version|release|news|stable)|current\s+version|"
-    r"newest\s+version|release\s+notes|up[-\s]?to[-\s]?date)\b",
+    r"newest\s+version|release\s+notes|up[-\s]?to[-\s]?date|"
+    r"(out|released|shipped|available|ga)\s+(yet|now)|"
+    r"when\s+(was|did)\s+.{0,40}\b(released?|ship(ped)?|come\s+out)|"
+    r"(did|has|have)\s+.{0,40}\b(ship(ped)?|release[ds]?|reach(ed)?\s+\d))\b",
     re.IGNORECASE)
 # Signals the "latest/current version" question is about THIS codebase, not the
 # web — suppress the weak web cue then.
@@ -51,13 +59,14 @@ def _has_web_intent(text: str) -> bool:
 
 
 _WEB_LOOKUP_DIRECTIVE = (
-    "[web lookup required] The user is asking for information that must come "
+    "[no web access] The user is asking for something that would have to come "
     "from the LIVE web (a search, the latest/current version, release notes, "
-    "or recent news). You MUST call `web_search` FIRST with a focused query, "
-    "then `web_fetch` the most authoritative result to confirm, and base your "
-    "answer ONLY on what you find — do NOT answer from prior knowledge, it may "
-    "be out of date. If web_search returns no results, refine the query (drop "
-    "years/qualifiers) and retry ONCE before saying you couldn't find it."
+    "recent news). This install has NO web search — the query text itself is "
+    "outbound data, so the capability was removed on purpose. Say plainly that "
+    "you cannot look it up, give what the repo/memory does support with its "
+    "date, and ask the user for a URL or a doc if they want it confirmed. NEVER "
+    "state a current version, release date or news item from prior knowledge as "
+    "if it were checked, and never claim you searched."
 )
 
 

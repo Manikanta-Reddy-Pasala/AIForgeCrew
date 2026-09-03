@@ -643,9 +643,14 @@ export AIFORGE_DOCS_INDEX="${AIFORGE_DOCS_INDEX:-0}"
 # Web fetch (web_crawl/web_fetch) defaults ON: the tools are broadly available
 # to chat + all tool-using agents and are protected by the SSRF guard
 # (guard_public_url blocks metadata/loopback/private-LAN pivots).
-# FULLY OFFLINE box: AIFORGE_ALLOW_WEB_FETCH=0 alone is NOT enough — web_search
-# (keyless DuckDuckGo) is ungated sanctioned egress. Set BOTH
-# AIFORGE_ALLOW_WEB_FETCH=0 AND AIFORGE_WEB_SEARCH_DISABLE=1 to close all egress.
+# There is no web SEARCH tool any more (removed 2026-09-03: the query string
+# was unfiltered outbound data), and a search engine's URL is refused on every
+# fetch path so the tool cannot come back as a URL. FULLY OFFLINE box:
+# AIFORGE_ALLOW_WEB_FETCH=0 closes page egress on every path (chat, doer,
+# researcher, crawler, and external `browse`); AIFORGE_WEB_FETCH_DISABLE=1 is
+# the hard-off that wins over it. Both are read in aiforge_core/net/egress.py —
+# one module, so a new tool cannot quietly opt out of them. See .env.example
+# for what these switches do NOT buy you.
 export AIFORGE_ALLOW_WEB_FETCH="${AIFORGE_ALLOW_WEB_FETCH:-1}"
 export AIFORGE_BROWSER_ALLOWLIST="${AIFORGE_BROWSER_ALLOWLIST:-127.0.0.1,localhost}"
 export DO_NOT_TRACK="${DO_NOT_TRACK:-1}"

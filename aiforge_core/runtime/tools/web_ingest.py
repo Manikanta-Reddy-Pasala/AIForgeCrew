@@ -58,9 +58,11 @@ def _slug_for(url: str) -> str:
 def _crawl_gate(args: dict) -> dict | None:
     """Every reason this crawl must not happen, or None to proceed.
 
-    ``sanctioned: True`` bypasses the AIFORGE_ALLOW_WEB_FETCH gate — set ONLY
-    by the researcher wrapper (the role's sanctioned egress, parity with its
-    ungated web_read); the chat path stays gated like web_fetch.
+    There is NO bypass. ``sanctioned: True`` used to skip the
+    AIFORGE_ALLOW_WEB_FETCH gate for the researcher, but the doer wrapper
+    hardcoded it, so EVERY role crawled any URL with the operator's switch off
+    — and with web search removed, that path was the widest way left to send a
+    query string out. The flag is now accepted and ignored.
 
     SSRF guard: web_crawl is available to every agent (not just the
     researcher), so a model-supplied URL must not pivot to cloud metadata
@@ -68,17 +70,15 @@ def _crawl_gate(args: dict) -> dict | None:
     BOTH the crawl4ai browser engine and the plain-fetch fallback. A pure DNS
     failure is left to the engine to surface as a natural error.
     """
-    from aiforge_core.runtime.tools import web_search as _ws
-    if _ws._disabled():
-        return {"ok": False, "error": "web_search_disabled"}
-    if args.get("sanctioned") is not True and not _ws._fetch_allowed():
-        return {"ok": False,
-                "error": "web fetch disabled (set AIFORGE_ALLOW_WEB_FETCH=1)"}
     url = (args.get("url") or "").strip()
     if not url:
         return {"ok": False, "error": "missing 'url'"}
     if not re.match(r"^https?://", url, re.IGNORECASE):
         return {"ok": False, "error": "url must be http(s)"}
+    from aiforge_core.net import egress as _egress
+    refusal = _egress.check(url)
+    if refusal is not None:
+        return refusal
     from aiforge_core.net.ssl import SSRFBlocked, guard_public_url
     try:
         guard_public_url(url)
@@ -111,7 +111,7 @@ def _fetch_page(url: str) -> tuple[dict, str, str, bool]:
     records nothing about it is the dangerous direction — the provenance is
     gone by the time anyone reads the note.
     """
-    from aiforge_core.runtime.tools import web_search as _ws
+    from aiforge_core.runtime.tools import web_fetch as _ws
     r = _ws._fetch_readable(url, 200_000)   # gate already applied by the caller
     if not r.get("ok"):
         return r, "", "", True
@@ -154,9 +154,9 @@ def _write_dossier(url: str, title: str, text: str, engine: str,
 def web_crawl(args: dict, _cwd: str | None = None) -> dict:
     """Fetch ``url`` → markdown → ``work/web/<slug>/page.md``. Optional
     ``max_chars`` bounds the returned preview (full text is on disk).
-    ``sanctioned: True`` bypasses the AIFORGE_ALLOW_WEB_FETCH gate — set
-    ONLY by the researcher wrapper (the role's sanctioned egress, parity
-    with its ungated web_read); the chat path stays gated like web_fetch."""
+    ``sanctioned`` is accepted and IGNORED. It used to bypass the fetch gate
+    for "the researcher wrapper", but the doer wrapper passed it for every
+    role — every path is gated the same now."""
     if not isinstance(args, dict):
         return {"ok": False,
                 "error": "missing 'url' (args must be a JSON object)"}

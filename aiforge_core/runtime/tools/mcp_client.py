@@ -113,6 +113,15 @@ def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
     why = check(url)
     if why:
         raise OSError(f"refusing MCP endpoint {url!r}: {why}")
+    # url_policy checks the SCHEME. The egress policy decides whether this box
+    # may talk to a remote server at all, and whether that host is on the
+    # operator's allowlist — the endpoint is operator config, but the arguments
+    # in the payload are model-supplied.
+    from aiforge_core.net import egress as _egress
+    refusal = _egress.allow("mcp", url, method="POST")
+    if refusal is not None:
+        raise OSError(f"refusing MCP endpoint {url!r}: "
+                      f"{refusal.get('error')} — {refusal.get('hint', '')}")
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,

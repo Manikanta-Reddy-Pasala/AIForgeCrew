@@ -121,7 +121,6 @@ from ._skills import (
     _t_run_tests,
 )
 from ._web import (
-    _t_web_search,
     _t_web_fetch,
     _t_web_crawl,
 )

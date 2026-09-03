@@ -1,4 +1,4 @@
-"""HTTP fetch + web search/crawl tools (fetch_url, web_read, web_search,
+"""HTTP fetch + crawl tools (fetch_url, web_read,
 web_crawl) and their gate.
 
 Split out of the former ``doer_tools`` module — moved verbatim.
@@ -15,19 +15,14 @@ _log = logging.getLogger("aiforge.web")
 
 
 _FETCH_MAX_BYTES = 256 * 1024
-_FETCH_TIMEOUT_S = 15
-
-
-def _web_fetch_allowed() -> bool:
-    """Network+telemetry lockdown: arbitrary-URL fetch is OFF by default.
-
-    The only sanctioned agent egress is the researcher's ``web_search``
-    (its own gate) plus the configured LLM endpoint. Set
-    ``AIFORGE_ALLOW_WEB_FETCH=1`` to re-enable arbitrary fetch/http_get.
-    """
-    return str(os.environ.get("AIFORGE_ALLOW_WEB_FETCH", "0")).strip().lower() in (
-        "1", "true", "yes", "on",
-    )
+def _fetch_timeout_s() -> float:
+    """Same knob the chat fetcher reads. It was documented as "per-request"
+    while three of the paths hardcoded their own number, so setting it to bound
+    egress changed nothing here."""
+    try:
+        return float(os.environ.get("AIFORGE_WEB_TIMEOUT_S", "15"))
+    except ValueError:
+        return 15.0
 
 
 def _open_web_response(req, url: str):
@@ -36,26 +31,41 @@ def _open_web_response(req, url: str):
     inspects TLS (re-signs with an untrusted CA). Returns ``(resp_cm,
     unverified)``. AIFORGE_LLM_CA_BUNDLE is honoured on the verified attempt so
     an operator's installed CA actually takes effect."""
-    from aiforge_core.net.ssl import (insecure_context, is_cert_error,
-                                      public_verifying_context,
-                                      web_tls_fallback_allowed_for)
+    from aiforge_core.net.ssl import (
+        insecure_context,
+        is_cert_error,
+        public_verifying_context,
+        web_tls_fallback_allowed_for,
+    )
     try:
-        return urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT_S,
+        return urllib.request.urlopen(req, timeout=_fetch_timeout_s(),
                                       context=public_verifying_context()), False
     except Exception as exc:  # noqa: BLE001 — classified right here
         if not (is_cert_error(exc) and web_tls_fallback_allowed_for(url)):
             raise
         _log.warning("web.tls_unverified url=%s err=%s — refetching without "
                      "verification", url, str(exc)[:160])
-        return urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT_S,
+        return urllib.request.urlopen(req, timeout=_fetch_timeout_s(),
                                       context=insecure_context()), True
 
 
-def _reguard_redirect(resp, url: str, guard_public_url, ssrf_blocked) -> "dict | None":
+def _reguard_redirect(resp, url: str, guard_public_url, ssrf_blocked) -> dict | None:
     """Re-guard the final URL after any redirect hops — a public URL can 30x to
-    a private/metadata target. Returns a refusal dict, or None to allow."""
+    a private/metadata target, or to a search engine. Returns a refusal dict,
+    or None to allow.
+
+    NOTE the limit, and do not overstate it in docs: urlopen has already
+    followed the hops by the time we see ``resp``, so the request (and its query
+    string) is on the wire. This refuses the RESULT; it does not prevent the
+    call. Only web_fetch's own opener guards each hop before it is made.
+    """
     final = getattr(resp, "url", None)
     if final and final != url:
+        from aiforge_core.net import egress as _egress
+        if _egress.looks_like_search(final):
+            return {"ok": False, "error": "web_search_removed",
+                    "hint": ("redirected to a search engine; this install has "
+                             "no web search.")}
         try:
             guard_public_url(final)
         except ssrf_blocked as exc:
@@ -124,43 +134,44 @@ def _do_fetch(url: str) -> dict:
 def fetch_url(url: str) -> dict:
     """GET an http(s) URL and return the body as text.
 
-    Gated behind ``AIFORGE_ALLOW_WEB_FETCH`` (default off) — under the
-    network lockdown, general agents cannot fetch arbitrary URLs. The
-    RESEARCHER uses the ungated ``web_read`` instead (role-scoped web)."""
-    if not _web_fetch_allowed():
-        return {"ok": False, "error": "web fetch disabled (set AIFORGE_ALLOW_WEB_FETCH=1)"}
+    Gated behind ``AIFORGE_ALLOW_WEB_FETCH`` (default off) and the
+    ``AIFORGE_WEB_FETCH_DISABLE`` hard-off. A search engine's result URL is
+    refused whatever the switches say — see aiforge_core.net.egress."""
+    from aiforge_core.net import egress as _egress
+    refusal = _egress.check(url)
+    if refusal is not None:
+        return refusal
     return _do_fetch(url)
 
 
 def web_read(url: str) -> dict:
-    """Fetch + return the text of a web page. RESEARCHER-only sanctioned
-    reader — the one agent allowed to READ a page it found via web_search.
-    Ungated on purpose (only the researcher's tool set receives it; other
-    agents never get this schema). Same 256 KB / 15s / http(s)-only limits."""
+    """Fetch + return the text of a web page. RESEARCHER-only reader — the one
+    agent allowed to read a page it was pointed at (other roles never get this
+    schema). Same 256 KB / 15s / http(s)-only limits.
+
+    It used to be UNGATED, on the reasoning that the researcher's search→read
+    flow would otherwise be dead. Search is gone, so that reasoning is gone
+    with it: an ungated reader on the one role that runs unattended, before any
+    human sees the ticket, is simply the widest egress in the system. It now
+    answers to the same switches as everything else."""
+    from aiforge_core.net import egress as _egress
+    refusal = _egress.check(url)
+    if refusal is not None:
+        return refusal
     return _do_fetch(url)
-
-
-def web_search(query: str, k: int = 5) -> dict:
-    """Search the open web (DuckDuckGo, no API key) when you're stuck — an
-    unfamiliar error, a library API you can't recall, a config flag. Returns
-    ranked {title, url, snippet}; follow up with fetch_url on the best hit."""
-    try:
-        from aiforge_core.runtime.tools import web_search as _ws
-        return _ws.web_search({"query": query, "limit": int(k or 5)})
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": str(exc)}
 
 
 def web_crawl(url: str, max_chars: int = 3000) -> dict:
     """Fetch a page as clean markdown AND save it to the shared
     work/web/<slug>/ dossier for reuse across sessions — prefer this over
-    web_read when the page is documentation worth keeping. Researcher-only
-    tool, so it rides the role's sanctioned egress (parity with the ungated
-    web_read — gating it on AIFORGE_ALLOW_WEB_FETCH would make it dead on
-    arrival for the ONE agent that receives it)."""
+    web_read when the page is documentation worth keeping.
+
+    This wrapper used to pass ``sanctioned: True``, which bypassed the fetch
+    gate — and since web_crawl is in the BASE tool list, that bypass applied to
+    every role, not the researcher it was written for. It is gone: web_crawl
+    now obeys AIFORGE_ALLOW_WEB_FETCH like every other page read."""
     try:
         from aiforge_core.runtime.tools import web_ingest as _wi
-        return _wi.web_crawl({"url": url, "max_chars": int(max_chars or 3000),
-                              "sanctioned": True})
+        return _wi.web_crawl({"url": url, "max_chars": int(max_chars or 3000)})
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}

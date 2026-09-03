@@ -198,7 +198,7 @@ def list_providers() -> list[dict]:
 
     Providers with ``hidden = True`` are filtered out unless
     ``AIFORGE_SHOW_<NAME>=1`` is set — keeps Gemini code in the
-    registry (rate limiter, web_search) but off the primary-backend
+    registry (rate limiter, tools) but off the primary-backend
     selector while ops standardise on Ollama Cloud.
     """
     out: list[dict] = []

@@ -1,7 +1,7 @@
-"""Web-tool surface (updated 66784fc): web_search + web_crawl are in the BASE
-surface — every tool-using agent gets them (gated by AIFORGE_ALLOW_WEB_FETCH,
-SSRF-guarded); web_search is keyless DuckDuckGo. web_READ (ungated raw page
-read) stays RESEARCHER-only. fetch_url stays gated."""
+"""Which ROLE gets which web tool. web_crawl is in the BASE surface; web_read
+stays RESEARCHER-only. Both are gated now — see test_egress_switches.py for the
+switches themselves; this file is only about role scoping. There is NO web
+SEARCH tool on any role (removed 2026-09-03)."""
 from __future__ import annotations
 import os
 import pytest
@@ -15,33 +15,43 @@ def _names(role):
 
 def test_researcher_gets_web_tools():
     n = _names("researcher")
-    assert {"web_search", "web_read", "web_crawl"} <= n
+    assert {"web_read", "web_crawl"} <= n
+    assert "web_search" not in n
 
 
 def test_doer_no_role_gets_base_web_but_not_web_read():
-    # role=None returns the full base set — web_search + web_crawl are in it now,
-    # but web_read (ungated raw read) stays researcher-only.
+    # role=None returns the full base set — web_crawl is in it, but web_read
+    # (raw page read) stays researcher-only and search does not exist.
     n = _names(None)
-    assert "web_search" in n
+    assert "web_search" not in n
     assert "web_crawl" in n
     assert "web_read" not in n
 
 
-def test_planner_gets_web_search_not_web_read():
-    # a tool-using role (planner allowlist includes web_search/web_crawl); the
-    # ungated web_read is still researcher-only.
+def test_planner_gets_web_crawl_not_web_read_or_search():
+    # a tool-using role (planner allowlist includes web_crawl); the
+    # web_read is still researcher-only, and search exists nowhere.
     n = _names("planner")
-    assert "web_search" in n
+    assert "web_search" not in n
     assert "web_crawl" in n
     assert "web_read" not in n
 
 
-def test_web_read_ungated(monkeypatch):
-    # web_read reads without the AIFORGE_ALLOW_WEB_FETCH gate
+def test_web_read_is_gated_like_everything_else(monkeypatch):
+    """This test used to be `test_web_read_ungated` and asserted the OPPOSITE.
+    web_read was exempt from the fetch switch so the researcher's search→read
+    flow would work; search is gone, and an unattended pre-planner role with
+    gate-free egress was then the widest hole in the system."""
     monkeypatch.delenv("AIFORGE_ALLOW_WEB_FETCH", raising=False)
-    monkeypatch.setattr(dt, "_do_fetch", lambda url: {"ok": True, "url": url, "body": "x"})
-    r = dt.web_read("http://example.com")
-    assert r["ok"] is True
+    monkeypatch.delenv("AIFORGE_WEB_FETCH_DISABLE", raising=False)
+    monkeypatch.delenv("AIFORGE_WEB_SEARCH_DISABLE", raising=False)
+    reached = {"n": 0}
+    monkeypatch.setattr(dt, "_do_fetch",
+                        lambda url: reached.__setitem__("n", 1) or {"ok": True})
+    assert dt.web_read("http://example.com")["ok"] is False
+    assert reached["n"] == 0, "web_read reached the network with the switch off"
+    monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
+    assert dt.web_read("http://example.com")["ok"] is True
 
 
 def test_fetch_url_still_gated(monkeypatch):

@@ -21,6 +21,26 @@ import os as _os
 # for the remote map by exporting LITELLM_LOCAL_MODEL_COST_MAP=False.
 _os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
+# Third-party telemetry off by default, HERE rather than only in run.sh.
+# run.sh sets these too, but it is one of several ways this code starts: a test
+# run, `python -m aiforge_core.cli`, a bare `uvicorn aiforge_core.api.api:app`
+# and any import from another tool all skip it, and those processes were
+# phoning home while the operator believed the box was quiet. Same reasoning as
+# the cost map above: the import that reads the variable can happen at any
+# moment, so the default belongs at the package boundary.
+# setdefault, so an operator who genuinely wants telemetry can still export it.
+for _var, _off in (
+    ("DO_NOT_TRACK", "1"),                    # honoured by a growing set of CLIs
+    ("HF_HUB_DISABLE_TELEMETRY", "1"),        # huggingface_hub
+    ("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1"),   # don't attach a stored HF token
+    ("LITELLM_TELEMETRY", "False"),
+    ("SCARF_NO_ANALYTICS", "true"),           # scarf-wrapped installers
+    ("ANONYMIZED_TELEMETRY", "False"),        # chromadb and friends
+    ("POSTHOG_DISABLED", "1"),
+    ("TOKENIZERS_PARALLELISM", "false"),      # not telemetry; kills a noisy warn
+):
+    _os.environ.setdefault(_var, _off)
+
 from .agents import AgentContract, load_agents  # noqa: E402
 
 __all__ = ["AgentContract", "load_agents"]

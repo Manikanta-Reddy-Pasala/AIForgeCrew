@@ -354,7 +354,7 @@ def is_cert_error(exc: BaseException) -> bool:
 
 
 # ─────────────────────────── SSRF guard ─────────────────────────────────
-# Shared guard for the two ungated public-fetch paths (the researcher's
+# Shared guard for the public-fetch paths (the researcher's
 # ``web_read`` and the ``kind=url`` memory ingest) plus the Doer browser
 # allowlist. Parses a URL, requires an http(s) scheme, resolves the host via
 # DNS and REJECTS if ANY resolved address is private / loopback / link-local

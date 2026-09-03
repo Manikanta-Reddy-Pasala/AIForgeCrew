@@ -172,8 +172,7 @@ effective value comes back as `unattended_budget_s`.
 |---|---|---|---|
 | `email_read` | `{query, limit, folder}` | read inbox via IMAP | RO |
 | `email_send` | `{to, subject, body, cc, bcc}` | send via SMTP | ASK |
-| `web_search` | `{query, limit}` | Tavily/Brave keyed, DuckDuckGo fallback | RO; egress-gated in headless roles |
-| `web_fetch` | `{url, max_chars}` | read a page's text | RO; `AIFORGE_ALLOW_WEB_FETCH=1` egress gate outside chat |
+| `web_fetch` | `{url, max_chars}` | read a page's text | RO; `AIFORGE_ALLOW_WEB_FETCH=1` egress gate everywhere, chat included; `AIFORGE_WEB_FETCH_DISABLE=1` is the hard-off |
 | `web_crawl` | `{url}` | page → clean markdown, saved to `work/web/<slug>/` dossier | RO; same egress gate |
 
 ### Context, resolvers & settings
@@ -235,7 +234,7 @@ filtered per role before the agent boots — `agents/loader.tools_schema_for_rol
 | **Chat** (simple/act) | the full 93-tool registry above |
 | **Chat** (plan mode) | read-only subset only (`_READONLY_TOOLS`) — inspect, recall, all Jira/Confluence/GitLab/web **reads**, `context_gather`, resolvers; every mutating tool returns `blocked: plan_mode` |
 | **Doer** | full build set above (edit + shell + verify + reads) |
-| **Researcher** | repo reads + `memory_lookup`/`graphify_lookup` + the web trio (`web_search`, `web_read`, `web_crawl`) + Jira/Confluence reads; no writes/shell |
+| **Researcher** | repo reads + `memory_lookup`/`graphify_lookup` + page reads (`web_read`, `web_crawl`) for a URL it was GIVEN (there is no web search), plus Jira/Confluence reads; no writes/shell |
 | **Architect** | `graphify_lookup`, `memory_lookup`, view-only `editor`, `grep_repo`, `repo_map`, `resolve_repo`, Jira/Confluence reads; no writes/shell |
 | **Planner** | same read set as Architect + `jira_worklog`; plan-writing ops (`write_plan`, `create_child_ticket`) are server-side, not model tools |
 | **Live-verifier** | `bash`, `file_read`, `grep` (runs the real recipe; can't edit) |

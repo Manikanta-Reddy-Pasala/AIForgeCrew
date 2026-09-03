@@ -32,7 +32,7 @@ OFFER = "OFFER"
 # Tier 1 — reversible, and nothing outside this machine observes it.
 _READ_ONLY = frozenset({
     "read_file", "read", "grep", "search", "list_dir", "ls", "glob",
-    "repo_map", "recall", "memory_search", "web_search",
+    "repo_map", "recall", "memory_search",
 })
 
 # Tier 2 — changes the workspace. Reversible while git can undo it.
