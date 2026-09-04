@@ -91,6 +91,11 @@ def test_prose_around_the_json_is_tolerated(monkeypatch):
 
 
 def test_every_prediction_has_its_own_id(monkeypatch):
+    # The repeat window would (correctly) drop the second identical suggestion;
+    # this test is about id uniqueness, so it turns that window off rather than
+    # inventing a second wording and testing two things at once.
+    monkeypatch.setenv("AIFORGE_PREDICT_REPEAT_H", "0")
+    monkeypatch.setenv("AIFORGE_PREDICT_DISMISS_DAYS", "0")
     _reply(monkeypatch, '{"action":"check it","tool":"","args":{},'
                         '"confidence":0.9,"rationale":"x"}')
     a, b = next_step.predict(_ctx()), next_step.predict(_ctx())

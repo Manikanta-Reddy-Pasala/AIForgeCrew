@@ -64,6 +64,28 @@ def min_confidence() -> float:
         return _DEFAULT_MIN_CONFIDENCE
 
 
+_DEFAULT_TOOLLESS_MIN = 0.9
+
+
+def toolless_floor(tool: str | None) -> float:
+    """The confidence a prediction must clear, given whether it names a tool.
+
+    A prediction with a tool is checked against the ordinary floor. One WITHOUT
+    is advice — the chip cannot run it, and nothing downstream can judge it by
+    whether running it helped — so it needs to be a strong guess to be worth
+    the interruption. This is what the "the suggestions are not good" report was
+    mostly about: vague, plausible, unactionable sentences at 0.8.
+    """
+    if str(tool or "").strip():
+        return min_confidence()
+    try:
+        floor = float(os.environ.get("AIFORGE_PREDICT_TOOLLESS_MIN") or
+                      _DEFAULT_TOOLLESS_MIN)
+    except ValueError:
+        floor = _DEFAULT_TOOLLESS_MIN
+    return max(min_confidence(), floor)
+
+
 def acting_enabled() -> bool:
     """``AIFORGE_PREDICT_ACT=0`` makes every prediction an offer.
 
@@ -140,4 +162,5 @@ def verdict(tool: str, args: dict, *, confidence: float,
     return OFFER
 
 
-__all__ = ["ACT", "OFFER", "tier", "verdict", "min_confidence", "acting_enabled"]
+__all__ = ["ACT", "OFFER", "tier", "verdict", "min_confidence",
+           "toolless_floor", "acting_enabled"]

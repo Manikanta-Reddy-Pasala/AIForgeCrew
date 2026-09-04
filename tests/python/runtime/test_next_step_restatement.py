@@ -160,7 +160,11 @@ def test_a_non_echo_still_comes_through(monkeypatch):
 
 # ── the defence that does not depend on catching the wording ─────────────
 
-@pytest.mark.parametrize("confidence", [0.75, 0.9, 0.95, 0.99, 1.0])
+# 0.75 is gone from this list on purpose: a prediction naming no tool now has
+# to clear a HIGHER floor (AIFORGE_PREDICT_TOOLLESS_MIN, 0.9) to be emitted at
+# all — see test_a_weak_toolless_prediction_is_dropped. The property below is
+# unchanged for the ones that survive: naming no tool can never ACT.
+@pytest.mark.parametrize("confidence", [0.9, 0.95, 0.99, 1.0])
 def test_a_toolless_prediction_never_acts_at_any_confidence(monkeypatch,
                                                             confidence):
     """The property that makes the failure impossible rather than unlikely: a

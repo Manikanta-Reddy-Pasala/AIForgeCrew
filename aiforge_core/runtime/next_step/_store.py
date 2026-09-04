@@ -126,10 +126,59 @@ def accepted(repo: str, limit: int = 5) -> list[dict]:
     return rows[-limit:] if limit > 0 else []
 
 
+def _norm(text: str) -> set[str]:
+    from aiforge_core.runtime.next_step._predict import _content_words
+    return _content_words(text)
+
+
+def _same_action(a: str, b: str, *, ratio: float = 0.8) -> bool:
+    """Two suggestions that say the same thing in different words.
+
+    Exact string equality is useless here: the model rewords itself every turn
+    ("run the tests" / "run the test suite" / "run tests for the module"), and
+    that rewording is exactly how the same suggestion came back in chat after
+    chat. Compare content words, both sides normalised the same way.
+    """
+    wa, wb = _norm(a), _norm(b)
+    if not wa or not wb:
+        return False
+    return len(wa & wb) / float(min(len(wa), len(wb))) >= ratio
+
+
+def recent_for(repo: str, action: str, *, within_s: float) -> dict | None:
+    """The most recent row for ``repo`` saying substantially what ``action``
+    says, inside the window. ``repo`` "" matches everything: a suggestion made
+    outside a repo is still a repeat when it comes back.
+    """
+    now = time.time()
+    for row in reversed(_read()):
+        if str(row.get("repo") or "") != str(repo or ""):
+            continue
+        if now - float(row.get("at") or 0) > within_s:
+            continue
+        if _same_action(action, str(row.get("action") or "")):
+            return row
+    return None
+
+
+def dismissed(repo: str, limit: int = 5) -> list[dict]:
+    """The most recent DISMISSED suggestions for ``repo``, oldest first.
+
+    Shown to the model as "do not propose these". Dismissals were recorded from
+    the start and used for nothing — so the one signal that says *this
+    suggestion is unwanted* never reached the thing generating suggestions, and
+    the same three came back in every new chat.
+    """
+    rows = [r for r in _read()
+            if r.get("accepted") is False
+            and str(r.get("repo") or "") == str(repo)]
+    return rows[-limit:] if limit > 0 else []
+
+
 def history(limit: int = 20) -> list[dict]:
     """Everything recorded, most recent first."""
     return list(reversed(_read()))[:limit]
 
 
 __all__ = ["MAX_ROWS", "remember", "append", "record_outcome", "accepted",
-           "history"]
+           "dismissed", "history", "recent_for"]

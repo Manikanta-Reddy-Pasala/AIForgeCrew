@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
-from aiforge_core.runtime.next_step import _predict, _risk, _store
+from aiforge_core.runtime.next_step import _predict, _repeat, _risk, _store
 
 ACT, OFFER = _risk.ACT, _risk.OFFER
 
@@ -50,6 +50,16 @@ def predict(ctx: dict) -> Prediction | None:
             # confidence floor, because this failure arrives at high confidence
             # by construction: the model is right about what was wanted and
             # wrong only about it still being wanted.
+            return None
+        if _repeat.suppressed(row["action"], ctx or {}):
+            # Already said, or already refused — in this chat or another one.
+            return None
+        if row["confidence"] < _risk.toolless_floor(row["tool"]):
+            # A suggestion that cannot name the tool it would use is advice
+            # rather than an action ("consider reviewing the changes"), and it
+            # is most of what the feature produced. It is not banned — a strong
+            # one is still worth a chip — but it clears a higher bar than a
+            # suggestion the system could actually run.
             return None
         if row["confidence"] < _risk.min_confidence():
             # Below the floor nothing is emitted AT ALL, not even an offer: a

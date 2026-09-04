@@ -144,10 +144,32 @@ def _examples(repo: str) -> str:
     return f"\n\nThis user previously accepted:\n{lines}"
 
 
+def _dismissed(repo: str) -> str:
+    """What this user has said NO to, verbatim, as a do-not-repeat list.
+
+    Dismissals were recorded from the first version and fed back into nothing,
+    so the single clearest signal in the store — *this suggestion is unwanted* —
+    never reached the thing writing suggestions. That is why the same two or
+    three came back in every new chat: each one started from an empty room.
+    """
+    from aiforge_core.runtime.next_step import _store
+
+    try:
+        rows = _store.dismissed(repo, limit=_MAX_EXAMPLES)
+    except Exception:  # noqa: BLE001 — no history is not a reason to say nothing
+        return ""
+    if not rows:
+        return ""
+    lines = "\n".join(f"- {r.get('action')}" for r in rows)
+    return ("\n\nThis user DISMISSED these — do not propose them again, or "
+            f"anything that only rewords them:\n{lines}")
+
+
 def _user_prompt(ctx: dict) -> str:
+    repo = str(ctx.get("repo") or "")
     return (f"They said: {str(ctx.get('message') or '')[:2000]}\n"
             f"What was just done: {str(ctx.get('did') or '')[:1000]}"
-            f"{_examples(str(ctx.get('repo') or ''))}")
+            f"{_examples(repo)}{_dismissed(repo)}")
 
 
 def _parse(raw: str) -> dict | None:
