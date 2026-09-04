@@ -25,12 +25,15 @@ from ._links import normalize_links, normalize_tags
 # a rule separator, or the brief's own Objective boilerplate. These aren't
 # knowledge — they're the envelope scaffolding read back as content (the exact
 # bug class we hit before). Scrubbed at render time so it never reaches disk.
-_LEAK_ITEM_RE = re.compile(
-    r"""^(?:
-          \#{1,6}\s                                  # markdown heading
-        | \#{0,2}\s*(?:objective|key\s*results|facts|links|learnings)\s*+:?\s*+$
-        | -{3,}\s*+$ | —{2,}\s*+$                     # rule / separator
-    )""", re.IGNORECASE | re.VERBOSE)
+# Three separate patterns rather than one alternation of four: they recognise
+# unrelated things, and as a single expression it was complex enough that
+# changing one branch meant re-reading all of them.
+_LEAK_HEADING_RE = re.compile(r"^\#{1,6}\s")
+_LEAK_LABEL_RE = re.compile(
+    r"^\#{0,2}\s*(?:objective|key\s*results|facts|links|learnings)\s*+:?\s*+$",
+    re.IGNORECASE)
+_LEAK_RULE_RE = re.compile(r"^(?:-{3,}|—{2,})\s*+$")
+_LEAK_PATTERNS = (_LEAK_HEADING_RE, _LEAK_LABEL_RE, _LEAK_RULE_RE)
 # Known envelope-boilerplate fragments that must never sit in a list item.
 _BOILERPLATE_SUBSTR = ("keep durable, deduped knowledge",)
 
@@ -39,7 +42,7 @@ def _is_leak_item(s: str) -> bool:
     t = (s or "").strip()
     if not t or _BODY_MARK in t:
         return True
-    if _LEAK_ITEM_RE.match(t):
+    if any(rx.match(t) for rx in _LEAK_PATTERNS):
         return True
     low = t.lower()
     return any(b in low for b in _BOILERPLATE_SUBSTR)

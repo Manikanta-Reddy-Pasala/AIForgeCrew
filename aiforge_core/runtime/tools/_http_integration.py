@@ -97,7 +97,7 @@ def ssl_context(insecure_tls: bool, ca_bundle: str = "", url: str = ""):
     if ca_bundle:
         try:
             return ssl.create_default_context(cafile=ca_bundle)
-        except (OSError, ssl.SSLError) as exc:
+        except OSError as exc:      # ssl.SSLError derives from OSError
             # A bad path must not silently downgrade to "no verification".
             raise ValueError(
                 f"CA bundle {ca_bundle!r} could not be loaded: {exc}") from exc

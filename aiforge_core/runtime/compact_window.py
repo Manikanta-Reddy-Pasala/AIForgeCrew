@@ -63,7 +63,8 @@ def at_hour() -> "int | None":
     if hour > 24:
         log.warning("AIFORGE_COMPACT_AT_HOUR=%r out of range — using 23", raw)
         return 23
-    return hour % 24                               # 24 = midnight
+    # midnight is written as 24 by operators who mean "end of day"
+    return hour % 24
 
 
 def daily_pass_registered() -> bool:

@@ -68,7 +68,10 @@ def _persist_env(key: str, value: str) -> None:
     + dir when absent. Sanitises so the file stays a clean KEY=VALUE store:
     keys restricted to env-name chars; CR/LF stripped from the value (a newline
     could otherwise smuggle a second assignment into the file)."""
-    key = re.sub(r"[^A-Za-z0-9_]", "", str(key))
+    # \W with re.ASCII, not the spelled-out class: same set, and the flag says
+    # WHY it is spelled out — \W is unicode-aware by default, and an env name
+    # must not accept a non-ASCII word character.
+    key = re.sub(r"\W", "", str(key), flags=re.ASCII)
     if not key:
         return
     value = str(value).replace("\r", " ").replace("\n", " ")

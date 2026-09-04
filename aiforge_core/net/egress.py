@@ -59,6 +59,13 @@ _log = logging.getLogger("aiforge.egress")
 
 _TRUE = ("1", "true", "yes", "on")
 
+# Hosts named in more than one list below — a scanner counts three of the same
+# string as a maintenance hazard, and it is right that the cloud endpoint and
+# the "mixed" search host should be the same name in both places.
+_AWS = "amazonaws.com"
+_GOOGLE_APIS = "googleapis.com"
+_DOCKER_HUB = "docker.io"
+
 # Query-bearing endpoints of the engines an agent reaches for by reflex once it
 # is told it has no search tool. Host-suffix matched, never substring-matched
 # over the whole URL (``evil.example/#google.com`` must not match).
@@ -72,7 +79,7 @@ _SEARCH_HOSTS = (
 # every query string on these would block ordinary reading —
 # storage.googleapis.com/bucket/spec.html?v=2 is not a search — so they need a
 # search-shaped PATH as well.
-_MIXED_HOSTS = ("google.com", "googleapis.com", "yahoo.com", "yandex.com",
+_MIXED_HOSTS = ("google.com", _GOOGLE_APIS, "yahoo.com", "yandex.com",
                 "baidu.com", "you.com")
 _SEARCH_PATHS = ("/search", "/html", "/lite", "/web", "/results", "/s")
 # Fronts for the same thing: a cache view, a reader proxy, a self-hosted searx.
@@ -409,11 +416,11 @@ def _writes_data(tokens: list[str], text: str) -> bool:
 # "I have the data" to "the data is off the box". Map the tool to the endpoint
 # it actually talks to, so the ordinary rules apply to it.
 _CLOUD_HOSTS = {
-    "aws": "amazonaws.com", "s3cmd": "amazonaws.com",
-    "gsutil": "googleapis.com", "gcloud": "googleapis.com",
+    "aws": _AWS, "s3cmd": _AWS,
+    "gsutil": _GOOGLE_APIS, "gcloud": _GOOGLE_APIS,
     "az": "blob.core.windows.net", "rclone": "rclone.invalid",
     "twine": "pypi.org", "npm": "registry.npmjs.org",
-    "docker": "docker.io", "podman": "docker.io", "skopeo": "docker.io",
+    "docker": _DOCKER_HUB, "podman": _DOCKER_HUB, "skopeo": _DOCKER_HUB,
 }
 _CLOUD_WRITE_VERBS = frozenset({"cp", "mv", "sync", "push", "publish",
                                 "upload", "put", "copy"})

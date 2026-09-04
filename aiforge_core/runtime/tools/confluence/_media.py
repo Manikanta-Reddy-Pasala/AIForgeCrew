@@ -156,37 +156,53 @@ def _upload_attachment(pid: str, filename: str, data: bytes,
         return {"ok": False, "error": str(exc)}
 
 
-def _resolve_image_bytes(src: str, cwd: str | None) -> tuple[bytes, str] | None:
-    """Fetch an image ref → (bytes, content_type). http(s) is downloaded; a
-    local path is resolved against cwd. None on any failure (skip that image)."""
-    ct = mimetypes.guess_type(src)[0] or "application/octet-stream"
-    if re.match(r"^https?://", src, re.I):
-        # The <img src> is scraped from the page body the MODEL wrote, so this
-        # is a model-composed URL like any other — it was fetched with no gate
-        # and no SSRF guard, while the sibling attachment paths pin the host.
-        from aiforge_core.net import egress as _egress
-        if _egress.check(src) is not None:
-            return None
-        from aiforge_core.net.ssl import SSRFBlocked, guard_public_url
-        try:
-            guard_public_url(src)
-        except SSRFBlocked as exc:
-            if exc.kind != "dns":
-                return None
-        try:
-            got = _http.http_get_bytes(src, headers={
-                "User-Agent": "AIForgeCrew-Confluence/1.0"},
-                timeout=_TIMEOUT_S, context=_ssl_ctx())
-            data = got.get("bytes") if isinstance(got, dict) else got
-            return (data, ct) if data else None
-        except Exception:  # noqa: BLE001
-            return None
+def _remote_image_allowed(src: str) -> bool:
+    """May we fetch this <img src> at all?
+
+    The reference is scraped from the page body the MODEL wrote, so it is a
+    model-composed URL like any other — it used to be fetched with no gate and
+    no SSRF guard, while the sibling attachment paths pinned the host.
+    """
+    from aiforge_core.net import egress as _egress
+    if _egress.check(src) is not None:
+        return False
+    from aiforge_core.net.ssl import SSRFBlocked, guard_public_url
+    try:
+        guard_public_url(src)
+    except SSRFBlocked as exc:
+        return exc.kind == "dns"    # a DNS failure is a network fact, not a pivot
+    return True
+
+
+def _download_image(src: str, ct: str) -> tuple[bytes, str] | None:
+    try:
+        got = _http.http_get_bytes(src, headers={
+            "User-Agent": "AIForgeCrew-Confluence/1.0"},
+            timeout=_TIMEOUT_S, context=_ssl_ctx())
+    except Exception:  # noqa: BLE001 — an image that will not load is skipped
+        return None
+    data = got.get("bytes") if isinstance(got, dict) else got
+    return (data, ct) if data else None
+
+
+def _read_local_image(src: str, cwd: str | None, ct: str) -> tuple[bytes, str] | None:
     path = src if os.path.isabs(src) else os.path.join(cwd or ".", src)
     try:
         with open(path, "rb") as fh:
             return fh.read(), ct
     except OSError:
         return None
+
+
+def _resolve_image_bytes(src: str, cwd: str | None) -> tuple[bytes, str] | None:
+    """Fetch an image ref → (bytes, content_type). http(s) is downloaded; a
+    local path is resolved against cwd. None on any failure (skip that image)."""
+    ct = mimetypes.guess_type(src)[0] or "application/octet-stream"
+    if not re.match(r"^https?://", src, re.I):
+        return _read_local_image(src, cwd, ct)
+    if not _remote_image_allowed(src):
+        return None
+    return _download_image(src, ct)
 
 
 def _upload_page_images(pid: str, refs: list[dict], cwd: str | None) -> list[dict]:

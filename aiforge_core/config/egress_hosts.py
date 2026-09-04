@@ -65,6 +65,77 @@ def _host_of(value: str) -> str:
         return ""
 
 
+# ── the probes ──────────────────────────────────────────────────────────────
+# One function per configured destination, at module level rather than nested
+# inside the collector: nine closures in one body is how that function reached a
+# cognitive complexity of 19, and each of these is independently readable and
+# independently testable. Every one returns RAW values (a URL, a host, maybe
+# empty) — normalising to a hostname happens once, in the collector.
+
+
+def _probe_ssl():
+    """The service inventory net/ssl.py already keeps — model endpoint, embed
+    and rerank sidecars, memory http, AIForge's own API, the MCP env list, the
+    generic AIFORGE_*_BASE_URL sweep and per-role agent_config rows."""
+    from aiforge_core.net.ssl import _configured_service_hosts
+    return _configured_service_hosts()
+
+
+def _probe_jira():
+    from aiforge_core.runtime.tools.jira._core import _base
+    return [_base()]
+
+
+def _probe_confluence():
+    from aiforge_core.runtime.tools.confluence._config import _base
+    return [_base()]
+
+
+def _probe_gitlab():
+    from aiforge_core.runtime.tools.gitlab import _base
+    return [_base()]
+
+
+def _probe_mail():
+    from aiforge_core.runtime.tools import email_tool
+    return [(email_tool._smtp_conf() or {}).get("host"),
+            (email_tool._imap_conf() or {}).get("host")]
+
+
+def _probe_mcp():
+    """As the CLIENT resolves them: env list AND the marketplace registry.
+    Reading only the env var meant a one-click-installed server was refused on
+    every call."""
+    from aiforge_core.runtime.tools.mcp_client import _load_endpoints
+    return list((_load_endpoints() or {}).values())
+
+
+def _probe_registry():
+    """The escalation chain lives in the model registry, which agent_config
+    does not see."""
+    from aiforge_core.config import model_registry
+    return [row.get("base_url") for row in (model_registry.list_models() or [])
+            if isinstance(row, dict)]
+
+
+def _probe_admin():
+    """May come from Settings rather than the environment."""
+    from aiforge_core.memory.sync import role
+    return [role.admin_url()]
+
+
+def _probe_sinks():
+    return [os.environ.get(var, "") for var in (
+        "LANGFUSE_HOST", "AIFORGE_OTEL_ENDPOINT", "AIFORGE_PDS_API_BASE",
+        "AIFORGE_EMBED_API_URL", "AIFORGE_CODEMEM_LM_URL",
+        "AIFORGE_INTENT_LM_URL", "AIFORGE_PLANNER_LM_URL")]
+
+
+_HOST_PROBES = (_probe_ssl, _probe_jira, _probe_confluence, _probe_gitlab,
+                _probe_mail, _probe_mcp, _probe_registry, _probe_admin,
+                _probe_sinks)
+
+
 def _integration_hosts() -> set[str]:
     """Hosts of everything this install is configured to talk to.
 
@@ -78,77 +149,19 @@ def _integration_hosts() -> set[str]:
     two copies of one rule — which is the drift this codebase has been bitten by
     before.
 
-    Every probe is guarded separately. One half-configured integration must not
+    Every probe is guarded SEPARATELY. One half-configured integration must not
     fail the box closed on everything at once, the model endpoint included.
     """
     out: set[str] = set()
-
-    def _add(value) -> None:
-        h = _host_of(str(value or ""))
-        if h:
-            out.add(h)
-
-    def _from_ssl() -> None:
-        # The service inventory net/ssl.py already keeps — model endpoint, embed
-        # and rerank sidecars, memory http, AIForge's own API, the MCP env list,
-        # the generic AIFORGE_*_BASE_URL sweep and per-role agent_config rows.
-        from aiforge_core.net.ssl import _configured_service_hosts
-        out.update(_configured_service_hosts())
-
-    def _jira() -> None:
-        from aiforge_core.runtime.tools.jira._core import _base
-        _add(_base())
-
-    def _confluence() -> None:
-        from aiforge_core.runtime.tools.confluence._config import _base
-        _add(_base())
-
-    def _gitlab() -> None:
-        from aiforge_core.runtime.tools.gitlab import _base
-        _add(_base())
-
-    def _mail() -> None:
-        from aiforge_core.runtime.tools import email_tool
-        _add((email_tool._smtp_conf() or {}).get("host"))
-        _add((email_tool._imap_conf() or {}).get("host"))
-
-    def _mcp() -> None:
-        # As the CLIENT resolves them: env list AND the marketplace registry.
-        # Reading only the env var meant a one-click-installed server was
-        # refused on every call.
-        from aiforge_core.runtime.tools.mcp_client import _load_endpoints
-        for url in (_load_endpoints() or {}).values():
-            _add(url)
-
-    def _registry() -> None:
-        # The escalation chain lives in the model registry, which agent_config
-        # does not see.
-        from aiforge_core.config import model_registry
-        for row in (model_registry.list_models() or []):
-            if isinstance(row, dict):
-                _add(row.get("base_url"))
-
-    def _admin() -> None:
-        # May come from Settings rather than the environment.
-        from aiforge_core.memory.sync import role
-        _add(role.admin_url())
-
-    def _sinks() -> None:
-        for var in ("LANGFUSE_HOST", "AIFORGE_OTEL_ENDPOINT",
-                    "AIFORGE_PDS_API_BASE", "AIFORGE_EMBED_API_URL",
-                    "AIFORGE_CODEMEM_LM_URL", "AIFORGE_INTENT_LM_URL",
-                    "AIFORGE_PLANNER_LM_URL"):
-            _add(os.environ.get(var, ""))
-
-    # Each probe is guarded SEPARATELY: one half-configured integration must not
-    # fail the box closed on everything at once, the model endpoint included.
-    for probe in (_from_ssl, _jira, _confluence, _gitlab, _mail, _mcp,
-                  _registry, _admin, _sinks):
+    for probe in _HOST_PROBES:
         try:
-            probe()
-        except Exception as exc:  # noqa: BLE001
+            for value in probe() or ():
+                host = _host_of(str(value or ""))
+                if host:
+                    out.add(host)
+        except Exception as exc:  # noqa: BLE001 — see the docstring
             log.debug("egress host probe %s failed: %s", probe.__name__, exc)
-    return {h for h in out if h}
+    return out
 
 
 def stored_hosts() -> list[str]:

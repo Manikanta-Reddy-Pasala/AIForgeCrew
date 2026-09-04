@@ -172,6 +172,47 @@ def _rank(p: str) -> int:
     return {ALLOW: 0, ASK: 1, DENY: 2}.get(p, 0)
 
 
+def _risk_verdict(tool: str, args: dict | None) -> dict:
+    """The classifier's verdict for a tool that carries a command or a cell —
+    a cell's shell calls are lifted back out and run through the same rules
+    (see ``command_risk.assess_code``). ``{}`` for every other tool."""
+    if tool in _CODE_TOOLS:
+        return command_risk.assess_code(_code_from_args(args))
+    if tool in _CMD_TOOLS:
+        return command_risk.assess(_cmd_from_args(args))
+    return {}
+
+
+def _ask_caution() -> bool:
+    """Caution-tier (sudo, chmod 777, force-push, global installs…) gates for
+    approval BY DEFAULT; AIFORGE_RISK_ASK_CAUTION=0 runs it free."""
+    return os.environ.get("AIFORGE_RISK_ASK_CAUTION", "1").strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
+def _apply_risk(tool: str, args: dict | None, policy: str,
+                reason: str) -> tuple[str, str, str]:
+    """Escalate ``policy`` for a risky command/cell. Returns
+    ``(policy, reason, risk_level)`` — the level is the classifier's own
+    answer, kept separate from the resulting policy because a gate with no
+    human attached needs to know WHY it is being asked."""
+    verdict = _risk_verdict(tool, args)
+    if not verdict:
+        return policy, reason, ""
+    lvl = verdict["level"]
+    escalate = (lvl == command_risk.DANGEROUS
+                or (lvl == command_risk.CAUTION and _ask_caution()))
+    if escalate and _rank(policy) < _rank(ASK):
+        return ASK, verdict["reason"], lvl
+    if lvl == command_risk.DANGEROUS and verdict["reason"]:
+        # Already at ask/deny for another reason (execute_ipython_cell is ask
+        # by default). Say the DANGEROUS thing anyway — an approval card
+        # reading "writes to an external system" for a cell that pipes curl
+        # into a shell tells the human the wrong thing to weigh.
+        return policy, verdict["reason"], lvl
+    return policy, reason, lvl
+
+
 def decide(tool: str, args: dict | None = None) -> dict:
     """Return ``{"policy", "reason"}`` for a tool call.
 
@@ -204,29 +245,7 @@ def decide(tool: str, args: dict | None = None) -> dict:
     if egress_refusal:
         return {"policy": DENY, "reason": egress_refusal, "risk": ""}
 
-    # Risk escalation for command-running tools — and for the notebook cell,
-    # whose shell commands are lifted back out and run through the same
-    # classifier (see command_risk.assess_code).
-    risk_level = ""
-    if tool in _CMD_TOOLS or tool in _CODE_TOOLS:
-        verdict = (command_risk.assess_code(_code_from_args(args))
-                   if tool in _CODE_TOOLS
-                   else command_risk.assess(_cmd_from_args(args)))
-        lvl = risk_level = verdict["level"]
-        # Caution-tier (sudo, chmod 777, force-push, global installs…) gates for
-        # approval BY DEFAULT now; set AIFORGE_RISK_ASK_CAUTION=0 to run it free.
-        ask_caution = os.environ.get(
-            "AIFORGE_RISK_ASK_CAUTION", "1").strip().lower() not in ("0", "false", "no", "off")
-        escalate = (lvl == command_risk.DANGEROUS
-                    or (lvl == command_risk.CAUTION and ask_caution))
-        if escalate and _rank(policy) < _rank(ASK):
-            policy, reason = ASK, verdict["reason"]
-        elif lvl == command_risk.DANGEROUS and verdict["reason"]:
-            # Already at ask/deny for another reason (execute_ipython_cell is
-            # ask by default). Say the DANGEROUS thing anyway — an approval
-            # card reading "writes to an external system" for a cell that pipes
-            # curl into a shell tells the human the wrong thing to weigh.
-            reason = verdict["reason"]
+    policy, reason, risk_level = _apply_risk(tool, args, policy, reason)
 
     if policy != ALLOW and not reason:
         reason = f"tool '{tool}' is set to {policy} by policy"

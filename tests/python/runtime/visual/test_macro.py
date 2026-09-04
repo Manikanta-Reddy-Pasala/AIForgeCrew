@@ -250,14 +250,14 @@ def test_a_model_chosen_public_host_is_not_vouched_for(monkeypatch):
     # Not loopback and not a served dev server: the existing allowlist and SSRF
     # guard must remain the only thing deciding.
     assert _macro._vouched_hosts("http://169.254.169.254/latest/meta-data",
-                                 None) == ()
-    assert _macro._vouched_hosts("http://evil.example.com/", None) == ()
+                                 None) == frozenset()
+    assert _macro._vouched_hosts("http://evil.example.com/", None) == frozenset()
 
 
 def test_a_started_service_host_is_vouched_for():
     hosts = _macro._vouched_hosts("http://dev-box:5173/app",
                                   {"url": "http://dev-box:5173"})
-    assert hosts == ("dev-box",)
+    assert hosts == frozenset({"dev-box"})
 
 
 @pytest.mark.parametrize("base,path,expected", [

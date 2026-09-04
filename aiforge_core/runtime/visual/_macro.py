@@ -83,7 +83,7 @@ def _wait_ready(url: str, timeout_s: float) -> tuple[bool, str]:
             return True, ""
         except urllib.error.HTTPError:
             return True, ""
-        except (ValueError, UnicodeError) as exc:
+        except ValueError as exc:   # UnicodeError derives from it
             # A malformed URL ("localhost:5173" with no scheme) will never
             # start working — retrying it burns the whole 30s timeout before
             # reporting a problem the caller could have been told at once.
@@ -190,7 +190,7 @@ def _join(base: str, path: str) -> str:
 _LOOPBACK = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
 
 
-def _vouched_hosts(url: str, started: dict | None) -> tuple[str, ...]:
+def _vouched_hosts(url: str, started: dict | None) -> frozenset[str]:
     """Hosts this call may browse regardless of the operator allowlist.
 
     Only two qualify: a loopback address, and the host of a server ``serve``
@@ -201,19 +201,23 @@ def _vouched_hosts(url: str, started: dict | None) -> tuple[str, ...]:
     """
     host = (urlsplit(url).hostname or "").lower()
     if not host:
-        return ()
-    if host in _LOOPBACK:
-        return (host,)
+        return frozenset()
+    if host in _LOOPBACK or _is_served_host(host, started):
+        return frozenset({host})
+    return frozenset()
+
+
+def _is_served_host(host: str, started: dict | None) -> bool:
+    """Is ``host`` a server ``serve`` just started, or one it is tracking?"""
     if started and (urlsplit(started.get("url") or "").hostname or "").lower() == host:
-        return (host,)
+        return True
     try:
         from aiforge_core.runtime.tools import serve as _serve
-        for svc in (_serve.list_services().get("services") or []):
-            if (urlsplit(svc.get("url") or "").hostname or "").lower() == host:
-                return (host,)
-    except Exception:  # noqa: BLE001
-        pass
-    return ()
+        return any(
+            (urlsplit(svc.get("url") or "").hostname or "").lower() == host
+            for svc in (_serve.list_services().get("services") or []))
+    except Exception:  # noqa: BLE001 — no service list is simply no vouch
+        return False
 
 
 def _navigate(browse, url: str, args: dict, run_id: str | None) -> dict | None:

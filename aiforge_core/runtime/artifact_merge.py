@@ -461,7 +461,7 @@ def _provenance(kind: str, merged_body: str, cluster: list[_Item]) -> str:
             + names + " -->\n")
 
 
-def _merged_extra(cluster: list[_Item]) -> tuple:
+def _merged_extra(cluster: list[_Item]) -> tuple[tuple, ...]:
     """The kind-specific metadata the merged artifact inherits.
 
     For rules that is SCOPE, and it has to be the union: the merged rule must
@@ -473,7 +473,10 @@ def _merged_extra(cluster: list[_Item]) -> tuple:
     """
     extras = [dict(i.extra or ()) for i in cluster if i.extra]
     if not extras:
-        return ()
+        # The SAME shape, empty — a kind that carries no extra metadata (skills,
+        # workflows) reads the pair list and finds nothing, rather than reading
+        # a different type on alternate calls.
+        return (("globs", ()), ("always", False))
     globs: list[str] = []
     for e in extras:
         for g in e.get("globs") or ():
@@ -497,9 +500,12 @@ def _restore(pairs: list[tuple[str, str]]) -> int:
             Path(src).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(dest, src)
             back += 1
-        except OSError as exc:
-            log.error("artifact_merge: could not restore %s from %s: %s",
-                      src, dest, exc)
+        except OSError:
+            # exception(), not error(): a restore that failed is the one place
+            # in this module where the traceback is the whole story — the file
+            # is in the archive and NOT back where it belongs.
+            log.exception("artifact_merge: could not restore %s from %s",
+                          src, dest)
     return back
 
 

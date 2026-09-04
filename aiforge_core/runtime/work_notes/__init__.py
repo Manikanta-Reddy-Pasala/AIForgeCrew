@@ -81,7 +81,7 @@ from ._links import _md_ref, normalize_links, normalize_tags
 from ._render import (
     _BOILERPLATE_SUBSTR,
     _KNOWN_KINDS,
-    _LEAK_ITEM_RE,
+    _LEAK_PATTERNS,
     _is_leak_item,
     knowledge_text,
     parse_note,

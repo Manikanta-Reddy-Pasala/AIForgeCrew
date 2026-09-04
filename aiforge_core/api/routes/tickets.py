@@ -113,8 +113,10 @@ class TicketCreate(BaseModel):
     metadata: dict | None = None
     # Route override — when set, skips auto-detection. Use this from
     # the UI when the human picks "Workflow" + workflow_id manually.
-    route: str | None = None                    # 'code' | 'workflow' | None=auto
-    route_workflow: str | None = None           # required when route='workflow'
+    # one of the two route names, or unset to auto-detect
+    route: str | None = None
+    # required when the route is the workflow one
+    route_workflow: str | None = None
     attachments: list[str] = Field(default_factory=list)  # attachment role names; feeds detector
     attached_files: list[AttachedFile] = Field(default_factory=list)
     # Deploy autonomy — operator opts the pipeline into auto-merge +

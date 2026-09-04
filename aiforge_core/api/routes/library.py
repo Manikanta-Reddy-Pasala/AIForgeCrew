@@ -188,7 +188,8 @@ def library_merge_report() -> dict:
             "report": artifact_merge.last_report()}
 
 
-@router.get("/api/library/merge/preview")
+@router.get("/api/library/merge/preview",
+            responses={404: {"description": "Unknown kind"}})
 def library_merge_preview(kind: str | None = None) -> dict:
     """The duplicate clusters as they stand right now, without spending a model
     call or touching a file. This is what the nightly pass would work on."""
@@ -204,7 +205,8 @@ def library_merge_preview(kind: str | None = None) -> dict:
     return {"clusters": out}
 
 
-@router.post("/api/library/merge/run")
+@router.post("/api/library/merge/run",
+             responses={400: {"description": "Bad request"}})
 def library_merge_run(payload: Annotated[dict, Body()] = None) -> dict:
     """Run the merge pass now. ``{"dry_run": true}`` reports without writing;
     ``{"kinds": ["rules"], "limit": 2}`` narrows it."""

@@ -46,9 +46,10 @@ def _effective_run_id(explicit: str | None) -> str:
     return explicit or _RUN_ID.get() or "default"
 
 
-def allow_hosts(hosts: tuple[str, ...] | list[str]):
-    """Vouch for ``hosts`` in the current context. Returns the ContextVar token
-    — reset it in a ``finally`` so the grant dies with the call."""
+def allow_hosts(hosts):
+    """Vouch for ``hosts`` (any iterable of names) in the current context.
+    Returns the ContextVar token — reset it in a ``finally`` so the grant dies
+    with the call."""
     clean = tuple(h.strip().lower() for h in hosts if h and h.strip())
     return _EXTRA_ALLOW.set(_EXTRA_ALLOW.get() + clean)
 

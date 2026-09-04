@@ -50,6 +50,7 @@ slightly worse, never break the product.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sqlite3
 import threading
@@ -207,7 +208,12 @@ def _cap(cap: "float | None") -> float:
         c = float(cap) if cap is not None else 0.0
     except (TypeError, ValueError):
         c = 0.0
-    if not (c > 0):          # also catches nan
+    # isnan explicitly: `c <= 0` is FALSE for nan, so the obvious spelling
+    # would let a nan cap through and every later comparison with it would be
+    # false too. The old `not (c > 0)` caught it by accident of IEEE ordering,
+    # which is a fact about floats, not something the next reader should have
+    # to reconstruct.
+    if math.isnan(c) or c <= 0:
         c = _DEFAULT_CAP_S
     return min(c * 1.5 + 5.0, _MAX_HOLD_S)
 
