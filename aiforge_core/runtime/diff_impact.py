@@ -28,4 +28,6 @@ def impacted_tests(
     The code-graph backend was removed, so this always returns [] — callers
     treat empty as "fall back to full suite".
     """
+    # unused, deliberately: graph-walk arguments from the Neo4j era; the coverage-map path takes none of them.
+    del hops, driver
     return []

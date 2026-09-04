@@ -8,6 +8,15 @@ import pytest  # noqa: E402
 from aiforge_core.runtime import repo_rules
 
 
+def _drive(result):
+    """Drive a gate whether or not it is a coroutine — the graph_pipeline gates
+    are sync node functions now (ADK awaits a node's result only when it is
+    awaitable)."""
+    if asyncio.iscoroutine(result):
+        return asyncio.run(result)
+    return result
+
+
 @pytest.fixture(autouse=True)
 def _unified_query_isolation(tmp_path, monkeypatch):
     """Tests here import adk_runner/pipeline, which transitively cache
@@ -111,7 +120,7 @@ def test_plan_promote_refreshes_rules(tmp_path, monkeypatch):
 
     plan = '{"subtickets": [{"scope_allowlist_globs": ["src/x/**"]}]}'
     state = {"plan_md": plan}
-    asyncio.run(gp._plan_promote(_Ctx(state)))
+    _drive(gp._plan_promote(_Ctx(state)))
     assert "Use ruff" in state.get("rules_md", "")
 
 

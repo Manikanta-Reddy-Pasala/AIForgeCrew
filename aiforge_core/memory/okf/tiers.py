@@ -72,12 +72,20 @@ _BULLET_RE = re.compile(r"^\s*[-*]\s+")
 # part of the "exact-ish whole-line identity" that replaced substring matching.
 # Grouped explicitly: `^A|B$` parses as `(^A)|(B$)`, which IS the intended
 # strip-both-ends here — but only to a reader who works out the precedence.
-# POSSESSIVE quantifiers (`++`, Python 3.11+ and this project requires >=3.11).
-# `\W+$`-style strips backtrack super-linearly on input that does NOT match:
-# the engine retries the run at every length before giving up. `++` never
-# gives characters back, which is exactly right for a strip and turns the
-# scan linear.
-_EDGE_PUNCT_RE = re.compile(r"(?:^\W++)|(?:\W++$)")
+def _strip_edge_punct(text: str) -> str:
+    r"""Drop leading/trailing non-word characters.
+
+    Two pointers rather than a regex. `^\W+|\W+$` is the shape a scanner flags
+    as a denial-of-service risk (and possessive quantifiers only silence the
+    engine, not the reviewer): for a strip there is nothing a regex gives that
+    a scan does not, and this one is obviously O(n) to anyone reading it.
+    """
+    i, j = 0, len(text)
+    while i < j and not (text[i].isalnum() or text[i] == "_"):
+        i += 1
+    while j > i and not (text[j - 1].isalnum() or text[j - 1] == "_"):
+        j -= 1
+    return text[i:j]
 
 
 # ── bookkeeping ───────────────────────────────────────────────────────────
@@ -287,7 +295,7 @@ def _claims(node: dict) -> list[str]:
         line = " ".join(raw.split())
         if not line or line.startswith("#"):
             continue
-        norm = _EDGE_PUNCT_RE.sub("", line.lower())
+        norm = _strip_edge_punct(line.lower())
         if norm:
             out.append(norm)
     return out

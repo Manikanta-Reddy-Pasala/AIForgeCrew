@@ -347,8 +347,40 @@ def _dirty_warning(cwd: str) -> str | None:
     return None
 
 
-_CONFLICT_RE = re.compile(
-    r"<<<<<<<[^\n]*\n(.*?)\n=======\n(.*?)\n>>>>>>>[^\n]*(?:\n|$)", re.DOTALL)
+def _conflict_hunks(text: str) -> list[dict]:
+    """Every git conflict hunk, as ``{head, incoming, block, span}``.
+
+    A line scan with running offsets, not
+    ``<<<<<<<[^\\n]*\\n(.*?)\\n=======\\n(.*?)\\n>>>>>>>`` under DOTALL: two lazy
+    quantifiers spanning a whole file is the denial-of-service shape a scanner
+    asks about, and conflict markers are whole lines anyway. ``span`` is the
+    character range of the whole hunk, so breadcrumbs and the replacement keep
+    working exactly as they did.
+    """
+    hunks: list[dict] = []
+    pos = 0
+    start_pos = None
+    head: list[str] | None = None
+    incoming: list[str] | None = None
+    for line in (text or "").splitlines(keepends=True):
+        stripped = line.rstrip("\n")
+        if stripped.startswith("<<<<<<<"):
+            start_pos, head, incoming = pos, [], None
+        elif head is not None and incoming is None and stripped == "=======":
+            incoming = []
+        elif incoming is not None and stripped.startswith(">>>>>>>"):
+            end = pos + len(line)
+            hunks.append({"head": "\n".join(head or []),
+                          "incoming": "\n".join(incoming),
+                          "block": text[start_pos:end],
+                          "span": (start_pos, end)})
+            start_pos = head = incoming = None
+        elif incoming is not None:
+            incoming.append(stripped)
+        elif head is not None:
+            head.append(stripped)
+        pos += len(line)
+    return hunks
 
 
 def _hunk_breadcrumbs(content: str, span: tuple, n: int) -> tuple:
@@ -396,7 +428,7 @@ def _resolve_conflict_hunk(goal: str, path: str, head: str, incoming: str,
     # spliced back into the file verbatim, so eating the first line's indent
     # breaks the very indentation the prompt asks the model to match, and the
     # file then fails the syntax check that follows.
-    out = re.sub(r"(?:^[ \t]*```\w*\n?)|(?:\n?[ \t]*```[ \t]*$)", "",
+    out = re.sub(r"^[ \t]*```\w*\n?|\n?[ \t]*```[ \t]*$", "",
                  out.strip("\n").rstrip(), flags=re.M)
     out = re.sub(r"^\s*(<<<<<<<|=======|>>>>>>>).*$", "", out, flags=re.M)
     return out.strip("\n")
@@ -408,13 +440,13 @@ def _resolve_all_hunks(backup: str, goal: str, relpath: str, budget: int,
     breadcrumb context; a hunk the model can't resolve falls back to keeping
     HEAD. Returns the rewritten text (may still carry markers → caller widens)."""
     new = backup
-    for m in _CONFLICT_RE.finditer(backup):
-        above, below = _hunk_breadcrumbs(backup, m.span(), budget)
-        res = _resolve_conflict_hunk(goal, relpath, m.group(1), m.group(2),
-                                     above, below, attempt)
+    for hunk in _conflict_hunks(backup):
+        above, below = _hunk_breadcrumbs(backup, hunk["span"], budget)
+        res = _resolve_conflict_hunk(goal, relpath, hunk["head"],
+                                     hunk["incoming"], above, below, attempt)
         if not res:
-            res = m.group(1)                    # fallback: keep HEAD
-        new = new.replace(m.group(0), res + "\n", 1)
+            res = hunk["head"]                  # fallback: keep HEAD
+        new = new.replace(hunk["block"], res + "\n", 1)
     return new
 
 

@@ -24,13 +24,26 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import sys
 from pathlib import Path
 
-# Section heading: markdown ATX (# … ###). The heading text becomes the topic;
-# the lines under it become one captured fact.
-_HEADING_RE = re.compile(r"^(#{1,3})[ \t]+(.+?)[ \t]*#*[ \t]*$")
+
+def _atx_heading(line: str) -> tuple[str, str] | None:
+    """``(hashes, text)`` for a markdown ATX heading (# … ###), else None.
+
+    Written as a scan rather than `^(#{1,3})[ \t]+(.+?)[ \t]*#*[ \t]*$`: three
+    adjacent optional trailing groups over user text is the classic
+    denial-of-service shape a scanner flags, and the same job is a strip.
+    """
+    stripped = line.strip()
+    hashes = len(stripped) - len(stripped.lstrip("#"))
+    if not 1 <= hashes <= 3:
+        return None
+    text = stripped[hashes:]
+    if not text[:1].isspace():
+        return None                      # "#body" is not a heading
+    text = text.strip().rstrip("#").strip()
+    return (stripped[:hashes], text) if text else None
 # Dirs never worth scanning.
 _SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "dist", "build",
               "__pycache__", "target", ".idea", ".gradle", "vendor"}
@@ -48,12 +61,12 @@ def _split_sections(text: str) -> list[tuple[str, str]]:
     heading = ""
     buf: list[str] = []
     for line in text.splitlines():
-        m = _HEADING_RE.match(line)
-        if m:
+        parsed = _atx_heading(line)
+        if parsed is not None:
             body = "\n".join(buf).strip()
             if body:
                 out.append((heading, body))
-            heading = m.group(2).strip()
+            heading = parsed[1]
             buf = []
         else:
             buf.append(line)

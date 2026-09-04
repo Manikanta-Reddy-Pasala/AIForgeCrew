@@ -19,8 +19,6 @@ Usage:
 from __future__ import annotations
 
 import contextvars
-import os
-import signal
 import threading
 from dataclasses import dataclass, field
 
@@ -94,12 +92,12 @@ def cancel(session_id: int) -> bool:
     # iteration" and abort the kill loop, leaving later pgids un-signalled.
     with _LOCK:
         _pgids = list(tok.pgids)
+    from aiforge_core.runtime import proc_signals
     for pgid in _pgids:
-        for sig in (signal.SIGTERM, signal.SIGKILL):
-            try:
-                os.killpg(pgid, sig)
-            except OSError:
-                pass
+        # One audited place decides whether a group may be signalled — it
+        # refuses group 0 and this process's own group, which is what a stale
+        # pgid computes to once the child has been reaped.
+        proc_signals.stop_group(pgid, pause_s=0.0)
     return True
 
 

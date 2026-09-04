@@ -256,7 +256,11 @@ def _fetch_url(url: str) -> str:
     # crude HTML strip
     raw = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", raw,
                  flags=re.DOTALL | re.IGNORECASE)
-    return re.sub(r"[^\S\n]+\n", "\n", _TAG_RE.sub(" ", raw))
+    # Trailing horizontal whitespace, per line — see jira_format._tidy: a
+    # quantifier over fetched HTML is exactly the DoS shape, and rstrip is one
+    # pass with nothing to give back.
+    return "\n".join(line.rstrip(" \t\f\v\r")
+                     for line in _TAG_RE.sub(" ", raw).split("\n"))
 
 
 def _index_chunk_layer(root: Path, repo: str, flag: str, exts: set, kind: str,

@@ -222,7 +222,10 @@ def sync_status() -> dict:
     return row
 
 
-@router.put("/api/memory/sync/group", responses={400: {"description": "Bad name"}})
+# 413 too: these read the body through _read_json, which enforces the cap.
+@router.put("/api/memory/sync/group", responses={
+    400: {"description": "Bad name"},
+    413: {"description": "Payload too large"}})
 async def choose_group(request: Request) -> dict:
     """This client joins a group. Persisted, so the choice survives a restart."""
     payload = await _read_json(request)
@@ -246,7 +249,9 @@ def sync_now() -> dict:
     return {"rows": loop.run_once()}
 
 
-@router.put("/api/memory/sync/admin", responses={400: {"description": "Refused"}})
+@router.put("/api/memory/sync/admin", responses={
+    400: {"description": "Refused"},
+    413: {"description": "Payload too large"}})
 async def set_admin(request: Request) -> dict:
     """Point this machine at an admin, from the settings screen.
 

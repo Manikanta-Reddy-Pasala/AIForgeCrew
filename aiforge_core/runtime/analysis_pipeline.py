@@ -173,6 +173,26 @@ def identify_repos(prompt: str, cwd: str) -> list[dict]:
     return out
 
 
+def _split_topics(tail: str) -> list[str]:
+    """Split a phrase on commas, slashes and the words "and"/"or".
+
+    Two replaces and one split, rather than a quantified alternation over user
+    text — the denial-of-service shape a scanner asks about. Same separators,
+    one pass, and the surrounding whitespace is stripped by the caller anyway.
+    """
+    text = (tail or "").replace(",", "\x00").replace("/", "\x00")
+    words = text.split()
+    out, current = [], []
+    for word in words:
+        if word.lower() in ("and", "or"):
+            out.append(" ".join(current))
+            current = []
+            continue
+        current.append(word)
+    out.append(" ".join(current))
+    return [piece for chunk in out for piece in chunk.split("\x00")]
+
+
 def extract_topics(prompt: str) -> list[str]:
     """Best-effort topic list from the prompt (heuristic, no LLM).
 
@@ -193,7 +213,7 @@ def extract_topics(prompt: str) -> list[str]:
     # stop at a sentence boundary / deliverable clause
     tail = re.split(r"(?:\band\s+(?:create|write|make|produce|generate)\b|"
                     r"[.;\n]|\bthen\b)", tail, maxsplit=1)[0]
-    parts = re.split(r"\s*+(?:,|/|\band\b|\bor\b)\s*+", tail)
+    parts = _split_topics(tail)
     topics = [t.strip(" .-") for t in parts if len(t.strip(" .-")) > 2]
     # drop obvious non-topics (verbs/filler that leaked in)
     stop = {"the", "these", "them", "each", "all", "repos", "repo",

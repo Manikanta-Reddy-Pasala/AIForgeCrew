@@ -66,7 +66,7 @@ from ._gates import (
     _DELETE_ACTIONS,
     _DELETE_STRONG,
     _DELETE_WEAK,
-    _GIT_HEAD_RE,
+    _git_head_verb,
     _NEG_COMMIT_RE,
     _NEG_DELETE_RE,
     _NEG_GUARD,

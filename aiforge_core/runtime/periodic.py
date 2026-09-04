@@ -407,7 +407,7 @@ def _due(t: _Task, now_mono: float, now_dt: datetime) -> float:
 def _run_due_tasks(nm: float, nd) -> None:
     """Fire every task due within ~1s. A task's fire failure never kills the
     loop."""
-    for t in list(_TASKS):
+    for t in tuple(_TASKS):
         if _due(t, nm, nd) <= 1.0:
             try:
                 _fire(t, nd)

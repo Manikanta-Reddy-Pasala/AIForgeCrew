@@ -17,7 +17,20 @@ log = logging.getLogger("aiforge.spec_to_tests")
 _ACCEPTANCE_HEAD = re.compile(
     r"(?im)^#{0,3}\s*(acceptance(?:\s+criteria)?|definition\s+of\s+done)\b",
 )
-_BULLET = re.compile(r"^[ \t]*+[-*][ \t]+(.+)$", re.M)
+def _bullets(text: str) -> list[str]:
+    """The `- ` / `* ` bullet lines of ``text``, in order.
+
+    A per-line scan instead of a MULTILINE quantifier over the whole body:
+    same result, nothing to backtrack, and no denial-of-service question to
+    answer about text that arrives from a ticket."""
+    out: list[str] = []
+    for raw in text.splitlines():
+        line = raw.lstrip(" \t")
+        if line[:1] in ("-", "*") and line[1:2] in (" ", "\t"):
+            item = line[1:].strip()
+            if item:
+                out.append(item)
+    return out
 
 
 def _extract_acceptance(body: str) -> list[str]:
@@ -31,7 +44,7 @@ def _extract_acceptance(body: str) -> list[str]:
     tail = body[m.end():]
     stop = re.search(r"\n\s*\n#", tail) or re.search(r"\n\s*\n[^-*]", tail)
     block = tail[: stop.start()] if stop else tail
-    return [b.group(1).strip() for b in _BULLET.finditer(block)]
+    return _bullets(block)
 
 
 def write_scaffold(

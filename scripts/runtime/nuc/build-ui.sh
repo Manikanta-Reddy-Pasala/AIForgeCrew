@@ -17,7 +17,7 @@ if ! command -v npm >/dev/null; then
   exit 2
 fi
 
-npm install --no-audit --no-fund --silent
+npm install --ignore-scripts --no-audit --no-fund --silent
 npm run build
 
 # Bounce the user-mode API so it sees the fresh dist/.

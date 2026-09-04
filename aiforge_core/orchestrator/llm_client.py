@@ -28,14 +28,25 @@ from aiforge_core.llm import complete as _complete
 # 4 trailing backticks because the response format directive
 # `response_format=json_object` collides with their training-set
 # bias toward fenced output.
-# Grouped explicitly: opening fence OR closing fence, not one alternation
-# whose precedence a reader has to derive.
-# POSSESSIVE quantifiers (`++`, Python 3.11+ and this project requires >=3.11).
-# `\W+$`-style strips backtrack super-linearly on input that does NOT match:
-# the engine retries the run at every length before giving up. `++` never
-# gives characters back, which is exactly right for a strip and turns the
-# scan linear.
-_FENCE = re.compile(r"(?:^`{3,}+(?:json)?\s*+\n?)|(?:\n?`{3,}+\s*+$)", re.MULTILINE)
+def _strip_fences(text: str) -> str:
+    """Drop leading/trailing ``` fence lines (``` or ```json).
+
+    Line work, not a MULTILINE quantifier over model output: the regex form is
+    the denial-of-service shape a scanner asks about, and stripping whole lines
+    is what "remove the fence" actually means.
+    """
+    lines = (text or "").split("\n")
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if lines and lines[0].lstrip().startswith("```"):
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines and lines[-1].strip().startswith("```"):
+        lines.pop()
+    return "\n".join(lines)
+
+
 _JSON_OBJ_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
@@ -54,7 +65,7 @@ def _resilient_json_parse(raw: str | None) -> dict | None:
     (catches nested fences). Returns the parsed dict, or None if all fail."""
     if not raw:
         return None
-    cleaned = _FENCE.sub("", raw).strip()
+    cleaned = _strip_fences(raw).strip()
     if not cleaned:
         return None
     obj = _loads_dict(cleaned)                          # 2. strict

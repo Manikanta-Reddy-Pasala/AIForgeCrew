@@ -52,7 +52,7 @@ def _slug_for(url: str) -> str:
     p = urllib.parse.urlparse(clean)
     base = (p.netloc + "-" + p.path.strip("/").replace("/", "-"))[:70]
     s = re.sub(r"[^A-Za-z0-9._-]+", "-", base).strip("-").lower() or "page"
-    return f"{s}-{hashlib.sha1(clean.encode('utf-8')).hexdigest()[:8]}"
+    return f"{s}-{hashlib.sha1(clean.encode('utf-8'), usedforsecurity=False).hexdigest()[:8]}"
 
 
 def _crawl_gate(args: dict) -> dict | None:

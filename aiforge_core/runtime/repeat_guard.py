@@ -33,7 +33,7 @@ def make_repeat_guard_callback():
             name = getattr(tool, "name", "") or ""
             sig = name + "|" + json.dumps(args or {}, sort_keys=True,
                                           default=str)[:600]
-            key = hashlib.sha1(sig.encode()).hexdigest()[:12]
+            key = hashlib.sha1(sig.encode(), usedforsecurity=False).hexdigest()[:12]
             state = getattr(tool_context, "state", None)
             if state is None:
                 return None

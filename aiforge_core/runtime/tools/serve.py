@@ -17,7 +17,6 @@ from __future__ import annotations
 import atexit
 import os
 import re
-import signal
 import subprocess
 import threading
 import time
@@ -38,24 +37,23 @@ def _default_ttl() -> float:
 
 
 def _kill_pgid(pid: int, pgid: int | None) -> None:
-    for sig in (signal.SIGTERM, signal.SIGKILL):
+    """Stop a served process — its group first, the pid itself as the fallback
+    for a child that never became a group leader. One audited helper decides
+    what may be signalled (see runtime/proc_signals)."""
+    from aiforge_core.runtime import proc_signals
+    if pgid is None:
         try:
-            os.killpg(pgid if pgid is not None else os.getpgid(pid), sig)
-            time.sleep(0.2)
-        except ProcessLookupError:
-            return
-        except Exception:  # noqa: BLE001
-            try:
-                os.kill(pid, sig)
-            except Exception:  # noqa: BLE001
-                pass
+            pgid = os.getpgid(pid)
+        except OSError:
+            pgid = None
+    proc_signals.stop_group(pgid, pid=pid)
 
 
 def _reap() -> int:
     """Kill services past their TTL or already dead. Returns count reaped."""
     now = time.monotonic()
     reaped = 0
-    for pid, s in list(_SERVICES.items()):
+    for pid, s in tuple(_SERVICES.items()):
         dead = s["proc"].poll() is not None
         ttl = s.get("ttl") or 0
         expired = ttl > 0 and (now - s.get("started_at", now)) > ttl
@@ -94,7 +92,7 @@ def _ensure_reaper() -> None:
 def _stop_all_on_exit() -> None:
     """Kill every still-running served process when the host process exits, so
     none are orphaned on shutdown/restart."""
-    for pid, s in list(_SERVICES.items()):
+    for pid, s in tuple(_SERVICES.items()):
         if s["proc"].poll() is None:
             _kill_pgid(pid, s.get("pgid"))
         _SERVICES.pop(pid, None)
@@ -282,7 +280,7 @@ def list_services(_args: dict | None = None, _cwd: str | None = None) -> dict:
     """List services started this session + whether each is still alive."""
     _reap()        # drop dead/expired before listing
     out = []
-    for pid, s in list(_SERVICES.items()):
+    for pid, s in tuple(_SERVICES.items()):
         alive = s["proc"].poll() is None
         if not alive:
             _SERVICES.pop(pid, None)

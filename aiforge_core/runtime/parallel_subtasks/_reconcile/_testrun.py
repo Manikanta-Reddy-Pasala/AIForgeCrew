@@ -345,12 +345,29 @@ _HTTP_STATUS_RULES: list[tuple[str, str]] = [
 ]
 
 
+def _count_before(output: str, words: tuple[str, ...]) -> int | None:
+    r"""The number pytest printed immediately before one of ``words``.
+
+    Tokens rather than `(\d+)\s+failed`: the summary line is arbitrary
+    subprocess output, and a quantifier over it is the denial-of-service shape
+    a scanner asks about. Splitting is one pass and reads as what it is.
+    ``None`` when the word never appears (which is not the same as zero).
+    """
+    tokens = output.split()
+    seen = None
+    for i, tok in enumerate(tokens[1:], start=1):
+        if tok.strip(",.:;") in words and tokens[i - 1].isdigit():
+            seen = int(tokens[i - 1])
+    return seen
+
+
 def _leaked_state(output: str) -> bool:
     """Shared state leaking across tests (an in-memory store never reset)."""
     return bool(
         re.search(r"(ValueError|Exception|IntegrityError)[^\n]*already exists", output)
         or re.search(r"errors?\b.*\n.*already exists", output, re.I)
-        or (re.search(r"\d++\s+errors?\b", output) and "already exists" in output))
+        or (_count_before(output, ("error", "errors")) is not None
+            and "already exists" in output))
 
 
 def _directed_hints(output: str) -> list[str]:
@@ -388,16 +405,16 @@ def _fail_count(output: str) -> int:
     not reset between tests) shows as 'N errors', NOT 'failed', so counting only
     'failed' made the loop stop early thinking it was nearly done. 999 =
     couldn't-run/collection-error (worst); 0 = all green."""
-    import re as _re
     out = output or ""
-    failed = _re.search(r"(\d++)\s+failed", out)
-    errored = _re.search(r"(\d++)\s+errors?\b", out)
-    n = (int(failed.group(1)) if failed else 0) + (int(errored.group(1)) if errored else 0)
+    failed_n = _count_before(out, ("failed",))
+    errored_n = _count_before(out, ("error", "errors"))
+    n = (failed_n or 0) + (errored_n or 0)
     if n:
         return n
-    if failed or errored:
+    if failed_n is not None or errored_n is not None:
         return 0                      # explicit "0 failed" style — all green
-    if _re.search(r"error|Error|Traceback|Interrupted", out):
+    low = out.lower()
+    if any(w in low for w in ("error", "traceback", "interrupted")):
         return 999                    # a raw error with no pytest counts → worst
     return 0
 

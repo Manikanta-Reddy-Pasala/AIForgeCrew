@@ -117,6 +117,9 @@ def _md_inline(line: str) -> str:
 
 
 def _tidy(s: str) -> str:
-    s = re.sub(r"[ \t]++\n", "\n", s)            # trailing spaces
+    # Trailing spaces, line by line: `[ \t]+\n` is a quantifier over
+    # user-controlled text (a scanner flags it as a DoS risk) and rstrip does
+    # the same job in one pass with nothing to backtrack.
+    s = "\n".join(line.rstrip(" \t") for line in s.split("\n"))
     s = re.sub(r"\n{3,}", "\n\n", s)            # collapse blank runs
     return s.strip()

@@ -33,7 +33,11 @@ case "$PREFIX" in
 esac
 
 echo "==> installing $PKG (npm global → $PREFIX) …"
-npm install -g "$PKG" >/dev/null 2>&1 || npm install -g "$PKG"
+# --ignore-scripts: a global CLI does not need its postinstall here
+# (verified: the package installs and exposes its bin without it), and
+# an install script from the registry is code we did not review.
+npm install -g --ignore-scripts "$PKG" >/dev/null 2>&1 \
+  || npm install -g --ignore-scripts "$PKG"
 
 BIN="$PREFIX/bin/codegraph"
 if [[ ! -x "$BIN" ]] && command -v codegraph >/dev/null 2>&1; then

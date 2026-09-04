@@ -9,9 +9,57 @@ import re
 from ._sources import _relevant_files, _spec_goal
 
 
-_PATCH_RE = re.compile(
-    r"<<<<<<< SEARCH\s*\n(.*?)\n=======\s*\n(.*?)\n>>>>>>> REPLACE", re.DOTALL)
-_FILE_HDR_RE = re.compile(r"^###[ \t]*FILE:[ \t]*(.+)$", re.MULTILINE)
+def _marker_blocks(text: str, start: str, middle: str, end: str
+                   ) -> list[tuple[str, str]]:
+    """``(before, after)`` pairs from ``start`` / ``middle`` / ``end`` marker
+    blocks — a conflict hunk, or a SEARCH/REPLACE patch.
+
+    Line scanning rather than `START(.*?)MIDDLE(.*?)END` with DOTALL: two lazy
+    quantifiers spanning a whole model reply is the denial-of-service shape a
+    scanner asks about, and markers are whole lines, so lines are the natural
+    unit. Unterminated blocks are dropped, exactly as a non-match was.
+    """
+    out: list[tuple[str, str]] = []
+    before: list[str] | None = None
+    after: list[str] | None = None
+    for line in (text or "").split("\n"):
+        head = line.strip()
+        if head.startswith(start):
+            before, after = [], None
+        elif before is not None and after is None and head.startswith(middle):
+            after = []
+        elif after is not None and head.startswith(end):
+            out.append(("\n".join(before or []), "\n".join(after)))
+            before = after = None
+        elif after is not None:
+            after.append(line)
+        elif before is not None:
+            before.append(line)
+    return out
+
+
+def _patches(text: str) -> list[tuple[str, str]]:
+    """Every ``<<<<<<< SEARCH / ======= / >>>>>>> REPLACE`` pair."""
+    return _marker_blocks(text, "<<<<<<< SEARCH", "=======", ">>>>>>> REPLACE")
+
+
+def _file_headers(text: str) -> list[tuple[int, str]]:
+    """``(line index, path)`` for every ``### FILE: path`` header.
+
+    A prefix test per line, not a MULTILINE quantifier over the reply.
+    """
+    out: list[tuple[int, str]] = []
+    for i, line in enumerate((text or "").split("\n")):
+        stripped = line.strip()
+        if not stripped.startswith("###"):
+            continue
+        rest = stripped[3:].lstrip()
+        if not rest.upper().startswith("FILE:"):
+            continue
+        path = rest[5:].strip()
+        if path:
+            out.append((i, path))
+    return out
 
 
 def _syntax_ok(rel: str, content: str) -> bool:
@@ -41,7 +89,7 @@ def _patched_content(content: str, seg: str, rel: str,
                      failures: list) -> str:
     """Apply this file's SEARCH/REPLACE blocks. A SEARCH that does not match
     character-for-character is recorded and skipped, never guessed at."""
-    for search, replace in _PATCH_RE.findall(seg):
+    for search, replace in _patches(seg):
         if search in content:
             content = content.replace(search, replace, 1)
         else:
@@ -84,14 +132,16 @@ def _apply_patches(cwd: str, out: str) -> tuple[list, list]:
     SEARCH matches the file character-for-character, swaps it, syntax-checks, and
     writes. Surgical: fixing one test can't rewrite an unrelated section. Returns
     (written_files, failures[(file, why)])."""
-    heads = [(m.start(), m.group(1).strip()) for m in _FILE_HDR_RE.finditer(out)]
+    lines = (out or "").split("\n")
+    heads = _file_headers(out)
     if not heads:
         return [], [("", "no ### FILE headers")]
     written: list = []
     failures: list = []
-    for i, (pos, rel) in enumerate(heads):
-        end = heads[i + 1][0] if i + 1 < len(heads) else len(out)
-        done = _apply_one_patch(cwd, rel, out[pos:end], failures)
+    for i, (line_no, rel) in enumerate(heads):
+        end_line = heads[i + 1][0] if i + 1 < len(heads) else len(lines)
+        segment = "\n".join(lines[line_no:end_line])
+        done = _apply_one_patch(cwd, rel, segment, failures)
         if done:
             written.append(done)
     return written, failures

@@ -15,6 +15,15 @@ import pytest
 from aiforge_core.runtime import graph_pipeline as gp
 
 
+def _drive(result):
+    """Drive a gate whether or not it is a coroutine — the graph_pipeline gates
+    are sync node functions now (ADK awaits a node's result only when it is
+    awaitable)."""
+    if asyncio.iscoroutine(result):
+        return asyncio.run(result)
+    return result
+
+
 class _FakeCtx:
     def __init__(self, state: dict) -> None:
         self.state = state
@@ -23,7 +32,7 @@ class _FakeCtx:
 
 def _route(state: dict) -> str:
     ctx = _FakeCtx(state)
-    asyncio.run(gp._triage_gate(ctx))
+    _drive(gp._triage_gate(ctx))
     return ctx.route
 
 

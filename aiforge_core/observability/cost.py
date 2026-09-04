@@ -125,6 +125,8 @@ def rollup(group_by: str = "day", *, days_back: int = 30) -> list[dict]:
     are still available via :func:`snapshot`. The ``group_by`` contract is
     still validated so a bad value fails loudly for the caller.
     """
+    # unused, deliberately: the Postgres cost tables are gone; the signature stays so callers degrade quietly.
+    del days_back
     if group_by not in ("day", "role", "model", "ticket"):
         raise ValueError("group_by must be day|role|model|ticket")
     return []
@@ -154,4 +156,6 @@ def _persist(
     live totals stay in memory (see :func:`snapshot`). ``record_call`` already
     treats this write as best-effort.
     """
+    # unused, deliberately: the Postgres cost tables are gone; the signature stays so callers degrade quietly.
+    del role, ticket, model, cost_usd, prompt_tokens, completion_tokens
     return None

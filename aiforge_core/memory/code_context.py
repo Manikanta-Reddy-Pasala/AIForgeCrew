@@ -36,7 +36,7 @@ def _repo_index_dir(root) -> "Path":
             ident = str(p.resolve().parent)      # the repo's real root
     except Exception:  # noqa: BLE001
         pass
-    key = hashlib.sha1(ident.encode()).hexdigest()[:16]
+    key = hashlib.sha1(ident.encode(), usedforsecurity=False).hexdigest()[:16]
     base = os.environ.get("AIFORGE_REPO_INDEX_DIR") or os.path.join(
         str(config_dir()),
         "repo-index")

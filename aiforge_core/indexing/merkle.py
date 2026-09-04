@@ -153,7 +153,7 @@ def _all_folder_paths(folder_files: dict[str, list[str]]) -> set[str]:
     """Every folder plus all its ancestor folders (so a parent can hash child
     folders), including the root ``.``."""
     all_folders = set(folder_files.keys())
-    for folder in list(all_folders):
+    for folder in tuple(all_folders):
         parts = Path(folder).parts
         for i in range(len(parts)):
             all_folders.add(str(Path(*parts[:i + 1])) or ".")

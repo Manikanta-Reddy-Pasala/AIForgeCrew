@@ -21,6 +21,8 @@ def memory_block(action: str = "read", content: str = "",
     The graph-backed block store was removed, so this soft-fails; callers
     never raise. Returns ``{ok: False, error}``.
     """
+    # unused, deliberately: the block store is gone; the tool keeps its schema so the model's calls still validate.
+    del action, content, label
     repo = _repo()
     if not repo:
         return {"ok": False, "error": "no repo scope (AIFORGE_AFM_REPO unset)"}

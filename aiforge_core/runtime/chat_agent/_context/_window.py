@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
 import os
+
+log = logging.getLogger("aiforge.chat.window")
 
 
 def _resolved_window(role: str | None = None) -> int:
@@ -235,6 +238,15 @@ def _cap_system_prompt(sys_msg: str, budget: int, *, protect: int = 0) -> str:
         keep = budget - len(_SYS_CAP_MARK)
         if keep <= 0:
             return sys_msg[:max(0, budget)]
+        if protect and keep < protect:
+            # The budget cannot even hold the region the caller called
+            # protected — the core prompt and the rules. Behaviour is unchanged
+            # (the cap wins, as the contract says), but this used to happen in
+            # total silence: `protect` was passed and never read, so a cap set
+            # below the core cut it mid-sentence and nothing said so.
+            log.warning(
+                "system prompt cap %d is smaller than the protected core (%d "
+                "chars) — the core itself is being truncated", budget, protect)
         return sys_msg[:keep] + _SYS_CAP_MARK
     except Exception:  # noqa: BLE001
         return sys_msg

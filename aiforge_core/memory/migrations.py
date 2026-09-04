@@ -65,6 +65,28 @@ _OKF_KEY_RENAMES = (("kind", "type"), ("source_url", "resource"),
                     ("updated_at", "timestamp"), ("created_at", "timestamp"))
 
 
+def _split_frontmatter(text: str) -> tuple[str, str, str] | None:
+    r"""``(opening, body, closing)`` of a YAML front-matter block, or None.
+
+    Index arithmetic instead of `\A(---\s*\n)(.*?)(\n---\s*\n?)`: a lazy
+    quantifier spanning a whole file is the denial-of-service shape a scanner
+    asks about, and "find the closing marker" is a str.find.
+    """
+    if not text.startswith("---"):
+        return None
+    first_nl = text.find("\n")
+    if first_nl == -1 or text[3:first_nl].strip():
+        return None                       # "---extra" is not an opener
+    close = text.find("\n---", first_nl)
+    if close == -1:
+        return None
+    end = text.find("\n", close + 1)
+    tail_end = end + 1 if end != -1 else len(text)
+    if text[close + 4:tail_end].strip():
+        return None                       # the closing line carries content
+    return text[:first_nl + 1], text[first_nl + 1:close], text[close:tail_end]
+
+
 def _rewrite_file_frontmatter_to_okf(path) -> bool:
     """Rename legacy frontmatter keys → OKF names in ONE md file's frontmatter
     block (body untouched). Idempotent: a key is renamed only when its OKF name
@@ -76,10 +98,10 @@ def _rewrite_file_frontmatter_to_okf(path) -> bool:
             text = fh.read()
     except OSError:
         return False
-    m = re.match(r"\A(---\s*\n)(.*?)(\n---\s*\n?)", text, re.DOTALL)
-    if not m:
+    parsed = _split_frontmatter(text)
+    if parsed is None:
         return False
-    head, fm, tail = m.group(1), m.group(2), m.group(3)
+    head, fm, tail = parsed
     lines = fm.split("\n")
     present = {ln.split(":", 1)[0].strip() for ln in lines if ":" in ln}
     changed = False
@@ -98,7 +120,11 @@ def _rewrite_file_frontmatter_to_okf(path) -> bool:
             out_lines.append(ln)
     if not changed:
         return False
-    new_text = head + "\n".join(out_lines) + tail + text[m.end():]
+    # head + body + closing marker, then everything after the block. The old
+    # form used the match object's end(); the split helper returns the three
+    # pieces, so the remainder is simply what their lengths do not cover.
+    consumed = len(head) + len(fm) + len(tail)
+    new_text = head + "\n".join(out_lines) + tail + text[consumed:]
     try:
         _atomic.write_text(path, new_text)
     except OSError:

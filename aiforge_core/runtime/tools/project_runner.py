@@ -301,12 +301,9 @@ def _exec(cmd: str, cwd: str, timeout: int) -> dict:
 
 
 def _kill(proc) -> None:
-    import signal
-    for s in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(os.getpgid(proc.pid), s)
-        except Exception:  # noqa: BLE001
-            pass
+    from aiforge_core.runtime import proc_signals
+    proc_signals.stop_group(proc_signals.group_of(proc),
+                            pid=getattr(proc, "pid", None), pause_s=0.0)
 
 
 def project(action: str = "detect", cwd: str = ".", timeout: int = 1800) -> dict:

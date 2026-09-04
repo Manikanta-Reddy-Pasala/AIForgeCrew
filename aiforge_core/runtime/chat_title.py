@@ -11,11 +11,10 @@ import re
 
 # Grouped explicitly — see the note in memory/okf/tiers.py.
 # POSSESSIVE quantifiers (`++`, Python 3.11+ and this project requires >=3.11).
-# `\W+$`-style strips backtrack super-linearly on input that does NOT match:
-# the engine retries the run at every length before giving up. `++` never
-# gives characters back, which is exactly right for a strip and turns the
-# scan linear.
-_BAD = re.compile(r'(?:^["\'`\s]++)|(?:["\'`\s]++$)')
+# The characters a model wraps a title in. `str.strip` takes a SET of them and
+# is linear by construction — the regex form (`^["\'`\s]+|["\'`\s]+$`) is the
+# shape a scanner flags as a denial-of-service risk, and it bought nothing.
+_EDGE_CHARS = "\"'`" + " \t\n\r\f\v"
 
 # A reasoning model (triage role) emits chain-of-thought first; capped at a few
 # tokens it leaks TRUNCATED CoT ("Thinking Process:", "The user is asking…") that
@@ -44,7 +43,7 @@ def _extract_title(out: str, prompt: str) -> str:
     lines = []
     for ln in cleaned.splitlines():
         ln = re.sub(r"^(title|chat)\s*[:\-]\s*", "", ln.strip(), flags=re.I)
-        ln = _BAD.sub("", ln)
+        ln = ln.strip(_EDGE_CHARS)
         if ln:
             lines.append(ln)
     # A reasoning model concludes with the title LAST — prefer the last clean line.
@@ -63,9 +62,31 @@ _VERB = re.compile(
     r"analyse|analyze|summar[iy][sz]e|describe|review|design|set ?up|refactor|"
     r"debug|investigate|update)\s+(a|an|the|me|some)?\s*", re.I)
 # Trailing clause that adds noise ("… with tests", "… across 3 modules").
-_TAIL = re.compile(
-    r"\s++(with|across|using|that|which|so that|in order to|and then|plus|,)\b.*$",
-    re.I | re.S)
+# A word scan, not `\s+(a|b|c)\b.*$` over user text: the regex form is the
+# denial-of-service shape a scanner asks about, and "cut at the first of these
+# words" is what it was doing.
+_TAIL_WORDS = ("with", "across", "using", "that", "which", "so", "in",
+               "and", "plus")
+_TAIL_PHRASES = {"so that", "in order to", "and then"}
+
+
+def _cut_tail_clause(text: str) -> str:
+    """Everything before the first noise connector (or the whole string)."""
+    if "," in text:
+        text = text.split(",", 1)[0]
+    words = text.split()
+    for i, word in enumerate(words):
+        low = word.lower()
+        if low in ("so", "in", "and"):
+            # only as part of the phrase — "and then", not a bare "and"
+            two = " ".join(w.lower() for w in words[i:i + 2])
+            three = " ".join(w.lower() for w in words[i:i + 3])
+            if two in _TAIL_PHRASES or three in _TAIL_PHRASES:
+                return " ".join(words[:i])
+            continue
+        if low in _TAIL_WORDS:
+            return " ".join(words[:i])
+    return text
 
 
 def provisional_title(text: str, max_words: int = 7, max_chars: int = 48) -> str:
@@ -80,7 +101,7 @@ def provisional_title(text: str, max_words: int = 7, max_chars: int = 48) -> str
     t = t.splitlines()[0]
     t = _LEAD.sub("", t)
     t = _VERB.sub("", t)
-    t = _TAIL.sub("", t)
+    t = _cut_tail_clause(t)
     t = t.strip(" .,:;-—")
     words = t.split()
     if words:

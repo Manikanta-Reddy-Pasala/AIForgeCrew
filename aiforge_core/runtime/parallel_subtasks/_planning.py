@@ -159,12 +159,25 @@ _VERB_RE = re.compile(r"\b(?:" + "|".join(_ACTION_VERBS) + r")\b", re.I)
 # "CI/CD", "read/write" — those name no file, so a verb + one of those wrongly
 # skipped enhancement and lost the memory/README context-fold. Concrete now
 # means "names an actual code file".
-# ONE character class, not a quantified group over the same characters: the
-# earlier shape was `[\w/-]+(?:\.[\w/-]+)*\.(ext)`, and on a long path-like
-# run that never ends in a known extension the two quantifiers can split the
-# same text in exponentially many ways. Dots simply belong in the class.
-_FILE_EXT_RE = re.compile(
-    r"[\w./-]*[\w-]\.(?:py|js|ts|tsx|jsx|java|go|rs|md|json|ya?ml|sql)\b", re.I)
+# TOKENS, not a pattern. "Does this text name a code file" is a suffix test on
+# each word, and a quantifier over a user's prompt is the denial-of-service
+# shape a scanner asks about — an earlier version of this very line was one.
+_CODE_EXTS = (".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".go", ".rs",
+              ".md", ".json", ".yaml", ".yml", ".sql")
+
+
+def _names_a_code_file(text: str) -> bool:
+    """True when ``text`` mentions something that looks like a real code file
+    ("src/app.py"), rather than a slash-phrase like "TCP/IP" or "read/write"."""
+    for raw in (text or "").split():
+        token = raw.strip("\"'`(),;:[]{}<>").lower()
+        stem = token.rsplit("/", 1)[-1]
+        if "." not in stem:
+            continue
+        if any(stem.endswith(ext) and len(stem) > len(ext)
+               for ext in _CODE_EXTS):
+            return True
+    return False
 # Multi-part connectors that mean "enhance, don't skip" (a list / sequence).
 _MULTIPART_RE = re.compile(r"\band\b|\bthen\b|;| & ", re.I)
 
@@ -195,7 +208,7 @@ def _is_concrete_prompt(prompt: str) -> bool:
         return False
     if not _VERB_RE.search(low):        # no action verb → not an imperative
         return False
-    return bool(_FILE_EXT_RE.search(p))  # must name an actual code file
+    return _names_a_code_file(p)          # must name an actual code file
 
 
 def _memory_block(prompt: str, repo: str | None) -> str:
@@ -764,7 +777,7 @@ def _plan_files(files: list[dict]) -> list[dict]:
         if slug in seen_slugs:
             # Same basename as an earlier file — append a short stable hash of
             # the full path so the worktree dir/branch stays unique.
-            suffix = hashlib.sha1(path.encode("utf-8")).hexdigest()[:6]
+            suffix = hashlib.sha1(path.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
             slug = f"{slug}-{suffix}"
         seen_slugs.add(slug)
         _api = [str(a) for a in (f.get("api") or []) if a]

@@ -199,10 +199,8 @@ def _strip_echoed_command(body: str, command: str) -> str:
 def _kill_group_and_reap(proc) -> tuple[bytes, bytes]:
     """SIGKILL the process group and drain it, so we don't leak pipe FDs or
     leave a zombie accumulating across a long Doer run."""
-    try:
-        os.killpg(os.getpgid(proc.pid), 9)
-    except Exception:  # noqa: BLE001
-        pass
+    from aiforge_core.runtime import proc_signals
+    proc_signals.kill_group(proc_signals.group_of(proc))
     try:
         return proc.communicate(timeout=5)
     except Exception:  # noqa: BLE001

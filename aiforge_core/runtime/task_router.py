@@ -83,6 +83,8 @@ def classify_task(prompt: str, history=None, cwd: str | None = None) -> "str | N
     disabled / errored / ambiguous (caller then uses its regex fallback so
     routing never hard-depends on the model). Deterministic trivial/greeting →
     ``chat`` without an LLM call."""
+    # unused, deliberately: routing reads the prompt only; cwd stays for call-site symmetry.
+    del cwd
     p = (prompt or "").strip()
     if not p or _disabled():
         return None

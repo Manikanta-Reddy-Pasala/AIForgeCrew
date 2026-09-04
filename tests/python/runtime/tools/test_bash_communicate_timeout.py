@@ -48,7 +48,9 @@ def bash(monkeypatch):
 
 def test_communicate_timeout_kills_group_and_returns(bash, monkeypatch):
     killed = []
-    monkeypatch.setattr(bash.os, "killpg", lambda pgid, sig: killed.append((pgid, sig)))
+    from aiforge_core.runtime import proc_signals as _ps
+    monkeypatch.setattr(_ps.os, "killpg",
+                        lambda pgid, sig: killed.append((pgid, sig)))
 
     res = bash._fallback_run("npm run dev &", timeout=5)
 
@@ -68,7 +70,8 @@ def test_normal_fast_command_unaffected(bash, monkeypatch):
 
     monkeypatch.setattr(bash.subprocess, "Popen", lambda *a, **k: _FastProc())
     killed = []
-    monkeypatch.setattr(bash.os, "killpg", lambda pgid, sig: killed.append(1))
+    from aiforge_core.runtime import proc_signals as _ps
+    monkeypatch.setattr(_ps.os, "killpg", lambda pgid, sig: killed.append(1))
 
     res = bash._fallback_run("echo hello", timeout=5)
     assert res["ok"] is True

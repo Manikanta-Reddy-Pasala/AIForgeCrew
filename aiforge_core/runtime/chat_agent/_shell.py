@@ -759,10 +759,9 @@ def _timeout_result(proc, timeout: int) -> dict:
     sees partial output (e.g. which tests ran/passed before the hang) and can
     adapt — instead of a blind "timeout" with no signal."""
     import signal as _sig
-    try:
-        os.killpg(os.getpgid(proc.pid), _sig.SIGTERM)
-    except Exception:  # noqa: BLE001
-        pass
+
+    from aiforge_core.runtime import proc_signals
+    proc_signals.kill_group(proc_signals.group_of(proc), _sig.SIGTERM)
     drained = _drain(proc)
     if drained is None:
         _kill_proc(proc)
@@ -846,15 +845,14 @@ def _t_run_command(args: dict, cwd: str) -> dict:
 
 
 def _kill_proc(proc) -> None:
-    import signal as _sig
-    for s in (_sig.SIGTERM, _sig.SIGKILL):
+    from aiforge_core.runtime import proc_signals
+    if not proc_signals.stop_group(proc_signals.group_of(proc),
+                                   pid=getattr(proc, "pid", None),
+                                   pause_s=0.0):
         try:
-            os.killpg(os.getpgid(proc.pid), s)
-        except Exception:  # noqa: BLE001
-            try:
-                proc.kill()
-            except Exception:  # noqa: BLE001
-                pass
+            proc.kill()
+        except Exception:  # noqa: BLE001 — already gone
+            pass
     # Reap so the killed child's pipe FDs are freed (no zombie leak).
     try:
         proc.communicate(timeout=5)

@@ -584,9 +584,12 @@ _ensure_node() {
   echo "==> fetching portable Node ${ver} (${os}-${arch}) into ${base}…"
   tmp="$(mktemp -d)"
   if command -v curl >/dev/null 2>&1; then
-    curl -LsSf "$url" -o "$tmp/node.tgz" || { rm -rf "$tmp"; return 0; }
+    # --proto '=https': a redirect may not downgrade to cleartext.
+    curl --proto '=https' --tlsv1.2 -LsSf "$url" -o "$tmp/node.tgz" \
+      || { rm -rf "$tmp"; return 0; }
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$tmp/node.tgz" "$url" || { rm -rf "$tmp"; return 0; }
+    wget --https-only -qO "$tmp/node.tgz" "$url" \
+      || { rm -rf "$tmp"; return 0; }
   else
     rm -rf "$tmp"; return 0
   fi
@@ -603,12 +606,27 @@ _ensure_node() {
 # MUST be called with the working dir already at web/.
 _npm_ci_resilient() {
   if [[ -n "${AIFORGE_NPM_REGISTRY:-}" ]]; then
-    npm ci --registry="$AIFORGE_NPM_REGISTRY"; return $?
+    npm ci --ignore-scripts --registry="$AIFORGE_NPM_REGISTRY"; return $?
   fi
-  npm ci && return 0
+  npm ci --ignore-scripts && return 0
   echo "==> npm ci failed on the configured registry (a private mirror may be" >&2
   echo "==> missing a package) — retrying against https://registry.npmjs.org/" >&2
-  npm ci --registry=https://registry.npmjs.org/
+  npm ci --ignore-scripts --registry=https://registry.npmjs.org/
+}
+
+# The scheme to PRINT for the UI. AIForge itself listens on plain HTTP and is
+# meant to sit behind loopback or a reverse proxy; when the operator fronts it
+# with TLS (AIFORGE_PUBLIC_SCHEME=https, or AIFORGE_TLS set) the banner has to
+# say so, or they copy a URL that will not connect. Hardcoding the scheme was
+# both wrong there and a cleartext-protocol finding.
+_ui_scheme() {
+  if [[ -n "${AIFORGE_PUBLIC_SCHEME:-}" ]]; then
+    printf '%s' "${AIFORGE_PUBLIC_SCHEME}"
+  elif [[ -n "${AIFORGE_TLS:-}" ]]; then
+    printf 'https'
+  else
+    printf 'http'
+  fi
 }
 
 # ── Single mode: SQLite on the host (no Docker infra to bring up) ─────────
@@ -633,7 +651,7 @@ if [[ "$MODE" == "docker" ]]; then
   mkdir -p "${AIFORGE_DATA_DIR:-./data}/aiforge"
   echo "==> docker mode: building the all-deps image (~2GB, first build takes a few minutes)…"
   "${DC[@]}" up -d --build
-  echo "==> AIForge is up. UI: http://${HOST}:${PORT}/ui/   (logs: ${DC[*]} logs -f aiforge)"
+  echo "==> AIForge is up. UI: $(_ui_scheme)://${HOST}:${PORT}/ui/   (logs: ${DC[*]} logs -f aiforge)"
   echo "==> full host FS mounted at /host — set AIFORGE_HOST_ROOT to narrow it."
   exit 0
 fi
@@ -700,9 +718,9 @@ fi
 if ! command -v uv >/dev/null 2>&1; then
   echo "==> 'uv' not found — installing (astral.sh)…"
   if command -v curl >/dev/null 2>&1; then
-    curl -LsSf https://astral.sh/uv/install.sh | sh || true
+    curl --proto '=https' --tlsv1.2 -LsSf https://astral.sh/uv/install.sh | sh || true
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO- https://astral.sh/uv/install.sh | sh || true
+    wget --https-only -qO- https://astral.sh/uv/install.sh | sh || true
   else
     echo "==> need curl or wget to auto-install uv" >&2
   fi
@@ -1071,7 +1089,7 @@ if [[ -n "$_CG_BIN" && -x "$_CG_BIN" && -n "${AIFORGE_CODEGRAPH_REPOS:-}" ]]; th
 fi
 
 echo ""
-echo "  AIForge → http://${HOST}:${PORT}/ui/   storage: SQLite + scoped-OKR memory"
+echo "  AIForge → $(_ui_scheme)://${HOST}:${PORT}/ui/   storage: SQLite + scoped-OKR memory"
 echo "  code context: RepoMap + CodeGraph"
 [[ -n "${AIFORGE_WORKSPACE_DIR:-}" ]] \
   && echo "  chat fs scope: ${AIFORGE_WORKSPACE_DIR}" \

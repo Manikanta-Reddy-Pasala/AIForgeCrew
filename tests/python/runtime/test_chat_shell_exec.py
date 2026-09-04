@@ -227,7 +227,8 @@ def run(monkeypatch, repo, gates):
                         lambda cmd, **kw: state.update(spawn=(cmd, kw))
                         or state["proc"])
     monkeypatch.setattr(S.os, "getpgid", lambda pid: 999)
-    monkeypatch.setattr(S.os, "killpg",
+    from aiforge_core.runtime import proc_signals as _ps
+    monkeypatch.setattr(_ps.os, "killpg",
                         lambda pgid, sig: state["killed"].append(sig))
     monkeypatch.setattr(chat_cancel, "active", lambda: state["sid"])
     monkeypatch.setattr(chat_cancel, "is_cancelled",
@@ -325,7 +326,8 @@ def test_a_killed_process_is_reaped(run):
 
 def test_a_process_that_cannot_be_signalled_is_killed_directly(run,
                                                                monkeypatch):
-    monkeypatch.setattr(S.os, "killpg",
+    from aiforge_core.runtime import proc_signals as _ps
+    monkeypatch.setattr(_ps.os, "killpg",
                         lambda pgid, sig: (_ for _ in ()).throw(OSError("gone")))
     proc = _Proc()
     S._kill_proc(proc)

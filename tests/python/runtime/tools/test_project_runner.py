@@ -357,7 +357,8 @@ def test_the_killer_escalates_and_never_raises(monkeypatch):
     class _Proc:
         pid = 1234
     monkeypatch.setattr(os, "getpgid", lambda pid: pid)
-    monkeypatch.setattr(os, "killpg", lambda pgid, sig: signals.append(sig))
+    from aiforge_core.runtime import proc_signals as _ps
+    monkeypatch.setattr(_ps.os, "killpg", lambda pgid, sig: signals.append(sig))
     pr._kill(_Proc())
     assert len(signals) == 2                      # SIGTERM then SIGKILL
 

@@ -190,6 +190,8 @@ def _memory_write_impl(
         "Decision_v2", "deduped": bool}`` on success;
         ``{"ok": False, "error": str}`` on any failure.
     """
+    # unused, deliberately: embedding is computed by the store, not passed in.
+    del embed_vec
     text = (text or "").strip()
     if not text:
         return {"ok": False, "error": "empty_text"}

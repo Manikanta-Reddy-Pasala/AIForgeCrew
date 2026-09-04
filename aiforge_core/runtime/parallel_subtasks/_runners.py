@@ -136,18 +136,48 @@ def _enforce_target_path(worktree: str, path: str) -> None:
 _FILE_BLOCK_RE = None  # lazy-compiled in _parse_file_blocks
 
 
+def _marker_sections(text: str) -> list[tuple[str, str]]:
+    """``(path, body)`` for every ``=== path ===`` block in ``text``.
+
+    A line scan: a marker is a whole line, so nothing here needs a quantifier
+    over the model's entire reply.
+    """
+    sections: list[tuple[str, str]] = []
+    path: str | None = None
+    body: list[str] = []
+    for line in (text or "").split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("===") and stripped.endswith("===") \
+                and len(stripped) > 6:
+            inner = stripped[3:-3].strip().strip("`")
+            if inner and "=" not in inner:
+                if path is not None:
+                    sections.append((path, "\n".join(body)))
+                path, body = inner, []
+                continue
+        if path is not None:
+            body.append(line)
+    if path is not None:
+        sections.append((path, "\n".join(body)))
+    return sections
+
+
 def _parse_file_blocks(text: str) -> dict:
     """Parse ``=== path/to/file ===\\n<content>`` blocks (also fenced ``)."""
-    import re
     blocks: dict = {}
-    # === path === markers
-    for m in re.finditer(r"^===\s*([^\n=]+?)\s*===\n(.*?)(?=(?:^===\s*[^\n=]+?\s*===)|\Z)",
-                         text, re.MULTILINE | re.DOTALL):
-        path = m.group(1).strip().strip("`")
-        body = m.group(2).strip()
+    # === path === markers. Scanned line by line rather than matched with a
+    # lazy quantifier + lookahead over the whole reply: that shape is what a
+    # scanner flags as a denial-of-service risk, and the markers are lines.
+    for path, body in _marker_sections(text):
         # strip a leading ```lang and trailing ``` fence if present
-        body = re.sub(r"^```[\w.+-]*\n", "", body)
-        body = re.sub(r"\n```\s*$", "", body)
+        body_lines = body.split("\n")
+        if body_lines and body_lines[0].startswith("```"):
+            body_lines.pop(0)
+        while body_lines and not body_lines[-1].strip():
+            body_lines.pop()
+        if body_lines and body_lines[-1].strip() == "```":
+            body_lines.pop()
+        body = "\n".join(body_lines).strip()
         if path and body:
             blocks[path] = body + "\n"
     return blocks

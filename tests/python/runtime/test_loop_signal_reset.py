@@ -15,8 +15,17 @@ class _FakeCtx:
         self.route = None
 
 
-def _run(coro):
-    return asyncio.run(coro)
+def _run(result):
+    """Drive a gate whether or not it is a coroutine.
+
+    The graph_pipeline gates are SYNC node functions (ADK calls a node function
+    directly and awaits it only when it is awaitable), so most calls return
+    their value outright. Tolerant rather than rewritten at every call site: a
+    gate that grows a genuine await later must not silently stop being driven.
+    """
+    if asyncio.iscoroutine(result):
+        return asyncio.run(result)
+    return result
 
 
 def test_loop_branch_clears_quality_signals() -> None:

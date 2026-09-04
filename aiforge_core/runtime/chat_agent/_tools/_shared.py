@@ -169,5 +169,5 @@ def _chat_run_id(cwd: str) -> str:
     process restarts, so a reconnecting session reattaches to the same tab.
     """
     import hashlib
-    digest = hashlib.md5((cwd or ".").encode("utf-8")).hexdigest()[:12]
+    digest = hashlib.md5((cwd or ".").encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
     return f"chat-{digest}"

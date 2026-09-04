@@ -571,7 +571,7 @@ def _compact_idle_sessions(idle_only: bool = True) -> bool:
             s, idle_only=idle_only, state=_SESSION_SCAN_STATE,
             max_windows=max_windows) or failed
     live = {(s or {}).get("id") for s in sessions}
-    for sid in list(_SESSION_SCAN_STATE):
+    for sid in tuple(_SESSION_SCAN_STATE):
         if sid not in live:
             _SESSION_SCAN_STATE.pop(sid, None)
     return not failed

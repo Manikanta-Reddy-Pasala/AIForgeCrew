@@ -310,8 +310,12 @@ def spawn(monkeypatch):
     state: dict = {"proc": _Proc(), "killed": []}
     monkeypatch.setattr(B.subprocess, "Popen",
                         lambda *a, **k: state.update(kw=k) or state["proc"])
-    monkeypatch.setattr(B.os, "getpgid", lambda pid: 999)
-    monkeypatch.setattr(B.os, "killpg",
+    from aiforge_core.runtime import proc_signals as _ps
+    # Signals go through runtime/proc_signals now (one audited place that
+    # refuses group 0 and this process's own group), so the stub belongs there
+    # rather than on each caller's `os`.
+    monkeypatch.setattr(_ps.os, "getpgid", lambda pid: 999)
+    monkeypatch.setattr(_ps.os, "killpg",
                         lambda pgid, sig: state["killed"].append((pgid, sig)))
     monkeypatch.setattr(B.time, "sleep", lambda s: None)
     return state

@@ -20,8 +20,11 @@ class _Ctx:
 
 
 async def _gate(state):
+    # The gate is a SYNC ADK node function now (ADK calls a node function and
+    # awaits it only when it is awaitable). The helper stays async because the
+    # test drives it through asyncio.run alongside async cases.
     ctx = _Ctx(state)
-    await _gates._loop_gate(ctx)
+    _gates._loop_gate(ctx)
     return ctx.route
 
 

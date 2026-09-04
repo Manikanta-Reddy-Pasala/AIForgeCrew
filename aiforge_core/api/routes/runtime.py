@@ -118,9 +118,8 @@ def set_llm_backend(payload: dict) -> dict:
     avail = {p["name"] for p in _list() if p["available"]}
     backend = (payload.get("backend") or "").strip().lower()
     if backend not in avail:
-        raise HTTPException(
-            400, f"backend must be one of {sorted(avail)}; got {backend!r}"
-        )
+        raise HTTPException(400, f"backend must be one of {sorted(avail)}; "
+                                 f"got {backend!r}")
     os.environ["AIFORGE_PRIMARY_BACKEND"] = backend
     _persist_env("AIFORGE_PRIMARY_BACKEND", backend)
     # Drop the legacy doer-only key so it doesn't shadow the global flag.

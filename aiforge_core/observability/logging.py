@@ -114,7 +114,7 @@ def _evict_old_run_loggers(name: str) -> None:
     while len(_run_logger_lru) > _RUN_LOGGER_CAP:
         old = _run_logger_lru.pop(0)
         ol = logging.getLogger(old)
-        for h in list(ol.handlers):
+        for h in tuple(ol.handlers):
             try:
                 h.close()
             except Exception:  # noqa: BLE001

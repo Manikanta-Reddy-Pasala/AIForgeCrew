@@ -16,7 +16,7 @@ echo ">>> 1/4 install backend deps (fastapi + uvicorn + pydantic already via ope
 echo ">>> 2/4 install frontend deps (npm)"
 cd "$REPO/web"
 if command -v npm >/dev/null 2>&1; then
-  npm install --no-audit --no-fund --silent
+  npm install --ignore-scripts --no-audit --no-fund --silent
   echo "   npm deps installed"
 else
   echo "   !! npm not on PATH — install Node first: brew install node"

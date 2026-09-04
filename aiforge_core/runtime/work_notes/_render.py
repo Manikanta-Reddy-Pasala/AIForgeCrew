@@ -241,10 +241,14 @@ class _NoteReader:
         return False
 
     def _take_heading(self, line: str) -> bool:
-        hm = re.match(r"^##[ \t]+(.+)$", line)
-        if not hm:
+        # A prefix test and a strip, not a quantifier over the line: same
+        # answer, and no denial-of-service question about note text.
+        if not line.startswith("##") or line[2:3] not in (" ", "\t"):
             return False
-        canon = _SECTION_KEYS.get(hm.group(1).strip().lower())
+        title = line[2:].strip()
+        if not title:
+            return False
+        canon = _SECTION_KEYS.get(title.lower())
         self._flush()
         if canon:
             self.current = canon

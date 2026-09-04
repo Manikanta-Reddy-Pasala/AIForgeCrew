@@ -54,9 +54,18 @@ def normalize_repo(name: "str | None") -> str:
     basename ('requests') — so writes filed under the annotated name were never
     found by recall. Normalising both sides to the bare name fixes the mismatch.
     Idempotent; a bare name passes through unchanged."""
-    import re
     n = (name or "").strip()
-    return re.sub(r"[ \t]*+\([^)]*+\)[ \t]*+$", "", n).strip() or n
+    # Strip ONE trailing "(...)" — 'requests (Python)' → 'requests'. Written
+    # with rfind rather than a trailing-group regex: the regex form is a
+    # quantifier over a name that arrives from user data, which is the
+    # denial-of-service shape a scanner asks about, and this is one index scan.
+    if n.endswith(")"):
+        open_at = n.rfind("(")
+        if open_at > 0:
+            trimmed = n[:open_at].strip()
+            if trimmed:
+                return trimmed
+    return n
 
 
 __all__ = ["git_toplevel", "repo_name", "normalize_repo"]

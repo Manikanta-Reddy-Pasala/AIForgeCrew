@@ -48,7 +48,7 @@ version() {
 build_wheel() {
   echo "==> building the web UI (it ships INSIDE the wheel — no npm on the target)"
   if [[ -f "$REPO_ROOT/web/package.json" ]]; then
-    ( cd "$REPO_ROOT/web" && npm ci --no-audit --no-fund && npm run build )
+    ( cd "$REPO_ROOT/web" && npm ci --ignore-scripts --no-audit --no-fund && npm run build )
   fi
   # The API resolves its UI from aiforge_core/web_dist when installed (see the
   # two candidates in api.py) — the repo path does not exist inside site-packages.
@@ -85,7 +85,9 @@ fetch_uv() {
   fi
   url="https://github.com/astral-sh/uv/releases/latest/download/$asset"
   echo "==> fetching uv for $target"
-  curl -fsSL "$url" -o "$dest/$asset"
+  # --proto '=https': the release URL is https and a redirect may
+  # not move it to cleartext.
+  curl --proto '=https' --tlsv1.2 -fsSL "$url" -o "$dest/$asset"
   ( cd "$dest" && case "$asset" in
       *.tar.gz) tar -xzf "$asset" --strip-components=1 ;;
       *.zip)    unzip -qo "$asset" ;;

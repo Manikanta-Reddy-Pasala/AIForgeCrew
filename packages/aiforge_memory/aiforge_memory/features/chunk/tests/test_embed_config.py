@@ -15,11 +15,11 @@ def test_defaults_reproduce_bge_m3(monkeypatch) -> None:
 
 def test_env_overrides_take_effect(monkeypatch) -> None:
     monkeypatch.setenv("AIFORGE_EMBED_MODEL", "nomic-embed-text")
-    monkeypatch.setenv("AIFORGE_EMBED_URL", "http://10.0.0.5:9000/")
+    monkeypatch.setenv("AIFORGE_EMBED_URL", "https://embed.test.invalid:9000/")
     monkeypatch.setenv("AIFORGE_EMBED_DIM", "768")
     cfg = em.embed_config()
     assert cfg["model"] == "nomic-embed-text"
-    assert cfg["url"] == "http://10.0.0.5:9000/"
+    assert cfg["url"] == "https://embed.test.invalid:9000/"
     assert cfg["dim"] == 768
 
 

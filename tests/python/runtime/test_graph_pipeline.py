@@ -21,8 +21,17 @@ class _FakeCtx:
         self.route = None
 
 
-def _run(coro):
-    return asyncio.run(coro)
+def _run(result):
+    """Drive a gate, whether it is a coroutine or not.
+
+    The gates are SYNC node functions now — ADK calls a node function directly
+    and awaits it only when it is awaitable — so most calls here return their
+    value outright. Kept tolerant rather than rewritten at 20 call sites: a
+    gate that grows a genuine await later must not silently stop being driven.
+    """
+    if asyncio.iscoroutine(result):
+        return asyncio.run(result)
+    return result
 
 
 # ── pure helpers ───────────────────────────────────────────────────────

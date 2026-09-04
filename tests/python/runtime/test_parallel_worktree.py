@@ -443,9 +443,12 @@ _CONFLICT = ("def f():\n"
 
 def test_breadcrumbs_come_from_around_the_hunk():
     content = "a\nb\nc\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> in\nd\ne\n"
-    m = wt._CONFLICT_RE.search(content)
-    above, below = wt._hunk_breadcrumbs(content, m.span(), 2)
+    # The hunk scanner replaced the DOTALL regex (a denial-of-service shape over
+    # a whole file); it reports the same character span.
+    hunk = wt._conflict_hunks(content)[0]
+    above, below = wt._hunk_breadcrumbs(content, hunk["span"], 2)
     assert above == "b\nc\n" and below.startswith("e")
+    assert hunk["head"] == "x" and hunk["incoming"] == "y"
 
 
 @pytest.mark.parametrize("text,conflicted", [

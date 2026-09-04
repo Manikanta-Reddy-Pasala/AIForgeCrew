@@ -154,6 +154,8 @@ def classify(message: str, *, repo: str | None = None,
     error / non-JSON / unknown category / below-threshold confidence →
     ``{"category": "none", ...}``. The kill-switch env
     ``AIFORGE_RULE_CAPTURE_DISABLE=1`` short-circuits to none."""
+    # unused, deliberately: classification is per-message; repo/session are the caller's context, not inputs.
+    del repo, session_id
     from aiforge_core.runtime import rule_capture as _rc
     if _disabled() or not (message or "").strip():
         return _none()

@@ -96,6 +96,8 @@ def _global_vector_recall(_text: str, *, limit: int,
     index that has been removed (SQLite-only build). The embedded SQLite
     vector recall (source 1) now owns semantic recall, so this is a no-op
     that returns []."""
+    # unused, deliberately: the graph vector index this took is gone (SQLite-only build); the signature stays for the caller.
+    del limit, repo
     return []
 
 

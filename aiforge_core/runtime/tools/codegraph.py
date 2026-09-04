@@ -100,7 +100,7 @@ def _build_lock_path(repo: str) -> str:
         canon = os.path.normcase(os.path.realpath(repo))
     except Exception:  # noqa: BLE001
         canon = os.path.normcase(os.path.abspath(repo))
-    h = hashlib.sha1(canon.encode("utf-8", "replace")).hexdigest()[:16]
+    h = hashlib.sha1(canon.encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:16]
     return os.path.join(tempfile.gettempdir(), f"aiforge-codegraph-{h}.lock")
 
 

@@ -53,17 +53,37 @@ def _spec_goal(cwd: str) -> str:
     return ""
 
 
+_SOURCE_EXTS = (".py", ".java", ".go", ".js", ".mjs", ".ts", ".tsx", ".rs",
+                ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".rb", ".php")
+
+
+def _source_tokens(output: str) -> list[str]:
+    """Every word in ``output`` that looks like a source-file path."""
+    out: list[str] = []
+    for raw in (output or "").replace("\\", "/").split():
+        # A pytest node id ("tests/test_a.py::test_b") and a trailing quote or
+        # comma both wrap the path the old pattern found INSIDE the token.
+        token = raw.strip("\"'`(),;[]{}<>").split("::", 1)[0].rstrip(":,")
+        # "app/store.py:12" and "src/main.rs:12:5" — compilers and tracebacks
+        # append the position to the path. Drop trailing :<digits> groups.
+        while ":" in token and token.rsplit(":", 1)[-1].isdigit():
+            token = token.rsplit(":", 1)[0]
+        stem = token.rsplit("/", 1)[-1]
+        if any(stem.lower().endswith(ext) and len(stem) > len(ext)
+               for ext in _SOURCE_EXTS):
+            out.append(token)
+    return out
+
+
 def _files_in_output(cwd: str, output: str) -> set:
     """Source files REFERENCED in the failing test/build output — minimal,
     targeted context for the resolver (not the whole tree)."""
     import re as _re
     hits: set = set()
-    # One class rather than a quantified group over the same characters — see
-    # the note on _FILE_EXT_RE in _planning.py. Build output is attacker-shaped
-    # input in the sense that matters here: it is long, and it is full of
-    # path-like runs that do not end in an extension.
-    _path_re = r"([\w./\\-]*[\w-]\.(?:py|java|go|js|mjs|ts|tsx|rs|c|cc|cpp|cxx|h|hpp|rb|php))"
-    for m in _re.findall(_path_re, output):
+    # Tokens, not a pattern: build output is long and full of path-like runs,
+    # and a quantifier over it is the denial-of-service shape a scanner asks
+    # about. A word that ends in a source extension is what we are looking for.
+    for m in _source_tokens(output):
         p = m.replace("\\", "/")
         if os.path.isabs(p) and p.startswith(cwd):
             p = os.path.relpath(p, cwd)

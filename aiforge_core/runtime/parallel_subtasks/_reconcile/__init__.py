@@ -71,8 +71,8 @@ from ._drift import (
     _symbol_drift_report,
 )
 from ._rewrite import (
-    _FILE_HDR_RE,
-    _PATCH_RE,
+    _file_headers,
+    _patches,
     _apply_patches,
     _rewrite_fix,
 )

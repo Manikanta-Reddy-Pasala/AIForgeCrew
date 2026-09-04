@@ -106,7 +106,7 @@ def _prune_locked() -> None:
     if len(_RUNS) <= _MAX_RUNS:
         return
     # Evict finished runs in insertion order (oldest first) until under cap.
-    for sid in list(_RUNS):
+    for sid in tuple(_RUNS):
         if len(_RUNS) <= _MAX_RUNS:
             break
         if _RUNS[sid].done:

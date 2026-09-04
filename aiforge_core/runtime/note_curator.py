@@ -206,6 +206,8 @@ def curate_note(path: str, cwd: str | None = None) -> dict:
 
     Returns ``{"ok": bool, "updated": bool, "changes": [str, ...]}``.
     NEVER raises."""
+    # unused, deliberately: notes resolve their own source; cwd stays for call-site symmetry.
+    del cwd
     try:
         return _curate(path)
     except Exception as exc:  # noqa: BLE001 — hard soft-error boundary

@@ -52,7 +52,7 @@ def _force_full_pipeline() -> bool:
         in ("1", "true", "yes", "on")
 
 
-async def _triage_gate(ctx):  # type: ignore[no-untyped-def]
+def _triage_gate(ctx):  # type: ignore[no-untyped-def]
     complexity = _read_complexity(ctx.state)
     # Fast-path skips enhancer→research→planner→verifiers straight to the Doer
     # for a 'trivial' ticket. Set AIFORGE_FORCE_FULL_PIPELINE=1 to always take
@@ -108,7 +108,7 @@ _PER_ITER_KEYS = (
 )
 
 
-async def _loop_gate(ctx):  # type: ignore[no-untyped-def]
+def _loop_gate(ctx):  # type: ignore[no-untyped-def]
     state = ctx.state
     iters = int(state.get("doer_iters", 0) or 0) + 1
     state["doer_iters"] = iters
@@ -145,7 +145,7 @@ async def _loop_gate(ctx):  # type: ignore[no-untyped-def]
                          "kill": kill, "wall_kill": wall_kill})
 
 
-async def _validator_gate(ctx):  # type: ignore[no-untyped-def]
+def _validator_gate(ctx):  # type: ignore[no-untyped-def]
     state = ctx.state
     replans = int(state.get("replan_count", 0) or 0)
     # Loop-engineering STOP condition (plateau/replan cap). If the Doer
@@ -199,7 +199,7 @@ async def _validator_gate(ctx):  # type: ignore[no-untyped-def]
         ctx.route = ROUTE_DONE
 
 
-async def _verifier_gate(ctx):  # type: ignore[no-untyped-def]
+def _verifier_gate(ctx):  # type: ignore[no-untyped-def]
     """Act on the merged verifier verdict. A rejected plan loops back to
     the Planner ONCE (bounded) instead of handing a known-bad plan to the
     Doer; otherwise proceed to the Doer."""
@@ -230,7 +230,7 @@ async def _verifier_gate(ctx):  # type: ignore[no-untyped-def]
         ctx.route = ROUTE_VERIFY_PASS
 
 
-async def _gap_gate(ctx):  # type: ignore[no-untyped-def]
+def _gap_gate(ctx):  # type: ignore[no-untyped-def]
     """Bounded research-completeness loop. If the gap-evaluator judged
     research insufficient and we have budget, re-dispatch the context
     fan-out (route research_gap → research_entry) with a targeted hint;
@@ -344,7 +344,7 @@ def _refresh_scoped_rules(state, merged: list[str]) -> None:
         pass
 
 
-async def _plan_promote(ctx):  # type: ignore[no-untyped-def]
+def _plan_promote(ctx):  # type: ignore[no-untyped-def]
     """Promote structured fields out of the Planner's raw ``plan_md``.
 
     The Planner emits one JSON blob under ``plan_md``; nothing else

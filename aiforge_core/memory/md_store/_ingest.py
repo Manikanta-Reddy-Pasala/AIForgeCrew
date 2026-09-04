@@ -69,7 +69,7 @@ def write(title: str, text: str, *, kind: str = "note",
     knowledge should go through ``capture()`` (which classifies + stamps)."""
     tags = list(tags or [])
     created = _now_iso()
-    digest = hashlib.sha1((title + text).encode()).hexdigest()[:6]
+    digest = hashlib.sha1((title + text).encode(), usedforsecurity=False).hexdigest()[:6]
     stem = f"{_slug(title)}-{created[:10].replace('-', '')}-{digest}"
     # RESERVED PREFIX GUARD: never let a per-note capture start with
     # ``compacted-``. compact() EXCLUDES every ``compacted-*`` file from its

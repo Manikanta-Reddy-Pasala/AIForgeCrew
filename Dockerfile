@@ -12,7 +12,7 @@
 FROM node:20-slim AS web
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
-RUN npm ci
+RUN npm ci --ignore-scripts
 COPY web/ ./
 RUN npm run build
 
@@ -27,6 +27,10 @@ ENV UV_SYSTEM_PYTHON=1 PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     HF_HOME=/opt/hf-cache
 
+# Builder stage: the repo minus everything .dockerignore excludes (.git, .venv,
+# data/, .aiforge/ with its credentials and databases, node_modules, caches and
+# now .env / *.pem / *.key). Nothing from this stage reaches the runtime image
+# except site-packages, /usr/local/bin and the model cache.
 COPY . .
 # Vendored memory pkg, then the Crew + extras. Semantic recall uses model2vec
 # (embed-static) — real static embeddings with NO torch, so the image stays
@@ -79,10 +83,31 @@ ENV PYTHONUNBUFFERED=1 \
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 COPY --from=builder /opt/hf-cache /opt/hf-cache
+# The repo, minus everything .dockerignore excludes — .git, .venv, data/,
+# .aiforge/ (credentials + databases), node_modules, models and caches. That
+# file is what keeps a recursive copy from carrying secrets into the image, so
+# it is part of this line, not incidental to it.
 COPY . .
 COPY --from=web /web/dist ./web/dist
 
-RUN mkdir -p /data/aiforge && chmod +x docker/entrypoint.sh
+# ── who the app runs as ───────────────────────────────────────────────────
+# Not root. The default `python` image leaves you as uid 0, which means the
+# agent's shell, its file edits and anything it installs all run with full
+# privileges inside the container — and, on a bind mount, write root-owned
+# files onto the host.
+#
+# The uid is a BUILD ARG because this image mounts host directories (the
+# workspace, /data): a container user whose uid does not match the host owner
+# cannot write them. Match it to your own (`id -u`) when the default is wrong:
+#     docker build --build-arg APP_UID=$(id -u) .
+ARG APP_UID=1000
+ARG APP_GID=1000
+RUN groupadd --gid "$APP_GID" aiforge 2>/dev/null || true \
+    && useradd --uid "$APP_UID" --gid "$APP_GID" --create-home aiforge 2>/dev/null || true \
+    && mkdir -p /data/aiforge \
+    && chmod +x docker/entrypoint.sh \
+    && chown -R "$APP_UID:$APP_GID" /data /app 2>/dev/null || true
+USER aiforge
 EXPOSE 8799
 
 # SECURITY: binds LOOPBACK by default (this control plane runs shell + edits

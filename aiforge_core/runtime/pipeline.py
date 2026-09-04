@@ -283,6 +283,8 @@ def build_pipeline(*, skip_researcher: bool = False,
         things: which ``live_verifier`` recipe gets baked into the
         prompt baked into the live_verifier stage.
     """
+    # unused, deliberately: the recipe is baked into live_verifier, not the graph build.
+    del project
     from google.adk.workflow import START, Edge, Workflow
 
     from .graph_pipeline import (

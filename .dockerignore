@@ -20,3 +20,15 @@ neo4j-logs
 hf-cache
 *.pptx
 *.log
+# Secrets and build output must never enter the image — the recursive
+# COPY in the Dockerfile is bounded by THIS file.
+.env
+.env.*
+*.pem
+*.key
+**/.aiforge
+security
+sonar
+test-results
+.scannerwork
+coverage.xml

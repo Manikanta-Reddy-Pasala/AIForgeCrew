@@ -72,6 +72,8 @@ def capture(prompt: str, *, repo: str | None = None,
             session_id=None) -> dict:
     """Detect + upsert a durable preference from ``prompt``. Returns
     ``{ok, captured, subject?}``. Never raises."""
+    # unused, deliberately: capture is per-repo; the session id rides along for the caller's convenience.
+    del session_id
     if _disabled():
         return {"ok": False, "skipped": "disabled"}
     p = (prompt or "").strip()
