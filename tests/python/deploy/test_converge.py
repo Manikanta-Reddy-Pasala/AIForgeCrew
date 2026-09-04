@@ -7,6 +7,8 @@ seam (`_docker`) so the decision logic is exercised for real.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from aiforge_core.deploy import converge as cv
@@ -82,10 +84,16 @@ def test_neutralise_survives_an_unreadable_file(env, tmp_path, monkeypatch):
 def test_clear_pg_from_env_covers_repo_and_runtime_env(env, tmp_path):
     (tmp_path / "repo" / ".env").write_text("AIFORGE_PG_URL=a\n")
     (tmp_path / "repo" / "aiforge.env").write_text("NEO4J_URI=b\n")
-    (tmp_path / "cfg" / "runtime.env").write_text("AIFORGE_FORCE_PG=1\n")
+    # runtime.env lives with the other credentials now (config.secure_store),
+    # and a legacy copy is MOVED there on first resolution — so write it where
+    # the app will actually look for it.
+    from aiforge_core.config.secure_store import secure_path
+    runtime_env = Path(str(secure_path("runtime.env")))
+    runtime_env.parent.mkdir(parents=True, exist_ok=True)
+    runtime_env.write_text("AIFORGE_FORCE_PG=1\n")
     cv._clear_pg_from_env()
     for p in ((tmp_path / "repo" / ".env"), (tmp_path / "repo" / "aiforge.env"),
-              (tmp_path / "cfg" / "runtime.env")):
+              runtime_env):
         assert "# [converge→sqlite]" in p.read_text(), p
 
 

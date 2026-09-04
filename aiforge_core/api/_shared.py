@@ -10,8 +10,6 @@ import os
 import re
 import threading
 
-from aiforge_core.config.paths import config_dir
-
 
 def env_truthy(name: str) -> bool:
     """True when env var ``name`` is set to a truthy string (1/true/yes/on)."""
@@ -48,10 +46,18 @@ def _ticket_files_base():
 # runtime.env — UI-persisted toggles restored into the process env on boot.
 # The path + lock live here (shared) so both api.py's startup loader and the
 # runtime route module's _persist_env write/read the same single location.
-_RUNTIME_ENV_PATH = os.path.expanduser(
-    os.environ.get("AIFORGE_RUNTIME_ENV", os.path.join(
-        str(config_dir()), "runtime.env"))
-)
+def _runtime_env_path() -> str:
+    """runtime.env holds DB URLs and whatever key the Settings UI persisted, so
+    it lives with the other credentials in the 0700 ``security/`` folder.
+    AIFORGE_RUNTIME_ENV still wins for a deployment that mounts it."""
+    raw = (os.environ.get("AIFORGE_RUNTIME_ENV") or "").strip()
+    if raw:
+        return os.path.expanduser(raw)
+    from aiforge_core.config.secure_store import secure_path
+    return str(secure_path("runtime.env"))
+
+
+_RUNTIME_ENV_PATH = _runtime_env_path()
 _RUNTIME_ENV_LOCK = threading.Lock()
 
 

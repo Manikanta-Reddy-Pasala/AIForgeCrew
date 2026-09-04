@@ -122,7 +122,13 @@ def _enriched_catalog(provider: str) -> list[dict[str, Any]]:
 
 
 def _path() -> Path:
+    """Where the per-role config (and its api_keys) lives.
+
+    Resolved through ``secure_store``: credential files live in the 0700
+    ``security/`` folder, and a legacy file in the config root is MOVED there
+    the first time it is asked for."""
+    from aiforge_core.config.secure_store import secure_path
     root = Path(os.environ.get("AIFORGE_CONFIG_DIR",
                                os.path.expanduser("~/.aiforge")))
     root.mkdir(parents=True, exist_ok=True)
-    return root / "agent_config.json"
+    return secure_path("agent_config.json")

@@ -398,7 +398,12 @@ fi
 # page (or via env). Honours AIFORGE_CONFIG_DIR.
 if [[ "${RESET_CONFIG:-0}" == "1" ]]; then
   _cfg_dir="${AIFORGE_CONFIG_DIR:-$HOME/.aiforge}"
-  _cfg_file="$_cfg_dir/agent_config.json"
+  # Credentials live in $AIFORGE_CONFIG_DIR/security (see
+  # aiforge_core/config/secure_store.py). Fall back to the legacy root path for
+  # an install that has not booted since the move, or one running with
+  # AIFORGE_SECURE_STORE=0.
+  _cfg_file="${AIFORGE_SECURITY_DIR:-$_cfg_dir/security}/agent_config.json"
+  [[ -f "$_cfg_file" ]] || _cfg_file="$_cfg_dir/agent_config.json"
   if [[ -f "$_cfg_file" ]]; then
     mv -f "$_cfg_file" "$_cfg_file.bak.$(date +%s)" 2>/dev/null \
       && echo "==> agent config reset (backed up): $_cfg_file" \

@@ -14,7 +14,9 @@ Each archetype can be flipped between providers (local mlx_lm / Ollama
 Cloud / any OpenAI-compatible endpoint) without a redeploy. Env vars still
 override at read time so ops keeps a final-say escape hatch.
 
-Storage: ``$AIFORGE_CONFIG_DIR/agent_config.json`` (default ``~/.aiforge``).
+Storage: ``$AIFORGE_CONFIG_DIR/security/agent_config.json`` (0600 inside the
+0700 credential folder — see ``config.secure_store``; a legacy file in the
+config root is moved there on first use).
 
 This module was split (grouped by concern) into ``_state`` / ``_resolve`` /
 ``_persist`` / ``_litellm`` / ``_tools`` / ``_public`` submodules; this package

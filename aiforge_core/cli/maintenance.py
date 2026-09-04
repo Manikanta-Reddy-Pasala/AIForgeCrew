@@ -28,9 +28,8 @@ def _load_runtime_env() -> None:
     Existing env values WIN — explicit wrapper exports stay
     authoritative.
     """
-    path = os.path.expanduser(
-        os.environ.get("AIFORGE_RUNTIME_ENV", "~/.aiforge/runtime.env"),
-    )
+    from aiforge_core.api._shared import _runtime_env_path
+    path = _runtime_env_path()
     if not os.path.isfile(path):
         return
     with open(path, "r", encoding="utf-8", errors="replace") as fh:

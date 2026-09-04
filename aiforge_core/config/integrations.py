@@ -1,6 +1,7 @@
 """Persisted integration settings (Confluence, …) configured from the UI.
 
-Stored as ``$AIFORGE_CONFIG_DIR/integrations.json`` (default ``~/.aiforge``)
+Stored as ``$AIFORGE_CONFIG_DIR/security/integrations.json`` (the 0700
+credential folder — see ``config.secure_store``)
 — the same place per-role agent config lives. Env vars always WIN over the
 stored value at read time, so an operator can still override via ``.env`` /
 systemd without touching the UI.
@@ -8,7 +9,6 @@ systemd without touching the UI.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 from aiforge_core.config import _atomic
@@ -16,9 +16,13 @@ from aiforge_core.config.paths import config_dir
 
 
 def _path() -> Path:
+    """The tokens file, inside the 0700 ``security/`` folder (see
+    ``config.secure_store``); a legacy copy in the config root is moved there
+    on first use."""
+    from aiforge_core.config.secure_store import secure_path
     d = Path(str(config_dir()))
     d.mkdir(parents=True, exist_ok=True)
-    return d / "integrations.json"
+    return secure_path("integrations.json")
 
 
 def load_all() -> dict:

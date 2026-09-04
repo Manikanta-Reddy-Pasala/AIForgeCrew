@@ -52,7 +52,11 @@ _SECRET_FILES = (
 )
 # Directories whose CONTENTS are private: notes, transcripts, uploaded files.
 _SECRET_DIRS = ("memory", "memory-archive", "logs", "chat_traces", "runs",
-                "ticket-files", "backups", "checkpoints")
+                "ticket-files", "backups", "checkpoints",
+                # Every credential file now lives here (config.secure_store).
+                # The DIRECTORY mode is what makes a file created inside it
+                # later safe, which a per-file list can never guarantee.
+                "security")
 
 
 def _target_file_mode() -> int:
@@ -95,9 +99,20 @@ def repair(config_dir: str | Path | None = None) -> dict:
     # bit and makes the operator's own config dir unreadable to the process
     # that just wrote it. Mirror every read bit into the matching execute bit.
     want_dir = want_file | ((want_file & 0o444) >> 2)
+    # The credential files moved into security/ (config.secure_store), but a
+    # box that has not booted since, or one running with AIFORGE_SECURE_STORE=0,
+    # still has them in the root — so repair BOTH locations. A path that does
+    # not exist is skipped anyway, and the alternative is a repair pass that
+    # quietly stopped covering the files it was written for.
+    from aiforge_core.config.secure_store import security_dir as _sec
+    try:
+        sec = Path(str(_sec()))
+    except Exception:  # noqa: BLE001 — a bad override must not stop the repair
+        sec = root / "security"
     for target, want, kind in (
         [(root, want_dir, "dir")]
         + [(root / n, want_file, "file") for n in _SECRET_FILES]
+        + [(sec / n, want_file, "file") for n in _SECRET_FILES]
         + [(root / n, want_dir, "dir") for n in _SECRET_DIRS]
     ):
         # The PROBE can raise too, not just the chmod: exists()/is_symlink()

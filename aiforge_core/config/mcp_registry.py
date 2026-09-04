@@ -6,7 +6,7 @@ Two halves:
      with the repo (``mcp_catalog.json``), so the user can browse + one-click
      install instead of hand-editing ``AIFORGE_MCP_ENDPOINTS``.
   2. **Installed registry** — the servers the user has installed/enabled,
-     stored as JSON at ``$AIFORGE_CONFIG_DIR/mcp_servers.json`` (mirrors
+     stored as JSON at ``$AIFORGE_CONFIG_DIR/security/mcp_servers.json`` (mirrors
      ``model_registry.py``). API keys/headers are kept server-side and never
      returned (only ``api_key_set``).
 
@@ -28,15 +28,17 @@ import re
 import threading
 
 from aiforge_core.config import _atomic
-from aiforge_core.config.paths import config_dir
 
 _LOCK = threading.Lock()
 _CATALOG_PATH = os.path.join(os.path.dirname(__file__), "mcp_catalog.json")
 
 
 def _path() -> str:
-    root = str(config_dir())
-    return os.path.join(root, "mcp_servers.json")
+    """Registry rows carry api keys and auth headers, so the file lives in the
+    0700 ``security/`` folder (``config.secure_store``) like every other
+    credential; a legacy copy in the config root moves there on first use."""
+    from aiforge_core.config.secure_store import secure_path
+    return str(secure_path("mcp_servers.json"))
 
 
 def _load() -> list[dict]:

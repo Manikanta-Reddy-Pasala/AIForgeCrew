@@ -119,9 +119,13 @@ def test_reset_wipes_config(tmp_path, monkeypatch):
         "_default": {"provider": "openai_compatible", "model": "m", "base_url": "https://x/v1"},
         "triage": {"provider": "local", "model": "stale", "base_url": None},
     }))
+    # Credentials now live in the 0700 security/ folder and a legacy file is
+    # MOVED there on first resolution (config.secure_store), so read the config
+    # back through the same resolver the app uses rather than the old path.
+    from aiforge_core.config.secure_store import secure_path
     # keep_default → only per-role rows removed
     ac.reset(keep_default=True)
-    left = json.loads((tmp_path / "agent_config.json").read_text())
+    left = json.loads(secure_path("agent_config.json").read_text())
     assert list(left.keys()) == ["_default"]
     # full reset → file gone, then idempotent
     assert ac.reset()["removed"] is True

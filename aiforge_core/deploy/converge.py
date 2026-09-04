@@ -178,8 +178,10 @@ def _clear_pg_from_env() -> None:
     """Comment out stale Postgres/Neo4j backend lines in the repo .env AND the
     UI-persisted ~/.aiforge/runtime.env, so a future boot never re-points the
     SQLite-only app at a removed Postgres/Neo4j."""
+    from pathlib import Path as _P
+    from aiforge_core.config.secure_store import secure_path
     for path in (_repo_root() / "aiforge.env", _repo_root() / ".env",
-                 _config_dir() / "runtime.env"):
+                 _P(str(secure_path("runtime.env")))):
         _neutralise_db_lines(path)
 
 def converge(*, force: bool = False) -> dict:
