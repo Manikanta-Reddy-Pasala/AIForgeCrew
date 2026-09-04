@@ -95,7 +95,7 @@ def test_both_maps_are_reported(monkeypatch):
 # ─── the HTTP POST ─────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def http(monkeypatch):
     import urllib.request
     state: dict = {"body": b'{"result": {"tools": []}}', "raise": None,
@@ -229,7 +229,7 @@ def test_everything_else_is_passed_through_or_stringified(res, expected):
 # ─── listing tools ─────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def one_http_server(monkeypatch):
     monkeypatch.setenv("AIFORGE_MCP_ENDPOINTS", "web=http://127.0.0.1:9000")
     return "web"
@@ -239,7 +239,8 @@ def test_the_tools_of_an_http_server_are_listed(one_http_server, http):
     http["body"] = json.dumps({"result": {"tools": [
         {"name": "fetch", "description": "get a page"}, "junk"]}}).encode()
     out = M.list_tools("web")
-    assert out["ok"] is True and out["tools"] == [{"name": "fetch",
+    assert out["ok"] is True
+    assert out["tools"] == [{"name": "fetch",
                                                    "description": "get a page"}]
     assert http["seen"]["url"] == "http://127.0.0.1:9000/mcp"
     assert http["seen"]["payload"]["method"] == "tools/list"
@@ -254,12 +255,14 @@ def test_an_http_error_reports_its_status(one_http_server, http):
 def test_an_unreachable_server_is_a_soft_failure(one_http_server, http):
     http["raise"] = OSError("connection refused")
     out = M.list_tools("web")
-    assert out["error"] == "connection_failed" and "refused" in out["detail"]
+    assert out["error"] == "connection_failed"
+    assert "refused" in out["detail"]
 
 
 def test_an_unknown_endpoint_names_the_ones_that_exist(one_http_server):
     out = M.list_tools("ghost")
-    assert out["error"] == "unknown_endpoint" and out["allowed"] == ["web"]
+    assert out["error"] == "unknown_endpoint"
+    assert out["allowed"] == ["web"]
 
 
 def test_with_nothing_configured_there_is_nothing_to_list():
@@ -273,7 +276,8 @@ def test_a_tool_call_is_dispatched_and_its_result_returned(one_http_server,
                                                             http):
     http["body"] = json.dumps({"result": {"content": "hello"}}).encode()
     out = M.call_tool("web", "fetch", {"url": "http://x"})
-    assert out["result"] == {"content": "hello"} and out["tool"] == "fetch"
+    assert out["result"] == {"content": "hello"}
+    assert out["tool"] == "fetch"
     params = http["seen"]["payload"]["params"]
     assert params == {"name": "fetch", "arguments": {"url": "http://x"}}
 
@@ -288,7 +292,8 @@ def test_an_error_the_server_reports_is_surfaced(one_http_server, http):
     http["body"] = json.dumps({"error": {"code": -32601,
                                          "message": "no such tool"}}).encode()
     out = M.call_tool("web", "nope")
-    assert out["error"] == "mcp_error" and out["detail"]["code"] == -32601
+    assert out["error"] == "mcp_error"
+    assert out["detail"]["code"] == -32601
 
 
 def test_a_call_needs_a_tool_name(one_http_server):
@@ -309,7 +314,7 @@ def test_a_failed_call_reports_the_transport_error(one_http_server, http):
 # ─── the local stdio transport ─────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def stdio(monkeypatch):
     from aiforge_core.config import mcp_registry
     state: dict = {"result": pytypes.SimpleNamespace(
@@ -332,7 +337,8 @@ def stdio(monkeypatch):
 
 def test_a_stdio_servers_tools_are_listed(stdio):
     out = M.list_tools("files")
-    assert out["ok"] is True and out["transport"] == "stdio"
+    assert out["ok"] is True
+    assert out["transport"] == "stdio"
     assert out["tools"] == [{"name": "read_file", "description": "read"}]
 
 
@@ -350,7 +356,8 @@ def test_a_server_that_returned_no_tools_is_still_ok(stdio):
 def test_a_missing_command_says_exactly_that(stdio):
     stdio["raise"] = FileNotFoundError("npx not found")
     out = M.list_tools("files")
-    assert out["error"] == "command_not_found" and "npx" in out["detail"]
+    assert out["error"] == "command_not_found"
+    assert "npx" in out["detail"]
 
 
 def test_a_server_that_will_not_start_is_a_soft_failure(stdio):
@@ -368,7 +375,8 @@ def test_a_stdio_tool_call_returns_a_serialised_result(stdio):
     stdio["result"] = pytypes.SimpleNamespace(
         model_dump=lambda mode=None: {"content": [{"text": "hi"}]})
     out = M.call_tool("files", "read_file", {"path": "/x"})
-    assert out["ok"] is True and out["transport"] == "stdio"
+    assert out["ok"] is True
+    assert out["transport"] == "stdio"
     assert out["result"] == {"content": [{"text": "hi"}]}
 
 

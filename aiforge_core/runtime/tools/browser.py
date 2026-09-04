@@ -491,8 +491,8 @@ _BROWSE_COMMANDS = {
 # JSON schema the model sees from these parameter names and types; a
 # params object or **kwargs here would hand the model an opaque blob
 # and it would stop being able to call the tool correctly.
-def browse(  # NOSONAR
-    command: str,
+def browse(
+    command: str,  # NOSONAR
     *,
     url: str | None = None,
     path: str | None = None,

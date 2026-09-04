@@ -215,7 +215,7 @@ def test_a_missing_linter_never_fails_the_run(monkeypatch, tmp_path):
 # ─── running the project's tests ───────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def runner(monkeypatch):
     import aiforge_core.runtime.tools.project_runner as pr
     state = {"stacks": ["python"], "has_tests": True, "res": {"ok": True}}
@@ -372,7 +372,8 @@ def test_no_output_at_all_is_zero():
 
 def test_an_import_error_becomes_a_concrete_instruction():
     hints = tr._directed_hints("ImportError: cannot import name 'Binary' from 'expr'")
-    assert hints and any("Binary" in h for h in hints)
+    assert hints
+    assert any("Binary" in h for h in hints)
 
 
 def test_leaked_state_is_recognised():

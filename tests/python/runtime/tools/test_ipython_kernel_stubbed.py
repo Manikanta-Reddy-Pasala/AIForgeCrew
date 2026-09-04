@@ -74,7 +74,7 @@ class _KM:
         self.interrupted += 1
 
 
-@pytest.fixture()
+@pytest.fixture
 def kernel(monkeypatch):
     """A booted fake kernel bound to run id 'r1'."""
     client = _Client()
@@ -124,7 +124,8 @@ def test_the_kernel_is_booted_once_and_reused(monkeypatch):
     try:
         assert K._start_kernel("r1") == (km, client)
         assert K._start_kernel("r1") == (km, client)
-        assert boots == [1] and km.started is True
+        assert boots == [1]
+        assert km.started is True
         assert client.executed, "the agentskills helpers are injected"
     finally:
         K._kernels.clear()
@@ -135,8 +136,10 @@ def test_a_kernel_is_shut_down_and_forgotten(kernel):
     K._kernels["r1"] = kernel.km
     K._clients["r1"] = kernel.client
     K.destroy_kernel("r1")
-    assert kernel.client.channels == "closed" and kernel.km.shutdown is True
-    assert "r1" not in K._kernels and "r1" not in K._clients
+    assert kernel.client.channels == "closed"
+    assert kernel.km.shutdown is True
+    assert "r1" not in K._kernels
+    assert "r1" not in K._clients
 
 
 def test_destroying_a_kernel_that_never_started_is_quiet(kernel):
@@ -166,7 +169,8 @@ def _fold(msgs):
 def test_stdout_and_stderr_are_kept_apart():
     acc = _fold([("stream", {"name": "stdout", "text": "hi"}),
                  ("stream", {"name": "stderr", "text": "warn"})])
-    assert acc["stdout"] == ["hi"] and acc["stderr"] == ["warn"]
+    assert acc["stdout"] == ["hi"]
+    assert acc["stderr"] == ["warn"]
 
 
 def test_a_cells_value_is_its_plain_text_repr():
@@ -209,7 +213,8 @@ def test_a_cell_that_prints_forever_still_ends(monkeypatch):
 
 def test_a_silent_kernel_times_out():
     out = K._drain_iopub(_Client([]), "m1", timeout=1)
-    assert out["timed_out"] is True and out["stdout"] == ""
+    assert out["timed_out"] is True
+    assert out["stdout"] == ""
 
 
 # ─── running a cell ────────────────────────────────────────────────────
@@ -224,7 +229,9 @@ def test_a_cell_returns_what_it_printed(kernel):
     res = _run(kernel, [_msg("stream", {"name": "stdout", "text": "hi\n"}),
                         _msg("execute_result", {"data": {"text/plain": "7"}}),
                         _msg("status", {"execution_state": "idle"})])
-    assert res["ok"] is True and res["stdout"] == "hi\n" and res["result"] == "7"
+    assert res["ok"] is True
+    assert res["stdout"] == "hi\n"
+    assert res["result"] == "7"
     assert res["truncated"] is False
 
 
@@ -233,13 +240,15 @@ def test_a_cell_that_printed_then_raised_is_not_a_success(kernel):
     res = _run(kernel, [_msg("stream", {"name": "stdout", "text": "step 1\n"}),
                         _msg("error", {"traceback": ["ValueError: x"]}),
                         _msg("status", {"execution_state": "idle"})])
-    assert res["ok"] is False and res["stdout"] == "step 1\n"
+    assert res["ok"] is False
+    assert res["stdout"] == "step 1\n"
     assert "ValueError" in res["stderr"]
 
 
 def test_a_runaway_cell_is_interrupted_so_it_stops_burning_the_kernel(kernel):
     res = _run(kernel, [], timeout=1)
-    assert res["error"] == "timeout" and res["truncated"] is True
+    assert res["error"] == "timeout"
+    assert res["truncated"] is True
     assert kernel.km.interrupted == 1
 
 
@@ -252,7 +261,8 @@ def test_a_huge_output_is_capped(kernel):
     big = "z" * (K._STDOUT_CAP_BYTES + 100)
     res = _run(kernel, [_msg("stream", {"name": "stdout", "text": big}),
                         _msg("status", {"execution_state": "idle"})])
-    assert len(res["stdout"]) == K._STDOUT_CAP_BYTES and res["truncated"] is True
+    assert len(res["stdout"]) == K._STDOUT_CAP_BYTES
+    assert res["truncated"] is True
 
 
 def test_an_empty_cell_never_reaches_the_kernel(kernel):
@@ -273,14 +283,16 @@ def test_a_kernel_that_will_not_boot_is_a_soft_error(monkeypatch):
     monkeypatch.setattr(K, "_start_kernel",
                         lambda rid: (_ for _ in ()).throw(OSError("no port")))
     res = K.execute_ipython_cell("1+1")
-    assert res["error"] == "kernel_boot_failed" and "no port" in res["detail"]
+    assert res["error"] == "kernel_boot_failed"
+    assert "no port" in res["detail"]
 
 
 def test_a_dead_kernel_mid_cell_is_a_soft_error(kernel):
     kernel.client.execute = lambda code, **kw: (_ for _ in ()).throw(
         RuntimeError("zmq closed"))
     res = K.execute_ipython_cell("1+1", _run_id="r1")
-    assert res["error"] == "cell_exec_failed" and "zmq closed" in res["detail"]
+    assert res["error"] == "cell_exec_failed"
+    assert "zmq closed" in res["detail"]
 
 
 def test_the_optional_import_is_what_decides_availability(monkeypatch):

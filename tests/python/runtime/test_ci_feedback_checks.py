@@ -26,7 +26,7 @@ from aiforge_core.runtime import ci_feedback as CI
 _PR = "https://github.com/acme/widgets/pull/42"
 
 
-@pytest.fixture()
+@pytest.fixture
 def gh(monkeypatch):
     """A scripted ``gh``: canned JSON per API path, recorded argv."""
     state: dict = {
@@ -72,7 +72,8 @@ def test_anything_that_is_not_a_pr_url_is_refused(url):
 
 def test_reading_checks_for_a_non_pr_says_so(gh):
     res = CI.read_pr_checks("not-a-url")
-    assert res["error"] == "bad_pr_url" and gh["calls"] == []
+    assert res["error"] == "bad_pr_url"
+    assert gh["calls"] == []
 
 
 # ─── grading the check runs ────────────────────────────────────────────
@@ -117,7 +118,8 @@ def test_a_conclusion_nobody_recognises_is_unknown():
 
 def test_the_checks_are_read_for_the_head_commit(gh):
     res = CI.read_pr_checks(_PR)
-    assert res["ok"] is True and res["status"] == "green"
+    assert res["ok"] is True
+    assert res["status"] == "green"
     assert res["checks"][0] == {"name": "build", "conclusion": "success",
                                 "summary": "all good"}
     assert "repos/acme/widgets/pulls/42" in " ".join(gh["calls"][0])
@@ -129,7 +131,8 @@ def test_the_reported_checks_are_capped(gh):
                                     "conclusion": "success"}
                                    for i in range(30)]}
     res = CI.read_pr_checks(_PR)
-    assert res["raw_count"] == 30 and len(res["checks"]) == 20
+    assert res["raw_count"] == 30
+    assert len(res["checks"]) == 20
 
 
 def test_a_long_check_summary_is_trimmed(gh):
@@ -148,7 +151,8 @@ def test_an_auth_failure_bubbles_up_with_its_stderr(gh):
     gh["rc"] = 1
     gh["stderr"] = "gh: authentication required"
     res = CI.read_pr_checks(_PR)
-    assert res["error"] == "gh_failed" and "authentication" in res["stderr"]
+    assert res["error"] == "gh_failed"
+    assert "authentication" in res["stderr"]
 
 
 def test_a_hung_gh_call_is_a_timeout_not_a_hang(gh):
@@ -183,7 +187,7 @@ def test_a_failing_check_runs_call_is_labelled_separately(gh, monkeypatch):
 # ─── grading, and rolling back ─────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def graded(monkeypatch):
     state: dict = {"snaps": [{"ok": True, "status": "green", "raw_count": 1,
                               "checks": []}], "reverted": 0, "slept": []}
@@ -201,7 +205,8 @@ def test_the_pr_and_repo_are_carried_into_the_result(graded):
     """The snapshot has neither, and the autofix request was being built with
     both fields empty."""
     out = CI.grade_and_react(_PR)
-    assert out["pr_url"] == _PR and out["repo"] == "acme/widgets"
+    assert out["pr_url"] == _PR
+    assert out["repo"] == "acme/widgets"
     assert out["rolled_back"] is False
 
 
@@ -224,7 +229,8 @@ def test_red_with_rollback_on_closes_the_pr(graded):
     graded["snaps"] = [{"ok": True, "status": "red", "raw_count": 1,
                         "checks": []}]
     out = CI.grade_and_react(_PR, auto_rollback=True)
-    assert out["rolled_back"] is True and out["rollback_result"] == {"ok": True}
+    assert out["rolled_back"] is True
+    assert out["rollback_result"] == {"ok": True}
 
 
 def test_a_read_that_failed_is_returned_as_is(graded):
@@ -238,7 +244,8 @@ def test_grading_waits_for_the_first_check_to_appear(graded):
                        {"ok": True, "status": "green", "raw_count": 2,
                         "checks": []}]
     out = CI.grade_and_react(_PR, poll_seconds=30)
-    assert out["status"] == "green" and graded["slept"] == [5]
+    assert out["status"] == "green"
+    assert graded["slept"] == [5]
 
 
 def test_the_wait_is_capped_so_the_runner_is_never_blocked(graded,
@@ -257,14 +264,16 @@ def test_the_rollback_comments_before_it_closes(gh):
     res = CI.open_revert_pr(_PR)
     assert res["ok"] is True
     comment, close = gh["calls"][0], gh["calls"][1]
-    assert comment[1:3] == ["pr", "comment"] and "auto-rollback" in comment[-1]
+    assert comment[1:3] == ["pr", "comment"]
+    assert "auto-rollback" in comment[-1]
     assert close[1:3] == ["pr", "close"]
 
 
 def test_a_rollback_that_could_not_close_is_not_ok(gh):
     gh["rc"] = 1
     res = CI.open_revert_pr(_PR)
-    assert res["ok"] is False and res["close_ok"] is False
+    assert res["ok"] is False
+    assert res["close_ok"] is False
 
 
 def test_a_rollback_needs_a_real_pr_url_and_gh(gh):
@@ -283,9 +292,12 @@ def _failed(n=1, summary="pytest: 3 failed"):
 
 def test_the_request_names_the_failing_checks():
     req = CI.build_fix_request(_PR, "acme/widgets", _failed(2))
-    assert req["kind"] == "ci_fix" and req["checks"] == ["check-0", "check-1"]
-    assert "check-0" in req["title"] and "pytest: 3 failed" in req["body"]
-    assert req["pr"] == _PR and req["repo"] == "acme/widgets"
+    assert req["kind"] == "ci_fix"
+    assert req["checks"] == ["check-0", "check-1"]
+    assert "check-0" in req["title"]
+    assert "pytest: 3 failed" in req["body"]
+    assert req["pr"] == _PR
+    assert req["repo"] == "acme/widgets"
 
 
 def test_a_wall_of_failures_does_not_become_the_title():
@@ -302,7 +314,8 @@ def test_the_log_excerpts_share_one_budget():
 
 def test_a_check_with_no_summary_is_still_listed():
     req = CI.build_fix_request(_PR, "r", [{"conclusion": "failure"}])
-    assert "- (unnamed)" in req["body"] and req["checks"] == ["(unnamed)"]
+    assert "- (unnamed)" in req["body"]
+    assert req["checks"] == ["(unnamed)"]
 
 
 # ─── closing the loop ──────────────────────────────────────────────────
@@ -320,7 +333,8 @@ def test_the_request_is_built_even_when_autofix_is_off(monkeypatch):
     sent: list = []
     req = CI.on_ci_red({"pr_url": _PR, "repo": "acme/widgets",
                         "checks": _failed()}, dispatch=sent.append)
-    assert req["checks"] == ["check-0"] and sent == []
+    assert req["checks"] == ["check-0"]
+    assert sent == []
 
 
 def test_with_autofix_on_the_request_is_dispatched(monkeypatch):
@@ -328,7 +342,8 @@ def test_with_autofix_on_the_request_is_dispatched(monkeypatch):
     sent: list = []
     CI.on_ci_red({"pr_url": _PR, "repo": "r", "checks": _failed()},
                  dispatch=sent.append)
-    assert sent and sent[0]["kind"] == "ci_fix"
+    assert sent
+    assert sent[0]["kind"] == "ci_fix"
 
 
 def test_a_dispatch_that_blows_up_does_not_break_grading(monkeypatch, caplog):

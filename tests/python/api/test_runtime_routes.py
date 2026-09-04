@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 from aiforge_core.api.routes import runtime as rt
 
 
-@pytest.fixture()
+@pytest.fixture
 def client():
     app = FastAPI()
     app.include_router(rt.router)
@@ -57,7 +57,7 @@ def persisted(monkeypatch):
             os.environ[var] = old
 
 
-@pytest.fixture()
+@pytest.fixture
 def providers(monkeypatch):
     """A two-provider registry with one unavailable."""
     import aiforge_core.llm as llm
@@ -95,7 +95,8 @@ def test_an_env_override_wins_and_is_surfaced(client, providers, monkeypatch):
     monkeypatch.setenv("AIFORGE_GEMINI_RPM", "12")
     gem = next(p for p in client.get("/api/runtime/rate_limits").json()["providers"]
                if p["provider"] == "gemini")
-    assert gem["effective_rpm"] == 12.0 and gem["env_override_rpm"] == "12"
+    assert gem["effective_rpm"] == 12.0
+    assert gem["env_override_rpm"] == "12"
 
 
 def test_the_bucket_state_is_included(client, providers):
@@ -118,7 +119,8 @@ def test_only_the_given_field_is_written(client, persisted):
 
 def test_a_limit_needs_a_provider(client):
     r = client.put("/api/runtime/rate_limits", json={"rpm": 5})
-    assert r.status_code == 400 and "provider required" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "provider required" in r.json()["detail"]
 
 
 # ─── the active backend ────────────────────────────────────────────────
@@ -160,7 +162,8 @@ def test_switching_backend_clears_the_legacy_key(client, providers, persisted,
 
 def test_an_unavailable_backend_is_refused(client, providers):
     r = client.put("/api/runtime/llm_backend", json={"backend": "anthropic"})
-    assert r.status_code == 400 and "must be one of" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "must be one of" in r.json()["detail"]
 
 
 def test_the_legacy_aliases_still_work(client, providers, persisted):
@@ -234,7 +237,8 @@ def test_a_role_parameter_becomes_an_env_var(client):
 ])
 def test_every_field_is_required(client, payload):
     r = client.post("/api/runtime/session_param", json=payload)
-    assert r.status_code == 400 and "required" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "required" in r.json()["detail"]
 
 
 # ─── the empty legacy aggregates ───────────────────────────────────────
@@ -256,7 +260,7 @@ def test_metrics_keep_their_shape_for_old_callers(client):
 # ─── the LLM settings store ────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def settings(monkeypatch):
     from aiforge_core.config import runtime_settings as rs
     state: dict = {"all": {"llm_max_rpm": 0}, "set": None, "unset": None,
@@ -289,7 +293,8 @@ def test_a_knob_can_be_forgotten_so_the_env_default_applies(client, settings):
     """The store otherwise shadows the documented env var forever."""
     body = client.put("/api/runtime/llm-settings",
                       json={"unset": ["llm_max_rpm"]}).json()
-    assert settings["unset"] == ["llm_max_rpm"] and body == {"forgot":
+    assert settings["unset"] == ["llm_max_rpm"]
+    assert body == {"forgot":
                                                              ["llm_max_rpm"]}
 
 
@@ -297,23 +302,27 @@ def test_setting_and_unsetting_the_same_knob_is_refused(client, settings):
     """Answering 200 would hide which half won."""
     r = client.put("/api/runtime/llm-settings",
                    json={"llm_max_rpm": 5, "unset": ["llm_max_rpm"]})
-    assert r.status_code == 400 and "cannot set and unset" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "cannot set and unset" in r.json()["detail"]
 
 
 def test_forgetting_an_unknown_knob_is_refused(client, settings):
     r = client.put("/api/runtime/llm-settings", json={"unset": ["nonsense"]})
-    assert r.status_code == 400 and "unknown setting" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "unknown setting" in r.json()["detail"]
 
 
 def test_an_empty_request_is_refused(client, settings):
     r = client.put("/api/runtime/llm-settings", json={})
-    assert r.status_code == 400 and "no settings provided" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "no settings provided" in r.json()["detail"]
 
 
 def test_a_value_the_store_rejects_is_a_400(client, settings):
     settings["error"] = ValueError("llm_max_rpm out of range")
     r = client.put("/api/runtime/llm-settings", json={"llm_max_rpm": 5})
-    assert r.status_code == 400 and "out of range" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "out of range" in r.json()["detail"]
 
 
 @pytest.mark.parametrize("payload", [
@@ -375,5 +384,6 @@ def test_a_cost_rollup_is_grouped_and_bounded(client, monkeypatch):
                         lambda group_by, days_back=30: seen.update(
                             group_by=group_by, days=days_back) or [{"day": "x"}])
     body = client.get("/api/runtime/cost?group_by=day&days_back=7").json()
-    assert body["group_by"] == "day" and body["days_back"] == 7
+    assert body["group_by"] == "day"
+    assert body["days_back"] == 7
     assert seen == {"group_by": "day", "days": 7}

@@ -35,17 +35,20 @@ from aiforge_core.runtime.parallel_subtasks import _runners as R
 def test_the_target_path_is_pinned_byte_for_byte():
     msg = R._doer_message({}, "", "pkg/mini_lang/lexer.py", "write a lexer")
     assert "pkg/mini_lang/lexer.py" in msg
-    assert "do NOT rename" in msg and "re-case" in msg
+    assert "do NOT rename" in msg
+    assert "re-case" in msg
 
 
 def test_a_subtask_without_a_path_gets_no_pin():
     msg = R._doer_message({}, "", "", "do a thing")
-    assert "TARGET FILE" not in msg and "GOAL: do a thing" in msg
+    assert "TARGET FILE" not in msg
+    assert "GOAL: do a thing" in msg
 
 
 def test_the_shared_spec_is_carried_into_every_fresh_context():
     msg = R._doer_message({}, "# Spec\nbuild a lang", "", "g")
-    assert "PROJECT SPEC" in msg and "build a lang" in msg
+    assert "PROJECT SPEC" in msg
+    assert "build a lang" in msg
 
 
 def test_a_blank_spec_is_left_out():
@@ -54,14 +57,16 @@ def test_a_blank_spec_is_left_out():
 
 def test_the_spec_is_capped_so_one_subtask_cannot_eat_the_context():
     msg = R._doer_message({}, "x" * 9000, "", "g")
-    assert "x" * 6000 in msg and "x" * 6001 not in msg
+    assert "x" * 6000 in msg
+    assert "x" * 6001 not in msg
 
 
 def test_acceptance_and_scope_are_listed_when_present():
     msg = R._doer_message({"acceptance": ["tokenises ints", "handles eof"],
                            "scope_allowlist_globs": ["a.py", "b.py"]},
                           "", "", "g")
-    assert "- tokenises ints" in msg and "- handles eof" in msg
+    assert "- tokenises ints" in msg
+    assert "- handles eof" in msg
     assert "SCOPE (only touch these): a.py, b.py" in msg
 
 
@@ -74,18 +79,20 @@ def test_a_subtask_that_blew_its_budget_is_told_to_build_the_core_first():
 
 def test_a_previous_failure_is_quoted_back_verbatim():
     msg = R._doer_message({"_retry_error": "NameError: tok"}, "", "", "g")
-    assert "NameError: tok" in msg and "Fix exactly that" in msg
+    assert "NameError: tok" in msg
+    assert "Fix exactly that" in msg
 
 
 def test_a_giant_previous_error_is_truncated():
     msg = R._doer_message({"_retry_error": "e" * 2000}, "", "", "g")
-    assert msg.count("e" * 800) == 1 and "e" * 900 not in msg
+    assert msg.count("e" * 800) == 1
+    assert "e" * 900 not in msg
 
 
 # ─── driving the Doer loop ─────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def chat(monkeypatch):
     """Stand in for the Doer chat loop; ``events`` is what it yields."""
     import aiforge_core.runtime.chat_agent as ca
@@ -135,15 +142,17 @@ def test_the_loop_runs_in_the_worktree_as_the_doer_with_a_hard_finish(chat):
     chat["events"] = [{"type": "message", "text": "ok"}]
     R._drive_doer("msg", "/wt", ["a.py"], "cf")
     call = chat["calls"][0]
-    assert call["cwd"] == "/wt" and call["role"] == "doer"
-    assert call["scope_globs"] == ["a.py"] and call["strict_finish"] is True
+    assert call["cwd"] == "/wt"
+    assert call["role"] == "doer"
+    assert call["scope_globs"] == ["a.py"]
+    assert call["strict_finish"] is True
     assert call["convo"] == [{"role": "user", "content": "msg"}]
 
 
 # ─── default_run_one ───────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def driver(monkeypatch):
     """Capture what default_run_one hands to the Doer."""
     seen: dict = {"result": {"ok": True}}
@@ -159,7 +168,8 @@ def driver(monkeypatch):
 
 def test_the_full_doer_runs_the_subtask_in_its_worktree(driver):
     res = R.default_run_one({"goal": "lex it", "path": "a/lexer.py"}, "/wt")
-    assert res == {"ok": True} and driver["worktree"] == "/wt"
+    assert res == {"ok": True}
+    assert driver["worktree"] == "/wt"
     assert "lex it" in driver["msg"]
 
 
@@ -207,7 +217,8 @@ def test_a_missing_llm_client_fails_the_subtask_cleanly(monkeypatch):
         return real(name, *a, **k)
     monkeypatch.setattr(builtins, "__import__", _imp)
     res = R.default_run_one({"goal": "g"}, "/wt")
-    assert res["ok"] is False and "import: no llm" in res["error"]
+    assert res["ok"] is False
+    assert "import: no llm" in res["error"]
 
 
 # ─── path enforcement ──────────────────────────────────────────────────
@@ -309,7 +320,8 @@ def test_a_matcher_slip_allows_the_write_rather_than_dropping_it(monkeypatch):
 
 def test_the_methods_the_test_calls_are_pulled_out():
     api = R._required_api_from_tests("g = Grid()\ng.place(1)\ng._is_valid(2)")
-    assert "place" in api and "_is_valid" in api
+    assert "place" in api
+    assert "_is_valid" in api
 
 
 def test_assertions_and_builtins_are_not_demanded_of_the_unit():
@@ -372,7 +384,8 @@ def test_no_tests_means_no_block_at_all():
 
 def test_a_huge_test_file_is_capped():
     block = R._tests_block("z" * 9000)
-    assert "z" * 6000 in block and "z" * 6001 not in block
+    assert "z" * 6000 in block
+    assert "z" * 6001 not in block
 
 
 # ─── the single-shot prompt ────────────────────────────────────────────
@@ -380,14 +393,17 @@ def test_a_huge_test_file_is_capped():
 
 def test_the_single_shot_prompt_carries_spec_target_and_goal():
     p = R._subtask_prompt({}, "# Spec", "pkg/lexer.py", "lex it")
-    assert "# Spec" in p and "pkg/lexer.py" in p and "SUBTASK: lex it" in p
+    assert "# Spec" in p
+    assert "pkg/lexer.py" in p
+    assert "SUBTASK: lex it" in p
     assert "Output ONLY the file(s)" in p
 
 
 def test_files_already_on_disk_are_named_so_imports_are_not_guessed():
     p = R._subtask_prompt({"_existing_files": "lexer.py: class Lexer"}, "",
                           "p.py", "g")
-    assert "EXISTING PROJECT FILES" in p and "class Lexer" in p
+    assert "EXISTING PROJECT FILES" in p
+    assert "class Lexer" in p
 
 
 def test_a_retry_leads_with_what_went_wrong_last_time():
@@ -397,7 +413,8 @@ def test_a_retry_leads_with_what_went_wrong_last_time():
 
 def test_the_tests_and_language_rules_ride_along():
     p = R._subtask_prompt({"_tests": "b.pop()"}, "", "a.hpp", "g")
-    assert "TESTS (ground truth)" in p and "TEMPLATE" in p
+    assert "TESTS (ground truth)" in p
+    assert "TEMPLATE" in p
 
 
 # ─── forcing the content onto the owned path ───────────────────────────
@@ -440,14 +457,17 @@ def test_a_crashing_guard_never_takes_the_runner_down(monkeypatch):
 def test_the_files_land_in_the_worktree(tmp_path):
     written, rejected, bad = R._write_subtask_files(
         {"pkg/a.py": "x = 1\n"}, str(tmp_path), [])
-    assert written == ["pkg/a.py"] and not rejected and bad is None
+    assert written == ["pkg/a.py"]
+    assert not rejected
+    assert bad is None
     assert (tmp_path / "pkg" / "a.py").read_text() == "x = 1\n"
 
 
 def test_a_write_outside_the_allowlist_is_rejected_not_written(tmp_path):
     written, rejected, _ = R._write_subtask_files(
         {"src/a.py": "x=1\n", "other/b.py": "y=1\n"}, str(tmp_path), ["src/**"])
-    assert written == ["src/a.py"] and rejected == ["other/b.py"]
+    assert written == ["src/a.py"]
+    assert rejected == ["other/b.py"]
     assert not (tmp_path / "other").exists()
 
 
@@ -456,13 +476,16 @@ def test_a_path_climbing_out_of_the_worktree_is_refused(tmp_path):
     because it is ABSOLUTE — the write would land outside the worktree."""
     written, rejected, bad = R._write_subtask_files(
         {"/../etc/a.py": "x=1\n"}, str(tmp_path), [])
-    assert written == [] and rejected == ["/etc/a.py"] and bad is None
+    assert written == []
+    assert rejected == ["/etc/a.py"]
+    assert bad is None
 
 
 def test_a_normal_nested_path_is_still_inside(tmp_path):
     written, rejected, _ = R._write_subtask_files({"a/b/c.py": "x=1\n"},
                                                   str(tmp_path), [])
-    assert written == ["a/b/c.py"] and not rejected
+    assert written == ["a/b/c.py"]
+    assert not rejected
 
 
 def test_an_unresolvable_worktree_refuses_the_write(tmp_path):
@@ -472,7 +495,9 @@ def test_an_unresolvable_worktree_refuses_the_write(tmp_path):
 def test_one_broken_file_stops_the_whole_write(tmp_path):
     written, _, bad = R._write_subtask_files({"a.py": "def f(:\n"},
                                              str(tmp_path), [])
-    assert written == [] and bad is not None and bad.startswith("a.py: ")
+    assert written == []
+    assert bad is not None
+    assert bad.startswith("a.py: ")
 
 
 def test_an_unwritable_destination_is_skipped(tmp_path, monkeypatch):
@@ -480,13 +505,14 @@ def test_an_unwritable_destination_is_skipped(tmp_path, monkeypatch):
                         lambda *a, **k: (_ for _ in ()).throw(OSError("ro")))
     written, _, bad = R._write_subtask_files({"a.py": "x=1\n"},
                                              str(tmp_path), [])
-    assert written == [] and bad is None
+    assert written == []
+    assert bad is None
 
 
 # ─── lightweight_run_one ───────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def one_shot(monkeypatch):
     """The single LLM call the lightweight runner spends."""
     from aiforge_core.llm import client as llm
@@ -557,7 +583,8 @@ def test_a_model_error_fails_the_subtask_instead_of_raising(one_shot, tmp_path):
 def test_a_broken_emitted_file_fails_with_the_syntax_error(one_shot, tmp_path):
     one_shot["out"] = "=== a.py ===\ndef f(:\n"
     res = R.lightweight_run_one({"goal": "g"}, str(tmp_path))
-    assert res["ok"] is False and res["error"].startswith("a.py: ")
+    assert res["ok"] is False
+    assert res["error"].startswith("a.py: ")
 
 
 def test_everything_out_of_scope_is_a_failure_naming_the_rejects(one_shot,
@@ -566,7 +593,8 @@ def test_everything_out_of_scope_is_a_failure_naming_the_rejects(one_shot,
     res = R.lightweight_run_one({"goal": "g",
                                  "scope_allowlist_globs": ["src/**"]},
                                 str(tmp_path))
-    assert res["ok"] is False and res["rejected"] == ["other/b.py"]
+    assert res["ok"] is False
+    assert res["rejected"] == ["other/b.py"]
     assert "all writes out of scope" in res["error"]
 
 
@@ -576,7 +604,8 @@ def test_a_partial_write_succeeds_but_reports_what_was_dropped(one_shot,
     res = R.lightweight_run_one({"goal": "g",
                                  "scope_allowlist_globs": ["src/**"]},
                                 str(tmp_path))
-    assert res["ok"] is True and res["rejected"] == ["other/b.py"]
+    assert res["ok"] is True
+    assert res["rejected"] == ["other/b.py"]
 
 
 def test_a_missing_llm_client_fails_the_light_runner_too(monkeypatch, tmp_path):
@@ -614,7 +643,7 @@ def test_any_other_value_keeps_the_cheap_runner(monkeypatch):
 # ─── run_subtasks_parallel ─────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def parallel(monkeypatch):
     """The whole entry point's collaborators: subtask store, ticket store,
     workspace and the orchestrator."""
@@ -657,7 +686,8 @@ def test_the_ticket_is_fanned_out_and_closed_out(parallel):
     agg = R.run_subtasks_parallel(_ticket())
     assert agg == {"ok": True, "total": 2, "done": 2}
     assert parallel["statuses"] == ["in_progress", "done"]
-    assert parallel["wt"] == "/wt" and parallel["base"] == "main"
+    assert parallel["wt"] == "/wt"
+    assert parallel["base"] == "main"
     assert parallel["count"] == 2
 
 
@@ -716,7 +746,8 @@ def test_the_review_is_emitted_with_the_run_totals(parallel):
     R.run_subtasks_parallel(_ticket())
     _tid, slug, kind, review, counts = parallel["emits"][0]
     assert (slug, kind, review) == ("*", "parallel_review", "looks good")
-    assert counts["total"] == 2 and counts["merged"] == 2
+    assert counts["total"] == 2
+    assert counts["merged"] == 2
 
 
 def test_a_status_store_that_is_down_does_not_fail_the_run(monkeypatch):

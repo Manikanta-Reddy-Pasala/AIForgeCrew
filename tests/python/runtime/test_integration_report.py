@@ -82,7 +82,8 @@ def test_an_empty_tree_has_no_language(tmp_path):
 def test_manual_steps_are_numbered_for_the_language(tmp_path):
     md = ir._manual_steps_md(str(tmp_path), "go")
     assert "build & test it yourself (go)" in md
-    assert "1. `go build ./...`" in md and "2. `go test ./...`" in md
+    assert "1. `go build ./...`" in md
+    assert "2. `go test ./...`" in md
 
 
 def test_the_tested_stack_wins_over_re_detection(tmp_path):
@@ -190,7 +191,7 @@ def test_a_workspace_under_a_dot_aiforge_root_still_discovers_tests(tmp_path):
 # ─── the managed venv ──────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def pip(monkeypatch):
     calls: list = []
     state = {"has_pytest": False}
@@ -265,7 +266,9 @@ def test_a_normal_run_is_not_retried(monkeypatch):
     monkeypatch.setattr(subprocess, "run",
                         lambda cmd, **kw: calls.append(cmd) or _P(stdout="2 passed"))
     rc, out = ir._run_pytest_capturing("/py", "/cwd", {}, 60)
-    assert rc == 0 and "2 passed" in out and len(calls) == 1
+    assert rc == 0
+    assert "2 passed" in out
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("first", [
@@ -280,7 +283,8 @@ def test_a_broken_config_is_retried_with_addopts_stripped(monkeypatch, first):
         return first if len(calls) == 1 else _P(stdout="3 passed")
     monkeypatch.setattr(subprocess, "run", _run)
     rc, out = ir._run_pytest_capturing("/py", "/cwd", {}, 60)
-    assert rc == 0 and "3 passed" in out
+    assert rc == 0
+    assert "3 passed" in out
     assert "addopts=" in calls[1]
 
 
@@ -291,7 +295,7 @@ def test_a_tree_with_no_tests_has_nothing_to_run(tmp_path):
     assert ir.run_bare_python_tests(str(tmp_path)) is None
 
 
-@pytest.fixture()
+@pytest.fixture
 def bare(monkeypatch, tmp_path):
     (tmp_path / "test_a.py").write_text("def test_a(): pass\n")
     monkeypatch.setattr(ir, "_ensure_pytest_venv", lambda *a: None)
@@ -312,7 +316,8 @@ def test_a_red_bare_tree_reports_its_tail(bare):
     state, tmp_path = bare
     state.update(rc=1, out="x" * 9000)
     ok, out = ir.run_bare_python_tests(str(tmp_path))
-    assert ok is False and len(out) == 4000
+    assert ok is False
+    assert len(out) == 4000
 
 
 def test_a_lint_failure_turns_a_green_run_red(bare, monkeypatch):
@@ -320,7 +325,8 @@ def test_a_lint_failure_turns_a_green_run_red(bare, monkeypatch):
     monkeypatch.setattr(ir, "_static_lint_python",
                         lambda cwd, py, env: (False, "\nF821 undefined name"))
     ok, out = ir.run_bare_python_tests(str(tmp_path))
-    assert ok is False and "F821" in out
+    assert ok is False
+    assert "F821" in out
 
 
 def test_the_lint_gate_can_be_turned_off(bare, monkeypatch):
@@ -346,7 +352,8 @@ def test_the_python_linter_reports_real_bug_codes(monkeypatch, tmp_path):
         return _P(returncode=1, stdout="a.py:1:1 F821 undefined name 'x'")
     monkeypatch.setattr(subprocess, "run", _run)
     ok, out = ir._static_lint_python(str(tmp_path), "/py", {})
-    assert ok is False and "F821" in out
+    assert ok is False
+    assert "F821" in out
     assert "F821,F822,F811" in seen["cmd"]
 
 
@@ -382,7 +389,8 @@ def test_typescript_is_typechecked_by_the_compiler(monkeypatch):
 def test_plain_javascript_is_syntax_checked_per_file(monkeypatch):
     monkeypatch.setattr(os.path, "exists", lambda p: False)
     ran = _dispatch(["a.js", "b.mjs"], {"node"})
-    assert len(ran) == 2 and all(r.startswith("js syntax") for r in ran)
+    assert len(ran) == 2
+    assert all(r.startswith("js syntax") for r in ran)
 
 
 def test_go_and_rust_get_their_native_linters(monkeypatch):
@@ -415,7 +423,9 @@ def test_problems_are_collected_with_their_labels(monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess, "run",
                         lambda cmd, **kw: _P(returncode=1, stdout="vet: bad ref"))
     ok, out = ir.run_static_checks(str(tmp_path))
-    assert ok is False and "=== go vet ===" in out and "bad ref" in out
+    assert ok is False
+    assert "=== go vet ===" in out
+    assert "bad ref" in out
 
 
 def test_a_crashing_checker_is_skipped(monkeypatch, tmp_path):
@@ -431,7 +441,7 @@ def test_a_crashing_checker_is_skipped(monkeypatch, tmp_path):
 # ─── the report ────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def runner(monkeypatch):
     import aiforge_core.runtime.tools.project_runner as pr
     state = {"stacks": ["python"], "has_tests": True,
@@ -455,13 +465,15 @@ def test_a_green_project_reports_both_steps(tmp_path, runner):
 def test_failing_tests_make_the_report_red(tmp_path, runner):
     runner["test"] = {"ok": False, "error": "2 failed"}
     rep = ir.build_and_test_report(str(tmp_path))
-    assert rep["ok"] is False and "2 failed" in rep["md"]
+    assert rep["ok"] is False
+    assert "2 failed" in rep["md"]
 
 
 def test_a_project_with_no_tests_falls_back_to_the_build_result(tmp_path, runner):
     runner["has_tests"] = False
     rep = ir.build_and_test_report(str(tmp_path))
-    assert rep["ok"] is True and "_none found_" in rep["md"]
+    assert rep["ok"] is True
+    assert "_none found_" in rep["md"]
 
 
 def test_an_absent_build_toolchain_is_not_a_failure(tmp_path, runner):
@@ -469,13 +481,15 @@ def test_an_absent_build_toolchain_is_not_a_failure(tmp_path, runner):
     for a missing compiler."""
     runner["build"] = {"ok": False, "error": "mvn: command not found"}
     rep = ir.build_and_test_report(str(tmp_path))
-    assert rep["ok"] is None and "can't auto-build" in rep["md"]
+    assert rep["ok"] is None
+    assert "can't auto-build" in rep["md"]
 
 
 def test_an_absent_test_toolchain_is_not_a_failure(tmp_path, runner):
     runner["test"] = {"ok": False, "error": "pytest: command not found"}
     rep = ir.build_and_test_report(str(tmp_path))
-    assert rep["ok"] is None and "Test toolchain isn't installed" in rep["md"]
+    assert rep["ok"] is None
+    assert "Test toolchain isn't installed" in rep["md"]
 
 
 def test_a_failed_build_still_runs_the_tests(tmp_path, runner):
@@ -495,14 +509,16 @@ def test_a_bare_python_tree_still_gets_a_real_verdict(tmp_path, runner, monkeypa
     monkeypatch.setattr(ir, "run_bare_python_tests", lambda cwd: (False, "1 failed"))
     rep = ir.build_and_test_report(str(tmp_path))
     assert rep["ok"] is False
-    assert "no build marker" in rep["md"] and "1 failed" in rep["md"]
+    assert "no build marker" in rep["md"]
+    assert "1 failed" in rep["md"]
 
 
 def test_a_bare_tree_with_no_tests_reports_no_markers(tmp_path, runner, monkeypatch):
     runner["stacks"] = []
     monkeypatch.setattr(ir, "run_bare_python_tests", lambda cwd: None)
     rep = ir.build_and_test_report(str(tmp_path))
-    assert rep["ok"] is None and "No build markers found" in rep["md"]
+    assert rep["ok"] is None
+    assert "No build markers found" in rep["md"]
 
 
 def test_a_missing_project_runner_still_returns_manual_steps(tmp_path, monkeypatch):
@@ -515,4 +531,5 @@ def test_a_missing_project_runner_still_returns_manual_steps(tmp_path, monkeypat
         return real_import(name, *a, **kw)
     monkeypatch.setattr(builtins, "__import__", _no_runner)
     rep = ir.build_and_test_report(str(tmp_path))
-    assert rep["ok"] is None and "Integration check" in rep["md"]
+    assert rep["ok"] is None
+    assert "Integration check" in rep["md"]

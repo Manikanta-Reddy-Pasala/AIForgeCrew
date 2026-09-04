@@ -108,7 +108,13 @@ def _require_model():
         raise HTTPException(503, _load_error or "model not loaded")
 
 
-@app.post("/embed")
+# Both routes can answer 503 (the model was never staged — see _require_model)
+# and /embed can answer 400. Declared here so the generated schema says so;
+# a client reading only the OpenAPI doc was told these calls cannot fail.
+@app.post("/embed", responses={
+    400: {"description": "Empty text"},
+    503: {"description": "Model not loaded"},
+})
 def embed(req: EmbedReq):
     _require_model()
     if not req.text.strip():
@@ -117,7 +123,8 @@ def embed(req: EmbedReq):
     return {"embedding": v}
 
 
-@app.post("/embed_batch")
+@app.post("/embed_batch",
+          responses={503: {"description": "Model not loaded"}})
 def embed_batch(req: EmbedBatchReq):
     _require_model()
     if not req.texts:

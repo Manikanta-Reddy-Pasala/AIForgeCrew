@@ -26,7 +26,7 @@ class _R:
         self.returncode = returncode
 
 
-@pytest.fixture()
+@pytest.fixture
 def git(monkeypatch):
     calls: list = []
     replies: dict = {}
@@ -148,20 +148,25 @@ def test_a_crashing_agent_is_a_retryable_failure(git):
     def _boom(_s, _wt):
         raise RuntimeError("agent died")
     r = wt._attempt({}, "/wt", "s", _boom, None)
-    assert r["ok"] is False and r["ran"] is False and "crash: agent died" in r["error"]
+    assert r["ok"] is False
+    assert r["ran"] is False
+    assert "crash: agent died" in r["error"]
 
 
 def test_a_crashing_validator_is_a_failure_not_an_exception(git):
     def _boom(_s, _wt):
         raise RuntimeError("no toolchain")
     r = wt._attempt({}, "/wt", "s", lambda s, w: {"ok": True}, _boom)
-    assert r["ok"] is False and "crash: no toolchain" in r["validation"]["error"]
+    assert r["ok"] is False
+    assert "crash: no toolchain" in r["validation"]["error"]
 
 
 def test_a_run_and_validate_that_both_pass(git):
     r = wt._attempt({}, "/wt", "s", lambda s, w: {"ok": True, "files": ["a.py"]},
                     lambda s, w: {"ok": True})
-    assert r["ok"] is True and r["ran"] is True and r["validated"] is True
+    assert r["ok"] is True
+    assert r["ran"] is True
+    assert r["validated"] is True
     assert r["detail"]["files"] == ["a.py"]
 
 
@@ -181,7 +186,8 @@ def test_work_is_committed_even_when_validation_fails(git):
 
 def test_the_retry_carries_the_previous_error():
     out = wt._retry_subtask({"slug": "s"}, {"error": "ImportError: x"}, 1)
-    assert out["_retry_error"] == "ImportError: x" and out["_retry_n"] == 1
+    assert out["_retry_error"] == "ImportError: x"
+    assert out["_retry_n"] == 1
     assert out["_too_big"] is False
 
 
@@ -207,7 +213,8 @@ def test_retries_reset_the_worktree_between_attempts(monkeypatch):
     monkeypatch.setattr(wt, "_reset_worktree", lambda w, b: resets.append(b))
     monkeypatch.setattr(wt, "_attempt", lambda *a: {"ok": False, "error": "boom"})
     last, i = wt._run_with_retries({"slug": "s"}, "/wt", "s", "main", None, None, None)
-    assert i == 2 and resets == ["main", "main"]
+    assert i == 2
+    assert resets == ["main", "main"]
     assert last["ok"] is False
 
 
@@ -222,7 +229,7 @@ def test_a_passing_first_attempt_does_not_retry(monkeypatch):
 # ─── running a subtask end to end ──────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def sub_env(monkeypatch):
     monkeypatch.setattr(wt, "_emit", lambda *a: None)
     monkeypatch.setattr(wt, "_make_worktree", lambda *a: ("/wt", "main-sub-s"))
@@ -247,7 +254,9 @@ def test_a_worktree_that_cannot_be_made_fails_the_subtask(sub_env, monkeypatch):
         raise RuntimeError("no disk")
     monkeypatch.setattr(wt, "_make_worktree", _boom)
     r = wt._run_subtask("/repo", "main", None, {"slug": "s"}, None, None)
-    assert r["ok"] is False and r["error"] == "no disk" and r["branch"] is None
+    assert r["ok"] is False
+    assert r["error"] == "no disk"
+    assert r["branch"] is None
 
 
 def test_a_finished_subtask_reports_its_branch_and_files(sub_env, monkeypatch):
@@ -255,7 +264,9 @@ def test_a_finished_subtask_reports_its_branch_and_files(sub_env, monkeypatch):
                         lambda *a: ({"ok": True, "ran": True, "validated": True,
                                      "detail": {"files": ["a.py"]}}, 0))
     r = wt._run_subtask("/repo", "main", None, {"slug": "s"}, None, None)
-    assert r["ok"] is True and r["branch"] == "main-sub-s" and r["attempts"] == 1
+    assert r["ok"] is True
+    assert r["branch"] == "main-sub-s"
+    assert r["attempts"] == 1
     assert sub_env == ["running", "done"]
 
 
@@ -279,7 +290,7 @@ def test_the_detail_is_tail_capped():
     assert len(wt._project_fail_detail({"error": "x" * 9000})) == 4000
 
 
-@pytest.fixture()
+@pytest.fixture
 def runner(monkeypatch):
     import aiforge_core.runtime.tools.project_runner as pr
     state = {"stacks": ["python"], "has_tests": True, "res": {"ok": True}}
@@ -302,7 +313,9 @@ def test_no_project_means_nothing_to_gate(runner):
 def test_failing_tests_never_pass_via_a_build_fallback(runner):
     runner["res"] = {"ok": False, "results": [{"ok": False, "output": "2 failed"}]}
     out = wt._build_or_test("/wt")
-    assert out["ok"] is False and out["via"] == "test" and "2 failed" in out["detail"]
+    assert out["ok"] is False
+    assert out["via"] == "test"
+    assert "2 failed" in out["detail"]
 
 
 def test_a_project_without_tests_is_gated_on_the_build(runner):
@@ -338,7 +351,8 @@ def test_a_written_valid_file_passes(tmp_path, monkeypatch):
 def test_a_file_that_was_never_written_fails(tmp_path, monkeypatch):
     monkeypatch.delenv("AIFORGE_PARALLEL_STRICT_VALIDATE", raising=False)
     out = wt.default_validate_one({"path": "a.py"}, str(tmp_path))
-    assert out["ok"] is False and out["via"] == "written"
+    assert out["ok"] is False
+    assert out["via"] == "written"
 
 
 def test_an_empty_file_fails(tmp_path, monkeypatch):
@@ -353,14 +367,16 @@ def test_an_untouched_scaffold_stub_is_rejected(tmp_path, monkeypatch):
     monkeypatch.delenv("AIFORGE_PARALLEL_STRICT_VALIDATE", raising=False)
     (tmp_path / "a.py").write_text(f'"""Stub {wt._SCAFFOLD_MARK}"""\n')
     out = wt.default_validate_one({"path": "a.py"}, str(tmp_path))
-    assert out["ok"] is False and out["via"] == "stub"
+    assert out["ok"] is False
+    assert out["via"] == "stub"
 
 
 def test_broken_syntax_is_rejected(tmp_path, monkeypatch):
     monkeypatch.delenv("AIFORGE_PARALLEL_STRICT_VALIDATE", raising=False)
     (tmp_path / "a.py").write_text("def (:\n")
     out = wt.default_validate_one({"path": "a.py"}, str(tmp_path))
-    assert out["ok"] is False and out["via"] == "syntax"
+    assert out["ok"] is False
+    assert out["via"] == "syntax"
 
 
 def test_a_pathless_subtask_has_nothing_to_validate(tmp_path, monkeypatch):
@@ -447,8 +463,10 @@ def test_breadcrumbs_come_from_around_the_hunk():
     # a whole file); it reports the same character span.
     hunk = wt._conflict_hunks(content)[0]
     above, below = wt._hunk_breadcrumbs(content, hunk["span"], 2)
-    assert above == "b\nc\n" and below.startswith("e")
-    assert hunk["head"] == "x" and hunk["incoming"] == "y"
+    assert above == "b\nc\n"
+    assert below.startswith("e")
+    assert hunk["head"] == "x"
+    assert hunk["incoming"] == "y"
 
 
 @pytest.mark.parametrize("text,conflicted", [
@@ -468,7 +486,7 @@ def test_the_syntax_check_fails_open(monkeypatch):
     assert wt._syntax_ok("a.py", "def (:\n") is True
 
 
-@pytest.fixture()
+@pytest.fixture
 def resolver(monkeypatch):
     import aiforge_core.llm.client as client
     seen: dict = {"prompts": []}
@@ -485,7 +503,8 @@ def test_a_hunk_is_resolved_from_minimal_context(resolver):
                                     "def f():\n", "", 1)
     assert out == "    return 3"
     p = resolver["prompts"][0]
-    assert "GOAL: goal" in p and "[AMBIENT CODE ABOVE]" in p
+    assert "GOAL: goal" in p
+    assert "[AMBIENT CODE ABOVE]" in p
     assert "CRITICAL" not in p
 
 
@@ -519,7 +538,8 @@ def test_a_dead_model_resolves_nothing(monkeypatch):
 def test_an_unresolvable_hunk_keeps_head(monkeypatch):
     monkeypatch.setattr(wt, "_resolve_conflict_hunk", lambda *a, **k: "")
     out = wt._resolve_all_hunks(_CONFLICT, "goal", "a.py", 5, 1)
-    assert "return 1" in out and "return 2" not in out
+    assert "return 1" in out
+    assert "return 2" not in out
 
 
 def test_a_resolved_file_is_written(tmp_path, monkeypatch):
@@ -584,7 +604,8 @@ def test_a_conflict_is_resolved_rather_than_dropping_the_work(git, monkeypatch):
     monkeypatch.setattr(wt, "_resolve_conflicts", lambda repo, goal: True)
     monkeypatch.setattr(wt, "_spec_goal", lambda repo: "goal")
     ok, info = wt._merge_branch("/repo", "main", "sub-a")
-    assert ok is True and "auto-resolved" in info
+    assert ok is True
+    assert "auto-resolved" in info
 
 
 def test_an_unresolvable_conflict_aborts_and_leaves_base_clean(git, monkeypatch):
@@ -592,7 +613,8 @@ def test_an_unresolvable_conflict_aborts_and_leaves_base_clean(git, monkeypatch)
     monkeypatch.setattr(wt, "_resolve_conflicts", lambda repo, goal: False)
     monkeypatch.setattr(wt, "_spec_goal", lambda repo: "goal")
     ok, info = wt._merge_branch("/repo", "main", "sub-a")
-    assert ok is False and "CONFLICT in a.py" in info
+    assert ok is False
+    assert "CONFLICT in a.py" in info
     assert ["merge", "--abort"] in git.calls
 
 

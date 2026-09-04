@@ -233,7 +233,8 @@ def test_console_errors_only_filter(monkeypatch):
     br._record("run-c", {"kind": "console", "level": "log", "text": "hi"})
     br._record("run-c", {"kind": "pageerror", "level": "error", "text": "bad"})
     out = br.drain_console("run-c", errors_only=True)
-    assert len(out) == 1 and out[0]["text"] == "bad"
+    assert len(out) == 1
+    assert out[0]["text"] == "bad"
 
 
 def test_console_ring_is_bounded(monkeypatch):
@@ -260,7 +261,8 @@ def test_console_command_does_not_launch_a_browser(monkeypatch):
     br.set_run_id("console-only")
     br._record("console-only", {"kind": "pageerror", "level": "error", "text": "x"})
     out = br.browse("console")
-    assert out["ok"] is True and out["count"] == 1
+    assert out["ok"] is True
+    assert out["count"] == 1
 
 
 def test_viewport(monkeypatch):
@@ -305,13 +307,15 @@ def test_screenshot_bytes_returns_raw_png(monkeypatch):
     monkeypatch.setattr(br, "_playwright_available", lambda: True)
     monkeypatch.setattr(br, "_get_context", lambda rid: (MagicMock(), page))
     png, err = br.screenshot_bytes()
-    assert png == b"\x89PNG" and err is None
+    assert png == b"\x89PNG"
+    assert err is None
 
 
 def test_screenshot_bytes_without_playwright(monkeypatch):
     monkeypatch.setattr(br, "_playwright_available", lambda: False)
     png, err = br.screenshot_bytes()
-    assert png is None and err == "playwright_missing"
+    assert png is None
+    assert err == "playwright_missing"
 
 
 def test_destroy_clears_the_console_buffer():

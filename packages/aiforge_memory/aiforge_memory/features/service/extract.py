@@ -86,10 +86,11 @@ def _truncate(text: str, limit: int) -> str:
     return f"{head}\n\n[TRUNCATED {len(text) - limit} chars]\n\n{tail}"
 
 
-# Grouped so the precedence is visible: the anchors belong to their OWN
-# branch (an opening fence at the start of a line, a closing fence at the end),
-# which is what `^a|b$` already meant and what a reader could not see.
-_FENCE_RE = re.compile(r"(?:^```(?:json)?\s*\n?)|(?:\n?```\s*$)", re.MULTILINE)
+# A fence the model emits is a line of its own, so match a LINE. The previous
+# pattern was an alternation of two anchored branches wrapped in groups that
+# existed only to make the precedence readable — which is a sign the alternation
+# was the wrong shape, not that it needed parentheses.
+_FENCE_RE = re.compile(r"^[ \t]*```(?:json)?[ \t]*$\n?", re.MULTILINE)
 
 
 def _parse(raw: str) -> list[ServiceDraft] | None:
@@ -119,47 +120,71 @@ def _parse(raw: str) -> list[ServiceDraft] | None:
     return out
 
 
-def _merge_overrides(
-    drafts: list[ServiceDraft], *, repo_path: str | Path,
-) -> list[ServiceDraft]:
+def _load_overrides(repo_path: str | Path) -> list | None:
+    """The ``services:`` list from ``.aiforge/services.yaml``.
+
+    None — NOT ``[]`` — when there is no file, the YAML is broken, or the key
+    is not a list. The caller must hand the drafts back untouched in those
+    cases, and an empty list is a different thing: a file that says "no
+    overrides" still runs the merge, and the merge de-duplicates by name.
+    """
     yaml_path = Path(repo_path) / ".aiforge" / "services.yaml"
     if not yaml_path.is_file():
-        return drafts
+        return None
     try:
         data = yaml.safe_load(yaml_path.read_text()) or {}
     except yaml.YAMLError:
-        return drafts
+        return None
     overrides = data.get("services") or []
-    if not isinstance(overrides, list):
-        return drafts
+    return overrides if isinstance(overrides, list) else None
 
+
+def _override_files(o: dict, repo_root: Path) -> list[str]:
+    """The literal ``files`` list plus whatever ``file_glob`` expands to.
+
+    Globs are resolved against the repo root and appended in glob order,
+    skipping anything already listed literally.
+    """
+    files = [str(x) for x in (o.get("files") or [])]
+    glob = o.get("file_glob")
+    if not glob:
+        return files
+    for pattern in (glob if isinstance(glob, list) else [glob]):
+        for p in repo_root.glob(str(pattern)):
+            if not p.is_file():
+                continue
+            rel = str(p.relative_to(repo_root))
+            if rel not in files:
+                files.append(rel)
+    return files
+
+
+def _override_draft(o: dict, repo_root: Path) -> ServiceDraft:
+    """One operator-written override, as a draft that outranks the LLM's."""
+    port = o.get("port")
+    return ServiceDraft(
+        name=str(o["name"]),
+        description=str(o.get("description", "")),
+        role=str(o.get("role", "")),
+        tech_stack=[str(x) for x in (o.get("tech_stack") or [])],
+        port=int(port) if isinstance(port, int) else None,
+        files=_override_files(o, repo_root),
+        source="manual",
+    )
+
+
+def _merge_overrides(
+    drafts: list[ServiceDraft], *, repo_path: str | Path,
+) -> list[ServiceDraft]:
+    """Operator overrides win over the LLM's drafts, matched by name."""
+    overrides = _load_overrides(repo_path)
+    if overrides is None:
+        return drafts
     repo_root = Path(repo_path).resolve()
     by_name: dict[str, ServiceDraft] = {d.name: d for d in drafts}
     for o in overrides:
-        if not isinstance(o, dict) or not o.get("name"):
-            continue
-        port = o.get("port")
-
-        # Files: literal list OR file_glob (glob expanded against repo_root).
-        files = [str(x) for x in (o.get("files") or [])]
-        glob = o.get("file_glob")
-        if glob:
-            for pattern in (glob if isinstance(glob, list) else [glob]):
-                for p in repo_root.glob(str(pattern)):
-                    if p.is_file():
-                        rel = str(p.relative_to(repo_root))
-                        if rel not in files:
-                            files.append(rel)
-
-        by_name[str(o["name"])] = ServiceDraft(
-            name=str(o["name"]),
-            description=str(o.get("description", "")),
-            role=str(o.get("role", "")),
-            tech_stack=[str(x) for x in (o.get("tech_stack") or [])],
-            port=int(port) if isinstance(port, int) else None,
-            files=files,
-            source="manual",
-        )
+        if isinstance(o, dict) and o.get("name"):
+            by_name[str(o["name"])] = _override_draft(o, repo_root)
     return list(by_name.values())
 
 

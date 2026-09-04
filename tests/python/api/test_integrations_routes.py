@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from aiforge_core.api.routes import integrations as ig
 
 
-@pytest.fixture()
+@pytest.fixture
 def client():
     app = FastAPI()
     app.include_router(ig.router)
@@ -55,7 +55,8 @@ def test_confluence_settings_are_saved_and_read_back(client, store):
                      "insecure_tls": True})
     body = client.get("/api/integrations/confluence").json()
     assert body["base_url"] == "https://wiki.internal"      # trimmed, no slash
-    assert body["user"] == "ada" and body["default_space"] == "ENG"
+    assert body["user"] == "ada"
+    assert body["default_space"] == "ENG"
     assert body["insecure_tls"] is True
     assert body["has_token"] is True
     assert "sk-secret" not in str(body)                     # write-only
@@ -75,14 +76,16 @@ def test_re_saving_the_form_keeps_the_token(client, store):
 def test_an_env_token_counts_as_configured(client, store, monkeypatch):
     monkeypatch.setenv("CONFLUENCE_TOKEN", "sk-env")
     body = client.get("/api/integrations/confluence").json()
-    assert body["has_token"] is True and body["env_managed"] is True
+    assert body["has_token"] is True
+    assert body["env_managed"] is True
 
 
 def test_an_env_base_url_wins_over_the_stored_one(client, store, monkeypatch):
     store["confluence"]["base_url"] = "https://stored"
     monkeypatch.setenv("CONFLUENCE_BASE_URL", "https://from-env")
     body = client.get("/api/integrations/confluence").json()
-    assert body["base_url"] == "https://from-env" and body["env_managed"] is True
+    assert body["base_url"] == "https://from-env"
+    assert body["env_managed"] is True
 
 
 def test_an_unconfigured_confluence_reads_as_empty(client, store):
@@ -109,7 +112,8 @@ def test_jira_settings_are_saved_and_read_back(client, store):
                      "insecure_tls": True})
     body = client.get("/api/integrations/jira").json()
     assert body["base_url"] == "https://jira.internal"
-    assert body["default_project"] == "ENG" and body["has_token"] is True
+    assert body["default_project"] == "ENG"
+    assert body["has_token"] is True
     assert "sk-jira" not in str(body)
 
 
@@ -123,7 +127,8 @@ def test_an_env_managed_jira_is_flagged(client, store, monkeypatch):
     monkeypatch.setenv("JIRA_BASE_URL", "https://from-env")
     monkeypatch.setenv("JIRA_USER", "env-user")
     body = client.get("/api/integrations/jira").json()
-    assert body["env_managed"] is True and body["user"] == "env-user"
+    assert body["env_managed"] is True
+    assert body["user"] == "env-user"
 
 
 def test_the_jira_test_button_calls_the_client(client, monkeypatch):
@@ -141,8 +146,10 @@ def test_gitlab_settings_are_saved_and_read_back(client, store):
                      "token": "glpat-x", "oauth": True, "insecure_tls": True})
     body = client.get("/api/integrations/gitlab").json()
     assert body["base_url"] == "https://gitlab.internal"
-    assert body["project"] == "grp/p" and body["oauth"] is True
-    assert body["has_token"] is True and "glpat-x" not in str(body)
+    assert body["project"] == "grp/p"
+    assert body["oauth"] is True
+    assert body["has_token"] is True
+    assert "glpat-x" not in str(body)
 
 
 def test_re_saving_gitlab_keeps_the_token(client, store):
@@ -175,10 +182,14 @@ def test_email_settings_are_saved_and_read_back(client, store):
                      "imap_user": "ada", "imap_password": "pw2",
                      "imap_ssl": False})
     body = client.get("/api/integrations/email").json()
-    assert body["smtp_host"] == "smtp.internal" and body["smtp_port"] == 25
-    assert body["smtp_starttls"] is False and body["imap_ssl"] is False
-    assert body["has_smtp_password"] is True and body["has_imap_password"] is True
-    assert "pw1" not in str(body) and "pw2" not in str(body)
+    assert body["smtp_host"] == "smtp.internal"
+    assert body["smtp_port"] == 25
+    assert body["smtp_starttls"] is False
+    assert body["imap_ssl"] is False
+    assert body["has_smtp_password"] is True
+    assert body["has_imap_password"] is True
+    assert "pw1" not in str(body)
+    assert "pw2" not in str(body)
 
 
 def test_re_saving_email_keeps_both_passwords(client, store):
@@ -191,8 +202,10 @@ def test_re_saving_email_keeps_both_passwords(client, store):
 
 def test_the_default_ports_and_tls_settings(client, store):
     body = client.get("/api/integrations/email").json()
-    assert body["smtp_port"] == 587 and body["imap_port"] == 993
-    assert body["smtp_starttls"] is True and body["imap_ssl"] is True
+    assert body["smtp_port"] == 587
+    assert body["imap_port"] == 993
+    assert body["smtp_starttls"] is True
+    assert body["imap_ssl"] is True
 
 
 def test_env_ports_and_flags_win(client, store, monkeypatch):
@@ -201,13 +214,15 @@ def test_env_ports_and_flags_win(client, store, monkeypatch):
     monkeypatch.setenv("AIFORGE_IMAP_SSL", "0")
     body = client.get("/api/integrations/email").json()
     assert body["smtp_port"] == 2525
-    assert body["smtp_starttls"] is False and body["imap_ssl"] is False
+    assert body["smtp_starttls"] is False
+    assert body["imap_ssl"] is False
 
 
 def test_an_env_password_counts_as_configured(client, store, monkeypatch):
     monkeypatch.setenv("AIFORGE_IMAP_PASSWORD", "env-pw")
     body = client.get("/api/integrations/email").json()
-    assert body["has_imap_password"] is True and body["env_managed"] is True
+    assert body["has_imap_password"] is True
+    assert body["env_managed"] is True
 
 
 def test_the_email_test_button_calls_the_client(client, monkeypatch):

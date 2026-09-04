@@ -5,7 +5,6 @@ Verifies the env-driven backend-compat shim returns the right
 in the codebase use it (no stray ``json_object`` literals)."""
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 
@@ -60,21 +59,38 @@ def test_case_insensitive(monkeypatch) -> None:
 # ─── Regression: no call site uses bare json_object literal ────────────
 
 
-_SOURCE_DIRS = (
-    "features/repo/extract.py",
-    "features/file/extract.py",
-    "features/service/extract.py",
-    "query/translator.py",
-)
+_PKG_ROOT = Path(__file__).parent.parent
 
 
-@pytest.mark.parametrize("rel_path", _SOURCE_DIRS)
+def _call_sites() -> list[str]:
+    """Every module that posts a chat completion, discovered.
+
+    This used to be a hand-written tuple, and it listed
+    ``query/translator.py`` — deleted with the Neo4j layer — so both guards
+    below have failed on a missing file ever since. Worse in the other
+    direction: a NEW call site added tomorrow would not have been guarded at
+    all. Finding them is the same work the guard is for.
+    """
+    found = []
+    for path in sorted(_PKG_ROOT.rglob("*.py")):
+        if "tests" in path.parts or path.name == "llm_compat.py":
+            continue
+        if "chat.completions.create" in path.read_text(encoding="utf-8"):
+            found.append(str(path.relative_to(_PKG_ROOT)))
+    return found
+
+
+def test_the_call_site_list_is_not_empty():
+    """A discovery bug that finds nothing would make both guards vacuous."""
+    assert _call_sites()
+
+
+@pytest.mark.parametrize("rel_path", _call_sites())
 def test_no_bare_json_object_literal_in_call_sites(rel_path: str) -> None:
     """Regression guard: every LLM call site MUST go through
     llm_compat.response_format(), not a bare {"type": "json_object"}
     literal. Catches drift if someone reverts the patch."""
-    src_root = Path(__file__).parent.parent
-    text = (src_root / rel_path).read_text(encoding="utf-8")
+    text = (_PKG_ROOT / rel_path).read_text(encoding="utf-8")
     # The file may mention json_object in comments/docstrings; the bare
     # literal of the form `response_format={"type": "json_object"}` is
     # what we're guarding against.
@@ -85,11 +101,13 @@ def test_no_bare_json_object_literal_in_call_sites(rel_path: str) -> None:
     )
 
 
-@pytest.mark.parametrize("rel_path", _SOURCE_DIRS)
+@pytest.mark.parametrize("rel_path", _call_sites())
 def test_call_sites_import_response_format(rel_path: str) -> None:
     """Each call site must import and call llm_compat.response_format."""
-    src_root = Path(__file__).parent.parent
-    text = (src_root / rel_path).read_text(encoding="utf-8")
-    assert "llm_compat" in text and "response_format" in text, (
+    text = (_PKG_ROOT / rel_path).read_text(encoding="utf-8")
+    assert "llm_compat" in text, (
+        f"{rel_path} must import from llm_compat"
+    )
+    assert "response_format" in text, (
         f"{rel_path} must import response_format from llm_compat"
     )

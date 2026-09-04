@@ -95,7 +95,8 @@ def test_the_native_stack_is_detected_by_build_file_or_sources(tmp_path, files, 
 
 def test_an_empty_tree_has_no_stack(tmp_path):
     det = pr.detect(str(tmp_path))
-    assert det["stacks"] == [] and det["note"] == "no recognised project markers"
+    assert det["stacks"] == []
+    assert det["note"] == "no recognised project markers"
 
 
 def test_the_source_walk_skips_vendor_dirs_and_is_bounded(tmp_path):
@@ -175,10 +176,12 @@ def test_the_maven_plan(tmp_path):
 
 def test_the_gradle_wrapper_is_preferred_when_present(tmp_path):
     tools, cmds = pr._stack_plan("gradle", str(tmp_path))
-    assert tools == ["java", "gradle"] and cmds["test"] == ["gradle test"]
+    assert tools == ["java", "gradle"]
+    assert cmds["test"] == ["gradle test"]
     (tmp_path / "gradlew").write_text("")
     tools, cmds = pr._stack_plan("gradle", str(tmp_path))
-    assert tools == ["java"] and cmds["test"] == ["./gradlew test"]
+    assert tools == ["java"]
+    assert cmds["test"] == ["./gradlew test"]
 
 
 @pytest.mark.parametrize("lockfile,pm", [(None, "npm"), ("yarn.lock", "yarn"),
@@ -256,7 +259,7 @@ def test_an_action_a_stack_does_not_support():
 # ─── execution ─────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def cancel(monkeypatch):
     from aiforge_core.runtime import chat_cancel
     state = {"sid": None, "cancelled": False, "tracked": []}
@@ -269,12 +272,15 @@ def cancel(monkeypatch):
 
 def test_a_command_runs_and_its_output_is_captured(cancel, tmp_path):
     r = pr._exec("echo hello", str(tmp_path), 30)
-    assert r["ok"] is True and r["code"] == 0 and "hello" in r["output"]
+    assert r["ok"] is True
+    assert r["code"] == 0
+    assert "hello" in r["output"]
 
 
 def test_a_failing_command_reports_its_code(cancel, tmp_path):
     r = pr._exec("exit 3", str(tmp_path), 30)
-    assert r["ok"] is False and r["code"] == 3
+    assert r["ok"] is False
+    assert r["code"] == 3
 
 
 def test_output_is_tail_capped(cancel, tmp_path):
@@ -292,7 +298,8 @@ def test_a_command_that_cannot_start_is_an_error(cancel, monkeypatch, tmp_path):
 def test_a_run_is_tracked_against_the_chat_session(cancel, tmp_path):
     cancel["sid"] = 7
     pr._exec("true", str(tmp_path), 30)
-    assert cancel["tracked"] and cancel["tracked"][0][0] == 7
+    assert cancel["tracked"]
+    assert cancel["tracked"][0][0] == 7
 
 
 def test_stop_kills_the_whole_process_group(cancel, monkeypatch, tmp_path):
@@ -309,7 +316,8 @@ def test_a_timeout_kills_the_group_and_says_so(cancel, monkeypatch, tmp_path):
     killed: list = []
     monkeypatch.setattr(pr, "_kill", lambda proc: killed.append(proc))
     r = pr._exec("sleep 5", str(tmp_path), 0)
-    assert r["ok"] is False and "timeout after 0s" in r["error"]
+    assert r["ok"] is False
+    assert "timeout after 0s" in r["error"]
     assert killed
 
 
@@ -333,7 +341,8 @@ def test_a_grandchild_holding_the_pipe_cannot_hang_the_call(cancel, monkeypatch,
     killed: list = []
     monkeypatch.setattr(pr, "_kill", lambda proc: killed.append(proc))
     r = pr._exec("mvn test", str(tmp_path), 30)
-    assert killed and r["output"] == "late output"
+    assert killed
+    assert r["output"] == "late output"
 
 
 def test_a_second_communicate_failure_still_returns(cancel, monkeypatch, tmp_path):
@@ -372,7 +381,7 @@ def test_killing_a_gone_process_is_not_fatal(monkeypatch):
 # ─── the entry point ───────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def runner(monkeypatch):
     from aiforge_core.runtime.tools import ensure_runtime as er
     state = {"exec": [], "provision": {"ok": True}, "results": {}}
@@ -388,18 +397,21 @@ def runner(monkeypatch):
 def test_detect_is_the_default_action(tmp_path, runner):
     (tmp_path / "go.mod").write_text("")
     out = pr.project(cwd=str(tmp_path))
-    assert out["stacks"] == ["go"] and runner["exec"] == []
+    assert out["stacks"] == ["go"]
+    assert runner["exec"] == []
 
 
 def test_a_tree_with_no_project_cannot_be_built(tmp_path, runner):
     out = pr.project("build", str(tmp_path))
-    assert out["ok"] is False and "no recognised project" in out["error"]
+    assert out["ok"] is False
+    assert "no recognised project" in out["error"]
 
 
 def test_the_stacks_canonical_command_runs(tmp_path, runner):
     (tmp_path / "go.mod").write_text("")
     out = pr.project("test", str(tmp_path))
-    assert out["ok"] is True and runner["exec"] == ["go test ./..."]
+    assert out["ok"] is True
+    assert runner["exec"] == ["go test ./..."]
     assert out["results"][0]["stack"] == "go"
 
 
@@ -417,7 +429,8 @@ def test_a_failing_command_stops_that_stacks_sequence(tmp_path, runner):
     cmds = pr._stack_plan("cmake", str(tmp_path))[1]["test"]
     runner["results"][cmds[0]] = {"cmd": cmds[0], "ok": False, "code": 1}
     out = pr.project("test", str(tmp_path))
-    assert out["ok"] is False and len(runner["exec"]) == 1
+    assert out["ok"] is False
+    assert len(runner["exec"]) == 1
 
 
 def test_every_detected_stack_is_run(tmp_path, runner):
@@ -430,7 +443,8 @@ def test_every_detected_stack_is_run(tmp_path, runner):
 def test_a_stack_with_no_command_for_the_action_is_skipped(tmp_path, runner):
     (tmp_path / "CMakeLists.txt").write_text("")
     out = pr.project("install", str(tmp_path))
-    assert out["ok"] is True and runner["exec"] == []
+    assert out["ok"] is True
+    assert runner["exec"] == []
 
 
 def test_the_path_is_expanded(tmp_path, runner, monkeypatch):

@@ -194,7 +194,7 @@ _JAVA_PATH_PREFIXES = (
 
 def _import_candidates(imp: str, *, importer_dir: str = "") -> list[str]:
     out: list[str] = []
-    if imp.startswith("./") or imp.startswith("../"):
+    if imp.startswith(("./", "../")):
         # TS relative — resolve against importer dir
         base = imp.lstrip("./")
         prefix = f"{importer_dir}/" if importer_dir else ""

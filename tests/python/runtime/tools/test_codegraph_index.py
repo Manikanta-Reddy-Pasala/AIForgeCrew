@@ -65,7 +65,8 @@ def test_an_explicit_binary_path_wins(monkeypatch, tmp_path):
     exe = tmp_path / "codegraph"
     exe.write_text("#!/bin/sh")
     monkeypatch.setenv("AIFORGE_CODEGRAPH_BIN", str(exe))
-    assert C._bin() == str(exe) and C.available() is True
+    assert C._bin() == str(exe)
+    assert C.available() is True
 
 
 def test_a_binary_path_that_does_not_exist_falls_back(monkeypatch):
@@ -231,7 +232,7 @@ def test_an_unwritable_lock_file_does_not_block_the_build(monkeypatch,
 # ─── the gate ──────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def gate(monkeypatch):
     state: dict = {"available": True, "indexed": True}
     monkeypatch.setattr(C, "available", lambda: state["available"])
@@ -284,7 +285,7 @@ def test_a_ticket_store_hiccup_never_gates_the_run(gate, monkeypatch):
 # ─── building it ───────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def build(monkeypatch, tmp_path):
     """A repo with no index, a fake binary, and a scripted init."""
     monkeypatch.setenv("AIFORGE_CODEGRAPH_PATH", str(tmp_path))
@@ -423,7 +424,8 @@ def test_a_repo_folder_that_is_not_there_is_not_built(build, monkeypatch):
 def test_the_build_command_and_timeout_are_overridable(monkeypatch):
     monkeypatch.setenv("AIFORGE_CODEGRAPH_INIT_CMD", "init --force")
     monkeypatch.setenv("AIFORGE_CODEGRAPH_BUILD_TIMEOUT_S", "20")
-    assert C._init_cmd() == "init --force" and C._build_timeout_s() == 20
+    assert C._init_cmd() == "init --force"
+    assert C._build_timeout_s() == 20
     monkeypatch.setenv("AIFORGE_CODEGRAPH_BUILD_TIMEOUT_S", "5")
     assert C._build_timeout_s() == 10, "with a floor"
     monkeypatch.setenv("AIFORGE_CODEGRAPH_BUILD_TIMEOUT_S", "soon")
@@ -446,7 +448,7 @@ def test_the_init_path_is_positional(monkeypatch, tmp_path):
 # ─── querying ──────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def query(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CODEGRAPH_PATH", str(tmp_path))
     state: dict = {"rc": 0, "out": "results", "err": "", "raise": None,
@@ -508,7 +510,8 @@ def test_a_degraded_result_is_returned_with_its_warning(query):
     query["rc"] = 1
     query["err"] = "3 files failed to parse"
     out = C.codegraph_query({"query": "x"})
-    assert out["ok"] is True and out["warning"] == "3 files failed to parse"
+    assert out["ok"] is True
+    assert out["warning"] == "3 files failed to parse"
 
 
 def test_a_huge_result_is_capped(query):

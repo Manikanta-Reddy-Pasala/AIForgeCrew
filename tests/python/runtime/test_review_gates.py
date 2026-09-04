@@ -239,7 +239,7 @@ def test_a_line_without_a_goal_keeps_the_original_goal():
 # ─── find_test_files / _fenced_test_blocks ─────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def tree(tmp_path):
     (tmp_path / "tests").mkdir()
     (tmp_path / "node_modules").mkdir()

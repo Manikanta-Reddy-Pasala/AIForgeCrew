@@ -150,12 +150,14 @@ def test_prior_turns_are_rendered_for_the_fresh_adk_session():
                                 {"role": "assistant", "content": "done"},
                                 {"role": "user", "content": "now test it"}])
     assert "CONVERSATION SO FAR" in out
-    assert "User: add a cache" in out and "Assistant: done" in out
+    assert "User: add a cache" in out
+    assert "Assistant: done" in out
     assert "now test it" not in out          # the current message is dropped
 
 
 def test_no_history_is_no_preamble():
-    assert cp._history_preamble(None) == "" and cp._history_preamble([]) == ""
+    assert cp._history_preamble(None) == ""
+    assert cp._history_preamble([]) == ""
 
 
 def test_a_first_turn_has_nothing_prior():
@@ -203,7 +205,8 @@ def test_a_planner_decomposition_becomes_a_live_panel(monkeypatch):
     ev = cp._planner_subtask_event("1. store — the store")
     assert ev["items"][0] == {"slug": "store", "goal": "the store",
                               "status": "pending"}
-    assert ev["items"][1]["slug"] == "sub-2" and ev["items"][1]["goal"] == "the cli"
+    assert ev["items"][1]["slug"] == "sub-2"
+    assert ev["items"][1]["goal"] == "the cli"
 
 
 def test_a_plan_with_no_subtasks_shows_no_panel(monkeypatch):
@@ -248,7 +251,8 @@ def test_with_nothing_at_all_the_turn_still_answers():
 
 def test_an_enhancer_block_asks_for_detail_instead():
     out = cp._promote_team_answer({"doer": "x"}, {}, "y", "no target named")
-    assert "need more detail" in out and "no target named" in out
+    assert "need more detail" in out
+    assert "no target named" in out
 
 
 # ─── the enhancer sentinel ─────────────────────────────────────────────
@@ -285,7 +289,7 @@ def test_other_events_are_not_the_sentinel(ev):
 # ─── routing one event ─────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def routing():
     return {"q": queue.Queue(), "steps": [], "by_role": {},
             "acc": {"emitted_subtasks": False, "sub_items": None}}
@@ -304,7 +308,8 @@ def test_a_message_event_is_queued_but_not_recorded_as_a_step(routing):
     ev = {"type": "message", "text": "done"}
     cp._process_team_event(ev, routing["q"], routing["steps"], routing["by_role"],
                            routing["acc"])
-    assert routing["q"].get_nowait() == ev and routing["steps"] == []
+    assert routing["q"].get_nowait() == ev
+    assert routing["steps"] == []
 
 
 def test_the_sentinel_stops_the_run_before_it_is_shown(routing):
@@ -313,7 +318,8 @@ def test_the_sentinel_stops_the_run_before_it_is_shown(routing):
     ev = {"type": "thought", "role": "enhancer", "text": "ENHANCE_BLOCKED: vague"}
     assert cp._process_team_event(ev, routing["q"], routing["steps"],
                                   routing["by_role"], routing["acc"]) == "vague"
-    assert routing["q"].empty() and routing["steps"] == []
+    assert routing["q"].empty()
+    assert routing["steps"] == []
 
 
 def test_the_planners_panel_is_emitted_once(routing, monkeypatch):
@@ -364,7 +370,7 @@ def test_a_failing_diff_never_breaks_the_turn(monkeypatch):
     assert cp._team_change_events("/repo", "abc", None) == []
 
 
-@pytest.fixture()
+@pytest.fixture
 def claim_guard(monkeypatch):
     import aiforge_core.runtime.chat_agent._context as ctx
     monkeypatch.setattr(ctx, "_edit_claim_guard_enabled", lambda: True)
@@ -411,7 +417,8 @@ def test_a_queued_steer_gets_an_ack(monkeypatch):
     q = queue.Queue()
     cp._emit_steer_acks(7, chat_interject, q)
     ev = q.get_nowait()
-    assert ev["type"] == "thought" and "use an LRU" in ev["text"]
+    assert ev["type"] == "thought"
+    assert "use an LRU" in ev["text"]
 
 
 def test_a_ticketless_run_needs_no_acks(monkeypatch):

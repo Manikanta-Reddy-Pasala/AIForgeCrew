@@ -20,7 +20,7 @@ def test_empty_prompt_rejected():
 
 
 def test_delegate_happy(monkeypatch):
-    async def _fake_run(role, prompt, timeout):
+    async def _fake_run(role, prompt):
         return {
             "ok": True, "role": role,
             "output": "research notes ...", "state_keys": ["research_brief"],
@@ -35,7 +35,7 @@ def test_delegate_happy(monkeypatch):
 
 
 def test_delegate_propagates_exception_as_soft_error(monkeypatch):
-    async def _boom(role, prompt, timeout):
+    async def _boom(role, prompt):
         raise RuntimeError("ADK launch failed")
     monkeypatch.setattr(dlg, "_run_delegate_async", _boom)
     out = dlg.delegate_to_agent("planner", "plan something")
@@ -45,8 +45,14 @@ def test_delegate_propagates_exception_as_soft_error(monkeypatch):
 
 
 def test_delegate_timeout(monkeypatch):
-    async def _slow(role, prompt, timeout):
-        return {"ok": False, "error": "timeout", "role": role}
+    """The deadline lives at the boundary now, so this drives the real one:
+    a delegate that outlives it, cancelled by asyncio.timeout()."""
+    import asyncio
+
+    async def _slow(role, prompt):
+        await asyncio.sleep(5)
+        return {"ok": True, "role": role, "output": "too late",
+                "state_keys": []}
     monkeypatch.setattr(dlg, "_run_delegate_async", _slow)
     out = dlg.delegate_to_agent("verifier", "verify x", timeout=1)
     assert out["ok"] is False
@@ -56,7 +62,7 @@ def test_delegate_timeout(monkeypatch):
 def test_delegation_depth_cap(monkeypatch):
     # Depth is now request-scoped (contextvar), not process-global env — so
     # concurrent chains can't clobber each other. Drive it up to the cap.
-    async def _ok(role, prompt, timeout):
+    async def _ok(role, prompt):
         return {"ok": True, "role": role, "output": "x", "state_keys": []}
     monkeypatch.setattr(dlg, "_run_delegate_async", _ok)
     monkeypatch.setenv("AIFORGE_DELEGATION_MAX_DEPTH", "3")
@@ -73,7 +79,7 @@ def test_delegation_depth_cap(monkeypatch):
 
 def test_delegation_depth_increments(monkeypatch):
     captured = {}
-    async def _capture(role, prompt, timeout):
+    async def _capture(role, prompt):
         captured["depth_inside"] = rc.get_delegation_depth()
         return {"ok": True, "role": role, "output": "", "state_keys": []}
     monkeypatch.setattr(dlg, "_run_delegate_async", _capture)

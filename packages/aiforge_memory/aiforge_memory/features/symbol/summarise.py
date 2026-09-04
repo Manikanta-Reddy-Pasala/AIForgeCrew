@@ -216,7 +216,8 @@ class _ErrorWindow:
         self.size = size
         self.done = 0
         self._lock = threading.Lock()
-        self._recent: list[int] = []          # 1 = error, 0 = ok
+        self._recent: list[int] = []          # one entry per completion:
+        #                                       1 for an error, 0 for a pass
 
     def record(self, ss: SymbolSummary) -> bool:
         """Record one completion. True while the batch should keep going."""
@@ -329,10 +330,11 @@ def _slice_body(content: bytes, line_start: int, line_end: int) -> str:
     return "\n".join(span)
 
 
-# Grouped so the precedence is visible: the anchors belong to their OWN
-# branch (an opening fence at the start of a line, a closing fence at the end),
-# which is what `^a|b$` already meant and what a reader could not see.
-_FENCE_RE = re.compile(r"(?:^```(?:json)?\s*\n?)|(?:\n?```\s*$)", re.MULTILINE)
+# A fence the model emits is a line of its own, so match a LINE. The previous
+# pattern was an alternation of two anchored branches wrapped in groups that
+# existed only to make the precedence readable — which is a sign the alternation
+# was the wrong shape, not that it needed parentheses.
+_FENCE_RE = re.compile(r"^[ \t]*```(?:json)?[ \t]*$\n?", re.MULTILINE)
 # Match the FIRST `{"summary":"..."}` JSON object anywhere in the text —
 # necessary when the model wraps the answer in a thinking dump.
 _SUMMARY_JSON_RE = re.compile(
@@ -497,7 +499,8 @@ def _call_llm(
             return _post_summary(raw_body, headers)
         except httpx.HTTPStatusError:
             raise
-        except Exception:  # noqa: BLE001 — transport, retried below
+        # Transport-level failure — retried below until RETRY_MAX.
+        except Exception:  # noqa: BLE001
             if attempt >= RETRY_MAX:
                 raise
             time.sleep(RETRY_BACKOFF_S)

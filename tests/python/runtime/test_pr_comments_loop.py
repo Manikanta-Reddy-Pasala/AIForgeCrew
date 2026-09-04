@@ -67,13 +67,15 @@ def test_a_question_word_with_punctuation_still_counts():
 def test_only_a_change_request_gets_the_full_pipeline(body, mode, monkeypatch):
     monkeypatch.delenv("AIFORGE_PR_COMMENT_LIGHTWEIGHT", raising=False)
     route = P.route_comment({"id": 5, "body": body})
-    assert route["mode"] == mode and route["comment_id"] == 5
+    assert route["mode"] == mode
+    assert route["comment_id"] == 5
 
 
 def test_the_old_always_ticket_behaviour_is_one_flag_away(monkeypatch):
     monkeypatch.setenv("AIFORGE_PR_COMMENT_LIGHTWEIGHT", "0")
     route = P.route_comment({"id": 5, "body": "nit: spacing"})
-    assert route["mode"] == "full" and route["reason"] == "lightweight_disabled:nit"
+    assert route["mode"] == "full"
+    assert route["reason"] == "lightweight_disabled:nit"
 
 
 # ─── the lightweight acknowledgement ───────────────────────────────────
@@ -81,13 +83,15 @@ def test_the_old_always_ticket_behaviour_is_one_flag_away(monkeypatch):
 
 def test_a_question_is_answered_as_a_clarification():
     out = P.lightweight_reply({"id": 1, "body": "Why this loop?"})
-    assert out["kind"] == "question" and "clarification" in out["reply_text"]
+    assert out["kind"] == "question"
+    assert "clarification" in out["reply_text"]
     assert "Why this loop?" in out["reply_text"]
 
 
 def test_a_nit_is_acknowledged_as_a_minor_follow_up():
     out = P.lightweight_reply({"id": 1, "body": "nit: spacing"})
-    assert out["kind"] == "nit" and "nit/style" in out["reply_text"]
+    assert out["kind"] == "nit"
+    assert "nit/style" in out["reply_text"]
 
 
 def test_nothing_is_posted_to_github_yet():
@@ -106,7 +110,7 @@ def test_a_bodyless_comment_still_produces_a_reply():
 # ─── the seen-comment state ────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def state_file(tmp_path, monkeypatch):
     p = tmp_path / "pr_comments_seen.json"
     monkeypatch.setattr(P, "_STATE_PATH", p)
@@ -137,7 +141,7 @@ def test_an_unwritable_state_dir_only_warns(tmp_path, monkeypatch, caplog):
 # ─── talking to gh ─────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def gh(monkeypatch):
     state: dict = {"rc": 0, "out": "[]", "timeout": False, "calls": []}
 
@@ -178,7 +182,7 @@ def _pr(number=7, repo="widgets", owner="acme"):
             "headRepositoryOwner": {"login": owner}}
 
 
-@pytest.fixture()
+@pytest.fixture
 def flow(monkeypatch):
     """Comments come back from gh; tickets are posted through a stub."""
     state: dict = {"comments": [], "posted": [], "post_ok": True}
@@ -200,7 +204,8 @@ def test_a_change_request_becomes_a_ticket(flow):
     flow["comments"] = [{"id": 10, "body": "This breaks on empty input."}]
     seen, tally = {}, _tally()
     P._process_pr_comments(_pr(), seen, tally)
-    assert tally["new_tickets"] == 1 and flow["posted"] == [("widgets", 7, 10)]
+    assert tally["new_tickets"] == 1
+    assert flow["posted"] == [("widgets", 7, 10)]
     assert seen == {"acme/widgets#7": 10}
 
 
@@ -209,7 +214,8 @@ def test_a_question_is_answered_without_a_ticket(flow):
     seen, tally = {}, _tally()
     P._process_pr_comments(_pr(), seen, tally)
     assert tally == {"new_tickets": 0, "lightweight_replies": 1}
-    assert seen == {"acme/widgets#7": 10} and flow["posted"] == []
+    assert seen == {"acme/widgets#7": 10}
+    assert flow["posted"] == []
 
 
 def test_a_comment_already_handled_is_never_handled_twice(flow):
@@ -226,14 +232,16 @@ def test_a_comment_whose_ticket_failed_is_retried_next_run(flow):
     flow["comments"] = [{"id": 10, "body": "fix it"}]
     seen, tally = {}, _tally()
     P._process_pr_comments(_pr(), seen, tally)
-    assert seen == {} and tally["new_tickets"] == 0
+    assert seen == {}
+    assert tally["new_tickets"] == 0
 
 
 def test_a_pr_with_no_repository_is_skipped(flow):
     flow["comments"] = [{"id": 10, "body": "fix it"}]
     seen = {}
     P._process_pr_comments({"number": 7, "headRepository": {}}, seen, _tally())
-    assert flow["posted"] == [] and seen == {}
+    assert flow["posted"] == []
+    assert seen == {}
 
 
 def test_an_unreadable_comment_list_is_skipped(flow):
@@ -246,7 +254,7 @@ def test_an_unreadable_comment_list_is_skipped(flow):
 # ─── the ticket POST ───────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def api(monkeypatch):
     import urllib.request
     state: dict = {"status": 201, "seen": {}, "raise": None}
@@ -282,10 +290,12 @@ def test_the_ticket_carries_the_comment_and_its_link(api, monkeypatch):
     assert ok is True
     payload = api["seen"]["payload"]
     assert api["seen"]["url"] == "http://api:8799/api/tickets"
-    assert payload["project"] == "widgets" and payload["labels"] == ["pr-followup"]
+    assert payload["project"] == "widgets"
+    assert payload["labels"] == ["pr-followup"]
     assert payload["metadata"] == {"pr_followup": True, "pr_number": 7,
                                    "comment_id": 10}
-    assert "reviewer" in payload["body"] and "#c10" in payload["body"]
+    assert "reviewer" in payload["body"]
+    assert "#c10" in payload["body"]
 
 
 def test_a_giant_comment_is_truncated_into_the_ticket(api):
@@ -309,7 +319,7 @@ def test_an_unreachable_api_does_not_crash_the_timer_job(api):
 # ─── the one-shot run ──────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def loop(monkeypatch, state_file):
     state: dict = {"have_gh": True, "prs": [_pr(), _pr(8)], "processed": []}
     monkeypatch.setattr(P.shutil, "which",

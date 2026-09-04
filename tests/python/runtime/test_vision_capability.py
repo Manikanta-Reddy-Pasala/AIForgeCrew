@@ -119,7 +119,7 @@ def test_a_transport_blip_is_inconclusive():
 # ─── probing an endpoint ───────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def endpoint(monkeypatch):
     from aiforge_core.llm.client import _http
     state: dict = {"raise": None, "seen": {}}
@@ -136,7 +136,8 @@ def endpoint(monkeypatch):
 def test_an_endpoint_that_accepts_the_image_can_see(endpoint):
     assert V.probe_vision_endpoint("qwen-vl", "http://lm:1234/v1") is True
     payload = endpoint["seen"]["payload"].decode()
-    assert "image_url" in payload and "data:image/png;base64," in payload
+    assert "image_url" in payload
+    assert "data:image/png;base64," in payload
     assert '"max_tokens": 1' in payload, "the probe asks for nothing back"
 
 
@@ -170,7 +171,7 @@ def test_a_junk_timeout_falls_back(endpoint, monkeypatch):
 # ─── caching a verdict ─────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def role_probe(monkeypatch):
     from aiforge_core.llm import router
     state: dict = {"verdict": True, "probes": 0,
@@ -217,7 +218,7 @@ def test_an_unresolvable_role_cannot_see(monkeypatch):
 # ─── the fast check ────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def registry(monkeypatch):
     from aiforge_core.config import model_registry, runtime_settings
     state: dict = {"override": 0, "flag": None, "heuristic": False,
@@ -251,16 +252,19 @@ def test_an_unreadable_setting_is_simply_not_an_override(monkeypatch):
 
 def test_an_explicit_registry_flag_beats_a_probe(registry, role_probe):
     registry["flag"] = "yes"
-    assert V.vision_enabled("chat") is True and role_probe["probes"] == 0
+    assert V.vision_enabled("chat") is True
+    assert role_probe["probes"] == 0
     registry["flag"] = "no"
-    assert V.vision_enabled("chat") is False and role_probe["probes"] == 0
+    assert V.vision_enabled("chat") is False
+    assert role_probe["probes"] == 0
 
 
 def test_a_recognised_vlm_family_needs_no_probe(registry, role_probe):
     """The same signal the Settings badge and the ADK path use, so all three
     detectors agree."""
     registry["heuristic"] = True
-    assert V.vision_enabled("chat") is True and role_probe["probes"] == 0
+    assert V.vision_enabled("chat") is True
+    assert role_probe["probes"] == 0
 
 
 def test_an_unknown_model_kicks_a_background_probe(registry, role_probe,
@@ -351,7 +355,8 @@ def test_warming_never_blocks_the_request(monkeypatch):
                         pytypes.SimpleNamespace(start=lambda: started.append(
                             (name, daemon, target))))
     V.warm_vision_async("chat")
-    assert started[0][0] == "vision-warm-chat" and started[0][1] is True
+    assert started[0][0] == "vision-warm-chat"
+    assert started[0][1] is True
 
 
 def test_warming_never_surfaces_an_error(monkeypatch):
@@ -394,7 +399,8 @@ def test_only_this_models_cached_probe_is_evicted(registry, endpoint):
     model."""
     V._VISION_CACHE.update({"qwen-vl": True, "other": True})
     V.classify_and_store_vision("r1", "qwen-vl", "http://lm/v1")
-    assert "qwen-vl" not in V._VISION_CACHE and V._VISION_CACHE["other"] is True
+    assert "qwen-vl" not in V._VISION_CACHE
+    assert V._VISION_CACHE["other"] is True
 
 
 def test_an_unwritable_registry_row_still_returns_the_verdict(registry,

@@ -84,7 +84,7 @@ def test_an_unreadable_session_reads_as_empty():
 # ─── driving a single agent ────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def no_deadline(monkeypatch):
     monkeypatch.setattr(pl, "_pipeline_deadline_s", lambda: 0)
 
@@ -99,7 +99,8 @@ def test_a_single_agent_abort_recovers_partial_state(no_deadline):
     svc = _SessionSvc({"partial": True})
     out = asyncio.run(pl._drive_single(_Runner(error=RuntimeError("boom")),
                                        svc, "sess-1", {}))
-    assert out["partial"] is True and out["_pipeline_abort"] == "RuntimeError"
+    assert out["partial"] is True
+    assert out["_pipeline_abort"] == "RuntimeError"
 
 
 def test_a_single_agent_deadline_is_tagged_as_such(monkeypatch):
@@ -167,7 +168,7 @@ def test_any_other_crash_is_also_soft(no_deadline):
 # ─── the single-agent wrapper ──────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def single(monkeypatch):
     """Stub the ADK runner/session plumbing for _run_single_agent."""
     import google.adk.runners as runners
@@ -198,7 +199,8 @@ def test_a_single_agent_run_seeds_the_ticket_and_cleans_up(single):
     assert out == {"live_verdict": "PASS"}
     assert single["svc"].created["state"] == {"ticket_identifier": "ONE-1",
                                               "ticket_project": "app"}
-    assert single["keyed"] == "sess-1" and single["destroyed"] == ["sess-1"]
+    assert single["keyed"] == "sess-1"
+    assert single["destroyed"] == ["sess-1"]
 
 
 def test_a_ticketless_run_seeds_nothing(single):
@@ -222,7 +224,7 @@ def test_a_failing_teardown_does_not_mask_the_result(single, monkeypatch):
 # ─── the post-PR live verifier ─────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def verifier(monkeypatch, tmp_path):
     import aiforge_core.runtime.pipeline as pipe
     state: dict = {"prompt": None, "state": {"live_verifier_verdict": "PASS"},

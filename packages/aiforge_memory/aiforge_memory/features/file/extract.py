@@ -107,10 +107,11 @@ def _summarize_one(content: bytes,
     return parsed
 
 
-# Grouped so the precedence is visible: the anchors belong to their OWN
-# branch (an opening fence at the start of a line, a closing fence at the end),
-# which is what `^a|b$` already meant and what a reader could not see.
-_FENCE_RE = re.compile(r"(?:^```(?:json)?\s*\n?)|(?:\n?```\s*$)", re.MULTILINE)
+# A fence the model emits is a line of its own, so match a LINE. The previous
+# pattern was an alternation of two anchored branches wrapped in groups that
+# existed only to make the precedence readable — which is a sign the alternation
+# was the wrong shape, not that it needed parentheses.
+_FENCE_RE = re.compile(r"^[ \t]*```(?:json)?[ \t]*$\n?", re.MULTILINE)
 
 
 def _parse(raw: str) -> tuple[str, list[str]] | None:

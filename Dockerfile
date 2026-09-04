@@ -88,11 +88,20 @@ ENV PYTHONUNBUFFERED=1 \
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 COPY --from=builder /opt/hf-cache /opt/hf-cache
-# The repo, minus everything .dockerignore excludes — .git, .venv, data/,
-# .aiforge/ (credentials + databases), node_modules, models and caches. That
-# file is what keeps a recursive copy from carrying secrets into the image, so
-# it is part of this line, not incidental to it.
-COPY . .
+# Named directories, not `COPY . .`. The recursive copy was bounded only by
+# .dockerignore — one forgotten pattern (a .env, a key, a scratch dump left in
+# the checkout) and it shipped. This lists what the runtime actually needs:
+#   aiforge_core/  the app (installed EDITABLE in the builder, so the source
+#                  has to be here at the same path)
+#   packages/      the vendored aiforge-memory package, likewise editable
+#   docker/        the entrypoint this image runs
+#   pyproject.toml the editable install's metadata
+# Everything else in the repo — tests, docs, installer, services, web sources,
+# the .git dir — has no runtime role. .dockerignore still applies on top.
+COPY aiforge_core ./aiforge_core
+COPY packages ./packages
+COPY docker ./docker
+COPY pyproject.toml ./
 COPY --from=web /web/dist ./web/dist
 
 # ── who the app runs as ───────────────────────────────────────────────────

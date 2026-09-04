@@ -56,14 +56,17 @@ def test_upload_names_are_sanitised(raw, safe):
 def test_an_image_is_stored_with_its_detected_mime(workspace, monkeypatch):
     monkeypatch.setattr(cm.vision, "_detect_mime", lambda raw: "image/png")
     out = cm.save_file(3, "shot.png", b"\x89PNG")
-    assert out["ok"] is True and out["kind"] == "image" and out["mime"] == "image/png"
+    assert out["ok"] is True
+    assert out["kind"] == "image"
+    assert out["mime"] == "image/png"
     assert open(out["path"], "rb").read() == b"\x89PNG"
 
 
 def test_a_document_falls_back_to_the_extension_mime(workspace, monkeypatch):
     monkeypatch.setattr(cm.vision, "_detect_mime", lambda raw: None)
     out = cm.save_file(3, "spec.pdf", b"%PDF-")
-    assert out["kind"] == "document" and out["mime"] == "application/pdf"
+    assert out["kind"] == "document"
+    assert out["mime"] == "application/pdf"
 
 
 def test_an_unknown_type_is_stored_as_a_document(workspace, monkeypatch):
@@ -80,13 +83,15 @@ def test_a_same_named_upload_never_clobbers_the_first(workspace, monkeypatch):
     monkeypatch.setattr(cm.vision, "_detect_mime", lambda raw: "image/png")
     first = cm.save_file(3, "shot.png", b"one")
     second = cm.save_file(3, "shot.png", b"two")
-    assert first["filename"] == "shot.png" and second["filename"] == "shot_1.png"
+    assert first["filename"] == "shot.png"
+    assert second["filename"] == "shot_1.png"
     assert open(first["path"], "rb").read() == b"one"
 
 
 def test_an_oversized_file_is_refused(workspace):
     out = cm.save_file(3, "huge.bin", b"x" * (cm._MAX_FILE_BYTES + 1))
-    assert out["ok"] is False and out["error"] == "file_too_large"
+    assert out["ok"] is False
+    assert out["error"] == "file_too_large"
     assert out["limit"] == cm._MAX_FILE_BYTES
 
 
@@ -142,7 +147,7 @@ def test_a_broken_router_is_not_fatal(monkeypatch):
 # ─── captioning ────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def vision_model(monkeypatch):
     seen: dict = {"reply": "a screenshot of a chart"}
     monkeypatch.setattr(cm, "_vision_role", lambda role: "vision")
@@ -159,7 +164,8 @@ def vision_model(monkeypatch):
 
 def test_an_image_is_captioned(vision_model, tmp_path):
     assert cm.describe_image(str(tmp_path / "a.png")) == "a screenshot of a chart"
-    assert vision_model["role"] == "vision" and vision_model["max_tokens"] == 200
+    assert vision_model["role"] == "vision"
+    assert vision_model["max_tokens"] == 200
 
 
 def test_the_ocr_prompt_asks_for_a_transcription(vision_model, tmp_path):
@@ -255,7 +261,7 @@ def test_an_unreadable_page_yields_nothing():
     assert cm._page_scan_blobs(_Bad()) == []
 
 
-@pytest.fixture()
+@pytest.fixture
 def pdf(monkeypatch):
     import pypdf
     state = {"pages": [_Page(images=(b"small", b"biggest-page-scan"))]}
@@ -273,7 +279,8 @@ def pdf(monkeypatch):
 
 def test_the_largest_image_on_a_page_is_the_scan(pdf):
     out = cm._pdf_ocr("/doc.pdf", "chat")
-    assert "[OCR page 1]" in out and "biggest-page-scan" in out
+    assert "[OCR page 1]" in out
+    assert "biggest-page-scan" in out
 
 
 def test_pages_with_text_are_skipped(pdf):
@@ -286,7 +293,8 @@ def test_ocr_stops_at_the_page_cap(pdf, monkeypatch):
     monkeypatch.setenv("AIFORGE_PDF_OCR_MAX_PAGES", "2")
     pdf["pages"] = [_Page(images=(b"s",)) for _ in range(5)]
     out = cm._pdf_ocr("/doc.pdf", "chat")
-    assert out.count("[OCR page") == 2 and "OCR stopped at 2 pages" in out
+    assert out.count("[OCR page") == 2
+    assert "OCR stopped at 2 pages" in out
 
 
 def test_ocr_stops_at_the_char_budget(pdf, monkeypatch):
@@ -400,7 +408,8 @@ def test_an_unreachable_summariser_falls_back_to_an_excerpt(monkeypatch):
     from aiforge_core.runtime import doc_summarize
     monkeypatch.setattr(doc_summarize, "summarize_text", lambda text, role: "")
     out = cm._summarize_or_excerpt("y" * 9000, "chat")
-    assert out.endswith("… (truncated)") and len(out) < 9000
+    assert out.endswith("… (truncated)")
+    assert len(out) < 9000
 
 
 def test_an_image_upload_is_described_by_caption(monkeypatch):
@@ -488,7 +497,7 @@ def test_an_unreadable_attachment_describes_to_nothing(monkeypatch):
 # ─── the per-turn context ──────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def media_rows(monkeypatch):
     from aiforge_core.runtime import chat_store
     rows: list = []

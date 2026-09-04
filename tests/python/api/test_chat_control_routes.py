@@ -30,14 +30,14 @@ from fastapi.testclient import TestClient
 from aiforge_core.api.routes import chat as C
 
 
-@pytest.fixture()
+@pytest.fixture
 def client():
     app = FastAPI()
     app.include_router(C.router)
     return TestClient(app)
 
 
-@pytest.fixture()
+@pytest.fixture
 def session(monkeypatch, tmp_path):
     """One session, id 7, working in tmp_path."""
     from aiforge_core.runtime import chat_store
@@ -63,7 +63,7 @@ def _sse(resp) -> list[dict]:
             if ln.startswith("data: ")]
 
 
-@pytest.fixture()
+@pytest.fixture
 def runs(monkeypatch):
     from aiforge_core.runtime import chat_runs
     state: dict = {"run": None, "tail": [{"type": "message", "text": "hi"}]}
@@ -138,7 +138,8 @@ def test_kill_all_clears_every_gate_and_frees_the_team_lock(client, monkeypatch)
     monkeypatch.setattr(chat_pipeline, "force_release_run_lock", lambda: True)
     assert client.post("/api/chat/kill-all").json() == {
         "killed": [1, 2], "count": 2, "team_lock_released": True}
-    assert seen["approve"] == [1, 2] and seen["clear"] == [1, 2]
+    assert seen["approve"] == [1, 2]
+    assert seen["clear"] == [1, 2]
     assert seen["cancel_finish"] == [], \
         "popping the cancel token here lets the slow producer miss it"
 
@@ -146,7 +147,7 @@ def test_kill_all_clears_every_gate_and_frees_the_team_lock(client, monkeypatch)
 # ─── steering ──────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def interject(monkeypatch):
     from aiforge_core.runtime import chat_interject
     state: dict = {"queued": True, "seen": {}}
@@ -173,7 +174,8 @@ def test_a_run_that_drains_no_steers_says_so(client, interject):
     interject["queued"] = False
     body = client.post("/api/chat/sessions/7/steer",
                        json={"content": "use postgres"}).json()
-    assert body["queued"] is False and body["unsupported"] is True
+    assert body["queued"] is False
+    assert body["unsupported"] is True
 
 
 def test_a_blank_steer_is_refused_as_empty_not_unsupported(client, interject):
@@ -216,7 +218,7 @@ def test_an_approval_without_a_note_or_id_still_resolves(client, monkeypatch):
 # ─── checkpoints ───────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def ckpt(monkeypatch):
     from aiforge_core.runtime import checkpoints
     state: dict = {"list": [{"sha": "abc", "label": "before: fix"}], "seen": {}}
@@ -241,8 +243,10 @@ def test_the_sessions_checkpoints_are_listed(client, session, ckpt):
 
 def test_a_snapshot_is_labelled_and_timestamped(client, session, ckpt):
     r = client.post("/api/chat/sessions/7/checkpoints", json={"label": "wip"})
-    assert r.status_code == 201 and r.json() == {"ok": True, "sha": "def"}
-    assert ckpt["seen"]["label"] == "wip" and ckpt["seen"]["when"]
+    assert r.status_code == 201
+    assert r.json() == {"ok": True, "sha": "def"}
+    assert ckpt["seen"]["label"] == "wip"
+    assert ckpt["seen"]["when"]
 
 
 def test_an_unlabelled_snapshot_is_called_manual(client, session, ckpt):
@@ -260,7 +264,8 @@ def test_a_whole_snapshot_is_restored_by_default(client, session, ckpt):
 def test_a_subset_of_files_can_be_restored(client, session, ckpt):
     client.post("/api/chat/sessions/7/checkpoints/restore",
                 json={"sha": "abc1", "paths": ["a.py"], "delete_orphans": True})
-    assert ckpt["seen"]["paths"] == ["a.py"] and ckpt["seen"]["orphans"] is True
+    assert ckpt["seen"]["paths"] == ["a.py"]
+    assert ckpt["seen"]["orphans"] is True
 
 
 def test_a_stub_of_a_sha_is_rejected_before_it_reaches_git(client, session,
@@ -285,7 +290,7 @@ def test_a_missing_session_is_a_404(client, session, ckpt, method, path,
 # ─── promoting a chat message to a pipeline ticket ─────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def tickets(monkeypatch):
     seen: dict = {}
     monkeypatch.setattr(
@@ -300,8 +305,10 @@ def test_a_chat_message_becomes_an_urgent_interactive_ticket(client, session,
     r = client.post("/api/chat/sessions/7/ticket",
                     json={"content": "add a lexer\nwith tests"})
     assert r.status_code == 201
-    assert r.json()["ticket"] == "ONE-41" and r.json()["ticket_id"] == 41
-    assert tickets["priority"] == "urgent" and tickets["route"] == "code"
+    assert r.json()["ticket"] == "ONE-41"
+    assert r.json()["ticket_id"] == 41
+    assert tickets["priority"] == "urgent"
+    assert tickets["route"] == "code"
     assert tickets["metadata"] == {"source": "chat", "chat_session_id": 7,
                                    "interactive": True}
     assert tickets["title"] == "add a lexer", "the first line titles it"
@@ -346,7 +353,7 @@ def test_an_empty_ticket_is_rejected(client, session, tickets):
 # ─── what the user did with a predicted next step ──────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def predictions(monkeypatch):
     from aiforge_core.runtime import next_step
     state: dict = {"outcomes": [], "rows": []}
@@ -386,7 +393,8 @@ def test_the_counters_answer_whether_the_feature_earns_its_place(client,
     predictions["rows"] = [{"accepted": True}, {"accepted": False},
                            {"accepted": None}]
     body = client.get("/api/chat/suggestions").json()
-    assert body["accepted"] == 1 and body["dismissed"] == 1
+    assert body["accepted"] == 1
+    assert body["dismissed"] == 1
     assert len(body["suggestions"]) == 3
 
 
@@ -402,7 +410,7 @@ def test_the_history_window_is_bounded(client, predictions, asked, used):
 # ─── edit-and-resend ───────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def resend(monkeypatch):
     from aiforge_core.runtime import chat_store, checkpoints
     state: dict = {"sha": "abc", "restored": [], "truncated": []}
@@ -448,7 +456,8 @@ def test_a_turn_with_no_checkpoint_only_truncates(resend, tmp_path):
     cwd = tmp_path / "session-7"
     cwd.mkdir()
     C._apply_edit_resend({"cwd": str(cwd)}, 7, _body())
-    assert resend["restored"] == [] and resend["truncated"] == [5]
+    assert resend["restored"] == []
+    assert resend["truncated"] == [5]
 
 
 def test_an_ordinary_turn_is_not_a_resend(resend):
@@ -467,7 +476,7 @@ def test_a_broken_resend_fails_open(resend, monkeypatch, caplog, tmp_path):
 # ─── slash commands ────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def commands(monkeypatch):
     from aiforge_core.runtime import commands as cmds
     state: dict = {"expanded": "Review the diff carefully.",
@@ -482,7 +491,8 @@ def commands(monkeypatch):
 def test_a_local_command_is_replaced_by_its_template(commands, tmp_path):
     body = pytypes.SimpleNamespace(content="/review the auth change")
     name, help_text = C._expand_slash_command({"cwd": str(tmp_path)}, body)
-    assert name == "review" and help_text is None
+    assert name == "review"
+    assert help_text is None
     assert body.content == "Review the diff carefully."
 
 
@@ -491,7 +501,8 @@ def test_help_is_answered_inline_not_sent_to_an_agent(commands, tmp_path):
     commands["builtin"] = True
     body = pytypes.SimpleNamespace(content="/help")
     name, help_text = C._expand_slash_command({"cwd": str(tmp_path)}, body)
-    assert name is None and help_text == "Review the diff carefully."
+    assert name is None
+    assert help_text == "Review the diff carefully."
     assert body.content == "/help", "the raw text is left alone"
 
 
@@ -514,7 +525,7 @@ def test_a_broken_expansion_leaves_the_raw_text(commands, monkeypatch):
 # ─── the resume brief ──────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def resume(monkeypatch):
     from aiforge_core.runtime import chat_resume
     state: dict = {"brief": "Rules for this run: finish the parser."}
@@ -557,7 +568,7 @@ def test_a_broken_resume_never_breaks_the_turn(resume):
 # ─── binding a scratch session to a durable context ────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def rehome(monkeypatch, tmp_path):
     from aiforge_core.runtime import chat_store, work_context as wc
     root = tmp_path / "chat-workspaces"
@@ -616,7 +627,7 @@ def test_a_failing_bind_never_blocks_the_turn(rehome, monkeypatch):
 # ─── titling ───────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def titler(monkeypatch):
     from aiforge_core.runtime import chat_store, chat_title
     state: dict = {"prov": "Add A Lexer", "suggested": "Lexer with tests",
@@ -661,7 +672,8 @@ def test_the_model_title_is_a_cheap_throwaway_call(titler):
     """Routed to triage so it never contends with the turn on a serial local
     endpoint."""
     C._gen_title("build a lexer", 7)
-    assert titler["role"] == "triage" and titler["renamed"] == ["Lexer with tests"]
+    assert titler["role"] == "triage"
+    assert titler["renamed"] == ["Lexer with tests"]
 
 
 def test_no_suggestion_leaves_the_name_as_it_is(titler):
@@ -733,7 +745,7 @@ def test_a_failing_git_and_no_touch_list_says_no(tmp_path, monkeypatch):
     assert C._turn_wrote_source(str(tmp_path)) is False
 
 
-@pytest.fixture()
+@pytest.fixture
 def stack(monkeypatch):
     from aiforge_core.runtime.tools import project_runner as pr
     state: dict = {"detected": {"stacks": ["python"]}, "has_tests": True}
@@ -765,7 +777,7 @@ def test_an_undetectable_stack_verifies_anyway(stack, monkeypatch, tmp_path):
     assert C._worth_verifying(str(tmp_path)) is True
 
 
-@pytest.fixture()
+@pytest.fixture
 def integration(monkeypatch):
     import aiforge_core.runtime.parallel_subtasks as ps
     state: dict = {"rep": {"md": "# green", "ok": True}}
@@ -804,7 +816,7 @@ def test_a_crash_in_the_verifier_never_breaks_the_turn(integration):
     assert [e["type"] for e in evs] == ["thought"], "no report, no raise"
 
 
-@pytest.fixture()
+@pytest.fixture
 def postrun(monkeypatch):
     import aiforge_core.runtime.parallel_subtasks as ps
     state: dict = {"wrote": True, "worth": True, "changes": [{"type": "changes"}]}

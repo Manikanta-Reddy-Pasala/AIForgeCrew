@@ -71,7 +71,8 @@ def test_the_limits_are_read_once(monkeypatch):
     monkeypatch.setenv("AIFORGE_CONTEXT_MAX_TOKENS", "1000")
     monkeypatch.setenv("AIFORGE_CONTEXT_MIN_KEEP", "2")
     lim = pl._CtxLimits()
-    assert lim.max_contents == 20 and lim.keep_invocations == 3
+    assert lim.max_contents == 20
+    assert lim.keep_invocations == 3
     assert lim.max_chars == 4000                 # 1000 tokens × 4 chars
     assert lim.min_keep == 4                     # floored
 
@@ -123,8 +124,10 @@ def test_different_user_messages_are_both_kept():
 
 def test_a_long_string_keeps_its_head_and_tail():
     out = pl._shorten("A" + "x" * 5000 + "Z", 2000)
-    assert out.startswith("A") and out.endswith("Z")
-    assert "truncated" in out and len(out) < 5000
+    assert out.startswith("A")
+    assert out.endswith("Z")
+    assert "truncated" in out
+    assert len(out) < 5000
 
 
 def test_a_short_string_is_untouched():
@@ -163,7 +166,8 @@ def test_a_zero_cap_disables_capping():
 
 def test_an_oversized_content_is_rebuilt():
     out = pl._cap_content(_c("user", "x" * 9000), 1000)
-    assert out is not None and "truncated" in pl._text_of(out)
+    assert out is not None
+    assert "truncated" in pl._text_of(out)
 
 
 def test_a_structure_we_cannot_rebuild_is_never_dropped(monkeypatch):
@@ -193,7 +197,8 @@ def _is_human(c):
 def test_the_seed_survives_the_window():
     contents = [_c("user", "seed")] + [_c("model", str(i)) for i in range(20)]
     out = pl._window(contents, 5, _adjust, _is_human)
-    assert pl._text_of(out[0]) == "seed" and len(out) == 6
+    assert pl._text_of(out[0]) == "seed"
+    assert len(out) == 6
 
 
 def test_a_short_history_is_kept_whole():
@@ -211,7 +216,8 @@ def test_the_split_is_adjusted_so_a_response_is_not_orphaned():
         seen["split"] = split
         return split - 1
     out = pl._window(contents, 3, _adj, _is_human)
-    assert seen["split"] == 8 and len(out) == 5      # seed + 4 from the earlier split
+    assert seen["split"] == 8
+    assert len(out) == 5      # seed + 4 from the earlier split
 
 
 def test_a_failing_adjuster_falls_back_to_the_raw_split():
@@ -225,7 +231,7 @@ def test_a_failing_adjuster_falls_back_to_the_raw_split():
 # ─── the tail trimmer ──────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def limits(monkeypatch):
     for k in ("AIFORGE_CONTEXT_MAX_CONTENTS", "AIFORGE_CONTEXT_MAX_TOKENS",
               "AIFORGE_CONTEXT_MAX_PART_CHARS", "AIFORGE_CONTEXT_MIN_KEEP",
@@ -239,7 +245,8 @@ def test_the_trimmer_keeps_the_seed_and_the_tail(limits):
     trim = pl._tail_trimmer(pl._CtxLimits(), _adjust, _is_human)
     contents = [_c("user", "seed")] + [_c("model", str(i)) for i in range(10)]
     out = trim(contents)
-    assert pl._text_of(out[0]) == "seed" and len(out) == 5
+    assert pl._text_of(out[0]) == "seed"
+    assert len(out) == 5
     assert pl._text_of(out[-1]) == "9"
 
 
@@ -313,7 +320,8 @@ def test_the_context_filter_can_be_disabled(limits):
 
 def test_the_filter_and_the_phantom_guard_are_wired(limits):
     plugins = pl._build_context_plugins()
-    assert plugins and any(type(p).__name__ == "ContextFilterPlugin"
+    assert plugins
+    assert any(type(p).__name__ == "ContextFilterPlugin"
                            for p in plugins)
     assert any(type(p).__name__ == "PhantomToolGuardPlugin" for p in plugins)
 
@@ -387,7 +395,7 @@ def _ticket(**kw):
     return pytypes.SimpleNamespace(**base)
 
 
-@pytest.fixture()
+@pytest.fixture
 def quiet_state(monkeypatch):
     monkeypatch.setattr(pl, "_toolchain_md", lambda: "")
     monkeypatch.setattr(pl, "_user_prefs_md", lambda: "")
@@ -412,7 +420,8 @@ def test_the_operators_scope_allowlist_is_seeded_and_kept(quiet_state):
 
 def test_rules_and_memory_are_seeded_as_state_not_prompt_text(quiet_state):
     state = pl._ticket_state(_ticket(), [], "RULES", "MEMORY")
-    assert state["rules_md"] == "RULES" and state["memory_brief_md"] == "MEMORY"
+    assert state["rules_md"] == "RULES"
+    assert state["memory_brief_md"] == "MEMORY"
 
 
 def test_the_toolchain_and_preferences_ride_along(monkeypatch):
@@ -447,7 +456,8 @@ def test_repo_rules_are_collected_from_the_ticket_text(monkeypatch):
     monkeypatch.setattr(repo_rules, "collect_or_ask", _collect)
     monkeypatch.setattr(pl, "_emit_ambiguous_rule_notice", lambda t, a: None)
     assert pl._collect_repo_rules(_ticket(), ["app/**"]) == "RULES"
-    assert "Fix it" in seen["query"] and seen["seed"] == ["app/**"]
+    assert "Fix it" in seen["query"]
+    assert seen["seed"] == ["app/**"]
 
 
 def test_a_broken_rules_collection_is_not_fatal(monkeypatch):
@@ -564,7 +574,8 @@ def test_image_attachments_are_injected_for_a_vision_doer(monkeypatch):
         {"name": "spec.pdf", "path": "/a.pdf"}]})
     out = pl._with_images(_c("user", "seed"), t, gtypes)
     assert pl._text_of(out) == "with images"
-    assert seen["images"] == ["/a.png"] and seen["model"] == "vlm"
+    assert seen["images"] == ["/a.png"]
+    assert seen["model"] == "vlm"
 
 
 def test_a_ticket_with_no_images_is_untouched(monkeypatch):
@@ -585,7 +596,7 @@ def test_a_failing_injection_keeps_the_original(monkeypatch):
 # ─── trajectory dump ───────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def session():
     return pytypes.SimpleNamespace(id="sess-1", events=[{"e": 1}],
                                    state={"k": "v"})
@@ -599,7 +610,8 @@ def test_the_trajectory_is_dumped_for_replay(monkeypatch, session):
                             tid=tid, sid=sid, events=events, state=state))
     monkeypatch.delenv("AIFORGE_TRAJECTORY_DUMP", raising=False)
     pl._dump_trajectory(session, None, {"ticket_identifier": "ONE-1"})
-    assert seen["tid"] == "ONE-1" and seen["sid"] == "sess-1"
+    assert seen["tid"] == "ONE-1"
+    assert seen["sid"] == "sess-1"
     assert seen["state"] == {"k": "v"}
 
 

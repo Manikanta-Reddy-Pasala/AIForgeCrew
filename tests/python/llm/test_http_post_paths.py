@@ -49,7 +49,8 @@ def test_the_client_identifies_itself(monkeypatch):
     gateway logs could not tell one user's traffic from another's."""
     headers = H._post_headers(_ep())
     assert headers["Authorization"] == "Bearer sk-test"
-    assert headers["User-Agent"] and not headers["User-Agent"].startswith("curl")
+    assert headers["User-Agent"]
+    assert not headers["User-Agent"].startswith("curl")
 
 
 def test_the_user_agent_can_be_overridden_for_a_fussy_proxy(monkeypatch):
@@ -59,14 +60,16 @@ def test_the_user_agent_can_be_overridden_for_a_fussy_proxy(monkeypatch):
 
 def test_a_url_is_split_into_host_port_and_path():
     conn, path = H._open_connection(_ep(), "http://box:8080/v1/chat?x=1", 5)
-    assert (conn.host, conn.port) == ("box", 8080) and path == "/v1/chat?x=1"
+    assert (conn.host, conn.port) == ("box", 8080)
+    assert path == "/v1/chat?x=1"
     assert conn.timeout == 5
 
 
 def test_https_defaults_to_443_and_carries_a_tls_context():
     conn, path = H._open_connection(_ep(base_url="https://api.x.dev"),
                                     "https://api.x.dev/v1/chat", 5)
-    assert conn.port == 443 and path == "/v1/chat"
+    assert conn.port == 443
+    assert path == "/v1/chat"
     assert getattr(conn, "_context", None) is not None
 
 
@@ -148,13 +151,14 @@ def test_a_200_that_says_the_model_dropped_is_transient(monkeypatch):
     monkeypatch.setattr(H, "_raise_if_model_dropped",
                         lambda b: seen.append(b))
     H._read_http_response(_Conn(_Resp(body=body)), "http://x")
-    assert seen and "error" in seen[0]
+    assert seen
+    assert "error" in seen[0]
 
 
 # ─── the cancellable path ──────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def cancellable(monkeypatch):
     state: dict = {"conn": _Conn()}
     monkeypatch.setattr(H, "_open_connection",
@@ -166,7 +170,8 @@ def test_a_normal_generation_posts_and_returns(cancellable):
     cancel = threading.Event()
     sent = [False]
     out = H._post_cancellable(_ep(), b"{}", 30, cancel, sent)
-    assert out == {"choices": []} and sent == [True]
+    assert out == {"choices": []}
+    assert sent == [True]
     assert cancellable["conn"].requested["method"] == "POST"
     assert cancellable["conn"].closed is True
 
@@ -227,7 +232,7 @@ def test_the_watcher_stops_when_the_request_finishes():
 # ─── the preflight ─────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def socket_probe(monkeypatch):
     import socket
     state: dict = {"raise": None, "seen": None}
@@ -274,7 +279,7 @@ def test_a_malformed_url_is_left_to_the_real_call(socket_probe):
 # ─── the meter ─────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def meter(monkeypatch):
     from aiforge_core.llm import call_meter
     state: dict = {"records": [], "failures": [], "token": "tok"}
@@ -304,7 +309,8 @@ def test_a_broken_meter_never_breaks_a_call(monkeypatch):
 
 def test_a_failure_is_charged_to_the_request_that_failed(meter):
     H._record_failure("tok", TimeoutError("read timed out"))
-    assert meter["failures"] and meter["failures"][0][0] == "tok"
+    assert meter["failures"]
+    assert meter["failures"][0][0] == "tok"
 
 
 def test_an_uncounted_send_has_no_failure_to_count(meter):
@@ -323,7 +329,7 @@ def test_a_classifier_that_blows_up_does_not_escape(meter, monkeypatch):
 # ─── the whole send ────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def post(monkeypatch, meter):
     """_post with its rate limiter, preflight and transport stubbed."""
     state: dict = {"acquired": [], "governed": [], "preflights": [],
@@ -365,7 +371,8 @@ def test_a_call_waits_for_budget_then_sends(post, meter, monkeypatch):
                         lambda req, timeout=None, context=None: _R())
     sent = [False]
     out = H._post(_ep(), b"{}", 30, role="chat", sent=sent)
-    assert out == post["response"] and sent == [True]
+    assert out == post["response"]
+    assert sent == [True]
     assert post["preflights"] == ["http://127.0.0.1:1234/v1"]
     assert meter["records"] == [("chat", "local", "m")]
 
@@ -397,7 +404,8 @@ def test_a_run_stopped_before_the_send_counts_nothing(post, meter):
     ep = _ep()
     with pytest.raises(H._LLMCancelled):
         H._post(ep, b"{}", 30, role="chat")
-    assert meter["records"] == [] and post["preflights"] == []
+    assert meter["records"] == []
+    assert post["preflights"] == []
 
 
 def test_a_failed_send_is_counted_as_traffic_and_as_a_failure(post, meter):
@@ -408,7 +416,8 @@ def test_a_failed_send_is_counted_as_traffic_and_as_a_failure(post, meter):
     ep = _ep()
     with pytest.raises(OSError):
         H._post(ep, b"{}", 30, role="chat")
-    assert len(meter["records"]) == 1 and len(meter["failures"]) == 1
+    assert len(meter["records"]) == 1
+    assert len(meter["failures"]) == 1
 
 
 def test_the_callers_budget_bounds_the_rate_limit_wait(post):
@@ -505,7 +514,8 @@ def test_the_budget_leaves_room_for_a_whole_attempt(monkeypatch):
 def test_a_disabled_budget_never_refuses_a_retry(monkeypatch):
     monkeypatch.setenv("AIFORGE_LLM_RETRY_BUDGET", "0")
     cfg = H._RetryCfg(timeout_s=30)
-    assert cfg.deadline is None and cfg.left() is None
+    assert cfg.deadline is None
+    assert cfg.left() is None
     assert H._budget_exhausted(cfg, attempt=1, retry=True, sleep_s=99) is False
 
 

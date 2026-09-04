@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from aiforge_core.api.routes import agents as ag
 
 
-@pytest.fixture()
+@pytest.fixture
 def client():
     app = FastAPI()
     app.include_router(ag.router)
@@ -89,7 +89,8 @@ def test_a_row_for_an_unconfigurable_role_still_renders(monkeypatch):
     monkeypatch.setattr(ag._acfg, "get",
                         lambda role: (_ for _ in ()).throw(RuntimeError("no row")))
     row = ag._agent_row("doer")
-    assert row["role"] == "doer" and row["model"]        # from the legacy ROLES
+    assert row["role"] == "doer"
+    assert row["model"]              # from the legacy ROLES
     row2 = ag._agent_row("ctx_memory")                    # no legacy row either
     assert row2["transport"] == "openai_compatible"
 
@@ -266,10 +267,11 @@ def test_an_invalid_role_save_is_a_400(client, monkeypatch):
                         lambda *a: (_ for _ in ()).throw(ValueError("unknown provider")))
     r = client.put("/api/config/agents/doer",
                    json={"provider": "nope", "model": "m"})
-    assert r.status_code == 400 and "unknown provider" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "unknown provider" in r.json()["detail"]
 
 
-@pytest.fixture()
+@pytest.fixture
 def v2_save(monkeypatch):
     monkeypatch.setattr(ag._acfg, "PROVIDERS", {"openai_compatible": {}})
     monkeypatch.setattr(ag._acfg, "_DEFAULT_KEY", "_default")
@@ -290,7 +292,8 @@ def test_the_v2_save_reports_only_that_a_key_is_set(client, v2_save):
                       json={"provider": "openai_compatible", "model": "m",
                             "base_url": " http://box/v1 ", "api_key": " sk-x ",
                             "insecure_tls": True}).json()
-    assert body["api_key_set"] is True and "sk-x" not in str(body)
+    assert body["api_key_set"] is True
+    assert "sk-x" not in str(body)
     assert v2_save["base_url"] == "http://box/v1"      # trimmed
     assert v2_save["api_key"] == "sk-x"
 
@@ -298,7 +301,8 @@ def test_the_v2_save_reports_only_that_a_key_is_set(client, v2_save):
 def test_the_global_default_row_is_writable(client, v2_save):
     r = client.put("/api/agents/v2/_default/config",
                    json={"provider": "openai_compatible", "model": "m"})
-    assert r.status_code == 200 and v2_save["role"] == "_default"
+    assert r.status_code == 200
+    assert v2_save["role"] == "_default"
 
 
 def test_an_unknown_archetype_is_a_404(client, v2_save):
@@ -310,7 +314,8 @@ def test_an_unknown_archetype_is_a_404(client, v2_save):
 def test_an_unknown_provider_is_a_400(client, v2_save):
     r = client.put("/api/agents/v2/doer/config",
                    json={"provider": "nope", "model": "m"})
-    assert r.status_code == 400 and "unknown provider" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "unknown provider" in r.json()["detail"]
 
 
 def test_an_empty_model_is_a_400(client, v2_save):
@@ -330,7 +335,7 @@ def test_a_rejected_save_is_a_400(client, v2_save, monkeypatch):
 # ─── the model registry ────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def registry(monkeypatch):
     from aiforge_core.config import model_registry
     state: dict = {"rows": [{"id": "m1", "model": "coder"}], "assigned": []}
@@ -373,7 +378,8 @@ def test_a_rejected_model_is_a_400(client, registry, monkeypatch):
     monkeypatch.setattr(model_registry, "add_model",
                         lambda **kw: (_ for _ in ()).throw(ValueError("duplicate")))
     r = client.post("/api/agents/models", json={"model": "dup"})
-    assert r.status_code == 400 and "duplicate" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "duplicate" in r.json()["detail"]
 
 
 def test_auto_assign_can_be_turned_off(client, registry, monkeypatch):
@@ -402,7 +408,8 @@ def test_a_vision_probe_is_started_in_the_background(client, registry, monkeypat
             pass
     monkeypatch.setattr(threading, "Thread", _T)
     client.post("/api/agents/models", json={"model": "new", "base_url": "http://x"})
-    assert started and started[0][1] == "new"
+    assert started
+    assert started[0][1] == "new"
 
 
 def test_a_broken_probe_launch_never_breaks_model_add(client, registry, monkeypatch):
@@ -473,7 +480,8 @@ def test_the_preview_applies_nothing(client, registry):
 
 def test_a_dry_run_applies_nothing(client, registry):
     body = client.post("/api/agents/auto-assign", json={"dry_run": True}).json()
-    assert body["applied"] is False and registry["assigned"] == []
+    assert body["applied"] is False
+    assert registry["assigned"] == []
 
 
 def test_auto_assign_applies_to_every_archetype_by_default(client, registry):
@@ -500,7 +508,8 @@ def test_applying_a_profile(client, monkeypatch):
     monkeypatch.setattr(ag._acfg, "apply_profile",
                         lambda name: {"doer": {"model": "coder"}})
     body = client.put("/api/agents/v2/profile/local").json()
-    assert body["profile"] == "local" and body["roles"]["doer"]["model"] == "coder"
+    assert body["profile"] == "local"
+    assert body["roles"]["doer"]["model"] == "coder"
 
 
 def test_an_unknown_profile_is_a_404(client, monkeypatch):

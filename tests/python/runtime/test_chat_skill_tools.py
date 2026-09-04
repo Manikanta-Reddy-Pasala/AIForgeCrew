@@ -22,7 +22,7 @@ def no_syntax_gate(monkeypatch):
     monkeypatch.setattr(sk, "_syntax_check", lambda ap, content, args: None)
 
 
-@pytest.fixture()
+@pytest.fixture
 def repo(tmp_path, monkeypatch):
     monkeypatch.setattr(sk, "_resolve", lambda cwd, path: tmp_path / path)
     (tmp_path / "a.py").write_text("x = 1\ny = 2\n")
@@ -68,7 +68,8 @@ def test_a_skill_is_authored_with_split_triggers(monkeypatch):
                         lambda **kw: seen.update(kw) or {"ok": True})
     sk._t_learn_skill({"name": "deploy", "description": "d", "body": "steps",
                        "triggers": "a, b ,, c", "scope": "REPO"}, "/repo")
-    assert seen["triggers"] == ["a", "b", "c"] and seen["scope"] == "repo"
+    assert seen["triggers"] == ["a", "b", "c"]
+    assert seen["scope"] == "repo"
     assert seen["body"] == "skill:steps"
 
 
@@ -110,7 +111,8 @@ def test_a_workflow_is_authored_with_its_scripts(monkeypatch):
     sk._t_learn_workflow({"name": "release", "body": "steps",
                           "scripts": [{"name": "run.sh"}], "triggers": ["ship"]},
                          "/repo")
-    assert seen["scripts"] == [{"name": "run.sh"}] and seen["triggers"] == ["ship"]
+    assert seen["scripts"] == [{"name": "run.sh"}]
+    assert seen["triggers"] == ["ship"]
 
 
 def test_a_failed_workflow_write_is_soft(monkeypatch):
@@ -132,9 +134,12 @@ def test_both_spellings_of_every_editor_field_are_accepted(monkeypatch):
     sk._t_editor({"sub_command": "str_replace", "path": "a.py",
                   "content": "body", "old_text": "a", "new_text": "b",
                   "insert_line": "3", "view_range": ["1", "5"]}, "/repo")
-    assert seen["command"] == "str_replace" and seen["file_text"] == "body"
-    assert seen["old_str"] == "a" and seen["new_str"] == "b"
-    assert seen["insert_line"] == 3 and seen["view_range"] == [1, 5]
+    assert seen["command"] == "str_replace"
+    assert seen["file_text"] == "body"
+    assert seen["old_str"] == "a"
+    assert seen["new_str"] == "b"
+    assert seen["insert_line"] == 3
+    assert seen["view_range"] == [1, 5]
 
 
 def test_a_junk_view_range_is_dropped(monkeypatch):
@@ -142,7 +147,8 @@ def test_a_junk_view_range_is_dropped(monkeypatch):
     seen: dict = {}
     monkeypatch.setattr(ed, "editor", lambda **kw: seen.update(kw) or {"ok": True})
     sk._t_editor({"path": "a.py", "view_range": ["one", "5"]}, "/repo")
-    assert seen["view_range"] is None and seen["command"] == "view"
+    assert seen["view_range"] is None
+    assert seen["command"] == "view"
 
 
 # ─── staging one edit ──────────────────────────────────────────────────
@@ -163,7 +169,8 @@ def test_a_valid_edit_is_applied_to_the_working_copy(repo):
 ])
 def test_a_malformed_edit_is_refused(repo, edit, fragment):
     out = sk._stage_edit(0, edit, sk._EditBatch(), "/repo")
-    assert out["ok"] is False and fragment in out["error"]
+    assert out["ok"] is False
+    assert fragment in out["error"]
 
 
 def test_text_that_is_not_there(repo):
@@ -179,7 +186,8 @@ def test_a_missing_file(repo):
 def test_an_ambiguous_match_is_refused(repo):
     """Replacing an arbitrary one of several occurrences corrupts silently."""
     out = sk._stage_edit(0, _edit("b.py", "v = 1", "v = 2"), sk._EditBatch(), "/repo")
-    assert "appears 2×" in out["error"] and "replace_all" in out["error"]
+    assert "appears 2×" in out["error"]
+    assert "replace_all" in out["error"]
 
 
 def test_replace_all_makes_it_unambiguous(repo):
@@ -194,7 +202,8 @@ def test_a_path_outside_the_workspace_is_refused(repo, monkeypatch):
                         lambda cwd, path: (_ for _ in ()).throw(
                             PermissionError("outside the workspace")))
     out = sk._stage_edit(0, _edit("../x.py", "a", "b"), sk._EditBatch(), "/repo")
-    assert out["ok"] is False and "outside" in out["error"]
+    assert out["ok"] is False
+    assert "outside" in out["error"]
 
 
 def test_two_edits_to_one_file_chain(repo):
@@ -230,7 +239,8 @@ def test_a_failed_write_rolls_the_batch_back(repo, monkeypatch):
     out = sk._t_multi_edit({"edits": [_edit("a.py", "x = 1", "x = 99"),
                                       _edit("b.py", "v = 1", "v = 2",
                                             replace_all=True)]}, "/repo")
-    assert out["ok"] is False and "rolled back" in out["error"]
+    assert out["ok"] is False
+    assert "rolled back" in out["error"]
     assert (repo / "a.py").read_text() == "x = 1\ny = 2\n"
 
 
@@ -254,7 +264,8 @@ def test_a_batch_that_would_break_syntax_is_refused(repo, monkeypatch):
     monkeypatch.setattr(sk, "_syntax_check",
                         lambda ap, content, args: "unexpected indent")
     out = sk._t_multi_edit({"edits": [_edit("a.py", "x = 1", "  x = 99")]}, "/repo")
-    assert out["error"] == "syntax_invalid" and out["file"] == "a.py"
+    assert out["error"] == "syntax_invalid"
+    assert out["file"] == "a.py"
     assert "force:true" in out["hint"]
     assert (repo / "a.py").read_text() == "x = 1\ny = 2\n"
 

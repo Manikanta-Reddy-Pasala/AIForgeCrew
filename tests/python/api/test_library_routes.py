@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 from aiforge_core.api.routes import library as lib
 
 
-@pytest.fixture()
+@pytest.fixture
 def client():
     app = FastAPI()
     app.include_router(lib.router)
@@ -48,7 +48,7 @@ def bundled(monkeypatch):
     _REAL_BUNDLED.__dict__.pop("_cache", None)
 
 
-@pytest.fixture()
+@pytest.fixture
 def real_bundled(monkeypatch):
     """Undo the stub so the on-disk scan itself is exercised."""
     monkeypatch.setattr(lib, "_bundled_names", _REAL_BUNDLED)
@@ -109,14 +109,16 @@ def test_skills_are_listed_with_their_origin(client, monkeypatch):
                         lambda: [_skill(), _skill("mine", "/global/mine.md")])
     rows = client.get("/api/library/skills").json()
     assert [r["origin"] for r in rows] == ["default", "custom"]
-    assert rows[0]["triggers"] == ["ship"] and rows[0]["body"].startswith("1.")
+    assert rows[0]["triggers"] == ["ship"]
+    assert rows[0]["body"].startswith("1.")
 
 
 def test_workflows_are_listed(client, monkeypatch):
     from aiforge_core.runtime import workflows
     monkeypatch.setattr(workflows, "load", lambda: [_skill("release")])
     rows = client.get("/api/library/workflows").json()
-    assert rows[0]["name"] == "release" and rows[0]["origin"] == "custom"
+    assert rows[0]["name"] == "release"
+    assert rows[0]["origin"] == "custom"
 
 
 def test_rules_carry_their_globs_and_scope(client, monkeypatch):
@@ -127,7 +129,8 @@ def test_rules_carry_their_globs_and_scope(client, monkeypatch):
                                    globs=["**/*.py"], always=True)
     monkeypatch.setattr(repo_rules, "load_global_and_builtin", lambda: [rule])
     row = client.get("/api/library/rules").json()[0]
-    assert row["globs"] == ["**/*.py"] and row["scope"] == "repo"
+    assert row["globs"] == ["**/*.py"]
+    assert row["scope"] == "repo"
     assert row["always"] is True
 
 
@@ -147,7 +150,7 @@ def test_the_public_workflow_registry_is_served(client, monkeypatch):
 # ─── creating ──────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def writers(monkeypatch):
     from aiforge_core.runtime import repo_rules, skills, workflows
     seen: dict = {"result": {"ok": True, "path": "/global/x.md"}}
@@ -169,7 +172,8 @@ def writers(monkeypatch):
 def test_each_kind_is_written_to_its_registry(client, writers, kind):
     r = client.post(f"/api/library/{kind}",
                     json={"name": "n", "body": "b", "description": "d"})
-    assert r.status_code == 201 and writers["kind"] == kind
+    assert r.status_code == 201
+    assert writers["kind"] == kind
 
 
 def test_a_comma_string_of_triggers_is_split(client, writers):
@@ -182,20 +186,23 @@ def test_a_rules_globs_and_always_flag_are_forwarded(client, writers):
     client.post("/api/library/rules",
                 json={"name": "n", "body": "b", "globs": ["**/*.py"],
                       "always": False})
-    assert writers["globs"] == ["**/*.py"] and writers["always"] is False
+    assert writers["globs"] == ["**/*.py"]
+    assert writers["always"] is False
 
 
 @pytest.mark.parametrize("payload", [{"body": "b"}, {"name": "n"},
                                      {"name": " ", "body": "b"}])
 def test_a_name_and_body_are_required(client, writers, payload):
     r = client.post("/api/library/skills", json=payload)
-    assert r.status_code == 400 and "name and body" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "name and body" in r.json()["detail"]
 
 
 def test_a_rejected_write_carries_the_registrys_reason(client, writers):
     writers["result"] = {"ok": False, "error": "script test failed"}
     r = client.post("/api/library/workflows", json={"name": "n", "body": "b"})
-    assert r.status_code == 400 and r.json()["detail"] == "script test failed"
+    assert r.status_code == 400
+    assert r.json()["detail"] == "script test failed"
 
 
 def test_creating_an_unknown_kind_is_a_404(client, writers):
@@ -206,7 +213,7 @@ def test_creating_an_unknown_kind_is_a_404(client, writers):
 # ─── deleting + clearing ───────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def deleters(monkeypatch):
     from aiforge_core.runtime import repo_rules, skills, workflows
     seen: dict = {"result": {"ok": True, "deleted": "n"}}
@@ -233,7 +240,8 @@ def test_one_item_is_deleted_from_its_registry(client, deleters, kind):
 def test_deleting_something_that_is_not_there_is_a_404(client, deleters):
     deleters["result"] = {"ok": False, "error": "no such skill"}
     r = client.delete("/api/library/skills/ghost")
-    assert r.status_code == 404 and r.json()["detail"] == "no such skill"
+    assert r.status_code == 404
+    assert r.json()["detail"] == "no such skill"
 
 
 def test_deleting_an_unknown_kind_is_a_404(client, deleters):
@@ -253,7 +261,7 @@ def test_clearing_an_unknown_kind_is_a_404(client, deleters):
 # ─── drafting with the model ───────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def drafter(monkeypatch):
     from aiforge_core.llm import client as llm
     seen: dict = {"draft": "# Draft"}
@@ -274,7 +282,8 @@ def test_each_kind_gets_its_own_authoring_prompt(client, drafter, kind, marker):
     body = client.post(f"/api/library/{kind}/generate",
                        json={"prompt": "deploying to qa"}).json()
     assert body == {"ok": True, "draft": "# Draft"}
-    assert marker in drafter["user"] and "deploying to qa" in drafter["user"]
+    assert marker in drafter["user"]
+    assert "deploying to qa" in drafter["user"]
 
 
 def test_the_drafting_role_can_be_chosen(client, drafter):
@@ -290,7 +299,8 @@ def test_the_default_drafting_role(client, drafter):
 
 def test_a_prompt_is_required(client, drafter):
     r = client.post("/api/library/skills/generate", json={"prompt": "  "})
-    assert r.status_code == 400 and "prompt is required" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "prompt is required" in r.json()["detail"]
 
 
 def test_generating_an_unknown_kind_is_a_404(client, drafter):
@@ -301,4 +311,5 @@ def test_generating_an_unknown_kind_is_a_404(client, drafter):
 def test_a_model_or_credit_error_is_surfaced_as_a_502(client, drafter):
     drafter["draft"] = RuntimeError("insufficient credit")
     r = client.post("/api/library/skills/generate", json={"prompt": "x"})
-    assert r.status_code == 502 and "insufficient credit" in r.json()["detail"]
+    assert r.status_code == 502
+    assert "insufficient credit" in r.json()["detail"]

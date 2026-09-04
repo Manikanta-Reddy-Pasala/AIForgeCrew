@@ -25,7 +25,8 @@ def test_native_schemas_exist_and_browse_names_command():
     # The old schema advertised `action`, which the dispatcher ignores — every
     # native browse call then arrived with an empty command.
     props = _schemas.CATALOG["browse"][1]
-    assert "command" in props and "action" not in props
+    assert "command" in props
+    assert "action" not in props
 
 
 def test_prompt_documents_the_look_step():
@@ -82,7 +83,8 @@ def test_screenshot_base64_is_replaced_by_an_audit(monkeypatch):
     # The base64 is unreadable to a text model and crowds out the turn.
     assert "png_b64" not in out
     assert out["audit"] == "SCREEN: x"
-    assert out["capture_id"] and out["screenshot"]
+    assert out["capture_id"]
+    assert out["screenshot"]
 
 
 def test_screenshot_audit_can_be_switched_off(monkeypatch):
@@ -96,7 +98,8 @@ def test_screenshot_audit_can_be_switched_off(monkeypatch):
 
     monkeypatch.setattr(visual, "audit_image", _boom)
     out = _pipeline._t_browse({"command": "screenshot", "audit": "false"}, ".")
-    assert out["screenshot"] and "audit" not in out
+    assert out["screenshot"]
+    assert "audit" not in out
 
 
 def test_oversize_screenshot_is_recaptured_not_dropped(monkeypatch):
@@ -190,7 +193,8 @@ def test_ui_check_tool_is_soft(monkeypatch):
 
     monkeypatch.setattr(visual, "ui_check", _boom)
     out = _pipeline._t_ui_check({"url": "http://x/"}, ".")
-    assert out["ok"] is False and out["error"] == "ui_check_failed"
+    assert out["ok"] is False
+    assert out["error"] == "ui_check_failed"
 
 
 def test_ui_ask_tool_is_soft(monkeypatch):
@@ -201,4 +205,5 @@ def test_ui_ask_tool_is_soft(monkeypatch):
 
     monkeypatch.setattr(visual, "ui_ask", _boom)
     out = _pipeline._t_ui_ask({"capture_id": "x"}, ".")
-    assert out["ok"] is False and out["error"] == "ui_ask_failed"
+    assert out["ok"] is False
+    assert out["error"] == "ui_ask_failed"

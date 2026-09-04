@@ -23,7 +23,7 @@ import pytest
 from aiforge_core.runtime.chat_agent._tools import _memory as M
 
 
-@pytest.fixture()
+@pytest.fixture
 def workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(M, "_workspace_root", lambda: str(tmp_path))
     (tmp_path / "src").mkdir()
@@ -73,7 +73,8 @@ def test_prior_conversations_are_searchable(monkeypatch):
                         lambda q, limit=None: seen.update(q=q, limit=limit)
                         or [{"session_id": 3, "text": "we chose postgres"}])
     out = M._t_search_chat_sessions({"q": "database", "limit": "4"}, "/r")
-    assert out["hits"][0]["session_id"] == 3 and seen["limit"] == 4
+    assert out["hits"][0]["session_id"] == 3
+    assert seen["limit"] == 4
 
 
 def test_a_broken_session_search_is_soft(monkeypatch):
@@ -86,7 +87,7 @@ def test_a_broken_session_search_is_soft(monkeypatch):
 # ─── writing a fact ────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def writer(monkeypatch):
     from aiforge_core.runtime.tools import memory_write
     seen: dict = {}
@@ -101,7 +102,8 @@ def test_a_fact_is_filed_under_the_repo_recall_will_query(writer):
     recalled."""
     assert M._t_memory_write({"text": "the deploy needs sudo"},
                              "/repo/src/api")["ok"] is True
-    assert writer["repo"] == "AIForgeCrew" and writer["source"] == "chat"
+    assert writer["repo"] == "AIForgeCrew"
+    assert writer["source"] == "chat"
     assert "chat" in writer["tags"]
 
 
@@ -113,7 +115,8 @@ def test_an_explicit_repo_wins(writer):
 def test_a_global_fact_carries_its_scope(writer):
     M._t_memory_write({"text": "x", "scope": "GLOBAL", "decision": True},
                       "/repo")
-    assert writer["scope"] == "global" and writer["decision"] is True
+    assert writer["scope"] == "global"
+    assert writer["decision"] is True
 
 
 def test_a_write_with_nothing_to_say_is_refused(writer):
@@ -134,7 +137,8 @@ def test_a_failing_store_is_reported(monkeypatch, writer):
 
 def test_a_partial_name_locates_the_file(workspace):
     out = M._t_find({"name": "app"}, str(workspace))
-    assert "src/app.py" in out["matches"] and out["base"] == str(workspace)
+    assert "src/app.py" in out["matches"]
+    assert out["base"] == str(workspace)
 
 
 def test_directories_can_be_asked_for_on_their_own(workspace):
@@ -167,7 +171,7 @@ def test_the_result_is_bounded(workspace):
 # ─── grepping ──────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def no_rg(monkeypatch):
     """Force the dependency-free path so the test is the same everywhere."""
     monkeypatch.setattr(M, "_ripgrep", lambda *a, **kw: None)
@@ -191,12 +195,14 @@ def test_a_glob_narrows_it_to_one_language(workspace, no_rg):
 def test_a_wrong_path_searches_the_project_and_says_so(workspace, no_rg):
     """An empty result would read as 'not in this repo'."""
     out = M._t_grep({"pattern": "TOKEN", "path": "srv"}, str(workspace))
-    assert out["matches"] and "not found" in out["note"]
+    assert out["matches"]
+    assert "not found" in out["note"]
 
 
 def test_a_real_subpath_narrows_the_search(workspace, no_rg):
     out = M._t_grep({"pattern": "TOKEN", "path": "src"}, str(workspace))
-    assert out["note"] == "" and out["matches"]
+    assert out["note"] == ""
+    assert out["matches"]
 
 
 def test_vendor_directories_are_skipped_here_too(workspace, no_rg):
@@ -206,7 +212,8 @@ def test_vendor_directories_are_skipped_here_too(workspace, no_rg):
 
 def test_a_bad_regex_is_reported_not_raised(workspace, no_rg):
     out = M._t_grep({"pattern": "unbalanced("}, str(workspace))
-    assert out["ok"] is False and "bad regex" in out["error"]
+    assert out["ok"] is False
+    assert "bad regex" in out["error"]
 
 
 def test_a_grep_with_no_pattern_is_refused(workspace):
@@ -216,7 +223,8 @@ def test_a_grep_with_no_pattern_is_refused(workspace):
 def test_the_matches_are_bounded(workspace, no_rg):
     (workspace / "big.txt").write_text("TOKEN\n" * 50)
     out = M._t_grep({"pattern": "TOKEN", "limit": 3}, str(workspace))
-    assert len(out["matches"]) == 3 and out["truncated"] is True
+    assert len(out["matches"]) == 3
+    assert out["truncated"] is True
 
 
 def test_an_unreadable_file_does_not_stop_the_walk(workspace, no_rg,
@@ -253,7 +261,8 @@ def test_the_ripgrep_command_excludes_the_vendor_dirs(workspace, monkeypatch):
                         lambda cmd, **kw: seen.update(cmd=cmd)
                         or pytypes.SimpleNamespace(stdout="a.py:1:hit\n"))
     assert M._ripgrep("TOKEN", str(workspace), "*.py", 10) == ["a.py:1:hit"]
-    assert "!node_modules" in seen["cmd"] and "-i" in seen["cmd"]
+    assert "!node_modules" in seen["cmd"]
+    assert "-i" in seen["cmd"]
 
 
 def test_without_ripgrep_the_caller_falls_back(workspace, monkeypatch):
@@ -273,7 +282,7 @@ def test_a_ripgrep_that_fails_falls_back_too(workspace, monkeypatch):
 # ─── remembering a rule ────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def rules(monkeypatch):
     from aiforge_core.memory import backend_select, sqlite_memory
     from aiforge_core.runtime import repo_rules
@@ -296,7 +305,8 @@ def rules(monkeypatch):
 
 def test_a_rule_lands_in_the_store_the_library_lists(rules):
     out = M._t_remember_rule({"text": "always run the tests"}, "/repo")
-    assert out["ok"] is True and out["path"] == "/rules/r.md"
+    assert out["ok"] is True
+    assert out["path"] == "/rules/r.md"
     assert rules["written"]["name"] == "always run the tests"
     assert rules["written"]["always"] is True
     assert out["remembered"].startswith("# always run the tests")
@@ -307,7 +317,8 @@ def test_the_rule_is_also_recalled_alongside_ordinary_facts(rules):
                        "/repo")
     unit = rules["units"][0]
     assert unit["text"] == "RULE: always run the tests"
-    assert unit["repo"] == "AIForgeCrew" and "rule" in unit["tags"]
+    assert unit["repo"] == "AIForgeCrew"
+    assert "rule" in unit["tags"]
 
 
 def test_a_global_rule_is_recorded_without_a_repo(rules):
@@ -375,7 +386,8 @@ def test_a_plain_bullet_is_always_on():
 
 def test_a_bullet_can_declare_when_it_applies():
     trig, text = M._parse_bullet("- [triggers: deploy, release] tag it first")
-    assert trig == ("deploy", "release") and text == "tag it first"
+    assert trig == ("deploy", "release")
+    assert text == "tag it first"
 
 
 def test_the_trigger_list_is_normalised():

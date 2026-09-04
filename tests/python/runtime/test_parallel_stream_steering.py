@@ -45,7 +45,8 @@ def test_a_steer_naming_a_subtask_is_pinned_to_it(tmp_path):
     heading, feedback = out
     assert "MANDATORY user instruction" in subs[0]["goal"]
     assert subs[0]["_user_mandate"] == ["handle unicode"]
-    assert "pkg/lexer.py" in heading and "pkg/lexer.py" in feedback
+    assert "pkg/lexer.py" in heading
+    assert "pkg/lexer.py" in feedback
 
 
 def test_the_analysis_note_is_shown_back_to_the_user(tmp_path):
@@ -61,14 +62,16 @@ def test_a_steer_naming_a_subtask_that_is_gone_is_not_pinned():
                                            ("global", "whole build")])
 def test_a_steer_with_no_subtask_goes_to_the_spec(target, marker):
     heading, feedback = S._steer_headings(target, "")
-    assert marker in heading and "✅ Got it" in feedback
+    assert marker in heading
+    assert "✅ Got it" in feedback
 
 
 def test_a_mandate_is_appended_to_the_spec_and_remembered(tmp_path):
     (tmp_path / S._SPEC_MD).write_text("# SPEC\n")
     S._append_spec_mandate(str(tmp_path), "## ⚙ heading", "use postgres")
     body = (tmp_path / S._SPEC_MD).read_text()
-    assert "## ⚙ heading" in body and "**MUST:** use postgres" in body
+    assert "## ⚙ heading" in body
+    assert "**MUST:** use postgres" in body
     assert S._USER_MANDATES[str(tmp_path)] == ["use postgres"], \
         "so the reconcile prompt can re-assert it"
 
@@ -78,7 +81,7 @@ def test_an_unwritable_spec_still_records_the_mandate(tmp_path):
     assert S._USER_MANDATES[str(tmp_path / "nope")] == ["use postgres"]
 
 
-@pytest.fixture()
+@pytest.fixture
 def router(monkeypatch):
     state: dict = {"route": {"target": "lexer", "note": "names the lexer"}}
     monkeypatch.setattr(S, "_route_steering",
@@ -110,7 +113,7 @@ def test_a_steer_for_a_vanished_subtask_falls_back_to_global(router, tmp_path):
 # ─── draining steers mid-run ───────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def interject(monkeypatch, router):
     from aiforge_core.runtime import chat_interject, chat_steer
     state: dict = {"pending": True, "queued": ["handle unicode"]}
@@ -125,7 +128,8 @@ def interject(monkeypatch, router):
 def test_a_steer_is_echoed_and_then_acknowledged(interject, tmp_path):
     evs = list(S._steering_drain(7, _subs(), str(tmp_path)))
     assert evs[0] == {"type": "steer", "text": "handle unicode"}
-    assert evs[1]["role"] == "planner" and "✅ Got it" in evs[1]["text"]
+    assert evs[1]["role"] == "planner"
+    assert "✅ Got it" in evs[1]["text"]
 
 
 def test_nothing_queued_means_nothing_to_do(interject, tmp_path):
@@ -234,7 +238,8 @@ def test_a_green_build_says_so(tmp_path):
 def test_a_failing_test_may_be_a_bad_test(tmp_path):
     """A local model writes those too, so do not assert the code is wrong."""
     out = S._build_verdict(False, str(tmp_path))
-    assert "some tests still fail" in out and "incorrect tests" in out
+    assert "some tests still fail" in out
+    assert "incorrect tests" in out
 
 
 def test_an_unclear_result_with_a_toolchain_present_names_it(tmp_path,
@@ -245,7 +250,8 @@ def test_an_unclear_result_with_a_toolchain_present_names_it(tmp_path,
     monkeypatch.setattr(project_runner, "detect",
                         lambda cwd: {"stacks": ["python", "maven"]})
     out = S._build_verdict(None, str(tmp_path))
-    assert "python, maven" in out and "did NOT pass cleanly" in out
+    assert "python, maven" in out
+    assert "did NOT pass cleanly" in out
 
 
 def test_an_unclear_result_with_no_toolchain_says_where_to_run_it(tmp_path,
@@ -302,7 +308,7 @@ def test_cleaning_a_workspace_with_no_sidecars_is_quiet(tmp_path):
 # ─── the final report ──────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def finalize(monkeypatch):
     state: dict = {"verdict": "every requirement addressed",
                    "res": {"ok": True}, "rep": {"ok": True, "md": "# report"},

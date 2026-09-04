@@ -128,51 +128,60 @@ def test_a_config_file_holding_the_wrong_shape_is_ignored(cfg):
                                    "pos_client-backend", "POSCLIENTBACKEND"])
 def test_a_name_typed_any_way_finds_the_same_repo(typed):
     res = M.fuzzy_pick(typed, {"PosClientBackend": "/srv/pcb"})
-    assert res["ok"] is True and res["value"] == "/srv/pcb"
+    assert res["ok"] is True
+    assert res["value"] == "/srv/pcb"
     assert res["match"] == "normalized"
 
 
 def test_a_small_typo_still_resolves():
     res = M.fuzzy_pick("PosClinetBackend", {"PosClientBackend": "/srv/pcb"})
-    assert res["ok"] is True and res["match"] == "fuzzy"
+    assert res["ok"] is True
+    assert res["match"] == "fuzzy"
 
 
 def test_a_fragment_of_the_name_falls_through_to_substring():
     res = M.fuzzy_pick("client", {"PosClientBackend": "/srv/pcb"})
-    assert res["ok"] is True and res["match"] == "substring"
+    assert res["ok"] is True
+    assert res["match"] == "substring"
 
 
 def test_two_different_repos_tying_is_never_guessed():
     """Picking one would send the work into the wrong repo."""
     res = M.fuzzy_pick("backend", {"backend": "/a", "Back End": "/b"})
-    assert res["ok"] is False and res["error"] == "ambiguous"
+    assert res["ok"] is False
+    assert res["error"] == "ambiguous"
     assert sorted(res["candidates"]) == ["Back End", "backend"]
 
 
 def test_two_names_for_the_same_folder_are_not_a_tie():
     res = M.fuzzy_pick("backend", {"backend": "/a", "Back-End": "/a"})
-    assert res["ok"] is True and res["value"] == "/a"
+    assert res["ok"] is True
+    assert res["value"] == "/a"
 
 
 def test_a_close_fuzzy_race_is_ambiguous():
     res = M.fuzzy_pick("servicex", {"servicea": "/a", "serviceb": "/b"})
-    assert res["ok"] is False and res["error"] == "ambiguous"
+    assert res["ok"] is False
+    assert res["error"] == "ambiguous"
 
 
 def test_a_clear_fuzzy_winner_is_taken():
     res = M.fuzzy_pick("posclientbackend",
                        {"PosClientBackend": "/a", "PosServerBackend": "/b"})
-    assert res["ok"] is True and res["value"] == "/a"
+    assert res["ok"] is True
+    assert res["value"] == "/a"
 
 
 def test_two_substring_hits_are_ambiguous():
     res = M.fuzzy_pick("service", {"service-one": "/a", "service-two": "/b"})
-    assert res["ok"] is False and res["error"] == "ambiguous"
+    assert res["ok"] is False
+    assert res["error"] == "ambiguous"
 
 
 def test_a_name_matching_nothing_offers_what_there_is():
     res = M.fuzzy_pick("zzz", {"alpha": "/a", "beta": "/b"})
-    assert res["error"] == "no match" and res["candidates"] == ["alpha", "beta"]
+    assert res["error"] == "no match"
+    assert res["candidates"] == ["alpha", "beta"]
 
 
 def test_the_candidate_list_offered_back_is_capped():
@@ -188,7 +197,8 @@ def test_nothing_to_match_against_is_its_own_answer():
 def test_the_matcher_serves_other_registries_too():
     """The same code backs Jira projects and Confluence spaces."""
     res = M.fuzzy_pick("one shell", {"OneShell": "ONE"}, value_key="key")
-    assert res["key"] == "ONE" and res["name"] == "OneShell"
+    assert res["key"] == "ONE"
+    assert res["name"] == "OneShell"
 
 
 @pytest.mark.parametrize("a,b", [("Pos Client-Backend", "posclientbackend"),
@@ -216,20 +226,23 @@ def test_a_pinned_folder_that_is_gone_still_shadows_the_base_folder(cfg,
     _repos(tmp_path, "widgets")
     M.set_path("widgets", "/gone/widgets")
     res = M.resolve("widgets")
-    assert res["ok"] is True and res["path"] == "/gone/widgets"
+    assert res["ok"] is True
+    assert res["path"] == "/gone/widgets"
 
 
 def test_a_moved_repo_is_found_under_the_base_folder(cfg, tmp_path):
     _repos(tmp_path, "widgets")
     M.set_path("widgets-old", "/gone/widgets")
     res = M.resolve("widgets")
-    assert res["ok"] is True and res["path"].endswith("codeRepo/widgets")
+    assert res["ok"] is True
+    assert res["path"].endswith("codeRepo/widgets")
 
 
 def test_the_folders_under_the_base_are_candidates(cfg, tmp_path):
     _repos(tmp_path, "AIForgeCrew", "PosFrontend")
     res = M.resolve("pos frontend")
-    assert res["ok"] is True and res["path"].endswith("PosFrontend")
+    assert res["ok"] is True
+    assert res["path"].endswith("PosFrontend")
 
 
 def test_hidden_folders_are_not_repos(cfg, tmp_path):
@@ -247,7 +260,8 @@ def test_a_file_in_the_base_folder_is_not_a_repo(cfg, tmp_path):
 def test_nothing_configured_at_all_says_how_to_fix_it(cfg, monkeypatch):
     monkeypatch.setenv("AIFORGE_WORKTREE_ROOT", "/definitely/not/here")
     res = M.resolve("widgets")
-    assert res["ok"] is False and "set_repo_root" in res["error"]
+    assert res["ok"] is False
+    assert "set_repo_root" in res["error"]
 
 
 def test_an_unreadable_base_folder_is_not_fatal(cfg, monkeypatch, tmp_path):
@@ -263,4 +277,5 @@ def test_a_pinned_repo_outside_the_base_is_still_a_candidate(cfg, tmp_path):
     _repos(tmp_path, "other")
     M.set_path("Widgets", "/srv/widgets")
     res = M.resolve("widgets")
-    assert res["ok"] is True and res["path"] == "/srv/widgets"
+    assert res["ok"] is True
+    assert res["path"] == "/srv/widgets"

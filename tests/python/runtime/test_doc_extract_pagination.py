@@ -37,7 +37,8 @@ def test_a_junk_env_value_falls_back_to_the_default(monkeypatch):
 def test_the_caps_are_tunable(monkeypatch):
     monkeypatch.setenv("AIFORGE_DOC_MAX_PAGES", "3")
     monkeypatch.setenv("AIFORGE_DOC_MAX_CHARS", "1234")
-    assert D._pdf_page_cap() == 3 and D._doc_char_budget() == 1234
+    assert D._pdf_page_cap() == 3
+    assert D._doc_char_budget() == 1234
 
 
 @pytest.mark.parametrize("path,mime,is_pdf", [
@@ -74,7 +75,7 @@ class _Page:
         return self._tables
 
 
-@pytest.fixture()
+@pytest.fixture
 def pdf(monkeypatch):
     """A stubbed pypdf + pdfplumber pair."""
     state: dict = {"pages": [_Page("page one"), _Page("page two")],
@@ -110,7 +111,8 @@ def test_a_pages_tables_are_folded_back_in(pdf, tmp_path):
     """pypdf's flat text carries the numbers but loses the grid."""
     pdf["tables"] = {0: [[["Q1", "10"], ["Q2", None]]]}
     out = D._pdf_pages(str(tmp_path / "a.pdf"))
-    assert "[tables]" in out[0] and "Q1 | 10" in out[0]
+    assert "[tables]" in out[0]
+    assert "Q1 | 10" in out[0]
     assert out[0].endswith("Q2 |"), "an empty cell stays an empty cell"
     assert "[tables]" not in out[1]
 
@@ -183,7 +185,8 @@ def _set_reported_pages(path, n):
 def test_a_manual_page_break_starts_a_new_page(tmp_path):
     path = _docx(tmp_path, ["first page", "\f", "second page"])
     pages = D._docx_pages(path)
-    assert pages[0] == "first page" and "second page" in pages[-1]
+    assert pages[0] == "first page"
+    assert "second page" in pages[-1]
 
 
 def test_a_table_lands_on_the_page_it_belongs_to(tmp_path):
@@ -203,7 +206,8 @@ def test_words_own_page_count_is_authoritative(tmp_path):
     under-count massively."""
     path = _docx(tmp_path, ["para " + "x" * 200] * 10, pages_reported=4)
     pages, kind = D._docx_paginate(path)
-    assert kind == "word" and len(pages) == 4
+    assert kind == "word"
+    assert len(pages) == 4
 
 
 def test_the_word_count_is_read_out_of_the_docx_zip(tmp_path):
@@ -242,14 +246,16 @@ def test_dense_page_breaks_are_trusted_as_real_pages(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_APPROX_PAGE_CHARS", "40")
     path = _docx(tmp_path, ["a" * 30, "\f", "b" * 30, "\f", "c" * 30])
     pages, kind = D._docx_paginate(path)
-    assert kind == "exact" and len(pages) >= 3
+    assert kind == "exact"
+    assert len(pages) >= 3
 
 
 def test_a_break_less_document_is_estimated(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_APPROX_PAGE_CHARS", "50")
     path = _docx(tmp_path, ["x" * 40] * 6)
     pages, kind = D._docx_paginate(path)
-    assert kind == "approx" and len(pages) > 1
+    assert kind == "approx"
+    assert len(pages) > 1
 
 
 def test_a_short_document_is_a_single_page(tmp_path):
@@ -266,14 +272,16 @@ def test_an_empty_document_has_no_pages(tmp_path):
 
 def test_text_is_split_into_exactly_the_count_word_reported():
     pages = D._split_into_n("\n".join(f"line {i}" for i in range(50)), 5)
-    assert len(pages) == 5 and all(p.strip() for p in pages)
+    assert len(pages) == 5
+    assert all(p.strip() for p in pages)
 
 
 def test_a_document_with_fewer_lines_than_pages_still_fills_them():
     """Otherwise the tail pages come back empty and a real page number reads
     as blank."""
     pages = D._split_into_n("one long single line " * 20, 4)
-    assert len(pages) == 4 and all(p.strip() for p in pages)
+    assert len(pages) == 4
+    assert all(p.strip() for p in pages)
 
 
 def test_a_single_page_split_is_the_whole_text():
@@ -299,8 +307,10 @@ def _xlsx(tmp_path, sheets):
 def test_each_sheet_is_a_page(tmp_path):
     path = _xlsx(tmp_path, {"Sales": [["Q1", 10]], "Costs": [["Q1", 3]]})
     pages, kind = D.paginate(path)
-    assert kind == "sheets" and len(pages) == 2
-    assert pages[0].startswith("# sheet: Sales") and "Q1, 10" in pages[0]
+    assert kind == "sheets"
+    assert len(pages) == 2
+    assert pages[0].startswith("# sheet: Sales")
+    assert "Q1, 10" in pages[0]
 
 
 def test_a_huge_sheet_is_cut_off_with_a_marker(tmp_path):
@@ -327,7 +337,8 @@ def test_a_large_text_file_is_estimated(tmp_path, monkeypatch):
     p = tmp_path / "notes.md"
     p.write_text("\n".join("x" * 40 for _ in range(10)))
     pages, kind = D.paginate(str(p))
-    assert kind == "approx" and len(pages) > 1
+    assert kind == "approx"
+    assert len(pages) > 1
 
 
 def test_an_empty_text_file_has_nothing_to_read(tmp_path):
@@ -362,17 +373,20 @@ def test_the_pagination_kind_is_reportable(tmp_path):
 
 def test_every_page_is_labelled_so_the_model_can_cite_it():
     out = D._join_pages(["one", "two"], budget=10_000)
-    assert out.startswith("--- page 1 ---\none") and "--- page 2 ---" in out
+    assert out.startswith("--- page 1 ---\none")
+    assert "--- page 2 ---" in out
 
 
 def test_the_labels_follow_the_pages_actually_selected():
     out = D._join_pages(["ten", "eleven"], budget=10_000, numbers=[10, 11])
-    assert "--- page 10 ---" in out and "--- page 11 ---" in out
+    assert "--- page 10 ---" in out
+    assert "--- page 11 ---" in out
 
 
 def test_the_join_stops_at_the_budget_and_says_where():
     out = D._join_pages(["x" * 100, "y" * 100, "z" * 100], budget=120)
-    assert "truncated at page 2" in out and "z" * 100 not in out
+    assert "truncated at page 2" in out
+    assert "z" * 100 not in out
 
 
 def test_the_whole_text_of_a_document_carries_its_page_markers(tmp_path):
@@ -426,7 +440,8 @@ def test_a_spec_against_an_empty_document_selects_nothing():
 def test_only_the_asked_for_pages_come_back(tmp_path):
     path = _xlsx(tmp_path, {"A": [["a"]], "B": [["b"]], "C": [["c"]]})
     out = D.extract_pages(path, "", "2-3")
-    assert "--- page 2 ---" in out and "sheet: B" in out
+    assert "--- page 2 ---" in out
+    assert "sheet: B" in out
     assert "sheet: A" not in out
 
 

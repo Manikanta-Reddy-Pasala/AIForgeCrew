@@ -119,7 +119,8 @@ def test_a_write_creates_parents_and_records_the_touch(repo):
 
 def test_a_draft_that_does_not_parse_never_reaches_disk(repo):
     out = _fs.file_write("a.py", "def (:\n")
-    assert out["ok"] is False and out["error"].startswith("syntax_invalid")
+    assert out["ok"] is False
+    assert out["error"].startswith("syntax_invalid")
     assert out["hint"]
     assert not (repo / "a.py").exists()
 
@@ -217,7 +218,8 @@ def test_entries_are_listed_by_kind(repo):
     (repo / "d").mkdir()
     (repo / "f.py").write_text("x")
     out = _fs.list_dir("")
-    assert out["ok"] is True and out["path"] == "."
+    assert out["ok"] is True
+    assert out["path"] == "."
     assert out["entries"] == [{"name": "d", "kind": "dir"},
                               {"name": "f.py", "kind": "file"}]
 
@@ -234,7 +236,7 @@ def test_listing_outside_the_root_is_refused(repo):
 # ─── the shell ─────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def risk(monkeypatch):
     from aiforge_core.runtime.tools import command_risk
     state = {"level": "safe", "reason": ""}
@@ -244,13 +246,15 @@ def risk(monkeypatch):
 
 def test_a_command_runs_in_the_repo_root(repo, risk):
     out = _fs.run_shell("pwd")
-    assert out["ok"] is True and out["returncode"] == 0
+    assert out["ok"] is True
+    assert out["returncode"] == 0
     assert str(repo) in out["stdout"]
 
 
 def test_a_failing_command_reports_its_code_and_a_digest(repo, risk):
     out = _fs.run_shell("echo 'ImportError: boom' >&2; exit 3")
-    assert out["ok"] is False and out["returncode"] == 3
+    assert out["ok"] is False
+    assert out["returncode"] == 3
     assert "ImportError: boom" in out["digest"]
 
 
@@ -269,7 +273,8 @@ def test_a_broken_safety_classifier_fails_closed(repo, monkeypatch):
     monkeypatch.setattr(command_risk, "assess",
                         lambda cmd: (_ for _ in ()).throw(RuntimeError("bad regex")))
     out = _fs.run_shell("echo hi")
-    assert out["error"] == "risk_check_failed" and "bad regex" in out["reason"]
+    assert out["error"] == "risk_check_failed"
+    assert "bad regex" in out["reason"]
 
 
 def test_the_fail_closed_gate_can_be_overridden(repo, monkeypatch):
@@ -287,7 +292,8 @@ def test_a_timeout_returns_what_was_captured(repo, risk, monkeypatch):
                                         stderr=b"Traceback (most recent call last):")
     monkeypatch.setattr(subprocess, "run", _boom)
     out = _fs.run_shell("sleep 999")
-    assert out["ok"] is False and out["error"] == "timeout"
+    assert out["ok"] is False
+    assert out["error"] == "timeout"
     assert out["stdout"] == "partial out"
     assert "Traceback" in out["digest"]
 
@@ -307,7 +313,8 @@ def test_a_junk_timeout_value_falls_back(repo, risk, monkeypatch):
 
 def test_output_is_truncated_per_stream(repo, risk):
     out = _fs.run_shell("python3 -c \"print('x' * 20000)\"")
-    assert len(out["stdout"]) == 8000 and out["truncated"] is True
+    assert len(out["stdout"]) == 8000
+    assert out["truncated"] is True
 
 
 def test_a_clean_run_gets_no_digest(repo, risk):
@@ -344,7 +351,8 @@ def test_the_grep_command_excludes_vendor_dirs(monkeypatch, repo):
     import shutil
     monkeypatch.setattr(shutil, "which", lambda name: None)
     cmd, rg = _fs._grep_command(repo, "pat")
-    assert rg is False and cmd[0] == "grep"
+    assert rg is False
+    assert cmd[0] == "grep"
     assert "--exclude-dir=node_modules" in cmd
 
 
@@ -352,7 +360,8 @@ def test_ripgrep_is_used_when_present(monkeypatch, repo):
     import shutil
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/rg" if name == "rg" else None)
     cmd, rg = _fs._grep_command(repo, "pat")
-    assert rg is True and cmd[0] == "/usr/bin/rg"
+    assert rg is True
+    assert cmd[0] == "/usr/bin/rg"
     assert "!node_modules" in cmd
 
 
@@ -391,7 +400,9 @@ def test_a_line_range_is_inclusive(repo):
     (repo / "a.py").write_text("".join(f"line{i}\n" for i in range(1, 11)))
     out = _fs.read_lines("a.py", 2, 4)
     assert out["text"] == "line2\nline3\nline4\n"
-    assert out["total_lines"] == 10 and out["start"] == 2 and out["end"] == 4
+    assert out["total_lines"] == 10
+    assert out["start"] == 2
+    assert out["end"] == 4
 
 
 def test_end_zero_reads_to_eof(repo):
@@ -407,7 +418,8 @@ def test_an_end_past_eof_is_clamped(repo):
 def test_a_start_past_eof_says_so_rather_than_erroring(repo):
     (repo / "a.py").write_text("a\n")
     out = _fs.read_lines("a.py", 50)
-    assert out["ok"] is True and out["text"] == ""
+    assert out["ok"] is True
+    assert out["text"] == ""
     assert "past EOF" in out["note"]
 
 

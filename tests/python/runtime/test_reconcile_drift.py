@@ -277,7 +277,8 @@ def test_the_python_blackboard_pairs_exposes_with_consumes(tmp_path):
 def test_the_blackboard_skips_unparseable_files(tmp_path):
     _write(tmp_path, "broken.py", "def (:\n")
     exposes, consumes = dr._python_blackboard(str(tmp_path))
-    assert exposes == {} and consumes == []
+    assert exposes == {}
+    assert consumes == []
 
 
 def test_star_imports_are_not_consumed_names(tmp_path):

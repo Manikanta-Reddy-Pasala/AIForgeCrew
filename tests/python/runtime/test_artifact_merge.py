@@ -343,7 +343,8 @@ def test_the_scheduled_pass_never_raises(monkeypatch):
     monkeypatch.setattr(am, "run", lambda *_a, **_kw: (_ for _ in ()).throw(
         RuntimeError("boom")))
     out = am.scheduled_pass()
-    assert out["ok"] is False and out["rows"] == []
+    assert out["ok"] is False
+    assert out["rows"] == []
 
 
 def test_merging_an_always_on_rule_widens_rather_than_narrows(stub_llm):
@@ -389,7 +390,8 @@ def test_the_routes_answer_and_merge_is_not_a_kind(client, stub_llm):
             if c["kind"] == "rules"], preview
 
     dry = client.post("/api/library/merge/run", json={"dry_run": True}).json()
-    assert dry["rows"] and dry["rows"][0]["action"] == "would_merge"
+    assert dry["rows"]
+    assert dry["rows"][0]["action"] == "would_merge"
 
     # No body at all is a valid request — the nightly defaults.
     assert client.post("/api/library/merge/run").status_code == 200
@@ -482,7 +484,8 @@ def test_two_passes_cannot_run_at_once(stub_llm, monkeypatch):
         out = am.run(["rules"])
     finally:
         am._LOCK.release()
-    assert out["ok"] is False and "already running" in out["error"]
+    assert out["ok"] is False
+    assert "already running" in out["error"]
 
 
 def test_a_typod_hour_is_clamped(monkeypatch):

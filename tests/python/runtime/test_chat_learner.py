@@ -124,7 +124,8 @@ def test_a_synthesized_record_describes_what_changed():
         "add an LRU cache", [{"text": "added an LRU cache to the store"}],
         ["app/store.py", "app/cli.py"])
     assert out["text"] == "DID: added an LRU cache to the store"
-    assert out["topic"] == "task-history" and out["kind"] == "feature"
+    assert out["topic"] == "task-history"
+    assert out["kind"] == "feature"
     assert out["about"] == ["store.py", "cli.py"]
     assert out["files"] == ["app/store.py", "app/cli.py"]
 
@@ -145,7 +146,7 @@ def test_the_summary_falls_back_to_the_user_request():
 # ─── the end-to-end turn ───────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def learner(monkeypatch):
     """Stub the LLM + the persistence layer."""
     from aiforge_core.llm import client
@@ -279,7 +280,8 @@ def test_the_learner_prompt_asks_for_the_task_done_record(learner):
     cl.learn_from_chat(prompt="p", final_text="a", steps=None, repo="r",
                        session_id=1)
     user = learner["messages"][1]["content"]
-    assert "task-history" in user and "DID:" in user
+    assert "task-history" in user
+    assert "DID:" in user
     assert "USER:\np" in user
 
 

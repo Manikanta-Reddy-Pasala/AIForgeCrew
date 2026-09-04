@@ -16,7 +16,7 @@ import pytest
 from aiforge_core.memory import migrations as mg
 
 
-@pytest.fixture()
+@pytest.fixture
 def mem(monkeypatch, tmp_path):
     """Point the whole memory tree at a temp dir."""
     from aiforge_core.memory import md_store
@@ -73,7 +73,8 @@ def test_an_archive_failure_is_reported_not_raised(mem, monkeypatch):
     monkeypatch.setattr(shutil, "move",
                         lambda *a: (_ for _ in ()).throw(OSError("read-only")))
     out = mg._archive_okr_dag_folder()
-    assert out["ok"] is False and "read-only" in out["error"]
+    assert out["ok"] is False
+    assert "read-only" in out["error"]
 
 
 # ─── frontmatter → OKF names ───────────────────────────────────────────
@@ -83,7 +84,8 @@ def test_legacy_keys_are_renamed(tmp_path):
     p = _md(tmp_path / "a.md", "kind: learning\nsource_url: http://x\nupdated_at: 2026")
     assert mg._rewrite_file_frontmatter_to_okf(p) is True
     text = p.read_text()
-    assert "type: learning" in text and "resource: http://x" in text
+    assert "type: learning" in text
+    assert "resource: http://x" in text
     assert "timestamp: 2026" in text
     assert "body" in text
 
@@ -166,7 +168,8 @@ def test_a_legacy_bundle_is_renamed(mem):
     (mem / "okr").mkdir()
     (mem / "okr" / "n.md").write_text("x")
     assert mg._rename_okr_dir_to_okf()["ok"] is True
-    assert (mem / "okf" / "n.md").exists() and not (mem / "okr").exists()
+    assert (mem / "okf" / "n.md").exists()
+    assert not (mem / "okr").exists()
 
 
 def test_nothing_to_rename(mem):
@@ -209,7 +212,7 @@ class _Paths:
         return self._peers
 
 
-@pytest.fixture()
+@pytest.fixture
 def peers(monkeypatch, tmp_path):
     from aiforge_core.memory.sync import paths as real
     legacy = tmp_path / "memory" / "okf" / "peers"
@@ -238,7 +241,8 @@ def test_a_file_already_at_the_destination_is_kept(peers):
     (inbox / "nuc").mkdir()
     (inbox / "nuc" / "n.md").write_text("newer")
     out = mg._move_okf_peers_to_inbox()
-    assert out["kept_at_destination"] == 1 and out["moved"] == 0
+    assert out["kept_at_destination"] == 1
+    assert out["moved"] == 0
     assert (inbox / "nuc" / "n.md").read_text() == "newer"
 
 
@@ -303,7 +307,7 @@ def test_sibling_repos_of_the_checkout_are_discovered(monkeypatch, tmp_path):
 # ─── the one-shot marker ───────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def marker(monkeypatch, tmp_path):
     from aiforge_core.memory.okf import store
     root = tmp_path / "okf"
@@ -385,7 +389,8 @@ def test_only_files_stamped_by_the_bad_drain_are_removed(tmp_path):
     store = _MdStore(tmp_path, {"a.md": {"source": "migrate:neo4j"},
                                 "b.md": {"source": "capture"}})
     assert mg._purge_drained_md(store) == 1
-    assert not (tmp_path / "a.md").exists() and (tmp_path / "b.md").exists()
+    assert not (tmp_path / "a.md").exists()
+    assert (tmp_path / "b.md").exists()
 
 
 def test_an_unparseable_file_is_left_alone(tmp_path):
@@ -419,7 +424,8 @@ def test_code_learnings_are_removed_and_prose_kept(tmp_path):
         {"type": "solution", "body": "def f(): pass", "path": str(code)},
     ]), out)
     assert out == {"removed_okr_learnings": 1, "kept_learnings": 1}
-    assert not code.exists() and prose.exists()
+    assert not code.exists()
+    assert prose.exists()
 
 
 def test_a_learning_whose_file_is_gone_is_not_counted(tmp_path):
@@ -441,7 +447,8 @@ def test_the_purge_rebuilds_the_briefs_and_index(monkeypatch, tmp_path):
     monkeypatch.setattr(okr_store, "_invalidate", lambda: called.append("invalidate"))
     monkeypatch.setattr(okr_store, "_write_index", lambda: called.append("index"))
     out = mg.purge_migrated_code()
-    assert out["ok"] is True and out["removed_md"] == 2
+    assert out["ok"] is True
+    assert out["removed_md"] == 2
     assert called == ["compact", "sweep", "invalidate", "index"]
 
 
@@ -480,7 +487,7 @@ def test_a_step_reporting_failure_still_counts_as_having_run():
 # ─── boot-time compaction window ───────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def compact(monkeypatch):
     from aiforge_core.memory import md_store
     from aiforge_core.runtime import compact_window
@@ -622,7 +629,7 @@ def test_a_move_failure_is_recorded(monkeypatch):
 # ─── the chain ─────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def chain(monkeypatch, marker):
     for name in ("_reembed_if_embedder_changed", "_move_files_into_folders",
                  "_startup_compact"):
@@ -640,7 +647,8 @@ def test_the_default_chain_archives_the_dag_instead_of_building_it(chain, monkey
                         lambda out, done: pytest.fail("ran DAG steps with the flag off"))
     out = mg.run_startup_migrations()
     assert out["okr_archive"] == {"ok": True}
-    assert out["format"] == {"ok": True} and out["okf_frontmatter"] == {"ok": True}
+    assert out["format"] == {"ok": True}
+    assert out["okf_frontmatter"] == {"ok": True}
 
 
 def test_a_one_shot_step_is_not_repeated(chain):
@@ -740,4 +748,5 @@ def test_every_recompact_step_runs(monkeypatch):
     out = mg.force_recompact_all()
     assert out["ok"] is True
     assert ran[:3] == ["tidy_legacy", "repo", "topic"]
-    assert "reingest" in ran and "map_scopes" in ran
+    assert "reingest" in ran
+    assert "map_scopes" in ran

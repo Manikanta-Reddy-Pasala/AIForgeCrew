@@ -26,7 +26,7 @@ import pytest
 from aiforge_core.runtime.tools import bash as B
 
 
-@pytest.fixture()
+@pytest.fixture
 def repo_root(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_REPO_ROOT", str(tmp_path))
     return tmp_path
@@ -36,7 +36,7 @@ def _prompt(rc=0):
     return f"__AIFORGE_PROMPT_{B._NONCE}_{rc}__"
 
 
-@pytest.fixture()
+@pytest.fixture
 def tmux(monkeypatch):
     """A fake tmux: records every command, replays a scripted pane."""
     state: dict = {"calls": [], "exists": False, "panes": [""], "rc": 0}
@@ -89,7 +89,9 @@ def test_the_runner_binds_the_session_for_the_whole_run():
 def test_the_output_is_what_lies_between_two_prompts(tmux):
     tmux["panes"] = [f"{_prompt()}\nls\nfile.txt\n{_prompt(0)}\n"]
     body, rc, timed_out = B._drain_until_prompt("s", timeout=1)
-    assert body == "ls\nfile.txt" and rc == 0 and timed_out is False
+    assert body == "ls\nfile.txt"
+    assert rc == 0
+    assert timed_out is False
 
 
 def test_the_exit_code_comes_off_the_closing_prompt(tmux):
@@ -102,7 +104,8 @@ def test_a_command_printing_a_prompt_shaped_string_cannot_forge_one(tmux):
     mis-parsed as a shell prompt (wrong rc / truncated stdout)."""
     tmux["panes"] = [f"{_prompt()}\necho __AIFORGE_PROMPT_9__\n{_prompt(0)}\n"]
     body, rc, _ = B._drain_until_prompt("s", timeout=1)
-    assert rc == 0 and "__AIFORGE_PROMPT_9__" in body
+    assert rc == 0
+    assert "__AIFORGE_PROMPT_9__" in body
 
 
 def test_a_pane_that_never_settles_times_out(tmux, monkeypatch):
@@ -110,7 +113,9 @@ def test_a_pane_that_never_settles_times_out(tmux, monkeypatch):
     ticks = iter([0.0, 0.5, 9.0, 9.0])
     monkeypatch.setattr(B.time, "monotonic", lambda: next(ticks))
     body, rc, timed_out = B._drain_until_prompt("s", timeout=1)
-    assert timed_out is True and rc is None and body == "still running…"
+    assert timed_out is True
+    assert rc is None
+    assert body == "still running…"
 
 
 def test_the_first_prompt_after_create_needs_only_one_sentinel(tmux):
@@ -127,7 +132,8 @@ def test_stop_interrupts_the_running_command(tmux, monkeypatch):
     monkeypatch.setattr(chat_cancel, "is_cancelled", lambda sid: True)
     tmux["panes"] = ["nothing yet"]
     body, rc, timed_out = B._drain_until_prompt("s", timeout=30)
-    assert rc == -130 and timed_out is False
+    assert rc == -130
+    assert timed_out is False
     assert ["tmux", "send-keys", "-t", "s", "C-c"] in tmux["calls"]
 
 
@@ -145,7 +151,8 @@ def test_the_session_is_created_with_a_parseable_prompt(tmux, repo_root):
     tmux["panes"] = [f"{_prompt(0)}\n"]
     assert B._create_session("r1") == "aiforge-r1"
     typed = _sent(tmux)
-    assert typed[0] == B._PROMPT_PS1 and typed[1] == "clear"
+    assert typed[0] == B._PROMPT_PS1
+    assert typed[1] == "clear"
     assert B._active_sessions["r1"] == "aiforge-r1"
 
 
@@ -182,7 +189,8 @@ def test_a_command_runs_in_the_persistent_session(tmux, repo_root):
     tmux["panes"] = [f"{_prompt(0)}\n",
                      f"{_prompt()}\necho hi\nhi\n{_prompt(0)}\n"]
     res = B.bash("echo hi", _run_id="r1")
-    assert res["ok"] is True and res["returncode"] == 0
+    assert res["ok"] is True
+    assert res["returncode"] == 0
     assert res["stdout"] == "hi", "the pty echo of the command is stripped"
 
 
@@ -190,7 +198,8 @@ def test_a_failing_command_is_not_ok(tmux, repo_root):
     tmux["panes"] = [f"{_prompt(0)}\n",
                      f"{_prompt()}\nfalse\n{_prompt(1)}\n"]
     res = B.bash("false", _run_id="r1")
-    assert res["ok"] is False and res["returncode"] == 1
+    assert res["ok"] is False
+    assert res["returncode"] == 1
 
 
 def test_a_trailing_ampersand_returns_at_once(tmux, repo_root):
@@ -212,8 +221,10 @@ def test_a_hung_command_is_interrupted_and_its_partial_output_kept(tmux,
     monkeypatch.setattr(B.time, "monotonic", _tick)
     tmux["panes"] = [f"{_prompt(0)}\n", "half an answer"]
     res = B.bash("sleep 999", timeout=1, _run_id="r1")
-    assert res["ok"] is False and res["error"] == "timeout"
-    assert res["truncated"] is True and "half an answer" in res["stdout"]
+    assert res["ok"] is False
+    assert res["error"] == "timeout"
+    assert res["truncated"] is True
+    assert "half an answer" in res["stdout"]
     assert ["tmux", "send-keys", "-t", "aiforge-r1", "C-c"] in tmux["calls"]
 
 
@@ -230,7 +241,8 @@ def test_a_huge_answer_is_capped(tmux, repo_root):
     big = "y" * (B._STDOUT_CAP_BYTES + 500)
     tmux["panes"] = [f"{_prompt(0)}\n", f"{_prompt()}\nc\n{big}\n{_prompt(0)}\n"]
     res = B.bash("c", _run_id="r1")
-    assert len(res["stdout"]) == B._STDOUT_CAP_BYTES and res["truncated"] is True
+    assert len(res["stdout"]) == B._STDOUT_CAP_BYTES
+    assert res["truncated"] is True
 
 
 def test_an_empty_command_never_reaches_a_shell(tmux):
@@ -242,7 +254,8 @@ def test_a_delete_is_refused_before_it_runs(tmux, monkeypatch):
     from aiforge_core.runtime.tools import delete_guard
     monkeypatch.setattr(delete_guard, "allow_delete", lambda: False)
     res = B.bash("rm -rf build")
-    assert res["blocked"] == "delete" and tmux["calls"] == []
+    assert res["blocked"] == "delete"
+    assert tmux["calls"] == []
 
 
 def test_the_docker_sandbox_takes_precedence_when_opted_in(tmux, monkeypatch):
@@ -304,7 +317,7 @@ class _Proc:
         return self._out, self._err
 
 
-@pytest.fixture()
+@pytest.fixture
 def spawn(monkeypatch):
     """A stubbed Popen plus a no-op process-group kill."""
     state: dict = {"proc": _Proc(), "killed": []}
@@ -321,7 +334,7 @@ def spawn(monkeypatch):
     return state
 
 
-@pytest.fixture()
+@pytest.fixture
 def cancel(monkeypatch):
     from aiforge_core.runtime import chat_cancel
     state: dict = {"sid": 7, "cancelled": False, "pgids": []}
@@ -339,7 +352,8 @@ def test_a_chat_run_gets_its_own_process_group(spawn, cancel, repo_root,
     import time as _t
     monkeypatch.setattr(_t, "sleep", lambda s: None)
     res = B._fallback_run("make", 30)
-    assert res["ok"] is True and res["stdout"] == "out"
+    assert res["ok"] is True
+    assert res["stdout"] == "out"
     assert spawn["kw"]["start_new_session"] is True
     assert cancel["pgids"] == [(7, 999)]
 
@@ -350,7 +364,8 @@ def test_stop_kills_the_tree_mid_build(spawn, cancel, repo_root):
     res = B._run_cancellable("make", 30, 7,
                              __import__("aiforge_core.runtime.chat_cancel",
                                         fromlist=["x"]))
-    assert res["stopped"] is True and res["error"] == "stopped by user"
+    assert res["stopped"] is True
+    assert res["error"] == "stopped by user"
     assert spawn["killed"] == [(999, 9)]
 
 
@@ -372,7 +387,8 @@ def test_a_command_that_outlives_its_budget_is_killed(spawn, cancel, repo_root,
     res = B._run_cancellable("sleep 999", 1, 7,
                              __import__("aiforge_core.runtime.chat_cancel",
                                         fromlist=["x"]))
-    assert res["error"] == "timeout" and res["truncated"] is True
+    assert res["error"] == "timeout"
+    assert res["truncated"] is True
     assert spawn["killed"] == [(999, 9)]
 
 
@@ -395,7 +411,8 @@ def test_a_spawn_failure_is_a_soft_error(spawn, cancel, repo_root, monkeypatch):
     monkeypatch.setattr(B.subprocess, "Popen",
                         lambda *a, **k: (_ for _ in ()).throw(OSError("no sh")))
     res = B._fallback_run("make", 30)
-    assert res["ok"] is False and "no sh" in res["error"]
+    assert res["ok"] is False
+    assert "no sh" in res["error"]
 
 
 def test_outside_a_chat_run_the_plain_path_is_used(spawn, repo_root,

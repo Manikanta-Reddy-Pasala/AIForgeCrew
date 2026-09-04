@@ -96,7 +96,7 @@ def test_an_unreadable_runtime_env_never_blocks_boot(monkeypatch, tmp_path):
 # ─── the model context reload ──────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def lm_studio(monkeypatch):
     import urllib.request as u
     state: dict = {"payload": {"data": [
@@ -272,7 +272,8 @@ def test_memory_migrations_run_off_the_boot_path(monkeypatch):
     monkeypatch.setattr(api_mod, "_spawn",
                         lambda fn, name=None: seen.update(name=name) or fn())
     api_mod._run_memory_migrations()
-    assert seen["ran"] is True and seen["name"] == "memory-migrations"
+    assert seen["ran"] is True
+    assert seen["name"] == "memory-migrations"
 
 
 def test_migrations_still_run_when_the_thread_cannot_start(monkeypatch):
@@ -304,7 +305,8 @@ def test_the_jobs_scheduler_loop_is_started(monkeypatch):
     monkeypatch.setattr(api_mod, "_spawn",
                         lambda fn, name=None: seen.update(fn=fn, name=name))
     api_mod._start_jobs_scheduler()
-    assert seen["name"] == "jobs-scheduler" and seen["fn"] is scheduler.run_loop
+    assert seen["name"] == "jobs-scheduler"
+    assert seen["fn"] is scheduler.run_loop
 
 
 def test_the_scheduler_can_be_disabled(monkeypatch):

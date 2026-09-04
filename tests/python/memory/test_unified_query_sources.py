@@ -41,7 +41,7 @@ def _ctx(monkeypatch, **over):
     return Q._RecallCtx(**args)
 
 
-@pytest.fixture()
+@pytest.fixture
 def embedded(monkeypatch):
     from aiforge_core.memory import backend_select
     state = {"embedded": True}
@@ -85,7 +85,8 @@ def test_the_agents_own_observations_are_recalled(monkeypatch, embedded):
                         or [{"text": "sync retries three times"}])
     ctx = _ctx(monkeypatch)
     Q._src_sqlite_recall(ctx)
-    assert ctx.used == ["memory"] and ctx.raw_hits[0]["source"] == "memory"
+    assert ctx.used == ["memory"]
+    assert ctx.raw_hits[0]["source"] == "memory"
     assert seen["repo"] == "AIForgeCrew"
 
 
@@ -110,7 +111,8 @@ def test_a_just_written_fact_surfaces_before_it_is_embedded(monkeypatch,
     monkeypatch.setenv("AIFORGE_UMEM_RECENT_N", "3")
     ctx = _ctx(monkeypatch)
     Q._src_recent(ctx)
-    assert ctx.used == ["recent"] and seen["limit"] == 3
+    assert ctx.used == ["recent"]
+    assert seen["limit"] == 3
 
 
 def test_the_hot_cache_can_be_switched_off(monkeypatch, embedded):
@@ -141,7 +143,8 @@ def test_without_the_embedded_backend_those_sources_stay_quiet(monkeypatch,
     Q._src_sqlite_recall(ctx)
     Q._src_keyword(ctx)
     Q._src_recent(ctx)
-    assert ctx.used == [] and ctx.errors == []
+    assert ctx.used == []
+    assert ctx.errors == []
 
 
 def test_a_broken_source_records_its_error_and_answers_nothing(monkeypatch,
@@ -151,7 +154,8 @@ def test_a_broken_source_records_its_error_and_answers_nothing(monkeypatch,
                         lambda *a, **kw: (_ for _ in ()).throw(OSError("db")))
     ctx = _ctx(monkeypatch)
     Q._src_sqlite_recall(ctx)
-    assert ctx.used == [] and ctx.errors == ["memory: db"]
+    assert ctx.used == []
+    assert ctx.errors == ["memory: db"]
 
 
 # ─── the ticket, symbol and doc sources ────────────────────────────────
@@ -164,7 +168,8 @@ def test_a_ticket_brief_is_recalled_at_full_score(monkeypatch):
                         raising=False)
     ctx = _ctx(monkeypatch, ticket="ONE-42")
     Q._src_ticket(ctx)
-    assert ctx.used == ["ticket"] and ctx.raw_hits[0]["_raw_score"] == 1.0
+    assert ctx.used == ["ticket"]
+    assert ctx.raw_hits[0]["_raw_score"] == 1.0
 
 
 def test_no_ticket_means_no_brief(monkeypatch):
@@ -187,7 +192,8 @@ def test_a_symbol_query_looks_the_symbol_up(monkeypatch):
                         raising=False)
     ctx = _ctx(monkeypatch)
     Q._src_symbol(ctx)
-    assert ctx.used == ["symbol"] and seen["args"]["query"] == "publishToRemote"
+    assert ctx.used == ["symbol"]
+    assert seen["args"]["query"] == "publishToRemote"
 
 
 def test_a_prose_query_is_not_a_symbol_lookup(monkeypatch):
@@ -264,7 +270,8 @@ def test_graph_matches_and_neighbours_become_rows():
         "neighbors": [{"node": {"label": "Publisher"}, "relation": "calls",
                        "weight": 0.7},
                       {"node": None, "relation": "x"}]})
-    assert rows[0]["text"] == "SyncService — sync.py" and rows[0]["id"] == "n1"
+    assert rows[0]["text"] == "SyncService — sync.py"
+    assert rows[0]["id"] == "n1"
     assert rows[1] == {"text": "Publisher (calls)", "score": 0.7}
     assert rows[2]["text"] == " (x)", "a label-less neighbour keeps its relation"
 
@@ -306,13 +313,14 @@ def test_a_broken_graph_lookup_soft_fails(monkeypatch):
                         lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
     ctx = _ctx(monkeypatch)
     Q._src_graphify(ctx)
-    assert ctx.errors and ctx.used == []
+    assert ctx.errors
+    assert ctx.used == []
 
 
 # ─── the contamination guard ───────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def vector(monkeypatch, embedded):
     import aiforge_core.memory.unified_query as pkg
     embedded["embedded"] = False          # the global vector path
@@ -328,7 +336,8 @@ def test_a_scoped_task_keeps_its_vector_recall_scoped(vector, monkeypatch):
     """Unscoped, a game project's memory leaked into an unrelated converter."""
     ctx = _ctx(monkeypatch, repo="tempconv")
     Q._src_global_vector(ctx)
-    assert vector["repo"] == "tempconv" and ctx.used == ["vector"]
+    assert vector["repo"] == "tempconv"
+    assert ctx.used == ["vector"]
 
 
 def test_a_repo_less_call_searches_globally(vector, monkeypatch):
@@ -346,13 +355,14 @@ def test_the_global_vector_source_can_be_switched_off(vector, monkeypatch):
     monkeypatch.setenv("AIFORGE_UMEM_GLOBAL_VECTOR", "0")
     ctx = _ctx(monkeypatch)
     Q._src_global_vector(ctx)
-    assert ctx.used == [] and "repo" not in vector
+    assert ctx.used == []
+    assert "repo" not in vector
 
 
 # ─── prior conversations ───────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def chat(monkeypatch):
     import aiforge_core.memory.unified_query as pkg
     seen: dict = {}
@@ -366,7 +376,8 @@ def chat(monkeypatch):
 def test_prior_chats_inform_a_scoped_recall_too(chat, monkeypatch):
     ctx = _ctx(monkeypatch, exclude_session=9)
     Q._src_chat(ctx)
-    assert ctx.used == ["chat"] and chat["exclude"] == 9, \
+    assert ctx.used == ["chat"]
+    assert chat["exclude"] == 9, \
         "and the live turn is not recalled as prior chat"
 
 
@@ -390,7 +401,7 @@ def test_chat_recall_can_be_switched_off_for_scoped_calls(chat, monkeypatch):
 # ─── fusing the sources ────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def fuse(monkeypatch):
     import aiforge_core.memory.unified_query as pkg
     state: dict = {"reranked": None}
@@ -415,7 +426,8 @@ def test_the_ranked_view_keeps_what_dedup_collapses(fuse, monkeypatch):
     ctx.raw_hits = [{"text": "same", "score": 0.9, "source": "memory"},
                     {"text": "same", "score": 0.5, "source": "keyword"}]
     top, ranked = Q._fuse_and_rank(ctx)
-    assert len(top) == 1 and len(ranked) == 2
+    assert len(top) == 1
+    assert len(ranked) == 2
 
 
 def test_the_hits_come_back_in_score_order(fuse, monkeypatch):
@@ -429,7 +441,8 @@ def test_the_answer_is_limited(fuse, monkeypatch):
     ctx = _ctx(monkeypatch, limit=2)
     ctx.raw_hits = [{"text": f"h{i}", "score": i / 10} for i in range(6)]
     top, ranked = Q._fuse_and_rank(ctx)
-    assert len(top) == 2 and len(ranked) == 6
+    assert len(top) == 2
+    assert len(ranked) == 6
 
 
 def test_a_reranker_that_answers_is_recorded(fuse, monkeypatch):
@@ -437,7 +450,8 @@ def test_a_reranker_that_answers_is_recorded(fuse, monkeypatch):
     ctx = _ctx(monkeypatch)
     ctx.raw_hits = [{"text": "a", "score": 0.2}]
     top, _ = Q._fuse_and_rank(ctx)
-    assert top[0]["text"] == "best" and "reranker" in ctx.used
+    assert top[0]["text"] == "best"
+    assert "reranker" in ctx.used
 
 
 def test_every_ranking_stage_soft_fails(fuse, monkeypatch):
@@ -449,13 +463,14 @@ def test_every_ranking_stage_soft_fails(fuse, monkeypatch):
     ctx = _ctx(monkeypatch)
     ctx.raw_hits = [{"text": "a", "score": 0.5}]
     top, _ = Q._fuse_and_rank(ctx)
-    assert [h["text"] for h in top] == ["a"] and len(ctx.errors) == 3
+    assert [h["text"] for h in top] == ["a"]
+    assert len(ctx.errors) == 3
 
 
 # ─── following the links ───────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def links(monkeypatch):
     from aiforge_core.memory import md_store
     state: dict = {"linked": [{"text": "the neighbour brief", "source": "b.md",
@@ -469,7 +484,8 @@ def links(monkeypatch):
 def test_a_hits_neighbours_come_with_it(links, monkeypatch):
     add = Q._linked_additions(_ctx(monkeypatch), [{"source": "a.md",
                                                    "text": "the hit"}])
-    assert add[0]["channel"] == "linked" and add[0]["linked"] is True
+    assert add[0]["channel"] == "linked"
+    assert add[0]["linked"] is True
     assert add[0]["source_uri"] == "linked://b.md"
 
 
@@ -494,7 +510,8 @@ def test_a_broken_expansion_never_breaks_recall(links, monkeypatch):
                         lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
     ctx = _ctx(monkeypatch)
     assert Q._linked_additions(ctx, [{"source": "a.md"}]) == []
-    assert ctx.errors and ctx.errors[0].startswith("linked:")
+    assert ctx.errors
+    assert ctx.errors[0].startswith("linked:")
 
 
 # ─── rendering for a prompt ────────────────────────────────────────────
@@ -524,13 +541,14 @@ def test_an_unscorable_hit_still_renders():
 
 def test_a_long_hit_is_trimmed_onto_one_line():
     out = Q.render({"hits": [{"text": "a\nb" + "z" * 400}]})
-    assert "\n" not in out.split("1. ")[1] and len(out.split("] ")[1]) <= 300
+    assert "\n" not in out.split("1. ")[1]
+    assert len(out.split("] ")[1]) <= 300
 
 
 # ─── the whole query ───────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def whole(monkeypatch, fuse):
     import aiforge_core.memory.unified_query as pkg
     monkeypatch.setattr(pkg, "_resolve_weights",
@@ -556,8 +574,10 @@ def test_a_query_returns_hits_sources_and_the_ranked_view(whole, monkeypatch):
                             {"text": "a fact", "score": 0.9,
                              "source": "memory"}) or ctx.used.append("memory"),))
     out = Q.query("how does sync work", repo="AIForgeCrew")
-    assert out["hits"][0]["text"] == "a fact" and out["used_sources"] == ["memory"]
-    assert out["ranked"] and out["query"] == "how does sync work"
+    assert out["hits"][0]["text"] == "a fact"
+    assert out["used_sources"] == ["memory"]
+    assert out["ranked"]
+    assert out["query"] == "how does sync work"
 
 
 def test_the_current_session_is_excluded_by_either_name(whole, monkeypatch):

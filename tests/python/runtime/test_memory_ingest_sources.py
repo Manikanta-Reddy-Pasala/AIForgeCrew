@@ -27,7 +27,7 @@ import pytest
 from aiforge_core.runtime import memory_ingest as I
 
 
-@pytest.fixture()
+@pytest.fixture
 def written(monkeypatch):
     """Capture what would be written into the store."""
     rows: list = []
@@ -38,7 +38,7 @@ def written(monkeypatch):
     return rows
 
 
-@pytest.fixture()
+@pytest.fixture
 def repo(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("def main():\n    return 1\n")
@@ -96,7 +96,8 @@ def test_a_file_that_vanished_is_skipped(tmp_path):
 
 def test_every_chunk_names_the_file_it_came_from(repo):
     chunks = I._collect_chunks(repo, {".py"})
-    assert chunks and all(t.startswith("# src/app.py") for t, _ in chunks)
+    assert chunks
+    assert all(t.startswith("# src/app.py") for t, _ in chunks)
     assert chunks[0][1] == "src/app.py"
 
 
@@ -111,7 +112,8 @@ def test_unreadable_files_do_not_stop_the_walk(repo, monkeypatch):
     monkeypatch.setattr(I, "_read_source",
                         lambda f: None if f.name == "app.py" else "text")
     refs = {ref for _, ref in I._collect_chunks(repo, {".py", ".md"})}
-    assert "src/app.py" not in refs and "README.md" in refs
+    assert "src/app.py" not in refs
+    assert "README.md" in refs
 
 
 # ─── embedding in batches ──────────────────────────────────────────────
@@ -123,7 +125,8 @@ def test_a_batch_is_embedded_in_one_round_trip(monkeypatch):
     monkeypatch.setattr(embed, "embed_batch",
                         lambda texts: seen.append(texts) or [[0.1], [0.2]])
     out = I._embed_batch_vecs([("a", "r1"), ("b", "r2")])
-    assert out == [[0.1], [0.2]] and seen == [["a", "b"]]
+    assert out == [[0.1], [0.2]]
+    assert seen == [["a", "b"]]
 
 
 def test_a_sidecar_hiccup_falls_back_to_per_write_embedding(monkeypatch):
@@ -138,14 +141,16 @@ def test_the_tree_is_written_with_its_vectors(repo, written, monkeypatch):
     monkeypatch.setattr(I, "_embed_batch_vecs",
                         lambda batch: [[0.5]] * len(batch))
     n = I._ingest_tree(repo, repo="proj", exts={".py"}, kind="code")
-    assert n == len(written) and written[0]["vec"] == [0.5]
-    assert written[0]["kind"] == "code" and written[0]["repo"] == "proj"
+    assert n == len(written)
+    assert written[0]["vec"] == [0.5]
+    assert written[0]["kind"] == "code"
+    assert written[0]["repo"] == "proj"
 
 
 # ─── the layered repo index ────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def layers(monkeypatch):
     state: dict = {"code": 3, "doc": 2}
 
@@ -160,7 +165,9 @@ def layers(monkeypatch):
 
 def test_both_layers_contribute_to_the_index(layers, repo):
     res = I._index_repo_full(repo, "proj")
-    assert res["units"] == 5 and res["code_units"] == 3 and res["doc_units"] == 2
+    assert res["units"] == 5
+    assert res["code_units"] == 3
+    assert res["doc_units"] == 2
     assert res["layers"] == {"code_chunks": "ok", "doc_chunks": "ok"}
     assert res["error"] is None
 
@@ -168,14 +175,16 @@ def test_both_layers_contribute_to_the_index(layers, repo):
 def test_one_broken_layer_does_not_lose_the_other(layers, repo):
     layers["code"] = RuntimeError("tree-sitter blew up")
     res = I._index_repo_full(repo, "proj")
-    assert res["units"] == 2 and res["error"] is None
+    assert res["units"] == 2
+    assert res["error"] is None
     assert res["layers"]["code_chunks"].startswith("error:")
 
 
 def test_a_layer_can_be_switched_off(layers, repo, monkeypatch):
     monkeypatch.setenv("AIFORGE_INDEX_DOCS", "0")
     res = I._index_repo_full(repo, "proj")
-    assert res["doc_units"] == 0 and res["layers"]["doc_chunks"] == I._SKIP_DISABLED
+    assert res["doc_units"] == 0
+    assert res["layers"]["doc_chunks"] == I._SKIP_DISABLED
 
 
 def test_an_index_that_found_nothing_names_the_path_it_looked_at(layers, repo):
@@ -183,7 +192,8 @@ def test_an_index_that_found_nothing_names_the_path_it_looked_at(layers, repo):
     not what the walker resolved."""
     layers["code"] = layers["doc"] = 0
     res = I._index_repo_full(repo, "proj")
-    assert str(repo.resolve()) in res["error"] and "/workspace" in res["error"]
+    assert str(repo.resolve()) in res["error"]
+    assert "/workspace" in res["error"]
     assert res["layers"]["code_chunks"] == "skip:no_files"
 
 
@@ -201,7 +211,7 @@ def test_an_empty_walk_after_a_layer_error_is_not_a_path_problem(repo):
 # ─── the four source kinds ─────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def ingest(monkeypatch):
     state: dict = {"full": {"units": 7, "error": None}, "tree": 4, "url": "text"}
     monkeypatch.setattr(I, "_index_repo_full", lambda root, repo: state["full"])
@@ -226,7 +236,8 @@ def test_a_single_file_is_chunked_as_a_document(written, tmp_path):
     p = tmp_path / "notes.md"
     p.write_text("some notes")
     res = I.ingest_source({"kind": "file", "name": "proj", "location": str(p)})
-    assert res["units"] == 1 and written[0]["ref"] == "notes.md"
+    assert res["units"] == 1
+    assert written[0]["ref"] == "notes.md"
     assert written[0]["text"].startswith("# notes.md")
 
 
@@ -234,7 +245,8 @@ def test_a_url_is_fetched_and_chunked(ingest, written):
     ingest["url"] = "the page text"
     res = I.ingest_source({"kind": "url", "name": "proj",
                            "location": "https://x.dev/doc"})
-    assert res["units"] == 1 and written[0]["ref"] == "https://x.dev/doc"
+    assert res["units"] == 1
+    assert written[0]["ref"] == "https://x.dev/doc"
 
 
 @pytest.mark.parametrize("kind,loc,msg", [
@@ -276,7 +288,7 @@ def test_the_display_suffix_is_stripped_off_the_repo_key(ingest, repo,
 # ─── fetching a URL safely ─────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def url(monkeypatch):
     import urllib.request
     state: dict = {"body": "<p>hello <b>world</b></p>", "final": None,
@@ -307,7 +319,8 @@ def url(monkeypatch):
 
 
 def test_the_markup_is_stripped_to_text(url):
-    assert "hello" in I._fetch_url("https://x.dev") and "<b>" not in \
+    assert "hello" in I._fetch_url("https://x.dev")
+    assert "<b>" not in \
         I._fetch_url("https://x.dev")
 
 
@@ -344,7 +357,7 @@ def test_a_dns_failure_is_left_to_the_fetch_to_surface(url, monkeypatch):
 # ─── the background index run ──────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def runner(monkeypatch):
     from aiforge_core.runtime import memory_sources as ms
     state: dict = {"source": {"id": 1, "kind": "repo", "name": "proj",
@@ -380,7 +393,8 @@ def test_a_layer_that_errored_is_never_a_clean_done(runner):
                                    "doc_chunks": "error:boom"}}
     I.run_index(1)
     status, kw = runner["status"][1]
-    assert status == "partial" and "doc_chunks=error:boom" in kw["error"]
+    assert status == "partial"
+    assert "doc_chunks=error:boom" in kw["error"]
 
 
 def test_a_failed_index_is_marked_with_its_error(runner):
@@ -424,13 +438,14 @@ def test_a_long_ingest_heartbeats_its_lease(runner, monkeypatch):
                         lambda target=None, name=None, daemon=None:
                         pytypes.SimpleNamespace(start=target))
     I.run_index(1)
-    assert runner["touched"] == 2 and beats[0] == 15
+    assert runner["touched"] == 2
+    assert beats[0] == 15
 
 
 # ─── the daily sweep ───────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def sweep(monkeypatch):
     from aiforge_core.indexing import merkle
     from aiforge_core.runtime import memory_sources as ms
@@ -455,7 +470,8 @@ def sweep(monkeypatch):
 
 def test_only_repos_and_doc_folders_are_swept(sweep):
     out = I.reindex_all()
-    assert out["total"] == 2 and sweep["indexed"] == [1, 2]
+    assert out["total"] == 2
+    assert sweep["indexed"] == [1, 2]
 
 
 def test_an_unchanged_repo_is_skipped(sweep):
@@ -463,13 +479,15 @@ def test_an_unchanged_repo_is_skipped(sweep):
     pure waste."""
     sweep["changed"]["/a"] = False
     out = I.reindex_all()
-    assert out["skipped"] == 1 and sweep["indexed"] == [2]
+    assert out["skipped"] == 1
+    assert sweep["indexed"] == [2]
 
 
 def test_force_rebuilds_everything(sweep):
     sweep["changed"] = {"/a": False, "/b": False}
     out = I.reindex_all(force=True)
-    assert out["indexed"] == 2 and out["skipped"] == 0
+    assert out["indexed"] == 2
+    assert out["skipped"] == 0
 
 
 def test_a_repo_never_indexed_before_is_always_indexed(sweep):
@@ -497,7 +515,8 @@ def test_one_bad_repo_never_stops_the_sweep(sweep, monkeypatch):
         sweep["indexed"].append(sid)
     monkeypatch.setattr(I, "run_index", _run)
     out = I.reindex_all()
-    assert out["indexed"] == 1 and out["errors"] == [{"id": 1,
+    assert out["indexed"] == 1
+    assert out["errors"] == [{"id": 1,
                                                       "error": "disk full"}]
 
 

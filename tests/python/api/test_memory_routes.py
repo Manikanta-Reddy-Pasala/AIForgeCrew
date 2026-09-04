@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from aiforge_core.api.routes import memory as mem
 
 
-@pytest.fixture()
+@pytest.fixture
 def client():
     app = FastAPI()
     app.include_router(mem.router)
@@ -43,7 +43,8 @@ def test_stats_report_the_embedded_backend(client, monkeypatch):
                         lambda: {"total": 7, "by_kind": {"learning": 5, "note": 2}})
     monkeypatch.delenv("AIFORGE_OKR_DAG", raising=False)
     body = client.get("/api/memory/stats").json()
-    assert body["backend"] == "sqlite" and body["total"] == 7
+    assert body["backend"] == "sqlite"
+    assert body["total"] == 7
     assert {w["wing"]: w["n"] for w in body["wings"]} == {"learning": 5, "note": 2}
     assert body["okr_dag"] is False
 
@@ -72,7 +73,7 @@ def test_hits_are_bucketed_by_origin(hit, origin):
     assert mem._search_origin(hit) == origin
 
 
-@pytest.fixture()
+@pytest.fixture
 def search(monkeypatch):
     from aiforge_core.memory import unified_query
     state: dict = {}
@@ -92,10 +93,12 @@ def test_search_returns_both_groups_and_a_flat_list(client, search):
                    {"channel": "keyword", "text": "a", "score": 0.9}],
     }
     body = client.get("/api/memory/search?q=lru").json()
-    assert body["query"] == "lru" and body["used_sources"] == ["md"]
+    assert body["query"] == "lru"
+    assert body["used_sources"] == ["md"]
     assert len(body["hits"]) == 1
     # the SAME brief appears in both buckets — overlap is expected
-    assert len(body["groups"]["vector"]) == 1 and len(body["groups"]["md"]) == 1
+    assert len(body["groups"]["vector"]) == 1
+    assert len(body["groups"]["md"]) == 1
     assert body["hits"][0]["origin"] == "vector"
 
 
@@ -122,7 +125,8 @@ def test_a_row_carries_its_metadata_and_is_text_capped(client, search):
     row = client.get("/api/memory/search?q=lru").json()["hits"][0]
     assert len(row["text"]) == 800
     assert row["metadata"] == {"ticket": "ONE-1", "repo": "app"}
-    assert row["wing"] == "learning" and row["linked"] is True
+    assert row["wing"] == "learning"
+    assert row["linked"] is True
 
 
 def test_ranked_falls_back_to_hits(client, search):
@@ -206,7 +210,7 @@ def test_legacy_briefs_are_tidied(client, monkeypatch):
 # ─── compaction ────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def compact(monkeypatch):
     from aiforge_core.memory import md_store
     seen: dict = {}
@@ -225,7 +229,8 @@ def test_a_plain_compact_also_runs_the_cross_brief_rules(client, compact):
     body = client.post("/api/memory/files/compact").json()
     assert body["files_in"] == 4
     assert body["rules"] == {"merged": 1, "role": "learner"}
-    assert compact["group_by"] == "topic" and compact["summarize"] is True
+    assert compact["group_by"] == "topic"
+    assert compact["summarize"] is True
 
 
 def test_a_dry_run_never_applies_the_rules(client, compact, monkeypatch):
@@ -261,7 +266,7 @@ def test_dedupe_delegates_to_the_migration(client, monkeypatch):
 # ─── compact-all (background) ──────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def recompact(monkeypatch):
     """Run the heavy pass inline so the progress plumbing is observable."""
     from aiforge_core.memory import migrations
@@ -284,7 +289,8 @@ def test_compact_all_runs_in_the_background_and_reports_progress(client, recompa
     assert client.post("/api/memory/compact-all").json() == {"ok": True,
                                                              "started": True}
     body = client.get("/api/memory/compact-all/status").json()
-    assert body["done"] is True and body["running"] is False
+    assert body["done"] is True
+    assert body["running"] is False
     assert body["steps_done"] == ["topic"]
     assert body["result"] == {"ok": True}
     assert body["total_steps"] == 15
@@ -293,14 +299,16 @@ def test_compact_all_runs_in_the_background_and_reports_progress(client, recompa
 def test_a_second_request_does_not_start_a_second_pass(client, recompact):
     mem._compact_all_state.update(running=True, current="topic")
     body = client.post("/api/memory/compact-all").json()
-    assert body["already_running"] is True and body["current"] == "topic"
+    assert body["already_running"] is True
+    assert body["current"] == "topic"
 
 
 def test_a_crash_is_surfaced_in_the_status(client, recompact):
     recompact["boom"] = True
     client.post("/api/memory/compact-all")
     body = client.get("/api/memory/compact-all/status").json()
-    assert body["error"] == "no llm" and body["done"] is True
+    assert body["error"] == "no llm"
+    assert body["done"] is True
 
 
 def test_the_status_of_an_idle_run(client):
@@ -325,7 +333,8 @@ def test_the_graph_returns_previews_not_full_bodies(client, monkeypatch):
     monkeypatch.setattr(okf, "build", lambda force=False: _G())
     monkeypatch.setattr(okf, "get_active", lambda: "kr-1")
     body = client.get("/api/memory/okf").json()
-    assert body["counts"] == {"learning": 1} and body["active_kr"] == "kr-1"
+    assert body["counts"] == {"learning": 1}
+    assert body["active_kr"] == "kr-1"
     assert len(body["nodes"][0]["preview"]) == 200
     assert body["nodes"][0]["title"] == "T"
 
@@ -364,7 +373,7 @@ def test_the_graph_is_seeded_from_the_briefs(client, monkeypatch):
 # ─── sources + indexing ────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def sources(monkeypatch):
     from aiforge_core.runtime import memory_sources as ms
     state: dict = {"rows": [{"id": 1, "kind": "repo"}], "spawned": [],
@@ -389,14 +398,17 @@ def test_sources_are_listed(client, sources):
 def test_a_repo_source_starts_indexing_immediately(client, sources):
     r = client.post("/api/memory/sources",
                     json={"kind": "repo", "location": "/repo"})
-    assert r.status_code == 201 and r.json()["status"] == "indexing"
-    assert sources["spawned"] == [2] and sources["status"] == [(2, "indexing")]
+    assert r.status_code == 201
+    assert r.json()["status"] == "indexing"
+    assert sources["spawned"] == [2]
+    assert sources["status"] == [(2, "indexing")]
 
 
 def test_a_file_source_stays_manual(client, sources):
     r = client.post("/api/memory/sources",
                     json={"kind": "file", "location": "/tmp/a.txt"})
-    assert r.status_code == 201 and "status" not in r.json()
+    assert r.status_code == 201
+    assert "status" not in r.json()
     assert sources["spawned"] == []
 
 
@@ -405,7 +417,8 @@ def test_an_invalid_source_is_a_400(client, sources, monkeypatch):
     monkeypatch.setattr(ms, "create",
                         lambda *a: (_ for _ in ()).throw(ValueError("bad kind")))
     r = client.post("/api/memory/sources", json={"kind": "nope", "location": "x"})
-    assert r.status_code == 400 and "bad kind" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "bad kind" in r.json()["detail"]
 
 
 def test_indexing_an_existing_source(client, sources):
@@ -426,7 +439,8 @@ def test_an_upload_is_saved_and_registered(client, sources, monkeypatch, tmp_pat
     monkeypatch.setattr(mem, "config_dir", lambda: tmp_path)
     r = client.post("/api/memory/sources/upload",
                     files={"file": ("notes.txt", b"hello")})
-    assert r.status_code == 201 and r.json()["kind"] == "file"
+    assert r.status_code == 201
+    assert r.json()["kind"] == "file"
     assert (tmp_path / "memory-files" / "notes.txt").read_bytes() == b"hello"
 
 
@@ -458,7 +472,8 @@ def test_indexing_runs_in_a_separate_process(monkeypatch):
         return object()
     monkeypatch.setattr(bg, "spawn", _spawn)
     mem._spawn_index(7)
-    assert seen["kind"] == "process" and seen["argv"][-1] == "7"
+    assert seen["kind"] == "process"
+    assert seen["argv"][-1] == "7"
     assert "aiforge_core.runtime.memory_ingest" in seen["argv"]
 
 
@@ -540,7 +555,8 @@ def test_clearing_a_store_requires_confirmation(client, monkeypatch):
     monkeypatch.setattr(admin, "clear_store",
                         lambda store: pytest.fail("cleared without confirm"))
     r = client.post("/api/memory/clear/sqlite", json={"confirm": False})
-    assert r.status_code == 400 and "confirm=true" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "confirm=true" in r.json()["detail"]
 
 
 def test_a_confirmed_clear_runs(client, monkeypatch):

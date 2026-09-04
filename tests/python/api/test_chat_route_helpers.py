@@ -29,7 +29,7 @@ def _drain(gen):
 # ─── stale note curation ───────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def curator(monkeypatch):
     from aiforge_core.runtime import note_curator as nc
     state: dict = {"stale": "/ctx/ONE-7.md", "result": None, "calls": []}
@@ -48,7 +48,8 @@ def test_a_note_that_actually_drifted_is_reported(curator):
     curator["result"] = {"ok": True, "changes": ["status: open → done"]}
     evs = _drain(C._note_staleness_notice("/repo"))
     assert evs[0]["role"] == "curator"
-    assert "ONE-7.md" in evs[0]["text"] and "status: open → done" in evs[0]["text"]
+    assert "ONE-7.md" in evs[0]["text"]
+    assert "status: open → done" in evs[0]["text"]
 
 
 def test_a_silent_freshness_bump_adds_no_chat_noise(curator):
@@ -78,7 +79,7 @@ def test_the_whole_pass_fails_open(monkeypatch):
 # ─── the 3-agent pipeline route ────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def pp(monkeypatch):
     """The pipeline module, stubbed: enhancer → architect → planner."""
     state: dict = {"files": ["a.py", "b.py"], "subs": [{"slug": "s1"},
@@ -179,13 +180,14 @@ def test_best_of_n_marks_the_run_unsteerable(pp, tmp_path, monkeypatch):
     evs = _drain(C._pipeline_route(pp["ns"], "build", str(tmp_path), 9, [],
                                    lambda s: s, path, 0.0, {}))
     assert seen == {"sid": 9, "val": False}
-    assert path["parallel"] is True and evs[-1] == {"type": "done"}
+    assert path["parallel"] is True
+    assert evs[-1] == {"type": "done"}
 
 
 # ─── the doc / analysis route ──────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def analysis(monkeypatch):
     from aiforge_core.runtime import analysis_pipeline as ap
     state: dict = {"fan": (False, [], []), "plan": (False, [], []), "seen": {}}
@@ -224,7 +226,8 @@ def test_a_multi_repo_analysis_fans_out_one_agent_per_repo(analysis):
     analysis["fan"] = (True, ["/a", "/b"], ["auth"])
     pctx: dict = {}
     evs = _doc(pctx)
-    assert evs == [{"type": "step", "text": "fan"}] and pctx["done"] is True
+    assert evs == [{"type": "step", "text": "fan"}]
+    assert pctx["done"] is True
     assert analysis["seen"]["repos"] == ["/a", "/b"]
 
 
@@ -233,7 +236,8 @@ def test_one_repo_naming_many_files_is_planned_into_bounded_groups(analysis):
     analysis["plan"] = (True, [{"files": ["a", "b"]}, {"files": ["c"]}], [])
     pctx: dict = {}
     evs = _doc(pctx)
-    assert "3 files" in evs[0]["text"] and "2 bounded" in evs[0]["text"]
+    assert "3 files" in evs[0]["text"]
+    assert "2 bounded" in evs[0]["text"]
     assert evs[-1] == {"type": "step", "text": "planned"}
     assert pctx["done"] is True
 
@@ -241,7 +245,8 @@ def test_one_repo_naming_many_files_is_planned_into_bounded_groups(analysis):
 def test_anything_else_goes_to_the_single_research_agent(analysis):
     pctx: dict = {}
     evs = _doc(pctx)
-    assert "single research agent" in evs[0]["text"] and "done" not in pctx
+    assert "single research agent" in evs[0]["text"]
+    assert "done" not in pctx
 
 
 def test_a_probe_that_blows_up_never_breaks_routing(analysis):
@@ -261,7 +266,7 @@ def _skip(**kw):
     return C._should_skip_enhance(**args)
 
 
-@pytest.fixture()
+@pytest.fixture
 def router(monkeypatch):
     from aiforge_core.runtime import turn_router as tr
     state: dict = {"followup": True, "cls": "simple"}
@@ -314,7 +319,7 @@ def test_a_broken_router_module_never_blocks_the_turn(monkeypatch):
 # ─── plan mode ─────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def plan_agent(monkeypatch):
     import aiforge_core.runtime.chat_agent as ca
     state: dict = {"events": [{"type": "step"}, {"type": "done"}], "kw": {}}
@@ -365,7 +370,8 @@ def test_an_agent_that_never_finishes_still_yields_the_plan(pp, plan_agent):
 def test_quick_mode_caps_the_plan_agents_steps(pp, plan_agent, monkeypatch):
     monkeypatch.setenv("AIFORGE_CHAT_QUICK_STEPS", "3")
     _plan_mode(pp, quick=True)
-    assert plan_agent["kw"]["max_steps"] == 3 and plan_agent["kw"]["mode"] == "plan"
+    assert plan_agent["kw"]["max_steps"] == 3
+    assert plan_agent["kw"]["mode"] == "plan"
 
 
 def test_a_normal_turn_runs_the_open_loop(pp, plan_agent):
@@ -376,7 +382,7 @@ def test_a_normal_turn_runs_the_open_loop(pp, plan_agent):
 # ─── gathering the routing inputs ──────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def decide(monkeypatch):
     from aiforge_core.runtime import chat_router as cr
     seen: dict = {}
@@ -402,8 +408,10 @@ def test_the_gathered_inputs_reach_the_pure_router(pp, decide, monkeypatch):
     monkeypatch.setattr(tr, "classify_task",
                         lambda p, history=None, cwd=None: "code_build")
     assert _decide(pp) == "decision"
-    assert decide["psub_on"] is True and decide["greenfield"] is False
-    assert decide["fresh"] is True and decide["cat"] == "code_build"
+    assert decide["psub_on"] is True
+    assert decide["greenfield"] is False
+    assert decide["fresh"] is True
+    assert decide["cat"] == "code_build"
 
 
 def test_a_follow_up_is_not_re_classified(pp, decide, monkeypatch):
@@ -413,7 +421,8 @@ def test_a_follow_up_is_not_re_classified(pp, decide, monkeypatch):
     monkeypatch.setattr(tr, "classify_task",
                         lambda *a, **k: pytest.fail("classified a follow-up"))
     _decide(pp)
-    assert decide["fresh"] is False and decide["cat"] is None
+    assert decide["fresh"] is False
+    assert decide["cat"] is None
 
 
 def test_a_dead_classifier_routes_on_without_a_class(pp, decide, monkeypatch):
@@ -435,7 +444,8 @@ def test_each_probe_fails_safe(pp, decide, monkeypatch):
                         lambda h: (_ for _ in ()).throw(RuntimeError("x")))
     _decide(pp, parallel_team=True)
     assert decide["psub_on"] is True   # falls back to the explicit pick
-    assert decide["greenfield"] is True and decide["fresh"] is True
+    assert decide["greenfield"] is True
+    assert decide["fresh"] is True
 
 
 def test_pipeline_approvals_force_the_gated_sequential_path(pp, decide,
@@ -470,7 +480,7 @@ def test_auto_escalation_can_be_switched_off(pp, decide, monkeypatch, val,
 # ─── rule / memory capture ─────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def capture(monkeypatch):
     from aiforge_core.runtime import rule_capture as rc
     state: dict = {

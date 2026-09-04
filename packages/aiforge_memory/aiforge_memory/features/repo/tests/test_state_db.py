@@ -8,7 +8,7 @@ import pytest
 from aiforge_memory.core import state as sdb
 
 
-@pytest.fixture()
+@pytest.fixture
 def db(tmp_path: Path):
     path = tmp_path / "codemem.state.db"
     conn = sdb.open_db(path)

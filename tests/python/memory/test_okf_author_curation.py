@@ -76,7 +76,9 @@ def _plan(nodes, decisions, repos={"AIForgeCrew"}):
 
 def test_a_real_global_rule_is_kept():
     plan = _plan([_learning("L1", body="always run tests")], [_dec("L1")])
-    assert plan["keep"] == ["L1"] and not plan["move"] and not plan["delete"]
+    assert plan["keep"] == ["L1"]
+    assert not plan["move"]
+    assert not plan["delete"]
 
 
 def test_a_project_decision_moves_it_to_that_repo():
@@ -87,7 +89,8 @@ def test_a_project_decision_moves_it_to_that_repo():
 def test_a_repo_the_whitelist_does_not_know_is_not_trusted():
     """The model can name anything; only the known-repo list decides."""
     plan = _plan([_learning("L1")], [_dec("L1", "project", "InventedRepo")])
-    assert plan["keep"] == ["L1"] and not plan["move"]
+    assert plan["keep"] == ["L1"]
+    assert not plan["move"]
 
 
 def test_the_name_match_rescues_a_learning_the_model_left_global():
@@ -100,7 +103,8 @@ def test_the_name_match_rescues_a_learning_the_model_left_global():
 def test_noise_is_deleted_without_a_name_rescue():
     plan = _plan([_learning("L1", body="aiforgecrew test artifact")],
                  [_dec("L1", "noise")])
-    assert plan["delete"] == ["L1"] and not plan["move"]
+    assert plan["delete"] == ["L1"]
+    assert not plan["move"]
 
 
 def test_a_node_the_model_never_ruled_on_still_gets_the_name_match():
@@ -111,7 +115,7 @@ def test_a_node_the_model_never_ruled_on_still_gets_the_name_match():
 # ─── batching the model call ───────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def triage(monkeypatch):
     """The structured LLM call, per batch."""
     from aiforge_core.llm import structured
@@ -141,7 +145,8 @@ def test_a_bad_batch_only_loses_its_own_items(triage):
     triage["fail_batch"] = 0
     items = [{"id": f"L{i}"} for i in range(16)]
     out = A._reclassify_decisions(items, "r")
-    assert len(triage["batches"]) == 2 and len(out) == 1
+    assert len(triage["batches"]) == 2
+    assert len(out) == 1
 
 
 def test_the_triage_runs_cold(triage):
@@ -152,7 +157,7 @@ def test_the_triage_runs_cold(triage):
 # ─── applying the plan ─────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def store(monkeypatch, tmp_path):
     from aiforge_core.memory.okf import store as st
     state: dict = {"saved": [], "nodes": [], "scopes": ["AIForgeCrew"],
@@ -228,7 +233,7 @@ def test_a_file_that_will_not_move_is_skipped(store, tmp_path, monkeypatch):
 # ─── the whole triage ──────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def curate(store, monkeypatch):
     state: dict = {"decisions": []}
     monkeypatch.setattr(A, "_reclassify_decisions",
@@ -252,7 +257,8 @@ def test_the_plan_is_carried_out(curate, store):
     curate["decisions"] = [_dec("L1", "project", "AIForgeCrew"),
                            _dec("L2", "noise")]
     res = A.reclassify_global_learnings(["AIForgeCrew"])
-    assert res["moved"] == 1 and res["deleted_to_trash"] == 1
+    assert res["moved"] == 1
+    assert res["deleted_to_trash"] == 1
     assert store["invalidated"] is True, "moved files → stale parse cache"
     assert store["indexed"] is True
 
@@ -261,15 +267,18 @@ def test_a_dry_run_touches_nothing(curate, store):
     store["nodes"] = [_learning("L1", scope="global")]
     curate["decisions"] = [_dec("L1", "project", "AIForgeCrew")]
     res = A.reclassify_global_learnings(["AIForgeCrew"], dry_run=True)
-    assert res["dry_run"] is True and res["move"] == [("L1", "AIForgeCrew")]
-    assert store["saved"] == [] and "indexed" not in store
+    assert res["dry_run"] is True
+    assert res["move"] == [("L1", "AIForgeCrew")]
+    assert store["saved"] == []
+    assert "indexed" not in store
 
 
 def test_no_model_leaves_the_folder_alone(curate, store):
     store["nodes"] = [_learning("L1", scope="global")]
     curate["decisions"] = ImportError("no llm")
     res = A.reclassify_global_learnings(["r"])
-    assert res["ok"] is False and "no llm" in res["error"]
+    assert res["ok"] is False
+    assert "no llm" in res["error"]
     assert store["saved"] == []
 
 
@@ -285,7 +294,8 @@ def test_a_decision_for_an_unknown_node_is_ignored(curate, store):
 def test_a_repo_card_is_one_node_per_workspace(store):
     A.record_repo_profile("AIForgeCrew", stack="python", build="uv sync")
     saved = store["saved"][0]
-    assert saved["id"] == "R-aiforgecrew" and saved["type"] == "repo"
+    assert saved["id"] == "R-aiforgecrew"
+    assert saved["type"] == "repo"
     assert saved["meta"]["scope"] == "repo:AIForgeCrew"
     assert saved["meta"]["build"] == "uv sync"
 
@@ -301,7 +311,8 @@ def test_scalars_overwrite_and_blanks_are_left_alone(store):
                                 "test": "make test"}, "body": "old"}]
     A.record_repo_profile("r", build="ninja", test="")
     meta = store["saved"][0]["meta"]
-    assert meta["build"] == "ninja" and meta["test"] == "make test"
+    assert meta["build"] == "ninja"
+    assert meta["test"] == "make test"
 
 
 def test_list_fields_accrete_instead_of_churning(store):
@@ -341,7 +352,8 @@ def test_a_script_is_recorded_with_how_to_run_it(store):
                         workspace="r")
     assert r["ok"] is True
     meta = store["saved"][0]["meta"]
-    assert meta["lang"] == "shell" and meta["run"] == "./tools/deploy.sh"
+    assert meta["lang"] == "shell"
+    assert meta["run"] == "./tools/deploy.sh"
     assert meta["title"] == "deploy.sh (shell)"
 
 
@@ -366,7 +378,8 @@ def test_a_task_recipe_is_recorded(store):
     A.record_task(title="Add a migration", workspace="r", tags=["db"],
                   body="1. write it")
     saved = store["saved"][0]
-    assert saved["type"] == "task" and saved["meta"]["tags"] == ["db"]
+    assert saved["type"] == "task"
+    assert saved["meta"]["tags"] == ["db"]
     assert saved["body"] == "1. write it"
 
 
@@ -441,7 +454,7 @@ def test_a_project_with_no_learnings_gets_no_card(store, monkeypatch):
 # ─── seeding the graph from the old flat briefs ────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def briefs(monkeypatch, tmp_path):
     from aiforge_core.memory import md_store
     state: dict = {"files": []}
@@ -466,7 +479,8 @@ def test_a_topics_facts_become_one_global_learning(store, briefs, tmp_path,
     saved = store["saved"][0]
     assert saved["meta"]["scope"] == "global", \
         "the LLM classify step sorts these into projects afterwards"
-    assert saved["meta"]["category"] == "deploy" and "ssh nuc" in saved["body"]
+    assert saved["meta"]["category"] == "deploy"
+    assert "ssh nuc" in saved["body"]
 
 
 def test_a_topic_already_in_the_graph_is_skipped(store, briefs, tmp_path,

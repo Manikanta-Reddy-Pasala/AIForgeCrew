@@ -21,7 +21,7 @@ import pytest
 from scripts.runtime import worktree_janitor as J
 
 
-@pytest.fixture()
+@pytest.fixture
 def workspace(tmp_path, monkeypatch):
     """Two repos, each with a worktree per ticket."""
     def _mk(repo: str, *tickets: str):
@@ -37,7 +37,7 @@ def workspace(tmp_path, monkeypatch):
     return tmp_path
 
 
-@pytest.fixture()
+@pytest.fixture
 def store(monkeypatch):
     """Ticket statuses, and a git that reports what it was asked to do."""
     from aiforge_core.tickets import store as st

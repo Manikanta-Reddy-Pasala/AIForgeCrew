@@ -89,7 +89,11 @@ def healthz() -> dict:
     }
 
 
-@app.post("/rerank", response_model=RerankResponse)
+# `response_model=` would only repeat the return annotation below, which
+# FastAPI already reads. The 503 is real and was undeclared: a client
+# reading the schema was told this call cannot fail.
+@app.post("/rerank",
+          responses={503: {"description": "Reranker unavailable"}})
 def rerank(req: RerankRequest) -> RerankResponse:
     if not req.texts:
         return RerankResponse(scores=[])

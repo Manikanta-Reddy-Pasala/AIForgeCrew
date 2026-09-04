@@ -52,7 +52,8 @@ def _unattended(monkeypatch):
 ])
 def test_a_dangerous_command_is_refused_with_nobody_watching(cmd):
     out = _gate("bash", {"cmd": cmd})
-    assert out is not None and out.get("blocked") == "risk", out
+    assert out is not None, "the gate returned nothing at all"
+    assert out.get("blocked") == "risk", out
     assert "no human" in out["error"]
 
 
@@ -135,7 +136,8 @@ def test_the_policy_reports_the_cell_risk_not_the_default_reason():
 def test_a_dangerous_cell_is_refused_with_nobody_watching():
     out = _gate("execute_ipython_cell",
                 {"code": "!dd if=/dev/zero of=/dev/sda"})
-    assert out is not None and out.get("blocked") == "risk", out
+    assert out is not None, "the gate returned nothing at all"
+    assert out.get("blocked") == "risk", out
 
 
 def test_an_ordinary_cell_still_runs_unattended():
@@ -151,7 +153,8 @@ def test_the_kernel_refuses_when_a_sandbox_is_required(monkeypatch):
     monkeypatch.setenv("AIFORGE_SANDBOX_REQUIRED", "1")
     from aiforge_core.runtime.tools import ipython_kernel
     out = ipython_kernel.execute_ipython_cell("print(1)")
-    assert out["ok"] is False and out["error"] == "sandbox_required"
+    assert out["ok"] is False
+    assert out["error"] == "sandbox_required"
 
 
 def test_the_kernel_is_untouched_without_the_requirement(monkeypatch):
@@ -207,4 +210,5 @@ def test_refused_by_whichever_layer_reaches_it_first(cmd):
     The egress gate answers first now; what must never change is that SOMETHING
     refuses them with nobody watching."""
     out = _gate("bash", {"cmd": cmd})
-    assert out is not None and out.get("ok") is False, out
+    assert out is not None, "the gate returned nothing at all"
+    assert out.get("ok") is False, out

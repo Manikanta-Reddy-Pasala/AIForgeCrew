@@ -58,7 +58,8 @@ def test_an_agents_text_is_badged_with_which_agent_said_it():
 def test_a_tool_call_carries_its_name_and_arguments():
     fc = pytypes.SimpleNamespace(name="file_write", args={"path": "a.py"})
     evs = P.map_event(_event("doer", [_part(fc=fc)]))
-    assert evs[0]["type"] == "tool" and evs[0]["name"] == "file_write"
+    assert evs[0]["type"] == "tool"
+    assert evs[0]["name"] == "file_write"
     assert evs[0]["args"] == {"path": "a.py"}
 
 
@@ -161,8 +162,10 @@ def test_a_stop_while_waiting_persists_a_stopped_turn(monkeypatch):
                         lambda **kw: persisted.append(kw))
     q: queue.Queue = queue.Queue()
     assert P._acquire_team_run_lock(7, "/repo", "build it", 0.0, q) is None
-    assert persisted[0]["cancelled"] is True and persisted[0]["team"] is True
-    assert q.get()["stopped"] is True and q.get() is P._SENTINEL
+    assert persisted[0]["cancelled"] is True
+    assert persisted[0]["team"] is True
+    assert q.get()["stopped"] is True
+    assert q.get() is P._SENTINEL
 
 
 def test_a_persist_failure_does_not_wedge_the_stop(monkeypatch):
@@ -184,14 +187,16 @@ def test_prior_turns_are_replayed_for_a_follow_up():
     out = P._history_preamble([{"role": "user", "content": "build a lexer"},
                                {"role": "assistant", "content": "done"},
                                {"role": "user", "content": "and a parser"}])
-    assert "User: build a lexer" in out and "Assistant: done" in out
+    assert "User: build a lexer" in out
+    assert "Assistant: done" in out
     assert "and a parser" not in out, "the current message is not prior context"
 
 
 def test_the_preamble_is_bounded():
     history = [{"role": "user", "content": "x" * 2000}] * 30
     out = P._history_preamble(history + [{"role": "user", "content": "now"}])
-    assert out.count("User:") == 12 and "x" * 801 not in out
+    assert out.count("User:") == 12
+    assert "x" * 801 not in out
 
 
 @pytest.mark.parametrize("history", [None, [], [{"role": "user",
@@ -232,7 +237,8 @@ def test_a_planner_decomposition_becomes_a_live_panel(monkeypatch):
     ev = P._planner_subtask_event("1. lexer 2. parser")
     assert ev["items"][0] == {"slug": "lexer", "goal": "tokenise",
                               "status": "pending"}
-    assert ev["items"][1]["slug"] == "sub-2" and ev["items"][1]["goal"] == "parse it"
+    assert ev["items"][1]["slug"] == "sub-2"
+    assert ev["items"][1]["goal"] == "parse it"
 
 
 def test_a_plan_with_no_subtasks_emits_no_panel(monkeypatch):
@@ -276,7 +282,8 @@ def test_a_run_with_nothing_to_say_still_says_something():
 
 def test_a_blocked_run_asks_for_what_it_needs():
     msg = P._promote_team_answer({"doer": "x"}, {}, "", "no target repo named")
-    assert "no target repo named" in msg and msg.startswith("I need more detail")
+    assert "no target repo named" in msg
+    assert msg.startswith("I need more detail")
 
 
 # ─── the enhancer's stop sentinel ──────────────────────────────────────
@@ -326,7 +333,8 @@ def test_an_event_reaches_the_client_and_the_transcript():
     by_role: dict = {}
     ev = {"type": "thought", "role": "doer", "text": "editing app.py"}
     assert P._process_team_event(ev, q, steps, by_role, _acc()) is None
-    assert q.get() is ev and steps == [ev]
+    assert q.get() is ev
+    assert steps == [ev]
     assert by_role["doer"] == "editing app.py"
 
 
@@ -358,13 +366,14 @@ def test_a_plain_message_is_streamed_but_not_a_step():
     steps: list = []
     P._process_team_event({"type": "message", "text": "done"}, q, steps, {},
                           _acc())
-    assert steps == [] and q.get()["text"] == "done"
+    assert steps == []
+    assert q.get()["text"] == "done"
 
 
 # ─── the answer versus the diff ────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def claim_guard(monkeypatch):
     from aiforge_core.runtime.chat_agent import _context
     state: dict = {"enabled": True, "claims": True}
@@ -515,8 +524,10 @@ def test_the_driver_thread_is_bound_so_stop_can_reach_it(monkeypatch):
                         lambda sid: seen.update(ctx=sid))
     q: queue.Queue = queue.Queue()
     P._bind_team_session(7, q)
-    assert seen["active"] == 7 and seen["steerable"] == (7, True)
-    assert seen["emitter"][0] == 7 and seen["ctx"] == 7
+    assert seen["active"] == 7
+    assert seen["steerable"] == (7, True)
+    assert seen["emitter"][0] == 7
+    assert seen["ctx"] == 7
     assert os.environ["AIFORGE_CURRENT_SESSION"] == "7"
 
 
@@ -534,7 +545,7 @@ def test_a_sessionless_run_only_clears_the_cancel_binding(monkeypatch):
 # ─── the fallback agent ────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def fallback(monkeypatch):
     from aiforge_core.runtime import (
         chat_approve,
@@ -565,7 +576,8 @@ def fallback(monkeypatch):
 
 def test_the_fallback_answers_and_persists_itself(fallback):
     evs = list(P._run_pipeline_fallback("build it", "/repo", 7, 0.0))
-    assert evs[0]["role"] == "fallback" and "lightweight agent" in evs[0]["text"]
+    assert evs[0]["role"] == "fallback"
+    assert "lightweight agent" in evs[0]["text"]
     assert [e["type"] for e in evs[1:]] == ["thought", "message"], \
         "the terminal done belongs to the caller"
     assert fallback["persisted"][0]["final_text"] == "the answer"
@@ -624,7 +636,8 @@ def test_a_finished_run_reconciles_persists_and_clears(monkeypatch):
     P._RUN_LOCK.acquire()
     P._drive_teardown(None, P._run_lock_gen(), None, 7, "/repo", "build",
                       "the answer", [], items, True, 0.0, q)
-    assert q.get()["status"] == "done" and q.get() is P._SENTINEL
+    assert q.get()["status"] == "done"
+    assert q.get() is P._SENTINEL
     assert seen["persisted"]["final_text"] == "the answer"
     assert set(seen["cleared"]) == {"cancel", "approve", "steer"}
     assert not P._RUN_LOCK.locked()
@@ -658,7 +671,8 @@ def test_a_sessionless_run_still_releases_the_lock():
     P._RUN_LOCK.acquire()
     P._drive_teardown(None, P._run_lock_gen(), None, None, "/repo", "x", "",
                       [], None, True, 0.0, q)
-    assert q.get() is P._SENTINEL and not P._RUN_LOCK.locked()
+    assert q.get() is P._SENTINEL
+    assert not P._RUN_LOCK.locked()
 
 
 def test_the_turn_duration_is_measured():

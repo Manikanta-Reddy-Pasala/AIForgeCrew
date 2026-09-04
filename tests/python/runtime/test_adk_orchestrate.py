@@ -64,7 +64,8 @@ def test_attachments_are_listed_by_their_worktree_path():
          "size": 1200},
         "not a dict"]})
     out = orc._attachments_block(t)
-    assert ".aiforge/ticket-files/ONE-1/spec.pdf" in out and "1200 bytes" in out
+    assert ".aiforge/ticket-files/ONE-1/spec.pdf" in out
+    assert "1200 bytes" in out
     assert "file_read" in out
 
 
@@ -79,8 +80,10 @@ def test_skills_and_workflows_are_searched_for_the_ticket(monkeypatch):
     monkeypatch.setattr(workflows, "auto_context", lambda hay, cwd: "WF BLOCK")
     monkeypatch.setattr(workflows, "selected_names", lambda hay, cwd: ["release"])
     prefix, sk, wf = orc._playbook_prefix("fix the parser", "/repo")
-    assert prefix.startswith("WF BLOCK") and "SKILL BLOCK" in prefix
-    assert sk == ["deploy"] and wf == ["release"]
+    assert prefix.startswith("WF BLOCK")
+    assert "SKILL BLOCK" in prefix
+    assert sk == ["deploy"]
+    assert wf == ["release"]
 
 
 def test_a_broken_registry_does_not_stop_the_prompt(monkeypatch):
@@ -107,7 +110,7 @@ def test_nothing_injected_emits_nothing(monkeypatch):
     orc._emit_context_injected(_ticket(), [], [])
 
 
-@pytest.fixture()
+@pytest.fixture
 def vision(monkeypatch):
     import aiforge_core.config.agent_config as ac
     import aiforge_core.runtime.vision as v
@@ -119,7 +122,9 @@ def test_images_are_flagged_for_a_vision_doer(vision):
     t = _ticket(metadata={"attached_files": [
         {"name": "shot.PNG", "path": "/a.png"}, {"name": "spec.pdf", "path": "/b"}]})
     out = orc._vision_block(t)
-    assert "vision-enabled model" in out and "/a.png" in out and "/b" not in out
+    assert "vision-enabled model" in out
+    assert "/a.png" in out
+    assert "/b" not in out
 
 
 def test_a_text_only_doer_gets_no_vision_block(monkeypatch):
@@ -151,7 +156,8 @@ def test_the_seed_prompt_carries_the_ticket_not_the_memory_block(monkeypatch):
     monkeypatch.setattr(orc, "_playbook_prefix", lambda hay, cwd: ("", [], []))
     monkeypatch.setattr(orc, "_emit_context_injected", lambda t, s, w: None)
     out = orc._build_prompt(_ticket(), "MEMORY BLOCK")
-    assert "# Ticket ONE-1" in out and "Fix the parser" in out
+    assert "# Ticket ONE-1" in out
+    assert "Fix the parser" in out
     assert "MEMORY BLOCK" not in out
 
 
@@ -238,7 +244,8 @@ def test_the_enhancer_sentinel_blocks_before_the_planner_runs(monkeypatch):
     monkeypatch.setattr(orc, "_extract_verdict", lambda s: "pass")
     monkeypatch.setattr(orc, "_enhancer_block_reason", lambda s: "too vague")
     v = orc._initial_verdict(_ticket(), {})
-    assert v.outcome == "fail" and v.reason == "too vague"
+    assert v.outcome == "fail"
+    assert v.reason == "too vague"
 
 
 def test_a_normal_run_keeps_its_verdict(monkeypatch):
@@ -316,7 +323,7 @@ def test_partial_work_with_nothing_to_review_stays_blocked(monkeypatch):
 # ─── live verification + merge ─────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def live(monkeypatch):
     state = {"lv": {"ok": True}, "merged": []}
     monkeypatch.setattr(orc, "_run_live_verifier",
@@ -428,7 +435,8 @@ def test_a_ci_error_lands_in_metadata_rather_than_blocking(monkeypatch):
                         lambda url, poll_seconds=None: (_ for _ in ()).throw(
                             RuntimeError("gh rate limited")))
     out = orc._grade_ci({"pr_url": "u"})
-    assert out["ok"] is False and "rate limited" in out["error"]
+    assert out["ok"] is False
+    assert "rate limited" in out["error"]
 
 
 def test_the_pr_is_reviewed_by_a_second_agent(monkeypatch):
@@ -464,8 +472,10 @@ def test_the_status_patch_folds_every_source(monkeypatch):
         {"verdict": "approve", "rationale": "fine", "scope_ok": True,
          "regression_risk": "low"},
         {"ok": True, "rationale": "held up"})
-    assert out["feedback_verdict"] == "pass" and out["pr_url"] == "u"
-    assert out["ci_status"] == "success" and out["review_verdict"] == "approve"
+    assert out["feedback_verdict"] == "pass"
+    assert out["pr_url"] == "u"
+    assert out["ci_status"] == "success"
+    assert out["review_verdict"] == "approve"
     assert out["validator_scope_ok"] is True
     assert out["live_verifier_ok"] is True
     assert out["handled_by"] == "pipeline"
@@ -474,8 +484,10 @@ def test_the_status_patch_folds_every_source(monkeypatch):
 def test_absent_sources_add_no_keys(monkeypatch):
     monkeypatch.setattr(orc, "_extract_verifier", lambda s: None)
     out = orc._status_metadata({}, orc._Verdict("fail", ""), {}, {}, {}, None, None)
-    assert "ci_status" not in out and "review_verdict" not in out
-    assert "validator_verdict" not in out and "live_verifier_ok" not in out
+    assert "ci_status" not in out
+    assert "review_verdict" not in out
+    assert "validator_verdict" not in out
+    assert "live_verifier_ok" not in out
 
 
 def test_a_failed_review_contributes_nothing(monkeypatch):
@@ -644,7 +656,7 @@ def test_a_broken_clarify_gate_never_parks(monkeypatch):
 # ─── the poll loop ─────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def loop(monkeypatch):
     state: dict = {"ticket": _ticket(), "worktree": "/wt", "ran": [],
                    "statuses": [], "parked": False}
@@ -673,7 +685,8 @@ def test_an_empty_queue_returns_false(loop):
 
 def test_a_claimed_ticket_runs_and_restores_the_environment(loop):
     assert orc._process_one_ticket() is True
-    assert loop["ran"] == ["ONE-1"] and loop["restored"] == {"env": "prior"}
+    assert loop["ran"] == ["ONE-1"]
+    assert loop["restored"] == {"env": "prior"}
     assert loop["forced"][-1] is None       # the override never leaks
 
 
@@ -687,7 +700,8 @@ def test_a_ticket_with_no_target_repo_is_blocked(loop):
     loop["worktree"] = ""
     orc._process_one_ticket()
     status, patch = loop["statuses"][0]
-    assert status == "blocked" and "no target repo" in patch["error"]
+    assert status == "blocked"
+    assert "no target repo" in patch["error"]
 
 
 def test_a_crashed_run_rescues_its_partial_work(loop, monkeypatch):
@@ -698,7 +712,8 @@ def test_a_crashed_run_rescues_its_partial_work(loop, monkeypatch):
                         lambda t: {"pr_url": "https://github.com/o/r/pull/9"})
     assert orc._process_one_ticket() is True
     status, patch = loop["statuses"][0]
-    assert status == "blocked" and patch["pr_url"].endswith("/9")
+    assert status == "blocked"
+    assert patch["pr_url"].endswith("/9")
     assert "adk died" in patch["error"]
 
 
@@ -745,7 +760,7 @@ def test_tracebacks_can_be_restored_for_a_novel_failure(monkeypatch, caplog):
 # ─── main ──────────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def entry(monkeypatch):
     from aiforge_core.config import backends
     from aiforge_core.runtime import memory_sources as ms
@@ -761,14 +776,16 @@ def entry(monkeypatch):
 
 
 def test_a_ticket_run_announces_the_backends(entry):
-    assert orc.main() == 0 and entry["boot"] == [1]
+    assert orc.main() == 0
+    assert entry["boot"] == [1]
 
 
 def test_an_idle_poll_backs_off_quietly(entry, monkeypatch):
     entry["processed"] = False
     monkeypatch.setenv("AIFORGE_POLL_IDLE_S", "3")
     assert orc.main() == 0
-    assert entry["boot"] == [] and entry["slept"] == 3
+    assert entry["boot"] == []
+    assert entry["slept"] == 3
 
 
 def test_orphaned_tickets_are_requeued_before_claiming(entry):

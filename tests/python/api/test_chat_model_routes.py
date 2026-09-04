@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 from aiforge_core.api.routes import chat as ch
 
 
-@pytest.fixture()
+@pytest.fixture
 def client():
     app = FastAPI()
     app.include_router(ch.router)
@@ -76,7 +76,8 @@ def test_an_unknown_mode_is_a_400(client, monkeypatch):
                         lambda mode, enabled: (_ for _ in ()).throw(
                             ValueError("unknown mode")))
     r = client.put("/api/chat/approval-settings/nope", json={"enabled": True})
-    assert r.status_code == 400 and "unknown mode" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "unknown mode" in r.json()["detail"]
 
 
 # ─── the thin ask + the deprecated retain ──────────────────────────────
@@ -93,7 +94,8 @@ def test_the_thin_ask_proxies_one_completion(client, monkeypatch):
     monkeypatch.setattr(llm_client, "call_text", _call)
     body = client.post("/api/chat/ask", json={"query": "  how?  "}).json()
     assert body == {"answer": "the answer", "trace": [], "hits": []}
-    assert seen["user"] == "how?" and seen["role"] == "doer"
+    assert seen["user"] == "how?"
+    assert seen["role"] == "doer"
 
 
 def test_an_empty_ask_still_says_something(client, monkeypatch):
@@ -164,7 +166,7 @@ def test_a_catalog_provider_falls_back_to_provider_discovery(monkeypatch, cfg):
 # ─── merging the registry with what is served ──────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def registry(monkeypatch):
     from aiforge_core.config import model_registry
     rows: list = []
@@ -206,15 +208,18 @@ def test_embedding_models_are_never_offered(registry):
 
 def test_served_models_that_were_never_registered_still_appear(registry):
     out = ch._merge_registry_and_served({"loaded-only"}, "http://boxA/v1")
-    assert out[0]["id"] == "loaded-only" and out[0]["active"] is True
+    assert out[0]["id"] == "loaded-only"
+    assert out[0]["active"] is True
 
 
 def test_active_models_sort_first(registry):
     registry.extend([{"model": "zzz", "base_url": ""},
                      {"model": "aaa", "base_url": "http://other/v1"}])
     out = ch._merge_registry_and_served({"zzz"}, "http://boxA/v1")
-    assert out[0]["active"] is True and out[0]["id"] == "zzz"
-    assert out[-1]["id"] == "aaa" and out[-1]["active"] is False
+    assert out[0]["active"] is True
+    assert out[0]["id"] == "zzz"
+    assert out[-1]["id"] == "aaa"
+    assert out[-1]["active"] is False
 
 
 def test_an_unavailable_registry_leaves_the_served_list_standing(monkeypatch):
@@ -241,8 +246,10 @@ def test_the_picker_lists_configured_and_served_models(client, registry,
     monkeypatch.setattr(ch, "_served_model_ids_for_role", lambda role: {"coder"})
     body = client.get("/api/chat/models").json()
     ids = [m["id"] for m in body["models"]]
-    assert "unloaded" in ids and "coder" in ids
-    assert body["current"] == "coder" and body["current_active"] is True
+    assert "unloaded" in ids
+    assert "coder" in ids
+    assert body["current"] == "coder"
+    assert body["current_active"] is True
     assert body["current_base_url"] == "http://boxA:1234/v1"
 
 
@@ -287,7 +294,9 @@ def test_an_explicit_pick_stands_when_the_registry_cannot_confirm_it(monkeypatch
     base, key, tls = ch._endpoint_for_picked_model(
         "coder", {"base_url": "http://boxA/v1", "insecure_tls": True},
         "http://boxC/v1")
-    assert base == "http://boxC/v1" and key is None and tls is True
+    assert base == "http://boxC/v1"
+    assert key is None
+    assert tls is True
 
 
 def test_with_nothing_to_go_on_the_slots_connection_is_kept(monkeypatch):
@@ -297,7 +306,7 @@ def test_with_nothing_to_go_on_the_slots_connection_is_kept(monkeypatch):
         == "http://boxA/v1"
 
 
-@pytest.fixture()
+@pytest.fixture
 def save(monkeypatch):
     saved: list = []
 
@@ -321,7 +330,8 @@ def test_a_pick_applies_to_every_agent_by_default(client, save):
     """Electing a bigger model should change TEAM mode too, not just chat."""
     body = client.put("/api/chat/model", json={"model": "new-model"}).json()
     assert [s["role"] for s in save] == ["chat", "_default"]
-    assert body["applied_to"] == "all agents" and body["active"] is True
+    assert body["applied_to"] == "all agents"
+    assert body["active"] is True
 
 
 def test_a_pick_can_be_scoped_to_chat_only(client, save):
@@ -341,7 +351,8 @@ def test_a_rejected_pick_is_a_400(client, save, monkeypatch):
     monkeypatch.setattr(ch._acfg, "set_role",
                         lambda *a, **k: (_ for _ in ()).throw(ValueError("bad url")))
     r = client.put("/api/chat/model", json={"model": "m"})
-    assert r.status_code == 400 and "bad url" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "bad url" in r.json()["detail"]
 
 
 def test_an_env_pinned_slot_warns_that_the_pick_will_not_apply(client, save,
@@ -355,7 +366,8 @@ def test_an_env_pinned_slot_warns_that_the_pick_will_not_apply(client, save,
 def test_a_pin_matching_the_pick_is_not_a_warning(monkeypatch):
     monkeypatch.setenv("AIFORGE_CHAT_MODEL", "same")
     env, warning = ch._env_pin_warning({"model": "same"}, apply_all=False)
-    assert warning is None and env["model"] == "same"
+    assert warning is None
+    assert env["model"] == "same"
 
 
 def test_the_vision_capability_is_re_identified_after_a_pick(client, save,
@@ -381,7 +393,7 @@ def test_a_broken_vision_probe_does_not_fail_the_pick(client, save, monkeypatch)
 # ─── reloading at a chosen context window ──────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def reload_env(monkeypatch):
     from aiforge_core.runtime import local_starter
     from aiforge_core.runtime import vision_detect
@@ -454,7 +466,7 @@ def test_a_rejected_orchestrator_pick_is_a_400(client, monkeypatch):
 # ─── managed session workspaces ────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def ws_root(monkeypatch, tmp_path):
     root = tmp_path / "chat-workspaces"
     root.mkdir()

@@ -25,7 +25,7 @@ class _R:
         self.returncode = returncode
 
 
-@pytest.fixture()
+@pytest.fixture
 def git(monkeypatch):
     """Record git calls instead of running them."""
     calls: list = []
@@ -49,7 +49,9 @@ def test_the_digest_skips_the_workers_own_file_and_the_tests(monkeypatch):
     ])
     out = orch._existing_source_digest("/cwd", "app/store.py")
     assert "REAL CLI" in out
-    assert "REAL STORE" not in out and "TESTS" not in out and "FIXTURES" not in out
+    assert "REAL STORE" not in out
+    assert "TESTS" not in out
+    assert "FIXTURES" not in out
 
 
 def test_still_stubbed_and_empty_files_are_skipped(monkeypatch):
@@ -59,14 +61,16 @@ def test_still_stubbed_and_empty_files_are_skipped(monkeypatch):
         ("app/c.py", "REAL\n"),
     ])
     out = orch._existing_source_digest("/cwd", "own.py")
-    assert "REAL" in out and orch._SCAFFOLD_MARK not in out
+    assert "REAL" in out
+    assert orch._SCAFFOLD_MARK not in out
 
 
 def test_the_digest_is_budget_capped(monkeypatch):
     monkeypatch.setattr(orch, "_gather_sources", lambda cwd: [
         ("a.py", "x" * 100), ("b.py", "y" * 5000)])
     out = orch._existing_source_digest("/cwd", "own.py", budget=200)
-    assert "x" * 100 in out and "y" * 5000 not in out
+    assert "x" * 100 in out
+    assert "y" * 5000 not in out
 
 
 def test_go_style_test_files_are_skipped(monkeypatch):
@@ -132,7 +136,7 @@ def test_stop_halts_test_writing(git, monkeypatch):
 # ─── one impl, committed or reverted ───────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def impl_env(monkeypatch, git):
     monkeypatch.setattr(orch, "_prune_offplan_files", lambda cwd, subs: [])
     monkeypatch.setattr(orch, "_retries", lambda: 2)
@@ -152,7 +156,8 @@ def test_an_improving_impl_is_committed(impl_env, monkeypatch):
     events: list = []
     committed, fails, _res = orch._build_one_impl(
         "/cwd", {"slug": "store"}, [], None, 3, None, events.append)
-    assert committed is True and fails == 1
+    assert committed is True
+    assert fails == 1
     assert events[0]["name"] == "committed"
     assert events[0]["args"]["status"] == "1 failing"
 
@@ -161,7 +166,8 @@ def test_holding_the_score_is_good_enough_to_commit(impl_env, monkeypatch):
     _fails(monkeypatch, [3])
     committed, fails, _ = orch._build_one_impl(
         "/cwd", {"slug": "s"}, [], None, 3, None, lambda _e: None)
-    assert committed is True and fails == 3
+    assert committed is True
+    assert fails == 3
 
 
 def test_a_regression_is_reverted_and_retried(impl_env, monkeypatch):
@@ -170,7 +176,8 @@ def test_a_regression_is_reverted_and_retried(impl_env, monkeypatch):
     sub: dict = {"slug": "store"}
     committed, fails, _ = orch._build_one_impl(
         "/cwd", sub, [], None, 3, None, events.append)
-    assert committed is False and fails == 3          # the caller's count stands
+    assert committed is False
+    assert fails == 3         # the caller's count stands
     assert [c[0] for c in impl_env].count("reset") == 2
     assert sub["_retry_error"] == "out"               # the error is fed back in
     assert "reverted, retry 1/2" in events[0]["text"]
@@ -180,7 +187,8 @@ def test_a_retry_that_recovers_is_committed(impl_env, monkeypatch):
     _fails(monkeypatch, [5, 2])
     committed, fails, _ = orch._build_one_impl(
         "/cwd", {"slug": "s"}, [], None, 3, None, lambda _e: None)
-    assert committed is True and fails == 2
+    assert committed is True
+    assert fails == 2
 
 
 def test_a_tree_that_cannot_run_tests_yet_says_so(impl_env, monkeypatch):
@@ -210,7 +218,8 @@ def test_each_impl_gets_the_current_tree_and_its_tests(monkeypatch):
     done, failed = orch._build_impls("/cwd", subs, subs, None, 3, None, None,
                                      lambda _e: None)
     assert (done, failed) == (1, 0)
-    assert subs[0]["_existing_files"] == "DIGEST" and subs[0]["_tests"] == "TESTS"
+    assert subs[0]["_existing_files"] == "DIGEST"
+    assert subs[0]["_tests"] == "TESTS"
 
 
 def test_a_failed_impl_is_counted_and_reported(monkeypatch):
@@ -248,7 +257,8 @@ def test_a_failed_impl_makes_the_sequential_run_not_ok(monkeypatch):
     monkeypatch.setattr(orch, "_fail_count", lambda out: 0)
     monkeypatch.setattr(orch, "_build_impls", lambda *a, **k: (0, 1))
     agg = orch._run_sequential("/cwd", "base", [{"slug": "a", "path": "a.py"}], None)
-    assert agg["ok"] is False and agg["failed"] == 1
+    assert agg["ok"] is False
+    assert agg["failed"] == 1
 
 
 # ─── which files a subtask owns ────────────────────────────────────────
@@ -378,13 +388,14 @@ def test_a_validator_exception_is_a_failure():
     def _boom(_s, _wt):
         raise RuntimeError("no toolchain")
     r = orch._attempt_subtask({}, "/wt", lambda s, wt: {"ok": True}, _boom)
-    assert r["ok"] is False and "validate: no toolchain" in r["error"]
+    assert r["ok"] is False
+    assert "validate: no toolchain" in r["error"]
 
 
 # ─── informed retries ──────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def quiet_emit(monkeypatch):
     monkeypatch.setattr(orch, "_emit", lambda *a, **k: None)
     monkeypatch.setattr(orch, "_update", lambda *a, **k: None)
@@ -492,7 +503,8 @@ def test_waves_run_in_order_and_stop_on_cancel(monkeypatch, quiet_emit):
     monkeypatch.setattr(orch, "_run_one_recursive", _one)
     results: dict = {}
     orch._run_wave_set("/wt", [], None, None, None, 1, None, results, 0)
-    assert seen == ["a", "b"] and set(results) == {"a", "b"}
+    assert seen == ["a", "b"]
+    assert set(results) == {"a", "b"}
 
     seen.clear()
     orch._run_wave_set("/wt", [], None, None, None, 1, lambda: True, {}, 0)
@@ -544,7 +556,8 @@ def test_an_integration_crash_is_a_failure():
     def _boom(_wt):
         raise RuntimeError("no toolchain")
     r = orch._shared_integration("/wt", _boom)
-    assert r["ok"] is False and "no toolchain" in r["error"]
+    assert r["ok"] is False
+    assert "no toolchain" in r["error"]
 
 
 def test_the_worktree_is_removed_and_the_branch_deleted(monkeypatch, tmp_path, git):

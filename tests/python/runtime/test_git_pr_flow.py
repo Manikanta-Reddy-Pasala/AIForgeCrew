@@ -23,7 +23,7 @@ import pytest
 from aiforge_core.runtime.git_pr import _pr
 
 
-@pytest.fixture()
+@pytest.fixture
 def git(monkeypatch):
     """Record git/gh argv; queue per-command replies."""
     state: dict = {"calls": [], "replies": {}, "default": (0, "", "")}
@@ -170,13 +170,14 @@ def test_a_probe_error_is_reported(git, monkeypatch):
     monkeypatch.setattr(subprocess, "run",
                         lambda *a, **k: (_ for _ in ()).throw(OSError("no git")))
     ok, reason = _pr._has_reachable_remote("/repo")
-    assert ok is False and reason.startswith("remote_probe_error")
+    assert ok is False
+    assert reason.startswith("remote_probe_error")
 
 
 # ─── pushing ───────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def reachable(monkeypatch):
     monkeypatch.setattr(_pr, "_has_reachable_remote", lambda root: (True, ""))
 
@@ -209,7 +210,8 @@ def test_a_diverged_ticket_branch_retries_with_a_lease(git, reachable, err):
 def test_a_shared_branch_is_never_force_pushed(git, reachable):
     git["replies"]["push"] = (1, "", "non-fast-forward")
     ok, err = _pr._push("/repo", "main")
-    assert ok is False and "non-fast-forward" in err
+    assert ok is False
+    assert "non-fast-forward" in err
     assert not any("--force-with-lease" in c for c in git["calls"])
 
 
@@ -226,7 +228,7 @@ def test_a_failed_lease_retry_reports_the_second_error(git, reachable):
 # ─── opening the PR ────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def gh(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda exe: "/usr/bin/gh")
 
@@ -262,19 +264,21 @@ def test_a_lookup_that_returns_nothing_reports_the_error(git, gh):
     git["replies"]["pr create"] = (1, "", "already exists")
     git["replies"]["pr view"] = (0, "  \n", "")
     url, err = _pr._open_pr("/repo", "ONE-1", "t", "b")
-    assert url == "" and "already exists" in err
+    assert url == ""
+    assert "already exists" in err
 
 
 def test_an_ordinary_gh_failure_is_reported(git, gh):
     git["replies"]["pr create"] = (1, "", "no upstream configured")
     url, err = _pr._open_pr("/repo", "ONE-1", "t", "b")
-    assert url == "" and "no upstream" in err
+    assert url == ""
+    assert "no upstream" in err
 
 
 # ─── the whole flow ────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def flow(monkeypatch):
     state = {"prod": ["app/store.py"], "test": ["tests/test_store.py"],
              "pushed": (True, ""), "pr": ("https://github.com/o/r/pull/1", ""),
@@ -372,7 +376,7 @@ def test_a_failed_event_emit_never_blocks_the_pr(flow, monkeypatch):
 # ─── the post-PR ingest ────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def ingest(monkeypatch):
     spawned: list = []
     monkeypatch.setattr(shutil, "which", lambda exe: "/usr/bin/aiforge-memory")
@@ -415,7 +419,7 @@ def test_a_failed_spawn_is_swallowed(ingest, monkeypatch):
 # ─── merging ───────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def merge(monkeypatch):
     state = {"result": types.SimpleNamespace(returncode=0, stdout="merged",
                                              stderr=""),
@@ -432,7 +436,8 @@ def merge(monkeypatch):
 def test_a_pr_is_squash_merged_by_default(merge):
     assert _pr.merge_pr("https://github.com/o/r/pull/1") == {"merged": True,
                                                              "reason": ""}
-    assert "--squash" in merge["args"] and "--delete-branch" in merge["args"]
+    assert "--squash" in merge["args"]
+    assert "--delete-branch" in merge["args"]
 
 
 def test_a_merge_commit_can_be_requested(merge):
@@ -451,7 +456,8 @@ def test_a_real_merge_failure_is_reported(merge):
     merge["result"] = types.SimpleNamespace(returncode=1, stdout="",
                                             stderr="checks are failing")
     out = _pr.merge_pr("u")
-    assert out["merged"] is False and "checks are failing" in out["reason"]
+    assert out["merged"] is False
+    assert "checks are failing" in out["reason"]
 
 
 def test_merging_needs_a_url_and_the_cli(monkeypatch):

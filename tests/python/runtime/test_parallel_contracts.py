@@ -122,7 +122,8 @@ def test_missing_keys_in_the_declaration_become_empty(tmp_path):
     ct._write_contract_sidecar(str(tmp_path), {"path": "a.py", "slug": "a"},
                                '===CONTRACT=== {"other": 1}')
     rec = json.loads((tmp_path / ct._CONTRACT_DIR / "a.json").read_text())
-    assert rec["exposes"] == [] and rec["consumes"] == {}
+    assert rec["exposes"] == []
+    assert rec["consumes"] == {}
 
 
 # ─── reading sidecars back ─────────────────────────────────────────────

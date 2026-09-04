@@ -21,7 +21,7 @@ from aiforge_core.runtime.chat_agent._tools import _misc as M
 # ─── the job builder ───────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def jobs(monkeypatch):
     from aiforge_core.jobs import parse, scripts, store
     state: dict = {
@@ -54,8 +54,10 @@ def _create(**over):
 
 def test_a_job_is_written_tested_and_scheduled(jobs):
     res = _create(description="triage the queue")
-    assert res["ok"] is True and res["job_id"] == 11
-    assert res["script_path"] == "/jobs/daily.sh" and res["tested"] is True
+    assert res["ok"] is True
+    assert res["job_id"] == 11
+    assert res["script_path"] == "/jobs/daily.sh"
+    assert res["tested"] is True
     assert res["trial_output"] == "3 issues"
     assert res["human_schedule"] == "every day at 09:00"
     assert jobs["created"]["kind"] == "script"
@@ -66,7 +68,8 @@ def test_a_script_that_fails_its_trial_is_never_scheduled(jobs):
     """A wrong JQL would otherwise fire forever doing nothing."""
     jobs["trial"] = {"ok": False, "returncode": 2, "stdout": "", "stderr": "bad JQL"}
     res = _create()
-    assert res["ok"] is False and "trial run FAILED" in res["error"]
+    assert res["ok"] is False
+    assert "trial run FAILED" in res["error"]
     assert "bad JQL" in res["error"]
     assert jobs["created"] is None
 
@@ -80,7 +83,8 @@ def test_a_rejected_build_leaves_no_orphan_script(jobs):
 def test_the_trial_can_be_skipped_for_a_destructive_script(jobs):
     jobs["trial"] = {"ok": False, "returncode": 1}
     res = _create(skip_test=True)
-    assert res["ok"] is True and res["tested"] is False
+    assert res["ok"] is True
+    assert res["tested"] is False
     assert res["trial_output"] is None
 
 
@@ -91,7 +95,8 @@ def test_a_job_with_the_same_name_is_replaced_not_duplicated(jobs):
                         {"id": 5, "name": "something else",
                          "script_path": "/jobs/other.sh"}]
     res = _create()
-    assert res["replaced_jobs"] == [4] and jobs["removed"] == [4]
+    assert res["replaced_jobs"] == [4]
+    assert jobs["removed"] == [4]
     assert "/jobs/old.sh" in jobs["deleted"]
 
 
@@ -99,7 +104,8 @@ def test_a_replaced_jobs_script_outside_the_jobs_dir_is_left_alone(jobs):
     jobs["existing"] = [{"id": 4, "name": "daily triage",
                          "script_path": "/etc/cron.d/thing"}]
     _create()
-    assert jobs["deleted"] == [] and jobs["removed"] == [4]
+    assert jobs["deleted"] == []
+    assert jobs["removed"] == [4]
 
 
 def test_a_dedupe_failure_never_blocks_the_create(jobs, monkeypatch):
@@ -112,7 +118,8 @@ def test_a_dedupe_failure_never_blocks_the_create(jobs, monkeypatch):
 def test_an_unschedulable_cron_is_refused(jobs):
     jobs["schedulable"] = False
     res = _create(cron="whenever")
-    assert res["ok"] is False and "unschedulable cron" in res["error"]
+    assert res["ok"] is False
+    assert "unschedulable cron" in res["error"]
 
 
 @pytest.mark.parametrize("missing", ["name", "cron", "script"])
@@ -131,7 +138,7 @@ def test_a_store_failure_is_a_soft_error(jobs, monkeypatch):
 # ─── repo folders ──────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def repos(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
     root = tmp_path / "codeRepo"
@@ -149,7 +156,8 @@ def test_a_repo_folder_is_persisted(repos, tmp_path):
 
 def test_a_folder_that_is_not_there_is_refused(repos):
     res = M._t_set_repo_folder({"repo": "widgets", "path": "/nope"}, "/cwd")
-    assert res["ok"] is False and "not a directory" in res["error"]
+    assert res["ok"] is False
+    assert "not a directory" in res["error"]
 
 
 def test_both_the_repo_and_the_path_are_required(repos):
@@ -183,7 +191,8 @@ def test_an_unreadable_base_folder_still_lists_the_explicit_paths(repos,
     monkeypatch.setattr(os, "listdir",
                         lambda p: (_ for _ in ()).throw(OSError("perm")))
     out = M._t_list_repos({}, "/cwd")
-    assert out["repos_under_root"] == [] and "widgets" in out["paths"]
+    assert out["repos_under_root"] == []
+    assert "widgets" in out["paths"]
 
 
 def test_a_loose_repo_name_resolves(repos):
@@ -194,7 +203,7 @@ def test_a_loose_repo_name_resolves(repos):
 # ─── integration defaults ──────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def integrations(monkeypatch):
     from aiforge_core.config import integrations as cfg
     seen: dict = {}
@@ -205,7 +214,8 @@ def integrations(monkeypatch):
 
 def test_a_default_jira_project_is_stored(integrations):
     res = M._t_set_integration_default({"tool": "jira", "value": "ENG"}, "/c")
-    assert res["ok"] is True and res["default_project"] == "ENG"
+    assert res["ok"] is True
+    assert res["default_project"] == "ENG"
     assert integrations == {"tool": "jira", "default_project": "ENG"}
 
 
@@ -236,7 +246,7 @@ def test_an_unwritable_config_is_a_soft_error(monkeypatch):
 # ─── the cross-entity dossier ──────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def gather(monkeypatch):
     from aiforge_core.runtime import context_gather as cg
     seen: dict = {}
@@ -249,13 +259,14 @@ def gather(monkeypatch):
 
 def test_a_jira_key_is_recognised_without_being_told(gather):
     M._t_context_gather({"key": "eng-42"}, "/c")
-    assert gather["kind"] == "jira" and gather["key"] == "ENG-42", \
-        "and normalised to uppercase"
+    assert gather["kind"] == "jira"
+    assert gather["key"] == "ENG-42", "and normalised to uppercase"
 
 
 def test_a_numeric_id_is_a_confluence_page(gather):
     M._t_context_gather({"id": "123456"}, "/c")
-    assert gather["kind"] == "confluence" and gather["key"] == "123456"
+    assert gather["kind"] == "confluence"
+    assert gather["key"] == "123456"
 
 
 def test_an_explicit_kind_is_honoured(gather):
@@ -265,7 +276,8 @@ def test_an_explicit_kind_is_honoured(gather):
 
 def test_a_refresh_can_be_forced(gather):
     M._t_context_gather({"key": "ENG-1", "force": True}, "/c")
-    assert gather["force"] is True and gather["role"] == "chat"
+    assert gather["force"] is True
+    assert gather["role"] == "chat"
 
 
 @pytest.mark.parametrize("args", [{}, {"kind": "jira"},
@@ -277,7 +289,7 @@ def test_a_gather_with_nothing_to_look_up_is_refused(gather, args):
 # ─── the managed notes ─────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def notes(monkeypatch):
     from aiforge_core.runtime import note_curator, work_notes
     state: dict = {"primary": "/work/jira/ENG-1/ticket.md", "inside": True,
@@ -313,7 +325,8 @@ def test_outside_a_context_workspace_there_is_nothing_to_curate(notes):
 
 def test_new_knowledge_is_folded_into_the_note(notes):
     res = M._t_note_consolidate({"text": "the deploy needs sudo"}, "/work")
-    assert res["ok"] is True and notes["seen"]["role"] == "learner"
+    assert res["ok"] is True
+    assert notes["seen"]["role"] == "learner"
     assert notes["seen"]["text"] == "the deploy needs sudo"
 
 
@@ -325,7 +338,8 @@ def test_a_path_outside_the_managed_root_is_refused(notes):
     """Same boundary that lets this tool stay ungated."""
     notes["inside"] = False
     res = M._t_note_consolidate({"text": "x", "path": "/etc/passwd"}, "/work")
-    assert res["ok"] is False and "outside the managed work root" in res["error"]
+    assert res["ok"] is False
+    assert "outside the managed work root" in res["error"]
 
 
 def test_folding_outside_a_context_workspace_says_so(notes):

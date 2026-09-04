@@ -17,7 +17,7 @@ import pytest
 from aiforge_core.runtime.tools import jira
 
 
-@pytest.fixture()
+@pytest.fixture
 def rest(monkeypatch):
     """Capture Jira REST calls; queue replies per (method, path-fragment)."""
     state: dict = {"calls": [], "replies": {}, "default": {"ok": True, "data": {}}}
@@ -116,14 +116,16 @@ def test_paging_continues_until_the_limit(rest, monkeypatch):
     pages = [_issues("A", "B", total=4), _issues("C", "D", total=4)]
     rest["replies"]["/search"] = lambda st: pages.pop(0)
     out = jira.jira_search({"jql": "x", "limit": 4})
-    assert out["results"] == ["A", "B", "C", "D"] and out["truncated"] is False
+    assert out["results"] == ["A", "B", "C", "D"]
+    assert out["truncated"] is False
 
 
 def test_more_matches_than_asked_for_marks_truncated(rest, monkeypatch):
     monkeypatch.setattr(jira, "_issue_summary", lambda x, with_time=False: x["key"])
     rest["replies"]["/search"] = _issues("A", total=50)
     out = jira.jira_search({"jql": "x", "limit": 1})
-    assert out["truncated"] is True and out["total"] == 50
+    assert out["truncated"] is True
+    assert out["total"] == 50
 
 
 def test_a_short_page_ends_the_walk(rest, monkeypatch):
@@ -143,8 +145,10 @@ def test_a_later_page_failure_keeps_what_was_fetched(rest, monkeypatch):
     pages = [_issues("A", total=9), {"ok": False, "error": "http 500"}]
     rest["replies"]["/search"] = lambda st: pages.pop(0)
     out = jira.jira_search({"jql": "x", "limit": 5})
-    assert out["ok"] is True and out["results"] == ["A"]
-    assert out["truncated"] is True and out["error"] == "http 500"
+    assert out["ok"] is True
+    assert out["results"] == ["A"]
+    assert out["truncated"] is True
+    assert out["error"] == "http 500"
 
 
 def test_time_tracking_fields_are_opt_in(rest, monkeypatch):
@@ -176,8 +180,10 @@ def test_an_issue_view_flattens_the_named_objects():
          "description": "d",
          "comment": {"comments": [{"author": {"displayName": "Bo"},
                                    "body": "hi"}]}})
-    assert view["type"] == "Bug" and view["status"] == "Open"
-    assert view["assignee"] == "Ada" and view["reporter"] is None
+    assert view["type"] == "Bug"
+    assert view["status"] == "Open"
+    assert view["assignee"] == "Ada"
+    assert view["reporter"] is None
     assert view["comments"] == [{"author": "Bo", "body": "hi"}]
 
 
@@ -214,7 +220,8 @@ def test_worklog_rows_sum_the_seconds():
          "timeSpentSeconds": 7200, "started": "2026-01-01", "comment": "c"},
         {"author": None, "timeSpentSeconds": "junk"},
     ])
-    assert total == 7200 and rows[0]["author"] == "Ada"
+    assert total == 7200
+    assert rows[0]["author"] == "Ada"
     assert rows[1]["author"] is None
 
 
@@ -224,7 +231,8 @@ def test_a_worklog_page_reports_truncation(rest, monkeypatch):
     rest["replies"]["/worklog"] = {"ok": True, "data": {
         "worklogs": [{"timeSpentSeconds": 3600}], "total": 12}}
     out = jira.jira_worklog({"key": "ENG-1"})
-    assert out["worklog_count"] == 1 and out["truncated"] is True
+    assert out["worklog_count"] == 1
+    assert out["truncated"] is True
     assert out["tracking"] == {"time_spent": "5h"}
 
 
@@ -368,7 +376,8 @@ def test_comments_are_read_with_their_authors(rest):
         "total": 5}}
     out = jira.jira_comments({"key": "ENG-1"})
     assert out["comments"][0]["author"] == "Ada"
-    assert out["count"] == 1 and out["truncated"] is True
+    assert out["count"] == 1
+    assert out["truncated"] is True
 
 
 @pytest.mark.parametrize("raw,expected", [(10, 10), (999, 100), (0, 1),
@@ -417,7 +426,7 @@ def test_a_failed_transition_list_is_returned(rest):
     assert jira.jira_transitions({"key": "ENG-1"})["ok"] is False
 
 
-@pytest.fixture()
+@pytest.fixture
 def transitions(rest):
     rest["replies"]["/transitions"] = {"ok": True, "data": {"transitions": [
         {"id": "11", "name": "Start Progress", "to": {"name": "In Progress"}},
@@ -429,7 +438,8 @@ def transitions(rest):
                                   "In Progress", "in progress"])
 def test_a_transition_matches_by_id_name_or_target_status(transitions, want):
     out = jira.jira_transition({"key": "ENG-1", "transition": want})
-    assert out["ok"] is True and out["transitioned_to"] == want
+    assert out["ok"] is True
+    assert out["transitioned_to"] == want
     assert transitions["calls"][-1]["body"]["transition"] == {"id": "11"}
 
 

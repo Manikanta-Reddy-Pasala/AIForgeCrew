@@ -16,7 +16,7 @@ import pytest
 from aiforge_core.runtime.doer_tools import _integrations as it
 
 
-@pytest.fixture()
+@pytest.fixture
 def calls(monkeypatch, tmp_path):
     """Capture (payload, cwd) for every stubbed client function."""
     from aiforge_core.runtime import sandbox
@@ -141,7 +141,9 @@ def test_a_status_change_rides_the_same_update(calls):
 def test_linking_two_issues(calls):
     it.jira_link_issues(inward="ENG-1", outward="ENG-2", type="Blocks")
     p = calls["payload"]
-    assert p["inward"] == "ENG-1" and p["outward"] == "ENG-2" and p["type"] == "Blocks"
+    assert p["inward"] == "ENG-1"
+    assert p["outward"] == "ENG-2"
+    assert p["type"] == "Blocks"
 
 
 def test_creating_a_dashboard(calls):
@@ -152,7 +154,9 @@ def test_creating_a_dashboard(calls):
 def test_searching_gitlab(calls):
     it.gitlab_search(query="q", limit=5, state="opened")
     p = calls["payload"]
-    assert p["query"] == "q" and p["limit"] == 5 and p["state"] == "opened"
+    assert p["query"] == "q"
+    assert p["limit"] == 5
+    assert p["state"] == "opened"
 
 
 def test_creating_a_gitlab_issue(calls):
@@ -168,13 +172,15 @@ def test_updating_a_gitlab_issue(calls):
 def test_opening_a_merge_request(calls):
     it.gitlab_mr_create(project="grp/p", source_branch="feat", title="t")
     p = calls["payload"]
-    assert p["source_branch"] == "feat" and p["title"] == "t"
+    assert p["source_branch"] == "feat"
+    assert p["title"] == "t"
 
 
 def test_listing_pipelines(calls):
     it.gitlab_pipelines(project="grp/p", ref="main", status="failed", limit=5)
     p = calls["payload"]
-    assert p["ref"] == "main" and p["status"] == "failed"
+    assert p["ref"] == "main"
+    assert p["status"] == "failed"
 
 
 def test_reading_one_pipeline(calls):
@@ -190,13 +196,15 @@ def test_watching_a_pipeline(calls):
 def test_sending_email(calls):
     it.email_send(to="a@b.c", subject="s", body="b")
     p = calls["payload"]
-    assert p["to"] == "a@b.c" and p["subject"] == "s"
+    assert p["to"] == "a@b.c"
+    assert p["subject"] == "s"
 
 
 def test_reading_email(calls):
     it.email_read(folder="INBOX", limit=3, query="q")
     p = calls["payload"]
-    assert p["folder"] == "INBOX" and p["limit"] == 3
+    assert p["folder"] == "INBOX"
+    assert p["limit"] == 3
 
 
 # ─── the two non-REST wrappers ─────────────────────────────────────────

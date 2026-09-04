@@ -37,7 +37,8 @@ def test_a_steer_pins_to_its_subtask_as_a_must():
     heading, feedback = st._pin_to_subtask(subs, "store", "use an LRU", "cache")
     assert "MANDATORY" in heading
     assert "app/store.py" in heading
-    assert "app/store.py" in feedback and "cache" in feedback
+    assert "app/store.py" in feedback
+    assert "cache" in feedback
     assert "[MANDATORY user instruction — MUST satisfy]: use an LRU" in subs[0]["goal"]
     assert subs[0]["_user_mandate"] == ["use an LRU"]
 
@@ -266,7 +267,9 @@ def test_the_execution_config_is_announced(monkeypatch):
     monkeypatch.setattr(st, "_max_workers", lambda: 4)
     monkeypatch.setattr(st.review_gates, "pick_reviewer_model", lambda: "big-model")
     text = list(st._announce_execution(_subs()))[0]["text"]
-    assert "2 subtasks" in text and "up to 4 at once" in text and "big-model" in text
+    assert "2 subtasks" in text
+    assert "up to 4 at once" in text
+    assert "big-model" in text
 
 
 def test_a_stray_sequential_flag_is_visible(monkeypatch):
@@ -541,7 +544,8 @@ def test_a_testless_plan_gains_one_test_subtask_per_module(monkeypatch):
     out = st._ensure_test_coverage([{"path": "app/store.py", "slug": "store"},
                                     {"path": "app/cli.py", "slug": "cli"}])
     assert [s["path"] for s in out[2:]] == ["tests/test_store.py", "tests/test_cli.py"]
-    assert out[2]["slug"] and out[2]["api"] == []
+    assert out[2]["slug"]
+    assert out[2]["api"] == []
     assert "unit tests for app/store.py" in out[2]["goal"]
 
 

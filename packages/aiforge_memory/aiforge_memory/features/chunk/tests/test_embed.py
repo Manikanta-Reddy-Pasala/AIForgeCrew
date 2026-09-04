@@ -50,7 +50,8 @@ def test_chunk_and_embed_no_vectors(tmp_path) -> None:
     walked = [_walked("a.py")]
     chunks, failed = em.chunk_and_embed(walked, repo="t", repo_root=tmp_path)
     assert failed == []
-    assert chunks and chunks[0].text.startswith("def a")
+    assert chunks
+    assert chunks[0].text.startswith("def a")
     assert not hasattr(chunks[0], "embed_vec")
 def test_chunk_and_embed_skips_too_large(tmp_path) -> None:
     p = tmp_path / "big.py"

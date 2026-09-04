@@ -33,7 +33,7 @@ class _Resp:
         return self._payload
 
 
-@pytest.fixture()
+@pytest.fixture
 def tp(tmp_path, monkeypatch):
     """The script as a module, with a scratch token cache and no real sleep."""
     for k in ("TEAMS_CLIENT_ID", "TEAMS_TENANT_ID", "TEAMS_CLIENT_SECRET",
@@ -49,7 +49,7 @@ def tp(tmp_path, monkeypatch):
     sys.modules.pop("teams_probe_cli_under_test", None)
 
 
-@pytest.fixture()
+@pytest.fixture
 def http(tp, monkeypatch):
     """Queue POST/GET replies; record what was sent."""
     state: dict = {"posts": [], "gets": [], "post_replies": [], "get_replies": []}
@@ -129,7 +129,8 @@ def test_a_password_login_caches_its_token(tp, http, monkeypatch):
     http["post_replies"] = [_Resp(payload={"access_token": "at"})]
     assert tp._password_login()["access_token"] == "at"
     sent = http["posts"][0]["data"]
-    assert sent["grant_type"] == "password" and sent["username"] == "ada@corp"
+    assert sent["grant_type"] == "password"
+    assert sent["username"] == "ada@corp"
 
 
 def test_an_mfa_account_is_told_to_use_device_code(tp, http, monkeypatch):
@@ -152,7 +153,8 @@ def test_an_ordinary_password_failure_has_no_mfa_hint(tp, http, monkeypatch):
                                   text="AADSTS50126")]
     with pytest.raises(SystemExit) as ei:
         tp._password_login()
-    assert "bad password" in str(ei.value) and "device code" not in str(ei.value)
+    assert "bad password" in str(ei.value)
+    assert "device code" not in str(ei.value)
 
 
 def test_missing_credentials_exit_before_any_request(tp, http):
@@ -208,7 +210,7 @@ def test_an_app_only_401_is_not_refreshed(tp, http):
 # ─── commands ──────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def signed_in(tp, monkeypatch):
     monkeypatch.setattr(tp, "_app_token", lambda: "app-token")
     monkeypatch.setattr(tp, "_delegated_token", lambda: "user-token")
@@ -239,7 +241,8 @@ def test_channel_messages_are_formatted(tp, signed_in, capsys):
     signed_in.append({"value": [_msg("m1")]})
     tp.cmd_messages(types.SimpleNamespace(team_id="t1", channel_id="c1", top=5))
     out = capsys.readouterr().out
-    assert "Ada: hello" in out and "<p>" not in out       # html stripped
+    assert "Ada: hello" in out
+    assert "<p>" not in out       # html stripped
 
 
 def test_chats_are_listed_with_a_fallback_label(tp, signed_in, capsys):
@@ -248,7 +251,8 @@ def test_chats_are_listed_with_a_fallback_label(tp, signed_in, capsys):
                                 {"id": "ch3"}]})
     tp.cmd_chats(None)
     out = capsys.readouterr().out
-    assert "ch1  Standup" in out and "ch2  oneOnOne" in out
+    assert "ch1  Standup" in out
+    assert "ch2  oneOnOne" in out
     assert "ch3  (no topic)" in out
 
 
@@ -288,7 +292,8 @@ def test_the_channel_poller_skips_the_backlog_then_prints_new(tp, monkeypatch,
     with pytest.raises(_Stop):
         tp.cmd_poll(args)
     out = capsys.readouterr().out
-    assert "fresh" in out and "old news" not in out
+    assert "fresh" in out
+    assert "old news" not in out
 
 
 def test_the_chat_poller_skips_the_backlog_too(tp, monkeypatch, capsys):
@@ -305,7 +310,8 @@ def test_the_chat_poller_skips_the_backlog_too(tp, monkeypatch, capsys):
     with pytest.raises(_Stop):
         tp.cmd_chat_poll(args)
     out = capsys.readouterr().out
-    assert "fresh" in out and "old news" not in out
+    assert "fresh" in out
+    assert "old news" not in out
 
 
 # ─── the CLI ───────────────────────────────────────────────────────────

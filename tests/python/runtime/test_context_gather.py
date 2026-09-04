@@ -19,7 +19,7 @@ import pytest
 from aiforge_core.runtime import context_gather as cg
 
 
-@pytest.fixture()
+@pytest.fixture
 def ctx(monkeypatch, tmp_path):
     from aiforge_core.runtime import work_context as wc
     from aiforge_core.runtime import work_notes
@@ -100,7 +100,7 @@ def test_an_unknown_kind_has_no_stamp():
 # ─── caching ───────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def cached(tmp_path):
     (tmp_path / "dossier.md").write_text("the dossier")
     return str(tmp_path), str(tmp_path / "dossier.md")
@@ -111,7 +111,8 @@ def test_an_unchanged_entity_serves_the_cache(cached):
     out = cg._cached_dossier(base, md, {"updated": "2026-01-01",
                                         "artifacts": ["ticket.md"]},
                              "jira", "ENG-1", "2026-01-01", force=False)
-    assert out["cached"] is True and out["dossier"] == "the dossier"
+    assert out["cached"] is True
+    assert out["dossier"] == "the dossier"
     assert out["artifacts"] == ["ticket.md"]
 
 
@@ -289,7 +290,8 @@ def test_every_linked_entity_is_read_and_written(tmp_path):
     secondaries, partial = _fan = cg._fan_out(_reader, ["111", "222"], "chat",
                                               "confluence", str(tmp_path),
                                               artifacts)
-    assert partial is False and len(secondaries) == 2
+    assert partial is False
+    assert len(secondaries) == 2
     assert sorted(artifacts) == ["confluence-111.md", "confluence-222.md"]
     assert (tmp_path / "confluence-111.md").exists()
 
@@ -299,7 +301,8 @@ def test_a_failed_linked_read_marks_the_gather_partial(tmp_path):
         return {"ok": ident == "111", "id": ident}
     secondaries, partial = cg._fan_out(_reader, ["111", "222"], "chat",
                                        "confluence", str(tmp_path), [])
-    assert partial is True and len(secondaries) == 1
+    assert partial is True
+    assert len(secondaries) == 1
 
 
 def test_a_crashing_reader_marks_the_gather_partial(tmp_path):
@@ -307,7 +310,8 @@ def test_a_crashing_reader_marks_the_gather_partial(tmp_path):
         raise RuntimeError("timeout")
     secondaries, partial = cg._fan_out(_reader, ["111"], "chat", "confluence",
                                        str(tmp_path), [])
-    assert partial is True and secondaries == []
+    assert partial is True
+    assert secondaries == []
 
 
 # ─── the primary read ──────────────────────────────────────────────────
@@ -317,7 +321,8 @@ def test_a_ticket_read_fetches_its_links_in_parallel(monkeypatch):
     monkeypatch.setattr(cg, "_read_jira", lambda key, role: {"ok": True, "key": key})
     monkeypatch.setattr(cg, "_jira_links", lambda key: [{"url": "u"}])
     primary, links = cg._read_primary("jira", "ENG-1", "chat")
-    assert primary["key"] == "ENG-1" and links == [{"url": "u"}]
+    assert primary["key"] == "ENG-1"
+    assert links == [{"url": "u"}]
 
 
 def test_a_page_read_has_no_links_call(monkeypatch):
@@ -361,11 +366,15 @@ def test_a_complete_gather_writes_and_stamps_the_cache(ctx, monkeypatch):
     monkeypatch.setattr(cg, "_read_confluence",
                         lambda pid, role: {"ok": True, "id": pid, "title": "Spec"})
     out = cg.gather("jira", "ENG-1")
-    assert out["ok"] is True and out["cached"] is False and out["linked"] == 1
+    assert out["ok"] is True
+    assert out["cached"] is False
+    assert out["linked"] == 1
     base = ctx / "jira" / "ENG-1"
-    assert (base / "ticket.md").exists() and (base / "dossier.md").exists()
+    assert (base / "ticket.md").exists()
+    assert (base / "dossier.md").exists()
     meta = json.loads((base / ".dossier.json").read_text())
-    assert meta["updated"] == "2026-01-01" and meta["partial"] is False
+    assert meta["updated"] == "2026-01-01"
+    assert meta["partial"] is False
     assert meta["artifacts"] == ["ticket.md", "confluence-111111.md"]
 
 
@@ -377,9 +386,11 @@ def test_a_partial_gather_is_usable_but_not_stamped(ctx, monkeypatch):
     monkeypatch.setattr(cg, "_read_confluence",
                         lambda pid, role: {"ok": False, "error": "http 404"})
     out = cg.gather("jira", "ENG-1")
-    assert out["ok"] is True and out["linked"] == 0
+    assert out["ok"] is True
+    assert out["linked"] == 0
     meta = json.loads((ctx / "jira" / "ENG-1" / ".dossier.json").read_text())
-    assert meta["updated"] is None and meta["partial"] is True
+    assert meta["updated"] is None
+    assert meta["partial"] is True
 
 
 def test_an_unreadable_primary_surfaces_the_reason(ctx, monkeypatch):
@@ -429,7 +440,8 @@ def test_the_dossier_is_captured_into_memory(monkeypatch):
         seen.update(kind=kind, text=text, repo=repo, topic=topic)
     monkeypatch.setattr(md_store, "capture", _capture)
     cg._capture_dossier("jira", "ENG-1", {"summary": "Fix it"}, [], "/base")
-    assert seen["repo"] == "ENG-1" and seen["topic"] == "jira-dossier"
+    assert seen["repo"] == "ENG-1"
+    assert seen["topic"] == "jira-dossier"
     assert "DOSSIER jira:ENG-1" in seen["text"]
 
 

@@ -40,7 +40,8 @@ def test_python_params_with_type_hints():
     process = next(s for s in py.symbols if s.fqname.endswith("::process"))
     params = json.loads(process.params_json)
     names = [p["name"] for p in params]
-    assert "self" in names and "amount" in names
+    assert "self" in names
+    assert "amount" in names
     amount = next(p for p in params if p["name"] == "amount")
     assert amount["type"] == "float"
 

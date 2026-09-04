@@ -14,7 +14,7 @@ def _git(cwd, *args):
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def repo(tmp_path):
     """Ephemeral git repo with one commit + one origin remote."""
     _git(tmp_path, "init", "-b", "main")

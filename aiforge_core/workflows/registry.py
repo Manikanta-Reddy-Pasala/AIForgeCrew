@@ -17,6 +17,7 @@ values out before returning so external callers can't poison it.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from importlib import import_module
 from typing import Any, Callable
@@ -34,12 +35,18 @@ class WorkflowSpec:
     tags: list[str] = field(default_factory=list)
 
     def to_public_dict(self) -> dict[str, Any]:
-        """UI-safe view — no handler import paths, no internals."""
+        """UI-safe view — no handler import paths, no internals.
+
+        DEEP copy of ``triggers``. ``dict(self.triggers)`` copied the mapping
+        and shared every list inside it, so a caller appending to the returned
+        ``triggers["keywords_any"]`` edited the process-global registry — the
+        exact poisoning this module's docstring says cannot happen.
+        """
         return {
             "id": self.id,
             "label": self.label,
             "description": self.description,
-            "triggers": dict(self.triggers),
+            "triggers": deepcopy(self.triggers),
             "required_attachments": list(self.required_attachments),
             "optional_inputs": list(self.optional_inputs),
             "tags": list(self.tags),

@@ -1,11 +1,12 @@
 # bge-reranker-v2-m3 cross-encoder sidecar — serves /rerank on :8765.
 FROM python:3.12-slim
 
-# Serving a model needs no privileges. Created here so the layers below
-# (pip, the model cache) are owned by the user that will read them.
-RUN useradd --create-home --uid 10001 sidecar
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# One layer: the unprivileged user and the CA bundle are both "prepare the
+# box", and splitting them cost an image layer for nothing.
+# Serving a model needs no privileges; the user is created BEFORE pip and
+# the model cache so those layers are owned by whoever will read them.
+RUN useradd --create-home --uid 10001 sidecar \
+    && apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 

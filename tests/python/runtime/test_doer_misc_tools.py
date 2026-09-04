@@ -55,7 +55,8 @@ def test_each_alias_delegates_to_the_canonical_tool(monkeypatch, alias, canonica
 
 def test_a_stray_todo_call_does_not_abort_the_run():
     out = t.todo_write("- [ ] fix the parser")
-    assert out["ok"] is True and "no-op" in out["note"]
+    assert out["ok"] is True
+    assert "no-op" in out["note"]
 
 
 def test_the_other_todo_spelling_works_too():
@@ -77,7 +78,7 @@ def test_a_task_spawn_points_at_the_real_path():
 # ─── subtask status ────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def ticket(monkeypatch):
     from aiforge_core.tickets import store, subtasks
 
@@ -185,7 +186,7 @@ def test_a_stop_failure_is_soft(monkeypatch):
 # ─── glob ──────────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def tree(monkeypatch, tmp_path):
     from aiforge_core.runtime import sandbox
     (tmp_path / "app").mkdir()
@@ -203,7 +204,8 @@ def tree(monkeypatch, tmp_path):
 def test_a_bare_pattern_matches_by_basename(tree):
     out = t.glob("*.py")
     assert set(out["matches"]) == {"app/store.py", "top.py"}
-    assert out["count"] == 2 and out["truncated"] is False
+    assert out["count"] == 2
+    assert out["truncated"] is False
 
 
 def test_a_recursive_pattern_also_matches_top_level_files(tree):
@@ -226,7 +228,8 @@ def test_the_match_list_is_capped(monkeypatch, tmp_path):
         (tmp_path / f"f{i}.py").write_text("x")
     monkeypatch.setattr(sandbox, "root", lambda: tmp_path)
     out = t.glob("*.py")
-    assert out["truncated"] is True and out["count"] == 500
+    assert out["truncated"] is True
+    assert out["count"] == 500
 
 
 def test_a_path_outside_the_root_is_refused(monkeypatch, tmp_path):
@@ -272,7 +275,8 @@ def test_a_workflow_is_authored(monkeypatch):
     monkeypatch.setattr(workflows, "write_workflow",
                         lambda **kw: seen.update(kw) or {"ok": True})
     t.learn_workflow("release", "body", triggers="ship")
-    assert seen["name"] == "release" and seen["triggers"] == ["ship"]
+    assert seen["name"] == "release"
+    assert seen["triggers"] == ["ship"]
 
 
 @pytest.mark.parametrize("fn,args", [("skill_search", ("q",)),
@@ -365,7 +369,8 @@ def test_the_browser_forwards_its_arguments(monkeypatch):
     monkeypatch.setattr(br, "browse",
                         lambda command, **kw: seen.update(command=command, **kw) or {"ok": True})
     t.browse("goto", url="https://x")
-    assert seen["command"] == "goto" and seen["url"] == "https://x"
+    assert seen["command"] == "goto"
+    assert seen["url"] == "https://x"
     assert seen["selector"] is None
 
 
@@ -414,7 +419,7 @@ def test_a_delegation_failure_is_soft(monkeypatch):
 # ─── github PRs ────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def gh(monkeypatch, tmp_path):
     from aiforge_core.runtime import sandbox
     monkeypatch.setattr(sandbox, "root", lambda: tmp_path)
@@ -440,7 +445,9 @@ def test_a_pr_is_opened_with_the_given_fields(gh):
     assert out == {"ok": True, "url": "https://github.com/o/r/pull/1"}
     cmd = gh["cmd"]
     assert cmd[:3] == ["gh", "pr", "create"]
-    assert "--draft" in cmd and "develop" in cmd and "feat" in cmd
+    assert "--draft" in cmd
+    assert "develop" in cmd
+    assert "feat" in cmd
 
 
 def test_a_pr_needs_a_title(gh):
@@ -453,7 +460,8 @@ def test_a_missing_gh_cli_says_how_to_fix_it(monkeypatch, tmp_path):
     import shutil
     monkeypatch.setattr(shutil, "which", lambda name: None)
     out = t.github_pr("t")
-    assert out["error"] == "gh_not_installed" and "gh auth login" in out["hint"]
+    assert out["error"] == "gh_not_installed"
+    assert "gh auth login" in out["hint"]
 
 
 def test_a_failed_pr_reports_the_cli_error(gh):
@@ -507,7 +515,8 @@ def test_the_openhands_key_spelling_is_accepted(monkeypatch):
 def test_a_non_object_edit_is_reported_not_raised(monkeypatch):
     monkeypatch.setattr(t, "file_patch", lambda *a: {"ok": True})
     out = t.multi_edit(["oops"])
-    assert out["ok"] is False and out["results"][0]["error"] == "not an object"
+    assert out["ok"] is False
+    assert out["results"][0]["error"] == "not an object"
 
 
 @pytest.mark.parametrize("edits", [[], "not a list", None])

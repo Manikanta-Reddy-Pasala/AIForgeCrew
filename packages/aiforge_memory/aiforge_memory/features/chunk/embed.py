@@ -196,6 +196,51 @@ def _split_doc_smart(text: str, *,
     return _split_doc(text, file_path=file_path)
 
 
+def _heading_lines(lines: list[str]) -> list[int]:
+    """Indices of the lines that START a section.
+
+    Two shapes: an ATX heading (``#``, but not a shebang) and an RST/AsciiDoc
+    underline — for which the heading is the line ABOVE the rule.
+    """
+    out: list[int] = []
+    for i, ln in enumerate(lines):
+        s = ln.lstrip()
+        if s.startswith("#") and not s.startswith("#!"):
+            out.append(i)
+        elif i > 0 and len(s) >= 3 and set(s) <= set('=-~^*"'):
+            out.append(i - 1)
+    return out
+
+
+def _window(lines: list[str], *, start_idx: int, first_index: int,
+            prefix: str = "") -> tuple[list[tuple[int, str, int, int]], int]:
+    """Slide a DOC_CHUNK_LINES window over ``lines``.
+
+    Returns ``(chunks, next_index)``. ``prefix`` is prepended to every chunk
+    after the first — that is how a windowed section keeps its heading
+    attached, so retrieval still associates the tail back to the title.
+    ``start_idx`` is the offset of ``lines[0]`` within the whole document, so
+    the emitted line numbers are absolute.
+    """
+    out: list[tuple[int, str, int, int]] = []
+    idx = first_index
+    step = max(1, DOC_CHUNK_LINES - CHUNK_OVERLAP)
+    i = 0
+    while i < len(lines):
+        chunk = lines[i:i + DOC_CHUNK_LINES]
+        if not chunk:
+            break
+        body = "\n".join(chunk)
+        if prefix and i > 0:
+            body = prefix + "\n" + body
+        out.append((idx, body, start_idx + i + 1, start_idx + i + len(chunk)))
+        idx += 1
+        if i + DOC_CHUNK_LINES >= len(lines):
+            break
+        i += step
+    return out, idx
+
+
 def _split_doc(text: str, *, file_path: str) -> list[tuple[int, str, int, int]]:
     """Heading-aware doc chunker.
 
@@ -210,69 +255,31 @@ def _split_doc(text: str, *, file_path: str) -> list[tuple[int, str, int, int]]:
     lines = text.splitlines()
     if not lines:
         return []
-    # Identify heading line indices: # / ## / === / --- / .. ::
-    heading_idx: list[int] = []
-    for i, ln in enumerate(lines):
-        s = ln.lstrip()
-        if s.startswith("#") and not s.startswith("#!"):
-            heading_idx.append(i)
-            continue
-        # RST underline: title is preceded by current line, followed
-        # by all-=-or---- line. Catch the underline.
-        if i > 0 and len(s) >= 3 and set(s) <= set("=-~^*\""):
-            heading_idx.append(i - 1)
-    heading_idx.append(len(lines))  # sentinel
 
+    heading_idx = _heading_lines(lines)
+    if not heading_idx:
+        # No headings — plain windowing over the whole document.
+        chunks, _ = _window(lines, start_idx=0, first_index=0)
+        return chunks
+    heading_idx.append(len(lines))          # sentinel: end of the last section
+
+    # Section by section, capped at ~2 × DOC_CHUNK_LINES; anything longer is
+    # windowed inside the section.
     out: list[tuple[int, str, int, int]] = []
-    if len(heading_idx) <= 1:
-        # No headings — fall back to plain windowing.
-        step = max(1, DOC_CHUNK_LINES - CHUNK_OVERLAP)
-        i = 0
-        idx = 0
-        while i < len(lines):
-            ch = lines[i:i + DOC_CHUNK_LINES]
-            if not ch:
-                break
-            out.append((idx, "\n".join(ch), i + 1, i + len(ch)))
-            idx += 1
-            if i + DOC_CHUNK_LINES >= len(lines):
-                break
-            i += step
-        return out
-
-    # Section-by-section. Cap each section at ~2 × DOC_CHUNK_LINES;
-    # split big sections via window inside.
     idx = 0
     cap = DOC_CHUNK_LINES * 2
     for k in range(len(heading_idx) - 1):
-        start = heading_idx[k]
-        end = heading_idx[k + 1]
-        sect_lines = lines[start:end]
-        if not sect_lines:
+        start, end = heading_idx[k], heading_idx[k + 1]
+        sect = lines[start:end]
+        if not sect:
             continue
-        if len(sect_lines) <= cap:
-            out.append(
-                (idx, "\n".join(sect_lines), start + 1, end),
-            )
+        if len(sect) <= cap:
+            out.append((idx, "\n".join(sect), start + 1, end))
             idx += 1
             continue
-        # Big section — windowed sub-split, each chunk prefixed with
-        # the heading so retrieval still associates back.
-        head = sect_lines[0]
-        i = 0
-        step = max(1, DOC_CHUNK_LINES - CHUNK_OVERLAP)
-        while i < len(sect_lines):
-            sub = sect_lines[i:i + DOC_CHUNK_LINES]
-            if not sub:
-                break
-            text_ch = (head + "\n" + "\n".join(sub)) if i > 0 else "\n".join(sub)
-            out.append(
-                (idx, text_ch, start + i + 1, start + i + len(sub)),
-            )
-            idx += 1
-            if i + DOC_CHUNK_LINES >= len(sect_lines):
-                break
-            i += step
+        chunks, idx = _window(sect, start_idx=start, first_index=idx,
+                              prefix=sect[0])
+        out += chunks
     return out
 
 

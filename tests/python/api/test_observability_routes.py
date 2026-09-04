@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from aiforge_core.api.routes import observability as obs
 
 
-@pytest.fixture()
+@pytest.fixture
 def client():
     app = FastAPI()
     app.include_router(obs.router)
@@ -41,7 +41,7 @@ def _drain(agen, limit=10):
 # ─── health ────────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def health_env(monkeypatch):
     import aiforge_core.tickets.backend_factory as bf
     import urllib.request
@@ -61,7 +61,8 @@ def health_env(monkeypatch):
 
 def test_health_reports_the_storage_backend(client, health_env):
     body = client.get("/api/health").json()
-    assert body["ok"] is True and body["storage"] == "sqlite"
+    assert body["ok"] is True
+    assert body["storage"] == "sqlite"
     assert body["lm_studio"] is False
 
 
@@ -174,7 +175,8 @@ def test_a_role_cannot_traverse_out_of_the_log_dir(monkeypatch, tmp_path):
     """The role reaches the filesystem, so it is sanitised before it does."""
     monkeypatch.setattr(obs, "LOG_DIR", str(tmp_path))
     path = _tailed_path(monkeypatch, "../../etc/passwd")
-    assert ".." not in path and "/etc/passwd" not in path
+    assert ".." not in path
+    assert "/etc/passwd" not in path
     assert path.startswith(str(tmp_path))
 
 
@@ -254,19 +256,22 @@ def test_a_failed_backfill_does_not_stop_the_stream(monkeypatch, tmp_path):
 def test_a_run_for_this_ticket_opens_the_window():
     in_ctx, emit = obs._trace_scope('{"event": "adk_runner.start", "t": "ONE-1"}',
                                     "ONE-1", False)
-    assert in_ctx is True and emit is False
+    assert in_ctx is True
+    assert emit is False
 
 
 def test_another_tickets_run_closes_the_window():
     in_ctx, emit = obs._trace_scope('{"event": "adk_runner.start", "t": "ONE-2"}',
                                     "ONE-1", True)
-    assert in_ctx is False and emit is False
+    assert in_ctx is False
+    assert emit is False
 
 
 def test_the_closing_line_is_emitted_then_the_window_ends():
     in_ctx, emit = obs._trace_scope('{"event": "adk_runner.done", "t": "ONE-1"}',
                                     "ONE-1", True)
-    assert in_ctx is False and emit is True
+    assert in_ctx is False
+    assert emit is True
 
 
 def test_lines_inside_the_window_are_emitted():
@@ -323,7 +328,8 @@ def test_a_corrupt_line_is_skipped(client, monkeypatch, tmp_path):
 def test_a_missing_log_reports_the_path_rather_than_500ing(client, monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_GRAPH_RUNNER_ERR", str(tmp_path / "gone.err"))
     body = client.get("/api/llm-trace/ONE-1").json()
-    assert body["events"] == [] and "not found" in body["error"]
+    assert body["events"] == []
+    assert "not found" in body["error"]
 
 
 # ─── the workflow DAG ──────────────────────────────────────────────────

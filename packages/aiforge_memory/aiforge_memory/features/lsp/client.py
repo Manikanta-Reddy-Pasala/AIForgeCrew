@@ -202,7 +202,7 @@ class LspClient:
             assert self._proc and self._proc.stdin
             self._proc.stdin.write(header + body)
             self._proc.stdin.flush()
-        except (BrokenPipeError, OSError) as exc:
+        except OSError as exc:      # BrokenPipeError IS an OSError
             raise LspError(f"send failed: {exc}") from exc
 
     def _read_loop(self) -> None:

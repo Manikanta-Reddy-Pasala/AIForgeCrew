@@ -129,8 +129,8 @@ def _apply_supervisor_invariants(
 # (API routes, CLI, tests, the sqlite backend's row mapper) names them.
 # Folding them into an object would move the same list one layer down and
 # break every call site to do it.
-def create(  # NOSONAR
-    *,
+def create(
+    *,  # NOSONAR
     title: str,
     body: str = "",
     assignee_role: str | None = None,

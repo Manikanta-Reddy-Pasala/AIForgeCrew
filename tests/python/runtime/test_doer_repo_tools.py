@@ -21,7 +21,7 @@ import pytest
 from aiforge_core.runtime.doer_tools import _repo as R
 
 
-@pytest.fixture()
+@pytest.fixture
 def sandbox(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_REPO_ROOT", str(tmp_path))
     return tmp_path
@@ -30,7 +30,7 @@ def sandbox(tmp_path, monkeypatch):
 # ─── the repo map ──────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def digest(monkeypatch):
     from aiforge_core.memory import code_context
     state: dict = {"digest": "app.py:\n  def main()\n", "seen": {}}
@@ -44,7 +44,8 @@ def digest(monkeypatch):
 
 def test_the_map_is_centred_on_what_was_asked_about(digest, sandbox):
     res = R.repo_map(focus="push sync", token_budget=2048)
-    assert res["ok"] is True and res["engine"] == "aider-treesitter-pagerank"
+    assert res["ok"] is True
+    assert res["engine"] == "aider-treesitter-pagerank"
     assert digest["seen"]["text"] == "push sync"
     assert digest["seen"]["budget"] == 2048
 
@@ -52,7 +53,8 @@ def test_the_map_is_centred_on_what_was_asked_about(digest, sandbox):
 def test_a_repo_too_small_to_map_says_so(digest, sandbox):
     digest["digest"] = ""
     res = R.repo_map()
-    assert res["ok"] is False and "empty map" in res["error"]
+    assert res["ok"] is False
+    assert "empty map" in res["error"]
 
 
 def test_a_missing_repomap_backend_is_a_soft_error(monkeypatch, sandbox):
@@ -112,7 +114,8 @@ def test_the_changed_files_are_mapped_to_their_tests(monkeypatch):
     monkeypatch.setattr(diff_impact, "impacted_tests",
                         lambda repo, files: ["test_a.py", "test_b.py"])
     res = R.impacted_tests("src/a.py, src/b.py")
-    assert res["tests"] == ["test_a.py", "test_b.py"] and res["count"] == 2
+    assert res["tests"] == ["test_a.py", "test_b.py"]
+    assert res["count"] == 2
     assert res["pattern"] == "test_a.py,test_b.py"
 
 
@@ -124,7 +127,8 @@ def test_nothing_changed_means_nothing_to_map(monkeypatch):
 def test_without_a_repo_the_caller_runs_the_full_suite(monkeypatch):
     monkeypatch.delenv("AIFORGE_AFM_REPO", raising=False)
     res = R.impacted_tests("a.py")
-    assert res["ok"] is False and res["tests"] == []
+    assert res["ok"] is False
+    assert res["tests"] == []
 
 
 def test_a_failing_impact_analysis_is_soft(monkeypatch):
@@ -138,7 +142,7 @@ def test_a_failing_impact_analysis_is_soft(monkeypatch):
 # ─── committing ────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def git(monkeypatch, sandbox):
     """A scripted git: one canned result per subcommand."""
     state: dict = {"calls": [], "add_rc": 0, "diff_rc": 1, "commit_rc": 0,
@@ -167,7 +171,8 @@ def git(monkeypatch, sandbox):
 
 def test_everything_in_the_worktree_is_staged_and_committed(git):
     res = R.git_commit("models written")
-    assert res["ok"] is True and res["staged"] == ["a.py", "b.py"]
+    assert res["ok"] is True
+    assert res["staged"] == ["a.py", "b.py"]
     add = git["calls"][0]
     assert add[:4] == ["git", "add", "-A", "--"], \
         "-A also captures deletions and renames"
@@ -192,7 +197,8 @@ def test_a_failed_stage_reports_gits_own_words(git):
     git["add_rc"] = 128
     git["stderr"] = b"fatal: not a git repository"
     res = R.git_commit("msg")
-    assert res["error"] == "git_add_failed" and "fatal" in res["stderr"]
+    assert res["error"] == "git_add_failed"
+    assert "fatal" in res["stderr"]
 
 
 def test_a_broken_diff_is_not_read_as_an_empty_tree(git):
@@ -208,13 +214,14 @@ def test_a_rejected_commit_surfaces_both_streams(git):
     git["stderr"] = b"hook failed"
     res = R.git_commit("msg")
     assert res["error"] == "git_commit_failed"
-    assert "hook failed" in res["stderr"] and "nothing added" in res["stdout"]
+    assert "hook failed" in res["stderr"]
+    assert "nothing added" in res["stdout"]
 
 
 # ─── read-only git inspect ─────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def git_ro(monkeypatch, sandbox):
     state: dict = {"argv": None, "rc": 0, "out": "on branch main\n", "err": ""}
 
@@ -268,7 +275,8 @@ def test_a_nonzero_exit_is_reported_not_raised(git_ro):
     git_ro["rc"] = 128
     git_ro["err"] = "fatal: bad revision"
     res = R.git_status()
-    assert res["ok"] is False and res["code"] == 128
+    assert res["ok"] is False
+    assert res["code"] == 128
 
 
 def test_a_box_without_git_says_exactly_that(git_ro):
@@ -289,7 +297,7 @@ def test_a_huge_diff_is_tail_capped(git_ro):
 # ─── renaming ──────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def project(sandbox):
     (sandbox / "a.py").write_text("old = 1\nprint(old)\n")
     (sandbox / "sub").mkdir()
@@ -302,8 +310,10 @@ def project(sandbox):
 
 def test_a_rename_previews_before_it_touches_anything(project):
     res = R.rename_symbol("old", "new")
-    assert res["dry_run"] is True and res["total_occurrences"] == 3
-    assert res["applied"] == 0 and "pass dry_run=false" in res["note"]
+    assert res["dry_run"] is True
+    assert res["total_occurrences"] == 3
+    assert res["applied"] == 0
+    assert "pass dry_run=false" in res["note"]
     assert (project / "a.py").read_text() == "old = 1\nprint(old)\n"
 
 
@@ -311,7 +321,8 @@ def test_applying_it_rewrites_and_records_the_touch(project, monkeypatch):
     touched: list = []
     monkeypatch.setattr(R, "record_touch", lambda fp: touched.append(fp))
     res = R.rename_symbol("old", "new", dry_run=False)
-    assert res["applied"] == 3 and "review the diff" in res["note"]
+    assert res["applied"] == 3
+    assert "review the diff" in res["note"]
     assert (project / "a.py").read_text() == "new = 1\nprint(new)\n"
     assert len(touched) == 2, "both source files are recorded as edited"
 

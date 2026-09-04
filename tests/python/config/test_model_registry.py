@@ -66,10 +66,12 @@ def test_an_explicit_flag_overrides_the_heuristic(flag, expected):
 
 def test_a_model_is_added_and_listed(registry):
     row = _add()
-    assert row["id"] == "coder" and row["model"] == "qwen3-coder"
+    assert row["id"] == "coder"
+    assert row["model"] == "qwen3-coder"
     assert row["api_key_set"] is False
     listed = mr.list_models()
-    assert len(listed) == 1 and listed[0]["base_url"] == "http://boxA/v1"
+    assert len(listed) == 1
+    assert listed[0]["base_url"] == "http://boxA/v1"
 
 
 def test_a_model_id_is_required():
@@ -84,7 +86,8 @@ def test_duplicate_labels_get_distinct_ids(registry):
 
 def test_an_invalid_capability_flag_falls_back_to_auto(registry):
     row = _add(vision="maybe", thinking="perhaps")
-    assert row["vision"] == "auto" and row["thinking"] == "auto"
+    assert row["vision"] == "auto"
+    assert row["thinking"] == "auto"
 
 
 def test_the_raw_key_is_never_listed(registry):
@@ -103,9 +106,12 @@ def test_a_model_is_updated_field_by_field(registry):
     out = mr.update_model(mid, label="New", base_url="http://boxB/v1",
                           vision="yes", thinking="no", context_window=32768,
                           insecure_tls=False)
-    assert out["label"] == "New" and out["base_url"] == "http://boxB/v1"
-    assert out["has_vision"] is True and out["has_thinking"] is False
-    assert out["context_window"] == 32768 and out["insecure_tls"] is False
+    assert out["label"] == "New"
+    assert out["base_url"] == "http://boxB/v1"
+    assert out["has_vision"] is True
+    assert out["has_thinking"] is False
+    assert out["context_window"] == 32768
+    assert out["insecure_tls"] is False
 
 
 def test_an_empty_key_never_clears_the_stored_one(registry):
@@ -125,7 +131,8 @@ def test_updating_a_missing_model(registry):
 
 def test_a_model_is_removed(registry):
     mid = _add()["id"]
-    assert mr.remove_model(mid) is True and mr.list_models() == []
+    assert mr.remove_model(mid) is True
+    assert mr.list_models() == []
     assert mr.remove_model(mid) is False
 
 
@@ -238,7 +245,7 @@ def test_a_per_model_window_is_read_back(registry):
     assert mr.context_for("never-added") == 0
 
 
-@pytest.fixture()
+@pytest.fixture
 def window(monkeypatch):
     """Control every input to the resolution order."""
     from aiforge_core.config import runtime_settings
@@ -362,7 +369,8 @@ def test_a_role_that_rejects_the_write_is_reported(registry, monkeypatch):
             raise ValueError("unknown role")
     monkeypatch.setattr(agent_config, "set_role", _set)
     out = mr.apply_to_roles(mid, ["doer", "bad"])
-    assert out["applied"] == ["doer"] and "unknown role" in out["errors"]["bad"]
+    assert out["applied"] == ["doer"]
+    assert "unknown role" in out["errors"]["bad"]
 
 
 def test_applying_an_unknown_model(registry):
@@ -373,7 +381,7 @@ def test_applying_an_unknown_model(registry):
 # ─── capability-based assignment ───────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def catalogue(registry):
     _add(label="Coder", model="qwen3-coder", context_window=32768)
     _add(label="Thinker", model="deepseek-r1", context_window=131072)

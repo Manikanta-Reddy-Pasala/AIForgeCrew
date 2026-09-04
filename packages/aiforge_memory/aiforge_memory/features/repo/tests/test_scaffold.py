@@ -14,7 +14,9 @@ def test_codemem_imports() -> None:
     from aiforge_memory.features.symbol import extract_calls
 
     assert aiforge_memory.SCHEMA_VERSION
-    assert embed and extract and extract_calls
+    assert embed
+    assert extract
+    assert extract_calls
 
 
 def test_codemem_version_marker() -> None:

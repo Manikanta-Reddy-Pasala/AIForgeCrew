@@ -22,7 +22,7 @@ import pytest
 _SRC = Path(__file__).resolve().parents[3] / "scripts" / "rag_eval.py"
 
 
-@pytest.fixture()
+@pytest.fixture
 def re_mod():
     spec = importlib.util.spec_from_file_location("rag_eval_under_test", _SRC)
     mod = importlib.util.module_from_spec(spec)
@@ -43,7 +43,8 @@ def _args(**kw):
 
 def test_the_builtin_smoke_set_is_used_without_a_file(re_mod):
     rows = re_mod._samples(_args())
-    assert len(rows) == 3 and all("question" in r for r in rows)
+    assert len(rows) == 3
+    assert all("question" in r for r in rows)
 
 
 def test_the_builtin_set_honours_a_limit(re_mod):
@@ -69,7 +70,7 @@ def test_a_questions_file_honours_the_limit(re_mod, tmp_path):
 # ─── the run ───────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def wired(re_mod, monkeypatch):
     """Stub ragas, the LLM and memory; capture what each hop received."""
     from aiforge_core.integrations import ragas_adapter
@@ -117,9 +118,11 @@ def test_a_missing_ragas_prints_the_overlay_command(re_mod, wired, capsys):
 def test_each_question_is_recalled_then_answered_from_its_contexts(re_mod, wired,
                                                                    capsys):
     assert re_mod.main() == 0
-    assert len(wired["queries"]) == 1 and wired["queries"][0]["limit"] == 6
+    assert len(wired["queries"]) == 1
+    assert wired["queries"][0]["limit"] == 6
     user = wired["completions"][0]["messages"][1]["content"]
-    assert "context one" in user and "Question:" in user
+    assert "context one" in user
+    assert "Question:" in user
     system = wired["completions"][0]["messages"][0]["content"]
     assert "ONLY from the provided context" in system
 
@@ -173,5 +176,6 @@ def test_the_scores_are_printed_with_the_judge(re_mod, wired, capsys):
     re_mod.main()
     out = capsys.readouterr().out
     assert "judge=qwen" in out
-    assert "faithfulness" in out and "0.91" in out
+    assert "faithfulness" in out
+    assert "0.91" in out
     assert "recalled 1 contexts for:" in out

@@ -54,7 +54,7 @@ def test_a_short_or_common_name_needs_a_repo_cue(prompt, found):
 # ─── identifying the repos ─────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def repos(monkeypatch, tmp_path):
     from aiforge_core.config import repo_map
     registry: dict = {}
@@ -177,7 +177,9 @@ def test_two_repos_fan_out(monkeypatch):
                         lambda p, cwd: [{"name": "a"}, {"name": "b"}])
     monkeypatch.setattr(ap, "extract_topics", lambda p: ["auth"])
     fan, repos, topics = ap.should_fan_out("p", "/cwd")
-    assert fan is True and len(repos) == 2 and topics == ["auth"]
+    assert fan is True
+    assert len(repos) == 2
+    assert topics == ["auth"]
 
 
 def test_one_repo_does_not_fan_out(monkeypatch):
@@ -200,8 +202,10 @@ def test_the_worker_count_is_clamped(monkeypatch, raw, expected):
 def test_the_brief_is_explicitly_read_only():
     out = ap._explore_prompt({"name": "alpha", "path": "/src/alpha"},
                              ["auth"], "compare the repos")
-    assert "READ-ONLY" in out and "Do NOT modify" in out
-    assert "Focus topics: auth" in out and "/src/alpha" in out
+    assert "READ-ONLY" in out
+    assert "Do NOT modify" in out
+    assert "Focus topics: auth" in out
+    assert "/src/alpha" in out
 
 
 def test_a_topicless_brief_asks_for_an_overview():
@@ -217,19 +221,23 @@ def test_the_last_message_is_the_findings():
         [{"type": "thought", "text": "looking"},
          {"type": "message", "text": "# Findings\nfirst"},
          {"type": "message", "text": "# Findings\nfinal"}], {"name": "a"})
-    assert ok is True and err is None and findings.endswith("final")
+    assert ok is True
+    assert err is None
+    assert findings.endswith("final")
 
 
 def test_an_error_event_ends_the_explore():
     _f, ok, err = ap._findings_from_events(
         [{"type": "error", "text": "model down"}], {"name": "a", "path": "/p"})
-    assert ok is False and err["error"] == "model down"
+    assert ok is False
+    assert err["error"] == "model down"
 
 
 def test_a_stopped_run_produces_no_findings():
     findings, ok, _err = ap._findings_from_events(
         [{"type": "message", "text": "(stopped: user)"}], {"name": "a"})
-    assert ok is False and findings == ""
+    assert ok is False
+    assert findings == ""
 
 
 def test_a_clarification_message_is_not_findings():
@@ -242,7 +250,7 @@ def test_a_clarification_message_is_not_findings():
 # ─── one explore worker ────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def explorer(monkeypatch):
     import aiforge_core.runtime.chat_agent as ca
     from aiforge_core.runtime import request_context as rc
@@ -262,10 +270,13 @@ def test_an_explore_runs_read_only_and_unattended(explorer):
     without mode="analyze" a hallucinated write would auto-apply in the user's
     real repo."""
     out = ap._explore_one({"name": "alpha", "path": "/src/alpha"}, [], "overall")
-    assert out["ok"] is True and out["findings"] == "# Findings"
+    assert out["ok"] is True
+    assert out["findings"] == "# Findings"
     kw = explorer["kwargs"]
-    assert kw["mode"] == "analyze" and kw["session_id"] is None
-    assert kw["role"] == "researcher" and kw["cwd"] == "/src/alpha"
+    assert kw["mode"] == "analyze"
+    assert kw["session_id"] is None
+    assert kw["role"] == "researcher"
+    assert kw["cwd"] == "/src/alpha"
 
 
 def test_the_worker_binds_its_own_repo_root(explorer):
@@ -280,7 +291,8 @@ def test_a_crashing_explore_is_reported_not_raised(explorer, monkeypatch):
     monkeypatch.setattr(ca, "run_chat_agent",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
     out = ap._explore_one({"name": "a", "path": "/p"}, [], "o")
-    assert out["ok"] is False and out["error"] == "boom"
+    assert out["ok"] is False
+    assert out["error"] == "boom"
 
 
 def test_a_file_group_explore_passes_exact_paths(explorer):
@@ -296,13 +308,14 @@ def test_a_crashing_group_explore_is_reported(explorer, monkeypatch):
     monkeypatch.setattr(ca, "run_chat_agent",
                         lambda *a, **k: (_ for _ in ()).throw(OSError("no repo")))
     out = ap._explore_files_group({"name": "g", "path": "/p", "files": []}, [], "o")
-    assert out["ok"] is False and out["error"] == "no repo"
+    assert out["ok"] is False
+    assert out["error"] == "no repo"
 
 
 # ─── the intra-repo plan ───────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def files_repo(tmp_path, monkeypatch):
     for i in range(8):
         (tmp_path / f"mod{i}.py").write_text("x = 1\n")
@@ -341,15 +354,18 @@ def test_an_absolute_path_is_not_discovered(files_repo):
 def test_many_named_files_are_split_into_bounded_groups(files_repo):
     prompt = "summarise " + ", ".join(f"mod{i}.py" for i in range(8))
     plan, groups, _topics = ap.plan_single_repo(prompt, str(files_repo))
-    assert plan is True and len(groups) == 2
+    assert plan is True
+    assert len(groups) == 2
     assert groups[0]["files"] == ["mod0.py", "mod1.py", "mod2.py", "mod3.py"]
-    assert groups[0]["name"] == "files 1-4" and groups[1]["name"] == "files 5-8"
+    assert groups[0]["name"] == "files 1-4"
+    assert groups[1]["name"] == "files 5-8"
 
 
 def test_a_few_files_stay_on_the_plain_research_agent(files_repo):
     plan, groups, _t = ap.plan_single_repo("summarise mod0.py and mod1.py",
                                            str(files_repo))
-    assert plan is False and groups == []
+    assert plan is False
+    assert groups == []
 
 
 @pytest.mark.parametrize("var,fn,raw,expected", [
@@ -366,7 +382,7 @@ def test_the_plan_thresholds_are_clamped(monkeypatch, var, fn, raw, expected):
 # ─── synthesis ─────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def synth(monkeypatch):
     from aiforge_core.llm import client
     state: dict = {"reply": "# The draft", "prompt": None}
@@ -386,7 +402,8 @@ def test_every_repos_findings_reach_the_synthesis(synth):
                           {"name": "beta", "path": "/b", "findings": "B findings"}],
                          ["auth"])
     assert out == "# The draft"
-    assert "A findings" in synth["prompt"] and "B findings" in synth["prompt"]
+    assert "A findings" in synth["prompt"]
+    assert "B findings" in synth["prompt"]
     assert "requested topics were: auth" in synth["prompt"]
 
 
@@ -406,7 +423,8 @@ def test_the_budget_is_per_repo_so_the_tail_is_not_dropped(synth):
 def test_a_failed_synthesis_never_loses_the_raw_findings(synth):
     synth["reply"] = RuntimeError("model down")
     out = ap._synthesize("p", [{"name": "a", "path": "/a", "findings": "A"}], [])
-    assert "synthesis failed" in out and "A" in out
+    assert "synthesis failed" in out
+    assert "A" in out
 
 
 def test_an_empty_reply_falls_back_to_the_raw_findings(synth):
@@ -418,7 +436,7 @@ def test_an_empty_reply_falls_back_to_the_raw_findings(synth):
 # ─── the fan-out skeleton ──────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def fanout(monkeypatch):
     from aiforge_core.runtime import chat_cancel
     state = {"cancelled": False, "results": {}}
@@ -440,7 +458,8 @@ def test_the_fan_out_announces_tracks_and_synthesizes(fanout):
     events = list(ap._fan_out_and_synthesize("p", units, _explore_ok, ["auth"],
                                              None, "repository"))
     kinds = [e["type"] for e in events]
-    assert kinds[0] == "thought" and kinds[1] == "subtasks"
+    assert kinds[0] == "thought"
+    assert kinds[1] == "subtasks"
     assert kinds[-2:] == ["message", "done"]
     assert events[1]["items"][0]["slug"] == "alpha"
     assert [e for e in events if e["type"] == "message"][0]["text"] == "# Draft (2)"
@@ -490,7 +509,8 @@ def test_the_cross_repo_entry_point_resolves_its_own_repos(monkeypatch):
         return iter(())
     monkeypatch.setattr(ap, "_fan_out_and_synthesize", _skeleton)
     list(ap.stream_analysis_team("p", "/cwd"))
-    assert seen["noun"] == "repository" and seen["fn"] is ap._explore_one
+    assert seen["noun"] == "repository"
+    assert seen["fn"] is ap._explore_one
     assert seen["topics"] == ["auth"]
 
 
@@ -502,4 +522,5 @@ def test_the_planned_entry_point_resolves_its_own_groups(monkeypatch):
                         lambda prompt, units, fn, topics, sid, noun:
                         seen.update(noun=noun, fn=fn) or iter(()))
     list(ap.stream_analysis_planned("p", "/cwd"))
-    assert seen["noun"] == "file group" and seen["fn"] is ap._explore_files_group
+    assert seen["noun"] == "file group"
+    assert seen["fn"] is ap._explore_files_group

@@ -52,14 +52,14 @@ class _T:
         self.route_confidence = kw.get("route_confidence")
 
 
-@pytest.fixture()
+@pytest.fixture
 def client():
     app = FastAPI()
     app.include_router(tk.router)
     return TestClient(app)
 
 
-@pytest.fixture()
+@pytest.fixture
 def store(monkeypatch, tmp_path):
     """A stubbed ticket store + a temp attachment base."""
     state: dict = {"ticket": _T(), "created": None, "deleted": [], "events": [],
@@ -130,8 +130,10 @@ def test_a_naive_timestamp_is_treated_as_utc():
 
 def test_a_row_defaults_its_route_and_collections():
     out = tk._ticket_row_out(_row())
-    assert out["route"] == "code" and out["route_source"] == "auto"
-    assert out["labels"] == [] and out["metadata"] == {}
+    assert out["route"] == "code"
+    assert out["route_source"] == "auto"
+    assert out["labels"] == []
+    assert out["metadata"] == {}
     assert out["created_at"] is None
 
 
@@ -145,7 +147,8 @@ def test_an_event_row_is_shaped():
     out = tk._event_row_out({"id": 1, "ticket_id": 2, "agent_role": "doer",
                              "kind": "stage_done", "body": None,
                              "metadata": None, "created_at": now})
-    assert out["body"] == "" and out["metadata"] == {}
+    assert out["body"] == ""
+    assert out["metadata"] == {}
     assert out["created_at"] == now.isoformat()
 
 
@@ -227,7 +230,7 @@ def test_removal_names_are_reduced_to_basenames(store, tmp_path):
 # ─── creating ──────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def create_env(monkeypatch, store):
     monkeypatch.setattr(tk._cfg, "canonical_role", lambda r: r)
     import aiforge_core.workflows as wf
@@ -260,7 +263,8 @@ def test_a_manual_route_is_recorded_as_manual(client, create_env):
 
 def test_a_workflow_route_needs_a_workflow_id(client, create_env):
     r = client.post("/api/tickets", json={"title": "t", "route": "workflow"})
-    assert r.status_code == 400 and "requires route_workflow" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "requires route_workflow" in r.json()["detail"]
 
 
 def test_a_broken_detector_never_breaks_a_ticket_post(client, create_env, monkeypatch):
@@ -289,7 +293,8 @@ def test_max_turns_lands_in_metadata(client, create_env):
 def test_an_unknown_parent_is_a_400(client, create_env):
     r = client.post("/api/tickets", json={"title": "t",
                                           "parent_identifier": "ONE-999"})
-    assert r.status_code == 400 and "not found" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "not found" in r.json()["detail"]
 
 
 def test_a_known_parent_is_linked(client, create_env):
@@ -405,7 +410,8 @@ def test_a_broken_subtask_store_still_renders_the_ticket(client, store, monkeypa
     monkeypatch.setattr(subtasks, "get_subtasks",
                         lambda tid: (_ for _ in ()).throw(RuntimeError("db gone")))
     body = client.get("/api/tickets/ONE-1").json()
-    assert body["subtasks"] == [] and body["subtask_progress"]["total"] == 0
+    assert body["subtasks"] == []
+    assert body["subtask_progress"]["total"] == 0
 
 
 def test_a_missing_ticket_is_a_404(client, store, monkeypatch):
@@ -416,7 +422,7 @@ def test_a_missing_ticket_is_a_404(client, store, monkeypatch):
 # ─── patching ──────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def patch_env(client, store, monkeypatch):
     monkeypatch.setattr(tk._cfg, "canonical_role", lambda r: r)
     monkeypatch.setattr(tk.tickets_mod, "VALID_STATUS", {"todo", "done"})
@@ -436,7 +442,8 @@ def test_a_status_change_is_recorded_as_human(client, patch_env):
 
 def test_an_invalid_status_is_a_400(client, patch_env):
     r = client.patch("/api/tickets/ONE-1", json={"status": "nope"})
-    assert r.status_code == 400 and "bad status" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "bad status" in r.json()["detail"]
 
 
 def test_patching_a_missing_ticket_is_a_404(client, patch_env):
@@ -487,10 +494,11 @@ def test_the_route_detector_can_be_previewed(client, monkeypatch):
     monkeypatch.setattr(det, "preview", _preview)
     body = client.post("/api/workflows/preview",
                        json={"body": "deploy it", "title": "t"}).json()
-    assert body["workflow_id"] == "wf-1" and seen["body"] == "deploy it"
+    assert body["workflow_id"] == "wf-1"
+    assert seen["body"] == "deploy it"
 
 
-@pytest.fixture()
+@pytest.fixture
 def route_env(monkeypatch, store):
     import aiforge_core.workflows as wf
     monkeypatch.setattr(wf, "get", lambda wid: {"id": wid} if wid == "wf-1" else None)
@@ -502,18 +510,21 @@ def route_env(monkeypatch, store):
 def test_an_override_records_the_manual_source(client, route_env):
     body = client.put("/api/tickets/ONE-1/route",
                       json={"route": "workflow", "route_workflow": "wf-1"}).json()
-    assert body["route"] == "workflow" and body["route_source"] == "manual"
+    assert body["route"] == "workflow"
+    assert body["route_source"] == "manual"
 
 
 def test_a_workflow_override_needs_an_id(client, route_env):
     r = client.put("/api/tickets/ONE-1/route", json={"route": "workflow"})
-    assert r.status_code == 400 and "requires route_workflow" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "requires route_workflow" in r.json()["detail"]
 
 
 def test_an_unknown_workflow_id_is_a_400(client, route_env):
     r = client.put("/api/tickets/ONE-1/route",
                    json={"route": "workflow", "route_workflow": "nope"})
-    assert r.status_code == 400 and "unknown workflow id" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "unknown workflow id" in r.json()["detail"]
 
 
 def test_overriding_a_missing_ticket_is_a_404(client, route_env):
@@ -531,9 +542,11 @@ def test_run_parallel_starts_in_the_background(client, store, monkeypatch):
     ran: list = []
     monkeypatch.setattr(ps, "run_subtasks_parallel", lambda t: ran.append(t.identifier))
     r = client.post("/api/tickets/ONE-1/run-parallel")
-    assert r.status_code == 202 and r.json() == {"started": True,
+    assert r.status_code == 202
+    assert r.json() == {"started": True,
                                                  "identifier": "ONE-1"}
-    assert started == ["parallel-ONE-1"] and ran == ["ONE-1"]
+    assert started == ["parallel-ONE-1"]
+    assert ran == ["ONE-1"]
 
 
 def test_a_crash_in_the_background_run_is_logged(client, store, monkeypatch):
@@ -550,7 +563,8 @@ def test_run_parallel_on_a_missing_ticket_is_a_404(client, store):
 
 def test_a_comment_returns_its_event_id(client, store):
     r = client.post("/api/tickets/ONE-1/comments", json={"body": "hi"})
-    assert r.status_code == 201 and r.json() == {"event_id": 99}
+    assert r.status_code == 201
+    assert r.json() == {"event_id": 99}
 
 
 def test_commenting_on_a_missing_ticket_is_a_404(client, store):
@@ -570,7 +584,7 @@ def test_reset_reports_how_many_were_deleted(client, store):
 # ─── live intervention ─────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def task_dirs(monkeypatch, tmp_path):
     ga = tmp_path / "ga"
     (ga / "temp" / "aiforge-ONE-1-abc").mkdir(parents=True)
@@ -603,7 +617,8 @@ def test_a_control_file_is_written_to_every_target(client, task_dirs, kind, expe
 
 def test_an_unknown_intervention_kind_is_a_400(client, task_dirs):
     r = client.post("/api/tickets/ONE-1/intervene", json={"kind": "explode"})
-    assert r.status_code == 400 and "must be one of" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "must be one of" in r.json()["detail"]
 
 
 def test_intervening_with_no_running_agent_is_a_404(client, monkeypatch, tmp_path):

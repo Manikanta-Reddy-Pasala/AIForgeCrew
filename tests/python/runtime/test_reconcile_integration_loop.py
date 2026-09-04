@@ -35,7 +35,7 @@ def _runner(monkeypatch, results):
 # ─── the pre-existing-failure gate ─────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def gate(monkeypatch):
     monkeypatch.setattr(ig, "_fail_count", lambda out: 0)
     monkeypatch.setattr(ig, "_broken_project_config", lambda cwd: "")
@@ -170,7 +170,7 @@ def test_a_prune_failure_is_swallowed(monkeypatch):
 # ─── one repair round ──────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def round_env(monkeypatch, tmp_path):
     monkeypatch.setattr(ig, "_prune_quietly", lambda cwd: [])
     monkeypatch.setattr(ig, "_escalation_model", lambda: None)
@@ -186,7 +186,8 @@ def test_an_improving_round_is_kept_and_clears_the_stall_count(round_env, monkey
     _runner(monkeypatch, [(False, "1 failed")])
     state: dict = {}
     events = list(ig._repair_round(str(round_env), "3 failed", 1, 12, 3, 2, state))
-    assert state["prev_fails"] == 1 and state["stalls"] == 0
+    assert state["prev_fails"] == 1
+    assert state["stalls"] == 0
     assert events[-1]["name"] == "patched files"
     assert events[-1]["args"]["status"] == "1 failing"
 
@@ -198,7 +199,8 @@ def test_a_lateral_round_is_kept_but_counts_as_a_stall(round_env, monkeypatch):
     _runner(monkeypatch, [(False, "3 failed")])
     state: dict = {}
     list(ig._repair_round(str(round_env), "3 failed", 1, 12, 3, 0, state))
-    assert state["prev_fails"] == 3 and state["stalls"] == 1
+    assert state["prev_fails"] == 3
+    assert state["stalls"] == 1
 
 
 def test_a_regressing_round_is_rolled_back(round_env, monkeypatch):
@@ -236,7 +238,8 @@ def test_a_tree_that_cannot_collect_reports_the_output(round_env, monkeypatch):
     events = list(ig._repair_round(str(round_env), "collection error", 1, 12, 999, 0, state))
     ev = events[-1]
     assert ev["args"]["status"] == "tests can't run (collection/build error)"
-    assert ev["result"]["ok"] is False and ev["result"]["output"]
+    assert ev["result"]["ok"] is False
+    assert ev["result"]["output"]
 
 
 # ─── the loop ──────────────────────────────────────────────────────────
@@ -254,7 +257,8 @@ def test_the_loop_stops_when_the_tree_goes_green(monkeypatch):
     monkeypatch.setattr(ig, "_repair_round", _round)
     state: dict = {}
     list(ig._repair_loop("/cwd", "2 failed", None, state))
-    assert rounds["n"] == 1 and state["ok"] is True
+    assert rounds["n"] == 1
+    assert state["ok"] is True
 
 
 def test_the_loop_is_bounded_by_the_round_cap(monkeypatch):
@@ -296,7 +300,7 @@ def test_stop_halts_the_loop(monkeypatch):
 # ─── the entry point ───────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def report(monkeypatch):
     import aiforge_core.runtime.integration_report as ir
     monkeypatch.setattr(ir, "build_and_test_report", lambda cwd: {"ok": True, "md": "# report"})
@@ -308,7 +312,8 @@ def test_a_green_tree_needs_no_repair(monkeypatch, report):
     monkeypatch.setattr(ig, "_repair_loop", lambda *a: pytest.fail("repaired a green tree"))
     result: dict = {}
     assert list(ig._reconcile_integration("/cwd", result)) == []
-    assert result["ok"] is True and result["rep"]["md"] == "# report"
+    assert result["ok"] is True
+    assert result["rep"]["md"] == "# report"
 
 
 def test_stop_before_the_first_run_still_reports(monkeypatch, report):
@@ -400,7 +405,8 @@ def test_the_spec_carries_goal_tree_contract_and_subtasks():
     ])
     assert "## Goal\n\nBuild an LRU cache" in md
     assert "- `app/store.py`" in md
-    assert "### `app/store.py` exposes" in md and "- `class Store`" in md
+    assert "### `app/store.py` exposes" in md
+    assert "- `class Store`" in md
     assert "## Subtasks (2)" in md
     assert "1. **store** — the cache" in md
     assert "   - [ ] evicts LRU" in md
@@ -408,7 +414,8 @@ def test_the_spec_carries_goal_tree_contract_and_subtasks():
 
 def test_a_plan_without_paths_omits_the_file_tree():
     md = ig._render_spec_md("goal", [{"slug": "a", "goal": "think"}])
-    assert "File tree" not in md and "API contract" not in md
+    assert "File tree" not in md
+    assert "API contract" not in md
 
 
 def test_a_plan_without_declared_apis_omits_the_contract():
@@ -424,7 +431,7 @@ def test_a_subtask_without_a_slug_is_numbered():
 # ─── the delivery audit ────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def verifier(monkeypatch):
     import aiforge_core.llm.client as client
     seen: dict = {}

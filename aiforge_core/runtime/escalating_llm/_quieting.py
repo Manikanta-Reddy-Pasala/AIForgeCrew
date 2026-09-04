@@ -147,8 +147,10 @@ def _neutralise_logging_worker() -> None:
         # Stays `async` with no await on purpose: it REPLACES langfuse's
         # LoggingWorker.flush, which langfuse awaits. A sync stub here
         # raises "object NoneType can't be used in 'await' expression"
-        # at shutdown. NOSONAR — S7503 cannot see the method it stands in for.
-        async def _anoop(self, *a, **k):  # noqa: ANN001  # NOSONAR
+        # at shutdown. S7503 cannot see the method it stands in for.
+        # (One directive per line — a second `#` after the first is not part
+        # of the suppression and tools disagree about what to do with it.)
+        async def _anoop(self, *a, **k):  # NOSONAR
             return None
 
         _lw.LoggingWorker.ensure_initialized_and_enqueue = _drop

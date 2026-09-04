@@ -22,14 +22,14 @@ from fastapi.testclient import TestClient
 from aiforge_core.api.routes import chat as ch
 
 
-@pytest.fixture()
+@pytest.fixture
 def client():
     app = FastAPI()
     app.include_router(ch.router)
     return TestClient(app)
 
 
-@pytest.fixture()
+@pytest.fixture
 def store(monkeypatch, tmp_path):
     """A stubbed chat_store plus a managed workspace root."""
     from aiforge_core.runtime import chat_store
@@ -59,7 +59,7 @@ def store(monkeypatch, tmp_path):
     return state
 
 
-@pytest.fixture()
+@pytest.fixture
 def quiet_background(monkeypatch):
     """Silence the fold / vision-warm side effects."""
     from aiforge_core.runtime import chat_session_fold, vision_detect
@@ -133,7 +133,8 @@ def test_sessions_are_listed(client, store):
 def test_a_session_is_read_with_its_messages(client, store):
     store["messages"] = [{"role": "user", "content": "hi"}]
     body = client.get("/api/chat/sessions/7").json()
-    assert body["session"]["id"] == 7 and len(body["messages"]) == 1
+    assert body["session"]["id"] == 7
+    assert len(body["messages"]) == 1
 
 
 def test_a_missing_session_is_a_404(client, store):
@@ -161,7 +162,8 @@ def test_reset_wipes_the_rows_the_markers_and_the_workspaces(client, store,
     cleared: list = []
     monkeypatch.setattr(chat_okr, "clear_all_markers", lambda: cleared.append(1))
     body = client.post("/api/chat/sessions/reset").json()
-    assert body["deleted"] == 3 and body["workspaces_removed"] == 2
+    assert body["deleted"] == 3
+    assert body["workspaces_removed"] == 2
     assert cleared == [1]
     assert not (store["root"] / "session-9").exists()
 
@@ -183,7 +185,7 @@ def test_a_marker_wipe_failure_does_not_fail_the_reset(client, store, monkeypatc
     assert client.post("/api/chat/sessions/reset").status_code == 200
 
 
-@pytest.fixture()
+@pytest.fixture
 def delete_env(monkeypatch, store):
     from aiforge_core.runtime import (chat_approve, chat_cancel, chat_interject,
                                       chat_okr, chat_runs, chat_session_fold)
@@ -208,7 +210,8 @@ def test_deleting_a_chat_stops_its_run_and_folds_it_first(client, store,
     os.makedirs(store["session"]["cwd"], exist_ok=True)
     assert client.delete("/api/chat/sessions/7").status_code == 204
     assert delete_env[:4] == ["cancel", "approve", "interject", "runs"]
-    assert "fold" in delete_env and "forget" in delete_env
+    assert "fold" in delete_env
+    assert "forget" in delete_env
     assert not os.path.exists(store["session"]["cwd"])
 
 
@@ -235,7 +238,7 @@ def test_a_failing_marker_cleanup_does_not_fail_the_delete(client, store,
 # ─── attachments ───────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def media(monkeypatch, store, tmp_path):
     from aiforge_core.runtime import chat_media, chat_store
     state: dict = {"saved": {"ok": True, "path": str(tmp_path / "a.png"),
@@ -271,7 +274,8 @@ def test_an_upload_is_saved_and_described(client, store, media):
                     files={"file": ("a.png", b"\x89PNG")})
     assert r.status_code == 201
     body = r.json()
-    assert body["description"] == "a chart" and body["auto_described"] is True
+    assert body["description"] == "a chart"
+    assert body["auto_described"] is True
     assert body["kind"] == "image"
 
 
@@ -282,13 +286,15 @@ def test_an_undescribable_upload_is_still_stored(client, store, media, monkeypat
                         lambda *a: (_ for _ in ()).throw(RuntimeError("no vlm")))
     body = client.post("/api/chat/sessions/7/media",
                        files={"file": ("a.png", b"x")}).json()
-    assert body["auto_described"] is False and body["description"] == ""
+    assert body["auto_described"] is False
+    assert body["description"] == ""
 
 
 def test_an_invalid_upload_is_a_400(client, store, media):
     media["saved"] = {"ok": False, "error": "file_too_large"}
     r = client.post("/api/chat/sessions/7/media", files={"file": ("a.bin", b"x")})
-    assert r.status_code == 400 and r.json()["detail"] == "file_too_large"
+    assert r.status_code == 400
+    assert r.json()["detail"] == "file_too_large"
 
 
 def test_uploading_to_a_missing_session_is_a_404(client, store, media):
@@ -327,7 +333,8 @@ def test_a_file_that_is_already_gone_is_not_an_error(client, store, media):
 def test_the_raw_file_is_served(client, store, media, tmp_path):
     (tmp_path / "a.png").write_bytes(b"\x89PNG")
     r = client.get("/api/chat/media/1/raw")
-    assert r.status_code == 200 and r.content == b"\x89PNG"
+    assert r.status_code == 200
+    assert r.content == b"\x89PNG"
 
 
 def test_a_missing_raw_file_is_a_404(client, store, media):
@@ -381,7 +388,8 @@ def test_the_digest_is_capped():
 
 
 def test_a_turn_with_no_tools_has_no_digest():
-    assert ch._step_digest([]) == "" and ch._step_digest("not a list") == ""
+    assert ch._step_digest([]) == ""
+    assert ch._step_digest("not a list") == ""
 
 
 def test_an_assistant_turn_carries_what_it_did(monkeypatch):
@@ -444,7 +452,8 @@ def test_a_topic_suggestion_is_captured(monkeypatch, prompt):
                         lambda kind, text, repo=None, source=None:
                         seen.update(kind=kind, repo=repo, source=source))
     ch._capture_chat_cue(prompt, "app", 7, pref_captured=False)
-    assert seen["kind"] == "topic_suggestion" and seen["source"] == "chat:7"
+    assert seen["kind"] == "topic_suggestion"
+    assert seen["source"] == "chat:7"
 
 
 def test_a_plain_preference_cue_is_captured_as_a_comment(monkeypatch):
@@ -504,7 +513,7 @@ def test_a_crash_in_the_writeback_never_affects_the_turn(monkeypatch):
 # ─── the periodic session summary ──────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def summary(monkeypatch):
     from aiforge_core.memory import okf
     from aiforge_core.runtime import (chat_store, chat_summary, session_ledger)
@@ -577,7 +586,8 @@ def test_the_turn_trace_is_served(client, store, monkeypatch):
     monkeypatch.setattr(chat_trace, "read_turns",
                         lambda sid: [{"ts": 1, "mode": "simple"}])
     body = client.get("/api/chat/sessions/7/trace").json()
-    assert body["count"] == 1 and body["session_id"] == 7
+    assert body["count"] == 1
+    assert body["session_id"] == 7
 
 
 def test_the_llm_usage_meter_is_served(client, store, monkeypatch):
@@ -592,7 +602,8 @@ def test_the_planners_spec_is_served_when_it_exists(client, store, tmp_path):
     store["session"]["cwd"] = str(tmp_path)
     (tmp_path / "SPEC.md").write_text("# SPEC\nthe plan")
     body = client.get("/api/chat/sessions/7/spec").json()
-    assert body["exists"] is True and "the plan" in body["content"]
+    assert body["exists"] is True
+    assert "the plan" in body["content"]
 
 
 def test_no_spec_yet(client, store, tmp_path):
@@ -607,7 +618,8 @@ def test_an_unreadable_spec_reports_the_error(client, store, tmp_path, monkeypat
     monkeypatch.setattr("builtins.open",
                         lambda *a, **k: (_ for _ in ()).throw(OSError("locked")))
     body = client.get("/api/chat/sessions/7/spec").json()
-    assert body["exists"] is False and "locked" in body["error"]
+    assert body["exists"] is False
+    assert "locked" in body["error"]
 
 
 def test_an_explicit_compaction_distils_the_session(client, store, monkeypatch):

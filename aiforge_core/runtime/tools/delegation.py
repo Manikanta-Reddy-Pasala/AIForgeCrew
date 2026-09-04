@@ -76,9 +76,9 @@ async def _drive_delegate(runner, session_id, content) -> list[str]:
     return output_parts
 
 
-async def _run_delegate_async(
-    role: str, prompt: str, timeout: int,
-) -> dict[str, Any]:
+async def _run_delegate_async(role: str, prompt: str) -> dict[str, Any]:
+    """Run one delegate to completion. NO deadline of its own — see
+    :func:`_run_delegate_with_deadline`, which owns the wall clock."""
     from google.adk.runners import Runner
     from google.adk.sessions import InMemorySessionService
     from google.genai import types as gtypes
@@ -102,15 +102,11 @@ async def _run_delegate_async(
         pass
 
     try:
-        # asyncio.timeout(), not wait_for(timeout=...): the context manager
-        # cancels the body in place rather than wrapping it in a second task,
-        # so the delegate's own cleanup runs inside the same task that started
-        # it — which is what `finally` below is relying on.
-        async with asyncio.timeout(timeout):
-            output_parts = await _drive_delegate(runner, session.id, content)
-    except TimeoutError:
-        return {"ok": False, "error": "timeout", "role": role}
+        output_parts = await _drive_delegate(runner, session.id, content)
     finally:
+        # Runs on the deadline's cancellation too: asyncio.timeout() cancels
+        # this task in place rather than abandoning it in a second one, so the
+        # delegate's tool sessions are always torn down.
         _cleanup_delegate_sessions(session.id)
 
     session = await session_svc.get_session(
@@ -118,6 +114,21 @@ async def _run_delegate_async(
     state = dict(session.state or {})
     return {"ok": True, "role": role, "output": "\n".join(output_parts),
             "state_keys": sorted(state.keys())}
+
+
+async def _run_delegate_with_deadline(role: str, prompt: str,
+                                      seconds: int) -> dict[str, Any]:
+    """The wall clock lives HERE, not inside the delegate.
+
+    A coroutine that takes its own ``timeout`` argument makes every caller
+    inherit one policy; a context manager at the boundary lets the caller
+    choose, and cancels the body in place so its ``finally`` still runs.
+    """
+    try:
+        async with asyncio.timeout(seconds):
+            return await _run_delegate_async(role, prompt)
+    except TimeoutError:
+        return {"ok": False, "error": "timeout", "role": role}
 
 
 def delegate_to_agent(
@@ -159,7 +170,8 @@ def delegate_to_agent(
     started = time.monotonic()
     depth_token = request_context.enter_delegation()
     try:
-        result = asyncio.run(_run_delegate_async(role, prompt, timeout))
+        result = asyncio.run(
+            _run_delegate_with_deadline(role, prompt, timeout))
     except Exception as exc:  # noqa: BLE001 — soft error
         return {"ok": False, "error": "delegate_failed",
                 "role": role, "detail": str(exc)[:300]}

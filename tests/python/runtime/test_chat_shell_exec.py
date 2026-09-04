@@ -26,7 +26,7 @@ import pytest
 from aiforge_core.runtime.chat_agent import _shell as S
 
 
-@pytest.fixture()
+@pytest.fixture
 def repo(tmp_path, monkeypatch):
     monkeypatch.setattr(S, "_workspace_root", lambda: tmp_path)
     (tmp_path / "app.py").write_text("x = 1\n")
@@ -39,13 +39,15 @@ def repo(tmp_path, monkeypatch):
 def test_a_file_is_written_and_its_parents_created(repo):
     res = S._t_file_write({"path": "pkg/new.py", "content": "y = 2\n"},
                           str(repo))
-    assert res["ok"] is True and res["bytes"] == 6
+    assert res["ok"] is True
+    assert res["bytes"] == 6
     assert (repo / "pkg" / "new.py").read_text() == "y = 2\n"
 
 
 def test_a_broken_file_is_refused_before_it_lands(repo):
     res = S._t_file_write({"path": "bad.py", "content": "def f(:\n"}, str(repo))
-    assert res["error"] == "syntax_invalid" and "force:true" in res["hint"]
+    assert res["error"] == "syntax_invalid"
+    assert "force:true" in res["hint"]
     assert not (repo / "bad.py").exists()
 
 
@@ -75,7 +77,8 @@ def test_a_guard_that_blows_up_never_blocks_a_write(repo, monkeypatch):
 def test_a_unique_snippet_is_replaced(repo):
     res = S._t_file_patch({"path": "app.py", "old_text": "x = 1",
                            "new_text": "x = 2"}, str(repo))
-    assert res["ok"] is True and (repo / "app.py").read_text() == "x = 2\n"
+    assert res["ok"] is True
+    assert (repo / "app.py").read_text() == "x = 2\n"
 
 
 def test_a_snippet_that_is_not_there_is_reported(repo):
@@ -88,7 +91,8 @@ def test_an_ambiguous_snippet_is_refused_with_its_count(repo):
     (repo / "app.py").write_text("a = 1\na = 1\n")
     res = S._t_file_patch({"path": "app.py", "old_text": "a = 1",
                            "new_text": "b = 1"}, str(repo))
-    assert res["error"] == "ambiguous_match" and res["occurrences"] == 2
+    assert res["error"] == "ambiguous_match"
+    assert res["occurrences"] == 2
 
 
 def test_a_patch_that_would_break_the_file_is_refused(repo):
@@ -109,7 +113,8 @@ def test_patching_a_file_that_is_not_there(repo):
 def test_a_directory_lists_with_folders_marked(repo):
     (repo / "src").mkdir()
     entries = S._t_list_dir({"path": "."}, str(repo))["entries"]
-    assert "src/" in entries and "app.py" in entries
+    assert "src/" in entries
+    assert "app.py" in entries
 
 
 def test_listing_something_that_is_not_a_directory(repo):
@@ -119,7 +124,7 @@ def test_listing_something_that_is_not_a_directory(repo):
 # ─── the pre-flight gates ──────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def gates(monkeypatch):
     from aiforge_core.runtime.tools import delete_guard
     state: dict = {"allow_delete": False, "destructive": False}
@@ -137,7 +142,8 @@ def test_an_ordinary_command_passes_every_gate(gates, repo):
 def test_a_destructive_delete_needs_the_user_to_agree(gates, repo):
     gates["destructive"] = True
     res = S._run_refusal("rm -rf build", {}, str(repo))
-    assert res["blocked"] == "delete" and "confirm_delete=true" in res["error"]
+    assert res["blocked"] == "delete"
+    assert "confirm_delete=true" in res["error"]
 
 
 def test_an_agreed_delete_runs(gates, repo):
@@ -175,7 +181,8 @@ def test_a_foreground_server_is_redirected_to_serve(gates, repo, cmd):
 
 def test_a_missing_script_is_named_instead_of_shell_noise(gates, repo):
     res = S._run_refusal("bash deploy.sh", {}, str(repo))
-    assert res["blocked"] == "missing_path" and "deploy.sh" in res["error"]
+    assert res["blocked"] == "missing_path"
+    assert "deploy.sh" in res["error"]
 
 
 def test_a_script_that_exists_runs(gates, repo):
@@ -218,7 +225,7 @@ class _Proc:
         self.returncode = -9
 
 
-@pytest.fixture()
+@pytest.fixture
 def run(monkeypatch, repo, gates):
     from aiforge_core.runtime import chat_cancel
     state: dict = {"proc": _Proc(), "sid": None, "cancelled": False,
@@ -251,7 +258,9 @@ def test_a_command_runs_in_its_own_process_group(run, repo):
 def test_a_failing_command_reports_its_code(run, repo):
     run["proc"] = _Proc(rc=1, out="", err="2 failed")
     res = S._t_run_command({"cmd": "pytest"}, str(repo))
-    assert res["ok"] is False and res["code"] == 1 and res["stderr"] == "2 failed"
+    assert res["ok"] is False
+    assert res["code"] == 1
+    assert res["stderr"] == "2 failed"
 
 
 def test_the_group_is_registered_so_stop_can_find_it(run, repo):
@@ -265,7 +274,8 @@ def test_stop_kills_the_tree_mid_run(run, repo):
     run["cancelled"] = True
     run["proc"] = _Proc(polls=5)
     res = S._t_run_command({"cmd": "sleep 100"}, str(repo))
-    assert res["stopped"] is True and run["killed"]
+    assert res["stopped"] is True
+    assert run["killed"]
 
 
 def test_a_timeout_keeps_the_partial_output_and_says_not_to_undo(run, repo,
@@ -276,7 +286,8 @@ def test_a_timeout_keeps_the_partial_output_and_says_not_to_undo(run, repo,
     ticks = iter([0.0, 100.0, 100.0])
     monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
     res = S._t_run_command({"cmd": "pytest", "timeout": 1}, str(repo))
-    assert res["timed_out"] is True and res["stdout"] == "3 passed"
+    assert res["timed_out"] is True
+    assert res["stdout"] == "3 passed"
     assert "Do NOT undo your edits" in res["error"]
     assert "NARROWER" in res["error"]
 
@@ -286,7 +297,8 @@ def test_a_timed_out_process_that_will_not_drain_is_killed(run):
         def communicate(self, timeout=None):
             raise subprocess.TimeoutExpired("cmd", 5)
     res = S._timeout_result(_Stuck(), 30)
-    assert res["stdout"] == "" and res["timed_out"] is True
+    assert res["stdout"] == ""
+    assert res["timed_out"] is True
     assert run["killed"]
 
 
@@ -353,14 +365,18 @@ def test_several_files_are_read_in_one_call(repo):
     re-reading files it already has."""
     (repo / "b.py").write_text("y = 2\n")
     out = S._t_read_files({"paths": ["app.py", "b.py"]}, str(repo))
-    assert out["read"] == 2 and out["note"] == "2 read, 0 failed"
-    assert "=== app.py ===" in out["content"] and "y = 2" in out["content"]
+    assert out["read"] == 2
+    assert out["note"] == "2 read, 0 failed"
+    assert "=== app.py ===" in out["content"]
+    assert "y = 2" in out["content"]
 
 
 def test_a_missing_file_in_a_batch_is_reported_not_fatal(repo):
     out = S._t_read_files({"paths": ["app.py", "ghost.py"]}, str(repo))
-    assert out["ok"] is True and out["failed"] == 1
-    assert "x = 1" in out["content"] and "[read failed:" in out["content"]
+    assert out["ok"] is True
+    assert out["failed"] == 1
+    assert "x = 1" in out["content"]
+    assert "[read failed:" in out["content"]
 
 
 def test_a_batch_with_no_paths_is_refused(repo):

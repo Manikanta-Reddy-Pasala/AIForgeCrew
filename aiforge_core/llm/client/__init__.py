@@ -32,14 +32,14 @@ is identical to before.
 """
 from __future__ import annotations
 
-from dataclasses import replace
-
 import contextvars
 import io
 import json
 import logging
 import os
 import random
+from dataclasses import replace
+from typing import cast
 
 _jitter = random.SystemRandom()
 import re
@@ -56,24 +56,20 @@ from .._ssl import context_for as _ssl_context_for
 from .._ssl import insecure_context as _ssl_insecure
 from ..router import escalate, fallback, resolve
 from ..types import Endpoint
-from ._http import TIMEOUT_SHIPPED_ATTR as _TIMEOUT_SHIPPED_ATTR
-from ._models import MODEL_MISSING_ATTR, model_missing
-from ._http import shipped_timeout as _shipped_timeout
-from ._http import shipped_timeout  # re-export: callers above the transport
 from ._errors import (
+    _MODEL_DROP_MARKERS,
+    _TRANSIENT_HTTP,
     _http_err_body,
     _is_transient_exc,
     _LLMCancelled,
-    _MODEL_DROP_MARKERS,
     _ModelReloading,
     _raise_if_model_dropped,
-    _TRANSIENT_HTTP,
 )
 from ._helpers import _estimate_tokens, _float_env, _int_env, _log, _record_usage
 from ._http import (
-    _build_body,
     _CANCEL,
     _NON_BODY_EXTRA_KEYS,
+    _build_body,
     _post,
     _post_cancellable,
     _post_ctx,
@@ -81,15 +77,19 @@ from ._http import (
     _post_with_retry,
     _preflight,
     set_cancel_event,
+    shipped_timeout,  # re-export: callers above the transport
 )
+from ._http import TIMEOUT_SHIPPED_ATTR as _TIMEOUT_SHIPPED_ATTR
+from ._http import shipped_timeout as _shipped_timeout
+from ._models import MODEL_MISSING_ATTR, model_missing
 from ._text import (
+    _THINK_CLOSE_ONLY_RE,
+    _THINK_LEAD_RE,
+    _THINK_OPEN_RE,
     _append_no_think,
     _extract_text,
     _is_garbage,
     _strip_think,
-    _THINK_CLOSE_ONLY_RE,
-    _THINK_LEAD_RE,
-    _THINK_OPEN_RE,
 )
 
 __all__ = [
@@ -623,10 +623,12 @@ def _substitute_attempt(role: str, primary: Endpoint, missing: list,
         extra={"aiforge": {"role": role, "configured": primary.model,
                            "using": sub, "available": missing,
                            "endpoint": primary.base_url}})
-    # Named, and annotated: `replace()` on a dataclass gives back the same
-    # type, but nothing in the call said so, and _try_post's first parameter is
-    # the one thing here that must be an Endpoint.
-    substitute_ep: Endpoint = replace(primary, model=sub)
+    # `replace()` on a dataclass gives back the same type, but its declared
+    # signature says only "a dataclass instance" — and _try_post's first
+    # parameter is the one thing here that must be an Endpoint. cast() says so
+    # without rebuilding the record field by field (which would silently drop
+    # any field added to Endpoint later).
+    substitute_ep = cast(Endpoint, replace(primary, model=sub))
     out = _try_post(substitute_ep, messages, shipped={},
                     temperature=temperature, max_tokens=max_tokens,
                     top_p=top_p, extras=extras, timeout_s=timeout_s,

@@ -19,7 +19,7 @@ from aiforge_core.runtime.tools import confluence
 from aiforge_core.runtime.tools.confluence import _tools as ct
 
 
-@pytest.fixture()
+@pytest.fixture
 def rest(monkeypatch):
     state: dict = {"calls": [], "replies": {}, "default": {"ok": True, "data": {}}}
 
@@ -122,8 +122,10 @@ def test_a_page_is_read_with_its_body_and_version(rest, monkeypatch):
         "version": {"number": 3},
         "body": {"storage": {"value": "<p>hi</p>"}}}}
     out = confluence.confluence_read({"id": "1"})
-    assert out["title"] == "Spec" and out["version"] == 3
-    assert out["body"] == "<p>hi</p>" and out["space"] == "ENG"
+    assert out["title"] == "Spec"
+    assert out["version"] == 3
+    assert out["body"] == "<p>hi</p>"
+    assert out["space"] == "ENG"
 
 
 def test_attachments_are_analysed_by_default(rest, monkeypatch):
@@ -151,7 +153,7 @@ def test_a_failed_read_is_returned(rest):
 # ─── creating ──────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def writer(monkeypatch):
     monkeypatch.setattr(ct, "md_to_storage", lambda body: f"<p>{body}</p>")
     monkeypatch.setattr(ct, "_storagify_media",
@@ -168,7 +170,8 @@ def test_a_page_is_created(rest, writer):
         "id": "9", "title": "Spec"}}
     out = confluence.confluence_create({"title": "Spec", "space": "ENG",
                                         "body": "hello"})
-    assert out["id"] == "9" and out["written"]["title"] == "Spec"
+    assert out["id"] == "9"
+    assert out["written"]["title"] == "Spec"
     body = rest["calls"][0]["body"]
     assert body["space"] == {"key": "ENG"}
     assert body["body"]["storage"]["value"] == "<p>hello</p>"
@@ -233,7 +236,8 @@ def test_images_upload_before_the_new_version_is_published(rest, writer):
         order.append(st["calls"][-1]["method"]) or {"ok": True,
                                                     "data": {"id": "1"}})
     confluence.confluence_update({"id": "1", "body": "see img"})
-    assert writer and order == ["GET", "PUT"]
+    assert writer
+    assert order == ["GET", "PUT"]
     assert writer[0][0] == "1"
 
 
@@ -296,7 +300,8 @@ def test_attaching_needs_a_page_and_a_source():
 def test_an_unreadable_source_is_reported(rest, monkeypatch):
     monkeypatch.setattr(ct, "_resolve_image_bytes", lambda src, cwd: None)
     out = confluence.confluence_attach({"id": "1", "path": "/gone.png"})
-    assert out["ok"] is False and "could not read" in out["error"]
+    assert out["ok"] is False
+    assert "could not read" in out["error"]
 
 
 # ─── children, descendants, spaces ─────────────────────────────────────
@@ -306,7 +311,8 @@ def test_child_pages_are_listed(rest):
     rest["replies"]["/child/page"] = {"ok": True, "data": {"results": [
         {"id": "2", "title": "Child"}]}}
     out = confluence.confluence_children({"id": "1"})
-    assert out["children"] == [{"id": "2", "title": "Child"}] and out["count"] == 1
+    assert out["children"] == [{"id": "2", "title": "Child"}]
+    assert out["count"] == 1
 
 
 def test_descendants_go_deep(rest):
@@ -373,7 +379,9 @@ def test_a_page_is_found_by_exact_title(rest):
     rest["replies"]["/rest/api/content"] = {"ok": True, "data": {"results": [
         {"id": "1", "title": "Spec", "version": {"number": 2}}]}}
     out = confluence.confluence_page_by_title({"space": "ENG", "title": "Spec"})
-    assert out["found"] is True and out["id"] == "1" and out["version"] == 2
+    assert out["found"] is True
+    assert out["id"] == "1"
+    assert out["version"] == 2
 
 
 def test_a_title_that_exists_nowhere_is_not_an_error(rest):

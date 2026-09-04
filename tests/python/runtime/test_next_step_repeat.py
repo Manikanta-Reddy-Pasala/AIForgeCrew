@@ -170,7 +170,8 @@ def test_a_strong_toolless_prediction_is_still_offered(monkeypatch):
     _reply(monkeypatch, "ask the user which environment to target", tool="",
            confidence=0.95)
     p = next_step.predict(_ctx())
-    assert p is not None and p.verdict == next_step.OFFER
+    assert p is not None
+    assert p.verdict == next_step.OFFER
 
 
 def test_a_tool_named_prediction_keeps_the_ordinary_floor(monkeypatch):

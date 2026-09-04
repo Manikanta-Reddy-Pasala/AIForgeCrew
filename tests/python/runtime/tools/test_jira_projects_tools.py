@@ -15,7 +15,7 @@ import pytest
 from aiforge_core.runtime.tools.jira import _projects as jp
 
 
-@pytest.fixture()
+@pytest.fixture
 def rest(monkeypatch):
     state: dict = {"calls": [], "replies": {}, "default": {"ok": True, "data": {}}}
 
@@ -177,7 +177,8 @@ def test_sprint_issues_are_summarised(rest, monkeypatch):
     rest["replies"]["/issue"] = {"ok": True, "data": {
         "issues": [{"key": "ENG-1"}], "total": 1}}
     out = jp.jira_sprint_issues({"sprint_id": "9"})
-    assert out["results"] == [("ENG-1", False)] and out["total"] == 1
+    assert out["results"] == [("ENG-1", False)]
+    assert out["total"] == 1
 
 
 def test_sprint_issue_time_tracking_is_opt_in(rest, monkeypatch):
@@ -275,7 +276,8 @@ def test_a_server_instance_gets_a_hint_rather_than_a_bare_failure(rest):
     """Dashboard create is Cloud-only; on Server/DC it is a UI action."""
     rest["replies"]["/dashboard"] = {"ok": False, "error": "http 404"}
     out = jp.jira_dashboard_create({"name": "Ops"})
-    assert out["ok"] is False and "Jira Cloud" in out["hint"]
+    assert out["ok"] is False
+    assert "Jira Cloud" in out["hint"]
 
 
 def test_an_existing_hint_is_not_overwritten(rest):

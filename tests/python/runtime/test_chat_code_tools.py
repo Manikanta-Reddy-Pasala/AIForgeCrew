@@ -18,7 +18,7 @@ from aiforge_core.runtime.chat_agent._tools import _code as T
 # ─── reading a slice of a file ─────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def src(tmp_path):
     (tmp_path / "app.py").write_text("".join(f"line {i}\n" for i in range(1, 11)))
     return tmp_path
@@ -27,12 +27,15 @@ def src(tmp_path):
 def test_a_line_range_is_returned_with_the_files_length(src):
     res = T._t_read_lines({"path": "app.py", "start": 2, "end": 4}, str(src))
     assert res["text"] == "line 2\nline 3\nline 4\n"
-    assert res["total_lines"] == 10 and res["start"] == 2 and res["end"] == 4
+    assert res["total_lines"] == 10
+    assert res["start"] == 2
+    assert res["end"] == 4
 
 
 def test_no_range_reads_the_whole_file(src):
     res = T._t_read_lines({"path": "app.py"}, str(src))
-    assert res["start"] == 1 and res["end"] == 10
+    assert res["start"] == 1
+    assert res["end"] == 10
 
 
 def test_an_end_past_the_last_line_stops_at_the_end(src):
@@ -41,7 +44,9 @@ def test_an_end_past_the_last_line_stops_at_the_end(src):
 
 def test_a_start_past_the_end_answers_empty_rather_than_failing(src):
     res = T._t_read_lines({"path": "app.py", "start": 50}, str(src))
-    assert res["ok"] is True and res["text"] == "" and res["total_lines"] == 10
+    assert res["ok"] is True
+    assert res["text"] == ""
+    assert res["total_lines"] == 10
 
 
 def test_a_zero_or_negative_start_is_the_first_line(src):
@@ -82,7 +87,7 @@ def test_each_codegraph_tool_reaches_its_implementation(tool, fn, monkeypatch):
 # ─── finding the document to summarise ─────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def media(tmp_path):
     d = tmp_path / ".aiforge" / "media"
     d.mkdir(parents=True)
@@ -122,7 +127,7 @@ def test_a_session_with_no_attachments_resolves_nothing(tmp_path):
 # ─── summarising it ────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def doc(monkeypatch):
     from aiforge_core.runtime import doc_extract, doc_summarize
     state: dict = {"pages": ["p1", "p2", "p3"], "kind": "", "spec_ok": True,
@@ -140,8 +145,10 @@ def doc(monkeypatch):
 
 def test_a_document_is_summarised_with_its_page_count(doc, media):
     res = T._t_summarize_doc({"path": "2026-Q1-report.pdf"}, str(media))
-    assert res["ok"] is True and res["summary"] == "the gist"
-    assert res["page_count"] == 3 and res["pages"] == "all"
+    assert res["ok"] is True
+    assert res["summary"] == "the gist"
+    assert res["page_count"] == 3
+    assert res["pages"] == "all"
     assert doc["seen"]["role"] == "chat"
 
 
@@ -149,7 +156,8 @@ def test_a_page_range_reaches_the_summariser(doc, media):
     """So a 400-page report can be read section by section."""
     res = T._t_summarize_doc({"file": "report", "pages": "1-2",
                               "role": "architect"}, str(media))
-    assert doc["seen"]["pages"] == "1-2" and doc["seen"]["role"] == "architect"
+    assert doc["seen"]["pages"] == "1-2"
+    assert doc["seen"]["role"] == "architect"
     assert res["pages"] == "1-2"
 
 
@@ -158,8 +166,10 @@ def test_an_out_of_range_page_request_is_told_the_real_count(doc, media):
     doc["spec_ok"] = False
     res = T._t_summarize_doc({"filename": "report", "pages": "50-60"},
                              str(media))
-    assert res["ok"] is False and res["page_count"] == 3
-    assert "out of range" in res["error"] and "3 page(s)" in res["error"]
+    assert res["ok"] is False
+    assert res["page_count"] == 3
+    assert "out of range" in res["error"]
+    assert "3 page(s)" in res["error"]
 
 
 @pytest.mark.parametrize("kind,marker", [("approx", "APPROXIMATE"),
@@ -172,7 +182,8 @@ def test_estimated_pagination_is_declared(doc, media, kind, marker):
 def test_an_unreadable_document_says_what_was_asked_for(doc, media):
     doc["summary"] = ""
     res = T._t_summarize_doc({"path": "report", "pages": "2"}, str(media))
-    assert res["ok"] is False and "nothing readable for pages 2" in res["error"]
+    assert res["ok"] is False
+    assert "nothing readable for pages 2" in res["error"]
 
 
 def test_a_file_that_cannot_be_found_is_reported(doc, media):
@@ -187,7 +198,7 @@ def test_a_call_with_no_filename_at_all(doc, media):
 # ─── renaming a symbol ─────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def project(tmp_path):
     (tmp_path / "a.py").write_text("old_name = 1\nprint(old_name)\n")
     (tmp_path / "sub").mkdir()
@@ -203,7 +214,8 @@ def test_a_rename_is_a_dry_run_by_default(project):
     """It rewrites files in place, so the caller asks for that explicitly."""
     res = T._t_rename_symbol({"name": "old_name", "new_name": "new_name"},
                              str(project))
-    assert res["dry_run"] is True and res["applied"] == 0
+    assert res["dry_run"] is True
+    assert res["applied"] == 0
     assert res["total_occurrences"] == 3
     assert (project / "a.py").read_text().startswith("old_name")
 
@@ -251,7 +263,8 @@ def test_both_names_are_required(project):
 def test_a_symbol_that_is_nowhere_changes_nothing(project):
     res = T._t_rename_symbol({"name": "ghost", "new_name": "n",
                               "dry_run": False}, str(project))
-    assert res["files"] == [] and res["total_occurrences"] == 0
+    assert res["files"] == []
+    assert res["total_occurrences"] == 0
 
 
 def test_an_unwritable_file_is_not_counted_as_renamed(project, monkeypatch):

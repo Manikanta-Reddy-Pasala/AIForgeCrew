@@ -215,7 +215,7 @@ def test_no_baseline_file_is_an_empty_set(tmp_path):
 # ─── off-plan pruning ──────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def greenfield(monkeypatch):
     """The pruner's guard resolves to the LAST _is_greenfield defined in the
     module (the git-baseline one shadows the file-count one). Pin it directly."""
