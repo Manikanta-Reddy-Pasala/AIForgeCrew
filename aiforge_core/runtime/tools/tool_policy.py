@@ -47,6 +47,13 @@ _CMD_TOOLS = {"run_command", "bash", "shell", "run_shell", "serve",
               "watch_until", "ui_check"}
 _CMD_ARG_KEYS = ("cmd", "command", "input")
 
+# Tools whose args carry CODE that can reach a shell from the inside. A cell
+# is a shell with three extra characters (`!curl x | sh`, os.system,
+# subprocess), so leaving it out of the risk path meant the identical string
+# escalated to ASK via bash and ran unassessed via the kernel.
+_CODE_TOOLS = {"execute_ipython_cell"}
+_CODE_ARG_KEYS = ("code", "cell", "source")
+
 # Tools that mutate something external/durable → default to ASK (human
 # approval) unless the operator explicitly overrides via AIFORGE_TOOL_POLICY.
 # Read-only filesystem + search tools — inspecting the tree is never worth an
@@ -120,14 +127,22 @@ def _configured() -> dict[str, str]:
     return m
 
 
-def _cmd_from_args(args: dict | None) -> str:
+def _arg_str(args: dict | None, keys) -> str:
     if not isinstance(args, dict):
         return ""
-    for k in _CMD_ARG_KEYS:
+    for k in keys:
         v = args.get(k)
         if isinstance(v, str) and v:
             return v
     return ""
+
+
+def _cmd_from_args(args: dict | None) -> str:
+    return _arg_str(args, _CMD_ARG_KEYS)
+
+
+def _code_from_args(args: dict | None) -> str:
+    return _arg_str(args, _CODE_ARG_KEYS)
 
 
 def _rank(p: str) -> int:
@@ -139,13 +154,16 @@ def decide(tool: str, args: dict | None = None) -> dict:
 
     ``policy`` ∈ {allow, ask, deny}. ``reason`` explains an ask/deny
     (e.g. the risk verdict) so the UI can show *why* approval is needed.
+    ``risk`` is the raw command/cell verdict ("" when this tool carries
+    neither), which the gates use to refuse a DANGEROUS call outright when
+    there is no human who could approve it.
     """
     cfg = _configured()
     # Read-only fs/search tools never gate (unless the operator explicitly set a
     # policy for that exact tool) — so folder listing / grep / read / recall
     # actions run without an approval prompt.
     if tool in _READONLY_ALWAYS_ALLOW and tool not in cfg:
-        return {"policy": ALLOW, "reason": ""}
+        return {"policy": ALLOW, "reason": "", "risk": ""}
     # Mutating-external tools default to ASK; an explicit env policy still wins.
     default = ASK if tool in _DEFAULT_ASK else ALLOW
     configured = cfg.get(tool, default)
@@ -153,10 +171,15 @@ def decide(tool: str, args: dict | None = None) -> dict:
     if tool in _DEFAULT_ASK and tool not in cfg:
         reason = f"'{tool}' writes to an external system — confirm first"
 
-    # Risk escalation for command-running tools.
-    if tool in _CMD_TOOLS:
-        verdict = command_risk.assess(_cmd_from_args(args))
-        lvl = verdict["level"]
+    # Risk escalation for command-running tools — and for the notebook cell,
+    # whose shell commands are lifted back out and run through the same
+    # classifier (see command_risk.assess_code).
+    risk_level = ""
+    if tool in _CMD_TOOLS or tool in _CODE_TOOLS:
+        verdict = (command_risk.assess_code(_code_from_args(args))
+                   if tool in _CODE_TOOLS
+                   else command_risk.assess(_cmd_from_args(args)))
+        lvl = risk_level = verdict["level"]
         # Caution-tier (sudo, chmod 777, force-push, global installs…) gates for
         # approval BY DEFAULT now; set AIFORGE_RISK_ASK_CAUTION=0 to run it free.
         ask_caution = os.environ.get(
@@ -165,10 +188,19 @@ def decide(tool: str, args: dict | None = None) -> dict:
                     or (lvl == command_risk.CAUTION and ask_caution))
         if escalate and _rank(policy) < _rank(ASK):
             policy, reason = ASK, verdict["reason"]
+        elif lvl == command_risk.DANGEROUS and verdict["reason"]:
+            # Already at ask/deny for another reason (execute_ipython_cell is
+            # ask by default). Say the DANGEROUS thing anyway — an approval
+            # card reading "writes to an external system" for a cell that pipes
+            # curl into a shell tells the human the wrong thing to weigh.
+            reason = verdict["reason"]
 
     if policy != ALLOW and not reason:
         reason = f"tool '{tool}' is set to {policy} by policy"
-    return {"policy": policy, "reason": reason}
+    # ``risk`` is the classifier's own verdict, not the resulting policy: a gate
+    # with no human attached needs to know WHY it is being asked, because
+    # "dangerous" is the one answer it must not degrade into an allow.
+    return {"policy": policy, "reason": reason, "risk": risk_level}
 
 
 __all__ = ["decide", "ALLOW", "ASK", "DENY"]

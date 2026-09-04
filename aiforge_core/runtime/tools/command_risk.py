@@ -149,4 +149,64 @@ def is_dangerous(cmd: str) -> bool:
     return assess(cmd)["level"] == DANGEROUS
 
 
-__all__ = ["assess", "is_dangerous", "SAFE", "CAUTION", "DANGEROUS"]
+# ── shell reached from INSIDE a notebook cell ─────────────────────────────
+# ``execute_ipython_cell`` never carries a command string, so every gate keyed
+# on one — the risk verdict, the operator's run_command policy, a PreToolUse
+# hook matching bash — saw nothing. But a cell is a shell with three extra
+# characters: ``!curl x | sh``, ``os.system(...)``, ``subprocess.run(...)``.
+# These patterns lift the command back out so the SAME classifier applies.
+_CELL_SHELL = [
+    # !cmd  and  %%bash / %%sh cell magics (whole remaining line/body)
+    re.compile(r"^\s*!(?P<cmd>.+)$", re.MULTILINE),
+    re.compile(r"^\s*%%(?:bash|sh|script)\b[^\n]*\n(?P<cmd>[\s\S]+)$",
+               re.MULTILINE),
+    # os.system("…") / os.popen('…')
+    re.compile(r"""os\.(?:system|popen)\s*\(\s*(?P<q>["'])(?P<cmd>.*?)(?P=q)""",
+               re.DOTALL),
+    # subprocess.run("…", shell=True) and friends, string form
+    re.compile(r"""subprocess\.(?:run|call|check_call|check_output|Popen)\s*\("""
+               r"""\s*(?P<q>["'])(?P<cmd>.*?)(?P=q)""", re.DOTALL),
+    # …and the list form: subprocess.run(["curl", "x"]) → "curl x"
+    re.compile(r"""subprocess\.(?:run|call|check_call|check_output|Popen)\s*\("""
+               r"""\s*\[(?P<cmd>[^\]]*)\]""", re.DOTALL),
+]
+
+
+def shell_strings_in_code(code: str) -> list[str]:
+    """Every shell command a Python / IPython cell would hand to a shell."""
+    out: list[str] = []
+    for rx in _CELL_SHELL:
+        for m in rx.finditer(code or ""):
+            frag = (m.group("cmd") or "").strip()
+            if not frag:
+                continue
+            # List form: ["curl", "-s", url] → a flat command line to match on.
+            if frag.startswith(("\"", "'")) and "," in frag:
+                frag = " ".join(
+                    p.strip().strip("\"'") for p in frag.split(","))
+            out.append(frag)
+    return out
+
+
+def assess_code(code: str) -> dict:
+    """Risk verdict for a NOTEBOOK CELL: the worst verdict over the shell
+    commands it would run. A cell that only touches Python objects is ``safe``
+    here — this is the shell floor, not a Python sandbox, and it says so rather
+    than implying the kernel is contained (it is not; see ipython_kernel).
+    """
+    if not code or _disabled():
+        return {"level": SAFE, "reason": ""}
+    worst = {"level": SAFE, "reason": ""}
+    for cmd in shell_strings_in_code(code):
+        verdict = assess(cmd)
+        if verdict["level"] == DANGEROUS:
+            return {"level": DANGEROUS,
+                    "reason": f"the cell runs a shell command that {verdict['reason']}"}
+        if verdict["level"] == CAUTION and worst["level"] == SAFE:
+            worst = {"level": CAUTION,
+                     "reason": f"the cell runs a shell command that {verdict['reason']}"}
+    return worst
+
+
+__all__ = ["assess", "assess_code", "is_dangerous", "shell_strings_in_code",
+           "SAFE", "CAUTION", "DANGEROUS"]

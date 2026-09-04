@@ -27,7 +27,8 @@ _SEARCH = "https://html.duckduckgo.com/html/?q=a+line+from+my+logs"
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     for var in ("AIFORGE_ALLOW_WEB_FETCH", "AIFORGE_WEB_FETCH_DISABLE",
-                "AIFORGE_WEB_SEARCH_DISABLE", "AIFORGE_BROWSER_ALLOWLIST"):
+                "AIFORGE_WEB_SEARCH_DISABLE", "AIFORGE_BROWSER_ALLOWLIST",
+                "AIFORGE_EGRESS_OFF"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -69,7 +70,13 @@ def test_sanctioned_flag_no_longer_bypasses_the_switch():
 # ── the hard-off wins over the switch ───────────────────────────────────────
 
 @pytest.mark.parametrize("kill_var", ["AIFORGE_WEB_FETCH_DISABLE",
-                                      "AIFORGE_WEB_SEARCH_DISABLE"])
+                                      "AIFORGE_WEB_SEARCH_DISABLE",
+                                      # The master switch reads as "nothing
+                                      # leaves this box". It closed the four
+                                      # DECLARED classes and left the widest
+                                      # channel — a model-composed URL — wide
+                                      # open, while run.sh turns fetching on.
+                                      "AIFORGE_EGRESS_OFF"])
 @pytest.mark.parametrize("call", [
     lambda: wf.web_fetch({"url": _URL}),
     lambda: doer_tools.fetch_url(_URL),
@@ -146,6 +153,23 @@ def test_local_dev_servers_stay_browsable_under_the_lockdown(monkeypatch, url):
     monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "0")
     monkeypatch.setenv("AIFORGE_WEB_FETCH_DISABLE", "1")
     assert browser_tool._allowlist_ok(url) is True
+
+
+def test_the_master_switch_closes_browsing_too(monkeypatch):
+    """browse is the widest page tool in the system; a switch that stops
+    web_fetch and leaves a headless browser driving is not a kill switch.
+
+    The host is put ON both allowlists first — otherwise this passes because
+    example.com is simply not on the list, which is true with or without the
+    fix and proves nothing."""
+    monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
+    monkeypatch.setenv("AIFORGE_EGRESS_ALLOW_HOSTS", "example.com")
+    monkeypatch.setenv("AIFORGE_BROWSER_ALLOWLIST", "example.com")
+    from aiforge_core.config import egress_hosts as _eh
+    _eh._invalidate()
+    assert browser_tool._allowlist_ok(_URL) is True      # control
+    monkeypatch.setenv("AIFORGE_EGRESS_OFF", "1")
+    assert browser_tool._allowlist_ok(_URL) is False
 
 
 def test_browse_refuses_a_search_engine(monkeypatch):

@@ -229,6 +229,18 @@ async def _ask_human(name: str, args: dict, sid, reason: str) -> dict | None:
     return _rejected_result(name, sid, decision)
 
 
+def _refuse_dangerous_unattended(verdict: dict) -> bool:
+    """A DANGEROUS risk verdict with no approver attached is a refusal, unless
+    the operator opted the whole install back in. Keyed on the classifier's
+    verdict rather than the resulting policy, so an ``ask`` that came from
+    something mild (an external write) still degrades to allow as before."""
+    from aiforge_core.runtime.tools import command_risk
+    if verdict.get("risk") != command_risk.DANGEROUS:
+        return False
+    return str(os.environ.get("AIFORGE_UNATTENDED_DANGEROUS", "")
+               ).strip().lower() not in ("1", "true", "yes", "on")
+
+
 async def _gate(name: str, args: dict) -> dict | None:
     """The policy decision for one tool call. None = let it run."""
     verdict = tool_policy.decide(name, args)
@@ -253,6 +265,22 @@ async def _gate(name: str, args: dict) -> dict | None:
                 "error": f"'{name}' is denied by policy: {verdict['reason']}"}
     # policy == ASK (or forced review) — need a human. Preserve autonomy.
     if not chat_approve.has_emitter(sid):
+        # …but not for a DANGEROUS verdict. "Ask" degrading to "allow" is fine
+        # for sudo or a global install; for `curl | sh`, a secret exfil, mkfs
+        # or a fork bomb it means the gate reads the verdict and then runs the
+        # command anyway, with nobody watching. The simple/plan loop already
+        # hard-blocks these unattended (_autonomous_decision); the pipeline did
+        # not, so the same command was refused in chat and executed by the
+        # Doer. Same floor, both paths.
+        if _refuse_dangerous_unattended(verdict):
+            log.warning("tool_gate.unattended_dangerous tool=%s reason=%s",
+                        name, verdict.get("reason"))
+            return {"ok": False, "blocked": "risk",
+                    "error": (f"'{name}' is refused: {verdict.get('reason')}. "
+                              "This run has no human who could approve it. An "
+                              "operator can set AIFORGE_UNATTENDED_DANGEROUS=1 "
+                              "to allow dangerous commands in unattended runs."),
+                    }
         return None            # autonomous run: no approver attached → allow
     reason = (verdict["reason"] if policy == tool_policy.ASK
               else "Review edits: confirm this file change before it lands.")

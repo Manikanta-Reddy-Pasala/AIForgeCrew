@@ -22,7 +22,8 @@ the operator configured, not one the model composed:
   telemetry    Langfuse and anything else that mirrors prompts off-box
   mcp          remote MCP servers
 
-  AIFORGE_EGRESS_OFF          hard-off for ALL of the above at once
+  AIFORGE_EGRESS_OFF          hard-off for ALL of the above AND for page
+                              fetching — it is the "nothing leaves" switch
   AIFORGE_EGRESS_ALLOW_HOSTS  CSV; when set, a declared destination must match
   AIFORGE_<CLASS>_DISABLE     per class, e.g. AIFORGE_TELEMETRY_DISABLE
   AIFORGE_UNATTENDED_WRITES   allow WRITE verbs with no human watching (off)
@@ -35,6 +36,12 @@ What this is NOT — and the docs must not claim otherwise:
     ``looks_like_search`` refuses the obvious search endpoints; it is a speed
     bump for an agent taking a shortcut, not a boundary against one determined
     to smuggle bytes out. The boundary is the switch.
+  * Not a gate on INFERENCE. Prompts to the model endpoint, and the text sent
+    to the embed / rerank sidecars, do not pass through here: sending them is
+    what the product does, and a gate that can refuse them is a gate that can
+    brick the install. Their control is which endpoint you configure — see
+    ``config/egress_hosts.write_hosts`` for why a configured endpoint is a
+    write destination by definition.
   * Not a control over ARBITRARY CODE. ``run_command``, ``execute_ipython_cell``
     and anything they spawn can open a socket directly; `curl` in a shell does
     not pass through here and cannot be made to. Only an OS-level egress
@@ -286,8 +293,16 @@ def allow(kind: str, url: str = "", *, method: str = "GET",
 
 
 def hard_off() -> bool:
-    """The operator's kill switch, under either name."""
-    return (_env_true("AIFORGE_WEB_FETCH_DISABLE")
+    """The operator's kill switch, under any of its names.
+
+    ``AIFORGE_EGRESS_OFF`` counts. It reads as "nothing leaves this box" and an
+    operator who sets it means the widest channel too — page fetching is the
+    one destination the MODEL chooses, and ``run.sh`` turns fetching on by
+    default, so leaving it out made the master switch close the narrow doors
+    and leave the wide one open.
+    """
+    return (_env_true("AIFORGE_EGRESS_OFF")
+            or _env_true("AIFORGE_WEB_FETCH_DISABLE")
             or _env_true("AIFORGE_WEB_SEARCH_DISABLE"))
 
 
