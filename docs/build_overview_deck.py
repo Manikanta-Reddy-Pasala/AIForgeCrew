@@ -511,7 +511,8 @@ def tool_access(prs):
     rows = [
         ("It calls a tool we never gave it",
          "Per-agent allowlist, applied where tools are wired",
-         "It never receives the schema · 9 of 19 roles get zero tools"),
+         "It never receives the schema · 9 of 19 roles get zero tools\n"
+         "(the Doer runs unfiltered by design — its list documents intent)"),
         ("It invents a tool that does not exist",
          "Closed dispatch table + phantom-tool guard",
          "\"unknown tool\" — no fall-through, and the run survives it"),
@@ -580,8 +581,8 @@ def execution_egress(prs):
     box(s, Inches(0.75), Inches(4.35), Inches(11.83), Inches(0.95),
         "Floors underneath, which no toggle lowers",
         "The delete guard fires with approvals off · git add -A is refused · writes stay inside the "
-        "ticket's scope · the workspace jail clamps paths · a REQUIRED sandbox refuses to fall back "
-        "to the host, and the notebook kernel refuses with it.",
+        "ticket's scope · the workspace jail clamps the file tools (a shell can still cd out of it) "
+        "· a REQUIRED sandbox refuses to fall back to the host, kernel included.",
         fill=WHITE, edge=SLATE, size=12.5, sub_size=9.5, label_color=SLATE)
 
     for i, (big, lab) in enumerate([
