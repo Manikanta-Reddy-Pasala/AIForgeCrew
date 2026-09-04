@@ -80,7 +80,7 @@ def run_consolidation(state) -> dict:
 
 def make_consolidate_after_callback():
     """ADK ``after_agent_callback`` that mines the finished run for memory."""
-    async def _callback(*, callback_context, **_kw):
+    def _callback(*, callback_context, **_kw):
         try:
             run_consolidation(callback_context.state)
         except Exception as exc:  # noqa: BLE001

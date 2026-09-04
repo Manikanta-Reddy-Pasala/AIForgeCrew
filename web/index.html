@@ -13,10 +13,14 @@
           var stored = localStorage.getItem('aiforge.theme');
           var dark = stored
             ? stored === 'dark'
-            : window.matchMedia('(prefers-color-scheme: dark)').matches;
-          document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
-        } catch (e) {
-          document.documentElement.setAttribute('data-theme', 'light');
+            : globalThis.matchMedia('(prefers-color-scheme: dark)').matches;
+          document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+        } catch (err) {
+          // localStorage throws outright in a private window or with site data
+          // blocked. Light is the safe fallback, but swallowing the reason has
+          // cost debugging time before — say what happened.
+          console.debug('aiforge: theme preload failed', err);
+          document.documentElement.dataset.theme = 'light';
         }
       })();
     </script>

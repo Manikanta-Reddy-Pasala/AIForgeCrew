@@ -388,7 +388,9 @@ def _reclassify_decisions(items: list[dict], repo_list: str) -> list:
         repo: str = ""
 
     class _Out(BaseModel):
-        decisions: "list[_Decision]" = []
+        # Unquoted: the quoted form hid the only reference to _Decision.
+        # PEP 563 stringifies it again before pydantic resolves it.
+        decisions: list[_Decision] = []
 
     out = []
     for i in range(0, len(items), 8):
@@ -536,7 +538,12 @@ def _union_into(meta: dict, key: str, new, cap: int = 30) -> None:
         meta[key] = cur[:cap]
 
 
-def record_repo_profile(workspace: str, *, stack: str = "", build: str = "",
+# NOSONAR (S107) — the parameters ARE the repo card's fields, one per
+# section of the rendered note. They are all optional and independent
+# (scalars overwrite, lists union), so a params object would just be this
+# list with an extra name in front of it.
+def record_repo_profile(workspace: str, *, stack: str = "",  # NOSONAR
+                        build: str = "",
                         test: str = "", run: str = "", structure: str = "",
                         entry_points=None, deploy: str = "", services=None,
                         tables=None, gotchas=None, conventions=None,

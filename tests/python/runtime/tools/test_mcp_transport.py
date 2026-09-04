@@ -178,8 +178,9 @@ def test_an_error_from_the_threaded_path_reaches_the_caller():
 
     async def _outer():
         return M._run_async(_boom())
+    outer = _outer()
     with pytest.raises(RuntimeError, match="server died"):
-        asyncio.run(_outer())
+        asyncio.run(outer)
 
 
 # ─── shaping what a server returned ────────────────────────────────────

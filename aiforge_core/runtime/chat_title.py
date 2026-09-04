@@ -19,7 +19,11 @@ _EDGE_CHARS = "\"'`" + " \t\n\r\f\v"
 # A reasoning model (triage role) emits chain-of-thought first; capped at a few
 # tokens it leaks TRUNCATED CoT ("Thinking Process:", "The user is asking…") that
 # must never become the title.
-_THINK_TAG = re.compile(r"<think>.*?(?:</think>|$)", re.I | re.S)
+# A ``<think>`` block, closed or truncated. Tempered greedy rather than
+# ``.*?(?:</think>|$)`` — the reluctant quantifier there was followed by an
+# expression that can match empty, which is both an S6019 finding and a
+# pattern that reads as "stop wherever".
+_THINK_TAG = re.compile(r"<think>(?:(?!</think>)[\s\S])*(?:</think>)?", re.I)
 _REASON_START = re.compile(
     r"^(thinking|thought|okay|ok\b|so\b|well\b|sure\b|let'?s|let me|first\b|"
     r"the user|i (?:need|should|think|'?ll|will|am|have|can|would)|"

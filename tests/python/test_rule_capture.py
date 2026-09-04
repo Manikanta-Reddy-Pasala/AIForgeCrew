@@ -7,12 +7,13 @@ autonomous runs ignore chat-set flags); undo/rescope revoke/move flags;
 whole-command is_commit_command; the inline gate auto-approve + audit; the
 capture pre-filter + actionable backstop; and atomic/concurrent index writes.
 """
-import asyncio
 import importlib
 import json
 import threading
 
 import pytest
+
+from tests.python._adk_cb import run_cb
 
 
 @pytest.fixture
@@ -462,8 +463,8 @@ def test_tool_gate_commit_flag_auto_approves_and_audits(rc, monkeypatch, tmp_pat
 
         class _T:
             name = "run_command"
-        res = asyncio.run(cb(tool=_T(), args={"cmd": "git commit -m x"},
-                             tool_context=None))
+        res = run_cb(cb, tool=_T(), args={"cmd": "git commit -m x"},
+                     tool_context=None)
         assert res is None                      # auto-approved (no block)
         assert any(e.get("type") == "auto_approved" for e in emitted)
         assert not any(e.get("type") == "approval" for e in emitted)
@@ -491,9 +492,9 @@ def test_tool_gate_chained_not_auto_approved(rc, monkeypatch, tmp_path):
 
         class _T:
             name = "run_command"
-        res = asyncio.run(cb(tool=_T(),
-                             args={"cmd": "git add . && rm -rf /tmp/zzz"},
-                             tool_context=None))
+        res = run_cb(cb, tool=_T(),
+                     args={"cmd": "git add . && rm -rf /tmp/zzz"},
+                     tool_context=None)
         assert res is not None
         assert res.get("rejected") is True
         assert any(e.get("type") == "approval" for e in emitted)

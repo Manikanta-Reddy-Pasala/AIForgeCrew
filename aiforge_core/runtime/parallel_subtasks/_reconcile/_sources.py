@@ -1,8 +1,12 @@
 """Source-file gathering, context selection, baseline snapshot, off-plan pruning.
 
-Note: ``_SRC_EXTS`` is defined TWICE here (verbatim from the original, same order);
-the SECOND definition is the effective value (last-wins) that every consumer
-(``_gather_sources``/``_prune_offplan_files``/``_change_in_error``) reads at call time.
+Note: ``_SRC_EXTS`` used to be defined TWICE here (carried over verbatim from
+the original). Only the second one was ever in effect — module globals are
+last-wins and every consumer (``_gather_sources`` / ``_prune_offplan_files`` /
+``_change_in_error``) resolves the name at CALL time — so the first list was a
+trap: editing it changed nothing, and the extensions it alone carried
+(``.cxx``, ``.toml``, ``.cfg``, ``.json``) were never matched. It is gone; the
+surviving definition sits just above its first consumer.
 
 Split from ``parallel_subtasks._reconcile`` (mechanical move, behaviour identical)."""
 from __future__ import annotations
@@ -12,9 +16,9 @@ import os
 from .._contracts import _CONTRACT_DIR
 
 
-_SRC_EXTS = (".py", ".java", ".kt", ".go", ".c", ".cc", ".cpp", ".cxx", ".h",
-             ".hpp", ".js", ".mjs", ".ts", ".tsx", ".rs", ".rb", ".php", ".sh",
-             ".toml", ".cfg", ".json")
+_SRC_EXTS = (".py", ".java", ".go", ".js", ".mjs", ".ts", ".tsx", ".c", ".cc",
+             ".cpp", ".h", ".hpp", ".rs", ".rb", ".php", ".cs", ".kt", ".swift",
+             ".scala", ".sh")
 
 
 def _gather_sources(cwd: str) -> list[tuple[str, str]]:
@@ -45,7 +49,11 @@ def _spec_goal(cwd: str) -> str:
         if os.path.isfile(p):
             import re as _re
             src = open(p, encoding="utf-8", errors="replace").read()
-            m = _re.search(r"##\s*Goal\s*(.+?)(?:\n##\s|\Z)", src, _re.DOTALL)
+            # Everything under "## Goal" up to the next "## " heading.
+            # Tempered greedy, not ``(.+?)(?:\n##\s|\Z)``: a reluctant
+            # quantifier followed by ``\Z`` (zero-width) is what S6019
+            # flags, and DOTALL is no longer needed to cross newlines.
+            m = _re.search(r"##[ \t]*Goal[ \t]*((?:(?!\n##\s)[\s\S])*)", src)
             if m:
                 return m.group(1).strip()[:2000]
     except Exception:  # noqa: BLE001
@@ -244,11 +252,6 @@ def _prune_offplan_files(cwd: str, subs: list) -> list:
         except Exception:  # noqa: BLE001
             pass
     return removed
-
-
-_SRC_EXTS = (".py", ".java", ".go", ".js", ".mjs", ".ts", ".tsx", ".c", ".cc",
-             ".cpp", ".h", ".hpp", ".rs", ".rb", ".php", ".cs", ".kt", ".swift",
-             ".scala", ".sh")
 
 
 def _working_tree_changes(cwd: str) -> "set[str] | None":

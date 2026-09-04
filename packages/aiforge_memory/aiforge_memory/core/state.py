@@ -117,7 +117,7 @@ def get_file_hashes(conn: sqlite3.Connection, *, repo: str) -> dict[str, str]:
     rows = conn.execute(
         "SELECT path, hash FROM merkle_files WHERE repo = ?", (repo,)
     ).fetchall()
-    return {p: h for p, h in rows}
+    return dict(rows)
 
 
 def upsert_file_hash(

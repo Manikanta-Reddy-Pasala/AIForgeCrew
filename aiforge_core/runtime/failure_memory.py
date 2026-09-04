@@ -151,7 +151,7 @@ def make_failure_memory_after_callback():
 
     Soft-fail. Never breaks the pipeline.
     """
-    async def _callback(*, callback_context, **_kw):
+    def _callback(*, callback_context, **_kw):
         if os.environ.get("AIFORGE_FAILURE_MEMORY", "1") in {"0", "false", ""}:
             return None
         try:

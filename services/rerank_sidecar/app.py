@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 MODEL_NAME = os.environ.get("BGE_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
 USE_FP16 = os.environ.get("BGE_RERANKER_FP16", "1") == "1"
-DEVICE = os.environ.get("BGE_RERANKER_DEVICE", "")  # 'cpu' / 'cuda' / '' = auto
+DEVICE = os.environ.get("BGE_RERANKER_DEVICE", "")  # "cpu", "cuda", or empty to auto-detect
 BATCH_SIZE = int(os.environ.get("BGE_RERANKER_BATCH", "16"))
 
 _reranker = None

@@ -11,7 +11,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from aiforge_core.runtime import quality_gate
-
+from tests.python._adk_cb import run_cb
 
 # --- evaluate() -----------------------------------------------------------
 
@@ -98,8 +98,7 @@ def test_feedback_callback_downgrades_pass_on_red_tests():
     ctx = MagicMock()
     ctx.state = {"feedback_verdict": "pass", "tests_ok": False}
 
-    import asyncio
-    asyncio.run(cb(callback_context=ctx))
+    run_cb(cb, callback_context=ctx)
 
     assert ctx.state["feedback_verdict"] == "fail"
 
@@ -112,7 +111,6 @@ def test_feedback_callback_noop_when_signals_absent():
     ctx = MagicMock()
     ctx.state = {"feedback_verdict": "pass"}
 
-    import asyncio
-    asyncio.run(cb(callback_context=ctx))
+    run_cb(cb, callback_context=ctx)
 
     assert ctx.state["feedback_verdict"] == "pass"

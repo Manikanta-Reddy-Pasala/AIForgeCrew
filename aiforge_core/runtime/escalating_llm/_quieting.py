@@ -144,7 +144,11 @@ def _neutralise_logging_worker() -> None:
             except Exception:  # noqa: BLE001
                 pass
 
-        async def _anoop(self, *a, **k):  # noqa: ANN001
+        # Stays `async` with no await on purpose: it REPLACES langfuse's
+        # LoggingWorker.flush, which langfuse awaits. A sync stub here
+        # raises "object NoneType can't be used in 'await' expression"
+        # at shutdown. NOSONAR — S7503 cannot see the method it stands in for.
+        async def _anoop(self, *a, **k):  # noqa: ANN001  # NOSONAR
             return None
 
         _lw.LoggingWorker.ensure_initialized_and_enqueue = _drop

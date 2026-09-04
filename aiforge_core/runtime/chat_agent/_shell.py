@@ -14,7 +14,16 @@ _ACTION_RE = re.compile(r"ACTION:\s*([A-Z_]+)", re.IGNORECASE)
 _ARGS_RE = re.compile(r"ARGS_JSON:\s*(\{.*\})", re.IGNORECASE | re.DOTALL)
 _FINAL_RE = re.compile(r"FINAL:\s*(.*)", re.IGNORECASE | re.DOTALL)
 _ASK_RE = re.compile(r"ASK:\s*(.*)", re.IGNORECASE | re.DOTALL)
-_THOUGHT_RE = re.compile(r"THOUGHT:\s*(.*?)(?:\n[A-Z_]+:|$)", re.IGNORECASE | re.DOTALL)
+# Everything after ``THOUGHT:`` up to the next ``\nMARKER:`` line, or the end.
+# Written as a tempered greedy token rather than ``(.*?)(?:\n[A-Z_]+:|$)``:
+# a reluctant quantifier whose follower can match the empty string (``$``
+# is zero-width) is the shape S6019 flags, and it read as if stopping were
+# optional. This says the same thing in one pass — consume anything that is
+# not the start of the next marker line. ``[ \t]*`` after the colon, NOT
+# ``\s*``: eating the newline would let the token consume the very marker
+# line that is supposed to stop it.
+_THOUGHT_RE = re.compile(r"THOUGHT:[ \t]*((?:(?!\n[A-Z_]+:)[\s\S])*)",
+                         re.IGNORECASE)
 
 _MAX_OBS = 6000  # truncate tool output fed back to the model
 # Content-READ tools return a document the model must see IN FULL to work with

@@ -247,12 +247,15 @@ def _read_one(stream) -> dict | None:
         return None
 
 
+_FILE_SCHEME = "file://"
+
+
 def path_to_uri(path: str | Path) -> str:
     p = Path(path).resolve()
-    return "file://" + urllib.parse.quote(str(p))
+    return _FILE_SCHEME + urllib.parse.quote(str(p))
 
 
 def uri_to_path(uri: str) -> str:
-    if uri.startswith("file://"):
-        return urllib.parse.unquote(uri[len("file://"):])
+    if uri.startswith(_FILE_SCHEME):
+        return urllib.parse.unquote(uri[len(_FILE_SCHEME):])
     return uri

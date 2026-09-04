@@ -28,7 +28,7 @@ def make_repeat_guard_callback():
     if limit <= 0:
         return None
 
-    async def _cb(*, tool, args, tool_context, **_kw):
+    def _cb(*, tool, args, tool_context, **_kw):
         try:
             name = getattr(tool, "name", "") or ""
             sig = name + "|" + json.dumps(args or {}, sort_keys=True,

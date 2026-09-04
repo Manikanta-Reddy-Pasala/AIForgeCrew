@@ -284,8 +284,9 @@ def test_the_channel_poller_skips_the_backlog_then_prints_new(tp, monkeypatch,
             raise _Stop
         return pages.pop(0)
     monkeypatch.setattr(tp, "_get", _get)
+    args = types.SimpleNamespace(team_id="t", channel_id="c", interval=0)
     with pytest.raises(_Stop):
-        tp.cmd_poll(types.SimpleNamespace(team_id="t", channel_id="c", interval=0))
+        tp.cmd_poll(args)
     out = capsys.readouterr().out
     assert "fresh" in out and "old news" not in out
 
@@ -300,8 +301,9 @@ def test_the_chat_poller_skips_the_backlog_too(tp, monkeypatch, capsys):
             raise _Stop
         return pages.pop(0)
     monkeypatch.setattr(tp, "_get", _get)
+    args = types.SimpleNamespace(chat_id="ch1", interval=0)
     with pytest.raises(_Stop):
-        tp.cmd_chat_poll(types.SimpleNamespace(chat_id="ch1", interval=0))
+        tp.cmd_chat_poll(args)
     out = capsys.readouterr().out
     assert "fresh" in out and "old news" not in out
 

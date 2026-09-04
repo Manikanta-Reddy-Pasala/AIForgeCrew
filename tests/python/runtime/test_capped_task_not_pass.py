@@ -13,6 +13,7 @@ from __future__ import annotations
 from aiforge_core.runtime import chat_agent as ca
 from aiforge_core.runtime import quality_gate
 from aiforge_core.runtime import text_doer as td
+from tests.python._adk_cb import run_cb
 
 
 def _fake_events(*events):
@@ -85,7 +86,6 @@ def test_declared_tests_none_gated_by_flag(monkeypatch):
 
 # ── feedback callback downgrades pass on incomplete stop ──
 def test_feedback_callback_downgrades_on_incomplete():
-    import asyncio
 
     from aiforge_core.agents import feedback as fb
 
@@ -94,5 +94,5 @@ def test_feedback_callback_downgrades_on_incomplete():
     class _Ctx:
         state = {"feedback_verdict": "pass", "doer_incomplete": True}
 
-    asyncio.run(cb(callback_context=_Ctx()))
+    run_cb(cb, callback_context=_Ctx())
     assert _Ctx.state["feedback_verdict"] == "fail"

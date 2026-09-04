@@ -148,7 +148,7 @@ def make_stage_callbacks(role: str) -> tuple:
     if _is_disabled():
         return (None, None)
 
-    async def _before(*, callback_context, **_kw):
+    def _before(*, callback_context, **_kw):
         try:
             tid = _ticket_id_from_state(callback_context.state)
             if tid is None:
@@ -161,7 +161,7 @@ def make_stage_callbacks(role: str) -> tuple:
             log.debug("stage_start.failed role=%s: %s", role, exc)
         return None
 
-    async def _after(*, callback_context, **_kw):
+    def _after(*, callback_context, **_kw):
         try:
             state = callback_context.state
             tid = _ticket_id_from_state(state)

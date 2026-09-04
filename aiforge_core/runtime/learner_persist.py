@@ -289,7 +289,7 @@ def make_learner_after_callback():
     context and persists each fact. Wrapped in try/except so a memory
     backend hiccup never breaks the pipeline's terminal verdict path.
     """
-    async def _callback(*, callback_context, **_kw):
+    def _callback(*, callback_context, **_kw):
         try:
             state = callback_context.state
             facts = _coerce_facts(state.get("facts_json"))

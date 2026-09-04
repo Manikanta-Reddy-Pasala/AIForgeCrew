@@ -598,8 +598,9 @@ def _log_model_missing(role: str, ep: Endpoint, missing: list) -> None:
 
 
 def _substitute_attempt(role: str, primary: Endpoint, missing: list,
-                        messages, temperature, max_tokens, top_p, extras,
-                        timeout_s):
+                        messages: list[dict], temperature: float | None,
+                        max_tokens: int | None, top_p: float | None,
+                        extras: dict | None, timeout_s: int) -> str | None:
     """The box told us what it DOES serve — use it rather than failing a whole
     run over one stale line of config. ONE retry, against the closest id the
     endpoint actually has. A rescue, not a routing decision: logged loudly at
@@ -622,7 +623,11 @@ def _substitute_attempt(role: str, primary: Endpoint, missing: list,
         extra={"aiforge": {"role": role, "configured": primary.model,
                            "using": sub, "available": missing,
                            "endpoint": primary.base_url}})
-    out = _try_post(replace(primary, model=sub), messages, shipped={},
+    # Named, and annotated: `replace()` on a dataclass gives back the same
+    # type, but nothing in the call said so, and _try_post's first parameter is
+    # the one thing here that must be an Endpoint.
+    substitute_ep: Endpoint = replace(primary, model=sub)
+    out = _try_post(substitute_ep, messages, shipped={},
                     temperature=temperature, max_tokens=max_tokens,
                     top_p=top_p, extras=extras, timeout_s=timeout_s,
                     role=role, source="model_substitute")

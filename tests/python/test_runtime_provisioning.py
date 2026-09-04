@@ -3,6 +3,8 @@ import importlib
 
 import pytest
 
+from tests.python._adk_cb import run_cb
+
 
 @pytest.fixture
 def cfg(monkeypatch, tmp_path):
@@ -185,7 +187,6 @@ def test_grep_tolerates_wrong_path(tmp_path):
 
 # ── stuck-loop repeat guard ──────────────────────────────────────────
 def test_repeat_guard_blocks_repeated_identical_call(monkeypatch):
-    import asyncio
     monkeypatch.setenv("AIFORGE_TOOL_REPEAT_LIMIT", "3")
     from aiforge_core.runtime.repeat_guard import make_repeat_guard_callback
     cb = make_repeat_guard_callback()
@@ -199,22 +200,16 @@ def test_repeat_guard_blocks_repeated_identical_call(monkeypatch):
 
     ctx = _Ctx()
 
-    async def run():
-        results = []
-        for _ in range(4):
-            results.append(await cb(tool=_Tool(), args={"command": "python3 <"},
-                                    tool_context=ctx))
-        return results
-
-    res = asyncio.run(run())
+    res = [run_cb(cb, tool=_Tool(), args={"command": "python3 <"},
+                  tool_context=ctx)
+           for _ in range(4)]
     assert res[0] is None
     assert res[1] is None
     assert res[2]
     assert res[2]["error"] == "repeated_call"
     # a DIFFERENT call is not blocked
-    async def other():
-        return await cb(tool=_Tool(), args={"command": "ls"}, tool_context=ctx)
-    assert asyncio.run(other()) is None
+    assert run_cb(cb, tool=_Tool(), args={"command": "ls"},
+                  tool_context=ctx) is None
 
 
 def test_repeat_guard_disabled_by_zero(monkeypatch):

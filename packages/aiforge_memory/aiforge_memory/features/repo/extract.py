@@ -129,6 +129,7 @@ def _call_llm(pack_text: str, *, system: str = "", user: str = "") -> str:
     `pack_text` is kept in the signature so tests can introspect it,
     but the actual prompt assembled below is what hits the LLM.
     """
+    del pack_text
     from openai import OpenAI
 
     client = OpenAI(
@@ -136,15 +137,15 @@ def _call_llm(pack_text: str, *, system: str = "", user: str = "") -> str:
         api_key=os.environ.get("AIFORGE_CODEMEM_LM_KEY", "lm-studio"),
     )
     from aiforge_memory.llm_compat import response_format
-    create_kwargs: dict = dict(
-        model=DEFAULT_MODEL,
-        messages=[
+    create_kwargs: dict = {
+        "model": DEFAULT_MODEL,
+        "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        temperature=0.0,
-        max_tokens=int(os.environ.get("AIFORGE_CODEMEM_REPO_SUMMARY_MAX_TOKENS", "8000")),
-    )
+        "temperature": 0.0,
+        "max_tokens": int(os.environ.get("AIFORGE_CODEMEM_REPO_SUMMARY_MAX_TOKENS", "8000")),
+    }
     rf = response_format()
     if rf is not None:
         create_kwargs["response_format"] = rf

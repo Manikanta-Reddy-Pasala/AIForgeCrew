@@ -56,45 +56,55 @@ def summarize_files(
 
     for wf in walked:
         fs = FileSummary(repo=repo, path=wf.path)
-        if wf.parse_error:
-            fs.skipped_reason = "parse_error"
-            out.append(fs)
-            continue
-        if not wf.symbols and wf.lang == "other":
-            fs.skipped_reason = "no_symbols"
-            out.append(fs)
-            continue
-        try:
-            content = (repo_root / wf.path).read_bytes()
-        except OSError:
-            fs.skipped_reason = "io_error"
-            out.append(fs)
-            continue
-        if len(content) > MAX_FILE_BYTES:
-            fs.skipped_reason = "too_large"
-            out.append(fs)
-            continue
-
-        try:
-            raw = _call_llm(
-                content.decode("utf-8", errors="replace"),
-                path=wf.path, lang=wf.lang,
-            )
-            parsed = _parse(raw)
-            if parsed is None:
-                strict = PROMPT_PATH.read_text() + \
-                    "\n\nReminder: output ONLY the JSON object."
-                raw2 = _call_llm(
-                    content.decode("utf-8", errors="replace"),
-                    path=wf.path, lang=wf.lang, system_override=strict,
-                )
-                parsed = _parse(raw2)
-            if parsed is not None:
-                fs.summary, fs.purpose_tags = parsed
-        except Exception:
-            fs.skipped_reason = "llm_error"
+        reason, content = _read_or_skip(wf, repo_root)
+        if reason:
+            fs.skipped_reason = reason
+        else:
+            try:
+                parsed = _summarize_one(content or b"", wf)
+                if parsed is not None:
+                    fs.summary, fs.purpose_tags = parsed
+            except Exception:
+                fs.skipped_reason = "llm_error"
         out.append(fs)
     return out
+
+
+def _read_or_skip(wf: WalkedFile,
+                  repo_root: Path) -> tuple[str, bytes | None]:
+    """``(skip_reason, content)`` — reason is "" when the file should be summarized.
+
+    Four "record why and move on" branches used to sit inline in the loop, each
+    repeating the same three lines, which is what made one straight-line
+    function hard to follow. The decision is here; the loop just records it.
+    """
+    if wf.parse_error:
+        return "parse_error", None
+    if not wf.symbols and wf.lang == "other":
+        return "no_symbols", None
+    try:
+        content = (repo_root / wf.path).read_bytes()
+    except OSError:
+        return "io_error", None
+    if len(content) > MAX_FILE_BYTES:
+        return "too_large", None
+    return "", content
+
+
+def _summarize_one(content: bytes,
+                   wf: WalkedFile) -> tuple[str, list[str]] | None:
+    """The model's ``(summary, tags)`` for one file, or None if it never emitted
+    parseable JSON. Transport errors propagate — the caller records them."""
+    text = content.decode("utf-8", errors="replace")
+    parsed = _parse(_call_llm(text, path=wf.path, lang=wf.lang))
+    if parsed is None:
+        # One retry with a blunter instruction: a model that wrapped the JSON in
+        # prose usually complies when told to output only the object.
+        strict = PROMPT_PATH.read_text() + \
+            "\n\nReminder: output ONLY the JSON object."
+        parsed = _parse(_call_llm(text, path=wf.path, lang=wf.lang,
+                                  system_override=strict))
+    return parsed
 
 
 # Grouped so the precedence is visible: the anchors belong to their OWN
@@ -135,15 +145,15 @@ def _call_llm(
     system = system_override or PROMPT_PATH.read_text()
     user = f"File: {path}\nLanguage: {lang}\n\n{content}"
     from aiforge_memory.llm_compat import response_format
-    create_kwargs: dict = dict(
-        model=DEFAULT_MODEL,
-        messages=[
+    create_kwargs: dict = {
+        "model": DEFAULT_MODEL,
+        "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        temperature=0.0,
-        max_tokens=600,
-    )
+        "temperature": 0.0,
+        "max_tokens": 600,
+    }
     rf = response_format()
     if rf is not None:
         create_kwargs["response_format"] = rf

@@ -168,7 +168,10 @@ def _run_async(coro) -> Any:
             loop = asyncio.new_event_loop()
             try:
                 box["v"] = loop.run_until_complete(coro)
-            except BaseException as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 — re-raised at `raise box["e"]`
+                # Worker thread: KeyboardInterrupt lands on the main thread and a
+                # SystemExit here would only end this one, so BaseException
+                # covered nothing extra.
                 box["e"] = exc
             finally:
                 loop.close()

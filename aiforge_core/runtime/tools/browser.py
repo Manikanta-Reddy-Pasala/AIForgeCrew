@@ -487,7 +487,11 @@ _BROWSE_COMMANDS = {
 }
 
 
-def browse(
+# NOSONAR (S107) — this signature IS the tool schema. ADK derives the
+# JSON schema the model sees from these parameter names and types; a
+# params object or **kwargs here would hand the model an opaque blob
+# and it would stop being able to call the tool correctly.
+def browse(  # NOSONAR
     command: str,
     *,
     url: str | None = None,

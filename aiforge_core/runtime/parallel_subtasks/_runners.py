@@ -136,6 +136,23 @@ def _enforce_target_path(worktree: str, path: str) -> None:
 _FILE_BLOCK_RE = None  # lazy-compiled in _parse_file_blocks
 
 
+def _marker_path(line: str) -> str | None:
+    """The path in a ``=== path ===`` marker line, or None for anything else.
+
+    Split out of :func:`_marker_sections`: deciding whether a line IS a marker
+    is a separate question from accumulating bodies, and three levels of `if`
+    inside the loop meant a reader had to hold both at once.
+    """
+    stripped = line.strip()
+    if not (stripped.startswith("===") and stripped.endswith("===")
+            and len(stripped) > 6):
+        return None
+    inner = stripped[3:-3].strip().strip("`")
+    # An "=" inside the marker means this is a line of content that happens to
+    # be wrapped in ===, not a path.
+    return inner if inner and "=" not in inner else None
+
+
 def _marker_sections(text: str) -> list[tuple[str, str]]:
     """``(path, body)`` for every ``=== path ===`` block in ``text``.
 
@@ -146,16 +163,12 @@ def _marker_sections(text: str) -> list[tuple[str, str]]:
     path: str | None = None
     body: list[str] = []
     for line in (text or "").split("\n"):
-        stripped = line.strip()
-        if stripped.startswith("===") and stripped.endswith("===") \
-                and len(stripped) > 6:
-            inner = stripped[3:-3].strip().strip("`")
-            if inner and "=" not in inner:
-                if path is not None:
-                    sections.append((path, "\n".join(body)))
-                path, body = inner, []
-                continue
-        if path is not None:
+        marker = _marker_path(line)
+        if marker is not None:
+            if path is not None:
+                sections.append((path, "\n".join(body)))
+            path, body = marker, []
+        elif path is not None:
             body.append(line)
     if path is not None:
         sections.append((path, "\n".join(body)))

@@ -1,101 +1,47 @@
-"""Online learner — step_trace + episodic + skills/failures/attachments.
+"""What is left of the Postgres-backed online learner: attachment lookup.
 
-This was backed by Postgres tables (episodic_outcomes, procedural_patterns,
-audit_events, step_traces, skills, failures, attachments). Postgres has been
-removed (SQLite-only build), so every writer is a soft no-op and every reader
-returns empty. The public surface is preserved so callers degrade gracefully.
+This module used to front seven Postgres tables — ``episodic_outcomes``,
+``procedural_patterns``, ``audit_events``, ``step_traces``, ``skills``,
+``failures`` and ``attachments``. Postgres was removed (SQLite-only build) and
+every writer became a soft no-op, kept "so callers degrade gracefully".
 
-Every function opens with ``del <its parameters>``. They are not dead: they ARE
-the interface — the shape every caller still passes and the shape the Postgres
-implementation had — and deleting the NAMES says "accepted, deliberately
-ignored" in the one place a reader looks, instead of leaving a scanner (and the
-next reader) to wonder whether the arguments were forgotten.
+They do not degrade gracefully any more, because there are no callers. The only
+thing anything still imports from here is :func:`attachments_for`, reached once
+from ``memory.trial_balance.run_workflow``. Eleven no-op functions preserving
+the shape of an interface nobody calls are not an interface — they are a
+promise the code cannot keep, and each one made a reader ask whether the
+arguments it accepts and ignores were forgotten rather than retired.
+
+So they are gone. Skills and failures are served by
+``aiforge_core.memory.skills`` and ``aiforge_core.runtime.failure_memory``;
+audit and step traces by ``aiforge_core.observability``. Anything that wants
+what those tables held should ask one of those, not a stub that answers "".
+
+Attachments have no replacement store yet, which is why the reader below still
+exists and still returns nothing: the caller already handles an empty list (it
+reports the missing roles and blocks), and that behaviour is under test in
+``tests/python/test_trial_balance_delegate.py``.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
-
-
-@dataclass
-class StepTrace:
-    ticket_id: str
-    agent_role: str
-    step_index: int
-    plan_step_id: str = ""
-    input_context: dict[str, Any] | None = None
-    output: dict[str, Any] | None = None
-    tools_used: list[str] | None = None
-    tokens_in: int = 0
-    tokens_out: int = 0
-    prompt_version: str = "v1"
-    status: str = "ok"
-
-
-def migrate() -> bool:
-    return False
-
-
-def record_step_trace(_t: StepTrace) -> None:
-    return None
-
-
-def record_episodic(*, ticket_id: str, stage: str, agent_role: str,
-                    outcome: str, summary: str,
-                    artifacts: dict | None = None,
-                    hitl_weight: int = 1) -> None:
-    del ticket_id, stage, agent_role, outcome, summary, artifacts, hitl_weight
-    return None
-
-
-def update_procedural(*, agent_role: str, task_class: str,
-                      tool_sequence: list[str], success: bool) -> None:
-    del agent_role, task_class, tool_sequence, success
-    return None
-
-
-def record_audit(*, ticket_id: str, agent_role: str, event_type: str,
-                 payload: dict | None, duration_ms: int = 0,
-                 status: str = "ok", trace_id: str | None = None) -> bool:
-    del ticket_id, agent_role, event_type, payload, duration_ms, status, trace_id
-    return False
-
-
-def promote_skill(*, repo: str, task_class: str, name: str,
-                  summary: str, body_md: str, success: bool) -> bool:
-    del repo, task_class, name, summary, body_md, success
-    return False
-
-
-def top_skills_for(*, repo: str, task_class: str, k: int = 3) -> list[dict]:
-    del repo, task_class, k
-    return []
-
-
-def record_failure(*, repo: str, task_class: str, mode: str,
-                   evidence: str, lesson: str = "") -> bool:
-    del repo, task_class, mode, evidence, lesson
-    return False
-
-
-def top_failures_for(*, repo: str, task_class: str, k: int = 5) -> list[dict]:
-    del repo, task_class, k
-    return []
-
-
-def add_attachment(*, ticket_id: str, filename: str, file_path: str,
-                   role: str = "other", content_type: str = "",
-                   bytes_: int = 0) -> bool:
-    del ticket_id, filename, file_path, role, content_type, bytes_
-    return False
-
 
 def attachments_for(_ticket_id: str) -> list[dict]:
+    """Attachments recorded for a ticket — always empty, no store backs it.
+
+    The one caller (``trial_balance.run_workflow``) treats an empty list as
+    "the required attachments are missing" and blocks with that reason, which
+    is the correct outcome while nothing is recording attachments.
+    """
     return []
 
 
 def detect_attachment_role(filename: str) -> str:
-    """Cheap pattern-match — see process docs for the contract."""
+    """Classify an attachment by its name — tally / oneshell / screenshot.
+
+    Kept with :func:`attachments_for`: whatever restores an attachment store
+    needs this rule, and it is the only part of the old module that was
+    behaviour rather than a stub.
+    """
     low = (filename or "").lower()
     if "tally" in low:
         return "tally"
@@ -104,3 +50,6 @@ def detect_attachment_role(filename: str) -> str:
     if low.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
         return "screenshot"
     return "other"
+
+
+__all__ = ["attachments_for", "detect_attachment_role"]

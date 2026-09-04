@@ -201,7 +201,7 @@ def adk_after_tool_callback():
     if os.environ.get("AIFORGE_HOOKS_DISABLE") == "1":
         return None
 
-    async def _cb(*, tool=None, args=None, tool_context=None,
+    def _cb(*, tool=None, args=None, tool_context=None,
                   tool_response=None, **_kw):
         try:
             import asyncio

@@ -90,18 +90,21 @@ def test_the_events_own_text_is_read_for_the_final_answer():
 # ─── the run lock ──────────────────────────────────────────────────────
 
 
-def test_the_lock_is_released_and_the_root_restored():
+def test_the_lock_is_released_and_the_root_restored(monkeypatch):
+    # monkeypatch, not os.environ[...]: whatever the release path leaves behind
+    # used to leak into every later test in the session — the same shape as the
+    # AIFORGE_COMPACT_DISABLE leak that made 24 unrelated tests fail.
     P._RUN_LOCK.acquire()
     gen = P._run_lock_gen()
-    os.environ["AIFORGE_REPO_ROOT"] = "/team/run"
+    monkeypatch.setenv("AIFORGE_REPO_ROOT", "/team/run")
     P._release_run_lock(gen, "/before")
     assert os.environ["AIFORGE_REPO_ROOT"] == "/before"
     assert not P._RUN_LOCK.locked()
 
 
-def test_a_run_that_had_no_root_leaves_none_behind():
+def test_a_run_that_had_no_root_leaves_none_behind(monkeypatch):
     P._RUN_LOCK.acquire()
-    os.environ["AIFORGE_REPO_ROOT"] = "/team/run"
+    monkeypatch.setenv("AIFORGE_REPO_ROOT", "/team/run")
     P._release_run_lock(P._run_lock_gen(), None)
     assert "AIFORGE_REPO_ROOT" not in os.environ
 
@@ -113,7 +116,7 @@ def test_a_wedged_holder_cannot_free_the_next_runs_lock(monkeypatch):
     stale_gen = P._run_lock_gen()
     assert P.force_release_run_lock() is True
     P._RUN_LOCK.acquire()                       # the next run takes it
-    os.environ["AIFORGE_REPO_ROOT"] = "/new/run"
+    monkeypatch.setenv("AIFORGE_REPO_ROOT", "/new/run")
     P._release_run_lock(stale_gen, "/stale")    # the wedged holder tears down
     assert P._RUN_LOCK.locked() is True
     assert os.environ["AIFORGE_REPO_ROOT"] == "/new/run"

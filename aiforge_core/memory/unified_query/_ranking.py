@@ -118,31 +118,31 @@ def _normalize_scores(hits: list[dict]) -> list[dict]:
     the existing ``score``). Monotonic within a source → within-source order
     preserved. Gated by ``AIFORGE_UMEM_NORMALIZE`` (default on; 0/false keeps
     the legacy weight-scaled ``score`` untouched)."""
-    if not hits:
-        return hits
-    if os.environ.get("AIFORGE_UMEM_NORMALIZE", "1").strip().lower() in (
-            "0", "false", "no", "off"):
-        return hits
+    # Rescores IN PLACE and hands the same list back. Three early `return hits`
+    # made that look like a choice between outcomes when there was only ever
+    # one; the guards now just skip the work.
+    enabled = os.environ.get("AIFORGE_UMEM_NORMALIZE", "1").strip().lower() \
+        not in ("0", "false", "no", "off")
+    if hits and enabled:
+        abs_w = _abs_weight()
+        groups: dict[str, list[dict]] = {}
+        for h in hits:
+            groups.setdefault(str(h.get("source") or ""), []).append(h)
 
-    abs_w = _abs_weight()
-    groups: dict[str, list[dict]] = {}
-    for h in hits:
-        groups.setdefault(str(h.get("source") or ""), []).append(h)
-
-    for group in groups.values():
-        raws = [_raw_of(h) for h in group]
-        lo, hi = min(raws), max(raws)
-        span = hi - lo
-        for h in group:
-            w = float(h.get("_weight", 1.0))
-            raw_c = min(1.0, max(0.0, _raw_of(h)))
-            if span <= 0:
-                # Single hit / all-equal band: keep ABSOLUTE relevance — a
-                # weak singleton must stay weak (was norm 1.0 = auto-top).
-                h["score"] = raw_c * w
-            else:
-                norm = (_raw_of(h) - lo) / span
-                h["score"] = (abs_w * raw_c + (1.0 - abs_w) * norm) * w
+        for group in groups.values():
+            raws = [_raw_of(h) for h in group]
+            lo, hi = min(raws), max(raws)
+            span = hi - lo
+            for h in group:
+                w = float(h.get("_weight", 1.0))
+                raw_c = min(1.0, max(0.0, _raw_of(h)))
+                if span <= 0:
+                    # Single hit / all-equal band: keep ABSOLUTE relevance — a
+                    # weak singleton must stay weak (was norm 1.0 = auto-top).
+                    h["score"] = raw_c * w
+                else:
+                    norm = (_raw_of(h) - lo) / span
+                    h["score"] = (abs_w * raw_c + (1.0 - abs_w) * norm) * w
     return hits
 
 

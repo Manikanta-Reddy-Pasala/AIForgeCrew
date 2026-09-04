@@ -10,6 +10,8 @@ import os
 import re
 import subprocess
 import threading
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from pydantic import BaseModel
 
@@ -441,14 +443,38 @@ def _shared_review(subs, done, cancelled, conflicts, integ) -> str:
             + ("; partial work kept on branch, NOT merged" if cancelled else ""))
 
 
-def _shared_run_and_merge(repo_root, base_branch, branch, wt, subs, run_one,
-                          validate_one, on_status, ticket_id, should_cancel,
-                          merge, integration_test, results: dict,
+@dataclass(frozen=True)
+class _SharedRun:
+    """Everything one shared-worktree run needs, in one value.
+
+    These fourteen arguments always travelled together — where the tree is,
+    which branch it came from, and the five callables that drive it — and
+    threading them through positionally made the call site a line nobody could
+    read without counting commas against the signature.
+    """
+    repo_root: str
+    base_branch: str
+    branch: str
+    wt: str
+    ticket_id: str
+    run_one: Callable
+    validate_one: Callable
+    on_status: Callable | None
+    should_cancel: Callable | None
+    merge: bool
+    integration_test: Callable | None
+
+
+def _shared_run_and_merge(run: _SharedRun, subs, results: dict,
                           state: dict) -> None:
     """Run every wave in the shared tree, commit, then integrate + merge.
     Leaves conflicts / merged / cancelled / committed / integ in ``state``."""
-    _run_wave_set(wt, subs, run_one, validate_one, on_status, ticket_id,
-                  should_cancel, results, 0)
+    repo_root, base_branch = run.repo_root, run.base_branch
+    branch, wt, ticket_id = run.branch, run.wt, run.ticket_id
+    should_cancel, merge = run.should_cancel, run.merge
+    integration_test = run.integration_test
+    _run_wave_set(wt, subs, run.run_one, run.validate_one, run.on_status,
+                  ticket_id, should_cancel, results, 0)
     # ALWAYS commit the subtask work onto the shared branch FIRST — the caller's
     # `finally` force-removes the worktree, which would DISCARD anything left
     # uncommitted (incl. earlier waves that already succeeded). Commit even on
@@ -484,9 +510,13 @@ def _run_shared_worktree(repo_root, base_branch, ticket_id, subs, run_one,
     state = {"conflicts": [], "merged": 0, "cancelled": False,
              "committed": False, "integ": {"ok": None, "skipped": True}}
     try:
-        _shared_run_and_merge(repo_root, base_branch, branch, wt, subs, run_one,
-                              validate_one, on_status, ticket_id, should_cancel,
-                              merge, integration_test, results, state)
+        _shared_run_and_merge(
+            _SharedRun(repo_root=repo_root, base_branch=base_branch,
+                       branch=branch, wt=wt, ticket_id=ticket_id,
+                       run_one=run_one, validate_one=validate_one,
+                       on_status=on_status, should_cancel=should_cancel,
+                       merge=merge, integration_test=integration_test),
+            subs, results, state)
     finally:
         kept = state["committed"] and (bool(state["conflicts"])
                                        or state["cancelled"])

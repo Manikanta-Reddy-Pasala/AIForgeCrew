@@ -669,8 +669,9 @@ def test_a_failed_run_blocks_the_ticket(parallel):
 
 def test_a_crash_mid_run_still_blocks_the_ticket_and_re_raises(parallel):
     parallel["agg"] = RuntimeError("worktree gone")
+    ticket = _ticket()
     with pytest.raises(RuntimeError):
-        R.run_subtasks_parallel(_ticket())
+        R.run_subtasks_parallel(ticket)
     assert parallel["statuses"] == ["in_progress", "blocked"]
     assert not R._INFLIGHT, "the in-flight guard is released on the way out"
 

@@ -9,7 +9,9 @@ import re
 from dataclasses import dataclass
 
 # Class.method or package.Class.method (last segment is the method)
-_SYMBOL_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]+)(?:\.([a-z_][A-Za-z0-9_]*))+\b")
+# `\w` is [A-Za-z0-9_] plus the same Unicode word characters an identifier
+# can already contain, which is what these two classes were spelling out.
+_SYMBOL_RE = re.compile(r"\b([A-Z]\w+)(?:\.([a-z_]\w*))+\b")
 # Ticket id: ABC-123
 _TICKET_RE = re.compile(r"\b([A-Z]{2,5}-\d+)\b")
 # File path with extension we care about

@@ -53,19 +53,24 @@ RUN if [ "$PREFETCH_EMBED_MODEL" = "1" ]; then \
 
 # ── runtime (slim: no compiler, no uv) ─────────────────────────────────
 FROM python:3.12-slim AS runtime
+# One layer: install the runtime binaries and configure the one of them that
+# needs configuring. Split across two RUNs these were two image layers for what
+# is a single "make git usable in here" step.
+#
 # git/curl for worktrees & git_pr (model2vec is pure-numpy — no torch/libgomp).
 # tmux: the Doer's bash tool keeps one session per run so `cd` / `export`
 # survive between calls — prompts/doer.py promises a "persistent shell". Without
 # the binary every command is a fresh subprocess (BashFallback tmux_missing).
+# Package names sorted so a future addition lands somewhere findable.
+#
+# The agent operates on HOST-mounted repos owned by another uid; without
+# safe.directory git refuses every command ("dubious ownership") and the failure
+# is swallowed upstream (no diff, no post-edit tests). Same trust boundary as
+# the shell/file tools the API already exposes over HTTP.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git curl ca-certificates tmux \
-    && rm -rf /var/lib/apt/lists/*
-
-# The agent operates on HOST-mounted repos owned by another uid; without this
-# git refuses every command ("dubious ownership") and the failure is swallowed
-# upstream (no diff, no post-edit tests). Same trust boundary as the shell/file
-# tools the API already exposes over HTTP.
-RUN git config --system --add safe.directory '*' \
+        ca-certificates curl git tmux \
+    && rm -rf /var/lib/apt/lists/* \
+    && git config --system --add safe.directory '*' \
     && git config --system user.email "aiforge@localhost" \
     && git config --system user.name "AIForge Bot"
 

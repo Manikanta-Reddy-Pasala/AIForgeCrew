@@ -303,7 +303,7 @@ def build_loop_budget_callbacks() -> tuple[
     min_elapsed_s = _env_float("AIFORGE_LOOP_MIN_ELAPSED_S",
                                _DEFAULT_MIN_ELAPSED_S)
 
-    async def after_iteration_callback(*, callback_context):  # type: ignore[no-untyped-def]
+    def after_iteration_callback(*, callback_context):  # type: ignore[no-untyped-def]
         """Refiner's after-agent hook — observe LOC, flip kill flag."""
         state = callback_context.state
         try:
@@ -317,7 +317,7 @@ def build_loop_budget_callbacks() -> tuple[
             log.exception("loop_budget.after_iteration_callback failed: %s", exc)
         return None  # don't override the refiner's content
 
-    async def before_loop_callback(*, callback_context):  # type: ignore[no-untyped-def]
+    def before_loop_callback(*, callback_context):  # type: ignore[no-untyped-def]
         """LoopAgent's before-agent hook — short-circuit on kill flag.
 
         Returning a ``types.Content`` payload tells ADK to skip the

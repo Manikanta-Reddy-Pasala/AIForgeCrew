@@ -154,6 +154,10 @@ def _split_code(text: str, *, file_path: str,
 
 
 def _split(text: str, *, file_path: str) -> list[tuple[int, str, int, int]]:
+    # Every splitter here takes the same (text, file_path) shape so the
+    # dispatcher can pick one without special-casing its arguments. This
+    # one chunks by line window only — accepted and ignored on purpose.
+    del file_path
     lines = text.splitlines()
     if not lines:
         return []
@@ -200,6 +204,9 @@ def _split_doc(text: str, *, file_path: str) -> list[tuple[int, str, int, int]]:
     splitting when there are no headings (long prose). Each chunk gets
     its parent heading prefixed so embedded queries can match on
     "JWT auth" → the section that owns it."""
+    # Same uniform splitter signature as _split; the headings come from the
+    # text, so the path is accepted and ignored.
+    del file_path
     lines = text.splitlines()
     if not lines:
         return []

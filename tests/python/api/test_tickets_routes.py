@@ -19,7 +19,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from aiforge_core.api.routes import tickets as tk
@@ -195,8 +195,10 @@ def test_an_unwritable_store_names_the_directory(store, monkeypatch, tmp_path):
     import pathlib
     monkeypatch.setattr(pathlib.Path, "mkdir",
                         lambda self, **kw: (_ for _ in ()).throw(PermissionError(13, "denied")))
-    with pytest.raises(Exception) as ei:
-        tk._persist_ticket_attachments("ONE-1", [_file("a.txt")])
+    attachment = _file("a.txt")
+    with pytest.raises(HTTPException) as ei:
+        tk._persist_ticket_attachments("ONE-1", [attachment])
+    assert ei.value.status_code == 500
     assert "could not store attachments under" in str(ei.value.detail)
     assert "writable" in str(ei.value.detail)
 
@@ -205,8 +207,9 @@ def test_a_failed_write_is_not_reported_as_saved(store, monkeypatch):
     import pathlib
     monkeypatch.setattr(pathlib.Path, "write_bytes",
                         lambda self, data: (_ for _ in ()).throw(OSError(28, "no space")))
-    with pytest.raises(Exception):
-        tk._persist_ticket_attachments("ONE-1", [_file("a.txt")])
+    attachment = _file("a.txt")
+    with pytest.raises(HTTPException, match="could not store attachments under"):
+        tk._persist_ticket_attachments("ONE-1", [attachment])
 
 
 def test_named_attachments_are_removed(store, tmp_path):

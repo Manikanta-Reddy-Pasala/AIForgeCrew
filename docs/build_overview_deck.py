@@ -72,7 +72,7 @@ def _txbody(tf, size, color, bold, align, space_after=0):
             r.font.size = Pt(size)
             r.font.color.rgb = color
             r.font.bold = bold
-            r.font.name = "Segoe UI"
+            r.font.name = FONT
         p.space_after = Pt(space_after)
 
 
@@ -93,8 +93,19 @@ def text(slide, x, y, w, h, s, size=12, color=INK, bold=False,
     return box
 
 
-def box(slide, x, y, w, h, label, sub="", fill=SLATE_T, edge=SLATE,
-        size=12, sub_size=9.5, shape=MSO_SHAPE.ROUNDED_RECTANGLE,
+# Repeated in three places each — named so a rename is one edit, not a
+# search-and-hope across 800 lines of slide code.
+FONT = "Segoe UI"
+CHAT_AGENT = "Chat agent"
+COMPACTS_LOCALLY = "compacts locally"
+
+
+# NOSONAR (S107) — the deck's workhorse, called 70+ times, and every one of
+# these is an independent visual override with a sensible default. A style
+# object here would mean building one at 70 call sites to change one colour.
+def box(slide, x, y, w, h, label, sub="", fill=SLATE_T,  # NOSONAR
+        edge=SLATE, size=12, sub_size=9.5,
+        shape=MSO_SHAPE.ROUNDED_RECTANGLE,
         label_color=None, bold=True):
     """A tinted rounded box with a bold label and an optional caption under it.
 
@@ -120,7 +131,7 @@ def box(slide, x, y, w, h, label, sub="", fill=SLATE_T, edge=SLATE,
         r.font.size = Pt(size)
         r.font.bold = bold
         r.font.color.rgb = label_color or edge
-        r.font.name = "Segoe UI"
+        r.font.name = FONT
     if sub:
         for line in sub.split("\n"):
             p = tf.add_paragraph()
@@ -130,7 +141,7 @@ def box(slide, x, y, w, h, label, sub="", fill=SLATE_T, edge=SLATE,
                 r.font.size = Pt(sub_size)
                 r.font.bold = False
                 r.font.color.rgb = INK
-                r.font.name = "Segoe UI"
+                r.font.name = FONT
     return sp
 
 
@@ -159,7 +170,8 @@ def chip(slide, x, y, w, s, fill=WHITE, edge=LINE, color=INK, size=9.5):
 def slide_base(prs, title, kicker="", footer_note=""):
     """A blank white slide with the standard title block and page furniture."""
     global _slide_no
-    s = prs.slides.add_slide(prs.slide_layouts[6])          # 6 = blank
+    # Layout index 6 is the blank one.
+    s = prs.slides.add_slide(prs.slide_layouts[6])
     _slide_no += 1
     text(s, Inches(0.6), Inches(0.34), Inches(12.2), Inches(0.5),
          title, size=27, bold=True)
@@ -213,7 +225,7 @@ def title_slide(prs):
     y = Inches(4.6)
     for i, (lab, sub) in enumerate([
             ("Ticket → PR", "19 agent roles"),
-            ("Chat agent", "109 tools, 3 modes"),
+            (CHAT_AGENT, "109 tools, 3 modes"),
             ("Memory", "files, not a DB"),
             ("Fleet sync", "groups + redaction")]):
         box(s, Inches(0.95) + i * Inches(2.75), y, Inches(2.5), Inches(0.92),
@@ -244,7 +256,7 @@ def architecture(prs):
         fill=BLUE_T, edge=BLUE, size=13)
 
     # four engines side by side
-    cols = [("Chat agent", "ReAct loop\n109 tools", GREEN_T, GREEN),
+    cols = [(CHAT_AGENT, "ReAct loop\n109 tools", GREEN_T, GREEN),
             ("ADK pipeline", "19 agents\ngit worktrees", PLUM_T, PLUM),
             ("Memory", "OKR-DAG\n+ SQLite", AMBER_T, AMBER),
             ("Integrations", "Jira · GitLab\nConfluence · MCP", SLATE_T, SLATE)]
@@ -442,9 +454,9 @@ def central_memory(prs):
             "laptops behind NAT just work. Unset AIFORGE_ADMIN_URL = this box IS the admin.")
 
     # spokes
-    for i, (lab, sub) in enumerate([("Laptop A", "compacts locally"),
-                                    ("NUC / server", "compacts locally"),
-                                    ("Laptop B", "compacts locally")]):
+    for i, (lab, sub) in enumerate([("Laptop A", COMPACTS_LOCALLY),
+                                    ("NUC / server", COMPACTS_LOCALLY),
+                                    ("Laptop B", COMPACTS_LOCALLY)]):
         box(s, Inches(0.75), Inches(1.70) + i * Inches(1.15), Inches(2.5),
             Inches(0.85), lab, sub, fill=GREEN_T, edge=GREEN, size=12.5)
         arrow(s, Inches(3.25), Inches(2.12) + i * Inches(1.15),
@@ -744,7 +756,7 @@ def what_it_is(prs):
     cards = [
         ("Ticket → PR", "a plain-language ticket\nbecomes a pull request",
          "19 specialised agent roles", BLUE_T, BLUE),
-        ("Chat agent", "the whole filesystem,\nthree modes",
+        (CHAT_AGENT, "the whole filesystem,\nthree modes",
          "109 tools, plain-text ReAct", GREEN_T, GREEN),
         ("Any endpoint", "OpenAI-compatible\nis the only requirement",
          "LM Studio · vLLM · cloud", AMBER_T, AMBER),

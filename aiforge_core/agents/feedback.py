@@ -68,7 +68,7 @@ def make_quality_gate_after_callback():
     Soft-fail and backward-compatible: when no signals are present the
     verdict is left exactly as the model emitted it.
     """
-    async def _callback(*, callback_context, **_kw):
+    def _callback(*, callback_context, **_kw):
         try:
             state = callback_context.state
             gate = quality_gate.evaluate(

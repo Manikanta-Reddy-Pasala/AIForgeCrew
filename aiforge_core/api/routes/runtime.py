@@ -133,7 +133,11 @@ def get_doer_backend_alias() -> dict:
     return get_llm_backend()
 
 
-@router.put("/api/runtime/doer_backend")
+# Same 400 as the endpoint it forwards to — declared here too, because the
+# generated schema is per-route: a client reading only this path was told the
+# call could not fail.
+@router.put("/api/runtime/doer_backend",
+            responses={400: {"description": "Bad request"}})
 def set_doer_backend_alias(payload: dict) -> dict:
     return set_llm_backend(payload)
 

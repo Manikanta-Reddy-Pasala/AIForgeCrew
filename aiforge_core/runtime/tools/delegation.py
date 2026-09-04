@@ -102,9 +102,13 @@ async def _run_delegate_async(
         pass
 
     try:
-        output_parts = await asyncio.wait_for(
-            _drive_delegate(runner, session.id, content), timeout=timeout)
-    except asyncio.TimeoutError:
+        # asyncio.timeout(), not wait_for(timeout=...): the context manager
+        # cancels the body in place rather than wrapping it in a second task,
+        # so the delegate's own cleanup runs inside the same task that started
+        # it — which is what `finally` below is relying on.
+        async with asyncio.timeout(timeout):
+            output_parts = await _drive_delegate(runner, session.id, content)
+    except TimeoutError:
         return {"ok": False, "error": "timeout", "role": role}
     finally:
         _cleanup_delegate_sessions(session.id)

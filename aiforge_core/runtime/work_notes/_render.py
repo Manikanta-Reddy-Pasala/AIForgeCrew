@@ -122,7 +122,10 @@ def _note_frontmatter(kind: str, key: str, res: str, ts: str, desc: str,
     return fm
 
 
-def render_note(kind: str, key: str, *, title: str, source_url: str = "",
+# NOSONAR (S107) — one keyword per OKF section/frontmatter key, called from
+# 44 places that each fill in a different subset. The list is the format.
+def render_note(kind: str, key: str, *, title: str,  # NOSONAR
+                source_url: str = "",
                 objective: str = "", key_results=None, facts=None,
                 links=None, learnings=None, body_md: str = "",
                 updated_at: str = "", tags=None,

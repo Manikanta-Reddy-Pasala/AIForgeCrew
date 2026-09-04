@@ -69,7 +69,11 @@ def _worktrees(root: Path) -> "list[tuple[Path, Path]]":
         try:
             out.extend((repo, wt) for wt in sorted(holder.iterdir())
                        if wt.is_dir())
-        except OSError as exc:  # noqa: PERF203 — one unreadable repo, not all
+        except OSError as exc:  # noqa: PERF203
+            # The try/except sits inside the loop on purpose: one unreadable
+            # repo must not end the sweep of every other repo. (Reason kept out
+            # of the noqa comment — anything after the codes is not part of the
+            # directive, and tools disagree about what to do with it.)
             print(f"! cannot read {holder}: {exc}")
     return out
 

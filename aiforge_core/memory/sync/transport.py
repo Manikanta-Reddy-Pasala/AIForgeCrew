@@ -173,7 +173,12 @@ def _fetch(url: str, token: str, limit: int, *, method: str = "GET",
         try:
             out["body"] = _stream(client, url, token, limit, started,
                                   method=method, payload=payload)
-        except BaseException as exc:   # noqa: BLE001 — re-raised on the caller's thread
+        except Exception as exc:  # noqa: BLE001 — re-raised on the caller's thread
+            # `Exception`, not `BaseException`: this body runs on a WORKER
+            # thread, where the two differ only in cases that cannot reach it —
+            # KeyboardInterrupt is delivered to the main thread, and a SystemExit
+            # here would end this thread and nothing else. Catching BaseException
+            # bought no coverage and hid the fact that the caller re-raises.
             out["error"] = exc
 
     worker = threading.Thread(target=_run, name="aiforge-sync-fetch", daemon=True)

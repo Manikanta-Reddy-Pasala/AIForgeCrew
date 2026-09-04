@@ -428,7 +428,13 @@ def _resolve_conflict_hunk(goal: str, path: str, head: str, incoming: str,
     # spliced back into the file verbatim, so eating the first line's indent
     # breaks the very indentation the prompt asks the model to match, and the
     # file then fails the syntax check that follows.
-    out = re.sub(r"^[ \t]*```\w*\n?|\n?[ \t]*```[ \t]*$", "",
+    # One alternation used to do both fences: `^[ \t]*```\w*\n?|\n?[ \t]*```[ \t]*$`.
+    # The `|` sat OUTSIDE both anchors, so which anchor bound which branch was
+    # anyone's guess to read (S5850), and the two optional `\n?`s around a
+    # `[ \t]*` run gave it super-linear backtracking on a long block (S8786).
+    # A fence the model emits is always a line of its own, so say that: drop any
+    # line that is nothing but a fence, with an optional language tag.
+    out = re.sub(r"^[ \t]*```[ \t]*\w*[ \t]*$\n?", "",
                  out.strip("\n").rstrip(), flags=re.M)
     out = re.sub(r"^\s*(<<<<<<<|=======|>>>>>>>).*$", "", out, flags=re.M)
     return out.strip("\n")

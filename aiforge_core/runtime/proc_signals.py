@@ -68,7 +68,7 @@ def kill_group(pgid: int | None, sig: int = _signal.SIGKILL) -> bool:
     try:
         os.killpg(pgid, sig)
         return True
-    except (OSError, ProcessLookupError) as exc:
+    except OSError as exc:      # ProcessLookupError IS an OSError
         log.debug("proc: killpg(%s, %s) failed: %s", pgid, sig, exc)
         return False
 
@@ -81,7 +81,7 @@ def kill_process(pid: int | None, sig: int = _signal.SIGKILL) -> bool:
     try:
         os.kill(pid, sig)
         return True
-    except (OSError, ProcessLookupError) as exc:
+    except OSError as exc:      # ProcessLookupError IS an OSError
         log.debug("proc: kill(%s, %s) failed: %s", pid, sig, exc)
         return False
 

@@ -202,7 +202,7 @@ def make_scope_guard_callback():
     if os.environ.get("AIFORGE_SCOPE_GUARD", "1") in {"0", "false", ""}:
         return None
 
-    async def _cb(*, tool, args, tool_context, **_kw):
+    def _cb(*, tool, args, tool_context, **_kw):
         try:
             state = getattr(tool_context, "state", None) or {}
             globs = _ticket_scope_globs(state)

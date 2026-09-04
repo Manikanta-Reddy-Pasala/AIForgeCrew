@@ -136,7 +136,7 @@ def _ctx_section_cap() -> int:
         return 8000
 
 
-async def merge_context(ctx):  # type: ignore[no-untyped-def]
+def merge_context(ctx):  # type: ignore[no-untyped-def]
     """Concat the per-gatherer briefs into ``context_brief_md`` (each section
     capped at :func:`_ctx_section_cap` so the merged brief stays bounded)."""
     try:
@@ -170,7 +170,7 @@ def _fold_axis_verdict(key: str, axis: str, state, issues: list,
         issues.append(it)
 
 
-async def merge_verdicts(ctx):  # type: ignore[no-untyped-def]
+def merge_verdicts(ctx):  # type: ignore[no-untyped-def]
     """AND the three axis verdicts into the legacy ``verifier_verdict``."""
     try:
         state = ctx.state
@@ -188,7 +188,7 @@ async def merge_verdicts(ctx):  # type: ignore[no-untyped-def]
         pass
 
 
-async def research_entry(ctx):  # type: ignore[no-untyped-def]
+def research_entry(ctx):  # type: ignore[no-untyped-def]
     """No-op fan-out source for the context branches.
 
     Exists so the context fan-out has a single stable re-entry point:

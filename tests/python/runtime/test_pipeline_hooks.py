@@ -7,6 +7,7 @@ import json
 import pytest
 
 from aiforge_core.runtime import hooks
+from tests.python._adk_cb import run_cb
 
 
 class _Tool:
@@ -24,7 +25,7 @@ def test_before_adapter_blocks_on_veto(tmp_path, monkeypatch):
         {"matcher": "run_command", "command": "exit 1",
          "block_on_nonzero": True}]})
     cb = hooks.adk_before_tool_callback()
-    out = asyncio.run(cb(tool=_Tool(), args={"command": "ls"}))
+    out = run_cb(cb, tool=_Tool(), args={"command": "ls"})
     assert isinstance(out, dict)
     assert out.get("blocked") == "hook"
 
@@ -35,7 +36,7 @@ def test_before_adapter_allows_when_no_block(tmp_path, monkeypatch):
     _write_hooks(tmp_path, {"PreToolUse": [
         {"matcher": "run_command", "command": "exit 0"}]})
     cb = hooks.adk_before_tool_callback()
-    out = asyncio.run(cb(tool=_Tool(), args={"command": "ls"}))
+    out = run_cb(cb, tool=_Tool(), args={"command": "ls"})
     assert out is None
 
 
@@ -48,7 +49,10 @@ def test_after_adapter_runs_hook(tmp_path, monkeypatch):
     cb = hooks.adk_after_tool_callback()
 
     async def _run():
-        await cb(tool=_Tool(), args={}, tool_response={"ok": True})
+        # Called from INSIDE a running loop on purpose: the callback is sync
+        # but reaches for asyncio.get_running_loop() to hand the hook to an
+        # executor, which is exactly how ADK invokes it.
+        cb(tool=_Tool(), args={}, tool_response={"ok": True})
         # after-hook is fire-and-forget in an executor; give it a beat
         await asyncio.sleep(0.5)
     asyncio.run(_run())

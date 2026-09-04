@@ -1,9 +1,8 @@
 """Tests for the research_entry passthrough fan-out source."""
 from __future__ import annotations
 
-import asyncio
-
 from aiforge_core.runtime import parallel_stages as ps
+from tests.python._adk_cb import run_cb
 
 
 class _Ctx:
@@ -14,7 +13,7 @@ class _Ctx:
 
 def test_research_entry_is_noop_passthrough() -> None:
     ctx = _Ctx({"enhanced_body": "x"})
-    asyncio.run(ps.research_entry(ctx))
+    run_cb(ps.research_entry, ctx=ctx)
     assert ctx.state["enhanced_body"] == "x"   # state untouched
     assert ctx.route is None
 

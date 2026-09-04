@@ -199,7 +199,11 @@ def _classify_batch(batch, hint_repo, hint_topic, role) -> list:
             topic: str = ""
 
         class ScopeDecisions(BaseModel):
-            items: "list[ScopeItem]" = []
+            # Unquoted on purpose: the string form hid the only reference to
+            # ScopeItem, so it read as a class nobody used. `from __future__
+            # import annotations` turns this back into the same string before
+            # pydantic ever sees it — identical at runtime, honest to a reader.
+            items: list[ScopeItem] = []
 
         hint = f"hint_repo={hint_repo or '-'} hint_topic={hint_topic or '-'}"
         listing = "\n".join(f"[{n}] {body}" for n, (_, body) in enumerate(batch))

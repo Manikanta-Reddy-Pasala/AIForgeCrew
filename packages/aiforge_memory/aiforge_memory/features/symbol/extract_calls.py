@@ -34,13 +34,15 @@ class CallEdge:
     confidence: float
 
 
-def resolve_calls(
-    files: list[WalkedFile], *, repo: str,
-) -> list[CallEdge]:
-    """Build CALLS edges across all walked files."""
-    # Index every symbol by its terminal name (last :: segment)
+def _name_indexes(
+    files: list[WalkedFile],
+) -> tuple[dict[str, list[str]], dict[str, dict[str, str]]]:
+    """``(by_name, file_index)`` — every symbol keyed by its terminal name.
+
+    Built identically by both resolvers; it was written out twice.
+    """
     by_name: dict[str, list[str]] = {}
-    file_index: dict[str, dict[str, str]] = {}  # file_path -> {name -> fqname}
+    file_index: dict[str, dict[str, str]] = {}   # file_path -> {name -> fqname}
     for wf in files:
         per_file: dict[str, str] = {}
         for sym in wf.symbols:
@@ -48,70 +50,96 @@ def resolve_calls(
             by_name.setdefault(short, []).append(sym.fqname)
             per_file[short] = sym.fqname
         file_index[wf.path] = per_file
+    return by_name, file_index
 
+
+def _resolve_callee(
+    callee_name: str, *, path: str, caller: str, by_name: dict,
+    file_index: dict, import_files: list, exclude_self: bool,
+) -> tuple[str | None, float]:
+    """``(callee_fqname, confidence)`` for one call site, or ``(None, 0.0)``.
+
+    Three tiers, most specific first: a symbol in the SAME file (1.0), one in a
+    file this file imports (0.7), then any symbol anywhere with that name
+    (0.4). ``exclude_self`` drops a resolution that points back at the caller —
+    the source-reading resolver wants that, the walker-only one never had it.
+    """
+    def _usable(fq: str | None) -> bool:
+        return bool(fq) and not (exclude_self and fq == caller)
+
+    same = file_index.get(path, {}).get(callee_name)
+    if _usable(same):
+        return same, 1.0
+    resolved = _from_imports(callee_name, import_files, file_index)
+    if _usable(resolved):
+        return resolved, 0.7
+    cands = by_name.get(callee_name, [])
+    if cands and _usable(cands[0]):
+        return cands[0], 0.4
+    return None, 0.0
+
+
+def _edges_for_file(
+    wf: WalkedFile, calls: list[dict], *, repo: str, by_name: dict,
+    file_index: dict, import_files: list, exclude_self: bool,
+) -> list[CallEdge]:
+    """Every CALLS edge one file's call sites resolve to."""
     edges: list[CallEdge] = []
+    for call in calls:
+        caller = _enclosing_symbol(wf.symbols, call["line"])
+        if caller is None:
+            continue
+        callee, confidence = _resolve_callee(
+            call["name"], path=wf.path, caller=caller, by_name=by_name,
+            file_index=file_index, import_files=import_files,
+            exclude_self=exclude_self,
+        )
+        if callee:
+            edges.append(CallEdge(
+                repo=repo, caller_fqname=caller,
+                callee_fqname=callee, confidence=confidence,
+            ))
+    return edges
 
+
+def resolve_calls(
+    files: list[WalkedFile], *, repo: str,
+) -> list[CallEdge]:
+    """Build CALLS edges across all walked files."""
+    by_name, file_index = _name_indexes(files)
+    edges: list[CallEdge] = []
     for wf in files:
         if wf.parse_error or not wf.symbols:
             continue
-        lang = wf.lang
         try:
-            calls = _extract_calls(wf, lang)
+            calls = _extract_calls(wf, wf.lang)
         except Exception:
             continue
         if not calls:
             continue
-
-        # Build local resolver index for this file's imports
         import_files = _resolve_imports_to_files(wf.imports, files)
-
-        for call in calls:
-            caller = _enclosing_symbol(wf.symbols, call["line"])
-            if caller is None:
-                continue
-            callee_name = call["name"]
-
-            # 1) same-file
-            same = file_index.get(wf.path, {}).get(callee_name)
-            if same:
-                edges.append(CallEdge(
-                    repo=repo,
-                    caller_fqname=caller,
-                    callee_fqname=same,
-                    confidence=1.0,
-                ))
-                continue
-
-            # 2) imported file
-            resolved = _from_imports(callee_name, import_files, file_index)
-            if resolved:
-                edges.append(CallEdge(
-                    repo=repo, caller_fqname=caller,
-                    callee_fqname=resolved, confidence=0.7,
-                ))
-                continue
-
-            # 3) fuzzy global
-            cands = by_name.get(callee_name, [])
-            if cands:
-                edges.append(CallEdge(
-                    repo=repo, caller_fqname=caller,
-                    callee_fqname=cands[0], confidence=0.4,
-                ))
+        edges += _edges_for_file(
+            wf, calls, repo=repo, by_name=by_name, file_index=file_index,
+            import_files=import_files, exclude_self=False,
+        )
     return edges
 
 
 def _extract_calls(wf: WalkedFile, lang: str) -> list[dict]:
-    """Re-parse to grab call sites with their line numbers."""
-    if not wf.path:
-        return []
-    parser = get_parser(lang)
-    language = get_language(lang)
-    source = Path(wf.path)  # placeholder — caller passes content separately
-    # The walker doesn't keep file bytes around; reload from disk.
-    # In production, ingest paths use absolute repo_path; here the walker's
-    # path is repo-relative, so callers must provide a base.
-    # To keep this self-contained, defer to a helper that accepts content.
+    """Always ``[]`` — this signature cannot reach the file's bytes.
+
+    The walker does not keep file contents, and ``wf.path`` is repo-RELATIVE,
+    so there is no way to reopen it from here without a base the caller never
+    passes. It used to build a parser, a language and a Path first and then
+    return [] anyway, which read like an implementation and was three unused
+    locals.
+
+    The working version is :func:`extract_calls_from_source` (bytes in), driven
+    by :func:`resolve_calls_with_source`, which has the repo root. Callers that
+    end up here get no call edges — which is what :func:`resolve_calls` has
+    always produced.
+    """
+    del wf, lang
     return []
 
 
@@ -209,6 +237,11 @@ def _from_imports(
     return None
 
 
+# The languages whose .scm call queries exist.
+_SOURCE_LANGS = frozenset(
+    {"python", "java", "typescript", "tsx", "javascript"})
+
+
 # ---- public re-walking helper ---------------------------------------------
 
 
@@ -217,6 +250,10 @@ def extract_calls_from_source(
 ) -> list[dict]:
     """Run the @call query against `source`. Returns list of
     {"name": str, "line": int} (1-based)."""
+    # `file_path` is part of the signature so callers can pass the same
+    # arguments they pass the rest of the extract API; the query runs on bytes
+    # and never needs it.
+    del file_path
     parser = get_parser(lang)
     language = get_language(lang)
     tree = parser.parse(source)
@@ -243,21 +280,13 @@ def resolve_calls_with_source(
     open them via repo_root + path.
     """
     repo_root = Path(repo_root)
-    by_name: dict[str, list[str]] = {}
-    file_index: dict[str, dict[str, str]] = {}
-    for wf in files:
-        per_file: dict[str, str] = {}
-        for sym in wf.symbols:
-            short = sym.fqname.rsplit("::", 1)[-1]
-            by_name.setdefault(short, []).append(sym.fqname)
-            per_file[short] = sym.fqname
-        file_index[wf.path] = per_file
+    by_name, file_index = _name_indexes(files)
 
     edges: list[CallEdge] = []
     for wf in files:
         if wf.parse_error or not wf.symbols:
             continue
-        if wf.lang not in {"python", "java", "typescript", "tsx", "javascript"}:
+        if wf.lang not in _SOURCE_LANGS:
             continue
         try:
             data = (repo_root / wf.path).read_bytes()
@@ -275,29 +304,8 @@ def resolve_calls_with_source(
         import_files = _resolve_imports_to_files(
             wf.imports, files, importer_path=wf.path,
         )
-        for call in calls:
-            caller = _enclosing_symbol(wf.symbols, call["line"])
-            if caller is None:
-                continue
-            callee_name = call["name"]
-            same = file_index.get(wf.path, {}).get(callee_name)
-            if same and same != caller:
-                edges.append(CallEdge(
-                    repo=repo, caller_fqname=caller,
-                    callee_fqname=same, confidence=1.0,
-                ))
-                continue
-            resolved = _from_imports(callee_name, import_files, file_index)
-            if resolved and resolved != caller:
-                edges.append(CallEdge(
-                    repo=repo, caller_fqname=caller,
-                    callee_fqname=resolved, confidence=0.7,
-                ))
-                continue
-            cands = by_name.get(callee_name, [])
-            if cands and cands[0] != caller:
-                edges.append(CallEdge(
-                    repo=repo, caller_fqname=caller,
-                    callee_fqname=cands[0], confidence=0.4,
-                ))
+        edges += _edges_for_file(
+            wf, calls, repo=repo, by_name=by_name, file_index=file_index,
+            import_files=import_files, exclude_self=True,
+        )
     return edges

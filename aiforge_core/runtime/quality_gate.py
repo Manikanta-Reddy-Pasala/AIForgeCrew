@@ -48,7 +48,7 @@ def make_quality_signal_callback():
     ``result["ok"]`` into the matching key. Always returns ``None`` so
     the tool response itself is never altered.
     """
-    async def _cb(*, tool, args, tool_context, tool_response, **_kw):
+    def _cb(*, tool, args, tool_context, tool_response, **_kw):
         try:
             name = getattr(tool, "name", "") or ""
             key = _TOOL_SIGNAL_KEYS.get(name)

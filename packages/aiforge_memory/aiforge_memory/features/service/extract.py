@@ -182,7 +182,12 @@ def _validate_files(
 
 
 def _call_llm(pack_text: str, *, system: str = "", user: str = "") -> str:
-    """Real LLM call. Isolated for monkey-patching in tests."""
+    """Real LLM call. Isolated for monkey-patching in tests.
+
+    `pack_text` is in the signature so a test double sees what the caller
+    packed; the prompt that actually ships is `system` + `user`.
+    """
+    del pack_text
     from openai import OpenAI
 
     client = OpenAI(
@@ -190,15 +195,15 @@ def _call_llm(pack_text: str, *, system: str = "", user: str = "") -> str:
         api_key=os.environ.get("AIFORGE_CODEMEM_LM_KEY", "lm-studio"),
     )
     from aiforge_memory.llm_compat import response_format
-    create_kwargs: dict = dict(
-        model=DEFAULT_MODEL,
-        messages=[
+    create_kwargs: dict = {
+        "model": DEFAULT_MODEL,
+        "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        temperature=0.0,
-        max_tokens=6000,
-    )
+        "temperature": 0.0,
+        "max_tokens": 6000,
+    }
     rf = response_format()
     if rf is not None:
         create_kwargs["response_format"] = rf

@@ -124,7 +124,12 @@ def _apply_supervisor_invariants(
     return assignee_role, priority, labels, metadata
 
 
-def create(
+# NOSONAR (S107) — a ticket is a flat record of independently-optional
+# fields, and these keyword names ARE the store's interface: every caller
+# (API routes, CLI, tests, the sqlite backend's row mapper) names them.
+# Folding them into an object would move the same list one layer down and
+# break every call site to do it.
+def create(  # NOSONAR
     *,
     title: str,
     body: str = "",

@@ -174,8 +174,9 @@ def test_a_normal_generation_posts_and_returns(cancellable):
 def test_stopping_before_the_request_sends_nothing(cancellable):
     cancel = threading.Event()
     cancel.set()
+    ep = _ep()
     with pytest.raises(H._LLMCancelled):
-        H._post_cancellable(_ep(), b"{}", 30, cancel, [False])
+        H._post_cancellable(ep, b"{}", 30, cancel, [False])
     assert cancellable["conn"].requested is None
 
 
@@ -187,14 +188,16 @@ def test_a_socket_error_after_stop_reads_as_cancelled(cancellable):
         cancel.set()
         raise OSError("connection closed")
     cancellable["conn"].request = _request
+    ep = _ep()
     with pytest.raises(H._LLMCancelled):
-        H._post_cancellable(_ep(), b"{}", 30, cancel, [False])
+        H._post_cancellable(ep, b"{}", 30, cancel, [False])
 
 
 def test_a_genuine_socket_error_is_not_disguised_as_a_stop(cancellable):
     cancellable["conn"]._raise = OSError("connection refused")
+    ep, never = _ep(), threading.Event()
     with pytest.raises(OSError, match="refused"):
-        H._post_cancellable(_ep(), b"{}", 30, threading.Event(), [False])
+        H._post_cancellable(ep, b"{}", 30, never, [False])
 
 
 def test_the_watcher_closes_the_socket_the_instant_stop_fires():
@@ -374,8 +377,9 @@ def test_the_preflight_runs_before_anything_is_counted(post, meter,
     monkeypatch.setattr(H, "_preflight",
                         lambda base: (_ for _ in ()).throw(
                             ConnectionError("unreachable")))
+    ep = _ep()
     with pytest.raises(ConnectionError):
-        H._post(_ep(), b"{}", 30, role="chat")
+        H._post(ep, b"{}", 30, role="chat")
     assert meter["records"] == [], "nothing was sent, nothing is counted"
 
 
@@ -390,8 +394,9 @@ def test_a_run_stopped_before_the_send_counts_nothing(post, meter):
     cancel = threading.Event()
     cancel.set()
     H.set_cancel_event(cancel)
+    ep = _ep()
     with pytest.raises(H._LLMCancelled):
-        H._post(_ep(), b"{}", 30, role="chat")
+        H._post(ep, b"{}", 30, role="chat")
     assert meter["records"] == [] and post["preflights"] == []
 
 
@@ -400,8 +405,9 @@ def test_a_failed_send_is_counted_as_traffic_and_as_a_failure(post, meter):
     cancel = threading.Event()
     H.set_cancel_event(cancel)
     post["raise"] = OSError("connection reset")
+    ep = _ep()
     with pytest.raises(OSError):
-        H._post(_ep(), b"{}", 30, role="chat")
+        H._post(ep, b"{}", 30, role="chat")
     assert len(meter["records"]) == 1 and len(meter["failures"]) == 1
 
 

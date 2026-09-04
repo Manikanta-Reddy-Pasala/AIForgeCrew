@@ -9,11 +9,11 @@ Covers:
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
 
 import pytest
 
 from aiforge_core.runtime import failure_memory, lm_health, pipeline
+from tests.python._adk_cb import run_cb
 
 # ── Pipeline shape ─────────────────────────────────────────────────────
 
@@ -177,8 +177,7 @@ def test_failure_memory_callback_skips_on_clean_pass(monkeypatch) -> None:
         pass
     ctx = _Ctx()
     ctx.state = state
-    import asyncio
-    asyncio.run(cb(callback_context=ctx))
+    run_cb(cb, callback_context=ctx)
     assert called["n"] == 0
 
 
@@ -211,8 +210,7 @@ def test_failure_memory_callback_writes_on_validator_reject(monkeypatch) -> None
         pass
     ctx = _Ctx()
     ctx.state = state
-    import asyncio
-    asyncio.run(cb(callback_context=ctx))
+    run_cb(cb, callback_context=ctx)
     assert captured.get("review_verdict") == "request_changes"
     assert "scope drift" in (captured.get("reason") or "")
 
@@ -238,6 +236,5 @@ def test_failure_memory_callback_skips_non_terminal_reject(monkeypatch) -> None:
         pass
     ctx = _Ctx()
     ctx.state = state
-    import asyncio
-    asyncio.run(cb(callback_context=ctx))
+    run_cb(cb, callback_context=ctx)
     assert called["n"] == 0

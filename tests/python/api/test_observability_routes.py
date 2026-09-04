@@ -384,6 +384,7 @@ def test_the_refresh_interval_is_clamped(monkeypatch, raw, expected):
                 break
         return out
 
+    pull = _pull()
     with pytest.raises(_StopStream):
-        asyncio.run(_pull())
+        asyncio.run(pull)
     assert seen["interval"] == expected

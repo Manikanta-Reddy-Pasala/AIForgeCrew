@@ -143,7 +143,7 @@ def _record_planner_subtasks(state) -> None:
 
 def make_planner_subtasks_callback():
     """ADK ``after_agent_callback`` for the Planner: record the decomposition."""
-    async def _callback(*, callback_context, **_kw):
+    def _callback(*, callback_context, **_kw):
         if os.environ.get("AIFORGE_SUBTASKS_DISABLE", "0") in ("1", "true"):
             return None
         try:
