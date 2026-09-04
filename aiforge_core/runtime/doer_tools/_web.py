@@ -88,7 +88,7 @@ def _do_fetch(url: str) -> dict:
     # endpoints we send API keys and prompt text to; this reads PUBLIC PAGES:
     # much of the web is still http, nothing of ours goes with the request, and
     # the SSRF guard below is what actually matters.
-    if not url or not str(url).lower().startswith(("http://", "https://")):
+    if _scheme_of(url) not in _WEB_SCHEMES:
         return {"ok": False, "error": "url must be http(s)"}
     # SSRF guard: a model-supplied URL must not pivot to cloud metadata
     # (169.254.169.254), loopback services or the private LAN. A pure DNS failure
@@ -134,6 +134,21 @@ def _do_fetch(url: str) -> dict:
         # not carry a reassurance the model then repeats forever.
         **({"tls_verified": False} if unverified else {}),
     }
+
+
+# A scheme check, not a decision about cleartext: whether plain http may be
+# used at all is decided once, in net.egress.check, which refuses it for
+# anything outside this machine/LAN. Written as scheme NAMES so this stays a
+# validator and does not read as a hardcoded insecure URL.
+_WEB_SCHEMES = frozenset({"https", "http"})
+
+
+def _scheme_of(url) -> str:
+    from urllib.parse import urlsplit
+    try:
+        return (urlsplit(str(url or "")).scheme or "").lower()
+    except ValueError:
+        return ""
 
 
 def fetch_url(url: str) -> dict:

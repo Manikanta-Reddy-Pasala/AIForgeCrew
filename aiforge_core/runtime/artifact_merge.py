@@ -110,8 +110,12 @@ class _Item:
     extra: tuple = ()
 
     def fingerprint(self) -> str:
+        # usedforsecurity=False: this is an IDENTITY digest — "is this the same
+        # artifact as last night" — never a signature or a credential. The flag
+        # is how the stdlib lets a caller say which of the two it means.
         h = hashlib.sha1(
-            (self.name + "\x00" + self.body).encode("utf-8", "replace"))
+            (self.name + "\x00" + self.body).encode("utf-8", "replace"),
+            usedforsecurity=False)
         return h.hexdigest()[:16]
 
 
@@ -323,7 +327,7 @@ def cluster_fingerprint(cluster: list[_Item]) -> str:
     """Identity of a cluster BY CONTENT, so an unchanged cluster is never sent
     to the model twice — and a cluster whose member was edited is."""
     joined = "|".join(sorted(i.fingerprint() for i in cluster))
-    return hashlib.sha1(joined.encode()).hexdigest()[:16]
+    return hashlib.sha1(joined.encode(), usedforsecurity=False).hexdigest()[:16]
 
 
 # ── the merge itself ────────────────────────────────────────────────────────

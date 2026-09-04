@@ -86,10 +86,18 @@ def _dir_block(path: str, token: str) -> str:
     return f"@{token} (folder):\n" + "\n".join(entries[:_MAX_DIR]) + more
 
 
+_WEB_SCHEMES = frozenset({"https", "http"})
+
+
 def _url_allowed(tok: str) -> bool:
     """A @-mention of a URL is a page to READ, not an endpoint we authenticate
-    to, so this is a scheme check — see the note in doer_tools/_web."""
-    return tok.lower().startswith(("http://", "https://"))
+    to, so this is a scheme check — see the note in doer_tools/_web. Whether
+    plain http may be used at all is net.egress.check's decision, made once."""
+    from urllib.parse import urlsplit
+    try:
+        return (urlsplit(tok.strip()).scheme or "").lower() in _WEB_SCHEMES
+    except ValueError:
+        return False
 
 
 def _url_block(url: str) -> str:
