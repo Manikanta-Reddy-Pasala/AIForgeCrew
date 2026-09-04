@@ -29,6 +29,33 @@ stages:
   - security_scan
   - sca_analysis
 
+# ── the security count must stay at 0 ────────────────────────────────────────
+# It reached zero on 2026-09-04 by CHANGING CODE, not by marking findings Won't
+# Fix: the TLS opt-out that returned CERT_NONE now pins the endpoint's
+# certificate, the hardcoded http:// scheme checks became scheme names, and a
+# SHA-1 identity digest says usedforsecurity=False. Nothing holds that but a
+# check — one `verify=False` added in a hurry puts it back to one, and nobody
+# sees it until someone opens the dashboard.
+#
+# Runs AFTER the sonar scan (it reads what that analysis published) and only
+# where the server is reachable; SONAR_HOST_URL/SONAR_TOKEN come from the same
+# CI variables the scan template uses. An unreachable server exits 2 and fails
+# the job on purpose: a question that was never asked is not a pass.
+# Placed in the LATER stage rather than declaring `needs` on the scan job: its
+# name comes from a shared template we do not own, and a `needs` on a job that
+# gets renamed upstream fails the whole pipeline for a reason nobody here can
+# see. Stage ordering gets the same guarantee without the coupling.
+sonar_security_gate:
+  stage: security_scan
+  image: python:3.12-slim
+  rules:
+    - !reference [.rules_default, rules]
+    - if: $SONAR_HOST_URL
+      when: on_success
+    - when: never
+  script:
+    - python scripts/sonar_security_gate.py
+
 variables:
   PIP_CACHE_DIR: ${CI_PROJECT_DIR}/.cache/pip
   UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
