@@ -500,154 +500,98 @@ def central_memory(prs):
 
 
 def tool_access(prs):
+    """High-level: the five things people actually worry about, one line each."""
     s = slide_base(
-        prs, "Tool access: who may call what",
-        "A role does not merely refrain from a tool — it never receives the schema.",
-        "Names are matched verbatim against the function name. Master opt-out: "
-        "AIFORGE_TOOL_ENFORCE=0.")
+        prs, "Five ways an agent goes wrong",
+        "One control each. Every one of them is a refusal, not a warning.",
+        "Detail on the next slide. Switches: AIFORGE_TOOL_POLICY · "
+        "AIFORGE_UNATTENDED_DANGEROUS · AIFORGE_SANDBOX_REQUIRED · "
+        "AIFORGE_EGRESS_OFF")
 
-    text(s, Inches(0.75), Inches(1.42), Inches(6), Inches(0.24),
-         "1 · THE LIST IS APPLIED WHERE THE TOOLS ARE WIRED", size=10,
-         bold=True, color=BLUE)
-    box(s, Inches(0.75), Inches(1.72), Inches(2.70), Inches(1.00),
-        "Tool registry", "92 ADK tools for the\npipeline · 109 in chat",
-        fill=SLATE_T, edge=SLATE, size=13, sub_size=8.5)
-    arrow(s, Inches(3.45), Inches(2.22), Inches(3.85), Inches(2.22))
-    box(s, Inches(3.85), Inches(1.72), Inches(3.00), Inches(1.00),
-        "agents.yaml contract",
-        "allowed ∩ NOT forbidden, per role\nforbidden always wins",
-        fill=BLUE_T, edge=BLUE, size=13, sub_size=8.5)
-    arrow(s, Inches(6.85), Inches(2.22), Inches(7.25), Inches(2.22))
-    for i, (lab, sub, f, e) in enumerate([
-            ("doer · 34", "file + shell surface", GREEN_T, GREEN),
-            ("researcher · 18", "+ web_read, role-only", GREEN_T, GREEN),
-            ("ctx_repomap · 8", "read-only: no bash, no write", AMBER_T, AMBER),
-            ("9 of 19 roles · 0", "forbidden: ALL — judgement only",
-             RED_T, RED)]):
-        x = Inches(7.25) + (i % 2) * Inches(2.75)
-        y = Inches(1.72) + (i // 2) * Inches(0.54)
-        box(s, x, y, Inches(2.60), Inches(0.46), lab, sub, fill=f, edge=e,
-            size=11, sub_size=7.5)
-
-    text(s, Inches(0.75), Inches(2.95), Inches(8), Inches(0.24),
-         "2 · WHEN THE MODEL ASKS FOR SOMETHING THAT IS NOT THERE", size=10,
-         bold=True, color=PLUM)
-    asks = [
-        ("Closed dispatch table",
-         "The name is looked up in a dict of registered tools. A miss returns "
-         "`unknown tool: X` — there is no fall-through to a shell, an eval, "
-         "or a similarly-named tool."),
-        ("Phantom-tool guard",
-         "An unknown-tool error is converted in-band: \"this tool does not "
-         "exist and is not available to you — do not call it again\". One "
-         "hallucinated call cannot abort the run."),
-        ("Removed capabilities answer for themselves",
-         "14 spellings of web search (web_search, google, tavily_search …) "
-         "reply with WHY it is gone, so the model stops walking the alias "
-         "carousel and asks for a URL."),
+    rows = [
+        ("It calls a tool we never gave it",
+         "Per-agent allowlist, applied where tools are wired",
+         "It never receives the schema · 9 of 19 roles get zero tools"),
+        ("It invents a tool that does not exist",
+         "Closed dispatch table + phantom-tool guard",
+         "\"unknown tool\" — no fall-through, and the run survives it"),
+        ("A shell command wrecks something",
+         "Risk classifier on every command-carrying tool",
+         "dangerous refused · caution asks · obfuscation normalised first"),
+        ("A notebook cell does whatever it likes",
+         "The cell's own shell calls are read and classified",
+         "!cmd · os.system · subprocess — approval-gated by default"),
+        ("Our data gets posted or uploaded somewhere",
+         "Default-deny host list, and reading is not writing",
+         "uploads have their own switch · no human, no external write"),
     ]
-    for i, (h, d) in enumerate(asks):
-        box(s, Inches(0.75) + i * Inches(4.15), Inches(3.22),
-            Inches(3.85), Inches(1.05), h, d, fill=WHITE, edge=PLUM,
-            size=11.5, sub_size=8.5, label_color=PLUM)
+    for i, (worry, control, proof) in enumerate(rows):
+        y = Inches(1.55) + i * Inches(1.02)
+        box(s, Inches(0.75), y, Inches(3.55), Inches(0.86), "", worry,
+            fill=RED_T, edge=RED, size=1, sub_size=11.5)
+        arrow(s, Inches(4.30), y + Inches(0.43), Inches(4.62), y + Inches(0.43))
+        box(s, Inches(4.62), y, Inches(4.05), Inches(0.86), "", control,
+            fill=GREEN_T, edge=GREEN, size=1, sub_size=11.5)
+        text(s, Inches(8.95), y + Inches(0.24), Inches(3.63), Inches(0.5),
+             proof, size=10, color=MUTED)
 
-    text(s, Inches(0.75), Inches(4.45), Inches(8), Inches(0.24),
-         "3 · AND AGAIN AT CALL TIME, ON THE TOOLS IT DOES HAVE", size=10,
-         bold=True, color=GREEN)
-    calls = [
-        ("Policy: allow · ask · deny",
-         "Per tool, AIFORGE_TOOL_POLICY. deny is a hard refusal — autonomous "
-         "runs included. 20 external-write tools default to ask."),
-        ("PreToolUse hooks",
-         "An operator's own hook can block any call before it runs; the "
-         "refusal is reported to the model as a normal tool result."),
-        ("Forced review of writes",
-         "Review mode makes every file-mutating call — including the editor "
-         "aliases — wait for Approve / Reject with a diff."),
-    ]
-    for i, (h, d) in enumerate(calls):
-        box(s, Inches(0.75) + i * Inches(4.15), Inches(4.72),
-            Inches(3.85), Inches(1.05), h, d, fill=WHITE, edge=GREEN,
-            size=11.5, sub_size=8.5, label_color=GREEN)
-
-    box(s, Inches(0.75), Inches(6.05), Inches(11.83), Inches(0.62),
-        "Where this is a filter and not a wall",
-        "An allowlist that matches no registered tool fails OPEN with a warning — a config typo "
-        "must not leave an agent tool-less — and the Doer runs unfiltered by design, its list "
-        "documenting intent. The hard stops are the call-time policy, the risk gate and the sandbox.",
-        fill=AMBER_T, edge=AMBER, size=11.5, sub_size=9)
+    legend(s, Inches(0.75), Inches(6.75),
+           [(RED_T, RED, "the worry"), (GREEN_T, GREEN, "the control"),
+            (WHITE, LINE, "how you can tell it is real")])
 
 
 def execution_egress(prs):
+    """One diagram: what a single tool call passes through before anything
+    happens, and where each refusal comes from."""
     s = slide_base(
-        prs, "Shell, kernel, and data leaving the box",
-        "The three ways an agent can do real damage, and what stands in each path.",
-        "Switches: AIFORGE_TOOL_POLICY · AIFORGE_RISK_ASK_CAUTION · "
-        "AIFORGE_SANDBOX_REQUIRED · AIFORGE_EGRESS_OFF · AIFORGE_UPLOAD_DISABLE "
-        "· AIFORGE_UNATTENDED_WRITES")
+        prs, "What one tool call passes through",
+        "Four gates. A call that fails any of them comes back as a refusal the "
+        "model can read.",
+        "Not covered, and said so: run_command and a notebook cell open sockets "
+        "themselves — curl in a shell never passes through the egress module. "
+        "That line is an OS firewall.")
 
-    cols = [
-        (Inches(0.75), Inches(3.85), BLUE, BLUE_T, "Shell commands",
-         "every tool carrying a command string", [
-             "Assessed on: run_command · bash · shell · run_shell · serve · "
-             "watch_until · ui_check. serve, watch_until and ui_check were "
-             "holes — same string, no verdict.",
-             "dangerous → curl | sh · base64 | sh · scp/curl of ~/.ssh, .env, "
-             "id_rsa, credentials · mkfs · dd of=/dev/* · fork bomb · shred. "
-             "Refused unless confirmed.",
-             "caution → sudo · chmod 777 · chown · ANY git push · gh pr create "
-             "· global installs · crontab · iptables. Asks by default.",
-             "Obfuscation is normalised before matching: ${IFS}, empty quote "
-             "pairs (r''m), in-word backslashes.",
-             "Floors underneath: delete guard fires with approvals off · "
-             "git add -A refused · workspace jail clamps paths · Docker "
-             "sandbox opt-in, REQUIRED mode refuses host fallback.",
-         ]),
-        (Inches(4.90), Inches(3.85), PLUM, PLUM_T, "IPython kernel",
-         "execute_ipython_cell — arbitrary Python", [
-             "Defaults to ASK, like Cursor and Claude Code gate code "
-             "execution: arbitrary code in a live kernel is never a silent "
-             "call.",
-             "Bounded: 60 s timeout then the kernel is interrupted, output "
-             "capped at 8 KB, one kernel per run, destroyed in the runner's "
-             "finally block.",
-             "Scoped away entirely from the roles that have no business "
-             "running code — the nine forbidden: ALL judgement agents and the "
-             "read-only ctx_* gatherers.",
-             "It can still open a socket and write a file: it is Python, not "
-             "a tool with a schema. The sandbox routes bash, not the kernel.",
-             "An unattended run has no approver, so ASK degrades to allow. "
-             "Container mode is the boundary for untrusted work.",
-         ]),
-        (Inches(8.95), Inches(3.63), GREEN, GREEN_T, "Data leaving",
-         "API calls, uploads, mail, telemetry", [
-             "One decision point: egress.allow() on integration · email · "
-             "telemetry · mcp · sync, and on every page fetch.",
-             "Host allowlist defaults to DENY, seeded from the integrations "
-             "you configured. If the list cannot be read, the call is refused.",
-             "Reading is not writing: a host added in Settings can be read, "
-             "never posted to. A destination that RECEIVES data must be a "
-             "configured integration with a credential.",
-             "An upload has its own switch — an attachment is file content, "
-             "not a sentence (AIFORGE_UPLOAD_DISABLE).",
-             "20 write tools (jira · confluence · gitlab · email_send · "
-             "github_pr) default to ASK, and an unattended run refuses them "
-             "outright. No telemetry by default.",
-         ]),
+    box(s, Inches(0.75), Inches(1.70), Inches(1.95), Inches(0.95),
+        "The model", "asks for a tool", fill=SLATE_T, edge=SLATE, size=13,
+        sub_size=9)
+
+    gates = [
+        ("1 · In this role's list?", "agents.yaml", BLUE, BLUE_T,
+         "no schema was ever offered"),
+        ("2 · Policy for this tool", "allow · ask · deny", PLUM, PLUM_T,
+         "deny is a hard refusal"),
+        ("3 · How risky is it?", "command + cell", AMBER, AMBER_T,
+         "dangerous: refused, not asked,\nwhen nobody can approve"),
+        ("4 · May it leave the box?", "egress allowlist", GREEN, GREEN_T,
+         "default deny · read ≠ write ·\nuploads switched separately"),
     ]
-    for x, w, edge, tint, head, sub, bullets in cols:
-        box(s, x, Inches(1.45), w, Inches(0.52), head, sub, fill=tint,
-            edge=edge, size=13, sub_size=8.5)
-        for i, b in enumerate(bullets):
-            text(s, x + Inches(0.05), Inches(2.12) + i * Inches(0.72),
-                 w - Inches(0.10), Inches(0.68), "· " + b, size=9)
+    x = Inches(3.05)
+    for i, (head, sub, edge, tint, refusal) in enumerate(gates):
+        arrow(s, x - Inches(0.35), Inches(2.17), x, Inches(2.17))
+        box(s, x, Inches(1.70), Inches(2.15), Inches(0.95), head, sub,
+            fill=tint, edge=edge, size=11.5, sub_size=9)
+        # the refusal path drops out of the bottom of each gate
+        arrow(s, x + Inches(1.07), Inches(2.65), x + Inches(1.07),
+              Inches(3.15), color=RED)
+        box(s, x - Inches(0.10), Inches(3.15), Inches(2.35), Inches(0.90),
+            "refused", refusal, fill=RED_T, edge=RED, size=10.5, sub_size=8.5)
+        x += Inches(2.50)
 
-    box(s, Inches(0.75), Inches(5.82), Inches(11.83), Inches(0.62),
-        "The boundary this code does not draw",
-        "run_command and execute_ipython_cell open sockets themselves: curl in a shell never passes "
-        "through the egress module and cannot be made to. That line is an OS firewall or a network "
-        "namespace. Regex risk-matching is a floor, not a proof — pair it with the sandbox.",
-        fill=AMBER_T, edge=AMBER, size=11.5, sub_size=9)
+    box(s, Inches(0.75), Inches(4.35), Inches(11.83), Inches(0.95),
+        "Floors underneath, which no toggle lowers",
+        "The delete guard fires with approvals off · git add -A is refused · writes stay inside the "
+        "ticket's scope · the workspace jail clamps paths · a REQUIRED sandbox refuses to fall back "
+        "to the host, and the notebook kernel refuses with it.",
+        fill=WHITE, edge=SLATE, size=12.5, sub_size=9.5, label_color=SLATE)
+
+    for i, (big, lab) in enumerate([
+            ("92", "tools in the registry"),
+            ("19", "agent roles, each with its own list"),
+            ("0", "tools for 9 of those roles"),
+            ("20", "write tools that ask before they post")]):
+        box(s, Inches(0.75) + i * Inches(3.00), Inches(5.55), Inches(2.80),
+            Inches(0.85), big, lab, fill=SLATE_T, edge=SLATE, size=20,
+            sub_size=8.5)
 
 
 def security(prs):
