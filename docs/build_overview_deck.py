@@ -499,6 +499,76 @@ def central_memory(prs):
              color=MUTED)
 
 
+def containment(prs):
+    s = slide_base(
+        prs, "Containment: what may run, what may leave",
+        "Two questions, one place each — a gate on execution, a gate on egress.",
+        "Kill switches: AIFORGE_EGRESS_OFF · AIFORGE_<CLASS>_DISABLE · "
+        "AIFORGE_WEB_FETCH_DISABLE · AIFORGE_UPLOAD_DISABLE · "
+        "AIFORGE_TOOL_POLICY=\"run_command=deny\"")
+
+    LX, LW = Inches(0.75), Inches(5.85)
+    RX, RW = Inches(6.95), Inches(5.63)
+
+    text(s, LX, Inches(1.45), LW, Inches(0.26),
+         "WHAT MAY RUN  —  a tool call reaching the shell", size=10,
+         bold=True, color=BLUE)
+    text(s, RX, Inches(1.45), RW, Inches(0.26),
+         "WHAT MAY LEAVE  —  a byte reaching the network", size=10,
+         bold=True, color=PLUM)
+
+    run_gates = [
+        ("1 · Role tool allowlist",
+         "agents.yaml allowed / forbidden per role. A tool off the list is\n"
+         "never offered to the model; forbidden=ALL is a tool-less role."),
+        ("2 · Per-tool policy: allow · ask · deny",
+         "AIFORGE_TOOL_POLICY. deny is a hard refusal, autonomous runs too;\n"
+         "ask blocks for Approve/Reject whenever a human is attached."),
+        ("3 · Risk verdict on every shell string",
+         "safe · caution · dangerous — dangerous forces at least ASK.\n"
+         "run_command · bash · serve · watch_until · ui_check all assessed."),
+        ("4 · Floors the toggles cannot lower",
+         "delete guard fires with approvals off · git add -A refused ·\n"
+         "push always asks · writes must land inside the ticket's scope globs."),
+        ("5 · Where it runs at all",
+         "Workspace jail on by default; Docker sandbox opt-in, and\n"
+         "AIFORGE_SANDBOX_REQUIRED=1 refuses to fall back to the host."),
+    ]
+    out_gates = [
+        ("1 · One module decides — net/egress.py",
+         "The switches used to be read in five places and honoured in two;\n"
+         "web_fetch closed while fetch_url, web_read, crawl, browse sailed past."),
+        ("2 · Host allowlist, default DENY",
+         "Seeded from the integrations you configured + the model endpoint;\n"
+         "extras added in Settings. A list that will not load refuses."),
+        ("3 · Reading is not writing",
+         "A host added in Settings is readable only. Somewhere that RECEIVES\n"
+         "our data must be a configured integration, with a credential."),
+        ("4 · No human attached, no external write",
+         "An unattended run refuses writes and uploads outright — approval is\n"
+         "what makes them safe. AIFORGE_UNATTENDED_WRITES=1 to opt in."),
+        ("5 · Re-checked on every redirect hop",
+         "Search endpoints, SSRF / metadata (169.254.169.254) and off-list\n"
+         "hosts are refused after the 302, not only on the URL we were handed."),
+    ]
+
+    for i, (lab, sub) in enumerate(run_gates):
+        box(s, LX, Inches(1.82) + i * Inches(0.87), LW, Inches(0.78), lab, sub,
+            fill=BLUE_T if i < 3 else GREEN_T, edge=BLUE if i < 3 else GREEN,
+            size=11.5, sub_size=8.5)
+    for i, (lab, sub) in enumerate(out_gates):
+        box(s, RX, Inches(1.82) + i * Inches(0.87), RW, Inches(0.78), lab, sub,
+            fill=PLUM_T if i < 3 else GREEN_T, edge=PLUM if i < 3 else GREEN,
+            size=11.5, sub_size=8.5)
+
+    box(s, LX, Inches(6.25), Inches(11.83), Inches(0.55),
+        "Stated plainly — the boundary this code does not draw",
+        "run_command and execute_ipython_cell open a socket themselves: curl in a shell never passes "
+        "through the egress module and cannot be made to. That line is an OS firewall or a network "
+        "namespace. Regex risk-matching is a floor, not a proof — pair it with the sandbox.",
+        fill=AMBER_T, edge=AMBER, size=11.5, sub_size=9)
+
+
 def security(prs):
     s = slide_base(
         prs, "Security and supply chain",
@@ -1121,6 +1191,7 @@ def build():
     central_memory(prs)
     limits(prs)
     safety(prs)
+    containment(prs)
     security(prs)
     versus(prs)
     comparison(prs)
