@@ -33,26 +33,38 @@ log = logging.getLogger("aiforge.proc")
 STOP_SEQUENCE = (_signal.SIGTERM, _signal.SIGKILL)
 
 
-def _refuses(pgid: int) -> str:
-    """Why this target must not be signalled, or "".
+def _check_group(pgid: object) -> tuple[int | None, str]:
+    """``(signalable pgid, refusal reason)`` — the validator for a group id.
+
+    The pgid comes back as a NEW, range-checked int and callers signal THAT,
+    not the value they were handed. That is the whole point of the shape: a
+    validator that returns only a *reason* leaves the unchecked original in
+    the caller's hand, and skipping the check becomes a one-line mistake.
 
     Checked rather than commented: a wrong pgid is not hypothetical — it is
     what ``os.getpgid`` returns after the child is already reaped, and killing
     group 0 from a worker would stop the app itself.
     """
-    if pgid is None:
-        return "no process group"
+    if not isinstance(pgid, int):
+        return None, "no process group"
     if pgid <= 1:
-        return f"group {pgid} is init or 'my own group'"
+        return None, f"group {pgid} is init or 'my own group'"
     try:
         # getpgrp(), not getpgid(0): they answer the same question — "what is
         # my process group" — and this one takes no pid, so it cannot be
         # confused with a lookup of the CHILD's group.
         if pgid == os.getpgrp():
-            return "that is THIS process's own group"
+            return None, "that is THIS process's own group"
     except OSError:                      # no process groups on this platform
         pass
-    return ""
+    return pgid, ""
+
+
+def _check_pid(pid: object) -> tuple[int | None, str]:
+    """``(signalable pid, refusal reason)`` — same contract, one process."""
+    if not isinstance(pid, int) or pid <= 1:
+        return None, f"pid {pid} is init, nothing, or not a pid"
+    return pid, ""
 
 
 def kill_group(pgid: int | None, sig: int = _signal.SIGKILL) -> bool:
@@ -61,28 +73,30 @@ def kill_group(pgid: int | None, sig: int = _signal.SIGKILL) -> bool:
     Never raises: a stop path runs while something has already gone wrong, and
     the caller's next move is the same either way.
     """
-    why = _refuses(pgid)
-    if why:
+    target, why = _check_group(pgid)
+    if target is None:
         log.debug("proc: refusing to signal %s — %s", pgid, why)
         return False
     try:
-        os.killpg(pgid, sig)
+        os.killpg(target, sig)
         return True
     except OSError as exc:      # ProcessLookupError IS an OSError
-        log.debug("proc: killpg(%s, %s) failed: %s", pgid, sig, exc)
+        log.debug("proc: killpg(%s, %s) failed: %s", target, sig, exc)
         return False
 
 
 def kill_process(pid: int | None, sig: int = _signal.SIGKILL) -> bool:
     """Signal ONE process we started — the fallback for a child that is not a
     group leader (no setsid on this platform, say)."""
-    if not pid or pid <= 1:
+    target, why = _check_pid(pid)
+    if target is None:
+        log.debug("proc: refusing to signal %s — %s", pid, why)
         return False
     try:
-        os.kill(pid, sig)
+        os.kill(target, sig)
         return True
     except OSError as exc:      # ProcessLookupError IS an OSError
-        log.debug("proc: kill(%s, %s) failed: %s", pid, sig, exc)
+        log.debug("proc: kill(%s, %s) failed: %s", target, sig, exc)
         return False
 
 
