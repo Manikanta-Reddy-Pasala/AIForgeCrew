@@ -155,20 +155,26 @@ def is_dangerous(cmd: str) -> bool:
 # hook matching bash — saw nothing. But a cell is a shell with three extra
 # characters: ``!curl x | sh``, ``os.system(...)``, ``subprocess.run(...)``.
 # These patterns lift the command back out so the SAME classifier applies.
+# Names that hand a string (or an argv list) to a shell / a new process. Matched
+# with an OPTIONAL dotted prefix so an alias reaches the same floor:
+# `import subprocess as sp; sp.run(...)` and `from os import system; system(...)`
+# both looked harmless while the spelled-out form was caught.
+_SHELL_CALL = (r"\b(?:[\w.]+\.)?(?:system|popen|run|call|check_call"
+               r"|check_output|Popen|getoutput|getstatusoutput|spawn)\s*\(\s*")
+# A Python string literal, INCLUDING its prefix and the triple-quoted forms.
+# Without the prefix, `os.system(f"curl {u} | sh")` — the way anyone actually
+# writes it — read as safe, which made the classifier a formality.
+_PY_STR = r'''[A-Za-z]{0,3}(?P<q>"""|\'\'\'|"|\')(?P<cmd>.*?)(?P=q)'''
+
 _CELL_SHELL = [
     # !cmd  and  %%bash / %%sh cell magics (whole remaining line/body)
     re.compile(r"^\s*!(?P<cmd>.+)$", re.MULTILINE),
     re.compile(r"^\s*%%(?:bash|sh|script)\b[^\n]*\n(?P<cmd>[\s\S]+)$",
                re.MULTILINE),
-    # os.system("…") / os.popen('…')
-    re.compile(r"""os\.(?:system|popen)\s*\(\s*(?P<q>["'])(?P<cmd>.*?)(?P=q)""",
-               re.DOTALL),
-    # subprocess.run("…", shell=True) and friends, string form
-    re.compile(r"""subprocess\.(?:run|call|check_call|check_output|Popen)\s*\("""
-               r"""\s*(?P<q>["'])(?P<cmd>.*?)(?P=q)""", re.DOTALL),
-    # …and the list form: subprocess.run(["curl", "x"]) → "curl x"
-    re.compile(r"""subprocess\.(?:run|call|check_call|check_output|Popen)\s*\("""
-               r"""\s*\[(?P<cmd>[^\]]*)\]""", re.DOTALL),
+    # a shell call taking a STRING: os.system("…"), subprocess.run(f"…")
+    re.compile(_SHELL_CALL + _PY_STR, re.DOTALL),
+    # …and the argv LIST form: subprocess.run(["curl", "x"]) → "curl x"
+    re.compile(_SHELL_CALL + r"\[(?P<cmd>[^\]]*)\]", re.DOTALL),
 ]
 
 

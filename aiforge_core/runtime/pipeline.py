@@ -173,12 +173,24 @@ def _build_doer():
         doer = make_text_doer_node()
     else:
         doer = _doer_mod.build(build_litellm_model)
-    for attr, factory in _DOER_TOOL_CALLBACKS:
+    _attach_tool_guards(doer)
+    return doer
+
+
+def _attach_tool_guards(agent, callbacks=None):
+    """Attach tool-boundary guards to ``agent``.
+
+    Any agent that can reach a shell needs the SAFETY ones, not just the Doer —
+    which is how ``live_verifier`` (it holds ``bash`` and runs unattended after
+    the PR is rolled out) ended up executing model-composed commands with no
+    risk verdict, no operator ``deny`` policy and no PreToolUse hook applied to
+    it. Each attach is guarded: a guard never blocks pipeline boot."""
+    for attr, factory in (callbacks or _DOER_TOOL_CALLBACKS):
         try:
-            _append_callback(doer, attr, factory())
+            _append_callback(agent, attr, factory())
         except Exception:  # noqa: BLE001 — a guard never blocks pipeline boot
             pass
-    return doer
+    return agent
 
 
 def _scope_guard_cb():
@@ -232,6 +244,17 @@ _DOER_TOOL_CALLBACKS = (
     ("before_tool_callback", _repeat_guard_cb),
     ("before_tool_callback", _approval_gate_cb),
     ("after_tool_callback", _quality_signal_cb),
+    ("before_tool_callback", _hook_before_cb),
+    ("after_tool_callback", _hook_after_cb),
+)
+
+# What EVERY shell-capable agent gets, Doer or not: the scope guard, the
+# risk/policy/approval gate and the operator's own hooks. The repeat guard and
+# the quality-signal recorder are Doer concerns and are left out on purpose
+# (see build_live_verifier_agent).
+_SHELL_AGENT_TOOL_CALLBACKS = (
+    ("before_tool_callback", _scope_guard_cb),
+    ("before_tool_callback", _approval_gate_cb),
     ("before_tool_callback", _hook_before_cb),
     ("after_tool_callback", _hook_after_cb),
 )
@@ -629,8 +652,19 @@ def _append_before_model(agent, cb) -> None:
 def build_live_verifier_agent(project: str | None = None):
     """Build the standalone live_verifier agent the runner invokes
     AFTER opening the PR. Runs on the operator's configured model (with
-    the cloud escalation chain) like every other archetype."""
-    return _live_verifier_mod.build(build_litellm_model, project=project)
+    the cloud escalation chain) like every other archetype.
+
+    Carries the SAFETY guards (risk/policy gate, scope, operator hooks). It
+    runs unattended against a deployed environment with ``bash`` in hand, so it
+    is the last agent that should be the one without a risk gate.
+
+    Deliberately WITHOUT the repeat guard: verification legitimately re-runs
+    the identical command — poll the health endpoint, check again after the
+    rollout settles — and blocking the 4th identical call would break the one
+    thing this agent exists to do."""
+    return _attach_tool_guards(
+        _live_verifier_mod.build(build_litellm_model, project=project),
+        callbacks=_SHELL_AGENT_TOOL_CALLBACKS)
 
 
 __all__ = [
