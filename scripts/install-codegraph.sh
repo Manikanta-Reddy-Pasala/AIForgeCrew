@@ -30,6 +30,8 @@ case "$PREFIX" in
     PREFIX="$HOME/.npm-global"
     npm config set prefix "$PREFIX" >/dev/null 2>&1 || true
     ;;
+  # Any other prefix is already user-writable — leave the operator's choice alone.
+  *) ;;
 esac
 
 echo "==> installing $PKG (npm global → $PREFIX) …"

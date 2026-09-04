@@ -20,10 +20,11 @@
 set -uo pipefail
 
 REPO_DIR="${1:-$(git rev-parse --show-toplevel 2>/dev/null)}"
-[ -z "${REPO_DIR}" ] && exit 0
+[[ -z "${REPO_DIR}" ]] && exit 0
 
 case "$REPO_DIR" in
   *.aiforge-worktrees/*) exit 0 ;;
+  *) ;;
 esac
 
 REPO_NAME="$(basename "$REPO_DIR")"
@@ -44,14 +45,14 @@ GRAPHIFY_OUT="$GRAPHIFY_OUT_BASE/$REPO_NAME"
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AIFORGE_REPO="$(cd "$HOOK_DIR/../.." && pwd)"
 PY="${AIFORGE_VENV:-$AIFORGE_REPO/.venv}/bin/python"
-[ -x "$PY" ] || PY="$(command -v python3 || true)"
+[[ -x "$PY" ]] || PY="$(command -v python3 || true)"
 GRAPHIFY="${GRAPHIFY:-$(command -v graphify || echo "$HOME/.local/bin/graphify")}"
 
 (
   echo "=== $(date -Iseconds) reindex $REPO_NAME ==="
   echo "    out=$GRAPHIFY_OUT"
 
-  if [ -x "$GRAPHIFY" ]; then
+  if [[ -x "$GRAPHIFY" ]]; then
     cd "$REPO_DIR" && \
       timeout 600 "$GRAPHIFY" update . --out "$GRAPHIFY_OUT" 2>&1 | tail -3
   fi
@@ -61,7 +62,7 @@ GRAPHIFY="${GRAPHIFY:-$(command -v graphify || echo "$HOME/.local/bin/graphify")
   # named" in a log nobody reads. graphify's own artifacts under
   # $GRAPHIFY_OUT are the output now.
   GJ="$GRAPHIFY_OUT/graph.json"
-  [ -f "$GJ" ] && echo "    graph: $GJ"
+  [[ -f "$GJ" ]] && echo "    graph: $GJ"
 
   echo "=== done $SECONDS s ==="
 ) >>"$LOG" 2>&1 &

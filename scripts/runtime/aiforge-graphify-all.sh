@@ -30,7 +30,7 @@
 set -uo pipefail
 
 DRY_RUN=0
-[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+[[ "${1:-}" = "--dry-run" ]] && DRY_RUN=1
 
 CODE_ROOT="${AIFORGE_CODE_ROOT:-$HOME/codeRepo}"
 AIFORGE_HOME="${AIFORGE_HOME:-$HOME/.aiforge}"
@@ -41,7 +41,7 @@ OUT_BASE="$AIFORGE_HOME/graphify-out"
 LOG="$AIFORGE_HOME/logs/graphify-all.log"
 
 # Missing code root is not an error — nothing to index yet.
-if [ ! -d "$CODE_ROOT" ]; then
+if [[ ! -d "$CODE_ROOT" ]]; then
   echo "aiforge-graphify-all: code root not found: $CODE_ROOT" >&2
   exit 0
 fi
@@ -53,18 +53,20 @@ discover() {
     case "$d" in
       *.aiforge-worktrees/*) continue ;;
       */.*) continue ;;
+      *) ;;
     esac
-    [ -d "$d/.git" ] || continue
+    [[ -d "$d/.git" ]] || continue
     echo "$d"
   done
+  return
 }
 
-if [ "$DRY_RUN" = 1 ]; then
+if [[ "$DRY_RUN" = 1 ]]; then
   discover
   exit 0
 fi
 
-if [ ! -x "$GRAPHIFY" ]; then
+if [[ ! -x "$GRAPHIFY" ]]; then
   echo "aiforge-graphify-all: graphify not executable: $GRAPHIFY" >&2
   exit 1
 fi
@@ -74,7 +76,7 @@ mkdir -p "$OUT_BASE" "$AIFORGE_HOME/logs"
 ok=0
 fail=0
 while IFS= read -r repo; do
-  [ -n "$repo" ] || continue
+  [[ -n "$repo" ]] || continue
   name="$(basename "$repo")"
   out="$OUT_BASE/$name"
   if {
@@ -93,7 +95,7 @@ echo "aiforge-graphify-all: $ok ok, $fail failed" >&2
 # Per-repo failures (non-code repos, parse errors) are expected and logged
 # — they must NOT mark the timer unit red. Only a total wipeout (nothing
 # indexed at all) is a real failure worth surfacing.
-if [ "$ok" -eq 0 ] && [ "$fail" -gt 0 ]; then
+if [[ "$ok" -eq 0 ]] && [[ "$fail" -gt 0 ]]; then
   exit 1
 fi
 exit 0

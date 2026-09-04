@@ -27,7 +27,7 @@ KV_MODELS="${KV_MODELS:-lmstudio-community/Qwen3-Coder-Next-MLX-4bit:262144:8}"
 IFS=',' read -ra SPECS <<< "$KV_MODELS"
 for spec in "${SPECS[@]}"; do
     spec="$(echo "$spec" | xargs)"
-    [ -n "$spec" ] || continue
+    [[ -n "$spec" ]] || continue
     rel="${spec%%:*}"; rest="${spec#*:}"
     ctx="${rest%%:*}"; bits="${rest#*:}"
     pub="${rel%%/*}"; dir="${rel##*/}"

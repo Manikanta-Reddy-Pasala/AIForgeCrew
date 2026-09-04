@@ -29,7 +29,8 @@ done
 
 # uv publishes one static binary per platform; these are the three we package.
 uv_asset() {
-  case "$1" in
+  local target="$1"
+  case "$target" in
     macos)       echo "uv-aarch64-apple-darwin.tar.gz" ;;
     macos-x64)   echo "uv-x86_64-apple-darwin.tar.gz" ;;
     linux)       echo "uv-x86_64-unknown-linux-gnu.tar.gz" ;;
@@ -43,6 +44,7 @@ version() {
   # The single source of truth is pyproject; a version baked anywhere else
   # eventually disagrees with the wheel the package installs.
   grep -m1 '^version' "$REPO_ROOT/pyproject.toml" | cut -d'"' -f2
+  return
 }
 
 build_wheel() {
@@ -70,6 +72,7 @@ build_wheel() {
     ( cd "$REPO_ROOT/packages/aiforge_memory" \
       && uv run --with build python -m build --wheel --outdir "$OUT" )
   fi
+  return
 }
 
 fetch_uv() {
@@ -91,6 +94,9 @@ fetch_uv() {
   ( cd "$dest" && case "$asset" in
       *.tar.gz) tar -xzf "$asset" --strip-components=1 ;;
       *.zip)    unzip -qo "$asset" ;;
+      # Any other archive shape is a packaging change, not something to
+      # unpack blindly.
+      *) echo "unknown archive: $asset" >&2; exit 1 ;;
     esac
     rm -f "$asset" )
   chmod +x "$dest"/uv* 2>/dev/null || true

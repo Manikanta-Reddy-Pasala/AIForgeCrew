@@ -28,13 +28,13 @@ if ! curl -s -o /dev/null --max-time 3 "$EMBED_SIDECAR_URL"; then
   echo "[seed-docs]       Continuing anyway — docs_index will skip embedding."
 fi
 
-if [ "$#" -eq 0 ]; then
+if [[ "$#" -eq 0 ]]; then
   set -- "${!LIBS[@]}"
 fi
 
 for lib in "$@"; do
   urls="${LIBS[$lib]:-}"
-  if [ -z "$urls" ]; then
+  if [[ -z "$urls" ]]; then
     echo "[seed-docs] unknown library: $lib (have: ${!LIBS[*]})" >&2
     continue
   fi

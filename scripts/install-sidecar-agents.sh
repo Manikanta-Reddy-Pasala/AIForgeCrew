@@ -18,6 +18,7 @@ install_one() {
   launchctl unload "$LA_DIR/$name" 2>/dev/null || true
   launchctl load   "$LA_DIR/$name"
   echo "  loaded: $name"
+  return
 }
 
 uninstall_one() {
@@ -25,11 +26,13 @@ uninstall_one() {
   launchctl unload "$LA_DIR/$name" 2>/dev/null || true
   rm -f "$LA_DIR/$name"
   echo "  removed: $name"
+  return
 }
 
 status_one() {
   local label="$1"
   launchctl list | awk -v l="$label" '$3 == l { print "  " l " pid=" $1 " exit=" $2 }'
+  return
 }
 
 case "$action" in

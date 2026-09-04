@@ -54,7 +54,11 @@ CMD
 
 # wixl wants \ paths and a GUID per component; both are generated here so the
 # only hand-written thing is the layout above.
-guid() { python3 -c "import uuid,sys;print(str(uuid.uuid5(uuid.NAMESPACE_URL,'aiforge-msi-'+sys.argv[1])).upper())" "$1"; }
+guid() {
+  local component="$1"
+  python3 -c "import uuid,sys;print(str(uuid.uuid5(uuid.NAMESPACE_URL,'aiforge-msi-'+sys.argv[1])).upper())" "$component"
+  return
+}
 
 cat > "$STAGE/aiforge.wxs" <<WXS
 <?xml version="1.0" encoding="utf-8"?>

@@ -30,7 +30,7 @@ if [[ "${1:-}" == "--" ]]; then
   CMD=("$@")
 fi
 
-is_wsl() { grep -qi microsoft /proc/version 2>/dev/null; }
+is_wsl() { grep -qi microsoft /proc/version 2>/dev/null; return; }
 
 start_holder() {
   case "$(uname -s)" in
@@ -76,6 +76,7 @@ cleanup() {
     kill "$HOLDER" 2>/dev/null || true
     wait "$HOLDER" 2>/dev/null || true
   fi
+  return
 }
 trap cleanup EXIT INT TERM
 

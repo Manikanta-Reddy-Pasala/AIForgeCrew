@@ -69,7 +69,7 @@ for repo in "${REPOS[@]}"; do
 
   # Auto-recover on abort (rc=2 = SymbolSummaryAborted: LM wedged).
   attempt=1
-  while [ $rc -eq 2 ] && [ $attempt -le 3 ]; do
+  while [[ $rc -eq 2 ]] && [[ $attempt -le 3 ]]; do
     echo "[$(date)] $repo: aborted (attempt $attempt) — restarting LM Studio" | tee -a $LOGDIR/master.log
     if restart_lms; then
       run_repo "$repo"
@@ -81,8 +81,9 @@ for repo in "${REPOS[@]}"; do
     attempt=$((attempt + 1))
   done
 
-  if [ $rc -ne 0 ] && [ $rc -ne 2 ]; then
-    echo "[$(date)] $repo: hard error rc=$rc — sleeping 60s" | tee -a $LOGDIR/master.log
+  if [[ $rc -ne 0 ]] && [[ $rc -ne 2 ]]; then
+    { echo "[$(date)] $repo: hard error rc=$rc — sleeping 60s" \
+        | tee -a $LOGDIR/master.log; } >&2
     sleep 60
   fi
   sleep 5

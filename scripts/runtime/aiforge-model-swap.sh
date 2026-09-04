@@ -43,6 +43,7 @@ if os.path.isfile(env_path):
 json.dump(data, open(out_path, "w"), indent=2)
 print(out_path)
 PY
+  return
 }
 
 case "${1:-}" in

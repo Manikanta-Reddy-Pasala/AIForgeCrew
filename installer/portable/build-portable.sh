@@ -72,6 +72,7 @@ if [[ "$OFFLINE" == "1" ]]; then
     linux)       PLAT=(--python-platform x86_64-unknown-linux-gnu) ;;
     linux-arm64) PLAT=(--python-platform aarch64-unknown-linux-gnu) ;;
     windows)     PLAT=(--python-platform x86_64-pc-windows-msvc) ;;
+    *)           echo "build-portable: unknown target: $TARGET" >&2; exit 2 ;;
   esac
   "$UV_HOST" pip download 2>/dev/null --help >/dev/null || true
   "$UV_HOST" pip install --dry-run >/dev/null 2>&1 || true
@@ -108,6 +109,7 @@ export AIFORGE_CONFIG_DIR="$HERE/data/config"
 mkdir -p "$AIFORGE_DATA_HOME" "$AIFORGE_CONFIG_DIR"
 exec "$HERE/app/first-run.sh" --open "$@"
 LAUNCH
+  return
 }
 
 case "$TARGET" in
@@ -132,6 +134,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%HERE%app\first-run.ps1
 endlocal
 CMD
     ;;
+  *)
+    echo "build-portable: unknown target: $TARGET" >&2; exit 2 ;;
 esac
 
 cat > "$ROOT/README.txt" <<TXT

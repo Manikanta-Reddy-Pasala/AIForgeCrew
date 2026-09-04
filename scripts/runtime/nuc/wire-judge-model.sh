@@ -15,7 +15,7 @@ REVERT="${REVERT:-0}"
 
 cd "$(dirname "$0")/../../.."
 PY="${AIFORGE_PY:-.venv/bin/python}"
-[ -x "$PY" ] || PY=python3
+[[ -x "$PY" ]] || PY=python3
 
 ROLES="$ROLES" JUDGE_MODEL="$JUDGE_MODEL" REVERT="$REVERT" "$PY" - << 'EOF'
 import os

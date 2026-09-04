@@ -65,8 +65,8 @@ fi
 
 mkdir -p "$OUT_DIR" "$LOG_DIR"
 
-ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
-log() { echo "[$(ts)] $*"; }
+ts() { date '+%Y-%m-%dT%H:%M:%S%z'; return; }
+log() { echo "[$(ts)] $*"; return; }
 
 if [[ ! -x "$GRAPHIFY_BIN" ]]; then
   log "ERROR: graphify CLI not found or not executable at $GRAPHIFY_BIN"

@@ -224,7 +224,10 @@ img, svg { display: block; max-width: 100%; }
 .sidebar .brand-mark {
   width: 28px; height: 28px;
   border-radius: var(--r-md);
-  background: linear-gradient(135deg, var(--accent) 0%, #8b5cf6 100%);
+  /* Fixed stops, not var(--accent): the white glyph on top has to clear
+     4.5:1 in BOTH themes, and the light theme's accent (#4a91f2) does
+     not. These two do (6.6:1 and 7.1:1). */
+  background: linear-gradient(135deg, #1d4ed8 0%, #6d28d9 100%);
   display: grid; place-items: center;
   color: #ffffff;
   font-weight: 800;
@@ -897,7 +900,8 @@ button.icon:hover:not(:disabled) { color: var(--fg-0); background: var(--bg-3); 
 }
 .bubble.user .bubble-avatar { background: var(--accent); color: #08101c; }
 .bubble.sys .bubble-avatar {
-  background: linear-gradient(135deg, #6aa6ff 0%, #8b5cf6 100%);
+  /* Darkened so the white initial clears 4.5:1 (was 2.5:1 at the light end). */
+  background: linear-gradient(135deg, #2563eb 0%, #6d28d9 100%);
   color: #fff;
 }
 .bubble-body {

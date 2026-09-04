@@ -29,7 +29,7 @@ set -euo pipefail
 # clone that never sets AIFORGE_LMS_HOST skips this entirely (this box's IP is
 # operator config, not a shared-repo constant).
 HOST="${AIFORGE_LMS_HOST:-}"
-if [ -z "$HOST" ]; then
+if [[ -z "$HOST" ]]; then
     echo "lms-ensure: AIFORGE_LMS_HOST unset — skipping (no remote LM Studio to manage)"
     exit 0
 fi
@@ -75,7 +75,7 @@ fi
 # no server restart once already false).
 "${_TO_QUICK[@]}" ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" '
   CFG="$HOME/.lmstudio/.internal/http-server-config.json"
-  if [ -f "$CFG" ] && grep -q "\"justInTimeModelLoading\": true" "$CFG"; then
+  if [[ -f "$CFG" ]] && grep -q "\"justInTimeModelLoading\": true" "$CFG"; then
     sed -i.bak "s/\"justInTimeModelLoading\": true/\"justInTimeModelLoading\": false/" "$CFG"
     '"$BIN"' server stop  >/dev/null 2>&1 || true
     '"$BIN"' server start >/dev/null 2>&1 || true
@@ -90,13 +90,13 @@ rc=0
 IFS=',' read -ra SPEC_ARR <<< "$SPECS"
 for spec in "${SPEC_ARR[@]}"; do
     spec="$(echo "$spec" | xargs)"   # trim
-    [ -n "$spec" ] || continue
+    [[ -n "$spec" ]] || continue
     MODEL="${spec%%:*}"
     rest="${spec#*:}"
     CTX="${rest%%:*}"
     TTL="${rest#*:}"
-    [ "$CTX" != "$spec" ] || CTX="$LEGACY_CTX"
-    [ "$TTL" != "$rest" ] || TTL="$LEGACY_TTL"
+    [[ "$CTX" != "$spec" ]] || CTX="$LEGACY_CTX"
+    [[ "$TTL" != "$rest" ]] || TTL="$LEGACY_TTL"
 
     # JSON handed over via env var — piping to stdin clashes with
     # reading the inline script from stdin (the original heredoc bug
@@ -122,12 +122,12 @@ print(best)
     marker="$MARKER_DIR/$(echo "$MODEL" | tr '/:' '__').spec"
     have_spec="$(cat "$marker" 2>/dev/null || echo "")"
 
-    if [ "$loaded_ctx" -ge "$CTX" ] 2>/dev/null && [ "$have_spec" = "$want_spec" ]; then
+    if [[ "$loaded_ctx" -ge "$CTX" ]] 2>/dev/null && [[ "$have_spec" = "$want_spec" ]]; then
         echo "lms-ensure: $MODEL loaded ctx=$loaded_ctx parallel=$PARALLEL (spec=$want_spec) — ok"
         continue
     fi
 
-    if [ "$have_spec" != "$want_spec" ] && [ "$loaded_ctx" -ge "$CTX" ] 2>/dev/null; then
+    if [[ "$have_spec" != "$want_spec" ]] && [[ "$loaded_ctx" -ge "$CTX" ]] 2>/dev/null; then
         echo "lms-ensure: $MODEL spec changed ($have_spec -> $want_spec) — reloading for parallel/ctx"
     else
         echo "lms-ensure: $MODEL ctx=$loaded_ctx < required $CTX — reloading"
@@ -144,7 +144,7 @@ print(best)
         echo "$want_spec" > "$marker" 2>/dev/null || true
     else
         _st=$?
-        if [ "$_st" = 124 ]; then
+        if [[ "$_st" = 124 ]]; then
             echo "lms-ensure: reload TIMED OUT for $MODEL after ${LOAD_TIMEOUT}s (not downloaded? skipping)" >&2
         else
             echo "lms-ensure: reload FAILED for $MODEL (exit $_st)" >&2

@@ -15,7 +15,7 @@ git pull --ff-only 2>&1 | tail -1
 
 echo "==> stop existing API"
 P=$(ss -tlnp 2>/dev/null | grep ':8799 ' | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
-[ -n "${P:-}" ] && kill -9 "$P" 2>/dev/null
+[[ -n "${P:-}" ]] && kill -9 "$P" 2>/dev/null
 pkill -9 -f "run.sh --host" 2>/dev/null
 pkill -9 -f "uvicorn aiforge_core.api" 2>/dev/null
 sleep 4

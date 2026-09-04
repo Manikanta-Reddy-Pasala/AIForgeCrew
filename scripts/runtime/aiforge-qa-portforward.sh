@@ -34,6 +34,7 @@ cleanup() {
     [[ -n "${pid:-}" ]] && kill "$pid" 2>/dev/null || true
   done
   wait 2>/dev/null || true
+  return
 }
 trap cleanup EXIT TERM INT
 
@@ -44,6 +45,7 @@ start_one() {
   $K -n "$ns" port-forward "$res" "$lport:$rport" --address 127.0.0.1 \
     >>/home/mani/.aiforge/logs/qa-pf.log 2>&1 &
   PIDS+=($!)
+  return
 }
 
 mkdir -p /home/mani/.aiforge/logs

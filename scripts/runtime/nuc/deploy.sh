@@ -13,11 +13,11 @@ AFM="${AIFORGE_AFM_DIR:-$HOME/AiForgeMemory}"
 UNIT_SRC="$CREW/scripts/runtime/nuc"
 UNIT_DST="$HOME/.config/systemd/user"
 
-step() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
+step() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; return; }
 
 step "pull repos"
 git -C "$CREW" pull --ff-only
-if [ -d "$AFM/.git" ]; then
+if [[ -d "$AFM/.git" ]]; then
     git -C "$AFM" pull --ff-only
 else
     echo "WARN: $AFM missing — clone AiForgeMemory first" >&2
@@ -29,13 +29,13 @@ step "install packages"
 # needed when dependencies change. Use pip if present, else uv, else
 # skip with a note.
 PY="$CREW/.venv/bin/python"
-if [ -x "$CREW/.venv/bin/pip" ]; then
+if [[ -x "$CREW/.venv/bin/pip" ]]; then
     "$CREW/.venv/bin/pip" install -q -e "$CREW"
-    [ -d "$AFM" ] && "$CREW/.venv/bin/pip" install -q -e "$AFM"
-elif command -v uv >/dev/null 2>&1 || [ -x "$HOME/.local/bin/uv" ]; then
+    [[ -d "$AFM" ]] && "$CREW/.venv/bin/pip" install -q -e "$AFM"
+elif command -v uv >/dev/null 2>&1 || [[ -x "$HOME/.local/bin/uv" ]]; then
     UV="$(command -v uv || echo "$HOME/.local/bin/uv")"
     "$UV" pip install -q --python "$PY" -e "$CREW"
-    [ -d "$AFM" ] && "$UV" pip install -q --python "$PY" -e "$AFM"
+    [[ -d "$AFM" ]] && "$UV" pip install -q --python "$PY" -e "$AFM"
 else
     echo "note: no pip/uv — skipping reinstall (editable installs track"
     echo "      the pulled code; rerun with uv on PATH if deps changed)"
@@ -65,7 +65,7 @@ step "enable timers"
 for t in aiforge-git-pull.timer aiforge-repo-pull.timer \
          aiforge-memory-decay.timer aiforge-pr-comments.timer \
          aiforge-worktree-janitor.timer aiforge-lms-ensure.timer; do
-    if [ -f "$UNIT_DST/$t" ]; then
+    if [[ -f "$UNIT_DST/$t" ]]; then
         systemctl --user enable --now "$t" 2>/dev/null \
             && echo "enabled $t" || echo "WARN: enable failed: $t"
     fi
@@ -77,6 +77,7 @@ check() {  # check <name> <cmd...>
     local name="$1"; shift
     if "$@" >/dev/null 2>&1; then echo "OK   $name"
     else echo "FAIL $name"; fail=1; fi
+    return
 }
 check "api :8799/api/health"   curl -fsS -m 5 http://127.0.0.1:8799/api/health
 check "embed sidecar :8764"    curl -fsS -m 5 http://127.0.0.1:8764/healthz
@@ -86,14 +87,14 @@ check "postgres :5432"         bash -c 'exec 3<>/dev/tcp/127.0.0.1/5432'
 check "decay timer enabled"    systemctl --user is-enabled aiforge-memory-decay.timer
 
 step "AiForgeMemory scheduler registration"
-if [ -f "$HOME/.aiforge/scheduler.yaml" ]; then
+if [[ -f "$HOME/.aiforge/scheduler.yaml" ]]; then
     echo "registered repos:"
     grep -E "^\s*-?\s*name:|^\s*repos:" "$HOME/.aiforge/scheduler.yaml" || true
 else
     echo "WARN: ~/.aiforge/scheduler.yaml missing — periodic code ingest is OFF"
 fi
 
-if [ "$fail" -ne 0 ]; then
+if [[ "$fail" -ne 0 ]]; then
     echo; echo "DEPLOY COMPLETED WITH FAILED HEALTH CHECKS — inspect above." >&2
     exit 1
 fi
