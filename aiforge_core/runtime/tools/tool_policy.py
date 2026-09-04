@@ -145,6 +145,29 @@ def _code_from_args(args: dict | None) -> str:
     return _arg_str(args, _CODE_ARG_KEYS)
 
 
+def _egress_refusal(tool: str, args: dict | None) -> str:
+    """Why this call may not reach the network, or "".
+
+    Covers both transports the agent reaches for after a refusal: a shell
+    command (curl / wget / nc) and a notebook cell that shells out. The cell's
+    LIBRARY calls — requests, urllib, a raw socket — cannot be caught here at
+    all; ``runtime.tools.kernel_egress`` guards those inside the kernel.
+    """
+    if tool not in _CMD_TOOLS and tool not in _CODE_TOOLS:
+        return ""
+    try:
+        from aiforge_core.net import egress as _eg
+        lines = ([_cmd_from_args(args)] if tool in _CMD_TOOLS else
+                 command_risk.shell_strings_in_code(_code_from_args(args)))
+        for line in lines:
+            refusal = _eg.command_refusal(line)
+            if refusal:
+                return f"{refusal.get('error')} — {refusal.get('hint')}"
+    except Exception:  # noqa: BLE001 — a gate bug must not block every command
+        return ""
+    return ""
+
+
 def _rank(p: str) -> int:
     return {ALLOW: 0, ASK: 1, DENY: 2}.get(p, 0)
 
@@ -170,6 +193,16 @@ def decide(tool: str, args: dict | None = None) -> dict:
     policy, reason = configured, ""
     if tool in _DEFAULT_ASK and tool not in cfg:
         reason = f"'{tool}' writes to an external system — confirm first"
+
+    # EGRESS first, and as a DENY. A refused web_fetch that the agent reruns as
+    # `curl` — or inside a notebook cell — is the same request wearing another
+    # transport, and it was going straight through: the risk classifier asks
+    # whether a command is dangerous, and fetching a page is not. This is not
+    # an approval question either, because what is missing is an operator's
+    # allowlist entry, not a human's blessing of this one call.
+    egress_refusal = _egress_refusal(tool, args)
+    if egress_refusal:
+        return {"policy": DENY, "reason": egress_refusal, "risk": ""}
 
     # Risk escalation for command-running tools — and for the notebook cell,
     # whose shell commands are lifted back out and run through the same

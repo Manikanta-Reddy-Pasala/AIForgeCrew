@@ -59,6 +59,18 @@ def _start_kernel(run_id: str) -> tuple[Any, Any]:
     _kernels[run_id] = km
     _clients[run_id] = client
     emit("Cell", {"action": "kernel_started", "run_id": run_id})
+    # Egress guard FIRST — before AgentSkills, before any user cell. A cell
+    # that reaches the network with an HTTP library was the transport an agent
+    # switched to after web_fetch and then curl were both refused, and it
+    # worked. See runtime/tools/kernel_egress.py.
+    try:
+        from .kernel_egress import guard_source
+        src = guard_source()
+        if src:
+            client.execute(src, silent=True, store_history=False)
+            _drain_iopub(client, "", timeout=5)
+    except Exception as exc:  # noqa: BLE001 — a guard never breaks the kernel
+        emit("Cell", {"action": "egress_guard_failed", "detail": str(exc)[:200]})
     # Inject AgentSkills helpers (sub #12) so the model can call
     # open_file / goto_line / find_file / search_dir / search_file /
     # create_file / run_cmd from any cell.

@@ -292,6 +292,165 @@ def allow(kind: str, url: str = "", *, method: str = "GET",
     return None
 
 
+# Shell tools that FETCH. A command line naming one of these carries the same
+# question as web_fetch — may this box talk to that host — and used to carry it
+# past every gate, because the classifier only asked whether a command was
+# DANGEROUS and this one is not.
+_NET_COMMANDS = frozenset({
+    "curl", "wget", "http", "https", "httpie", "xh", "aria2c",
+    "nc", "ncat", "netcat", "telnet", "ftp", "sftp", "lynx", "w3m", "links",
+    "youtube-dl", "yt-dlp",
+})
+# Interpreters that fetch when handed a program on the command line. `python -c
+# "import requests; requests.get(...)"` names no fetcher at all, which is the
+# obvious next thing to try once curl is refused.
+_INTERPRETERS = frozenset({"python", "python2", "python3", "node", "ruby",
+                           "perl", "php", "deno", "bun"})
+_INLINE_FLAGS = ("-c", "-e", "--eval", "--execute")
+_URL_RE = re.compile(r"""(?:^|[\s"'=(])((?:https?|ftp)://[^\s"'`)|;<>]+)""",
+                     re.IGNORECASE)
+# A bare host as `curl example.com` / `nc host 443` takes it. The last label
+# must look like a TLD (letters), which is also what keeps `curl -o out.html`
+# from reading its OUTPUT FILE as a destination — the false positive that would
+# have refused a perfectly allowed fetch because of the -o argument.
+_BARE_HOST_RE = re.compile(
+    r"^(?!-)[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})*\.(?:[A-Za-z]{2,24})$")
+_IPV4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+# Options whose VALUE is a local path, never a destination.
+# Endings that make a token a local file rather than a host. `curl out.html`
+# with no -o is rare, but reading an output filename as a destination refuses a
+# fetch the operator explicitly allowed — a false refusal is how a control
+# earns the reputation that gets it switched off.
+_FILE_EXTS = frozenset({
+    "html", "htm", "json", "txt", "log", "md", "yml", "yaml", "csv", "tsv",
+    "xml", "png", "jpg", "jpeg", "gif", "svg", "pdf", "zip", "gz", "tar",
+    "tgz", "bz2", "xz", "sh", "py", "js", "ts", "rb", "go", "rs", "java",
+    "conf", "cfg", "ini", "toml", "env", "lock", "sql", "db", "bin", "out",
+})
+_FILE_FLAGS = ("-o", "--output", "-O", "-T", "--upload-file", "-D",
+               "--dump-header", "-K", "--config", "-b", "--cookie",
+               "-c", "--cookie-jar", "--cacert", "--cert", "--key")
+
+
+def _tokens(cmd: str) -> list[str]:
+    """Shell-ish tokens. ``shlex`` is right about quoting and wrong about `&&`
+    and pipes, so split on those first: a fetcher after a `;` is still a
+    fetcher, and the whole point is that it does not have to be the first word.
+    """
+    import shlex
+    out: list[str] = []
+    for part in re.split(r"[|;&]+|\n", str(cmd or "")):
+        try:
+            out += shlex.split(part)
+        except ValueError:          # unbalanced quotes: fall back to whitespace
+            out += part.split()
+    return out
+
+
+def _is_fetcher(token: str) -> bool:
+    """A fetcher named ANY way the shell accepts it — `curl`, `/usr/bin/curl`,
+    `./curl`. Matching the bare word missed the absolute path, which is one
+    keystroke away."""
+    name = token.rsplit("/", 1)[-1].lower()
+    return name in _NET_COMMANDS
+
+
+def _has_inline_program(tokens: list[str]) -> bool:
+    """Does this line hand an interpreter a program on the command line?
+
+    Deliberately loose about WHERE the flag sits relative to the interpreter:
+    the tokeniser splits on `;` and `&&`, so the two can land in different
+    fragments — and a check that required adjacency would miss the shape it
+    exists for."""
+    names = {t.rsplit("/", 1)[-1].lower() for t in tokens}
+    if not (names & _INTERPRETERS):
+        return False
+    return any(t in _INLINE_FLAGS for t in tokens)
+
+
+def _bare_hosts(tokens: list[str]) -> list[str]:
+    """Destinations given without a scheme, minus the arguments that are files."""
+    out: list[str] = []
+    fetching = False
+    skip_next = False
+    for i, tok in enumerate(tokens):
+        if skip_next:
+            skip_next = False
+            continue
+        if _is_fetcher(tok):
+            fetching = True
+            continue
+        if tok in _FILE_FLAGS:
+            skip_next = True
+            continue
+        if not fetching or tok.startswith("-"):
+            continue
+        candidate = tok.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+        if candidate.lower().rsplit(".", 1)[-1] in _FILE_EXTS:
+            continue            # `curl out.html …` names a file, not a host
+        if _IPV4_RE.match(candidate) or _BARE_HOST_RE.match(candidate):
+            out.append(tok)     # keep the PATH: the policy reads the query too
+        del i
+    return out
+
+
+def urls_in_command(cmd: str) -> list[str]:
+    """Every destination this command line would reach.
+
+    Three shapes, because an agent that has just been refused tries all of
+    them: an explicit URL, a bare host after a fetcher, and a URL inside a
+    `python -c` program.
+    """
+    text = str(cmd or "")
+    tokens = _tokens(text)
+    found: list[str] = []
+    if any(_is_fetcher(t) for t in tokens):
+        found += [m.group(1) for m in _URL_RE.finditer(text)]
+        found += _bare_hosts(tokens)
+    if _has_inline_program(tokens):
+        # Scan the WHOLE line, not the extracted program: `python -c "import
+        # requests; requests.get('…')"` contains a `;`, and any tokeniser worth
+        # having splits on that — which put the URL in a different fragment
+        # from the -c and made this exact case, the one an agent reaches for
+        # after curl is refused, read as harmless.
+        found += re.findall(r"""(?:https?|ftp)://[^\s"'`)]+""", text)
+    out: list[str] = []
+    for u in found:
+        if u not in out:
+            out.append(u)
+    return out
+
+
+def command_refusal(cmd: str) -> dict | None:
+    """``None`` unless a shell command would reach a destination this box may
+    not reach.
+
+    THE HOLE THIS CLOSES, reported from a live session: web_fetch refused a URL
+    because the host was not on the allowlist, and the agent immediately reran
+    it as `curl` — and then, when that was refused, inside a notebook cell —
+    until something worked. Every one of those is the same request; only the
+    transport changed. A refusal that can be walked around by changing
+    transport is a suggestion, and the operator was told it was a boundary.
+
+    This is a policy gate, not containment: a determined agent can still open a
+    socket in code, which is why `kernel_egress` guards the notebook kernel and
+    why the module docstring is explicit that an OS firewall is the real line.
+    What it stops is the ROUTINE reroute, which is what actually happens.
+    """
+    for target in urls_in_command(cmd):
+        url = target if "://" in target else "https://" + target
+        refusal = check(url)
+        if refusal is not None:
+            return {**refusal,
+                    "error": f"{refusal.get('error')} (via a shell command)",
+                    "hint": (str(refusal.get("hint") or "") +
+                             " Reaching it with curl / wget / a notebook cell "
+                             "is the SAME request through another transport — "
+                             "it is refused too. Ask the user to add the host "
+                             "in Settings -> Egress, or to paste the content.")}
+    return None
+
+
 def hard_off() -> bool:
     """The operator's kill switch, under any of its names.
 
@@ -377,9 +536,12 @@ def check(url: str = "") -> dict | None:
                          "default: the configured integrations, the model "
                          "endpoint, and this machine/LAN. An operator can add "
                          "a host in Settings -> Egress. Ask the user to add it "
-                         "or to paste the content.")}
+                         "or to paste the content. Reaching it another way — "
+                         "curl, wget, a notebook cell — is the same request "
+                         "and is refused the same way, so do not try one.")}
     return None
 
 
-__all__ = ["allow", "attended", "check", "class_off", "fetch_allowed",
-           "hard_off", "host_allowed", "looks_like_search"]
+__all__ = ["allow", "attended", "check", "class_off", "command_refusal",
+           "fetch_allowed", "hard_off", "host_allowed", "is_local_host",
+           "looks_like_search", "urls_in_command"]

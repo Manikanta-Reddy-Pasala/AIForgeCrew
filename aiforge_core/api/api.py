@@ -127,6 +127,16 @@ def _repair_config_permissions() -> None:
     0644 long after that hardening landed, because nothing had rewritten it.
     Runs first so a token is not world-readable for the length of a boot."""
     try:
+        # Consolidate first: the credential files move into security/ (0700),
+        # and the repair below then tightens whatever is left in the root.
+        # Order matters — repairing a path we are about to move is wasted work,
+        # and moving after the repair leaves a boot's worth of exposure.
+        from aiforge_core.config import secure_store
+        secure_store.migrate_all()
+    except Exception as exc:  # noqa: BLE001 — never block boot on this
+        logging.getLogger("aiforge.secure_store").warning(
+            "credential consolidation skipped: %s", exc)
+    try:
         from aiforge_core.config import permissions
         permissions.repair()
     except Exception as exc:  # noqa: BLE001 — never block boot on this
