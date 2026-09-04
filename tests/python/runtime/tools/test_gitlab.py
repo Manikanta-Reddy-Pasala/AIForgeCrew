@@ -163,7 +163,7 @@ def test_oauth_uses_bearer(monkeypatch):
     assert "Private-token" not in seen["headers"]
 
 
-def test_insecure_tls_builds_unverified_context(monkeypatch):
+def test_insecure_tls_builds_a_pinned_context(monkeypatch):
     monkeypatch.setenv("GITLAB_BASE_URL", "https://gitlab.internal")
     monkeypatch.setenv("GITLAB_TOKEN", "tok")
     monkeypatch.setenv("GITLAB_INSECURE_TLS", "1")
@@ -172,7 +172,8 @@ def test_insecure_tls_builds_unverified_context(monkeypatch):
     gl.gitlab_search({"query": "x"})
     ctx = seen["context"]
     assert ctx is not None
-    assert ctx.verify_mode == ssl.CERT_NONE
+    # "insecure_tls" now means PINNED, not unverified — see net/trust.py.
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
 
 
 def test_reads_stored_config_when_env_absent(tmp_path, monkeypatch):

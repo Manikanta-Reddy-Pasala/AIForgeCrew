@@ -7,8 +7,8 @@ without editing env files + restarting:
   set_role(insecure_tls=True) → stored on the row
   resolve_litellm()           → surfaces insecure_tls
   escalating_llm._build_one() → passes ssl_verify=False to LiteLLM
-  probe(insecure=True)        → builds a CERT_NONE context
-  net.ssl.insecure_context()  → CERT_NONE / no hostname check
+  probe(insecure=True)        → builds a context PINNED to that host's cert
+  net.ssl.insecure_context()  → verifying, anchored to the pinned certificate
   _ensure_v1()                → respects an operator-supplied path (/api)
 """
 import importlib
@@ -35,11 +35,25 @@ def cfgdir(monkeypatch, tmp_path):
 
 
 # ── net.ssl.insecure_context ─────────────────────────────────────────
-def test_insecure_context_is_cert_none():
+def test_insecure_context_verifies_against_the_pin(monkeypatch):
+    """The name survives because every call site uses it; the behaviour does
+    not. "Skip TLS verify" now means "trust THAT certificate", which is what a
+    self-signed endpoint actually needs."""
+    from tests.python.tls_pin_fixture import stub_pin, trusts_the_pin
+    stub_pin(monkeypatch)
     from aiforge_core.net.ssl import insecure_context
-    ctx = insecure_context()
-    assert ctx.verify_mode == ssl.CERT_NONE
-    assert ctx.check_hostname is False
+    ctx = insecure_context("https://chatai.internal/api")
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.check_hostname is True
+    assert trusts_the_pin(ctx)
+
+
+def test_insecure_context_without_a_pin_still_verifies(monkeypatch):
+    from tests.python.tls_pin_fixture import no_pin
+    no_pin(monkeypatch)
+    from aiforge_core.net.ssl import insecure_context
+    assert insecure_context("https://chatai.internal/api").verify_mode \
+        == ssl.CERT_REQUIRED
 
 
 def test_shim_reexports_insecure_context():
@@ -197,15 +211,17 @@ def test_probe_auto_relaxes_internal_without_flag(monkeypatch):
     monkeypatch.delenv("AIFORGE_LLM_CA_BUNDLE", raising=False)
     monkeypatch.delenv("AIFORGE_LLM_TLS_STRICT_INTERNAL", raising=False)
     monkeypatch.setattr(oc.urllib.request, "urlopen", _fake_urlopen)
-    # insecure=False but host is .internal → auto-relaxed to CERT_NONE
+    # insecure=False but host is .internal → the PINNED context, still verifying
+    from tests.python.tls_pin_fixture import stub_pin
+    stub_pin(monkeypatch)
     out = oc.probe("https://chatai.internal/api", insecure=False)
     assert out["ok"] is True
     assert out["models"] == ["qwen"]
-    assert seen["mode"] == ssl.CERT_NONE
+    assert seen["mode"] == ssl.CERT_REQUIRED
 
 
-# ── probe(insecure=True) selects the CERT_NONE context ───────────────
-def test_probe_insecure_uses_unverified_context(monkeypatch):
+# ── probe(insecure=True) selects the PINNED context ──────────────────
+def test_probe_insecure_uses_the_pinned_context(monkeypatch):
     import aiforge_core.llm.providers.openai_compatible as oc
 
     seen = {}
@@ -219,8 +235,11 @@ def test_probe_insecure_uses_unverified_context(monkeypatch):
         seen["context"] = context
         return _Resp()
 
+    from tests.python.tls_pin_fixture import stub_pin, trusts_the_pin
+    stub_pin(monkeypatch)
     monkeypatch.setattr(oc.urllib.request, "urlopen", _fake_urlopen)
     out = oc.probe("https://chatai.internal", insecure=True)
     assert out["ok"] is True
     assert out["models"] == ["m"]
-    assert seen["context"].verify_mode == ssl.CERT_NONE
+    assert seen["context"].verify_mode == ssl.CERT_REQUIRED
+    assert trusts_the_pin(seen["context"])

@@ -81,15 +81,17 @@ def integration_conf(name: str, env_prefix: str, *,
     return conf
 
 
-def ssl_context(insecure_tls: bool, ca_bundle: str = ""):
+def ssl_context(insecure_tls: bool, ca_bundle: str = "", url: str = ""):
     """The TLS context for an integration call, in order of preference:
 
-    * ``ca_bundle`` set → verification stays ON, anchored to that CA. This is
-      the right answer for a self-signed internal Jira/Confluence/GitLab, and
-      the reason the insecure default could be removed.
-    * ``insecure_tls`` → CERT_NONE. A deliberate, per-integration opt-out the
-      operator now has to ask for; it sends the auth token over a connection
-      nobody has authenticated.
+    * ``ca_bundle`` set → verification stays ON, anchored to that CA. The right
+      answer for a self-signed internal Jira/Confluence/GitLab when the
+      operator has the internal CA to hand.
+    * ``insecure_tls`` → verification stays ON, anchored to THAT ENDPOINT'S own
+      certificate, pinned on first use (``net.trust``). It used to mean
+      CERT_NONE, which sent the integration's auth token over a connection
+      nobody had authenticated — the flag meant "this host is self-signed", and
+      it now does what that should have meant all along.
     * otherwise → None, meaning urllib's own default verification.
     """
     if ca_bundle:
@@ -100,10 +102,8 @@ def ssl_context(insecure_tls: bool, ca_bundle: str = ""):
             raise ValueError(
                 f"CA bundle {ca_bundle!r} could not be loaded: {exc}") from exc
     if insecure_tls:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        return ctx
+        from aiforge_core.net import ssl as _nssl
+        return _nssl.insecure_context(url or None)
     return None
 
 

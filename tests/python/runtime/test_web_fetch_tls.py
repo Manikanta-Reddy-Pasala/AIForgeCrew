@@ -131,7 +131,7 @@ def test_the_verified_attempt_comes_first(monkeypatch):
                            and ctx.check_hostname is True)
 
 
-def test_a_cert_failure_refetches_without_verification(monkeypatch):
+def test_a_cert_failure_refetches_pinned(monkeypatch):
     calls: list = []
 
     def _open(req, timeout=None, context=None):
@@ -145,8 +145,13 @@ def test_a_cert_failure_refetches_without_verification(monkeypatch):
     out = ws._get("https://inspected.example.com", verified=verified)
     assert "page" in out
     assert len(calls) == 2
-    assert calls[1].verify_mode == ssl.CERT_NONE
-    assert verified == [False], "the downgrade must be reported, not hidden"
+    # The retry PINS the certificate that host presented instead of turning
+    # verification off — an inspecting appliance still works, and a different
+    # certificate on a later fetch fails.
+    assert calls[1].verify_mode == ssl.CERT_REQUIRED
+    assert verified == [False], (
+        "pinned is not verified-to-a-public-root: the downgrade must still be "
+        "reported, not hidden")
 
 
 def test_the_fallback_can_be_forbidden(monkeypatch):
@@ -202,19 +207,45 @@ def test_a_verified_page_says_nothing_about_tls(monkeypatch):
     assert "tls_verified" not in out
 
 
-def test_plain_http_is_still_allowed(monkeypatch):
-    """"Allow non-secure" — an http:// URL is fetched as-is; there is no
-    certificate in play and nothing to fall back from."""
+def test_plain_http_to_a_remote_host_is_refused(monkeypatch):
+    """The request, its query string and the page cross a network in the clear,
+    and anything on the path can read or rewrite them. Allowlisting a host says
+    where we may talk, not that we may shout it."""
     monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
     monkeypatch.delenv("AIFORGE_WEB_SEARCH_DISABLE", raising=False)
-    # NOT a `.local` host any more: that suffix stopped counting as "this
-    # network" when it turned out to wave through metadata.google.internal.
-    # Any allowed host makes the same point — the scheme is what is under test.
+    monkeypatch.delenv("AIFORGE_ALLOW_CLEARTEXT_HTTP", raising=False)
+    monkeypatch.setenv("AIFORGE_EGRESS_ALLOW_HOSTS", "intranet.example")
+    called: list = []
+    _patch_ws_open(monkeypatch, lambda *a, **k: called.append(1) or _Resp())
+    out = ws.web_fetch({"url": "http://intranet.example/page"})
+    assert out["ok"] is False
+    assert out["error"] == "cleartext_http_refused"
+    assert not called
+
+
+def test_plain_http_is_allowed_when_the_operator_asks(monkeypatch):
+    """An intranet service with no TLS is a real thing; it takes a deliberate
+    line in a config file rather than a default nobody chose."""
+    monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
+    monkeypatch.delenv("AIFORGE_WEB_SEARCH_DISABLE", raising=False)
+    monkeypatch.setenv("AIFORGE_ALLOW_CLEARTEXT_HTTP", "1")
     monkeypatch.setenv("AIFORGE_EGRESS_ALLOW_HOSTS", "intranet.example")
     _patch_ws_open(monkeypatch, lambda *a, **k: _Resp())
     out = ws.web_fetch({"url": "http://intranet.example/page"})
     assert out["ok"]
     assert "tls_verified" not in out
+
+
+def test_a_loopback_url_is_refused_as_ssrf_not_as_a_scheme_problem(monkeypatch):
+    """web_fetch cannot reach loopback at all — guard_public_url refuses it —
+    so the scheme rule must not be what answers. A reader sent after the wrong
+    problem is the failure mode this ordering exists to avoid."""
+    monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
+    monkeypatch.delenv("AIFORGE_ALLOW_CLEARTEXT_HTTP", raising=False)
+    _patch_ws_open(monkeypatch, lambda *a, **k: _Resp())
+    out = ws.web_fetch({"url": "http://127.0.0.1:5173/page"})
+    assert out["ok"] is False
+    assert "ssrf" in out["error"]
 
 
 # ── the doer / researcher path, which has its own fetch ──────────────────
@@ -253,7 +284,7 @@ def test_the_doer_fetch_falls_back_the_same_way(monkeypatch):
     out = _web.fetch_url("https://inspected.example.com")
     assert out["ok"]
     assert out["tls_verified"] is False
-    assert calls[1].verify_mode == ssl.CERT_NONE
+    assert calls[1].verify_mode == ssl.CERT_REQUIRED
 
 
 def test_the_doer_fetch_does_not_retry_a_404(monkeypatch):

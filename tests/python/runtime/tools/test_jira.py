@@ -184,7 +184,7 @@ def test_basic_auth_when_user_set(monkeypatch):
     assert seen["headers"].get("Authorization", "").startswith("Basic ")
 
 
-def test_insecure_tls_builds_unverified_context(monkeypatch):
+def test_insecure_tls_builds_a_pinned_context(monkeypatch):
     monkeypatch.setenv("JIRA_BASE_URL", "https://jira.internal")
     monkeypatch.setenv("JIRA_TOKEN", "tok")
     monkeypatch.setenv("JIRA_INSECURE_TLS", "1")
@@ -193,7 +193,8 @@ def test_insecure_tls_builds_unverified_context(monkeypatch):
     jr.jira_search({"query": "x"})
     ctx = seen["context"]
     assert ctx is not None
-    assert ctx.verify_mode == ssl.CERT_NONE
+    # "insecure_tls" now means PINNED, not unverified — see net/trust.py.
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
 
 
 def test_reads_stored_config_when_env_absent(tmp_path, monkeypatch):

@@ -22,7 +22,13 @@ def _repomap_max_chars() -> int:
 
 _SYM_PATTERNS = {
     ".py": r"^\s*(?:async\s+)?(?:class|def)\s+(\w+)",
-    ".java": r"^\s*(?:@\w+\s*)*(?:public|private|protected|static|final|abstract|\s)*"
+    # BOUNDED, and the modifier list no longer contains ``\s``. It read
+    # (?:public|…|\s)* — an alternation that can match a single space, under a
+    # star, next to another starred group — so a line of leading whitespace that
+    # never reaches ``class`` backtracks super-linearly. Java allows a handful
+    # of modifiers, so say a handful.
+    ".java": r"^\s*(?:@\w+\s+){0,4}"
+             r"(?:(?:public|private|protected|static|final|abstract)\s+){0,5}"
              r"(?:class|interface|enum|record)\s+(\w+)"
              r"|^\s*(?:public|private|protected)\s+(?:static\s+)?[\w<>\[\],\s.]+?\s+(\w+)\s*\(",
     ".go": r"^\s*func\s+(?:\([^)]*\)\s*)?(\w+)|^\s*type\s+(\w+)\s",
@@ -33,7 +39,8 @@ _SYM_PATTERNS = {
     ".rs": r"^\s*(?:pub\s+)?(?:fn|struct|enum|trait|impl)\s+(\w+)",
     ".c": r"^\s*[\w\*\s]+?\s+(\w+)\s*\([^;]*\)\s*\{",
     ".cpp": r"^\s*(?:class|struct)\s+(\w+)|^\s*[\w:<>\*&\s]+?\s+(\w+)\s*\([^;]*\)\s*\{",
-    ".cs": r"^\s*(?:public|private|protected|internal|static|\s)*(?:class|interface|struct|enum)\s+(\w+)",
+    ".cs": r"^\s*(?:(?:public|private|protected|internal|static)\s+){0,5}"
+           r"(?:class|interface|struct|enum)\s+(\w+)",
     ".kt": r"^\s*(?:fun|class|interface|object)\s+(\w+)",
     ".php": r"^\s*(?:abstract\s+|final\s+)?(?:class|interface|trait|function)\s+(\w+)",
 }

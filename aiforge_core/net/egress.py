@@ -181,6 +181,29 @@ def _host_is_writable(url: str) -> bool:
     return any(host == h or host.endswith("." + h) for h in allow)
 
 
+def _cleartext_to_public(url: str) -> bool:
+    """Plain http to something that is not this machine or the LAN.
+
+    A local dev server on http is the ordinary case and stays allowed — it
+    never leaves the host. Everything else is a request, a query string and a
+    page crossing a network in the clear, which is worth refusing on its own
+    terms and not only because a scanner says so.
+
+    ``AIFORGE_ALLOW_CLEARTEXT_HTTP=1`` restores it for an operator whose
+    intranet service genuinely has no TLS. That is a deliberate line in a
+    config file rather than a default nobody chose.
+    """
+    if _env_true("AIFORGE_ALLOW_CLEARTEXT_HTTP"):
+        return False        # an operator with an http-only intranet service
+    try:
+        parts = urlsplit(str(url or ""))
+    except ValueError:
+        return False
+    if (parts.scheme or "").lower() != "http":
+        return False
+    return not is_local_host((parts.hostname or "").strip("[]").lower())
+
+
 def _is_blocked_address(url: str) -> bool:
     """Link-local, multicast and reserved literals — the SSRF targets. Kept
     separate from ``is_local_host`` so "my LAN" and "the thing that hands out
@@ -698,6 +721,13 @@ def check(url: str = "") -> dict | None:
         return {"ok": False, "error": "blocked (ssrf): non-public address",
                 "hint": ("link-local / metadata addresses are refused "
                          "regardless of the allowlist.")}
+    if url and _cleartext_to_public(url):
+        return {"ok": False, "error": "cleartext_http_refused",
+                "hint": ("plain http to a host outside this machine/LAN sends "
+                         "the request and the page in the clear, and anything "
+                         "on the path can read or rewrite it. Use https, or "
+                         "ask the user to paste the content. A local dev "
+                         "server on http is unaffected.")}
     # The allowlist applies to PAGES too, not only to declared destinations.
     # Otherwise "only the integrations are reachable" would be true of Jira and
     # false of web_fetch, which is the wider hole of the two: the integration

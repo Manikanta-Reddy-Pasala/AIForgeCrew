@@ -235,20 +235,40 @@ def auto_relax_internal(url: str | None) -> bool:
     return _is_intrinsically_internal_host(_host_of(url))
 
 
-def insecure_context() -> ssl.SSLContext:
-    """An explicitly non-verifying TLS context (CERT_NONE).
+def _port_of(url: str | None) -> int:
+    """The port a URL names, or the scheme's default. A pin is fetched from the
+    port we will actually talk to — an internal service on :8443 presents its
+    certificate there, not on 443."""
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(str(url or ""))
+        return int(parts.port or (443 if parts.scheme == "https" else 80))
+    except (ValueError, TypeError):
+        return 443
 
-    For a *deliberate, per-endpoint* opt-out: the operator pasted a
-    self-hosted HTTPS base-URL and ticked "skip TLS verify" in the UI
-    (or stored ``insecure_tls`` on that role). Unlike the global
-    ``AIFORGE_LLM_SSL_VERIFY`` toggle this is scoped to the single
-    endpoint the caller is talking to, so it never strips verification
-    from any other host. Callers gate it on https + the explicit flag.
+
+def insecure_context(url: str | None = None) -> ssl.SSLContext:
+    """The context for an endpoint the operator marked as self-signed.
+
+    It no longer disables verification, and the name is kept only because it is
+    what every call site asks for. "Skip TLS verify" used to mean CERT_NONE
+    with hostname checking off — scoped to one endpoint, deliberate, and still
+    "anything on the path can be that host and we will never know".
+
+    What the flag means now: TRUST THAT CERTIFICATE. The endpoint's certificate
+    is pinned on first use and every later connection is verified against it
+    (see ``net.trust``), so a self-signed internal Jira keeps working and a
+    substituted certificate fails — which is the whole difference.
+
+    Falls back to ordinary verification when nothing can be pinned (the host is
+    unreachable, or trust-on-first-use is off). That fails the connection with a
+    certificate error rather than opening it, which is the correct direction for
+    a fallback to fail in.
     """
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    return ctx
+    from aiforge_core.net import trust
+    host = _host_of(url) if url else ""
+    ctx = trust.context_for_pin(host, _port_of(url)) if host else None
+    return ctx or _verifying_context()
 
 
 # ───────────────────── web fetch: the broken-chain case ─────────────────
@@ -475,7 +495,8 @@ def context_for(url: str | None) -> ssl.SSLContext | None:
 
     For ``https://``:
       * custom CA bundle set            → verifying context trusting it;
-      * verify disabled + internal host → unverified context (CERT_NONE);
+      * verify disabled + internal host → verifying context pinned to that
+        host's own certificate (net.trust), never an unverified one;
       * everything else (incl. public)  → default verifying context.
     """
     if not url or not str(url).lower().startswith("https://"):
@@ -487,11 +508,11 @@ def context_for(url: str | None) -> ssl.SSLContext | None:
         return ssl.create_default_context(cafile=ca)
 
     if not _verify_enabled() and _is_trusted_internal_host(_host_of(url)):
-        # Scoped opt-out for a trusted self-hosted endpoint only.
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        return ctx
+        # A trusted self-hosted endpoint: verification stays ON, anchored to
+        # that host's own certificate (pinned on first use). This branch used
+        # to return CERT_NONE, which is the same capability with none of the
+        # protection — see net/trust.py.
+        return insecure_context(url)
 
     # Public host, or verify left on: full default verification (with certifi
     # roots layered in so an empty OS trust store doesn't break public https).
@@ -508,7 +529,7 @@ def httpx_verify(url: str | None = None, *, insecure_tls: bool = False):
     else the per-url context / CA bundle / default verify. Returns
     True | <ssl.SSLContext>. httpx accepts both."""
     if (insecure_tls or auto_relax_internal(url)) and not _ca_bundle():
-        return insecure_context()           # ssl.SSLContext with CERT_NONE
+        return insecure_context(url)        # verifying, pinned to that host
     ctx = context_for(url)
     if ctx is not None:
         return ctx

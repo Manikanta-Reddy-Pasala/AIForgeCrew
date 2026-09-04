@@ -58,7 +58,12 @@ def _files_in_output(cwd: str, output: str) -> set:
     targeted context for the resolver (not the whole tree)."""
     import re as _re
     hits: set = set()
-    for m in _re.findall(r"([\w/\\-]+(?:\.[\w/\\-]+)*\.(?:py|java|go|js|mjs|ts|tsx|rs|c|cc|cpp|cxx|h|hpp|rb|php))", output):
+    # One class rather than a quantified group over the same characters — see
+    # the note on _FILE_EXT_RE in _planning.py. Build output is attacker-shaped
+    # input in the sense that matters here: it is long, and it is full of
+    # path-like runs that do not end in an extension.
+    _path_re = r"([\w./\\-]*[\w-]\.(?:py|java|go|js|mjs|ts|tsx|rs|c|cc|cpp|cxx|h|hpp|rb|php))"
+    for m in _re.findall(_path_re, output):
         p = m.replace("\\", "/")
         if os.path.isabs(p) and p.startswith(cwd):
             p = os.path.relpath(p, cwd)

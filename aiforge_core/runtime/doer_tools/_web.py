@@ -43,10 +43,11 @@ def _open_web_response(req, url: str):
     except Exception as exc:  # noqa: BLE001 — classified right here
         if not (is_cert_error(exc) and web_tls_fallback_allowed_for(url)):
             raise
-        _log.warning("web.tls_unverified url=%s err=%s — refetching without "
-                     "verification", url, str(exc)[:160])
+        _log.warning("web.tls_unverified url=%s err=%s — refetching PINNED to "
+                     "the certificate that host presents (not verified to a "
+                     "public root)", url, str(exc)[:160])
         return urllib.request.urlopen(req, timeout=_fetch_timeout_s(),
-                                      context=insecure_context()), True
+                                      context=insecure_context(url)), True
 
 
 def _reguard_redirect(resp, url: str, guard_public_url, ssrf_blocked) -> dict | None:

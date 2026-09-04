@@ -1,10 +1,11 @@
 """TLS posture of the Jira / Confluence / GitLab HTTP integrations.
 
-The default is INSECURE by the operator's explicit decision: an unset
-`{PREFIX}_INSECURE_TLS` skips verification, because these integrations point
-at internal, often self-signed, endpoints. These tests pin that default so it
-cannot drift silently in either direction, and pin the CA-bundle path — which
-keeps verification ON — as the better answer for the self-signed case.
+An unset `{PREFIX}_INSECURE_TLS` still defaults to the self-signed path,
+because these integrations point at internal, often self-signed, endpoints —
+but that path no longer means "do not verify". It pins the endpoint's own
+certificate and verifies against it (net.trust), so the bearer token no longer
+travels over a connection nobody authenticated. A CA bundle remains the better
+answer where the operator has the internal CA.
 """
 from __future__ import annotations
 
@@ -27,14 +28,18 @@ def _conf(**_kw):
     return hi.integration_conf("jira", "JIRA")
 
 
-def test_unset_skips_verification_by_design():
-    # The operator's deliberate default (see the module docstring). Pinned so
-    # the exposure it carries is a decision on record, not an accident: the
-    # bearer token travels over an unauthenticated connection.
+def test_unset_selects_the_pinned_path_by_design(monkeypatch):
+    # The operator's deliberate default (see the module docstring) — and what
+    # it now buys: verification against that endpoint's own certificate rather
+    # than none at all.
+    from tests.python.tls_pin_fixture import stub_pin, trusts_the_pin
+    stub_pin(monkeypatch)
     conf = _conf()
     assert conf["insecure_tls"] is True
-    assert hi.ssl_context(conf["insecure_tls"], conf["ca_bundle"]).verify_mode \
-        == ssl.CERT_NONE
+    ctx = hi.ssl_context(conf["insecure_tls"], conf["ca_bundle"],
+                         "https://jira.internal")
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert trusts_the_pin(ctx)
 
 
 def test_explicit_zero_turns_verification_on(monkeypatch):
@@ -45,13 +50,16 @@ def test_explicit_zero_turns_verification_on(monkeypatch):
     assert hi.ssl_context(conf["insecure_tls"], conf["ca_bundle"]) is None
 
 
-def test_explicit_opt_out_still_works(monkeypatch):
+def test_explicit_opt_out_pins_rather_than_disables(monkeypatch):
+    from tests.python.tls_pin_fixture import stub_pin
+    stub_pin(monkeypatch)
     monkeypatch.setenv("JIRA_INSECURE_TLS", "1")
     conf = _conf()
     assert conf["insecure_tls"] is True
-    ctx = hi.ssl_context(conf["insecure_tls"], conf["ca_bundle"])
-    assert ctx.verify_mode == ssl.CERT_NONE
-    assert ctx.check_hostname is False
+    ctx = hi.ssl_context(conf["insecure_tls"], conf["ca_bundle"],
+                         "https://jira.internal")
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.check_hostname is True
 
 
 @pytest.mark.parametrize("value", ["0", "false", "no", ""])

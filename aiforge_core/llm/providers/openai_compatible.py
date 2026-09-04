@@ -127,7 +127,7 @@ def _probe_tls_plan(url: str, insecure: bool) -> "tuple[bool, str]":
     auto = (not insecure) and _ssl_auto_relax(url)
     skip_tls = is_https and (insecure or auto)
     if skip_tls:
-        tls_mode = "skip-verify(auto-internal)" if auto else "skip-verify(CERT_NONE)"
+        tls_mode = "pinned(auto-internal)" if auto else "pinned(self-signed)"
     elif is_https:
         tls_mode = "verify"
     else:
@@ -169,7 +169,10 @@ def probe(base_url: str, api_key: str | None = None,
     try:
         # Inside the try so a bad CA bundle path (FileNotFoundError) is reported
         # as a clean {ok: False, error} instead of raising.
-        ctx = _ssl_insecure() if skip_tls else _ssl_context_for(url)
+        # The URL matters: the "skip" path pins THAT host's certificate
+        # (net.trust) rather than dropping verification, so it has to know
+        # which host it is talking to.
+        ctx = _ssl_insecure(url) if skip_tls else _ssl_context_for(url)
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(
                 req, timeout=_probe_timeout(timeout), context=ctx) as r:
@@ -273,7 +276,10 @@ def probe_native(base_url: str, model: str, api_key: str | None = None,
     skip_tls, tls_mode = _probe_tls_plan(url, insecure)
     from .._ssl import context_for as _ssl_context_for
     from .._ssl import insecure_context as _ssl_insecure
-    ctx = _ssl_insecure() if skip_tls else _ssl_context_for(url)
+    # The URL matters: the 'skip' path pins THAT host's certificate
+    # (net.trust) rather than dropping verification, so it needs to know
+    # which host it is talking to.
+    ctx = _ssl_insecure(url) if skip_tls else _ssl_context_for(url)
     log.info("probe_native -> url=%s model=%s tls=%s", url, model, tls_mode)
 
     results: dict = {

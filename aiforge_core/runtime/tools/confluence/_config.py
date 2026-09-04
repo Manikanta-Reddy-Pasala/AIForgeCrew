@@ -52,7 +52,8 @@ def _headers() -> dict[str, str]:
 
 def _ssl_ctx():
     c = _conf()
-    return _http.ssl_context(c["insecure_tls"], c.get("ca_bundle", ""))
+    return _http.ssl_context(c["insecure_tls"], c.get("ca_bundle", ""),
+                             c.get("base_url", ""))
 
 
 def _request(method: str, path: str, *, params: dict | None = None,

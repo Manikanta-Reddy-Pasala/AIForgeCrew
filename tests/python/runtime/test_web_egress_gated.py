@@ -27,7 +27,7 @@ def test_fetch_url_disabled_by_default_makes_no_request(monkeypatch):
 
     monkeypatch.setattr(doer_tools.urllib.request, "urlopen", _boom)
 
-    out = doer_tools.fetch_url("http://example.com")
+    out = doer_tools.fetch_url("https://example.com")
     assert out["ok"] is False
     assert "web fetch disabled" in out["error"]
     assert "AIFORGE_ALLOW_WEB_FETCH=1" in out["error"]
@@ -42,7 +42,7 @@ def test_http_get_and_web_fetch_aliases_also_gated(monkeypatch):
     monkeypatch.setattr(doer_tools.urllib.request, "urlopen", _boom)
 
     for fn in (doer_tools.http_get, doer_tools.web_fetch):
-        out = fn("http://example.com")
+        out = fn("https://example.com")
         assert out["ok"] is False
         assert "web fetch disabled" in out["error"]
 
@@ -66,7 +66,7 @@ def test_fetch_url_proceeds_when_opted_in(monkeypatch):
     monkeypatch.setattr(
         doer_tools.urllib.request, "urlopen", lambda *a, **k: _Resp()
     )
-    out = doer_tools.fetch_url("http://example.com")
+    out = doer_tools.fetch_url("https://example.com")
     assert out["ok"] is True
     assert out["body"] == "hello world"
     assert out["status"] == 200
@@ -93,7 +93,7 @@ def test_browser_empty_allowlist_denies_the_open_web(monkeypatch):
     host is still denied without an allowlist or the fetch switch."""
     monkeypatch.delenv("AIFORGE_BROWSER_ALLOWLIST", raising=False)
     monkeypatch.delenv("AIFORGE_ALLOW_WEB_FETCH", raising=False)
-    assert browser_tool._allowlist_ok("http://example.com") is False
+    assert browser_tool._allowlist_ok("https://example.com") is False
     assert browser_tool._allowlist_ok("http://127.0.0.1:8799") is True
 
 

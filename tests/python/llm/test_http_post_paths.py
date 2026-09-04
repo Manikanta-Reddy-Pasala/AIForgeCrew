@@ -71,13 +71,18 @@ def test_https_defaults_to_443_and_carries_a_tls_context():
 
 
 def test_a_self_hosted_box_with_a_self_signed_cert_is_not_refused(monkeypatch):
-    """Verification is skipped only on the explicit opt-out or a trusted
-    internal host — a public host still verifies."""
+    """The explicit opt-out (or a trusted internal host) selects the PINNED
+    context — verification stays on, anchored to that box's own certificate
+    (net.trust) — while a public host verifies against the ordinary roots."""
+    from tests.python.tls_pin_fixture import stub_pin, trusts_the_pin
+
+    stub_pin(monkeypatch)
     monkeypatch.setattr(H, "_ssl_ca_bundle", lambda: None)
     monkeypatch.setattr(H, "_ssl_auto_relax", lambda base: False)
     ctx = H._post_ctx(_ep(base_url="https://lan-box:8443/v1",
                           extras={"insecure_tls": True}))
-    assert ctx.verify_mode.name == "CERT_NONE"
+    assert ctx.verify_mode.name == "CERT_REQUIRED"
+    assert trusts_the_pin(ctx), "the opt-out must trust that box's own cert"
 
 
 def test_a_ca_bundle_keeps_verification_on(monkeypatch):

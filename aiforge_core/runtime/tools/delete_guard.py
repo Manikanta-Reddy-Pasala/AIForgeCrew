@@ -13,7 +13,11 @@ import os
 import re
 
 _DELETE_PATTERNS = [
-    r"\brm\s+(-[a-z]*\s+)*",          # rm, rm -rf, rm -f …
+    # BOUNDED, and the inner class requires a letter. `(-[a-z]*\s+)*` let an
+    # option match as just "-" plus spaces, so a long run of dashes and spaces
+    # could be split many ways before the match failed. Nobody passes rm more
+    # than a few option groups.
+    r"\brm\s+(?:-[a-z]+\s+){0,5}",   # rm, rm -rf, rm -f …
     r"\brmdir\b", r"\bunlink\b",
     r"\bgit\s+clean\b",
     r"\bgit\s+reset\s+--hard\b",

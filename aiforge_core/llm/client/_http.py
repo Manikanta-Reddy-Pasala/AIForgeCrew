@@ -135,16 +135,20 @@ def _post_headers(ep: Endpoint) -> dict:
 
 
 def _post_ctx(ep: Endpoint):
-    # Per-endpoint TLS context. Skip verification when the role carries the
-    # explicit insecure_tls opt-out OR the host is trusted-internal (self-
-    # hosted LAN box, self-signed is normal). Public hosts verify; a CA
-    # bundle keeps verify ON. Otherwise honour AIFORGE_LLM_SSL_VERIFY / CA.
+    # Per-endpoint TLS context. The explicit insecure_tls opt-out (or a
+    # trusted-internal host, where self-signed is normal) selects the PINNED
+    # context — verification stays on, anchored to that endpoint's own
+    # certificate. Public hosts verify against the ordinary roots; a CA bundle
+    # wins over both. Otherwise honour AIFORGE_LLM_SSL_VERIFY / CA.
     base = ep.base_url
     insecure = bool((ep.extras or {}).get("insecure_tls"))
     if str(base).lower().startswith("https://") and (
         insecure or _ssl_auto_relax(base)
     ) and not _ssl_ca_bundle():
-        return _ssl_insecure()
+        # Pass the URL: the opt-out pins THAT endpoint's certificate and keeps
+        # verifying (net.trust) rather than dropping verification, so it has to
+        # know which host it is talking to.
+        return _ssl_insecure(base)
     return _ssl_context_for(base)
 
 

@@ -48,18 +48,18 @@ def test_web_read_is_gated_like_everything_else(monkeypatch):
     reached = {"n": 0}
     monkeypatch.setattr(dt, "_do_fetch",
                         lambda url: reached.__setitem__("n", 1) or {"ok": True})
-    assert dt.web_read("http://example.com")["ok"] is False
+    assert dt.web_read("https://example.com")["ok"] is False
     assert reached["n"] == 0, "web_read reached the network with the switch off"
     monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
-    assert dt.web_read("http://example.com")["ok"] is True
+    assert dt.web_read("https://example.com")["ok"] is True
 
 
 def test_fetch_url_still_gated(monkeypatch):
     monkeypatch.delenv("AIFORGE_ALLOW_WEB_FETCH", raising=False)
     called = {"n": 0}
     monkeypatch.setattr(dt, "_do_fetch", lambda url: called.__setitem__("n", called["n"] + 1) or {"ok": True})
-    r = dt.fetch_url("http://example.com")
+    r = dt.fetch_url("https://example.com")
     assert r["ok"] is False
     assert called["n"] == 0
     monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
-    assert dt.fetch_url("http://example.com")["ok"] is True
+    assert dt.fetch_url("https://example.com")["ok"] is True

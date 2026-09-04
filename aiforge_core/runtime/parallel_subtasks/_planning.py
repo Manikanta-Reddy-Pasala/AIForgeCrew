@@ -159,8 +159,12 @@ _VERB_RE = re.compile(r"\b(?:" + "|".join(_ACTION_VERBS) + r")\b", re.I)
 # "CI/CD", "read/write" — those name no file, so a verb + one of those wrongly
 # skipped enhancement and lost the memory/README context-fold. Concrete now
 # means "names an actual code file".
+# ONE character class, not a quantified group over the same characters: the
+# earlier shape was `[\w/-]+(?:\.[\w/-]+)*\.(ext)`, and on a long path-like
+# run that never ends in a known extension the two quantifiers can split the
+# same text in exponentially many ways. Dots simply belong in the class.
 _FILE_EXT_RE = re.compile(
-    r"[\w/-]+(?:\.[\w/-]+)*\.(?:py|js|ts|tsx|jsx|java|go|rs|md|json|ya?ml|sql)\b", re.I)
+    r"[\w./-]*[\w-]\.(?:py|js|ts|tsx|jsx|java|go|rs|md|json|ya?ml|sql)\b", re.I)
 # Multi-part connectors that mean "enhance, don't skip" (a list / sequence).
 _MULTIPART_RE = re.compile(r"\band\b|\bthen\b|;| & ", re.I)
 

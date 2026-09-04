@@ -149,14 +149,18 @@ def _get(url: str, *, verified: list | None = None) -> str:
         if not (is_cert_error(exc) and web_tls_fallback_allowed_for(url)):
             raise
         _log.warning(
-            "web.tls_unverified url=%s — the certificate could not be "
-            "verified (%s); refetching WITHOUT verification. Set "
-            "AIFORGE_LLM_CA_BUNDLE to your network's CA to keep verifying, "
-            "or AIFORGE_WEB_INSECURE_TLS=0 to fail instead.",
+            "web.tls_unverified url=%s — the chain could not be verified "
+            "(%s); refetching PINNED to the certificate that host presents, "
+            "which is not the same as trusting it. Set AIFORGE_LLM_CA_BUNDLE "
+            "to your network's CA to verify properly, or "
+            "AIFORGE_WEB_INSECURE_TLS=0 to fail instead.",
             url, str(exc)[:160])
         if verified is not None:
+            # Still False: pinned is not verified-to-a-public-root, and the
+            # result's `tls_verified` flag is what tells the model how much to
+            # trust the page. Downgrading quietly is the failure this reports.
             verified[:] = [False]
-        return _fetch(insecure_context())
+        return _fetch(insecure_context(url))
 
 
 def _strip_tags(s: str) -> str:

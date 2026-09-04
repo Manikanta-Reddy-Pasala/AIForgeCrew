@@ -24,8 +24,12 @@ def test_configured_public_host_not_auto_relaxed(monkeypatch):
     monkeypatch.setenv("AIFORGE_DEFAULT_PROVIDER", "openai_compatible")
     monkeypatch.setenv("AIFORGE_DEFAULT_BASE_URL", "https://openrouter.ai/api/v1")
     assert s.auto_relax_internal("https://openrouter.ai/api/v1") is False
-    # The explicit verify-off path may still trust a configured host.
+    # The explicit verify-off path may still trust a configured host — by
+    # PINNING its certificate, never by disabling verification.
+    from tests.python.tls_pin_fixture import stub_pin, trusts_the_pin
+    stub_pin(monkeypatch)
     monkeypatch.setenv("AIFORGE_LLM_SSL_VERIFY", "false")
     import ssl as _ssl
     ctx = s.context_for("https://openrouter.ai/api/v1")
-    assert ctx.verify_mode == _ssl.CERT_NONE
+    assert ctx.verify_mode == _ssl.CERT_REQUIRED
+    assert trusts_the_pin(ctx)
