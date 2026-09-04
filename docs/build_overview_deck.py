@@ -499,71 +499,152 @@ def central_memory(prs):
              color=MUTED)
 
 
-def containment(prs):
+def tool_access(prs):
     s = slide_base(
-        prs, "Containment: what may run, what may leave",
-        "Two questions, one place each — a gate on execution, a gate on egress.",
-        "Kill switches: AIFORGE_EGRESS_OFF · AIFORGE_<CLASS>_DISABLE · "
-        "AIFORGE_WEB_FETCH_DISABLE · AIFORGE_UPLOAD_DISABLE · "
-        "AIFORGE_TOOL_POLICY=\"run_command=deny\"")
+        prs, "Tool access: who may call what",
+        "A role does not merely refrain from a tool — it never receives the schema.",
+        "Names are matched verbatim against the function name. Master opt-out: "
+        "AIFORGE_TOOL_ENFORCE=0.")
 
-    LX, LW = Inches(0.75), Inches(5.85)
-    RX, RW = Inches(6.95), Inches(5.63)
-
-    text(s, LX, Inches(1.45), LW, Inches(0.26),
-         "WHAT MAY RUN  —  a tool call reaching the shell", size=10,
+    text(s, Inches(0.75), Inches(1.42), Inches(6), Inches(0.24),
+         "1 · THE LIST IS APPLIED WHERE THE TOOLS ARE WIRED", size=10,
          bold=True, color=BLUE)
-    text(s, RX, Inches(1.45), RW, Inches(0.26),
-         "WHAT MAY LEAVE  —  a byte reaching the network", size=10,
+    box(s, Inches(0.75), Inches(1.72), Inches(2.70), Inches(1.00),
+        "Tool registry", "92 ADK tools for the\npipeline · 109 in chat",
+        fill=SLATE_T, edge=SLATE, size=13, sub_size=8.5)
+    arrow(s, Inches(3.45), Inches(2.22), Inches(3.85), Inches(2.22))
+    box(s, Inches(3.85), Inches(1.72), Inches(3.00), Inches(1.00),
+        "agents.yaml contract",
+        "allowed ∩ NOT forbidden, per role\nforbidden always wins",
+        fill=BLUE_T, edge=BLUE, size=13, sub_size=8.5)
+    arrow(s, Inches(6.85), Inches(2.22), Inches(7.25), Inches(2.22))
+    for i, (lab, sub, f, e) in enumerate([
+            ("doer · 34", "file + shell surface", GREEN_T, GREEN),
+            ("researcher · 18", "+ web_read, role-only", GREEN_T, GREEN),
+            ("ctx_repomap · 8", "read-only: no bash, no write", AMBER_T, AMBER),
+            ("9 of 19 roles · 0", "forbidden: ALL — judgement only",
+             RED_T, RED)]):
+        x = Inches(7.25) + (i % 2) * Inches(2.75)
+        y = Inches(1.72) + (i // 2) * Inches(0.54)
+        box(s, x, y, Inches(2.60), Inches(0.46), lab, sub, fill=f, edge=e,
+            size=11, sub_size=7.5)
+
+    text(s, Inches(0.75), Inches(2.95), Inches(8), Inches(0.24),
+         "2 · WHEN THE MODEL ASKS FOR SOMETHING THAT IS NOT THERE", size=10,
          bold=True, color=PLUM)
-
-    run_gates = [
-        ("1 · Role tool allowlist",
-         "agents.yaml allowed / forbidden per role. A tool off the list is\n"
-         "never offered to the model; forbidden=ALL is a tool-less role."),
-        ("2 · Per-tool policy: allow · ask · deny",
-         "AIFORGE_TOOL_POLICY. deny is a hard refusal, autonomous runs too;\n"
-         "ask blocks for Approve/Reject whenever a human is attached."),
-        ("3 · Risk verdict on every shell string",
-         "safe · caution · dangerous — dangerous forces at least ASK.\n"
-         "run_command · bash · serve · watch_until · ui_check all assessed."),
-        ("4 · Floors the toggles cannot lower",
-         "delete guard fires with approvals off · git add -A refused ·\n"
-         "push always asks · writes must land inside the ticket's scope globs."),
-        ("5 · Where it runs at all",
-         "Workspace jail on by default; Docker sandbox opt-in, and\n"
-         "AIFORGE_SANDBOX_REQUIRED=1 refuses to fall back to the host."),
+    asks = [
+        ("Closed dispatch table",
+         "The name is looked up in a dict of registered tools. A miss returns "
+         "`unknown tool: X` — there is no fall-through to a shell, an eval, "
+         "or a similarly-named tool."),
+        ("Phantom-tool guard",
+         "An unknown-tool error is converted in-band: \"this tool does not "
+         "exist and is not available to you — do not call it again\". One "
+         "hallucinated call cannot abort the run."),
+        ("Removed capabilities answer for themselves",
+         "14 spellings of web search (web_search, google, tavily_search …) "
+         "reply with WHY it is gone, so the model stops walking the alias "
+         "carousel and asks for a URL."),
     ]
-    out_gates = [
-        ("1 · One module decides — net/egress.py",
-         "The switches used to be read in five places and honoured in two;\n"
-         "web_fetch closed while fetch_url, web_read, crawl, browse sailed past."),
-        ("2 · Host allowlist, default DENY",
-         "Seeded from the integrations you configured + the model endpoint;\n"
-         "extras added in Settings. A list that will not load refuses."),
-        ("3 · Reading is not writing",
-         "A host added in Settings is readable only. Somewhere that RECEIVES\n"
-         "our data must be a configured integration, with a credential."),
-        ("4 · No human attached, no external write",
-         "An unattended run refuses writes and uploads outright — approval is\n"
-         "what makes them safe. AIFORGE_UNATTENDED_WRITES=1 to opt in."),
-        ("5 · Re-checked on every redirect hop",
-         "Search endpoints, SSRF / metadata (169.254.169.254) and off-list\n"
-         "hosts are refused after the 302, not only on the URL we were handed."),
+    for i, (h, d) in enumerate(asks):
+        box(s, Inches(0.75) + i * Inches(4.15), Inches(3.22),
+            Inches(3.85), Inches(1.05), h, d, fill=WHITE, edge=PLUM,
+            size=11.5, sub_size=8.5, label_color=PLUM)
+
+    text(s, Inches(0.75), Inches(4.45), Inches(8), Inches(0.24),
+         "3 · AND AGAIN AT CALL TIME, ON THE TOOLS IT DOES HAVE", size=10,
+         bold=True, color=GREEN)
+    calls = [
+        ("Policy: allow · ask · deny",
+         "Per tool, AIFORGE_TOOL_POLICY. deny is a hard refusal — autonomous "
+         "runs included. 20 external-write tools default to ask."),
+        ("PreToolUse hooks",
+         "An operator's own hook can block any call before it runs; the "
+         "refusal is reported to the model as a normal tool result."),
+        ("Forced review of writes",
+         "Review mode makes every file-mutating call — including the editor "
+         "aliases — wait for Approve / Reject with a diff."),
     ]
+    for i, (h, d) in enumerate(calls):
+        box(s, Inches(0.75) + i * Inches(4.15), Inches(4.72),
+            Inches(3.85), Inches(1.05), h, d, fill=WHITE, edge=GREEN,
+            size=11.5, sub_size=8.5, label_color=GREEN)
 
-    for i, (lab, sub) in enumerate(run_gates):
-        box(s, LX, Inches(1.82) + i * Inches(0.87), LW, Inches(0.78), lab, sub,
-            fill=BLUE_T if i < 3 else GREEN_T, edge=BLUE if i < 3 else GREEN,
-            size=11.5, sub_size=8.5)
-    for i, (lab, sub) in enumerate(out_gates):
-        box(s, RX, Inches(1.82) + i * Inches(0.87), RW, Inches(0.78), lab, sub,
-            fill=PLUM_T if i < 3 else GREEN_T, edge=PLUM if i < 3 else GREEN,
-            size=11.5, sub_size=8.5)
+    box(s, Inches(0.75), Inches(6.05), Inches(11.83), Inches(0.62),
+        "Where this is a filter and not a wall",
+        "An allowlist that matches no registered tool fails OPEN with a warning — a config typo "
+        "must not leave an agent tool-less — and the Doer runs unfiltered by design, its list "
+        "documenting intent. The hard stops are the call-time policy, the risk gate and the sandbox.",
+        fill=AMBER_T, edge=AMBER, size=11.5, sub_size=9)
 
-    box(s, LX, Inches(6.25), Inches(11.83), Inches(0.55),
-        "Stated plainly — the boundary this code does not draw",
-        "run_command and execute_ipython_cell open a socket themselves: curl in a shell never passes "
+
+def execution_egress(prs):
+    s = slide_base(
+        prs, "Shell, kernel, and data leaving the box",
+        "The three ways an agent can do real damage, and what stands in each path.",
+        "Switches: AIFORGE_TOOL_POLICY · AIFORGE_RISK_ASK_CAUTION · "
+        "AIFORGE_SANDBOX_REQUIRED · AIFORGE_EGRESS_OFF · AIFORGE_UPLOAD_DISABLE "
+        "· AIFORGE_UNATTENDED_WRITES")
+
+    cols = [
+        (Inches(0.75), Inches(3.85), BLUE, BLUE_T, "Shell commands",
+         "every tool carrying a command string", [
+             "Assessed on: run_command · bash · shell · run_shell · serve · "
+             "watch_until · ui_check. serve, watch_until and ui_check were "
+             "holes — same string, no verdict.",
+             "dangerous → curl | sh · base64 | sh · scp/curl of ~/.ssh, .env, "
+             "id_rsa, credentials · mkfs · dd of=/dev/* · fork bomb · shred. "
+             "Refused unless confirmed.",
+             "caution → sudo · chmod 777 · chown · ANY git push · gh pr create "
+             "· global installs · crontab · iptables. Asks by default.",
+             "Obfuscation is normalised before matching: ${IFS}, empty quote "
+             "pairs (r''m), in-word backslashes.",
+             "Floors underneath: delete guard fires with approvals off · "
+             "git add -A refused · workspace jail clamps paths · Docker "
+             "sandbox opt-in, REQUIRED mode refuses host fallback.",
+         ]),
+        (Inches(4.90), Inches(3.85), PLUM, PLUM_T, "IPython kernel",
+         "execute_ipython_cell — arbitrary Python", [
+             "Defaults to ASK, like Cursor and Claude Code gate code "
+             "execution: arbitrary code in a live kernel is never a silent "
+             "call.",
+             "Bounded: 60 s timeout then the kernel is interrupted, output "
+             "capped at 8 KB, one kernel per run, destroyed in the runner's "
+             "finally block.",
+             "Scoped away entirely from the roles that have no business "
+             "running code — the nine forbidden: ALL judgement agents and the "
+             "read-only ctx_* gatherers.",
+             "It can still open a socket and write a file: it is Python, not "
+             "a tool with a schema. The sandbox routes bash, not the kernel.",
+             "An unattended run has no approver, so ASK degrades to allow. "
+             "Container mode is the boundary for untrusted work.",
+         ]),
+        (Inches(8.95), Inches(3.63), GREEN, GREEN_T, "Data leaving",
+         "API calls, uploads, mail, telemetry", [
+             "One decision point: egress.allow() on integration · email · "
+             "telemetry · mcp · sync, and on every page fetch.",
+             "Host allowlist defaults to DENY, seeded from the integrations "
+             "you configured. If the list cannot be read, the call is refused.",
+             "Reading is not writing: a host added in Settings can be read, "
+             "never posted to. A destination that RECEIVES data must be a "
+             "configured integration with a credential.",
+             "An upload has its own switch — an attachment is file content, "
+             "not a sentence (AIFORGE_UPLOAD_DISABLE).",
+             "20 write tools (jira · confluence · gitlab · email_send · "
+             "github_pr) default to ASK, and an unattended run refuses them "
+             "outright. No telemetry by default.",
+         ]),
+    ]
+    for x, w, edge, tint, head, sub, bullets in cols:
+        box(s, x, Inches(1.45), w, Inches(0.52), head, sub, fill=tint,
+            edge=edge, size=13, sub_size=8.5)
+        for i, b in enumerate(bullets):
+            text(s, x + Inches(0.05), Inches(2.12) + i * Inches(0.72),
+                 w - Inches(0.10), Inches(0.68), "· " + b, size=9)
+
+    box(s, Inches(0.75), Inches(5.82), Inches(11.83), Inches(0.62),
+        "The boundary this code does not draw",
+        "run_command and execute_ipython_cell open sockets themselves: curl in a shell never passes "
         "through the egress module and cannot be made to. That line is an OS firewall or a network "
         "namespace. Regex risk-matching is a floor, not a proof — pair it with the sandbox.",
         fill=AMBER_T, edge=AMBER, size=11.5, sub_size=9)
@@ -1191,7 +1272,8 @@ def build():
     central_memory(prs)
     limits(prs)
     safety(prs)
-    containment(prs)
+    tool_access(prs)
+    execution_egress(prs)
     security(prs)
     versus(prs)
     comparison(prs)
