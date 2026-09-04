@@ -175,4 +175,48 @@ def library_generate(kind: str, payload: Annotated[dict, Body()]) -> dict:
     return {"ok": True, "draft": draft}
 
 
+# ── duplicate merge ─────────────────────────────────────────────────────────
+# Declared BEFORE the /api/library/{kind} routes would ever see them: these
+# paths are literal, so FastAPI matches them first regardless, but keeping them
+# together documents that "merge" is not a kind.
+
+@router.get("/api/library/merge/report")
+def library_merge_report() -> dict:
+    """What the last merge pass did — one row per cluster it considered."""
+    from aiforge_core.runtime import artifact_merge
+    return {"enabled": artifact_merge.enabled(),
+            "report": artifact_merge.last_report()}
+
+
+@router.get("/api/library/merge/preview")
+def library_merge_preview(kind: str | None = None) -> dict:
+    """The duplicate clusters as they stand right now, without spending a model
+    call or touching a file. This is what the nightly pass would work on."""
+    from aiforge_core.runtime import artifact_merge as am
+    kinds = [kind] if kind else list(am.KINDS)
+    out = []
+    for k in kinds:
+        if k not in am.KINDS:
+            raise HTTPException(404, f"unknown kind {k!r}")
+        out += [{"kind": k, "members": [i.name for i in c],
+                 "fingerprint": am.cluster_fingerprint(c)}
+                for c in am.find_clusters(k)]
+    return {"clusters": out}
+
+
+@router.post("/api/library/merge/run")
+def library_merge_run(payload: Annotated[dict, Body()] = None) -> dict:
+    """Run the merge pass now. ``{"dry_run": true}`` reports without writing;
+    ``{"kinds": ["rules"], "limit": 2}`` narrows it."""
+    from aiforge_core.runtime import artifact_merge
+    body = payload or {}
+    kinds = body.get("kinds") or None
+    if kinds and any(k not in artifact_merge.KINDS for k in kinds):
+        raise HTTPException(400, f"kinds must be within {artifact_merge.KINDS}")
+    limit = body.get("limit")
+    return artifact_merge.run(kinds, dry_run=bool(body.get("dry_run")),
+                              limit=int(limit) if limit else None,
+                              force=bool(body.get("force")))
+
+
 __all__ = ["router"]

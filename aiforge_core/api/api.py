@@ -660,6 +660,29 @@ def _register_daily_compaction(_pd, daily_hour: int) -> None:
                      "AIFORGE_COMPACT_MAX_SKIP_DAYS", 3, low=0))
 
 
+def _register_artifact_merge(_pd) -> None:
+    """Nightly library merge — fold duplicate rules / skills / workflows.
+
+    They accumulate because the writers key on a slug: "run tests first" and
+    "always run the tests" are two files saying one thing, and every one of
+    them is prompt overhead on turns that never use it. Runs in the small hours
+    (AIFORGE_MERGE_HOUR, default 04:00) at role=learner, so it is under the same
+    rate ceiling as every other unattended sender; AIFORGE_ARTIFACT_MERGE=0
+    turns it off.
+
+    NOT strict_hour: unlike compaction there is no working-day intrusion to
+    avoid — the pass is a handful of small completions — so a laptop that was
+    asleep at 04:00 should still reconcile the library at the next wake.
+    """
+    from aiforge_core.runtime import artifact_merge as _am
+    if not _am.enabled():
+        return
+    # Clamped to a real hour: periodic treats at_hour as [0-23] and a typo'd
+    # 25 would give a task whose next-run time never arrives.
+    hour = min(23, _int_env_or("AIFORGE_MERGE_HOUR", 4, low=0))
+    _pd.register("artifact-merge", _am.scheduled_pass, at_hour=hour)
+
+
 @app.on_event("startup")
 def _start_daily_reindex() -> None:
     """Once a day, re-index EVERY registered repo/docs source so semantic
@@ -677,6 +700,7 @@ def _start_daily_reindex() -> None:
         hour = 3
     from aiforge_core.runtime import periodic as _pd
     _register_hourly_jobs(_pd, hour)
+    _register_artifact_merge(_pd)
     # Compaction is ENABLED BY DEFAULT (Option A): the per-category rate limiter
     # caps it at compaction_rpm (default 5/min), so it can no longer spend a
     # burst of requests before the app is usable. Turn it OFF from Settings
