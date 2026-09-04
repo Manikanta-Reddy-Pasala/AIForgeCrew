@@ -294,7 +294,10 @@ def _slice_body(content: bytes, line_start: int, line_end: int) -> str:
     return "\n".join(span)
 
 
-_FENCE_RE = re.compile(r"^```(?:json)?\s*\n?|\n?```\s*$", re.MULTILINE)
+# Grouped so the precedence is visible: the anchors belong to their OWN
+# branch (an opening fence at the start of a line, a closing fence at the end),
+# which is what `^a|b$` already meant and what a reader could not see.
+_FENCE_RE = re.compile(r"(?:^```(?:json)?\s*\n?)|(?:\n?```\s*$)", re.MULTILINE)
 # Match the FIRST `{"summary":"..."}` JSON object anywhere in the text —
 # necessary when the model wraps the answer in a thinking dump.
 _SUMMARY_JSON_RE = re.compile(

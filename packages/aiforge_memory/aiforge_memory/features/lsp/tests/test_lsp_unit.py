@@ -7,6 +7,8 @@ ref-to-edge mapping.
 """
 from __future__ import annotations
 
+import pytest
+
 import io
 import json
 from pathlib import Path
@@ -133,7 +135,7 @@ def test_ref_to_edge_emits_correct_caller(tmp_path):
     assert edge is not None
     assert edge.caller_fqname == "f.py::caller"
     assert edge.callee_fqname == "g.py::callee"
-    assert edge.confidence == 1.0
+    assert edge.confidence == pytest.approx(1.0)
 
 
 def test_ref_to_edge_skips_self_reference(tmp_path):

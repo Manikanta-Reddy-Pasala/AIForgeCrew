@@ -614,13 +614,20 @@ def _resolve_active_task_dirs(identifier: str) -> list[str]:
         os.environ.get("AIFORGE_GA_DIR", ""),
         os.path.expanduser("~/genericagent"),
     )
+    # The identifier comes off an HTTP request and is about to become part of
+    # a glob pattern. One segment or nothing: a ticket id containing "../" is
+    # not a ticket id, and sanitising it quietly would hide that.
+    from aiforge_core.config.safe_paths import safe_dir, safe_segment
+    ident = safe_segment(identifier)
+    if not ident:
+        return []
     for root in ga_root_candidates:
-        if root and os.path.isdir(root):
-            base = os.path.join(root, "temp")
+        base = safe_dir(os.path.join(root, "temp")) if root else ""
+        if base:
             return sorted(_glob_mod.glob(
-                os.path.join(base, f"aiforge-{identifier}-*")
+                os.path.join(base, f"aiforge-{ident}-*")
             )) + sorted(_glob_mod.glob(
-                os.path.join(base, f"aiforge-planner-{identifier}-*")
+                os.path.join(base, f"aiforge-planner-{ident}-*")
             ))
     return []
 

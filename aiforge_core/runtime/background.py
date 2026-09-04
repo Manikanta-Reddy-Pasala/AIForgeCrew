@@ -26,10 +26,23 @@ from typing import Callable
 log = logging.getLogger("aiforge.background")
 
 
+
+def _scrub(value) -> str:
+    """A job name reaches this from a request; a newline in it would write a
+    second, forged log line. One place decides how an outside value is logged
+    (observability.logging.scrub)."""
+    try:
+        from aiforge_core.observability.logging import scrub
+        return scrub(value)
+    except Exception:  # noqa: BLE001 — logging must never break a spawn
+        return str(value).replace("\n", " ")[:200]
+
+
 def _spawn_process(argv: "list[str] | None", name: str):
     """Detached child process. Best-effort — never raises."""
     if not argv:
-        log.warning("background.spawn(kind=process) needs argv (name=%s)", name)
+        log.warning("background.spawn(kind=process) needs argv (name=%s)",
+                    _scrub(name))
         return None
     try:
         return subprocess.Popen(
@@ -64,7 +77,8 @@ def _guarded(fn, name: str, on_error) -> "Callable[[], None]":
 def _spawn_thread(fn, name: str, on_error):
     """Daemon thread running ``fn``. Best-effort — never raises."""
     if fn is None:
-        log.warning("background.spawn(kind=thread) needs fn (name=%s)", name)
+        log.warning("background.spawn(kind=thread) needs fn (name=%s)",
+                    _scrub(name))
         return None
     try:
         t = threading.Thread(target=_guarded(fn, name, on_error),

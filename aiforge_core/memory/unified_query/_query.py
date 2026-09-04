@@ -62,7 +62,11 @@ class _RecallCtx:
         self.used: list[str] = []
         self.errors: list[str] = []
         self.raw_hits: list[dict] = []
-        self.auto_ticket = ticket or (_TICKET_RE.search(text) or [None])[0]
+        # `(search(...) or [None])[0]` worked — a Match supports [0] — but it
+        # reads as an index into a list that may be empty, which is how an
+        # analyser reads it too. Say which one it is.
+        _m = _TICKET_RE.search(text)
+        self.auto_ticket = ticket or (_m.group(0) if _m else None)
         self.cross_task = os.environ.get("AIFORGE_UMEM_CROSS_TASK", "0") == "1"
 
     def _repo_or_env(self):

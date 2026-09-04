@@ -192,6 +192,8 @@ def _python_toolchain() -> dict[str, str]:
 def _java_toolchain(worktree) -> dict[str, str]:
     """Gradle (incl. Kotlin/.kts) vs Maven — picked per marker/wrapper so a
     Kotlin/gradle repo doesn't get mvn commands it can't run."""
+    from aiforge_core.config.safe_paths import safe_dir
+    worktree = safe_dir(worktree)
     is_gradle = bool(worktree and _glob.glob(
         os.path.join(worktree, _BUILD_GRADLE)))
     has_pom = bool(worktree and os.path.isfile(
@@ -372,7 +374,14 @@ def detect_lang(worktree_path: str) -> str:
     """
     if not worktree_path:
         return ""
-    base = os.path.abspath(worktree_path)
+    # Resolve BEFORE anything is joined to it: the value arrives from a ticket
+    # or from Settings, i.e. across an HTTP boundary, and `/repo/../etc` has to
+    # become `/etc` while the answer can still be "not a directory, nothing to
+    # detect" rather than a walk of somewhere else.
+    from aiforge_core.config.safe_paths import safe_dir
+    base = safe_dir(worktree_path)
+    if not base:
+        return ""
     cached = _LANG_CACHE.get(base)
     if cached is not None:
         return cached
@@ -556,6 +565,11 @@ def _from_worktree(worktree: str) -> dict | None:
     """Read per-worktree YAML override from <worktree>/.aiforge/aiforge.conf.yml.
     Replaces the old ga_tools.repo_config.load() call inline — no new deps."""
     import yaml as _yaml
+
+    from aiforge_core.config.safe_paths import safe_dir
+    worktree = safe_dir(worktree)
+    if not worktree:
+        return None
     conf = os.path.join(worktree, ".aiforge", "aiforge.conf.yml")
     if not os.path.isfile(conf):
         return None

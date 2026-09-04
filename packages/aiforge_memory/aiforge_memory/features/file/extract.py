@@ -97,7 +97,10 @@ def summarize_files(
     return out
 
 
-_FENCE_RE = re.compile(r"^```(?:json)?\s*\n?|\n?```\s*$", re.MULTILINE)
+# Grouped so the precedence is visible: the anchors belong to their OWN
+# branch (an opening fence at the start of a line, a closing fence at the end),
+# which is what `^a|b$` already meant and what a reader could not see.
+_FENCE_RE = re.compile(r"(?:^```(?:json)?\s*\n?)|(?:\n?```\s*$)", re.MULTILINE)
 
 
 def _parse(raw: str) -> tuple[str, list[str]] | None:

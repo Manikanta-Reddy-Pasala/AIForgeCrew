@@ -52,6 +52,24 @@ class _JsonFormatter(logging.Formatter):
 _CONFIGURED = False
 
 
+# ── values that came from outside ──────────────────────────────────────────
+# A log line is a record someone reads later, and a value carrying a newline
+# writes a SECOND line that looks exactly as authentic as the first — a role
+# name of "doer\nINFO api: token accepted" is a forged entry, not a formatting
+# quirk. Everything that crosses an HTTP boundary goes through here before it
+# is logged.
+_LOG_VALUE_CAP = 200
+
+
+def scrub(value, limit: int = _LOG_VALUE_CAP) -> str:
+    """One line, bounded, safe to write into a log record."""
+    text = str(value)
+    for ch in ("\r\n", "\n", "\r", "\x00", "\x1b"):
+        text = text.replace(ch, " ")
+    text = text.strip()
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
 def _configure_root() -> None:
     global _CONFIGURED
     if _CONFIGURED:

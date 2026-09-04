@@ -230,9 +230,10 @@ def providers_test(body: _ProviderTestBody) -> dict:
     base_url, api_key, insecure = _saved_role_credentials(
         body.role, (body.base_url or "").strip(),
         (body.api_key or "").strip() or None, bool(body.insecure_tls))
+    from aiforge_core.observability.logging import scrub
     logging.getLogger("aiforge.api").info(
         "POST /api/providers/test role=%s base_url=%s insecure_tls=%s token=%s",
-        body.role, base_url, insecure, "yes" if api_key else "no")
+        scrub(body.role), scrub(base_url), insecure, "yes" if api_key else "no")
     return probe(base_url, api_key, insecure=insecure)
 
 
@@ -290,9 +291,10 @@ def providers_test_native(body: _NativeTestBody) -> dict:
     # points at this same base_url. Keys live on role rows, not model rows.
     if not api_key and base_url:
         api_key = _key_for_base_url(base_url)
+    from aiforge_core.observability.logging import scrub
     logging.getLogger("aiforge.api").info(
         "POST /api/providers/test-native role=%s base_url=%s model=%s tls=%s",
-        body.role, base_url, model, insecure)
+        scrub(body.role), scrub(base_url), scrub(model), insecure)
     return probe_native(base_url, model, api_key, insecure=insecure)
 
 

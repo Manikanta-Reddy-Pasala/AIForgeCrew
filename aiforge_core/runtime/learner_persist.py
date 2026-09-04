@@ -141,7 +141,9 @@ def _solution_theme(f: dict) -> str:
     case the first tag with any 'topic:' prefix stripped."""
     tp = f.get("topic")
     if tp == "task-history":
-        tag = ((f.get("tags") or [""]) or [""])[0] or ""
+        # One `or`, not two: `x or [""]` is already non-empty, so the second
+        # fallback could never be reached — it read as defence and was noise.
+        tag = (f.get("tags") or [""])[0] or ""
         return tag.split("topic:", 1)[-1] if tag else ""
     return tp or ""
 

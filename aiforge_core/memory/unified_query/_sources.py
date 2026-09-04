@@ -9,17 +9,21 @@ from typing import Any
 
 
 def _ticket_brief(identifier: str) -> dict | None:
-    """Fetch ticket brief. Tries local Postgres first (canonical),
-    falls back to graph_mcp ticket_brief (Linear/Jira proxy) when
-    not found locally.
+    """Fetch a ticket brief. Currently always None — and that is the point.
+
+    It used to read local Postgres first and fall back to the graph_mcp
+    ticket_brief proxy. BOTH backends were removed with the SQLite-only build,
+    so ``_ticket_local`` and ``_mcp_call`` are no-op shims: the local branch
+    could never be taken and the fallback could never return rows. Written as
+    two live-looking calls, that read as a working lookup — an analyser calls
+    it a condition that is always false, and a reader would call it worse.
+
+    The SHAPE is kept (both shims still exist, and this function still returns
+    the first row with a score) so restoring either backend is one edit here,
+    not a rewrite of the caller.
     """
-    local = _ticket_local(identifier)
-    if local:
-        return local
     res = _mcp_call("ticket_brief", {"id": identifier})
-    if not res:
-        return None
-    rows = _unpack_mcp_rows(res)
+    rows = _unpack_mcp_rows(res) if res else []
     if not rows:
         return None
     first = rows[0]
