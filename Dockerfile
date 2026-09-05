@@ -27,11 +27,20 @@ ENV UV_SYSTEM_PYTHON=1 PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     HF_HOME=/opt/hf-cache
 
-# Builder stage: the repo minus everything .dockerignore excludes (.git, .venv,
-# data/, .aiforge/ with its credentials and databases, node_modules, caches and
-# now .env / *.pem / *.key). Nothing from this stage reaches the runtime image
-# except site-packages, /usr/local/bin and the model cache.
-COPY . .
+# Named directories, not `COPY . .` — the same rule the runtime stage already
+# follows, and for the same reason: a recursive copy of the build context is
+# bounded only by .dockerignore, so one forgotten pattern (a .env, a key, a
+# scratch dump in the checkout) puts it in a layer. A discarded stage is still
+# a layer: it lands in the builder's cache and in anything that pulls it.
+#
+# Both installs below are EDITABLE, so what they need is exactly the two
+# package trees plus the root metadata:
+#   pyproject.toml  the root distribution's metadata (no readme/license refs)
+#   aiforge_core/   the app
+#   packages/       the vendored aiforge-memory distribution
+COPY pyproject.toml ./
+COPY aiforge_core ./aiforge_core
+COPY packages ./packages
 # Vendored memory pkg, then the Crew + extras. Semantic recall uses model2vec
 # (embed-static) — real static embeddings with NO torch, so the image stays
 # small (torch alone was ~1GB). structured/crawl/chunking round out the extras.
@@ -48,6 +57,7 @@ RUN if [ "$PREFETCH_EMBED_MODEL" = "1" ]; then \
       python -c "from model2vec import StaticModel as S; S.from_pretrained('${EMBED_MODEL}')" \
       && echo "prefetched ${EMBED_MODEL}"; \
     else echo "skipped embed-model prefetch"; fi \
+    && mkdir -p "$HF_HOME" \
     && find /usr/local/lib/python3.12/site-packages -name '__pycache__' -type d -prune -exec rm -rf {} + \
     && rm -rf /root/.cache/uv /root/.cache/pip
 

@@ -8,7 +8,6 @@ keep their inline function-local imports and behaviour.
 """
 from __future__ import annotations
 
-import glob as _glob_mod  # local alias to avoid leaking name
 import json
 import logging
 import os
@@ -614,21 +613,28 @@ def _resolve_active_task_dirs(identifier: str) -> list[str]:
         os.environ.get("AIFORGE_GA_DIR", ""),
         os.path.expanduser("~/genericagent"),
     )
-    # The identifier comes off an HTTP request and is about to become part of
-    # a glob pattern. One segment or nothing: a ticket id containing "../" is
-    # not a ticket id, and sanitising it quietly would hide that.
+    # The identifier comes off an HTTP request. One segment or nothing: a
+    # ticket id containing "../" is not a ticket id, and sanitising it quietly
+    # would hide that.
     from aiforge_core.config.safe_paths import safe_dir, safe_segment
     ident = safe_segment(identifier)
     if not ident:
         return []
+    prefixes = (f"aiforge-{ident}-", f"aiforge-planner-{ident}-")
     for root in ga_root_candidates:
         base = safe_dir(os.path.join(root, "temp")) if root else ""
-        if base:
-            return sorted(_glob_mod.glob(
-                os.path.join(base, f"aiforge-{ident}-*")
-            )) + sorted(_glob_mod.glob(
-                os.path.join(base, f"aiforge-planner-{ident}-*")
-            ))
+        if not base:
+            continue
+        # List the directory and keep the entries whose NAME starts with the
+        # identifier, rather than building `glob(f"...{ident}-*")`: the
+        # identifier is compared, never joined into a path. Same answer, and
+        # nothing off the request reaches the filesystem call.
+        try:
+            with os.scandir(base) as entries:
+                return sorted(os.path.join(base, e.name) for e in entries
+                              if e.is_dir() and e.name.startswith(prefixes))
+        except OSError:
+            return []
     return []
 
 

@@ -6,5 +6,5 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 PY="${AIFORGE_PYTHON:-$REPO/.venv/bin/python}"
-[ -x "$PY" ] || PY="$(command -v python3)"
+[[ -x "$PY" ]] || PY="$(command -v python3)"
 exec "$PY" "$HERE/worktree_janitor.py" "$@"

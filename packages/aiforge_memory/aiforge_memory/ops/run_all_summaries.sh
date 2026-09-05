@@ -82,8 +82,12 @@ for repo in "${REPOS[@]}"; do
   done
 
   if [[ $rc -ne 0 ]] && [[ $rc -ne 2 ]]; then
-    { echo "[$(date)] $repo: hard error rc=$rc — sleeping 60s" \
-        | tee -a $LOGDIR/master.log; } >&2
+    # The error goes to stderr on its own line rather than riding a group
+    # redirect around `tee` — a reader (and a linter) should not have to work
+    # out which stream this ends up on.
+    msg="[$(date)] $repo: hard error rc=$rc — sleeping 60s"
+    echo "$msg" >&2
+    echo "$msg" >> "$LOGDIR/master.log"
     sleep 60
   fi
   sleep 5

@@ -8,37 +8,27 @@ import os
 from typing import Any
 
 
-def _ticket_brief(identifier: str) -> dict | None:
-    """Fetch a ticket brief. Currently always None — and that is the point.
+def _ticket_brief(_identifier: str) -> dict | None:
+    """Fetch a ticket brief — always None on this build, and that is the point.
 
     It used to read local Postgres first and fall back to the graph_mcp
-    ticket_brief proxy. BOTH backends were removed with the SQLite-only build,
-    so ``_ticket_local`` and ``_mcp_call`` are no-op shims: the local branch
-    could never be taken and the fallback could never return rows. Written as
-    two live-looking calls, that read as a working lookup — an analyser calls
-    it a condition that is always false, and a reader would call it worse.
+    ticket_brief proxy. BOTH backends went with the SQLite-only build, so both
+    branches were dead: the local read returned None and the proxy could never
+    return rows. Keeping them written out as live-looking calls read as a
+    working lookup to a human and as an always-false condition to an analyser,
+    and neither reading was useful.
 
-    The SHAPE is kept (both shims still exist, and this function still returns
-    the first row with a score) so restoring either backend is one edit here,
-    not a rewrite of the caller.
+    So the body says what is true. The CALLER is untouched — recall still asks
+    for a brief and still handles None — so restoring a backend is this
+    function's body plus ``_unpack_mcp_rows``, which is still here and still
+    used by the sym_lookup/find_doc sources.
     """
-    res = _mcp_call("ticket_brief", {"id": identifier})
-    rows = _unpack_mcp_rows(res) if res else []
-    if not rows:
-        return None
-    first = rows[0]
-    first.setdefault("score", 1.0)
-    return first
+    return None
 
 
 def _ticket_local(_identifier: str) -> dict | None:
-    """Direct read from a local ticket store — SQLite-degraded no-op.
-
-    This was a direct read from local Postgres tickets + recent events.
-    Postgres has been removed (SQLite-only build), so there is no local pg
-    ticket source: return None and let ``_ticket_brief`` fall back to the
-    graph_mcp proxy.
-    """
+    """Direct read from a local ticket store — no-op, kept for the same reason
+    ``_ticket_brief`` is: this build has no local ticket backend to read."""
     return None
 
 

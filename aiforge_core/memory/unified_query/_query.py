@@ -181,11 +181,16 @@ def _graphify_rows(gr: dict) -> "list[dict]":
     """Flatten a graphify_lookup result into scored recall rows (top matches +
     neighbours), dropping empties."""
     grows: list[dict] = []
-    for m in (gr.get("matches") or [])[:6]:
+    # `gr` comes off a tool result, so neither key is guaranteed to be a list —
+    # take the sequence explicitly instead of slicing whatever arrived.
+    matches = gr.get("matches")
+    neighbors = gr.get("neighbors")
+    for m in (list(matches)[:6] if isinstance(matches, (list, tuple)) else []):
         sf = m.get("source_file") or ""
         grows.append({"text": f"{m.get('label', '')}{' — ' + sf if sf else ''}",
                       "score": 0.8, "id": m.get("id")})
-    for n in (gr.get("neighbors") or [])[:12]:
+    for n in (list(neighbors)[:12]
+              if isinstance(neighbors, (list, tuple)) else []):
         nd = n.get("node")
         label = nd.get("label") if isinstance(nd, dict) else str(nd or "")
         grows.append({"text": f"{label} ({n.get('relation', 'related')})",

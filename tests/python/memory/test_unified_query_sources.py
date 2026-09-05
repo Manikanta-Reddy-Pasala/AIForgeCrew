@@ -281,6 +281,14 @@ def test_a_wholly_empty_row_is_dropped():
                              "neighbors": []}) == []
 
 
+@pytest.mark.parametrize("payload", [{}, {"matches": None, "neighbors": None},
+                                     {"matches": {"a": 1}, "neighbors": "xs"}])
+def test_a_payload_that_is_not_a_sequence_yields_no_rows(payload):
+    """`gr` is a tool result, so neither key is guaranteed to be a list — a
+    dict or a string used to be sliced as if it were one."""
+    assert Q._graphify_rows(payload) == []
+
+
 def test_the_graph_rows_are_bounded():
     rows = Q._graphify_rows({
         "matches": [{"label": f"m{i}"} for i in range(10)],
@@ -610,3 +618,16 @@ def test_the_cache_cannot_grow_without_bound(whole, monkeypatch):
     for i in range(4):
         Q.query(f"question {i}")
     assert len(Q._QCACHE) <= 3
+
+
+# ─── the sources this build no longer has ──────────────────────────────
+
+
+def test_the_ticket_sources_answer_nothing_on_this_build():
+    """Both ticket backends went with the SQLite-only build. The functions
+    stay so recall's call site is untouched, but they say so plainly instead
+    of routing through shims that could never return a row."""
+    import aiforge_core.memory.unified_query as pkg
+    assert pkg._ticket_brief("ONE-1") is None
+    assert pkg._ticket_local("ONE-1") is None
+    assert pkg._mcp_call("ticket_brief", {"id": "ONE-1"}) is None

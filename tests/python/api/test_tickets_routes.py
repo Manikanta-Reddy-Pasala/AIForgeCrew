@@ -605,6 +605,39 @@ def test_no_ga_checkout_means_no_targets(monkeypatch, tmp_path):
     assert tk._resolve_active_task_dirs("ONE-1") == []
 
 
+def test_another_tickets_directory_is_not_a_target(task_dirs):
+    (task_dirs / "aiforge-ONE-2-xyz").mkdir()
+    dirs = tk._resolve_active_task_dirs("ONE-1")
+    assert len(dirs) == 2 and not any("ONE-2" in d for d in dirs)
+
+
+def test_a_file_named_like_a_task_dir_is_not_a_target(task_dirs):
+    (task_dirs / "aiforge-ONE-1-note").write_text("not a task dir")
+    assert len(tk._resolve_active_task_dirs("ONE-1")) == 2
+
+
+def test_an_identifier_that_traverses_is_refused(task_dirs):
+    """Refused outright — the id never reaches the filesystem call.
+
+    The directory listing is filtered by NAME, so a traversing id could not
+    escape the temp dir even if it got this far; it is rejected anyway,
+    because a ticket id containing "../" is not a ticket id with a typo.
+    """
+    assert tk._resolve_active_task_dirs("../ONE-1") == []
+    assert tk._resolve_active_task_dirs("") == []
+
+
+def test_an_unreadable_temp_dir_yields_no_targets(task_dirs, monkeypatch):
+    real, denied = os.scandir, os.path.realpath(str(task_dirs))
+
+    def _denied(path):
+        if str(path) == denied:      # the temp dir itself, not its ancestors
+            raise PermissionError("nope")
+        return real(path)
+    monkeypatch.setattr(os, "scandir", _denied)
+    assert tk._resolve_active_task_dirs("ONE-1") == []
+
+
 @pytest.mark.parametrize("kind,expected", [("stop", ""), ("keyinfo", "note"),
                                            ("intervene", "note")])
 def test_a_control_file_is_written_to_every_target(client, task_dirs, kind, expected):
