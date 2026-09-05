@@ -1,0 +1,3 @@
+Message,Type,Severity,Security Category,Hotspot Priority,Rule Key,Rule Name,File Name,File Line,Impact MAINTAINABILITY,Impact RELIABILITY,Impact SECURITY
+Make sure that sending signals is safe here.,SECURITY_HOTSPOT,CRITICAL,others,LOW,python:S4828,Signaling processes is security-sensitive,aiforge_core/runtime/proc_signals.py,96,,,
+Make sure that sending signals is safe here.,SECURITY_HOTSPOT,CRITICAL,others,LOW,python:S4828,Signaling processes is security-sensitive,aiforge_core/runtime/proc_signals.py,81,,,

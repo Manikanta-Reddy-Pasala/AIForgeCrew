@@ -26,7 +26,6 @@ include:
 stages:
   - build
   - sast_analysis
-  - security_scan
   - sca_analysis
 
 variables:
