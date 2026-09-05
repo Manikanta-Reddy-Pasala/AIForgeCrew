@@ -99,3 +99,5 @@ aiforge_core/web_dist/
 test-results/
 sonar/
 .scannerwork/
+/.git-github
+/.git-gitlab
