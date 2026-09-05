@@ -114,6 +114,18 @@ def test_a_component_that_is_a_file_is_refused(tmp_path):
     assert safe_paths._respelled(str(f)) == "", "the last component too"
 
 
+def test_a_drive_letter_is_rebuilt_from_the_literal_alphabet():
+    """The Windows prefix, on the box where these actually run.
+
+    "" means posix (no drive to rebuild); None means the prefix was not a
+    drive letter at all, which is the caller's bytes and so cannot be part of
+    an answer.
+    """
+    assert safe_paths._drive_prefix("c:") == "C:"
+    assert safe_paths._drive_prefix("") == ""
+    assert safe_paths._drive_prefix("1:") is None
+
+
 def test_a_drive_letter_that_is_not_one_is_refused(tmp_path, monkeypatch):
     """The Windows branch, exercised where the tests actually run.
 

@@ -608,7 +608,8 @@ def test_no_ga_checkout_means_no_targets(monkeypatch, tmp_path):
 def test_another_tickets_directory_is_not_a_target(task_dirs):
     (task_dirs / "aiforge-ONE-2-xyz").mkdir()
     dirs = tk._resolve_active_task_dirs("ONE-1")
-    assert len(dirs) == 2 and not any("ONE-2" in d for d in dirs)
+    assert len(dirs) == 2
+    assert not any("ONE-2" in d for d in dirs)
 
 
 def test_a_file_named_like_a_task_dir_is_not_a_target(task_dirs):

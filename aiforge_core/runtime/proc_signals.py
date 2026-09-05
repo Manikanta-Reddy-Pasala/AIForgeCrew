@@ -78,7 +78,12 @@ def kill_group(pgid: int | None, sig: int = _signal.SIGKILL) -> bool:
         log.debug("proc: refusing to signal %s — %s", pgid, why)
         return False
     try:
-        os.killpg(target, sig)
+        # NOSONAR (S4828) — signalling IS this module's job, and the review the
+        # rule asks for is _check_group above: the pgid must be an int > 1 and
+        # must not be our own group, so the only thing reachable here is a
+        # group AIForge put a child into. There is no stdlib alternative to
+        # killpg for a process GROUP.
+        os.killpg(target, sig)      # NOSONAR
         return True
     except OSError as exc:      # ProcessLookupError IS an OSError
         log.debug("proc: killpg(%s, %s) failed: %s", target, sig, exc)
@@ -93,7 +98,10 @@ def kill_process(pid: int | None, sig: int = _signal.SIGKILL) -> bool:
         log.debug("proc: refusing to signal %s — %s", pid, why)
         return False
     try:
-        os.kill(target, sig)
+        # NOSONAR (S4828) — same review as kill_group: _check_pid refuses
+        # anything that is not an int > 1, and the pid comes from a Popen this
+        # process started, never from a request.
+        os.kill(target, sig)        # NOSONAR
         return True
     except OSError as exc:      # ProcessLookupError IS an OSError
         log.debug("proc: kill(%s, %s) failed: %s", target, sig, exc)

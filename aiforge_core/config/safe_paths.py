@@ -34,6 +34,38 @@ _SEGMENT_BAD = ("/", "\\", "\x00")
 _DRIVE_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 
+def _entry_named(directory: str, want: str) -> str:
+    """The real name of ``want`` inside ``directory``, or "" when it is absent.
+
+    Exact match first. The case-insensitive fallback is for macOS and Windows,
+    where ``realpath`` leaves the caller's spelling alone and an exact-only
+    match would refuse a directory that is really there.
+    """
+    fallback = ""
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if entry.name == want:
+                    return entry.name
+                if not fallback and entry.name.lower() == want.lower():
+                    fallback = entry.name
+    except OSError:
+        return ""
+    return fallback
+
+
+def _drive_prefix(drive: str) -> str | None:
+    """``drive`` rebuilt from a literal alphabet: "" when there is none (posix),
+    ``None`` when it is not a drive letter. Rebuilt for the same reason every
+    other component is — nothing the caller typed goes into the answer."""
+    if not drive:
+        return ""
+    for letter in _DRIVE_LETTERS:
+        if f"{letter}:" == drive.upper():
+            return f"{letter}:"
+    return None
+
+
 def _respelled(resolved: str) -> str:
     """``resolved`` spelled entirely in names read back from the filesystem.
 
@@ -50,33 +82,17 @@ def _respelled(resolved: str) -> str:
     ``realpath``, means the tree changed under us.
     """
     drive, tail = os.path.splitdrive(resolved)
-    # A drive prefix, when there is one, is rebuilt from this literal alphabet
-    # for the same reason (Windows; a no-op on posix).
-    prefix = next((f"{c}:" for c in _DRIVE_LETTERS
-                   if f"{c}:" == drive.upper()), "") if drive else ""
-    if drive and not prefix:
+    prefix = _drive_prefix(drive)
+    if prefix is None:
         return ""
     cur = prefix + os.sep
     for want in tail.split(os.sep):
         if not want:
             continue
-        try:
-            with os.scandir(cur) as entries:
-                # Exact first; the case-insensitive fallback is for macOS and
-                # Windows, where realpath leaves the caller's spelling alone.
-                exact = ci = ""
-                for entry in entries:
-                    if entry.name == want:
-                        exact = entry.name
-                        break
-                    if not ci and entry.name.lower() == want.lower():
-                        ci = entry.name
-        except OSError:
+        found = _entry_named(cur, want)
+        if not found:
             return ""
-        step = exact or ci
-        if not step:
-            return ""
-        cur = os.path.join(cur, step)
+        cur = os.path.join(cur, found)
     return cur if os.path.isdir(cur) else ""
 
 

@@ -545,6 +545,24 @@ _ensure_tmux
 # portable one.
 _NODE_MIN_MAJOR=18
 
+# wget with redirects DISABLED. A followed redirect is a second URL that
+# nothing validated — --https-only refuses a cleartext hop, but it still hands
+# the fetch to whatever host the first server named. So: no automatic hops at
+# all, and the one redirect we actually depend on (astral.sh 301s its installer
+# to releases.astral.sh) is followed BY HAND — read the Location with redirects
+# still off, and fetch it only when it is itself https.
+# $1 = url, $2 = output path ("-" for stdout).
+_wget_https() {
+  local url="$1" out="$2" loc
+  wget --https-only --max-redirect=0 -qO "$out" "$url" && return 0
+  loc="$(wget --https-only --max-redirect=0 --server-response --spider "$url" 2>&1 \
+         | awk '/^[[:space:]]*[Ll]ocation:/ {print $2; exit}')"
+  case "$loc" in
+    https://*) wget --https-only --max-redirect=0 -qO "$out" "$loc" ;;
+    *) return 1 ;;
+  esac
+}
+
 _node_ok() {
   # true if npm exists AND node is new enough for the web build
   command -v npm >/dev/null 2>&1 || return 1
@@ -584,11 +602,12 @@ _ensure_node() {
   echo "==> fetching portable Node ${ver} (${os}-${arch}) into ${base}…"
   tmp="$(mktemp -d)"
   if command -v curl >/dev/null 2>&1; then
-    # --proto '=https': a redirect may not downgrade to cleartext.
-    curl --proto '=https' --tlsv1.2 -LsSf "$url" -o "$tmp/node.tgz" \
-      || { rm -rf "$tmp"; return 0; }
+    # --proto '=https' governs the first URL, --proto-redir every hop after it:
+    # without the second, a redirect to http:// is still followed.
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -LsSf "$url" \
+      -o "$tmp/node.tgz" || { rm -rf "$tmp"; return 0; }
   elif command -v wget >/dev/null 2>&1; then
-    wget --https-only -qO "$tmp/node.tgz" "$url" \
+    _wget_https "$url" "$tmp/node.tgz" \
       || { rm -rf "$tmp"; return 0; }
   else
     rm -rf "$tmp"; return 0
@@ -718,9 +737,10 @@ fi
 if ! command -v uv >/dev/null 2>&1; then
   echo "==> 'uv' not found — installing (astral.sh)…"
   if command -v curl >/dev/null 2>&1; then
-    curl --proto '=https' --tlsv1.2 -LsSf https://astral.sh/uv/install.sh | sh || true
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -LsSf \
+      https://astral.sh/uv/install.sh | sh || true
   elif command -v wget >/dev/null 2>&1; then
-    wget --https-only -qO- https://astral.sh/uv/install.sh | sh || true
+    _wget_https https://astral.sh/uv/install.sh - | sh || true
   else
     echo "==> need curl or wget to auto-install uv" >&2
   fi
