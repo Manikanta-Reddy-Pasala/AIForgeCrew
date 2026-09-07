@@ -22,6 +22,20 @@ export type EgressHosts = {
   writable: string[];
 };
 
+/** The certificate authority this box trusts. `source` is an env var name,
+ *  "ui" for one saved from this screen, or "" when there is none — an env-set
+ *  bundle wins, so the screen says so instead of pretending the box is
+ *  editable. */
+export type CaStatus = {
+  configured: boolean;
+  source: string;
+  path: string;
+  readable: boolean;
+  certificates: { sha256: string; subject: string; issuer: string;
+                  not_after: string }[];
+  applies_to: string[];
+};
+
 export const api = {
   health:   () => j<any>('/health'),
   // Machine-wide LLM request meter for the toolbar badge. `series=false` skips
@@ -40,6 +54,19 @@ export const api = {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ extra_hosts }),
     }),
+  // ── Local certificate authority ─────────────────────────────────
+  // An internal CA has to be trustable from the screen: the alternative is
+  // editing a unit file and restarting, which is why "CERTIFICATE_VERIFY_
+  // FAILED" used to be a dead end for anyone without shell access.
+  ca: () => j<CaStatus>('/runtime/ca'),
+  saveCa: (pem: string) =>
+    j<CaStatus & { ok: boolean; saved: number }>('/runtime/ca', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pem }),
+    }),
+  clearCa: () =>
+    j<CaStatus & { ok: boolean; removed: boolean }>('/runtime/ca',
+                                                    { method: 'DELETE' }),
   // ── Model registry (simplified Settings) ────────────────────────
   models: () => j<{ models: RegistryModel[] }>('/agents/models'),
   addModel: (body: ModelInput) =>

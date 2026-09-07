@@ -351,6 +351,54 @@ class EgressHostsBody(BaseModel):
                     "what gets stored.")
 
 
+class CaBundleBody(BaseModel):
+    pem: str = Field("", description="PEM text of the CA certificate(s)")
+
+
+@router.get("/api/runtime/ca")
+def ca_get() -> dict:
+    """The certificate authority this box trusts, and where it came from.
+
+    Shows the parsed subject, issuer, expiry and fingerprint rather than the
+    PEM: a pasted certificate is unreadable to a human, so the screen has to
+    prove the right one landed.
+    """
+    from aiforge_core.net import ca
+
+    return ca.status()
+
+
+@router.put("/api/runtime/ca", responses={400: {"description": "Bad request"}})
+def ca_put(body: CaBundleBody) -> dict:
+    """Trust a locally issued CA, from the screen rather than a unit file.
+
+    Everything picks it up at once — the model endpoint, Jira, Confluence,
+    GitLab, our own HTTP, and git, curl and npm through the environment — and
+    it takes hold immediately, so the request that just failed with
+    CERTIFICATE_VERIFY_FAILED can simply be retried.
+    """
+    from aiforge_core.net import ca
+
+    if len(body.pem) > 512_000:
+        raise HTTPException(status_code=400, detail="certificate too large")
+    try:
+        certs = ca.save(body.pem)
+    except ValueError as exc:
+        # A bad paste is the operator's typo, not a server fault, and saying
+        # which line is wrong beats a generic 500.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "saved": len(certs), **ca.status()}
+
+
+@router.delete("/api/runtime/ca")
+def ca_delete() -> dict:
+    """Stop trusting the saved certificate. An env-set bundle is untouched."""
+    from aiforge_core.net import ca
+
+    removed = ca.clear()
+    return {"ok": True, "removed": removed, **ca.status()}
+
+
 @router.get("/api/runtime/egress_hosts")
 def egress_hosts_get() -> dict:
     """What this box may talk to, and where each entry came from.

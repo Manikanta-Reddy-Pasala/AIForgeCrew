@@ -15,6 +15,7 @@ import { JiraCard, ConfluenceCard, GitlabCard, EmailCard } from '../components/I
 import AgentSettings from './AgentSettings';
 import MemorySyncCard from './Home.MemorySyncCard';
 import EgressCard from './Settings.EgressCard';
+import CaCard from './Settings.CaCard';
 
 // ── config-first Home page ─────────────────────────────────────────
 //
@@ -451,6 +452,7 @@ export default function Home() {
         <AgentLimitsCard />
         <MemorySyncCard />
         <EgressCard />
+        <CaCard />
       </>)}
 
     </>
