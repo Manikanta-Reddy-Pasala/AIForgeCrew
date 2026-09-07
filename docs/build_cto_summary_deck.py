@@ -437,25 +437,25 @@ def containment_visual(prs):
           edge=RED, color=RED, size=8.5)
 
     cy = panel(s, Inches(8.76), y2, Inches(3.96), Inches(1.30),
-               "What a run costs", GREEN, GREEN_T)
+               "Every action is written down", GREEN, GREEN_T)
     chips(s, Inches(8.88), cy, Inches(3.72),
-          ["a cap on how often each agent may call the model",
-           "our local model first; a paid one only after a real failure"],
+          ["each run keeps a readable record of every step it took",
+           "20 actions that reach outside stop and ask a person"],
           edge=GREEN, color=GREEN, size=8.5)
 
     y3 = Inches(5.44)
     cy = panel(s, L, y3, Inches(6.00), Inches(1.30),
-               "It works inside our own network", GREEN, GREEN_T)
+               "Our code never leaves the building", BLUE, BLUE_T)
     chips(s, _e(L + Inches(0.14)), cy, Inches(5.72), [
-        "paste our own certificate authority into Settings — no restart",
-        "one setting covers the model, Jira, GitLab, git and curl",
-    ], edge=GREEN, color=GREEN, size=8.5)
+        "prompts and code go only to the model we point it at",
+        "with that model on our own hardware, it runs with the network off",
+    ], edge=BLUE, color=BLUE, size=8.5)
 
     cy = panel(s, Inches(6.72), y3, Inches(6.00), Inches(1.30),
-               "Keys and tokens", AMBER, AMBER_T)
+               "Our keys and our certificates", AMBER, AMBER_T)
     chips(s, Inches(6.86), cy, Inches(5.72), [
-        "all of them in one locked folder, readable only by the service",
-        "permissions are repaired every time it starts",
+        "keys sit in one locked folder and are never shown back",
+        "our own certificate authority is added in Settings, no restart",
     ], edge=AMBER, color=AMBER, size=8.5)
 
     notes(s, """
