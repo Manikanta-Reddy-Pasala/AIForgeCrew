@@ -390,6 +390,37 @@ def ca_put(body: CaBundleBody) -> dict:
     return {"ok": True, "saved": len(certs), **ca.status()}
 
 
+@router.post("/api/runtime/ca", responses={400: {"description": "Bad request"}})
+def ca_add(body: CaBundleBody) -> dict:
+    """ADD certificates, keeping the ones already trusted.
+
+    An estate hands out a root and one or two intermediates, usually as
+    separate files. PUT replaces, which loses the first file the moment the
+    second is uploaded; this appends, and ignores a fingerprint already in the
+    bundle rather than stacking it twice.
+    """
+    from aiforge_core.net import ca
+
+    if len(body.pem) > 512_000:
+        raise HTTPException(status_code=400, detail="certificate too large")
+    try:
+        certs = ca.add(body.pem)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "count": len(certs), **ca.status()}
+
+
+@router.delete("/api/runtime/ca/{sha256}")
+def ca_remove_one(sha256: str) -> dict:
+    """Drop ONE certificate from the bundle, by fingerprint."""
+    from aiforge_core.net import ca
+
+    removed = ca.remove(sha256)
+    if not removed:
+        raise HTTPException(status_code=404, detail="no such certificate")
+    return {"ok": True, "removed": sha256, **ca.status()}
+
+
 @router.delete("/api/runtime/ca")
 def ca_delete() -> dict:
     """Stop trusting the saved certificate. An env-set bundle is untouched."""

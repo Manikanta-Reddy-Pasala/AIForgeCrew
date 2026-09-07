@@ -146,16 +146,56 @@ def describe(pem: str | None = None) -> list[dict]:
     for block in _certificates(pem) if pem.strip() else []:
         der = ssl.PEM_cert_to_DER_cert(block + "\n")
         item = {"sha256": hashlib.sha256(der).hexdigest(),
-                "subject": "", "issuer": "", "not_after": ""}
+                "subject": "", "issuer": "", "not_after": "",
+                "kind": "certificate", "is_ca": False, "pem": block + "\n"}
         try:    # cryptography ships with the http stack; never fail on it
             from cryptography import x509
+            from cryptography.x509.oid import ExtensionOID
             cert = x509.load_der_x509_certificate(der)
             item["subject"] = cert.subject.rfc4514_string()
             item["issuer"] = cert.issuer.rfc4514_string()
             item["not_after"] = cert.not_valid_after_utc.isoformat()
+            try:
+                bc = cert.extensions.get_extension_for_oid(
+                    ExtensionOID.BASIC_CONSTRAINTS).value
+                item["is_ca"] = bool(bc.ca)
+            except Exception:  # noqa: BLE001 — no extension means not a CA
+                item["is_ca"] = False
+            # Self-issued CA = a root; a CA signed by someone else = an
+            # intermediate. Naming them on screen is what stops the usual
+            # mistake of installing the root alone and wondering why an
+            # internal host still fails.
+            if item["is_ca"]:
+                item["kind"] = ("root" if item["subject"] == item["issuer"]
+                                else "intermediate")
+            else:
+                item["kind"] = "not a CA"
         except Exception:  # noqa: BLE001 — the fingerprint alone still helps
             pass
         out.append(item)
+    return out
+
+
+def gaps(certs: list[dict] | None = None) -> list[str]:
+    """Problems worth telling the operator about, in their words.
+
+    An intermediate whose issuer is not in the bundle still verifies IF the
+    server sends the chain — most do — so this is a warning, never a refusal.
+    The one we care about is the reverse of the usual advice: people paste the
+    root, the server sends only its leaf, and nothing works.
+    """
+    certs = describe() if certs is None else certs
+    subjects = {c["subject"] for c in certs if c["subject"]}
+    out = []
+    for c in certs:
+        if c["kind"] == "intermediate" and c["issuer"] not in subjects:
+            out.append(f"{c['subject']} is an intermediate and its issuer "
+                       f"({c['issuer']}) is not in this list — add that root "
+                       "too unless your servers send the full chain")
+        if c["kind"] == "not a CA":
+            out.append(f"{c['subject'] or c['sha256'][:16]} is a server "
+                       "certificate, not a CA — trusting it covers that one "
+                       "host only")
     return out
 
 
@@ -167,6 +207,44 @@ def save(pem: str) -> list[dict]:
     the operator believing TLS was fixed.
     """
     certs = describe(pem)          # validates, and raises on a bad paste
+    _write("".join(c["pem"] for c in certs))
+    log.info("ca: saved %d certificate(s) to %s", len(certs), stored_path())
+    return certs
+
+
+def add(pem: str) -> list[dict]:
+    """Append certificates to the bundle, keeping what is already trusted.
+
+    An estate hands you a root AND one or two intermediates, often as separate
+    files. ``save`` replaces, which quietly loses the first file the moment the
+    second is added — the failure then looks like "it forgot my certificate".
+    So the screen adds, and duplicates (same fingerprint) are ignored rather
+    than stacked.
+    """
+    incoming = describe(pem)          # validates, and raises on a bad paste
+    have = describe()
+    seen = {c["sha256"] for c in have}
+    merged = have + [c for c in incoming if c["sha256"] not in seen]
+    _write("".join(c["pem"] for c in merged))
+    log.info("ca: bundle now holds %d certificate(s)", len(merged))
+    return merged
+
+
+def remove(sha256: str) -> bool:
+    """Drop one certificate from the bundle by fingerprint."""
+    have = describe()
+    keep = [c for c in have if c["sha256"] != sha256]
+    if len(keep) == len(have):
+        return False
+    if keep:
+        _write("".join(c["pem"] for c in keep))
+    else:
+        clear()
+    return True
+
+
+def _write(pem: str) -> None:
+    """Put ``pem`` in the store, 0600, and publish it to subprocesses."""
     path = stored_path(create=True)
     path.write_text(pem if pem.endswith("\n") else pem + "\n")
     try:
@@ -174,8 +252,6 @@ def save(pem: str) -> list[dict]:
     except OSError as exc:  # noqa: BLE001
         log.warning("ca: could not chmod %s — %s", path, exc)
     apply_to_process_env(force=True)
-    log.info("ca: saved %d certificate(s) to %s", len(certs), path)
-    return certs
 
 
 def clear() -> bool:
@@ -194,8 +270,11 @@ def clear() -> bool:
 def status() -> dict:
     """Everything the Settings screen needs in one call."""
     b = bundle()
+    certs = describe()
     return {"configured": bool(b), "source": source(), "path": b or "",
-            "readable": readable(b), "certificates": describe(),
+            "readable": readable(b), "warnings": gaps(certs),
+            "certificates": [{k: v for k, v in c.items() if k != "pem"}
+                             for c in certs],
             "applies_to": ["the model endpoint", "Jira, Confluence, GitLab",
                            "AIForge's own HTTP", "git, curl, npm and the "
                            "agent's shell"]}

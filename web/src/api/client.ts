@@ -32,7 +32,11 @@ export type CaStatus = {
   path: string;
   readable: boolean;
   certificates: { sha256: string; subject: string; issuer: string;
-                  not_after: string }[];
+                  not_after: string; kind: string; is_ca: boolean }[];
+  /** Things worth saying out loud — an intermediate whose root is missing,
+   *  or a server certificate pasted in place of a CA. Never a refusal: most
+   *  servers send their chain, so the bundle still works. */
+  warnings: string[];
   applies_to: string[];
 };
 
@@ -59,6 +63,14 @@ export const api = {
   // editing a unit file and restarting, which is why "CERTIFICATE_VERIFY_
   // FAILED" used to be a dead end for anyone without shell access.
   ca: () => j<CaStatus>('/runtime/ca'),
+  addCa: (pem: string) =>
+    j<CaStatus & { ok: boolean; count: number }>('/runtime/ca', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pem }),
+    }),
+  removeCa: (sha256: string) =>
+    j<CaStatus & { ok: boolean }>(`/runtime/ca/${sha256}`,
+                                  { method: 'DELETE' }),
   saveCa: (pem: string) =>
     j<CaStatus & { ok: boolean; saved: number }>('/runtime/ca', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
