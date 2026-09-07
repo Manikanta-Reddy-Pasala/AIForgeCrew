@@ -766,6 +766,42 @@ def _normalise(path: Path) -> list[str]:
     return changed
 
 
+def _rewrite_with_libreoffice(path: Path) -> bool:
+    """Re-save the deck through LibreOffice, and ship THAT file.
+
+    python-pptx writes a package that passes every structural check there is —
+    zip integrity, content types, relationships, slide ids, element order, no
+    float EMU — and LibreOffice renders it perfectly. It still would not open
+    in the reviewer's PowerPoint. When a file is provably valid and one reader
+    still refuses it, arguing with the reader is not a plan: re-writing the
+    same slides through a second, independent implementation is.
+
+    Best effort. No LibreOffice on the machine (CI, a laptop) simply leaves
+    the python-pptx output in place, which is what the checks say is fine.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if not soffice:
+        return False
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            subprocess.run(
+                [soffice, "--headless", "--convert-to",
+                 "pptx:Impress MS PowerPoint 2007 XML", "--outdir", tmp,
+                 str(path)],
+                check=True, capture_output=True, timeout=180)
+        except (subprocess.SubprocessError, OSError):
+            return False
+        out = Path(tmp) / path.name
+        if not out.is_file() or out.stat().st_size < 20_000:
+            return False        # a truncated conversion is worse than none
+        shutil.copyfile(out, path)
+    return True
+
+
 def build():
     prs = Presentation()
     prs.slide_width, prs.slide_height = W, H
@@ -775,6 +811,10 @@ def build():
     prs.save(OUT)
     for note in _normalise(OUT):
         print(f"  normalised: {note}")
+    if _rewrite_with_libreoffice(OUT):
+        print("  rewritten by LibreOffice (a second, independent writer)")
+        for note in _normalise(OUT):
+            print(f"  normalised: {note}")
     print(f"wrote {OUT}  ({OUT.stat().st_size / 1024:.0f} KB, "
           f"{len(prs.slides._sldIdLst)} slides)")
 
