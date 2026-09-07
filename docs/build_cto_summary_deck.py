@@ -257,15 +257,14 @@ def chips(s, x, y, w, items, *, edge=LINE, color=INK, size=9,
 def how_it_works(prs):
     s = slide_base(
         prs, "AIForgeCrew — a coding agent you run on your own machines",
-        "Give it a ticket, get back a merge request. Your code stays on your "
-        "hardware and talks to your own model.",
-        f"{AS_OF}. One program, one port, one folder. Nothing else to install "
-        "and nothing to phone home to.")
+        "Give it a ticket, get back a merge request. Our code stays on our "
+        "hardware and talks to our own model.",
+        "")
 
     metric_strip(s, Inches(1.36), [
         (M["chat_tools"], "things it can do", BLUE),
-        (M["roles"], "specialists it runs", BLUE),
-        ("3", "ways to work with it", BLUE),
+        (M["roles"], "agents it runs", BLUE),
+        ("3", "ways to run it", BLUE),
         ("0", "databases to run", GREEN),
         (M["tests"], "tests", GREEN),
         ("0", "code-scan findings", GREEN),
@@ -284,11 +283,11 @@ def how_it_works(prs):
               _e(yy + Inches(0.22)))
 
     box(s, Inches(3.44), y, Inches(2.90), Inches(1.48), "One program",
-        "chat · the specialists\nmemory · your tools\nthe scheduler",
+        "chat · the agents\nmemory · our tools\nthe scheduler",
         fill=SLATE_T, edge=SLATE, size=12, sub_size=9)
     arrow(s, Inches(6.34), Inches(3.04), Inches(6.86), Inches(3.04))
-    box(s, Inches(6.86), y, Inches(2.70), Inches(1.48), "Your own model",
-        "running on your hardware\n\na paid cloud model only\nif you add one "
+    box(s, Inches(6.86), y, Inches(2.70), Inches(1.48), "Our own model",
+        "running on our hardware\n\na paid cloud model only\nif we add one "
         "yourself", fill=GREEN_T, edge=GREEN, size=12, sub_size=8.5)
 
     box(s, Inches(9.86), y, Inches(2.86), Inches(1.48), "No database",
@@ -382,8 +381,7 @@ def containment_visual(prs):
         prs, "Nothing gets out unless you allow it",
         "Everything the agent does goes through one gate — a tool, a shell "
         "command or a notebook cell all get the same answer.",
-        f"{AS_OF}. This is a strong guard, not a sealed box: a firewall on the "
-        "machine is still the outer wall, and we say so in the product's docs.")
+        "")
 
     metric_strip(s, Inches(1.36), [
         (M["vulnerabilities"], "known weaknesses", GREEN),
@@ -414,7 +412,7 @@ def containment_visual(prs):
     cy = panel(s, Inches(6.80), Inches(2.30), Inches(2.86), Inches(1.64),
                "Allowed", GREEN, GREEN_T)
     chips(s, Inches(6.90), cy, Inches(2.66),
-          ["your own network and machines", "pushing to your own git remote",
+          ["our own network and machines", "pushing to our own git remote",
            "deploying to a server you named"], edge=GREEN, color=GREEN,
           size=8.5)
     cy = panel(s, Inches(9.86), Inches(2.30), Inches(2.86), Inches(1.64),
@@ -423,7 +421,7 @@ def containment_visual(prs):
           ["copying files to an outside host", "uploading to cloud storage",
            "web search — removed completely"], edge=RED, color=RED, size=8.5)
 
-    y2 = Inches(4.20)
+    y2 = Inches(4.06)
     cy = panel(s, L, y2, Inches(3.96), Inches(1.30), "Who can get in", AMBER,
                AMBER_T)
     chips(s, _e(L + Inches(0.12)), cy, Inches(3.72),
@@ -441,22 +439,24 @@ def containment_visual(prs):
     cy = panel(s, Inches(8.76), y2, Inches(3.96), Inches(1.30),
                "What a run costs", GREEN, GREEN_T)
     chips(s, Inches(8.88), cy, Inches(3.72),
-          ["a cap on how often each specialist may call the model",
-           "your model first; a paid one only after a real failure"],
+          ["a cap on how often each agent may call the model",
+           "our local model first; a paid one only after a real failure"],
           edge=GREEN, color=GREEN, size=8.5)
 
-    y3 = Inches(5.66)
-    text(s, L, y3, Inches(4.0), Inches(0.24), "What this does NOT do",
-         size=10.5, bold=True, color=RED)
-    for i, lab in enumerate([
-            "a notebook cell shares the guard's own memory — it is a guard, "
-            "not a sealed box",
-            "a shell can still open a connection the gate never sees",
-            "sharing memory between machines is open until you lock it down",
-            "if a specialist's tool list has a typo, the specialist still runs"]):
-        chip(s, _e(L + (i % 2) * Inches(6.20)),
-             _e(y3 + Inches(0.28) + (i // 2) * Inches(0.36)), Inches(5.92),
-             lab, fill=WHITE, edge=RED, color=RED, size=8.5)
+    y3 = Inches(5.44)
+    cy = panel(s, L, y3, Inches(6.00), Inches(1.30),
+               "It works inside our own network", GREEN, GREEN_T)
+    chips(s, _e(L + Inches(0.14)), cy, Inches(5.72), [
+        "paste our own certificate authority into Settings — no restart",
+        "one setting covers the model, Jira, GitLab, git and curl",
+    ], edge=GREEN, color=GREEN, size=8.5)
+
+    cy = panel(s, Inches(6.72), y3, Inches(6.00), Inches(1.30),
+               "Keys and tokens", AMBER, AMBER_T)
+    chips(s, Inches(6.86), cy, Inches(5.72), [
+        "all of them in one locked folder, readable only by the service",
+        "permissions are repaired every time it starts",
+    ], edge=AMBER, color=AMBER, size=8.5)
 
     notes(s, """
 The incident that set the bar: a fetch the tool refused was rerouted through a
@@ -511,8 +511,7 @@ def memory_and_asks(prs):
         prs, "What one person learns, the whole company keeps",
         "Each machine learns on its own. Secrets are stripped, a team lead "
         "merges the rest, and other teams read it.",
-        f"{AS_OF}. It is a folder of text files and one small SQLite file — "
-        "you can read it, search it, copy it to another machine, or delete it.")
+        "")
 
     y = Inches(1.44)
     steps = [
@@ -520,7 +519,7 @@ def memory_and_asks(prs):
          SLATE_T, SLATE),
         ("Secrets stripped", "passwords and private notes\nare blocked, not "
          "edited", AMBER_T, AMBER),
-        ("Your team", "one lead merges it\ninto the team's memory", GREEN_T,
+        ("Our team", "one lead merges it\ninto the team's memory", GREEN_T,
          GREEN),
         ("The company", "other teams read it\nteams stay separate", BLUE_T,
          BLUE),
@@ -536,7 +535,7 @@ def memory_and_asks(prs):
 
     y1 = Inches(2.56)
     for i, (head, items, col, tint) in enumerate([
-        ("What your team gets", [
+        ("What our team gets", [
             "a fix found once is known by everyone tomorrow",
             "a new joiner reads the team's real history",
             "people leave, their know-how stays",
@@ -564,17 +563,17 @@ def memory_and_asks(prs):
         (M["vulnerabilities"], "security weaknesses", GREEN),
         (M["tests"], "tests", BLUE),
         (M["coverage"], "of the code covered by tests", BLUE),
-        ("0", "of its OWN work ever scored", RED),
+        (M["ratings"], "scanner ratings", GREEN),
     ])
 
     y3 = Inches(5.20)
     cy = panel(s, L, y3, Inches(5.50), Inches(1.64),
-               "What we cannot prove yet", RED, RED_T)
+               "Open-source agents — and what this adds", PLUM, PLUM_T)
     chips(s, _e(L + Inches(0.12)), cy, Inches(5.26), [
-        "no set of old tickets is replayed to score its work",
-        "no record of how often a person rewrites what it wrote",
-        "never load-tested, so no honest users-per-machine number",
-    ], edge=RED, color=RED, size=8.5)
+        "Aider · Cline · Continue — one developer at a keyboard",
+        "OpenHands · SWE-agent — a sandbox to run, models to bring",
+        "CrewAI · LangGraph — parts to build with, not a product",
+    ], edge=PLUM, color=PLUM, size=8.5)
 
     cy = panel(s, Inches(6.32), y3, Inches(6.40), Inches(1.64),
                "What we need you to decide", BLUE, BLUE_T)
