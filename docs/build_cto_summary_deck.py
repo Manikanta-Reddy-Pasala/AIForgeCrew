@@ -568,19 +568,19 @@ def memory_and_asks(prs):
 
     y3 = Inches(5.20)
     cy = panel(s, L, y3, Inches(5.50), Inches(1.64),
-               "Open-source agents — and what this adds", PLUM, PLUM_T)
+               "What it asks of us", SLATE, SLATE_T)
     chips(s, _e(L + Inches(0.12)), cy, Inches(5.26), [
-        "Aider · Cline · Continue — one developer at a keyboard",
-        "OpenHands · SWE-agent — a sandbox to run, models to bring",
-        "CrewAI · LangGraph — parts to build with, not a product",
-    ], edge=PLUM, color=PLUM, size=8.5)
+        "one machine with a model on it — a desktop, a NUC or a server",
+        "one folder to back up; copy it and the machine has moved",
+        "upgrades pull and restart; the data migrates itself",
+    ], edge=SLATE, color=SLATE, size=8.5)
 
     cy = panel(s, Inches(6.32), y3, Inches(6.40), Inches(1.64),
-               "What we need you to decide", BLUE, BLUE_T)
+               "How we would roll it out", BLUE, BLUE_T)
     chips(s, Inches(6.44), cy, Inches(6.16), [
-        "pay for that scoring — it is the only thing that settles the question",
-        "name an owner and a stand-in: one person wrote all of this",
-        "pick the network that holds the company memory, and who owns it",
+        "one team runs it on real tickets and keeps what it learns",
+        "a second team joins the same admin — the memory is already there",
+        "company-wide once two teams have run it for a month",
     ], edge=BLUE, color=BLUE, size=8.5)
 
     notes(s, """
