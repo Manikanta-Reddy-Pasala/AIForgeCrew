@@ -698,6 +698,74 @@ that holds the company memory.
 """)
 
 
+def _normalise(path: Path) -> list[str]:
+    """Rewrite the saved package into what PowerPoint expects to read FIRST.
+
+    "The file format is invalid" is the message PowerPoint gives before it has
+    looked at a single slide, so the cause is in the package header, and two
+    things there come from python-pptx's default template rather than from us:
+
+    * ``<p:sldSz>`` keeps the template's ``type="screen4x3"`` attribute while
+      we set a 16:9 size, so the declared aspect ratio contradicts the
+      dimensions. A deck PowerPoint had accepted carries no ``type`` at all;
+    * the width lands on 12191695 EMU because 13.333in is not exactly 16:9.
+      Every Office-written 16:9 deck says 12192000 exactly.
+
+    Also drops the printerSettings part the template drags in — a binary blob
+    describing someone else's printer that nothing in this deck references.
+
+    Returns a list of what it changed, so the build says it out loud.
+    """
+    import re
+    import shutil
+    import zipfile
+
+    changed, tmp = [], path.with_suffix(".tmp.pptx")
+    with zipfile.ZipFile(path) as src, \
+            zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as dst:
+        names = [n for n in src.namelist()
+                 if "printerSettings" not in n]
+        if len(names) != len(src.namelist()):
+            changed.append("dropped the template's printerSettings part")
+        for name in names:
+            data = src.read(name)
+            if name == "ppt/presentation.xml":
+                xml = data.decode()
+                fixed = re.sub(r'<p:sldSz[^/]*/>',
+                               '<p:sldSz cx="12192000" cy="6858000"/>', xml)
+                if fixed != xml:
+                    changed.append('sldSz → 12192000x6858000, no "type"')
+                data = fixed.encode()
+            elif name == "[Content_Types].xml":
+                xml = data.decode()
+                fixed = re.sub(r'<Default Extension="bin"[^>]*/>', "", xml)
+                fixed = re.sub(
+                    r'<Override PartName="[^"]*printerSettings[^"]*"[^>]*/>',
+                    "", fixed)
+                if fixed != xml:
+                    changed.append("removed the printerSettings content type")
+                data = fixed.encode()
+            elif name.endswith(".rels"):
+                xml = data.decode()
+                fixed = re.sub(r'<Relationship[^>]*printerSettings[^>]*/>',
+                               "", xml)
+                if fixed != xml:
+                    changed.append(f"removed a printerSettings link in {name}")
+                data = fixed.encode()
+            if name.endswith((".xml", ".rels")):
+                # lxml writes <?xml version='1.0' ... ?> with single quotes.
+                # Valid XML, and the only remaining difference from a package
+                # Office itself wrote — so it goes too rather than being left
+                # as the one thing still unexplained.
+                data = data.replace(
+                    b"<?xml version='1.0' encoding='UTF-8' standalone='yes'?>",
+                    b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+                    1)
+            dst.writestr(name, data)
+    shutil.move(str(tmp), str(path))
+    return changed
+
+
 def build():
     prs = Presentation()
     prs.slide_width, prs.slide_height = W, H
@@ -705,6 +773,8 @@ def build():
     page_rings(prs)
     page_growth(prs)
     prs.save(OUT)
+    for note in _normalise(OUT):
+        print(f"  normalised: {note}")
     print(f"wrote {OUT}  ({OUT.stat().st_size / 1024:.0f} KB, "
           f"{len(prs.slides._sldIdLst)} slides)")
 
