@@ -218,19 +218,37 @@ def card_row(s, y, cards, *, x0=None, total_w=None, gap=_GAP,
 def notes(s, body: str) -> None:
     """Park the prose in the speaker notes.
 
-    The slides went visual because fourteen pages of cards were unreadable in
-    a room — but a CTO deck still has to answer the hard question when it is
-    asked out loud. Every sentence the boxes no longer carry lives here, so
-    the presenter has it and the slide does not.
+    The slides are drawn, not written — but a CTO deck still has to answer the
+    hard question when it is asked out loud, so every sentence the boxes no
+    longer carry lives here for the presenter.
     """
     s.notes_slide.notes_text_frame.text = body.strip()
 
 
-def chips(s, x, y, w, items, *, fill=WHITE, edge=LINE, color=INK, size=9,
-          gap=Inches(0.08)):
-    """A vertical stack of pills. Returns the y below the last one."""
+def panel(s, x, y, w, h, title, color, tint):
+    """A titled panel: the heading sits ON TOP of the frame, never inside it.
+
+    A ``box`` centres its label vertically, so chips laid inside one cover the
+    heading — which is exactly what the first cut of this deck did, and it was
+    invisible until the pptx was rendered to PNG and looked at.
+    """
+    box(s, x, y, w, Inches(0.42), title, "", fill=tint, edge=color, size=11.5)
+    frame = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, _e(x),
+                               _e(y + Inches(0.42)), _e(w),
+                               _e(h - Inches(0.42)))
+    frame.fill.solid()
+    frame.fill.fore_color.rgb = WHITE
+    frame.line.color.rgb = color
+    frame.line.width = Pt(1.0)
+    frame.shadow.inherit = False
+    return _e(y + Inches(0.52))
+
+
+def chips(s, x, y, w, items, *, edge=LINE, color=INK, size=9,
+          gap=Inches(0.07)):
+    """A stack of pills. Returns the y below the last one."""
     for it in items:
-        chip(s, x, y, w, it, fill=fill, edge=edge, color=color, size=size)
+        chip(s, x, y, w, it, fill=WHITE, edge=edge, color=color, size=size)
         y = _e(y + Inches(0.30) + gap)
     return y
 
@@ -238,241 +256,222 @@ def chips(s, x, y, w, items, *, fill=WHITE, edge=LINE, color=INK, size=9,
 # ------------------------------------------------------------- page 1 ------
 def how_it_works(prs):
     s = slide_base(
-        prs, "AIForgeCrew — a coding agent platform you run yourself",
-        "A ticket becomes a merge request. On your hardware, against your "
-        "model, with no database anywhere in it.",
-        f"{AS_OF}. One Python service, one port, one folder of state.")
+        prs, "AIForgeCrew — a coding agent you run on your own machines",
+        "Give it a ticket, get back a merge request. Your code stays on your "
+        "hardware and talks to your own model.",
+        f"{AS_OF}. One program, one port, one folder. Nothing else to install "
+        "and nothing to phone home to.")
 
     metric_strip(s, Inches(1.36), [
-        (M["chat_tools"], "tools", BLUE),
-        (M["roles"], "agent roles", BLUE),
-        ("3", "chat modes", BLUE),
-        ("0", "databases", GREEN),
+        (M["chat_tools"], "things it can do", BLUE),
+        (M["roles"], "specialists it runs", BLUE),
+        ("3", "ways to work with it", BLUE),
+        ("0", "databases to run", GREEN),
         (M["tests"], "tests", GREEN),
-        ("0", "Sonar findings", GREEN),
+        ("0", "code-scan findings", GREEN),
     ])
 
-    # ── row 1: in → process → model ────────────────────────────────────────
+    # ── the shape of the system ───────────────────────────────────────────
     y = Inches(2.30)
     for i, (lab, sub, f, e) in enumerate([
-            ("Ticket", "Jira · GitLab", BLUE_T, BLUE),
-            ("Chat", "ask · plan · team", GREEN_T, GREEN),
-            ("Schedule", "cron, unattended", PLUM_T, PLUM)]):
-        box(s, L, _e(y + i * Inches(0.56)), Inches(2.10), Inches(0.48),
-            lab, sub, fill=f, edge=e, size=11, sub_size=8)
-        arrow(s, Inches(2.72), _e(y + i * Inches(0.56) + Inches(0.24)),
-              Inches(3.30), Inches(2.86))
+            ("A ticket", "from Jira or GitLab", BLUE_T, BLUE),
+            ("A chat", "ask · plan · delegate", GREEN_T, GREEN),
+            ("A schedule", "runs while you sleep", PLUM_T, PLUM)]):
+        yy = _e(y + i * Inches(0.52))
+        box(s, L, yy, Inches(2.30), Inches(0.44), lab, sub, fill=f, edge=e,
+            size=11, sub_size=8)
+        arrow(s, Inches(2.92), _e(yy + Inches(0.22)), Inches(3.44),
+              _e(yy + Inches(0.22)))
 
-    box(s, Inches(3.30), y, Inches(3.30), Inches(1.60),
-        "One process · :8799",
-        "chat engine · pipeline\nmemory · integrations\nscheduler",
+    box(s, Inches(3.44), y, Inches(2.90), Inches(1.48), "One program",
+        "chat · the specialists\nmemory · your tools\nthe scheduler",
         fill=SLATE_T, edge=SLATE, size=12, sub_size=9)
-    arrow(s, Inches(6.60), Inches(3.10), Inches(7.20), Inches(3.10))
-    box(s, Inches(7.20), y, Inches(2.60), Inches(1.60), "Your endpoint",
-        "LM Studio · vLLM · mlx\non hardware you own\n\ncloud only if YOU\nregister one",
-        fill=GREEN_T, edge=GREEN, size=12, sub_size=8.5)
+    arrow(s, Inches(6.34), Inches(3.04), Inches(6.86), Inches(3.04))
+    box(s, Inches(6.86), y, Inches(2.70), Inches(1.48), "Your own model",
+        "running on your hardware\n\na paid cloud model only\nif you add one "
+        "yourself", fill=GREEN_T, edge=GREEN, size=12, sub_size=8.5)
 
-    box(s, Inches(10.10), y, Inches(2.62), Inches(1.60), "No database",
-        "no vector store\nno Postgres · no Neo4j\nno broker · no GPU\n\n"
-        "markdown + one SQLite",
+    box(s, Inches(9.86), y, Inches(2.86), Inches(1.48), "No database",
+        "no vector store, no Postgres,\nno Neo4j, no queue, no GPU\n\n"
+        "just files and one small\nSQLite file",
         fill=WHITE, edge=BLUE, size=12, sub_size=8.5, label_color=BLUE)
 
-    # ── row 2: the pipeline ───────────────────────────────────────────────
-    y2 = Inches(4.10)
-    text(s, L, _e(y2 - Inches(0.26)), Inches(4.0), Inches(0.22),
-         "How a ticket becomes a merge request", size=10, bold=True,
-         color=MUTED)
-    stages = ["Triage", "Enhancer", "Architect", "Planner", "Verifier"]
-    bw = Inches(1.44)
-    for i, st in enumerate(stages):
-        x = L + i * (bw + Inches(0.13))
-        box(s, x, y2, bw, Inches(0.42), st, "", fill=BLUE_T, edge=BLUE,
-            size=10)
-        if i < 4:
-            arrow(s, _e(x + bw), _e(y2 + Inches(0.21)),
-                  _e(x + bw + Inches(0.13)), _e(y2 + Inches(0.21)))
-    arrow(s, _e(L + 5 * (bw + Inches(0.13)) - Inches(0.13)),
-          _e(y2 + Inches(0.21)), Inches(8.52), _e(y2 + Inches(0.21)))
-    box(s, Inches(8.52), y2, Inches(2.10), Inches(0.42), "Build loop", "",
-        fill=GREEN_T, edge=GREEN, size=10)
-    arrow(s, Inches(10.62), _e(y2 + Inches(0.21)), Inches(10.75),
-          _e(y2 + Inches(0.21)))
-    box(s, Inches(10.75), y2, Inches(1.97), Inches(0.42), "Merge request", "",
-        fill=SLATE_T, edge=SLATE, size=10)
-    text(s, Inches(8.52), _e(y2 + Inches(0.46)), Inches(4.20), Inches(0.36),
-         "4 parallel subtasks, each in its own git worktree  ·  "
-         "Validator → Live-verifier → Learner", size=8.5, color=MUTED)
+    # ── one ticket, end to end ────────────────────────────────────────────
+    text(s, L, Inches(4.00), Inches(6.0), Inches(0.24),
+         "What happens to one ticket", size=10.5, bold=True, color=MUTED)
+    y2 = Inches(4.30)
+    steps = [("Understand", BLUE_T, BLUE), ("Plan", BLUE_T, BLUE),
+             ("Write code", GREEN_T, GREEN), ("Test and fix", GREEN_T, GREEN),
+             ("Check it works", PLUM_T, PLUM), ("Merge request", SLATE_T, SLATE)]
+    bw = Inches(1.86)
+    for i, (lab, f, e) in enumerate(steps):
+        x = L + i * (bw + Inches(0.19))
+        box(s, x, y2, bw, Inches(0.46), lab, "", fill=f, edge=e, size=10.5)
+        if i < len(steps) - 1:
+            arrow(s, _e(x + bw), _e(y2 + Inches(0.23)),
+                  _e(x + bw + Inches(0.19)), _e(y2 + Inches(0.23)))
+    text(s, L, Inches(4.86), WD, Inches(0.26),
+         "up to four pieces of the job run side by side, each in its own copy "
+         "of the repo  ·  a person reviews the merge request — nothing merges "
+         "itself", size=9, color=MUTED)
 
-    # ── row 3: the two loops that make it compound ────────────────────────
-    y3 = Inches(5.16)
-    box(s, L, y3, Inches(6.00), Inches(1.30), "It writes its own procedures",
-        "", fill=AMBER_T, edge=AMBER, size=11.5)
+    # ── the two things that make it better over time ──────────────────────
+    y3 = Inches(5.32)
+    cy = panel(s, L, y3, Inches(6.00), Inches(1.42),
+               "It writes down what it learns", AMBER, AMBER_T)
     for i, lab in enumerate(["Rules", "Skills", "Workflows"]):
-        chip(s, _e(L + Inches(0.22) + i * Inches(1.30)), _e(y3 + Inches(0.42)),
-             Inches(1.18), lab, fill=WHITE, edge=AMBER, color=AMBER)
-    chip(s, Inches(4.62), _e(y3 + Inches(0.42)), Inches(1.22),
-         "nightly merge", fill=WHITE, edge=AMBER, color=AMBER)
-    arrow(s, Inches(4.42), _e(y3 + Inches(0.57)), Inches(4.62),
-          _e(y3 + Inches(0.57)), color=AMBER)
-    text(s, _e(L + Inches(0.22)), _e(y3 + Inches(0.86)), Inches(5.6),
+        chip(s, _e(L + Inches(0.18) + i * Inches(1.42)), cy, Inches(1.30),
+             lab, fill=WHITE, edge=AMBER, color=AMBER)
+    chip(s, Inches(4.98), cy, Inches(0.94), "tidied nightly", fill=WHITE,
+         edge=AMBER, color=AMBER, size=8.5)
+    text(s, _e(L + Inches(0.18)), _e(cy + Inches(0.38)), Inches(5.64),
          Inches(0.34),
-         "markdown the agent writes and reuses — a fix found once becomes a "
-         "procedure, and duplicates are swept up nightly", size=8.5,
-         color=MUTED)
+         "plain text files it writes for itself, so a fix found once becomes a "
+         "step it repeats — and duplicates get merged every night",
+         size=8.5, color=MUTED)
 
-    box(s, Inches(6.90), y3, Inches(5.82), Inches(1.30),
-        "It remembers, without a database", "", fill=GREEN_T, edge=GREEN,
-        size=11.5)
-    hops = [("Desktop", 1.22), ("Redact", 1.10), ("Team admin", 1.30),
-            ("Company", 1.20)]
-    x = Inches(7.12)
-    for i, (lab, w) in enumerate(hops):
-        chip(s, x, _e(y3 + Inches(0.42)), Inches(w), lab, fill=WHITE,
-             edge=GREEN, color=GREEN)
-        x = _e(x + Inches(w))
-        if i < len(hops) - 1:
-            arrow(s, x, _e(y3 + Inches(0.57)), _e(x + Inches(0.22)),
-                  _e(y3 + Inches(0.57)), color=GREEN)
-            x = _e(x + Inches(0.22))
-    text(s, Inches(7.12), _e(y3 + Inches(0.86)), Inches(5.40), Inches(0.34),
-         "only distilled notes travel · credentials blocked before they are "
-         "offered · delete the folder and it is gone", size=8.5, color=MUTED)
+    cy = panel(s, Inches(6.72), y3, Inches(6.00), Inches(1.42),
+               "It plugs into the tools you already have", BLUE, BLUE_T)
+    for i, lab in enumerate([f"Jira {M['jira_tools']}",
+                             f"Confluence {M['confluence_tools']}",
+                             f"GitLab {M['gitlab_tools']}", "GitHub",
+                             "e-mail"]):
+        chip(s, _e(Inches(6.90) + i * Inches(1.12)), cy, Inches(1.04), lab,
+             fill=WHITE, edge=BLUE, color=BLUE, size=8.5)
+    text(s, Inches(6.90), _e(cy + Inches(0.38)), Inches(5.64), Inches(0.34),
+         "plus any MCP server, a map of your codebase, a real shell and test "
+         "runner, and a local model that can look at your screen",
+         size=8.5, color=MUTED)
 
     notes(s, """
-One FastAPI process, port 8799, React UI plus REST and streaming; chat engine,
+One FastAPI process on port 8799 — React UI, REST and streaming. Chat engine,
 agent pipeline, memory, integrations and job scheduler are libraries inside it.
 Python 3.12 and one model endpoint; no GPU, torch, Postgres, Neo4j, vector
 store or message broker. Runs on a desktop, a NUC, a server under systemd or a
-container — the same single command, and an unset admin URL means this box is
-it. Upgrade is git pull and run.sh, which converges the environment and
-migrates in place.
+container, same single command; upgrade is git pull and run.sh, which converges
+the environment and migrates in place.
 
-Pipeline: Triage, Enhancer, Architect, Planner, Verifier, then a build loop of
-up to four parallel subtasks each in its own git worktree (Doer edits, tests
-run, Feedback reads failures, Refiner fixes), then Validator gates,
-Live-verifier runs the real recipe, Learner writes memory back, and the result
-is a merge request a human reviews. Reasoning is plain text, so any model
-drives it — no vendor function-calling. Simple mode writes, Plan mode is
-read-only, Team mode runs the pipeline.
+The pipeline in full: Triage, Enhancer, Architect, Planner, Verifier, then a
+build loop of up to four parallel subtasks each in its own git worktree (Doer
+edits, tests run, Feedback reads failures, Refiner fixes), then Validator
+gates, Live-verifier runs the real recipe, Learner writes memory back, and the
+result is a merge request a human reviews. Reasoning is plain text, so any
+model drives it — no vendor function-calling needed. Simple mode writes, Plan
+mode is read-only, Team mode runs the whole pipeline.
 
-Library: rules, skills and workflows are markdown the agent writes and reuses;
-a nightly sweep merges near-duplicates so the prompt does not bloat, and a
-merge unions the members' scopes rather than silently narrowing one.
+Rules, skills and workflows are markdown the agent writes and reuses; a nightly
+sweep merges near-duplicates so the prompt does not bloat, and a merge unions
+the members' scopes rather than silently narrowing one.
 
-Memory: each desktop compacts locally, a client-side redaction filter blocks
-credential-shaped and private notes before anything is advertised, one team
-admin merges, and one admin can serve many independent fleets. Only distilled
-knowledge nodes travel; transcripts, captures and working notes never leave the
-machine that made them. Every merge is snapshotted with a revert endpoint.
+Integrations: Jira 21 tools, Confluence 14, GitLab 10, plus GitHub, e-mail and
+any MCP server; a tool with no credentials hides itself rather than failing a
+turn. A tree-sitter and PageRank repo map plus 5 knowledge-graph tools choose
+context instead of pasting it. The real toolchain is present: persistent shell,
+language server, type-checker, test runner, IPython kernel. A local vision
+model can screenshot the running app and answer questions about it.
 
-Integrations: Jira 21 tools, Confluence 14, GitLab 10, plus GitHub, email and
-any MCP server; a tool with no credentials hides itself. A tree-sitter and
-PageRank repo map plus 5 knowledge-graph tools choose context instead of
-pasting it. A local vision model can screenshot the running app. The real
-toolchain is present: shell, language server, type-checker, test runner, an
-IPython kernel.
+If your estate runs its own certificate authority, one setting —
+AIFORGE_CA_BUNDLE — makes the model endpoint, Jira, Confluence, GitLab, git,
+curl and npm all trust it.
 """)
 
 
 # ------------------------------------------------------------- page 2 ------
 def containment_visual(prs):
     s = slide_base(
-        prs, "Containment — one policy, every path",
-        "A refused fetch was rerouted through a shell curl, then a notebook "
-        "cell, and it worked. So the policy sits under all three.",
-        f"{AS_OF}. A guard, not a sandbox: an OS egress firewall is still the "
-        "outer boundary, and that limit is printed in the product's own docs.")
+        prs, "Nothing gets out unless you allow it",
+        "Everything the agent does goes through one gate — a tool, a shell "
+        "command or a notebook cell all get the same answer.",
+        f"{AS_OF}. This is a strong guard, not a sealed box: a firewall on the "
+        "machine is still the outer wall, and we say so in the product's docs.")
 
     metric_strip(s, Inches(1.36), [
-        (M["vulnerabilities"], "vulnerabilities", GREEN),
-        (M["hotspots"], "hotspots", GREEN),
-        ("0", "telemetry", GREEN),
-        ("0", "CERT_NONE in the tree", GREEN),
-        ("9 / 19", "roles with no tools", PLUM),
-        ("20", "writes that ask a human", AMBER),
+        (M["vulnerabilities"], "known weaknesses", GREEN),
+        (M["hotspots"], "security items to review", GREEN),
+        ("0", "usage data sent anywhere", GREEN),
+        ("0", "connections that skip certificate checks", GREEN),
+        ("20", "actions that ask you first", AMBER),
     ])
 
-    # ── the funnel: three transports → one module → allow / deny ──────────
-    y = Inches(2.26)
-    for i, (lab, sub) in enumerate([("Tool call", "web · Jira · MCP"),
-                                    ("Shell command", "curl · scp · ssh"),
-                                    ("Notebook cell", "kernel getaddrinfo")]):
-        box(s, L, _e(y + i * Inches(0.56)), Inches(2.40), Inches(0.48), lab,
-            sub, fill=SLATE_T, edge=SLATE, size=11, sub_size=8)
-        arrow(s, Inches(3.02), _e(y + i * Inches(0.56) + Inches(0.24)),
-              Inches(3.60), Inches(2.82))
+    y = Inches(2.30)
+    for i, (lab, sub) in enumerate([("What the agent runs", "web · Jira · tools"),
+                                    ("What it types in a shell", "curl · scp · ssh"),
+                                    ("What it runs in a notebook", "its own code")]):
+        box(s, L, _e(y + i * Inches(0.54)), Inches(2.86), Inches(0.46), lab,
+            sub, fill=SLATE_T, edge=SLATE, size=10.5, sub_size=8)
+        arrow(s, Inches(3.48), _e(y + i * Inches(0.54) + Inches(0.23)),
+              Inches(4.00), Inches(2.84))
 
-    box(s, Inches(3.60), y, Inches(2.60), Inches(1.60), "net/egress.py",
-        "one policy\nevery transport\nafter every redirect\n\n"
-        "unlisted = DENIED", fill=BLUE_T, edge=BLUE, size=12, sub_size=8.5)
+    box(s, Inches(4.00), y, Inches(2.30), Inches(1.44), "One gate",
+        "the same answer\nevery time, even after\na redirect\n\n"
+        "not on the list = NO", fill=BLUE_T, edge=BLUE, size=12.5,
+        sub_size=8.5)
 
-    arrow(s, Inches(6.20), Inches(2.66), Inches(6.86), Inches(2.66),
+    arrow(s, Inches(6.30), Inches(2.62), Inches(6.80), Inches(2.62),
           color=GREEN)
-    arrow(s, Inches(6.20), Inches(3.42), Inches(6.86), Inches(3.42),
+    arrow(s, Inches(6.30), Inches(3.30), Inches(6.80), Inches(3.30),
           color=RED)
-    box(s, Inches(6.86), Inches(2.42), Inches(2.72), Inches(0.50), "ALLOWED",
-        "", fill=GREEN_T, edge=GREEN, size=10.5)
-    chips(s, Inches(6.86), Inches(2.98), Inches(2.72),
-          ["loopback · LAN · local registry", "git push to a named remote",
-           "ssh to a declared deploy box"], fill=WHITE, edge=GREEN,
-          color=GREEN)
-    box(s, Inches(9.80), Inches(2.42), Inches(2.92), Inches(0.50), "DENIED",
-        "", fill=RED_T, edge=RED, size=10.5)
-    chips(s, Inches(9.80), Inches(2.98), Inches(2.92),
-          ["scp · rsync · curl -d/-T · /dev/tcp",
-           "aws s3 cp · docker push · npm publish",
-           "web search — deleted outright"], fill=WHITE, edge=RED, color=RED)
+    cy = panel(s, Inches(6.80), Inches(2.30), Inches(2.86), Inches(1.64),
+               "Allowed", GREEN, GREEN_T)
+    chips(s, Inches(6.90), cy, Inches(2.66),
+          ["your own network and machines", "pushing to your own git remote",
+           "deploying to a server you named"], edge=GREEN, color=GREEN,
+          size=8.5)
+    cy = panel(s, Inches(9.86), Inches(2.30), Inches(2.86), Inches(1.64),
+               "Refused", RED, RED_T)
+    chips(s, Inches(9.96), cy, Inches(2.66),
+          ["copying files to an outside host", "uploading to cloud storage",
+           "web search — removed completely"], edge=RED, color=RED, size=8.5)
 
-    # ── the second row: who gets in, and what drives it ───────────────────
-    y2 = Inches(4.34)
-    box(s, L, y2, Inches(3.96), Inches(1.16), "Who gets in", "",
-        fill=AMBER_T, edge=AMBER, size=11.5)
-    chips(s, _e(L + Inches(0.16)), _e(y2 + Inches(0.38)), Inches(3.64),
-          ["token on every /api/*  ·  CORS allow-list",
-           "public bind + no token → refuses to boot"],
-          fill=WHITE, edge=AMBER, color=AMBER)
+    y2 = Inches(4.20)
+    cy = panel(s, L, y2, Inches(3.96), Inches(1.30), "Who can get in", AMBER,
+               AMBER_T)
+    chips(s, _e(L + Inches(0.12)), cy, Inches(3.72),
+          ["every request needs a key",
+           "on a public address with no key, it refuses to start"],
+          edge=AMBER, color=AMBER, size=8.5)
 
-    box(s, Inches(4.78), y2, Inches(3.96), Inches(1.16),
-        "What drives it", "", fill=RED_T, edge=RED, size=11.5)
-    chips(s, Inches(4.94), _e(y2 + Inches(0.38)), Inches(3.64),
-          ["a ticket or a page is UNTRUSTED text",
-           "so: containment, not detection"],
-          fill=WHITE, edge=RED, color=RED)
+    cy = panel(s, Inches(4.78), y2, Inches(3.96), Inches(1.30),
+               "Text it reads is not an order", RED, RED_T)
+    chips(s, Inches(4.90), cy, Inches(3.72),
+          ["a ticket or web page could try to steer it",
+           "so we box it in rather than try to spot it"],
+          edge=RED, color=RED, size=8.5)
 
-    box(s, Inches(8.76), y2, Inches(3.96), Inches(1.16), "What a run costs",
-        "", fill=GREEN_T, edge=GREEN, size=11.5)
-    chips(s, Inches(8.92), _e(y2 + Inches(0.38)), Inches(3.64),
-          ["rate ceiling per role  ·  request meter",
-           "local first; cloud only after a failure"],
-          fill=WHITE, edge=GREEN, color=GREEN)
+    cy = panel(s, Inches(8.76), y2, Inches(3.96), Inches(1.30),
+               "What a run costs", GREEN, GREEN_T)
+    chips(s, Inches(8.88), cy, Inches(3.72),
+          ["a cap on how often each specialist may call the model",
+           "your model first; a paid one only after a real failure"],
+          edge=GREEN, color=GREEN, size=8.5)
 
-    # ── the limits, stated ────────────────────────────────────────────────
-    y3 = Inches(5.62)
-    text(s, L, y3, Inches(3.0), Inches(0.24), "Limits we publish", size=10,
-         bold=True, color=RED)
+    y3 = Inches(5.66)
+    text(s, L, y3, Inches(4.0), Inches(0.24), "What this does NOT do",
+         size=10.5, bold=True, color=RED)
     for i, lab in enumerate([
-            "the kernel guard is a guard, not a sandbox",
-            "a shell can open a socket the policy never sees",
-            "fleet sync is unauthenticated by default",
-            "role tool filters fail OPEN, so a typo cannot brick an agent"]):
+            "a notebook cell shares the guard's own memory — it is a guard, "
+            "not a sealed box",
+            "a shell can still open a connection the gate never sees",
+            "sharing memory between machines is open until you lock it down",
+            "if a specialist's tool list has a typo, the specialist still runs"]):
         chip(s, _e(L + (i % 2) * Inches(6.20)),
              _e(y3 + Inches(0.28) + (i // 2) * Inches(0.36)), Inches(5.92),
-             lab, fill=WHITE, edge=RED, color=RED, size=9)
+             lab, fill=WHITE, edge=RED, color=RED, size=8.5)
 
     notes(s, """
 The incident that set the bar: a fetch the tool refused was rerouted through a
-shell curl, then through a notebook cell, and it worked. A boundary you can
-walk around by changing transport is a suggestion, so one module answers on all
-three paths and after every redirect, and a missing allow-list entry is DENIED
-rather than escalated to a human.
+shell curl, then through a notebook cell, and it worked. A boundary you can walk
+around by changing transport is a suggestion, so one module — net/egress.py —
+answers on all three paths and after every redirect, and a missing allow-list
+entry is DENIED rather than escalated to a human.
 
-Outbound, refused: scp, rsync, sftp, ssh host 'cmd', curl -d/-F/-T, aws s3 cp,
+Refused outbound: scp, rsync, sftp, ssh host 'cmd', curl -d/-F/-T, aws s3 cp,
 docker push, npm publish, git push to a URL, and bash's own > /dev/tcp/host/port.
 Inbound: web fetch, crawl, headless browser, @mention expansion. Web SEARCH was
 deleted outright because the query string is our own data leaving the box, and
 deleting the tool closed nothing until the refusal moved to the fetch layer.
 AIFORGE_EGRESS_OFF closes everything in one switch; per-class switches cover
-integrations, email, telemetry, MCP and fleet sync. Loopback, LAN, a local
+integrations, e-mail, telemetry, MCP and fleet sync. Loopback, LAN, a local
 registry and a git push to a named remote stay allowed on purpose — a control
 that blocks ordinary work is a control that gets switched off.
 
@@ -480,20 +479,20 @@ Access: a token is required on every API route but health; a non-loopback bind
 with NO token refuses to boot, and the guard inspects the real server rather
 than an env var only run.sh sets. Loopback trust must be declared, because
 behind a same-host reverse proxy every request looks like 127.0.0.1 — which was
-a full auth bypass. CORS is an allow-list, never a wildcard. Limits: one shared
-token, so no per-user identity or SSO yet, and fleet sync is open unless closed.
+a full auth bypass. CORS is an allow-list, never a wildcard. The limits: one
+shared token, so no per-user identity or SSO yet.
 
 Untrusted input: a ticket description, a fetched page or a review comment
 reaches the model beside your own instruction and we do not classify it. So the
-answer is containment: the egress refusal is code rather than model judgement,
-the 20 external-write tools ask a human, file tools are clamped to the
-workspace, Plan mode cannot write, and unattended runs refuse writes outright.
+answer is containment: the refusal is code rather than model judgement, 20
+external-write tools ask a human, file tools are clamped to the workspace, Plan
+mode cannot write, and unattended runs refuse writes outright.
 
-Trust and secrets: no CERT_NONE anywhere — each endpoint's certificate is
-verified, and one AIFORGE_CA_BUNDLE covers the model endpoint, the
-integrations, AIForge's own HTTP and every subprocess (git, curl, npm), or a
-self-signed host is pinned on first use. Credentials, MCP headers and the
-runtime env live in one 0700 folder, files 0600, repaired on boot.
+Certificates and secrets: no CERT_NONE anywhere. One AIFORGE_CA_BUNDLE covers
+the model endpoint, the integrations, our own HTTP and every subprocess (git,
+curl, npm); otherwise a self-signed host is pinned on first use. Credentials,
+MCP headers and the runtime env live in one 0700 folder, files 0600, repaired
+on boot.
 
 Cost: a rate ceiling in requests per minute per role keeps background work from
 out-shouting a person, a request meter attributes every call to a role and a
@@ -501,108 +500,122 @@ task, long sessions compact into briefs, and escalation to a cloud model
 happens only after a local failure and only if you registered one. With a local
 endpoint the marginal cost of a run is electricity.
 
-Supply chain: one build emits sonar/, blackduck/ and a CycloneDX SBOM; a heavy
-dependency was dropped and its repo-map vendored under Apache-2.0, 212 packages
-to 186. Every control above began as a bypass that WORKED in testing, and each
-is pinned by a test verified to fail on the tree before the fix.
+Every control above began as a bypass that WORKED in testing, and each is
+pinned by a test verified to fail on the tree before the fix.
 """)
 
 
 # ------------------------------------------------------------- page 3 ------
-def evidence_visual(prs):
+def memory_and_asks(prs):
     s = slide_base(
-        prs, "The evidence, the gap, and the asks",
-        "The zeros are the PLATFORM's, read off the scanner API. What they do "
-        "not cover is the middle column — said here rather than left to find.",
-        f"{AS_OF}. {M['ncloc']} lines, {M['files']} files, "
-        f"{M['duplication']} duplication; one build feeds both scanner "
-        "families and a hermetic Docker target runs the suite clean-room.")
+        prs, "What one person learns, the whole company keeps",
+        "Each machine learns on its own. Secrets are stripped, a team lead "
+        "merges the rest, and other teams read it.",
+        f"{AS_OF}. It is a folder of text files and one small SQLite file — "
+        "you can read it, search it, copy it to another machine, or delete it.")
 
-    metric_strip(s, Inches(1.36), [
-        (M["bugs"], "bugs", GREEN),
-        (M["vulnerabilities"], "vulnerabilities", GREEN),
-        (M["code_smells"], "code smells", GREEN),
-        (M["ratings"], "Sonar ratings", GREEN),
+    y = Inches(1.44)
+    steps = [
+        ("One machine", "learns from every run\nnothing raw ever leaves",
+         SLATE_T, SLATE),
+        ("Secrets stripped", "passwords and private notes\nare blocked, not "
+         "edited", AMBER_T, AMBER),
+        ("Your team", "one lead merges it\ninto the team's memory", GREEN_T,
+         GREEN),
+        ("The company", "other teams read it\nteams stay separate", BLUE_T,
+         BLUE),
+    ]
+    bw = Inches(2.72)
+    for i, (lab, sub, f, e) in enumerate(steps):
+        x = L + i * (bw + Inches(0.42))
+        box(s, x, y, bw, Inches(1.00), lab, sub, fill=f, edge=e, size=12.5,
+            sub_size=8.5)
+        if i < len(steps) - 1:
+            arrow(s, _e(x + bw), _e(y + Inches(0.50)),
+                  _e(x + bw + Inches(0.42)), _e(y + Inches(0.50)))
+
+    y1 = Inches(2.56)
+    for i, (head, items, col, tint) in enumerate([
+        ("What your team gets", [
+            "a fix found once is known by everyone tomorrow",
+            "a new joiner reads the team's real history",
+            "people leave, their know-how stays",
+        ], GREEN, GREEN_T),
+        ("What the company gets", [
+            "one place serves many teams at once",
+            "each team's memory stays its own",
+            "nothing to run: it is files in a folder",
+        ], BLUE, BLUE_T),
+        ("What legal and audit get", [
+            "passwords are blocked before sharing, not after",
+            "every merge is saved and can be undone",
+            "delete the folder and it is gone — no second copy",
+        ], PLUM, PLUM_T),
+    ]):
+        x = L + i * Inches(4.16)
+        cy = panel(s, x, y1, Inches(3.90), Inches(1.64), head, col, tint)
+        chips(s, _e(x + Inches(0.12)), cy, Inches(3.66), items, edge=col,
+              color=col, size=8.5)
+
+    # ── the honest half ───────────────────────────────────────────────────
+    y2 = Inches(4.32)
+    metric_strip(s, y2, [
+        (M["bugs"], "bugs found by the scanner", GREEN),
+        (M["vulnerabilities"], "security weaknesses", GREEN),
         (M["tests"], "tests", BLUE),
-        (M["coverage"], "coverage (86.7% pytest-cov)", BLUE),
+        (M["coverage"], "of the code covered by tests", BLUE),
+        ("0", "of its OWN work ever scored", RED),
     ])
 
-    y = Inches(2.34)
-    box(s, L, y, Inches(3.96), Inches(0.50), "MEASURED — the platform", "",
-        fill=GREEN_T, edge=GREEN, size=11.5)
-    chips(s, L, _e(y + Inches(0.58)), Inches(3.96), [
-        "whole tree scanned, not two directories",
-        "duplicate build copies excluded",
-        "coverage regenerated with every scan",
-        "9 vulnerabilities closed by CODE",
-        "3 failures named, not rounded away",
-    ], fill=WHITE, edge=GREEN, color=GREEN)
+    y3 = Inches(5.20)
+    cy = panel(s, L, y3, Inches(5.50), Inches(1.64),
+               "What we cannot prove yet", RED, RED_T)
+    chips(s, _e(L + Inches(0.12)), cy, Inches(5.26), [
+        "no set of old tickets is replayed to score its work",
+        "no record of how often a person rewrites what it wrote",
+        "never load-tested, so no honest users-per-machine number",
+    ], edge=RED, color=RED, size=8.5)
 
-    box(s, Inches(4.68), y, Inches(3.96), Inches(0.50),
-        "NOT MEASURED — the output", "", fill=RED_T, edge=RED, size=11.5)
-    chips(s, Inches(4.68), _e(y + Inches(0.58)), Inches(3.96), [
-        "no frozen ticket set, no replay",
-        "no acceptance rate on generated MRs",
-        "no edit distance to what shipped",
-        "no load test → no sizing number",
-        "no restore drill; traces name the box",
-    ], fill=WHITE, edge=RED, color=RED)
-
-    box(s, Inches(9.36), y, Inches(3.36), Inches(0.50),
-        "REMOVED — versus the usual", "", fill=BLUE_T, edge=BLUE, size=11.5)
-    chips(s, Inches(9.36), _e(y + Inches(0.58)), Inches(3.36), [
-        "vector DB → markdown + SQLite",
-        "opaque rows → git diff",
-        "dump/restore → copy a folder",
-        "vendor tool-calling → any model",
-        "telemetry on → none in the lock",
-    ], fill=WHITE, edge=BLUE, color=BLUE)
-
-    y2 = Inches(4.94)
-    text(s, L, y2, Inches(6.0), Inches(0.26), "Decisions we need from you",
-         size=13, bold=True, color=INK)
-    asks = [("Prove the output", "fund the harness above", RED),
-            ("Name an owner", "one author is the bus factor", RED),
-            ("Admin host", "which network holds company memory", BLUE),
-            ("Boundary", "OS firewall rule + per-user identity", BLUE),
-            ("Scanner profile", "make ours and the corporate one agree", BLUE)]
-    w = Inches(2.34)
-    for i, (lab, sub, col) in enumerate(asks):
-        box(s, _e(L + i * (w + Inches(0.11))), Inches(5.28), w, Inches(0.86),
-            lab, sub, fill=WHITE, edge=col, size=11, sub_size=8.5,
-            label_color=col)
+    cy = panel(s, Inches(6.32), y3, Inches(6.40), Inches(1.64),
+               "What we need you to decide", BLUE, BLUE_T)
+    chips(s, Inches(6.44), cy, Inches(6.16), [
+        "pay for that scoring — it is the only thing that settles the question",
+        "name an owner and a stand-in: one person wrote all of this",
+        "pick the network that holds the company memory, and who owns it",
+    ], edge=BLUE, color=BLUE, size=8.5)
 
     notes(s, """
-Why the zero is real: the scan covers the whole repository — an earlier config
-scanned two directories, reported zero, and CI still failed. Duplicate build
-copies are excluded so nothing is counted twice, and coverage is regenerated
-with every scan because one out-of-range line makes the whole report read 0%.
-The suite's own line coverage is 86.7%; Sonar reports 82.8% because it also
-counts files the unit suite never imports. 8,606 tests ran: 3 failed, 0 errors,
-0 skipped, all three in one file needing a model actually served on the shared
-endpoint, which was empty — stated rather than rounded to zero. Nine standing
-vulnerabilities were closed by CHANGING CODE (TLS pinning, scheme validation,
-digest usage) after two earlier passes had triaged them as accepted decisions.
-They were decisions; they were the wrong ones.
+Memory in detail. Each machine compacts what it learned locally. A redaction
+filter runs on the CLIENT before anything is advertised: credential-shaped and
+private notes are BLOCKED, never quietly edited. One team admin is the only
+merger, folding into per-group trees so two teams cannot mix, and one admin can
+serve many independent fleets — groups are discovered from the admin rather
+than hardcoded. Only distilled knowledge nodes travel; transcripts, captures
+and working notes never leave the machine that made them. Every merge is
+snapshotted and a revert endpoint restores it. Sync is spoke-initiated, so
+laptops behind NAT just work, and moving a machine is copying a directory.
+Deploy note: the admin holds the merged fold — bind it to the LAN or a
+WireGuard network, because the sync surface is open by default on purpose.
 
-What the number does not say: it is the platform's quality, not the agent's
-output. A tree with zero findings can still write a wrong patch. There is no
-evaluation harness — no frozen set of closed tickets replayed each release, no
-acceptance rate (merged without a rewrite), no edit distance between what the
+The quality numbers are the PLATFORM's, read off the scanner API rather than
+inferred from a green pipeline: 0 bugs, 0 vulnerabilities, 0 code smells, A/A/A
+ratings, 8,606 tests, 82.8% coverage as Sonar scopes it (86.7% by pytest-cov on
+the same run), 71,204 lines, 542 files, 0.1% duplication. Three test failures
+are named rather than rounded away: all three need a model actually served on
+the shared endpoint, which was empty. Nine standing vulnerabilities were closed
+by changing code — TLS pinning, scheme validation, digest usage — after two
+earlier passes had triaged them as accepted decisions.
+
+What that number does NOT say: it is the platform's quality, not the agent's
+output. There is no evaluation harness — no frozen set of closed tickets
+replayed each release, no acceptance rate, no edit distance between what the
 agent wrote and what shipped, and nothing re-run when the model is swapped.
-There is no load test, so no honest number for developers per box, VRAM for a
-team of N, or wall-clock per ticket. Backup is copying one folder, but there is
-no documented restore drill, and the traces that record every tool call name
-the BOX rather than a person, with no retention or tamper-evidence: good for
-debugging a run, not yet evidence for an auditor.
+There is no load test, so no honest number for users per box, VRAM for a team
+of N, or wall-clock per ticket. Backup is copying one folder, but there is no
+documented restore drill, and the traces that record every tool call name the
+BOX rather than a person, with no retention or tamper-evidence.
 
-The comparison a budget actually faces: a per-seat assistant prices per
-developer per month and sends the source to its vendor; this prices as hardware
-you already own and sends it to the endpoint you set. Cost is the easy half —
-output quality is the argument worth having, which is why the first ask is to
-fund the harness.
-
-The five asks, in order: prove the output; name an owner and a support rota;
+The full ask list: fund the scoring harness; name an owner and a support rota;
 decide which network holds the merged company memory and who owns it; add the
 OS-level firewall rule the shell still needs and decide on per-user identity;
 and confirm the corporate scanner profile so both servers agree.
@@ -614,7 +627,7 @@ def build():
     prs.slide_width, prs.slide_height = W, H
     how_it_works(prs)
     containment_visual(prs)
-    evidence_visual(prs)
+    memory_and_asks(prs)
     prs.save(OUT)
     print(f"wrote {OUT}  ({OUT.stat().st_size / 1024:.0f} KB, "
           f"{len(prs.slides._sldIdLst)} slides)")
