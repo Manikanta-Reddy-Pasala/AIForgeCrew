@@ -70,15 +70,23 @@ def integration_conf(name: str, env_prefix: str, *,
         # and the UI toggle for this was removed. `{PREFIX}_INSECURE_TLS=0`
         # turns verification on, and `{PREFIX}_CA_BUNDLE` is the better answer
         # — it keeps verification ON and anchors it to the internal CA.
-        "insecure_tls": _ins is None or truthy(_ins),
+        "insecure_tls": (_ins is None and not _shared_ca()) or truthy(_ins),
         "ca_bundle": (_s("ca_bundle", f"{env_prefix}_CA_BUNDLE")
-                      or os.environ.get("AIFORGE_CA_BUNDLE", "").strip()),
+                      or _shared_ca()),
     }
     for key, env in str_fields:
         conf[key] = _s(key, env)
     for key, env in bool_fields:
         conf[key] = truthy(os.environ.get(env, "")) or bool(stored.get(key))
     return conf
+
+
+def _shared_ca() -> str:
+    """The estate-wide CA bundle (AIFORGE_CA_BUNDLE / SSL_CERT_FILE /
+    REQUESTS_CA_BUNDLE), or "". One var covers Jira, Confluence, GitLab, the
+    model endpoint and every subprocess — see ``net.ca``."""
+    from aiforge_core.net import ca
+    return ca.bundle() or ""
 
 
 def ssl_context(insecure_tls: bool, ca_bundle: str = "", url: str = ""):

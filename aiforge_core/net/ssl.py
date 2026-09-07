@@ -30,10 +30,12 @@ result carries ``tls_verified: false``.
 
 Env knobs (highest priority first):
 
-* ``AIFORGE_LLM_CA_BUNDLE`` — path to a PEM CA bundle / cert. When set,
-  verification stays ON but trusts this CA (applies to every https
-  host). Also honours the standard ``SSL_CERT_FILE`` /
-  ``REQUESTS_CA_BUNDLE`` if AIForge's var is unset.
+* ``AIFORGE_CA_BUNDLE`` — path to a PEM CA bundle. Verification stays ON
+  and trusts this CA, for the model endpoint, the integrations and every
+  subprocess alike (see ``net.ca``); the standard ``SSL_CERT_FILE`` /
+  ``REQUESTS_CA_BUNDLE`` are honoured the same way.
+* ``AIFORGE_LLM_CA_BUNDLE`` — the same thing for the MODEL endpoint only,
+  overriding the shared bundle when the two differ.
 * ``AIFORGE_LLM_SSL_VERIFY`` — ``true`` (default) verifies normally;
   ``false`` / ``0`` / ``no`` / ``off`` disables verification, but **only
   for trusted-internal hosts** (see above). Ignored when a CA bundle is
@@ -65,11 +67,18 @@ def _verify_enabled() -> bool:
 
 
 def _ca_bundle() -> str | None:
-    for var in ("AIFORGE_LLM_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
-        val = os.environ.get(var)
-        if val and val.strip():
-            return val.strip()
-    return None
+    """The CA bundle for AIForge's own traffic.
+
+    ``AIFORGE_LLM_CA_BUNDLE`` still wins for the model endpoint alone; anything
+    else falls through to the shared resolver in ``net.ca``, so one
+    ``AIFORGE_CA_BUNDLE`` covers the model, the integrations and every
+    subprocess at once.
+    """
+    val = (os.environ.get("AIFORGE_LLM_CA_BUNDLE") or "").strip()
+    if val:
+        return val
+    from aiforge_core.net import ca
+    return ca.bundle()
 
 
 def _certifi_where() -> str | None:

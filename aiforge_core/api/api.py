@@ -145,6 +145,24 @@ def _repair_config_permissions() -> None:
 
 
 @app.on_event("startup")
+def _publish_ca_bundle() -> None:
+    """Put the estate's CA into this process's environment before anything
+    spawns a subprocess.
+
+    An internal CA used to reach the model client and the integration helpers
+    and stop there, so ``git clone`` against an internal GitLab failed with a
+    certificate error while the REST calls to the same host worked. Publishing
+    it here means git, gh, curl, npm and anything the agent runs in its shell
+    inherit the same trust, and an operator who already set one of those
+    variables keeps their value."""
+    try:
+        from aiforge_core.net import ca
+        ca.apply_to_process_env()
+    except Exception as exc:  # noqa: BLE001 — never block boot on this
+        logging.getLogger("aiforge.ca").warning("CA bundle not applied: %s", exc)
+
+
+@app.on_event("startup")
 def _guard_and_announce_backends() -> None:
     """FIRST boot step: in data-driven mode (AIFORGE_REQUIRE_DATA_BACKEND=1)
     abort LOUD if any data store still resolves to embedded SQLite, then log
