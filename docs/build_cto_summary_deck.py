@@ -568,12 +568,15 @@ def memory_and_asks(prs):
 
     y3 = Inches(5.20)
     cy = panel(s, L, y3, Inches(5.50), Inches(1.64),
-               "What it asks of us", SLATE, SLATE_T)
+               "What the open-source agents do not do", PLUM, PLUM_T)
     chips(s, _e(L + Inches(0.12)), cy, Inches(5.26), [
-        "one machine with a model on it — a desktop, a NUC or a server",
-        "one folder to back up; copy it and the machine has moved",
-        "upgrades pull and restart; the data migrates itself",
-    ], edge=SLATE, color=SLATE, size=8.5)
+        "OpenCode, Aider and Cline stop at one machine — ours shares what "
+        "it learns",
+        "one chat loop there; 19 agents here, carrying a ticket to a merge "
+        "request",
+        "the enterprise parts they leave out: one gate out, our own CA, "
+        "approvals",
+    ], edge=PLUM, color=PLUM, size=8.5)
 
     cy = panel(s, Inches(6.32), y3, Inches(6.40), Inches(1.64),
                "How we would roll it out", BLUE, BLUE_T)
