@@ -1,17 +1,25 @@
-"""Build docs/AIForgeCrew-CTO-Summary.pptx — a ten-page executive summary.
+"""Build docs/AIForgeCrew-CTO-Summary.pptx — a fourteen-page executive summary.
 
-Audience: a CTO, not an engineer. Ten pages, one question each:
+Audience: a CTO, not an engineer. Fourteen pages, one question each:
 
   1. What is it, and what does it replace? (product + shape)
   2. How does the work actually get done? (pipeline, chat modes, library)
-  3. What can it reach, and what holds it? (security + containment)
-  4. Can our code or our data get out? (egress, both directions)
-  5. Where do the source and the prompts actually go? (inference boundary)
-  6. What does it give a team, and then the whole company? (shared memory)
-  7. What does it cost to run, and how is it operated? (budget + deploy)
-  8. What is in the build, and what do we NOT claim? (supply chain + limits)
-  9. How does it compare with the usual stack? (what was removed)
- 10. Is the code trustworthy, and what must you decide? (quality + asks)
+  3. Does its OUTPUT hold up, and how would we know? (agent quality — open)
+  4. What can it reach, and what holds it? (security + containment)
+  5. Who can reach it, and whose words does it obey? (access + injection)
+  6. Can our code or our data get out? (egress, both directions)
+  7. Where do the source and the prompts actually go? (inference boundary)
+  8. What does it give a team, and then the whole company? (shared memory)
+  9. What does it cost to run, and how is it operated? (budget + deploy)
+ 10. How does it survive contact with production? (sizing, backup, upgrade)
+ 11. What is in the build, and what do we NOT claim? (supply chain + limits)
+ 12. What can audit, legal and model governance rely on? (record + licence)
+ 13. How does it compare with the usual stack? (what was removed)
+ 14. Is the code trustworthy, and what must you decide? (quality + asks)
+
+Slides 3, 5, 10 and 12 exist to state what is NOT measured or NOT held. A deck
+that only lists controls invites the audience to find the gap themselves, and
+they will.
 
 Run it:
 
@@ -512,7 +520,8 @@ def supply_chain(prs):
 def quality(prs):
     s = slide_base(
         prs, "Code quality — and the decisions we need from you",
-        "Zero is the whole tree's number, not a subset's.",
+        "Zero is the whole tree's number, not a subset's — and it is the "
+        "PLATFORM's number, not the agent's output (slide 3).",
         f"{AS_OF}. Read off the scanner API, not inferred from a green "
         f"pipeline: {M['open_issues']} unresolved issues and {M['hotspots']} "
         f"hotspots awaiting review across {M['ncloc']} lines of production "
@@ -564,20 +573,25 @@ def quality(prs):
 
     text(s, L, Inches(5.22), WD, Inches(0.28), "Decisions we need",
          size=13, bold=True, color=INK)
-    card_row(s, Inches(5.56), [
+    card_row(s, Inches(5.48), [
+        ("Prove the output", [
+            "Fund the slide-3 harness. Nothing else settles the buy question.",
+        ], WHITE, RED),
+        ("Name an owner", [
+            "One author today. A second maintainer, and a support rota.",
+        ], WHITE, RED),
+        ("Where the admin lives", [
+            "One host holds the merged company memory. Which network?",
+        ], WHITE, BLUE),
+        ("Boundary and identity", [
+            "The shell still needs an OS firewall rule; per-user identity is "
+            "a decision, not a build.",
+        ], WHITE, BLUE),
         ("Scanner profile", [
             "The corporate server runs analysers ours does not; confirm the "
             "profile so both agree.",
         ], WHITE, BLUE),
-        ("Where the admin lives", [
-            "One host holds the merged company memory. Which network, and who "
-            "owns it?",
-        ], WHITE, BLUE),
-        ("Egress boundary", [
-            "We hold three transports in-process; the shell still needs an "
-            "OS-level firewall rule.",
-        ], WHITE, BLUE),
-    ])
+    ], body_size=9.5, head_size=11.5)
 
 
 # ------------------------------------------------------------- page 1 ------
@@ -750,6 +764,10 @@ def cost_and_ops(prs):
             "Persistent shell, language server, type-checker, test runner and "
             "an IPython kernel — not a simulated one.",
         ], SLATE_T, SLATE),
+        ("It works while nobody watches", [
+            "Scheduled ticket pipelines, nightly compaction and the sweep that "
+            "merges duplicate rules — which is why those runs refuse writes.",
+        ], PLUM_T, PLUM),
     ])
 
 
@@ -760,7 +778,8 @@ def versus(prs):
         "Most of the operational burden here is burden we removed rather than "
         "documented.",
         f"{AS_OF}. The right column is the shipping default, not a hardened "
-        "configuration you have to assemble.")
+        "configuration you have to assemble. None of it depends on the network "
+        "being off.")
 
     rows = [
         ("Storage", "a vector database to install, tune, back up",
@@ -783,25 +802,273 @@ def versus(prs):
         if lab:
             text(s, x, hdr, w, Inches(0.28), lab, size=11.5, bold=True, color=col)
     for i, (k, a, b) in enumerate(rows):
-        y = Inches(1.88) + i * Inches(0.58)
+        y = Inches(1.88) + i * Inches(0.54)
         bg = s.shapes.add_shape(MSO_SHAPE.RECTANGLE, _e(L), _e(y), _e(WD),
-                                Inches(0.52))
+                                Inches(0.48))
         bg.fill.solid()
         bg.fill.fore_color.rgb = WHITE if i % 2 else SLATE_T
         bg.line.fill.background()
         bg.shadow.inherit = False
-        text(s, _e(L + Inches(0.14)), _e(y + Inches(0.14)), Inches(2.3),
+        text(s, _e(L + Inches(0.14)), _e(y + Inches(0.12)), Inches(2.3),
              Inches(0.28), k, size=11, bold=True)
-        text(s, Inches(3.20), _e(y + Inches(0.14)), Inches(4.5), Inches(0.28),
+        text(s, Inches(3.20), _e(y + Inches(0.12)), Inches(4.5), Inches(0.28),
              a, size=10.5, color=MUTED)
-        text(s, Inches(7.90), _e(y + Inches(0.14)), Inches(4.7), Inches(0.28),
+        text(s, Inches(7.90), _e(y + Inches(0.12)), Inches(4.7), Inches(0.28),
              b, size=10.5, color=INK)
 
-    box(s, L, Inches(6.58), WD, Inches(0.40), "",
-        "Everything above is a property of the default install — none of it "
-        "depends on the network being off.",
-        fill=WHITE, edge=LINE, size=10, sub_size=10)
+    box(s, L, Inches(6.30), WD, Inches(0.56),
+        "The comparison your budget actually faces",
+        "a per-seat assistant — Copilot, Cursor, a Devin-class agent — prices "
+        "per developer per month and sends the source to its vendor; this "
+        "prices as hardware you already own and sends it to the endpoint you "
+        "set. Cost is the easy half: the open question is output quality "
+        "(slide 3), and it is the one worth arguing about.",
+        fill=WHITE, edge=BLUE, size=12, sub_size=9.5, label_color=BLUE)
 
+
+
+# ------------------------------------------------------------- page 3 ------
+def does_it_work(prs):
+    s = slide_base(
+        prs, "Does the work it produces hold up?",
+        "The zeros on the quality slide are OUR code. Whether a generated "
+        "merge request is CORRECT is a different question, and unmeasured.",
+        f"{AS_OF}. There is no evaluation harness in the tree: no golden ticket "
+        "set, no acceptance rate, no evals directory. Stated here rather than "
+        "left for you to assume from a green scan.")
+
+    text(s, L, Inches(1.44), WD, Inches(0.46),
+         "A platform with zero findings can still write a wrong patch. The "
+         "quality slide says the code that drives the agent is sound; it says "
+         "nothing about the agent's output. Nobody should conflate the two, so "
+         "this deck separates them.", size=11.5, color=RED)
+
+    h = card_row(s, Inches(2.02), [
+        ("Measured today", [
+            f"{M['tests']} tests, {M['coverage_raw']} line coverage and "
+            f"{M['open_issues']} findings — over the platform's own source.",
+            "Every containment control is pinned by a test verified to fail on "
+            "the tree before the fix.",
+            "That is a statement about the machinery, not about the patch it "
+            "hands you.",
+        ], BLUE_T, BLUE),
+        ("NOT measured today", [
+            "No frozen set of tickets replayed each release.",
+            "No acceptance rate: how often a generated merge request is merged "
+            "without a rewrite.",
+            "No edit distance between what the agent wrote and what was merged.",
+            "No re-run of any of the above when the model is swapped.",
+        ], RED_T, RED),
+        ("What holds the line meanwhile", [
+            "Every run ends at a merge request a human reviews. Nothing merges "
+            "itself.",
+            "Validator gates the result and Live-verifier runs the real recipe "
+            "before it is offered.",
+            "Plan mode is read-only, and file tools cannot leave the workspace.",
+        ], GREEN_T, GREEN),
+    ])
+
+    y = Inches(2.02) + h + Inches(0.24)
+    card_row(s, y, [
+        ("The harness we propose", [
+            "A frozen set of already-closed tickets, replayed at each release.",
+            "Pass = the repo's own tests pass AND a reviewer merges it without "
+            "rewriting the diff.",
+            "The same set re-run on any model or prompt change, so a swap "
+            "cannot quietly regress the work.",
+        ], AMBER_T, AMBER),
+        ("Adoption evidence to collect", [
+            "Tickets carried end to end, and the share that reach a merge "
+            "request without a human rescue.",
+            "Reviewer minutes per generated merge request.",
+            "Per-role failure counts — already written to the trajectory files, "
+            "never yet aggregated.",
+        ], SLATE_T, SLATE),
+        ("Why this is the deciding number", [
+            "Containment decides whether we are ALLOWED to run it.",
+            "Output quality decides whether it is WORTH running.",
+            "Asking for this number is the correct response to the rest of "
+            "this deck.",
+        ], PLUM_T, PLUM),
+    ])
+
+
+# ------------------------------------------------------------- page 5 ------
+def access_and_injection(prs):
+    s = slide_base(
+        prs, "Who can reach it, and whose words it obeys",
+        "Egress answers where bytes go. These two answer who starts a run, and "
+        "which text the model treats as an instruction.",
+        f"{AS_OF}. Both controls below are code in the request path, not model "
+        "judgement — a prompt cannot argue its way past either.")
+
+    metric_strip(s, Inches(1.42), [
+        ("token", "on every /api/* route but health", BLUE),
+        ("refuses", "to boot on a public bind with no token", GREEN),
+        ("never *", "CORS is an allow-list, not a wildcard", GREEN),
+        ("1", "shared token — no per-user identity yet", AMBER),
+        ("0", "injection classifiers on inbound text", RED),
+    ])
+
+    h = card_row(s, Inches(2.22), [
+        ("Access — what holds", [
+            "AIFORGE_API_TOKEN is required by every API route except health, "
+            "as a header or a bearer.",
+            "A non-loopback bind with no token REFUSES TO BOOT, and the guard "
+            "inspects the real server rather than an env var only run.sh sets.",
+            "Loopback trust is declared, and the admin surface never takes "
+            "that shortcut.",
+        ], GREEN_T, GREEN),
+        ("Access — what does not", [
+            "One shared token, so the trail names the BOX, not the person. No "
+            "SSO, LDAP or per-user roles today.",
+            "The fleet-sync surface is open unless AIFORGE_SYNC_AUTH is set.",
+            "Found the hard way: behind a same-host reverse proxy every "
+            "request looks like 127.0.0.1, so implicit loopback trust was a "
+            "full auth bypass.",
+        ], AMBER_T, AMBER),
+    ])
+
+    y = Inches(2.22) + h + Inches(0.18)
+    box(s, L, y, WD, Inches(0.56),
+        "The agent-specific risk: a Jira description, a fetched page or a "
+        "review comment is UNTRUSTED TEXT that reaches the model beside your "
+        "own instruction",
+        "we do not mark provenance or classify it — so the answer is "
+        "containment, not detection: the controls below do not consult the "
+        "model before refusing",
+        fill=RED_T, edge=RED, size=12.5, sub_size=9.5)
+
+    card_row(s, _e(y + Inches(0.72)), [
+        ("Why injected text still cannot do much", [
+            "Egress policy is code: a refusal is not promptable.",
+            "The 20 external-write tools ask a human first.",
+            "File tools are clamped to the workspace; plan mode cannot write; "
+            "unattended runs refuse writes outright.",
+        ], GREEN_T, GREEN),
+        ("What it could still cost you", [
+            "Wasted runs, a misleading plan, a bad patch in front of a "
+            "reviewer — caught by review, not by the machine.",
+            "The reviewer stays in the loop for the same reason the writes "
+            "ask: the model is not the control.",
+        ], AMBER_T, AMBER),
+        ("What would close it properly", [
+            "Mark inbound content as data, not instruction, at the point it "
+            "enters the prompt.",
+            "Replay a set of hostile tickets in the same harness as slide 3.",
+            "Neither exists yet; both are cheap next to the containment work "
+            "already done.",
+        ], BLUE_T, BLUE),
+    ])
+
+
+# ------------------------------------------------------------ page 10 ------
+def run_in_production(prs):
+    s = slide_base(
+        prs, "Running it — sizing, failure, backup, upgrade",
+        "One process, one port, one folder — plus the two operational questions "
+        "we cannot yet answer with a number.",
+        f"{AS_OF}. Everything on the left is measured from the code; the two "
+        "amber cards are open, and both appear in the asks on the last slide.")
+
+    for i, (lab, sub, f, e) in enumerate([
+            ("One process", "uvicorn, default bind\n127.0.0.1:8799, no\nworker fan-out",
+             SLATE_T, SLATE),
+            ("One state folder", "AIFORGE_CONFIG_DIR —\nSQLite plus markdown,\n"
+                                 "no server to cluster", BLUE_T, BLUE),
+            ("Scheduler", "a daemon thread, cron\nexpressions, 30s tick,\n"
+                          "AIFORGE_JOBS_DISABLE=1", PLUM_T, PLUM),
+            ("Throughput knobs", "4 parallel subtasks in\nworktrees · analysis\n"
+                                 "workers · an RPM ceiling", GREEN_T, GREEN)]):
+        box(s, L + i * Inches(3.08), Inches(1.50), Inches(2.88), Inches(1.16),
+            lab, sub, fill=f, edge=e, size=13, sub_size=9)
+
+    h = card_row(s, Inches(2.86), [
+        ("Failure modes, and what happens", [
+            "Model endpoint down: the run fails visibly. There is no silent "
+            "cloud fallback — escalation needs a model you registered.",
+            "A bad edit lands in a git worktree, never the working copy.",
+            "Missed schedules collapse: a three-day backlog fires once, "
+            "because the next run is computed from now.",
+        ], GREEN_T, GREEN),
+        ("Sizing — OPEN", [
+            "We have never load-tested it: developers per box, model VRAM for a "
+            "team of N, wall-clock per ticket are all unmeasured.",
+            "A single process with no worker fan-out is also the availability "
+            "story: restart is the recovery.",
+            "Do not let anyone quote you a rollout number before a load test.",
+        ], AMBER_T, AMBER),
+        ("Backup and upgrade", [
+            "Upgrade is git pull and run.sh, which converges the environment "
+            "and migrates the data in place.",
+            "Backup is copying one folder — but there is no documented restore "
+            "drill, retention or rotation. That is the honest gap.",
+            "Rollback of a migrated state folder is untested.",
+        ], AMBER_T, AMBER),
+    ])
+
+    box(s, L, _e(Inches(2.86) + h + Inches(0.22)), WD, Inches(0.50),
+        "The shape of the ask",
+        "neither open item is a design flaw — both are measurements nobody has "
+        "paid for yet, and each is a day of work, not a quarter",
+        fill=WHITE, edge=BLUE, size=12.5, sub_size=10, label_color=BLUE)
+
+
+# ------------------------------------------------------------ page 12 ------
+def governance(prs):
+    s = slide_base(
+        prs, "Audit, licence and model governance",
+        "What the record shows, what it cannot show, and who owns the licence "
+        "on the code the model writes.",
+        f"{AS_OF}. The traces below are the product's default behaviour; the "
+        "gaps are named so legal and audit hear them from us first.")
+
+    h = card_row(s, Inches(1.46), [
+        ("What is recorded", [
+            "Every chat turn appends to a per-session trace: the message, EACH "
+            "tool call with its arguments and outcome, and the reply — markdown "
+            "for a human, JSONL beside it for a machine.",
+            "The ticket pipeline dumps a full trajectory per run.",
+            "Structured JSON logs per role, ticket and event; optional "
+            "self-hosted Langfuse traces replay every step.",
+        ], GREEN_T, GREEN),
+        ("What the record cannot tell you", [
+            "One shared token means the actor is the machine, not a named "
+            "person — approvals included.",
+            "Traces are files: no retention policy, no rotation, no "
+            "tamper-evidence, and an env switch turns them off.",
+            "So they are excellent for debugging a run and NOT yet evidence for "
+            "an auditor. Naming that is cheaper than discovering it.",
+        ], AMBER_T, AMBER),
+    ])
+
+    y = Inches(1.46) + h + Inches(0.24)
+    card_row(s, y, [
+        ("Licence and IP", [
+            "The product is MIT. The vendored repo-map component keeps its "
+            "Apache-2.0 licence and notice.",
+            "The MODEL's licence is the operator's choice and it governs "
+            "commercial use of what it writes — a local open-weights model is "
+            "a legal decision, not only a cost one.",
+            "Generated code carries no provenance stamp today; the merge "
+            "request and its trace are the record.",
+        ], PLUM_T, PLUM),
+        ("Model governance", [
+            "The registry pins each model: id, base URL, TLS and vision flags, "
+            "keys held server-side and never returned to the UI.",
+            "Roles pick a registered model by name, so a swap is one edit and "
+            "is visible in config.",
+            "But nothing re-validates BEHAVIOUR after a swap — the same harness "
+            "from slide 3 is what closes this.",
+        ], BLUE_T, BLUE),
+        ("Ownership — the uncomfortable one", [
+            "One author has written this platform. That is the bus factor.",
+            "No support rota, no on-call, no published roadmap beyond the "
+            "current work.",
+            "A tool this central needs a named owner and a second pair of "
+            "hands before it is depended on company-wide.",
+        ], RED_T, RED),
+    ])
 
 
 def build():
@@ -809,12 +1076,16 @@ def build():
     prs.slide_width, prs.slide_height = W, H
     what_it_is(prs)
     how_work_flows(prs)
+    does_it_work(prs)
     security(prs)
+    access_and_injection(prs)
     nothing_leaves(prs)
     where_code_goes(prs)
     shared_memory(prs)
     cost_and_ops(prs)
+    run_in_production(prs)
     supply_chain(prs)
+    governance(prs)
     versus(prs)
     quality(prs)
     prs.save(OUT)
