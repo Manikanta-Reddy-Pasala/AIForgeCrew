@@ -133,11 +133,13 @@ def shape(s, kind, x, y, w, h, *, fill=None, edge=None, edge_w=1.0,
           gradient=None, angle=0.0, adjust=None):
     sp = s.shapes.add_shape(kind, _e(x), _e(y), _e(w), _e(h))
     if gradient:
-        sp.fill.gradient()
-        sp.fill.gradient_angle = angle
-        stops = sp.fill.gradient_stops
-        stops[0].color.rgb, stops[0].position = gradient[0], 0.0
-        stops[1].color.rgb, stops[1].position = gradient[1], 1.0
+        # SOLID, not a gradient. python-pptx writes a valid <a:gradFill>, but
+        # a deck carrying them would not open on the reviewer's Mac while the
+        # same deck without them did — and a page nobody can open is worth
+        # less than a page with a flat header. Depth comes from stacking two
+        # solids instead (see `band`), which every renderer agrees on.
+        sp.fill.solid()
+        sp.fill.fore_color.rgb = gradient[0]
     elif fill is None:
         sp.fill.background()
     else:
@@ -218,8 +220,11 @@ def page(prs, title, kicker, *, accent=BLUE, stats=()):
     _page += 1
     s = prs.slides.add_slide(prs.slide_layouts[6])
 
-    shape(s, MSO_SHAPE.RECTANGLE, 0, 0, W, Inches(1.62),
-          gradient=(NAVY, NAVY_2), angle=0.0)
+    shape(s, MSO_SHAPE.RECTANGLE, 0, 0, W, Inches(1.62), fill=NAVY)
+    shape(s, MSO_SHAPE.RECTANGLE, Inches(8.20), 0, _e(W - Inches(8.20)),
+          Inches(1.62), fill=NAVY_2)
+    shape(s, MSO_SHAPE.RECTANGLE, Inches(7.70), 0, Inches(0.50), Inches(1.62),
+          fill=RGBColor(0x11, 0x2B, 0x44))
     # a hairline of the page's accent along the bottom of the band
     shape(s, MSO_SHAPE.RECTANGLE, 0, Inches(1.60), W, Pt(3), fill=accent)
 
