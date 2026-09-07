@@ -443,7 +443,10 @@ export default function Home() {
         ))}
       </div>
 
-      {tab === 'integrations' && <IntegrationsTab />}
+      {tab === 'integrations' && (<>
+        <IntegrationsTab />
+        <CaCard />
+      </>)}
 
       {tab === 'agent' && (<>
         {/* Simplified: add models once — the system auto-decides everything

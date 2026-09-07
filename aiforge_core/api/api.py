@@ -1227,19 +1227,31 @@ def _normalize_query(query: str) -> str:
 # ─────────────────────────── Static UI ──────────────────────────────────
 # If the Vite production build exists, serve it at /ui/ and redirect "/" to it.
 #
-# Two places, in this order, because there are two ways this code runs:
-#   1. INSTALLED (wheel / .deb / .app / .msi) — the build copies web/dist into
+# Two places, and the CHECKOUT one comes first:
+#   1. A REPO CHECKOUT — ../../web/dist, where `npm run build` puts it.
+#   2. INSTALLED (wheel / .deb / .app / .msi) — the build copies web/dist into
 #      the package as aiforge_core/web_dist, because ../../web/dist from inside
 #      site-packages is nowhere at all. Without this the packaged app serves a
 #      working API and a 404 for its own UI.
-#   2. A REPO CHECKOUT — ../../web/dist, where `npm run build` puts it.
-_DIST_CANDIDATES = (
-    os.path.join(os.path.dirname(__file__), "..", "web_dist"),
-    os.path.join(os.path.dirname(__file__), "..", "..", "web", "dist"),
-)
-_DIST = next((os.path.abspath(p) for p in _DIST_CANDIDATES
-              if os.path.isdir(os.path.abspath(p))),
-             os.path.abspath(_DIST_CANDIDATES[-1]))
+#
+# The order used to be the other way round, and it cost a real afternoon: once
+# installer/build_payload.sh has run in a checkout, aiforge_core/web_dist stays
+# behind as an untracked copy and SHADOWED the freshly built UI for ever after.
+# The symptom is a new screen that never appears no matter how many times you
+# rebuild — the API is new, the UI is frozen at whenever the payload was last
+# built. An installed package has no ../../web/dist, so it is unaffected.
+def _resolve_dist() -> str:
+    here = os.path.dirname(__file__)
+    candidates = (
+        os.path.join(here, "..", "..", "web", "dist"),
+        os.path.join(here, "..", "web_dist"),
+    )
+    return next((os.path.abspath(c) for c in candidates
+                 if os.path.isdir(os.path.abspath(c))),
+                os.path.abspath(candidates[0]))
+
+
+_DIST = _resolve_dist()
 
 if os.path.isdir(_DIST):
     # SPA fallback: any unknown path under /ui/ returns index.html so
