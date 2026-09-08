@@ -223,7 +223,9 @@ _write_env_line() {                      # $1 = key, $2 = value ("" removes it)
   [[ -n "$want" ]] && printf '%s=%s\n' "$key" "$want" >> "$f"
   return 0
 }
-_write_role() { _write_env_line AIFORGE_ROLE "$1"; }
+_write_role() {                          # $1 = value, or "" to remove the line
+  _write_env_line AIFORGE_ROLE "$1"
+}
 
 if [[ $ADMIN -eq 1 && $UNADMIN -eq 1 ]]; then
   echo "error: --admin and --spoke are opposites; pass one." >&2
@@ -238,7 +240,7 @@ if [[ $ADMIN -eq 1 && -n "${AIFORGE_ADMIN_URL:-}" ]]; then
   # Refused, not overridden: silently promoting a spoke gives the fleet two
   # admins, both stamping `derived: mesh`.
   echo "error: --admin, but AIFORGE_ADMIN_URL=$AIFORGE_ADMIN_URL says this box is a spoke." >&2
-  echo "       To just open the sync page: ./run.sh --admin-page" >&2
+  echo "       A machine cannot be both. To just open the sync page: ./run.sh --admin-page" >&2
   echo "       To make THIS box the admin: remove AIFORGE_ADMIN_URL from ${ENV_FILE:-.env} first." >&2
   exit 2
 fi

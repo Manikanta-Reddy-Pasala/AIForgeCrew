@@ -410,7 +410,8 @@ def ca_add(body: CaBundleBody) -> dict:
     return {"ok": True, "count": len(certs), **ca.status()}
 
 
-@router.delete("/api/runtime/ca/{sha256}")
+@router.delete("/api/runtime/ca/{sha256}", responses={
+    404: {"description": "No certificate with that fingerprint"}})
 def ca_remove_one(sha256: str) -> dict:
     """Drop ONE certificate from the bundle, by fingerprint."""
     from aiforge_core.net import ca

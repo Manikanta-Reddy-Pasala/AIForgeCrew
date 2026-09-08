@@ -49,6 +49,8 @@ OUT = Path(__file__).resolve().parent / "AIForgeCrew-CTO-Summary.pptx"
 W, H = Inches(13.333), Inches(7.5)
 L, WD = Inches(0.62), Inches(12.09)
 FONT = "Segoe UI"
+#: The preset-dash element; python-pptx has no API for it.
+PRST_DASH = "a:prstDash"
 
 # ── palette ────────────────────────────────────────────────────────────────
 NAVY = RGBColor(0x0B, 0x1B, 0x2B)
@@ -134,7 +136,7 @@ def txt(s, x, y, w, h, body, *, size=12, color=INK, bold=False,
 
 
 def shape(s, kind, x, y, w, h, *, fill=None, edge=None, edge_w=1.0,
-          gradient=None, angle=0.0, adjust=None):
+          gradient=None, adjust=None):
     sp = s.shapes.add_shape(kind, _e(x), _e(y), _e(w), _e(h))
     if gradient:
         # SOLID, not a gradient. python-pptx writes a valid <a:gradFill>, but
@@ -192,7 +194,7 @@ def line(s, x1, y1, x2, y2, *, color=LINE, width=1.25, dashed=False):
     conn.line.width = Pt(width)
     if dashed:
         ln = conn.line._get_or_add_ln()
-        ln.insert(0, ln.makeelement(qn("a:prstDash"), {"val": "sysDash"}))
+        ln.insert(0, ln.makeelement(qn(PRST_DASH), {"val": "sysDash"}))
     return conn
 
 
@@ -205,7 +207,7 @@ def arrow(s, x1, y1, x2, y2, *, color=FAINT, width=1.5, dashed=False):
     ln.append(ln.makeelement(qn("a:tailEnd"),
                              {"type": "triangle", "w": "med", "len": "med"}))
     if dashed:
-        ln.insert(0, ln.makeelement(qn("a:prstDash"), {"val": "sysDash"}))
+        ln.insert(0, ln.makeelement(qn(PRST_DASH), {"val": "sysDash"}))
     return conn
 
 
@@ -308,7 +310,7 @@ def dash_edge(sp):
     """
     from pptx.oxml.ns import qn
     ln = sp.line._get_or_add_ln()
-    ln.append(ln.makeelement(qn("a:prstDash"), {"val": "sysDash"}))
+    ln.append(ln.makeelement(qn(PRST_DASH), {"val": "sysDash"}))
     return sp
 
 
@@ -505,7 +507,7 @@ def page_hub(prs):
           _e(r_out * 2), _e(r_out * 2), fill=BLUE_T)
     core = shape(s, MSO_SHAPE.OVAL, _e(cx - Inches(1.02)),
                  _e(cy - Inches(1.02)), Inches(2.04), Inches(2.04),
-                 gradient=(NAVY_2, BLUE), angle=45.0)
+                 gradient=(NAVY_2, BLUE))
     label(core, "One program\none port · one folder\nno database",
           size=13, color=WHITE)
 
@@ -634,7 +636,7 @@ def page_rings(prs):
               fill=fill, edge=edge, edge_w=1.25)
     core = shape(s, MSO_SHAPE.OVAL, _e(cx - Inches(0.68)),
                  _e(cy - Inches(0.68)), Inches(1.36), Inches(1.36),
-                 gradient=(NAVY_2, TEAL), angle=45.0)
+                 gradient=(NAVY_2, TEAL))
     label(core, "Our code\nand our keys", size=12, color=WHITE)
 
     # ring captions, sitting ON their ring
@@ -889,6 +891,51 @@ that holds the company memory.
 """)
 
 
+def _drop_if_printer_settings(m) -> str:
+    """Delete the matched tag when it mentions printerSettings, else keep it.
+
+    The literal is tested here rather than inside the pattern: an
+    ``[^"]*printerSettings[^"]*`` between delimiters is unbounded repetition
+    either side of a literal, which backtracks. The patterns that call this
+    exclude their own delimiter from every class, so they run linearly.
+    """
+    return "" if "printerSettings" in m.group(0) else m.group(0)
+
+
+def _rewrite_part(name: str, data: bytes, changed: list[str]) -> bytes:
+    """One package part, rewritten. Appends what it did to ``changed``."""
+    import re
+    if name == "ppt/presentation.xml":
+        xml = data.decode()
+        fixed = re.sub(r'<p:sldSz[^/]*/>',
+                       '<p:sldSz cx="12192000" cy="6858000"/>', xml)
+        if fixed != xml:
+            changed.append('sldSz → 12192000x6858000, no "type"')
+        data = fixed.encode()
+    elif name == "[Content_Types].xml":
+        xml = data.decode()
+        fixed = re.sub(r'<Default Extension="bin"[^>]*/>', "", xml)
+        fixed = re.sub(r'<Override PartName="[^"]*"[^>]*/>',
+                       _drop_if_printer_settings, fixed)
+        if fixed != xml:
+            changed.append("removed the printerSettings content type")
+        data = fixed.encode()
+    elif name.endswith(".rels"):
+        xml = data.decode()
+        fixed = re.sub(r'<Relationship[^>]*/>',
+                       _drop_if_printer_settings, xml)
+        if fixed != xml:
+            changed.append(f"removed a printerSettings link in {name}")
+        data = fixed.encode()
+    if name.endswith((".xml", ".rels")):
+        # lxml writes <?xml version='1.0' ... ?> with single quotes. Valid XML,
+        # and the only remaining difference from a package Office itself wrote.
+        data = data.replace(
+            b"<?xml version='1.0' encoding='UTF-8' standalone='yes'?>",
+            b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>', 1)
+    return data
+
+
 def _normalise(path: Path) -> list[str]:
     """Rewrite the saved package into what PowerPoint expects to read FIRST.
 
@@ -907,52 +954,17 @@ def _normalise(path: Path) -> list[str]:
 
     Returns a list of what it changed, so the build says it out loud.
     """
-    import re
     import shutil
     import zipfile
 
     changed, tmp = [], path.with_suffix(".tmp.pptx")
     with zipfile.ZipFile(path) as src, \
             zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as dst:
-        names = [n for n in src.namelist()
-                 if "printerSettings" not in n]
+        names = [n for n in src.namelist() if "printerSettings" not in n]
         if len(names) != len(src.namelist()):
             changed.append("dropped the template's printerSettings part")
         for name in names:
-            data = src.read(name)
-            if name == "ppt/presentation.xml":
-                xml = data.decode()
-                fixed = re.sub(r'<p:sldSz[^/]*/>',
-                               '<p:sldSz cx="12192000" cy="6858000"/>', xml)
-                if fixed != xml:
-                    changed.append('sldSz → 12192000x6858000, no "type"')
-                data = fixed.encode()
-            elif name == "[Content_Types].xml":
-                xml = data.decode()
-                fixed = re.sub(r'<Default Extension="bin"[^>]*/>', "", xml)
-                fixed = re.sub(
-                    r'<Override PartName="[^"]*printerSettings[^"]*"[^>]*/>',
-                    "", fixed)
-                if fixed != xml:
-                    changed.append("removed the printerSettings content type")
-                data = fixed.encode()
-            elif name.endswith(".rels"):
-                xml = data.decode()
-                fixed = re.sub(r'<Relationship[^>]*printerSettings[^>]*/>',
-                               "", xml)
-                if fixed != xml:
-                    changed.append(f"removed a printerSettings link in {name}")
-                data = fixed.encode()
-            if name.endswith((".xml", ".rels")):
-                # lxml writes <?xml version='1.0' ... ?> with single quotes.
-                # Valid XML, and the only remaining difference from a package
-                # Office itself wrote — so it goes too rather than being left
-                # as the one thing still unexplained.
-                data = data.replace(
-                    b"<?xml version='1.0' encoding='UTF-8' standalone='yes'?>",
-                    b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
-                    1)
-            dst.writestr(name, data)
+            dst.writestr(name, _rewrite_part(name, src.read(name), changed))
     shutil.move(str(tmp), str(path))
     return changed
 

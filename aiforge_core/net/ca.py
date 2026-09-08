@@ -128,6 +128,42 @@ def _certificates(pem: str) -> list[str]:
     return blocks
 
 
+def _is_ca(cert) -> bool:
+    """True when basicConstraints says CA. A certificate without the extension
+    is not one."""
+    try:
+        from cryptography.x509.oid import ExtensionOID
+        bc = cert.extensions.get_extension_for_oid(
+            ExtensionOID.BASIC_CONSTRAINTS).value
+        return bool(bc.ca)
+    except Exception:  # noqa: BLE001 — no extension means not a CA
+        return False
+
+
+def _add_x509_detail(item: dict, der: bytes) -> None:
+    """Fill subject/issuer/expiry/kind in place. Never raises: the fingerprint
+    alone is still worth showing, and cryptography is an indirect dependency.
+
+    Self-issued CA = a root; a CA signed by someone else = an intermediate.
+    Naming them on screen is what stops the usual mistake of installing the
+    root alone and wondering why an internal host still fails.
+    """
+    try:
+        from cryptography import x509
+        cert = x509.load_der_x509_certificate(der)
+        item["subject"] = cert.subject.rfc4514_string()
+        item["issuer"] = cert.issuer.rfc4514_string()
+        item["not_after"] = cert.not_valid_after_utc.isoformat()
+        item["is_ca"] = _is_ca(cert)
+    except Exception:  # noqa: BLE001
+        return
+    if item["is_ca"]:
+        item["kind"] = ("root" if item["subject"] == item["issuer"]
+                        else "intermediate")
+    else:
+        item["kind"] = "not a CA"
+
+
 def describe(pem: str | None = None) -> list[dict]:
     """Subject, issuer, expiry and SHA-256 for each certificate in the bundle.
 
@@ -148,30 +184,7 @@ def describe(pem: str | None = None) -> list[dict]:
         item = {"sha256": hashlib.sha256(der).hexdigest(),
                 "subject": "", "issuer": "", "not_after": "",
                 "kind": "certificate", "is_ca": False, "pem": block + "\n"}
-        try:    # cryptography ships with the http stack; never fail on it
-            from cryptography import x509
-            from cryptography.x509.oid import ExtensionOID
-            cert = x509.load_der_x509_certificate(der)
-            item["subject"] = cert.subject.rfc4514_string()
-            item["issuer"] = cert.issuer.rfc4514_string()
-            item["not_after"] = cert.not_valid_after_utc.isoformat()
-            try:
-                bc = cert.extensions.get_extension_for_oid(
-                    ExtensionOID.BASIC_CONSTRAINTS).value
-                item["is_ca"] = bool(bc.ca)
-            except Exception:  # noqa: BLE001 — no extension means not a CA
-                item["is_ca"] = False
-            # Self-issued CA = a root; a CA signed by someone else = an
-            # intermediate. Naming them on screen is what stops the usual
-            # mistake of installing the root alone and wondering why an
-            # internal host still fails.
-            if item["is_ca"]:
-                item["kind"] = ("root" if item["subject"] == item["issuer"]
-                                else "intermediate")
-            else:
-                item["kind"] = "not a CA"
-        except Exception:  # noqa: BLE001 — the fingerprint alone still helps
-            pass
+        _add_x509_detail(item, der)
         out.append(item)
     return out
 

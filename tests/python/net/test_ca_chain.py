@@ -145,7 +145,8 @@ def test_one_can_be_removed_without_losing_the_other(chain):
     inter = next(c for c in certs if c["kind"] == "intermediate")
     assert ca.remove(inter["sha256"]) is True
     left = ca.describe()
-    assert len(left) == 1 and left[0]["kind"] == "root"
+    assert len(left) == 1
+    assert left[0]["kind"] == "root"
 
 
 def test_a_lone_intermediate_is_flagged(chain):
@@ -203,7 +204,8 @@ def test_the_integration_path_uses_that_same_bundle(chain):
 def _pin(host: str, leaf_file: str) -> None:
     """Pin exactly what ``trust.fetch`` would record: the leaf, alone."""
     from aiforge_core.net import trust
-    leaf = open(leaf_file).read().split("-----BEGIN PRIVATE KEY")[0]
+    with open(leaf_file) as fh:
+        leaf = fh.read().split("-----BEGIN PRIVATE KEY")[0]
     leaf = leaf.split("-----BEGIN RSA PRIVATE KEY")[0]
     trust.store(host, leaf)
 

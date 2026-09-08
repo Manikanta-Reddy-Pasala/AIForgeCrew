@@ -59,7 +59,8 @@ def client():
 
 def test_nothing_configured_by_default():
     st = ca.status()
-    assert st["configured"] is False and st["source"] == ""
+    assert st["configured"] is False
+    assert st["source"] == ""
 
 
 def test_saving_puts_it_in_force_at_once(pem):
@@ -78,7 +79,8 @@ def test_saved_file_is_not_world_readable(pem):
 
 def test_the_screen_can_show_what_landed(pem):
     certs = ca.save(pem)
-    assert certs and "Acme Root CA" in certs[0]["subject"]
+    assert certs
+    assert "Acme Root CA" in certs[0]["subject"]
     assert len(certs[0]["sha256"]) == 64
 
 
@@ -115,9 +117,11 @@ def test_get_reports_nothing_configured(client):
 
 def test_put_then_get_round_trips(client, pem):
     put = client.put("/api/runtime/ca", json={"pem": pem})
-    assert put.status_code == 200 and put.json()["saved"] == 1
+    assert put.status_code == 200
+    assert put.json()["saved"] == 1
     body = client.get("/api/runtime/ca").json()
-    assert body["configured"] is True and body["source"] == "ui"
+    assert body["configured"] is True
+    assert body["source"] == "ui"
     assert "Acme Root CA" in body["certificates"][0]["subject"]
 
 
@@ -130,7 +134,8 @@ def test_put_rejects_junk_with_a_reason(client):
 def test_delete_removes_it(client, pem):
     client.put("/api/runtime/ca", json={"pem": pem})
     r = client.delete("/api/runtime/ca")
-    assert r.status_code == 200 and r.json()["removed"] is True
+    assert r.status_code == 200
+    assert r.json()["removed"] is True
     assert client.get("/api/runtime/ca").json()["configured"] is False
 
 
