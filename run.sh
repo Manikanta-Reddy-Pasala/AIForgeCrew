@@ -3,12 +3,16 @@
 #
 #   git clone … && cd AIForgeCrew && ./run.sh
 #
-# ZERO PREREQS — on a clean machine run.sh installs its own toolchain:
-#   • uv       — auto-installed via astral.sh if missing (needs curl or wget)
-#   • Node/npm — a portable Node is fetched into ~/.aiforge/node if missing
-#                (no sudo, no nvm; Linux/macOS x64+arm64). Pin: AIFORGE_NODE_VERSION
-#   • python + node deps, RepoMap, CodeGraph — installed on first boot
-# You just need git + curl (or wget). Everything else is bootstrapped.
+# PREREQS — provision the TOOLCHAIN, run.sh does the rest:
+#   • python 3.12 — from your package manager (apt/dnf/brew). That is the
+#     only hard prerequisite besides git.
+#   • uv and Node are PYTHON DEPENDENCIES now (the `toolchain` extra: the `uv`
+#     wheel and `nodejs-wheel-binaries`), so they arrive from the same index,
+#     lockfile, mirror and CA as everything else. run.sh downloads nothing
+#     from github, astral.sh, nodejs.org or a browser CDN — only package
+#     managers fetch: PyPI, npm, docker, apt.
+#   • python + node deps, RepoMap, CodeGraph — installed on first boot.
+# So: git + python 3.12. Everything else is a package.
 #
 # TWO INSTALL MODES (see INSTALL.md):
 #   • BINARY / NATIVE (default) — runs on the host, full fs/shell/toolchain.
@@ -84,6 +88,8 @@
 #                    runs ONLY when a legacy <memory>/okr/ folder still exists
 #                    (the pre-OKF signal); opt out with AIFORGE_MIGRATE_OKF=0
 #   --purge-code     drop code-as-learnings from a bad migration, then exit
+#   --offline    air-gapped: no network at all, package managers included
+#                (AIFORGE_OFFLINE=1). Everything must already be on the box.
 #   (--lite/--hybrid/--docker/--no-build are legacy no-ops — always SQLite now)
 #
 # Self-hosted model over HTTPS with an internal/self-signed cert? Drop an `.env`
@@ -142,6 +148,63 @@ fi
 export AIFORGE_LLM_SSL_VERIFY="${AIFORGE_LLM_SSL_VERIFY:-true}"
 [[ -n "${AIFORGE_LLM_CA_BUNDLE:-}" ]] && export AIFORGE_LLM_CA_BUNDLE
 
+# ── Corporate CA, for the BOOTSTRAP itself ────────────────────────────────
+# aiforge_core/net/ca.py publishes the bundle to git, curl, npm and every
+# subprocess — from an @app.on_event("startup") hook, i.e. AFTER this script
+# has already finished installing everything. So on an estate with its own
+# root CA (or a TLS-inspecting proxy) the app trusted it and the installer did
+# not: `uv pip install` off PyPI, `npm ci` off the registry and `git` all
+# failed with CERTIFICATE_VERIFY_FAILED before the app ever started, and the
+# operator was told to paste a certificate into a UI they could not reach yet.
+#
+# Same resolution order as net/ca.py — an explicit variable wins, then the
+# certificate saved from Settings — so one answer covers the installer and the
+# running product. Nothing here disables verification; with no bundle
+# configured every tool keeps its own default trust store.
+_ca_bootstrap() {
+  local ca="" v
+  for v in AIFORGE_CA_BUNDLE SSL_CERT_FILE REQUESTS_CA_BUNDLE; do
+    [[ -n "${!v:-}" ]] && { ca="${!v}"; break; }
+  done
+  [[ -z "$ca" ]] \
+    && ca="${AIFORGE_SECURITY_DIR:-${AIFORGE_CONFIG_DIR:-$HOME/.aiforge}/security}/ca/custom-ca.pem"
+  [[ -r "$ca" ]] || return 0
+
+  export AIFORGE_CA_BUNDLE="$ca"
+  # One file, every tool's own name for it. Only variables the operator left
+  # unset are filled — the same rule apply_to_process_env() follows, so a box
+  # that already points a tool somewhere keeps its answer.
+  local var
+  for var in GIT_SSL_CAINFO CURL_CA_BUNDLE SSL_CERT_FILE REQUESTS_CA_BUNDLE \
+             NODE_EXTRA_CA_CERTS; do
+    [[ -z "${!var:-}" ]] && export "$var=$ca"
+  done
+  # uv reads SSL_CERT_FILE, but only with native-tls off (its default); make
+  # the intent explicit rather than depending on which build shipped.
+  export UV_NATIVE_TLS="${UV_NATIVE_TLS:-0}"
+  # npm's own name for it, so a `.npmrc` written by an earlier install cannot
+  # send the web build to a store that lacks the root.
+  export NPM_CONFIG_CAFILE="${NPM_CONFIG_CAFILE:-$ca}"
+  echo "==> CA bundle in force for package installs: $ca"
+}
+_ca_bootstrap
+
+# A proxy is the other half of the same wall: an operator who exports
+# https_proxy for their shell loses it the moment a tool reads only the
+# uppercase name (or the reverse). Mirror whichever side is set so curl, wget,
+# uv, npm and git all see it, and keep loopback direct so the local model
+# endpoint and AIForge's own API are never sent through it.
+for _p in http_proxy https_proxy no_proxy; do
+  _P="$(echo "$_p" | tr '[:lower:]' '[:upper:]')"
+  if [[ -n "${!_p:-}" && -z "${!_P:-}" ]]; then export "$_P=${!_p}"
+  elif [[ -n "${!_P:-}" && -z "${!_p:-}" ]]; then export "$_p=${!_P}"; fi
+done
+if [[ -n "${http_proxy:-}${https_proxy:-}" ]]; then
+  export no_proxy="${no_proxy:-127.0.0.1,localhost,::1}"
+  export NO_PROXY="${NO_PROXY:-$no_proxy}"
+fi
+unset _p _P
+
 # ssh deploys run free by default: a plain ssh is already safe, and an ssh whose
 # REMOTE command runs sudo/systemctl (the deploy case) would otherwise prompt
 # for approval every time. A DANGEROUS remote command (rm -rf / secret exfil)
@@ -198,6 +261,7 @@ while [[ $# -gt 0 ]]; do
     --migrate-okf) MAINT=migrateokf ;;  # rename okr→okf + convert ALL md files to OKF frontmatter, then exit
     --purge-code) MAINT=purge ;;      # drop code-as-learnings from a bad drain, then exit
     --install-model2vec|--install-semantic) INSTALL_MODEL2VEC=1 ;;  # install semantic memory (model2vec, ~30MB, NO torch). --install-semantic kept as an alias.
+    --offline) AIFORGE_OFFLINE=1 ;;  # air-gapped: no network at all, package managers included
     --dev) DEV=1 ;;
     --admin) ADMIN=1; ADMIN_PAGE=1 ;;  # this box is THE memory admin (+ open its page)
     --admin-url) ADMIN_URL_SET="${2:-}"; shift ;;  # name the admin (makes this a spoke)
@@ -219,6 +283,58 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+# ── Nothing is fetched except by a package manager ────────────────────────
+# This script used to install its own toolchain by downloading a source and
+# executing it: `curl https://astral.sh/uv/install.sh | sh` (a remote script
+# piped into a shell), a Node tarball off nodejs.org unpacked onto PATH, uv's
+# managed-CPython download, and playwright's ~150MB browser build off their
+# CDN. Several were written `|| true`, so a failure was SILENT and the stack
+# came up degraded with no line saying why.
+#
+# All four are gone. uv and Node are now the `toolchain` extra in pyproject
+# (the `uv` wheel; `nodejs-wheel-binaries`), so they resolve from the same
+# index, lockfile, private mirror and CA as every other dependency. What
+# remains is only ever a package manager fetching a pinned artifact — PyPI,
+# npm, docker, apt — and --offline refuses even those.
+AIFORGE_OFFLINE="${AIFORGE_OFFLINE:-0}"
+export AIFORGE_OFFLINE
+
+_offline() { [[ "${AIFORGE_OFFLINE}" != "0" ]]; }
+
+# Report a fetch that did not happen. $1 = what, $2 = how to get it.
+_no_fetch() {
+  echo "==> not fetching $1" >&2
+  [[ -n "${2:-}" ]] && echo "    provide it instead: $2" >&2
+  return 1
+}
+
+# A missing REQUIREMENT: say what is absent and how to get it, then stop —
+# rather than starting a stack that cannot work.
+_offline_fatal() {
+  echo "!! $1" >&2
+  [[ -n "${2:-}" ]] && echo "!! $2" >&2
+  exit 1
+}
+
+if _offline; then
+  # Tell the TOOLS as well as the call sites, so a dependency that shells out
+  # on its own (uv resolving an interpreter, playwright's driver, huggingface
+  # inside model2vec) is refused by its own environment too.
+  export UV_OFFLINE="${UV_OFFLINE:-1}"
+  export UV_PYTHON_DOWNLOADS="${UV_PYTHON_DOWNLOADS:-never}"
+  export PIP_NO_INDEX="${PIP_NO_INDEX:-1}"
+  export npm_config_offline="${npm_config_offline:-true}"
+  export npm_config_audit="${npm_config_audit:-false}"
+  export npm_config_fund="${npm_config_fund:-false}"
+  export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="${PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD:-1}"
+  export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+  export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+  export AIFORGE_INSTALL_TMUX="${AIFORGE_INSTALL_TMUX:-0}"
+  echo "==> offline: no network at all (package managers included)."
+fi
+# uv must never install a second interpreter, offline or not.
+export UV_PYTHON_DOWNLOADS="${UV_PYTHON_DOWNLOADS:-never}"
 
 # ── --admin / --spoke: the memory role ────────────────────────────────
 # Exactly ONE machine in a fleet runs with --admin. That box receives every
@@ -545,24 +661,6 @@ _ensure_tmux
 # portable one.
 _NODE_MIN_MAJOR=18
 
-# wget with redirects DISABLED. A followed redirect is a second URL that
-# nothing validated — --https-only refuses a cleartext hop, but it still hands
-# the fetch to whatever host the first server named. So: no automatic hops at
-# all, and the one redirect we actually depend on (astral.sh 301s its installer
-# to releases.astral.sh) is followed BY HAND — read the Location with redirects
-# still off, and fetch it only when it is itself https.
-# $1 = url, $2 = output path ("-" for stdout).
-_wget_https() {
-  local url="$1" out="$2" loc
-  wget --https-only --max-redirect=0 -qO "$out" "$url" && return 0
-  loc="$(wget --https-only --max-redirect=0 --server-response --spider "$url" 2>&1 \
-         | awk '/^[[:space:]]*[Ll]ocation:/ {print $2; exit}')"
-  case "$loc" in
-    https://*) wget --https-only --max-redirect=0 -qO "$out" "$loc" ;;
-    *) return 1 ;;
-  esac
-}
-
 _node_ok() {
   # true if npm exists AND node is new enough for the web build
   command -v npm >/dev/null 2>&1 || return 1
@@ -571,50 +669,48 @@ _node_ok() {
   [[ "$maj" =~ ^[0-9]+$ ]] && (( maj >= _NODE_MIN_MAJOR ))
 }
 
-# Portable Node.js — if the machine has no npm OR its Node is too old for the web
-# build, fetch a self-contained Node into ~/.aiforge/node (no sudo, no package
-# manager, no nvm) so a clean box builds from just `./run.sh`. Sets PATH for this
-# run and persists it. Best-effort: unsupported OS/arch, no curl/wget, or no
-# network falls through to the existing stale-bundle warning.
+# Node for the web build, as a PYTHON DEPENDENCY.
+#
+# This used to fetch a tarball from nodejs.org, unpack it into ~/.aiforge/node
+# and put it on PATH — a toolchain the script installed, from a URL nothing
+# pinned. `nodejs-wheel-binaries` is the same Node shipped as an ordinary
+# wheel, so it resolves through the same index, lockfile, mirror and CA as
+# every other dependency, and `uv pip install -e '.[toolchain]'` is the whole
+# install. Nothing is downloaded here that pip would not download.
+#
+# The wheel's own bin/npm is a shim that requires '../lib/cli.js' relative to
+# the wrong root and dies with MODULE_NOT_FOUND, so we write our own shims
+# into .venv/bin (already on PATH) pointing node at npm-cli.js.
 _ensure_node() {
   _node_ok && return 0
-  local ver="${AIFORGE_NODE_VERSION:-v20.18.1}" base="$HOME/.aiforge/node"
-  local os arch pkg url tmp
-  # a previously-fetched portable Node — prefer it over an old system Node
-  if [[ -x "$base/bin/npm" ]]; then
-    export PATH="$base/bin:$PATH"
-    _node_ok && return 0                       # good; else it's stale, re-fetch
+  [[ -x .venv/bin/python ]] || return 0
+
+  if ! .venv/bin/python -c "import nodejs_wheel" >/dev/null 2>&1; then
+    if _offline; then
+      _no_fetch "the nodejs-wheel-binaries wheel" \
+        "install Node ${_NODE_MIN_MAJOR}+ from your package manager, or pre-install the wheel" || true
+      return 0
+    fi
+    echo "==> no usable Node — installing the nodejs-wheel-binaries wheel…"
+    "${UV:-uv}" pip install --python .venv/bin/python -e '.[toolchain]' >/dev/null 2>&1 || {
+      echo "==> could not install Node from PyPI — install Node ${_NODE_MIN_MAJOR}+ yourself (apt/dnf/brew install nodejs)" >&2
+      return 0
+    }
   fi
-  command -v node >/dev/null 2>&1 && echo \
-    "==> system Node $(node -v 2>/dev/null) is too old for the web build (need ${_NODE_MIN_MAJOR}+) — fetching a portable Node…" >&2
-  case "$(uname -s)" in
-    Linux)  os=linux ;;
-    Darwin) os=darwin ;;
-    *) return 0 ;;                              # Windows-native etc — skip (WSL is Linux)
-  esac
-  case "$(uname -m)" in
-    x86_64|amd64)  arch=x64 ;;
-    arm64|aarch64) arch=arm64 ;;
-    *) return 0 ;;
-  esac
-  pkg="node-${ver}-${os}-${arch}"
-  url="https://nodejs.org/dist/${ver}/${pkg}.tar.gz"
-  echo "==> fetching portable Node ${ver} (${os}-${arch}) into ${base}…"
-  tmp="$(mktemp -d)"
-  if command -v curl >/dev/null 2>&1; then
-    # --proto '=https' governs the first URL, --proto-redir every hop after it:
-    # without the second, a redirect to http:// is still followed.
-    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -LsSf "$url" \
-      -o "$tmp/node.tgz" || { rm -rf "$tmp"; return 0; }
-  elif command -v wget >/dev/null 2>&1; then
-    _wget_https "$url" "$tmp/node.tgz" \
-      || { rm -rf "$tmp"; return 0; }
-  else
-    rm -rf "$tmp"; return 0
-  fi
-  tar -xzf "$tmp/node.tgz" -C "$tmp" || { rm -rf "$tmp"; return 0; }
-  mkdir -p "$(dirname "$base")"; rm -rf "$base"; mv "$tmp/$pkg" "$base"; rm -rf "$tmp"
-  [[ -x "$base/bin/npm" ]] && export PATH="$base/bin:$PATH"
+
+  local root
+  root="$(.venv/bin/python -c 'import nodejs_wheel, pathlib; print(pathlib.Path(nodejs_wheel.__file__).parent)' 2>/dev/null)" || return 0
+  [[ -x "$root/bin/node" ]] || return 0
+
+  ln -sf "$root/bin/node" .venv/bin/node
+  local tool
+  for tool in npm npx; do
+    printf '#!/bin/sh\nexec "%s/bin/node" "%s/lib/node_modules/npm/bin/%s-cli.js" "$@"\n' \
+      "$root" "$root" "$tool" > ".venv/bin/$tool"
+    chmod +x ".venv/bin/$tool"
+  done
+  hash -r 2>/dev/null || true
+  _node_ok && echo "==> node $(node -v) + npm $(npm -v) (from the nodejs-wheel-binaries wheel)"
 }
 
 # `npm ci` that survives a private registry which doesn't mirror every package.
@@ -624,6 +720,19 @@ _ensure_node() {
 # and only on failure retry against public npm so a clean build still works.
 # MUST be called with the working dir already at web/.
 _npm_ci_resilient() {
+  if _offline; then
+    # npm off a registry is a package manager doing its job, so only the
+    # air-gapped switch stops it. `npm ci` ALWAYS reaches the registry — it
+    # deletes node_modules first and reinstalls from the lockfile — so an
+    # already-installed tree is the only acceptable answer here.
+    if [[ -d node_modules ]]; then
+      echo "==> offline: using the existing web/node_modules (no npm ci)"
+      return 0
+    fi
+    _no_fetch "npm ci for the web UI" \
+      "copy a prepared web/node_modules onto this box" || true
+    return 1
+  fi
   if [[ -n "${AIFORGE_NPM_REGISTRY:-}" ]]; then
     npm ci --ignore-scripts --registry="$AIFORGE_NPM_REGISTRY"; return $?
   fi
@@ -734,41 +843,67 @@ if ! command -v uv >/dev/null 2>&1; then
     [[ -x "$_d/uv" ]] && export PATH="$_d:$PATH" && break
   done
 fi
-if ! command -v uv >/dev/null 2>&1; then
-  echo "==> 'uv' not found — installing (astral.sh)…"
-  if command -v curl >/dev/null 2>&1; then
-    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -LsSf \
-      https://astral.sh/uv/install.sh | sh || true
-  elif command -v wget >/dev/null 2>&1; then
-    _wget_https https://astral.sh/uv/install.sh - | sh || true
-  else
-    echo "==> need curl or wget to auto-install uv" >&2
-  fi
-  # the installer drops uv in one of these — put it on PATH for this run
-  for _d in "$HOME/.local/bin" "$HOME/.cargo/bin"; do
-    [[ -x "$_d/uv" ]] && export PATH="$_d:$PATH"
+# ── uv, as a PYTHON DEPENDENCY ────────────────────────────────────────────
+# This used to be `curl https://astral.sh/uv/install.sh | sh` — a remote script
+# fetched and executed, unpinned and unsigned, on every box that lacked uv.
+# uv ships as an ordinary wheel, so the chicken-and-egg is solved with the
+# stdlib instead: create the venv with `python -m venv`, pip-install uv INTO
+# it, and use that. Same index, same lockfile, same mirror, same CA as every
+# other dependency, and a box whose package manager already provides uv never
+# reaches this at all.
+AIFORGE_PYTHON="${AIFORGE_PYTHON:-3.12}"
+
+# The interpreter to build the venv from. No managed-CPython download: an
+# absent 3.12 is an error with a fix in it, not a silent second interpreter.
+_pick_python() {
+  local c
+  for c in "python$AIFORGE_PYTHON" "python3.12" "python3" "python"; do
+    command -v "$c" >/dev/null 2>&1 && { command -v "$c"; return 0; }
   done
+  return 1
+}
+
+if [[ ! -d .venv ]]; then
+  echo "==> creating .venv (python $AIFORGE_PYTHON)"
+  if command -v uv >/dev/null 2>&1; then
+    uv venv --python "$AIFORGE_PYTHON" .venv || uv venv .venv
+  else
+    _PY="$(_pick_python)" || _offline_fatal \
+      "no python interpreter found (looked for python$AIFORGE_PYTHON, python3.12, python3)." \
+      "Install python $AIFORGE_PYTHON from your package manager."
+    "$_PY" -m venv .venv || _offline_fatal \
+      "python -m venv failed with $_PY." \
+      "On Debian/Ubuntu the venv module is a separate package: apt install python3-venv"
+  fi
 fi
-if ! command -v uv >/dev/null 2>&1; then
-  echo "==> uv install failed — install manually: https://docs.astral.sh/uv/  (curl -LsSf https://astral.sh/uv/install.sh | sh)" >&2
-  exit 1
+
+# uv itself: PATH first (a box that provisioned it), then the venv, then PyPI.
+UV="$(command -v uv 2>/dev/null || true)"
+[[ -z "$UV" && -x .venv/bin/uv ]] && UV="$PWD/.venv/bin/uv"
+if [[ -z "$UV" ]]; then
+  if _offline; then
+    _offline_fatal "uv is not installed and offline mode will not fetch it." \
+      "Install uv from your package manager (brew/dnf install uv, pipx install uv), or pre-install the wheel into .venv."
+  fi
+  echo "==> uv not found — installing the uv wheel from PyPI…"
+  .venv/bin/python -m pip install -q --disable-pip-version-check uv \
+    || _offline_fatal "could not install the uv wheel from PyPI." \
+         "Install uv from your package manager (brew/dnf install uv, pipx install uv)."
+  UV="$PWD/.venv/bin/uv"
 fi
+export UV
+echo "==> uv: $UV ($("$UV" --version 2>/dev/null || echo unknown))"
 
 # On WSL when the repo lives on /mnt/c (DrvFs), uv's cache (Linux ~/.cache) and
 # the target .venv are on different filesystems, so hardlinking fails noisily
 # and can leave broken venv scripts. Force copy mode for a portable venv.
 export UV_LINK_MODE="${UV_LINK_MODE:-copy}"
 
-# Pin the interpreter. Left to itself, `uv venv` grabs the NEWEST python on the
-# machine — on a fresh mac that is now 3.14, for which scipy/numpy ship no
-# wheels, so `uv pip install` falls back to a source build that dies (meson:
-# "Failed to build scipy"). Pin a version every dep has wheels for; uv
-# auto-downloads a managed CPython when it is absent. Override: AIFORGE_PYTHON.
-AIFORGE_PYTHON="${AIFORGE_PYTHON:-3.12}"
-if [[ ! -d .venv ]]; then
-  echo "==> creating .venv (python $AIFORGE_PYTHON)"
-  uv venv --python "$AIFORGE_PYTHON" .venv
-fi
+# AIFORGE_PYTHON is pinned above, not left to uv. Left to itself `uv venv`
+# grabs the NEWEST python on the machine — on a fresh mac that is now 3.14, for
+# which scipy/numpy ship no wheels, so the install falls back to a source build
+# that dies ("Failed to build scipy"). No managed-CPython download either way:
+# an absent interpreter is an error naming the package to install.
 # Put the venv's bin on PATH for THIS process and every child shell it spawns —
 # job/Doer shells (tmux/run_shell) need `aiforge-tool`, `aiforge-maint`, etc. to
 # resolve, otherwise a script that should bridge to the authenticated Jira/
@@ -784,10 +919,10 @@ echo "==> installing python deps (editable)"
 # whole resolve with "Failed to read metadata from installed package …:
 # No such file or directory". A corrupt existing venv can't be patched in
 # place, so on ANY install failure we nuke and rebuild it from scratch.
-if ! uv pip install --python .venv/bin/python -e . >/dev/null 2>&1; then
+if ! "$UV" pip install --python .venv/bin/python -e . >/dev/null 2>&1; then
   echo "==> deps install failed — rebuilding .venv from scratch (corrupt/partial venv; common on WSL /mnt/c)"
-  rm -rf .venv && uv venv --python "$AIFORGE_PYTHON" .venv
-  uv pip install --python .venv/bin/python -e . >/dev/null
+  rm -rf .venv && "$UV" venv --python "$AIFORGE_PYTHON" .venv
+  "$UV" pip install --python .venv/bin/python -e . >/dev/null
 fi
 
 # POST-install SMOKE IMPORT: on WSL /mnt/c (DrvFs) a copy can leave a package
@@ -799,12 +934,12 @@ if [[ "${AIFORGE_SKIP_SMOKE:-0}" != "1" ]]; then
   _smoke='import urllib3.util, urllib3.util.connection, requests, charset_normalizer, certifi, idna, google.adk'
   if ! .venv/bin/python -c "$_smoke" >/dev/null 2>&1; then
     echo "==> core deps import broken (partial install — common on WSL /mnt/c) — repairing…"
-    uv pip install --python .venv/bin/python --reinstall \
+    "$UV" pip install --python .venv/bin/python --reinstall \
       urllib3 requests charset_normalizer certifi idna >/dev/null 2>&1 || true
     if ! .venv/bin/python -c "$_smoke" >/dev/null 2>&1; then
       echo "==> still broken — rebuilding .venv from scratch"
-      rm -rf .venv && uv venv --python "$AIFORGE_PYTHON" .venv
-      uv pip install --python .venv/bin/python -e . >/dev/null 2>&1 || true
+      rm -rf .venv && "$UV" venv --python "$AIFORGE_PYTHON" .venv
+      "$UV" pip install --python .venv/bin/python -e . >/dev/null 2>&1 || true
     fi
     if .venv/bin/python -c "$_smoke" >/dev/null 2>&1; then
       echo "==> deps repaired"
@@ -884,7 +1019,7 @@ fi
 if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
   if ! .venv/bin/python -c "import instructor, crawl4ai, chonkie" >/dev/null 2>&1; then
     echo "==> installing integration extras (instructor + crawl4ai + chonkie)…"
-    uv pip install --python .venv/bin/python -e '.[structured,crawl,chunking]' >/dev/null 2>&1 \
+    "$UV" pip install --python .venv/bin/python -e '.[structured,crawl,chunking]' >/dev/null 2>&1 \
       && echo "==> integration extras ready" \
       || echo "==> integration extras skipped (built-in fallbacks active)"
   fi
@@ -894,7 +1029,7 @@ if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
   if [[ "${INSTALL_MODEL2VEC:-0}" == "1" ]] \
       && ! .venv/bin/python -c "import model2vec, sqlite_vec" >/dev/null 2>&1; then
     echo "==> installing model2vec static embeddings (real semantic, NO torch, ~30MB)…"
-    uv pip install --python .venv/bin/python -e '.[embed-static]' \
+    "$UV" pip install --python .venv/bin/python -e '.[embed-static]' \
       && : "${AIFORGE_EMBED_BACKEND:=model2vec}" \
       || echo "==> model2vec install failed — continuing"
   fi
@@ -908,13 +1043,17 @@ if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
     export AIFORGE_EMBED_BACKEND=hash
     echo "==> embed backend: hash (keyword). Semantic recall: ./run.sh --install-model2vec"
   fi
-  # crawl4ai renders with headless chromium — install best-effort (idempotent).
-  .venv/bin/python -m playwright install chromium >/dev/null 2>&1 || true
+  # NO `playwright install chromium` here. It pulled a ~150MB browser build
+  # off Playwright's CDN — a binary from a source that is not a package index,
+  # fetched on every run behind `|| true` so a failure was silent. crawl4ai
+  # falls back to a plain fetch without it. A box that wants rendering points
+  # PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH at a chromium its package manager
+  # installed (apt install chromium / brew install chromium).
   # crawl4ai's deps pull urllib3/chardet versions newer than an older
   # requests' hardcoded compat check → noisy RequestsDependencyWarning on
   # EVERY python spawn. Newer requests widened the check — upgrade
   # best-effort (cosmetic; nothing breaks either way).
-  uv pip install --python .venv/bin/python -U requests >/dev/null 2>&1 || true
+  "$UV" pip install --python .venv/bin/python -U requests >/dev/null 2>&1 || true
 fi
 
 # ── venv self-heal ────────────────────────────────────────────────────
@@ -927,10 +1066,10 @@ fi
 # resort — so `./run.sh` alone always recovers.
 if ! .venv/bin/python -c "import pydantic_core" >/dev/null 2>&1; then
   echo "==> venv incomplete (pydantic_core missing) — repairing deps"
-  uv pip install --python .venv/bin/python --reinstall -e . >/dev/null 2>&1 || true
+  "$UV" pip install --python .venv/bin/python --reinstall -e . >/dev/null 2>&1 || true
   if ! .venv/bin/python -c "import pydantic_core" >/dev/null 2>&1; then
     echo "==> rebuilding .venv from scratch"
-    rm -rf .venv && uv venv --python "$AIFORGE_PYTHON" .venv && uv pip install --python .venv/bin/python -e . >/dev/null
+    rm -rf .venv && "$UV" venv --python "$AIFORGE_PYTHON" .venv && "$UV" pip install --python .venv/bin/python -e . >/dev/null
   fi
 fi
 
@@ -947,9 +1086,9 @@ fi
 if [[ $WITH_GRAPHIFY -eq 1 ]]; then
   if command -v graphify >/dev/null 2>&1; then
     echo "==> graphify present ($(command -v graphify)) — upgrading"
-    uv tool upgrade graphifyy 2>/dev/null || uv tool install --force graphifyy 2>/dev/null || true
-  elif uv tool install graphifyy; then
-    echo "==> graphify ready: $(command -v graphify 2>/dev/null || echo "$(uv tool dir --bin 2>/dev/null)/graphify")"
+    "$UV" tool upgrade graphifyy 2>/dev/null || "$UV" tool install --force graphifyy 2>/dev/null || true
+  elif "$UV" tool install graphifyy; then
+    echo "==> graphify ready: $(command -v graphify 2>/dev/null || echo "$("$UV" tool dir --bin 2>/dev/null)/graphify")"
   else
     echo "==> WARN: 'uv tool install graphifyy' failed — skipping graphify (stack still boots)." \
          "Install it yourself with:  uv tool install graphifyy   (or: pipx install graphifyy)." \

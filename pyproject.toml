@@ -150,6 +150,20 @@ chunking = ["chonkie>=1.0"]
 # extra the dependency-free hash backend is used. (No sentence-transformers /
 # torch — the ``api`` backend also gives semantic recall with zero local deps.)
 embed-static = ["model2vec>=0.3", "sqlite-vec>=0.1"]
+# TOOLCHAIN AS A DEPENDENCY. run.sh used to install these itself by fetching a
+# source and executing it: astral.sh's uv installer piped into a shell, a Node
+# tarball off nodejs.org unpacked onto PATH, uv's managed CPython. All three
+# are gone. Both tools ship as ordinary wheels, so they resolve from the same
+# index, lockfile and CA as every other dependency, and a private mirror can
+# hold them like anything else.
+#   uv                     the resolver/installer itself (Rust binary in a wheel)
+#   nodejs-wheel-binaries  node + npm + npx; run.sh writes .venv/bin shims for
+#                          them (the wheel's own bin/npm shim resolves
+#                          ../lib/cli.js relative to the wrong root and dies
+#                          with MODULE_NOT_FOUND — node bin/npm-cli.js works)
+# Only needed on a box whose package manager does not already provide them:
+#   uv pip install -e '.[toolchain]'
+toolchain = ["uv>=0.5", "nodejs-wheel-binaries>=20"]
 # tracing needs NO extra: the langfuse mirror posts to the REST ingestion
 # API with core httpx (the SDK's pins conflicted with the old aider-chat dep).
 # NOTE: ragas (RAG eval, scripts/rag_eval.py + integrations/ragas_adapter.py)
