@@ -6,9 +6,10 @@ primitives. Four rounds of edits proved that the moment you have `box` and
 content is; the fifth round asked for a visual answer instead, so the shapes
 here are built for the ideas they carry:
 
-  1. THREE PRESSURES — why we are doing this at all: a speed gap, a leaking
-     perimeter with the unapproved tools drawn inside it, and an uneven lift,
-     converging on one dark bar that says what we build about it.
+  1. ONE SCENE, TWICE — why at all: the same four engineers drawn on a
+     perimeter that does not hold (the open-source agents they installed for
+     themselves sitting outside it, dashed arrows running out) and then
+     inside one boundary with a single gate. Three sentences underneath.
   2. a HUB — one program at the centre, work coming in on the left, the model
      and the tools on the right, and the ticket's journey as a chevron run
      underneath. The claim of the page is "one thing, in the middle, that you
@@ -299,7 +300,7 @@ def bullet(s, x, y, w, glyph, head, body, color, *, size=10.5):
     return max(h, d)
 
 
-# ── dashed outline, for the perimeter we do not actually hold ──────────────
+# ── dashed outline, for a perimeter that is not actually holding ───────────
 def dash_edge(sp):
     """Make an autoshape's outline dashed. Appended AFTER the solid fill the
     caller already set: a:ln's children are an ordered sequence, so inserting
@@ -311,137 +312,145 @@ def dash_edge(sp):
     return sp
 
 
+def person(s, x, y, w, name, *, edge, ink):
+    """An engineer: a head and a body, not another labelled rectangle."""
+    d = Inches(0.22)
+    shape(s, MSO_SHAPE.OVAL, _e(x + (w - d) / 2), y, d, d,
+          fill=WHITE, edge=edge, edge_w=1.25)
+    sp = shape(s, MSO_SHAPE.ROUND_2_SAME_RECTANGLE, x,
+               _e(y + Inches(0.20)), w, Inches(0.34), fill=WHITE,
+               edge=edge, edge_w=1.25, adjust=[0.30])
+    label(sp, name, size=8, color=ink)
+    return sp
+
+
 # ────────────────────────────────────────────────── page 1: why at all ─────
 def page_why(prs):
-    """THREE PRESSURES, then one answer.
+    """ONE SCENE, TWICE: the same engineers, drawn two ways.
 
-    Not a hub, not rings: three columns that each carry their own small
-    drawing (a speed gap, a leaking perimeter, an uneven lift), three arrows
-    converging, and a single dark bar that says what we do about it. The
-    shapes are deliberately unlike the other pages' — this page argues, the
-    others describe.
+    Left, as it is today — a perimeter that does not hold, with the agents
+    people installed for themselves sitting outside it and dashed arrows
+    running out to them. Right, as we mean it to be — the same engineers,
+    the same work, all of it inside one boundary with a single gate.
+
+    Deliberately NOT three cards: the argument is a before-and-after, so the
+    page draws the before and the after and lets the three sentences at the
+    bottom carry the rest.
     """
     s = page(prs, "Why we are building this",
-             "The question is not whether the company uses AI. It already "
-             "does — through tools nobody approved, logged or paid for.",
+             "AI is already in the building — installed by whoever wanted "
+             "it, approved by nobody. We want the lift, on our terms.",
              accent=AMBER)
 
-    cw, ch = Inches(3.89), Inches(2.62)
-    cy = Inches(2.02)
-    xs = [Inches(0.62), Inches(4.72), Inches(8.82)]
-    cols = [AMBER, RED, BLUE]
-    heads = ["Standing still is now the risk",
-             "It is here — but not through us",
-             "The gain is real, but uneven"]
-    bodies = [
-        "Teams shipping with AI are pulling ahead, and our engineers know "
-        "it. They are not waiting for us to decide.",
-        "Personal accounts, browser tools, code pasted into a chat box. We "
-        "cannot name the tools, the data or the spend.",
-        "Whoever found a tool got faster. None of it is shared, repeatable "
-        "or measurable across the team.",
+    PY_, PH = Inches(2.24), Inches(3.00)
+    PW = Inches(5.55)
+    LX, RX = Inches(0.62), Inches(7.16)
+
+    txt(s, LX, Inches(1.94), PW, Inches(0.24),
+        "TODAY — HAPPENING ALREADY, JUST NOT THROUGH US",
+        size=9, bold=True, color=RED)
+    txt(s, RX, Inches(1.94), PW, Inches(0.24), "WHAT WE ARE BUILDING",
+        size=9, bold=True, color=GREEN)
+
+    # ── left: the perimeter that does not hold ─────────────────────────────
+    shape(s, MSO_SHAPE.ROUNDED_RECTANGLE, LX, PY_, PW, PH, fill=WHITE,
+          edge=LINE, adjust=[0.04])
+    bx, by = _e(LX + Inches(0.26)), _e(PY_ + Inches(0.46))
+    bw, bh = Inches(2.62), Inches(1.96)
+    dash_edge(shape(s, MSO_SHAPE.RECTANGLE, bx, by, bw, bh,
+                    fill=MIST, edge=RED, edge_w=1.25))
+    txt(s, _e(bx + Inches(0.10)), _e(by + Inches(0.08)), Inches(2.0),
+        Inches(0.22), "OUR NETWORK", size=8, bold=True, color=FAINT)
+    for j in range(4):
+        px = _e(bx + Inches(0.16) + (j % 2) * Inches(1.24))
+        py = _e(by + Inches(0.40) + (j // 2) * Inches(0.66))
+        person(s, px, py, Inches(1.06), "engineer", edge=FAINT, ink=MUTED)
+
+    tools = ["OpenCode", "Kilo Code", "Cline", "Aider"]
+    tx, tw = _e(LX + Inches(3.22), ), Inches(2.06)
+    txt(s, tx, _e(PY_ + Inches(0.22)), tw, Inches(0.22),
+        "PICKED AND INSTALLED ALONE", size=8, bold=True, color=FAINT)
+    for j, name in enumerate(tools):
+        ty = _e(PY_ + Inches(0.52) + j * Inches(0.46))
+        sp = shape(s, MSO_SHAPE.ROUNDED_RECTANGLE, tx, ty, tw, Inches(0.34),
+                   fill=RED_T, edge=RGBColor(0xE0, 0xA8, 0xA8), adjust=[0.28])
+        label(sp, name, size=9, color=RED)
+        arrow(s, _e(bx + bw), _e(by + Inches(0.30) + j * Inches(0.44)),
+              _e(tx - Inches(0.05)), _e(ty + Inches(0.17)),
+              color=RED, width=1.25, dashed=True)
+
+    txt(s, tx, _e(PY_ + Inches(2.30)), tw, Inches(0.22),
+        "+ whatever ships next month", size=8, italic=True, color=FAINT)
+
+    txt(s, _e(LX + Inches(0.26)), _e(PY_ + Inches(2.54)),
+        _e(PW - Inches(0.52)), Inches(0.34),
+        "No approved list, no log, no answer when a customer asks where "
+        "their data went.", size=9.5, color=INK)
+
+    # ── the turn ───────────────────────────────────────────────────────────
+    shape(s, MSO_SHAPE.CHEVRON, Inches(6.30), _e(PY_ + Inches(1.02)),
+          Inches(0.72), Inches(0.72), fill=NAVY, adjust=[0.42])
+
+    # ── right: the same people, inside one boundary ────────────────────────
+    shape(s, MSO_SHAPE.ROUNDED_RECTANGLE, RX, PY_, PW, PH, fill=WHITE,
+          edge=LINE, adjust=[0.04])
+    gx, gy = _e(RX + Inches(0.26)), _e(PY_ + Inches(0.46))
+    gw, gh = Inches(5.03), Inches(1.96)
+    shape(s, MSO_SHAPE.RECTANGLE, gx, gy, gw, gh, fill=GREEN_T, edge=GREEN,
+          edge_w=1.5)
+    txt(s, _e(gx + Inches(0.10)), _e(gy + Inches(0.08)), Inches(2.0),
+        Inches(0.22), "OUR NETWORK", size=8, bold=True, color=GREEN)
+    for j in range(4):
+        px = _e(gx + Inches(0.14) + (j % 2) * Inches(1.14))
+        py = _e(gy + Inches(0.40) + (j // 2) * Inches(0.62))
+        person(s, px, py, Inches(1.00), "engineer", edge=GREEN, ink=GREEN)
+
+    gate = shape(s, MSO_SHAPE.CHEVRON, _e(gx + Inches(2.50)),
+                 _e(gy + Inches(0.58)), Inches(1.00), Inches(0.72),
+                 fill=NAVY, adjust=[0.28])
+    label(gate, "one gate", size=9.5, color=WHITE)
+    for j in range(2):
+        arrow(s, _e(gx + Inches(2.30)),
+              _e(gy + Inches(0.58) + j * Inches(0.62)),
+              _e(gx + Inches(2.46)), _e(gy + Inches(0.94)),
+              color=RGBColor(0x9C, 0xC5, 0xB0))
+
+    plat = shape(s, MSO_SHAPE.ROUNDED_RECTANGLE, _e(gx + Inches(3.62)),
+                 _e(gy + Inches(0.34)), Inches(1.16), Inches(1.16),
+                 fill=WHITE, edge=GREEN, edge_w=1.5, adjust=[0.10])
+    label(plat, "AIForgeCrew\nour model, on\nour hardware", size=9.5,
+          color=GREEN)
+    arrow(s, _e(gx + Inches(3.50)), _e(gy + Inches(0.94)),
+          _e(gx + Inches(3.58)), _e(gy + Inches(0.94)),
+          color=RGBColor(0x9C, 0xC5, 0xB0))
+
+    txt(s, _e(gx + Inches(0.14)), _e(gy + Inches(1.66)), Inches(4.7),
+        Inches(0.24),
+        "every call logged  ·  tools scoped to the role  ·  approval before "
+        "anything leaves", size=8.5, color=GREEN)
+
+    txt(s, _e(RX + Inches(0.26)), _e(PY_ + Inches(2.54)),
+        _e(PW - Inches(0.52)), Inches(0.34),
+        "Same engineers, same work — on one path we can see, log and "
+        "change.", size=9.5, color=INK)
+
+    # ── the three sentences under the drawing ──────────────────────────────
+    sy = Inches(5.52)
+    shape(s, MSO_SHAPE.ROUNDED_RECTANGLE, L, sy, WD, Inches(0.86), fill=MIST,
+          adjust=[0.16])
+    points = [
+        ("1", "It lifts every engineer —",
+         "a steady boost on real work, and it holds day after day.", AMBER),
+        ("2", "It is already in use —",
+         "installed by whoever wanted it, approved by nobody, logged "
+         "nowhere.", RED),
+        ("3", "We want that lift for all of us —",
+         "one standard toolset, and numbers we can actually show.", BLUE),
     ]
-
-    for i, (x, col, head, body) in enumerate(zip(xs, cols, heads, bodies)):
-        shape(s, MSO_SHAPE.ROUNDED_RECTANGLE, x, cy, cw, ch,
-              fill=WHITE, edge=col, edge_w=1.25, adjust=[0.05])
-        d = Inches(0.30)
-        shape(s, MSO_SHAPE.OVAL, _e(x + Inches(0.22)), _e(cy + Inches(0.20)),
-              d, d, fill=col)
-        txt(s, _e(x + Inches(0.22)), _e(cy + Inches(0.235)), d, Inches(0.24),
-            str(i + 1), size=10, bold=True, color=WHITE,
-            align=PP_ALIGN.CENTER)
-        inner = cw - Inches(0.84)
-        txt(s, _e(x + Inches(0.62)), _e(cy + Inches(0.18)), inner,
-            Inches(0.48), head, size=11.5, bold=True, color=col)
-
-        # each column's own small drawing, in a fixed band
-        zx, zy = _e(x + Inches(0.22)), _e(cy + Inches(0.86))
-        zw = cw - Inches(0.44)
-
-        if i == 0:
-            # a speed gap: one long bar, one short one
-            txt(s, zx, zy, zw, Inches(0.22), "HOW FAST WORK SHIPS",
-                size=8, bold=True, color=FAINT)
-            track = Inches(2.52)
-            bx = _e(zx + Inches(0.86))
-            for cap, frac, fill in (("with AI", 0.94, AMBER),
-                                    ("us today", 0.42, RGBColor(0xCB, 0xD5,
-                                                                0xE1))):
-                by = _e(zy + (Inches(0.30) if frac > 0.5 else Inches(0.64)))
-                txt(s, zx, _e(by + Inches(0.015)), Inches(0.82), Inches(0.22),
-                    cap, size=8.5, color=MUTED, align=PP_ALIGN.RIGHT)
-                shape(s, MSO_SHAPE.ROUNDED_RECTANGLE, bx, by, track,
-                      Inches(0.20), fill=MIST, adjust=[0.5])
-                shape(s, MSO_SHAPE.ROUNDED_RECTANGLE, bx, by,
-                      _e(track * frac), Inches(0.20), fill=fill,
-                      adjust=[0.5])
-
-        elif i == 1:
-            # the perimeter as it stands: dashed, with things crossing it
-            txt(s, zx, zy, zw, Inches(0.22), "OUR PERIMETER, AS IT STANDS",
-                size=8, bold=True, color=FAINT)
-            fw, fh = Inches(2.78), Inches(0.74)
-            fy = _e(zy + Inches(0.22))
-            dash_edge(shape(s, MSO_SHAPE.RECTANGLE, zx, fy, fw, fh,
-                            fill=RED_T, edge=RED, edge_w=1.25))
-            chips = ["ChatGPT", "Copilot", "Cursor", "browser AI"]
-            for j, name in enumerate(chips):
-                px = _e(zx + Inches(0.10) + (j % 2) * Inches(1.32))
-                py = _e(fy + Inches(0.09) + (j // 2) * Inches(0.32))
-                sp = shape(s, MSO_SHAPE.ROUNDED_RECTANGLE, px, py,
-                           Inches(1.24), Inches(0.26), fill=WHITE,
-                           edge=RGBColor(0xE7, 0xB8, 0xB8), adjust=[0.3])
-                label(sp, name, size=8, color=RED)
-            for k in range(3):
-                ay = _e(fy + Inches(0.14) + k * Inches(0.24))
-                # they run PAST the card's own wall: that is the point
-                arrow(s, _e(zx + fw - Inches(0.04)), ay,
-                      _e(x + cw + Inches(0.10)), ay, color=RED, width=1.25)
-
-        else:
-            # the lift today: five bars, no two alike
-            txt(s, zx, zy, zw, Inches(0.22), "THE LIFT, PER PERSON",
-                size=8, bold=True, color=FAINT)
-            base = _e(zy + Inches(0.94))
-            heights = [0.60, 0.16, 0.38, 0.09, 0.52]
-            for j, hh in enumerate(heights):
-                bx = _e(zx + Inches(0.28) + j * Inches(0.58))
-                shape(s, MSO_SHAPE.ROUNDED_RECTANGLE, bx,
-                      _e(base - Inches(hh)), Inches(0.32), Inches(hh),
-                      fill=BLUE if hh > 0.3 else RGBColor(0xCB, 0xD5, 0xE1),
-                      adjust=[0.25])
-            line(s, zx, base, _e(zx + zw), base, color=LINE, width=1.0)
-
-        bh = Inches(text_h(body, (cw - Inches(0.44)) / Inches(1), 9.5))
-        txt(s, zx, _e(cy + Inches(1.92)), _e(cw - Inches(0.44)), bh, body,
-            size=9.5, color=INK)
-
-    # ── three pressures, one answer ────────────────────────────────────────
-    bar_y = Inches(5.42)
-    for x in xs:
-        arrow(s, _e(x + cw / 2), _e(cy + ch + Inches(0.06)),
-              Inches(6.665), _e(bar_y - Inches(0.06)),
-              color=RGBColor(0xC2, 0xD3, 0xE6), width=1.5)
-
-    shape(s, MSO_SHAPE.ROUNDED_RECTANGLE, L, bar_y, WD, Inches(0.92),
-          fill=NAVY, adjust=[0.10])
-    shape(s, MSO_SHAPE.RECTANGLE, L, bar_y, Pt(4), Inches(0.92), fill=GREEN)
-    txt(s, Inches(0.92), _e(bar_y + Inches(0.20)), Inches(4.20),
-        Inches(0.56), "So we build our own — and own the whole path",
-        size=13.5, bold=True, color=WHITE)
-
-    chips = ["our model, our hardware", "every call logged",
-             "scoped to the role", "the same tools for everyone"]
-    cwid, gap = Inches(1.72), Inches(0.15)
-    x = Inches(5.34)
-    for name in chips:
-        sp = shape(s, MSO_SHAPE.ROUNDED_RECTANGLE, x,
-                   _e(bar_y + Inches(0.24)), cwid, Inches(0.44),
-                   fill=RGBColor(0x14, 0x2C, 0x45), edge=GREEN, edge_w=1.0,
-                   adjust=[0.22])
-        label(sp, name, size=8.5, color=WHITE, bold=False)
-        x = _e(x + cwid + gap)
+    for j, (glyph, head, body, col) in enumerate(points):
+        bullet(s, _e(L + Inches(0.22) + j * Inches(4.02)),
+               _e(sy + Inches(0.16)), Inches(3.80), glyph, head, body, col,
+               size=9.5)
 
     txt(s, L, Inches(6.56), WD, Inches(0.30),
         "Buying more seats does not answer the control question — it only "
@@ -451,28 +460,28 @@ def page_why(prs):
     notes(s, """
 The argument, in the order the page makes it.
 
-1. Standing still is now the expensive option. The teams we compete with are
-shipping with AI in the loop, and our own engineers already know it — the
-demand is not hypothetical, it is here and it is being met somewhere else.
-Choosing not to decide is still a decision, and it is the one that costs the
-most.
+1. AI lifts every engineer. Not a miracle and not a headcount argument — a
+steady boost on the work we already do, which holds day after day and
+compounds through a codebase. Choosing not to decide is still a decision, and
+it is the one that leaves that lift on the table.
 
-2. It is already in the building, just not through us. People are using
-personal accounts, browser extensions and free tiers, and pasting whatever
-they are working on into them. We cannot say which tools are in use, what left
-with them, what it costs, or what a customer would be told if they asked.
-There is no allow-list to enforce and no log to produce. This is the control
-problem, and it gets worse every month we leave it alone.
+2. It is already in use, and not through us. The agents are open source and
+free: OpenCode, Kilo Code, Cline, Aider, and whatever ships next month.
+Anyone can install one in a minute, point it at any model endpoint, and work
+on our repositories with it. We cannot say which are in use, what left with
+them, or what a customer would be told if they asked. There is no approved
+list to enforce and no log to produce, and it gets harder to unwind every
+month we leave it alone.
 
-3. The gain is real but uneven. Whoever found a tool got faster; nobody else
-did. None of that speed is shared, repeatable or measurable, so we cannot
-plan around it or prove it.
+3. We want that lift for everyone, on our terms. Today whoever went looking
+got faster and nobody else did; none of it is standard, shared or measurable.
+One platform gives every engineer the same tooling and gives us numbers we
+can show.
 
-The answer: one platform we run ourselves. Our own model on our own hardware,
-so the code and the customer data never leave. Every call through one gate, so
-there is a log and an allow-list. Tools scoped to a role, with approval before
-anything reaches outside. And the same capability for every engineer, not just
-the ones who went looking.
+So: the same engineers and the same work, inside one boundary. Our own model
+on our own hardware, so code and customer data never leave. One gate, so
+there is a log and an approved list. Tools scoped to the role, with approval
+before anything reaches outside.
 
 The following pages describe what that platform is, how it is contained, and
 what it measurably does today.
