@@ -30,8 +30,8 @@
 #   --admin-page open the loopback-only sync page, claim nothing
 #   --group <name>      preselect the sync group (headless boxes only)
 #   --reset-config      wipe the saved agent config (backed up)
-#   --install-model2vec install semantic memory (~30MB, no torch)
-#   --with-graphify     install the `graphify` CLI
+#   --install-model2vec print the command that adds semantic memory
+#   --with-graphify     print the command that adds the `graphify` CLI
 #   --with-langfuse     bring up the self-hosted trace UI (needs Docker)
 #   --stop-langfuse     stop it again (traces are ephemeral)
 #   --migrate           force a re-converge of a prior install
@@ -217,7 +217,7 @@ while [[ $# -gt 0 ]]; do
     --recompact-all) MAINT=recompact ;;
     --migrate-okf) MAINT=migrateokf ;;
     --purge-code) MAINT=purge ;;
-    --install-model2vec|--install-semantic) INSTALL_MODEL2VEC=1 ;;
+    --install-model2vec|--install-semantic) SHOW_MODEL2VEC=1 ;;
     --dev) DEV=1 ;;
     --admin) ADMIN=1; ADMIN_PAGE=1 ;;
     --admin-url) ADMIN_URL_SET="${2:-}"; shift ;;
@@ -411,11 +411,11 @@ _ensure_access() {
 }
 _ensure_access
 
-# ── tmux ──────────────────────────────────────────────────────────────────
-# The Doer's bash tool keeps ONE tmux session per run — that is what makes cd,
-# export and `source .venv/bin/activate` survive between calls. Without it the
-# tool silently degrades to a stateless subprocess. Opt out: AIFORGE_INSTALL_TMUX=0.
-_tmux_os_kind() {
+# ── prerequisites ─────────────────────────────────────────────────────────
+# run.sh installs NOTHING. It checks what is missing and prints the command for
+# THIS machine, then stops. An operator who is told "deps install failed" has to
+# go and find out what to type; one who is told what to type does not.
+_os_kind() {
   case "$(uname -s 2>/dev/null)" in
     Darwin)                  echo "macos" ;;
     FreeBSD|OpenBSD|NetBSD)  echo "bsd" ;;
@@ -426,57 +426,101 @@ _tmux_os_kind() {
     *)                       echo "unknown" ;;
   esac
 }
+_OS="$(_os_kind)"
 
-_tmux_install_cmd() {                    # $1 = os kind, $2 = sudo prefix or "skip"
-  local kind="$1" SUDO="$2"
-  case "$kind" in
-    macos)                               # brew/port refuse to run under sudo
-      if   command -v brew >/dev/null 2>&1; then echo "brew install tmux"
-      elif command -v port >/dev/null 2>&1; then echo "port install tmux"
-      fi ;;
+# The command that installs $1 on this box. Empty when there is no manager we
+# can name, so the caller can fall back to a URL.
+_install_hint() {                        # $1 = python | uv | node | tmux
+  local what="$1"
+  case "$_OS" in
+    macos)
+      case "$what" in
+        python) echo "brew install python@3.12" ;;
+        uv)     echo "brew install uv" ;;
+        node)   echo "brew install node" ;;
+        tmux)   echo "brew install tmux" ;;
+      esac ;;
     windows)
-      command -v pacman >/dev/null 2>&1 && echo "pacman -S --noconfirm --needed tmux" ;;
+      # Git Bash / MSYS2. winget is the one manager a stock Windows has.
+      case "$what" in
+        python) echo "winget install Python.Python.3.12    (or use WSL)" ;;
+        uv)     echo "winget install astral-sh.uv          (or: pipx install uv)" ;;
+        node)   echo "winget install OpenJS.NodeJS.LTS" ;;
+        tmux)   echo "not available natively — use WSL, or MSYS2: pacman -S tmux" ;;
+      esac ;;
     linux|wsl|bsd|unknown)
-      [[ "$SUDO" == "skip" ]] && return 0
-      if   command -v apt-get >/dev/null 2>&1; then echo "$SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tmux"
-      elif command -v dnf     >/dev/null 2>&1; then echo "$SUDO dnf install -y -q tmux"
-      elif command -v yum     >/dev/null 2>&1; then echo "$SUDO yum install -y -q tmux"
-      elif command -v zypper  >/dev/null 2>&1; then echo "$SUDO zypper --non-interactive install -y tmux"
-      elif command -v pacman  >/dev/null 2>&1; then echo "$SUDO pacman -S --noconfirm --needed tmux"
-      elif command -v apk     >/dev/null 2>&1; then echo "$SUDO apk add --no-cache -q tmux"
-      elif command -v pkg     >/dev/null 2>&1; then echo "$SUDO pkg install -y tmux"
+      if command -v apt-get >/dev/null 2>&1; then
+        case "$what" in
+          python) echo "sudo apt install -y python3.12 python3.12-venv" ;;
+          uv)     echo "sudo apt install -y pipx && pipx install uv" ;;
+          node)   echo "sudo apt install -y nodejs npm" ;;
+          tmux)   echo "sudo apt install -y tmux" ;;
+        esac
+      elif command -v dnf >/dev/null 2>&1; then
+        case "$what" in
+          python) echo "sudo dnf install -y python3.12" ;;
+          uv)     echo "sudo dnf install -y uv" ;;
+          node)   echo "sudo dnf install -y nodejs npm" ;;
+          tmux)   echo "sudo dnf install -y tmux" ;;
+        esac
+      elif command -v pacman >/dev/null 2>&1; then
+        case "$what" in
+          python) echo "sudo pacman -S --needed python" ;;
+          uv)     echo "sudo pacman -S --needed uv" ;;
+          node)   echo "sudo pacman -S --needed nodejs npm" ;;
+          tmux)   echo "sudo pacman -S --needed tmux" ;;
+        esac
+      elif command -v apk >/dev/null 2>&1; then
+        case "$what" in
+          python) echo "sudo apk add python3" ;;
+          uv)     echo "sudo apk add uv" ;;
+          node)   echo "sudo apk add nodejs npm" ;;
+          tmux)   echo "sudo apk add tmux" ;;
+        esac
+      elif command -v zypper >/dev/null 2>&1; then
+        case "$what" in
+          python) echo "sudo zypper install -y python312" ;;
+          uv)     echo "sudo zypper install -y uv" ;;
+          node)   echo "sudo zypper install -y nodejs npm" ;;
+          tmux)   echo "sudo zypper install -y tmux" ;;
+        esac
+      elif command -v pkg >/dev/null 2>&1; then
+        case "$what" in
+          python) echo "sudo pkg install -y python312" ;;
+          uv)     echo "sudo pkg install -y uv" ;;
+          node)   echo "sudo pkg install -y node npm" ;;
+          tmux)   echo "sudo pkg install -y tmux" ;;
+        esac
       fi ;;
   esac
+}
+
+# Collected so the operator sees EVERY missing thing at once, rather than
+# fixing one, re-running, and being told about the next.
+_MISSING=()
+_need() {                                # $1 = label, $2 = tool key
+  local hint; hint="$(_install_hint "$2")"
+  _MISSING+=("$(printf '  %-14s %s' "$1" "${hint:-install it from your package manager}")")
+}
+
+_report_missing() {
+  (( ${#_MISSING[@]} )) || return 0
+  echo "" >&2
+  echo "!! Missing prerequisites on this $_OS box. run.sh installs nothing —" >&2
+  echo "!! run these, then ./run.sh again:" >&2
+  echo "" >&2
+  printf '%s\n' "${_MISSING[@]}" >&2
+  echo "" >&2
+  exit 1
 }
 
 _ensure_tmux() {
   [[ "${AIFORGE_INSTALL_TMUX:-1}" == "0" ]] && return 0
   command -v tmux >/dev/null 2>&1 && return 0
-  local kind; kind="$(_tmux_os_kind)"
-  local SUDO=""
-  if [[ "$kind" != "macos" && "$kind" != "windows" && "$(id -u)" != "0" ]]; then
-    if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then SUDO="sudo -n"
-    else SUDO="skip"; fi
-  fi
-  local cmd; cmd="$(_tmux_install_cmd "$kind" "$SUDO")"
-  if [[ -n "$cmd" ]]; then
-    echo "==> tmux not found ($kind) — installing (persistent Doer shell)…"
-    [[ "$kind" == "linux" || "$kind" == "wsl" ]] && command -v apt-get >/dev/null 2>&1 \
-      && { $SUDO apt-get update -qq >/dev/null 2>&1 || true; }
-    $cmd >/dev/null 2>&1 || true
-  fi
-  if command -v tmux >/dev/null 2>&1; then
-    echo "==> tmux ready: $(command -v tmux)"
-  else
-    local hint
-    case "$kind" in
-      macos)   hint="brew install tmux" ;;
-      windows) hint="use WSL, or MSYS2: pacman -S tmux" ;;
-      bsd)     hint="pkg install tmux" ;;
-      *)       hint="sudo apt-get install tmux" ;;
-    esac
-    echo "==> tmux missing ($kind) — the Doer's bash tool runs STATELESS. Install it: $hint" >&2
-  fi
+  # Not fatal: without it the Doer's bash tool runs stateless (no cd/export
+  # persistence between calls), which degrades the agent but boots fine.
+  echo "==> tmux not found — the Doer's bash tool will run STATELESS." >&2
+  echo "    $(_install_hint tmux)" >&2
 }
 _ensure_tmux
 
@@ -490,24 +534,18 @@ _node_ok() {
   [[ "$maj" =~ ^[0-9]+$ ]] && (( maj >= _NODE_MIN_MAJOR ))
 }
 
-# Node comes from the nodejs-wheel-binaries wheel, not a tarball off nodejs.org.
-# Its own bin/npm resolves '../lib/cli.js' against the wrong root and dies with
-# MODULE_NOT_FOUND, so write shims into .venv/bin pointing node at npm-cli.js.
+# Node comes from the nodejs-wheel-binaries wheel — a declared dependency, so
+# it arrives with `uv pip install -e '.[toolchain]'` and nothing is fetched
+# here. The wheel's own bin/npm resolves '../lib/cli.js' against the wrong root
+# and dies with MODULE_NOT_FOUND, so we write shims pointing node at npm-cli.js.
 _ensure_node() {
   _node_ok && return 0
-  [[ -x .venv/bin/python ]] || return 0
-
-  if ! .venv/bin/python -c "import nodejs_wheel" >/dev/null 2>&1; then
-    echo "==> no usable Node — installing the nodejs-wheel-binaries wheel…"
-    "${UV:-uv}" pip install --python .venv/bin/python -e '.[toolchain]' >/dev/null 2>&1 || {
-      echo "==> could not install Node from PyPI — install Node ${_NODE_MIN_MAJOR}+ yourself" >&2
-      return 0
-    }
-  fi
+  [[ -x .venv/bin/python ]] || return 1
+  .venv/bin/python -c "import nodejs_wheel" >/dev/null 2>&1 || return 1
 
   local root tool
-  root="$(.venv/bin/python -c 'import nodejs_wheel, pathlib; print(pathlib.Path(nodejs_wheel.__file__).parent)' 2>/dev/null)" || return 0
-  [[ -x "$root/bin/node" ]] || return 0
+  root="$(.venv/bin/python -c 'import nodejs_wheel, pathlib; print(pathlib.Path(nodejs_wheel.__file__).parent)' 2>/dev/null)" || return 1
+  [[ -x "$root/bin/node" ]] || return 1
   ln -sf "$root/bin/node" .venv/bin/node
   for tool in npm npx; do
     printf '#!/bin/sh\nexec "%s/bin/node" "%s/lib/node_modules/npm/bin/%s-cli.js" "$@"\n' \
@@ -521,15 +559,6 @@ _ensure_node() {
 # Corporate boxes point ~/.npmrc at a mirror that may not carry every package,
 # so try the configured registry first and fall back to public npm.
 # Must be called with the working dir at web/.
-_npm_ci_resilient() {
-  if [[ -n "${AIFORGE_NPM_REGISTRY:-}" ]]; then
-    npm ci --ignore-scripts --registry="$AIFORGE_NPM_REGISTRY"; return $?
-  fi
-  npm ci --ignore-scripts && return 0
-  echo "==> npm ci failed on the configured registry — retrying against public npm" >&2
-  npm ci --ignore-scripts --registry=https://registry.npmjs.org/
-}
-
 # AIForge listens on plain HTTP; the banner must say https when the operator
 # fronts it with TLS, or they copy a URL that will not connect.
 _ui_scheme() {
@@ -611,30 +640,30 @@ _pick_python() {
   return 1
 }
 
+# Creating the venv downloads nothing — it is the local interpreter and the
+# stdlib — so run.sh still does that much rather than make it a chore.
 if [[ ! -d .venv ]]; then
-  echo "==> creating .venv (python $AIFORGE_PYTHON)"
+  if ! _PY="$(_pick_python)"; then
+    _need "python $AIFORGE_PYTHON" python
+    _report_missing
+  fi
+  echo "==> creating .venv ($_PY)"
   if command -v uv >/dev/null 2>&1; then
     uv venv --python "$AIFORGE_PYTHON" .venv || uv venv .venv
-  else
-    # No uv yet: the stdlib makes the venv, then pip installs the uv wheel into
-    # it. That is how uv can be a dependency rather than a piped installer.
-    _PY="$(_pick_python)" || _fatal \
-      "no python interpreter found (looked for python$AIFORGE_PYTHON, python3.12, python3)." \
-      "Install python $AIFORGE_PYTHON from your package manager."
-    "$_PY" -m venv .venv || _fatal \
-      "python -m venv failed with $_PY." \
-      "On Debian/Ubuntu the venv module is a separate package: apt install python3-venv"
+  elif ! "$_PY" -m venv .venv; then
+    echo "!! python -m venv failed with $_PY." >&2
+    [[ "$_OS" != "macos" && "$_OS" != "windows" ]] \
+      && echo "!! On Debian/Ubuntu the venv module is a separate package:" >&2 \
+      && echo "!!   sudo apt install -y python3-venv" >&2
+    exit 1
   fi
 fi
 
 UV="$(command -v uv 2>/dev/null || true)"
 [[ -z "$UV" && -x .venv/bin/uv ]] && UV="$PWD/.venv/bin/uv"
 if [[ -z "$UV" ]]; then
-  echo "==> uv not found — installing the uv wheel from PyPI…"
-  .venv/bin/python -m pip install -q --disable-pip-version-check uv \
-    || _fatal "could not install the uv wheel from PyPI." \
-              "Install uv from your package manager (brew/dnf install uv, pipx install uv)."
-  UV="$PWD/.venv/bin/uv"
+  _need "uv" uv
+  _report_missing
 fi
 export UV
 echo "==> uv: $UV ($("$UV" --version 2>/dev/null || echo unknown))"
@@ -646,43 +675,26 @@ export UV_LINK_MODE="${UV_LINK_MODE:-copy}"
 # Absolute, so job/Doer shells in another cwd still resolve `aiforge-tool`.
 export PATH="$PWD/.venv/bin:$PATH"
 
-echo "==> installing python deps (editable)"
-# The rebuild below exists for WSL /mnt/c, where a copy can leave a package
-# half-written and uv aborts the whole resolve; a corrupt venv cannot be patched
-# in place. It must NOT fire on a network or TLS failure — deleting a working
-# venv because the index was unreachable is how an operator behind a proxy lost
-# theirs. So the error is read, shown, and only corruption rebuilds.
-if ! _out="$("$UV" pip install --python .venv/bin/python -e . 2>&1)"; then
-  if grep -qiE "certificate|tls handshake|ssl|proxy|dns|timed out|temporary failure|failed to connect|resolve host|Request failed|UnknownIssuer" <<<"$_out"; then
-    echo "$_out" >&2
-    _fatal "could not reach the package index — the .venv is left ALONE." \
-      "Behind a proxy or an internal CA? Load the root AND its intermediates in Settings → Local certificate authority, or set AIFORGE_CA_BUNDLE."
-  fi
-  echo "==> deps install failed — rebuilding .venv from scratch"
-  echo "$_out" | tail -5 >&2
-  rm -rf .venv && "$UV" venv --python "$AIFORGE_PYTHON" .venv
-  "$UV" pip install --python .venv/bin/python -e . >/dev/null
-fi
-unset _out
+# run.sh does NOT install. Everything is either a declared dependency of this
+# project or something the operator installed — never something this script
+# fetched on its own. So: check, and if it is not there, say exactly what to
+# type. `uv pip install` is one command; a half-understood failure is an hour.
+_venv_ready() { .venv/bin/python -c "import aiforge_core, pydantic_core" >/dev/null 2>&1; }
 
-# An install can exit 0 and still be half-written (again, DrvFs). Skip with
-# AIFORGE_SKIP_SMOKE=1.
-if [[ "${AIFORGE_SKIP_SMOKE:-0}" != "1" ]]; then
-  _smoke='import urllib3.util, urllib3.util.connection, requests, charset_normalizer, certifi, idna, google.adk'
-  if ! .venv/bin/python -c "$_smoke" >/dev/null 2>&1; then
-    echo "==> core deps import broken (partial install) — repairing…"
-    "$UV" pip install --python .venv/bin/python --reinstall \
-      urllib3 requests charset_normalizer certifi idna >/dev/null 2>&1 || true
-    if ! .venv/bin/python -c "$_smoke" >/dev/null 2>&1; then
-      echo "==> still broken — rebuilding .venv from scratch"
-      rm -rf .venv && "$UV" venv --python "$AIFORGE_PYTHON" .venv
-      "$UV" pip install --python .venv/bin/python -e . >/dev/null 2>&1 || true
-    fi
-    .venv/bin/python -c "$_smoke" >/dev/null 2>&1 \
-      && echo "==> deps repaired" \
-      || echo "==> WARN: deps still broken. On /mnt/c? Move the repo to the Linux FS." >&2
-  fi
+if ! _venv_ready; then
+  echo "" >&2
+  echo "!! The .venv does not have this project installed." >&2
+  echo "!! run.sh installs nothing — run this once, then ./run.sh again:" >&2
+  echo "" >&2
+  echo "     $UV pip install --python .venv/bin/python -e '.[toolchain]'" >&2
+  echo "" >&2
+  echo "   Optional extras, same pattern:" >&2
+  echo "     $UV pip install --python .venv/bin/python -e '.[structured,crawl,chunking]'   # richer tools" >&2
+  echo "     $UV pip install --python .venv/bin/python -e '.[embed-static]'                # semantic memory" >&2
+  echo "" >&2
+  exit 1
 fi
+echo "==> deps: .venv is ready"
 
 # ── converge a prior install (once, marker-guarded) ───────────────────────
 # Detects a dockerized Postgres/Neo4j install, moves its data into SQLite/OKF
@@ -720,18 +732,8 @@ fi
 # Every seam has a built-in fallback. Skip with AIFORGE_SKIP_INTEGRATIONS=1.
 if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
   if ! .venv/bin/python -c "import instructor, crawl4ai, chonkie" >/dev/null 2>&1; then
-    echo "==> installing integration extras (instructor + crawl4ai + chonkie)…"
-    "$UV" pip install --python .venv/bin/python -e '.[structured,crawl,chunking]' >/dev/null 2>&1 \
-      && echo "==> integration extras ready" \
-      || echo "==> integration extras skipped (built-in fallbacks active)"
-  fi
-
-  if [[ "${INSTALL_MODEL2VEC:-0}" == "1" ]] \
-      && ! .venv/bin/python -c "import model2vec, sqlite_vec" >/dev/null 2>&1; then
-    echo "==> installing model2vec static embeddings (~30MB, no torch)…"
-    "$UV" pip install --python .venv/bin/python -e '.[embed-static]' \
-      && : "${AIFORGE_EMBED_BACKEND:=model2vec}" \
-      || echo "==> model2vec install skipped — continuing"
+    echo "==> integration extras absent (built-in fallbacks active). To add them:"
+    echo "    $UV pip install --python .venv/bin/python -e '.[structured,crawl,chunking]'"
   fi
 
   # An explicit backend always wins; otherwise pick the lightest installed one.
@@ -743,42 +745,21 @@ if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
     echo "==> embed backend: model2vec (auto — static semantic, no torch)"
   else
     export AIFORGE_EMBED_BACKEND=hash
-    echo "==> embed backend: hash (keyword). Semantic recall: ./run.sh --install-model2vec"
+    echo "==> embed backend: hash (keyword). For semantic recall:"
+    echo "    $UV pip install --python .venv/bin/python -e '.[embed-static]'"
   fi
-
-  # No `playwright install chromium`: that pulled a browser binary from a CDN,
-  # not a package index. crawl4ai falls back to a plain fetch; a box that wants
-  # rendering sets PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH to a packaged chromium.
-
-  # crawl4ai's deps outrun an older requests' hardcoded compat check, which
-  # warns on every python spawn. Cosmetic.
-  "$UV" pip install --python .venv/bin/python -U requests >/dev/null 2>&1 || true
-fi
-
-# An interrupted install can leave pydantic present but pydantic_core missing;
-# uv then considers the env satisfied, so a plain re-run won't fix it.
-if ! .venv/bin/python -c "import pydantic_core" >/dev/null 2>&1; then
-  echo "==> venv incomplete (pydantic_core missing) — repairing deps"
-  "$UV" pip install --python .venv/bin/python --reinstall -e . >/dev/null 2>&1 || true
-  if ! .venv/bin/python -c "import pydantic_core" >/dev/null 2>&1; then
-    echo "==> rebuilding .venv from scratch"
-    rm -rf .venv && "$UV" venv --python "$AIFORGE_PYTHON" .venv \
-      && "$UV" pip install --python .venv/bin/python -e . >/dev/null
+  if [[ "${SHOW_MODEL2VEC:-0}" == "1" ]]; then
+    echo "==> semantic memory (model2vec, ~30MB, no torch) — run this, then ./run.sh:"
+    echo "    $UV pip install --python .venv/bin/python -e '.[embed-static]'"
   fi
 fi
 
-# ── graphify (--with-graphify) ────────────────────────────────────────────
-# ISOLATED install only. graphify pins its OWN pydantic, so co-installing it
-# into .venv breaks the app's boot with ModuleNotFoundError: pydantic_core.
-if [[ $WITH_GRAPHIFY -eq 1 ]]; then
-  if command -v graphify >/dev/null 2>&1; then
-    echo "==> graphify present ($(command -v graphify)) — upgrading"
-    "$UV" tool upgrade graphifyy 2>/dev/null || "$UV" tool install --force graphifyy 2>/dev/null || true
-  elif "$UV" tool install graphifyy; then
-    echo "==> graphify ready: $(command -v graphify 2>/dev/null || echo "$("$UV" tool dir --bin 2>/dev/null)/graphify")"
-  else
-    echo "==> WARN: 'uv tool install graphifyy' failed — skipping (stack still boots)." >&2
-  fi
+# ── graphify (--with-graphify) ─────────────────────────────────────────────
+# ISOLATED install only — graphify pins its OWN pydantic, so putting it in
+# .venv breaks the app's boot. Hence `uv tool`, and hence the operator runs it.
+if [[ $WITH_GRAPHIFY -eq 1 ]] && ! command -v graphify >/dev/null 2>&1; then
+  echo "==> graphify not installed. Install it yourself (NEVER into .venv):"
+  echo "    $UV tool install graphifyy      # or: pipx install graphifyy"
 fi
 
 # ── --test ────────────────────────────────────────────────────────────────
@@ -787,28 +768,32 @@ if [[ $TEST -eq 1 ]]; then
 fi
 
 # ── web UI build ──────────────────────────────────────────────────────────
+# `npm ci` reaches the registry, so the operator runs it. run.sh only builds
+# what is already installed.
 if [[ $SKIP_WEB -eq 0 ]]; then
-  _ensure_node
-  if command -v npm >/dev/null 2>&1; then
-    if [[ ! -d web/dist ]] || [[ -n "$(find web/src web/index.html web/package.json -newer web/dist/index.html 2>/dev/null | head -1)" ]]; then
-      echo "==> building web UI"
-      ( cd web && { [[ -d node_modules ]] || _npm_ci_resilient; } && npm run build )
-    else
-      echo "==> web UI up to date (use --skip-web to skip this check)"
+  _ensure_node || true
+  _web_stale() {
+    [[ ! -d web/dist ]] || [[ -n "$(find web/src web/index.html web/package.json \
+      -newer web/dist/index.html 2>/dev/null | head -1)" ]]
+  }
+  if ! command -v npm >/dev/null 2>&1; then
+    if _web_stale; then
+      echo "!! No npm, and web/dist is missing or stale — the UI will be wrong." >&2
+      echo "!! Node comes with the toolchain extra:" >&2
+      echo "!!   $UV pip install --python .venv/bin/python -e '.[toolchain]'" >&2
+      echo "!! or install it yourself: $(_install_hint node)" >&2
     fi
-  elif [[ ! -d web/dist ]]; then
-    echo "!! no npm and no web/dist — the UI will not load. Install Node ${_NODE_MIN_MAJOR}+" >&2
-    echo "!! (apt/dnf/brew install nodejs), or build web/ elsewhere and copy dist over." >&2
-  elif [[ -n "$(find web/src web/index.html web/package.json -newer web/dist/index.html 2>/dev/null | head -1)" ]]; then
-    # Loud: source changed but npm is missing, so the OLD bundle is served —
-    # the #1 cause of "I pulled but the UI is unchanged".
-    echo "!! ============================================================" >&2
-    echo "!! npm not found — web/dist is STALE. You are serving an OUTDATED UI." >&2
-    echo "!! Install Node ${_NODE_MIN_MAJOR}+ and re-run, or run 'cd web && npm run build'" >&2
-    echo "!! elsewhere and copy web/dist over." >&2
-    echo "!! ============================================================" >&2
+  elif [[ ! -d web/node_modules ]]; then
+    if _web_stale; then
+      echo "!! web/node_modules is missing, so the UI cannot be built." >&2
+      echo "!! run.sh does not install — run this once, then ./run.sh again:" >&2
+      echo "!!   (cd web && npm ci --ignore-scripts && npm run build)" >&2
+    fi
+  elif _web_stale; then
+    echo "==> building web UI"
+    ( cd web && npm run build )
   else
-    echo "==> npm not found — skipping UI build (dist present + current)" >&2
+    echo "==> web UI up to date (use --skip-web to skip this check)"
   fi
 fi
 
@@ -862,17 +847,14 @@ fi
 # ── launch ────────────────────────────────────────────────────────────────
 export PATH="$PWD/.venv/bin:$PATH"
 
-# CodeGraph: the Doer's codegraph_* calls are enforced, so install the indexer
-# if missing (npm, user prefix, no sudo). Skip with AIFORGE_SKIP_CODEGRAPH=1.
+# CodeGraph: the Doer's codegraph_* calls are enforced, but the indexer is an
+# npm package — so the operator installs it. Enforcement self-gates off without
+# a binary or an index. Skip the notice with AIFORGE_SKIP_CODEGRAPH=1.
 if [[ "${AIFORGE_SKIP_CODEGRAPH:-0}" != "1" ]]; then
   [[ -d "$HOME/.npm-global/bin" ]] && export PATH="$HOME/.npm-global/bin:$PATH"
-  if ! command -v codegraph >/dev/null 2>&1 && [[ -z "${AIFORGE_CODEGRAPH_BIN:-}" ]] \
-       && command -v npm >/dev/null 2>&1; then
-    echo "==> installing CodeGraph (code-graph indexer)…"
-    bash scripts/install-codegraph.sh >/dev/null 2>&1 \
-      && echo "==> codegraph ready" \
-      || echo "==> codegraph install skipped — enforcement stays off"
-    [[ -d "$HOME/.npm-global/bin" ]] && export PATH="$HOME/.npm-global/bin:$PATH"
+  if ! command -v codegraph >/dev/null 2>&1 && [[ -z "${AIFORGE_CODEGRAPH_BIN:-}" ]]; then
+    echo "==> codegraph not installed — the enforced codegraph_* tools stay off."
+    echo "    bash scripts/install-codegraph.sh    # npm, user prefix, no sudo"
   fi
 fi
 

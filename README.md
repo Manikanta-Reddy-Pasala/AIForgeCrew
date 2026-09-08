@@ -29,10 +29,10 @@ cd AIForgeCrew
 ./run.sh
 ```
 
-`run.sh` never fetches a source and executes it — no installer piped into a
-shell, no Node tarball, no managed CPython, no browser binary from a CDN. `uv`
-and Node are Python dependencies, so the only thing that ever fetches is a
-package manager installing what the project declares.
+**`run.sh` installs nothing.** It checks what is missing and prints the command
+for your OS, then stops. Everything comes from one of two places: a dependency
+this project declares, or a command you ran — never something the script
+fetched on its own. Setup is three commands; see **[INSTALL.md](INSTALL.md)**.
 
 Settings live in **`aiforge.env`** — one fixed file, committed, identical on
 every box, which run.sh reads and never writes to. Anything per-box (the model

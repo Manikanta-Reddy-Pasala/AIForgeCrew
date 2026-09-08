@@ -2,32 +2,42 @@
 
 ## Prerequisites
 
-**`git` and `python 3.12`.** That is the whole list.
+**`git` and `python 3.12`.** run.sh installs nothing — it checks what is
+missing and prints the command for your OS, then stops.
+
+| | macOS | Debian/Ubuntu | Fedora/RHEL | Windows |
+|---|---|---|---|---|
+| python 3.12 | `brew install python@3.12` | `sudo apt install -y python3.12 python3.12-venv` | `sudo dnf install -y python3.12` | `winget install Python.Python.3.12` |
+| uv | `brew install uv` | `sudo apt install -y pipx && pipx install uv` | `sudo dnf install -y uv` | `winget install astral-sh.uv` |
+| tmux *(optional)* | `brew install tmux` | `sudo apt install -y tmux` | `sudo dnf install -y tmux` | use WSL |
+
+Then, once:
 
 ```bash
-sudo apt install -y git python3.12 python3.12-venv   # Debian/Ubuntu
-sudo dnf install -y git python3.12                   # RHEL/Fedora
-brew install git python@3.12                         # macOS
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -e '.[toolchain]'
+(cd web && npm ci --ignore-scripts && npm run build)      # the UI
+./run.sh
 ```
 
-`uv` and Node are Python dependencies (the `toolchain` extra: the `uv` wheel and
-`nodejs-wheel-binaries`), so they arrive from the same index, lockfile, private
-mirror and CA as everything else. If your package manager already provides them,
-`run.sh` uses those and installs nothing.
+`node` and `npm` come from the `toolchain` extra (`nodejs-wheel-binaries`), so
+that second command supplies them — you do not install Node separately unless
+you prefer to. Without tmux the agent still boots; its shell tool just loses
+`cd`/`export` persistence between calls.
 
-`run.sh` never fetches a source and executes it: no `curl … | sh`, no Node
-tarball onto `PATH`, no managed CPython, no browser binary from a CDN. That is
-structural, not a setting — uv and Node are wheels, so there is no such code
-path left. What does fetch is a package manager installing the dependencies the
-project declares, from the index, lockfile, private mirror and CA you already
-use.
+Optional, same pattern:
 
-Settings live in `aiforge.env` — one fixed file, committed and identical on
-every box, that run.sh reads and never writes to. Per-box values come from the
-real environment, which overrides it.
+```bash
+uv pip install --python .venv/bin/python -e '.[structured,crawl,chunking]'  # richer tools
+uv pip install --python .venv/bin/python -e '.[embed-static]'               # semantic memory
+uv tool install graphifyy          # the graphify CLI — NEVER into .venv
+bash scripts/install-codegraph.sh  # the CodeGraph indexer (npm, no sudo)
+```
 
-Node is needed only to build the web UI; `--skip-web` or a pre-built `web/dist`
-avoids it. Use `AIFORGE_PYTHON=3.11` if that is the interpreter you have.
+Everything comes from one of two places: a dependency this project declares, or
+a command you ran. `run.sh` never fetches a source and executes it — no
+installer piped into a shell, no Node tarball, no managed CPython, no browser
+binary from a CDN.
 
 ## Two ways to run it
 

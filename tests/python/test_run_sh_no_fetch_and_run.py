@@ -232,20 +232,63 @@ def test_the_published_bundle_still_carries_the_operators_ca(tmp_path, a_ca):
     assert a_ca.strip() in published.read_text()
 
 
-# ── a network failure must not delete a working venv ────────────────────────
+# ── run.sh installs nothing at all ─────────────────────────────────────────
+# Everything comes from one of two places: a dependency this project declares,
+# or a command the operator ran. Never something the script fetched on its own.
 
-def test_a_network_failure_does_not_delete_the_venv():
-    """The rebuild branch is for a half-written venv on DrvFs, not for a proxy."""
-    guard = re.search(r"if ! _out=.*?rm -rf \.venv", SRC, re.S)
-    assert guard, "the deps-install failure branch changed shape"
-    assert "certificate" in guard.group(0)
-    assert "left ALONE" in guard.group(0)
+def _executable_lines() -> list[str]:
+    """Code lines that RUN something — an `echo` that prints an install command
+    for the operator is the opposite of running it, and must not be flagged."""
+    out = []
+    for ln in _code_lines():
+        stripped = ln.strip()
+        if stripped.startswith(("echo ", "printf ", "#")):
+            continue
+        # `case` arms in the hint table are `python) echo "brew install …" ;;`
+        # — the echo is not at the start of the line but it is still a print.
+        if re.match(r"^\S+\)\s+echo ", stripped):
+            continue
+        out.append(ln)
+    return out
 
 
-def test_the_diagnosis_does_not_fire_on_a_bare_word(tmp_path):
-    """`network` and `connect` appear in messages that are not link failures."""
-    m = re.search(r"grep -qiE \"([^\"]*certificate[^\"]*)\"", SRC)
-    assert m, "the failure classifier changed shape"
-    pattern = m.group(1)
-    assert "|network|" not in f"|{pattern}|"
-    assert "|connect|" not in f"|{pattern}|"
+def test_the_script_runs_no_installer():
+    for cmd in ('"$UV" pip install', "uv tool install", "npm ci",
+                "bash scripts/install-codegraph.sh", "apt-get install",
+                "brew install"):
+        hits = [ln for ln in _executable_lines() if cmd in ln]
+        assert not hits, f"run.sh still runs an install: {hits}"
+
+
+def test_the_installer_commands_are_still_PRINTED():
+    """Removing the installs must not remove the guidance that replaced them."""
+    printed = "\n".join(ln for ln in _code_lines() if ln.strip().startswith("echo "))
+    assert "pip install" in printed
+    assert "npm ci" in printed
+
+
+def test_it_can_no_longer_delete_a_venv():
+    """The rebuild branches are gone with the installs, so the failure that
+    destroyed an operator's virtualenv has no code path left."""
+    assert "rm -rf .venv" not in SRC
+
+
+def test_a_missing_prerequisite_names_the_command_for_this_os():
+    """An operator told 'deps install failed' has to go and find out what to
+    type; one told what to type does not."""
+    assert "_install_hint" in SRC
+    for manager in ("brew install", "apt install", "dnf install", "winget install"):
+        assert manager in SRC, f"no hint for {manager}"
+
+
+@pytest.mark.parametrize("tool", ["python", "uv", "node", "tmux"])
+def test_every_prerequisite_has_a_hint_on_every_platform(tool):
+    hint = re.search(r"_install_hint\(\) \{.*?\n\}", SRC, re.S)
+    assert hint, "the hint table changed shape"
+    assert f"{tool})" in hint.group(0), f"{tool} has no install hint"
+
+
+def test_the_venv_is_checked_not_filled():
+    assert "_venv_ready()" in SRC
+    i = SRC.index("_venv_ready()")
+    assert "does not have this project installed" in SRC[i:i + 1200]
