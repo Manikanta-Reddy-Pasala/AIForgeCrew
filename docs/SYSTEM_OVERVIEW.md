@@ -4,7 +4,7 @@ Audience: the operator and new team members. Every claim below is verified
 against the code (file references inline). Companion docs:
 [QUICKSTART.md](../QUICKSTART.md) (setup) · [TOOLS.md](TOOLS.md) (complete
 tool reference + per-agent allowlists) · [DECISIONS.md](DECISIONS.md) (why
-things are the way they are) · [DEMO_GUIDE.md](DEMO_GUIDE.md) (walkthrough).
+things are the way they are) · [OKF.md](OKF.md) (the on-disk memory format).
 
 ---
 

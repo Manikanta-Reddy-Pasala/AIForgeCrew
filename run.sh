@@ -1,123 +1,58 @@
 #!/usr/bin/env bash
-# run.sh — one-command boot for AIForge (deploy-anywhere).
+# run.sh — one-command boot for AIForge.
 #
 #   git clone … && cd AIForgeCrew && ./run.sh
 #
-# PREREQS — provision the TOOLCHAIN, run.sh does the rest:
-#   • python 3.12 — from your package manager (apt/dnf/brew). That is the
-#     only hard prerequisite besides git.
-#   • uv and Node are PYTHON DEPENDENCIES now (the `toolchain` extra: the `uv`
-#     wheel and `nodejs-wheel-binaries`), so they arrive from the same index,
-#     lockfile, mirror and CA as everything else. run.sh downloads nothing
-#     from github, astral.sh, nodejs.org or a browser CDN — only package
-#     managers fetch: PyPI, npm, docker, apt.
-#   • python + node deps, RepoMap, CodeGraph — installed on first boot.
-# So: git + python 3.12. Everything else is a package.
+# Needs: git + python 3.12. Everything else is a package.
+# uv and Node are Python dependencies (the `toolchain` extra), so run.sh
+# downloads nothing from github, astral.sh, nodejs.org or a browser CDN —
+# only package managers fetch: PyPI, npm, docker, apt.
 #
-# TWO INSTALL MODES (see INSTALL.md):
-#   • BINARY / NATIVE (default) — runs on the host, full fs/shell/toolchain.
-#       ./run.sh                      # your user
-#       sudo ./run.sh                 # as root (full-filesystem access)
-#   • DOCKER — one self-contained container, all deps baked (RepoMap, semantic/
-#       torch, sqlite-vec, extras, UI), the FULL host FS mounted at /host:
-#       ./run.sh --docker             # build + up the container
-#
-# SINGLE MODE — everything on the host, zero infra Docker:
-#   • embedded SQLite  (tickets + chat)
-#   • scoped-OKR Markdown memory  (briefs in ~/.aiforge/memory/compacted/,
-#       originals archived to archive/; global 'shared' + per-repo + topic briefs)
-#   • hybrid recall  (keyword/BM25 + spell-correct by default; add semantic
-#       vector KNN with --install-model2vec — optional, see below)
-#   • RepoMap + CodeGraph  (code context — tree-sitter, in-tree)
-#   • api + team-pipeline runner on the host (full fs/shell/toolchain)
-# A prior dockerized install (Postgres/Neo4j) is auto-migrated to SQLite/OKR on
-# first boot and its DB containers/images/volumes removed (see
-# aiforge_core.deploy.converge). Point it at a model on the home page
-# (http://localhost:8799/ui/).
-#
-# MEMORY EMBEDDER (recall quality) — AIFORGE_EMBED_BACKEND. An EXPLICIT value is
-# always honored; otherwise the lightest installed backend is auto-picked.
-#   • model2vec (RECOMMENDED semantic) — real static embeddings, ~30MB model,
-#     NO torch (pure numpy). Enable ONCE: `./run.sh --install-model2vec`. Loads
-#     from a local dir for zero-network runtime (AIFORGE_EMBED_MODEL2VEC_PATH).
-#   • hash — keyword + exact-id + spell-correction, zero deps, no download.
-#     The fallback when no semantic backend is installed.
-#   • api — semantic from an OpenAI-compatible /v1/embeddings endpoint you ALREADY
-#     run (LM Studio / Ollama). No local model at all:
-#       AIFORGE_EMBED_BACKEND=api AIFORGE_EMBED_API_MODEL=<embed-model> ./run.sh
-#
-# SEED A FRESH MACHINE'S MEMORY from agent-instruction files (CLAUDE.md /
-# AGENTS.md / GEMINI.md / .cursorrules) — a reproducible, committed path:
-#   aiforge-memory-instructions --clear --root <repos-dir>   # (stop api first)
+# Runs on the host by default (full fs/shell access); `--docker` runs the
+# self-contained container instead. Storage is embedded SQLite + Markdown
+# memory. Point it at a model on http://localhost:8799/ui/.
 #
 # Flags:
 #   --port N     listen port (default 8799)
 #   --host H     bind host (default 127.0.0.1)
-#   --dev        uvicorn --reload (hot reload)
-#   --admin      run this machine as THE memory admin: it receives every other
-#                machine's OKF nodes and runs the one cross-machine merge over
-#                them. Exactly one box in a fleet takes this flag. It also opens
-#                the loopback-only sync admin page (the URL is printed anyway).
-#   --admin-page open that page without claiming the role (any machine)
-#   --spoke      give up the admin role: drops the persisted AIFORGE_ROLE so
-#                AIFORGE_ADMIN_URL decides again (how you MOVE the admin)
-#   --admin-url <url>
-#                name the memory admin this box syncs with, which makes it a
-#                spoke. Persisted to the env file like --admin/--spoke.
-#   --group <name>
-#                preselect the sync group. Only needed on a headless box that
-#                will never see the settings screen — a client normally
-#                discovers the admin's group list and picks from it there.
+#   --dev        uvicorn --reload
+#   --docker     build + run the all-deps container (host FS at /host)
 #   --skip-web   don't (re)build the web UI
-#   --test       probe the configured model endpoint (OK/FAIL), then exit
-#   --reset-config  wipe ~/.aiforge/agent_config.json (backed up) so stale
-#                per-role rows can't shadow the model you set next
-#   --with-langfuse  bring up a self-hosted Langfuse trace UI (the ONE optional
-#                Docker piece; also AIFORGE_LANGFUSE=1 in .env)
-#   --stop-langfuse  stop the langfuse containers (traces are ephemeral)
-#   --with-graphify  install the `graphify` CLI (concept-graph tool)
-#   --migrate    force a (re-)converge: clear stale PG/Neo4j env keys and remove
-#                SQLite/OKR + remove docker, then start
-#   --install-model2vec  install semantic memory (model2vec static embeddings,
-#                ~30MB, NO torch), then start with it active. One-time.
-#                (--install-semantic is a kept alias — also installs model2vec.)
-#   --dedupe     remove duplicate OKR nodes + chat sessions, then exit
-#   --recompact-all  re-LLM every memory brief + rebuild from scratch, then exit
-#   --migrate-okf    rename okr→okf + convert ALL memory md files to OKF (Open
-#                    Knowledge Format v0.1) frontmatter, then exit. On start it
-#                    runs ONLY when a legacy <memory>/okr/ folder still exists
-#                    (the pre-OKF signal); opt out with AIFORGE_MIGRATE_OKF=0
-#   --purge-code     drop code-as-learnings from a bad migration, then exit
+#   --test       probe the configured model endpoint, then exit
 #   --offline    air-gapped: no network at all, package managers included
-#                (AIFORGE_OFFLINE=1). Everything must already be on the box.
-#   (--lite/--hybrid/--docker/--no-build are legacy no-ops — always SQLite now)
+#   --admin      this box is THE memory admin (exactly one per fleet); it
+#                merges every machine's knowledge and serves the result back
+#   --spoke      give up the admin role (how you MOVE the admin)
+#   --admin-url <url>   name the admin this box syncs with
+#   --admin-page open the loopback-only sync page, claim nothing
+#   --group <name>      preselect the sync group (headless boxes only)
+#   --reset-config      wipe the saved agent config (backed up)
+#   --install-model2vec install semantic memory (~30MB, no torch)
+#   --with-graphify     install the `graphify` CLI
+#   --with-langfuse     bring up the self-hosted trace UI (needs Docker)
+#   --stop-langfuse     stop it again (traces are ephemeral)
+#   --migrate           force a re-converge of a prior install
+#   --dedupe | --recompact-all | --migrate-okf | --purge-code
+#                       memory maintenance, then exit
+#   (--lite/--hybrid/--no-build are legacy no-ops)
 #
-# Self-hosted model over HTTPS with an internal/self-signed cert? Drop an `.env`
-# (or `aiforge.env`) next to this script — it is sourced automatically:
-#   AIFORGE_LM_BASE_URL       https://your-box:1234/v1   (the model endpoint)
-#   AIFORGE_LLM_SSL_VERIFY    false   (relax TLS for INTERNAL hosts only)
-#   AIFORGE_LLM_CA_BUNDLE     /path/to/ca.pem  (preferred: keep verify ON)
+# Self-hosted model over HTTPS? Drop a `.env` next to this script:
+#   AIFORGE_LM_BASE_URL    https://your-box:1234/v1
+#   AIFORGE_CA_BUNDLE      /path/to/ca.pem     (keeps verification ON)
 #
-# ⚠️  The agent has FULL filesystem + shell access on this machine (no sandbox).
+# ⚠️  The agent has FULL filesystem + shell access here (no sandbox).
 #     Set AIFORGE_WORKSPACE_DIR=/path to clamp the chat file scope.
 set -euo pipefail
 
-# EXPORT the config dir before spawning anything. The rate ceiling, and the
-# settings store it reads, are keyed on this path — and the children only ever
-# resolved it from a DEFAULT ($HOME/.aiforge). A supervisor with its own HOME
-# (a systemd unit, a launchd plist, a sudo'd runner) therefore put the API and
-# the runner on two different rate windows, and each quietly got the operator's
-# full llm_max_rpm: the exact bug the shared window fixes, but with a file on
-# disk that makes it look fixed.
+# Export before spawning anything: the rate ceiling and the settings store are
+# keyed on this path, and a supervisor with its own HOME otherwise puts the API
+# and the runner on two different rate windows.
 export AIFORGE_CONFIG_DIR="${AIFORGE_CONFIG_DIR:-$HOME/.aiforge}"
 
 cd "$(dirname "$0")"
 
-# ── Local env file (self-hosted endpoint + TLS toggle) ────────────────
-# Source a committed-out `.env` / `aiforge.env` if present so `./run.sh`
-# applies the operator's model base_url + SSL settings with NO manual
-# `export`. `set -a` auto-exports every assignment in the file.
-ENV_FILE=""            # the file that was actually sourced, for writers below
+# ── env file ──────────────────────────────────────────────────────────────
+ENV_FILE=""
 for _envf in .env aiforge.env; do
   if [[ -f "$_envf" ]]; then
     echo "==> loading env from $_envf"
@@ -127,42 +62,27 @@ for _envf in .env aiforge.env; do
   fi
 done
 
-# SINGLE MODE = embedded SQLite. Immediately drop any Postgres/Neo4j pointers a
-# stale .env (from an old hybrid setup) may have set, so NOTHING run.sh spawns
-# (converge, the api, the runner) tries a Postgres that no longer exists and
-# spams "Postgres unreachable". converge provides its own PG url internally when
-# it actually migrates. Set AIFORGE_KEEP_PG=1 only if you truly run external PG.
+# Storage is SQLite. Drop Postgres/Neo4j pointers a stale .env may still set,
+# or everything run.sh spawns spams "Postgres unreachable". converge supplies
+# its own PG url when it actually migrates.
 if [[ "${AIFORGE_KEEP_PG:-0}" != "1" ]]; then
   unset AIFORGE_PG_URL AIFORGE_DSN AIFORGE_FORCE_PG \
         AIFORGE_NEO4J_URI NEO4J_URI AIFORGE_REQUIRE_DATA_BACKEND || true
   [[ "${AIFORGE_MEMORY_BACKEND:-}" == "neo4j" ]] && export AIFORGE_MEMORY_BACKEND=sqlite
 fi
 
-# NOTE: ~/.aiforge/runtime.env (UI-persisted toggles) is intentionally NOT
-# sourced here — sourcing it would execute any shell metacharacters a value
-# contains. The API loads it itself with a plain KEY=VALUE parser at startup
-# (no shell eval), so the toggles still survive a restart, safely.
+# ~/.aiforge/runtime.env is deliberately NOT sourced — that would execute any
+# shell metacharacter in a value. The API parses it as plain KEY=VALUE.
 
-# Secure-by-default: verification stays ON unless the env file flips it.
-# Exporting (without override) makes the value visible to the app + probe.
 export AIFORGE_LLM_SSL_VERIFY="${AIFORGE_LLM_SSL_VERIFY:-true}"
 [[ -n "${AIFORGE_LLM_CA_BUNDLE:-}" ]] && export AIFORGE_LLM_CA_BUNDLE
 
-# ── Corporate CA, for the BOOTSTRAP itself ────────────────────────────────
-# aiforge_core/net/ca.py publishes the bundle to git, curl, npm and every
-# subprocess — from an @app.on_event("startup") hook, i.e. AFTER this script
-# has already finished installing everything. So on an estate with its own
-# root CA (or a TLS-inspecting proxy) the app trusted it and the installer did
-# not: `uv pip install` off PyPI, `npm ci` off the registry and `git` all
-# failed with CERTIFICATE_VERIFY_FAILED before the app ever started, and the
-# operator was told to paste a certificate into a UI they could not reach yet.
-#
-# Same resolution order as net/ca.py — an explicit variable wins, then the
-# certificate saved from Settings — so one answer covers the installer and the
-# running product. Nothing here disables verification; with no bundle
-# configured every tool keeps its own default trust store.
+# ── corporate CA, for the installs below ──────────────────────────────────
+# net/ca.py publishes the bundle from a startup hook — i.e. after this script
+# has finished installing everything — so without this the app trusted the
+# operator's CA and pip/npm/git did not. Same resolution order as net/ca.py.
 _ca_bootstrap() {
-  local ca="" v
+  local ca="" v var
   for v in AIFORGE_CA_BUNDLE SSL_CERT_FILE REQUESTS_CA_BUNDLE; do
     [[ -n "${!v:-}" ]] && { ca="${!v}"; break; }
   done
@@ -171,29 +91,18 @@ _ca_bootstrap() {
   [[ -r "$ca" ]] || return 0
 
   export AIFORGE_CA_BUNDLE="$ca"
-  # One file, every tool's own name for it. Only variables the operator left
-  # unset are filled — the same rule apply_to_process_env() follows, so a box
-  # that already points a tool somewhere keeps its answer.
-  local var
   for var in GIT_SSL_CAINFO CURL_CA_BUNDLE SSL_CERT_FILE REQUESTS_CA_BUNDLE \
              NODE_EXTRA_CA_CERTS; do
-    [[ -z "${!var:-}" ]] && export "$var=$ca"
+    [[ -z "${!var:-}" ]] && export "$var=$ca"      # never overrule the operator
   done
-  # uv reads SSL_CERT_FILE, but only with native-tls off (its default); make
-  # the intent explicit rather than depending on which build shipped.
-  export UV_NATIVE_TLS="${UV_NATIVE_TLS:-0}"
-  # npm's own name for it, so a `.npmrc` written by an earlier install cannot
-  # send the web build to a store that lacks the root.
+  export UV_NATIVE_TLS="${UV_NATIVE_TLS:-0}"       # uv reads SSL_CERT_FILE only with native-tls off
   export NPM_CONFIG_CAFILE="${NPM_CONFIG_CAFILE:-$ca}"
   echo "==> CA bundle in force for package installs: $ca"
 }
 _ca_bootstrap
 
-# A proxy is the other half of the same wall: an operator who exports
-# https_proxy for their shell loses it the moment a tool reads only the
-# uppercase name (or the reverse). Mirror whichever side is set so curl, wget,
-# uv, npm and git all see it, and keep loopback direct so the local model
-# endpoint and AIForge's own API are never sent through it.
+# Mirror proxy vars across cases — tools read one or the other — and keep
+# loopback direct so the local model endpoint never goes through a proxy.
 for _p in http_proxy https_proxy no_proxy; do
   _P="$(echo "$_p" | tr '[:lower:]' '[:upper:]')"
   if [[ -n "${!_p:-}" && -z "${!_P:-}" ]]; then export "$_P=${!_p}"
@@ -205,124 +114,81 @@ if [[ -n "${http_proxy:-}${https_proxy:-}" ]]; then
 fi
 unset _p _P
 
-# ssh deploys run free by default: a plain ssh is already safe, and an ssh whose
-# REMOTE command runs sudo/systemctl (the deploy case) would otherwise prompt
-# for approval every time. A DANGEROUS remote command (rm -rf / secret exfil)
-# still gates, and LOCAL sudo is unaffected. Set AIFORGE_ALLOW_SSH=0 in .env to
-# require approval for ssh again.
+# A plain ssh is safe and the deploy case runs sudo remotely, which would
+# otherwise prompt every time. Dangerous remote commands still gate.
 export AIFORGE_ALLOW_SSH="${AIFORGE_ALLOW_SSH:-1}"
 
-# Memory sync is hub-and-spoke. Every machine compacts its own memory locally;
-# one machine is the ADMIN, and it additionally runs the single CROSS-machine
-# merge over everybody's knowledge and serves the result back. Leave
-# AIFORGE_ADMIN_URL unset and this box IS the admin (which is also what a
-# standalone install is, so nothing to configure). On every other machine set it
-# in .env:
-#
-#     AIFORGE_ADMIN_URL=http://<admin-host>:8799
-#
-# The sync surface answers with NO credential by default, so a spoke needs
-# nothing else; set AIFORGE_SYNC_AUTH=1 (plus AIFORGE_API_TOKEN on both ends) to
-# require the API token on /api/memory/sync/* too. Bind the admin to a trusted
-# interface — a LAN address or a WireGuard one — not to 0.0.0.0 on a hostile
-# network.
+# Memory sync is hub-and-spoke: every machine compacts locally, ONE machine
+# (the admin) runs the cross-machine merge. Unset AIFORGE_ADMIN_URL means this
+# box is the admin, which is also what a standalone install is.
 [[ -n "${AIFORGE_ADMIN_URL:-}" ]] && export AIFORGE_ADMIN_URL
 [[ -n "${AIFORGE_ROLE:-}" ]] && export AIFORGE_ROLE
-# The role itself is decided AFTER the flags are parsed — see "--admin: the role".
 
 PORT=8799
 HOST=127.0.0.1
 DEV=0
-ADMIN=0                 # this machine IS the memory admin (--admin)
-ADMIN_PAGE=0            # just open /admin in a browser (--admin-page)
-UNADMIN=0               # give up a persisted admin role (--spoke)
-ADMIN_URL_SET=""        # name the admin this box syncs with (--admin-url)
-GROUP_SET=""            # preselect the sync group (--group)
+ADMIN=0
+ADMIN_PAGE=0
+UNADMIN=0
+ADMIN_URL_SET=""
+GROUP_SET=""
 SKIP_WEB=0
 TEST=0
-# Default mode is config-driven: AIFORGE_MODE (from .env / the service env) →
-# lite | hybrid | docker; a CLI flag below still overrides. DEFAULT is LITE
-# (zero-Docker, embedded SQLite) — matches the deploy-anywhere direction and
-# means a fresh clone never spins up Postgres/Neo4j containers unless the
-# operator explicitly asks (--hybrid / --docker / AIFORGE_MODE=hybrid).
-# SINGLE MODE: embedded SQLite + scoped-OKR memory + RepoMap + CodeGraph,
-# all on the host — no Docker infra. Kept as a var (always "lite") so the
-# converge/langfuse/lockdown blocks read the same name.
-MODE=lite
-WITH_GRAPHIFY=0  # --with-graphify installs the graphify CLI on the host
-WITH_LANGFUSE="${AIFORGE_LANGFUSE:-0}"  # --with-langfuse (or AIFORGE_LANGFUSE=1): self-hosted trace UI
+MODE=lite                               # always SQLite; kept as a var for the blocks below
+WITH_GRAPHIFY=0
+WITH_LANGFUSE="${AIFORGE_LANGFUSE:-0}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --docker) MODE=docker ;;      # build + run the self-contained single-mode container
-    --lite|--hybrid|--no-build) : ;;  # legacy no-ops (always SQLite now)
-    --migrate) MIGRATE=1 ;;   # force a (re-)converge: migrate PG/Neo4j → SQLite/OKR + remove docker, then start
-    --dedupe) MAINT=dedupe ;;         # remove duplicate OKR nodes + chat sessions, then exit
-    --recompact-all) MAINT=recompact ;;  # re-LLM every brief + rebuild, then exit
-    --migrate-okf) MAINT=migrateokf ;;  # rename okr→okf + convert ALL md files to OKF frontmatter, then exit
-    --purge-code) MAINT=purge ;;      # drop code-as-learnings from a bad drain, then exit
-    --install-model2vec|--install-semantic) INSTALL_MODEL2VEC=1 ;;  # install semantic memory (model2vec, ~30MB, NO torch). --install-semantic kept as an alias.
-    --offline) AIFORGE_OFFLINE=1 ;;  # air-gapped: no network at all, package managers included
+    --docker) MODE=docker ;;
+    --lite|--hybrid|--no-build) : ;;                 # legacy no-ops
+    --migrate) MIGRATE=1 ;;
+    --dedupe) MAINT=dedupe ;;
+    --recompact-all) MAINT=recompact ;;
+    --migrate-okf) MAINT=migrateokf ;;
+    --purge-code) MAINT=purge ;;
+    --install-model2vec|--install-semantic) INSTALL_MODEL2VEC=1 ;;
+    --offline) AIFORGE_OFFLINE=1 ;;
     --dev) DEV=1 ;;
-    --admin) ADMIN=1; ADMIN_PAGE=1 ;;  # this box is THE memory admin (+ open its page)
-    --admin-url) ADMIN_URL_SET="${2:-}"; shift ;;  # name the admin (makes this a spoke)
-    --group) GROUP_SET="${2:-}"; shift ;;          # preselect the sync group
-    --admin-page) ADMIN_PAGE=1 ;;      # open the sync admin page, claim nothing
-    --spoke) UNADMIN=1 ;;              # drop a persisted admin role
+    --admin) ADMIN=1; ADMIN_PAGE=1 ;;
+    --admin-url) ADMIN_URL_SET="${2:-}"; shift ;;
+    --group) GROUP_SET="${2:-}"; shift ;;
+    --admin-page) ADMIN_PAGE=1 ;;
+    --spoke) UNADMIN=1 ;;
     --skip-web) SKIP_WEB=1 ;;
-    --test) TEST=1 ;;             # model probe runs in the venv, no stack
+    --test) TEST=1 ;;
     --with-graphify) WITH_GRAPHIFY=1 ;;
     --with-langfuse) WITH_LANGFUSE=1 ;;
     --stop-langfuse) STOP_LANGFUSE=1 ;;
     --reset-config) RESET_CONFIG=1 ;;
     --port) PORT="$2"; shift ;;
     --host) HOST="$2"; shift ;;
-    # End-anchored, not a hardcoded line number: the header grows, and a fixed
-    # range silently drops the newest flags from --help (it already had).
+    # End-anchored, so new flags in the header are never dropped from --help.
     -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift
 done
 
-# ── Nothing is fetched except by a package manager ────────────────────────
-# This script used to install its own toolchain by downloading a source and
-# executing it: `curl https://astral.sh/uv/install.sh | sh` (a remote script
-# piped into a shell), a Node tarball off nodejs.org unpacked onto PATH, uv's
-# managed-CPython download, and playwright's ~150MB browser build off their
-# CDN. Several were written `|| true`, so a failure was SILENT and the stack
-# came up degraded with no line saying why.
-#
-# All four are gone. uv and Node are now the `toolchain` extra in pyproject
-# (the `uv` wheel; `nodejs-wheel-binaries`), so they resolve from the same
-# index, lockfile, private mirror and CA as every other dependency. What
-# remains is only ever a package manager fetching a pinned artifact — PyPI,
-# npm, docker, apt — and --offline refuses even those.
+# ── nothing is fetched except by a package manager ────────────────────────
 AIFORGE_OFFLINE="${AIFORGE_OFFLINE:-0}"
 export AIFORGE_OFFLINE
-
 _offline() { [[ "${AIFORGE_OFFLINE}" != "0" ]]; }
 
-# Report a fetch that did not happen. $1 = what, $2 = how to get it.
-_no_fetch() {
+_no_fetch() {                            # $1 = what, $2 = how to get it
   echo "==> not fetching $1" >&2
   [[ -n "${2:-}" ]] && echo "    provide it instead: $2" >&2
   return 1
 }
 
-# A missing REQUIREMENT: say what is absent and how to get it, then stop —
-# rather than starting a stack that cannot work.
-_offline_fatal() {
+_fatal() {                               # a missing requirement, with its fix
   echo "!! $1" >&2
   [[ -n "${2:-}" ]] && echo "!! $2" >&2
   exit 1
 }
 
 if _offline; then
-  # Tell the TOOLS as well as the call sites, so a dependency that shells out
-  # on its own (uv resolving an interpreter, playwright's driver, huggingface
-  # inside model2vec) is refused by its own environment too.
+  # Tell the tools too, so a dependency that shells out on its own is refused.
   export UV_OFFLINE="${UV_OFFLINE:-1}"
-  export UV_PYTHON_DOWNLOADS="${UV_PYTHON_DOWNLOADS:-never}"
   export PIP_NO_INDEX="${PIP_NO_INDEX:-1}"
   export npm_config_offline="${npm_config_offline:-true}"
   export npm_config_audit="${npm_config_audit:-false}"
@@ -336,37 +202,20 @@ fi
 # uv must never install a second interpreter, offline or not.
 export UV_PYTHON_DOWNLOADS="${UV_PYTHON_DOWNLOADS:-never}"
 
-# ── --admin / --spoke: the memory role ────────────────────────────────
-# Exactly ONE machine in a fleet runs with --admin. That box receives every
-# other machine's OKF nodes and runs the single cross-machine merge over them;
-# every other machine names it with AIFORGE_ADMIN_URL and is a spoke. Local
-# compaction is unaffected either way — every machine distils its own memory.
-#
-# The role is PERSISTED to the env file, not just exported for this process. It
-# has to be: the shipped unit (scripts/runtime/nuc/aiforge-api.service) starts
-# run.sh with no --admin, so a reboot or `systemctl restart` would otherwise
-# bring the admin back as a plain machine — and a machine that stops being the
-# admin retires its own mesh fold (okf/tiers._retire_own_mesh), i.e. the fleet's
-# merged knowledge would be deleted by a restart.
-#
-# Because it persists, there has to be a way OUT: --spoke drops the line, which
-# is how you move the admin from one box to another.
-
+# ── memory role (--admin / --spoke / --admin-url / --group) ───────────────
+# The role is PERSISTED, not just exported: the systemd unit starts run.sh with
+# no flags, and a machine that stops being the admin retires the fleet's merged
+# fold — so a restart would delete it. --spoke is the way back out.
 _env_role_file="${ENV_FILE:-.env}"
 
-# Rewrite the env file's AIFORGE_ROLE line, preserving the file's mode and owner.
-# `cp -p` first, then truncate THAT copy: a plain `> tmp` creates a fresh file
-# under the umask, so a .env kept at 0600 (it holds AIFORGE_LM_API_KEY — see
-# .env.example) came back 0644 and world-readable. grep exiting 1 is "nothing
-# matched", not a failure, so it must not abort the rewrite under `set -e`.
-_write_env_line() {                   # $1 = key, $2 = value ("" removes the line)
+_write_env_line() {                      # $1 = key, $2 = value ("" removes it)
   local key="$1" want="$2" f="$_env_role_file"
   if [[ -f "$f" ]]; then
+    # cp -p first: a plain `> tmp` creates the file under the umask, so a .env
+    # kept at 0600 (it holds api keys) came back world-readable.
     cp -p "$f" "$f.tmp" || return 1
-    # Exit 1 is "no lines selected" and is fine. Exit 2 is a real failure — a
-    # full disk, a quota — and the redirection has ALREADY truncated the tmp
-    # file, so moving it over .env would replace the operator's API keys with
-    # nothing. Narrowed to 1, and the tmp file is cleaned up either way.
+    # grep exit 1 is "nothing matched" and fine; exit 2 is a real failure and
+    # the tmp file is already truncated, so moving it would erase the keys.
     grep -vE "^[[:space:]]*${key}=" "$f" > "$f.tmp" || [[ $? -eq 1 ]] \
       || { rm -f "$f.tmp"; return 1; }
     mv "$f.tmp" "$f" || { rm -f "$f.tmp"; return 1; }
@@ -374,41 +223,28 @@ _write_env_line() {                   # $1 = key, $2 = value ("" removes the lin
   [[ -n "$want" ]] && printf '%s=%s\n' "$key" "$want" >> "$f"
   return 0
 }
-
-# One writer for every persisted line, so the role, the admin url and the group
-# cannot drift apart in how they are written, locked or cleaned up.
-_write_role() {                       # $1 = value, or "" to only remove the line
-  _write_env_line AIFORGE_ROLE "$1"
-}
+_write_role() { _write_env_line AIFORGE_ROLE "$1"; }
 
 if [[ $ADMIN -eq 1 && $UNADMIN -eq 1 ]]; then
   echo "error: --admin and --spoke are opposites; pass one." >&2
   exit 2
 fi
 if [[ $ADMIN -eq 1 && "$MODE" == "docker" ]]; then
-  # The container image does not run the sync loop at all (docker/entrypoint.sh),
-  # and docker-compose.yml forwards neither AIFORGE_ROLE nor AIFORGE_ADMIN_URL,
-  # so claiming a role here would be a statement about a process that never syncs.
   echo "error: --admin has no meaning in --docker mode: the container does not" >&2
   echo "       run the memory sync loop. Run the admin on the host." >&2
   exit 2
 fi
 if [[ $ADMIN -eq 1 && -n "${AIFORGE_ADMIN_URL:-}" ]]; then
-  # REFUSED, not overridden. --admin used to mean only "open the /admin page",
-  # so an operator on a SPOKE may still type it out of habit; silently promoting
-  # that machine gives the fleet two admins, both stamping `derived: mesh`.
+  # Refused, not overridden: silently promoting a spoke gives the fleet two
+  # admins, both stamping `derived: mesh`.
   echo "error: --admin, but AIFORGE_ADMIN_URL=$AIFORGE_ADMIN_URL says this box is a spoke." >&2
-  echo "       A machine cannot be both. To just open the sync page: ./run.sh --admin-page" >&2
+  echo "       To just open the sync page: ./run.sh --admin-page" >&2
   echo "       To make THIS box the admin: remove AIFORGE_ADMIN_URL from ${ENV_FILE:-.env} first." >&2
   exit 2
 fi
 
 if [[ -n "$ADMIN_URL_SET" ]]; then
   if [[ $ADMIN -eq 1 || "${AIFORGE_ROLE:-}" == "admin" ]]; then
-    # Refused, not silently ignored — the mirror of the rule --admin already
-    # enforces in the other direction. A box that is both stamps `derived: mesh`
-    # while also pushing to somebody else's hub, so knowledge crosses in both
-    # directions and two machines claim the same fold.
     echo "error: --admin-url, but this box holds the admin role. A machine" >&2
     echo "       cannot be both. Run ./run.sh --spoke here first." >&2
     exit 2
@@ -423,12 +259,10 @@ if [[ -n "$ADMIN_URL_SET" ]]; then
 fi
 
 if [[ -n "$GROUP_SET" ]]; then
-  # The same alphabet sync.group.is_valid enforces: the name becomes a directory
-  # component on the admin, so it is refused here rather than repaired into some
-  # other group's name.
+  # The name becomes a directory component on the admin, so refuse rather than
+  # repair it into some other group's name.
   if [[ ! "$GROUP_SET" =~ ^[A-Za-z0-9_-]+$ ]]; then
-    echo "error: '$GROUP_SET' is not a usable group name — it becomes a" >&2
-    echo "       directory component, so it takes [A-Za-z0-9_-]." >&2
+    echo "error: '$GROUP_SET' is not a usable group name — it takes [A-Za-z0-9_-]." >&2
     exit 2
   fi
   export AIFORGE_SYNC_GROUP="$GROUP_SET"
@@ -467,9 +301,8 @@ if [[ "$MODE" != "docker" ]]; then
   if [[ "${AIFORGE_ROLE:-}" == "admin" ]]; then
     echo "  memory: ADMIN — merges every machine's knowledge and serves the result back"
     if [[ -n "${AIFORGE_ADMIN_URL:-}" ]]; then
-      # The persisted role wins over the url (role.role()), so this box ignores
-      # an admin it appears to be configured to follow. Almost always a half-
-      # finished handover: the successor was set up, this box never stood down.
+      # The persisted role wins over the url, so this box ignores an admin it
+      # looks configured to follow — usually a half-finished handover.
       echo "  memory: WARNING — AIFORGE_ADMIN_URL=$AIFORGE_ADMIN_URL is IGNORED while"
       echo "          this box holds the admin role. Moving the admin? Run"
       echo "          ./run.sh --spoke here once, then --admin on the new box."
@@ -484,23 +317,17 @@ if [[ "$MODE" != "docker" ]]; then
     echo "  memory: WARNING — AIFORGE_ROLE=spoke but no AIFORGE_ADMIN_URL: this box"
     echo "          neither syncs nor merges. Set the url, or drop the role."
   else
-    echo "  memory: standalone — no --admin and no AIFORGE_ADMIN_URL, so this box"
-    echo "          merges only its own knowledge (fine for a single machine)"
+    echo "  memory: standalone — merges only its own knowledge"
   fi
 fi
 
-# ── Stop the langfuse stack (--stop-langfuse) ─────────────────────────
-# Tears the trace-server containers down. Data is EPHEMERAL by design — the
-# v3 stack runs with NO volumes (postgres/clickhouse/redis/minio), so all
-# traces are gone on stop. Exits after stopping.
+# ── --stop-langfuse ───────────────────────────────────────────────────────
 if [[ "${STOP_LANGFUSE:-0}" == "1" ]]; then
   if docker compose version >/dev/null 2>&1; then DC=(docker compose)
   else DC=(docker-compose); fi
   docker info >/dev/null 2>&1 || DC=(sudo "${DC[@]}")
-  # --remove-orphans: a compose change that renames/drops services (e.g. the
-  # v3↔v2 swap) leaves the old containers as ORPHANS in this project, holding
-  # the network open ("Resource is still in use"). Removing orphans clears them
-  # + the network in one pass.
+  # --remove-orphans: a renamed service leaves containers holding the network
+  # open ("Resource is still in use").
   "${DC[@]}" -p aiforge-langfuse --env-file "${AIFORGE_CONFIG_DIR:-$HOME/.aiforge}/langfuse.env" \
     -f scripts/compose/langfuse-compose.yml down --remove-orphans \
     && echo "==> langfuse stopped (ephemeral — traces do not persist)" \
@@ -508,18 +335,11 @@ if [[ "${STOP_LANGFUSE:-0}" == "1" ]]; then
   exit 0
 fi
 
-# ── Reset saved agent config (--reset-config) ─────────────────────────
-# Wipe ~/.aiforge/agent_config.json so stale per-role rows can't shadow the
-# endpoint you set next. Run ONCE, then reconfigure the model on the home
-# page (or via env). Honours AIFORGE_CONFIG_DIR.
+# ── --reset-config ────────────────────────────────────────────────────────
 if [[ "${RESET_CONFIG:-0}" == "1" ]]; then
   _cfg_dir="${AIFORGE_CONFIG_DIR:-$HOME/.aiforge}"
-  # Credentials live in $AIFORGE_CONFIG_DIR/security (see
-  # aiforge_core/config/secure_store.py). Fall back to the legacy root path for
-  # an install that has not booted since the move, or one running with
-  # AIFORGE_SECURE_STORE=0.
   _cfg_file="${AIFORGE_SECURITY_DIR:-$_cfg_dir/security}/agent_config.json"
-  [[ -f "$_cfg_file" ]] || _cfg_file="$_cfg_dir/agent_config.json"
+  [[ -f "$_cfg_file" ]] || _cfg_file="$_cfg_dir/agent_config.json"   # pre-move installs
   if [[ -f "$_cfg_file" ]]; then
     mv -f "$_cfg_file" "$_cfg_file.bak.$(date +%s)" 2>/dev/null \
       && echo "==> agent config reset (backed up): $_cfg_file" \
@@ -529,82 +349,55 @@ if [[ "${RESET_CONFIG:-0}" == "1" ]]; then
   fi
 fi
 
-# ── Local access bootstrap ────────────────────────────────────────────
-# A fresh host often can't read logs (journald), talk to the Docker socket, or
-# use systemd-user linger — the "run as root or add user to adm/docker" wall.
-# Add the CURRENT user to the groups that grant that access, once, idempotently,
-# via a NON-INTERACTIVE sudo (skip silently if sudo needs a password or isn't
-# there — never block startup, never prompt). Only groups that EXIST on the box
-# and that the user is NOT already in are touched. New membership needs a fresh
-# login to take hold in this shell; docker/converge already sudo-fall-back this
-# run, so nothing is blocked meanwhile. Opt out: AIFORGE_FIX_PERMS=0.
+# ── local access bootstrap ────────────────────────────────────────────────
+# Journald/docker access, once, through a sudo that will NOT prompt. Never
+# blocks startup. Opt out: AIFORGE_FIX_PERMS=0.
 _ensure_access() {
   [[ "${AIFORGE_FIX_PERMS:-1}" == "0" ]] && return 0
-  command -v usermod >/dev/null 2>&1 || return 0          # not a Linux/usermod box
+  command -v usermod >/dev/null 2>&1 || return 0
   local u; u="$(id -un)"
-  [[ "$u" == "root" ]] && return 0                        # already all-access
-  # sudo that will NOT prompt; if it would, bail quietly (operator can add perms)
+  [[ "$u" == "root" ]] && return 0
   local SUDO=""
   if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then SUDO="sudo -n"
   else return 0; fi
-  # docker group only matters when the socket exists AND the daemon rejects us
   local want=(adm systemd-journal)
-  if [[ -S /var/run/docker.sock ]] && ! docker info >/dev/null 2>&1; then
-    want+=(docker)
-  fi
-  local added=()
+  [[ -S /var/run/docker.sock ]] && ! docker info >/dev/null 2>&1 && want+=(docker)
+  local added=() g
   for g in "${want[@]}"; do
-    getent group "$g" >/dev/null 2>&1 || continue         # group must exist
-    id -nG "$u" 2>/dev/null | tr ' ' '\n' | grep -qx "$g" && continue  # already in
+    getent group "$g" >/dev/null 2>&1 || continue
+    id -nG "$u" 2>/dev/null | tr ' ' '\n' | grep -qx "$g" && continue
     $SUDO usermod -aG "$g" "$u" 2>/dev/null && added+=("$g")
   done
-  # user-service linger so systemctl --user survives logout (deploy target)
-  if command -v loginctl >/dev/null 2>&1; then
-    $SUDO loginctl enable-linger "$u" >/dev/null 2>&1 || true
-  fi
-  if (( ${#added[@]} )); then
-    echo "==> access: added '$u' to ${added[*]} — log out/in (or 'newgrp ${added[0]}') for it to take effect in your shell" >&2
-  fi
+  command -v loginctl >/dev/null 2>&1 && $SUDO loginctl enable-linger "$u" >/dev/null 2>&1 || true
+  (( ${#added[@]} )) && echo "==> access: added '$u' to ${added[*]} — log out/in for it to take effect" >&2
+  return 0
 }
 _ensure_access
 
-# ── Persistent shell (tmux) ───────────────────────────────────────────
-# The Doer's bash tool keeps ONE tmux session per run — that is what makes
-# `cd`, `export` and `source .venv/bin/activate` survive BETWEEN bash() calls,
-# and prompts/doer.py advertises exactly that ("persistent shell"). With no
-# tmux binary the tool degrades to a stateless subprocess per call
-# (BashFallback reason=tmux_missing), so the state the model was told it has
-# silently isn't there. Install it best-effort under the same rules as the
-# access bootstrap: root, or a sudo that will NOT prompt; brew on macOS; never
-# block startup, never prompt. Opt out: AIFORGE_INSTALL_TMUX=0.
+# ── tmux ──────────────────────────────────────────────────────────────────
+# The Doer's bash tool keeps ONE tmux session per run — that is what makes cd,
+# export and `source .venv/bin/activate` survive between calls. Without it the
+# tool silently degrades to a stateless subprocess. Opt out: AIFORGE_INSTALL_TMUX=0.
 _tmux_os_kind() {
-  # What KIND of box is this — the answer decides the package manager.
   case "$(uname -s 2>/dev/null)" in
     Darwin)                  echo "macos" ;;
     FreeBSD|OpenBSD|NetBSD)  echo "bsd" ;;
-    MINGW*|MSYS*|CYGWIN*)    echo "windows" ;;   # Git Bash / MSYS2 / Cygwin
+    MINGW*|MSYS*|CYGWIN*)    echo "windows" ;;
     Linux)
-      # WSL is ordinary Linux userland — same package manager, worth naming in
-      # the log because "which layer needs tmux" is the usual confusion there
-      # (under Docker Desktop it is the CONTAINER, not the distro).
       if grep -qiE "microsoft|wsl" /proc/version 2>/dev/null; then echo "wsl"
       else echo "linux"; fi ;;
     *)                       echo "unknown" ;;
   esac
 }
 
-_tmux_install_cmd() {
-  # Echo the install command for THIS box (empty = no manager we can drive).
-  # $1 = os kind, $2 = sudo prefix ("" when root, "sudo -n", or "skip").
+_tmux_install_cmd() {                    # $1 = os kind, $2 = sudo prefix or "skip"
   local kind="$1" SUDO="$2"
   case "$kind" in
-    macos)
-      # Homebrew and MacPorts both refuse to run under sudo — no prefix here.
+    macos)                               # brew/port refuse to run under sudo
       if   command -v brew >/dev/null 2>&1; then echo "brew install tmux"
       elif command -v port >/dev/null 2>&1; then echo "port install tmux"
       fi ;;
     windows)
-      # MSYS2 ships tmux; Git Bash / Cygwin have no package manager to drive.
       command -v pacman >/dev/null 2>&1 && echo "pacman -S --noconfirm --needed tmux" ;;
     linux|wsl|bsd|unknown)
       [[ "$SUDO" == "skip" ]] && return 0
@@ -622,17 +415,12 @@ _tmux_install_cmd() {
 _ensure_tmux() {
   [[ "${AIFORGE_INSTALL_TMUX:-1}" == "0" ]] && return 0
   command -v tmux >/dev/null 2>&1 && return 0
-
   local kind; kind="$(_tmux_os_kind)"
-
-  # Root installs directly; a normal user only through a sudo that will NOT
-  # prompt. macOS/MSYS2 managers run as the user, so the prefix is unused there.
   local SUDO=""
   if [[ "$kind" != "macos" && "$kind" != "windows" && "$(id -u)" != "0" ]]; then
     if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then SUDO="sudo -n"
     else SUDO="skip"; fi
   fi
-
   local cmd; cmd="$(_tmux_install_cmd "$kind" "$SUDO")"
   if [[ -n "$cmd" ]]; then
     echo "==> tmux not found ($kind) — installing (persistent Doer shell)…"
@@ -640,7 +428,6 @@ _ensure_tmux() {
       && { $SUDO apt-get update -qq >/dev/null 2>&1 || true; }
     $cmd >/dev/null 2>&1 || true
   fi
-
   if command -v tmux >/dev/null 2>&1; then
     echo "==> tmux ready: $(command -v tmux)"
   else
@@ -649,38 +436,26 @@ _ensure_tmux() {
       macos)   hint="brew install tmux" ;;
       windows) hint="use WSL, or MSYS2: pacman -S tmux" ;;
       bsd)     hint="pkg install tmux" ;;
-      *)       hint="sudo apt-get install tmux  (or your distro's equivalent)" ;;
+      *)       hint="sudo apt-get install tmux" ;;
     esac
-    echo "==> tmux missing ($kind) — the Doer's bash tool runs STATELESS (no cd/export persistence between calls). Install it: $hint" >&2
+    echo "==> tmux missing ($kind) — the Doer's bash tool runs STATELESS. Install it: $hint" >&2
   fi
 }
 _ensure_tmux
 
-# Minimum Node major the web build (vite 5) needs. An OLDER system Node is as
-# broken as none — vite refuses to run — so we treat it the same and fetch a
-# portable one.
-_NODE_MIN_MAJOR=18
+# ── node (a python dependency) ────────────────────────────────────────────
+_NODE_MIN_MAJOR=18                       # vite 5 refuses to run below this
 
 _node_ok() {
-  # true if npm exists AND node is new enough for the web build
   command -v npm >/dev/null 2>&1 || return 1
   command -v node >/dev/null 2>&1 || return 1
   local maj; maj="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null)"
   [[ "$maj" =~ ^[0-9]+$ ]] && (( maj >= _NODE_MIN_MAJOR ))
 }
 
-# Node for the web build, as a PYTHON DEPENDENCY.
-#
-# This used to fetch a tarball from nodejs.org, unpack it into ~/.aiforge/node
-# and put it on PATH — a toolchain the script installed, from a URL nothing
-# pinned. `nodejs-wheel-binaries` is the same Node shipped as an ordinary
-# wheel, so it resolves through the same index, lockfile, mirror and CA as
-# every other dependency, and `uv pip install -e '.[toolchain]'` is the whole
-# install. Nothing is downloaded here that pip would not download.
-#
-# The wheel's own bin/npm is a shim that requires '../lib/cli.js' relative to
-# the wrong root and dies with MODULE_NOT_FOUND, so we write our own shims
-# into .venv/bin (already on PATH) pointing node at npm-cli.js.
+# Node comes from the nodejs-wheel-binaries wheel, not a tarball off nodejs.org.
+# Its own bin/npm resolves '../lib/cli.js' against the wrong root and dies with
+# MODULE_NOT_FOUND, so write shims into .venv/bin pointing node at npm-cli.js.
 _ensure_node() {
   _node_ok && return 0
   [[ -x .venv/bin/python ]] || return 0
@@ -688,22 +463,20 @@ _ensure_node() {
   if ! .venv/bin/python -c "import nodejs_wheel" >/dev/null 2>&1; then
     if _offline; then
       _no_fetch "the nodejs-wheel-binaries wheel" \
-        "install Node ${_NODE_MIN_MAJOR}+ from your package manager, or pre-install the wheel" || true
+        "install Node ${_NODE_MIN_MAJOR}+ from your package manager" || true
       return 0
     fi
     echo "==> no usable Node — installing the nodejs-wheel-binaries wheel…"
     "${UV:-uv}" pip install --python .venv/bin/python -e '.[toolchain]' >/dev/null 2>&1 || {
-      echo "==> could not install Node from PyPI — install Node ${_NODE_MIN_MAJOR}+ yourself (apt/dnf/brew install nodejs)" >&2
+      echo "==> could not install Node from PyPI — install Node ${_NODE_MIN_MAJOR}+ yourself" >&2
       return 0
     }
   fi
 
-  local root
+  local root tool
   root="$(.venv/bin/python -c 'import nodejs_wheel, pathlib; print(pathlib.Path(nodejs_wheel.__file__).parent)' 2>/dev/null)" || return 0
   [[ -x "$root/bin/node" ]] || return 0
-
   ln -sf "$root/bin/node" .venv/bin/node
-  local tool
   for tool in npm npx; do
     printf '#!/bin/sh\nexec "%s/bin/node" "%s/lib/node_modules/npm/bin/%s-cli.js" "$@"\n' \
       "$root" "$root" "$tool" > ".venv/bin/$tool"
@@ -713,148 +486,101 @@ _ensure_node() {
   _node_ok && echo "==> node $(node -v) + npm $(npm -v) (from the nodejs-wheel-binaries wheel)"
 }
 
-# `npm ci` that survives a private registry which doesn't mirror every package.
-# Corporate boxes often set registry=https://artifactory.internal/ in ~/.npmrc;
-# if it lacks a dep the install 404s. Honor an explicit AIFORGE_NPM_REGISTRY;
-# otherwise try the box's configured registry first (respects intended mirrors),
-# and only on failure retry against public npm so a clean build still works.
-# MUST be called with the working dir already at web/.
+# Corporate boxes point ~/.npmrc at a mirror that may not carry every package,
+# so try the configured registry first and fall back to public npm.
+# Must be called with the working dir at web/.
 _npm_ci_resilient() {
   if _offline; then
-    # npm off a registry is a package manager doing its job, so only the
-    # air-gapped switch stops it. `npm ci` ALWAYS reaches the registry — it
-    # deletes node_modules first and reinstalls from the lockfile — so an
-    # already-installed tree is the only acceptable answer here.
+    # `npm ci` always reaches the registry (it deletes node_modules first), so
+    # an already-installed tree is the only acceptable answer here.
     if [[ -d node_modules ]]; then
       echo "==> offline: using the existing web/node_modules (no npm ci)"
       return 0
     fi
-    _no_fetch "npm ci for the web UI" \
-      "copy a prepared web/node_modules onto this box" || true
+    _no_fetch "npm ci for the web UI" "copy a prepared web/node_modules onto this box" || true
     return 1
   fi
   if [[ -n "${AIFORGE_NPM_REGISTRY:-}" ]]; then
     npm ci --ignore-scripts --registry="$AIFORGE_NPM_REGISTRY"; return $?
   fi
   npm ci --ignore-scripts && return 0
-  echo "==> npm ci failed on the configured registry (a private mirror may be" >&2
-  echo "==> missing a package) — retrying against https://registry.npmjs.org/" >&2
+  echo "==> npm ci failed on the configured registry — retrying against public npm" >&2
   npm ci --ignore-scripts --registry=https://registry.npmjs.org/
 }
 
-# The scheme to PRINT for the UI. AIForge itself listens on plain HTTP and is
-# meant to sit behind loopback or a reverse proxy; when the operator fronts it
-# with TLS (AIFORGE_PUBLIC_SCHEME=https, or AIFORGE_TLS set) the banner has to
-# say so, or they copy a URL that will not connect. Hardcoding the scheme was
-# both wrong there and a cleartext-protocol finding.
+# AIForge listens on plain HTTP; the banner must say https when the operator
+# fronts it with TLS, or they copy a URL that will not connect.
 _ui_scheme() {
-  if [[ -n "${AIFORGE_PUBLIC_SCHEME:-}" ]]; then
-    printf '%s' "${AIFORGE_PUBLIC_SCHEME}"
-  elif [[ -n "${AIFORGE_TLS:-}" ]]; then
-    printf 'https'
-  else
-    printf 'http'
+  if   [[ -n "${AIFORGE_PUBLIC_SCHEME:-}" ]]; then printf '%s' "${AIFORGE_PUBLIC_SCHEME}"
+  elif [[ -n "${AIFORGE_TLS:-}" ]]; then           printf 'https'
+  else                                             printf 'http'
   fi
 }
 
-# ── Single mode: SQLite on the host (no Docker infra to bring up) ─────────
-# The app runs on embedded SQLite + the scoped-OKR memory, with RepoMap +
-# CodeGraph for code context. Nothing to start here — fall through to venv +
-# launch. (Tracing via --with-langfuse is the only optional Docker piece.)
-
-# ── DOCKER MODE (--docker) ─────────────────────────────────────────────
-# Build + run the self-contained single-mode container (all deps baked: RepoMap,
-# model2vec semantic, sqlite-vec, structured/crawl/chunking, pre-built UI) with the
-# FULL host filesystem mounted at /host. No native venv/toolchain step. State
-# persists on the host under ${AIFORGE_DATA_DIR:-./data}/aiforge.
+# ── --docker: the all-deps container, host FS at /host ────────────────────
 if [[ "$MODE" == "docker" ]]; then
   if docker compose version >/dev/null 2>&1; then DC=(docker compose)
   elif command -v docker-compose >/dev/null 2>&1; then DC=(docker-compose)
   else
-    echo "==> docker mode needs Docker + Compose — install Docker Desktop/Engine, or use the native path: ./run.sh" >&2
+    echo "==> docker mode needs Docker + Compose, or use the native path: ./run.sh" >&2
     exit 1
   fi
   export AIFORGE_PORT="$PORT"
   [[ "${MIGRATE:-0}" == "1" ]] && export AIFORGE_MIGRATE=1
   mkdir -p "${AIFORGE_DATA_DIR:-./data}/aiforge"
-  echo "==> docker mode: building the all-deps image (~2GB, first build takes a few minutes)…"
+  echo "==> docker mode: building the all-deps image (~2GB, first build takes minutes)…"
   "${DC[@]}" up -d --build
   echo "==> AIForge is up. UI: $(_ui_scheme)://${HOST}:${PORT}/ui/   (logs: ${DC[*]} logs -f aiforge)"
   echo "==> full host FS mounted at /host — set AIFORGE_HOST_ROOT to narrow it."
   exit 0
 fi
 
-# ── Network lockdown (host process) ───────────────────────────────────
-# External-ingest is code-default ON → forced OFF here. web-fetch is code-default
-# OFF → forced ON below (line with AIFORGE_ALLOW_WEB_FETCH:-1; SSRF-guarded); do
-# NOT delete that line thinking it's redundant — it is what enables web egress.
-# Operator overrides win via `:-`.
+# ── network posture ───────────────────────────────────────────────────────
+# Web fetch is code-default OFF and forced ON here (SSRF-guarded) — do not
+# delete that line thinking it is redundant. There is no web SEARCH tool.
+# Fully offline box: AIFORGE_ALLOW_WEB_FETCH=0, or the hard-off
+# AIFORGE_WEB_FETCH_DISABLE=1. Both are read in net/egress.py.
 export AIFORGE_EXTERNAL_INGEST="${AIFORGE_EXTERNAL_INGEST:-0}"
 export AIFORGE_DOCS_INDEX="${AIFORGE_DOCS_INDEX:-0}"
-# Web fetch (web_crawl/web_fetch) defaults ON: the tools are broadly available
-# to chat + all tool-using agents and are protected by the SSRF guard
-# (guard_public_url blocks metadata/loopback/private-LAN pivots).
-# There is no web SEARCH tool any more (removed 2026-09-03: the query string
-# was unfiltered outbound data), and a search engine's URL is refused on every
-# fetch path so the tool cannot come back as a URL. FULLY OFFLINE box:
-# AIFORGE_ALLOW_WEB_FETCH=0 closes page egress on every path (chat, doer,
-# researcher, crawler, and external `browse`); AIFORGE_WEB_FETCH_DISABLE=1 is
-# the hard-off that wins over it. Both are read in aiforge_core/net/egress.py —
-# one module, so a new tool cannot quietly opt out of them. See .env.example
-# for what these switches do NOT buy you.
 export AIFORGE_ALLOW_WEB_FETCH="${AIFORGE_ALLOW_WEB_FETCH:-1}"
 export AIFORGE_BROWSER_ALLOWLIST="${AIFORGE_BROWSER_ALLOWLIST:-127.0.0.1,localhost}"
 export DO_NOT_TRACK="${DO_NOT_TRACK:-1}"
 export HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"
 export LITELLM_TELEMETRY="${LITELLM_TELEMETRY:-False}"
-# litellm fetches its model cost/context map from raw.githubusercontent.com on
-# EVERY import and warns when the fetch fails ("Failed to fetch remote model
-# cost map ... Falling back to local backup"). This is a local-model deployment,
-# so the call buys nothing: it is a startup network round-trip whose only
-# outcome is the backup map that ships inside the wheel — which is what the
-# failure already falls back to. Ask for the local map directly. Set this to
-# False to restore the fetch if you start pricing cloud models from here.
+# litellm fetches a model cost map from raw.githubusercontent.com on every
+# import; the fallback it uses on failure ships inside the wheel anyway.
 export LITELLM_LOCAL_MODEL_COST_MAP="${LITELLM_LOCAL_MODEL_COST_MAP:-True}"
 
-# ── Maintenance commands (use the existing venv, no uv/deps step, then EXIT) ─
-# ./run.sh --dedupe | --recompact-all | --purge-code
+# ── maintenance commands (existing venv, then exit) ───────────────────────
 if [[ -n "${MAINT:-}" ]]; then
   if [[ ! -x .venv/bin/python ]]; then
-    echo "==> no .venv yet — run ./run.sh once to set it up before a maintenance command" >&2
+    echo "==> no .venv yet — run ./run.sh once before a maintenance command" >&2
     exit 1
   fi
   case "$MAINT" in
-    dedupe)    echo "==> dedupe: removing duplicate OKR nodes + chat sessions…"
-               .venv/bin/python -m aiforge_core.memory.migrations --dedupe; exit $? ;;
-    recompact) echo "==> recompact-all: re-LLM every brief + rebuild (minutes)…"
-               .venv/bin/python -m aiforge_core.memory.migrations --recompact-all; exit $? ;;
-    migrateokf) echo "==> migrate-okf: rename okr→okf + convert ALL memory md files to OKF frontmatter…"
-               .venv/bin/python -m aiforge_core.memory.migrations --migrate-okf; exit $? ;;
-    purge)     echo "==> purge-code: dropping code-as-learnings…"
-               .venv/bin/python -m aiforge_core.memory.migrations --purge-code; exit $? ;;
+    dedupe)     echo "==> dedupe: removing duplicate OKR nodes + chat sessions…"
+                .venv/bin/python -m aiforge_core.memory.migrations --dedupe; exit $? ;;
+    recompact)  echo "==> recompact-all: re-LLM every brief + rebuild (minutes)…"
+                .venv/bin/python -m aiforge_core.memory.migrations --recompact-all; exit $? ;;
+    migrateokf) echo "==> migrate-okf: converting memory to OKF frontmatter…"
+                .venv/bin/python -m aiforge_core.memory.migrations --migrate-okf; exit $? ;;
+    purge)      echo "==> purge-code: dropping code-as-learnings…"
+                .venv/bin/python -m aiforge_core.memory.migrations --purge-code; exit $? ;;
   esac
 fi
 
-# ── Python env ────────────────────────────────────────────────────────
-# uv may already be installed but off a non-interactive PATH (astral's installer
-# only wires interactive shells) — pick it up before deciding to (re)install.
+# ── python env ────────────────────────────────────────────────────────────
+# uv may be installed but off a non-interactive PATH.
 if ! command -v uv >/dev/null 2>&1; then
   for _d in "$HOME/.local/bin" "$HOME/.cargo/bin"; do
     [[ -x "$_d/uv" ]] && export PATH="$_d:$PATH" && break
   done
 fi
-# ── uv, as a PYTHON DEPENDENCY ────────────────────────────────────────────
-# This used to be `curl https://astral.sh/uv/install.sh | sh` — a remote script
-# fetched and executed, unpinned and unsigned, on every box that lacked uv.
-# uv ships as an ordinary wheel, so the chicken-and-egg is solved with the
-# stdlib instead: create the venv with `python -m venv`, pip-install uv INTO
-# it, and use that. Same index, same lockfile, same mirror, same CA as every
-# other dependency, and a box whose package manager already provides uv never
-# reaches this at all.
+
+# Pin the interpreter: left to itself uv grabs the newest python on the box,
+# and on a fresh mac that is 3.14, for which scipy/numpy ship no wheels.
 AIFORGE_PYTHON="${AIFORGE_PYTHON:-3.12}"
 
-# The interpreter to build the venv from. No managed-CPython download: an
-# absent 3.12 is an error with a fix in it, not a silent second interpreter.
 _pick_python() {
   local c
   for c in "python$AIFORGE_PYTHON" "python3.12" "python3" "python"; do
@@ -868,72 +594,53 @@ if [[ ! -d .venv ]]; then
   if command -v uv >/dev/null 2>&1; then
     uv venv --python "$AIFORGE_PYTHON" .venv || uv venv .venv
   else
-    _PY="$(_pick_python)" || _offline_fatal \
+    # No uv yet: the stdlib makes the venv, then pip installs the uv wheel into
+    # it. That is how uv can be a dependency rather than a piped installer.
+    _PY="$(_pick_python)" || _fatal \
       "no python interpreter found (looked for python$AIFORGE_PYTHON, python3.12, python3)." \
       "Install python $AIFORGE_PYTHON from your package manager."
-    "$_PY" -m venv .venv || _offline_fatal \
+    "$_PY" -m venv .venv || _fatal \
       "python -m venv failed with $_PY." \
       "On Debian/Ubuntu the venv module is a separate package: apt install python3-venv"
   fi
 fi
 
-# uv itself: PATH first (a box that provisioned it), then the venv, then PyPI.
 UV="$(command -v uv 2>/dev/null || true)"
 [[ -z "$UV" && -x .venv/bin/uv ]] && UV="$PWD/.venv/bin/uv"
 if [[ -z "$UV" ]]; then
-  if _offline; then
-    _offline_fatal "uv is not installed and offline mode will not fetch it." \
-      "Install uv from your package manager (brew/dnf install uv, pipx install uv), or pre-install the wheel into .venv."
-  fi
+  _offline && _fatal "uv is not installed and offline mode will not fetch it." \
+    "Install uv from your package manager (brew/dnf install uv, pipx install uv)."
   echo "==> uv not found — installing the uv wheel from PyPI…"
   .venv/bin/python -m pip install -q --disable-pip-version-check uv \
-    || _offline_fatal "could not install the uv wheel from PyPI." \
-         "Install uv from your package manager (brew/dnf install uv, pipx install uv)."
+    || _fatal "could not install the uv wheel from PyPI." \
+              "Install uv from your package manager (brew/dnf install uv, pipx install uv)."
   UV="$PWD/.venv/bin/uv"
 fi
 export UV
 echo "==> uv: $UV ($("$UV" --version 2>/dev/null || echo unknown))"
 
-# On WSL when the repo lives on /mnt/c (DrvFs), uv's cache (Linux ~/.cache) and
-# the target .venv are on different filesystems, so hardlinking fails noisily
-# and can leave broken venv scripts. Force copy mode for a portable venv.
+# WSL /mnt/c: uv's cache and .venv are on different filesystems, so hardlinking
+# fails and can leave broken venv scripts.
 export UV_LINK_MODE="${UV_LINK_MODE:-copy}"
 
-# AIFORGE_PYTHON is pinned above, not left to uv. Left to itself `uv venv`
-# grabs the NEWEST python on the machine — on a fresh mac that is now 3.14, for
-# which scipy/numpy ship no wheels, so the install falls back to a source build
-# that dies ("Failed to build scipy"). No managed-CPython download either way:
-# an absent interpreter is an error naming the package to install.
-# Put the venv's bin on PATH for THIS process and every child shell it spawns —
-# job/Doer shells (tmux/run_shell) need `aiforge-tool`, `aiforge-maint`, etc. to
-# resolve, otherwise a script that should bridge to the authenticated Jira/
-# Confluence tools can't find the CLI and falls back to a credential-less curl
-# (→ 401). Absolute path so a worktree cwd still resolves it.
+# Absolute, so job/Doer shells in another cwd still resolve `aiforge-tool`.
 export PATH="$PWD/.venv/bin:$PATH"
+
 echo "==> installing python deps (editable)"
-# Global uv targeting the venv's python — `uv venv` does not install uv
-# *into* the venv, so `.venv/bin/uv` would not exist on a fresh machine.
-#
-# On WSL /mnt/c (DrvFs) a copy can leave a package half-written — e.g. a
-# `numpy-*.dist-info/` dir with NO METADATA file — and uv then aborts the
-# whole resolve with "Failed to read metadata from installed package …:
-# No such file or directory". A corrupt existing venv can't be patched in
-# place, so on ANY install failure we nuke and rebuild it from scratch.
+# WSL /mnt/c can leave a package half-written, and uv then aborts the whole
+# resolve. A corrupt venv can't be patched in place — rebuild it.
 if ! "$UV" pip install --python .venv/bin/python -e . >/dev/null 2>&1; then
-  echo "==> deps install failed — rebuilding .venv from scratch (corrupt/partial venv; common on WSL /mnt/c)"
+  echo "==> deps install failed — rebuilding .venv from scratch"
   rm -rf .venv && "$UV" venv --python "$AIFORGE_PYTHON" .venv
   "$UV" pip install --python .venv/bin/python -e . >/dev/null
 fi
 
-# POST-install SMOKE IMPORT: on WSL /mnt/c (DrvFs) a copy can leave a package
-# HALF-WRITTEN even though the install exits 0 — e.g. urllib3 with no
-# urllib3/util dir → "ModuleNotFoundError: No module named 'urllib3.util'" at
-# runtime. Import the fragile core deps; on failure, force-reinstall them, and
-# if STILL broken, nuke + rebuild the whole venv. Skip with AIFORGE_SKIP_SMOKE=1.
+# An install can exit 0 and still be half-written (again, DrvFs). Skip with
+# AIFORGE_SKIP_SMOKE=1.
 if [[ "${AIFORGE_SKIP_SMOKE:-0}" != "1" ]]; then
   _smoke='import urllib3.util, urllib3.util.connection, requests, charset_normalizer, certifi, idna, google.adk'
   if ! .venv/bin/python -c "$_smoke" >/dev/null 2>&1; then
-    echo "==> core deps import broken (partial install — common on WSL /mnt/c) — repairing…"
+    echo "==> core deps import broken (partial install) — repairing…"
     "$UV" pip install --python .venv/bin/python --reinstall \
       urllib3 requests charset_normalizer certifi idna >/dev/null 2>&1 || true
     if ! .venv/bin/python -c "$_smoke" >/dev/null 2>&1; then
@@ -941,81 +648,46 @@ if [[ "${AIFORGE_SKIP_SMOKE:-0}" != "1" ]]; then
       rm -rf .venv && "$UV" venv --python "$AIFORGE_PYTHON" .venv
       "$UV" pip install --python .venv/bin/python -e . >/dev/null 2>&1 || true
     fi
-    if .venv/bin/python -c "$_smoke" >/dev/null 2>&1; then
-      echo "==> deps repaired"
-    else
-      echo "==> WARN: deps still broken. If on /mnt/c, move the repo to the Linux FS (e.g. ~/AIForgeCrew) — DrvFs corrupts venvs." >&2
-    fi
+    .venv/bin/python -c "$_smoke" >/dev/null 2>&1 \
+      && echo "==> deps repaired" \
+      || echo "==> WARN: deps still broken. On /mnt/c? Move the repo to the Linux FS." >&2
   fi
 fi
 
-# ── AUTO-DETECT + converge to latest (SQLite, no infra Docker) ────────────
-# On ANY invocation, identify a PRIOR install and migrate it to the current
-# architecture ONCE, so an upgrade "just works" without the operator knowing to
-# pass --migrate: if a dockerized Postgres with data is present, move its chat +
-# tickets into the SQLite stores and remove the DB infra containers (neo4j/embed/
-# rerank/postgres — volumes kept, recoverable), then run in --lite. The memory
-# side (flat md / old Neo4j → scoped OKR) migrates on API startup separately
-# (aiforge_core.memory.migrations). Marker-guarded (runs once); opt out with
-# AIFORGE_AUTO_MIGRATE=0.
-# The whole detect → migrate (PG→SQLite, Neo4j→OKR) → verify → remove DB-infra
-# (containers/images/volumes, KEEP langfuse) flow lives in ONE PORTABLE Python
-# module (aiforge_core.deploy.converge) so it runs the same on Linux/macOS/WSL/
-# Windows — run.sh just invokes it. Marker-guarded; opt out AIFORGE_AUTO_MIGRATE=0.
+# ── converge a prior install (once, marker-guarded) ───────────────────────
+# Detects a dockerized Postgres/Neo4j install, moves its data into SQLite/OKF
+# and removes the DB infra. Portable — the whole flow is one Python module.
+# Opt out: AIFORGE_AUTO_MIGRATE=0. Do NOT `systemctl stop aiforge-api` here:
+# run.sh IS the service's ExecStart.
 _cfgdir="${AIFORGE_CONFIG_DIR:-$HOME/.aiforge}"
-_automig_marker="$_cfgdir/.data_migrated_v1"
-# Default: auto-converge ONCE (marker-guarded). `./run.sh --migrate` forces a
-# (re-)converge now, then continues to start. Opt out entirely: AIFORGE_AUTO_MIGRATE=0.
 if [[ "${AIFORGE_AUTO_MIGRATE:-1}" != "0" || "${MIGRATE:-0}" == "1" ]]; then
-  # NOTE: do NOT 'systemctl stop aiforge-api' here — run.sh IS the service's
-  # ExecStart, so that would kill this very process. systemd already stopped the
-  # previous instance before starting us, so the SQLite files are free to migrate.
   _cvg=()
   [[ "${MIGRATE:-0}" == "1" ]] && _cvg=(--force)
-  # ${arr[@]+"${arr[@]}"} — expand to NOTHING when empty (no phantom "" arg);
-  # a bare "${arr[@]}" trips `set -u` on macOS bash 3.2 ("unbound variable").
+  # ${arr[@]+"${arr[@]}"} expands to nothing when empty; a bare "${arr[@]}"
+  # trips `set -u` on macOS bash 3.2.
   .venv/bin/python -m aiforge_core.deploy.converge ${_cvg[@]+"${_cvg[@]}"} || true
 fi
 
-# ── OKF format converge (only when a legacy okr/ folder is present) ───────
-# TRIGGER: a leftover ``<memory>/okr/`` folder is the signal that this install
-# predates OKF. Only THEN do we converge — rename okr/ → okf/ and rewrite every
-# memory .md file's frontmatter to OKF names (kind→type, source_url→resource,
-# updated_at/created_at→timestamp). Once okr/ is gone (renamed/cleaned) this
-# skips entirely, so a fresh/already-OKF install never scans on start. Run the
-# one-shot conversion by hand any time with ``./run.sh --migrate-okf``.
-# Opt out even when okr/ is present with AIFORGE_MIGRATE_OKF=0.
+# A leftover okr/ folder is the signal that this install predates OKF; once
+# it is gone this never scans again. By hand: ./run.sh --migrate-okf
 _okf_memdir="${AIFORGE_MEMORY_MD_DIR:-$_cfgdir/memory}"
 if [[ "${AIFORGE_MIGRATE_OKF:-1}" != "0" && -x .venv/bin/python \
       && -d "$_okf_memdir/okr" ]]; then
-  echo "==> legacy okr/ folder present → converging memory to OKF (okr→okf)…"
+  echo "==> legacy okr/ folder present → converging memory to OKF…"
   .venv/bin/python -m aiforge_core.memory.migrations --migrate-okf || true
 fi
 
-# (PG/Neo4j env was already stripped right after .env load; docker cleanup —
-# stopping/removing leftover DB-infra — is handled inside the
-# converge module above, portably; nothing to do here.)
-
-# ── RepoMap grammars ──────────────────────────────────────────────────────
-# The chat/doer repo context uses a tree-sitter + PageRank RepoMap for a RANKED
-# symbol map. The mapper itself is vendored in-tree
-# (aiforge_core/indexing/repomap/, from aider-chat under Apache-2.0 — the
-# package was dropped for its CVE-bearing pins), so nothing is installed here;
-# its grammars come from tree-sitter-language-pack, a declared dependency that
-# `uv sync` above already installed. If the import fails the agent falls back
-# to the built-in regex symbol map (aiforge_core/runtime/chat_agent.py).
+# ── RepoMap ───────────────────────────────────────────────────────────────
+# Vendored in-tree; its grammars are a declared dependency. On import failure
+# the agent falls back to the regex symbol map.
 if [[ "${AIFORGE_SKIP_AIDER:-0}" != "1" ]]; then
   .venv/bin/python -c "import aiforge_core.indexing.repomap" >/dev/null 2>&1 \
     && echo "==> RepoMap ready (tree-sitter + PageRank)" \
     || echo "==> RepoMap unavailable (falling back to regex symbol map)"
 fi
 
-# ── Integration adapters (instructor / crawl4ai) ─────────────────────
-# Optional extras behind aiforge_core/integrations/: instructor = validated
-# structured LLM output (architect/grader/steering seams), crawl4ai =
-# browser-rendered markdown for web_crawl dossiers. Best-effort — every seam
-# has a built-in fallback, the stack boots without them. Skip with
-# AIFORGE_SKIP_INTEGRATIONS=1.
+# ── optional extras + embed backend ───────────────────────────────────────
+# Every seam has a built-in fallback. Skip with AIFORGE_SKIP_INTEGRATIONS=1.
 if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
   if ! .venv/bin/python -c "import instructor, crawl4ai, chonkie" >/dev/null 2>&1; then
     echo "==> installing integration extras (instructor + crawl4ai + chonkie)…"
@@ -1023,16 +695,16 @@ if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
       && echo "==> integration extras ready" \
       || echo "==> integration extras skipped (built-in fallbacks active)"
   fi
-  # ── Embed backend. Priority: an EXPLICIT AIFORGE_EMBED_BACKEND (runtime.env /
-  # env) is ALWAYS honored. Else auto-pick model2vec (static semantic, NO torch)
-  # if installed, else hash. Enable semantic ONCE: ./run.sh --install-model2vec.
+
   if [[ "${INSTALL_MODEL2VEC:-0}" == "1" ]] \
       && ! .venv/bin/python -c "import model2vec, sqlite_vec" >/dev/null 2>&1; then
-    echo "==> installing model2vec static embeddings (real semantic, NO torch, ~30MB)…"
+    echo "==> installing model2vec static embeddings (~30MB, no torch)…"
     "$UV" pip install --python .venv/bin/python -e '.[embed-static]' \
       && : "${AIFORGE_EMBED_BACKEND:=model2vec}" \
       || echo "==> model2vec install failed — continuing"
   fi
+
+  # An explicit backend always wins; otherwise pick the lightest installed one.
   if [[ -n "${AIFORGE_EMBED_BACKEND:-}" ]]; then
     export AIFORGE_EMBED_BACKEND
     echo "==> embed backend: ${AIFORGE_EMBED_BACKEND} (explicit)"
@@ -1043,46 +715,31 @@ if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
     export AIFORGE_EMBED_BACKEND=hash
     echo "==> embed backend: hash (keyword). Semantic recall: ./run.sh --install-model2vec"
   fi
-  # NO `playwright install chromium` here. It pulled a ~150MB browser build
-  # off Playwright's CDN — a binary from a source that is not a package index,
-  # fetched on every run behind `|| true` so a failure was silent. crawl4ai
-  # falls back to a plain fetch without it. A box that wants rendering points
-  # PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH at a chromium its package manager
-  # installed (apt install chromium / brew install chromium).
-  # crawl4ai's deps pull urllib3/chardet versions newer than an older
-  # requests' hardcoded compat check → noisy RequestsDependencyWarning on
-  # EVERY python spawn. Newer requests widened the check — upgrade
-  # best-effort (cosmetic; nothing breaks either way).
+
+  # No `playwright install chromium`: that pulled a browser binary from a CDN,
+  # not a package index. crawl4ai falls back to a plain fetch; a box that wants
+  # rendering sets PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH to a packaged chromium.
+
+  # crawl4ai's deps outrun an older requests' hardcoded compat check, which
+  # warns on every python spawn. Cosmetic.
   "$UV" pip install --python .venv/bin/python -U requests >/dev/null 2>&1 || true
 fi
 
-# ── venv self-heal ────────────────────────────────────────────────────
-# A partial/interrupted install can leave the venv importable-but-broken —
-# classic symptom: pydantic is present but its compiled companion
-# `pydantic_core` wheel is not, so the API dies at boot with
-# "ModuleNotFoundError: No module named 'pydantic_core'". uv then considers
-# the env "satisfied", so a plain re-run won't fix it. Probe a core import;
-# if it fails, force-reinstall, and rebuild the venv from scratch as a last
-# resort — so `./run.sh` alone always recovers.
+# An interrupted install can leave pydantic present but pydantic_core missing;
+# uv then considers the env satisfied, so a plain re-run won't fix it.
 if ! .venv/bin/python -c "import pydantic_core" >/dev/null 2>&1; then
   echo "==> venv incomplete (pydantic_core missing) — repairing deps"
   "$UV" pip install --python .venv/bin/python --reinstall -e . >/dev/null 2>&1 || true
   if ! .venv/bin/python -c "import pydantic_core" >/dev/null 2>&1; then
     echo "==> rebuilding .venv from scratch"
-    rm -rf .venv && "$UV" venv --python "$AIFORGE_PYTHON" .venv && "$UV" pip install --python .venv/bin/python -e . >/dev/null
+    rm -rf .venv && "$UV" venv --python "$AIFORGE_PYTHON" .venv \
+      && "$UV" pip install --python .venv/bin/python -e . >/dev/null
   fi
 fi
 
-# ── graphify CLI (optional, --with-graphify) ──────────────────────────
-# Installs the host `graphify` binary (PyPI package: graphifyy) used by the
-# concept-graph refresh (docs/TOOLS.md → Graphify graph; aiforge-graphify-all.timer)
-# and the graphify_lookup tool. Opt-in — the stack boots fine without it.
-#
-# ISOLATED install ONLY (uv tool). graphify carries a large, independently
-# pinned dep set (incl. its OWN pydantic) — co-installing it into the app
-# .venv clobbers the app's pinned pydantic/pydantic-core and breaks boot with
-# "ModuleNotFoundError: pydantic_core". So we NEVER touch .venv here; on
-# failure we warn and continue rather than fall back into the venv.
+# ── graphify (--with-graphify) ────────────────────────────────────────────
+# ISOLATED install only. graphify pins its OWN pydantic, so co-installing it
+# into .venv breaks the app's boot with ModuleNotFoundError: pydantic_core.
 if [[ $WITH_GRAPHIFY -eq 1 ]]; then
   if command -v graphify >/dev/null 2>&1; then
     echo "==> graphify present ($(command -v graphify)) — upgrading"
@@ -1090,26 +747,19 @@ if [[ $WITH_GRAPHIFY -eq 1 ]]; then
   elif "$UV" tool install graphifyy; then
     echo "==> graphify ready: $(command -v graphify 2>/dev/null || echo "$("$UV" tool dir --bin 2>/dev/null)/graphify")"
   else
-    echo "==> WARN: 'uv tool install graphifyy' failed — skipping graphify (stack still boots)." \
-         "Install it yourself with:  uv tool install graphifyy   (or: pipx install graphifyy)." \
-         "Deliberately NOT installing into .venv — that would break the app's pydantic." >&2
+    echo "==> WARN: 'uv tool install graphifyy' failed — skipping (stack still boots)." >&2
   fi
 fi
 
-# ── Connectivity test (--test) ────────────────────────────────────────
-# Probe the CONFIGURED model endpoint with the current SSL settings and
-# exit. Verifies BOTH reachability and that TLS is accepted (or relaxed)
-# without booting the server. Needs the venv but NO Docker → works in
-# every mode. Never prints api keys.
+# ── --test ────────────────────────────────────────────────────────────────
 if [[ $TEST -eq 1 ]]; then
   exec .venv/bin/python -m aiforge_core.cli.connectivity_test
 fi
 
-# ── Web UI build (optional) ───────────────────────────────────────────
+# ── web UI build ──────────────────────────────────────────────────────────
 if [[ $SKIP_WEB -eq 0 ]]; then
-  _ensure_node                       # fetch a portable Node if the box has no npm
+  _ensure_node
   if command -v npm >/dev/null 2>&1; then
-    # Rebuild only when dist is missing or any source is newer than it.
     if [[ ! -d web/dist ]] || [[ -n "$(find web/src web/index.html web/package.json -newer web/dist/index.html 2>/dev/null | head -1)" ]]; then
       echo "==> building web UI"
       ( cd web && { [[ -d node_modules ]] || _npm_ci_resilient; } && npm run build )
@@ -1117,34 +767,25 @@ if [[ $SKIP_WEB -eq 0 ]]; then
       echo "==> web UI up to date (use --skip-web to skip this check)"
     fi
   elif [[ ! -d web/dist ]]; then
-    echo "!! npm not found and portable Node auto-install failed (no network or" >&2
-    echo "!! unsupported OS/arch) AND no web/dist — the UI will not load. Install" >&2
-    echo "!! Node (https://nodejs.org), then re-run; or build web/ elsewhere." >&2
+    echo "!! no npm and no web/dist — the UI will not load. Install Node ${_NODE_MIN_MAJOR}+" >&2
+    echo "!! (apt/dnf/brew install nodejs), or build web/ elsewhere and copy dist over." >&2
   elif [[ -n "$(find web/src web/index.html web/package.json -newer web/dist/index.html 2>/dev/null | head -1)" ]]; then
-    # Loud: a git pull updated the source but npm is missing, so the OLD bundle
-    # is still being served — the #1 cause of "I pulled but the UI is unchanged".
+    # Loud: source changed but npm is missing, so the OLD bundle is served —
+    # the #1 cause of "I pulled but the UI is unchanged".
     echo "!! ============================================================" >&2
-    echo "!! npm not found (portable Node auto-install failed) — web/dist is STALE." >&2
-    echo "!! You are serving an OUTDATED UI: source changed but the bundle was NOT" >&2
-    echo "!! rebuilt. Install Node (https://nodejs.org) and re-run, or run" >&2
-    echo "!! 'cd web && npm run build' on a machine with npm and copy web/dist over." >&2
+    echo "!! npm not found — web/dist is STALE. You are serving an OUTDATED UI." >&2
+    echo "!! Install Node ${_NODE_MIN_MAJOR}+ and re-run, or run 'cd web && npm run build'" >&2
+    echo "!! elsewhere and copy web/dist over." >&2
     echo "!! ============================================================" >&2
   else
     echo "==> npm not found — skipping UI build (dist present + current)" >&2
   fi
 fi
 
-# ── Langfuse trace server (--with-langfuse / AIFORGE_LANGFUSE=1) ─────
-# Self-hosted Langfuse v2 MINIMAL (app + postgres + hourly retention-prune
-# sidecar; deliberately NOT v3's clickhouse/redis/minio/worker stack) via
-# scripts/compose/langfuse-compose.yml. FULLY headless: secrets + API keys
-# are generated ONCE into ~/.aiforge/langfuse.env (never committed) and the
-# project is provisioned on first boot via LANGFUSE_INIT_* — then the app's
-# LANGFUSE_* env is exported here so every LLM call mirrors automatically.
+# ── langfuse (--with-langfuse) ────────────────────────────────────────────
+# Secrets are generated once into ~/.aiforge/langfuse.env and the project is
+# provisioned on first boot; the app-side LANGFUSE_* env is exported after.
 if [[ "$WITH_LANGFUSE" == "1" ]]; then
-  # Tracing is allowed even in --lite: lite means no DB infra in Docker, but
-  # langfuse (the ONLY container an operator may want) can still run when Docker
-  # is present. Only skip when Docker isn't installed at all.
   if ! command -v docker >/dev/null 2>&1; then
     echo "==> --with-langfuse needs Docker (not installed) — skipped" >&2
   else
@@ -1160,7 +801,7 @@ if [[ "$WITH_LANGFUSE" == "1" ]]; then
         echo "LF_MINIO_PASSWORD=$(_rand 12)"
         echo "LF_NEXTAUTH_SECRET=$(_rand 24)"
         echo "LF_SALT=$(_rand 24)"
-        echo "LF_ENCRYPTION_KEY=$(_rand 32)"   # 64 hex chars, required length
+        echo "LF_ENCRYPTION_KEY=$(_rand 32)"       # must be 64 hex chars
         echo "LF_PUBLIC_KEY=pk-lf-$(_rand 16)"
         echo "LF_SECRET_KEY=sk-lf-$(_rand 16)"
         echo "LF_ADMIN_PASSWORD=$(_rand 8)"
@@ -1174,35 +815,25 @@ if [[ "$WITH_LANGFUSE" == "1" ]]; then
       docker info >/dev/null 2>&1 || DC=(sudo "${DC[@]}")
     fi
     echo "==> starting langfuse (trace UI) on http://localhost:${LF_PORT}"
-    # --env-file, NOT the sourced shell env: on hosts where docker needs
-    # sudo, `sudo docker compose` strips the exported LF_* vars and postgres
-    # boots with an EMPTY password → unhealthy → whole stack aborts.
+    # --env-file, not the sourced shell env: `sudo docker compose` strips the
+    # exported LF_* vars and postgres then boots with an EMPTY password.
     if "${DC[@]}" -p aiforge-langfuse --env-file "$_lf_env" \
          -f scripts/compose/langfuse-compose.yml up -d --quiet-pull --remove-orphans; then
-      # Export the app-side mirror config; tracing turns on automatically.
       export LANGFUSE_HOST="http://127.0.0.1:${LF_PORT}"
       export LANGFUSE_PUBLIC_KEY="$LF_PUBLIC_KEY"
       export LANGFUSE_SECRET_KEY="$LF_SECRET_KEY"
       echo "    langfuse login: admin@aiforge.local / ${LF_ADMIN_PASSWORD}  (keys in $_lf_env)"
     else
-      echo "==> WARN: langfuse bring-up failed — tracing stays off (stack boots fine)" >&2
+      echo "==> WARN: langfuse bring-up failed — tracing stays off" >&2
     fi
   fi
 fi
 
-# ── Launch (host: api + runner) ───────────────────────────────────────
-# Put the venv's bin on PATH for the API, the runner, AND every subprocess
-# they spawn — job/workflow scripts call the `aiforge-tool` console script
-# (configured jira/confluence/gitlab access) and must find it without
-# knowing the venv location.
+# ── launch ────────────────────────────────────────────────────────────────
 export PATH="$PWD/.venv/bin:$PATH"
 
-# ── CodeGraph binary — best-effort auto-install ───────────────────────────
-# The Doer's codegraph_* tool calls are ENFORCED, so install the indexer if it's
-# missing (npm package @colbymchenry/codegraph, user prefix, no sudo). Skip with
-# AIFORGE_SKIP_CODEGRAPH=1. npm-user-global bin is put on PATH so the index block
-# below resolves it. Best-effort — a box with no npm just skips (enforcement
-# self-gates off when no binary/index).
+# CodeGraph: the Doer's codegraph_* calls are enforced, so install the indexer
+# if missing (npm, user prefix, no sudo). Skip with AIFORGE_SKIP_CODEGRAPH=1.
 if [[ "${AIFORGE_SKIP_CODEGRAPH:-0}" != "1" ]]; then
   [[ -d "$HOME/.npm-global/bin" ]] && export PATH="$HOME/.npm-global/bin:$PATH"
   if ! command -v codegraph >/dev/null 2>&1 && [[ -z "${AIFORGE_CODEGRAPH_BIN:-}" ]] \
@@ -1210,28 +841,18 @@ if [[ "${AIFORGE_SKIP_CODEGRAPH:-0}" != "1" ]]; then
     echo "==> installing CodeGraph (code-graph indexer)…"
     bash scripts/install-codegraph.sh >/dev/null 2>&1 \
       && echo "==> codegraph ready" \
-      || echo "==> codegraph install skipped (npm/network) — enforcement stays off"
+      || echo "==> codegraph install skipped — enforcement stays off"
     [[ -d "$HOME/.npm-global/bin" ]] && export PATH="$HOME/.npm-global/bin:$PATH"
   fi
 fi
 
-# ── CodeGraph index (feeds the ENFORCED codegraph_* tool calls) ───────────
-# The Doer is required to call codegraph (callers/impact/explore) before
-# editing an existing symbol — see runtime/text_doer._CODEGRAPH_MANDATE. Those
-# calls only have data if an index exists, so build/refresh it here. Fully
-# config-driven + portable: a generic clone with no codegraph binary or no
-# repos configured SKIPS this cleanly.
-#   AIFORGE_CODEGRAPH_BIN    codegraph binary (else `codegraph` on PATH)
-#   AIFORGE_CODEGRAPH_REPOS  comma-separated repo paths to index (empty = skip)
-# First run → `init` (full, ~20s for 1200 files); thereafter → `sync`
-# (incremental). Both run in the background so boot is never blocked.
-# No repos set but the binary is here → hint the operator (indexing is opt-in).
+# Those enforced calls only have data if an index exists. First run → init
+# (~20s for 1200 files), thereafter → sync. Both in the background.
+#   AIFORGE_CODEGRAPH_REPOS  comma-separated repo paths (empty = skip)
 if [[ -z "${AIFORGE_CODEGRAPH_REPOS:-}" ]] && command -v codegraph >/dev/null 2>&1; then
   echo "  codegraph: installed but idle — set AIFORGE_CODEGRAPH_REPOS=\"/path/a,/path/b\" to index"
 fi
 _CG_BIN="${AIFORGE_CODEGRAPH_BIN:-codegraph}"
-# Accept a bare command name (resolve via PATH) as well as an absolute path —
-# mirrors AIFORGE_LMS_BIN conventions; otherwise `-x` on a bare name fails.
 [[ "$_CG_BIN" != */* ]] && _CG_BIN="$(command -v "$_CG_BIN" 2>/dev/null || true)"
 if [[ -n "$_CG_BIN" && -x "$_CG_BIN" && -n "${AIFORGE_CODEGRAPH_REPOS:-}" ]]; then
   IFS=',' read -ra _CG_REPOS <<< "$AIFORGE_CODEGRAPH_REPOS"
@@ -1248,24 +869,18 @@ if [[ -n "$_CG_BIN" && -x "$_CG_BIN" && -n "${AIFORGE_CODEGRAPH_REPOS:-}" ]]; th
 fi
 
 echo ""
-echo "  AIForge → $(_ui_scheme)://${HOST}:${PORT}/ui/   storage: SQLite + scoped-OKR memory"
+echo "  AIForge → $(_ui_scheme)://${HOST}:${PORT}/ui/   storage: SQLite + scoped-OKF memory"
 echo "  code context: RepoMap + CodeGraph"
 [[ -n "${AIFORGE_WORKSPACE_DIR:-}" ]] \
   && echo "  chat fs scope: ${AIFORGE_WORKSPACE_DIR}" \
   || echo "  chat fs scope: UNRESTRICTED (set AIFORGE_WORKSPACE_DIR to clamp)"
 echo ""
 
-# The team pipeline runner claims + processes tickets on the HOST. The SQLite
-# claim (conditional UPDATE under the single-writer lock) is atomic. Reaped when
-# uvicorn exits.
 ( while true; do .venv/bin/python -m aiforge_core.runtime.adk_runner || true; sleep "${AIFORGE_RUNNER_POLL_SEC:-10}"; done ) &
 RUNNER_PID=$!
 echo "  runner: host pid $RUNNER_PID (polls every ${AIFORGE_RUNNER_POLL_SEC:-10}s)"
 
-# Peer memory sync. Always on, with no opt-out: a cycle with no approved peers
-# in peers.json (the default) touches no network and builds no manifest, so on a
-# single machine this costs one small JSON read every 30 minutes. Reaped when
-# uvicorn exits.
+# Always on: with no approved peers a cycle touches no network at all.
 ( while true; do .venv/bin/python -m aiforge_core.memory.sync.loop || true; sleep 30; done ) &
 SYNC_PID=$!
 trap 'kill $RUNNER_PID $SYNC_PID 2>/dev/null' EXIT INT TERM
@@ -1273,21 +888,13 @@ echo "  memory sync: host pid $SYNC_PID (peer pull every 30m)"
 
 RELOAD=()
 [[ $DEV -eq 1 ]] && RELOAD=(--reload)
-# Invoke uvicorn via `python -m`, NOT the .venv/bin/uvicorn console-script:
-# on WSL over /mnt/c (DrvFs) the wrapper script fails with "cannot execute:
-# required file not found" (exec-bit / shebang quirks). The python binary +
-# module form is portable across WSL and macOS.
-# Tell the app which host it's bound to, so the security boot-guard can refuse
-# a non-loopback bind that has no AIFORGE_API_TOKEN set (unauth shell API on LAN).
+# Lets the boot guard refuse a non-loopback bind with no AIFORGE_API_TOKEN.
 export AIFORGE_BIND_HOST="$HOST"
 
-# --admin: the sync admin page. Always PRINT the URL (headless boxes have no
-# browser, and an operator on an SSH tunnel wants the address, not a launch),
-# and only try to open it when a launcher actually exists. The opener waits for
-# the port in the BACKGROUND so uvicorn still runs in the foreground below.
 ADMIN_URL="http://127.0.0.1:$PORT/admin"
 if [[ $ADMIN_PAGE -eq 1 ]]; then
   echo "  admin: $ADMIN_URL  (loopback-only; tunnel with ssh -L $PORT:127.0.0.1:$PORT)"
+  # Wait for the port in the background so uvicorn still runs in the foreground.
   (
     for _ in $(seq 1 60); do
       (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null && break
@@ -1299,12 +906,10 @@ if [[ $ADMIN_PAGE -eq 1 ]]; then
   ) >/dev/null 2>&1 &
 fi
 
-# NOT `exec`: exec replaces this shell's process image, taking the trap on line
-# 778 with it, so the ticket runner and the peer-sync loop would outlive the
-# server as orphans whenever the API is stopped by PID rather than by killing
-# the whole process group. Running uvicorn as a child and waiting keeps the trap
-# alive, so one Ctrl-C / SIGTERM tears down all three. `wait` is interrupted by
-# the trapped signal, which is what lets the handler run.
+# `python -m uvicorn`, not the console script: on WSL over /mnt/c the wrapper
+# fails with "cannot execute: required file not found".
+# NOT `exec`: exec would replace this shell and take the trap with it, orphaning
+# the runner and the sync loop whenever the API is stopped by PID.
 .venv/bin/python -m uvicorn aiforge_core.api.api:app --host "$HOST" --port "$PORT" ${RELOAD[@]+"${RELOAD[@]}"} &
 UVICORN_PID=$!
 trap 'kill $UVICORN_PID $RUNNER_PID $SYNC_PID 2>/dev/null' EXIT INT TERM

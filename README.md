@@ -13,13 +13,15 @@ Plus a full-filesystem chat coding agent.
 |---|---|
 | **[SYSTEM_OVERVIEW.md](docs/SYSTEM_OVERVIEW.md)** | How it works: request flow (chat + pipeline), memory, skills/workflows/rules, operating it |
 | **[OKR_MEMORY.md](docs/OKR_MEMORY.md)** | The OKR-DAG memory — markdown nodes (objectives/key-results/learnings/sessions), typed edges, in-memory graph, surgical retrieval |
+| **[OKF.md](docs/OKF.md)** | The on-disk memory format (Open Knowledge Format v0.1) |
 | **[TOOLS.md](docs/TOOLS.md)** | The complete tool reference — every tool, args, gating, per-agent allowlists |
 | **[DECISIONS.md](docs/DECISIONS.md)** | Why things are the way they are (ADR-lite log, evidence-linked) |
-| **[DEMO_GUIDE.md](docs/DEMO_GUIDE.md)** | A guided demo walkthrough |
+| **[INSTALL.md](INSTALL.md)** | Native vs Docker install, prerequisites, offline and corporate-CA notes |
 
 ## Quickstart (deploy anywhere)
 
-No Postgres, no Neo4j, no GPU — clone and run:
+No Postgres, no Neo4j, no GPU. **Prerequisites: `git` and `python 3.12`** — from
+your package manager. Everything else is a package:
 
 ```bash
 git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew.git
@@ -27,16 +29,21 @@ cd AIForgeCrew
 ./run.sh
 ```
 
+`uv` and Node come in as Python dependencies, so `run.sh` never pipes a remote
+installer into a shell. Only package managers fetch — PyPI, npm, docker, apt —
+and `./run.sh --offline` refuses even those. See **[INSTALL.md](INSTALL.md)**.
+
 Open **http://127.0.0.1:8799/ui/**. The landing page is config-first: pick a
 provider + model for each pipeline step. Choose **OpenAI-compatible** and paste any
 base URL — LM Studio (`http://localhost:1234/v1`), OpenRouter, Groq, Together, vLLM,
 or a cloud endpoint with a key. Hit **Test connection** to verify. Then use **Chat**
 (a full-filesystem coding agent) or file a **Ticket** (the full pipeline).
 
-Single-mode: everything on the host, embedded **SQLite** (tickets + chat) + scoped
-**OKR Markdown memory** under `~/.aiforge/` — no infra Docker. Upgrading an old
-dockerized (Postgres/Neo4j) install? `git pull && ./run.sh` auto-migrates the data
-cleans stale PG/Neo4j env keys and removes leftover DB containers (force with `./run.sh --migrate`).
+Single-mode: everything on the host, embedded **SQLite** (tickets + chat) +
+scoped **Markdown memory** under `~/.aiforge/` — no infra Docker. Upgrading an
+old dockerized (Postgres/Neo4j) install? `git pull && ./run.sh` migrates the
+data, clears stale PG/Neo4j env keys and removes the leftover DB containers
+(force with `./run.sh --migrate`).
 
 Recall is **keyword + spell-correction** by default (no download). Add
 **semantic** vector KNN (meaning/paraphrase recall) once with
@@ -49,13 +56,24 @@ an OpenAI-compatible `/v1/embeddings` endpoint you already run:
 > file/exec operations to one directory, and run shared/untrusted deployments inside a
 > container. Treat the chat box like a terminal.
 
-`./run.sh --dev` enables hot reload; `--port N` / `--host H` change the bind;
-`--migrate` forces a re-converge (env cleanup + leftover container removal); `--install-model2vec` enables semantic recall (no torch).
-Mode is `AIFORGE_MODE`-driven (`lite` | `hybrid` | `docker`; a flag still wins):
-`--lite` runs **zero-Docker** (host + SQLite for everything). `--migrate` re-runs an
-existing Postgres (chat + tickets) into the SQLite stores and removes the DB infra
-containers. `--with-langfuse` / `--stop-langfuse` manage the optional self-hosted
-LLM trace UI — allowed even in `--lite`, so tracing can be the only container.
+| Flag | What it does |
+|---|---|
+| `--dev` | uvicorn hot reload |
+| `--port N` / `--host H` | change the bind (off-loopback needs `AIFORGE_API_TOKEN`) |
+| `--docker` | run the self-contained container instead of the host path |
+| `--install-model2vec` | semantic recall, ~30 MB, no torch |
+| `--migrate` | re-run a prior Postgres install into SQLite, remove the DB containers |
+| `--offline` | air-gapped: no network at all |
+| `--with-langfuse` / `--stop-langfuse` | the optional self-hosted LLM trace UI |
+
+(`--lite` / `--hybrid` / `--no-build` are accepted but do nothing — storage has
+been single-mode SQLite since the converge.)
+
+**Behind a corporate CA?** Paste the root **and its intermediates** into
+Settings → *Local certificate authority*, or set `AIFORGE_CA_BUNDLE=/path/ca.pem`.
+One answer covers the model endpoint, Jira/Confluence/GitLab, `git` and the
+package installs. Verification is never turned off — a self-signed endpoint is
+pinned, not trusted blindly.
 
 ## Features
 
@@ -72,8 +90,9 @@ LLM trace UI — allowed even in `--lite`, so tracing can be the only container.
   LSP/typecheck/format/per-test runs, persistent ipython, background dev servers,
   GitHub PRs + GitLab MRs. Full reference: **[docs/TOOLS.md](docs/TOOLS.md)**.
 - **Integrations** — a broad **Jira** suite (issues, transitions, **time tracking**,
-  **boards/sprints**, dashboards), **Confluence**, **GitLab**, **email**, **web
-  search/fetch/crawl**, **browser** automation, **MCP**. `context_gather` builds a
+  **boards/sprints**, dashboards), **Confluence**, **GitLab**, **email**,
+  **web fetch/crawl** (a URL you supply — there is no web *search* tool),
+  **browser** automation, **MCP**. `context_gather` builds a
   cached cross-entity **dossier** (ticket + linked pages + images, fetched in
   parallel). Every configured integration is also callable from shell scripts via
   the **`aiforge-tool`** CLI (read-only by default).

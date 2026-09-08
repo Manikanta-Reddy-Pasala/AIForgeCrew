@@ -16,10 +16,14 @@ Everything you need to go from clone → running → configured → doing real w
 
 ## 1. Run it
 
-**Prereqs:** Node + npm (to build the UI) and one reachable model endpoint (LM
-Studio, vLLM, Ollama, OpenRouter, a cloud key…). **No Docker required** — the
-stack is single-mode: embedded SQLite + Markdown OKR memory, all on the host.
-(Docker is only needed for the optional self-hosted Langfuse trace UI.)
+**Prereqs:** `git`, `python 3.12`, and one reachable model endpoint (LM Studio,
+vLLM, Ollama, OpenRouter, a cloud key…). **No Docker required** — the stack is
+single-mode: embedded SQLite + Markdown memory, all on the host. (Docker is only
+needed for the optional self-hosted Langfuse trace UI.)
+
+You do **not** need Node installed: it comes in as a Python dependency for the
+UI build. Nor `uv` — same. `run.sh` never pipes a remote installer into a shell;
+see **[INSTALL.md](INSTALL.md)** for the offline and corporate-CA notes.
 
 ```bash
 git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew.git
@@ -54,14 +58,21 @@ Afterwards every plain `./run.sh` auto-detects it. Force hash:
 `AIFORGE_EMBED_BACKEND=hash ./run.sh`. Or the API backend:
 `AIFORGE_EMBED_BACKEND=api AIFORGE_EMBED_API_MODEL=<embed-model> ./run.sh`.
 
-Handy flags: `--port N` · `--host 0.0.0.0` (LAN — needs `AIFORGE_API_TOKEN`, or
-`AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1` if you front it yourself) · `--dev` (hot
-reload) · `--reset-config` (wipe saved model config) · `--test` (probe the model
-endpoint and exit) · `--migrate` (force re-converge) · `--install-model2vec`
-(one-time semantic install, no torch) · `--recompact-all` (re-fold every brief, then exit).
+Handy flags:
 
-> `--lite` / `--hybrid` / `--docker` / `--no-build` are legacy no-ops — the stack
-> is always single-mode SQLite now.
+| Flag | Does |
+|---|---|
+| `--port N` / `--host 0.0.0.0` | change the bind; off-loopback needs `AIFORGE_API_TOKEN` |
+| `--dev` | hot reload |
+| `--test` | probe the model endpoint, then exit |
+| `--reset-config` | wipe the saved model config |
+| `--offline` | air-gapped: no network at all |
+| `--skip-web` | don't rebuild the UI |
+| `--migrate` | force a re-converge of a prior install |
+| `--recompact-all` | re-fold every memory brief, then exit |
+
+> `--lite` / `--hybrid` / `--no-build` are legacy no-ops — storage is always
+> single-mode SQLite now. `--docker` is real: it runs the container instead.
 
 ---
 
@@ -81,8 +92,12 @@ own model.
    all roles at once. The chat agent's model is set the same way.
 
 > Tip: for a local setup, register several models (a fast coder + a bigger
-> reasoner) and assign the strong one to `planner`/`doer`. TLS on an internal
-> self-signed endpoint? set `AIFORGE_LLM_SSL_VERIFY=false`.
+> reasoner) and assign the strong one to `planner`/`doer`.
+>
+> **TLS on an internal endpoint?** Load your CA in Settings → *Local certificate
+> authority* (the root **and** its intermediates). Only if you have no CA at all,
+> tick *skip TLS verify* on the row — that pins the endpoint's certificate rather
+> than disabling verification.
 
 ---
 
