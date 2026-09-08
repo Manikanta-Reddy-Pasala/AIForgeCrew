@@ -4,9 +4,12 @@
 #   git clone … && cd AIForgeCrew && ./run.sh
 #
 # Needs: git + python 3.12. Everything else is a package.
-# uv and Node are Python dependencies (the `toolchain` extra), so run.sh
-# downloads nothing from github, astral.sh, nodejs.org or a browser CDN —
-# only package managers fetch: PyPI, npm, docker, apt.
+#
+# SECURE BY DEFAULT: a plain ./run.sh downloads NOTHING. Pass --online to let
+# the package managers fetch (PyPI, npm, docker, apt) — that is how you
+# bootstrap or upgrade a box. Even then nothing downloads a source and executes
+# it: uv and Node are Python dependencies (the `toolchain` extra), never an
+# installer piped into a shell.
 #
 # Runs on the host by default (full fs/shell access); `--docker` runs the
 # self-contained container instead. Storage is embedded SQLite + Markdown
@@ -19,7 +22,8 @@
 #   --docker     build + run the all-deps container (host FS at /host)
 #   --skip-web   don't (re)build the web UI
 #   --test       probe the configured model endpoint, then exit
-#   --offline    air-gapped: no network at all, package managers included
+#   --online     allow package managers to fetch for THIS run (default: off)
+#   --offline    the default; no network at all
 #   --admin      this box is THE memory admin (exactly one per fleet); it
 #                merges every machine's knowledge and serves the result back
 #   --spoke      give up the admin role (how you MOVE the admin)
@@ -81,23 +85,61 @@ export AIFORGE_LLM_SSL_VERIFY="${AIFORGE_LLM_SSL_VERIFY:-true}"
 # net/ca.py publishes the bundle from a startup hook — i.e. after this script
 # has finished installing everything — so without this the app trusted the
 # operator's CA and pip/npm/git did not. Same resolution order as net/ca.py.
+#
+# SSL_CERT_FILE REPLACES the trust store, it does not add to it. Publishing a
+# corporate-root-only file therefore fixes the internal hosts and breaks every
+# public one: uv died with `invalid peer certificate: UnknownIssuer` fetching
+# pypi.org, because the proxy does not re-sign pypi and the public roots were
+# gone. So we publish root(s) PLUS the platform's own bundle, merged.
+_system_ca_file() {
+  local c
+  for c in /etc/ssl/certs/ca-certificates.crt \
+           /etc/pki/tls/certs/ca-bundle.crt \
+           /etc/ssl/ca-bundle.pem \
+           /etc/ssl/cert.pem; do
+    [[ -r "$c" ]] && { printf '%s' "$c"; return 0; }
+  done
+  # macOS framework builds ship no readable bundle; certifi is a dependency.
+  .venv/bin/python -c 'import certifi; print(certifi.where())' 2>/dev/null
+}
+
 _ca_bootstrap() {
-  local ca="" v var
+  local ca="" v var sys merged
   for v in AIFORGE_CA_BUNDLE SSL_CERT_FILE REQUESTS_CA_BUNDLE; do
     [[ -n "${!v:-}" ]] && { ca="${!v}"; break; }
   done
   [[ -z "$ca" ]] \
     && ca="${AIFORGE_SECURITY_DIR:-${AIFORGE_CONFIG_DIR:-$HOME/.aiforge}/security}/ca/custom-ca.pem"
   [[ -r "$ca" ]] || return 0
-
   export AIFORGE_CA_BUNDLE="$ca"
+
+  # Merge, and rebuild whenever either input is newer than the result.
+  sys="$(_system_ca_file)"
+  merged="$(dirname "$ca")/bundle-with-system.pem"
+  if [[ -r "$sys" ]]; then
+    if [[ ! -s "$merged" || "$ca" -nt "$merged" || "$sys" -nt "$merged" ]]; then
+      if cat "$sys" "$ca" > "$merged.tmp" 2>/dev/null && mv "$merged.tmp" "$merged"; then
+        chmod 644 "$merged" 2>/dev/null || true
+      else
+        rm -f "$merged.tmp"; merged="$ca"
+        echo "==> WARN: could not merge the CA with the system bundle — public" >&2
+        echo "    hosts (PyPI, npm) may fail with UnknownIssuer" >&2
+      fi
+    fi
+  else
+    merged="$ca"
+    echo "==> WARN: no system CA bundle found; trusting ONLY $ca. Public hosts" >&2
+    echo "    such as PyPI will fail unless your proxy re-signs them too." >&2
+  fi
+
   for var in GIT_SSL_CAINFO CURL_CA_BUNDLE SSL_CERT_FILE REQUESTS_CA_BUNDLE \
              NODE_EXTRA_CA_CERTS; do
-    [[ -z "${!var:-}" ]] && export "$var=$ca"      # never overrule the operator
+    [[ -z "${!var:-}" ]] && export "$var=$merged"   # never overrule the operator
   done
-  export UV_NATIVE_TLS="${UV_NATIVE_TLS:-0}"       # uv reads SSL_CERT_FILE only with native-tls off
-  export NPM_CONFIG_CAFILE="${NPM_CONFIG_CAFILE:-$ca}"
-  echo "==> CA bundle in force for package installs: $ca"
+  export NPM_CONFIG_CAFILE="${NPM_CONFIG_CAFILE:-$merged}"
+  # NOT UV_NATIVE_TLS: measured on uv 0.11.26 — SSL_CERT_FILE is honoured with
+  # or without it, and setting it only prints a deprecation warning.
+  echo "==> CA: $ca (+ system roots → $merged)"
 }
 _ca_bootstrap
 
@@ -147,7 +189,8 @@ while [[ $# -gt 0 ]]; do
     --migrate-okf) MAINT=migrateokf ;;
     --purge-code) MAINT=purge ;;
     --install-model2vec|--install-semantic) INSTALL_MODEL2VEC=1 ;;
-    --offline) AIFORGE_OFFLINE=1 ;;
+    --offline) AIFORGE_OFFLINE=1 ;;   # the default; kept so it can be said out loud
+    --online) AIFORGE_OFFLINE=0 ;;    # let package managers fetch for THIS run
     --dev) DEV=1 ;;
     --admin) ADMIN=1; ADMIN_PAGE=1 ;;
     --admin-url) ADMIN_URL_SET="${2:-}"; shift ;;
@@ -169,8 +212,12 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-# ── nothing is fetched except by a package manager ────────────────────────
-AIFORGE_OFFLINE="${AIFORGE_OFFLINE:-0}"
+# ── secure by default: no downloads ───────────────────────────────────────
+# A run fetches NOTHING unless you ask. `--online` (or AIFORGE_OFFLINE=0 in
+# .env) lets the package managers work for one run — PyPI, npm, docker, apt —
+# which is how a box is bootstrapped or upgraded, deliberately. Nothing ever
+# downloads a source and executes it: uv and Node are `toolchain` wheels.
+AIFORGE_OFFLINE="${AIFORGE_OFFLINE:-1}"
 export AIFORGE_OFFLINE
 _offline() { [[ "${AIFORGE_OFFLINE}" != "0" ]]; }
 
@@ -197,7 +244,9 @@ if _offline; then
   export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
   export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
   export AIFORGE_INSTALL_TMUX="${AIFORGE_INSTALL_TMUX:-0}"
-  echo "==> offline: no network at all (package managers included)."
+  echo "==> offline (default): nothing will be downloaded. Use --online to fetch."
+else
+  echo "==> ONLINE: package managers may fetch (PyPI, npm, docker, apt)."
 fi
 # uv must never install a second interpreter, offline or not.
 export UV_PYTHON_DOWNLOADS="${UV_PYTHON_DOWNLOADS:-never}"
@@ -629,13 +678,24 @@ export UV_LINK_MODE="${UV_LINK_MODE:-copy}"
 export PATH="$PWD/.venv/bin:$PATH"
 
 echo "==> installing python deps (editable)"
-# WSL /mnt/c can leave a package half-written, and uv then aborts the whole
-# resolve. A corrupt venv can't be patched in place — rebuild it.
-if ! "$UV" pip install --python .venv/bin/python -e . >/dev/null 2>&1; then
+# The rebuild below exists for WSL /mnt/c, where a copy can leave a package
+# half-written and uv then aborts the whole resolve; a corrupt venv cannot be
+# patched in place. It must NOT fire on a network or TLS failure — deleting a
+# working venv because PyPI was unreachable is how an operator behind a proxy
+# lost theirs. So the error is read, shown, and only the corruption case
+# rebuilds.
+if ! _out="$("$UV" pip install --python .venv/bin/python -e . 2>&1)"; then
+  if grep -qiE "certificate|tls|ssl|proxy|dns|timed out|temporary failure|connect|network|resolve host|Request failed" <<<"$_out"; then
+    echo "$_out" >&2
+    _fatal "could not reach the package index — the .venv is left ALONE." \
+      "Behind a proxy or an internal CA? Load the CA in Settings, or set AIFORGE_CA_BUNDLE. Air-gapped? ./run.sh is offline by default; this run asked to fetch."
+  fi
   echo "==> deps install failed — rebuilding .venv from scratch"
+  echo "$_out" | tail -5 >&2
   rm -rf .venv && "$UV" venv --python "$AIFORGE_PYTHON" .venv
   "$UV" pip install --python .venv/bin/python -e . >/dev/null
 fi
+unset _out
 
 # An install can exit 0 and still be half-written (again, DrvFs). Skip with
 # AIFORGE_SKIP_SMOKE=1.

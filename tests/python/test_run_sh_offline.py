@@ -122,7 +122,6 @@ def box(tmp_path, toolless_path):
         "HOME": str(home),
         "AIFORGE_CONFIG_DIR": str(home / ".aiforge"),
         "AIFORGE_INSTALL_TMUX": "0",
-        "AIFORGE_OFFLINE": "1",
     }
     return {"env": env, "marker": marker, "tmp": tmp_path}
 
@@ -140,18 +139,34 @@ def _fetched(box) -> str:
 
 
 def test_a_missing_uv_never_reaches_astral_sh(box):
-    r = _run(box, [])
+    r = _run(box, ["--online"])                   # even asked to fetch
     assert "astral.sh" not in _fetched(box), _fetched(box)
     assert "nodejs.org" not in _fetched(box), _fetched(box)
     # and it said what to do about it rather than dying mutely
     assert "uv" in (r.stdout + r.stderr).lower()
 
 
-def test_offline_is_announced_and_refuses_the_wheel_too(box):
-    r = _run(box, ["--offline"])
-    assert "offline: no network at all" in r.stdout
-    assert r.returncode != 0
-    assert "package manager" in r.stderr
+def test_a_plain_run_downloads_nothing(box):
+    """Secure by default: no flag, no fetch."""
+    r = _run(box, [])
+    assert "nothing will be downloaded" in r.stdout
+    assert r.returncode != 0                      # no uv, and it will not fetch one
+    assert "package manager" in r.stderr          # …and it says where to get one
+
+
+def test_online_is_what_lets_a_package_manager_fetch(box):
+    r = _run(box, ["--online"])
+    assert "ONLINE" in r.stdout
+    assert "nothing will be downloaded" not in r.stdout
+
+
+def test_online_does_not_persist_into_the_next_run(box):
+    _run(box, ["--online"])
+    assert "nothing will be downloaded" in _run(box, []).stdout
+
+
+def test_offline_can_still_be_said_out_loud(box):
+    assert "nothing will be downloaded" in _run(box, ["--offline"]).stdout
 
 
 def test_offline_tells_the_tools_as_well_as_the_call_sites(box):
@@ -159,3 +174,74 @@ def test_offline_tells_the_tools_as_well_as_the_call_sites(box):
     for var in ("UV_OFFLINE", "PIP_NO_INDEX", "npm_config_offline",
                 "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "HF_HUB_OFFLINE"):
         assert f'export {var}="${{{var}:-' in SRC, var
+
+
+# ── the CA bootstrap must ADD to the trust store, not replace it ────────────
+# Reported live from WSL behind a corporate proxy:
+#   ==> CA bundle in force for package installs: …/custom-ca.pem
+#   × Failed to fetch: `https://pypi.org/simple/playwright/`
+#   ╰─▶ invalid peer certificate: UnknownIssuer
+# SSL_CERT_FILE REPLACES the trust store. Publishing a corporate-root-only file
+# fixed the internal hosts and took every public root away with it, so PyPI —
+# which that proxy does not re-sign — became unreachable. And because the
+# failing install then hit the "rebuild .venv from scratch" branch, a network
+# error DELETED a working virtualenv.
+
+def _ca_bootstrap(tmp_path, ca_pem: str):
+    """Run run.sh's own _ca_bootstrap with a corporate CA in place."""
+    home = tmp_path / "home"
+    (home / ".aiforge" / "security" / "ca").mkdir(parents=True)
+    (home / ".aiforge" / "security" / "ca" / "custom-ca.pem").write_text(ca_pem)
+    fn = re.search(r"^_system_ca_file\(\).*?^_ca_bootstrap$", SRC, re.S | re.M)
+    assert fn, "run.sh no longer defines the CA bootstrap"
+    script = f'set -euo pipefail\n{fn.group(0)}\necho "PUBLISHED=$SSL_CERT_FILE"\n'
+    r = subprocess.run(["bash", "-c", script], cwd=str(tmp_path), text=True,
+                       capture_output=True, timeout=30,
+                       env={"HOME": str(home), "PATH": os.environ.get("PATH", ""),
+                            "AIFORGE_CONFIG_DIR": str(home / ".aiforge")})
+    assert r.returncode == 0, r.stderr
+    published = re.search(r"PUBLISHED=(\S+)", r.stdout)
+    assert published, r.stdout
+    return Path(published.group(1))
+
+
+@pytest.fixture
+def a_ca(tmp_path):
+    """A throwaway self-signed root, as an operator's corporate CA."""
+    out = tmp_path / "corp.pem"
+    r = subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+         "-keyout", str(tmp_path / "k.pem"), "-out", str(out), "-days", "2",
+         "-subj", "/CN=Acme Corp Root"],
+        capture_output=True, timeout=60)
+    if r.returncode != 0:
+        pytest.skip("openssl unavailable")
+    return out.read_text()
+
+
+def _count_certs(p: Path) -> int:
+    return p.read_text().count("BEGIN CERTIFICATE")
+
+
+def test_the_published_bundle_keeps_the_public_roots(tmp_path, a_ca):
+    published = _ca_bootstrap(tmp_path, a_ca)
+    system = next((Path(c) for c in (
+        "/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/ca-bundle.pem", "/etc/ssl/cert.pem") if Path(c).is_file()), None)
+    if system is None:
+        pytest.skip("no system CA bundle on this box")
+    assert _count_certs(published) == _count_certs(system) + 1, (
+        "the published bundle is not system roots + the operator's CA")
+
+
+def test_the_published_bundle_still_carries_the_operators_ca(tmp_path, a_ca):
+    published = _ca_bootstrap(tmp_path, a_ca)
+    assert a_ca.strip() in published.read_text()
+
+
+def test_a_network_failure_does_not_delete_the_venv():
+    """The rebuild branch is for a half-written venv on DrvFs, not for a proxy."""
+    guard = re.search(r"if ! _out=.*?rm -rf \.venv", SRC, re.S)
+    assert guard, "the deps-install failure branch changed shape"
+    assert "certificate" in guard.group(0)
+    assert "left ALONE" in guard.group(0)

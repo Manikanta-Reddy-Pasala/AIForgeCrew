@@ -28,7 +28,8 @@ see **[INSTALL.md](INSTALL.md)** for the offline and corporate-CA notes.
 ```bash
 git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew.git
 cd AIForgeCrew
-./run.sh
+./run.sh --online     # first run: lets PyPI/npm install the deps
+./run.sh              # afterwards: downloads nothing
 ```
 
 Open **http://127.0.0.1:8799/ui/**. First boot builds the venv + UI and starts
@@ -66,7 +67,7 @@ Handy flags:
 | `--dev` | hot reload |
 | `--test` | probe the model endpoint, then exit |
 | `--reset-config` | wipe the saved model config |
-| `--offline` | air-gapped: no network at all |
+| `--online` | let package managers fetch for this run (default: off) |
 | `--skip-web` | don't rebuild the UI |
 | `--migrate` | force a re-converge of a prior install |
 | `--recompact-all` | re-fold every memory brief, then exit |

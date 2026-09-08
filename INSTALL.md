@@ -15,9 +15,16 @@ brew install git python@3.12                         # macOS
 mirror and CA as everything else. If your package manager already provides them,
 `run.sh` uses those and installs nothing.
 
-`run.sh` never fetches a source and executes it — no `curl … | sh`, no Node
-tarball onto `PATH`, no managed CPython, no browser binary from a CDN. Only
-package managers fetch: PyPI, npm, docker, apt.
+**A plain `./run.sh` downloads nothing.** `--online` lets the package managers
+fetch for one run — PyPI, npm, docker, apt — which is how you bootstrap or
+upgrade. Even then `run.sh` never fetches a source and executes it: no
+`curl … | sh`, no Node tarball onto `PATH`, no managed CPython, no browser
+binary from a CDN.
+
+```bash
+./run.sh --online     # first run on a new box, and after a git pull
+./run.sh              # every run after that
+```
 
 Node is needed only to build the web UI; `--skip-web` or a pre-built `web/dist`
 avoids it. Use `AIFORGE_PYTHON=3.11` if that is the interpreter you have.
@@ -66,13 +73,10 @@ deps.
 
 ### Air-gapped
 
-```bash
-./run.sh --offline
-```
-
-Refuses the network entirely, package managers included, and names the missing
-piece and its fix rather than coming up degraded. Pre-seed `.venv` and
-`web/node_modules` (or `web/dist`) on such a box.
+Nothing to do — that is the default. `--offline` is accepted so it can be said
+out loud. A blocked step names the missing piece and its fix rather than coming
+up degraded. Pre-seed `.venv` and `web/node_modules` (or `web/dist`) on such a
+box.
 
 ### Behind a corporate CA or proxy
 
@@ -80,6 +84,12 @@ Paste the root **and its intermediates** into Settings → *Local certificate
 authority*, or set `AIFORGE_CA_BUNDLE=/path/ca.pem` before the first run.
 `run.sh` publishes it to `git`, `curl`, `npm`, `uv` and every subprocess before
 the first install, so the installer trusts what the app trusts.
+
+It publishes your CA **merged with the platform's own root bundle**, because
+`SSL_CERT_FILE` *replaces* the trust store rather than adding to it. Publishing
+a corporate-root-only file fixes the internal hosts and takes every public root
+away with it — PyPI then fails with `invalid peer certificate: UnknownIssuer`
+unless your proxy happens to re-sign it too.
 
 A root alone is not enough when your server presents a bare leaf — load the
 intermediates too, or you get `unable to get local issuer certificate`.
