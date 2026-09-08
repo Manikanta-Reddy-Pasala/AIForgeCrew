@@ -163,11 +163,21 @@ def context_for_pin(host: str, port: int = 443) -> ssl.SSLContext | None:
     if not pem:
         return None
     try:
-        return ssl.create_default_context(cadata=pem)
+        ctx = ssl.create_default_context(cadata=pem)
     except (ssl.SSLError, ValueError) as exc:
         log.warning("trust: pinned certificate for %s is unusable — %s",
                     host, exc)
         return None
+    # A pin is a leaf certificate (``ssl.get_server_certificate`` returns the
+    # leaf and nothing else), and a leaf is not self-issued. Without
+    # PARTIAL_CHAIN, OpenSSL will not stop at a trust-store entry that is not
+    # its own issuer: it keeps building, looks for the internal CA that signed
+    # the leaf, does not find it, and fails the connection with
+    # "unable to get local issuer certificate" — the very error this module
+    # exists to remove. The flag says "an entry in this store may BE the
+    # anchor", which is precisely what pinning means.
+    ctx.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
+    return ctx
 
 
 def forget(host: str) -> bool:

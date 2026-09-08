@@ -189,3 +189,83 @@ def test_the_integration_path_uses_that_same_bundle(chain):
     with socket.create_connection(("127.0.0.1", port), timeout=5) as raw:
         with ctx.wrap_socket(raw, server_hostname="localhost") as s:
             s.send(b"hi")                       # Jira over the internal CA
+
+
+# ── the pin has to work as an anchor too ────────────────────────────────────
+# Reported live: an operator ticked "skip TLS verify" for a self-hosted model
+# endpoint and got the CA-bundle error back out of the pinning path —
+#   probe -> url=https://chat.ai.internal/api/v1/models insecure_flag=True
+#            tls=pinned(self-signed)
+#   probe FAILED ... [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify
+#            failed: unable to get local issuer certificate
+# Two separate defects produced that one line, and each gets a handshake here.
+
+def _pin(host: str, leaf_file: str) -> None:
+    """Pin exactly what ``trust.fetch`` would record: the leaf, alone."""
+    from aiforge_core.net import trust
+    leaf = open(leaf_file).read().split("-----BEGIN PRIVATE KEY")[0]
+    leaf = leaf.split("-----BEGIN RSA PRIVATE KEY")[0]
+    trust.store(host, leaf)
+
+
+def _connect(ctx, port: int) -> None:
+    import socket
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as raw:
+        with ctx.wrap_socket(raw, server_hostname="localhost") as s:
+            s.send(b"hi")
+
+
+def test_a_pinned_leaf_verifies_the_server_that_presented_it(chain):
+    """The defect: a leaf is not self-issued, so without PARTIAL_CHAIN OpenSSL
+    walks PAST the pin looking for the internal CA that signed it, does not
+    find it, and reports the operator's exact error — from the very path whose
+    whole purpose is to make a self-signed endpoint reachable."""
+    from aiforge_core.net import trust
+    _pin("localhost", chain["leaf_file"])
+    ctx = trust.context_for_pin("localhost")
+    assert ctx is not None
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.check_hostname
+    _connect(ctx, _serve(chain["leaf_file"]))      # no exception = verified
+
+
+def test_a_pin_is_still_a_pin_and_refuses_a_different_certificate(chain,
+                                                                  tmp_path):
+    """PARTIAL_CHAIN must not become "trust anything the host offers"."""
+    from aiforge_core.net import trust
+    other_k = _key()
+    other = _cert("localhost", x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, "localhost")]),
+        other_k, other_k.public_key(), ca_cert=False)
+    other_file = tmp_path / "other.pem"
+    other_file.write_text(
+        other.public_bytes(serialization.Encoding.PEM).decode()
+        + other_k.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption()).decode())
+    _pin("localhost", chain["leaf_file"])          # pinned: the REAL leaf
+    ctx = trust.context_for_pin("localhost")
+    port = _serve(str(other_file))                 # served: a substitute
+    with pytest.raises(ssl.SSLError):
+        _connect(ctx, port)
+
+
+def test_the_skip_verify_path_uses_the_operators_ca_when_there_is_one(chain):
+    """"A CA bundle beats trust-on-first-use on every path" — insecure_context
+    was the path where it did not, so uploading a root + intermediate and then
+    ticking "skip TLS verify" discarded the bundle and pinned the leaf."""
+    from aiforge_core.net.ssl import insecure_context
+    ca.add(chain["root"] + chain["intermediate"])
+    port = _serve(chain["leaf_file"])
+    _connect(insecure_context(f"https://localhost:{port}"), port)
+
+
+def test_the_probe_label_names_the_ca_bundle_when_one_is_in_force(chain,
+                                                                  monkeypatch):
+    """The log line has to name what actually anchored the handshake."""
+    from aiforge_core.llm.providers.openai_compatible import _probe_tls_plan
+    url = "https://chat.ai.internal/api/v1/models"
+    assert _probe_tls_plan(url, True)[1] == "pinned(self-signed)"
+    ca.add(chain["root"])
+    assert _probe_tls_plan(url, True)[1] == "ca-bundle"

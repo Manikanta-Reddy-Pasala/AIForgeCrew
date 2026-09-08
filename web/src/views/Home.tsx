@@ -431,6 +431,14 @@ export default function Home() {
         </div>
       )}
 
+      {/* Trust comes FIRST. On an estate with its own CA, every card below
+          this one — the model endpoint, Jira, Confluence, GitLab — fails with
+          CERTIFICATE_VERIFY_FAILED until the root and its intermediates are
+          loaded, so burying it at the bottom of one tab made it the last
+          thing an operator found and the first thing they needed. Above the
+          tab bar it is also mounted ONCE, rather than once per tab. */}
+      <CaCard />
+
       {/* ── Settings tabs: Agent | Integrations ──────────────────── */}
       <div className="row" style={{ gap: 4, marginBottom: 16, borderBottom: '1px solid var(--border-1)' }}>
         {(['agent', 'integrations'] as const).map(t => (
@@ -443,10 +451,7 @@ export default function Home() {
         ))}
       </div>
 
-      {tab === 'integrations' && (<>
-        <IntegrationsTab />
-        <CaCard />
-      </>)}
+      {tab === 'integrations' && <IntegrationsTab />}
 
       {tab === 'agent' && (<>
         {/* Simplified: add models once — the system auto-decides everything
@@ -455,7 +460,6 @@ export default function Home() {
         <AgentLimitsCard />
         <MemorySyncCard />
         <EgressCard />
-        <CaCard />
       </>)}
 
     </>

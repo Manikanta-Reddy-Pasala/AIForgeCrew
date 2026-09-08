@@ -47,10 +47,13 @@ Env knobs (highest priority first):
 from __future__ import annotations
 
 import ipaddress
+import logging
 import os
 import socket
 import ssl
 from urllib.parse import urlsplit
+
+log = logging.getLogger("aiforge.tls")
 
 _FALSEY = {"0", "false", "no", "off", ""}
 _MISSING = object()
@@ -269,11 +272,29 @@ def insecure_context(url: str | None = None) -> ssl.SSLContext:
     (see ``net.trust``), so a self-signed internal Jira keeps working and a
     substituted certificate fails — which is the whole difference.
 
+    A CONFIGURED CA BUNDLE WINS over the pin, on this path as on every other.
+    An operator who pasted their root and intermediates into Settings (or set
+    ``AIFORGE_CA_BUNDLE``) has said what to trust; trust-on-first-use is the
+    answer for an estate that has no CA, not an override of one that does.
+    Callers used to guard this themselves — ``context_for`` did, the provider
+    probe did not — so ticking "skip TLS verify" silently discarded the CA the
+    operator had just uploaded and pinned the leaf instead.
+
     Falls back to ordinary verification when nothing can be pinned (the host is
     unreachable, or trust-on-first-use is off). That fails the connection with a
     certificate error rather than opening it, which is the correct direction for
     a fallback to fail in.
     """
+    bundle = _ca_bundle()
+    if bundle:
+        try:
+            return ssl.create_default_context(cafile=bundle)
+        except (OSError, ValueError):
+            # ssl.SSLError is an OSError, so OSError alone covers an
+            # unreadable file AND a bundle OpenSSL will not parse.
+            # Loud, and then on to the pin: an unreadable bundle must not be
+            # the reason an endpoint the operator marked self-signed goes dark.
+            log.exception("tls: CA bundle %s is unusable", bundle)
     from aiforge_core.net import trust
     host = _host_of(url) if url else ""
     ctx = trust.context_for_pin(host, _port_of(url)) if host else None

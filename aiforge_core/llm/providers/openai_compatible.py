@@ -122,12 +122,20 @@ def _probe_tls_plan(url: str, insecure: bool) -> "tuple[bool, str]":
     """(skip_tls, tls_mode_label) for a probe. Skip TLS verify when explicitly
     asked OR for a trusted-internal host (self-hosted LAN box, self-signed cert
     is normal there); public hosts always verify."""
+    from .._ssl import _ca_bundle
     from .._ssl import auto_relax_internal as _ssl_auto_relax
     is_https = url.lower().startswith("https://")
     auto = (not insecure) and _ssl_auto_relax(url)
     skip_tls = is_https and (insecure or auto)
     if skip_tls:
-        tls_mode = "pinned(auto-internal)" if auto else "pinned(self-signed)"
+        # The label has to name what will ACTUALLY anchor the handshake. A
+        # configured CA bundle beats the pin inside ``insecure_context``, and a
+        # log line still saying "pinned(self-signed)" sent the last operator
+        # hunting a pinning bug while their uploaded CA was doing the work.
+        if _ca_bundle():
+            tls_mode = "ca-bundle"
+        else:
+            tls_mode = "pinned(auto-internal)" if auto else "pinned(self-signed)"
     elif is_https:
         tls_mode = "verify"
     else:
