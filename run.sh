@@ -5,11 +5,9 @@
 #
 # Needs: git + python 3.12. Everything else is a package.
 #
-# SECURE BY DEFAULT: ./run.sh downloads NOTHING unless the box says otherwise.
-# That is one setting in the env file, not a flag — set it once per machine:
-#
-#     AIFORGE_OFFLINE=1   never downloads      (the default when unset)
-#     AIFORGE_OFFLINE=0   package managers may fetch: PyPI, npm, docker, apt
+# Nothing fetches a source and executes it — no installer piped into a shell,
+# no Node tarball, no managed CPython, no browser binary from a CDN. That is
+# structural, not a setting: uv and Node are Python dependencies now.
 #
 # Either way nothing downloads a source and executes it: uv and Node are Python
 # dependencies (the `toolchain` extra), never an installer piped into a shell.
@@ -241,51 +239,28 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-# ── network policy: ONE setting, in the env file ──────────────────────────
-# AIFORGE_OFFLINE decides whether a package manager may fetch — PyPI, npm,
-# docker, apt. It is a property of the BOX, not of a run, so it lives in .env
-# beside the model endpoint and the memory role rather than in a flag you have
-# to remember on every invocation:
+# ── what may be fetched ───────────────────────────────────────────────────
+# There is no offline switch, because there is nothing left for one to protect.
+# What was dangerous was run.sh fetching a SOURCE and executing it — astral.sh's
+# uv installer piped into a shell, a Node tarball unpacked onto PATH, uv's
+# managed CPython, a browser binary off a CDN. All four are gone: uv and Node
+# are ordinary wheels (the `toolchain` extra), resolved from the same index,
+# lockfile, private mirror and CA as every other dependency. So there is no
+# code path a setting could re-enable, and a switch would only ever have
+# stopped a box from installing its own declared dependencies — which on a
+# fresh clone means it cannot run at all.
 #
-#     AIFORGE_OFFLINE=1     never downloads      (the default when unset)
-#     AIFORGE_OFFLINE=0     package managers may fetch
-#
-# Nothing downloads a source and executes it either way: uv and Node are
-# `toolchain` wheels, never an installer piped into a shell.
-AIFORGE_OFFLINE="${AIFORGE_OFFLINE:-1}"
-export AIFORGE_OFFLINE
-
-_offline() { [[ "${AIFORGE_OFFLINE}" != "0" ]]; }
-
-_no_fetch() {                            # $1 = what, $2 = how to get it
-  echo "==> not fetching $1" >&2
-  [[ -n "${2:-}" ]] && echo "    provide it instead: $2" >&2
-  return 1
-}
-
+# The one thing still refused outright: playwright's browser build comes from a
+# CDN, not a package index. crawl4ai falls back to a plain fetch without it; a
+# box that wants rendering points PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH at a
+# chromium its package manager installed.
+export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="${PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD:-1}"
 _fatal() {                               # a missing requirement, with its fix
   echo "!! $1" >&2
   [[ -n "${2:-}" ]] && echo "!! $2" >&2
   exit 1
 }
 
-if _offline; then
-  # Tell the tools too, so a dependency that shells out on its own is refused.
-  export UV_OFFLINE="${UV_OFFLINE:-1}"
-  export PIP_NO_INDEX="${PIP_NO_INDEX:-1}"
-  export npm_config_offline="${npm_config_offline:-true}"
-  export npm_config_audit="${npm_config_audit:-false}"
-  export npm_config_fund="${npm_config_fund:-false}"
-  export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="${PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD:-1}"
-  export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
-  export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
-  export AIFORGE_INSTALL_TMUX="${AIFORGE_INSTALL_TMUX:-0}"
-  echo "==> offline: nothing will be downloaded." \
-       "Set AIFORGE_OFFLINE=0 in $ENV_FILE to allow package managers."
-else
-  echo "==> online (AIFORGE_OFFLINE=0 in $ENV_FILE):" \
-       "package managers may fetch (PyPI, npm, docker, apt)."
-fi
 # uv must never install a second interpreter, offline or not.
 export UV_PYTHON_DOWNLOADS="${UV_PYTHON_DOWNLOADS:-never}"
 
@@ -523,11 +498,6 @@ _ensure_node() {
   [[ -x .venv/bin/python ]] || return 0
 
   if ! .venv/bin/python -c "import nodejs_wheel" >/dev/null 2>&1; then
-    if _offline; then
-      _no_fetch "the nodejs-wheel-binaries wheel" \
-        "install Node ${_NODE_MIN_MAJOR}+ from your package manager" || true
-      return 0
-    fi
     echo "==> no usable Node — installing the nodejs-wheel-binaries wheel…"
     "${UV:-uv}" pip install --python .venv/bin/python -e '.[toolchain]' >/dev/null 2>&1 || {
       echo "==> could not install Node from PyPI — install Node ${_NODE_MIN_MAJOR}+ yourself" >&2
@@ -552,16 +522,6 @@ _ensure_node() {
 # so try the configured registry first and fall back to public npm.
 # Must be called with the working dir at web/.
 _npm_ci_resilient() {
-  if _offline; then
-    # `npm ci` always reaches the registry (it deletes node_modules first), so
-    # an already-installed tree is the only acceptable answer here.
-    if [[ -d node_modules ]]; then
-      echo "==> offline: using the existing web/node_modules (no npm ci)"
-      return 0
-    fi
-    _no_fetch "npm ci for the web UI" "copy a prepared web/node_modules onto this box" || true
-    return 1
-  fi
   if [[ -n "${AIFORGE_NPM_REGISTRY:-}" ]]; then
     npm ci --ignore-scripts --registry="$AIFORGE_NPM_REGISTRY"; return $?
   fi
@@ -670,8 +630,6 @@ fi
 UV="$(command -v uv 2>/dev/null || true)"
 [[ -z "$UV" && -x .venv/bin/uv ]] && UV="$PWD/.venv/bin/uv"
 if [[ -z "$UV" ]]; then
-  _offline && _fatal "uv is not installed and offline mode will not fetch it." \
-    "Install uv from your package manager (brew/dnf install uv, pipx install uv)."
   echo "==> uv not found — installing the uv wheel from PyPI…"
   .venv/bin/python -m pip install -q --disable-pip-version-check uv \
     || _fatal "could not install the uv wheel from PyPI." \
@@ -688,48 +646,24 @@ export UV_LINK_MODE="${UV_LINK_MODE:-copy}"
 # Absolute, so job/Doer shells in another cwd still resolve `aiforge-tool`.
 export PATH="$PWD/.venv/bin:$PATH"
 
-# EVERY install goes through here, so a call site cannot forget the policy —
-# which is exactly what went wrong when the switch guarded three of the nine.
-# Returns non-zero (quietly) when offline, so an optional extra just skips.
-_uv_install() {                          # $1 = what, for the log; rest = uv args
-  local what="$1"; shift
-  if _offline; then
-    echo "==> offline: not installing $what" >&2
-    return 1
+echo "==> installing python deps (editable)"
+# The rebuild below exists for WSL /mnt/c, where a copy can leave a package
+# half-written and uv aborts the whole resolve; a corrupt venv cannot be patched
+# in place. It must NOT fire on a network or TLS failure — deleting a working
+# venv because the index was unreachable is how an operator behind a proxy lost
+# theirs. So the error is read, shown, and only corruption rebuilds.
+if ! _out="$("$UV" pip install --python .venv/bin/python -e . 2>&1)"; then
+  if grep -qiE "certificate|tls handshake|ssl|proxy|dns|timed out|temporary failure|failed to connect|resolve host|Request failed|UnknownIssuer" <<<"$_out"; then
+    echo "$_out" >&2
+    _fatal "could not reach the package index — the .venv is left ALONE." \
+      "Behind a proxy or an internal CA? Load the root AND its intermediates in Settings → Local certificate authority, or set AIFORGE_CA_BUNDLE."
   fi
-  "$UV" pip install --python .venv/bin/python "$@"
-}
-
-if _offline; then
-  # Nothing to install, so do not pretend to try: uv would fail with "Network
-  # connectivity is disabled", which is not a network problem to be diagnosed.
-  # Prove the venv can actually run the app instead, and if it cannot, say the
-  # one thing that changes it.
-  if ! .venv/bin/python -c "import aiforge_core" >/dev/null 2>&1; then
-    _fatal "offline, and this .venv cannot import aiforge_core — the dependencies are not installed." \
-      "Let this box install them: put AIFORGE_OFFLINE=0 in $ENV_FILE and re-run. Or copy a prepared .venv onto it."
-  fi
-  echo "==> deps: using the existing .venv (offline)"
-else
-  echo "==> installing python deps (editable)"
-  # The rebuild below exists for WSL /mnt/c, where a copy can leave a package
-  # half-written and uv aborts the whole resolve; a corrupt venv cannot be
-  # patched in place. It must NOT fire on a network or TLS failure — deleting a
-  # working venv because PyPI was unreachable is how an operator behind a proxy
-  # lost theirs. So the error is read, shown, and only corruption rebuilds.
-  if ! _out="$("$UV" pip install --python .venv/bin/python -e . 2>&1)"; then
-    if grep -qiE "certificate|tls handshake|ssl|proxy|dns|timed out|temporary failure|failed to connect|resolve host|Request failed|UnknownIssuer" <<<"$_out"; then
-      echo "$_out" >&2
-      _fatal "could not reach the package index — the .venv is left ALONE." \
-        "Behind a proxy or an internal CA? Load the CA in Settings → Local certificate authority, or set AIFORGE_CA_BUNDLE."
-    fi
-    echo "==> deps install failed — rebuilding .venv from scratch"
-    echo "$_out" | tail -5 >&2
-    rm -rf .venv && "$UV" venv --python "$AIFORGE_PYTHON" .venv
-    "$UV" pip install --python .venv/bin/python -e . >/dev/null
-  fi
-  unset _out
+  echo "==> deps install failed — rebuilding .venv from scratch"
+  echo "$_out" | tail -5 >&2
+  rm -rf .venv && "$UV" venv --python "$AIFORGE_PYTHON" .venv
+  "$UV" pip install --python .venv/bin/python -e . >/dev/null
 fi
+unset _out
 
 # An install can exit 0 and still be half-written (again, DrvFs). Skip with
 # AIFORGE_SKIP_SMOKE=1.
@@ -737,13 +671,9 @@ if [[ "${AIFORGE_SKIP_SMOKE:-0}" != "1" ]]; then
   _smoke='import urllib3.util, urllib3.util.connection, requests, charset_normalizer, certifi, idna, google.adk'
   if ! .venv/bin/python -c "$_smoke" >/dev/null 2>&1; then
     echo "==> core deps import broken (partial install) — repairing…"
-    _uv_install "the core deps" --reinstall \
+    "$UV" pip install --python .venv/bin/python --reinstall \
       urllib3 requests charset_normalizer certifi idna >/dev/null 2>&1 || true
     if ! .venv/bin/python -c "$_smoke" >/dev/null 2>&1; then
-      # Offline this would delete the venv and be unable to refill it, which is
-      # strictly worse than the broken venv it is trying to repair.
-      _offline && _fatal "offline, and the .venv's core imports are broken." \
-        "Put AIFORGE_OFFLINE=0 in $ENV_FILE and re-run to rebuild it."
       echo "==> still broken — rebuilding .venv from scratch"
       rm -rf .venv && "$UV" venv --python "$AIFORGE_PYTHON" .venv
       "$UV" pip install --python .venv/bin/python -e . >/dev/null 2>&1 || true
@@ -791,7 +721,7 @@ fi
 if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
   if ! .venv/bin/python -c "import instructor, crawl4ai, chonkie" >/dev/null 2>&1; then
     echo "==> installing integration extras (instructor + crawl4ai + chonkie)…"
-    _uv_install "the integration extras" -e '.[structured,crawl,chunking]' >/dev/null 2>&1 \
+    "$UV" pip install --python .venv/bin/python -e '.[structured,crawl,chunking]' >/dev/null 2>&1 \
       && echo "==> integration extras ready" \
       || echo "==> integration extras skipped (built-in fallbacks active)"
   fi
@@ -799,7 +729,7 @@ if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
   if [[ "${INSTALL_MODEL2VEC:-0}" == "1" ]] \
       && ! .venv/bin/python -c "import model2vec, sqlite_vec" >/dev/null 2>&1; then
     echo "==> installing model2vec static embeddings (~30MB, no torch)…"
-    _uv_install "model2vec" -e '.[embed-static]' \
+    "$UV" pip install --python .venv/bin/python -e '.[embed-static]' \
       && : "${AIFORGE_EMBED_BACKEND:=model2vec}" \
       || echo "==> model2vec install skipped — continuing"
   fi
@@ -822,15 +752,13 @@ if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
 
   # crawl4ai's deps outrun an older requests' hardcoded compat check, which
   # warns on every python spawn. Cosmetic.
-  _uv_install "a newer requests" -U requests >/dev/null 2>&1 || true
+  "$UV" pip install --python .venv/bin/python -U requests >/dev/null 2>&1 || true
 fi
 
 # An interrupted install can leave pydantic present but pydantic_core missing;
 # uv then considers the env satisfied, so a plain re-run won't fix it.
 if ! .venv/bin/python -c "import pydantic_core" >/dev/null 2>&1; then
   echo "==> venv incomplete (pydantic_core missing) — repairing deps"
-  _offline && _fatal "offline, and the .venv is missing pydantic_core — the app cannot boot." \
-    "Put AIFORGE_OFFLINE=0 in $ENV_FILE and re-run to repair it."
   "$UV" pip install --python .venv/bin/python --reinstall -e . >/dev/null 2>&1 || true
   if ! .venv/bin/python -c "import pydantic_core" >/dev/null 2>&1; then
     echo "==> rebuilding .venv from scratch"
@@ -842,9 +770,7 @@ fi
 # ── graphify (--with-graphify) ────────────────────────────────────────────
 # ISOLATED install only. graphify pins its OWN pydantic, so co-installing it
 # into .venv breaks the app's boot with ModuleNotFoundError: pydantic_core.
-if [[ $WITH_GRAPHIFY -eq 1 ]] && _offline && ! command -v graphify >/dev/null 2>&1; then
-  _no_fetch "the graphify CLI" "set AIFORGE_OFFLINE=0 in $ENV_FILE" || true
-elif [[ $WITH_GRAPHIFY -eq 1 ]]; then
+if [[ $WITH_GRAPHIFY -eq 1 ]]; then
   if command -v graphify >/dev/null 2>&1; then
     echo "==> graphify present ($(command -v graphify)) — upgrading"
     "$UV" tool upgrade graphifyy 2>/dev/null || "$UV" tool install --force graphifyy 2>/dev/null || true
@@ -941,7 +867,7 @@ export PATH="$PWD/.venv/bin:$PATH"
 if [[ "${AIFORGE_SKIP_CODEGRAPH:-0}" != "1" ]]; then
   [[ -d "$HOME/.npm-global/bin" ]] && export PATH="$HOME/.npm-global/bin:$PATH"
   if ! command -v codegraph >/dev/null 2>&1 && [[ -z "${AIFORGE_CODEGRAPH_BIN:-}" ]] \
-       && command -v npm >/dev/null 2>&1 && ! _offline; then
+       && command -v npm >/dev/null 2>&1; then
     echo "==> installing CodeGraph (code-graph indexer)…"
     bash scripts/install-codegraph.sh >/dev/null 2>&1 \
       && echo "==> codegraph ready" \

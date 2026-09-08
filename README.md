@@ -29,18 +29,15 @@ cd AIForgeCrew
 ./run.sh
 ```
 
-**Secure by default: `./run.sh` downloads nothing** unless the box says
-otherwise. That is one line in **`aiforge.env`** — the fixed, committed file
-run.sh reads and never writes to:
+`run.sh` never fetches a source and executes it — no installer piped into a
+shell, no Node tarball, no managed CPython, no browser binary from a CDN. `uv`
+and Node are Python dependencies, so the only thing that ever fetches is a
+package manager installing what the project declares.
 
-```
-AIFORGE_OFFLINE=1   # never downloads (the default)
-AIFORGE_OFFLINE=0   # package managers may fetch: PyPI, npm, docker, apt
-```
-
-Anything that differs per box — the model endpoint, the memory role, an API key
-— goes in the real environment (systemd unit, `docker -e`, a shell export),
-which **overrides** the file. `.env` is no longer read.
+Settings live in **`aiforge.env`** — one fixed file, committed, identical on
+every box, which run.sh reads and never writes to. Anything per-box (the model
+endpoint, the memory role, an API key) goes in the real environment, which
+**overrides** the file. `.env` is no longer read.
 
 Either way nothing downloads a source and executes it: `uv` and Node are Python
 dependencies, never an installer piped into a shell. See

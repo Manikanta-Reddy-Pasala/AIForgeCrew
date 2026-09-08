@@ -28,8 +28,7 @@ see **[INSTALL.md](INSTALL.md)** for the offline and corporate-CA notes.
 ```bash
 git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew.git
 cd AIForgeCrew
-AIFORGE_OFFLINE=0 ./run.sh      # let PyPI/npm install the deps, once
-./run.sh                        # afterwards: downloads nothing
+./run.sh
 ```
 
 Settings live in **`aiforge.env`** — one fixed file, committed, identical on

@@ -15,21 +15,16 @@ brew install git python@3.12                         # macOS
 mirror and CA as everything else. If your package manager already provides them,
 `run.sh` uses those and installs nothing.
 
-**`./run.sh` downloads nothing** unless the box says otherwise. Whether a
-package manager may fetch is one setting in `aiforge.env` — the fixed file,
-committed and identical on every box, that run.sh reads and never writes to:
+`run.sh` never fetches a source and executes it: no `curl … | sh`, no Node
+tarball onto `PATH`, no managed CPython, no browser binary from a CDN. That is
+structural, not a setting — uv and Node are wheels, so there is no such code
+path left. What does fetch is a package manager installing the dependencies the
+project declares, from the index, lockfile, private mirror and CA you already
+use.
 
-```
-AIFORGE_OFFLINE=1   # never downloads (the default when unset)
-AIFORGE_OFFLINE=0   # package managers may fetch: PyPI, npm, docker, apt
-```
-
-`run.sh` writes the line itself on first run if it is missing, so the policy is
-readable off the file rather than inferred from its absence. Set `0` on a box
-you bootstrap and upgrade; leave `1` on a locked-down one.
-
-Either way `run.sh` never fetches a source and executes it: no `curl … | sh`,
-no Node tarball onto `PATH`, no managed CPython, no browser binary from a CDN.
+Settings live in `aiforge.env` — one fixed file, committed and identical on
+every box, that run.sh reads and never writes to. Per-box values come from the
+real environment, which overrides it.
 
 Node is needed only to build the web UI; `--skip-web` or a pre-built `web/dist`
 avoids it. Use `AIFORGE_PYTHON=3.11` if that is the interpreter you have.
