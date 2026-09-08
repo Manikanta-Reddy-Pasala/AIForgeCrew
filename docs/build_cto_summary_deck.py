@@ -1,4 +1,4 @@
-"""Build docs/AIForgeCrew-CTO-Summary.pptx — three pages, drawn properly.
+"""Build docs/AIForgeCrew-CTO-Summary.pptx — four pages, drawn properly.
 
 This generator deliberately does NOT import the older deck's box/chip
 primitives. Four rounds of edits proved that the moment you have `box` and
@@ -6,15 +6,18 @@ primitives. Four rounds of edits proved that the moment you have `box` and
 content is; the fifth round asked for a visual answer instead, so the shapes
 here are built for the ideas they carry:
 
-  1. a HUB — one program at the centre, work coming in on the left, the model
+  1. THREE PRESSURES — why we are doing this at all: a speed gap, a leaking
+     perimeter with the unapproved tools drawn inside it, and an uneven lift,
+     converging on one dark bar that says what we build about it.
+  2. a HUB — one program at the centre, work coming in on the left, the model
      and the tools on the right, and the ticket's journey as a chevron run
      underneath. The claim of the page is "one thing, in the middle, that you
      own", and the drawing says it before the words do.
-  2. RINGS — containment is layers, so it is drawn as layers: the code at the
+  3. RINGS — containment is layers, so it is drawn as layers: the code at the
      core, the workspace and approvals around it, the one gate around that,
      and the firewall we do NOT provide as the outermost ring, greyed, because
      stating the boundary we don't hold is the honest part.
-  3. GROWTH — memory as three widening circles, one machine to a team to the
+  4. GROWTH — memory as three widening circles, one machine to a team to the
      company, with the redaction gate sitting ON the ring it guards.
 
 Everything is measured on main and dated in the notes. Run it:
@@ -296,7 +299,186 @@ def bullet(s, x, y, w, glyph, head, body, color, *, size=10.5):
     return max(h, d)
 
 
-# ─────────────────────────────────────────────────────── page 1: the hub ───
+# ── dashed outline, for the perimeter we do not actually hold ──────────────
+def dash_edge(sp):
+    """Make an autoshape's outline dashed. Appended AFTER the solid fill the
+    caller already set: a:ln's children are an ordered sequence, so inserting
+    at 0 puts prstDash before the fill and writes a technically invalid part.
+    """
+    from pptx.oxml.ns import qn
+    ln = sp.line._get_or_add_ln()
+    ln.append(ln.makeelement(qn("a:prstDash"), {"val": "sysDash"}))
+    return sp
+
+
+# ────────────────────────────────────────────────── page 1: why at all ─────
+def page_why(prs):
+    """THREE PRESSURES, then one answer.
+
+    Not a hub, not rings: three columns that each carry their own small
+    drawing (a speed gap, a leaking perimeter, an uneven lift), three arrows
+    converging, and a single dark bar that says what we do about it. The
+    shapes are deliberately unlike the other pages' — this page argues, the
+    others describe.
+    """
+    s = page(prs, "Why we are building this",
+             "The question is not whether the company uses AI. It already "
+             "does — through tools nobody approved, logged or paid for.",
+             accent=AMBER)
+
+    cw, ch = Inches(3.89), Inches(2.62)
+    cy = Inches(2.02)
+    xs = [Inches(0.62), Inches(4.72), Inches(8.82)]
+    cols = [AMBER, RED, BLUE]
+    heads = ["Standing still is now the risk",
+             "It is here — but not through us",
+             "The gain is real, but uneven"]
+    bodies = [
+        "Teams shipping with AI are pulling ahead, and our engineers know "
+        "it. They are not waiting for us to decide.",
+        "Personal accounts, browser tools, code pasted into a chat box. We "
+        "cannot name the tools, the data or the spend.",
+        "Whoever found a tool got faster. None of it is shared, repeatable "
+        "or measurable across the team.",
+    ]
+
+    for i, (x, col, head, body) in enumerate(zip(xs, cols, heads, bodies)):
+        shape(s, MSO_SHAPE.ROUNDED_RECTANGLE, x, cy, cw, ch,
+              fill=WHITE, edge=col, edge_w=1.25, adjust=[0.05])
+        d = Inches(0.30)
+        shape(s, MSO_SHAPE.OVAL, _e(x + Inches(0.22)), _e(cy + Inches(0.20)),
+              d, d, fill=col)
+        txt(s, _e(x + Inches(0.22)), _e(cy + Inches(0.235)), d, Inches(0.24),
+            str(i + 1), size=10, bold=True, color=WHITE,
+            align=PP_ALIGN.CENTER)
+        inner = cw - Inches(0.84)
+        txt(s, _e(x + Inches(0.62)), _e(cy + Inches(0.18)), inner,
+            Inches(0.48), head, size=11.5, bold=True, color=col)
+
+        # each column's own small drawing, in a fixed band
+        zx, zy = _e(x + Inches(0.22)), _e(cy + Inches(0.86))
+        zw = cw - Inches(0.44)
+
+        if i == 0:
+            # a speed gap: one long bar, one short one
+            txt(s, zx, zy, zw, Inches(0.22), "HOW FAST WORK SHIPS",
+                size=8, bold=True, color=FAINT)
+            track = Inches(2.52)
+            bx = _e(zx + Inches(0.86))
+            for cap, frac, fill in (("with AI", 0.94, AMBER),
+                                    ("us today", 0.42, RGBColor(0xCB, 0xD5,
+                                                                0xE1))):
+                by = _e(zy + (Inches(0.30) if frac > 0.5 else Inches(0.64)))
+                txt(s, zx, _e(by + Inches(0.015)), Inches(0.82), Inches(0.22),
+                    cap, size=8.5, color=MUTED, align=PP_ALIGN.RIGHT)
+                shape(s, MSO_SHAPE.ROUNDED_RECTANGLE, bx, by, track,
+                      Inches(0.20), fill=MIST, adjust=[0.5])
+                shape(s, MSO_SHAPE.ROUNDED_RECTANGLE, bx, by,
+                      _e(track * frac), Inches(0.20), fill=fill,
+                      adjust=[0.5])
+
+        elif i == 1:
+            # the perimeter as it stands: dashed, with things crossing it
+            txt(s, zx, zy, zw, Inches(0.22), "OUR PERIMETER, AS IT STANDS",
+                size=8, bold=True, color=FAINT)
+            fw, fh = Inches(2.78), Inches(0.74)
+            fy = _e(zy + Inches(0.22))
+            dash_edge(shape(s, MSO_SHAPE.RECTANGLE, zx, fy, fw, fh,
+                            fill=RED_T, edge=RED, edge_w=1.25))
+            chips = ["ChatGPT", "Copilot", "Cursor", "browser AI"]
+            for j, name in enumerate(chips):
+                px = _e(zx + Inches(0.10) + (j % 2) * Inches(1.32))
+                py = _e(fy + Inches(0.09) + (j // 2) * Inches(0.32))
+                sp = shape(s, MSO_SHAPE.ROUNDED_RECTANGLE, px, py,
+                           Inches(1.24), Inches(0.26), fill=WHITE,
+                           edge=RGBColor(0xE7, 0xB8, 0xB8), adjust=[0.3])
+                label(sp, name, size=8, color=RED)
+            for k in range(3):
+                ay = _e(fy + Inches(0.14) + k * Inches(0.24))
+                # they run PAST the card's own wall: that is the point
+                arrow(s, _e(zx + fw - Inches(0.04)), ay,
+                      _e(x + cw + Inches(0.10)), ay, color=RED, width=1.25)
+
+        else:
+            # the lift today: five bars, no two alike
+            txt(s, zx, zy, zw, Inches(0.22), "THE LIFT, PER PERSON",
+                size=8, bold=True, color=FAINT)
+            base = _e(zy + Inches(0.94))
+            heights = [0.60, 0.16, 0.38, 0.09, 0.52]
+            for j, hh in enumerate(heights):
+                bx = _e(zx + Inches(0.28) + j * Inches(0.58))
+                shape(s, MSO_SHAPE.ROUNDED_RECTANGLE, bx,
+                      _e(base - Inches(hh)), Inches(0.32), Inches(hh),
+                      fill=BLUE if hh > 0.3 else RGBColor(0xCB, 0xD5, 0xE1),
+                      adjust=[0.25])
+            line(s, zx, base, _e(zx + zw), base, color=LINE, width=1.0)
+
+        bh = Inches(text_h(body, (cw - Inches(0.44)) / Inches(1), 9.5))
+        txt(s, zx, _e(cy + Inches(1.92)), _e(cw - Inches(0.44)), bh, body,
+            size=9.5, color=INK)
+
+    # ── three pressures, one answer ────────────────────────────────────────
+    bar_y = Inches(5.42)
+    for x in xs:
+        arrow(s, _e(x + cw / 2), _e(cy + ch + Inches(0.06)),
+              Inches(6.665), _e(bar_y - Inches(0.06)),
+              color=RGBColor(0xC2, 0xD3, 0xE6), width=1.5)
+
+    shape(s, MSO_SHAPE.ROUNDED_RECTANGLE, L, bar_y, WD, Inches(0.92),
+          fill=NAVY, adjust=[0.10])
+    shape(s, MSO_SHAPE.RECTANGLE, L, bar_y, Pt(4), Inches(0.92), fill=GREEN)
+    txt(s, Inches(0.92), _e(bar_y + Inches(0.20)), Inches(4.20),
+        Inches(0.56), "So we build our own — and own the whole path",
+        size=13.5, bold=True, color=WHITE)
+
+    chips = ["our model, our hardware", "every call logged",
+             "scoped to the role", "the same tools for everyone"]
+    cwid, gap = Inches(1.72), Inches(0.15)
+    x = Inches(5.34)
+    for name in chips:
+        sp = shape(s, MSO_SHAPE.ROUNDED_RECTANGLE, x,
+                   _e(bar_y + Inches(0.24)), cwid, Inches(0.44),
+                   fill=RGBColor(0x14, 0x2C, 0x45), edge=GREEN, edge_w=1.0,
+                   adjust=[0.22])
+        label(sp, name, size=8.5, color=WHITE, bold=False)
+        x = _e(x + cwid + gap)
+
+    txt(s, L, Inches(6.56), WD, Inches(0.30),
+        "Buying more seats does not answer the control question — it only "
+        "spreads it. Owning the platform does.",
+        size=10, color=MUTED)
+
+    notes(s, """
+The argument, in the order the page makes it.
+
+1. Standing still is now the expensive option. The teams we compete with are
+shipping with AI in the loop, and our own engineers already know it — the
+demand is not hypothetical, it is here and it is being met somewhere else.
+Choosing not to decide is still a decision, and it is the one that costs the
+most.
+
+2. It is already in the building, just not through us. People are using
+personal accounts, browser extensions and free tiers, and pasting whatever
+they are working on into them. We cannot say which tools are in use, what left
+with them, what it costs, or what a customer would be told if they asked.
+There is no allow-list to enforce and no log to produce. This is the control
+problem, and it gets worse every month we leave it alone.
+
+3. The gain is real but uneven. Whoever found a tool got faster; nobody else
+did. None of that speed is shared, repeatable or measurable, so we cannot
+plan around it or prove it.
+
+The answer: one platform we run ourselves. Our own model on our own hardware,
+so the code and the customer data never leave. Every call through one gate, so
+there is a log and an allow-list. Tools scoped to a role, with approval before
+anything reaches outside. And the same capability for every engineer, not just
+the ones who went looking.
+
+The following pages describe what that platform is, how it is contained, and
+what it measurably does today.
+""")
+
+# ─────────────────────────────────────────────────────── page 2: the hub ───
 def page_hub(prs):
     s = page(prs, "AIForgeCrew — a coding agent we run ourselves",
              "Give it a ticket, get a merge request. Our code stays on our "
@@ -420,7 +602,7 @@ anything reaches outside.
 """)
 
 
-# ──────────────────────────────────────────────── page 2: the containment ──
+# ──────────────────────────────────────────────── page 3: the containment ──
 def page_rings(prs):
     s = page(prs, "Nothing gets out unless we allow it",
              "A tool call, a shell command and a notebook cell all reach the "
@@ -556,7 +738,7 @@ typo cannot brick an agent.
 """)
 
 
-# ────────────────────────────────────────────────── page 3: how it grows ───
+# ────────────────────────────────────────────────── page 4: how it grows ───
 def page_growth(prs):
     s = page(prs, "What one person learns, the whole company keeps",
              "Each machine learns on its own. Secrets are stripped, a team "
@@ -805,6 +987,7 @@ def _rewrite_with_libreoffice(path: Path) -> bool:
 def build():
     prs = Presentation()
     prs.slide_width, prs.slide_height = W, H
+    page_why(prs)
     page_hub(prs)
     page_rings(prs)
     page_growth(prs)
