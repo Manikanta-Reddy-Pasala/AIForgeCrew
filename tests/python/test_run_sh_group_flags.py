@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import re
 import shutil
-import stat
 import subprocess
 from pathlib import Path
 
@@ -72,72 +71,27 @@ def test_help_lists_both_new_flags(tmp_path: Path):
     assert "--group" in proc.stdout
 
 
-# ── the writer, as shipped ────────────────────────────────────────────────
+# ── both flags are per-run now ────────────────────────────────────────────
+# They used to be written into the env file. The file is fixed and committed,
+# so they apply to this process and print the variable to set for permanence.
 
-def _write_env_harness(env_file: Path, key: str, want: str):
-    """Run run.sh's own ``_write_env_line`` against ``env_file``.
+def test_admin_url_applies_to_this_run_and_says_how_to_keep_it(tmp_path: Path):
+    r = _run(tmp_path, ["--admin-url", "http://rig:8799", "--test"])
 
-    Lifted out of the script rather than reimplemented, so this tests the
-    shipped code — a copy would drift, and every bug the role tests document (a
-    dropped file mode, a stray .tmp, a grep exit code) lives in these lines.
-    """
-    src = RUN_SH.read_text(encoding="utf-8")
-    body = re.search(r"^_write_env_line\(\) \{.*?^\}$", src, re.S | re.M)
-    assert body, "run.sh no longer defines _write_env_line"
-    script = (f'set -euo pipefail\nENV_FILE="{env_file.name}"\n'
-              f'_env_role_file="${{ENV_FILE}}"\n{body.group(0)}\n'
-              f'_write_env_line "{key}" "{want}"\n')
-    return subprocess.run(["bash", "-c", script], cwd=str(env_file.parent),
-                          capture_output=True, text=True, timeout=30)
+    assert "spoke of http://rig:8799 for THIS run" in r.stdout
+    assert "AIFORGE_ADMIN_URL=http://rig:8799" in r.stdout
+    assert not (tmp_path / "aiforge.env").exists(), "run.sh wrote a config file"
 
 
-def test_the_admin_url_replaces_any_prior_line(tmp_path: Path):
-    env = tmp_path / ".env"
-    env.write_text("AIFORGE_ADMIN_URL=http://old:8799\n", encoding="utf-8")
+def test_group_applies_to_this_run_and_says_how_to_keep_it(tmp_path: Path):
+    r = _run(tmp_path, ["--group", "eu-west", "--test"])
 
-    proc = _write_env_harness(env, "AIFORGE_ADMIN_URL", "http://nuc:8799")
-
-    assert proc.returncode == 0, proc.stderr
-    assert env.read_text(encoding="utf-8") == "AIFORGE_ADMIN_URL=http://nuc:8799\n"
-    assert not (tmp_path / ".env.tmp").exists(), "a stray tmp file was left behind"
+    assert "group eu-west for THIS run" in r.stdout
+    assert "AIFORGE_SYNC_GROUP=eu-west" in r.stdout
 
 
-def test_the_group_line_does_not_disturb_the_role_line(tmp_path: Path):
-    """The three persisted settings share one writer, and each must rewrite
-    only its own key — a shared regex that matched a prefix would silently
-    demote the admin while recording a group."""
-    env = tmp_path / ".env"
-    env.write_text("AIFORGE_ROLE=admin\nAIFORGE_ADMIN_URL=http://nuc:8799\n",
-                   encoding="utf-8")
+def test_neither_flag_leaves_a_file_behind(tmp_path: Path):
+    _run(tmp_path, ["--admin-url", "http://rig:8799", "--group", "eu", "--test"])
 
-    _write_env_harness(env, "AIFORGE_SYNC_GROUP", "cellular")
-
-    text = env.read_text(encoding="utf-8")
-    assert "AIFORGE_ROLE=admin" in text
-    assert "AIFORGE_ADMIN_URL=http://nuc:8799" in text
-    assert "AIFORGE_SYNC_GROUP=cellular" in text
-
-
-def test_other_settings_survive_the_rewrite(tmp_path: Path):
-    env = tmp_path / ".env"
-    env.write_text("AIFORGE_LM_API_KEY=sk-secret\nAIFORGE_SYNC_GROUP=old\n"
-                   "AIFORGE_ALLOW_SSH=1\n", encoding="utf-8")
-
-    _write_env_harness(env, "AIFORGE_SYNC_GROUP", "cellular")
-
-    text = env.read_text(encoding="utf-8")
-    assert "AIFORGE_LM_API_KEY=sk-secret" in text
-    assert "AIFORGE_ALLOW_SSH=1" in text
-    assert text.count("AIFORGE_SYNC_GROUP=") == 1
-    assert "AIFORGE_SYNC_GROUP=cellular" in text
-
-
-def test_the_file_mode_is_preserved(tmp_path: Path):
-    """.env is where .env.example tells operators to put their API keys."""
-    env = tmp_path / ".env"
-    env.write_text("AIFORGE_LM_API_KEY=sk-secret\n", encoding="utf-8")
-    env.chmod(0o600)
-
-    _write_env_harness(env, "AIFORGE_SYNC_GROUP", "cellular")
-
-    assert stat.S_IMODE(env.stat().st_mode) == 0o600
+    assert not (tmp_path / ".env").exists()
+    assert not (tmp_path / "aiforge.env").exists()

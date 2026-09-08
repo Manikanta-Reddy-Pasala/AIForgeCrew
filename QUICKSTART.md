@@ -28,12 +28,14 @@ see **[INSTALL.md](INSTALL.md)** for the offline and corporate-CA notes.
 ```bash
 git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew.git
 cd AIForgeCrew
-echo AIFORGE_OFFLINE=0 >> .env    # let PyPI/npm install the deps on this box
-./run.sh
+AIFORGE_OFFLINE=0 ./run.sh      # let PyPI/npm install the deps, once
+./run.sh                        # afterwards: downloads nothing
 ```
 
-Leave that line out (or set `1`) and `run.sh` downloads nothing, ever — the
-default. It is a per-box setting, not a per-run flag.
+Settings live in **`aiforge.env`** — one fixed file, committed, identical on
+every box, which `run.sh` reads and never writes to. Anything per-box (the
+model endpoint, the memory role, keys) goes in the real environment, which
+overrides the file. There is no `.env`.
 
 Open **http://127.0.0.1:8799/ui/**. First boot builds the venv + UI and starts
 the api + team-pipeline runner on the host — it does **not** download anything

@@ -170,37 +170,51 @@ def test_there_is_no_network_flag_to_remember(box):
         assert _run(box, [flag]).returncode == 2  # unknown arg
 
 
-def test_the_default_is_recorded_in_the_env_file_so_it_is_visible(box, tmp_path):
-    """An operator should be able to read the policy off the file, not infer it
-    from the absence of a line.
-
-    run.sh cds to its own directory, so the env file it reads and writes is the
-    one beside the script — the copy has to go with it.
-    """
+def test_the_script_writes_no_configuration_at_all(box, tmp_path):
+    """The env file is fixed and committed; a run must not edit it."""
     import shutil
     script = tmp_path / "run.sh"
     shutil.copy(RUN_SH, script)
-    env = tmp_path / ".env"
-    env.write_text("AIFORGE_LM_BASE_URL=http://127.0.0.1:1234/v1\n")
-    r = subprocess.run(["bash", str(script)], cwd=str(tmp_path), text=True,
-                       capture_output=True, timeout=90,
-                       env={**os.environ, **box["env"]})
-    text = env.read_text()
-    assert "AIFORGE_OFFLINE=1" in text, r.stdout[-500:]
-    assert "AIFORGE_LM_BASE_URL=" in text, "the rewrite dropped the operator's settings"
-
-
-def test_an_operators_own_value_is_never_overwritten(box, tmp_path):
-    import shutil
-    script = tmp_path / "run.sh"
-    shutil.copy(RUN_SH, script)
-    env = tmp_path / ".env"
-    env.write_text("AIFORGE_OFFLINE=0\n")
+    env = tmp_path / "aiforge.env"
+    env.write_text("AIFORGE_OFFLINE=1\n")
+    before = env.read_text()
     subprocess.run(["bash", str(script)], cwd=str(tmp_path), text=True,
                    capture_output=True, timeout=90,
                    env={**os.environ, **box["env"]})
-    assert env.read_text().count("AIFORGE_OFFLINE=") == 1
-    assert "AIFORGE_OFFLINE=0" in env.read_text()
+    assert env.read_text() == before
+    assert not (tmp_path / ".env").exists()
+
+
+def test_a_missing_uv_never_reaches_astral_sh(box):
+    box["env"]["AIFORGE_OFFLINE"] = "0"           # even allowed to fetch
+    r = _run(box, [])
+    assert "astral.sh" not in _fetched(box), _fetched(box)
+    assert "nodejs.org" not in _fetched(box), _fetched(box)
+    # and it said what to do about it rather than dying mutely
+    assert "uv" in (r.stdout + r.stderr).lower()
+
+
+def test_a_plain_run_downloads_nothing(box):
+    """Secure by default, and with no flag to remember."""
+    r = _run(box, [])
+    assert "offline: nothing will be downloaded" in r.stdout
+    assert r.returncode != 0                      # no uv, and it will not fetch one
+    assert "package manager" in r.stderr          # …and it says where to get one
+
+
+def test_the_setting_is_what_allows_a_fetch_not_a_flag(box):
+    box["env"]["AIFORGE_OFFLINE"] = "0"
+    r = _run(box, [])
+    assert "online (AIFORGE_OFFLINE=0" in r.stdout
+    assert "nothing will be downloaded" not in r.stdout
+
+
+def test_there_is_no_network_flag_to_remember(box):
+    """The policy belongs to the box, so a per-run flag would be a second,
+    contradictable source of truth."""
+    for flag in ("--online", "--offline"):
+        assert f"    {flag})" not in SRC, f"{flag} is back"
+        assert _run(box, [flag]).returncode == 2  # unknown arg
 
 
 def test_offline_tells_the_tools_as_well_as_the_call_sites(box):

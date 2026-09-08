@@ -30,12 +30,17 @@ cd AIForgeCrew
 ```
 
 **Secure by default: `./run.sh` downloads nothing** unless the box says
-otherwise. That is one line in `.env`, not a flag to remember:
+otherwise. That is one line in **`aiforge.env`** — the fixed, committed file
+run.sh reads and never writes to:
 
 ```
-AIFORGE_OFFLINE=1   # never downloads (the default when unset)
+AIFORGE_OFFLINE=1   # never downloads (the default)
 AIFORGE_OFFLINE=0   # package managers may fetch: PyPI, npm, docker, apt
 ```
+
+Anything that differs per box — the model endpoint, the memory role, an API key
+— goes in the real environment (systemd unit, `docker -e`, a shell export),
+which **overrides** the file. `.env` is no longer read.
 
 Either way nothing downloads a source and executes it: `uv` and Node are Python
 dependencies, never an installer piped into a shell. See

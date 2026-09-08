@@ -33,8 +33,10 @@ node_modules/
 .env.*
 !.env.example
 !.env.test.example
-aiforge.env
-!aiforge.env.example
+# aiforge.env is the FIXED, committed environment run.sh reads — see the file
+# itself. Secrets never go in it; they belong in the real environment or in
+# Settings (0600 under $AIFORGE_CONFIG_DIR/security).
+!aiforge.env
 secrets/
 config/prod/
 

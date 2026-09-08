@@ -16,8 +16,8 @@ mirror and CA as everything else. If your package manager already provides them,
 `run.sh` uses those and installs nothing.
 
 **`./run.sh` downloads nothing** unless the box says otherwise. Whether a
-package manager may fetch is one setting in `.env` — a property of the machine,
-not of a run, so there is no flag to remember:
+package manager may fetch is one setting in `aiforge.env` — the fixed file,
+committed and identical on every box, that run.sh reads and never writes to:
 
 ```
 AIFORGE_OFFLINE=1   # never downloads (the default when unset)

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import re
 import shutil
-import stat
 import subprocess
 from pathlib import Path
 
@@ -72,90 +71,85 @@ def test_help_lists_both_role_flags(tmp_path: Path):
     assert "--spoke" in proc.stdout
 
 
-# ── the writer, as shipped ────────────────────────────────────────────────
+# ── nothing is persisted any more ─────────────────────────────────────────
+# The env file is FIXED and committed, so run.sh reads it and never writes to
+# it. That removes the drift a self-editing script causes — and puts a real
+# obligation on the operator, because a machine that stops being the admin
+# retires its own merged fold and tombstones it to every spoke. So the flag
+# claims the role for one run and says, loudly, what has to be in the
+# environment for it to survive a restart.
 
-def _write_role_harness(env_file: Path, want: str) -> subprocess.CompletedProcess:
-    """Run run.sh's own ``_write_role`` against ``env_file``.
+def test_the_script_never_writes_to_the_env_file(tmp_path: Path):
+    env = tmp_path / "aiforge.env"
+    env.write_text("AIFORGE_LM_BASE_URL=http://127.0.0.1:1234/v1\n")
+    before = env.read_text()
 
-    The function is lifted out of the script rather than reimplemented, so this
-    tests the shipped code: a copy would drift, and every bug below (a dropped
-    file mode, a stray .tmp) was in the details of these four lines.
+    _run(tmp_path, ["--admin"])
 
-    Both halves are lifted. ``_write_role`` became a thin wrapper over the
-    generic ``_write_env_line`` when --admin-url and --group needed the same
-    careful rewrite, and lifting only the wrapper leaves it calling a function
-    that is not there.
-    """
-    src = RUN_SH.read_text(encoding="utf-8")
-    generic = re.search(r"^_write_env_line\(\) \{.*?^\}$", src, re.S | re.M)
-    body = re.search(r"^_write_role\(\) \{.*?^\}$", src, re.S | re.M)
-    assert generic, "run.sh no longer defines _write_env_line"
-    assert body, "run.sh no longer defines _write_role"
-    script = (f'set -euo pipefail\nENV_FILE="{env_file.name}"\n'
-              f'_env_role_file="${{ENV_FILE}}"\n{generic.group(0)}\n'
-              f'{body.group(0)}\n'
-              f'_write_role "{want}"\n')
-    return subprocess.run(["bash", "-c", script], cwd=str(env_file.parent),
-                          capture_output=True, text=True, timeout=30)
+    assert env.read_text() == before, "run.sh edited its own configuration"
+    assert not (tmp_path / ".env").exists(), "run.sh created a .env"
+    assert not (tmp_path / "aiforge.env.tmp").exists()
 
 
-def test_the_role_replaces_any_prior_role_line(tmp_path: Path):
-    """``grep -v`` exits 1 when it selects nothing, so a file whose ONLY content
-    was a role line used to keep the old line and gain the new one — two
-    contradictory roles, which is exactly what the rewrite exists to prevent."""
-    env = tmp_path / ".env"
-    env.write_text("AIFORGE_ROLE=spoke\n", encoding="utf-8")
+def test_admin_warns_that_the_role_will_not_survive_a_restart(tmp_path: Path):
+    r = _run(tmp_path, ["--admin"])
 
-    proc = _write_role_harness(env, "admin")
-
-    assert proc.returncode == 0, proc.stderr
-    assert env.read_text(encoding="utf-8") == "AIFORGE_ROLE=admin\n"
-    assert not (tmp_path / ".env.tmp").exists(), "a stray tmp file was left behind"
+    assert "THIS RUN ONLY" in r.stderr
+    assert "RETIRES" in r.stderr                  # names the actual consequence
+    assert "AIFORGE_ROLE=admin" in r.stderr       # …and the line that prevents it
 
 
-def test_other_settings_survive_the_rewrite(tmp_path: Path):
-    env = tmp_path / ".env"
-    env.write_text("AIFORGE_LM_API_KEY=sk-secret\nAIFORGE_ROLE=spoke\n"
-                   "AIFORGE_ALLOW_SSH=1\n", encoding="utf-8")
+def test_no_warning_when_the_environment_already_carries_the_role(tmp_path: Path):
+    r = _run(tmp_path, ["--admin"], {"AIFORGE_ROLE": "admin"})
 
-    _write_role_harness(env, "admin")
-
-    text = env.read_text(encoding="utf-8")
-    assert "AIFORGE_LM_API_KEY=sk-secret" in text
-    assert "AIFORGE_ALLOW_SSH=1" in text
-    assert text.count("AIFORGE_ROLE=") == 1
-    assert "AIFORGE_ROLE=admin" in text
+    assert "THIS RUN ONLY" not in r.stderr
 
 
-def test_the_file_mode_is_preserved(tmp_path: Path):
-    """.env is where .env.example tells operators to put their API keys. A naive
-    ``> tmp && mv`` creates the replacement under the umask, so a 0600 secrets
-    file came back 0644 — world-readable — after one ``./run.sh --admin``."""
-    env = tmp_path / ".env"
-    env.write_text("AIFORGE_LM_API_KEY=sk-secret\n", encoding="utf-8")
-    env.chmod(0o600)
+def test_spoke_says_where_the_role_has_to_be_removed_from(tmp_path: Path):
+    r = _run(tmp_path, ["--spoke"], {"AIFORGE_ROLE": "admin"})
 
-    _write_role_harness(env, "admin")
-
-    assert stat.S_IMODE(env.stat().st_mode) == 0o600
+    assert "NOT the admin for this run" in r.stdout
+    assert "AIFORGE_ROLE=admin" in r.stdout
 
 
-def test_an_empty_want_only_removes_the_line(tmp_path: Path):
-    """``--spoke``: the way back out of a persisted role, and therefore the way
-    the admin is moved to another machine."""
-    env = tmp_path / ".env"
-    env.write_text("AIFORGE_ROLE=admin\nAIFORGE_ALLOW_SSH=1\n", encoding="utf-8")
+def test_the_environment_overrides_the_file(tmp_path: Path):
+    """Per-box settings come from the environment; the file is what is the same
+    everywhere. `set -a; . file` would have clobbered the environment instead."""
+    (tmp_path / "aiforge.env").write_text("AIFORGE_ADMIN_URL=http://from-file:8799\n")
 
-    proc = _write_role_harness(env, "")
+    r = _run(tmp_path, [], {"AIFORGE_ADMIN_URL": "http://from-env:8799"})
 
-    assert proc.returncode == 0, proc.stderr
-    assert env.read_text(encoding="utf-8") == "AIFORGE_ALLOW_SSH=1\n"
+    assert "from-env" in r.stdout
+    assert "from-file" not in r.stdout
 
 
-def test_a_missing_env_file_is_created(tmp_path: Path):
-    env = tmp_path / ".env"
+def test_a_value_in_the_file_is_data_not_a_command(tmp_path: Path):
+    """The file is parsed, not sourced — a committed file is still not a script."""
+    marker = tmp_path / "pwned"
+    (tmp_path / "aiforge.env").write_text(
+        f'AIFORGE_SYNC_GROUP=$(touch {marker})\n')
 
-    proc = _write_role_harness(env, "admin")
+    _run(tmp_path, [])
 
-    assert proc.returncode == 0, proc.stderr
-    assert env.read_text(encoding="utf-8") == "AIFORGE_ROLE=admin\n"
+    assert not marker.exists(), "a value in the env file was executed"
+
+
+def test_a_windows_edited_file_still_parses(tmp_path: Path):
+    """WSL operators edit this in Notepad; a trailing \r turned every value into
+    one ending in a carriage return."""
+    (tmp_path / "aiforge.env").write_text(
+        "AIFORGE_ADMIN_URL=http://rig:8799\r\n")
+
+    r = _run(tmp_path, [])
+
+    assert "spoke of http://rig:8799" in r.stdout
+
+
+def test_a_leftover_dot_env_is_noticed_but_not_read(tmp_path: Path):
+    """Silently honouring one would be exactly the per-box drift this replaced."""
+    (tmp_path / ".env").write_text("AIFORGE_ADMIN_URL=http://stale:8799\n")
+
+    r = _run(tmp_path, [])
+
+    assert ".env is ignored" in r.stderr
+    assert "stale" not in r.stdout

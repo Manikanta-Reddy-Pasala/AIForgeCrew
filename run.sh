@@ -41,9 +41,12 @@
 #                       memory maintenance, then exit
 #   (--lite/--hybrid/--no-build are legacy no-ops)
 #
-# Self-hosted model over HTTPS? Drop a `.env` next to this script:
+# Settings live in `aiforge.env` — fixed, committed, identical everywhere and
+# never written to by this script. Anything per-box goes in the real
+# environment, which overrides the file:
 #   AIFORGE_LM_BASE_URL    https://your-box:1234/v1
 #   AIFORGE_CA_BUNDLE      /path/to/ca.pem     (keeps verification ON)
+#   AIFORGE_ROLE=admin     on exactly one machine in a fleet
 #
 # ⚠️  The agent has FULL filesystem + shell access here (no sandbox).
 #     Set AIFORGE_WORKSPACE_DIR=/path to clamp the chat file scope.
@@ -56,16 +59,42 @@ export AIFORGE_CONFIG_DIR="${AIFORGE_CONFIG_DIR:-$HOME/.aiforge}"
 
 cd "$(dirname "$0")"
 
-# ── env file ──────────────────────────────────────────────────────────────
-ENV_FILE=""
-for _envf in .env aiforge.env; do
-  if [[ -f "$_envf" ]]; then
-    echo "==> loading env from $_envf"
-    set -a; . "./$_envf"; set +a
-    ENV_FILE="$_envf"
-    break
-  fi
-done
+# ── the fixed env file ────────────────────────────────────────────────────
+# ONE file, committed, identical on every box. run.sh READS it and never writes
+# to it: a script that edits its own configuration means two sources of truth
+# and a machine whose behaviour depends on what a previous run happened to
+# append. Per-box differences come from the real environment — a systemd unit,
+# `docker -e`, a shell export — which is why the environment WINS over the file
+# rather than the other way round (`set -a; . file` would clobber it).
+ENV_FILE="aiforge.env"
+
+_load_env_file() {                       # KEY=VALUE only; no eval, no override
+  local f="$1" line key val
+  [[ -r "$f" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"                 # a file edited on Windows (WSL)
+    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+    key="${line%%=*}"; val="${line#*=}"
+    key="${key#"${key%%[![:space:]]*}"}"; key="${key%"${key##*[![:space:]]}"}"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    [[ -n "${!key+x}" ]] && continue      # already in the environment — it wins
+    val="${val#"${val%%[![:space:]]*}"}"
+    case "$val" in
+      \"*\") val="${val#\"}"; val="${val%\"}" ;;
+      \'*\') val="${val#\'}"; val="${val%\'}" ;;
+    esac
+    export "$key=$val"
+  done < "$f"
+}
+
+if [[ -f "$ENV_FILE" ]]; then
+  echo "==> loading env from $ENV_FILE (the environment overrides it)"
+  _load_env_file "$ENV_FILE"
+fi
+# A leftover .env from before the fixed-file move is NOT read — silently
+# honouring one would be exactly the per-box drift this replaced.
+[[ -f .env ]] && echo "==> note: .env is ignored; settings come from $ENV_FILE" \
+                      "and the environment. Delete it to stop this notice." >&2
 
 # Storage is SQLite. Drop Postgres/Neo4j pointers a stale .env may still set,
 # or everything run.sh spawns spams "Postgres unreachable". converge supplies
@@ -166,6 +195,7 @@ export AIFORGE_ALLOW_SSH="${AIFORGE_ALLOW_SSH:-1}"
 # box is the admin, which is also what a standalone install is.
 [[ -n "${AIFORGE_ADMIN_URL:-}" ]] && export AIFORGE_ADMIN_URL
 [[ -n "${AIFORGE_ROLE:-}" ]] && export AIFORGE_ROLE
+_ROLE_FROM_ENV="${AIFORGE_ROLE:-}"       # before any flag touches it
 
 PORT=8799
 HOST=127.0.0.1
@@ -222,38 +252,9 @@ done
 #
 # Nothing downloads a source and executes it either way: uv and Node are
 # `toolchain` wheels, never an installer piped into a shell.
-_env_role_file="${ENV_FILE:-.env}"
-
-_write_env_line() {                      # $1 = key, $2 = value ("" removes it)
-  local key="$1" want="$2" f="$_env_role_file"
-  if [[ -f "$f" ]]; then
-    # cp -p first: a plain `> tmp` creates the file under the umask, so a .env
-    # kept at 0600 (it holds api keys) came back world-readable.
-    cp -p "$f" "$f.tmp" || return 1
-    # grep exit 1 is "nothing matched" and fine; exit 2 is a real failure and
-    # the tmp file is already truncated, so moving it would erase the keys.
-    grep -vE "^[[:space:]]*${key}=" "$f" > "$f.tmp" || [[ $? -eq 1 ]] \
-      || { rm -f "$f.tmp"; return 1; }
-    mv "$f.tmp" "$f" || { rm -f "$f.tmp"; return 1; }
-  fi
-  [[ -n "$want" ]] && printf '%s=%s\n' "$key" "$want" >> "$f"
-  return 0
-}
-_write_role() {                          # $1 = value, or "" to remove the line
-  _write_env_line AIFORGE_ROLE "$1"
-}
-
 AIFORGE_OFFLINE="${AIFORGE_OFFLINE:-1}"
 export AIFORGE_OFFLINE
 
-# Record the default so the file states it, rather than leaving the operator to
-# infer the policy from its absence. Only ever written when the key is missing.
-if [[ -f "$_env_role_file" ]] \
-     && ! grep -qE "^[[:space:]]*AIFORGE_OFFLINE=" "$_env_role_file" 2>/dev/null; then
-  _write_env_line AIFORGE_OFFLINE "$AIFORGE_OFFLINE" \
-    && echo "  network: recorded AIFORGE_OFFLINE=$AIFORGE_OFFLINE in $_env_role_file" \
-    || true
-fi
 _offline() { [[ "${AIFORGE_OFFLINE}" != "0" ]]; }
 
 _no_fetch() {                            # $1 = what, $2 = how to get it
@@ -280,9 +281,9 @@ if _offline; then
   export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
   export AIFORGE_INSTALL_TMUX="${AIFORGE_INSTALL_TMUX:-0}"
   echo "==> offline: nothing will be downloaded." \
-       "Set AIFORGE_OFFLINE=0 in $_env_role_file to allow package managers."
+       "Set AIFORGE_OFFLINE=0 in $ENV_FILE to allow package managers."
 else
-  echo "==> online (AIFORGE_OFFLINE=0 in $_env_role_file):" \
+  echo "==> online (AIFORGE_OFFLINE=0 in $ENV_FILE):" \
        "package managers may fetch (PyPI, npm, docker, apt)."
 fi
 # uv must never install a second interpreter, offline or not.
@@ -318,12 +319,9 @@ if [[ -n "$ADMIN_URL_SET" ]]; then
     exit 2
   fi
   export AIFORGE_ADMIN_URL="$ADMIN_URL_SET"
-  if _write_env_line AIFORGE_ADMIN_URL "$ADMIN_URL_SET"; then
-    echo "  memory: recorded AIFORGE_ADMIN_URL=$ADMIN_URL_SET in $_env_role_file"
-  else
-    echo "  memory: WARNING — could not write $_env_role_file; this box will" >&2
-    echo "          forget its admin on the next restart" >&2
-  fi
+  echo "  memory: spoke of $ADMIN_URL_SET for THIS run."
+  echo "          To keep it, put AIFORGE_ADMIN_URL=$ADMIN_URL_SET in the environment"
+  echo "          (systemd unit / docker -e) or in $ENV_FILE."
 fi
 
 if [[ -n "$GROUP_SET" ]]; then
@@ -334,35 +332,31 @@ if [[ -n "$GROUP_SET" ]]; then
     exit 2
   fi
   export AIFORGE_SYNC_GROUP="$GROUP_SET"
-  if _write_env_line AIFORGE_SYNC_GROUP "$GROUP_SET"; then
-    echo "  memory: recorded AIFORGE_SYNC_GROUP=$GROUP_SET in $_env_role_file"
-  else
-    echo "  memory: WARNING — could not write $_env_role_file; this box will" >&2
-    echo "          rediscover its group on the next restart" >&2
-  fi
+  echo "  memory: group $GROUP_SET for THIS run."
+  echo "          To keep it, set AIFORGE_SYNC_GROUP=$GROUP_SET in the environment."
 fi
 
 if [[ $UNADMIN -eq 1 ]]; then
   unset AIFORGE_ROLE
-  if _write_role ""; then
-    echo "  memory: dropped the persisted admin role from $_env_role_file"
-  else
-    echo "  memory: WARNING — could not rewrite $_env_role_file; remove the" >&2
-    echo "          AIFORGE_ROLE line by hand or this box stays the admin" >&2
-  fi
+  echo "  memory: NOT the admin for this run."
+  echo "          Remove AIFORGE_ROLE=admin from the environment (and from"
+  echo "          $ENV_FILE if it is there) or the next start claims it again."
 fi
 
 if [[ $ADMIN -eq 1 ]]; then
-  export AIFORGE_ROLE=admin
-  if ! grep -qE '^[[:space:]]*AIFORGE_ROLE=admin[[:space:]]*$' "$_env_role_file" 2>/dev/null; then
-    if _write_role admin; then
-      echo "  memory: recorded AIFORGE_ROLE=admin in $_env_role_file (survives a restart)"
-    else
-      echo "  memory: WARNING — could not persist the role to $_env_role_file. A" >&2
-      echo "          restart will bring this box back as a NON-admin, which" >&2
-      echo "          retires its merged fold. Add AIFORGE_ROLE=admin by hand." >&2
-    fi
+  # The flag claims the role for THIS process only. Nothing is written, so the
+  # environment has to carry it — and a restart WITHOUT it is not neutral: a
+  # machine that stops being the admin retires its own mesh fold
+  # (okf/tiers._retire_own_mesh) and propagates that deletion to every spoke.
+  # So say it loudly rather than let a reboot delete the fleet's memory.
+  if [[ "${_ROLE_FROM_ENV:-}" != "admin" ]]; then
+    echo "  memory: WARNING — --admin claims the role for THIS RUN ONLY." >&2
+    echo "          AIFORGE_ROLE=admin is not in the environment, so a restart" >&2
+    echo "          without --admin comes back as a NON-admin, which RETIRES" >&2
+    echo "          this box's merged fold and tombstones it to every spoke." >&2
+    echo "          Put AIFORGE_ROLE=admin in the unit/env that starts run.sh." >&2
   fi
+  export AIFORGE_ROLE=admin
 fi
 
 if [[ "$MODE" != "docker" ]]; then
@@ -713,7 +707,7 @@ if _offline; then
   # one thing that changes it.
   if ! .venv/bin/python -c "import aiforge_core" >/dev/null 2>&1; then
     _fatal "offline, and this .venv cannot import aiforge_core — the dependencies are not installed." \
-      "Let this box install them: put AIFORGE_OFFLINE=0 in $_env_role_file and re-run. Or copy a prepared .venv onto it."
+      "Let this box install them: put AIFORGE_OFFLINE=0 in $ENV_FILE and re-run. Or copy a prepared .venv onto it."
   fi
   echo "==> deps: using the existing .venv (offline)"
 else
@@ -749,7 +743,7 @@ if [[ "${AIFORGE_SKIP_SMOKE:-0}" != "1" ]]; then
       # Offline this would delete the venv and be unable to refill it, which is
       # strictly worse than the broken venv it is trying to repair.
       _offline && _fatal "offline, and the .venv's core imports are broken." \
-        "Put AIFORGE_OFFLINE=0 in $_env_role_file and re-run to rebuild it."
+        "Put AIFORGE_OFFLINE=0 in $ENV_FILE and re-run to rebuild it."
       echo "==> still broken — rebuilding .venv from scratch"
       rm -rf .venv && "$UV" venv --python "$AIFORGE_PYTHON" .venv
       "$UV" pip install --python .venv/bin/python -e . >/dev/null 2>&1 || true
@@ -836,7 +830,7 @@ fi
 if ! .venv/bin/python -c "import pydantic_core" >/dev/null 2>&1; then
   echo "==> venv incomplete (pydantic_core missing) — repairing deps"
   _offline && _fatal "offline, and the .venv is missing pydantic_core — the app cannot boot." \
-    "Put AIFORGE_OFFLINE=0 in $_env_role_file and re-run to repair it."
+    "Put AIFORGE_OFFLINE=0 in $ENV_FILE and re-run to repair it."
   "$UV" pip install --python .venv/bin/python --reinstall -e . >/dev/null 2>&1 || true
   if ! .venv/bin/python -c "import pydantic_core" >/dev/null 2>&1; then
     echo "==> rebuilding .venv from scratch"
@@ -849,7 +843,7 @@ fi
 # ISOLATED install only. graphify pins its OWN pydantic, so co-installing it
 # into .venv breaks the app's boot with ModuleNotFoundError: pydantic_core.
 if [[ $WITH_GRAPHIFY -eq 1 ]] && _offline && ! command -v graphify >/dev/null 2>&1; then
-  _no_fetch "the graphify CLI" "set AIFORGE_OFFLINE=0 in $_env_role_file" || true
+  _no_fetch "the graphify CLI" "set AIFORGE_OFFLINE=0 in $ENV_FILE" || true
 elif [[ $WITH_GRAPHIFY -eq 1 ]]; then
   if command -v graphify >/dev/null 2>&1; then
     echo "==> graphify present ($(command -v graphify)) — upgrading"
