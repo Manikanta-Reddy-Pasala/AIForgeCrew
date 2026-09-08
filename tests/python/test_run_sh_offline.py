@@ -279,3 +279,56 @@ def test_a_network_failure_does_not_delete_the_venv():
     assert guard, "the deps-install failure branch changed shape"
     assert "certificate" in guard.group(0)
     assert "left ALONE" in guard.group(0)
+
+
+# ── offline must not ATTEMPT an install ────────────────────────────────────
+# Reported live: an offline run announced "nothing will be downloaded" and then
+# ran `uv pip install -e .` anyway. uv refused with "Network connectivity is
+# disabled", which the failure branch then mis-read as a network problem and
+# reported as "could not reach the package index … this run asked to fetch" —
+# a diagnosis that was wrong twice over. The switch had guarded three call
+# sites and left the other six, the main deps install among them.
+
+def test_no_install_runs_unguarded():
+    """Every `uv pip install` sits behind the offline gate, the online branch,
+    or a fatal. A new call site that forgets is the bug this pins."""
+    lines = [(i, ln) for i, ln in enumerate(SRC.splitlines(), 1)
+             if '"$UV" pip install' in ln and not ln.lstrip().startswith("#")]
+    assert lines, "the installs moved; this test needs rewriting"
+    gate = SRC.index("_uv_install()")
+    online_branch = SRC.index('echo "==> installing python deps (editable)"')
+    for i, ln in lines:
+        off = SRC.index(ln)
+        assert off >= min(gate, online_branch), (
+            f"line {i} installs before any offline gate: {ln.strip()}")
+
+
+def test_offline_with_a_working_venv_says_so_and_installs_nothing():
+    assert 'echo "==> deps: using the existing .venv (offline)"' in SRC
+
+
+def test_offline_with_an_unusable_venv_names_the_one_line_that_fixes_it():
+    m = re.search(r"cannot import aiforge_core.*?\n.*?AIFORGE_OFFLINE=0", SRC, re.S)
+    assert m, "the offline deps failure no longer says how to fix itself"
+
+
+@pytest.mark.parametrize("guard", [
+    "the .venv's core imports are broken",     # the smoke rebuild
+    "missing pydantic_core",                    # the self-heal
+])
+def test_no_rebuild_path_can_delete_a_venv_it_cannot_refill(guard):
+    """Both rebuild branches `rm -rf .venv`. Offline that is strictly worse than
+    the broken venv they are repairing, so each is preceded by a fatal."""
+    i = SRC.index(guard)
+    window = SRC[max(0, i - 300):i + 400]
+    assert "_offline && _fatal" in window, f"{guard!r} can still delete the venv"
+
+
+def test_the_network_diagnosis_cannot_fire_on_uvs_own_offline_message():
+    """`Network connectivity is disabled` is uv obeying us, not a broken link."""
+    m = re.search(r"grep -qiE \"([^\"]*certificate[^\"]*)\"", SRC)
+    assert m, "the failure classifier changed shape"
+    pattern = m.group(1)
+    assert "network" not in pattern, (
+        "a bare 'network' matches uv's offline message and mis-diagnoses it")
+    assert "|connect|" not in f"|{pattern}|"

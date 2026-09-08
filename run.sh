@@ -694,25 +694,48 @@ export UV_LINK_MODE="${UV_LINK_MODE:-copy}"
 # Absolute, so job/Doer shells in another cwd still resolve `aiforge-tool`.
 export PATH="$PWD/.venv/bin:$PATH"
 
-echo "==> installing python deps (editable)"
-# The rebuild below exists for WSL /mnt/c, where a copy can leave a package
-# half-written and uv then aborts the whole resolve; a corrupt venv cannot be
-# patched in place. It must NOT fire on a network or TLS failure — deleting a
-# working venv because PyPI was unreachable is how an operator behind a proxy
-# lost theirs. So the error is read, shown, and only the corruption case
-# rebuilds.
-if ! _out="$("$UV" pip install --python .venv/bin/python -e . 2>&1)"; then
-  if grep -qiE "certificate|tls|ssl|proxy|dns|timed out|temporary failure|connect|network|resolve host|Request failed" <<<"$_out"; then
-    echo "$_out" >&2
-    _fatal "could not reach the package index — the .venv is left ALONE." \
-      "Behind a proxy or an internal CA? Load the CA in Settings, or set AIFORGE_CA_BUNDLE. Air-gapped? ./run.sh is offline by default; this run asked to fetch."
+# EVERY install goes through here, so a call site cannot forget the policy —
+# which is exactly what went wrong when the switch guarded three of the nine.
+# Returns non-zero (quietly) when offline, so an optional extra just skips.
+_uv_install() {                          # $1 = what, for the log; rest = uv args
+  local what="$1"; shift
+  if _offline; then
+    echo "==> offline: not installing $what" >&2
+    return 1
   fi
-  echo "==> deps install failed — rebuilding .venv from scratch"
-  echo "$_out" | tail -5 >&2
-  rm -rf .venv && "$UV" venv --python "$AIFORGE_PYTHON" .venv
-  "$UV" pip install --python .venv/bin/python -e . >/dev/null
+  "$UV" pip install --python .venv/bin/python "$@"
+}
+
+if _offline; then
+  # Nothing to install, so do not pretend to try: uv would fail with "Network
+  # connectivity is disabled", which is not a network problem to be diagnosed.
+  # Prove the venv can actually run the app instead, and if it cannot, say the
+  # one thing that changes it.
+  if ! .venv/bin/python -c "import aiforge_core" >/dev/null 2>&1; then
+    _fatal "offline, and this .venv cannot import aiforge_core — the dependencies are not installed." \
+      "Let this box install them: put AIFORGE_OFFLINE=0 in $_env_role_file and re-run. Or copy a prepared .venv onto it."
+  fi
+  echo "==> deps: using the existing .venv (offline)"
+else
+  echo "==> installing python deps (editable)"
+  # The rebuild below exists for WSL /mnt/c, where a copy can leave a package
+  # half-written and uv aborts the whole resolve; a corrupt venv cannot be
+  # patched in place. It must NOT fire on a network or TLS failure — deleting a
+  # working venv because PyPI was unreachable is how an operator behind a proxy
+  # lost theirs. So the error is read, shown, and only corruption rebuilds.
+  if ! _out="$("$UV" pip install --python .venv/bin/python -e . 2>&1)"; then
+    if grep -qiE "certificate|tls handshake|ssl|proxy|dns|timed out|temporary failure|failed to connect|resolve host|Request failed|UnknownIssuer" <<<"$_out"; then
+      echo "$_out" >&2
+      _fatal "could not reach the package index — the .venv is left ALONE." \
+        "Behind a proxy or an internal CA? Load the CA in Settings → Local certificate authority, or set AIFORGE_CA_BUNDLE."
+    fi
+    echo "==> deps install failed — rebuilding .venv from scratch"
+    echo "$_out" | tail -5 >&2
+    rm -rf .venv && "$UV" venv --python "$AIFORGE_PYTHON" .venv
+    "$UV" pip install --python .venv/bin/python -e . >/dev/null
+  fi
+  unset _out
 fi
-unset _out
 
 # An install can exit 0 and still be half-written (again, DrvFs). Skip with
 # AIFORGE_SKIP_SMOKE=1.
@@ -720,9 +743,13 @@ if [[ "${AIFORGE_SKIP_SMOKE:-0}" != "1" ]]; then
   _smoke='import urllib3.util, urllib3.util.connection, requests, charset_normalizer, certifi, idna, google.adk'
   if ! .venv/bin/python -c "$_smoke" >/dev/null 2>&1; then
     echo "==> core deps import broken (partial install) — repairing…"
-    "$UV" pip install --python .venv/bin/python --reinstall \
+    _uv_install "the core deps" --reinstall \
       urllib3 requests charset_normalizer certifi idna >/dev/null 2>&1 || true
     if ! .venv/bin/python -c "$_smoke" >/dev/null 2>&1; then
+      # Offline this would delete the venv and be unable to refill it, which is
+      # strictly worse than the broken venv it is trying to repair.
+      _offline && _fatal "offline, and the .venv's core imports are broken." \
+        "Put AIFORGE_OFFLINE=0 in $_env_role_file and re-run to rebuild it."
       echo "==> still broken — rebuilding .venv from scratch"
       rm -rf .venv && "$UV" venv --python "$AIFORGE_PYTHON" .venv
       "$UV" pip install --python .venv/bin/python -e . >/dev/null 2>&1 || true
@@ -770,7 +797,7 @@ fi
 if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
   if ! .venv/bin/python -c "import instructor, crawl4ai, chonkie" >/dev/null 2>&1; then
     echo "==> installing integration extras (instructor + crawl4ai + chonkie)…"
-    "$UV" pip install --python .venv/bin/python -e '.[structured,crawl,chunking]' >/dev/null 2>&1 \
+    _uv_install "the integration extras" -e '.[structured,crawl,chunking]' >/dev/null 2>&1 \
       && echo "==> integration extras ready" \
       || echo "==> integration extras skipped (built-in fallbacks active)"
   fi
@@ -778,9 +805,9 @@ if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
   if [[ "${INSTALL_MODEL2VEC:-0}" == "1" ]] \
       && ! .venv/bin/python -c "import model2vec, sqlite_vec" >/dev/null 2>&1; then
     echo "==> installing model2vec static embeddings (~30MB, no torch)…"
-    "$UV" pip install --python .venv/bin/python -e '.[embed-static]' \
+    _uv_install "model2vec" -e '.[embed-static]' \
       && : "${AIFORGE_EMBED_BACKEND:=model2vec}" \
-      || echo "==> model2vec install failed — continuing"
+      || echo "==> model2vec install skipped — continuing"
   fi
 
   # An explicit backend always wins; otherwise pick the lightest installed one.
@@ -801,13 +828,15 @@ if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
 
   # crawl4ai's deps outrun an older requests' hardcoded compat check, which
   # warns on every python spawn. Cosmetic.
-  "$UV" pip install --python .venv/bin/python -U requests >/dev/null 2>&1 || true
+  _uv_install "a newer requests" -U requests >/dev/null 2>&1 || true
 fi
 
 # An interrupted install can leave pydantic present but pydantic_core missing;
 # uv then considers the env satisfied, so a plain re-run won't fix it.
 if ! .venv/bin/python -c "import pydantic_core" >/dev/null 2>&1; then
   echo "==> venv incomplete (pydantic_core missing) — repairing deps"
+  _offline && _fatal "offline, and the .venv is missing pydantic_core — the app cannot boot." \
+    "Put AIFORGE_OFFLINE=0 in $_env_role_file and re-run to repair it."
   "$UV" pip install --python .venv/bin/python --reinstall -e . >/dev/null 2>&1 || true
   if ! .venv/bin/python -c "import pydantic_core" >/dev/null 2>&1; then
     echo "==> rebuilding .venv from scratch"
@@ -819,7 +848,9 @@ fi
 # ── graphify (--with-graphify) ────────────────────────────────────────────
 # ISOLATED install only. graphify pins its OWN pydantic, so co-installing it
 # into .venv breaks the app's boot with ModuleNotFoundError: pydantic_core.
-if [[ $WITH_GRAPHIFY -eq 1 ]]; then
+if [[ $WITH_GRAPHIFY -eq 1 ]] && _offline && ! command -v graphify >/dev/null 2>&1; then
+  _no_fetch "the graphify CLI" "set AIFORGE_OFFLINE=0 in $_env_role_file" || true
+elif [[ $WITH_GRAPHIFY -eq 1 ]]; then
   if command -v graphify >/dev/null 2>&1; then
     echo "==> graphify present ($(command -v graphify)) — upgrading"
     "$UV" tool upgrade graphifyy 2>/dev/null || "$UV" tool install --force graphifyy 2>/dev/null || true
@@ -916,7 +947,7 @@ export PATH="$PWD/.venv/bin:$PATH"
 if [[ "${AIFORGE_SKIP_CODEGRAPH:-0}" != "1" ]]; then
   [[ -d "$HOME/.npm-global/bin" ]] && export PATH="$HOME/.npm-global/bin:$PATH"
   if ! command -v codegraph >/dev/null 2>&1 && [[ -z "${AIFORGE_CODEGRAPH_BIN:-}" ]] \
-       && command -v npm >/dev/null 2>&1; then
+       && command -v npm >/dev/null 2>&1 && ! _offline; then
     echo "==> installing CodeGraph (code-graph indexer)…"
     bash scripts/install-codegraph.sh >/dev/null 2>&1 \
       && echo "==> codegraph ready" \
