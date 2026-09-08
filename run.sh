@@ -5,11 +5,14 @@
 #
 # Needs: git + python 3.12. Everything else is a package.
 #
-# SECURE BY DEFAULT: a plain ./run.sh downloads NOTHING. Pass --online to let
-# the package managers fetch (PyPI, npm, docker, apt) — that is how you
-# bootstrap or upgrade a box. Even then nothing downloads a source and executes
-# it: uv and Node are Python dependencies (the `toolchain` extra), never an
-# installer piped into a shell.
+# SECURE BY DEFAULT: ./run.sh downloads NOTHING unless the box says otherwise.
+# That is one setting in the env file, not a flag — set it once per machine:
+#
+#     AIFORGE_OFFLINE=1   never downloads      (the default when unset)
+#     AIFORGE_OFFLINE=0   package managers may fetch: PyPI, npm, docker, apt
+#
+# Either way nothing downloads a source and executes it: uv and Node are Python
+# dependencies (the `toolchain` extra), never an installer piped into a shell.
 #
 # Runs on the host by default (full fs/shell access); `--docker` runs the
 # self-contained container instead. Storage is embedded SQLite + Markdown
@@ -22,8 +25,6 @@
 #   --docker     build + run the all-deps container (host FS at /host)
 #   --skip-web   don't (re)build the web UI
 #   --test       probe the configured model endpoint, then exit
-#   --online     allow package managers to fetch for THIS run (default: off)
-#   --offline    the default; no network at all
 #   --admin      this box is THE memory admin (exactly one per fleet); it
 #                merges every machine's knowledge and serves the result back
 #   --spoke      give up the admin role (how you MOVE the admin)
@@ -189,8 +190,6 @@ while [[ $# -gt 0 ]]; do
     --migrate-okf) MAINT=migrateokf ;;
     --purge-code) MAINT=purge ;;
     --install-model2vec|--install-semantic) INSTALL_MODEL2VEC=1 ;;
-    --offline) AIFORGE_OFFLINE=1 ;;   # the default; kept so it can be said out loud
-    --online) AIFORGE_OFFLINE=0 ;;    # let package managers fetch for THIS run
     --dev) DEV=1 ;;
     --admin) ADMIN=1; ADMIN_PAGE=1 ;;
     --admin-url) ADMIN_URL_SET="${2:-}"; shift ;;
@@ -212,13 +211,49 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-# ── secure by default: no downloads ───────────────────────────────────────
-# A run fetches NOTHING unless you ask. `--online` (or AIFORGE_OFFLINE=0 in
-# .env) lets the package managers work for one run — PyPI, npm, docker, apt —
-# which is how a box is bootstrapped or upgraded, deliberately. Nothing ever
-# downloads a source and executes it: uv and Node are `toolchain` wheels.
+# ── network policy: ONE setting, in the env file ──────────────────────────
+# AIFORGE_OFFLINE decides whether a package manager may fetch — PyPI, npm,
+# docker, apt. It is a property of the BOX, not of a run, so it lives in .env
+# beside the model endpoint and the memory role rather than in a flag you have
+# to remember on every invocation:
+#
+#     AIFORGE_OFFLINE=1     never downloads      (the default when unset)
+#     AIFORGE_OFFLINE=0     package managers may fetch
+#
+# Nothing downloads a source and executes it either way: uv and Node are
+# `toolchain` wheels, never an installer piped into a shell.
+_env_role_file="${ENV_FILE:-.env}"
+
+_write_env_line() {                      # $1 = key, $2 = value ("" removes it)
+  local key="$1" want="$2" f="$_env_role_file"
+  if [[ -f "$f" ]]; then
+    # cp -p first: a plain `> tmp` creates the file under the umask, so a .env
+    # kept at 0600 (it holds api keys) came back world-readable.
+    cp -p "$f" "$f.tmp" || return 1
+    # grep exit 1 is "nothing matched" and fine; exit 2 is a real failure and
+    # the tmp file is already truncated, so moving it would erase the keys.
+    grep -vE "^[[:space:]]*${key}=" "$f" > "$f.tmp" || [[ $? -eq 1 ]] \
+      || { rm -f "$f.tmp"; return 1; }
+    mv "$f.tmp" "$f" || { rm -f "$f.tmp"; return 1; }
+  fi
+  [[ -n "$want" ]] && printf '%s=%s\n' "$key" "$want" >> "$f"
+  return 0
+}
+_write_role() {                          # $1 = value, or "" to remove the line
+  _write_env_line AIFORGE_ROLE "$1"
+}
+
 AIFORGE_OFFLINE="${AIFORGE_OFFLINE:-1}"
 export AIFORGE_OFFLINE
+
+# Record the default so the file states it, rather than leaving the operator to
+# infer the policy from its absence. Only ever written when the key is missing.
+if [[ -f "$_env_role_file" ]] \
+     && ! grep -qE "^[[:space:]]*AIFORGE_OFFLINE=" "$_env_role_file" 2>/dev/null; then
+  _write_env_line AIFORGE_OFFLINE "$AIFORGE_OFFLINE" \
+    && echo "  network: recorded AIFORGE_OFFLINE=$AIFORGE_OFFLINE in $_env_role_file" \
+    || true
+fi
 _offline() { [[ "${AIFORGE_OFFLINE}" != "0" ]]; }
 
 _no_fetch() {                            # $1 = what, $2 = how to get it
@@ -244,9 +279,11 @@ if _offline; then
   export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
   export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
   export AIFORGE_INSTALL_TMUX="${AIFORGE_INSTALL_TMUX:-0}"
-  echo "==> offline (default): nothing will be downloaded. Use --online to fetch."
+  echo "==> offline: nothing will be downloaded." \
+       "Set AIFORGE_OFFLINE=0 in $_env_role_file to allow package managers."
 else
-  echo "==> ONLINE: package managers may fetch (PyPI, npm, docker, apt)."
+  echo "==> online (AIFORGE_OFFLINE=0 in $_env_role_file):" \
+       "package managers may fetch (PyPI, npm, docker, apt)."
 fi
 # uv must never install a second interpreter, offline or not.
 export UV_PYTHON_DOWNLOADS="${UV_PYTHON_DOWNLOADS:-never}"
@@ -255,26 +292,6 @@ export UV_PYTHON_DOWNLOADS="${UV_PYTHON_DOWNLOADS:-never}"
 # The role is PERSISTED, not just exported: the systemd unit starts run.sh with
 # no flags, and a machine that stops being the admin retires the fleet's merged
 # fold — so a restart would delete it. --spoke is the way back out.
-_env_role_file="${ENV_FILE:-.env}"
-
-_write_env_line() {                      # $1 = key, $2 = value ("" removes it)
-  local key="$1" want="$2" f="$_env_role_file"
-  if [[ -f "$f" ]]; then
-    # cp -p first: a plain `> tmp` creates the file under the umask, so a .env
-    # kept at 0600 (it holds api keys) came back world-readable.
-    cp -p "$f" "$f.tmp" || return 1
-    # grep exit 1 is "nothing matched" and fine; exit 2 is a real failure and
-    # the tmp file is already truncated, so moving it would erase the keys.
-    grep -vE "^[[:space:]]*${key}=" "$f" > "$f.tmp" || [[ $? -eq 1 ]] \
-      || { rm -f "$f.tmp"; return 1; }
-    mv "$f.tmp" "$f" || { rm -f "$f.tmp"; return 1; }
-  fi
-  [[ -n "$want" ]] && printf '%s=%s\n' "$key" "$want" >> "$f"
-  return 0
-}
-_write_role() {                          # $1 = value, or "" to remove the line
-  _write_env_line AIFORGE_ROLE "$1"
-}
 
 if [[ $ADMIN -eq 1 && $UNADMIN -eq 1 ]]; then
   echo "error: --admin and --spoke are opposites; pass one." >&2

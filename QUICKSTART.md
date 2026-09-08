@@ -28,9 +28,12 @@ see **[INSTALL.md](INSTALL.md)** for the offline and corporate-CA notes.
 ```bash
 git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew.git
 cd AIForgeCrew
-./run.sh --online     # first run: lets PyPI/npm install the deps
-./run.sh              # afterwards: downloads nothing
+echo AIFORGE_OFFLINE=0 >> .env    # let PyPI/npm install the deps on this box
+./run.sh
 ```
+
+Leave that line out (or set `1`) and `run.sh` downloads nothing, ever — the
+default. It is a per-box setting, not a per-run flag.
 
 Open **http://127.0.0.1:8799/ui/**. First boot builds the venv + UI and starts
 the api + team-pipeline runner on the host — it does **not** download anything
@@ -67,7 +70,6 @@ Handy flags:
 | `--dev` | hot reload |
 | `--test` | probe the model endpoint, then exit |
 | `--reset-config` | wipe the saved model config |
-| `--online` | let package managers fetch for this run (default: off) |
 | `--skip-web` | don't rebuild the UI |
 | `--migrate` | force a re-converge of a prior install |
 | `--recompact-all` | re-fold every memory brief, then exit |

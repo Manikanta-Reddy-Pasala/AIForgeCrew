@@ -15,16 +15,21 @@ brew install git python@3.12                         # macOS
 mirror and CA as everything else. If your package manager already provides them,
 `run.sh` uses those and installs nothing.
 
-**A plain `./run.sh` downloads nothing.** `--online` lets the package managers
-fetch for one run — PyPI, npm, docker, apt — which is how you bootstrap or
-upgrade. Even then `run.sh` never fetches a source and executes it: no
-`curl … | sh`, no Node tarball onto `PATH`, no managed CPython, no browser
-binary from a CDN.
+**`./run.sh` downloads nothing** unless the box says otherwise. Whether a
+package manager may fetch is one setting in `.env` — a property of the machine,
+not of a run, so there is no flag to remember:
 
-```bash
-./run.sh --online     # first run on a new box, and after a git pull
-./run.sh              # every run after that
 ```
+AIFORGE_OFFLINE=1   # never downloads (the default when unset)
+AIFORGE_OFFLINE=0   # package managers may fetch: PyPI, npm, docker, apt
+```
+
+`run.sh` writes the line itself on first run if it is missing, so the policy is
+readable off the file rather than inferred from its absence. Set `0` on a box
+you bootstrap and upgrade; leave `1` on a locked-down one.
+
+Either way `run.sh` never fetches a source and executes it: no `curl … | sh`,
+no Node tarball onto `PATH`, no managed CPython, no browser binary from a CDN.
 
 Node is needed only to build the web UI; `--skip-web` or a pre-built `web/dist`
 avoids it. Use `AIFORGE_PYTHON=3.11` if that is the interpreter you have.
@@ -73,10 +78,9 @@ deps.
 
 ### Air-gapped
 
-Nothing to do — that is the default. `--offline` is accepted so it can be said
-out loud. A blocked step names the missing piece and its fix rather than coming
-up degraded. Pre-seed `.venv` and `web/node_modules` (or `web/dist`) on such a
-box.
+Nothing to do — that is the default. A blocked step names the missing piece and
+its fix rather than coming up degraded. Pre-seed `.venv` and `web/node_modules`
+(or `web/dist`) on such a box.
 
 ### Behind a corporate CA or proxy
 

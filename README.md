@@ -29,11 +29,17 @@ cd AIForgeCrew
 ./run.sh
 ```
 
-**Secure by default: a plain `./run.sh` downloads nothing.** Pass `--online`
-to let the package managers fetch (PyPI, npm, docker, apt) — that is how you
-bootstrap or upgrade a box. Even then nothing downloads a source and executes
-it: `uv` and Node are Python dependencies, never an installer piped into a
-shell. See **[INSTALL.md](INSTALL.md)**.
+**Secure by default: `./run.sh` downloads nothing** unless the box says
+otherwise. That is one line in `.env`, not a flag to remember:
+
+```
+AIFORGE_OFFLINE=1   # never downloads (the default when unset)
+AIFORGE_OFFLINE=0   # package managers may fetch: PyPI, npm, docker, apt
+```
+
+Either way nothing downloads a source and executes it: `uv` and Node are Python
+dependencies, never an installer piped into a shell. See
+**[INSTALL.md](INSTALL.md)**.
 
 Open **http://127.0.0.1:8799/ui/**. The landing page is config-first: pick a
 provider + model for each pipeline step. Choose **OpenAI-compatible** and paste any
@@ -65,7 +71,6 @@ an OpenAI-compatible `/v1/embeddings` endpoint you already run:
 | `--docker` | run the self-contained container instead of the host path |
 | `--install-model2vec` | semantic recall, ~30 MB, no torch |
 | `--migrate` | re-run a prior Postgres install into SQLite, remove the DB containers |
-| `--online` | let package managers fetch for this run (default: off) |
 | `--with-langfuse` / `--stop-langfuse` | the optional self-hosted LLM trace UI |
 
 (`--lite` / `--hybrid` / `--no-build` are accepted but do nothing — storage has
