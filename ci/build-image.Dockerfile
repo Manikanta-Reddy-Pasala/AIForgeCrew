@@ -1,56 +1,58 @@
-# Base image for the AIForgeCrew GitLab build job.
-# Your original, plus five deltas — each marked AIFORGE and explained in
-# ci/README.md. Nothing else is changed.
+# Build image for AIForgeCrew's GitLab CI job.
+#
+# Dedicated to that one job, so it carries exactly what the job needs and
+# nothing else. The runner has no route off the estate: everything below comes
+# from Artifactory or the Ubuntu archive, and the job that uses this image
+# fetches nothing the image did not already provide.
 FROM ubuntu:24.04
 
-# ensure local python is preferred over distribution python
-ENV PATH=/root/.local/bin:$PATH
-
 ARG ARTIFACTORY2_PASSWORD
-ARG ARTIFACTORY_USERNAME
-ARG ARTIFACTORY_PASSWORD
+ARG CA_URL=https://artifactory2.internal:443/artifactory/Public/infra_intermediate.cert.pem
+# Pinned: unpinned, a rebuild silently changes the resolver that reads uv.lock.
+ARG UV_VERSION=0.9.30
+# 3.12, not 3.13: uv.lock pins numpy 1.26.4, which publishes no cp313 wheel, so
+# on 3.13 uv falls back to the sdist and needs a C compiler this image does not
+# carry. 3.13 also fails three of AIForgeCrew's TLS chain tests.
+ARG PYTHON_VERSION=3.12.11
 
-ENV PYTHON_VERSION=3.13.7
-# AIFORGE 1: our uv.lock pins numpy 1.26.4, which has no cp313 wheel. On 3.13
-# uv falls back to the sdist and needs a C compiler this image does not carry.
-ENV PYTHON_VERSION_AIFORGE=3.12.11
+# uv's interpreter ahead of the distribution python
+ENV PATH=/root/.local/bin:$PATH
+ENV JAVA_HOME=/usr/lib/jvm/default-java
+ENV PYTHONDONTWRITEBYTECODE=1
 
-# AIFORGE 2: git (the job runs in a repo), tmux (~1MB — without it the
-# persistent-shell tests skip rather than run).
-# runtime dependencies excl build-essential libapt-pkg-dev
+# curl/unzip for the cert step, JRE for keytool, git because the job runs in a
+# repository, tmux because AIForgeCrew's persistent-shell tests skip without it.
+# No build-essential: every dependency in uv.lock resolves to a wheel on 3.12.
 RUN set -eux; \
     apt-get update && \
-    apt-get install -y --no-install-recommends  curl unzip default-jre-headless ca-certificates python3-full python3-pip git tmux && \
+    apt-get install -y --no-install-recommends curl unzip default-jre-headless ca-certificates python3-full python3-pip git tmux && \
     apt-get dist-clean
 
-# Get certificate and use it
-ENV JAVA_HOME=/usr/lib/jvm/default-java
+# The estate CA, into both the system store and the JVM's.
 RUN set -eux; \
-    curl --header "Authorization: Bearer $ARTIFACTORY2_PASSWORD" --insecure -o /usr/local/share/ca-certificates/infra_intermediate.crt https://artifactory2.internal:443/artifactory/Public/infra_intermediate.cert.pem && \
+    curl --header "Authorization: Bearer $ARTIFACTORY2_PASSWORD" --insecure -o /usr/local/share/ca-certificates/infra_intermediate.crt "$CA_URL" && \
     update-ca-certificates && \
     keytool -noprompt -importcert -alias infra_intermediate -keystore ${JAVA_HOME}/lib/security/cacerts -storepass changeit -file /usr/local/share/ca-certificates/infra_intermediate.crt
 
-# AIFORGE 3: pin uv, so rebuilding this image does not silently change the
-# resolver that reads uv.lock.
-ARG UV_VERSION=0.9.30
+# uv is an ordinary wheel, so it comes from the same index as everything else.
 RUN pip install --break-system-packages "uv==${UV_VERSION}"
 
 ENV UV_PYTHON_INSTALL_DIR=/opt/python
 ENV UV_MANAGED_PYTHON=true
-# AIFORGE 4: UV_NO_CACHE=true was here. It makes GitLab's .uv-cache useless and
-# rules out the warm-cache air-gap fallback. Left to the job to decide.
 
 RUN set -eux; \
-    uv python install --no-progress ${PYTHON_VERSION} ${PYTHON_VERSION_AIFORGE} && \
-    ln /root/.local/bin/python3.13 /root/.local/bin/python3 && \
-    ln /root/.local/bin/python3 /root/.local/bin/python
+    uv python install --no-progress "${PYTHON_VERSION}" && \
+    ln -sf "/root/.local/bin/python${PYTHON_VERSION%.*}" /root/.local/bin/python3 && \
+    ln -sf /root/.local/bin/python3 /root/.local/bin/python
 
-# AIFORGE 5: after the installs above, never fetch an interpreter at job time —
-# an offline runner would hang or fail obscurely. Now a missing version says so.
+# After the install above: never reach for an interpreter at job time. An
+# offline runner would fail obscurely; now a version miss says so immediately.
 ENV UV_PYTHON_DOWNLOADS=never
 
-RUN export PYTHONDONTWRITEBYTECODE=1; \
-    which python3; \
-    python3 --version; \
-    uv --version; \
-    uv python list --only-installed
+# Deliberately NOT set: UV_NO_CACHE. Setting it here would make the job's
+# .uv-cache do nothing and rule out a warm-cache run with no index at all.
+
+RUN set -eux; \
+    which python3; python3 --version; python --version; \
+    uv --version; uv python list --only-installed; \
+    git --version; tmux -V; keytool -list -keystore ${JAVA_HOME}/lib/security/cacerts -storepass changeit -alias infra_intermediate >/dev/null
