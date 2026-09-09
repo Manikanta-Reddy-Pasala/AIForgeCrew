@@ -31,21 +31,24 @@ variables:
   # exist, so the scanner image there stays spelled out.
   ARTIFACTORY_HOST: "artifactory.internal"
   ARTIFACTORY_DOCKER_HOST: "docker.artifactory.internal"
+  # Any image Artifactory already mirrors. uv is NOT in it and does not need to
+  # be — it is a PyPI wheel, installed from the index below.
+  BUILD_IMAGE: "$ARTIFACTORY_DOCKER_HOST/docker-remote/python:3.12-slim"
+  UV_VERSION: "0.9.30"
 
-  # `af=` is load-bearing: with a bare URL uv sends NO auth header at all.
-  UV_DEFAULT_INDEX: "af=https://$ARTIFACTORY_HOST/artifactory/api/pypi/pypi-remote/simple"
-  UV_INDEX_AF_USERNAME: "$ARTIFACTORY_USER"
-  UV_INDEX_AF_PASSWORD: "$ARTIFACTORY_TOKEN"
+  PIP_INDEX_URL: "https://$ARTIFACTORY_HOST/artifactory/api/pypi/pypi-remote/simple"
+  UV_DEFAULT_INDEX: "$PIP_INDEX_URL"
   npm_config_registry: "https://$ARTIFACTORY_HOST/artifactory/api/npm/npm-remote/"
-  # npm has no username/password env pair like uv — auth only comes from a
-  # file, written in the script step below. userconfig is load-bearing: npm ci
-  # runs in web/ and would never read a .npmrc at the project root.
+  # Neither pip nor npm has a username/password env pair; both read a file.
+  # userconfig is load-bearing: npm ci runs in web/ and would never find a
+  # .npmrc at the project root. pip and uv both read ~/.netrc, written below.
   npm_config_userconfig: "$CI_PROJECT_DIR/.npmrc"
-  # TLS VERIFICATION OFF. uv scopes it to a host; the other three are global
-  # for the job. To turn it back on, delete these four and install the CA
-  # instead (see the commented before_script below) plus UV_NATIVE_TLS=true
-  # and NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt.
+  # TLS VERIFICATION OFF. uv and pip scope it to a host; the other three are
+  # global for the job. To turn it back on, delete these five and install the
+  # CA instead (see the commented block below) plus UV_NATIVE_TLS=true and
+  # NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt.
   UV_INSECURE_HOST: "$ARTIFACTORY_HOST"
+  PIP_TRUSTED_HOST: "$ARTIFACTORY_HOST"
   npm_config_strict_ssl: "false"
   GIT_SSL_NO_VERIFY: "true"
   NODE_TLS_REJECT_UNAUTHORIZED: "0"
@@ -54,8 +57,7 @@ variables:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
 build:
-  # Pinned: the floating python3.12-bookworm-slim tag is uv 0.9.30, uv:latest is 0.12.10.
-  image: $ARTIFACTORY_DOCKER_HOST/ghcr-remote/astral-sh/uv:0.9.30-python3.12-bookworm-slim
+  image: $BUILD_IMAGE
   stage: build
   #tags: [restricted-offline]
   extends: [.default_rules]
@@ -66,10 +68,13 @@ build:
       - .npm-cache/
   # The verifying alternative to the TLS vars above: $ARTIFACTORY_CA as a
   # File-type CI variable.
-  #before_script:
   #  - cp "$ARTIFACTORY_CA" /usr/local/share/ca-certificates/corp.crt && update-ca-certificates
-  script:
+  before_script:
+    - printf 'machine %s login %s password %s\n' "$ARTIFACTORY_HOST" "$ARTIFACTORY_USER" "$ARTIFACTORY_TOKEN" > ~/.netrc
+    - chmod 600 ~/.netrc
+    - pip install --quiet --root-user-action=ignore "uv==$UV_VERSION"
     - uv --version
+  script:
     - mkdir -p sonar blackduck test-results
 
     # A reused workspace can carry a half-written venv across jobs; uv sync does not repair one.
