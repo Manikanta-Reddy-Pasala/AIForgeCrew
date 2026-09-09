@@ -99,14 +99,34 @@ build:
     # interpreter the venv is built on.
     - apt-get install -o Acquire::https::CaInfo=/tmp/cert.pem -y --no-install-recommends curl ca-certificates git tmux python3-full python3-pip
     - mv /tmp/cert.pem /usr/local/share/ca-certificates/chain_ca.crt && update-ca-certificates
+    # Unset or empty, printf still writes a file — a malformed one. pip then
+    # gets 401, tries to PROMPT for a username, and dies in ask_input with
+    # `EOFError: EOF when reading a line` under a 40-line traceback that names
+    # neither the credential nor the host. Fail here instead.
+    - |
+      : "${ARTIFACTORY_USER:?set ARTIFACTORY_USER as a CI/CD variable}"
+      : "${ARTIFACTORY_TOKEN:?set ARTIFACTORY_TOKEN as a masked CI/CD variable}"
     - printf 'machine %s login %s password %s\n' "$ARTIFACTORY_HOST" "$ARTIFACTORY_USER" "$ARTIFACTORY_TOKEN" > ~/.netrc
     - chmod 600 ~/.netrc
+    # One request that says which of the three it is, before anything long runs.
+    - |
+      code=$(curl -sS -o /dev/null -w '%{http_code}' --netrc "$PIP_INDEX_URL" 2>/dev/null || true)
+      : "${code:=000}"
+      echo "pypi index -> HTTP $code"
+      case "$code" in
+        401) echo "401: ~/.netrc did not authenticate. machine must be the bare host ($ARTIFACTORY_HOST), and HOME here is $HOME."; exit 1 ;;
+        403) echo "403: authenticated, but this token may not read pypi-remote."; exit 1 ;;
+        404) echo "404: wrong path — check PIP_INDEX_URL."; exit 1 ;;
+        000) echo "no response: DNS, TLS or firewall, not credentials."; exit 1 ;;
+      esac
     # pip, not pipx. pipx first upgrades pip inside its own shared venv, so it
     # asks the index for `pip` as well as for `uv` — and a curated internal repo
     # often does not carry pip. That extra request is the one that fails with
     # "Could not find a version that satisfies the requirement pip>=23.1".
     # --break-system-packages because 24.04 marks the system python PEP 668.
-    - pip install --break-system-packages --quiet "uv==$UV_VERSION"
+    # --no-input: without it a 401 ends in an EOFError traceback from a prompt
+    # that can never be answered, instead of an error naming the response.
+    - pip install --break-system-packages --no-input --quiet "uv==$UV_VERSION"
     - uv --version && python3 --version && uv python find "$UV_PYTHON"
   script:
     - mkdir -p sonar blackduck test-results
