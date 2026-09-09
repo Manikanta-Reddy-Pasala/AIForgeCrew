@@ -31,11 +31,14 @@ variables:
   UV_INDEX_AF_USERNAME: "$ARTIFACTORY_USER"
   UV_INDEX_AF_PASSWORD: "$ARTIFACTORY_TOKEN"
   npm_config_registry: "https://artifactory.internal/artifactory/api/npm/npm-remote/"
-  # Both needed only for a corporate CA, and neither is redundant: uv ignores
-  # the system store (bundled webpki-roots) and node ships its own CA list.
-  # git/curl/python already read /etc/ssl/certs by default.
-  UV_NATIVE_TLS: "true"
-  NODE_EXTRA_CA_CERTS: "/etc/ssl/certs/ca-certificates.crt"
+  # TLS VERIFICATION OFF. uv scopes it to a host; the other three are global
+  # for the job. To turn it back on, delete these four and install the CA
+  # instead (see the commented before_script below) plus UV_NATIVE_TLS=true
+  # and NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt.
+  UV_INSECURE_HOST: "artifactory.internal"
+  npm_config_strict_ssl: "false"
+  GIT_SSL_NO_VERIFY: "true"
+  NODE_TLS_REJECT_UNAUTHORIZED: "0"
   UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
   npm_config_cache: "$CI_PROJECT_DIR/.npm-cache"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
@@ -51,8 +54,8 @@ build:
     paths:
       - .uv-cache/
       - .npm-cache/
-  # Corporate CA: drop $ARTIFACTORY_CA in as a File-type CI variable. Skip the
-  # whole block if Artifactory's cert is publicly trusted.
+  # The verifying alternative to the TLS vars above: $ARTIFACTORY_CA as a
+  # File-type CI variable.
   #before_script:
   #  - cp "$ARTIFACTORY_CA" /usr/local/share/ca-certificates/corp.crt && update-ca-certificates
   script:
