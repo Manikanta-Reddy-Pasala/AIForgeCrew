@@ -26,11 +26,17 @@ stages:
   - sca_analysis
 
 variables:
+  # Defaults only — a project CI/CD variable of the same name overrides them.
+  # `include:` above cannot read these: it is resolved before job variables
+  # exist, so the scanner image there stays spelled out.
+  ARTIFACTORY_HOST: "artifactory.internal"
+  ARTIFACTORY_DOCKER_HOST: "docker.artifactory.internal"
+
   # `af=` is load-bearing: with a bare URL uv sends NO auth header at all.
-  UV_DEFAULT_INDEX: "af=https://artifactory.internal/artifactory/api/pypi/pypi-remote/simple"
+  UV_DEFAULT_INDEX: "af=https://$ARTIFACTORY_HOST/artifactory/api/pypi/pypi-remote/simple"
   UV_INDEX_AF_USERNAME: "$ARTIFACTORY_USER"
   UV_INDEX_AF_PASSWORD: "$ARTIFACTORY_TOKEN"
-  npm_config_registry: "https://artifactory.internal/artifactory/api/npm/npm-remote/"
+  npm_config_registry: "https://$ARTIFACTORY_HOST/artifactory/api/npm/npm-remote/"
   # npm has no username/password env pair like uv — auth only comes from a
   # file, written in the script step below. userconfig is load-bearing: npm ci
   # runs in web/ and would never read a .npmrc at the project root.
@@ -39,7 +45,7 @@ variables:
   # for the job. To turn it back on, delete these four and install the CA
   # instead (see the commented before_script below) plus UV_NATIVE_TLS=true
   # and NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt.
-  UV_INSECURE_HOST: "artifactory.internal"
+  UV_INSECURE_HOST: "$ARTIFACTORY_HOST"
   npm_config_strict_ssl: "false"
   GIT_SSL_NO_VERIFY: "true"
   NODE_TLS_REJECT_UNAUTHORIZED: "0"
@@ -49,7 +55,7 @@ variables:
 
 build:
   # Pinned: the floating python3.12-bookworm-slim tag is uv 0.9.30, uv:latest is 0.12.10.
-  image: docker.artifactory.internal/ghcr-remote/astral-sh/uv:0.9.30-python3.12-bookworm-slim
+  image: $ARTIFACTORY_DOCKER_HOST/ghcr-remote/astral-sh/uv:0.9.30-python3.12-bookworm-slim
   stage: build
   #tags: [restricted-offline]
   extends: [.default_rules]
@@ -95,12 +101,12 @@ build:
     - cp test-results/junit.xml sonar/junit.xml
 
     # Host-only scoping is enough, the registry path does not have to match.
-    # Basic instead of bearer: //host/:_auth=$(printf '%s:%s' "$ARTIFACTORY_USER" "$ARTIFACTORY_TOKEN" | base64 -w0)
+    # Basic instead of bearer: //$ARTIFACTORY_HOST/:_auth=$(printf '%s:%s' "$ARTIFACTORY_USER" "$ARTIFACTORY_TOKEN" | base64 -w0)
     - |
       if [ ! -f web/package.json ]; then
         echo "no web/package.json — nothing to build"
       else
-        printf '//artifactory.internal/:_authToken=%s\n' "$ARTIFACTORY_TOKEN" > "$CI_PROJECT_DIR/.npmrc"
+        printf '//%s/:_authToken=%s\n' "$ARTIFACTORY_HOST" "$ARTIFACTORY_TOKEN" > "$CI_PROJECT_DIR/.npmrc"
         (cd web && npm ci --no-audit --no-fund && npm run build)
       fi
 
