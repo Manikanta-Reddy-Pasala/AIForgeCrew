@@ -37,7 +37,7 @@ variables:
 build:
   image: python:3.12
   stage: build
-  tags: [restricted-online]
+  #tags: [restricted-online]
   extends: [.default_rules]
   cache:
     key: "uv-$CI_COMMIT_REF_SLUG"
