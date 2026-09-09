@@ -123,6 +123,14 @@ override-dependencies = [
   "pygments>=2.20.0",
 ]
 
+# Artifactory first: uv searches declared indexes in order and appends PyPI as
+# the fallback, so on the offline runner nothing reaches the fallback. Off the
+# estate this index is unreachable, which matters for `uv lock`, not for
+# `uv sync --frozen`.
+[[tool.uv.index]]
+name = "internal"
+url = "https://artifactory.internal:443/artifactory/api/pypi/pypi-remote/simple/"
+
 [tool.uv.sources]
 # aiforge-memory is vendored in-repo (packages/aiforge_memory/) rather than
 # pulled from its own git repo. uv installs it editable from this path.

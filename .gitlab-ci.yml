@@ -31,33 +31,42 @@ variables:
   # exist, so the scanner image there stays spelled out.
   ARTIFACTORY_HOST: "artifactory.internal"
   ARTIFACTORY_DOCKER_HOST: "docker.artifactory.internal"
-  # ci/build-image.Dockerfile, or any image Artifactory already mirrors — uv is
-  # a PyPI wheel and before_script installs it when the image has none.
-  BUILD_IMAGE: "$ARTIFACTORY_DOCKER_HOST/docker-remote/python:3.12-slim"
-  UV_VERSION: "0.9.30"
-  # 3.12, not 3.13: uv.lock pins numpy 1.26.4, which has no cp313 wheel, and
-  # building it from the sdist needs a C compiler the build image omits.
+  BUILD_IMAGE: "$ARTIFACTORY_DOCKER_HOST/docker-remote/ubuntu:24.04"
+  UBUNTU_SUITE: "noble"
+  UV_VERSION: "0.12.10"
+  # 3.12, not 3.13: uv.lock pins numpy 1.26.4, which publishes no cp313 wheel,
+  # so on 3.13 uv falls back to the sdist and wants a C compiler that is not
+  # installed. 3.13 also fails three of the TLS chain tests.
   UV_PYTHON: "3.12"
-  # The build image may bake UV_NO_CACHE=true, which would make the cache below
-  # do nothing.
-  UV_NO_CACHE: "false"
 
-  PIP_INDEX_URL: "https://$ARTIFACTORY_HOST/artifactory/api/pypi/pypi-remote/simple"
-  UV_DEFAULT_INDEX: "$PIP_INDEX_URL"
+  # Artifactory proxies, one per package manager.
+  APT_REMOTE: "https://$ARTIFACTORY_HOST/artifactory/debian-remote"
+  APT_SECURITY_REMOTE: "https://$ARTIFACTORY_HOST/artifactory/security-debian-remote"
+  PIP_INDEX_URL: "https://$ARTIFACTORY_HOST:443/artifactory/api/pypi/pypi-remote/simple/"
   npm_config_registry: "https://$ARTIFACTORY_HOST/artifactory/api/npm/npm-remote/"
+  # The pypi index also lives in pyproject.toml ([[tool.uv.index]]), which is
+  # what makes `uv lock` and a developer's own sync use it.
+
+  # The interpreter is apt's: noble ships 3.12.3, which is what the lock wants,
+  # so uv never fetches one. Both switches together mean a miss fails loudly
+  # instead of quietly reaching for python-build-standalone on github.com.
+  # If Artifactory does proxy that (a github-remote repository), the other route
+  # is UV_PYTHON_INSTALL_MIRROR pointed at
+  # <host>/artifactory/github-remote/astral-sh/python-build-standalone/releases/download
+  # plus `uv python install --system-certs "$UV_PYTHON"` in before_script.
+  UV_PYTHON_DOWNLOADS: "never"
+  UV_PYTHON_PREFERENCE: "only-system"
+
+  # TLS verification is ON: the CA is installed in before_script. uv reads
+  # bundled Mozilla roots unless told otherwise, and node ships its own list;
+  # git, curl and pip read the system store once update-ca-certificates has run.
+  UV_SYSTEM_CERTS: "true"
+  NODE_EXTRA_CA_CERTS: "/etc/ssl/certs/ca-certificates.crt"
+
   # Neither pip nor npm has a username/password env pair; both read a file.
   # userconfig is load-bearing: npm ci runs in web/ and would never find a
   # .npmrc at the project root. pip and uv both read ~/.netrc, written below.
   npm_config_userconfig: "$CI_PROJECT_DIR/.npmrc"
-  # TLS VERIFICATION OFF. uv and pip scope it to a host; the other three are
-  # global for the job. To turn it back on, delete these five and install the
-  # CA instead (see the commented block below) plus UV_NATIVE_TLS=true and
-  # NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt.
-  UV_INSECURE_HOST: "$ARTIFACTORY_HOST"
-  PIP_TRUSTED_HOST: "$ARTIFACTORY_HOST"
-  npm_config_strict_ssl: "false"
-  GIT_SSL_NO_VERIFY: "true"
-  NODE_TLS_REJECT_UNAUTHORIZED: "0"
   UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
   npm_config_cache: "$CI_PROJECT_DIR/.npm-cache"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
@@ -72,15 +81,31 @@ build:
     paths:
       - .uv-cache/
       - .npm-cache/
-  # The verifying alternative to the TLS vars above: $ARTIFACTORY_CA as a
-  # File-type CI variable.
-  #  - cp "$ARTIFACTORY_CA" /usr/local/share/ca-certificates/corp.crt && update-ca-certificates
+  # $ARTIFACTORY_CA is a File-type CI/CD variable holding the chain PEM.
+  # apt needs it before it can install anything, hence the explicit CaInfo on
+  # the first two calls — after update-ca-certificates the system store carries
+  # it and nothing else needs to be told.
   before_script:
+    - cp "$ARTIFACTORY_CA" /tmp/cert.pem
+    - rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*
+    - |
+      for suite in "$UBUNTU_SUITE" "$UBUNTU_SUITE-updates" "$UBUNTU_SUITE-backports"; do
+        echo "deb $APT_REMOTE $suite main universe restricted multiverse"
+      done > /etc/apt/sources.list.d/artifactory.list
+    - echo "deb $APT_SECURITY_REMOTE $UBUNTU_SUITE main universe restricted multiverse" >> /etc/apt/sources.list.d/artifactory.list
+    - apt-get update -o Acquire::https::CaInfo=/tmp/cert.pem
+    # git because the job runs in a repository; tmux (~1MB) because the
+    # persistent-shell tests skip without it; python3 because it is the
+    # interpreter the venv is built on.
+    - apt-get install -o Acquire::https::CaInfo=/tmp/cert.pem -y --no-install-recommends curl ca-certificates git tmux pipx python3-full python3-pip
+    - mv /tmp/cert.pem /usr/local/share/ca-certificates/chain_ca.crt && update-ca-certificates
     - printf 'machine %s login %s password %s\n' "$ARTIFACTORY_HOST" "$ARTIFACTORY_USER" "$ARTIFACTORY_TOKEN" > ~/.netrc
     - chmod 600 ~/.netrc
-    - command -v uv >/dev/null || pip install --quiet --root-user-action=ignore "uv==$UV_VERSION"
-    - uv --version && uv python find "$UV_PYTHON"
+    - pipx install "uv==$UV_VERSION"
+    - export PATH="/root/.local/bin:$PATH"
+    - uv --version && python3 --version && uv python find "$UV_PYTHON"
   script:
+    - export PATH="/root/.local/bin:$PATH"
     - mkdir -p sonar blackduck test-results
 
     # A reused workspace can carry a half-written venv across jobs; uv sync does not repair one.
