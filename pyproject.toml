@@ -123,13 +123,17 @@ override-dependencies = [
   "pygments>=2.20.0",
 ]
 
-# Artifactory first: uv searches declared indexes in order and appends PyPI as
-# the fallback, so on the offline runner nothing reaches the fallback. Off the
-# estate this index is unreachable, which matters for `uv lock`, not for
-# `uv sync --frozen`.
+# default = true, so PyPI is not consulted at all and `uv lock` records THIS
+# host in uv.lock. That last part is the whole point: `uv sync --frozen` fetches
+# the URLs written in the lock and never asks the configured index, so a lock
+# resolved against PyPI sends the offline runner to files.pythonhosted.org no
+# matter what is configured here. Verified: with a PyPI-resolved lock and a
+# different index configured, uv made ZERO requests to that index.
+# Re-lock through the `relock` job whenever dependencies change.
 [[tool.uv.index]]
 name = "internal"
 url = "https://artifactory.internal:443/artifactory/api/pypi/pypi-remote/simple/"
+default = true
 
 [tool.uv.sources]
 # aiforge-memory is vendored in-repo (packages/aiforge_memory/) rather than
