@@ -97,15 +97,18 @@ build:
     # git because the job runs in a repository; tmux (~1MB) because the
     # persistent-shell tests skip without it; python3 because it is the
     # interpreter the venv is built on.
-    - apt-get install -o Acquire::https::CaInfo=/tmp/cert.pem -y --no-install-recommends curl ca-certificates git tmux pipx python3-full python3-pip
+    - apt-get install -o Acquire::https::CaInfo=/tmp/cert.pem -y --no-install-recommends curl ca-certificates git tmux python3-full python3-pip
     - mv /tmp/cert.pem /usr/local/share/ca-certificates/chain_ca.crt && update-ca-certificates
     - printf 'machine %s login %s password %s\n' "$ARTIFACTORY_HOST" "$ARTIFACTORY_USER" "$ARTIFACTORY_TOKEN" > ~/.netrc
     - chmod 600 ~/.netrc
-    - pipx install "uv==$UV_VERSION"
-    - export PATH="/root/.local/bin:$PATH"
+    # pip, not pipx. pipx first upgrades pip inside its own shared venv, so it
+    # asks the index for `pip` as well as for `uv` — and a curated internal repo
+    # often does not carry pip. That extra request is the one that fails with
+    # "Could not find a version that satisfies the requirement pip>=23.1".
+    # --break-system-packages because 24.04 marks the system python PEP 668.
+    - pip install --break-system-packages --quiet "uv==$UV_VERSION"
     - uv --version && python3 --version && uv python find "$UV_PYTHON"
   script:
-    - export PATH="/root/.local/bin:$PATH"
     - mkdir -p sonar blackduck test-results
 
     # A reused workspace can carry a half-written venv across jobs; uv sync does not repair one.
