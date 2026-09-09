@@ -63,6 +63,16 @@ while the job runs with TLS verification off. If you turn verification back on,
 a trust store holding an intermediate but no root does not verify a server that
 sends a bare leaf.
 
+## Moving this to its own repo
+
+The file uses no build context — no `COPY`, nothing read from the working
+directory — so it drops into a standalone repo unchanged. Build it there, push
+the tag to Artifactory, and point `BUILD_IMAGE` in AIForgeCrew's
+`.gitlab-ci.yml` at it. Keep `UV_VERSION` and `PYTHON_VERSION_AIFORGE` in step
+with what AIForgeCrew's `uv.lock` needs; the job asserts the interpreter is
+there with `uv python find "$UV_PYTHON"` in before_script, so a mismatch fails
+in the first seconds rather than at the numpy build.
+
 ## Verified, on a real container
 
 - `python:3.12-slim`, `ubuntu:24.04`, and this layout were each run end to end.
@@ -74,3 +84,24 @@ sends a bare leaf.
   git-shelling-out tests, and meant nothing.
 - `apt-get dist-clean` is a real subcommand on Ubuntu 24.04's apt.
 - tmux 3.4 and git 2.43.0 come from the 24.04 archive.
+
+The image itself was BUILT and then run through the whole job body:
+
+- `docker build` completes all 17 steps. Both interpreters install,
+  `update-ca-certificates` and `keytool` run, and `python3` still resolves to
+  3.13.7, so nothing else using this image sees a different default.
+- In the built image: `uv python find 3.12`, a 3.12.11 venv, `uv sync
+  --all-extras --dev --frozen`, sdist + wheel, the node shims (node v24.19.0,
+  npm 11.17.0), tmux 3.4 and git 2.43.0 on PATH.
+- pytest with the job's own --cov/--junitxml flags over tests/python/net and
+  tests/python/llm: 486 passed, junit.xml parses to 486 tests / 0 failures,
+  coverage.xml is valid cobertura. That subset includes the test_ca_chain tests
+  that fail on 3.13.
+- `npm ci` + `vite build` in 210ms, web/dist/index.html written.
+- `uv export` 690 lines, CycloneDX SBOM 204 components.
+- With UV_NO_CACHE=false the cache fills: 33174 files.
+
+One layer cannot be tested outside your network: the certificate is fetched
+from `artifactory2.internal`. The build above substituted a locally generated
+certificate for that one `curl`, so `update-ca-certificates` and `keytool` were
+exercised for real while the fetch itself was not.
