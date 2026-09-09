@@ -1,6 +1,22 @@
 # AIForgeCrew — build stage that emits sonar/ and blackduck/ scan inputs.
 # The scans themselves come from the shared templates below (same ones
 # omni-server uses); this file only has to produce what they consume.
+#
+# OFFLINE RUNNER. Nothing here fetches from the public internet. Every earlier
+# egress is gone:
+#   * `apt-get update && apt-get install curl ca-certificates` — an apt mirror
+#     the offline runner cannot reach, installing what the image already has.
+#   * `curl -LsSf https://astral.sh/uv/install.sh | sh` — astral.sh. The image
+#     ships uv instead (python:3.12 does NOT carry uv: verified, `command -v uv`
+#     is empty there, only pip).
+#   * `uv run --with build|pytest-cov|cyclonedx-bom` — each `--with` RESOLVES
+#     AGAINST THE INDEX at job time. They are the `ci` extra now, so they come
+#     out of uv.lock with everything else.
+#   * `npm ci` reaching registry.npmjs.org, and node itself. Node arrives as the
+#     nodejs-wheel-binaries wheel (the `toolchain` extra) — same index, same
+#     lock, same CA as every other dependency.
+# What remains is Artifactory, which the restricted runner is expected to reach.
+# For a TRUE air gap (not even Artifactory), see the UV_OFFLINE note below.
 
 include:
   # SonarQube scan (same shared template omni-server uses)
@@ -29,33 +45,90 @@ stages:
   - sca_analysis
 
 variables:
-  PIP_CACHE_DIR: ${CI_PROJECT_DIR}/.cache/pip
+  # ---- Artifactory ----
+  # PyPI. `UV_INDEX_URL` still works but uv deprecates it in favour of
+  # `UV_DEFAULT_INDEX` (`uv help sync` says so) — use the current name.
+  # DEFAULT, not `UV_INDEX`: an extra index would leave pypi.org as the
+  # fallback, and a fallback the runner cannot reach is a hang, not an error.
+  #
+  # NOTE THE `af=` PREFIX. The index must be NAMED or the credential env vars
+  # below bind to NOTHING and uv sends the request unauthenticated — verified
+  # against a server that logged the Authorization header: named index => the
+  # Basic header arrives, the same vars with a BARE url => no header at all,
+  # which Artifactory answers 401 and the job blames on the token.
+  # The name uppercases into the var: af -> UV_INDEX_AF_USERNAME/_PASSWORD.
+  UV_DEFAULT_INDEX: "af=https://artifactory.internal/artifactory/api/pypi/pypi-remote/simple"
+  UV_INDEX_AF_USERNAME: "$ARTIFACTORY_USER"
+  UV_INDEX_AF_PASSWORD: "$ARTIFACTORY_TOKEN"   # masked+protected CI variable
+  npm_config_registry: "https://artifactory.internal/artifactory/api/npm/npm-remote/"
+  # npm has no equivalent env pair; it wants the token in .npmrc, keyed by the
+  # registry host. Written in before_script rather than committed:
+  #   before_script:
+  #     - printf '//artifactory.internal/artifactory/api/npm/npm-remote/:_auth=%s\n' "$ARTIFACTORY_NPM_B64" > "$CI_PROJECT_DIR/.npmrc"
+  #
+  # Do NOT embed credentials in the index URL. It works (verified) but the URL
+  # is echoed in the job log with the token in it. A $NETRC file also works if
+  # you would rather not name the index.
+
+  # ---- TLS ----
+  # Artifactory behind the corporate CA. --native-tls makes uv use the OS trust
+  # store, which is where the base image should have the CA installed; the
+  # explicit file vars cover git, curl and node, none of which read uv's config.
+  # Same gap as AIFORGE_CA_BUNDLE closed at runtime: REST verified while
+  # `git clone` against the same host failed, because nothing set GIT_SSL_CAINFO.
+  UV_NATIVE_TLS: "true"
+  SSL_CERT_FILE: "/etc/ssl/certs/ca-certificates.crt"
+  GIT_SSL_CAINFO: "/etc/ssl/certs/ca-certificates.crt"
+  CURL_CA_BUNDLE: "/etc/ssl/certs/ca-certificates.crt"
+  NODE_EXTRA_CA_CERTS: "/etc/ssl/certs/ca-certificates.crt"
+
   UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
+  npm_config_cache: "$CI_PROJECT_DIR/.npm-cache"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+  # TRUE AIR GAP (Artifactory unreachable too): warm .uv-cache/ and .npm-cache/
+  # from a pipeline that ran online, keep them as a cache, and set
+  #   UV_OFFLINE: "1"          # uv --offline; nothing leaves the box
+  #   npm_config_offline: "true"
+  # Or vendor wheels and set UV_FIND_LINKS=vendor/ with --no-index. All three
+  # flags are real (`uv help sync`); none of them is needed while the runner can
+  # still see Artifactory.
 
 # ---- build ----
 build:
-  image: python:3.12
+  # python:3.12 has NO uv — checked, not assumed. This image is uv + CPython:
+  # 261MB, vs 1.55GB for the bookworm (non-slim) variant and 1.62GB for
+  # python:3.12. Nothing in this repo compiles from source (run.sh was proved
+  # end to end in a bare python:3.12-slim), so slim is enough.
+  #
+  # PINNED, and mirrored into Artifactory — a public ghcr.io pull is egress the
+  # offline runner does not have. Pin the VERSION: the floating
+  # `python3.12-bookworm-slim` tag currently serves uv 0.9.30 while
+  # `uv:latest` is 0.12.10, so "the same tag" is not the same uv.
+  # 0.9.30 reads this repo's uv.lock (revision 3) — verified with
+  # `uv sync --frozen --all-extras --dev --dry-run`, not inferred.
+  image: docker.artifactory.internal/ghcr-remote/astral-sh/uv:0.9.30-python3.12-bookworm-slim
   stage: build
-  #tags: [restricted-online]
+  # LEFT COMMENTED OUT, as f009c3e3 set it — untagged, so any runner may take
+  # the job. When you do pin it, the tag is the OFFLINE pool: the old value
+  # was `restricted-online`, a runner WITH egress, and nothing below needs one.
+  #tags: [restricted-offline]
   extends: [.default_rules]
   cache:
     key: "uv-$CI_COMMIT_REF_SLUG"
     paths:
       - .uv-cache/
-  before_script:
-    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
-    # tmux: the Doer's bash tool keeps ONE session per run, which is what makes
-    # `cd` / `export` persist between bash() calls. Without the binary those
-    # tests can only skip — and the pty-echo bug they now cover went unnoticed
-    # for exactly that reason. ~1MB, so install it and let CI really run them.
-    # BEST-EFFORT on purpose: a restricted apt mirror that does not carry tmux
-    # must not take the pipeline down — before_script failing means no tests,
-    # no coverage.xml, and an artifact upload with nothing to upload.
-    - apt-get install -y --no-install-recommends tmux || echo 'tmux unavailable here - the persistent-shell tests will skip'
-    - curl -LsSf https://astral.sh/uv/install.sh | sh
-    - . "$HOME/.local/bin/env"
+      - .npm-cache/
+  # NO before_script for the TOOLCHAIN. It existed only to install
+  # curl/ca-certificates (already in the image) and to pipe astral.sh's
+  # installer into a shell. (An authenticated npm registry still needs one, to
+  # write .npmrc — see above.)
+  # tmux went with
+  # it: the persistent-shell tests need the binary and an offline runner has no
+  # apt mirror to get it from, so they SKIP here. Want them to really run? Bake
+  # tmux into the internal base image — ~1MB — do not put apt back in the job.
   script:
+    - uv --version
     - mkdir -p sonar blackduck test-results
 
     # ---------- deps + package ----------
@@ -65,13 +138,31 @@ build:
     # importing DEFAULT_MINIMUM_PROMPT_CACHE_TOKEN_COUNT from its constants.py,
     # both of which ship in the pinned 1.98.0). uv sync repairs what it tracks,
     # not a venv someone else half-wrote, so rebuild it; .uv-cache keeps it fast.
-    # --frozen => resolve from uv.lock exactly (Black Duck must see the SHIPPED versions)
+    # --frozen => resolve from uv.lock exactly (Black Duck must see the SHIPPED
+    # versions, and a frozen sync makes no resolution requests).
     - rm -rf .venv
     - uv sync --all-extras --dev --frozen
-    - uv run --with build python -m build --sdist --wheel
+    - uv run python -m build --sdist --wheel
+
+    # ---------- node, from the wheel (no nodejs.org, no apt) ----------
+    # nodejs-wheel-binaries is in the `toolchain` extra, so --all-extras already
+    # installed node/npm/npx into site-packages. TRAP, verified in this exact
+    # image: the wheel's own bin/npm dies (`/usr/bin/env: 'node': No such file`)
+    # and putting its bin/ on PATH does NOT fix it — npm and npx then fail with
+    # MODULE_NOT_FOUND. Only calling node against npm-cli.js works. Same shims
+    # run.sh writes.
+    - |
+      NW="$(.venv/bin/python -c 'import nodejs_wheel, pathlib; print(pathlib.Path(nodejs_wheel.__file__).parent)')"
+      ln -sf "$NW/bin/node" .venv/bin/node
+      for t in npm npx; do
+        printf '#!/bin/sh\nexec "%s/bin/node" "%s/lib/node_modules/npm/bin/%s-cli.js" "$@"\n' "$NW" "$NW" "$t" > ".venv/bin/$t"
+        chmod +x ".venv/bin/$t"
+      done
+      export PATH="$CI_PROJECT_DIR/.venv/bin:$PATH"
+      node --version && npm --version
 
     # ---------- tests -> sonar/ ----------
-    # pytest-cov is NOT in [dev]; --with injects it without touching pyproject.
+    # pytest-cov comes from the `ci` extra (uv.lock), NOT from `--with`.
     #
     # NO -m HERE ON PURPOSE. pyproject's addopts already deselects every
     # live-only marker, and a -m on the command line REPLACES that list rather
@@ -81,7 +172,7 @@ build:
     # has never registered, while missing live_tmux / live_ga / live_jupyter /
     # live_aider. Markers live in pyproject; this job just runs pytest.
     - >
-      uv run --with pytest-cov pytest
+      uv run pytest
       -q
       --junitxml=test-results/junit.xml
       --cov=aiforge_core --cov=scripts
@@ -89,21 +180,17 @@ build:
       --cov-report=term
     - cp test-results/junit.xml sonar/junit.xml
 
-    # ---------- frontend (Sonar reads web/src; skip if no web/) ----------
-    # python:3.12 has no node — `npm ci` there is "npm: command not found",
-    # which failed the whole job AFTER a green test run. Sonar analyses
-    # web/src as SOURCE, it never reads web/dist, and Black Duck gets
-    # package-lock.json copied below, so the built UI is not an input to
-    # either scan: build it when npm happens to be present, skip loudly
-    # otherwise. (Want the built UI in the artifacts? Install node in
-    # before_script — it is not needed for the scans.)
+    # ---------- frontend (Sonar reads web/src) ----------
+    # npm now exists (shim above), and the registry is Artifactory. `npm ci`
+    # obeys package-lock.json, so it installs the SHIPPED versions — same
+    # contract as `uv sync --frozen`. Sonar analyses web/src as SOURCE and never
+    # reads web/dist, and Black Duck gets package-lock.json copied below, so a
+    # missing web/ is not fatal to either scan.
     - |
       if [ ! -f web/package.json ]; then
         echo "no web/package.json — nothing to build"
-      elif command -v npm >/dev/null 2>&1; then
-        (cd web && npm ci --no-audit --no-fund && npm run build)
       else
-        echo "npm not on PATH — skipping the web build (Sonar reads web/src, not web/dist)"
+        (cd web && npm ci --no-audit --no-fund && npm run build)
       fi
 
     # ---------- sonar/sonar-project.properties ----------
@@ -122,8 +209,9 @@ build:
       if [ -f web/package-lock.json ]; then
         mkdir -p blackduck/web && cp web/package.json web/package-lock.json blackduck/web/
       fi
-    # CycloneDX SBOM of the ACTUAL resolved venv (catches transitive pins the lock text hides)
-    - uv run --with cyclonedx-bom cyclonedx-py environment .venv -o blackduck/sbom.cyclonedx.json
+    # CycloneDX SBOM of the ACTUAL resolved venv (catches transitive pins the
+    # lock text hides). cyclonedx-bom is in the `ci` extra now.
+    - uv run cyclonedx-py environment .venv -o blackduck/sbom.cyclonedx.json
     - cp dist/*.whl dist/*.tar.gz blackduck/ 2>/dev/null || true
     - ls -R sonar blackduck
 
