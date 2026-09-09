@@ -31,10 +31,16 @@ variables:
   # exist, so the scanner image there stays spelled out.
   ARTIFACTORY_HOST: "artifactory.internal"
   ARTIFACTORY_DOCKER_HOST: "docker.artifactory.internal"
-  # Any image Artifactory already mirrors. uv is NOT in it and does not need to
-  # be — it is a PyPI wheel, installed from the index below.
+  # ci/build-image.Dockerfile, or any image Artifactory already mirrors — uv is
+  # a PyPI wheel and before_script installs it when the image has none.
   BUILD_IMAGE: "$ARTIFACTORY_DOCKER_HOST/docker-remote/python:3.12-slim"
   UV_VERSION: "0.9.30"
+  # 3.12, not 3.13: uv.lock pins numpy 1.26.4, which has no cp313 wheel, and
+  # building it from the sdist needs a C compiler the build image omits.
+  UV_PYTHON: "3.12"
+  # The build image may bake UV_NO_CACHE=true, which would make the cache below
+  # do nothing.
+  UV_NO_CACHE: "false"
 
   PIP_INDEX_URL: "https://$ARTIFACTORY_HOST/artifactory/api/pypi/pypi-remote/simple"
   UV_DEFAULT_INDEX: "$PIP_INDEX_URL"
@@ -72,8 +78,8 @@ build:
   before_script:
     - printf 'machine %s login %s password %s\n' "$ARTIFACTORY_HOST" "$ARTIFACTORY_USER" "$ARTIFACTORY_TOKEN" > ~/.netrc
     - chmod 600 ~/.netrc
-    - pip install --quiet --root-user-action=ignore "uv==$UV_VERSION"
-    - uv --version
+    - command -v uv >/dev/null || pip install --quiet --root-user-action=ignore "uv==$UV_VERSION"
+    - uv --version && uv python find "$UV_PYTHON"
   script:
     - mkdir -p sonar blackduck test-results
 
