@@ -31,6 +31,10 @@ variables:
   UV_INDEX_AF_USERNAME: "$ARTIFACTORY_USER"
   UV_INDEX_AF_PASSWORD: "$ARTIFACTORY_TOKEN"
   npm_config_registry: "https://artifactory.internal/artifactory/api/npm/npm-remote/"
+  # npm has no username/password env pair like uv — auth only comes from a
+  # file, written in the script step below. userconfig is load-bearing: npm ci
+  # runs in web/ and would never read a .npmrc at the project root.
+  npm_config_userconfig: "$CI_PROJECT_DIR/.npmrc"
   # TLS VERIFICATION OFF. uv scopes it to a host; the other three are global
   # for the job. To turn it back on, delete these four and install the CA
   # instead (see the commented before_script below) plus UV_NATIVE_TLS=true
@@ -90,10 +94,13 @@ build:
       --cov-report=term
     - cp test-results/junit.xml sonar/junit.xml
 
+    # Host-only scoping is enough, the registry path does not have to match.
+    # Basic instead of bearer: //host/:_auth=$(printf '%s:%s' "$ARTIFACTORY_USER" "$ARTIFACTORY_TOKEN" | base64 -w0)
     - |
       if [ ! -f web/package.json ]; then
         echo "no web/package.json — nothing to build"
       else
+        printf '//artifactory.internal/:_authToken=%s\n' "$ARTIFACTORY_TOKEN" > "$CI_PROJECT_DIR/.npmrc"
         (cd web && npm ci --no-audit --no-fund && npm run build)
       fi
 
