@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import pytest
 from aiforge_core.runtime import doer_tools as dt
+from aiforge_core.runtime.doer_tools import _web
 
 
 def _names(role):
@@ -46,20 +47,30 @@ def test_web_read_is_gated_like_everything_else(monkeypatch):
     monkeypatch.delenv("AIFORGE_WEB_FETCH_DISABLE", raising=False)
     monkeypatch.delenv("AIFORGE_WEB_SEARCH_DISABLE", raising=False)
     reached = {"n": 0}
-    monkeypatch.setattr(dt, "_do_fetch",
+    # Patch the module that DEFINES _do_fetch, not the package that re-exports
+    # it. `dt._do_fetch` is a second name bound at import time; web_read looks
+    # the function up in _web's own globals, so rebinding the alias patched
+    # nothing and the call went to the real network. That made both halves of
+    # this test lie: the "reached the network" assertion could never fire, and
+    # the switch-on assertion was really testing that example.com was
+    # reachable — so it passed on a laptop and failed on an offline runner.
+    monkeypatch.setattr(_web, "_do_fetch",
                         lambda url: reached.__setitem__("n", 1) or {"ok": True})
     assert dt.web_read("https://example.com")["ok"] is False
     assert reached["n"] == 0, "web_read reached the network with the switch off"
     monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
     assert dt.web_read("https://example.com")["ok"] is True
+    assert reached["n"] == 1, "web_read did not reach _do_fetch with the switch on"
 
 
 def test_fetch_url_still_gated(monkeypatch):
     monkeypatch.delenv("AIFORGE_ALLOW_WEB_FETCH", raising=False)
     called = {"n": 0}
-    monkeypatch.setattr(dt, "_do_fetch", lambda url: called.__setitem__("n", called["n"] + 1) or {"ok": True})
+    # _web, not dt — see the note in the test above.
+    monkeypatch.setattr(_web, "_do_fetch", lambda url: called.__setitem__("n", called["n"] + 1) or {"ok": True})
     r = dt.fetch_url("https://example.com")
     assert r["ok"] is False
     assert called["n"] == 0
     monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
     assert dt.fetch_url("https://example.com")["ok"] is True
+    assert called["n"] == 1

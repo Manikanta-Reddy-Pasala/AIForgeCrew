@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -88,9 +89,26 @@ def box(tmp_path, toolless_path):
 
 
 def _run(box, args, timeout=120):
+    """Run run.sh in an ISOLATED workspace — never in the repository itself.
+
+    cwd used to be REPO. On a developer box with no .venv that happened to
+    behave, but CI builds the .venv first, and the `toolchain` extra puts a uv
+    INSIDE it. run.sh looks there (`.venv/bin/uv`), finds the project already
+    installed, and goes on to launch the whole stack — which never returns, so
+    the test died on its own 120s timeout instead of on anything it asserts.
+
+    The box fixture is a machine WITHOUT uv. A checkout with a populated .venv
+    is not that machine, so give run.sh an empty directory to be that machine
+    in. It creates its own .venv there (stdlib only, no download), finds no uv,
+    prints the install hint, and exits — which is the behaviour under test.
+    """
+    work = box["tmp"] / "work"
+    if not work.exists():
+        work.mkdir()
+        shutil.copy(RUN_SH, work / "run.sh")
     env = dict(os.environ)
     env.update(box["env"])
-    return subprocess.run(["bash", str(RUN_SH), *args], cwd=str(REPO),
+    return subprocess.run(["bash", str(work / "run.sh"), *args], cwd=str(work),
                           capture_output=True, text=True, env=env,
                           timeout=timeout)
 
@@ -197,7 +215,6 @@ def test_a_missing_uv_never_reaches_astral_sh(box):
 
 def test_the_script_writes_no_configuration_at_all(box, tmp_path):
     """The env file is fixed and committed; a run must not edit it."""
-    import shutil
     script = tmp_path / "run.sh"
     shutil.copy(RUN_SH, script)
     env = tmp_path / "aiforge.env"
