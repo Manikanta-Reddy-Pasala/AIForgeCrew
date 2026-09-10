@@ -31,7 +31,7 @@ variables:
   # exist, so the scanner image there stays spelled out.
   ARTIFACTORY_HOST: "artifactory.internal"
   ARTIFACTORY_DOCKER_HOST: "docker.artifactory.internal"
-  BUILD_IMAGE: "ubuntu:24.04"
+  BUILD_IMAGE: "$ARTIFACTORY_DOCKER_HOST/docker-remote/ubuntu:24.04"
   UBUNTU_SUITE: "noble"
   UV_VERSION: "0.12.10"
   # 3.12, not 3.13: uv.lock pins numpy 1.26.4, which publishes no cp313 wheel,
@@ -44,8 +44,10 @@ variables:
   APT_SECURITY_REMOTE: "https://$ARTIFACTORY_HOST/artifactory/security-debian-remote"
   PIP_INDEX_URL: "https://$ARTIFACTORY_HOST:443/artifactory/api/pypi/pypi-remote/simple/"
   npm_config_registry: "https://$ARTIFACTORY_HOST/artifactory/api/npm/npm-remote/"
-  # The pypi index also lives in pyproject.toml ([[tool.uv.index]]), which is
-  # what makes `uv lock` and a developer's own sync use it.
+  # The pypi index also lives in pyproject.toml, as the DEFAULT
+  # [[tool.uv.index]] — that is what makes `uv lock` write this host into
+  # uv.lock. It does not affect `uv sync --frozen`, which only ever fetches the
+  # URLs already in the lock.
 
   # The interpreter is apt's: noble ships 3.12.3, which is what the lock wants,
   # so uv never fetches one. Both switches together mean a miss fails loudly
@@ -71,16 +73,7 @@ variables:
   npm_config_cache: "$CI_PROJECT_DIR/.npm-cache"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
-build:
-  image: $BUILD_IMAGE
-  stage: build
-  #tags: [restricted-offline]
-  extends: [.default_rules]
-  cache:
-    key: "uv-$CI_COMMIT_REF_SLUG"
-    paths:
-      - .uv-cache/
-      - .npm-cache/
+.artifactory_setup:
   # $ARTIFACTORY_CA is a File-type CI/CD variable holding the chain PEM.
   # apt needs it before it can install anything, hence the explicit CaInfo on
   # the first two calls — after update-ca-certificates the system store carries
@@ -128,8 +121,29 @@ build:
     # that can never be answered, instead of an error naming the response.
     - pip install --break-system-packages --no-input --quiet "uv==$UV_VERSION"
     - uv --version && python3 --version && uv python find "$UV_PYTHON"
+
+build:
+  image: $BUILD_IMAGE
+  stage: build
+  #tags: [restricted-offline]
+  extends: [.default_rules, .artifactory_setup]
+  cache:
+    key: "uv-$CI_COMMIT_REF_SLUG"
+    paths:
+      - .uv-cache/
+      - .npm-cache/
   script:
     - mkdir -p sonar blackduck test-results
+    # `uv sync --frozen` fetches the URLs recorded in uv.lock and never asks the
+    # configured index. A lock resolved against PyPI therefore sends this runner
+    # to files.pythonhosted.org, where it spends 46s per package before failing.
+    # Say so in one line instead.
+    - |
+      if grep -q 'registry = "https://pypi.org/simple"' uv.lock; then
+        echo "uv.lock records PyPI as its registry, so --frozen will fetch files.pythonhosted.org."
+        echo "Run the manual 'relock' job and commit the uv.lock it produces."
+        exit 1
+      fi
 
     # A reused workspace can carry a half-written venv across jobs; uv sync does not repair one.
     - rm -rf .venv
@@ -197,3 +211,19 @@ build:
         coverage_format: cobertura
         path: sonar/coverage.xml
   coverage: '/^TOTAL\s+.*\s+(\d+(?:\.\d+)?)%$/'
+
+# uv.lock has to be resolved from Artifactory, and this runner is the only place
+# that can reach it. Manual: run it when dependencies change, download the
+# uv.lock artifact, commit it.
+relock:
+  image: $BUILD_IMAGE
+  stage: build
+  when: manual
+  extends: [.default_rules, .artifactory_setup]
+  script:
+    - uv lock --no-cache
+    - echo "internal $(grep -c 'artifactory' uv.lock) / pypi $(grep -c 'pypi.org' uv.lock)"
+    - grep -q 'registry = "https://pypi.org/simple"' uv.lock && { echo "still PyPI — is the index default in pyproject.toml?"; exit 1; } || true
+  artifacts:
+    paths: [uv.lock]
+    expire_in: 1 week
