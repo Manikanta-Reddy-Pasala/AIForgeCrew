@@ -31,7 +31,7 @@ variables:
   # exist, so the scanner image there stays spelled out.
   ARTIFACTORY_HOST: "artifactory.internal"
   ARTIFACTORY_DOCKER_HOST: "docker.artifactory.internal"
-  BUILD_IMAGE: "$ARTIFACTORY_DOCKER_HOST/docker-remote/ubuntu:24.04"
+  BUILD_IMAGE: "ubuntu:24.04"
   UBUNTU_SUITE: "noble"
   UV_VERSION: "0.12.10"
   # 3.12, not 3.13: uv.lock pins numpy 1.26.4, which publishes no cp313 wheel,
