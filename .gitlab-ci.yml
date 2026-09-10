@@ -218,12 +218,30 @@ build:
 relock:
   image: $BUILD_IMAGE
   stage: build
-  when: manual
-  extends: [.default_rules, .artifactory_setup]
+  # NOT `extends: .default_rules` + a job-level `when: manual`: a job's own
+  # `rules:` override the top-level `when`, so `.default_rules` ending in
+  # `when: on_success` made this run on EVERY pipeline, in parallel with build.
+  # allow_failure so an un-clicked manual job never blocks the pipeline.
+  extends: [.artifactory_setup]
+  rules:
+    - !reference [.rules_default, rules]
+    - when: manual
+      allow_failure: true
   script:
     - uv lock --no-cache
-    - echo "internal $(grep -c 'artifactory' uv.lock) / pypi $(grep -c 'pypi.org' uv.lock)"
-    - grep -q 'registry = "https://pypi.org/simple"' uv.lock && { echo "still PyPI — is the index default in pyproject.toml?"; exit 1; } || true
+    - |
+      internal=$(grep -c 'artifactory' uv.lock || true)
+      pypi=$(grep -c 'pypi.org' uv.lock || true)
+      echo "internal $internal / pypi $pypi"
+      if [ "$internal" -eq 0 ]; then
+        echo "no Artifactory URL in the lock at all — [[tool.uv.index]] default=true is not being read."
+        exit 1
+      fi
+      if grep -q 'registry = "https://pypi.org/simple"' uv.lock; then
+        echo "still PyPI — is the index default in pyproject.toml?"
+        exit 1
+      fi
+      echo "commit this uv.lock artifact."
   artifacts:
     paths: [uv.lock]
     expire_in: 1 week
