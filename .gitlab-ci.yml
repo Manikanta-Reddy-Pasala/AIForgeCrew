@@ -89,24 +89,17 @@ build:
       - .npm-cache/
   script:
     - mkdir -p sonar blackduck test-results
-    # `uv sync --frozen` fetches the URLs in uv.lock and never asks the
-    # configured index, so a PyPI-resolved lock sends this runner to
-    # files.pythonhosted.org. Re-resolve here; committing the uv.lock artifact
-    # only saves the ~60s. pyproject's default index is Artifactory, so any
-    # `uv lock` writes that host and a lock made outside the estate is useless.
-    - |
-      if grep -q 'registry = "https://pypi.org/simple"' uv.lock; then
-        echo "uv.lock is PyPI-resolved — re-resolving against Artifactory (commit the uv.lock artifact to skip this)."
-        uv lock --no-cache
-        if grep -q 'registry = "https://pypi.org/simple"' uv.lock; then
-          echo "relock did not take: check [[tool.uv.index]] default=true"; exit 1
-        fi
-        echo "relocked: internal $(grep -c artifactory uv.lock) / pypi $(grep -c pypi.org uv.lock)"
-      fi
-
     # A reused workspace can carry a half-written venv; uv sync does not repair one.
     - rm -rf .venv
-    - uv sync --all-extras --dev --frozen
+    # NOT --frozen. Measured on uv 0.12.10: --frozen installs the URLs recorded
+    # in uv.lock and never asks the configured index — with the index
+    # unreachable it still fetched from pypi.org — so a lock resolved outside
+    # the estate sends this runner to files.pythonhosted.org. Without it uv
+    # re-resolves against the index when the lock's registry is not ours, and
+    # when the lock already matches it resolves from the lock alone (verified
+    # under --offline, no network). So the flag is the only thing that made a
+    # foreign lock fatal.
+    - uv sync --all-extras --dev
     - uv run python -m build --sdist --wheel
 
     # The nodejs wheel's own bin/npm is broken and PATH does not fix it — only
