@@ -1,6 +1,0 @@
-Message,Type,Severity,Security Category,Hotspot Priority,Rule Key,Rule Name,File Name,File Line,Impact MAINTAINABILITY,Impact RELIABILITY,Impact SECURITY
-Make sure that sending signals is safe here.,SECURITY_HOTSPOT,CRITICAL,others,LOW,python:S4828,Signaling processes is security-sensitive,aiforge_core/runtime/proc_signals.py,96,,,
-Refactor this function to reduce its Cognitive Complexity from 21 to the 15 allowed.,CODE_SMELL,CRITICAL,,,python:S3776,Cognitive Complexity of functions should not be too high,aiforge_core/config/safe_paths.py,37,HIGH,,
-Not disabling redirects might allow for redirections to insecure websites. Make sure it is safe here.,SECURITY_HOTSPOT,MAJOR,others,LOW,shell:S6506,Allowing downgrades to a clear-text protocol is security-sensitive,run.sh,591,,,
-Not disabling redirects might allow for redirections to insecure websites. Make sure it is safe here.,SECURITY_HOTSPOT,MAJOR,others,LOW,shell:S6506,Allowing downgrades to a clear-text protocol is security-sensitive,run.sh,723,,,
-Make sure that sending signals is safe here.,SECURITY_HOTSPOT,CRITICAL,others,LOW,python:S4828,Signaling processes is security-sensitive,aiforge_core/runtime/proc_signals.py,81,,,
