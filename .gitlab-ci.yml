@@ -91,14 +91,7 @@ build:
     - mkdir -p sonar blackduck test-results
     # A reused workspace can carry a half-written venv; uv sync does not repair one.
     - rm -rf .venv
-    # NOT --frozen. Measured on uv 0.12.10: --frozen installs the URLs recorded
-    # in uv.lock and never asks the configured index — with the index
-    # unreachable it still fetched from pypi.org — so a lock resolved outside
-    # the estate sends this runner to files.pythonhosted.org. Without it uv
-    # re-resolves against the index when the lock's registry is not ours, and
-    # when the lock already matches it resolves from the lock alone (verified
-    # under --offline, no network). So the flag is the only thing that made a
-    # foreign lock fatal.
+
     - uv sync --all-extras --dev
     - uv run python -m build --sdist --wheel
 
