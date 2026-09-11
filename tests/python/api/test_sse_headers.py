@@ -108,3 +108,18 @@ def test_every_sse_route_goes_through_the_helper():
     assert not offenders, (
         "SSE responses must use sse_response() (sets X-Accel-Buffering): "
         + "; ".join(offenders))
+
+
+def test_an_async_generator_is_streamed_not_crashed():
+    """sse_response must take async generators (the logs/trace streams are)."""
+    import asyncio
+
+    async def _agen():
+        yield "data: a\n\n"
+        yield "data: b\n\n"
+
+    r = sse_response(_agen())
+
+    async def _read():
+        return [chunk async for chunk in r.body_iterator]
+    assert asyncio.run(_read()) == ["data: a\n\n", "data: b\n\n"]

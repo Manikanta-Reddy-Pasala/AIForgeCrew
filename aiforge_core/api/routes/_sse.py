@@ -17,9 +17,10 @@ owns those, and setting them here draws h11 warnings for no benefit.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 
 from fastapi.responses import StreamingResponse
 
@@ -63,9 +64,43 @@ def _instrumented(generator: Iterator, label: str) -> Iterator:
                   label, time.monotonic() - start, n)
 
 
-def sse_response(generator: Iterator, *, label: str = "sse") -> StreamingResponse:
+async def _instrumented_async(agen: AsyncIterator, label: str) -> AsyncIterator:
+    """:func:`_instrumented` for an ASYNC generator. The live-logs, trace and
+    LLM-trace streams are async; iterating one with a plain ``for`` raised
+    ``TypeError: 'async_generator' object is not iterable`` right after the 200
+    headers, so every Live-logs connection died and the page sat on
+    "reconnecting…". A disconnect arrives here as ``CancelledError``, not
+    ``GeneratorExit``. ``aclose`` runs the inner generator's own ``finally``
+    (kills its ``tail -F``, cancels its pumps)."""
+    start = time.monotonic()
+    n = 0
+    try:
+        async for item in agen:
+            n += 1
+            yield item
+    except (GeneratorExit, asyncio.CancelledError):
+        _log.info("sse %s: client disconnected after %.1fs, %d events",
+                  label, time.monotonic() - start, n)
+        raise
+    except Exception as exc:  # noqa: BLE001 — re-raised; we only annotate it
+        _log.warning("sse %s: stream failed after %.1fs, %d events: %s",
+                     label, time.monotonic() - start, n, exc)
+        raise
+    else:
+        _log.info("sse %s: completed after %.1fs, %d events",
+                  label, time.monotonic() - start, n)
+    finally:
+        aclose = getattr(agen, "aclose", None)
+        if aclose is not None:
+            await aclose()
+
+
+def sse_response(generator: Iterator | AsyncIterator, *,
+                 label: str = "sse") -> StreamingResponse:
     """A ``text/event-stream`` response that survives a buffering proxy and logs
-    how it ended (see :func:`_instrumented`)."""
-    return StreamingResponse(_instrumented(generator, label),
-                             media_type="text/event-stream",
+    how it ended (see :func:`_instrumented`). Takes a sync or an async
+    generator."""
+    body = (_instrumented_async(generator, label)
+            if hasattr(generator, "__aiter__") else _instrumented(generator, label))
+    return StreamingResponse(body, media_type="text/event-stream",
                              headers=dict(SSE_HEADERS))

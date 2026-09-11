@@ -394,3 +394,26 @@ def test_the_refresh_interval_is_clamped(monkeypatch, raw, expected):
     with pytest.raises(_StopStream):
         asyncio.run(pull)
     assert seen["interval"] == expected
+
+
+# ── the live-logs stream must actually deliver a body ──────────────────────
+# Every Live-logs connection died with "TypeError: 'async_generator' object is
+# not iterable" right after the 200 headers: sse_response iterated its
+# generator with a plain `for`, and _tail_forever is ASYNC. The tests above
+# never read an async route's BODY, so the break shipped for two months.
+
+def test_the_live_logs_stream_delivers_its_events(client, monkeypatch):
+    closed = {}
+
+    async def _finite_tail(path):
+        try:
+            yield "data: first\n\n"
+            yield "data: second\n\n"
+        finally:
+            closed["inner_finally"] = True   # tail -F cleanup must still run
+    monkeypatch.setattr(obs, "_tail_forever", _finite_tail)
+    with client.stream("GET", "/api/logs/chat/stream") as r:
+        assert r.status_code == 200
+        body = "".join(r.iter_text())
+    assert "data: first" in body and "data: second" in body
+    assert closed.get("inner_finally") is True
