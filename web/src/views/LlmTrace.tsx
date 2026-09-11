@@ -6,6 +6,7 @@
 // chain — the same data `aiforge ticket llm-trace --full` prints.
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { j } from '../api/core';
 
 type Msg = { role?: string; content?: string };
 type LlmCall = {
@@ -32,8 +33,7 @@ export default function LlmTrace() {
   useEffect(() => {
     if (!id) return;
     setLoading(true);
-    fetch(`/api/llm-trace/${id}?limit=50`)
-      .then(r => r.json())
+    j<any>(`/llm-trace/${id}?limit=50`)
       .then(d => {
         if (d.error) setErr(d.error);
         setEvents(d.events || []);
@@ -51,9 +51,9 @@ export default function LlmTrace() {
         const d = JSON.parse(e.data);
         const line: string = d.line || '';
         if (!line) return;
-        const j = JSON.parse(line);
+        const rec = JSON.parse(line);
         // graph-runner.err wraps the call payload in extra.aiforge.
-        const call = (j?.extra?.aiforge || j) as LlmCall;
+        const call = (rec?.extra?.aiforge || rec) as LlmCall;
         if (!call?.agent_role) return;
         setEvents(s => [...s, call]);
       } catch {/* ignore */}
@@ -131,8 +131,8 @@ export default function LlmTrace() {
                   {/* key=index: immutable per-call transcript rendered once;
                       roles/content duplicate across turns and it never reorders,
                       so a content key would collide. (S6479 exception) */}
-                  {(c.messages || []).map((m, j) => (
-                    <details key={j} style={{ marginBottom: 6 }}>
+                  {(c.messages || []).map((m, mi) => (
+                    <details key={mi} style={{ marginBottom: 6 }}>
                       <summary className="small">
                         <strong>→ {m.role || '?'}</strong>
                         <span className="muted">

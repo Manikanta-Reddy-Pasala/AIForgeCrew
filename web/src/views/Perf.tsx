@@ -1,29 +1,40 @@
 // Per-step perf snapshot — reads /api/runtime/perf and renders rows
-// grouped by event family (Search / Tool / LLM / File / Edit cycle).
+// grouped by event family (Search / Tool / LLM / Queue / File / Edit cycle).
 // KISS: pure SVG/HTML, no chart library. Auto-refresh every 5s.
 //
-// Each row shows count · avg · max · total. A family header bar visualises
-// the family's total wall_ms relative to the heaviest family in view, so
-// you can spot which step type is dominating runtime at a glance.
+// Each row shows count · avg · p95 · max · summed latency. A family header bar
+// visualises the family's summed latency relative to the whole view. Summed,
+// not wall-clock: parallel calls overlap, so the total can exceed real time.
 import { useEffect, useMemo, useState } from 'react';
+import { j } from '../api/core';
 
 type Row = {
   event: string;
   name: string;
   count: number;
   total_ms: number;
+  avg_ms?: number;
+  p95_ms?: number;
   max_ms: number;
   extra?: any[];
 };
 
-type FamilyKey = 'Search' | 'Tool' | 'LLM' | 'File' | 'Edit cycle' | 'Other';
+type Snapshot = { rows: Row[]; window_s: number; samples: number; oldest_ts: number | null };
+
+const WINDOWS: { label: string; s: number }[] = [
+  { label: '1h', s: 3600 }, { label: '24h', s: 86400 },
+  { label: '7d', s: 7 * 86400 }, { label: 'All', s: 0 },
+];
+
+type FamilyKey = 'Search' | 'Tool' | 'LLM' | 'Queue' | 'File' | 'Edit cycle' | 'Other';
 const FAMILY_KEYS: FamilyKey[] =
-  ['Search', 'Tool', 'LLM', 'File', 'Edit cycle', 'Other'];
+  ['Search', 'Tool', 'LLM', 'Queue', 'File', 'Edit cycle', 'Other'];
 
 const FAMILY_COLOR: Record<FamilyKey, string> = {
   'Search':     '#5b8def',
   'Tool':       '#7a5fb7',
   'LLM':        '#d44a76',
+  'Queue':      '#c0392b',
   'File':       '#2faa66',
   'Edit cycle': '#dd9b3c',
   'Other':      '#888',
@@ -31,7 +42,7 @@ const FAMILY_COLOR: Record<FamilyKey, string> = {
 
 function familyOf(event: string): FamilyKey {
   // The perf recorder writes the family label verbatim into `event`
-  // ("LLM" / "Tool" / "Search" / "File" / "Edit cycle"). Match those first.
+  // ("LLM" / "Tool" / "Queue" / "Search" / "File" / "Edit cycle"). Match those first.
   if ((FAMILY_KEYS as string[]).includes(event)) return event as FamilyKey;
   // Legacy GA-hook event names (pre_/post_ phases).
   if (event === 'post_search' || event === 'pre_search')           return 'Search';
@@ -52,19 +63,29 @@ function fmt(n: number): string {
 
 export default function Perf() {
   const [rows, setRows]   = useState<Row[]>([]);
+  const [samples, setSamples] = useState(0);
   const [err,  setErr]    = useState<string | null>(null);
   const [reset, setReset] = useState(false);
+  const [windowS, setWindowS] = useState(86400);
   const [active, setActive] = useState<Set<FamilyKey>>(new Set(FAMILY_KEYS));
   const [collapsed, setCollapsed] = useState<Set<FamilyKey>>(new Set());
 
-  async function load(forceReset = false) {
+  async function load() {
     try {
-      const url = `/api/runtime/perf${forceReset ? '?reset=true' : ''}`;
-      const r = await fetch(url);
-      const d = await r.json();
+      const d = await j<Snapshot>(`/runtime/perf?window_s=${windowS}`);
       setRows(d.rows || []);
-      setReset(d.reset || false);
+      setSamples(d.samples || 0);
       setErr(null);
+    } catch (e: any) {
+      setErr(String(e));
+    }
+  }
+
+  async function clearStats() {
+    try {
+      await j(`/runtime/perf/reset`, { method: 'POST' });
+      setReset(true);
+      await load();
     } catch (e: any) {
       setErr(String(e));
     }
@@ -74,7 +95,7 @@ export default function Perf() {
     load();
     const t = setInterval(() => load(), 5000);
     return () => clearInterval(t);
-  }, []);
+  }, [windowS]);
 
   // Bucketize rows by family.
   const families = useMemo(() => {
@@ -117,6 +138,7 @@ export default function Perf() {
   // Only families that actually have data get a chip (drop dead Edit cycle/Other).
   const chipFamilies = FAMILY_KEYS.filter(f => families[f].rows.length > 0);
   const totalRows = rows.length;
+  const windowLabel = WINDOWS.find(w => w.s === windowS)?.label ?? `${windowS}s`;
 
   return (
     <>
@@ -128,11 +150,19 @@ export default function Perf() {
             and grouped by kind of work — so you can see what dominates runtime.
           </div>
         </div>
-        <button type="button" className="ghost" onClick={() => load(true)}>Clear stats</button>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          {WINDOWS.map(w => (
+            <button type="button" key={w.label} onClick={() => setWindowS(w.s)}
+              className={w.s === windowS ? '' : 'ghost'}
+              aria-pressed={w.s === windowS}>{w.label}</button>
+          ))}
+          <button type="button" className="ghost" onClick={clearStats}>Clear stats</button>
+        </div>
       </div>
 
-      <div className="small muted" style={{ marginBottom: 12 }}>
-        {totalRows} operations tracked · {fmt(grandTotal)} total wall-clock · refreshes every 5s
+      <div className="small muted" style={{ marginBottom: 12 }}
+           title="Summed latency adds every call's duration; calls that ran in parallel overlap, so it can exceed real elapsed time.">
+        {samples.toLocaleString()} timed calls in {totalRows} operations · last {windowLabel} · {fmt(grandTotal)} summed latency · refreshes every 5s
       </div>
 
       {/* Family filter chips */}
@@ -146,7 +176,7 @@ export default function Perf() {
                        border: `1px solid ${on ? FAMILY_COLOR[f] : 'var(--border-1)'}`,
                        background: on ? FAMILY_COLOR[f] : 'transparent',
                        color: on ? '#fff' : 'var(--fg-3)', fontWeight: on ? 600 : 400, cursor: 'pointer' }}
-              title={`${fam.rows.length} buckets · ${fmt(fam.total)} total`}>
+              title={`${fam.rows.length} operations · ${fmt(fam.total)} summed`}>
               {f} <span style={{ opacity: 0.85, marginLeft: 4 }}>{fam.count.toLocaleString()}</span>
             </button>
           );
@@ -180,7 +210,7 @@ export default function Perf() {
                     {f}
                   </span>
                   <span className="small muted" style={{ minWidth: 230, fontVariantNumeric: 'tabular-nums' }}>
-                    {fam.count.toLocaleString()}× · total {fmt(fam.total)} · max {fmt(fam.max)}
+                    {fam.count.toLocaleString()}× · summed {fmt(fam.total)} · max {fmt(fam.max)}
                   </span>
                   <span style={{ flex: 1, height: 6, background: 'var(--bg-3)', borderRadius: 3, overflow: 'hidden' }}>
                     <span style={{ display: 'block', height: '100%', width: `${pctOfTotal}%`, background: FAMILY_COLOR[f] }} />
@@ -193,7 +223,7 @@ export default function Perf() {
                 {!isCollapsed && (
                   <div style={{ borderTop: '1px solid var(--border-1)' }}>
                     {fam.rows.map(r => {
-                      const avg = r.count > 0 ? r.total_ms / r.count : 0;
+                      const avg = r.avg_ms ?? (r.count > 0 ? r.total_ms / r.count : 0);
                       const widthPct = fam.total > 0 ? (r.total_ms / fam.total) * 100 : 0;
                       return (
                         <div key={`${r.event}:${r.name}`}
@@ -207,6 +237,7 @@ export default function Perf() {
                           </span>
                           <span className="muted" style={{ minWidth: 52, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{r.count.toLocaleString()}×</span>
                           <span style={{ minWidth: 78, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: 'var(--fg-2)' }}>avg {fmt(avg)}</span>
+                          <span style={{ minWidth: 78, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: 'var(--fg-2)' }}>p95 {fmt(r.p95_ms ?? r.max_ms)}</span>
                           <span style={{ minWidth: 78, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: 'var(--fg-2)' }}>max {fmt(r.max_ms)}</span>
                           <span style={{ minWidth: 82, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 600, color: 'var(--fg-1)' }}>{fmt(r.total_ms)}</span>
                         </div>

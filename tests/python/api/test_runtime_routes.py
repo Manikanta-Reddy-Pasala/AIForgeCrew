@@ -354,19 +354,23 @@ def test_zero_means_no_limit_and_is_accepted(client, settings, payload):
 
 def test_the_perf_snapshot_is_served(client, monkeypatch):
     from aiforge_core.runtime import perf_recorder
-    monkeypatch.setattr(perf_recorder, "aggregate", lambda: [{"step": "doer"}])
-    body = client.get("/api/runtime/perf").json()
-    assert body == {"rows": [{"step": "doer"}], "reset": False}
+    seen = []
+    monkeypatch.setattr(perf_recorder, "snapshot",
+                        lambda w: seen.append(w) or {"rows": [{"step": "doer"}]})
+    assert client.get("/api/runtime/perf").json() == {"rows": [{"step": "doer"}]}
+    client.get("/api/runtime/perf?window_s=3600")
+    assert seen == [86400, 3600]                     # default window is 24h
 
 
-def test_the_recorder_can_be_truncated(client, monkeypatch):
+def test_the_recorder_is_cleared_by_post_only(client, monkeypatch):
+    """A GET that wiped the stats could be fired by any link or prefetch."""
     from aiforge_core.runtime import perf_recorder
     reset: list = []
     monkeypatch.setattr(perf_recorder, "reset", lambda: reset.append(1))
-    monkeypatch.setattr(perf_recorder, "aggregate",
-                        lambda: pytest.fail("aggregated after a reset"))
-    assert client.get("/api/runtime/perf?reset=true").json() == {"rows": [],
-                                                                 "reset": True}
+    monkeypatch.setattr(perf_recorder, "snapshot", lambda w: {"rows": []})
+    client.get("/api/runtime/perf?reset=true")
+    assert reset == []
+    assert client.post("/api/runtime/perf/reset").json() == {"reset": True}
     assert reset == [1]
 
 

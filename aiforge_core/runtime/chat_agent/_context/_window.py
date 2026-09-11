@@ -150,21 +150,21 @@ def _ctx_budget_chars(role: str | None = None,
         except ValueError:
             pass
     reserve_sys = _SYSTEM_PROMPT_CHARS if sys_chars is None else max(0, int(sys_chars))
-    win = _window_tokens(role)
-    if win > 0:
-        # The context (system prompt + history) may reach _history_fraction of
-        # the window — 80% by default — and never past the window minus the
-        # model's own reply (output cap), so a request always fits.
-        try:
-            from aiforge_core.config import runtime_settings
-            out_chars = int(runtime_settings.get("max_output_tokens")) * 4
-        except Exception:  # noqa: BLE001
-            out_chars = 4096 * 4
-        win_chars = win * 4                      # ~4 chars/token
-        ceiling = min(int(win_chars * _history_fraction(role)),
-                      win_chars - out_chars)
-        return max(ceiling - reserve_sys, _CTX_BUDGET_FLOOR_CHARS)
-    return 24000 if _cave_mode() else 48000
+    # Unknown window → the registry's 128K default, so the 80% rule holds here
+    # too (this used to fall back to a fixed 24K/48K chars, i.e. ~6K/12K tokens).
+    win = _window_tokens(role) or 131072
+    # The context (system prompt + history) may reach _history_fraction of the
+    # window — 80% by default — and never past the window minus the model's own
+    # reply (output cap), so a request always fits.
+    try:
+        from aiforge_core.config import runtime_settings
+        out_chars = int(runtime_settings.get("max_output_tokens")) * 4
+    except Exception:  # noqa: BLE001
+        out_chars = 4096 * 4
+    win_chars = win * 4                          # ~4 chars/token
+    ceiling = min(int(win_chars * _history_fraction(role)),
+                  win_chars - out_chars)
+    return max(ceiling - reserve_sys, _CTX_BUDGET_FLOOR_CHARS)
 
 
 # ── system-prompt budgeting (Fix C2) ────────────────────────────────────

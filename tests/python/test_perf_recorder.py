@@ -158,3 +158,73 @@ def test_maybe_trim_concurrent_no_corruption(tmp_path, monkeypatch):
     # A final trim brings it under the cap (atomic last-write-wins).
     perf_recorder._maybe_trim(str(path))
     assert path.stat().st_size <= perf_recorder._MAX_BYTES
+
+
+# ── window, p95, retention, cross-process lock (2026-09-11) ────────────────
+
+def _write(path, recs):
+    path.write_text("".join(json.dumps(r) + "\n" for r in recs))
+
+
+def test_snapshot_only_counts_the_window(tmp_path):
+    import time
+    now = time.time()
+    _write(tmp_path / "perf.ndjson", [
+        {"family": "LLM", "name": "doer", "ms": 9000.0, "ts": now - 3 * 86400},
+        {"family": "LLM", "name": "doer", "ms": 100.0, "ts": now - 60},
+    ])
+    snap = perf_recorder.snapshot(86400)
+    assert snap["samples"] == 1 and snap["rows"][0]["max_ms"] == 100.0
+    assert perf_recorder.snapshot(0)["samples"] == 2          # 0 = everything
+
+
+def test_rows_carry_avg_and_p95(tmp_path):
+    for ms in range(1, 101):
+        perf_recorder.record("Tool", "grep", float(ms))
+    row = perf_recorder.snapshot()["rows"][0]
+    assert row["count"] == 100 and row["avg_ms"] == 50.5
+    assert row["p95_ms"] == 95.0 and row["max_ms"] == 100.0
+
+
+def test_trim_drops_samples_past_retention_not_a_line_count(tmp_path, monkeypatch):
+    import time
+    now = time.time()
+    path = tmp_path / "perf.ndjson"
+    _write(path, [{"family": "LLM", "name": "old", "ms": 1.0, "ts": now - 8 * 86400}]
+           + [{"family": "LLM", "name": "new", "ms": 1.0, "ts": now}] * 30)
+    perf_recorder._maybe_trim(str(path))
+    names = {json.loads(ln)["name"] for ln in path.read_text().splitlines()}
+    assert names == {"new"}
+    assert len(path.read_text().splitlines()) == 30           # recent kept whole
+
+
+def test_the_first_record_of_a_process_checks_retention(tmp_path, monkeypatch):
+    import time
+    path = tmp_path / "perf.ndjson"
+    _write(path, [{"family": "LLM", "name": "old", "ms": 1.0,
+                   "ts": time.time() - 30 * 86400}])
+    monkeypatch.setattr(perf_recorder, "_record_count", 0)
+    perf_recorder.record("LLM", "new", 1.0)
+    assert "old" not in path.read_text()
+
+
+def test_appends_from_another_process_survive_a_trim(tmp_path, monkeypatch):
+    """The trim's read-rewrite and every append share one flock, so a sample
+    written by a second process between the read and the replace is not lost."""
+    import subprocess
+    import sys
+    import time
+    monkeypatch.setattr(perf_recorder, "_MAX_BYTES", 500)
+    monkeypatch.setattr(perf_recorder, "_TRIM_KEEP", 100000)
+    path = tmp_path / "perf.ndjson"
+    _write(path, [{"family": "LLM", "name": "seed", "ms": 1.0, "ts": time.time()}] * 50)
+    child = subprocess.Popen(
+        [sys.executable, "-c",
+         "from aiforge_core.runtime import perf_recorder as p\n"
+         "for _ in range(300): p.record('Tool', 'child', 1.0)"],
+        env={**os.environ, "AIFORGE_CONFIG_DIR": str(tmp_path)})
+    while child.poll() is None:
+        perf_recorder._maybe_trim(str(path))
+    assert child.returncode == 0
+    lines = path.read_text().splitlines()
+    assert sum(1 for ln in lines if '"child"' in ln) == 300

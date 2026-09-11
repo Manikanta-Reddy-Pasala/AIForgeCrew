@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from aiforge_core.api._shared import _persist_env
@@ -310,17 +310,23 @@ def llm_settings_set(body: _RuntimeSettingsBody) -> dict:
 
 
 @router.get("/api/runtime/perf")
-def runtime_perf(reset: bool = False) -> dict:
-    """Per-step perf snapshot, backed by the ndjson perf recorder.
+def runtime_perf(window_s: int = Query(86400, ge=0, le=30 * 86400)) -> dict:
+    """Per-step perf snapshot of the last ``window_s`` seconds (0 = every
+    sample kept), backed by the ndjson perf recorder.
 
     Samples are appended by ``aiforge_core.runtime.perf_recorder`` at the LLM
-    call boundary and at each chat/doer tool dispatch. ``reset`` truncates the
-    recorder's ndjson and returns an empty snapshot."""
+    call boundary (native and ADK), rate-limit queueing, and each tool
+    dispatch. Clearing is ``POST /api/runtime/perf/reset`` — a GET that wiped
+    data could be fired by any link or prefetch."""
     from aiforge_core.runtime import perf_recorder
-    if reset:
-        perf_recorder.reset()
-        return {"rows": [], "reset": True}
-    return {"rows": perf_recorder.aggregate(), "reset": False}
+    return perf_recorder.snapshot(window_s)
+
+
+@router.post("/api/runtime/perf/reset")
+def runtime_perf_reset() -> dict:
+    from aiforge_core.runtime import perf_recorder
+    perf_recorder.reset()
+    return {"reset": True}
 
 
 @router.get("/api/runtime/cost")

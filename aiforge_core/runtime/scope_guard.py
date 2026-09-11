@@ -241,10 +241,10 @@ def make_scope_guard_callback():
 # an absolute path writes wherever it points. That is how a session opened to
 # ask about one thing ended up editing an unrelated repo it had only READ about
 # (in recall). ON by default: mutating file tools may only write inside the
-# session's own cwd. AIFORGE_CHAT_WORKSPACE_JAIL=0 turns it off for a session
-# that legitimately writes outside its cwd (a sibling repo, a path elsewhere on
-# the box) — the refusal names the workspace, so a run that hits it says exactly
-# what to set.
+# session's own cwd, folders the user named, and folders the user allowed when
+# the chat asked (chat_write_grants). AIFORGE_CHAT_WORKSPACE_JAIL=0 is an
+# operator switch (the docker sandbox sets it: the box itself is the boundary),
+# never something to hand a user mid-chat.
 _JAIL_ENV = "AIFORGE_CHAT_WORKSPACE_JAIL"
 _JAIL_OFF = ("0", "false", "no", "off")
 

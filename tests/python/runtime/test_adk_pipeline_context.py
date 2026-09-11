@@ -347,7 +347,8 @@ def test_a_condenser_strategy_layers_over_the_trim(limits):
 def test_an_unavailable_guard_is_not_fatal(monkeypatch):
     import aiforge_core.runtime.tool_error_plugin as tep
     monkeypatch.delattr(tep, "PhantomToolGuardPlugin", raising=False)
-    assert pl._phantom_tool_guard() == []
+    # the perf observer still attaches; the missing guard is simply skipped
+    assert [type(p).__name__ for p in pl._phantom_tool_guard()] == ["PerfPlugin"]
 
 
 # ─── run configuration ─────────────────────────────────────────────────

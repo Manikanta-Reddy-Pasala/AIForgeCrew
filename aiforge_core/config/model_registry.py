@@ -347,6 +347,25 @@ def _autodetected_window(base_url: str, api_key: str) -> "int | None":
         return None
 
 
+def context_window_source(role: str | None = None) -> "tuple[int, str]":
+    """``(window, source)`` — the same resolution as
+    :func:`effective_context_window`, plus WHERE the number came from:
+    ``model`` (per-model setting), ``setting`` (global context_window),
+    ``server`` (the endpoint's /v1/models — for LM Studio that is the context
+    length the model was LOADED with, not its maximum) or ``default``. The chat
+    meter shows it, so "why 32k when the model does 256k" answers itself."""
+    per, base_url, api_key = _explicit_role_window(role)
+    if per > 0:
+        return per, "model"
+    exp = _explicit_global_window()
+    if exp is not None:
+        return exp, "setting"
+    det = _autodetected_window(base_url, api_key)
+    if det is not None:
+        return det, "server"
+    return _CTX_STATIC_DEFAULT, "default"
+
+
 def effective_context_window(role: str | None = None) -> int:
     """The single source of truth for the input context window (tokens).
 
@@ -356,18 +375,9 @@ def effective_context_window(role: str | None = None) -> int:
       1b. the global ``runtime_settings`` explicit value, else
       2.  auto-detected from the live endpoint's ``/v1/models`` (capped 256K),
           gated by ``AIFORGE_AUTODETECT_CTX``, else
-      3.  the static default (262144 = 256K).
+      3.  the static default (131072 = 128K).
     """
-    per, base_url, api_key = _explicit_role_window(role)
-    if per > 0:
-        return per
-    exp = _explicit_global_window()
-    if exp is not None:
-        return exp
-    det = _autodetected_window(base_url, api_key)
-    if det is not None:
-        return det
-    return _CTX_STATIC_DEFAULT
+    return context_window_source(role)[0]
 
 
 def context_window_for_role(role: str) -> int:

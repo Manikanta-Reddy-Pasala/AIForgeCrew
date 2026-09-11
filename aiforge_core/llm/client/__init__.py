@@ -533,6 +533,10 @@ def complete_raw(role: str, messages: list[dict], *,
     # write" read 0 for almost every real message while the session total
     # climbed. A per-turn number that is always zero is worse than none.
     _meter_tok: list = [None]
+    # Timed like complete(): this is the DEFAULT chat path, and the Perf page
+    # recorded no LLM time at all for it.
+    import time as _time
+    _t0 = _time.perf_counter()
     try:
         body = _post_with_retry(ep, payload, timeout_s, role=role,
                                 source="native", meter=_meter_tok)
@@ -547,13 +551,26 @@ def complete_raw(role: str, messages: list[dict], *,
         body = _native_model_chain(role, ep, payload, timeout_s,
                                    meter=_meter_tok)
         if body is None:
+            _perf_record("LLM", role, _t0)
             raise exc
+    _perf_record("LLM", role, _t0)
     _record_usage(role, body, _meter_tok[0])
     try:
         msg = body["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as exc:
         raise RuntimeError(f"native completion: no message in response ({exc})") from exc
     return dict(msg) if isinstance(msg, dict) else {"role": "assistant", "content": str(msg)}
+
+
+def _perf_record(family: str, name: str, t0: float) -> None:
+    """One perf sample since ``t0`` (perf_counter). Never raises."""
+    try:
+        import time as _time
+
+        from aiforge_core.runtime import perf_recorder
+        perf_recorder.record(family, name, (_time.perf_counter() - t0) * 1000.0)
+    except Exception:  # noqa: BLE001 — perf recording is optional
+        pass
 
 
 def _preflight_escalate(role: str, primary: Endpoint, messages: list[dict],

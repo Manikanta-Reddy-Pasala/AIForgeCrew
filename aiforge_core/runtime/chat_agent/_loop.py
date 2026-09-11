@@ -1185,6 +1185,11 @@ def _condense_and_report(st, role, complete_fn, session_id, _meter):
         # compaction budget as the denominator, so a 256K model read "96k".
         from ._context._window import _history_fraction, _window_tokens
         _model_win = _window_tokens(role) or (_ctx_budget + _sys_len) // 4
+        try:
+            from aiforge_core.config import model_registry as _mr
+            _win_src = _mr.context_window_source(role)[1]
+        except Exception:  # noqa: BLE001
+            _win_src = ""
         _ctx_tokens = (_ctx_chars + _sys_len) // 4          # what is sent
         _compact_at = (_ctx_budget + _sys_len) // 4
         _calls = _meter.snapshot(session_id) if _meter is not None else {}
@@ -1192,6 +1197,7 @@ def _condense_and_report(st, role, complete_fn, session_id, _meter):
                "budget_chars": _ctx_budget,
                "context_tokens": _ctx_tokens,
                "window_tokens": _model_win,
+               "window_source": _win_src,
                "compact_at_tokens": _compact_at,
                "compact_pct": round(_history_fraction(role) * 100),
                "pct": min(100, round(_ctx_tokens * 100 / max(1, _model_win))),
@@ -1675,10 +1681,40 @@ def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
     return None
 
 
+def _ask_write_grant(st, name, args, cwd, jailed):
+    """Ask the user to let this chat write outside its workspace. Approve →
+    the folder (see chat_write_grants.grant_root) is granted for the rest of
+    the session and the call proceeds (returns None). Reject/expire → the
+    usual rejection handling ("continue"/"return")."""
+    from aiforge_core.runtime import chat_approve, chat_write_grants
+    roots: list[str] = []
+    for raw in jailed:
+        r = chat_write_grants.grant_root(os.path.join(cwd or "", str(raw)))
+        if r not in roots:
+            roots.append(r)
+    seq = chat_approve.request(st.session_id)
+    yield {"type": "approval", "id": seq, "name": name, "args": args,
+           "grant_roots": roots,
+           "reason": ("Allow this chat to write in " + ", ".join(roots)
+                      + "? It is outside the chat's folder (" + str(cwd)
+                      + "). Allowing covers the rest of this chat."),
+           "preview": _diff_preview(name, args, cwd)}
+    decision = chat_approve.wait(st.session_id)
+    if decision.get("note") == "approval timed out":
+        yield {"type": "approval_expired", "id": seq, "name": name}
+    if decision.get("decision") != "approve":
+        return (yield from _handle_rejection(
+            name, args, st.session_id, st.convo, decision))
+    chat_write_grants.grant(st.session_id, roots)
+    st.user_roots = list(getattr(st, "user_roots", ()) or ()) + roots
+    return None
+
+
 def _pre_tool_checks(st, name, args, cwd, _scope_globs):
-    """PreToolUse hook block + autonomous scope-allowlist enforcement. Yields a
-    scope-violation observation and returns continue when the path is out of
-    scope; otherwise returns the hook-block dict (or None) for dispatch."""
+    """PreToolUse hook block, workspace jail and autonomous scope-allowlist
+    enforcement. Returns "continue"/"return" when the call must not run (a
+    refused or rejected write); otherwise the hook-block dict (or None) for
+    dispatch."""
     # Lifecycle hook (Claude Code parity): PreToolUse can block a tool
     # (a `block_on_nonzero` hook that exits non-zero) — surface it like the
     # plan-mode/policy blocks. Hooks soft-fail; a hooks error never breaks
@@ -1692,29 +1728,31 @@ def _pre_tool_checks(st, name, args, cwd, _scope_globs):
     except Exception:  # noqa: BLE001 — hooks must never break dispatch
         _hook_block = None
 
-    # Workspace jail (on by default, AIFORGE_CHAT_WORKSPACE_JAIL=0 opts out).
-    # The session's cwd
-    # is otherwise only a DEFAULT: an absolute path in a mutating file tool
-    # writes anywhere. Refuse WITHOUT writing and tell the model why, so an
-    # off-topic recall can never turn into an edit in a repo the user never
-    # mentioned in this chat.
+    # Workspace jail (on by default). The session's cwd is otherwise only a
+    # DEFAULT: an absolute path in a mutating file tool writes anywhere, and an
+    # off-topic recall must never turn into an edit in a repo the user never
+    # brought into this chat. Interactive: ASK the user (one click grants the
+    # folder for the rest of this chat). Unattended: refuse without writing.
     try:
         from aiforge_core.runtime import scope_guard as _sg_jail
         _roots = list(getattr(st, "user_roots", ()) or ())
         _jailed = _sg_jail.outside_workspace(name, args or {}, cwd, _roots)
     except Exception:  # noqa: BLE001 — never break dispatch
         _jailed, _roots = [], []
-    if _jailed:
+    if _jailed and getattr(st, "session_id", None) is not None:
+        _sig = yield from _ask_write_grant(st, name, args, cwd, _jailed)
+        if _sig is not None:
+            return _sig
+    elif _jailed:
         _allowed = [cwd] + _roots
         result = {
             "ok": False, "error": "outside_workspace",
             "blocked_paths": _jailed, "allowed_folders": _allowed,
-            "hint": ("Write refused: the path is outside the folders this chat "
-                     "may write to: " + ", ".join(map(str, _allowed)) + ". "
-                     "Those are the session workspace plus any folder the user "
-                     "named in this chat. Do NOT write there another way (a "
-                     "shell redirect, cp, mv) — ask the user to name the folder "
-                     "or point this chat at that project."),
+            "hint": ("Write refused: this unattended run may only write in "
+                     + ", ".join(map(str, _allowed)) + ". Do NOT write there "
+                     "another way (a shell redirect, cp, mv); do the work "
+                     "inside those folders or report that it needs a folder "
+                     "outside them."),
         }
         yield {"type": "tool", "name": name, "args": args, "result": result}
         st.convo.append({"role": "user",
@@ -2005,6 +2043,12 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
             if isinstance(m, dict) and (m.get("role") or "user") == "user")
     except Exception:  # noqa: BLE001 — never break a turn over this
         _user_roots = []
+    try:
+        from aiforge_core.runtime import chat_write_grants as _grants
+        _user_roots += [r for r in _grants.granted(session_id)
+                        if r not in _user_roots]
+    except Exception:  # noqa: BLE001
+        pass
 
     convo, _bundle, _asks, _dropped_playbooks = _build_convo(
         messages, cwd, role, readonly_mode=readonly_mode,
@@ -2209,8 +2253,8 @@ def _run_action_path(st, step, n, cwd, session_id):
     if _sig == "continue":
         return "continue"
     _hb = yield from _pre_tool_checks(st, name, args, cwd, st.scope_globs)
-    if _hb == "continue":
-        return "continue"
+    if _hb in ("continue", "return"):
+        return _hb
     result = yield from _dispatch_tool(name, args, cwd, n, _hb)
     yield from _post_tool(st, name, args, result, cwd, sig, n,
                           st.long_chain_help, st.bundle)

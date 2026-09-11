@@ -767,7 +767,8 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
 def _team_plugins() -> list:
     """The ticket driver's plugins: its context filter (keeps a long team run
     inside the model's window — team chat replayed every event on every call)
-    plus the phantom-tool guard. Falls back to the guard alone."""
+    plus the perf observer and the phantom-tool guard. Falls back to those
+    two alone."""
     try:
         from .adk_runner._pipeline import _build_context_plugins
         plugins = _build_context_plugins()
@@ -776,8 +777,8 @@ def _team_plugins() -> list:
     except Exception:  # noqa: BLE001 — resilience is best-effort
         pass
     try:
-        from .tool_error_plugin import PhantomToolGuardPlugin
-        return [PhantomToolGuardPlugin()]
+        from .adk_runner._pipeline import _phantom_tool_guard
+        return _phantom_tool_guard()
     except Exception:  # noqa: BLE001
         return []
 

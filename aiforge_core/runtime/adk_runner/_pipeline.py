@@ -226,12 +226,20 @@ def _condensing_filter(tail_trim, strategy: str):
 def _phantom_tool_guard() -> list:
     """Keep the pipeline alive when a text agent emits a hallucinated
     function_call — ADK would otherwise raise "Tool X not found" and abort the
-    whole run. See tool_error_plugin."""
+    whole run. See tool_error_plugin. The perf observer goes FIRST: it returns
+    None from every callback, so it sees every call and changes none."""
+    plugins: list = []
+    try:
+        from ..perf_plugin import PerfPlugin
+        plugins.append(PerfPlugin())
+    except Exception:  # noqa: BLE001 — perf is optional
+        pass
     try:
         from ..tool_error_plugin import PhantomToolGuardPlugin
-        return [PhantomToolGuardPlugin()]
+        plugins.append(PhantomToolGuardPlugin())
     except Exception:  # noqa: BLE001 — resilience is best-effort
-        return []
+        pass
+    return plugins
 
 
 def _build_context_plugins() -> list:

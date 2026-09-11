@@ -215,3 +215,91 @@ def test_refusal_lists_the_allowed_folders_and_forbids_the_shell_route(monkeypat
     result = events[0]["result"]
     assert result["allowed_folders"] == [str(ws), str(named)]
     assert "Do NOT write there another way" in result["hint"]
+
+
+# ── interactive: the jail ASKS, one click grants the folder ────────────────
+# It used to refuse and leave the agent to talk the user round — down to
+# telling them to set AIFORGE_CHAT_WORKSPACE_JAIL=0, an operator env var.
+
+def _interactive(monkeypatch, tmp_path, decision):
+    import types
+
+    from aiforge_core.runtime import chat_approve
+    from aiforge_core.runtime.chat_agent import _loop
+    monkeypatch.setenv("AIFORGE_CHAT_WORKSPACE_JAIL", "1")
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setattr(chat_approve, "request", lambda sid: 7)
+    monkeypatch.setattr(chat_approve, "wait", lambda sid: decision)
+    ws = tmp_path / "session-1"
+    ws.mkdir()
+    repo = tmp_path / "code" / "mission-support"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "pkg" / "schemas").mkdir(parents=True)
+    target = str(repo / "pkg" / "schemas" / "a.json")
+    st = types.SimpleNamespace(convo=[], user_roots=[], session_id=41)
+    events, ret = _drive(_loop._pre_tool_checks(
+        st, "file_write", {"path": target, "content": "x"}, str(ws), None))
+    return st, events, ret, repo
+
+
+def test_an_outside_write_asks_and_approval_grants_the_repo(monkeypatch, tmp_path):
+    from aiforge_core.runtime import chat_write_grants
+    st, events, ret, repo = _interactive(
+        monkeypatch, tmp_path, {"decision": "approve"})
+    assert events[0]["type"] == "approval"
+    assert events[0]["grant_roots"] == [os.path.realpath(repo)]
+    assert "AIFORGE_" not in events[0]["reason"]
+    assert ret is None                               # the write goes ahead
+    assert st.user_roots == [os.path.realpath(repo)]
+    # remembered for the rest of the chat (next turns rebuild user_roots)
+    assert chat_write_grants.granted(41) == [os.path.realpath(repo)]
+    assert chat_write_grants.granted(42) == []       # per session, not global
+
+
+def test_a_rejected_grant_does_not_write(monkeypatch, tmp_path):
+    from aiforge_core.runtime import chat_write_grants
+    st, events, ret, _repo = _interactive(
+        monkeypatch, tmp_path, {"decision": "reject"})
+    assert ret == "return"                           # stop and wait for the user
+    assert events[-1]["type"] == "done"
+    assert chat_write_grants.granted(41) == []
+
+
+def test_granted_folders_join_the_next_turns_roots(monkeypatch, tmp_path):
+    from aiforge_core.runtime import chat_write_grants
+    from aiforge_core.runtime.chat_agent import _loop
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    chat_write_grants.grant(9, [str(proj)])
+    st = _loop._build_loop_state(
+        [{"role": "user", "content": "carry on"}],
+        str(tmp_path / "ws"), "chat", 3, lambda *a, **k: "FINAL: x",
+        9, "act", None, None, False)
+    assert str(proj) in st.user_roots
+
+
+def test_grant_root_is_the_repo_or_nearest_folder_never_home(tmp_path, monkeypatch):
+    from aiforge_core.runtime import chat_write_grants as g
+    monkeypatch.setenv("HOME", str(tmp_path))
+    repo = tmp_path / "code" / "r"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "src").mkdir()
+    assert g.grant_root(str(repo / "src" / "new" / "x.py")) == os.path.realpath(repo)
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert g.grant_root(str(plain / "x.py")) == os.path.realpath(plain)
+    # a new folder straight under ~ is granted by itself, not ~
+    assert g.grant_root(str(tmp_path / "newproj" / "x.py")) \
+        == os.path.realpath(tmp_path / "newproj")
+
+
+def test_deleting_chats_drops_their_grants(monkeypatch, tmp_path):
+    from aiforge_core.runtime import chat_write_grants as g
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    g.grant(1, ["/a"])
+    g.grant(2, ["/b"])
+    g.forget(1)
+    assert g.granted(1) == [] and g.granted(2) == ["/b"]
+    g.forget_all()
+    assert g.granted(2) == []

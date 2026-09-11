@@ -298,12 +298,24 @@ def _post(ep: Endpoint, payload: bytes, timeout_s: int,
     _wait_cap = float(_int_env("AIFORGE_LLM_MAX_WAIT_S", 120))
     if max_wait_s is not None:
         _wait_cap = max(1.0, min(_wait_cap, max_wait_s))
+    import time as _time
+    _wait_t0 = _time.perf_counter()
     _rl.acquire(
         ep.provider,
         declared=declared,
         tokens_estimate=_estimate_tokens(payload),
         max_wait_s=_wait_cap,
     )
+    # Time spent queued behind the rate limiter is part of the LLM number the
+    # Perf page shows; record it on its own so a slow "LLM" row can be told
+    # apart from a throttled one.
+    _waited_ms = (_time.perf_counter() - _wait_t0) * 1000.0
+    if _waited_ms >= 50:
+        try:
+            from aiforge_core.runtime import perf_recorder
+            perf_recorder.record("Queue", role or ep.provider, _waited_ms)
+        except Exception:  # noqa: BLE001
+            pass
     cancel = _CANCEL.get()
     # ONE preflight for both paths, BEFORE the meter. It used to sit inside
     # _post_cancellable, so the cancellable path (which is every chat

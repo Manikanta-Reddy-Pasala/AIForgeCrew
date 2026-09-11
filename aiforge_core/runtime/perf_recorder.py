@@ -7,13 +7,15 @@ endpoint consumed by the web Perf view.
 Design rules:
   * **Soft-fail everywhere.** Perf instrumentation must NEVER raise into a
     running agent — every public function swallows its own exceptions.
-  * **Cheap.** One append per timed boundary; no locks, no background thread.
-  * **Bounded.** The ndjson is trimmed to the last N lines once it grows past
-    a soft size cap so a long-lived host never accumulates an unbounded file.
+  * **Cheap.** One short locked append per timed boundary; no background
+    thread.
+  * **Bounded.** Samples older than 7 days are dropped, and past a size cap
+    only the newest are kept, so a long-lived host never grows the file
+    without limit.
 
 The ``family`` string is written verbatim into the ``event`` field that the
 Perf page groups on. The page's ``familyOf(event)`` recognises the family
-labels emitted here ("LLM", "Tool", "Search", "File", "Edit cycle").
+labels emitted here ("LLM", "Tool", "Queue", "Search", "File", "Edit cycle").
 """
 
 from __future__ import annotations
@@ -24,19 +26,31 @@ import threading
 import time
 from contextlib import contextmanager
 
+try:
+    import fcntl
+except ImportError:          # native Windows: the thread lock alone
+    fcntl = None
+
 from aiforge_core.config import _atomic
 from aiforge_core.config.paths import config_dir
 
-# Soft size cap (~5 MB). When exceeded we keep only the last _TRIM_KEEP lines.
+# Samples older than this are dropped when the file is trimmed. The old rule
+# (keep the last 5,000 lines once past 5 MB) meant a busy hour erased a week,
+# and a quiet host kept month-old samples in every total.
+_RETENTION_S = 7 * 86400
+# Past this size a trim also keeps only the newest _TRIM_KEEP lines, so the file
+# stays bounded even inside the retention window.
 _MAX_BYTES = 5 * 1024 * 1024
-_TRIM_KEEP = 5000
+_TRIM_KEEP = 20000
+# The aggregate window the Perf page shows by default.
+DEFAULT_WINDOW_S = 86400
 
-# Serializes the read-modify-write of _maybe_trim and reset() so concurrent
-# callers can't corrupt or lose samples (CC2). record()'s append stays
-# lock-free (O_APPEND is atomic per line).
-_TRIM_LOCK = threading.Lock()
-# Only stat+trim every Nth record so the over-cap check (and its lock) isn't
-# taken on the hot path of every single append — shrinks the racy window.
+# One lock for append, trim and reset. The thread lock orders this process; the
+# flock on a sidecar file orders the others (API server, runner, CLI all write
+# here). Without it a trim in process A read the file, process B appended, and
+# A's atomic replace published a copy without B's line — silently lost.
+_LOCK = threading.Lock()
+# Stat + trim on the first record of a process and every Nth after it.
 _TRIM_CHECK_EVERY = 64
 _record_count = 0
 
@@ -49,8 +63,26 @@ def _perf_path() -> str:
     return os.path.join(_config_dir(), "perf.ndjson")
 
 
+@contextmanager
+def _locked(path: str):
+    with _LOCK:
+        if fcntl is None:
+            yield
+            return
+        fh = open(path + ".lock", "a+")  # noqa: SIM115 — held for the block
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+
 def record(family: str, name: str, ms: float) -> None:
     """Append one perf sample. Soft-fail: never raises."""
+    global _record_count
     try:
         path = _perf_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -60,95 +92,120 @@ def record(family: str, name: str, ms: float) -> None:
             "ms": float(ms),
             "ts": time.time(),
         })
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
-        # Only check size every Nth record (a plain counter — an exact value
-        # doesn't matter, it just throttles how often we stat + lock).
-        global _record_count
+        with _locked(path):
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        check = _record_count % _TRIM_CHECK_EVERY == 0
         _record_count += 1
-        if _record_count % _TRIM_CHECK_EVERY == 0:
+        if check:
             _maybe_trim(path)
     except Exception:
         # Perf must never break a run.
         pass
 
 
-def _maybe_trim(path: str) -> None:
-    """Trim the ndjson to the last _TRIM_KEEP lines if it grew past the cap.
-
-    Serialized under _TRIM_LOCK and published through ``_atomic.write_text`` so
-    a concurrent trim/reset can't interleave a truncate-in-place and lose or
-    corrupt samples (CC2). Readers see either the whole old file or the whole
-    new one, never a torn write. The lock only orders *this* process — a second
-    process trimming the same file is covered by the helper's per-writer
-    staging name, not by the lock."""
+def _oldest_ts(path: str) -> "float | None":
     try:
-        with _TRIM_LOCK:
-            if os.path.getsize(path) <= _MAX_BYTES:
+        with open(path, encoding="utf-8") as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if raw:
+                    return float(json.loads(raw).get("ts") or 0.0)
+    except Exception:
+        return None
+    return None
+
+
+def _maybe_trim(path: str) -> None:
+    """Drop samples past the retention window, and past the size cap keep only
+    the newest _TRIM_KEEP. Runs under the shared lock and publishes through
+    ``_atomic.write_text``, so readers see the whole old file or the whole new
+    one and no concurrent append is lost."""
+    try:
+        with _locked(path):
+            cutoff = time.time() - _RETENTION_S
+            oversize = os.path.getsize(path) > _MAX_BYTES
+            oldest = _oldest_ts(path)
+            if not oversize and (oldest is None or oldest >= cutoff):
                 return
+            keep = []
             with open(path, encoding="utf-8") as fh:
-                lines = fh.readlines()
-            _atomic.write_text(path, "".join(lines[-_TRIM_KEEP:]))
+                for raw in fh:
+                    try:
+                        if float(json.loads(raw).get("ts") or 0.0) >= cutoff:
+                            keep.append(raw)
+                    except Exception:
+                        continue
+            if oversize:
+                keep = keep[-_TRIM_KEEP:]
+            _atomic.write_text(path, "".join(keep))
     except Exception:
         pass
 
 
-def _fold_perf_record(raw: str, buckets: dict) -> None:
-    """Parse one ndjson perf line and fold it into ``buckets`` keyed by
-    (family, name). A malformed line is skipped."""
-    raw = raw.strip()
-    if not raw:
-        return
-    try:
-        rec = json.loads(raw)
-    except Exception:
-        return
-    family = str(rec.get("family", "Other"))
-    name = str(rec.get("name", "?"))
-    try:
-        ms = float(rec.get("ms", 0.0))
-    except Exception:
-        ms = 0.0
-    b = buckets.get((family, name))
-    if b is None:
-        buckets[(family, name)] = {"event": family, "name": name, "count": 1,
-                                   "total_ms": ms, "max_ms": ms}
-    else:
-        b["count"] += 1
-        b["total_ms"] += ms
-        b["max_ms"] = max(b["max_ms"], ms)
+def _p95(values: list) -> float:
+    s = sorted(values)
+    return s[min(len(s) - 1, int(round(0.95 * (len(s) - 1))))] if s else 0.0
 
 
-def aggregate() -> list[dict]:
-    """Group samples by (family, name); return rows sorted by total_ms desc.
+def snapshot(window_s: "float | None" = DEFAULT_WINDOW_S) -> dict:
+    """Group the samples of the last ``window_s`` seconds (all of them when
+    ``window_s`` is 0/None) by (family, name).
 
-    Row shape matches the Perf page: ``{event, name, count, total_ms, max_ms}``.
-    Soft-fail to ``[]`` on any error.
-    """
+    Rows are ``{event, name, count, total_ms, avg_ms, p95_ms, max_ms}``, sorted
+    by total_ms desc. ``total_ms`` is SUMMED latency — parallel calls overlap,
+    so it is not wall-clock. Also returns ``samples`` (the number of timed
+    calls in the window) and ``oldest_ts`` (the first one kept). Soft-fails to
+    an empty snapshot."""
+    out = {"rows": [], "window_s": window_s or 0, "samples": 0, "oldest_ts": None}
     try:
         path = _perf_path()
         if not os.path.exists(path):
-            return []
-        buckets: dict[tuple[str, str], dict] = {}
+            return out
+        since = time.time() - window_s if window_s else None
+        buckets: dict = {}
+        oldest = None
         with open(path, "r", encoding="utf-8") as fh:
             for raw in fh:
-                _fold_perf_record(raw, buckets)
-        rows = list(buckets.values())
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    rec = json.loads(raw)
+                    ms = float(rec.get("ms", 0.0))
+                    ts = float(rec.get("ts") or 0.0)
+                except Exception:
+                    continue
+                if since is not None and ts < since:
+                    continue
+                oldest = ts if oldest is None else min(oldest, ts)
+                key = (str(rec.get("family", "Other")), str(rec.get("name", "?")))
+                buckets.setdefault(key, []).append(ms)
+        rows = []
+        for (family, name), vals in buckets.items():
+            total = sum(vals)
+            rows.append({"event": family, "name": name, "count": len(vals),
+                         "total_ms": total, "avg_ms": total / len(vals),
+                         "p95_ms": _p95(vals), "max_ms": max(vals)})
         rows.sort(key=lambda r: r["total_ms"], reverse=True)
-        return rows
+        out.update(rows=rows, samples=sum(r["count"] for r in rows),
+                   oldest_ts=oldest)
+        return out
     except Exception:
-        return []
+        return out
+
+
+def aggregate(window_s: "float | None" = None) -> list[dict]:
+    """The rows of :func:`snapshot` — every sample kept unless ``window_s``."""
+    return snapshot(window_s)["rows"]
 
 
 def reset() -> None:
-    """Truncate the ndjson file. Soft-fail: never raises.
-
-    Serialized under the same lock as _maybe_trim (CC2) so a reset can't race a
-    concurrent trim's read-modify-write."""
+    """Truncate the ndjson file. Soft-fail: never raises."""
     try:
         path = _perf_path()
-        with _TRIM_LOCK:
-            if os.path.exists(path):
+        if os.path.exists(path):
+            with _locked(path):
                 open(path, "w", encoding="utf-8").close()
     except Exception:
         pass

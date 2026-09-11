@@ -262,6 +262,18 @@ def window(monkeypatch):
     return state
 
 
+def test_the_window_says_where_it_came_from(window):
+    """The chat meter shows the source, so "why 32k, the model does 256k"
+    answers itself (LM Studio reports the context the model was LOADED with)."""
+    assert mr.context_window_source("doer") == (mr._CTX_STATIC_DEFAULT, "default")
+    window["detected"] = 32768
+    assert mr.context_window_source("doer") == (32768, "server")
+    window["explicit"] = 65536
+    assert mr.context_window_source("doer") == (65536, "setting")
+    window["per"] = 8192
+    assert mr.context_window_source("doer") == (8192, "model")
+
+
 def test_a_per_model_window_beats_everything(window):
     window.update(per=8192, explicit=131072, detected=200000)
     assert mr.effective_context_window("doer") == 8192

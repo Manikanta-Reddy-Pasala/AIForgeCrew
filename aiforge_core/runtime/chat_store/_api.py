@@ -109,14 +109,31 @@ def rename_session(session_id: int, title: str) -> "dict | None":
     return _backend().rename_session(session_id, title)
 
 
+def _forget_grants(session_id=None) -> None:
+    """Drop write grants with their session. After delete-all the ids restart
+    at 1, so a kept grant would hand a NEW chat an old chat's folders."""
+    try:
+        from aiforge_core.runtime import chat_write_grants
+        if session_id is None:
+            chat_write_grants.forget_all()
+        else:
+            chat_write_grants.forget(session_id)
+    except Exception:  # noqa: BLE001 — never block a delete on this
+        pass
+
+
 def delete_session(session_id: int) -> bool:
-    return _backend().delete_session(session_id)
+    ok = _backend().delete_session(session_id)
+    _forget_grants(session_id)
+    return ok
 
 
 def delete_all_sessions() -> int:
     """Delete EVERY chat session + its messages and reset the id sequence so new
     sessions start at 1. Returns the count of sessions deleted."""
-    return _backend().delete_all_sessions()
+    n = _backend().delete_all_sessions()
+    _forget_grants()
+    return n
 
 
 def _session_signature(be, s: dict) -> str:
