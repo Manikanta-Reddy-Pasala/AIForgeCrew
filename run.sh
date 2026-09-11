@@ -5,12 +5,12 @@
 #
 # Needs: git + python 3.12. Everything else is a package.
 #
-# Nothing fetches a source and executes it — no installer piped into a shell,
-# no Node tarball, no managed CPython, no browser binary from a CDN. That is
-# structural, not a setting: uv and Node are Python dependencies now.
-#
-# Either way nothing downloads a source and executes it: uv and Node are Python
-# dependencies (the `toolchain` extra), never an installer piped into a shell.
+# First run installs what the project DECLARES, from its lockfiles: uv.lock
+# (uv and Node included — the `toolchain` extra), web/package-lock.json, and
+# scripts/codegraph/package-lock.json. Later runs install nothing unless a lock
+# changed. Nothing fetches a source and executes it — no installer piped into a
+# shell, no Node tarball, no managed CPython, no browser binary from a CDN, no
+# npm install scripts.
 #
 # Runs on the host by default (full fs/shell access); `--docker` runs the
 # self-contained container instead. Storage is embedded SQLite + Markdown
@@ -30,7 +30,7 @@
 #   --admin-page open the loopback-only sync page, claim nothing
 #   --group <name>      preselect the sync group (headless boxes only)
 #   --reset-config      wipe the saved agent config (backed up)
-#   --install-model2vec print the command that adds semantic memory
+#   --install-model2vec also install semantic memory (the embed-static extra)
 #   --with-graphify     print the command that adds the `graphify` CLI
 #   --with-langfuse     bring up the self-hosted trace UI (needs Docker)
 #   --stop-langfuse     stop it again (traces are ephemeral)
@@ -45,6 +45,8 @@
 #   AIFORGE_LM_BASE_URL    https://your-box:1234/v1
 #   AIFORGE_CA_BUNDLE      /path/to/ca.pem     (keeps verification ON)
 #   AIFORGE_ROLE=admin     on exactly one machine in a fleet
+#   AIFORGE_EXTRAS=structured,crawl,chunking,embed-static   optional extras
+#   UV_DEFAULT_INDEX       package index (default: pyproject's, else PyPI)
 #
 # ⚠️  The agent has FULL filesystem + shell access here (no sandbox).
 #     Set AIFORGE_WORKSPACE_DIR=/path to clamp the chat file scope.
@@ -392,7 +394,9 @@ fi
 _ensure_access() {
   [[ "${AIFORGE_FIX_PERMS:-1}" == "0" ]] && return 0
   command -v usermod >/dev/null 2>&1 || return 0
-  local u; u="$(id -un)"
+  # No passwd entry (`docker run --user 1000`) makes `id -un` fail, and under
+  # set -e that ended run.sh right here with no message at all.
+  local u; u="$(id -un 2>/dev/null)" || return 0
   [[ "$u" == "root" ]] && return 0
   local SUDO=""
   if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then SUDO="sudo -n"
@@ -412,9 +416,9 @@ _ensure_access() {
 _ensure_access
 
 # ── prerequisites ─────────────────────────────────────────────────────────
-# run.sh installs NOTHING. It checks what is missing and prints the command for
-# THIS machine, then stops. An operator who is told "deps install failed" has to
-# go and find out what to type; one who is told what to type does not.
+# What only the OS can provide (python, tmux) is never installed here: run.sh
+# prints the command for THIS machine instead. An operator told "deps install
+# failed" has to go and find out what to type; one told what to type does not.
 _os_kind() {
   case "$(uname -s 2>/dev/null)" in
     Darwin)                  echo "macos" ;;
@@ -430,13 +434,12 @@ _OS="$(_os_kind)"
 
 # The command that installs $1 on this box. Empty when there is no manager we
 # can name, so the caller can fall back to a URL.
-_install_hint() {                        # $1 = python | uv | node | tmux
+_install_hint() {                        # $1 = python | node | tmux
   local what="$1"
   case "$_OS" in
     macos)
       case "$what" in
-        python) echo "brew install python@3.12" ;;
-        uv)     echo "brew install uv" ;;
+        python) echo "python.org installer (https://www.python.org/downloads/macos/)" ;;
         node)   echo "brew install node" ;;
         tmux)   echo "brew install tmux" ;;
       esac ;;
@@ -444,7 +447,6 @@ _install_hint() {                        # $1 = python | uv | node | tmux
       # Git Bash / MSYS2. winget is the one manager a stock Windows has.
       case "$what" in
         python) echo "winget install Python.Python.3.12    (or use WSL)" ;;
-        uv)     echo "winget install astral-sh.uv          (or: pipx install uv)" ;;
         node)   echo "winget install OpenJS.NodeJS.LTS" ;;
         tmux)   echo "not available natively — use WSL, or MSYS2: pacman -S tmux" ;;
       esac ;;
@@ -452,42 +454,36 @@ _install_hint() {                        # $1 = python | uv | node | tmux
       if command -v apt-get >/dev/null 2>&1; then
         case "$what" in
           python) echo "sudo apt install -y python3.12 python3.12-venv" ;;
-          uv)     echo "sudo apt install -y pipx && pipx install uv" ;;
           node)   echo "sudo apt install -y nodejs npm" ;;
           tmux)   echo "sudo apt install -y tmux" ;;
         esac
       elif command -v dnf >/dev/null 2>&1; then
         case "$what" in
           python) echo "sudo dnf install -y python3.12" ;;
-          uv)     echo "sudo dnf install -y uv" ;;
           node)   echo "sudo dnf install -y nodejs npm" ;;
           tmux)   echo "sudo dnf install -y tmux" ;;
         esac
       elif command -v pacman >/dev/null 2>&1; then
         case "$what" in
           python) echo "sudo pacman -S --needed python" ;;
-          uv)     echo "sudo pacman -S --needed uv" ;;
           node)   echo "sudo pacman -S --needed nodejs npm" ;;
           tmux)   echo "sudo pacman -S --needed tmux" ;;
         esac
       elif command -v apk >/dev/null 2>&1; then
         case "$what" in
           python) echo "sudo apk add python3" ;;
-          uv)     echo "sudo apk add uv" ;;
           node)   echo "sudo apk add nodejs npm" ;;
           tmux)   echo "sudo apk add tmux" ;;
         esac
       elif command -v zypper >/dev/null 2>&1; then
         case "$what" in
           python) echo "sudo zypper install -y python312" ;;
-          uv)     echo "sudo zypper install -y uv" ;;
           node)   echo "sudo zypper install -y nodejs npm" ;;
           tmux)   echo "sudo zypper install -y tmux" ;;
         esac
       elif command -v pkg >/dev/null 2>&1; then
         case "$what" in
           python) echo "sudo pkg install -y python312" ;;
-          uv)     echo "sudo pkg install -y uv" ;;
           node)   echo "sudo pkg install -y node npm" ;;
           tmux)   echo "sudo pkg install -y tmux" ;;
         esac
@@ -556,9 +552,15 @@ _ensure_node() {
   _node_ok && echo "==> node $(node -v) + npm $(npm -v) (from the nodejs-wheel-binaries wheel)"
 }
 
-# Corporate boxes point ~/.npmrc at a mirror that may not carry every package,
-# so try the configured registry first and fall back to public npm.
-# Must be called with the working dir at web/.
+# `npm ci` from a committed lockfile. --ignore-scripts: an install script from
+# the registry is code nobody reviewed, and neither vite nor codegraph needs
+# one (their native parts are per-platform optional packages). The registry is
+# npm's own config (~/.npmrc), so a mirror works unchanged.
+_npm_ci() {                              # $1 = dir holding package-lock.json
+  ( cd "$1" && npm_config_update_notifier=false \
+      npm ci --ignore-scripts --no-audit --no-fund --loglevel=error )
+}
+
 # AIForge listens on plain HTTP; the banner must say https when the operator
 # fronts it with TLS, or they copy a URL that will not connect.
 _ui_scheme() {
@@ -641,7 +643,7 @@ _pick_python() {
 }
 
 # Creating the venv downloads nothing — it is the local interpreter and the
-# stdlib — so run.sh still does that much rather than make it a chore.
+# stdlib.
 if [[ ! -d .venv ]]; then
   if ! _PY="$(_pick_python)"; then
     _need "python $AIFORGE_PYTHON" python
@@ -659,11 +661,49 @@ if [[ ! -d .venv ]]; then
   fi
 fi
 
+# ── package index ─────────────────────────────────────────────────────────
+# pyproject's default index is the estate's Artifactory. Off the estate that
+# host does not resolve and every install dies on a DNS error, so when the
+# operator named no index and that host does not resolve, use PyPI — the
+# registry uv.lock records. On the estate nothing changes.
+_pyproject_index() {                     # never fails: set -e + pipefail
+  [[ -r pyproject.toml ]] || return 0
+  sed -n '/^\[\[tool\.uv\.index\]\]/,/^\[/s/^url *= *"\(.*\)"/\1/p' pyproject.toml | head -1 || true
+}
+_resolves() {                            # $1 = host; DNS only, no request
+  .venv/bin/python -c 'import socket, sys; socket.getaddrinfo(sys.argv[1], 443)' \
+    "$1" >/dev/null 2>&1
+}
+_INDEX=""
+_pick_index() {                          # only when something is installed
+  [[ -n "$_INDEX" ]] && return 0
+  if [[ -z "${UV_DEFAULT_INDEX:-}${UV_INDEX_URL:-}" ]]; then
+    local idx host
+    idx="$(_pyproject_index)"; host="${idx#*://}"; host="${host%%[:/]*}"
+    if [[ -n "$host" ]] && ! _resolves "$host"; then
+      export UV_DEFAULT_INDEX="https://pypi.org/simple"
+      echo "==> index: $host does not resolve here — using PyPI" \
+           "(set UV_DEFAULT_INDEX to choose)"
+    fi
+  fi
+  _INDEX="${UV_DEFAULT_INDEX:-${UV_INDEX_URL:-$(_pyproject_index)}}"
+}
+
+# ── uv ────────────────────────────────────────────────────────────────────
+# uv is a wheel: pip puts it in .venv, then `uv sync` replaces it with the
+# version uv.lock pins (the `toolchain` extra).
 UV="$(command -v uv 2>/dev/null || true)"
 [[ -z "$UV" && -x .venv/bin/uv ]] && UV="$PWD/.venv/bin/uv"
 if [[ -z "$UV" ]]; then
-  _need "uv" uv
-  _report_missing
+  _pick_index
+  echo "==> installing the uv wheel into .venv"
+  _pip_index=()
+  [[ -z "${PIP_INDEX_URL:-}" && -n "$_INDEX" ]] && _pip_index=(--index-url "$_INDEX")
+  .venv/bin/python -m pip install -q --disable-pip-version-check --only-binary=:all: \
+      ${_pip_index[@]+"${_pip_index[@]}"} uv \
+    || _fatal "pip could not install uv into .venv." \
+              "Check the index/proxy/CA settings, or install uv yourself."
+  UV="$PWD/.venv/bin/uv"
 fi
 export UV
 echo "==> uv: $UV ($("$UV" --version 2>/dev/null || echo unknown))"
@@ -675,26 +715,41 @@ export UV_LINK_MODE="${UV_LINK_MODE:-copy}"
 # Absolute, so job/Doer shells in another cwd still resolve `aiforge-tool`.
 export PATH="$PWD/.venv/bin:$PATH"
 
-# run.sh does NOT install. Everything is either a declared dependency of this
-# project or something the operator installed — never something this script
-# fetched on its own. So: check, and if it is not there, say exactly what to
-# type. `uv pip install` is one command; a half-understood failure is an hour.
+# ── python deps, from uv.lock ─────────────────────────────────────────────
+# Re-synced only when pyproject, the lock or the extras change, so an
+# installed box boots with no network. --inexact keeps anything the operator
+# added. --locked first: it installs exactly the lock. On the estate the lock's
+# registry is not the configured index, uv calls the lock stale, and the plain
+# sync re-resolves against Artifactory — what CI does.
+#
+# Wheels only. Pass 1 installs every index dependency with --no-build, so
+# nothing from an index is ever built from a source archive. Pass 2 then has
+# only this checkout's own two packages left (aiforgecrew, aiforge-memory),
+# which --no-build would refuse because they ARE local source.
+_uv_sync() {
+  "$UV" sync "$@" --no-build --no-install-project --no-install-local && "$UV" sync "$@"
+}
 _venv_ready() { .venv/bin/python -c "import aiforge_core, pydantic_core" >/dev/null 2>&1; }
 
-if ! _venv_ready; then
-  echo "" >&2
-  echo "!! The .venv does not have this project installed." >&2
-  echo "!! run.sh installs nothing — run this once, then ./run.sh again:" >&2
-  echo "" >&2
-  echo "     $UV pip install --python .venv/bin/python -e '.[toolchain]'" >&2
-  echo "" >&2
-  echo "   Optional extras, same pattern:" >&2
-  echo "     $UV pip install --python .venv/bin/python -e '.[structured,crawl,chunking]'   # richer tools" >&2
-  echo "     $UV pip install --python .venv/bin/python -e '.[embed-static]'                # semantic memory" >&2
-  echo "" >&2
-  exit 1
+[[ "${SHOW_MODEL2VEC:-0}" == "1" ]] && AIFORGE_EXTRAS="${AIFORGE_EXTRAS:+$AIFORGE_EXTRAS,}embed-static"
+_SYNC=(--inexact --extra toolchain)
+IFS=',' read -ra _extras <<< "${AIFORGE_EXTRAS:-}"
+for _e in ${_extras[@]+"${_extras[@]}"}; do
+  _e="${_e//[[:space:]]/}"; [[ -n "$_e" ]] && _SYNC+=(--extra "$_e")
+done
+_STAMP=".venv/.aiforge-deps"
+_want="$(cat pyproject.toml uv.lock 2>/dev/null | cksum) ${_SYNC[*]}"
+if ! _venv_ready || [[ "$(cat "$_STAMP" 2>/dev/null)" != "$_want" ]]; then
+  _pick_index
+  echo "==> installing python deps from uv.lock (${_SYNC[*]})"
+  _uv_sync --locked "${_SYNC[@]}" || _uv_sync "${_SYNC[@]}" \
+    || _fatal "uv sync failed — see the error above." \
+              "Behind a proxy or a private index? Set UV_DEFAULT_INDEX / AIFORGE_CA_BUNDLE."
+  _venv_ready || _fatal "uv sync finished but .venv cannot import aiforge_core."
+  printf '%s' "$_want" > "$_STAMP"
 fi
 echo "==> deps: .venv is ready"
+_ensure_node || true                     # .venv/bin/{node,npm,npx} from the wheel
 
 # ── converge a prior install (once, marker-guarded) ───────────────────────
 # Detects a dockerized Postgres/Neo4j install, moves its data into SQLite/OKF
@@ -733,7 +788,7 @@ fi
 if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
   if ! .venv/bin/python -c "import instructor, crawl4ai, chonkie" >/dev/null 2>&1; then
     echo "==> integration extras absent (built-in fallbacks active). To add them:"
-    echo "    $UV pip install --python .venv/bin/python -e '.[structured,crawl,chunking]'"
+    echo "    AIFORGE_EXTRAS=structured,crawl,chunking ./run.sh"
   fi
 
   # An explicit backend always wins; otherwise pick the lightest installed one.
@@ -746,11 +801,7 @@ if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
   else
     export AIFORGE_EMBED_BACKEND=hash
     echo "==> embed backend: hash (keyword). For semantic recall:"
-    echo "    $UV pip install --python .venv/bin/python -e '.[embed-static]'"
-  fi
-  if [[ "${SHOW_MODEL2VEC:-0}" == "1" ]]; then
-    echo "==> semantic memory (model2vec, ~30MB, no torch) — run this, then ./run.sh:"
-    echo "    $UV pip install --python .venv/bin/python -e '.[embed-static]'"
+    echo "    ./run.sh --install-model2vec      # or AIFORGE_EXTRAS=embed-static"
   fi
 fi
 
@@ -767,31 +818,27 @@ if [[ $TEST -eq 1 ]]; then
   exec .venv/bin/python -m aiforge_core.cli.connectivity_test
 fi
 
-# ── web UI build ──────────────────────────────────────────────────────────
-# `npm ci` reaches the registry, so the operator runs it. run.sh only builds
-# what is already installed.
+# ── web UI ────────────────────────────────────────────────────────────────
+# node_modules is (re)installed only when package-lock.json changed — npm
+# keeps its own copy of the lock it installed in node_modules/.package-lock.json.
+_lock_changed() {                        # $1 = dir
+  [[ ! -f "$1/node_modules/.package-lock.json" \
+     || "$1/package-lock.json" -nt "$1/node_modules/.package-lock.json" ]]
+}
 if [[ $SKIP_WEB -eq 0 ]]; then
-  _ensure_node || true
   _web_stale() {
-    [[ ! -d web/dist ]] || [[ -n "$(find web/src web/index.html web/package.json \
-      -newer web/dist/index.html 2>/dev/null | head -1)" ]]
+    [[ ! -f web/dist/index.html ]] || [[ -n "$(find web/src web/index.html \
+      web/package.json web/package-lock.json -newer web/dist/index.html 2>/dev/null | head -1)" ]]
   }
   if ! command -v npm >/dev/null 2>&1; then
-    if _web_stale; then
-      echo "!! No npm, and web/dist is missing or stale — the UI will be wrong." >&2
-      echo "!! Node comes with the toolchain extra:" >&2
-      echo "!!   $UV pip install --python .venv/bin/python -e '.[toolchain]'" >&2
-      echo "!! or install it yourself: $(_install_hint node)" >&2
-    fi
-  elif [[ ! -d web/node_modules ]]; then
-    if _web_stale; then
-      echo "!! web/node_modules is missing, so the UI cannot be built." >&2
-      echo "!! run.sh does not install — run this once, then ./run.sh again:" >&2
-      echo "!!   (cd web && npm ci --ignore-scripts && npm run build)" >&2
-    fi
+    echo "!! No npm — the web UI cannot be built. Node normally comes with the" >&2
+    echo "!! toolchain extra; on a platform with no nodejs wheel: $(_install_hint node)" >&2
+  elif _lock_changed web && { echo "==> installing web deps (npm ci)"; ! _npm_ci web; }; then
+    echo "!! npm ci failed in web/ — the UI is not built. The API still runs." >&2
   elif _web_stale; then
     echo "==> building web UI"
-    ( cd web && npm run build )
+    ( cd web && npm run build --silent ) \
+      || echo "!! web UI build failed — see above. The API still runs." >&2
   else
     echo "==> web UI up to date (use --skip-web to skip this check)"
   fi
@@ -847,23 +894,52 @@ fi
 # ── launch ────────────────────────────────────────────────────────────────
 export PATH="$PWD/.venv/bin:$PATH"
 
-# CodeGraph: the Doer's codegraph_* calls are enforced, but the indexer is an
-# npm package — so the operator installs it. Enforcement self-gates off without
-# a binary or an index. Skip the notice with AIFORGE_SKIP_CODEGRAPH=1.
-if [[ "${AIFORGE_SKIP_CODEGRAPH:-0}" != "1" ]]; then
-  [[ -d "$HOME/.npm-global/bin" ]] && export PATH="$HOME/.npm-global/bin:$PATH"
-  if ! command -v codegraph >/dev/null 2>&1 && [[ -z "${AIFORGE_CODEGRAPH_BIN:-}" ]]; then
-    echo "==> codegraph not installed — the enforced codegraph_* tools stay off."
-    echo "    bash scripts/install-codegraph.sh    # npm, user prefix, no sudo"
+# CodeGraph: the Doer's codegraph_* calls are enforced, and the indexer is an
+# npm package pinned in scripts/codegraph/package-lock.json. It goes into
+# .venv/codegraph (no global prefix, no sudo) and is linked into .venv/bin,
+# which is on PATH for the API. Each repo is indexed on first use; see below to
+# pre-index. AIFORGE_SKIP_CODEGRAPH=1 skips it; AIFORGE_CODEGRAPH_BIN overrides.
+#
+# The link targets the per-platform package's own launcher (it carries its own
+# Node), NOT the package's `bin` shim: when that platform package is missing,
+# the shim downloads a bundle from GitHub Releases and executes it.
+export CODEGRAPH_TELEMETRY="${CODEGRAPH_TELEMETRY:-0}"
+export CODEGRAPH_NO_DOWNLOAD="${CODEGRAPH_NO_DOWNLOAD:-1}"
+_codegraph_launcher() {
+  local f
+  for f in .venv/codegraph/node_modules/@colbymchenry/codegraph-*/bin/codegraph; do
+    [[ -x "$f" ]] && { printf '%s' "${f#.venv/}"; return 0; }
+  done
+  return 1
+}
+_ensure_codegraph() {
+  [[ "${AIFORGE_SKIP_CODEGRAPH:-0}" == "1" || -n "${AIFORGE_CODEGRAPH_BIN:-}" ]] && return 0
+  local dir=.venv/codegraph src=scripts/codegraph launcher
+  [[ -f "$src/package-lock.json" ]] || return 0
+  if ! cmp -s "$src/package-lock.json" "$dir/package-lock.json" || ! _codegraph_launcher >/dev/null; then
+    if ! command -v npm >/dev/null 2>&1; then
+      echo "==> codegraph needs npm (none found) — the codegraph_* tools stay off." >&2
+      return 0
+    fi
+    echo "==> installing codegraph (npm ci, pinned)"
+    mkdir -p "$dir" && cp "$src/package.json" "$src/package-lock.json" "$dir/"
+    if ! _npm_ci "$dir"; then
+      rm -f "$dir/package-lock.json"     # retried next run, not marked done
+      echo "!! codegraph install failed — the codegraph_* tools stay off." >&2
+      return 0
+    fi
   fi
-fi
+  if ! launcher="$(_codegraph_launcher)"; then
+    echo "!! codegraph has no package for this platform — the codegraph_* tools stay off." >&2
+    return 0
+  fi
+  ln -sf "../$launcher" .venv/bin/codegraph
+}
+_ensure_codegraph
 
-# Those enforced calls only have data if an index exists. First run → init
+# Pre-index repos so the first Doer turn does not pay for it. First run → init
 # (~20s for 1200 files), thereafter → sync. Both in the background.
-#   AIFORGE_CODEGRAPH_REPOS  comma-separated repo paths (empty = skip)
-if [[ -z "${AIFORGE_CODEGRAPH_REPOS:-}" ]] && command -v codegraph >/dev/null 2>&1; then
-  echo "  codegraph: installed but idle — set AIFORGE_CODEGRAPH_REPOS=\"/path/a,/path/b\" to index"
-fi
+#   AIFORGE_CODEGRAPH_REPOS  comma-separated repo paths (empty = on first use)
 _CG_BIN="${AIFORGE_CODEGRAPH_BIN:-codegraph}"
 [[ "$_CG_BIN" != */* ]] && _CG_BIN="$(command -v "$_CG_BIN" 2>/dev/null || true)"
 if [[ -n "$_CG_BIN" && -x "$_CG_BIN" && -n "${AIFORGE_CODEGRAPH_REPOS:-}" ]]; then

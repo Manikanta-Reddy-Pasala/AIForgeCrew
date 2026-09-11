@@ -84,6 +84,9 @@ def box(tmp_path, toolless_path):
         "HOME": str(home),
         "AIFORGE_CONFIG_DIR": str(home / ".aiforge"),
         "AIFORGE_INSTALL_TMUX": "0",
+        # run.sh now pip-installs the uv wheel on a box without uv. The test is
+        # about what is NOT fetched, so give pip nowhere to fetch from.
+        "PIP_NO_INDEX": "1",
     }
     return {"env": env, "marker": marker, "tmp": tmp_path}
 
@@ -99,8 +102,9 @@ def _run(box, args, timeout=120):
 
     The box fixture is a machine WITHOUT uv. A checkout with a populated .venv
     is not that machine, so give run.sh an empty directory to be that machine
-    in. It creates its own .venv there (stdlib only, no download), finds no uv,
-    prints the install hint, and exits — which is the behaviour under test.
+    in. It creates its own .venv there (stdlib only), asks pip for the uv wheel,
+    pip has no index (PIP_NO_INDEX), and run.sh exits naming uv — curl and
+    wget never run.
     """
     work = box["tmp"] / "work"
     if not work.exists():
@@ -249,63 +253,176 @@ def test_the_published_bundle_still_carries_the_operators_ca(tmp_path, a_ca):
     assert a_ca.strip() in published.read_text()
 
 
-# ── run.sh installs nothing at all ─────────────────────────────────────────
-# Everything comes from one of two places: a dependency this project declares,
-# or a command the operator ran. Never something the script fetched on its own.
+
+
+# ── what run.sh DOES install: exactly what a lockfile pins ──────────────────
+# A clean box used to stop four times — no uv, no project in .venv, no
+# node_modules, no codegraph — each with a command for the operator to type.
+# run.sh now installs those itself, but only from the three committed locks:
+# uv.lock, web/package-lock.json and scripts/codegraph/package-lock.json.
 
 def _executable_lines() -> list[str]:
-    """Code lines that RUN something — an `echo` that prints an install command
-    for the operator is the opposite of running it, and must not be flagged."""
+    """Code lines with every quoted string blanked out: a command inside
+    `echo "…"` is printed for the operator, not run, and must not be flagged.
+    Lines that ARE a print (`echo`, `printf`, a hint-table arm) are dropped."""
     out = []
     for ln in _code_lines():
         stripped = ln.strip()
-        if stripped.startswith(("echo ", "printf ", "#")):
+        if stripped.startswith(("echo ", "printf ")) or re.match(r"^\S+\)\s+echo ", stripped):
             continue
-        # `case` arms in the hint table are `python) echo "brew install …" ;;`
-        # — the echo is not at the start of the line but it is still a print.
-        if re.match(r"^\S+\)\s+echo ", stripped):
-            continue
-        out.append(ln)
+        out.append(re.sub(r"\"[^\"]*\"|'[^']*'", '""', ln))
     return out
 
 
-def test_the_script_runs_no_installer():
-    for cmd in ('"$UV" pip install', "uv tool install", "npm ci",
-                "bash scripts/install-codegraph.sh", "apt-get install",
-                "brew install"):
+def test_no_os_package_manager_or_global_install_runs():
+    for cmd in ("apt-get install", "apt install", "brew install", "dnf install",
+                "uv tool install", "pipx install", "npm install", "npm i ",
+                "install-codegraph.sh", "uv pip install"):
         hits = [ln for ln in _executable_lines() if cmd in ln]
-        assert not hits, f"run.sh still runs an install: {hits}"
+        assert not hits, f"run.sh runs an unpinned/OS install: {hits}"
 
 
-def test_the_installer_commands_are_still_PRINTED():
-    """Removing the installs must not remove the guidance that replaced them."""
-    printed = "\n".join(ln for ln in _code_lines() if ln.strip().startswith("echo "))
-    assert "pip install" in printed
-    assert "npm ci" in printed
+def test_pip_only_ever_bootstraps_uv():
+    """pip runs once, to put the uv wheel in .venv; everything else is uv sync
+    from the lock. A second pip install would be an unpinned side channel."""
+    lines = _executable_lines()
+    hits = [i for i, ln in enumerate(lines) if "pip install" in ln]
+    assert len(hits) == 1, [lines[i] for i in hits]
+    stmt = " ".join(lines[hits[0]:hits[0] + 3])
+    assert re.search(r"\buv\b", stmt.split("pip install", 1)[1]), stmt
+
+
+def test_python_deps_are_synced_from_the_lock_as_wheels_only():
+    """Pass 1 installs every index dependency with --no-build; pass 2 is left
+    with only this checkout's own packages to build."""
+    assert "_uv_sync --locked" in SRC
+    assert '"$UV" sync "$@" --no-build --no-install-project --no-install-local' in SRC
+
+
+def test_the_uv_bootstrap_is_a_wheel():
+    assert "pip install -q --disable-pip-version-check --only-binary=:all:" in SRC
+
+
+def test_every_npm_install_is_ci_from_a_lock_with_no_scripts():
+    npm = [ln for ln in _executable_lines() if re.search(r"\bnpm (ci|i|install)\b", ln)]
+    assert npm, "run.sh no longer installs web deps"
+    for ln in npm:
+        assert "npm ci --ignore-scripts" in ln, ln
+
+
+def test_codegraph_is_pinned_exactly_by_a_committed_lock():
+    import json
+    d = REPO / "scripts" / "codegraph"
+    pin = json.loads((d / "package.json").read_text())["dependencies"]["@colbymchenry/codegraph"]
+    assert re.fullmatch(r"\d+\.\d+\.\d+", pin), f"not an exact pin: {pin}"
+    lock = json.loads((d / "package-lock.json").read_text())["packages"]
+    top = lock["node_modules/@colbymchenry/codegraph"]
+    assert top["version"] == pin and top["integrity"].startswith("sha512-")
+    # the native binary is a per-platform optional package; all must be locked
+    for plat in ("linux-x64", "linux-arm64", "darwin-arm64", "darwin-x64"):
+        assert f"node_modules/@colbymchenry/codegraph-{plat}" in lock, plat
+
+
+def test_codegraph_telemetry_and_self_download_are_off_by_default():
+    init = (REPO / "aiforge_core" / "__init__.py").read_text()
+    for var, off in (("CODEGRAPH_TELEMETRY", "0"), ("CODEGRAPH_NO_DOWNLOAD", "1")):
+        assert f'{var}="${{{var}:-{off}}}"' in SRC, var
+        assert f'"{var}", "{off}"' in init, var
+
+
+def test_codegraph_is_linked_to_the_platform_launcher_not_the_npm_shim():
+    """The package's `bin` is a shim that, when the per-platform package is
+    missing, downloads a bundle from GitHub Releases and executes it."""
+    assert "node_modules/.bin/codegraph" not in "\n".join(_code_lines())
+    assert "@colbymchenry/codegraph-*/bin/codegraph" in SRC
 
 
 def test_it_can_no_longer_delete_a_venv():
-    """The rebuild branches are gone with the installs, so the failure that
-    destroyed an operator's virtualenv has no code path left."""
+    """The old rebuild branches destroyed an operator's virtualenv on a network
+    blip. Installing from a lock with --inexact never needs to."""
     assert "rm -rf .venv" not in SRC
 
 
 def test_a_missing_prerequisite_names_the_command_for_this_os():
-    """An operator told 'deps install failed' has to go and find out what to
-    type; one told what to type does not."""
     assert "_install_hint" in SRC
     for manager in ("brew install", "apt install", "dnf install", "winget install"):
         assert manager in SRC, f"no hint for {manager}"
 
 
-@pytest.mark.parametrize("tool", ["python", "uv", "node", "tmux"])
-def test_every_prerequisite_has_a_hint_on_every_platform(tool):
+@pytest.mark.parametrize("tool", ["python", "node", "tmux"])
+def test_every_os_prerequisite_has_a_hint_on_every_platform(tool):
     hint = re.search(r"_install_hint\(\) \{.*?\n\}", SRC, re.S)
     assert hint, "the hint table changed shape"
     assert f"{tool})" in hint.group(0), f"{tool} has no install hint"
 
 
-def test_the_venv_is_checked_not_filled():
-    assert "_venv_ready()" in SRC
-    i = SRC.index("_venv_ready()")
-    assert "does not have this project installed" in SRC[i:i + 1200]
+# ── behaviour, with a fake uv that records every call ──────────────────────
+
+@pytest.fixture
+def synced_box(tmp_path):
+    """A checkout whose .venv already imports the project (a shim onto the
+    interpreter running this test) and a fake uv on PATH that logs its args
+    and UV_DEFAULT_INDEX. `--test` is the earliest exit after the install."""
+    import sys
+    work = tmp_path / "work"
+    (work / ".venv" / "bin").mkdir(parents=True)
+    shutil.copy(RUN_SH, work / "run.sh")
+    shutil.copy(REPO / "uv.lock", work / "uv.lock")
+    # An index host that can never resolve (RFC 6761), whatever the network.
+    (work / "pyproject.toml").write_text(
+        (REPO / "pyproject.toml").read_text().replace(
+            "artifactory.internal", "artifactory.invalid"))
+    py = work / ".venv" / "bin" / "python"
+    py.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+    py.chmod(0o755)
+    log = tmp_path / "uv.log"
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    uv = bindir / "uv"
+    uv.write_text('#!/bin/sh\n[ "$1" = --version ] && { echo "uv 0.0.0-fake"; exit 0; }\n'
+                  f'echo "$* | index=${{UV_DEFAULT_INDEX:-}}" >> "{log}"\n')
+    uv.chmod(0o755)
+    env = {**os.environ,
+           "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}",
+           "HOME": str(tmp_path / "home"),
+           "AIFORGE_CONFIG_DIR": str(tmp_path / "home" / ".aiforge"),
+           "AIFORGE_LM_BASE_URL": "http://127.0.0.1:9/v1",
+           "AIFORGE_INSTALL_TMUX": "0", "AIFORGE_FIX_PERMS": "0",
+           "AIFORGE_AUTO_MIGRATE": "0", "AIFORGE_MIGRATE_OKF": "0",
+           "AIFORGE_SKIP_AIDER": "1", "AIFORGE_SKIP_INTEGRATIONS": "1"}
+    for k in ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "AIFORGE_EXTRAS"):
+        env.pop(k, None)
+
+    def run(**extra):
+        r = subprocess.run(["bash", "run.sh", "--test"], cwd=str(work), text=True,
+                           capture_output=True, timeout=120, env={**env, **extra})
+        calls = log.read_text().splitlines() if log.exists() else []
+        return r, [c for c in calls if c.startswith("sync ")]
+    return run
+
+
+def test_first_boot_syncs_from_the_lock_and_second_boot_installs_nothing(synced_box):
+    r, syncs = synced_box()
+    assert "AIForge connectivity test" in r.stdout, r.stdout + r.stderr
+    assert syncs and syncs[0].startswith("sync --locked --inexact --extra toolchain"), syncs
+    assert "--no-build --no-install-project --no-install-local" in syncs[0], syncs
+    assert "--no-build" not in syncs[1], syncs    # only the local packages are left
+    r, again = synced_box()
+    assert again == syncs, "an unchanged lock was synced again — boot needs the network"
+
+
+def test_new_extras_trigger_a_sync_that_includes_them(synced_box):
+    synced_box()
+    _, syncs = synced_box(AIFORGE_EXTRAS="crawl, embed-static")
+    assert "--extra crawl --extra embed-static" in syncs[-1], syncs
+
+
+def test_an_unresolvable_estate_index_falls_back_to_pypi(synced_box):
+    r, syncs = synced_box()
+    assert syncs[0].endswith("index=https://pypi.org/simple"), syncs
+    assert "does not resolve here" in r.stdout
+
+
+def test_an_index_the_operator_named_is_never_overridden(synced_box):
+    _, syncs = synced_box(UV_DEFAULT_INDEX="https://mirror.example/simple")
+    assert syncs[0].endswith("index=https://mirror.example/simple"), syncs

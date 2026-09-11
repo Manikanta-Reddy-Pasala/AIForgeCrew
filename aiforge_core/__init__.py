@@ -37,6 +37,10 @@ for _var, _off in (
     ("SCARF_NO_ANALYTICS", "true"),           # scarf-wrapped installers
     ("ANONYMIZED_TELEMETRY", "False"),        # chromadb and friends
     ("POSTHOG_DISABLED", "1"),
+    ("CODEGRAPH_TELEMETRY", "0"),             # the codegraph CLI the Doer calls
+    # Not telemetry: its npm shim otherwise downloads a bundle from GitHub
+    # Releases and executes it whenever the platform package is missing.
+    ("CODEGRAPH_NO_DOWNLOAD", "1"),
     ("TOKENIZERS_PARALLELISM", "false"),      # not telemetry; kills a noisy warn
 ):
     _os.environ.setdefault(_var, _off)

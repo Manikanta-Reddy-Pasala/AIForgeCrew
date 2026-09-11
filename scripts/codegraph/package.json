@@ -1,0 +1,8 @@
+{
+  "name": "aiforge-codegraph",
+  "private": true,
+  "description": "Pins the codegraph CLI the Doer's codegraph_* tools call. run.sh installs it into .venv/codegraph with npm ci --ignore-scripts.",
+  "dependencies": {
+    "@colbymchenry/codegraph": "1.6.0"
+  }
+}

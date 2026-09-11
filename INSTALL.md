@@ -2,42 +2,54 @@
 
 ## Prerequisites
 
-**`git` and `python 3.12`.** run.sh installs nothing — it checks what is
-missing and prints the command for your OS, then stops.
+**`git` and `python 3.12`** — the two things only your OS can provide.
 
 | | macOS | Debian/Ubuntu | Fedora/RHEL | Windows |
 |---|---|---|---|---|
-| python 3.12 | `brew install python@3.12` | `sudo apt install -y python3.12 python3.12-venv` | `sudo dnf install -y python3.12` | `winget install Python.Python.3.12` |
-| uv | `brew install uv` | `sudo apt install -y pipx && pipx install uv` | `sudo dnf install -y uv` | `winget install astral-sh.uv` |
+| python 3.12 | [python.org installer](https://www.python.org/downloads/macos/) | `sudo apt install -y python3.12 python3.12-venv` | `sudo dnf install -y python3.12` | `winget install Python.Python.3.12` |
 | tmux *(optional)* | `brew install tmux` | `sudo apt install -y tmux` | `sudo dnf install -y tmux` | use WSL |
 
-Then, once:
+Then:
 
 ```bash
-uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python -e '.[toolchain]'
-(cd web && npm ci --ignore-scripts && npm run build)      # the UI
 ./run.sh
 ```
 
-`node` and `npm` come from the `toolchain` extra (`nodejs-wheel-binaries`), so
-that second command supplies them — you do not install Node separately unless
-you prefer to. Without tmux the agent still boots; its shell tool just loses
+The first run installs what the project **declares, from its lockfiles** — and
+nothing else:
+
+| What | From | Into |
+|---|---|---|
+| `uv` | the PyPI wheel (`pip install uv`, once) | `.venv` |
+| python deps, incl. `node`/`npm` (`toolchain` extra) | `uv.lock` (`uv sync --locked`) | `.venv` |
+| web UI deps | `web/package-lock.json` (`npm ci --ignore-scripts`) | `web/node_modules` → `web/dist` |
+| CodeGraph indexer | `scripts/codegraph/package-lock.json` (`npm ci --ignore-scripts`) | `.venv/codegraph` |
+
+Later runs install nothing unless a lock changed, so a set-up box boots with no
+network. Without tmux the agent still boots; its shell tool just loses
 `cd`/`export` persistence between calls.
 
-Optional, same pattern:
+Optional extras, same lockfile:
 
 ```bash
-uv pip install --python .venv/bin/python -e '.[structured,crawl,chunking]'  # richer tools
-uv pip install --python .venv/bin/python -e '.[embed-static]'               # semantic memory
-uv tool install graphifyy          # the graphify CLI — NEVER into .venv
-bash scripts/install-codegraph.sh  # the CodeGraph indexer (npm, no sudo)
+AIFORGE_EXTRAS=structured,crawl,chunking ./run.sh   # richer tools
+./run.sh --install-model2vec                        # semantic memory (embed-static)
+uv tool install graphifyy                           # the graphify CLI — NEVER into .venv
 ```
 
-Everything comes from one of two places: a dependency this project declares, or
-a command you ran. `run.sh` never fetches a source and executes it — no
-installer piped into a shell, no Node tarball, no managed CPython, no browser
-binary from a CDN.
+**Package index.** pyproject's default index is the estate's Artifactory. When
+that host does not resolve (i.e. you are off the estate), run.sh installs from
+PyPI — the registry `uv.lock` records — and says so. Name one yourself with
+`UV_DEFAULT_INDEX=<url>`; npm uses its own config (`~/.npmrc`).
+
+Nothing is downloaded from GitHub — every piece is a package from an index
+(PyPI, npm, or your mirror of them) — and every Python dependency installs as a
+**wheel** (`--no-build`): nothing from an index is ever built from a source
+archive. Only this checkout's own two packages are built, locally. `run.sh` never fetches a source and
+executes it — no installer piped into a shell, no Node tarball, no managed
+CPython, no browser binary from a CDN, no npm install scripts. CodeGraph runs from its per-platform package with
+`CODEGRAPH_NO_DOWNLOAD=1` (its npm shim otherwise downloads and runs a bundle
+from GitHub when that package is missing) and `CODEGRAPH_TELEMETRY=0`.
 
 ## Two ways to run it
 
@@ -59,8 +71,8 @@ state across restarts. Point either at your model on `http://localhost:8799/ui/`
 ## Native
 
 Full filesystem + shell access, no sandbox. `run.sh` creates `.venv` (with
-`python -m venv` when `uv` is not yet present), installs `uv` and the deps into
-it, builds the UI, starts the API.
+`python -m venv` when `uv` is not yet present), installs `uv` and the locked
+deps into it, builds the UI, installs CodeGraph, starts the API.
 
 ```bash
 git clone <repo> && cd AIForgeCrew
@@ -77,15 +89,17 @@ lives in root's `~/.aiforge`.
 ./run.sh --skip-web                   # don't rebuild the UI
 ```
 
-CodeGraph installs from npm on first boot. The RepoMap is vendored in-tree —
+CodeGraph installs from its lockfile on first boot and indexes each repo on
+first use (`AIFORGE_CODEGRAPH_REPOS=/a,/b` pre-indexes). The RepoMap is vendored in-tree —
 only its tree-sitter grammars are installed, and they come in with the python
 deps.
 
 ### Air-gapped
 
-Nothing to do — that is the default. A blocked step names the missing piece and
-its fix rather than coming up degraded. Pre-seed `.venv` and `web/node_modules`
-(or `web/dist`) on such a box.
+After the first run nothing is fetched. For a box that never had a network,
+pre-seed `.venv`, `web/node_modules` (or `web/dist`) and `.venv/codegraph` from
+a box of the same OS/arch — or use the portable `--offline` bundle
+(`installer/BUILDING.md`).
 
 ### Behind a corporate CA or proxy
 

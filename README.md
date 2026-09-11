@@ -29,19 +29,19 @@ cd AIForgeCrew
 ./run.sh
 ```
 
-**`run.sh` installs nothing.** It checks what is missing and prints the command
-for your OS, then stops. Everything comes from one of two places: a dependency
-this project declares, or a command you ran — never something the script
-fetched on its own. Setup is three commands; see **[INSTALL.md](INSTALL.md)**.
+The first run installs what the project declares, **from its lockfiles only**
+(`uv.lock`, `web/package-lock.json`, `scripts/codegraph/package-lock.json`),
+builds the UI and starts. Later runs install nothing unless a lock changed. See
+**[INSTALL.md](INSTALL.md)**.
 
 Settings live in **`aiforge.env`** — one fixed file, committed, identical on
 every box, which run.sh reads and never writes to. Anything per-box (the model
 endpoint, the memory role, an API key) goes in the real environment, which
 **overrides** the file. `.env` is no longer read.
 
-Either way nothing downloads a source and executes it: `uv` and Node are Python
-dependencies, never an installer piped into a shell. See
-**[INSTALL.md](INSTALL.md)**.
+Nothing downloads a source and executes it: `uv` and Node are Python
+dependencies, never an installer piped into a shell, and npm runs no install
+scripts.
 
 Open **http://127.0.0.1:8799/ui/**. The landing page is config-first: pick a
 provider + model for each pipeline step. Choose **OpenAI-compatible** and paste any
