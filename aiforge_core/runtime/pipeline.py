@@ -651,6 +651,27 @@ def _append_before_model(agent, cb) -> None:
     _append_callback(agent, "before_model_callback", cb)
 
 
+# The roles delegate_to_agent may run on their own.
+_DELEGABLE = frozenset({"researcher", "planner", "refiner", "triage", "verifier"})
+
+
+def build_role_agent(role: str):
+    """ONE role's agent, built standalone — what ``delegate_to_agent`` runs.
+
+    The delegate used to build the whole pipeline and look the role up in its
+    ``sub_agents``; the pipeline is a Workflow graph now and has none, so every
+    delegation returned ``delegate_build_failed`` while the tool was still
+    offered to the Doer and to chat. Same safety guards as the live verifier
+    (risk/policy gate, scope, operator hooks). None for any other role."""
+    role = (role or "").strip().lower()
+    if role not in _DELEGABLE:
+        return None
+    import importlib
+    mod = importlib.import_module(f"aiforge_core.agents.{role}")
+    return _attach_tool_guards(mod.build(build_litellm_model),
+                               callbacks=_SHELL_AGENT_TOOL_CALLBACKS)
+
+
 def build_live_verifier_agent(project: str | None = None):
     """Build the standalone live_verifier agent the runner invokes
     AFTER opening the PR. Runs on the operator's configured model (with
@@ -671,5 +692,6 @@ def build_live_verifier_agent(project: str | None = None):
 
 __all__ = [
     "build_pipeline", "build_litellm_model", "build_live_verifier_agent",
+    "build_role_agent",
     "set_force_provider", "get_force_provider",
 ]

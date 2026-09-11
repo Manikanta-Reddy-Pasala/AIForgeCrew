@@ -653,6 +653,7 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
     # "0/N pending" even after the run reports complete.
     _sub_items: list[dict] | None = None
     _run_ok = False
+    _run_id = None                       # keys this run's shell/browser/kernel
     try:
         os.environ["AIFORGE_REPO_ROOT"] = cwd
         from aiforge_core.runtime import request_context
@@ -703,12 +704,7 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
         # "Tool X not found" and the whole SequentialAgent pipeline aborts
         # mid-flight. The plugin turns it into a graceful observation so the
         # run survives to its answer.
-        _plugins = []
-        try:
-            from .tool_error_plugin import PhantomToolGuardPlugin
-            _plugins.append(PhantomToolGuardPlugin())
-        except Exception:  # noqa: BLE001 — resilience is best-effort
-            pass
+        _plugins = _team_plugins()
         runner = Runner(agent=pipeline, app_name="aiforge-chat",
                         session_service=svc, auto_create_session=True,
                         plugins=_plugins)
@@ -716,6 +712,12 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
             app_name="aiforge-chat", user_id="chat",
             state=_team_state,
         )
+        # One shell (tmux), browser and kernel for THIS run. Unkeyed, every
+        # team run shared the "default" shell: a run on repo B ran its
+        # commands in the directory repo A's run had cd'd into.
+        from .run_resources import key_stateful_tools
+        _run_id = session.id
+        key_stateful_tools(_run_id)
         content = gtypes.Content(
             role="user", parts=[gtypes.Part.from_text(text=prompt)])
         kw = {"user_id": "chat", "session_id": session.id, "new_message": content}
@@ -729,8 +731,10 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
         except Exception:
             pass
         agen = runner.run_async(**kw)
-        evres = await _drive_run_events(agen, runner, q, session_id,
-                                        chat_interject, steps)
+        evres = await _events_under_deadline(agen, runner, q, session_id,
+                                             chat_interject, steps)
+        if evres is None:                # hit the deadline — already reported
+            return
         by_role, final = evres["by_role"], evres["final"]
         _sub_items = evres["sub_items"] if evres["sub_items"] is not None else _sub_items
         _enhancer_blocked_reason = evres["enhancer_blocked"]
@@ -752,9 +756,73 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
         # expensive path to repeat.
         q.put({"type": "stopped", "reason": "pipeline_error"})
     finally:
+        if _run_id is not None:
+            from .run_resources import destroy_run_resources
+            destroy_run_resources(_run_id)
         _drive_teardown(root_token, my_lock_gen, prev_root, session_id, cwd,
                         raw_prompt, final_text, steps, _sub_items, _run_ok,
                         started_at, q)
+
+
+def _team_plugins() -> list:
+    """The ticket driver's plugins: its context filter (keeps a long team run
+    inside the model's window — team chat replayed every event on every call)
+    plus the phantom-tool guard. Falls back to the guard alone."""
+    try:
+        from .adk_runner._pipeline import _build_context_plugins
+        plugins = _build_context_plugins()
+        if plugins:
+            return plugins
+    except Exception:  # noqa: BLE001 — resilience is best-effort
+        pass
+    try:
+        from .tool_error_plugin import PhantomToolGuardPlugin
+        return [PhantomToolGuardPlugin()]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _team_deadline_s() -> float:
+    """The wall clock for one team turn: ``AIFORGE_CHAT_TEAM_DEADLINE_S``,
+    default the ticket pipeline's own deadline (90 min); 0 disables. Team chat
+    had none — only an LLM-call cap — so a run stalled below the cap held the
+    server-wide team lock indefinitely. (Simple chat's turn deadline defaults
+    to OFF, so it is not reused here.)"""
+    raw = os.environ.get("AIFORGE_CHAT_TEAM_DEADLINE_S", "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    try:
+        from .adk_runner._verdict import _pipeline_deadline_s
+        return float(_pipeline_deadline_s())
+    except Exception:  # noqa: BLE001
+        return 5400.0
+
+
+async def _events_under_deadline(agen, runner, q, session_id, chat_interject,
+                                 steps):
+    """``_drive_run_events`` bounded by :func:`_team_deadline_s`. Returns its
+    result, or None after reporting a deadline stop (same structural marker a
+    user Stop leaves, so Retry resumes instead of redoing the whole run)."""
+    import asyncio
+    import contextlib
+    deadline = _team_deadline_s()
+    cm = (asyncio.timeout(deadline) if deadline and deadline > 0
+          else contextlib.nullcontext())
+    try:
+        async with cm:
+            return await _drive_run_events(agen, runner, q, session_id,
+                                           chat_interject, steps)
+    except TimeoutError:
+        with contextlib.suppress(Exception):
+            await agen.aclose()
+        q.put({"type": "error",
+               "text": (f"team run stopped at its {int(deadline // 60)}-minute "
+                        "deadline (AIFORGE_CHAT_TEAM_DEADLINE_S)")})
+        q.put({"type": "stopped", "reason": "deadline"})
+        return None
 
 
 

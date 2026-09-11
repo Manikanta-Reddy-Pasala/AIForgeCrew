@@ -330,17 +330,9 @@ def _run_live_verifier(ticket, pr_url: str) -> dict | None:
 
 
 def _key_stateful_tools(session_id: str) -> None:
-    """Key the stateful tools (bash session, browser context, IPython kernel) to
-    THIS run so the destroy_* calls actually match them — otherwise each mints a
-    per-call id and leaks (browser/ipython did exactly this)."""
-    import importlib
-    for mod, fn in (("bash", "set_run_id"), ("browser", "set_run_id"),
-                    ("ipython_kernel", "set_run_id")):
-        try:
-            getattr(importlib.import_module(
-                f"aiforge_core.runtime.tools.{mod}"), fn)(session_id)
-        except Exception:  # noqa: BLE001
-            pass
+    """Key bash / browser / IPython to THIS run (see runtime.run_resources)."""
+    from ..run_resources import key_stateful_tools
+    key_stateful_tools(session_id)
 
 
 def _run_kwargs(session_id: str, content) -> dict:
@@ -650,19 +642,9 @@ async def _drive_pipeline(runner, session_svc, session_id: str,
 
 
 def _destroy_run_resources(session_id: str) -> None:
-    """Best-effort cleanup of everything keyed to this run. Each failure is
-    swallowed so the runner still returns (e.g. when tmux isn't installed)."""
-    for module, fn in (("aiforge_core.runtime.tools.bash", "destroy_session"),
-                       ("aiforge_core.runtime.tools.browser", "destroy_context"),
-                       ("aiforge_core.runtime.tools.ipython_kernel",
-                        "destroy_kernel"),
-                       ("aiforge_core.runtime.docker_sandbox",
-                        "destroy_container")):
-        try:
-            import importlib
-            getattr(importlib.import_module(module), fn)(session_id)
-        except Exception as exc:  # noqa: BLE001 — best-effort cleanup
-            log.debug("%s.%s failed: %s", module.rsplit(".", 1)[-1], fn, exc)
+    """Best-effort cleanup of everything keyed to this run (runtime.run_resources)."""
+    from ..run_resources import destroy_run_resources
+    destroy_run_resources(session_id)
 
 
 def _dump_trajectory(session, _ticket, initial_state: dict) -> None:

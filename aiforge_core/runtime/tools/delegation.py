@@ -34,18 +34,11 @@ _DEFAULT_MAX_DEPTH = 3
 
 
 def _build_delegate_agent(role: str):
-    """Construct a single LlmAgent for ``role`` using the production
-    pipeline factory. Late import so this module is unit-testable
-    without ADK present."""
-    from aiforge_core.runtime.pipeline import build_pipeline
+    """The single agent for ``role`` (``pipeline.build_role_agent``). Late
+    import so this module is unit-testable without ADK present."""
+    from aiforge_core.runtime.pipeline import build_role_agent
 
-    pipeline = build_pipeline(skip_researcher=False)
-    # The SequentialAgent exposes ``sub_agents``; find the one matching role.
-    sub_agents = getattr(pipeline, "sub_agents", []) or []
-    for sub in sub_agents:
-        if getattr(sub, "name", "").lower() == role:
-            return sub
-    return None
+    return build_role_agent(role)
 
 
 def _cleanup_delegate_sessions(session_id) -> None:
