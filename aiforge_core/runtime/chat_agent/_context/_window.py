@@ -90,30 +90,44 @@ _SYSTEM_PROMPT_CHARS = 14000
 _CTX_BUDGET_FLOOR_CHARS = 4000
 
 
-# Live-history fraction of the window kept before an auto-condense fires.
-# Cave is the STANDARD DEFAULT (see :func:`_cave_mode`), so the cave value is
-# what a model gets unless the operator explicitly opts out on a strong,
-# big-window model.
-_CAVE_CONDENSE_FRACTION = 0.40     # cave (default) → compact at ~40% full
-_FULL_CONDENSE_FRACTION = 0.85     # cave opted OUT (strong model) → use window
+# Auto-compaction fires when the context (system prompt + live history)
+# reaches this fraction of the model's window — 80% (user, 2026-09-11). It used
+# to be 40% in cave mode, which on a 256K model compacted at ~96K and showed
+# "96k" as if that were the window. Cave mode still keeps the context lean
+# (smaller repo map, fewer optional blocks); it no longer halves the window.
+_CONDENSE_FRACTION = 0.80
 
 
 def _history_fraction(_role: str | None = None) -> float:
-    """Fraction of the (post-reserve) window kept as LIVE history before an
-    auto-condense fires. An explicit ``AIFORGE_CTX_HISTORY_FRACTION`` wins;
-    otherwise cave mode (the standard default for the small local models this
-    runs on) condenses early at :data:`_CAVE_CONDENSE_FRACTION` (~40% full) —
-    small models drift + invent file edits as live context grows, so keeping
-    the live slice small is what stops the hallucination. An operator who opted
-    OUT of cave on a strong big-window model keeps :data:`_FULL_CONDENSE_FRACTION`
-    of the window. Clamped to a sane band."""
+    """Fraction of the model's window the context may fill before an
+    auto-condense: ``AIFORGE_CTX_HISTORY_FRACTION`` if set (clamped to
+    0.15-0.95), else :data:`_CONDENSE_FRACTION`."""
     env = os.environ.get("AIFORGE_CTX_HISTORY_FRACTION")
     if env is not None:
         try:
             return min(0.95, max(0.15, float(env)))
         except (TypeError, ValueError):
             pass
-    return _CAVE_CONDENSE_FRACTION if _cave_mode() else _FULL_CONDENSE_FRACTION
+    return _CONDENSE_FRACTION
+
+
+def _window_tokens(role: str | None = None) -> int:
+    """The model's input window in tokens for ``role`` (per-model registry,
+    else the global setting); 0 when unknown."""
+    win = 0
+    if role:
+        try:
+            from aiforge_core.config import model_registry
+            win = int(model_registry.context_window_for_role(role))
+        except Exception:  # noqa: BLE001
+            win = 0
+    if win <= 0:
+        try:
+            from aiforge_core.config import runtime_settings
+            win = int(runtime_settings.get("context_window"))
+        except Exception:  # noqa: BLE001
+            win = 0
+    return max(0, win)
 
 
 def _ctx_budget_chars(role: str | None = None,
@@ -136,37 +150,20 @@ def _ctx_budget_chars(role: str | None = None,
         except ValueError:
             pass
     reserve_sys = _SYSTEM_PROMPT_CHARS if sys_chars is None else max(0, int(sys_chars))
-    win = 0
-    # Per-model context window (registry) for this role wins over the global.
-    if role:
-        try:
-            from aiforge_core.config import model_registry
-            win = int(model_registry.context_window_for_role(role))
-        except Exception:  # noqa: BLE001
-            win = 0
-    if win <= 0:
-        try:
-            from aiforge_core.config import runtime_settings
-            win = int(runtime_settings.get("context_window"))
-        except Exception:  # noqa: BLE001
-            win = 0
-    # Fraction of the (post-reserve) window kept as live history before we
-    # condense — see :func:`_history_fraction`. Cave (the standard default)
-    # condenses at ~40% full: small models drift + invent edits as live context
-    # grows LONG before the window physically fills, so the live slice is kept
-    # small. A strong model with cave opted out keeps ~85%. Env-tunable.
-    headroom = _history_fraction(role)
+    win = _window_tokens(role)
     if win > 0:
-        # Reserve what the request needs beyond history: the model's own reply
-        # (output cap) and the system prompt. ~4 chars/token.
+        # The context (system prompt + history) may reach _history_fraction of
+        # the window — 80% by default — and never past the window minus the
+        # model's own reply (output cap), so a request always fits.
         try:
             from aiforge_core.config import runtime_settings
             out_chars = int(runtime_settings.get("max_output_tokens")) * 4
         except Exception:  # noqa: BLE001
             out_chars = 4096 * 4
-        usable = win * 4 - out_chars - reserve_sys
-        budget = int(max(usable, _CTX_BUDGET_FLOOR_CHARS) * headroom)
-        return max(budget, _CTX_BUDGET_FLOOR_CHARS)
+        win_chars = win * 4                      # ~4 chars/token
+        ceiling = min(int(win_chars * _history_fraction(role)),
+                      win_chars - out_chars)
+        return max(ceiling - reserve_sys, _CTX_BUDGET_FLOOR_CHARS)
     return 24000 if _cave_mode() else 48000
 
 

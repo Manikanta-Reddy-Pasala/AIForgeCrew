@@ -45,6 +45,16 @@ def _int_env(key: str, default: int) -> int:
 
 
 def _context_window() -> int:
+    """The Doer model's EFFECTIVE window (per-model value → operator setting →
+    auto-detected → default) — the same source chat uses. It read only the
+    global setting (128K default), so a 256K model was trimmed as if 128K."""
+    try:
+        from aiforge_core.config import model_registry
+        win = int(model_registry.effective_context_window("doer"))
+        if win > 0:
+            return win
+    except Exception:  # noqa: BLE001
+        pass
     try:
         from aiforge_core.config import runtime_settings as _rs
         return int(_rs.get("context_window") or 131072)
@@ -53,18 +63,16 @@ def _context_window() -> int:
 
 
 def _history_frac() -> float:
-    """The same condense trigger the simple ReAct loop uses.
-
-    Team mode and mid-run steers then condense EARLY too, instead of running
-    near-full where small models drift and invent edits. Soft-fails to the old
-    0.55 when the import is unavailable.
+    """The same compaction trigger the simple ReAct loop uses (80% of the
+    window by default), so team mode and tickets trim at the same point.
+    Soft-fails to 0.8 when the import is unavailable.
     """
     try:
         from aiforge_core.runtime.chat_agent._context._window import (
             _history_fraction)
         return _history_fraction()
     except Exception:  # noqa: BLE001
-        return 0.55
+        return 0.8
 
 
 def _text_of(c) -> str:

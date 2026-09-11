@@ -44,14 +44,27 @@ def test_int_env_falls_back(monkeypatch, raw, expected):
     assert pl._int_env("AIFORGE_X", 12) == expected
 
 
-def test_the_context_window_comes_from_runtime_settings(monkeypatch):
+def test_the_context_window_is_the_models_effective_window(monkeypatch):
+    """The same source chat uses: a 256K model is not trimmed as if 128K."""
+    from aiforge_core.config import model_registry as mr
+    monkeypatch.setattr(mr, "effective_context_window", lambda role=None: 262144)
+    assert pl._context_window() == 262144
+
+
+def test_the_context_window_falls_back_to_runtime_settings(monkeypatch):
+    from aiforge_core.config import model_registry as mr
     from aiforge_core.config import runtime_settings as rs
+    monkeypatch.setattr(mr, "effective_context_window",
+                        lambda role=None: (_ for _ in ()).throw(RuntimeError("x")))
     monkeypatch.setattr(rs, "get", lambda key: 32768)
     assert pl._context_window() == 32768
 
 
 def test_an_unreadable_setting_falls_back(monkeypatch):
+    from aiforge_core.config import model_registry as mr
     from aiforge_core.config import runtime_settings as rs
+    monkeypatch.setattr(mr, "effective_context_window",
+                        lambda role=None: (_ for _ in ()).throw(RuntimeError("x")))
     monkeypatch.setattr(rs, "get",
                         lambda key: (_ for _ in ()).throw(RuntimeError("no db")))
     assert pl._context_window() == 131072

@@ -1180,16 +1180,21 @@ def _condense_and_report(st, role, complete_fn, session_id, _meter):
     _ctx_chars = sum(len(_text_of(m)) for m in st.convo[1:])
     _ctx_budget = _ctx_budget_chars(role, sys_chars=_sys_len)
     if _ctx_budget > 0:
-        # ~4 chars/token → surface ABSOLUTE token counts (in k) alongside the
-        # pct so the UI can show "120k / 256k" not just a bare percentage.
-        _ctx_tokens = _ctx_chars // 4
-        _win_tokens = _ctx_budget // 4
+        # ~4 chars/token. The meter shows the context against the MODEL'S
+        # window ("30k / 256k") and where compaction fires. It used to show the
+        # compaction budget as the denominator, so a 256K model read "96k".
+        from ._context._window import _history_fraction, _window_tokens
+        _model_win = _window_tokens(role) or (_ctx_budget + _sys_len) // 4
+        _ctx_tokens = (_ctx_chars + _sys_len) // 4          # what is sent
+        _compact_at = (_ctx_budget + _sys_len) // 4
         _calls = _meter.snapshot(session_id) if _meter is not None else {}
         yield {"type": "usage", "context_chars": _ctx_chars,
                "budget_chars": _ctx_budget,
                "context_tokens": _ctx_tokens,
-               "window_tokens": _win_tokens,
-               "pct": min(100, round(_ctx_chars * 100 / _ctx_budget)),
+               "window_tokens": _model_win,
+               "compact_at_tokens": _compact_at,
+               "compact_pct": round(_history_fraction(role) * 100),
+               "pct": min(100, round(_ctx_tokens * 100 / max(1, _model_win))),
                # Requests actually sent to the LLM — this turn, this chat,
                # and the machine-wide rate. "Why is one question 40 calls?"
                "llm_turn": _calls.get("turn", 0),

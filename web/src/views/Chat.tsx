@@ -90,6 +90,7 @@ function mergeUsage(prev: LiveTurn, evt: any): LiveTurn {
     ...(evt.pct !== undefined ? {
       pct: evt.pct, chars: evt.context_chars, budget: evt.budget_chars,
       tokens: evt.context_tokens, windowTokens: evt.window_tokens,
+      compactAtTokens: evt.compact_at_tokens, compactPct: evt.compact_pct,
     } : {}),
     ...(evt.llm_turn !== undefined ? {
       llmTurn: evt.llm_turn, llmSession: evt.llm_session,
@@ -1993,12 +1994,14 @@ export default function Chat() {
                     {liveTurn.streaming && liveTurn.usage
                       && (liveTurn.usage.budget ?? 0) > 0 && (
                       <div className="xs muted" style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 6 }}
-                           title={`~${Math.round((liveTurn.usage.tokens ?? liveTurn.usage.chars / 4) / 1000)}k / ${Math.round((liveTurn.usage.windowTokens ?? liveTurn.usage.budget / 4) / 1000)}k tokens before auto-condense`}>
-                        <span style={{ width: 60, height: 4, background: 'var(--bg-2,#222)', borderRadius: 2, overflow: 'hidden' }}>
+                           title={`~${Math.round((liveTurn.usage.tokens ?? liveTurn.usage.chars / 4) / 1000)}k of the model's ${Math.round((liveTurn.usage.windowTokens ?? liveTurn.usage.budget / 4) / 1000)}k-token window; auto-compaction at ${liveTurn.usage.compactPct ?? 80}% (~${Math.round((liveTurn.usage.compactAtTokens ?? 0) / 1000)}k)`}>
+                        <span style={{ position: 'relative', width: 60, height: 4, background: 'var(--bg-2,#222)', borderRadius: 2, overflow: 'hidden' }}>
                           <span style={{ display: 'block', height: '100%', width: `${liveTurn.usage.pct ?? 0}%`,
-                                         background: (liveTurn.usage.pct ?? 0) > 85 ? 'var(--err,#e5534b)' : 'var(--accent,#2563eb)' }} />
+                                         background: (liveTurn.usage.pct ?? 0) >= (liveTurn.usage.compactPct ?? 80) ? 'var(--err,#e5534b)' : 'var(--accent,#2563eb)' }} />
+                          {/* where auto-compaction fires */}
+                          <span style={{ position: 'absolute', top: 0, bottom: 0, width: 1, left: `${liveTurn.usage.compactPct ?? 80}%`, background: 'var(--fg-3,#888)' }} />
                         </span>
-                        context {Math.round((liveTurn.usage.tokens ?? liveTurn.usage.chars / 4) / 1000)}k / {Math.round((liveTurn.usage.windowTokens ?? liveTurn.usage.budget / 4) / 1000)}k ({liveTurn.usage.pct ?? 0}%)
+                        context {Math.round((liveTurn.usage.tokens ?? liveTurn.usage.chars / 4) / 1000)}k / {Math.round((liveTurn.usage.windowTokens ?? liveTurn.usage.budget / 4) / 1000)}k ({liveTurn.usage.pct ?? 0}%) · compacts at {liveTurn.usage.compactPct ?? 80}%
                       </div>
                     )}
                   </div>

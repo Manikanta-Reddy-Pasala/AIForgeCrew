@@ -123,12 +123,13 @@ def test_cave_mode_keeps_quality_blocks_and_shrinks_budget(tmp_path, monkeypatch
     monkeypatch.setattr(wf, "auto_context", lambda *a, **k: (seen.__setitem__("workflows", seen["workflows"] + 1), "WF")[1])
     monkeypatch.setattr(mn, "expand", lambda *a, **k: (seen.__setitem__("mentions", seen["mentions"] + 1), ("M", 0))[1])
 
-    # Budget shrinks in cave mode (condense fires sooner).
+    # Cave keeps the injected context lean but no longer moves the compaction
+    # point: that is 80% of the window either way (user, 2026-09-11).
     monkeypatch.setenv("AIFORGE_CAVE_MODE", "0")
     monkeypatch.delenv("AIFORGE_CHAT_CONTEXT_BUDGET_CHARS", raising=False)
     normal = ca._ctx_budget_chars()
     monkeypatch.setenv("AIFORGE_CAVE_MODE", "1")
-    assert ca._ctx_budget_chars() < normal
+    assert ca._ctx_budget_chars() == normal
 
     fn = _scripted(["FINAL: done"])
     list(ca.run_chat_agent([{"role": "user", "content": "hi"}],

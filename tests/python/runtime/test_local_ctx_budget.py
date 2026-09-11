@@ -55,10 +55,12 @@ def test_budget_leaves_room_for_input_on_32k(ca, monkeypatch):
     monkeypatch.setenv("AIFORGE_CAVE_MODE", "0")  # deterministic non-cave headroom
     budget = ca._ctx_budget_chars()
     win_chars = 32768 * 4
-    # The output + system reservation was subtracted: budget must be below the
-    # OLD naive `win*4*0.55` value (which reserved nothing for output/system).
-    assert budget < int(win_chars * 0.55)
-    assert budget < win_chars
+    # History + the ~14K system-prompt estimate stay within 80% of the window,
+    # and never eat the reply's room (the output cap).
+    from aiforge_core.config import runtime_settings
+    out_chars = int(runtime_settings.get("max_output_tokens")) * 4
+    assert budget + 14000 <= int(win_chars * 0.80)
+    assert budget + 14000 + out_chars <= win_chars
     # Still a usable slice of history.
     assert budget >= 4000
 
@@ -72,12 +74,14 @@ def test_budget_never_below_floor_on_tiny_window(ca, monkeypatch):
         assert budget > 0
 
 
-def test_cave_budget_smaller_than_non_cave(ca, monkeypatch):
+def test_cave_no_longer_moves_the_compaction_point(ca, monkeypatch):
+    """Compaction is at 80% either way (user, 2026-09-11); cave only keeps the
+    injected context lean."""
     monkeypatch.setenv("AIFORGE_LOCAL_CTX_WINDOW", "32768")
     monkeypatch.setenv("AIFORGE_CAVE_MODE", "0")
     normal = ca._ctx_budget_chars()
     monkeypatch.setenv("AIFORGE_CAVE_MODE", "1")
-    assert ca._ctx_budget_chars() < normal
+    assert ca._ctx_budget_chars() == normal
 
 
 # --- cave is the STANDARD DEFAULT across all models ------------------------

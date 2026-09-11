@@ -51,6 +51,7 @@ export type LiveTurn = {
   subtasks?: SubtaskItem[];   // Planner decomposition (team mode)
   captured?: CapturedItem[];  // Rule/Memory/Feedback captured this turn
   usage?: { pct: number; chars: number; budget: number; tokens?: number; windowTokens?: number;
+    compactAtTokens?: number; compactPct?: number;
             // Requests actually sent to the LLM: this turn, this chat, and the
             // machine-wide rate over the last minute.
             llmTurn?: number; llmSession?: number; llmPerMin?: number;
