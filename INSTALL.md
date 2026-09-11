@@ -1,8 +1,23 @@
 # Installing AIForge
 
-## Prerequisites
+## Two ways to run it
 
-**`git` and `python 3.12`** — the two things only your OS can provide.
+| | **Docker (default)** | Native |
+|---|---|---|
+| Command | `./run.sh` | `./run.sh --native` |
+| Needs on the machine | Docker + Compose | git + python 3.12 |
+| What the agent can touch | everything **inside** an Ubuntu 24.04 box; of this machine only `~/.aiforge` | the whole machine |
+| Rights | full: your uid + passwordless sudo, no workspace jail | your user |
+| Network | outbound open | outbound open |
+
+Docker mode is the controlled one: the agent can install anything and do
+anything inside its box, and cannot read or write the rest of your machine.
+See **Docker (default)** below.
+
+## Prerequisites (native mode, and the box's own first start)
+
+**`git` and `python 3.12`** — the two things only your OS can provide. Docker
+mode needs only Docker; the box brings its own.
 
 | | macOS | Debian/Ubuntu | Fedora/RHEL | Windows |
 |---|---|---|---|---|
@@ -62,20 +77,6 @@ CPython, no browser binary from a CDN, no npm install scripts. CodeGraph runs fr
 `CODEGRAPH_NO_DOWNLOAD=1` (its npm shim otherwise downloads and runs a bundle
 from GitHub when that package is missing) and `CODEGRAPH_TELEMETRY=0`.
 
-## Two ways to run it
-
-| | Native | Docker |
-|---|---|---|
-| Command | `./run.sh` (or `sudo ./run.sh`) | `./run.sh --docker` |
-| Deps live | in `.venv` on the host | baked into the image |
-| Filesystem | the whole host (it *is* the host) | host FS mounted at `/host` |
-| Best for | a box you own / a VM | isolation, or a clean host |
-| First run | fast | slow (~2 GB image build) |
-
-Both are single-mode: embedded SQLite + Markdown memory, no Postgres/Neo4j. Both
-include the tree-sitter RepoMap, the model2vec embedder (static embeddings +
-sqlite-vec, no torch) and the structured / crawl / chunking extras. Both persist
-state across restarts. Point either at your model on `http://localhost:8799/ui/`.
 
 ---
 
@@ -133,40 +134,70 @@ loopback kept direct.
 
 ---
 
-## Docker
-
-One self-contained container, everything baked in — python deps, RepoMap
-grammars, the model2vec stack (embed model pre-downloaded), the extras, and the
-pre-built UI. Nothing is fetched at run time.
+## Docker (default)
 
 ```bash
-./run.sh --docker                     # same as: docker compose up -d --build
+./run.sh                 # build the box (first time: a few minutes), start it
+./run.sh --logs          # follow it — the first start installs its dependencies
+./run.sh --shell         # a shell inside the box
+./run.sh --stop          # stop it (the box keeps what the agent installed, until a rebuild)
+./run.sh --repos ~/code  # mount YOUR projects folder instead of ~/.aiforge/repos
+./run.sh --port 9000     # any other flag is passed to the run.sh inside the box
 ```
 
-The **entire host filesystem is mounted at `/host`**, so the agent works on your
-real repos and its edits land back on the host. Narrow it:
+How it works:
 
-```bash
-AIFORGE_HOST_ROOT=$HOME ./run.sh --docker
-```
+1. **The box** — `Dockerfile` is Ubuntu 24.04 + OS packages (python 3.12, git,
+   tmux, curl, sudo) + this checkout. It installs no Python or npm packages at
+   build time.
+2. **Its first start** — the entrypoint installs the internal CA, links your
+   credentials, then runs this checkout's own `run.sh --native` inside the box:
+   the same lockfile-pinned, Artifactory-only, wheels-only install as native
+   mode, into the `aiforge-state` volume. Later starts install nothing unless a
+   lockfile changed. The API, the ticket runner and the memory sync loop all
+   run inside.
+3. **What it sees** — `~/.aiforge` is mounted at the same path. That folder is
+   everything AIForge keeps: settings, memory, tickets, chat workspaces, and
+   `~/.aiforge/repos`, where projects live by default (clone or create them
+   there, then point a chat or ticket at one). To work on a folder of your
+   own instead, `./run.sh --repos /path/to/code` mounts it at the same path
+   as the box's project root. Nothing else of this machine is visible to the
+   agent.
+4. **What it may do** — anything inside the box: it runs as your uid with
+   passwordless sudo and is told to **install every tool a task needs**
+   (`ensure_runtime`, `sudo apt-get install maven`, `npm i -g …`) rather than
+   stop. Box-local actions (sudo, installs, chown, systemctl) run without
+   approval; actions that reach outside the box — `git push`, opening a PR,
+   deleting data — still ask. No workspace jail. Files it writes into
+   `~/.aiforge` stay owned by you. Tools it installs survive `--stop`; an image
+   rebuild (a code update) starts the box fresh.
+5. **Network** — the host's network: the UI is on this machine's
+   `127.0.0.1:8799`, outbound connections (Artifactory, GitLab, Jira, the
+   model) just work.
 
-State (config, SQLite, memory, model cache) lives on the host under
-`./data/aiforge`, so it survives rebuilds.
+Credentials go in `~/.aiforge/security/` — the box links them where every tool
+looks:
 
-| Var | Default | Purpose |
+| File | Used by |
+|---|---|
+| `security/netrc` | pip, uv (`machine artifactory.internal login … password …`) |
+| `security/npmrc` | npm (`//artifactory.internal/:_authToken=…`) |
+| `security/gitconfig`, `security/ssh/` | git (identity, SSH keys for GitLab) |
+| `security/ca/custom-ca.pem` | the internal CA — installed into the box's trust store |
+
+Tokens entered in Settings (GitLab, Jira, the model key) are stored there too.
+
+| Var (in your shell) | Default | Purpose |
 |---|---|---|
-| `AIFORGE_HOST_ROOT` | `/` | host path mounted at `/host` |
-| `AIFORGE_DATA_DIR` | `./data` | where persisted state lives |
-| `AIFORGE_LM_BASE_URL` | `http://127.0.0.1:1234/v1` | model endpoint (host networking, so loopback works) |
-| `AIFORGE_EMBED_BACKEND` | `model2vec` | `hash` = keyword-only; `api` = external `/v1/embeddings` |
-| `AIFORGE_RUNNER_CONCURRENCY` | `0` | N>0 runs N ticket-runner loops alongside the API |
-| `PREFETCH_EMBED_MODEL` (build arg) | `1` | `0` = smaller image, model downloads on first use |
+| `AIFORGE_LM_BASE_URL` | `aiforge.env` | the model endpoint |
+| `UV_DEFAULT_INDEX`, `npm_config_registry` | Artifactory | registry overrides |
+| `AIFORGE_APT_MIRROR` | archive.ubuntu.com | Ubuntu mirror (e.g. Artifactory's ubuntu remote) for the box's apt |
+| `AIFORGE_BASE_REGISTRY` | Docker Hub | prefix for the `ubuntu:24.04` base image |
+| `AIFORGE_EXTRAS` | — | optional Python extras, as in native mode |
 
-```bash
-docker compose logs -f aiforge        # tail
-docker compose down                   # stop (state persists)
-docker compose up -d --build          # rebuild after a git pull
-```
+`docker volume rm <project>_aiforge-state` only forces a reinstall — your data
+is in `~/.aiforge`, never in a volume.
+
 
 ---
 
@@ -192,5 +223,6 @@ browser cannot send a header on a plain navigation, so reach it as:
 curl -H "Authorization: Bearer $AIFORGE_API_TOKEN" http://127.0.0.1:8799/admin
 ```
 
-In Docker mode the whole host FS is reachable at `/host` — narrow it with
-`AIFORGE_HOST_ROOT` unless you intend whole-host access.
+In Docker mode (the default) the agent has full rights inside its box but sees
+only `~/.aiforge` of this machine; in native mode (`--native`) it has your
+user's full access to the whole machine.

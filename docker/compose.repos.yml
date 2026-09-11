@@ -1,0 +1,9 @@
+# Added by `./run.sh --repos DIR` (or AIFORGE_REPOS_DIR): YOUR folder of
+# projects, mounted at the same path, becomes the box's project root. It is the
+# only host folder besides ~/.aiforge the box can see — and only when you ask.
+services:
+  aiforge:
+    environment:
+      AIFORGE_REPO_ROOT: ${AIFORGE_REPOS_DIR}
+    volumes:
+      - ${AIFORGE_REPOS_DIR}:${AIFORGE_REPOS_DIR}

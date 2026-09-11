@@ -37,7 +37,9 @@ _DANGEROUS = [
     (r"\b(sh|bash|zsh|ksh)\b\s+<\(\s*(curl|wget|fetch)\b",
      "executes a network download via process substitution (remote code execution)"),
     # secret EXFILTRATION: pushing creds/keys off the box (network/copy verbs)
-    (r"(scp|curl|wget|rsync|nc|netcat|tar)\b[^\n]*(\.ssh/|\.aws/|\.env\b|id_rsa|id_ed25519|credentials|secrets?\b|\.pem\b|\.kube/|private[_-]?key)",
+    # .netrc/.npmrc and ~/.aiforge/security hold the Artifactory, GitLab and
+    # Jira tokens this install uses — the same class as ~/.ssh.
+    (r"(scp|curl|wget|rsync|nc|netcat|tar)\b[^\n]*(\.ssh/|\.aws/|\.env\b|id_rsa|id_ed25519|credentials|secrets?\b|\.pem\b|\.kube/|private[_-]?key|\.netrc\b|\.npmrc\b|\.aiforge/security\b)",
      "exfiltrates credentials / private keys / secrets off the machine"),
     (r"\benv\b[^\n]*\|\s*(curl|wget|nc|netcat)\b",
      "pipes the environment (likely secrets) to the network"),
@@ -58,7 +60,7 @@ _DANGEROUS = [
 _CAUTION = [
     # local READ of creds/keys (no network) — surfaces secrets into the
     # agent's context; a heads-up, not an exfil.
-    (r"\b(cat|less|more|grep|tail|head|cp)\b[^\n]*(\.ssh/|\.aws/|\.env\b|id_rsa|id_ed25519|credentials|secrets?\b|\.pem\b|\.kube/|private[_-]?key)",
+    (r"\b(cat|less|more|grep|tail|head|cp)\b[^\n]*(\.ssh/|\.aws/|\.env\b|id_rsa|id_ed25519|credentials|secrets?\b|\.pem\b|\.kube/|private[_-]?key|\.netrc\b|\.npmrc\b|\.aiforge/security\b)",
      "reads credentials / private keys / secrets"),
     (r"\bsudo\b", "runs with elevated privileges (sudo)"),
     (r"\bchmod\s+(?:-[a-zA-Z]+\s+){0,4}777\b",
@@ -95,6 +97,29 @@ def _normalize(cmd: str) -> str:
 
 _DANGEROUS_C = [(re.compile(p, re.IGNORECASE), why) for p, why in _DANGEROUS]
 _CAUTION_C = [(re.compile(p, re.IGNORECASE), why) for p, why in _CAUTION]
+
+# Caution reasons whose whole effect stays inside the machine they run on. In
+# the docker-mode sandbox that machine is a disposable box the agent owns — it
+# is EXPECTED to sudo-install whatever a task needs — so these run free there.
+# Everything else in the caution tier reaches outside the box (a push, a PR, a
+# read of mounted credentials) and still asks; the dangerous tier is untouched.
+_BOX_LOCAL = frozenset({
+    "runs with elevated privileges (sudo)",
+    "makes a path world-writable (chmod 777)",
+    "changes file ownership",
+    "installs a global package",
+    "installs a user-wide Python package",
+    "force-kills processes",
+    "stops/disables a system service",
+    "edits scheduled jobs",
+    "changes firewall rules",
+})
+
+
+def in_sandbox() -> bool:
+    """True inside the docker-mode sandbox (the image sets AIFORGE_SANDBOX=1)."""
+    return os.environ.get("AIFORGE_SANDBOX", "").strip().lower() in (
+        "1", "true", "yes", "on")
 
 SAFE = "safe"
 CAUTION = "caution"
@@ -135,6 +160,7 @@ def assess(cmd: str) -> dict:
             return {"level": DANGEROUS, "reason": why}
     if any(delete_guard.is_destructive_delete(f) for f in forms):
         return {"level": DANGEROUS, "reason": "deletes files/data"}
+    sandbox = in_sandbox()
     for rx, why in _CAUTION_C:
         if any(rx.search(f) for f in forms):
             # ssh escape hatch: with AIFORGE_ALLOW_SSH, a caution-tier ssh
@@ -142,6 +168,10 @@ def assess(cmd: str) -> dict:
             # remote commands already returned above, so they still gate.
             if _ssh_allowed() and any(_SSH_RE.match(f) for f in forms):
                 return {"level": SAFE, "reason": ""}
+            # sandbox: box-local reasons run free; keep scanning, so a command
+            # that is ALSO external (`sudo … && git push`) still asks.
+            if sandbox and why in _BOX_LOCAL:
+                continue
             return {"level": CAUTION, "reason": why}
     return {"level": SAFE, "reason": ""}
 

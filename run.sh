@@ -12,15 +12,21 @@
 # shell, no Node tarball, no managed CPython, no browser binary from a CDN, no
 # npm install scripts.
 #
-# Runs on the host by default (full fs/shell access); `--docker` runs the
-# self-contained container instead. Storage is embedded SQLite + Markdown
-# memory. Point it at a model on http://localhost:8799/ui/.
+# DOCKER MODE by default: an Ubuntu 24.04 sandbox where the agent has full
+# rights, sees only ~/.aiforge from the host, and has open outbound network
+# (see docker-compose.yml). `--native` runs on the host instead (full host fs
+# and shell access). Storage is embedded SQLite + Markdown memory. UI on
+# http://localhost:8799/ui/.
 #
 # Flags:
 #   --port N     listen port (default 8799)
 #   --host H     bind host (default 127.0.0.1)
 #   --dev        uvicorn --reload
-#   --docker     build + run the all-deps container (host FS at /host)
+#   --native     run on the host, not in the sandbox (or AIFORGE_MODE=native)
+#   --docker     the sandbox (the default; or AIFORGE_MODE=docker)
+#   --stop | --logs | --shell   stop / follow / open a shell in the sandbox
+#   --repos DIR  mount YOUR projects folder into the sandbox (same path) as its
+#                project root; default ~/.aiforge/repos (or AIFORGE_REPOS_DIR)
 #   --skip-web   don't (re)build the web UI
 #   --test       probe the configured model endpoint, then exit
 #   --admin      this box is THE memory admin (exactly one per fleet); it
@@ -213,12 +219,19 @@ ADMIN_URL_SET=""
 GROUP_SET=""
 SKIP_WEB=0
 TEST=0
-MODE=lite                               # always SQLite; kept as a var for the blocks below
+MODE="${AIFORGE_MODE:-docker}"          # docker (default) | native
+DOCKER_ACTION=up
+_ORIG_ARGS=("$@")
 WITH_GRAPHIFY=0
 WITH_LANGFUSE="${AIFORGE_LANGFUSE:-0}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --docker) MODE=docker ;;
+    --native) MODE=native ;;
+    --stop) DOCKER_ACTION=stop ;;
+    --logs) DOCKER_ACTION=logs ;;
+    --shell) DOCKER_ACTION=shell ;;
+    --repos) AIFORGE_REPOS_DIR="${2:-}"; shift ;;
     --lite|--hybrid|--no-build) : ;;                 # legacy no-ops
     --migrate) MIGRATE=1 ;;
     --dedupe) MAINT=dedupe ;;
@@ -281,11 +294,8 @@ if [[ $ADMIN -eq 1 && $UNADMIN -eq 1 ]]; then
   echo "error: --admin and --spoke are opposites; pass one." >&2
   exit 2
 fi
-if [[ $ADMIN -eq 1 && "$MODE" == "docker" ]]; then
-  echo "error: --admin has no meaning in --docker mode: the container does not" >&2
-  echo "       run the memory sync loop. Run the admin on the host." >&2
-  exit 2
-fi
+[[ "$MODE" == "docker" || "$MODE" == "native" ]] \
+  || { echo "error: AIFORGE_MODE must be docker or native, not '$MODE'" >&2; exit 2; }
 if [[ $ADMIN -eq 1 && -n "${AIFORGE_ADMIN_URL:-}" ]]; then
   # Refused, not overridden: silently promoting a spoke gives the fleet two
   # admins, both stamping `derived: mesh`.
@@ -392,6 +402,79 @@ if [[ "${RESET_CONFIG:-0}" == "1" ]]; then
   else
     echo "==> no saved agent config to reset ($_cfg_file)"
   fi
+fi
+
+# AIForge listens on plain HTTP; the banner must say https when the operator
+# fronts it with TLS, or they copy a URL that will not connect.
+_ui_scheme() {
+  if   [[ -n "${AIFORGE_PUBLIC_SCHEME:-}" ]]; then printf '%s' "${AIFORGE_PUBLIC_SCHEME}"
+  elif [[ -n "${AIFORGE_TLS:-}" ]]; then           printf 'https'
+  else                                             printf 'http'
+  fi
+}
+
+# ── docker mode: the sandbox (the default) ────────────────────────────────
+# run.sh on the host only starts the box; the run.sh INSIDE it does the rest
+# (install on first start, API, runner, memory sync) with the flags passed
+# through. The box sees ~/.aiforge and nothing else of this machine.
+if [[ "$MODE" == "docker" ]]; then
+  command -v docker >/dev/null 2>&1 \
+    || _fatal "docker mode (the default) needs Docker." \
+              "Install Docker, or run on the host instead: ./run.sh --native"
+  if docker compose version >/dev/null 2>&1; then DC=(docker compose)
+  elif command -v docker-compose >/dev/null 2>&1; then DC=(docker-compose)
+  else _fatal "docker mode needs Docker Compose (the 'docker compose' plugin)."; fi
+  docker info >/dev/null 2>&1 \
+    || _fatal "cannot talk to the Docker daemon as $(id -un 2>/dev/null || id -u)." \
+              "Add yourself to the docker group (sudo usermod -aG docker \$USER, then log in again)."
+
+  # The box is built for YOU: files the agent writes into ~/.aiforge stay yours.
+  export AIFORGE_UID AIFORGE_GID AIFORGE_USER AIFORGE_HOME
+  AIFORGE_UID="$(id -u)"; AIFORGE_GID="$(id -g)"
+  AIFORGE_USER="$(id -un 2>/dev/null || echo aiforge)"; AIFORGE_HOME="$HOME"
+  mkdir -p "$AIFORGE_CONFIG_DIR/repos"
+  # Your own projects folder: mounted at the same path, it becomes the box's
+  # project root (docker/compose.repos.yml). Nothing else of the host is added.
+  if [[ -n "${AIFORGE_REPOS_DIR:-}" ]]; then
+    [[ -d "$AIFORGE_REPOS_DIR" ]] || _fatal "--repos: '$AIFORGE_REPOS_DIR' is not a folder."
+    AIFORGE_REPOS_DIR="$(cd "$AIFORGE_REPOS_DIR" && pwd -P)"
+    export AIFORGE_REPOS_DIR
+    DC+=(-f docker-compose.yml -f docker/compose.repos.yml)
+  fi
+
+  _pass=()                              # everything but the docker-only flags
+  _skip=0
+  for _a in ${_ORIG_ARGS[@]+"${_ORIG_ARGS[@]}"}; do
+    if (( _skip )); then _skip=0; continue; fi
+    case "$_a" in
+      --docker|--native|--stop|--logs|--shell) ;;
+      --repos) _skip=1 ;;
+      *) _pass+=("$_a") ;;
+    esac
+  done
+  export AIFORGE_RUN_ARGS="${_pass[*]:-}"
+
+  case "$DOCKER_ACTION" in
+    # stop, not down: the container keeps what the agent installed in it
+    # (apt, npm -g …) until the image is rebuilt.
+    stop)  exec "${DC[@]}" stop ;;
+    logs)  exec "${DC[@]}" logs -f aiforge ;;
+    shell) exec docker exec -it -u "$AIFORGE_UID:$AIFORGE_GID" \
+             -w "${AIFORGE_REPOS_DIR:-$AIFORGE_HOME/.aiforge/repos}" aiforge bash ;;
+  esac
+  if [[ $TEST -eq 1 || -n "${MAINT:-}" ]]; then
+    # a one-off inside a throwaway box sharing the same state, then exit
+    exec "${DC[@]}" run --rm --no-deps aiforge
+  fi
+  echo "==> docker mode: building the sandbox image (first time: a few minutes)…"
+  "${DC[@]}" up -d --build
+  echo ""
+  echo "  AIForge sandbox → $(_ui_scheme)://${HOST}:${PORT}/ui/"
+  echo "  sees from this machine: $AIFORGE_CONFIG_DIR${AIFORGE_REPOS_DIR:+ and $AIFORGE_REPOS_DIR}"
+  echo "  projects: ${AIFORGE_REPOS_DIR:-$AIFORGE_CONFIG_DIR/repos}   (full rights inside the box)"
+  echo "  first start installs its dependencies — follow it: ./run.sh --logs"
+  echo "  stop: ./run.sh --stop   ·   shell inside: ./run.sh --shell   ·   on the host: ./run.sh --native"
+  exit 0
 fi
 
 # ── local access bootstrap ────────────────────────────────────────────────
@@ -572,32 +655,6 @@ _npm_ci() {                              # $1 = dir holding package-lock.json
       npm ci --ignore-scripts --no-audit --no-fund --loglevel=error )
 }
 
-# AIForge listens on plain HTTP; the banner must say https when the operator
-# fronts it with TLS, or they copy a URL that will not connect.
-_ui_scheme() {
-  if   [[ -n "${AIFORGE_PUBLIC_SCHEME:-}" ]]; then printf '%s' "${AIFORGE_PUBLIC_SCHEME}"
-  elif [[ -n "${AIFORGE_TLS:-}" ]]; then           printf 'https'
-  else                                             printf 'http'
-  fi
-}
-
-# ── --docker: the all-deps container, host FS at /host ────────────────────
-if [[ "$MODE" == "docker" ]]; then
-  if docker compose version >/dev/null 2>&1; then DC=(docker compose)
-  elif command -v docker-compose >/dev/null 2>&1; then DC=(docker-compose)
-  else
-    echo "==> docker mode needs Docker + Compose, or use the native path: ./run.sh" >&2
-    exit 1
-  fi
-  export AIFORGE_PORT="$PORT"
-  [[ "${MIGRATE:-0}" == "1" ]] && export AIFORGE_MIGRATE=1
-  mkdir -p "${AIFORGE_DATA_DIR:-./data}/aiforge"
-  echo "==> docker mode: building the all-deps image (~2GB, first build takes minutes)…"
-  "${DC[@]}" up -d --build
-  echo "==> AIForge is up. UI: $(_ui_scheme)://${HOST}:${PORT}/ui/   (logs: ${DC[*]} logs -f aiforge)"
-  echo "==> full host FS mounted at /host — set AIFORGE_HOST_ROOT to narrow it."
-  exit 0
-fi
 
 # ── network posture ───────────────────────────────────────────────────────
 # Web fetch is code-default OFF and forced ON here (SSRF-guarded) — do not

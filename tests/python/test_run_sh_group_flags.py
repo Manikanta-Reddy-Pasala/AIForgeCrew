@@ -26,6 +26,7 @@ def _run(tmp_path: Path, args: list[str], extra_env: dict | None = None):
     shutil.copy(RUN_SH, dst)
     env = dict(os.environ)
     env["AIFORGE_CONFIG_DIR"] = str(tmp_path / "cfg")
+    env["AIFORGE_MODE"] = "native"   # the host path; docker mode starts a container
     env.pop("AIFORGE_ADMIN_URL", None)
     env.pop("AIFORGE_ROLE", None)
     env.pop("AIFORGE_SYNC_GROUP", None)

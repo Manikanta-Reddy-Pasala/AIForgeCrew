@@ -25,6 +25,7 @@ def _run(tmp_path: Path, args: list[str], extra_env: dict | None = None):
     shutil.copy(RUN_SH, dst)
     env = dict(os.environ)
     env["AIFORGE_CONFIG_DIR"] = str(tmp_path / "cfg")
+    env["AIFORGE_MODE"] = "native"   # the host path; docker mode starts a container
     env.pop("AIFORGE_ADMIN_URL", None)
     env.pop("AIFORGE_ROLE", None)
     env.update(extra_env or {})
@@ -46,14 +47,79 @@ def test_admin_is_refused_when_a_url_says_this_box_is_a_spoke(tmp_path: Path):
     assert "--admin-page" in proc.stderr        # …and says what to type instead
 
 
-def test_admin_is_refused_in_docker_mode(tmp_path: Path):
-    """The container never runs the sync loop, so a role claimed there would be
-    a statement about a process that does not exist."""
-    proc = _run(tmp_path, ["--docker", "--admin"])
+def test_docker_mode_passes_the_role_flags_into_the_sandbox(tmp_path: Path):
+    """The sandbox runs run.sh natively inside it — runner AND memory sync — so
+    --admin is no longer refused in docker mode: it is handed to the inner
+    run.sh. Proved with a fake `docker` that records the compose call."""
+    import os
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "docker.log"
+    fake = bindir / "docker"
+    fake.write_text(f'#!/bin/sh\necho "$* | RUN_ARGS=$AIFORGE_RUN_ARGS | UID=$AIFORGE_UID" >> "{log}"\nexit 0\n')
+    fake.chmod(0o755)
+    proc = _run(tmp_path, ["--admin", "--port", "9001"],
+                {"AIFORGE_MODE": "docker",
+                 "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"})
+    assert proc.returncode == 0, proc.stderr
+    up = [ln for ln in log.read_text().splitlines() if ln.startswith("compose up")]
+    assert up and "RUN_ARGS=--admin --port 9001" in up[0], log.read_text()
+    assert f"UID={os.getuid()}" in up[0]
+    assert "AIForge sandbox" in proc.stdout
 
-    assert proc.returncode == 2
-    assert "docker" in proc.stderr.lower()
 
+def test_repos_mounts_your_folder_and_is_not_passed_inward(tmp_path: Path):
+    import os
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "docker.log"
+    fake = bindir / "docker"
+    fake.write_text(f'#!/bin/sh\necho "$* | RUN_ARGS=$AIFORGE_RUN_ARGS | REPOS=$AIFORGE_REPOS_DIR" >> "{log}"\nexit 0\n')
+    fake.chmod(0o755)
+    code = tmp_path / "code"
+    code.mkdir()
+    proc = _run(tmp_path, ["--repos", str(code), "--dev"],
+                {"AIFORGE_MODE": "docker",
+                 "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"})
+    assert proc.returncode == 0, proc.stderr
+    up = [ln for ln in log.read_text().splitlines() if " up " in f" {ln} "][0]
+    assert "-f docker-compose.yml -f docker/compose.repos.yml" in up
+    assert f"REPOS={os.path.realpath(code)}" in up
+    assert "RUN_ARGS=--dev |" in up                 # --repos and its value stay outside
+
+
+def test_repos_must_be_a_folder(tmp_path: Path):
+    import os
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "docker").write_text("#!/bin/sh\nexit 0\n")
+    (bindir / "docker").chmod(0o755)
+    proc = _run(tmp_path, ["--repos", str(tmp_path / "nope")],
+                {"AIFORGE_MODE": "docker",
+                 "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"})
+    assert proc.returncode == 1 and "is not a folder" in proc.stderr
+
+
+def test_docker_mode_is_the_default(tmp_path: Path):
+    import os
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "docker.log"
+    fake = bindir / "docker"
+    fake.write_text(f'#!/bin/sh\necho "$*" >> "{log}"\nexit 0\n')
+    fake.chmod(0o755)
+    env = {"PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"}
+    dst = tmp_path / "run.sh"
+    shutil.copy(RUN_SH, dst)
+    full = {**os.environ, "AIFORGE_CONFIG_DIR": str(tmp_path / "cfg"), **env}
+    full.pop("AIFORGE_MODE", None)
+    subprocess.run(["bash", str(dst)], cwd=str(tmp_path), capture_output=True,
+                   text=True, env=full, timeout=60)
+    assert "compose up -d --build" in log.read_text()
+    subprocess.run(["bash", str(dst), "--stop"], cwd=str(tmp_path),
+                   capture_output=True, text=True, env=full, timeout=60)
+    # stop, not down: the container keeps what the agent installed in it
+    assert "compose stop" in log.read_text()
 
 def test_admin_and_spoke_together_are_refused(tmp_path: Path):
     proc = _run(tmp_path, ["--admin", "--spoke"])

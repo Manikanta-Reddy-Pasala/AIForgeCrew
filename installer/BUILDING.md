@@ -32,7 +32,7 @@ exist inside site-packages. Skip this step and the package serves a working API
 and a 404 for its own UI.
 
 Needs: `node` + `npm` (UI), `uv`, `python3` with pip. A box that has run
-`./run.sh` has them all in `.venv/bin` — `PATH="$PWD/.venv/bin:$PATH" installer/build_payload.sh`.
+`./run.sh --native` has them all in `.venv/bin` — `PATH="$PWD/.venv/bin:$PATH" installer/build_payload.sh`.
 
 Everything comes from the internal Artifactory — pyproject's index (or
 `UV_DEFAULT_INDEX`) and `AIFORGE_NPM_REGISTRY` from `aiforge.env` (or

@@ -1,62 +1,61 @@
-# AIForge — DOCKER MODE (single-mode: embedded SQLite + scoped-OKR memory).
+# AIForge — DOCKER MODE, the default `./run.sh`. Start it through run.sh, which
+# fills in your uid/home and the passthrough settings below.
 #
-# One self-contained container: the app + ALL deps (RepoMap, model2vec semantic,
-# sqlite-vec, structured/crawl/chunking, pre-built UI) baked into the image —
-# nothing is fetched at run time. No Postgres/Neo4j/sidecars (that was the old
-# "pro" stack; the project is single-mode now).
+# An Ubuntu 24.04 sandbox. Inside it the agent has full rights (your uid +
+# passwordless sudo, no workspace jail) and open outbound network. It sees ONE
+# host folder: ~/.aiforge, mounted at the same path — settings, credentials
+# (security/), memory, tickets, and ~/.aiforge/workspace where projects live.
+# Nothing else on the host is visible to it.
 #
-# FULL HOST FILESYSTEM is mounted at /host so the agent works on your real repos
-# and files. AIFORGE_HOST_ROOT (default `/`) chooses what to expose; point it at
-# a narrower dir (e.g. $HOME or ~/code) to limit the blast radius.
-#
-#   docker compose up -d --build        # or: ./run.sh --docker
-#
-# Persisted state (config, sqlite, memory, hf-cache) lives on the host under
-# ${AIFORGE_DATA_DIR:-./data}/aiforge so it survives rebuilds.
+# The app copy and everything installed for it (.venv, node_modules, web/dist,
+# codegraph) live in the `aiforge-state` volume, so restarts install nothing.
+# `./run.sh --stop` stops it; removing that volume only forces a reinstall —
+# your data is in ~/.aiforge, never in a volume.
 
 services:
   aiforge:
     build:
       context: .
-      dockerfile: Dockerfile
       network: host
       args:
-        # 0 → don't bake the embed model (smaller image; downloads on first use)
-        PREFETCH_EMBED_MODEL: ${PREFETCH_EMBED_MODEL:-1}
-    image: aiforge-app:latest
+        BASE_REGISTRY: ${AIFORGE_BASE_REGISTRY:-}
+        APT_MIRROR: ${AIFORGE_APT_MIRROR:-}
+        APP_UID: ${AIFORGE_UID:-1000}
+        APP_GID: ${AIFORGE_GID:-1000}
+        APP_USER: ${AIFORGE_USER:-aiforge}
+        APP_HOME: ${AIFORGE_HOME:-/home/aiforge}
+    image: aiforge-sandbox:local
     container_name: aiforge
     restart: unless-stopped
-    # Host networking so the app reaches a host-loopback LM endpoint (e.g. an
-    # SSH tunnel / LM Studio on 127.0.0.1:1234) with no extra config.
+    # The host's network: the UI stays on the machine's loopback (no token
+    # needed, same as native mode) and outbound connections just work.
     network_mode: host
+    # Passed through from the environment ./run.sh runs in, only when set
+    # there. Everything fixed comes from aiforge.env, which the inner run.sh
+    # reads itself.
     environment:
-      # SECURITY: loopback bind by default — this API runs shell + edits files,
-      # so it must not land on the LAN unauthenticated. To expose it, set BOTH
-      # AIFORGE_BIND_HOST=0.0.0.0 and AIFORGE_API_TOKEN=<secret> (the app refuses
-      # to boot on a non-loopback bind without a token).
-      AIFORGE_BIND_HOST: ${AIFORGE_BIND_HOST:-127.0.0.1}
-      AIFORGE_PORT: ${AIFORGE_PORT:-8799}
-      AIFORGE_API_TOKEN: ${AIFORGE_API_TOKEN:-}
-      # Bind 0.0.0.0 without a token ONLY if you front the API yourself
-      # (Cloudflare / WireGuard-only proxy) — else the app refuses to boot on a
-      # non-loopback bind. Forwarded so a host that sets it (e.g. via .env) works.
-      AIFORGE_ALLOW_UNAUTH_NONLOOPBACK: ${AIFORGE_ALLOW_UNAUTH_NONLOOPBACK:-0}
-      AIFORGE_CONFIG_DIR: /data/aiforge
-      # Real paraphrase recall via model2vec (static embeddings, no torch) —
-      # the image baked in the model + sqlite-vec.
-      AIFORGE_EMBED_BACKEND: ${AIFORGE_EMBED_BACKEND:-model2vec}
-      # The agent's workspace = the mounted host filesystem, so edits/worktrees
-      # land on the host and persist.
-      AIFORGE_REPO_ROOT: ${AIFORGE_REPO_ROOT:-/host}
-      # Point at your model endpoint (host loopback works via network_mode:host).
-      AIFORGE_LM_BASE_URL: ${AIFORGE_LM_BASE_URL:-http://127.0.0.1:1234/v1}
-      AIFORGE_LLM_SSL_VERIFY: ${AIFORGE_LLM_SSL_VERIFY:-true}
-      # N>0 runs N ticket-runner loops in-container alongside the api; 0 = api only.
-      AIFORGE_RUNNER_CONCURRENCY: ${AIFORGE_RUNNER_CONCURRENCY:-0}
-      # Force a (re-)converge/migration on boot when set to 1.
-      AIFORGE_MIGRATE: ${AIFORGE_MIGRATE:-}
+      - AIFORGE_RUN_ARGS
+      - AIFORGE_APT_MIRROR
+      - AIFORGE_LM_BASE_URL
+      - AIFORGE_API_TOKEN
+      - AIFORGE_ROLE
+      - AIFORGE_ADMIN_URL
+      - AIFORGE_SYNC_GROUP
+      - AIFORGE_EXTRAS
+      - AIFORGE_EMBED_BACKEND
+      - AIFORGE_RUNNER_POLL_SEC
+      - AIFORGE_NPM_REGISTRY
+      - UV_DEFAULT_INDEX
+      - npm_config_registry
+      - http_proxy
+      - https_proxy
+      - no_proxy
+      - HTTP_PROXY
+      - HTTPS_PROXY
+      - NO_PROXY
     volumes:
-      # Persisted app state (config, sqlite, memory briefs/captures, hf-cache).
-      - ${AIFORGE_DATA_DIR:-./data}/aiforge:/data/aiforge
-      # FULL host filesystem → /host (read-write). Narrow it with AIFORGE_HOST_ROOT.
-      - ${AIFORGE_HOST_ROOT:-/}:/host
+      - ${AIFORGE_CONFIG_DIR:-~/.aiforge}:${AIFORGE_HOME:-/home/aiforge}/.aiforge
+      - aiforge-state:/var/lib/aiforge
+
+volumes:
+  aiforge-state:

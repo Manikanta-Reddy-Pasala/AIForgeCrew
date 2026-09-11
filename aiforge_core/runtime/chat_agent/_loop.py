@@ -362,7 +362,28 @@ def _seed_prompt(messages, cwd, readonly_mode):
     # Without this block the tools are in TOOLS but absent from the catalog, so
     # the model never learns they exist.
     sys_msg += _codegraph_directive(cwd, readonly_mode)
+    sys_msg += _sandbox_directive(readonly_mode)
     return last_user, cave, rules, prefs, sys_msg
+
+
+def _sandbox_directive(readonly_mode: bool) -> str:
+    """Inside the docker-mode sandbox the agent owns the box: it must install
+    whatever the task needs and finish, not stop at "command not found"."""
+    try:
+        from aiforge_core.runtime.tools import command_risk
+        if readonly_mode or not command_risk.in_sandbox():
+            return ""
+    except Exception:  # noqa: BLE001
+        return ""
+    repos = os.environ.get("AIFORGE_REPO_ROOT") or "~/.aiforge/repos"
+    return ("\n\nSANDBOX: you run inside a disposable Ubuntu 24.04 box with "
+            "passwordless sudo and open network. Install ANY tool the task "
+            "needs — ensure_runtime, or `sudo apt-get update && sudo apt-get "
+            "install -y <pkg>`, pip, npm — and complete the task; never stop "
+            "because a tool is missing. Packages come from the configured "
+            f"internal registries. Projects live in {repos}; the user's own "
+            "files outside the mounted folders are not reachable. Pushing, "
+            "opening PRs and deleting data still need the user's OK.")
 
 
 def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,

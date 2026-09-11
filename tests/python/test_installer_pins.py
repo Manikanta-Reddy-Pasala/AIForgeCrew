@@ -70,9 +70,8 @@ def test_nothing_from_an_index_is_built_from_source():
     """Wheels only, everywhere: a source archive from an index is never built."""
     assert "--no-build" in (INST / "common" / "first-run.sh").read_text()
     assert "--no-build" in (INST / "windows" / "first-run.ps1").read_text()
-    docker = (REPO / "Dockerfile").read_text()
-    assert "uv pip install --system --no-config --no-build" in docker
-    assert "-r /tmp/image-pins.txt --override /tmp/image-pins.txt" in docker
+    # docker mode installs through run.sh inside the box (covered by its own
+    # tests); the image itself carries no compiler to build anything with.
     assert "build-essential" not in _code(REPO / "Dockerfile")
     for f in ("build_payload.sh", "portable/build-portable.sh"):
         assert "--only-binary=:all:" in (INST / f).read_text(), f
@@ -97,8 +96,9 @@ def test_there_is_no_public_registry_fallback():
         code = _code(f)
         for host in ("pypi.org", "pythonhosted.org", "registry.npmjs.org"):
             assert host not in code, f"{f.relative_to(REPO)} names {host}"
-    docker = (REPO / "Dockerfile").read_text()
-    assert '--registry "$NPM_REGISTRY"' in docker
+    # docker mode installs npm packages through run.sh inside the box, which
+    # uses AIFORGE_NPM_REGISTRY; the image runs no npm at build.
+    assert "npm " not in _code(REPO / "Dockerfile")
     assert "lock-pins.txt" in (INST / "windows" / "first-run.ps1").read_text()
 
 

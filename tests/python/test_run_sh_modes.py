@@ -38,6 +38,7 @@ _LAUNCH_BANNER_SENTINEL = "code context: RepoMap + CodeGraph"
 def _bash(script: Path, args: list[str], cwd: Path, extra_env: dict | None,
           timeout: float) -> subprocess.CompletedProcess:
     env = dict(os.environ)
+    env["AIFORGE_MODE"] = "native"   # the host path; docker mode starts a container
     env.update(extra_env or {})
     return subprocess.run(
         ["bash", str(script), *args],

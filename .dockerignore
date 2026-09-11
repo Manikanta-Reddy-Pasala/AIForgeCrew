@@ -32,3 +32,14 @@ sonar
 test-results
 .scannerwork
 coverage.xml
+# Build output and caches: the image copies the whole checkout (the sandbox
+# syncs it into its state volume), so none of this may ride along.
+dist
+build
+*.egg-info
+.ruff_cache
+blackduck
+.uv-cache
+.npm-cache
+web/.vite
+**/node_modules

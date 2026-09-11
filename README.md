@@ -16,12 +16,12 @@ Plus a full-filesystem chat coding agent.
 | **[OKF.md](docs/OKF.md)** | The on-disk memory format (Open Knowledge Format v0.1) |
 | **[TOOLS.md](docs/TOOLS.md)** | The complete tool reference — every tool, args, gating, per-agent allowlists |
 | **[DECISIONS.md](docs/DECISIONS.md)** | Why things are the way they are (ADR-lite log, evidence-linked) |
-| **[INSTALL.md](INSTALL.md)** | Native vs Docker install, prerequisites, offline and corporate-CA notes |
+| **[INSTALL.md](INSTALL.md)** | Docker (default) vs native, how the sandbox works, credentials, offline and corporate-CA notes |
 
 ## Quickstart (deploy anywhere)
 
-No Postgres, no Neo4j, no GPU. **Prerequisites: `git` and `python 3.12`** — from
-your package manager. Everything else is a package:
+No Postgres, no Neo4j, no GPU. **Prerequisite: Docker** (or `git` + `python 3.12`
+for native mode). Everything else is a package:
 
 ```bash
 git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew.git
@@ -29,7 +29,10 @@ cd AIForgeCrew
 ./run.sh
 ```
 
-The first run installs what the project declares, **from its lockfiles only**
+`./run.sh` starts AIForge in an **Ubuntu 24.04 sandbox**: the agent has full
+rights inside it, sees only `~/.aiforge` of your machine, and has outbound
+network. `./run.sh --native` runs it on the host instead. Either way the first
+run installs what the project declares, **from its lockfiles only**
 (`uv.lock`, `web/package-lock.json`, `scripts/codegraph/package-lock.json`),
 builds the UI and starts. Later runs install nothing unless a lock changed. See
 **[INSTALL.md](INSTALL.md)**.
@@ -61,16 +64,18 @@ Recall is **keyword + spell-correction** by default (no download). Add
 an OpenAI-compatible `/v1/embeddings` endpoint you already run:
 `AIFORGE_EMBED_BACKEND=api AIFORGE_EMBED_API_MODEL=<model> ./run.sh`.
 
-> ⚠️ **Security.** By default the Chat agent has **full, unsandboxed filesystem and
-> shell access** on the host. Set `AIFORGE_WORKSPACE_DIR=/path/to/workspace` to clamp
-> file/exec operations to one directory, and run shared/untrusted deployments inside a
-> container. Treat the chat box like a terminal.
+> ⚠️ **Security.** In docker mode (the default) the agent can do anything inside its
+> box but reaches only `~/.aiforge` of your machine. In `--native` mode it has **full,
+> unsandboxed filesystem and shell access** on the host — set
+> `AIFORGE_WORKSPACE_DIR=/path` to clamp it. Treat the chat box like a terminal.
 
 | Flag | What it does |
 |---|---|
 | `--dev` | uvicorn hot reload |
 | `--port N` / `--host H` | change the bind (off-loopback needs `AIFORGE_API_TOKEN`) |
-| `--docker` | run the self-contained container instead of the host path |
+| `--native` | run on the host instead of the sandbox (docker mode is the default) |
+| `--stop` / `--logs` / `--shell` | stop, follow, or open a shell in the sandbox |
+| `--repos DIR` | mount your projects folder into the sandbox (default `~/.aiforge/repos`) |
 | `--install-model2vec` | semantic recall, ~30 MB, no torch |
 | `--migrate` | re-run a prior Postgres install into SQLite, remove the DB containers |
 | `--with-langfuse` / `--stop-langfuse` | the optional self-hosted LLM trace UI |
