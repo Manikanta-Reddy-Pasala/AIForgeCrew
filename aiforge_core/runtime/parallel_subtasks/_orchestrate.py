@@ -82,17 +82,24 @@ def _commit_all(cwd: str, message: str) -> None:
 
 
 def _write_test_subtasks(cwd: str, tests: list[dict], run_one, on_status,
-                         should_cancel) -> None:
+                         should_cancel) -> int:
     """Write + commit the test files first (they are the executable spec). Not
-    gated — tests alone fail to import until impls exist; that's the baseline."""
+    gated — tests alone fail to import until impls exist; that's the baseline.
+    Returns how many were actually written: a test subtask whose agent failed
+    (the model endpoint dropped) used to count as done regardless, so a run
+    that built nothing still reported partial success."""
+    written = 0
     for s in tests:
         if should_cancel and should_cancel():
-            return
+            return written
         slug = s.get("slug")
         _status(on_status, slug, "running")
-        res = _safe_run(run_one, s, cwd)
+        res = _safe_run(run_one, s, cwd) or {}
         _commit_all(cwd, f"test: {slug}")
-        _status(on_status, slug, "done", (res or {}).get("files"))
+        ok = res.get("ok") is not False and bool(res.get("files") or res.get("ok"))
+        written += int(ok)
+        _status(on_status, slug, "done" if ok else "failed", res.get("files"))
+    return written
 
 
 def _revert_attempt(cwd: str) -> None:
@@ -165,7 +172,7 @@ def _run_sequential(cwd: str, _base_branch: str, subs: list, run_one, *,
 
     tests = [s for s in subs if _is_test_subtask(s)]
     impls = _sequential_order([s for s in subs if not _is_test_subtask(s)])
-    _write_test_subtasks(cwd, tests, run_one, on_status, should_cancel)
+    wrote = _write_test_subtasks(cwd, tests, run_one, on_status, should_cancel)
 
     # Baseline fail count with tests present, impls not yet built. Prune any
     # off-plan files first so the tree matches the plan.
@@ -180,7 +187,8 @@ def _run_sequential(cwd: str, _base_branch: str, subs: list, run_one, *,
     # Each impl in dep order, seeing the REAL prior files; commit or revert.
     done, failed = _build_impls(cwd, impls, subs, run_one, prev_fails,
                                 on_status, should_cancel, _e)
-    return {"ok": failed == 0, "total": len(subs), "done": done + len(tests),
+    failed += len(tests) - wrote
+    return {"ok": failed == 0, "total": len(subs), "done": done + wrote,
             "failed": failed}
 
 

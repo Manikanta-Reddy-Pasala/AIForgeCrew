@@ -71,7 +71,17 @@ def _msg_text(msg: dict) -> str:
 
 
 def _extract_text(resp_body: dict) -> str:
-    msg = (resp_body.get("choices") or [{}])[0].get("message", {}) or {}
+    choice = (resp_body.get("choices") or [{}])[0] or {}
+    msg = choice.get("message", {}) or {}
+    # A reasoning model that spent its whole token budget THINKING stops with
+    # finish_reason "length" and no content. Its reasoning channel is then an
+    # unfinished train of thought, not an answer: falling back to it made
+    # "We need answer user's request. Need produce ONLY rewritten request…" the
+    # enhanced build spec (and the chat's visible reply). Empty instead, so the
+    # caller's empty-response retry (with /no_think) runs.
+    if (choice.get("finish_reason") == "length"
+            and not _strip_think((msg.get("content") or "").strip())):
+        return ""
     return _msg_text(msg)
 
 

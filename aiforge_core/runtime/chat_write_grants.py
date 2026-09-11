@@ -84,33 +84,40 @@ def forget_all() -> None:
             pass
 
 
-def grant_root(target: str) -> str:
+def _broad(path: str, home: str) -> bool:
+    """``/``, the home directory, or anything ABOVE it (``/Users``, ``/home``)."""
+    return path in (os.sep, home) or home.startswith(path.rstrip(os.sep) + os.sep)
+
+
+def grant_root(target: str) -> "str | None":
     """The folder one approval covers for ``target``: its git repository when
     it is inside one (approving a write to one file of a project means the
-    project), else the nearest folder that exists. Never ``/`` or the home
-    directory itself — too broad to grant by one click; those fall back to the
-    nearest existing folder."""
+    project), else the nearest folder that exists. Never ``/``, the home
+    directory or anything above it: a write straight into ``~`` offered to
+    grant ``/Users`` — every account's home — for the session. Such a target
+    covers only itself; ``None`` means the target IS one of those and can only
+    be approved once, never granted."""
     home = os.path.realpath(os.path.expanduser("~"))
-    d = os.path.realpath(target)
-    while d and not os.path.isdir(d):
+    t = os.path.realpath(target)
+    if _broad(t, home):
+        return None
+    d = t
+    while not os.path.isdir(d):
         parent = os.path.dirname(d)
         if parent == d:
             break
         d = parent
-    nearest = d
     probe = d
-    while probe and probe not in (os.sep, home):
+    while not _broad(probe, home):
         if os.path.exists(os.path.join(probe, ".git")):
             return probe
-        parent = os.path.dirname(probe)
-        if parent == probe:
-            break
-        probe = parent
-    if nearest in (os.sep, home):
-        # /home/me/newproj/x.py → grant the folder being created, not ~.
-        parent = os.path.dirname(os.path.realpath(target))
-        return parent if parent not in (os.sep, home) else os.path.realpath(target)
-    return nearest
+        probe = os.path.dirname(probe)
+    if _broad(d, home):
+        # /home/me/newproj/x.py → the folder being created under ~, not ~ —
+        # and a file written straight into ~ covers just that file.
+        rel = os.path.relpath(t, d).split(os.sep)[0]
+        return os.path.join(d, rel)
+    return d
 
 
 __all__ = ["granted", "grant", "forget", "forget_all", "grant_root"]

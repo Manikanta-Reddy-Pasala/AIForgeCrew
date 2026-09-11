@@ -126,6 +126,29 @@ def test_test_subtasks_are_written_and_committed(git, monkeypatch):
     assert [s[1] for s in seen] == ["running", "done", "running", "done"]
 
 
+def test_a_failed_test_subtask_is_not_counted_as_written(git, monkeypatch):
+    """A dropped model endpoint failed every agent; the test subtasks still
+    counted as done, so a run that built nothing reported partial success."""
+    monkeypatch.setattr(orch, "_safe_run", lambda run_one, s, cwd: {"ok": False, "error": "x"})
+    seen: list = []
+    n = orch._write_test_subtasks("/cwd", [{"slug": "t1"}], None,
+                                  lambda *a: seen.append(a), None)
+    assert n == 0
+    assert seen[-1][1] == "failed"
+
+
+def test_a_sequential_run_whose_tests_failed_is_not_ok(monkeypatch):
+    monkeypatch.setattr(orch, "_is_test_subtask", lambda s: "test" in s["slug"])
+    monkeypatch.setattr(orch, "_write_test_subtasks", lambda *a: 0)
+    monkeypatch.setattr(orch, "_prune_offplan_files", lambda cwd, subs: [])
+    monkeypatch.setattr(orch, "_project_test_output", lambda cwd: (False, "out"))
+    monkeypatch.setattr(orch, "_fail_count", lambda out: 0)
+    monkeypatch.setattr(orch, "_build_impls", lambda *a, **k: (0, 1))
+    agg = orch._run_sequential("/cwd", "base",
+                               [{"slug": "test-a"}, {"slug": "impl-a", "path": "a.py"}], None)
+    assert agg == {"ok": False, "total": 2, "done": 0, "failed": 2}
+
+
 def test_stop_halts_test_writing(git, monkeypatch):
     monkeypatch.setattr(orch, "_safe_run",
                         lambda *a: pytest.fail("ran a subtask after Stop"))
@@ -236,7 +259,7 @@ def test_a_failed_impl_is_counted_and_reported(monkeypatch):
 
 def test_the_sequential_run_reports_its_baseline(monkeypatch):
     monkeypatch.setattr(orch, "_is_test_subtask", lambda s: "test" in s["slug"])
-    monkeypatch.setattr(orch, "_write_test_subtasks", lambda *a: None)
+    monkeypatch.setattr(orch, "_write_test_subtasks", lambda *a: 1)
     monkeypatch.setattr(orch, "_prune_offplan_files", lambda cwd, subs: [])
     monkeypatch.setattr(orch, "_project_test_output", lambda cwd: (False, "out"))
     monkeypatch.setattr(orch, "_fail_count", lambda out: 4)
@@ -251,7 +274,7 @@ def test_the_sequential_run_reports_its_baseline(monkeypatch):
 
 def test_a_failed_impl_makes_the_sequential_run_not_ok(monkeypatch):
     monkeypatch.setattr(orch, "_is_test_subtask", lambda s: False)
-    monkeypatch.setattr(orch, "_write_test_subtasks", lambda *a: None)
+    monkeypatch.setattr(orch, "_write_test_subtasks", lambda *a: 0)
     monkeypatch.setattr(orch, "_prune_offplan_files", lambda cwd, subs: [])
     monkeypatch.setattr(orch, "_project_test_output", lambda cwd: (False, "out"))
     monkeypatch.setattr(orch, "_fail_count", lambda out: 0)

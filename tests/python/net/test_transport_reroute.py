@@ -223,7 +223,7 @@ def test_the_guard_is_installed_before_any_cell_runs(monkeypatch):
             pass
 
     class _KM:
-        def start_kernel(self):
+        def start_kernel(self, **_kw):
             pass
 
         def client(self):

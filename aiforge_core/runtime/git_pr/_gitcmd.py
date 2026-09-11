@@ -48,16 +48,17 @@ def run_git(args: list[str], cwd: str) -> tuple[int, str, str]:
 
 
 def _resolve_repo_root() -> str | None:
-    """Honour ``AIFORGE_REPO_ROOT`` and confirm it's a git repo.
+    """This run's repo root (request context, then ``AIFORGE_REPO_ROOT``) and
+    confirm it's a git repo.
 
     Accepts both regular repos (``.git`` is a directory) and worktrees
     (``.git`` is a file containing ``gitdir: ...``). Falls back to
     ``git rev-parse --git-dir`` so any layout git itself accepts also
     works here.
     """
-    repo_root = os.path.expanduser(os.environ.get(
-        "AIFORGE_REPO_ROOT", "~/aiforge_workspace",
-    ))
+    from aiforge_core.runtime import request_context
+    repo_root = os.path.expanduser(
+        request_context.get_repo_root() or "~/aiforge_workspace")
     dot_git = os.path.join(repo_root, ".git")
     if os.path.isdir(dot_git) or os.path.isfile(dot_git):
         return repo_root

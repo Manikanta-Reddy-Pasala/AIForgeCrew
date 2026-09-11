@@ -407,7 +407,12 @@ class EscalatingLlm(BaseLlm):
         if target and llm_request.model != target:
             req = llm_request.model_copy(update={"model": target})
         from aiforge_core.config import model_overrides
-        return model_overrides.apply(target, req, role=self.role)
+        req = model_overrides.apply(target, req, role=self.role)
+        from aiforge_core.llm import reasoning as _reasoning
+        api_base = (getattr(model, "_additional_args", None) or {}).get("api_base", "")
+        if target and _reasoning.reasoning_off(target, api_base):
+            req = _reasoning.no_think_request(req)
+        return req
 
     async def _attempt(self, model, req: LlmRequest, label: str, target,
                        out: dict) -> list:

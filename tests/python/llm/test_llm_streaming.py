@@ -101,6 +101,7 @@ def test_a_refused_stream_is_retried_unstreamed(monkeypatch):
         return {"choices": [{"message": {"content": "ok"}}]}
 
     monkeypatch.setattr(_http, "_post_cancellable_once", once)
+    monkeypatch.setattr(_http, "_NO_STREAM", set())
     tok = _http._DELTA_SINK.set(lambda k, t: None)
     try:
         ep = type("E", (), {"base_url": "http://x/v1"})()
@@ -131,3 +132,59 @@ def test_other_http_errors_are_not_retried_here(monkeypatch, status):
             _http._post_cancellable(ep, b"{}", 5, None)
     finally:
         _http._DELTA_SINK.reset(tok)
+
+
+def _no_sink(kind, text):
+    return None
+
+
+def test_an_error_chunk_is_a_retryable_failure_not_half_an_answer():
+    conn = _Conn(_Resp([f"data: {json.dumps(_chunk(content='half'))}\n",
+                        'data: {"error": {"message": "upstream reset"}}\n']))
+    with pytest.raises(ConnectionError):
+        _http._read_sse_response(conn, "u", _no_sink)
+
+
+def test_a_stream_cut_off_before_the_end_is_retryable():
+    conn = _Conn(_Resp([f"data: {json.dumps(_chunk(content='half an ans'))}\n"]))  # no [DONE]
+    with pytest.raises(ConnectionError):
+        _http._read_sse_response(conn, "u", _no_sink)
+
+
+def test_a_finish_reason_without_done_is_complete():
+    lines = [f"data: {json.dumps(_chunk(content='ok'))}\n",
+             'data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}\n']
+    body = _http._read_sse_response(_Conn(_Resp(lines)), "u", lambda k, t: None)
+    assert body["choices"][0]["message"]["content"] == "ok"
+
+
+def test_an_incomplete_chunked_read_is_a_connection_error():
+    import http.client
+
+    class _Cut(_Resp):
+        def readline(self):
+            raise http.client.IncompleteRead(b"par")
+    conn = _Conn(_Cut([]))
+    with pytest.raises(ConnectionError):
+        _http._read_sse_response(conn, "u", _no_sink)
+
+
+def test_an_endpoint_that_refused_streaming_is_not_asked_again(monkeypatch):
+    calls = []
+
+    def once(ep, payload, timeout_s, cancel, sent, sink):
+        calls.append(sink is not None)
+        if sink is not None:
+            raise urllib.error.HTTPError("u", 400, "bad", {}, io.BytesIO(b""))
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    monkeypatch.setattr(_http, "_post_cancellable_once", once)
+    monkeypatch.setattr(_http, "_NO_STREAM", set())
+    ep = type("E", (), {"base_url": "http://nostream/v1"})()
+    tok = _http._DELTA_SINK.set(lambda k, t: None)
+    try:
+        _http._post_cancellable(ep, b'{"model":"m"}', 5, None)
+        _http._post_cancellable(ep, b'{"model":"m"}', 5, None)
+    finally:
+        _http._DELTA_SINK.reset(tok)
+    assert calls == [True, False, False]

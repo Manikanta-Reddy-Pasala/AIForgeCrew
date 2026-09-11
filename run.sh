@@ -451,14 +451,32 @@ if [[ "$MODE" == "docker" ]]; then
     export AIFORGE_REPOS_DIR
     _cfiles+=(docker/compose.repos.yml); _extra=1
   fi
-  # Extra folders: ~/.aiforge/mounts.list (Settings edits it; --mount adds to
-  # it), each mounted at the same path. Generated per start, so a folder added
-  # from inside the box is mounted on the next ./run.sh.
+  # Extra folders. The LIST is ~/.aiforge/mounts.list (Settings and the chat's
+  # mount_folder add to it) — but ~/.aiforge is inside the box, so the box could
+  # write its own host access into it. A folder is mounted only once THIS host
+  # approved it: `--mount DIR` here, or a "y" at the prompt below. Approvals are
+  # kept outside everything the box can see.
   _mounts_file="$AIFORGE_CONFIG_DIR/mounts.list"
+  _approved="${XDG_CONFIG_HOME:-$HOME/.config}/aiforge/approved-mounts"
+  mkdir -p "$(dirname "$_approved")" && touch "$_approved" && chmod 600 "$_approved"
+  _norm_mount() {            # absolute, no trailing slash, as typed (no -P)
+    local m="${1/#\~/$HOME}"
+    [[ "$m" == /* ]] || m="$PWD/$m"
+    while [[ "$m" == */ && "$m" != / ]]; do m="${m%/}"; done
+    printf '%s' "$m"
+  }
+  _mount_refused() {         # a reason, or nothing when the path may be mounted
+    case "$1" in *[:\#\"\\\$]*) echo "needs a path without : # \" \\ or \$"; return ;; esac
+    [[ "$1" == /* ]] || { echo "needs an absolute path"; return; }
+    [[ "$1" == / ]] && { echo "is the whole filesystem — too broad"; return; }
+    [[ "$HOME/" == "$1/"* ]] && { echo "is your home folder (or above it) — too broad"; return; }
+    [[ -d "$1" ]] || echo "is not a folder on this machine"
+  }
   for _m in ${_MOUNT_ARGS[@]+"${_MOUNT_ARGS[@]}"}; do
     [[ -n "$_m" ]] || continue
-    _m="${_m/#\~/$HOME}"
+    _m="$(_norm_mount "$_m")"
     grep -qxF "$_m" "$_mounts_file" 2>/dev/null || printf '%s\n' "$_m" >> "$_mounts_file"
+    grep -qxF "$_m" "$_approved" || printf '%s\n' "$_m" >> "$_approved"
   done
   # ~/.aiforge is always mounted, at $HOME/.aiforge inside the box.
   _mounted=("$AIFORGE_HOME/.aiforge")
@@ -468,17 +486,21 @@ if [[ "$MODE" == "docker" ]]; then
   printf 'services:\n  aiforge:\n    volumes:\n' > "$_mount_yml.tmp"
   _n=0
   while IFS= read -r _m || [[ -n "$_m" ]]; do
-    _m="${_m%%#*}"; _m="${_m#"${_m%%[![:space:]]*}"}"; _m="${_m%"${_m##*[![:space:]]}"}"
-    [[ -n "$_m" ]] || continue
-    _m="${_m/#\~/$HOME}"
-    if [[ "$_m" == *:* || "$_m" != /* ]]; then
-      echo "!! mount skipped: '$_m' (needs an absolute path without ':')" >&2; continue
-    fi
-    if [[ ! -d "$_m" ]]; then
-      echo "!! mount skipped: '$_m' is not a folder on this machine" >&2; continue
-    fi
-    _m="$(cd "$_m" && pwd -P)"
+    [[ "$_m" =~ ^[[:space:]]*(#|$) ]] && continue
+    _m="$(_norm_mount "$(printf '%s' "$_m" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')")"
+    _why="$(_mount_refused "$_m")"
+    if [[ -n "$_why" ]]; then echo "!! mount skipped: '$_m' $_why" >&2; continue; fi
     case "$_m/" in "$AIFORGE_CONFIG_DIR"/*|"${AIFORGE_REPOS_DIR:-/nonexistent}"/*) continue ;; esac
+    if ! grep -qxF "$_m" "$_approved"; then
+      if [[ -t 0 ]]; then
+        read -r -p "==> mount '$_m' into the sandbox (the agent gets full access to it)? [y/N] " _ans
+        [[ "$_ans" == [yY]* ]] || { echo "   not mounted (still listed in Settings)"; continue; }
+        printf '%s\n' "$_m" >> "$_approved"
+      else
+        echo "!! mount waiting for approval: '$_m' — run ./run.sh in a terminal to approve it" >&2
+        continue
+      fi
+    fi
     printf '      - "%s:%s"\n' "$_m" "$_m" >> "$_mount_yml.tmp"
     _mounted+=("$_m"); _n=$((_n + 1))
   done < <(cat "$_mounts_file" 2>/dev/null)
@@ -1019,6 +1041,20 @@ fi
 
 # ── launch ────────────────────────────────────────────────────────────────
 export PATH="$PWD/.venv/bin:$PATH"
+
+# Everything AIForge starts — the agent's own `pip`/`uv`/`npm install` in a
+# shell, a build's managed venv, the ticket runner — installs from the SAME
+# internal registries as AIForge itself. Only this script's install used them;
+# every child fell back to pypi.org / registry.npmjs.org, which an offline
+# estate cannot reach (a build's test gate installed no pytest and went blind).
+# The operator's own PIP_INDEX_URL / UV_DEFAULT_INDEX / npm_config_registry win.
+_app_index="${UV_DEFAULT_INDEX:-${UV_INDEX_URL:-${PIP_INDEX_URL:-$(_pyproject_index)}}}"
+if [[ -n "$_app_index" ]]; then
+  export UV_DEFAULT_INDEX="${UV_DEFAULT_INDEX:-$_app_index}"
+  export PIP_INDEX_URL="${PIP_INDEX_URL:-$_app_index}"
+fi
+[[ -n "${AIFORGE_NPM_REGISTRY:-}" ]] \
+  && export npm_config_registry="${npm_config_registry:-$AIFORGE_NPM_REGISTRY}"
 
 # CodeGraph: the Doer's codegraph_* calls are enforced, and the indexer is an
 # npm package pinned in scripts/codegraph/package-lock.json. It goes into

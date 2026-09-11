@@ -65,6 +65,7 @@ COPY aiforge_core /opt/aiforge-src/aiforge_core
 COPY packages /opt/aiforge-src/packages
 COPY web /opt/aiforge-src/web
 COPY scripts /opt/aiforge-src/scripts
+COPY services /opt/aiforge-src/services
 COPY docker /opt/aiforge-src/docker
 COPY tests /opt/aiforge-src/tests
 COPY docker/entrypoint.sh /usr/local/bin/aiforge-entrypoint

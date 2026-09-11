@@ -558,10 +558,15 @@ def complete_raw(role: str, messages: list[dict], *,
     _perf_record("LLM", role, _t0)
     _record_usage(role, body, _meter_tok[0])
     try:
-        msg = body["choices"][0]["message"]
+        choice = body["choices"][0]
+        msg = choice["message"]
     except (KeyError, IndexError, TypeError) as exc:
         raise RuntimeError(f"native completion: no message in response ({exc})") from exc
-    return dict(msg) if isinstance(msg, dict) else {"role": "assistant", "content": str(msg)}
+    out = dict(msg) if isinstance(msg, dict) else {"role": "assistant", "content": str(msg)}
+    # Carried for the reader, never sent back: "length" with no content means
+    # the model ran out of tokens while still reasoning (see _text._extract_text).
+    out["_finish_reason"] = choice.get("finish_reason") if isinstance(choice, dict) else None
+    return out
 
 
 def _perf_record(family: str, name: str, t0: float) -> None:

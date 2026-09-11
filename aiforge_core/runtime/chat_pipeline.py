@@ -110,9 +110,13 @@ def _part_events(author: str, part) -> list[dict]:
 
 def _team_streaming() -> dict:
     """RunConfig kwargs that make team agents stream their text as they write
-    it (SSE partial events). AIFORGE_CHAT_TEAM_STREAM=0 turns it off."""
-    if os.environ.get("AIFORGE_CHAT_TEAM_STREAM", "1").strip().lower() in (
-            "0", "false", "no", "off"):
+    it (SSE partial events). OFF unless AIFORGE_CHAT_TEAM_STREAM=1: ADK's
+    streamed call goes through EscalatingLlm._stream_primary, which skips the
+    per-model request stamping, retries, fallback chain, empty-reply escalation
+    and spend recording that the unstreamed path has — a single 5xx would end a
+    team agent instead of being retried."""
+    if os.environ.get("AIFORGE_CHAT_TEAM_STREAM", "0").strip().lower() not in (
+            "1", "true", "yes", "on"):
         return {}
     try:
         from google.adk.agents.run_config import StreamingMode

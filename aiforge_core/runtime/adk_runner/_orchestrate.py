@@ -695,7 +695,10 @@ def _run_claimed_ticket(ticket) -> None:
         _run_ticket(ticket, worktree)
     except Exception as exc:  # noqa: BLE001 — a ticket must never kill the runner
         _log_run_failure(ticket, exc)
-        rescue_meta = _rescue_partial_work(ticket)
+        # A workflow ticket never had a worktree: the rescue would resolve the
+        # runner's DEFAULT repo and commit + push whatever sat uncommitted there.
+        rescue_meta = ({} if getattr(ticket, "route", "code") == "workflow"
+                       else _rescue_partial_work(ticket))
         try:
             tickets_mod.update_status(
                 ticket.id, "blocked", role="adk_runner",

@@ -45,6 +45,11 @@ class _Run:
     def __init__(self, session_id: int) -> None:
         self.session_id = session_id
         self.events: list[dict] = []          # full ordered buffer (replay)
+        # Streamed text of the model call in flight, merged per phase. Not in
+        # `events`: a long build streams thousands of chunks, and every one is
+        # superseded by the step/answer event that settles its call — so only
+        # this unsettled tail is worth replaying to a re-attaching client.
+        self.pending_deltas: list[dict] = []
         self.subscribers: set[queue.Queue] = set()
         self.done = False
         self.started_at = time.time()         # epoch secs — for reattach timer
@@ -59,10 +64,27 @@ class _Run:
             # Don't buffer heartbeats — iter_subscription generates its own per
             # subscriber. Buffering the producer's pings would replay a growing
             # pile of them to every re-attach. Forward live but don't store.
-            if event.get("type") != "ping":
+            kind = event.get("type")
+            if kind == "delta":
+                self._hold_delta(event)
+            elif kind != "ping":
+                self.pending_deltas = []      # this event settles the stream
                 self.events.append(event)
             for q in self.subscribers:
                 q.put(event)
+
+    def _hold_delta(self, event: dict) -> None:
+        """Keep the in-flight call's stream as one event per phase run."""
+        if event.get("phase") == "reset":
+            self.pending_deltas = [event]
+            return
+        last = self.pending_deltas[-1] if self.pending_deltas else None
+        if (last is not None and last.get("phase") == event.get("phase")
+                and last.get("role") == event.get("role")):
+            self.pending_deltas[-1] = {**last, "text": (last.get("text") or "")
+                                       + (event.get("text") or "")}
+        else:
+            self.pending_deltas.append(dict(event))
 
     def finish(self) -> None:
         with self.lock:
@@ -80,7 +102,7 @@ class _Run:
         """
         q: queue.Queue = queue.Queue()
         with self.lock:
-            for ev in self.events:
+            for ev in self.events + self.pending_deltas:
                 q.put(ev)
             if self.done:
                 q.put(_SENTINEL)

@@ -66,7 +66,10 @@ def test_material_gaps_block_with_the_reason(monkeypatch, calls):
 
 
 def test_an_unknown_workflow_blocks_instead_of_running_the_code_pipeline(monkeypatch, calls):
-    monkeypatch.setattr(orch, "_rescue_partial_work", lambda t: {})
+    # No worktree was made, so the partial-work rescue (commit + push + PR of
+    # whatever repo it resolves) must not run for a workflow ticket.
+    monkeypatch.setattr(orch, "_rescue_partial_work",
+                        lambda t: pytest.fail("rescued a workflow ticket's 'work'"))
     monkeypatch.setattr(orch, "_log_run_failure", lambda t, e: None)
     orch._run_claimed_ticket(_ticket(route_workflow="no-such-workflow"))
     _tid, status, kw = calls["status"][-1]

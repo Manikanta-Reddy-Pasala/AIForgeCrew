@@ -54,8 +54,9 @@ export default function MountsCard() {
         <p style={{ fontSize: 13, opacity: 0.8 }}>
           AIForge runs in an Ubuntu 24.04 box with full rights inside it. From this machine it
           sees only the folders below, each at the same path. Add a folder to give the agent
-          access to it; it is mounted the next time you start the box with <code>./run.sh</code> on
-          the host.
+          access to it; the next time you run <code>./run.sh</code> in a terminal on the host it asks
+          you to approve the folder, then mounts it. (The list lives in a folder the sandbox
+          can write, so only an approval on the host can grant access.)
         </p>
       ) : (
         <p style={{ fontSize: 13, opacity: 0.8 }}>
@@ -89,7 +90,7 @@ export default function MountsCard() {
       </div>
       {data.restart_needed && (
         <div className="xs" style={{ marginTop: 8, color: 'var(--warn, #dd9b3c)' }}>
-          Restart the box on the host to apply: <code>./run.sh</code>
+          To apply: run <code>./run.sh</code> in a terminal on the host and approve the new folder.
         </div>
       )}
       {msg && <div className="xs" style={{ marginTop: 6, color: 'var(--err)' }}>{msg}</div>}

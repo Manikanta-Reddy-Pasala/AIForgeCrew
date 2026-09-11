@@ -686,10 +686,23 @@ def _dispatch_tool(name, args, cwd, n, _hook_block):
         # ReAct step counter `n`, unique per iteration) lets the UI match
         # this to the completed `tool` event below and flip it in place
         # instead of appending a second, duplicate row.
-        yield {"type": "tool_start", "name": name, "args": args,
-               "call_id": n}
+        yield {"type": "tool_start", "name": name,
+               "args": _shown_args(name, args), "call_id": n}
         result = _invoke_tool(fn, name, args, cwd)
     return result
+
+
+# Argument values never shown in a step (the UI, the replay buffer, the saved
+# turn): save_secret's value. Masked in a COPY before the event leaves — the
+# tool masks its own args too, but only once it runs, after tool_start was out.
+_SECRET_ARGS = {"save_secret": ("value",)}
+
+
+def _shown_args(name, args):
+    keys = _SECRET_ARGS.get(name)
+    if not keys or not isinstance(args, dict):
+        return args
+    return {k: ("[secret]" if k in keys else v) for k, v in args.items()}
 
 
 _SHELL_TOOLS = ("run_command", "bash", "run_shell", "shell", "serve",
@@ -1684,20 +1697,30 @@ def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
 def _ask_write_grant(st, name, args, cwd, jailed):
     """Ask the user to let this chat write outside its workspace. Approve →
     the folder (see chat_write_grants.grant_root) is granted for the rest of
-    the session and the call proceeds (returns None). Reject/expire → the
-    usual rejection handling ("continue"/"return")."""
+    the session and the call proceeds (returns None). A target that is ``/``,
+    the home directory or above it is approved for THIS call only, never
+    granted. Reject/expire → the usual rejection handling ("continue"/"return")."""
     from aiforge_core.runtime import chat_approve, chat_write_grants
     roots: list[str] = []
+    once: list[str] = []
     for raw in jailed:
-        r = chat_write_grants.grant_root(os.path.join(cwd or "", str(raw)))
-        if r not in roots:
+        target = os.path.join(cwd or "", str(raw))
+        r = chat_write_grants.grant_root(target)
+        if r is None:
+            once.append(os.path.realpath(target))
+        elif r not in roots:
             roots.append(r)
+    if once:
+        reason = ("Allow this ONE write to " + ", ".join(once) + "? It is outside "
+                  "the chat's folder (" + str(cwd) + ") and too broad to allow for "
+                  "the rest of the chat.")
+    else:
+        reason = ("Allow this chat to write in " + ", ".join(roots) + "? It is "
+                  "outside the chat's folder (" + str(cwd) + "). Allowing covers "
+                  "the rest of this chat.")
     seq = chat_approve.request(st.session_id)
     yield {"type": "approval", "id": seq, "name": name, "args": args,
-           "grant_roots": roots,
-           "reason": ("Allow this chat to write in " + ", ".join(roots)
-                      + "? It is outside the chat's folder (" + str(cwd)
-                      + "). Allowing covers the rest of this chat."),
+           "grant_roots": roots, "reason": reason,
            "preview": _diff_preview(name, args, cwd)}
     decision = chat_approve.wait(st.session_id)
     if decision.get("note") == "approval timed out":
@@ -1705,8 +1728,9 @@ def _ask_write_grant(st, name, args, cwd, jailed):
     if decision.get("decision") != "approve":
         return (yield from _handle_rejection(
             name, args, st.session_id, st.convo, decision))
-    chat_write_grants.grant(st.session_id, roots)
-    st.user_roots = list(getattr(st, "user_roots", ()) or ()) + roots
+    if roots and not once:
+        chat_write_grants.grant(st.session_id, roots)
+        st.user_roots = list(getattr(st, "user_roots", ()) or ()) + roots
     return None
 
 
@@ -1763,9 +1787,12 @@ def _pre_tool_checks(st, name, args, cwd, _scope_globs):
     except Exception:  # noqa: BLE001 — hooks must never break dispatch
         _hook_block = None
 
-    _sig = yield from _workspace_jail(st, name, args, cwd)
-    if _sig is not None:
-        return _sig
+    # A call a PreToolUse hook already blocked never runs — do not ask for
+    # (and persist) a write grant it will not use.
+    if _hook_block is None:
+        _sig = yield from _workspace_jail(st, name, args, cwd)
+        if _sig is not None:
+            return _sig
 
     # Scope allowlist enforcement (autonomous Doer path). Reject a
     # mutating file tool whose resolved target path is outside the

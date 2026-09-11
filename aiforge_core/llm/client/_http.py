@@ -7,6 +7,7 @@ Layers on the leaf helpers (:mod:`._helpers`, :mod:`._errors`) plus the sibling
 from __future__ import annotations
 
 import contextvars
+import http.client
 import io
 import json
 import random
@@ -90,6 +91,12 @@ class _StreamAssembler:
 
     def feed(self, chunk: dict) -> None:
         _raise_if_model_dropped(chunk)
+        if chunk.get("error"):
+            # A proxy whose upstream failed mid-stream sends an error chunk;
+            # ignoring it returned half an answer as a finished one.
+            err = chunk["error"]
+            msg = err.get("message") if isinstance(err, dict) else str(err)
+            raise ConnectionError(f"stream error from the model server: {str(msg)[:200]}")
         for k in ("id", "model", "created"):
             if chunk.get(k) is not None:
                 self.meta.setdefault(k, chunk[k])
@@ -156,6 +163,20 @@ _RETRY_MIN_BUDGET_S = 10.0
 _NON_BODY_EXTRA_KEYS = frozenset({"insecure_tls"})
 
 
+def _apply_reasoning_off(ep: Endpoint, body: dict) -> None:
+    """Reasoning switched off for this model (Models → Thinking: no, or
+    AIFORGE_NO_REASONING=1): add both switches the Qwen/DeepSeek family honours
+    — the chat-template kwarg and /no_think on the last user turn."""
+    try:
+        from aiforge_core.llm import reasoning as _reasoning
+        if _reasoning.reasoning_off(ep.model, ep.base_url):
+            from ._text import _append_no_think
+            body["messages"] = _append_no_think(body["messages"])
+            body.update(_reasoning.NO_THINK_KWARGS)
+    except Exception:  # noqa: BLE001 — never break a call over this
+        pass
+
+
 def _build_body(ep: Endpoint, messages: list[dict],
                 temperature: float | None,
                 max_tokens: int | None,
@@ -165,6 +186,7 @@ def _build_body(ep: Endpoint, messages: list[dict],
         "model": ep.model,
         "messages": messages,
     }
+    _apply_reasoning_off(ep, body)
     # When the caller didn't pin a temperature, honour a model-keyed forced
     # temperature from the quirk sheet (e.g. qwythos -> 0.0). This is the
     # only path the direct client.complete callers (enhancer / architect /
@@ -302,24 +324,43 @@ def _read_sse_response(conn, url: str, sink) -> dict:
         return body
     asm = _StreamAssembler(sink)
     asm._emit("start", "")          # a retried call starts its text afresh
-    while True:
-        line = resp.readline()
-        if not line:
-            break
-        line = line.strip()
-        if not line.startswith(b"data:"):
-            continue
-        data = line[5:].strip()
-        if data == b"[DONE]":
-            break
-        try:
-            chunk = json.loads(data)
-        except ValueError:
-            continue
-        asm.feed(chunk)
+    done = _pump_sse(resp, asm)
+    if not done and asm.finish is None:
+        # Cut off: no [DONE] and no finish_reason. Accepting the partial body
+        # made half an answer the FINAL.
+        raise ConnectionError("model stream ended before the answer was complete")
     body = asm.body()
     _raise_if_model_dropped(body)
     return body
+
+
+def _pump_sse(resp, asm: "_StreamAssembler") -> bool:
+    """Feed every ``data:`` event to ``asm``; True when ``[DONE]`` arrived. A
+    chunked read cut mid-way is a dropped connection (retryable), not the
+    non-OSError IncompleteRead that escaped the retry classifier."""
+    try:
+        while True:
+            line = resp.readline()
+            if not line:
+                return False
+            line = line.strip()
+            if not line.startswith(b"data:"):
+                continue
+            data = line[5:].strip()
+            if data == b"[DONE]":
+                return True
+            try:
+                chunk = json.loads(data)
+            except ValueError:
+                continue
+            asm.feed(chunk)
+    except http.client.IncompleteRead as exc:
+        raise ConnectionError("model stream was cut off mid-response") from exc
+
+
+# Endpoints that answered a stream request with 400: asked unstreamed from then
+# on, instead of paying two round trips on every call.
+_NO_STREAM: set = set()
 
 
 def _post_cancellable(ep: Endpoint, payload: bytes, timeout_s: int,
@@ -330,7 +371,7 @@ def _post_cancellable(ep: Endpoint, payload: bytes, timeout_s: int,
     Used only when a cancel token is bound for this thread. Streams when a
     delta sink is bound too (see :func:`set_delta_sink`); a server that
     rejects the stream request (400) is asked once more without it."""
-    sink = _DELTA_SINK.get() if stream else None
+    sink = _DELTA_SINK.get() if stream and ep.base_url not in _NO_STREAM else None
     if sink is not None:
         try:
             return _post_cancellable_once(ep, _streaming_payload(payload),
@@ -338,7 +379,8 @@ def _post_cancellable(ep: Endpoint, payload: bytes, timeout_s: int,
         except urllib.error.HTTPError as exc:
             if exc.code != 400:
                 raise
-            _log.info("llm stream refused (400) by %s — retrying unstreamed",
+            _NO_STREAM.add(ep.base_url)
+            _log.info("llm stream refused (400) by %s — unstreamed from now on",
                       ep.base_url)
     return _post_cancellable_once(ep, payload, timeout_s, cancel, sent, None)
 

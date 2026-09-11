@@ -126,6 +126,12 @@ def _build_one(cfg: dict[str, Any]) -> BaseLlm:
     # param.
     kwargs["drop_params"] = True
     kwargs["additional_drop_params"] = ["stream_options"]
+    # Reasoning off for this model: the chat-template kwarg rides in the body
+    # (extra_body is never dropped); /no_think is added per request in
+    # EscalatingLlm._stamp_request.
+    from aiforge_core.llm import reasoning as _reasoning
+    if _reasoning.reasoning_off(cfg["model_id"], api_base):
+        kwargs["extra_body"] = dict(_reasoning.NO_THINK_KWARGS)
     return LiteLlm(**kwargs)
 
 

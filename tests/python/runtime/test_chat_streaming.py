@@ -112,16 +112,18 @@ def test_a_streamed_team_chunk_is_a_draft_delta():
     ]
 
 
-def test_team_streaming_is_on_by_default_and_can_be_turned_off(monkeypatch):
+def test_team_streaming_is_opt_in(monkeypatch):
+    """Off by default: ADK's streamed call skips the escalating wrapper's
+    retries, fallback chain and spend recording."""
     import pytest
     pytest.importorskip("google.adk.agents.run_config")
     from google.adk.agents.run_config import StreamingMode
 
     from aiforge_core.runtime import chat_pipeline as cp
     monkeypatch.delenv("AIFORGE_CHAT_TEAM_STREAM", raising=False)
-    assert cp._team_streaming() == {"streaming_mode": StreamingMode.SSE}
-    monkeypatch.setenv("AIFORGE_CHAT_TEAM_STREAM", "0")
     assert cp._team_streaming() == {}
+    monkeypatch.setenv("AIFORGE_CHAT_TEAM_STREAM", "1")
+    assert cp._team_streaming() == {"streaming_mode": StreamingMode.SSE}
 
 
 def test_partial_chunks_never_become_steps_or_the_answer():
@@ -166,3 +168,34 @@ def test_the_perf_plugin_times_the_whole_streamed_call():
                                      llm_response=types.SimpleNamespace(partial=False))
         return still_timing, key in p._started
     assert asyncio.run(run()) == (True, False)
+
+
+# ── a re-attaching client replays the stream tail, not every chunk ────────
+
+def test_the_replay_buffer_keeps_only_the_unsettled_stream():
+    from aiforge_core.runtime.chat_runs import _Run
+    run = _Run(1)
+    run.publish({"type": "delta", "phase": "reset"})
+    for piece in ("a", "b", "c"):
+        run.publish({"type": "delta", "phase": "answer", "text": piece})
+    run.publish({"type": "tool", "name": "file_read"})          # settles call 1
+    run.publish({"type": "delta", "phase": "reset"})
+    run.publish({"type": "delta", "phase": "draft", "text": "THOUGHT: "})
+    run.publish({"type": "delta", "phase": "draft", "text": "next"})
+    q = run.subscribe()
+    replay = [q.get_nowait() for _ in range(q.qsize())]
+    assert replay == [
+        {"type": "tool", "name": "file_read"},
+        {"type": "delta", "phase": "reset"},
+        {"type": "delta", "phase": "draft", "text": "THOUGHT: next"},
+    ]
+    assert all(e["type"] != "delta" for e in run.events)
+
+
+def test_live_subscribers_still_get_every_chunk():
+    from aiforge_core.runtime.chat_runs import _Run
+    run = _Run(1)
+    q = run.subscribe()
+    for piece in ("x", "y"):
+        run.publish({"type": "delta", "phase": "answer", "text": piece})
+    assert [q.get_nowait()["text"] for _ in range(q.qsize())] == ["x", "y"]

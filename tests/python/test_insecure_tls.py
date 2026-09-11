@@ -17,6 +17,17 @@ import ssl
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_ca_from_the_box(monkeypatch, tmp_path):
+    """A CA configured on the machine running the tests (AIFORGE_CA_BUNDLE, or
+    one in the real config dir's security/ca) rightly turns internal-host
+    auto-relax off, and these tests then fail on that box only."""
+    for var in ("AIFORGE_CA_BUNDLE", "AIFORGE_LLM_CA_BUNDLE", "SSL_CERT_FILE",
+                "REQUESTS_CA_BUNDLE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+
+
 @pytest.fixture
 def cfgdir(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))

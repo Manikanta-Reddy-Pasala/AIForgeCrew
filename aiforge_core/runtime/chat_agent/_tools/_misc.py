@@ -299,9 +299,9 @@ def _t_mount_folder(args: dict, _cwd: str) -> dict:
                         "machine's files; the folder is mounted when it runs in "
                         "the sandbox."}
     return {"ok": True, "path": path, "status": row.get("status", "waiting"),
-            "note": "Tell the user: restart AIForge on the host with ./run.sh to "
-                    "mount it (Settings → Sandbox folders shows it). Until then "
-                    "the folder is not visible here."}
+            "note": "Tell the user: on the host, run ./run.sh in a terminal — it "
+                    "asks them to approve the folder, then mounts it (Settings → "
+                    "Sandbox folders shows it). Until then it is not visible here."}
 
 
 _SECRET_NAME_RE = re.compile(r"^[\w.-]{1,64}$", re.ASCII)

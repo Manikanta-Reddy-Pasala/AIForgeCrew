@@ -125,6 +125,31 @@ def test_a_spec_that_splits_runs_the_parallel_team(pp, tmp_path):
     assert pp["seen"]["team_subs"] == pp["subs"]
 
 
+def test_a_finished_parallel_build_ends_the_turn(pp, tmp_path):
+    """The route sent `done` but never set the flag, so the dispatcher fell
+    through and ran the same request AGAIN — a single agent in simple mode, the
+    whole sequential team in team mode — after the UI was told it had finished
+    (and a follow-up message got 409 while that second run held the session)."""
+    pctx: dict = {"done": False}
+    _drain(C._pipeline_route(pp["ns"], "build", str(tmp_path), 1, [],
+                             lambda s: s, {}, 0.0, pctx))
+    assert pctx["done"] is True
+
+
+def test_a_best_of_n_build_ends_the_turn(pp, tmp_path, monkeypatch):
+    from aiforge_core.runtime import best_of_n as bon
+    from aiforge_core.runtime import chat_interject
+    monkeypatch.setenv("AIFORGE_BEST_OF_N", "2")
+    monkeypatch.setattr(chat_interject, "set_steerable", lambda sid, val: None)
+    monkeypatch.setattr(bon, "stream_best_of_n",
+                        lambda spec, cwd, session_id=None: iter(pp["bon_events"]))
+    pp["subs"] = [{"slug": "one"}]                  # one task → best-of-N branch
+    pctx: dict = {"done": False}
+    _drain(C._pipeline_route(pp["ns"], "build", str(tmp_path), 1, [],
+                             lambda s: s, {}, 0.0, pctx))
+    assert pctx["done"] is True
+
+
 def test_the_enhancers_recall_is_scoped_to_this_sessions_repo(pp, tmp_path):
     """Unscoped, an unrelated prior session bleeds into the build spec — a
     'mathx' build once decomposed into game/storage."""
@@ -365,6 +390,20 @@ def test_a_plan_that_will_not_decompose_emits_no_panel(pp, plan_agent):
 def test_an_agent_that_never_finishes_still_yields_the_plan(pp, plan_agent):
     plan_agent["events"] = [{"type": "step"}]
     assert _plan_mode(pp)[-1]["type"] == "plan_ready"
+
+
+@pytest.mark.parametrize("failure", [
+    {"type": "error", "text": "the model didn't respond"},
+    {"type": "stopped", "reason": "deadline"},
+    {"type": "message", "text": "Which database?", "awaiting_input": True},
+])
+def test_a_failed_or_open_planning_turn_offers_no_plan(pp, plan_agent, failure):
+    """"Approve & Execute" after a turn that produced no plan ran an unplanned
+    build of the raw request."""
+    plan_agent["events"] = [{"type": "step"}, failure, {"type": "done"}]
+    types = [e["type"] for e in _plan_mode(pp)]
+    assert "plan_ready" not in types
+    assert types[-1] == "done"
 
 
 def test_quick_mode_caps_the_plan_agents_steps(pp, plan_agent, monkeypatch):

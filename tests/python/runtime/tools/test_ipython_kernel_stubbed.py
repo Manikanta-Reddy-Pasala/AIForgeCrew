@@ -61,8 +61,9 @@ class _KM:
         self.shutdown = None
         self.interrupted = 0
 
-    def start_kernel(self):
+    def start_kernel(self, **kw):
         self.started = True
+        self.env = kw.get("env")
 
     def client(self):
         return self._client
@@ -305,3 +306,34 @@ def test_the_optional_import_is_what_decides_availability(monkeypatch):
         return real(name, *a, **k)
     monkeypatch.setattr(builtins, "__import__", _imp)
     assert K._jupyter_available() is False
+
+
+
+def test_the_kernel_gets_this_runs_repo(monkeypatch):
+    """A separate process: it sees the run's repo only when it is handed over,
+    not via the process-global env another team run may have set."""
+    import pytest
+
+    from aiforge_core.runtime import request_context
+    from aiforge_core.runtime.tools import ipython_kernel as ik
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    class _RecordingKM:
+        def start_kernel(self, **kw):
+            seen.update(kw)
+            raise _Stop
+
+    pytest.importorskip("jupyter_client")
+    monkeypatch.setattr("jupyter_client.manager.KernelManager", _RecordingKM)
+    monkeypatch.setenv("AIFORGE_REPO_ROOT", "/other/run")
+    ik._kernels.pop("repo-test", None)
+    tok = request_context.set_repo_root("/this/run")
+    try:
+        with pytest.raises(_Stop):
+            ik._start_kernel("repo-test")
+    finally:
+        request_context.reset_repo_root(tok)
+    assert seen["env"]["AIFORGE_REPO_ROOT"] == "/this/run"

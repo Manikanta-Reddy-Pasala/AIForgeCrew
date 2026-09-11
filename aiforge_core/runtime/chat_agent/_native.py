@@ -187,9 +187,14 @@ def _synth_step(msg: dict) -> str:
     call is taken — the loop runs one action per turn. Returns the
     ``_NATIVE_ARGS_UNRECOVERABLE`` sentinel when a named call's arguments were
     attempted but can't be parsed (caller falls back to text for that turn)."""
-    from aiforge_core.llm.client._text import _msg_text
+    from aiforge_core.llm.client._text import _msg_text, _strip_think
     calls = msg.get("tool_calls") or []
     if not calls:
+        # Out of tokens mid-reasoning: the reasoning channel is an unfinished
+        # thought, not the reply — return nothing so the empty-turn retry runs.
+        if (msg.get("_finish_reason") == "length"
+                and not _strip_think((msg.get("content") or "").strip())):
+            return ""
         return _msg_text(msg)
     fn = (calls[0] or {}).get("function") or {}
     name = fn.get("name") or ""

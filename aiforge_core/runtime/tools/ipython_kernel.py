@@ -11,6 +11,7 @@ agent loop survives on boxes without the install.
 from __future__ import annotations
 
 import contextvars
+import os
 import uuid
 from typing import Any
 
@@ -52,7 +53,18 @@ def _start_kernel(run_id: str) -> tuple[Any, Any]:
         return _kernels[run_id], _clients[run_id]
     from jupyter_client.manager import KernelManager
     km = KernelManager()
-    km.start_kernel()
+    # The kernel is a separate process: it sees this run's repo only if it is
+    # handed over explicitly (agentskills' bootstrap reads AIFORGE_REPO_ROOT),
+    # not via the process-global env another run may have set.
+    env = dict(os.environ)
+    try:
+        from aiforge_core.runtime import request_context
+        root = request_context.get_repo_root()
+        if root:
+            env["AIFORGE_REPO_ROOT"] = root
+    except Exception:  # noqa: BLE001 — the inherited env is the old behaviour
+        pass
+    km.start_kernel(env=env)
     client = km.client()
     client.start_channels()
     client.wait_for_ready(timeout=10)

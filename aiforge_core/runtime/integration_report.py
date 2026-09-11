@@ -230,7 +230,7 @@ def _python_test_files(cwd: str) -> list[str]:
     return out
 
 
-def _ensure_pytest_venv(cwd: str, venv: str, py: str, timeout: int) -> None:
+def _ensure_pytest_venv(cwd: str, venv: str, py: str, timeout: int) -> str:
     """Make ``py`` a venv with pytest + the tree's deps importable, creating and
     installing as needed. A PRIOR round may have created the venv but failed to
     install pytest (a single bad dep name aborts the whole ``pip install``),
@@ -247,7 +247,7 @@ def _ensure_pytest_venv(cwd: str, venv: str, py: str, timeout: int) -> None:
         return c.returncode == 0
 
     if _has_pytest():
-        return
+        return ""
     if not os.path.exists(py):
         subprocess.run([sys.executable, "-m", "venv", venv],
                        capture_output=True, timeout=120)
@@ -255,9 +255,10 @@ def _ensure_pytest_venv(cwd: str, venv: str, py: str, timeout: int) -> None:
     # plugins models reference via pyproject addopts (cov, asyncio, mock) so a
     # `--cov`/`@pytest.mark.asyncio` config doesn't exit with "unrecognized
     # arguments" and zero signal.
-    subprocess.run([py, "-m", "pip", "-q", "install", "pytest", "pytest-cov",
-                    "pytest-asyncio", "pytest-mock", "pytest-timeout", "ruff"],
-                   capture_output=True, timeout=timeout)
+    core = subprocess.run([py, "-m", "pip", "-q", "install", "--no-input",
+                           "pytest", "pytest-cov", "pytest-asyncio", "pytest-mock",
+                           "pytest-timeout", "ruff"],
+                          capture_output=True, text=True, timeout=timeout)
     # Third-party imports BEST-EFFORT and one at a time — a single
     # unresolvable/mis-detected name (a stray stdlib module, a private package)
     # must NOT abort the whole install and strand pytest. Each failure is
@@ -269,6 +270,16 @@ def _ensure_pytest_venv(cwd: str, venv: str, py: str, timeout: int) -> None:
     if os.path.exists(req):
         subprocess.run([py, "-m", "pip", "-q", "install", "-r", req],
                        capture_output=True, timeout=timeout)
+    if _has_pytest():
+        return ""
+    # Say WHY instead of a bare "No module named pytest" that reads like a
+    # defect in the generated code (it is an index / network / credential
+    # problem — pip goes to PIP_INDEX_URL, which run.sh points at the
+    # internal index).
+    tail = ((core.stderr or "") + (core.stdout or "")).strip()[-800:]
+    return ("could not install pytest into the build's .aiforge-venv (index: "
+            + (os.environ.get("PIP_INDEX_URL") or "pip default") + ")"
+            + (":\n" + tail if tail else ""))
 
 
 def _pytest_timeout_args() -> list[str]:
@@ -315,7 +326,9 @@ def run_bare_python_tests(cwd: str, timeout: int = 300):
     venv = os.path.join(cwd, _AIFORGE_VENV)
     py = os.path.join(venv, "bin", "python")
     try:
-        _ensure_pytest_venv(cwd, venv, py, timeout)
+        why = _ensure_pytest_venv(cwd, venv, py, timeout)
+        if why:
+            return False, why
         env = dict(os.environ, SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy")
         rc, out = _run_pytest_capturing(py, cwd, env, timeout)
         ok = rc == 0

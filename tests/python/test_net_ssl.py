@@ -25,7 +25,7 @@ from tests.python.tls_pin_fixture import no_pin, stub_pin, trusts_the_pin
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     for var in (
-        "AIFORGE_LLM_SSL_VERIFY", "AIFORGE_LLM_CA_BUNDLE",
+        "AIFORGE_LLM_SSL_VERIFY", "AIFORGE_LLM_CA_BUNDLE", "AIFORGE_CA_BUNDLE",
         "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE",
         "AIFORGE_LM_BASE_URL", "AIFORGE_EMBED_URL", "AIFORGE_RERANK_URL",
         "AIFORGE_MCP_ENDPOINTS", "AIFORGE_API_BASE",

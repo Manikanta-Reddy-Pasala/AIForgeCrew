@@ -38,8 +38,13 @@ def test_a_removed_folder_stays_mounted_until_restart(monkeypatch):
     assert row["status"].startswith("removed")
 
 
-@pytest.mark.parametrize("bad", ["relative/dir", "/a:b", "/", ""])
-def test_unsafe_paths_are_refused(bad):
+@pytest.mark.parametrize("bad", ["relative/dir", "/a:b", "/", "", "/data/a#b",
+                                 '/x"y', "/x$HOME", "/home/me", "/home", "/home/me/"])
+def test_unsafe_paths_are_refused(bad, monkeypatch):
+    """`#` would be cut as a comment and mount a DIFFERENT folder; quotes and
+    `$` break or get interpolated in the compose file; the home folder or above
+    it defeats the sandbox."""
+    monkeypatch.setenv("HOME", "/home/me")
     with pytest.raises(ValueError):
         sm.add(bad)
 
@@ -85,7 +90,23 @@ def test_run_sh_mounts_the_list_at_the_same_path(tmp_path):
     assert '"$AIFORGE_CONFIG_DIR/mounts.list"' in src
     assert "printf '      - \"%s:%s\"\\n' \"$_m\" \"$_m\"" in src
     assert "is not a folder on this machine" in src
+    # The list is writable from inside the box, so it is a REQUEST: only a
+    # host-side approval (--mount, or the prompt) grants a mount.
+    assert 'approved-mounts' in src
+    assert "mount waiting for approval" in src
+    assert "is your home folder (or above it)" in src
     compose = (REPO / "docker-compose.yml").read_text()
     assert "- AIFORGE_MOUNTS" in compose
     r = subprocess.run(["bash", "-n", str(REPO / "run.sh")], capture_output=True)
     assert r.returncode == 0, r.stderr
+
+
+def test_a_secret_is_masked_before_the_tool_even_runs(monkeypatch, tmp_path):
+    """tool_start leaves before the tool runs; it must already be masked."""
+    from aiforge_core.runtime.chat_agent import _loop
+    monkeypatch.setitem(_loop.TOOLS, "save_secret", lambda a, c: {"ok": True})
+    g = _loop._dispatch_tool("save_secret", {"name": "t", "value": "s3cr3t"},
+                             str(tmp_path), 1, None)
+    first = next(g)
+    assert first["type"] == "tool_start"
+    assert "s3cr3t" not in str(first)

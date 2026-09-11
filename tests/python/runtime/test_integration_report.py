@@ -245,6 +245,25 @@ def test_a_requirements_file_is_installed_too(tmp_path, pip, monkeypatch):
     assert any("-r" in c for c in pip["calls"])
 
 
+def test_a_failed_pytest_install_says_why(tmp_path, monkeypatch):
+    """The gate used to report a bare "No module named pytest", read as a
+    defect in the generated code; it was the index (offline estate, pip going
+    to pypi.org) or the network."""
+    def _run(cmd, **kw):
+        if cmd[1:] == ["-c", "import pytest"]:
+            return _P(returncode=1)
+        if "pytest-asyncio" in cmd:
+            return _P(returncode=1, stderr="ERROR: No matching distribution found for pytest")
+        return _P()
+    monkeypatch.setattr(subprocess, "run", _run)
+    monkeypatch.setenv("PIP_INDEX_URL", "https://artifactory.internal/simple/")
+    monkeypatch.setattr(os.path, "exists", lambda p: True)
+    why = ir._ensure_pytest_venv(str(tmp_path), "/venv", "/venv/bin/python", 60)
+    assert "could not install pytest" in why
+    assert "artifactory.internal" in why
+    assert "No matching distribution" in why
+
+
 # ─── running pytest ────────────────────────────────────────────────────
 
 

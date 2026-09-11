@@ -1116,8 +1116,12 @@ def _pipeline_route(_pp, prompt, cwd, session_id, history, _with_resume, _path,
                                             enhanced=True, session_id=session_id)
         # stream_parallel_team emits no terminal `done`; synthesize one
         # so a UI waiting on `done` doesn't hang (exactly one — the
-        # exception path in _gen only fires on error).
+        # exception path in _gen only fires on error). AND mark the turn
+        # done: without it the dispatcher fell through and ran the same
+        # request AGAIN (single agent in simple mode, the whole sequential
+        # team in team mode) after the UI had been told it was finished.
         yield {"type": "done"}
+        _pctx["done"] = True
         return
     # Couldn't split into ≥2 distinct files → it's really ONE task.
     # STILL write SPEC.md (user requirement: every pipeline-routed run
@@ -1158,6 +1162,7 @@ def _pipeline_route(_pp, prompt, cwd, session_id, history, _with_resume, _path,
         # stream_best_of_n emits no terminal `done`; synthesize one so a
         # UI waiting on `done` doesn't hang (exactly one).
         yield {"type": "done"}
+        _pctx["done"] = True
         return
     _af_log.info("parallel decompose <2 subtasks — sequential fallback")
 
@@ -1270,14 +1275,21 @@ def _plan_mode_route(_pp, _enriched, _enriched_history, cwd, role, session_id,
     # plan_ready, then release `done`) so the UI sees the plan, not a
     # finished turn with no plan.
     _pending_done = None
+    _no_plan = False
     for _ev in run_chat_agent(_enriched_history, cwd=cwd, role=role,
                               session_id=session_id, mode="plan",
                               max_steps=_quick_step_cap(quick)):
         if _ev.get("type") == "done":
             _pending_done = _ev
             continue
+        # A planning turn that failed ("the model didn't respond"), was
+        # stopped, or ended by asking the user something produced no plan —
+        # offering "Approve & Execute" then ran an unplanned build.
+        if _ev.get("type") in ("error", "stopped") or _ev.get("awaiting_input"):
+            _no_plan = True
         yield _ev
-    yield {"type": "plan_ready", "spec": _enriched}
+    if not _no_plan:
+        yield {"type": "plan_ready", "spec": _enriched}
     if _pending_done is not None:
         yield _pending_done
 

@@ -51,6 +51,25 @@ def test_extract_text_thinkonly_falls_back_to_reasoning():
     assert c._extract_text(body) == "the real answer"
 
 
+def test_truncated_thinking_is_not_an_answer():
+    """The model ran out of tokens while still reasoning: its reasoning became
+    the enhanced build spec ("We need answer user's request. Need produce ONLY
+    rewritten request…")."""
+    body = {"choices": [{"finish_reason": "length", "message": {
+        "content": "", "reasoning_content": "We need answer user's request. Need produce",
+    }}]}
+    txt = c._extract_text(body)
+    assert txt == ""
+    assert c._is_garbage(txt)
+
+
+def test_a_truncated_answer_with_content_is_still_returned():
+    body = {"choices": [{"finish_reason": "length", "message": {
+        "content": "Partial but real answer", "reasoning_content": "thinking",
+    }}]}
+    assert c._extract_text(body) == "Partial but real answer"
+
+
 def test_extract_text_both_empty_is_garbage():
     body = {"choices": [{"message": {
         "content": "<think>x</think>", "reasoning_content": "",
@@ -117,3 +136,12 @@ def test_try_post_gives_up_after_all_retries_garbage(monkeypatch):
     )
     assert out is None
     assert calls["n"] == 3   # retries+1, all garbage → None (caller escalates)
+
+
+def test_the_native_path_does_not_show_truncated_thinking_either():
+    from aiforge_core.runtime.chat_agent import _native
+    msg = {"content": "", "reasoning_content": "We need answer user's request",
+           "_finish_reason": "length"}
+    assert _native._synth_step(msg) == ""
+    msg["_finish_reason"] = "stop"
+    assert _native._synth_step(msg) == "We need answer user's request"

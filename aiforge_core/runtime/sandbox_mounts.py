@@ -6,7 +6,9 @@ The box sees ~/.aiforge and nothing else of the host, plus a projects folder
 new folder into itself: the host's ``./run.sh`` does that when it (re)starts
 the box, reading ``~/.aiforge/mounts.list``. So adding a folder here (Settings,
 or the chat's ``mount_folder`` tool) records the request, and the answer says
-plainly that it lands on the next ``./run.sh``. ``AIFORGE_MOUNTS`` is the list
+plainly that it lands on the next ``./run.sh`` — and only once the HOST approves
+it there (``--mount`` or a prompt): the list lives in ~/.aiforge, which the box
+itself can write, so an entry here is a request, never a grant. ``AIFORGE_MOUNTS`` is the list
 run.sh actually mounted at start, so "mounted" and "waiting for a restart" are
 both real, not guessed.
 """
@@ -66,11 +68,14 @@ def validate(path: str) -> str:
         p = os.path.join(os.environ.get("HOME", ""), p[1:].lstrip("/"))
     if not p.startswith("/"):
         raise ValueError("use an absolute host path, like /home/me/projects")
-    if ":" in p or "\n" in p:
-        raise ValueError("a mount path cannot contain ':' or a newline")
+    bad = sorted({c for c in p if c in ':#"\\$\n'})
+    if bad:
+        raise ValueError("a mount path cannot contain " + " ".join(repr(c) for c in bad))
     p = os.path.normpath(p)
-    if p == "/":
-        raise ValueError("mounting the whole host filesystem defeats the sandbox")
+    home = os.path.normpath(os.environ.get("HOME", "") or "/nonexistent")
+    if p == "/" or home == p or home.startswith(p.rstrip("/") + "/"):
+        raise ValueError("too broad: the whole filesystem or your home folder "
+                         "(or above it) defeats the sandbox — mount a project folder")
     return p
 
 
@@ -108,7 +113,7 @@ def state() -> dict:
             rows.append({"path": p, "kind": "folder", "status": "mounted" if p in want
                          else "removed — still mounted until restart"})
     rows += [{"path": p, "kind": "folder",
-              "status": "waiting — restart with ./run.sh on the host"}
+              "status": "waiting — approve it by running ./run.sh in a terminal on the host"}
              for p in want if p not in live]
     return {"sandbox": in_sandbox(), "folders": rows,
             "restart_needed": any(r["status"] != "mounted" for r in rows),
