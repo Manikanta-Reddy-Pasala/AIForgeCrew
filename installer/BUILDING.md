@@ -7,6 +7,7 @@ AIForge; this file is for whoever *builds* the packages.
 dist/installer/
   aiforgecrew-<ver>-py3-none-any.whl     the app, with the web UI inside it
   aiforge_memory-<ver>-py3-none-any.whl  the vendored dependency no index carries
+  lock-pins.txt                          uv.lock's versions — every first run installs them (--override)
   uv/{macos,macos-x64,linux,linux-arm64,windows}/uv[.exe]
   AIForge-<ver>.dmg        macOS
   AIForge-<ver>.msi        Windows
@@ -21,15 +22,29 @@ installer/build_payload.sh --target linux       # just one target's uv
 ```
 
 It builds the web UI, **copies it into the package** as `aiforge_core/web_dist`,
-builds the app wheel and the vendored `aiforge-memory` wheel, and downloads a
-`uv` binary per target (cached — a rebuild does not re-download 130 MB).
+builds the app wheel and the vendored `aiforge-memory` wheel, exports
+`lock-pins.txt`, and takes a `uv` binary per target out of uv's **PyPI wheel**
+for that platform (cached per version).
 
 That UI copy is not cosmetic: the API resolves its static files from
 `aiforge_core/web_dist` when installed, because the repo's `web/dist` does not
 exist inside site-packages. Skip this step and the package serves a working API
 and a 404 for its own UI.
 
-Needs: `node` + `npm` (UI), `uv`, `curl`.
+Needs: `node` + `npm` (UI), `uv`, `python3` with pip. A box that has run
+`./run.sh` has them all in `.venv/bin` — `PATH="$PWD/.venv/bin:$PATH" installer/build_payload.sh`.
+
+Nothing comes from GitHub: the `uv` it packages is the `uv==<locked>` wheel from
+the package index (PyPI or your mirror), not a release asset. Off the
+estate (pyproject's Artifactory index does not resolve) it builds against PyPI,
+same rule as run.sh; `UV_DEFAULT_INDEX` overrides.
+
+`lock-pins.txt` (installed as `--override`, not `-c` — google-adk 2.1.0 caps
+starlette <1.0 itself, so as constraints the lock is unsatisfiable) is not
+optional: `override-dependencies` in pyproject (the
+CVE floors — starlette, fastapi, litellm, aiohttp…) is a uv *project* setting
+and never reaches wheel metadata. Without it a packaged first run resolves
+fresh and got starlette 0.52.1, below the `>=1.1.0` floor.
 
 ## Step 1 — the packages
 
@@ -75,7 +90,7 @@ From a Mac, use a container — which also *installs and runs* it, the only test
 that means anything:
 
 ```bash
-installer/verify-deb.sh                 # ubuntu:22.04 by default
+installer/verify-deb.sh                 # ubuntu:24.04 by default (22.04 needs deadsnakes)
 installer/verify-deb.sh ubuntu:24.04
 docker run --rm --platform linux/amd64 -v "$PWD":/src ubuntu:24.04 \
   bash -c 'apt-get update -qq && apt-get install -y -qq dpkg-dev >/dev/null &&
@@ -103,7 +118,7 @@ Same payload, no installer: unpack-and-run, with all state in the folder.
 installer/portable/build-portable.sh --target macos            # .tar.gz
 installer/portable/build-portable.sh --target linux
 installer/portable/build-portable.sh --target windows          # .zip
-installer/portable/build-portable.sh --target linux --offline  # + CPython + wheels
+installer/portable/build-portable.sh --target linux --offline  # + every locked wheel
 ```
 
 Buildable from any host for any target — they are archives, not OS packages.
@@ -112,11 +127,13 @@ The launcher sets `AIFORGE_APP_HOME`, `AIFORGE_DATA_HOME` **and**
 between portable and installed, and leaving it out would quietly scatter a
 "portable" app's memory into `~/.aiforge`.
 
-`--offline` vendors a standalone CPython (`UV_PYTHON_INSTALL_DIR` inside the
-bundle) and downloads every wheel for the TARGET platform, not the build host.
-If the wheel download cannot resolve (a source-only dependency, or an older uv
-without `pip download`), the build says so and produces the online bundle
-rather than a broken offline one.
+`--offline` downloads every locked wheel (`lock-pins.txt`) for the TARGET
+platform with `pip download`, and the first run installs from that folder with
+`--offline --no-index`. It carries **no interpreter** — the target needs Python
+3.12. Build it **on the target's OS**: pip evaluates environment markers
+(`sys_platform == …`) against the host, so a cross-OS offline bundle would
+silently miss platform-only packages, and the script refuses. A dependency with
+no wheel for the target fails the build rather than shipping a broken bundle.
 
 ## Step 2 — proving it
 
@@ -145,12 +162,11 @@ launch.
 
 ## What is deliberately NOT bundled
 
-**A Python interpreter.** Ubuntu 22.04 ships 3.10, stock macOS ships 3.9,
-Windows often ships none — so the choice is a 60 MB interpreter per package
-plus a per-distro matrix, or one `uv` binary that provisions CPython 3.12 into
-the user's profile on first launch. The second one is ~130 MB for all three
-targets and has a single code path. The cost is that **the first launch needs
-the network**; nothing after it does.
+**A Python interpreter.** Nothing is fetched from GitHub, and uv's managed
+CPython is a GitHub release asset — there is no package index that carries an
+interpreter. So the target brings Python 3.12 from its own package manager
+(the `.deb` depends on `python3.12`; on Ubuntu 22.04 that means deadsnakes),
+and first-run stops with the install command when it is missing.
 
 **The venv.** It is built per user, on first run, in their profile — not by the
 installer as root. The agent runs as that user against their repos and their

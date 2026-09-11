@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Install + run bge-m3 embed sidecar on port 8764. Uses uv + Python 3.12.
 set -euo pipefail
+# uv's managed CPython comes from GitHub, not a package index: never download one.
+export UV_PYTHON_DOWNLOADS="${UV_PYTHON_DOWNLOADS:-never}"
 
 SIDECAR_DIR="$(cd "$(dirname "$0")/.." && pwd)/services/embed_sidecar"
 MODEL_DIR="${BGE_M3_DIR:-$HOME/.aiforge/models/bge-m3}"

@@ -15,9 +15,10 @@
 # and it carries its own history with it.
 #
 # Two flavours:
-#   (default)   ~20MB. First run downloads CPython + the dependencies.
-#   --offline   ~1GB+. Carries a standalone CPython and every wheel, so the
-#               first run needs NO network at all — the air-gapped case.
+#   (default)   ~20MB. First run installs the locked dependencies from the index.
+#   --offline   ~1GB. Carries every locked wheel, so the first run needs NO
+#               network — the air-gapped case. Build it on the target's OS.
+# Either way the machine needs Python 3.12: no interpreter is downloaded.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -46,46 +47,36 @@ trap 'rm -rf "$STAGE"' EXIT
 ROOT="$STAGE/AIForge-$VERSION"
 mkdir -p "$ROOT/app/uv" "$ROOT/data"
 
-cp "$PAYLOAD"/*.whl "$ROOT/app/"
+cp "$PAYLOAD"/*.whl "$PAYLOAD"/lock-pins.txt "$ROOT/app/"
 cp "$UV_SRC"/uv* "$ROOT/app/uv/"
 chmod +x "$ROOT/app/uv/"* 2>/dev/null || true
 cp "$REPO_ROOT/installer/common/first-run.sh"     "$ROOT/app/first-run.sh"
 cp "$REPO_ROOT/installer/windows/first-run.ps1"   "$ROOT/app/first-run.ps1"
 chmod +x "$ROOT/app/first-run.sh"
 
-# ── offline: carry the interpreter and every dependency ─────────────────
+# ── offline: carry every dependency ─────────────────────────────────────
+# The locked versions (lock-pins.txt), as wheels for the TARGET platform, from
+# the package index. No interpreter is carried: uv's managed CPython comes from
+# GitHub, not an index, so the target needs its own Python 3.12.
 if [[ "$OFFLINE" == "1" ]]; then
-  UV_HOST="$PAYLOAD/uv/$( [[ "$(uname -s)" == "Darwin" ]] && echo macos || echo linux )/uv"
-  [[ -x "$UV_HOST" ]] || UV_HOST="$(command -v uv)"
-  echo "==> vendoring CPython $PY_VERSION for $TARGET"
-  # uv installs a standalone build INTO the bundle; first-run.sh points
-  # UV_PYTHON_INSTALL_DIR back at it, so nothing is fetched at run time.
-  UV_PYTHON_INSTALL_DIR="$ROOT/app/python" "$UV_HOST" python install "$PY_VERSION" \
-    || echo "    ! could not vendor a CPython for $TARGET — the bundle will fetch one on first run" >&2
-  echo "==> vendoring the dependency wheels"
-  # Downloaded for the TARGET, not this host: a mac cannot use linux manylinux
-  # wheels and vice versa, and getting that wrong is a bundle that only works
-  # on the machine that built it.
-  case "$TARGET" in
-    macos)       PLAT=(--python-platform aarch64-apple-darwin) ;;
-    macos-x64)   PLAT=(--python-platform x86_64-apple-darwin) ;;
-    linux)       PLAT=(--python-platform x86_64-unknown-linux-gnu) ;;
-    linux-arm64) PLAT=(--python-platform aarch64-unknown-linux-gnu) ;;
-    windows)     PLAT=(--python-platform x86_64-pc-windows-msvc) ;;
-    *)           echo "build-portable: unknown target: $TARGET" >&2; exit 2 ;;
+  # pip evaluates environment markers (sys_platform == 'darwin' …) against the
+  # machine it runs on, so a cross-OS offline bundle would silently miss the
+  # target's platform-only packages. Build it on the target's OS.
+  case "$TARGET:$(uname -s)" in
+    linux*:Linux|macos*:Darwin) ;;
+    *) echo "build-portable: --offline for $TARGET must be built on that OS (markers are host-evaluated)" >&2; exit 2 ;;
   esac
-  "$UV_HOST" pip download 2>/dev/null --help >/dev/null || true
-  "$UV_HOST" pip install --dry-run >/dev/null 2>&1 || true
-  # `uv pip download` is not in every uv; `uv export` + pip download is, but the
-  # simplest portable route is uv's own resolver writing wheels to a directory.
-  if ! "$UV_HOST" pip download --python-version "$PY_VERSION" "${PLAT[@]}" \
-        --only-binary :all: -d "$ROOT/app/wheels" \
-        "${WHEEL}[xlsx,structured,crawl,chunking,embed-static]" \
-        --find-links "$ROOT/app" >/dev/null 2>&1; then
-    echo "    ! wheel vendoring failed (a source-only dependency, or this uv has no"
-    echo "      'pip download'). The bundle still works — its first run fetches deps." >&2
-    rm -rf "$ROOT/app/wheels"
-  fi
+  case "$TARGET" in
+    macos)       PLAT=(--platform macosx_11_0_arm64 --platform macosx_12_0_arm64 --platform macosx_14_0_arm64) ;;
+    macos-x64)   PLAT=(--platform macosx_10_12_x86_64 --platform macosx_10_13_x86_64 --platform macosx_11_0_x86_64) ;;
+    linux)       PLAT=(--platform manylinux2014_x86_64 --platform manylinux_2_17_x86_64 --platform manylinux_2_28_x86_64) ;;
+    linux-arm64) PLAT=(--platform manylinux2014_aarch64 --platform manylinux_2_17_aarch64 --platform manylinux_2_28_aarch64) ;;
+  esac
+  echo "==> vendoring the locked dependency wheels for $TARGET"
+  "${PYTHON:-python3}" -m pip download --quiet --disable-pip-version-check --no-deps \
+      --only-binary=:all: --python-version "$PY_VERSION" --implementation cp "${PLAT[@]}" \
+      -r "$ROOT/app/lock-pins.txt" -d "$ROOT/app/wheels" \
+    || { echo "build-portable: could not vendor every locked wheel for $TARGET" >&2; exit 1; }
 fi
 
 # ── launchers ───────────────────────────────────────────────────────────
@@ -102,9 +93,6 @@ export AIFORGE_DATA_HOME="$HERE/data/runtime"
 # The whole point of "portable": memory, tickets and chat live in the folder,
 # not in this machine's home directory.
 export AIFORGE_CONFIG_DIR="$HERE/data/config"
-# An offline bundle carries its own interpreter; uv finds it here instead of
-# downloading one.
-[[ -d "$HERE/app/python" ]] && export UV_PYTHON_INSTALL_DIR="$HERE/app/python"
 [[ -d "$HERE/app/wheels" ]] && export AIFORGE_WHEEL_DIR="$HERE/app/wheels"
 mkdir -p "$AIFORGE_DATA_HOME" "$AIFORGE_CONFIG_DIR"
 exec "$HERE/app/first-run.sh" --open "$@"
@@ -126,7 +114,6 @@ set "HERE=%~dp0"
 set "AIFORGE_APP_HOME=%HERE%app"
 set "AIFORGE_DATA_HOME=%HERE%data\runtime"
 set "AIFORGE_CONFIG_DIR=%HERE%data\config"
-if exist "%HERE%app\python" set "UV_PYTHON_INSTALL_DIR=%HERE%app\python"
 if exist "%HERE%app\wheels" set "AIFORGE_WHEEL_DIR=%HERE%app\wheels"
 if not exist "%AIFORGE_DATA_HOME%" mkdir "%AIFORGE_DATA_HOME%"
 if not exist "%AIFORGE_CONFIG_DIR%" mkdir "%AIFORGE_CONFIG_DIR%"
@@ -149,9 +136,12 @@ Nothing is installed and nothing is written outside this folder. Your memory,
 tickets, chat history and the Python runtime all live in data/ — copy the whole
 folder to another machine and it carries its history with it.
 
-$( [[ -d "$ROOT/app/python" ]] \
-   && echo "This is the OFFLINE bundle: the interpreter and dependencies are included, so the first run needs no network." \
-   || echo "The FIRST run downloads a Python 3.12 and the dependencies into data/runtime — it needs the network once. Every run after that does not." )
+Needs Python 3.12 on this machine (macOS: the python.org installer;
+Ubuntu 24.04: sudo apt install python3.12; Windows: winget install Python.Python.3.12).
+
+$( [[ -d "$ROOT/app/wheels" ]] \
+   && echo "This is the OFFLINE bundle: every dependency is included, so the first run needs no network." \
+   || echo "The FIRST run installs the dependencies into data/runtime — it needs the package index once. Every run after that does not." )
 
 macOS: the first launch is blocked by Gatekeeper because this is unsigned —
 right-click AIForge.command -> Open, once.

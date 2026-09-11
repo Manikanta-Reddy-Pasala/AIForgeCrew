@@ -18,6 +18,12 @@ VENV="$DATA_HOME/venv"
 UV="$APP_HOME/uv/uv"
 PY_VERSION="${AIFORGE_PYTHON_VERSION:-3.12}"
 
+# Never download an interpreter: uv's managed CPython comes from GitHub
+# releases, not a package index. The runtime is built on this machine's own
+# Python 3.12 (a package-manager install), same as run.sh.
+export UV_PYTHON_DOWNLOADS=never
+export UV_PYTHON_PREFERENCE=only-system
+
 [[ -x "$UV" ]] || UV="$(command -v uv || true)"
 if [[ -z "$UV" || ! -x "$UV" ]]; then
   echo "AIForge: no uv binary in the package and none on PATH — cannot build the runtime." >&2
@@ -43,9 +49,25 @@ if [[ ! -f "$MARKER" || ! -x "$VENV/bin/aiforge" ]]; then
   # 0700: the venv holds the tokens' reach, not the tokens, but everything the
   # agent can do runs out of here.
   chmod 700 "$DATA_HOME" 2>/dev/null || true
-  # uv fetches a managed CPython when the host has none of the right version —
-  # which is the normal case on Ubuntu 22.04 (3.10) and stock macOS (3.9).
-  #
+  # uv reads pyproject.toml/uv.toml from the CURRENT directory. Launched from
+  # inside a project (AIForgeCrew's own checkout names an estate-only index),
+  # that project's index silently became the app's — so install from here.
+  # User-level uv config (~/.config/uv) still applies.
+  LAUNCH_DIR="$PWD"
+  cd "$DATA_HOME"
+  if ! "$UV" python find "$PY_VERSION" >/dev/null 2>&1; then
+    echo "AIForge: needs Python $PY_VERSION on this machine, and found none." >&2
+    case "$(uname -s)" in
+      # python.org, not Homebrew: brew's bottles are served from ghcr.io.
+      Darwin) echo "  the python.org installer: https://www.python.org/downloads/macos/" >&2 ;;
+      *) if command -v apt-get >/dev/null 2>&1; then
+           echo "  sudo apt install -y python$PY_VERSION" >&2
+           echo "  (Ubuntu 22.04 has no $PY_VERSION in its archive: add ppa:deadsnakes/ppa first)" >&2
+         elif command -v dnf >/dev/null 2>&1; then echo "  sudo dnf install -y python$PY_VERSION" >&2
+         else echo "  install python $PY_VERSION from your package manager" >&2; fi ;;
+    esac
+    exit 1
+  fi
   # An UPGRADE lands here too: the new wheel's name does not match the marker,
   # so this block runs again with a venv already in place. `uv venv` refuses to
   # touch an existing one ("A virtual environment already exists"), which turned
@@ -68,7 +90,7 @@ if [[ ! -f "$MARKER" || ! -x "$VENV/bin/aiforge" ]]; then
   # on a machine that has no route to an index in the first place.
   OFFLINE_ARGS=()
   if [[ -n "${AIFORGE_WHEEL_DIR:-}" && -d "${AIFORGE_WHEEL_DIR}" ]]; then
-    OFFLINE_ARGS=(--offline --find-links "$AIFORGE_WHEEL_DIR")
+    OFFLINE_ARGS=(--offline --no-index --find-links "$AIFORGE_WHEEL_DIR")
     echo "AIForge: installing from the bundled wheels (no network needed)."
   fi
   # --find-links: aiforge-memory is vendored, ships beside the app wheel, and
@@ -80,8 +102,17 @@ if [[ ! -f "$MARKER" || ! -x "$VENV/bin/aiforge" ]]; then
   # them the app starts, serves every one of its routes, and then degrades
   # feature by feature at call time, which reads as "some pages don't work".
   # `uv sync --all-extras` is what the repo and CI use; this is that.
-  "$UV" pip install --python "$VENV/bin/python" ${OFFLINE_ARGS[@]+"${OFFLINE_ARGS[@]}"} \
-        --find-links "$APP_HOME" \
+  # --override: exactly the versions uv.lock pins (build_payload.sh exports
+  # them), so an installed app runs what CI tested, CVE floors included. Not
+  # -c: the lock overrides google-adk's own starlette cap, which a constraint
+  # cannot, and the install would be unsatisfiable.
+  PIN_ARGS=()
+  [[ -f "$APP_HOME/lock-pins.txt" ]] && PIN_ARGS=(--override "$APP_HOME/lock-pins.txt")
+  # --no-build: wheels only — the app and aiforge-memory ship as wheels beside
+  # this script, every dependency has one on the index, and nothing is ever
+  # built from a downloaded source archive.
+  "$UV" pip install --python "$VENV/bin/python" --no-build ${OFFLINE_ARGS[@]+"${OFFLINE_ARGS[@]}"} \
+        ${PIN_ARGS[@]+"${PIN_ARGS[@]}"} --find-links "$APP_HOME" \
         "${WHEEL}[xlsx,structured,crawl,chunking,embed-static]"
   # Written last: a half-built venv must not look finished on the next launch.
   : > "$MARKER"
@@ -90,6 +121,7 @@ if [[ ! -f "$MARKER" || ! -x "$VENV/bin/aiforge" ]]; then
   find "$DATA_HOME" -maxdepth 1 -name '.installed-*' ! -name "$(basename "$MARKER")" \
     -delete 2>/dev/null || true
   echo "AIForge: runtime ready."
+  cd "$LAUNCH_DIR"
 fi
 
 exec "$VENV/bin/aiforge" "$@"

@@ -38,6 +38,7 @@ mkdir -p "$STAGE/files/uv"
 cp "$WHEEL" "$STAGE/files/$(basename "$WHEEL")"
 # The vendored aiforge-memory wheel — no index carries it, --find-links finds it.
 [[ -n "$MEM_WHEEL" ]] && cp "$MEM_WHEEL" "$STAGE/files/$(basename "$MEM_WHEEL")"
+cp "$PAYLOAD/lock-pins.txt" "$STAGE/files/lock-pins.txt"
 cp "$UV_EXE" "$STAGE/files/uv/uv.exe"
 cp "$REPO_ROOT/installer/windows/first-run.ps1" "$STAGE/files/first-run.ps1"
 
@@ -81,6 +82,7 @@ cat > "$STAGE/aiforge.wxs" <<WXS
           <Component Id="AppFiles" Guid="$(guid appfiles)" Win64="yes">
             <File Id="Wheel"   Source="files/$(basename "$WHEEL")" KeyPath="yes"/>
             $( [[ -n "$MEM_WHEEL" ]] && echo "<File Id=\"MemWheel\" Source=\"files/$(basename "$MEM_WHEEL")\"/>" )
+            <File Id="Constraints" Source="files/lock-pins.txt"/>
             <File Id="FirstRun" Source="files/first-run.ps1"/>
             <File Id="LaunchCmd" Source="files/AIForge.cmd"/>
           </Component>

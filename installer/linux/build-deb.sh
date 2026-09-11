@@ -10,10 +10,11 @@
 #                            you and writes your repos, so the runtime it can
 #                            repair must be yours too.
 #
-# Depends: python3 is NOT a dependency. uv provisions 3.12 itself, which is the
-# only way one .deb works on 22.04 (python3.10) and 24.04 (3.12) alike. tmux IS
-# a dependency: without it the agent's bash tool silently loses `cd`/`export`
-# between calls, and a package is exactly where that should be settled.
+# Depends: python3.12, from the distro archive. uv never downloads an
+# interpreter (its managed CPython comes from GitHub, not an index), so 24.04
+# installs straight away and 22.04 needs ppa:deadsnakes/ppa — apt says so
+# instead of the first launch failing. tmux IS a dependency: without it the
+# agent's bash tool silently loses `cd`/`export` between calls.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -43,7 +44,7 @@ install -d "$STAGE/DEBIAN" "$STAGE/opt/aiforge/uv" "$STAGE/usr/bin" \
 
 # Every wheel in the payload: the app's, plus the vendored aiforge-memory that
 # no index carries.
-for w in "$PAYLOAD"/*.whl; do install -m 0644 "$w" "$STAGE/opt/aiforge/"; done
+for w in "$PAYLOAD"/*.whl "$PAYLOAD"/lock-pins.txt; do install -m 0644 "$w" "$STAGE/opt/aiforge/"; done
 install -m 0755 "$PAYLOAD/uv/$UV_DIR/uv"    "$STAGE/opt/aiforge/uv/uv"
 install -m 0755 "$REPO_ROOT/installer/common/first-run.sh" "$STAGE/opt/aiforge/first-run.sh"
 
@@ -76,16 +77,16 @@ Version: $VERSION
 Section: devel
 Priority: optional
 Architecture: $ARCH
-Depends: ca-certificates, curl, git, tmux
+Depends: python3.12, ca-certificates, curl, git, tmux
 Installed-Size: $INSTALLED_KB
 Maintainer: AIForge <noreply@aiforge.local>
 Description: Local AI engineering crew
  AIForge runs an API, a chat UI and an autonomous ticket pipeline against your
  own repositories, with its memory and state in your home directory.
  .
- The interpreter is NOT a dependency: the package carries uv, which provisions
- the Python it needs on first launch. That first launch needs the network; every
- launch after it does not.
+ The package carries uv; the first launch builds a per-user runtime on the
+ system python3.12 from the locked dependency versions. That first launch needs
+ the package index; every launch after it does not.
 CTRL
 
 cat > "$STAGE/DEBIAN/postinst" <<'POST'
@@ -94,7 +95,7 @@ set -e
 # Deliberately does NOT build a venv here. postinst runs as root, and a
 # root-built runtime is one the user who actually runs the agent cannot repair.
 # The first `aiforge` does it, as them, in their home.
-echo "AIForge installed. Run 'aiforge' to start it (first run downloads its Python)."
+echo "AIForge installed. Run 'aiforge' to start it (first run installs its dependencies)."
 exit 0
 POST
 chmod 0755 "$STAGE/DEBIAN/postinst"

@@ -3,17 +3,20 @@
 # the API it serves.
 #
 # Builds the .deb inside an Ubuntu container (so the arch matches the container,
-# not the build host), installs it as a normal user, lets the first run
-# provision its own CPython, starts the server and asks it for the UI and an API
-# endpoint. Everything the packaging can get wrong — a missing dependency, a
+# not the build host), installs it with apt (so its Depends — python3.12 among
+# them — really resolve), starts it as a normal user and asks it for the UI and
+# an API endpoint. Everything the packaging can get wrong — a missing dependency, a
 # wheel that cannot resolve, a UI that is not inside the wheel — shows up here
 # and nowhere else.
 #
-#   installer/verify-deb.sh [ubuntu:22.04]
+#   installer/verify-deb.sh [ubuntu:24.04]
+#
+# 22.04 has no python3.12 in its archive: there apt refuses the package until
+# ppa:deadsnakes/ppa is added, which is the documented behaviour.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE="${1:-ubuntu:22.04}"
+IMAGE="${1:-ubuntu:24.04}"
 
 [[ -n "$(ls -1 "$REPO_ROOT"/dist/installer/aiforgecrew-*.whl 2>/dev/null || true)" ]] || {
   echo "no payload — run installer/build_payload.sh first" >&2; exit 1; }
@@ -27,12 +30,12 @@ exec docker run --rm -v "$REPO_ROOT":/src "$IMAGE" bash -euo pipefail -c '
   bash installer/linux/build-deb.sh >/dev/null
   DEB="$(ls -1 dist/installer/aiforge_*_$(dpkg --print-architecture).deb | head -1)"
   echo "==> install $DEB"
-  dpkg -i "$DEB" >/dev/null
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "./$DEB" >/dev/null
 
   # As a NORMAL user: the per-user runtime is the whole design, and root would
   # hide a permissions mistake in it.
   useradd -m tester
-  echo "==> first run (provisions CPython + the venv)"
+  echo "==> first run (builds the per-user venv on the system python3.12)"
   su tester -c "nohup aiforge --no-runner --no-sync >/tmp/aiforge.log 2>&1 &"
   for _ in $(seq 1 90); do
     curl -sf http://127.0.0.1:8799/ui/ >/dev/null 2>&1 && break

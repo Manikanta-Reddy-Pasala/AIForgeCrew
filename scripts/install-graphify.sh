@@ -2,6 +2,8 @@
 # Install Graphify CLI + build knowledge graph for the repo.
 # Prefer uv (Python 3.12). Fall back to pipx with absolute path if uv absent.
 set -euo pipefail
+# uv's managed CPython comes from GitHub, not a package index: never download one.
+export UV_PYTHON_DOWNLOADS="${UV_PYTHON_DOWNLOADS:-never}"
 
 if command -v uv >/dev/null; then
   uv tool install --upgrade --python 3.12 graphifyy

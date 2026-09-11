@@ -19,8 +19,16 @@ AIForge-<ver>-<os>-portable.tar.gz   (.zip on Windows)   ~20 MB
   data/   runtime/ + config/  ← everything it writes
 ```
 
-Add `--offline` at build time and it carries its own CPython and every wheel,
-so even the first run needs no network — the air-gapped case.
+Add `--offline` at build time and it carries every locked wheel, so even the
+first run needs no network — the air-gapped case.
+
+**Nothing is downloaded from GitHub** — not uv, not a Python, not a Docker
+image. Everything comes from a package index (PyPI, npm, or your mirror of
+them), so the machine needs **Python 3.12** from its own package manager:
+
+| macOS | Ubuntu 24.04 | Ubuntu 22.04 | Windows |
+|---|---|---|---|
+| [python.org installer](https://www.python.org/downloads/macos/) (Homebrew bottles come from ghcr.io) | pulled in by the `.deb` | `sudo add-apt-repository ppa:deadsnakes/ppa` first | `winget install Python.Python.3.12` |
 
 | | macOS | Windows | Ubuntu / Debian |
 |---|---|---|---|
@@ -35,13 +43,14 @@ Open <http://localhost:8799/ui/> — the mac and Windows launchers do it for you
 ## What is (and is not) in the box
 
 **In:** the app, the built web UI (inside the wheel — no npm on your machine),
-and a `uv` binary.
+a `uv` binary, and `lock-pins.txt` — the exact versions `uv.lock` pins, so the
+runtime first launch builds is the one CI tested.
 
-**Not in:** a Python interpreter. Every target ships a different and usually
-too-old one — Ubuntu 22.04 has 3.10, stock macOS has 3.9, Windows often has
-none — so instead of bundling a 60 MB interpreter per package, `uv` provisions
-the CPython 3.12 it needs on **first launch**. That first launch needs the
-network; every launch after it does not.
+**Not in:** a Python interpreter. The first launch builds the runtime on the
+machine's own Python 3.12 and never downloads one (uv's managed CPython comes
+from GitHub releases, not an index); without 3.12 it stops and prints the
+install command for that OS. That first launch needs the package index; every
+launch after it does not.
 
 Packages are ~130 MB (mostly `uv` plus the wheel). The runtime it builds in your
 profile is a few hundred MB more.
@@ -86,12 +95,13 @@ install into WSL2 with the .deb instead.
 
 ```bash
 sudo apt install ./aiforge_<ver>_amd64.deb
-aiforge                 # first run downloads its Python, then starts
+aiforge                 # first run installs the locked dependencies, then starts
 ```
 
-`python3` is deliberately **not** a dependency (uv handles it), but `tmux` is:
-without it the agent silently loses shell state between calls, and a package is
-where that should be settled rather than discovered.
+`python3.12` and `tmux` are dependencies. 24.04 has 3.12 in its archive; on
+22.04 add `ppa:deadsnakes/ppa` first, or apt refuses the package (by design —
+better than a first launch that cannot build its runtime). Without tmux the
+agent silently loses shell state between calls.
 
 Removing the package leaves `~/.local/share/aiforge` and `~/.aiforge` alone —
 that is your memory, tickets and chat history, not package state.

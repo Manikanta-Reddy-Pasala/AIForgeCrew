@@ -1,3 +1,6 @@
+# uv's managed CPython comes from GitHub, not a package index: never download one.
+export UV_PYTHON_DOWNLOADS ?= never
+
 .PHONY: help install test test-docker ui clean installers installer-payload installer-deb installer-dmg installer-msi installer-portable installer-verify
 
 help:

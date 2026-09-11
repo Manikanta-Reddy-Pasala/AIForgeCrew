@@ -16,12 +16,21 @@ RUN npm ci --ignore-scripts
 COPY web/ ./
 RUN npm run build
 
-# ── python builder (has the compiler toolchain; discarded) ─────────────
+# ── codegraph (the Doer's enforced codegraph_* tools) ───────────────────
+# Same lockfile run.sh installs from. Only the per-platform package is kept:
+# it carries its own Node, and the package's npm `bin` shim is the thing that
+# downloads a bundle from GitHub when that platform package is missing.
+FROM node:20-slim AS codegraph
+WORKDIR /cg
+COPY scripts/codegraph/package.json scripts/codegraph/package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund \
+    && mkdir /out && cp -a node_modules/@colbymchenry/codegraph-linux-* /out/codegraph \
+    && /out/codegraph/bin/codegraph --version
+
+# ── python builder (discarded) ─────────────────────────────────────────
+# No compiler on purpose: every dependency installs as a wheel, so anything
+# that would need building from source fails here instead of quietly compiling.
 FROM python:3.12-slim AS builder
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential git \
-    && rm -rf /var/lib/apt/lists/*
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 WORKDIR /app
 ENV UV_SYSTEM_PYTHON=1 PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -36,18 +45,43 @@ ENV UV_SYSTEM_PYTHON=1 PYTHONUNBUFFERED=1 \
 # Both installs below are EDITABLE, so what they need is exactly the two
 # package trees plus the root metadata:
 #   pyproject.toml  the root distribution's metadata (no readme/license refs)
+#   uv.lock         the versions every install below is pinned to
 #   aiforge_core/   the app
 #   packages/       the vendored aiforge-memory distribution
-COPY pyproject.toml ./
+COPY pyproject.toml uv.lock ./
 COPY aiforge_core ./aiforge_core
 COPY packages ./packages
-# Vendored memory pkg, then the Crew + extras. Semantic recall uses model2vec
-# (embed-static) — real static embeddings with NO torch, so the image stays
-# small (torch alone was ~1GB). structured/crawl/chunking round out the extras.
-# aider-chat is a CORE dep. Dev tools so chat sessions can run/test their code.
-RUN uv pip install --system -e ./packages/aiforge_memory \
-    && uv pip install --system -e '.[embed-static,structured,crawl,chunking]' \
-    && uv pip install --system pytest ruff
+# The Crew + extras. Semantic recall uses model2vec (embed-static) — real static
+# embeddings with NO torch, so the image stays small (torch alone was ~1GB).
+# structured/crawl/chunking round out the extras; `dev` (pytest, ruff) so chat
+# sessions can run/test their code.
+# Index: one passed in wins; else pyproject's (the estate's Artifactory) when
+# it resolves; else PyPI, the registry uv.lock records.
+# uv: its PyPI wheel at the version uv.lock pins — not the ghcr.io image.
+# Versions: exactly uv.lock's for the image's extras (a fresh resolve gave
+# starlette 0.52.1, under the CVE floor). --no-config: in /app, uv pip reads
+# pyproject's override-dependencies, and an override REPLACES a pin — litellm
+# ==1.98.0 became >=1.84.0 and resolved 1.100.1. The pins are --override as
+# well as -r: google-adk caps starlette <1, which only an override beats (it is
+# how uv.lock got 1.6.0). Wheels only: every dependency
+# goes in with --no-build, then this checkout's two packages alone, --no-deps.
+ARG UV_DEFAULT_INDEX=""
+RUN url="$(sed -n '/^\[\[tool\.uv\.index\]\]/,/^\[/s/^url *= *"\(.*\)"/\1/p' pyproject.toml | head -1)"; \
+    host="$(echo "$url" | sed 's|^[a-z]*://||; s|[:/].*||')"; \
+    if [ -n "$UV_DEFAULT_INDEX" ]; then idx="$UV_DEFAULT_INDEX"; \
+    elif [ -n "$host" ] && getent hosts "$host" >/dev/null; then idx="$url"; \
+    else idx=https://pypi.org/simple; echo "index: ${host:-none} does not resolve — using PyPI"; fi; \
+    export UV_DEFAULT_INDEX="$idx"; \
+    uvver="$(sed -n '/^name = "uv"$/{n;s/^version = "\(.*\)"/\1/p;}' uv.lock)"; \
+    pip install -q --no-cache-dir --disable-pip-version-check --only-binary=:all: \
+        --index-url "$idx" "uv==$uvver" \
+    && uv export --frozen --no-dev --no-hashes --no-emit-project --no-emit-local --quiet \
+         --extra embed-static --extra structured --extra crawl --extra chunking --extra dev \
+         -o /tmp/image-pins.txt \
+    && uv pip install --system --no-config --no-build \
+         -r /tmp/image-pins.txt --override /tmp/image-pins.txt \
+    && uv pip install --system --no-deps -e ./packages/aiforge_memory -e . \
+    && pip uninstall -q -y uv && rm -f /tmp/image-pins.txt
 
 # Pre-download the model2vec model (~30MB) so recall works fully OFFLINE. Skip
 # with --build-arg PREFETCH_EMBED_MODEL=0 (downloads on first use instead).
@@ -113,6 +147,9 @@ COPY packages ./packages
 COPY docker ./docker
 COPY pyproject.toml ./
 COPY --from=web /web/dist ./web/dist
+COPY --from=codegraph /out/codegraph /opt/codegraph
+RUN ln -s /opt/codegraph/bin/codegraph /usr/local/bin/codegraph
+ENV CODEGRAPH_TELEMETRY=0 CODEGRAPH_NO_DOWNLOAD=1
 
 # ── who the app runs as ───────────────────────────────────────────────────
 # Not root. The default `python` image leaves you as uid 0, which means the
