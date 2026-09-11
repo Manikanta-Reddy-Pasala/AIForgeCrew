@@ -44,7 +44,7 @@ install -d "$STAGE/DEBIAN" "$STAGE/opt/aiforge/uv" "$STAGE/usr/bin" \
 
 # Every wheel in the payload: the app's, plus the vendored aiforge-memory that
 # no index carries.
-for w in "$PAYLOAD"/*.whl "$PAYLOAD"/lock-pins.txt; do install -m 0644 "$w" "$STAGE/opt/aiforge/"; done
+for w in "$PAYLOAD"/*.whl "$PAYLOAD"/lock-pins.txt "$PAYLOAD"/index-url.txt; do install -m 0644 "$w" "$STAGE/opt/aiforge/"; done
 install -m 0755 "$PAYLOAD/uv/$UV_DIR/uv"    "$STAGE/opt/aiforge/uv/uv"
 install -m 0755 "$REPO_ROOT/installer/common/first-run.sh" "$STAGE/opt/aiforge/first-run.sh"
 

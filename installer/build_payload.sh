@@ -42,20 +42,25 @@ uv_platform() {
   esac
 }
 
-# Same rule as run.sh: an index you name wins; otherwise pyproject's estate
-# index, unless it does not resolve from this box — then PyPI, the registry
-# uv.lock records. Without this every build off the estate dies on a DNS error.
+# The internal Artifactory is the only source — same rule as run.sh, no public
+# fallback. PyPI index: UV_DEFAULT_INDEX, else pyproject's [[tool.uv.index]].
+# npm: npm_config_registry, else AIFORGE_NPM_REGISTRY from aiforge.env.
+# The internal CA is in the OS trust store; uv and Node ignore it unless told.
+export UV_SYSTEM_CERTS="${UV_SYSTEM_CERTS:-true}" NODE_USE_SYSTEM_CA="${NODE_USE_SYSTEM_CA:-1}"
+
 pick_index() {
-  [[ -n "${UV_DEFAULT_INDEX:-}${UV_INDEX_URL:-}" ]] && return 0
-  local host
-  host="$(sed -n '/^\[\[tool\.uv\.index\]\]/,/^\[/s/^url *= *"https*:\/\/\([^:/"]*\).*/\1/p' \
-          "$REPO_ROOT/pyproject.toml" | head -1 || true)"
-  [[ -n "$host" ]] || return 0
+  INDEX="${UV_DEFAULT_INDEX:-${UV_INDEX_URL:-$(sed -n '/^\[\[tool\.uv\.index\]\]/,/^\[/s/^url *= *"\(.*\)"/\1/p' \
+          "$REPO_ROOT/pyproject.toml" | head -1 || true)}}"
+  [[ -n "$INDEX" ]] || { echo "no package index (pyproject / UV_DEFAULT_INDEX)" >&2; exit 1; }
+  local host="${INDEX#*://}"; host="${host%%[:/]*}"
   if ! getent hosts "$host" >/dev/null 2>&1 \
      && ! python3 -c 'import socket, sys; socket.getaddrinfo(sys.argv[1], 443)' "$host" >/dev/null 2>&1; then
-    export UV_DEFAULT_INDEX="https://pypi.org/simple"
-    echo "==> index: $host does not resolve here — using PyPI"
+    echo "package index host '$host' does not resolve — builds use only $INDEX" >&2; exit 1
   fi
+  export UV_DEFAULT_INDEX="$INDEX"
+  NPM_REGISTRY="${npm_config_registry:-$(sed -n 's/^AIFORGE_NPM_REGISTRY=//p' "$REPO_ROOT/aiforge.env" 2>/dev/null | head -1)}"
+  [[ -n "$NPM_REGISTRY" ]] || { echo "no npm registry (aiforge.env AIFORGE_NPM_REGISTRY)" >&2; exit 1; }
+  echo "==> index: $INDEX   npm: $NPM_REGISTRY"
   return 0
 }
 
@@ -76,7 +81,7 @@ version() {
 build_wheel() {
   echo "==> building the web UI (it ships INSIDE the wheel — no npm on the target)"
   if [[ -f "$REPO_ROOT/web/package.json" ]]; then
-    ( cd "$REPO_ROOT/web" && npm_config_update_notifier=false \
+    ( cd "$REPO_ROOT/web" && npm_config_update_notifier=false npm_config_registry="$NPM_REGISTRY" \
         npm ci --ignore-scripts --no-audit --no-fund --loglevel=error && npm run build --silent )
   fi
   # The API resolves its UI from aiforge_core/web_dist when installed (see the
@@ -110,6 +115,9 @@ build_wheel() {
   echo "==> exporting lock-pins.txt from uv.lock"
   ( cd "$REPO_ROOT" && uv export --frozen --all-extras --no-dev --no-hashes \
       --no-emit-project --no-emit-local --quiet -o "$OUT/lock-pins.txt" )
+  # The index every first run installs from: an installed app has no
+  # pyproject to read it from, and uv's own default would be pypi.org.
+  printf '%s\n' "$INDEX" > "$OUT/index-url.txt"
   return
 }
 
@@ -152,13 +160,7 @@ mkdir -p "$OUT"
 echo "==> AIForge $(version) → $OUT"
 pick_index
 PYTHON="${PYTHON:-python3}"
-# pip gets the same index uv does: the one named, else pyproject's when it
-# resolves. PIP_INDEX_URL / pip.conf, if set, win.
-PIP_INDEX_ARGS=()
-if [[ -z "${PIP_INDEX_URL:-}" ]]; then
-  _idx="${UV_DEFAULT_INDEX:-${UV_INDEX_URL:-$(sed -n '/^\[\[tool\.uv\.index\]\]/,/^\[/s/^url *= *"\(.*\)"/\1/p' "$REPO_ROOT/pyproject.toml" | head -1 || true)}}"
-  [[ -n "$_idx" ]] && PIP_INDEX_ARGS=(--index-url "$_idx")
-fi
+PIP_INDEX_ARGS=(--index-url "$INDEX")
 build_wheel
 if [[ -n "$TARGET" ]]; then
   fetch_uv "$TARGET"

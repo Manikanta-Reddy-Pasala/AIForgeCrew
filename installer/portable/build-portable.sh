@@ -47,7 +47,7 @@ trap 'rm -rf "$STAGE"' EXIT
 ROOT="$STAGE/AIForge-$VERSION"
 mkdir -p "$ROOT/app/uv" "$ROOT/data"
 
-cp "$PAYLOAD"/*.whl "$PAYLOAD"/lock-pins.txt "$ROOT/app/"
+cp "$PAYLOAD"/*.whl "$PAYLOAD"/lock-pins.txt "$PAYLOAD"/index-url.txt "$ROOT/app/"
 cp "$UV_SRC"/uv* "$ROOT/app/uv/"
 chmod +x "$ROOT/app/uv/"* 2>/dev/null || true
 cp "$REPO_ROOT/installer/common/first-run.sh"     "$ROOT/app/first-run.sh"
@@ -75,6 +75,7 @@ if [[ "$OFFLINE" == "1" ]]; then
   echo "==> vendoring the locked dependency wheels for $TARGET"
   "${PYTHON:-python3}" -m pip download --quiet --disable-pip-version-check --no-deps \
       --only-binary=:all: --python-version "$PY_VERSION" --implementation cp "${PLAT[@]}" \
+      --index-url "${UV_DEFAULT_INDEX:-$(head -1 "$ROOT/app/index-url.txt")}" \
       -r "$ROOT/app/lock-pins.txt" -d "$ROOT/app/wheels" \
     || { echo "build-portable: could not vendor every locked wheel for $TARGET" >&2; exit 1; }
 fi

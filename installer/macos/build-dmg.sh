@@ -31,7 +31,7 @@ APP="$STAGE/AIForge.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/uv"
 
 # Every wheel: the app's, plus the vendored aiforge-memory no index carries.
-cp "$PAYLOAD"/*.whl "$PAYLOAD"/lock-pins.txt "$APP/Contents/Resources/"
+cp "$PAYLOAD"/*.whl "$PAYLOAD"/lock-pins.txt "$PAYLOAD"/index-url.txt "$APP/Contents/Resources/"
 cp "$PAYLOAD/uv/$UV_TARGET/uv" "$APP/Contents/Resources/uv/uv"
 cp "$REPO_ROOT/installer/common/first-run.sh" "$APP/Contents/Resources/first-run.sh"
 chmod 0755 "$APP/Contents/Resources/uv/uv" "$APP/Contents/Resources/first-run.sh"

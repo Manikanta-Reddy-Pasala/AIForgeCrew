@@ -23,8 +23,9 @@ Add `--offline` at build time and it carries every locked wheel, so even the
 first run needs no network — the air-gapped case.
 
 **Nothing is downloaded from GitHub** — not uv, not a Python, not a Docker
-image. Everything comes from a package index (PyPI, npm, or your mirror of
-them), so the machine needs **Python 3.12** from its own package manager:
+image. Every package comes from the internal Artifactory (the index URL is
+baked into the package as `index-url.txt`; `UV_DEFAULT_INDEX` overrides), so
+the machine needs **Python 3.12** from its own package manager:
 
 | macOS | Ubuntu 24.04 | Ubuntu 22.04 | Windows |
 |---|---|---|---|

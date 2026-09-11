@@ -24,6 +24,7 @@ $pyVersion  = if ($env:AIFORGE_PYTHON_VERSION) { $env:AIFORGE_PYTHON_VERSION } e
 
 $env:UV_PYTHON_DOWNLOADS = 'never'
 $env:UV_PYTHON_PREFERENCE = 'only-system'
+if (-not $env:UV_SYSTEM_CERTS) { $env:UV_SYSTEM_CERTS = 'true' }   # the internal CA is in the OS store
 
 $uv = Join-Path $appHome 'uv\uv.exe'
 if (-not (Test-Path $uv)) {
@@ -83,6 +84,12 @@ if (-not (Test-Path $marker) -or -not (Test-Path $venvStart)) {
     # feature by feature - which reads as "some pages do not work".
     # --override: exactly uv.lock's versions, so the installed app runs what CI
     # tested. Not -c: the lock overrides google-adk's starlette cap.
+    # The index the package was built against (the internal Artifactory);
+    # uv's own default would be pypi.org. $env:UV_DEFAULT_INDEX wins.
+    $indexFile = Join-Path $appHome 'index-url.txt'
+    if (-not $env:UV_DEFAULT_INDEX -and (Test-Path $indexFile)) {
+        $env:UV_DEFAULT_INDEX = (Get-Content $indexFile -TotalCount 1).Trim()
+    }
     $pin = @()
     $lockPins = Join-Path $appHome 'lock-pins.txt'
     if (Test-Path $lockPins) { $pin = @('--override', $lockPins) }

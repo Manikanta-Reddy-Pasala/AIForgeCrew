@@ -23,6 +23,9 @@ PY_VERSION="${AIFORGE_PYTHON_VERSION:-3.12}"
 # Python 3.12 (a package-manager install), same as run.sh.
 export UV_PYTHON_DOWNLOADS=never
 export UV_PYTHON_PREFERENCE=only-system
+# The internal Artifactory's CA lives in the OS trust store; uv ignores that
+# store unless told.
+export UV_SYSTEM_CERTS="${UV_SYSTEM_CERTS:-true}"
 
 [[ -x "$UV" ]] || UV="$(command -v uv || true)"
 if [[ -z "$UV" || ! -x "$UV" ]]; then
@@ -108,6 +111,12 @@ if [[ ! -f "$MARKER" || ! -x "$VENV/bin/aiforge" ]]; then
   # cannot, and the install would be unsatisfiable.
   PIN_ARGS=()
   [[ -f "$APP_HOME/lock-pins.txt" ]] && PIN_ARGS=(--override "$APP_HOME/lock-pins.txt")
+  # The index the package was built against (the internal Artifactory) — uv's
+  # own default would be pypi.org. UV_DEFAULT_INDEX in the environment wins.
+  if [[ -z "${UV_DEFAULT_INDEX:-}" && -s "$APP_HOME/index-url.txt" ]]; then
+    UV_DEFAULT_INDEX="$(head -1 "$APP_HOME/index-url.txt")"
+    export UV_DEFAULT_INDEX
+  fi
   # --no-build: wheels only — the app and aiforge-memory ship as wheels beside
   # this script, every dependency has one on the index, and nothing is ever
   # built from a downloaded source archive.

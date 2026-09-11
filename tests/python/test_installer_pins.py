@@ -86,6 +86,19 @@ def test_every_package_carries_the_lock_pins():
     for f in ("linux/build-deb.sh", "macos/build-dmg.sh",
               "portable/build-portable.sh", "windows/build-msi.sh"):
         assert "lock-pins.txt" in (INST / f).read_text(), f
+        assert "index-url.txt" in (INST / f).read_text(), f
+    assert "index-url.txt" in (INST / "windows" / "first-run.ps1").read_text()
+
+
+def test_there_is_no_public_registry_fallback():
+    """The estate reaches only the internal Artifactory: an unresolvable index
+    stops the build instead of switching to pypi.org."""
+    for f in _BUILD_AND_INSTALL:
+        code = _code(f)
+        for host in ("pypi.org", "pythonhosted.org", "registry.npmjs.org"):
+            assert host not in code, f"{f.relative_to(REPO)} names {host}"
+    docker = (REPO / "Dockerfile").read_text()
+    assert '--registry "$NPM_REGISTRY"' in docker
     assert "lock-pins.txt" in (INST / "windows" / "first-run.ps1").read_text()
 
 
@@ -99,12 +112,13 @@ def _fake_app(tmp_path, python_found=True):
         '[[tool.uv.index]]\nname="x"\nurl="https://unreachable.invalid/simple/"\ndefault=true\n')
     (app / "aiforgecrew-9.9.9-py3-none-any.whl").write_text("")
     (app / "lock-pins.txt").write_text("starlette==1.6.0\n")
+    (app / "index-url.txt").write_text("https://artifactory.internal/simple/\n")
     log = tmp_path / "uv.log"
     # A fake uv: records cwd + args; `venv` makes a python, `pip install`
     # makes the console script the bootstrap then execs.
     uv = app / "uv" / "uv"
     uv.write_text(f"""#!/bin/sh
-echo "cwd=$PWD args=$*" >> "{log}"
+echo "cwd=$PWD index=$UV_DEFAULT_INDEX args=$*" >> "{log}"
 [ "$1 $2" = "python find" ] && exit {0 if python_found else 1}
 case "$1" in
   venv) eval "v=\\${{$#}}"; mkdir -p "$v/bin"; printf '#!/bin/sh\\n' > "$v/bin/python"; chmod +x "$v/bin/python" ;;
@@ -130,6 +144,7 @@ def test_first_run_overrides_with_the_lock_pins_from_its_data_dir(tmp_path):
     pip = [c for c in calls if " args=pip install" in c]
     assert pip, calls
     assert f"--override {app}/lock-pins.txt" in pip[0], pip[0]
+    assert "index=https://artifactory.internal/simple/ " in pip[0], pip[0]
     assert all(c.startswith(f"cwd={data} ") for c in calls), calls
 
 

@@ -23,8 +23,8 @@ installer/build_payload.sh --target linux       # just one target's uv
 
 It builds the web UI, **copies it into the package** as `aiforge_core/web_dist`,
 builds the app wheel and the vendored `aiforge-memory` wheel, exports
-`lock-pins.txt`, and takes a `uv` binary per target out of uv's **PyPI wheel**
-for that platform (cached per version).
+`lock-pins.txt` and `index-url.txt`, and takes a `uv` binary per target out of
+uv's wheel on the Artifactory PyPI remote (cached per version).
 
 That UI copy is not cosmetic: the API resolves its static files from
 `aiforge_core/web_dist` when installed, because the repo's `web/dist` does not
@@ -34,10 +34,12 @@ and a 404 for its own UI.
 Needs: `node` + `npm` (UI), `uv`, `python3` with pip. A box that has run
 `./run.sh` has them all in `.venv/bin` — `PATH="$PWD/.venv/bin:$PATH" installer/build_payload.sh`.
 
-Nothing comes from GitHub: the `uv` it packages is the `uv==<locked>` wheel from
-the package index (PyPI or your mirror), not a release asset. Off the
-estate (pyproject's Artifactory index does not resolve) it builds against PyPI,
-same rule as run.sh; `UV_DEFAULT_INDEX` overrides.
+Everything comes from the internal Artifactory — pyproject's index (or
+`UV_DEFAULT_INDEX`) and `AIFORGE_NPM_REGISTRY` from `aiforge.env` (or
+`npm_config_registry`). There is no public fallback: an index host that does not
+resolve stops the build. The `uv` it packages is the `uv==<locked>` wheel, not a
+GitHub release asset. `index-url.txt` carries the index into the package, since
+an installed app has no pyproject and uv's own default is pypi.org.
 
 `lock-pins.txt` (installed as `--override`, not `-c` — google-adk 2.1.0 caps
 starlette <1.0 itself, so as constraints the lock is unsatisfiable) is not

@@ -283,24 +283,42 @@ def test_no_os_package_manager_or_global_install_runs():
 
 
 def test_pip_only_ever_bootstraps_uv():
-    """pip runs once, to put the uv wheel in .venv; everything else is uv sync
-    from the lock. A second pip install would be an unpinned side channel."""
+    """Python's pip runs once, to put the uv wheel in .venv; everything else is
+    uv installing the lock's pins. A second pip would be an unpinned side channel."""
     lines = _executable_lines()
-    hits = [i for i, ln in enumerate(lines) if "pip install" in ln]
+    hits = [i for i, ln in enumerate(lines) if "-m pip install" in ln]
     assert len(hits) == 1, [lines[i] for i in hits]
-    stmt = " ".join(lines[hits[0]:hits[0] + 3])
-    assert re.search(r"\buv\b", stmt.split("pip install", 1)[1]), stmt
+    # the one package it installs: uv, at the version uv.lock pins
+    assert '"uv${_uvv:+==$_uvv}"' in SRC and '_uvv="$(_lock_version uv)"' in SRC
 
 
-def test_python_deps_are_synced_from_the_lock_as_wheels_only():
-    """Pass 1 installs every index dependency with --no-build; pass 2 is left
-    with only this checkout's own packages to build."""
-    assert "_uv_sync --locked" in SRC
-    assert '"$UV" sync "$@" --no-build --no-install-project --no-install-local' in SRC
+def test_python_deps_are_the_locks_versions_from_the_index_as_wheels():
+    """Exported pins (names + versions only) installed from the configured
+    index — never `uv sync`, which downloads the file URLs recorded in the lock
+    (pypi.org). Every index package --no-build; then only the local packages."""
+    code = "\n".join(_code_lines())
+    assert "uv sync" not in code
+    assert '"$UV" export --frozen' in code
+    assert '--no-config --default-index "$_INDEX"' in code
+    assert '--no-build -r "$_pins" --override "$_pins"' in code
+    assert "--no-deps -e ./packages/aiforge_memory -e ." in code
+
+
+def test_there_is_no_public_registry_fallback():
+    """The estate reaches only the internal Artifactory."""
+    code = "\n".join(_code_lines())
+    for host in ("pypi.org", "pythonhosted.org", "registry.npmjs.org"):
+        assert host not in code, host
+
+
+def test_npm_installs_go_to_the_configured_registry():
+    env = (REPO / "aiforge.env").read_text()
+    assert "AIFORGE_NPM_REGISTRY=https://artifactory." in env
+    assert 'npm_config_registry="$reg"' in SRC
 
 
 def test_the_uv_bootstrap_is_a_wheel():
-    assert "pip install -q --disable-pip-version-check --only-binary=:all:" in SRC
+    assert "pip install -q --no-input --disable-pip-version-check --only-binary=:all:" in SRC
 
 
 def test_every_npm_install_is_ci_from_a_lock_with_no_scripts():
@@ -362,16 +380,17 @@ def test_every_os_prerequisite_has_a_hint_on_every_platform(tool):
 def synced_box(tmp_path):
     """A checkout whose .venv already imports the project (a shim onto the
     interpreter running this test) and a fake uv on PATH that logs its args
-    and UV_DEFAULT_INDEX. `--test` is the earliest exit after the install."""
+    and writes whatever `export -o` asks for. `--test` is the earliest exit
+    after the install."""
     import sys
     work = tmp_path / "work"
     (work / ".venv" / "bin").mkdir(parents=True)
     shutil.copy(RUN_SH, work / "run.sh")
     shutil.copy(REPO / "uv.lock", work / "uv.lock")
-    # An index host that can never resolve (RFC 6761), whatever the network.
+    # localhost always resolves; the repo's real index host may not, here.
     (work / "pyproject.toml").write_text(
         (REPO / "pyproject.toml").read_text().replace(
-            "artifactory.internal", "artifactory.invalid"))
+            "artifactory.internal", "localhost"))
     py = work / ".venv" / "bin" / "python"
     py.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
     py.chmod(0o755)
@@ -380,7 +399,9 @@ def synced_box(tmp_path):
     bindir.mkdir()
     uv = bindir / "uv"
     uv.write_text('#!/bin/sh\n[ "$1" = --version ] && { echo "uv 0.0.0-fake"; exit 0; }\n'
-                  f'echo "$* | index=${{UV_DEFAULT_INDEX:-}}" >> "{log}"\n')
+                  f'echo "$*" >> "{log}"\n'
+                  'if [ "$1" = export ]; then while [ $# -gt 0 ]; do\n'
+                  '  [ "$1" = -o ] && { echo "x==1" > "$2"; }; shift; done; fi\n')
     uv.chmod(0o755)
     env = {**os.environ,
            "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}",
@@ -397,32 +418,44 @@ def synced_box(tmp_path):
         r = subprocess.run(["bash", "run.sh", "--test"], cwd=str(work), text=True,
                            capture_output=True, timeout=120, env={**env, **extra})
         calls = log.read_text().splitlines() if log.exists() else []
-        return r, [c for c in calls if c.startswith("sync ")]
-    return run
+        return r, [c for c in calls if c.startswith(("export ", "pip install "))]
+    return run, work
 
 
-def test_first_boot_syncs_from_the_lock_and_second_boot_installs_nothing(synced_box):
-    r, syncs = synced_box()
+def test_first_boot_installs_the_lock_and_second_boot_installs_nothing(synced_box):
+    run, _ = synced_box
+    r, calls = run()
     assert "AIForge connectivity test" in r.stdout, r.stdout + r.stderr
-    assert syncs and syncs[0].startswith("sync --locked --inexact --extra toolchain"), syncs
-    assert "--no-build --no-install-project --no-install-local" in syncs[0], syncs
-    assert "--no-build" not in syncs[1], syncs    # only the local packages are left
-    r, again = synced_box()
-    assert again == syncs, "an unchanged lock was synced again — boot needs the network"
+    exp, deps, local = calls[:3]
+    assert exp.startswith("export --frozen") and "--extra toolchain" in exp, calls
+    assert "--default-index https://localhost" in deps and "--no-build" in deps, deps
+    assert "--override" in deps and "--no-config" in deps, deps
+    assert "--no-deps -e ./packages/aiforge_memory -e ." in local, local
+    r, again = run()
+    assert again == calls, "an unchanged lock was installed again — boot needs the network"
 
 
-def test_new_extras_trigger_a_sync_that_includes_them(synced_box):
-    synced_box()
-    _, syncs = synced_box(AIFORGE_EXTRAS="crawl, embed-static")
-    assert "--extra crawl --extra embed-static" in syncs[-1], syncs
+def test_new_extras_trigger_an_install_that_includes_them(synced_box):
+    run, _ = synced_box
+    run()
+    _, calls = run(AIFORGE_EXTRAS="crawl, embed-static")
+    exports = [c for c in calls if c.startswith("export ")]
+    assert "--extra crawl --extra embed-static" in exports[-1], exports
 
 
-def test_an_unresolvable_estate_index_falls_back_to_pypi(synced_box):
-    r, syncs = synced_box()
-    assert syncs[0].endswith("index=https://pypi.org/simple"), syncs
-    assert "does not resolve here" in r.stdout
+def test_an_unresolvable_index_stops_the_install_and_never_goes_public(synced_box):
+    run, work = synced_box
+    pp = work / "pyproject.toml"
+    pp.write_text(pp.read_text().replace("localhost", "artifactory.invalid"))
+    r, calls = run()
+    assert r.returncode == 1
+    assert "does not resolve" in r.stderr and "artifactory.invalid" in r.stderr
+    assert not calls, calls
+    assert "pypi.org" not in r.stdout + r.stderr
 
 
-def test_an_index_the_operator_named_is_never_overridden(synced_box):
-    _, syncs = synced_box(UV_DEFAULT_INDEX="https://mirror.example/simple")
-    assert syncs[0].endswith("index=https://mirror.example/simple"), syncs
+def test_an_index_the_operator_named_is_the_one_used(synced_box):
+    run, _ = synced_box
+    _, calls = run(UV_DEFAULT_INDEX="https://127.0.0.1/mirror/simple/")
+    deps = [c for c in calls if c.startswith("pip install ")][0]
+    assert "--default-index https://127.0.0.1/mirror/simple/" in deps, deps

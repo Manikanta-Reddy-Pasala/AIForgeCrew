@@ -8,11 +8,18 @@
 # no CUDA — and a multi-stage build keeps the compiler toolchain out of the
 # final image.
 
+# Every package comes from the internal Artifactory; nothing falls back to a
+# public registry. BASE_REGISTRY prefixes the base images (e.g. an Artifactory
+# docker remote, "artifactory.internal/docker-remote/"); empty = Docker Hub.
+ARG BASE_REGISTRY=""
+ARG NPM_REGISTRY=https://artifactory.internal/artifactory/api/npm/npm-remote/
+
 # ── web build ─────────────────────────────────────────────────────────
-FROM node:20-slim AS web
+FROM ${BASE_REGISTRY}node:20-slim AS web
+ARG NPM_REGISTRY
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
-RUN npm ci --ignore-scripts
+RUN npm ci --ignore-scripts --no-audit --no-fund --registry "$NPM_REGISTRY"
 COPY web/ ./
 RUN npm run build
 
@@ -20,17 +27,18 @@ RUN npm run build
 # Same lockfile run.sh installs from. Only the per-platform package is kept:
 # it carries its own Node, and the package's npm `bin` shim is the thing that
 # downloads a bundle from GitHub when that platform package is missing.
-FROM node:20-slim AS codegraph
+FROM ${BASE_REGISTRY}node:20-slim AS codegraph
+ARG NPM_REGISTRY
 WORKDIR /cg
 COPY scripts/codegraph/package.json scripts/codegraph/package-lock.json ./
-RUN npm ci --ignore-scripts --no-audit --no-fund \
+RUN npm ci --ignore-scripts --no-audit --no-fund --registry "$NPM_REGISTRY" \
     && mkdir /out && cp -a node_modules/@colbymchenry/codegraph-linux-* /out/codegraph \
     && /out/codegraph/bin/codegraph --version
 
 # ── python builder (discarded) ─────────────────────────────────────────
 # No compiler on purpose: every dependency installs as a wheel, so anything
 # that would need building from source fails here instead of quietly compiling.
-FROM python:3.12-slim AS builder
+FROM ${BASE_REGISTRY}python:3.12-slim AS builder
 WORKDIR /app
 ENV UV_SYSTEM_PYTHON=1 PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -55,8 +63,8 @@ COPY packages ./packages
 # embeddings with NO torch, so the image stays small (torch alone was ~1GB).
 # structured/crawl/chunking round out the extras; `dev` (pytest, ruff) so chat
 # sessions can run/test their code.
-# Index: one passed in wins; else pyproject's (the estate's Artifactory) when
-# it resolves; else PyPI, the registry uv.lock records.
+# Index: UV_DEFAULT_INDEX if passed, else pyproject's (the estate's
+# Artifactory). No public fallback: an unresolvable index fails the build.
 # uv: its PyPI wheel at the version uv.lock pins — not the ghcr.io image.
 # Versions: exactly uv.lock's for the image's extras (a fresh resolve gave
 # starlette 0.52.1, under the CVE floor). --no-config: in /app, uv pip reads
@@ -67,10 +75,9 @@ COPY packages ./packages
 # goes in with --no-build, then this checkout's two packages alone, --no-deps.
 ARG UV_DEFAULT_INDEX=""
 RUN url="$(sed -n '/^\[\[tool\.uv\.index\]\]/,/^\[/s/^url *= *"\(.*\)"/\1/p' pyproject.toml | head -1)"; \
-    host="$(echo "$url" | sed 's|^[a-z]*://||; s|[:/].*||')"; \
-    if [ -n "$UV_DEFAULT_INDEX" ]; then idx="$UV_DEFAULT_INDEX"; \
-    elif [ -n "$host" ] && getent hosts "$host" >/dev/null; then idx="$url"; \
-    else idx=https://pypi.org/simple; echo "index: ${host:-none} does not resolve — using PyPI"; fi; \
+    idx="${UV_DEFAULT_INDEX:-$url}"; host="$(echo "$idx" | sed 's|^[a-z]*://||; s|[:/].*||')"; \
+    getent hosts "$host" >/dev/null \
+      || { echo "package index host '$host' does not resolve — this build uses only $idx" >&2; exit 1; }; \
     export UV_DEFAULT_INDEX="$idx"; \
     uvver="$(sed -n '/^name = "uv"$/{n;s/^version = "\(.*\)"/\1/p;}' uv.lock)"; \
     pip install -q --no-cache-dir --disable-pip-version-check --only-binary=:all: \
@@ -96,7 +103,7 @@ RUN if [ "$PREFETCH_EMBED_MODEL" = "1" ]; then \
     && rm -rf /root/.cache/uv /root/.cache/pip
 
 # ── runtime (slim: no compiler, no uv) ─────────────────────────────────
-FROM python:3.12-slim AS runtime
+FROM ${BASE_REGISTRY}python:3.12-slim AS runtime
 # One layer: install the runtime binaries and configure the one of them that
 # needs configuring. Split across two RUNs these were two image layers for what
 # is a single "make git usable in here" step.

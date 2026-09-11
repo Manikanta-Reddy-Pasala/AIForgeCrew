@@ -15,15 +15,15 @@ Then:
 ./run.sh
 ```
 
-The first run installs what the project **declares, from its lockfiles** — and
-nothing else:
+The first run installs what the project **declares, at its lockfiles'
+versions, from the internal Artifactory** — and nothing else:
 
-| What | From | Into |
-|---|---|---|
-| `uv` | the PyPI wheel (`pip install uv`, once) | `.venv` |
-| python deps, incl. `node`/`npm` (`toolchain` extra) | `uv.lock` (`uv sync --locked`) | `.venv` |
-| web UI deps | `web/package-lock.json` (`npm ci --ignore-scripts`) | `web/node_modules` → `web/dist` |
-| CodeGraph indexer | `scripts/codegraph/package-lock.json` (`npm ci --ignore-scripts`) | `.venv/codegraph` |
+| What | Versions from | Fetched from | Into |
+|---|---|---|---|
+| `uv` | `uv.lock` | Artifactory PyPI remote (`pip install uv==…`, once) | `.venv` |
+| python deps, incl. `node`/`npm` (`toolchain` extra) | `uv.lock`, exported as pins | Artifactory PyPI remote (`uv pip install --no-build`) | `.venv` |
+| web UI deps | `web/package-lock.json` | Artifactory npm remote (`npm ci --ignore-scripts`) | `web/node_modules` → `web/dist` |
+| CodeGraph indexer | `scripts/codegraph/package-lock.json` | Artifactory npm remote (`npm ci --ignore-scripts`) | `.venv/codegraph` |
 
 Later runs install nothing unless a lock changed, so a set-up box boots with no
 network. Without tmux the agent still boots; its shell tool just loses
@@ -37,13 +37,24 @@ AIFORGE_EXTRAS=structured,crawl,chunking ./run.sh   # richer tools
 uv tool install graphifyy                           # the graphify CLI — NEVER into .venv
 ```
 
-**Package index.** pyproject's default index is the estate's Artifactory. When
-that host does not resolve (i.e. you are off the estate), run.sh installs from
-PyPI — the registry `uv.lock` records — and says so. Name one yourself with
-`UV_DEFAULT_INDEX=<url>`; npm uses its own config (`~/.npmrc`).
+**Registries: the internal Artifactory only.** There is no public fallback —
+the estate cannot reach pypi.org or registry.npmjs.org, so if the index host
+does not resolve, run.sh stops and says which host to check.
 
-Nothing is downloaded from GitHub — every piece is a package from an index
-(PyPI, npm, or your mirror of them) — and every Python dependency installs as a
+| | Default (committed) | Override per box | Credentials |
+|---|---|---|---|
+| PyPI | pyproject `[[tool.uv.index]]` | `UV_DEFAULT_INDEX` | `~/.netrc` (`machine artifactory.internal login … password …`) |
+| npm | `AIFORGE_NPM_REGISTRY` in `aiforge.env` | `npm_config_registry` | `~/.npmrc` (`//artifactory.internal/:_authToken=…`) |
+
+uv.lock and the npm locks record public URLs, but only their **versions** are
+used: the Python lock is exported as exact pins and installed from the index
+(`uv sync` would download the URLs written in the lock), and npm swaps the
+public host for the configured registry. uv.lock is never rewritten. Put the
+internal CA in `AIFORGE_CA_BUNDLE` (or Settings) and pip, uv, npm and git all
+trust it.
+
+Nothing is downloaded from GitHub — every piece is a package from Artifactory —
+and every Python dependency installs as a
 **wheel** (`--no-build`): nothing from an index is ever built from a source
 archive. Only this checkout's own two packages are built, locally. `run.sh` never fetches a source and
 executes it — no installer piped into a shell, no Node tarball, no managed

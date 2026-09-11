@@ -5,10 +5,10 @@
 #
 # Needs: git + python 3.12. Everything else is a package.
 #
-# First run installs what the project DECLARES, from its lockfiles: uv.lock
-# (uv and Node included — the `toolchain` extra), web/package-lock.json, and
-# scripts/codegraph/package-lock.json. Later runs install nothing unless a lock
-# changed. Nothing fetches a source and executes it — no installer piped into a
+# First run installs what the project DECLARES, at its lockfiles' versions —
+# uv.lock (uv and Node included — the `toolchain` extra), web/package-lock.json
+# and scripts/codegraph/package-lock.json — from the internal Artifactory only,
+# as wheels only. Later runs install nothing unless a lock changed. Nothing fetches a source and executes it — no installer piped into a
 # shell, no Node tarball, no managed CPython, no browser binary from a CDN, no
 # npm install scripts.
 #
@@ -46,7 +46,8 @@
 #   AIFORGE_CA_BUNDLE      /path/to/ca.pem     (keeps verification ON)
 #   AIFORGE_ROLE=admin     on exactly one machine in a fleet
 #   AIFORGE_EXTRAS=structured,crawl,chunking,embed-static   optional extras
-#   UV_DEFAULT_INDEX       package index (default: pyproject's, else PyPI)
+#   UV_DEFAULT_INDEX       PyPI-type index (default: pyproject's Artifactory)
+#   npm_config_registry    npm registry (default: AIFORGE_NPM_REGISTRY, Artifactory)
 #
 # ⚠️  The agent has FULL filesystem + shell access here (no sandbox).
 #     Set AIFORGE_WORKSPACE_DIR=/path to clamp the chat file scope.
@@ -172,6 +173,11 @@ _ca_bootstrap() {
   echo "==> CA: $ca (+ system roots → $merged)"
 }
 _ca_bootstrap
+# A CA installed in the OS trust store — the usual corporate box — has to work
+# without AIFORGE_CA_BUNDLE too: uv and Node carry their own root lists and
+# ignore the OS store unless told (pip 24.2+ already uses it).
+export UV_SYSTEM_CERTS="${UV_SYSTEM_CERTS:-true}"
+export NODE_USE_SYSTEM_CA="${NODE_USE_SYSTEM_CA:-1}"
 
 # Mirror proxy vars across cases — tools read one or the other — and keep
 # loopback direct so the local model endpoint never goes through a proxy.
@@ -555,9 +561,14 @@ _ensure_node() {
 # `npm ci` from a committed lockfile. --ignore-scripts: an install script from
 # the registry is code nobody reviewed, and neither vite nor codegraph needs
 # one (their native parts are per-platform optional packages). The registry is
-# npm's own config (~/.npmrc), so a mirror works unchanged.
+# Artifactory's npm remote (AIFORGE_NPM_REGISTRY in aiforge.env; an exported
+# npm_config_registry wins). The locks record registry.npmjs.org, and npm
+# swaps that host for the configured registry, so they install unchanged.
+# Credentials: ~/.npmrc (`//host/:_authToken=…`).
 _npm_ci() {                              # $1 = dir holding package-lock.json
-  ( cd "$1" && npm_config_update_notifier=false \
+  local reg="${npm_config_registry:-${AIFORGE_NPM_REGISTRY:-}}"
+  [[ -n "$reg" ]] || { echo "!! no npm registry: set AIFORGE_NPM_REGISTRY (aiforge.env)." >&2; return 1; }
+  ( cd "$1" && npm_config_update_notifier=false npm_config_registry="$reg" \
       npm ci --ignore-scripts --no-audit --no-fund --loglevel=error )
 }
 
@@ -662,10 +673,12 @@ if [[ ! -d .venv ]]; then
 fi
 
 # ── package index ─────────────────────────────────────────────────────────
-# pyproject's default index is the estate's Artifactory. Off the estate that
-# host does not resolve and every install dies on a DNS error, so when the
-# operator named no index and that host does not resolve, use PyPI — the
-# registry uv.lock records. On the estate nothing changes.
+# ── package index: the internal Artifactory, and nothing else ─────────────
+# pyproject's [[tool.uv.index]] names it; UV_DEFAULT_INDEX overrides per box.
+# There is NO public fallback: the estate cannot reach pypi.org, and a box
+# that silently switched to it would install from somewhere nobody vetted. So
+# an index that does not resolve stops the install, with what to check.
+# Credentials: ~/.netrc (pip and uv both read it).
 _pyproject_index() {                     # never fails: set -e + pipefail
   [[ -r pyproject.toml ]] || return 0
   sed -n '/^\[\[tool\.uv\.index\]\]/,/^\[/s/^url *= *"\(.*\)"/\1/p' pyproject.toml | head -1 || true
@@ -677,32 +690,32 @@ _resolves() {                            # $1 = host; DNS only, no request
 _INDEX=""
 _pick_index() {                          # only when something is installed
   [[ -n "$_INDEX" ]] && return 0
-  if [[ -z "${UV_DEFAULT_INDEX:-}${UV_INDEX_URL:-}" ]]; then
-    local idx host
-    idx="$(_pyproject_index)"; host="${idx#*://}"; host="${host%%[:/]*}"
-    if [[ -n "$host" ]] && ! _resolves "$host"; then
-      export UV_DEFAULT_INDEX="https://pypi.org/simple"
-      echo "==> index: $host does not resolve here — using PyPI" \
-           "(set UV_DEFAULT_INDEX to choose)"
-    fi
-  fi
   _INDEX="${UV_DEFAULT_INDEX:-${UV_INDEX_URL:-$(_pyproject_index)}}"
+  [[ -n "$_INDEX" ]] || _fatal "no package index: pyproject names none and UV_DEFAULT_INDEX is unset."
+  local host="${_INDEX#*://}"; host="${host%%[:/]*}"; host="${host##*@}"
+  _resolves "$host" || _fatal "the package index host '$host' does not resolve from this box." \
+    "AIForge installs only from $_INDEX — check DNS/VPN, or set UV_DEFAULT_INDEX."
+  echo "==> index: $_INDEX"
 }
 
 # ── uv ────────────────────────────────────────────────────────────────────
-# uv is a wheel: pip puts it in .venv, then `uv sync` replaces it with the
-# version uv.lock pins (the `toolchain` extra).
+# uv is a wheel: pip puts the version uv.lock pins into .venv, from the index.
+_lock_version() {                        # $1 = package name in uv.lock
+  sed -n "/^name = \"$1\"\$/{n;s/^version = \"\(.*\)\"/\1/p;}" uv.lock 2>/dev/null | head -1 || true
+}
 UV="$(command -v uv 2>/dev/null || true)"
 [[ -z "$UV" && -x .venv/bin/uv ]] && UV="$PWD/.venv/bin/uv"
 if [[ -z "$UV" ]]; then
   _pick_index
-  echo "==> installing the uv wheel into .venv"
+  _uvv="$(_lock_version uv)"
+  echo "==> installing the uv wheel into .venv (uv${_uvv:+==$_uvv})"
   _pip_index=()
-  [[ -z "${PIP_INDEX_URL:-}" && -n "$_INDEX" ]] && _pip_index=(--index-url "$_INDEX")
-  .venv/bin/python -m pip install -q --disable-pip-version-check --only-binary=:all: \
-      ${_pip_index[@]+"${_pip_index[@]}"} uv \
-    || _fatal "pip could not install uv into .venv." \
-              "Check the index/proxy/CA settings, or install uv yourself."
+  [[ -z "${PIP_INDEX_URL:-}" ]] && _pip_index=(--index-url "$_INDEX")
+  # --no-input: on a 401 pip otherwise PROMPTS, and dies in an EOFError.
+  .venv/bin/python -m pip install -q --no-input --disable-pip-version-check --only-binary=:all: \
+      ${_pip_index[@]+"${_pip_index[@]}"} "uv${_uvv:+==$_uvv}" \
+    || _fatal "pip could not install uv into .venv from $_INDEX." \
+              "Check ~/.netrc credentials and the CA (AIFORGE_CA_BUNDLE)."
   UV="$PWD/.venv/bin/uv"
 fi
 export UV
@@ -715,37 +728,40 @@ export UV_LINK_MODE="${UV_LINK_MODE:-copy}"
 # Absolute, so job/Doer shells in another cwd still resolve `aiforge-tool`.
 export PATH="$PWD/.venv/bin:$PATH"
 
-# ── python deps, from uv.lock ─────────────────────────────────────────────
-# Re-synced only when pyproject, the lock or the extras change, so an
-# installed box boots with no network. --inexact keeps anything the operator
-# added. --locked first: it installs exactly the lock. On the estate the lock's
-# registry is not the configured index, uv calls the lock stale, and the plain
-# sync re-resolves against Artifactory — what CI does.
-#
-# Wheels only. Pass 1 installs every index dependency with --no-build, so
-# nothing from an index is ever built from a source archive. Pass 2 then has
-# only this checkout's own two packages left (aiforgecrew, aiforge-memory),
-# which --no-build would refuse because they ARE local source.
-_uv_sync() {
-  "$UV" sync "$@" --no-build --no-install-project --no-install-local && "$UV" sync "$@"
-}
+# ── python deps: uv.lock's versions, from the index ───────────────────────
+# The lock is exported as exact pins and installed from the configured index.
+# Not `uv sync`: that downloads the file URLs RECORDED in uv.lock, and a lock
+# resolved against another registry would send the box there. Pins carry only
+# names and versions, so the lock is the version truth and Artifactory the
+# only source. uv.lock is never rewritten. --override as well as -r: google-adk
+# caps starlette <1 and only an override beats that (it is how the lock got
+# 1.6.0). --no-config: in this directory uv pip would read pyproject's
+# override-dependencies, and an override REPLACES a pin.
+# Wheels only: --no-build for every index package; then this checkout's own
+# two packages, --no-deps. Re-run only when pyproject, the lock or the extras
+# change, so an installed box boots with no network.
 _venv_ready() { .venv/bin/python -c "import aiforge_core, pydantic_core" >/dev/null 2>&1; }
 
 [[ "${SHOW_MODEL2VEC:-0}" == "1" ]] && AIFORGE_EXTRAS="${AIFORGE_EXTRAS:+$AIFORGE_EXTRAS,}embed-static"
-_SYNC=(--inexact --extra toolchain)
+_EXTRAS=(--extra toolchain)
 IFS=',' read -ra _extras <<< "${AIFORGE_EXTRAS:-}"
 for _e in ${_extras[@]+"${_extras[@]}"}; do
-  _e="${_e//[[:space:]]/}"; [[ -n "$_e" ]] && _SYNC+=(--extra "$_e")
+  _e="${_e//[[:space:]]/}"; [[ -n "$_e" ]] && _EXTRAS+=(--extra "$_e")
 done
 _STAMP=".venv/.aiforge-deps"
-_want="$(cat pyproject.toml uv.lock 2>/dev/null | cksum) ${_SYNC[*]}"
+_want="$(cat pyproject.toml uv.lock 2>/dev/null | cksum) ${_EXTRAS[*]}"
 if ! _venv_ready || [[ "$(cat "$_STAMP" 2>/dev/null)" != "$_want" ]]; then
   _pick_index
-  echo "==> installing python deps from uv.lock (${_SYNC[*]})"
-  _uv_sync --locked "${_SYNC[@]}" || _uv_sync "${_SYNC[@]}" \
-    || _fatal "uv sync failed — see the error above." \
-              "Behind a proxy or a private index? Set UV_DEFAULT_INDEX / AIFORGE_CA_BUNDLE."
-  _venv_ready || _fatal "uv sync finished but .venv cannot import aiforge_core."
+  echo "==> installing python deps: uv.lock versions from the index (${_EXTRAS[*]})"
+  _pins=".venv/.aiforge-pins.txt"
+  _pip=("$UV" pip install --python .venv/bin/python --no-config --default-index "$_INDEX")
+  "$UV" export --frozen --no-dev --no-hashes --no-emit-project --no-emit-local --quiet \
+      "${_EXTRAS[@]}" -o "$_pins" \
+    && "${_pip[@]}" --no-build -r "$_pins" --override "$_pins" \
+    && "${_pip[@]}" --no-deps -e ./packages/aiforge_memory -e . \
+    || _fatal "installing the python deps failed — see the error above." \
+              "Check ~/.netrc credentials and the CA (AIFORGE_CA_BUNDLE) for $_INDEX."
+  _venv_ready || _fatal "install finished but .venv cannot import aiforge_core."
   printf '%s' "$_want" > "$_STAMP"
 fi
 echo "==> deps: .venv is ready"
