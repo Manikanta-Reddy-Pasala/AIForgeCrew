@@ -54,11 +54,24 @@ class StoreBackend(Protocol):
         """
         ...
 
-    def reap_stale_in_progress(self, max_age_s: int) -> list[int]:
+    def reap_stale_in_progress(self, max_age_s: int,
+                               max_reclaims: "int | None" = None) -> list[int]:
         """Reset ``in_progress`` rows whose claim (``claimed_at``, falling
         back to ``updated_at``) is older than ``max_age_s`` back to ``todo``
         and bump ``metadata.reclaim_count``. Requeues tickets orphaned by a
-        hard-crashed runner. Returns the reset ticket ids."""
+        hard-crashed runner. A ticket past ``max_reclaims`` goes to
+        ``blocked`` instead. Returns the reaped ticket ids (both kinds)."""
+        ...
+
+    def renew_claim(self, ticket_id: int) -> bool:
+        """Refresh the claim of a ticket this process is RUNNING (``claimed_at``
+        = now, only while ``in_progress``) — the heartbeat that keeps the
+        reaper off a live run. True when a row was renewed."""
+        ...
+
+    def claim_ticket(self, ticket_id: int) -> "dict | None":
+        """Atomically claim ONE specific ticket (→ ``in_progress``, claimed_at
+        = now) unless it is already ``in_progress``. None when it is."""
         ...
 
     def set_status(self, ticket_id: int, status: str, completed: bool,

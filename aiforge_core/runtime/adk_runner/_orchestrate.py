@@ -618,18 +618,43 @@ def _process_one_ticket() -> bool:
     if ticket is None:
         return False
     log.info("claimed ticket=%s title=%r", ticket.identifier, ticket.title)
-    if _clarify_parked(ticket):
-        return True
-    _probe_local_lm(ticket)
+    from aiforge_core.tickets.lease import defer, hold_claim, worktree_lock
+    # The claim is renewed for as long as this run lives, so no reaper can
+    # requeue it mid-run; siblings sharing the root's worktree take turns.
+    root = _root_identifier(ticket)
+    with hold_claim(ticket.id), worktree_lock(root) as held:
+        if not held:
+            log.info("ticket=%s deferred: worktree %s is in use by another run",
+                     ticket.identifier, root)
+            defer(ticket.id, reason=f"worktree {root} in use by another run")
+            return True
+        _run_claimed_ticket(ticket)
+    return True
 
-    worktree, prior_env = _setup_ticket_workspace(ticket)
-    if not worktree:
-        tickets_mod.update_status(ticket.id, "blocked", role="adk_runner",
-                                  metadata_patch=_no_repo_metadata(ticket))
-        _restore_env(prior_env)
-        return True
-    _prepare_worktree(ticket, worktree)
+
+def _root_identifier(ticket) -> str:
     try:
+        from aiforge_core.runtime.workspace import _root_ticket
+        return _root_ticket(ticket).identifier
+    except Exception:  # noqa: BLE001
+        return ticket.identifier
+
+
+def _run_claimed_ticket(ticket) -> None:
+    """Everything after the claim, inside ONE try: a failure in workspace setup
+    or preparation used to escape it and strand the ticket in_progress until
+    the lease lapsed — and then loop back through a reclaim."""
+    prior_env = None
+    try:
+        if _clarify_parked(ticket):
+            return
+        _probe_local_lm(ticket)
+        worktree, prior_env = _setup_ticket_workspace(ticket)
+        if not worktree:
+            tickets_mod.update_status(ticket.id, "blocked", role="adk_runner",
+                                      metadata_patch=_no_repo_metadata(ticket))
+            return
+        _prepare_worktree(ticket, worktree)
         _run_ticket(ticket, worktree)
     except Exception as exc:  # noqa: BLE001 — a ticket must never kill the runner
         _log_run_failure(ticket, exc)
@@ -638,14 +663,17 @@ def _process_one_ticket() -> bool:
             tickets_mod.update_status(
                 ticket.id, "blocked", role="adk_runner",
                 metadata_patch={"error": str(exc)[:500], **rescue_meta})
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc2:  # noqa: BLE001
+            # Not silent: a ticket left in_progress here is reaped, and after
+            # AIFORGE_TICKET_MAX_RECLAIMS it is blocked — say why in the log.
+            log.error("ticket=%s: could not mark blocked after a failed run: %s",
+                      ticket.identifier, exc2)
     finally:
         # Always clear the per-ticket override so the next claim builds against
         # the operator's profile, not the previous ticket's forced provider.
         set_force_provider(None)
-        _restore_env(prior_env)
-    return True
+        if prior_env is not None:
+            _restore_env(prior_env)
 
 
 def main() -> int:

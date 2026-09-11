@@ -250,8 +250,24 @@ def _fire_agent(job: dict) -> bool:
             with _RUNNING_LOCK:
                 _RUNNING.discard(job["id"])
 
+    # A slow run must not overlap its own next firing: both would work in the
+    # same job workspace. This firing's slot is already consumed, so it is
+    # skipped (and said so on the job) rather than queued.
     with _RUNNING_LOCK:
-        _RUNNING.add(job["id"])
+        if job["id"] in _RUNNING:
+            busy = True
+        else:
+            busy = False
+            _RUNNING.add(job["id"])
+    if busy:
+        log.info("jobs.fire_agent skipped job=%s: previous run still running",
+                 job["id"])
+        try:
+            store.update(job["id"], last_error="skipped: the previous run was "
+                                               "still running at this firing")
+        except Exception:  # noqa: BLE001
+            pass
+        return False
     try:
         _t.Thread(target=_run, name=f"jobs-agent-{job['id']}", daemon=True).start()
     except Exception:  # noqa: BLE001 — a thread that never started is not running

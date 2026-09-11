@@ -35,7 +35,7 @@ def test_every_documented_operation_is_named_in_the_protocol():
                "set_status", "delete_ticket", "reset_all_tickets",
                "set_route", "set_branch", "append_body", "insert_event",
                "fetch_events", "list_tickets", "get_enriched",
-               "fetch_children", "search_title"):
+               "fetch_children", "search_title", "renew_claim", "claim_ticket"):
         assert op in declared, f"{op} is not declared on StoreBackend"
 
 

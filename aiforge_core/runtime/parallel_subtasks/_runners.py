@@ -4,6 +4,7 @@ Split from ``parallel_subtasks.py`` (mechanical move, behaviour identical)."""
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import json
 import logging
 import os
@@ -519,9 +520,24 @@ def run_subtasks_parallel(ticket, *, run_one=None) -> dict:
         if tid in _INFLIGHT:
             return {"ok": False, "error": "already running for this ticket"}
         _INFLIGHT.add(tid)
-    # Move the ticket into the working state so its lifecycle status reflects
-    # the run (todo → in_progress → done/blocked).
-    _set_status(_store, tid, "in_progress")
+    # Claim it ATOMICALLY (todo/blocked/… → in_progress): the in-process
+    # _INFLIGHT guard above does not stop the runner PROCESS from claiming the
+    # same ticket, and a bare status flip left no claim for the reaper to see
+    # renewed — it requeued the live run.
+    if _store.claim_ticket(tid) is None:
+        with _INFLIGHT_LOCK:
+            _INFLIGHT.discard(tid)
+        return {"ok": False, "error": "already running (claimed by another run)"}
+    from aiforge_core.tickets.lease import hold_claim, worktree_lock
+    _stack = contextlib.ExitStack()
+    _stack.enter_context(hold_claim(tid))
+    _root = _root_identifier_of(ticket)
+    if not _stack.enter_context(worktree_lock(_root)):
+        _stack.close()
+        _set_status(_store, tid, "todo")
+        with _INFLIGHT_LOCK:
+            _INFLIGHT.discard(tid)
+        return {"ok": False, "error": f"worktree {_root} is in use by another run"}
     try:
         wt, base_branch = _run_workspace(ticket, tid)
         # NOTE: we do NOT touch the process-global AIFORGE_CURRENT_TICKET here.
@@ -545,8 +561,17 @@ def run_subtasks_parallel(ticket, *, run_one=None) -> dict:
         _set_status(_store, tid, "blocked")
         raise
     finally:
+        _stack.close()
         with _INFLIGHT_LOCK:
             _INFLIGHT.discard(tid)
+
+
+def _root_identifier_of(ticket) -> str:
+    try:
+        from aiforge_core.runtime.workspace import _root_ticket
+        return _root_ticket(ticket).identifier
+    except Exception:  # noqa: BLE001
+        return str(getattr(ticket, "identifier", ticket))
 
 
 # ---- cross-group names (bottom import = cycle-safe; all defs above are set) ----

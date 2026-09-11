@@ -264,20 +264,57 @@ def reap_stale_in_progress(max_age_s: int | None = None) -> list[int]:
     Meant to run at runner startup, before claiming. Returns the reset ids.
     """
     if max_age_s is None:
-        try:
-            max_age_s = int(os.environ.get("AIFORGE_TICKET_LEASE_S", "3600"))
-        except ValueError:
-            max_age_s = 3600
-    ids = get_backend().reap_stale_in_progress(max_age_s)
+        max_age_s = lease_seconds()
+    ids = get_backend().reap_stale_in_progress(max_age_s, max_reclaims())
     for tid in ids:
         try:
+            row = get_backend().fetch_ticket(tid) or {}
+            status = row.get("status") or "todo"
             get_backend().insert_event(
-                tid, "graph_runner", "status_change", "todo",
-                {"reaped": True, "reason": "stale in_progress lease expired"},
+                tid, "graph_runner", "status_change", status,
+                {"reaped": True, "reason": (
+                    "stale in_progress lease expired" if status == "todo"
+                    else "reclaimed too many times — blocked")},
             )
         except Exception:  # noqa: BLE001 — event write is best-effort
             pass
     return ids
+
+
+def lease_seconds() -> int:
+    """How long a claim lives without a heartbeat (``AIFORGE_TICKET_LEASE_S``,
+    default 3600). A live run renews it (tickets.lease.hold_claim), so this only
+    bounds how long a CRASHED run's ticket waits before it is requeued."""
+    try:
+        return max(60, int(os.environ.get("AIFORGE_TICKET_LEASE_S", "3600")))
+    except ValueError:
+        return 3600
+
+
+def max_reclaims() -> int:
+    """Reclaims before a ticket is blocked instead of requeued
+    (``AIFORGE_TICKET_MAX_RECLAIMS``, default 3)."""
+    try:
+        return max(0, int(os.environ.get("AIFORGE_TICKET_MAX_RECLAIMS", "3")))
+    except ValueError:
+        return 3
+
+
+def renew_claim(ticket_id: int) -> bool:
+    """Heartbeat for a ticket this process is running (see tickets.lease)."""
+    return get_backend().renew_claim(ticket_id)
+
+
+def claim_ticket(ticket_id: int) -> "Ticket | None":
+    """Atomically claim ONE specific ticket unless it is already running —
+    for operator-started runs (run-parallel), so they can never race the
+    runner onto the same ticket. None when it is already ``in_progress``."""
+    row = get_backend().claim_ticket(ticket_id)
+    if row is None:
+        return None
+    get_backend().insert_event(row["id"], "graph_runner", "status_change",
+                               "in_progress", {"claimed": "operator run"})
+    return Ticket.from_row(row)
 
 
 def update_status(ticket_id: int, status: str, *, role: str | None = None,

@@ -644,9 +644,10 @@ def test_any_other_value_keeps_the_cheap_runner(monkeypatch):
 
 
 @pytest.fixture
-def parallel(monkeypatch):
+def parallel(monkeypatch, tmp_path):
     """The whole entry point's collaborators: subtask store, ticket store,
     workspace and the orchestrator."""
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))   # worktree lock files
     import aiforge_core.runtime.parallel_subtasks as pkg
     from aiforge_core.tickets import store as tstore
     from aiforge_core.tickets import subtasks as st
@@ -661,6 +662,13 @@ def parallel(monkeypatch):
     monkeypatch.setattr(tstore, "update_status",
                         lambda tid, status, role=None:
                         seen["statuses"].append(status))
+    # the run CLAIMS the ticket atomically (todo → in_progress) rather than
+    # flipping its status; None = someone else already runs it
+    seen["claimable"] = True
+    monkeypatch.setattr(tstore, "claim_ticket",
+                        lambda tid: (seen["statuses"].append("in_progress")
+                                     or pytypes.SimpleNamespace(id=tid))
+                        if seen["claimable"] else None)
     monkeypatch.setattr(R, "_run_workspace", lambda t, tid: ("/wt", "main"))
     monkeypatch.setattr(R, "_emit",
                         lambda *a: seen["emits"].append(a))
@@ -689,6 +697,15 @@ def test_the_ticket_is_fanned_out_and_closed_out(parallel):
     assert parallel["wt"] == "/wt"
     assert parallel["base"] == "main"
     assert parallel["count"] == 2
+
+
+def test_a_ticket_another_run_already_claimed_is_not_run(parallel):
+    """The runner PROCESS may hold it — the in-process guard cannot see that."""
+    parallel["claimable"] = False
+    agg = R.run_subtasks_parallel(_ticket())
+    assert agg["ok"] is False and "already running" in agg["error"]
+    assert "count" not in parallel                    # nothing was fanned out
+    assert 7 not in R._INFLIGHT                       # and the guard is released
 
 
 def test_a_failed_run_blocks_the_ticket(parallel):

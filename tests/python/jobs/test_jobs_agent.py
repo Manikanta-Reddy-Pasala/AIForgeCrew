@@ -82,3 +82,30 @@ def test_fire_dispatches_agent_kind(monkeypatch):
     # fire advances the schedule then dispatches by kind
     assert scheduler.fire(job, now=NOW) is True
     assert called.get("id") == job["id"]
+
+
+def test_a_firing_while_the_previous_run_is_still_going_is_skipped(monkeypatch):
+    """Both runs would work in the same job workspace. The slot is already
+    consumed by the time this runs, so the overlapping firing is skipped and
+    says so on the job — it is not queued for later."""
+    import threading
+    release = threading.Event()
+    calls = []
+
+    def slow_run_chat_agent(messages, *, cwd, role, session_id):
+        calls.append(1)
+        release.wait(5)
+        yield {"type": "message", "text": "done"}
+
+    monkeypatch.setattr("aiforge_core.runtime.chat_agent.run_chat_agent",
+                        slow_run_chat_agent)
+    job = _make_agent_job()
+    assert scheduler._fire_agent(job) is True
+    assert _wait_until(lambda: calls)                 # first run is in flight
+    assert scheduler._fire_agent(job) is False         # overlap refused
+    assert "still running" in (store.get(job["id"]).get("last_error") or "")
+    assert len(calls) == 1
+    release.set()
+    assert _wait_until(lambda: not scheduler.is_running(job["id"]))
+    assert scheduler._fire_agent(job) is True          # free again afterwards
+    release.set()

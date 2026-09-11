@@ -190,7 +190,10 @@ class SqliteBackend:
         return _row_to_dict(r) if r else None
 
     def claim_oldest(self, excluded_projects) -> "dict | None":
-        sql = "SELECT * FROM tickets WHERE status = 'todo' "
+        # A deferred ticket (tickets.lease.defer) is skipped until retry_after.
+        sql = ("SELECT * FROM tickets WHERE status = 'todo' "
+               "AND (json_extract(metadata, '$.retry_after') IS NULL "
+               f"OR json_extract(metadata, '$.retry_after') <= {_NOW}) ")
         params: list = []
         if excluded_projects:
             ph = ",".join("?" for _ in excluded_projects)
@@ -229,7 +232,25 @@ class SqliteBackend:
                 # next SELECT skips it (no longer 'todo'). Try again.
             return None
 
-    def reap_stale_in_progress(self, max_age_s) -> list[int]:
+    def renew_claim(self, ticket_id) -> bool:
+        with _LOCK, self._conn() as c:
+            upd = c.execute(
+                f"UPDATE tickets SET claimed_at={_NOW} "
+                "WHERE id=? AND status='in_progress'", (ticket_id,))
+            return bool(upd.rowcount and upd.rowcount > 0)
+
+    def claim_ticket(self, ticket_id) -> "dict | None":
+        with _LOCK, self._conn() as c:
+            upd = c.execute(
+                f"UPDATE tickets SET status='in_progress', updated_at={_NOW}, "
+                f"claimed_at={_NOW} WHERE id=? AND status != 'in_progress'",
+                (ticket_id,))
+            if not (upd.rowcount and upd.rowcount > 0):
+                return None
+            r = c.execute(_SELECT_FROM_TICKETS_WHERE_ID, (ticket_id,)).fetchone()
+            return _row_to_dict(r) if r else None
+
+    def reap_stale_in_progress(self, max_age_s, max_reclaims=None) -> list[int]:
         """Reset ``in_progress`` rows whose claim is older than the lease back
         to ``todo`` (a hard-crashed / OOM-killed / redeployed runner never
         clears its own claim, and re-claim only selects ``todo``). Bumps
@@ -249,11 +270,19 @@ class SqliteBackend:
             for r in rows:
                 md = json.loads(r["metadata"] or "{}")
                 md["reclaim_count"] = int(md.get("reclaim_count") or 0) + 1
+                # A ticket whose run keeps dying (it crashes / OOMs the runner)
+                # would otherwise be requeued forever.
+                new = "todo"
+                if max_reclaims is not None and md["reclaim_count"] > max_reclaims:
+                    new = "blocked"
+                    md["blocked_reason"] = (
+                        f"reclaimed {md['reclaim_count']} times — its run keeps "
+                        "dying without finishing; needs a look before re-queueing")
                 upd = c.execute(
-                    f"UPDATE tickets SET status='todo', metadata=?, "
+                    f"UPDATE tickets SET status=?, metadata=?, "
                     f"updated_at={_NOW}, claimed_at=NULL "
                     "WHERE id=? AND status='in_progress'",
-                    (json.dumps(md), r["id"]),
+                    (new, json.dumps(md), r["id"]),
                 )
                 if upd.rowcount and upd.rowcount > 0:
                     reset.append(int(r["id"]))
