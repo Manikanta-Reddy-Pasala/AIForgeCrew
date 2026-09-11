@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { j } from '../api/core';
+import { AuthedEventSource } from '../api/stream';
 
 type CtxSkill = { name: string; why?: string };
 type CtxRule = { name: string; source?: string };
@@ -112,22 +113,21 @@ export default function WorkflowGraph() {
     setErr(null);
     const qs = ticket ? `?ticket=${encodeURIComponent(ticket)}` : '';
     const url = `/api/workflow/stream${qs}`;
-    let es: EventSource | null = null;
+    let es: AuthedEventSource | null = null;
     let cancelled = false;
     // The SSE stream's fallback. It used to be a bare fetch with no status
     // check: a 401 or a 500 returns a JSON error BODY, which parses fine and
     // became the topology — then `topo.edges.forEach` threw during render and
     // the view died, with `.catch` never firing because nothing rejected.
-    // EventSource cannot send an Authorization header, so a UI opened from
-    // another host (see api/core.ts) 401s here every time. Going through `j`
-    // turns a non-2xx into a throw, which the error state already handles.
+    // Going through `j` turns a non-2xx into a throw, which the error state
+    // already handles.
     const loadFallback = () => {
       j<any>(`/workflow/topology${qs}`)
         .then(d => { if (!cancelled && d && Array.isArray(d.nodes)) setTopo(d); })
         .catch(e => !cancelled && setErr(String(e)));
     };
     try {
-      es = new EventSource(url);
+      es = new AuthedEventSource(url);
       es.onmessage = (ev) => {
         try {
           const d = JSON.parse(ev.data);

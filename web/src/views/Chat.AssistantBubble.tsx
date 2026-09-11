@@ -21,6 +21,7 @@ function stepKey(s: AgentStep): string {
     }
     case 'thought': return `thought:${s.role ?? ''}:${s.text}`;
     case 'error': return `error:${s.text}`;
+    case 'message': return `message:${s.role ?? ''}:${s.text}`;
     case 'changes': return `changes:${s.files.map(f => f.path).join(',')}`;
   }
 }

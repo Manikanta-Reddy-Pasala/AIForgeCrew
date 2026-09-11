@@ -93,7 +93,8 @@ def test_a_deferred_ticket_is_skipped_until_its_retry_after(store):
     assert first.id == a.id
     lease.defer(a.id, seconds=60, reason="worktree busy")
     nxt = store.claim_next_any()
-    assert nxt is not None and nxt.id == b.id            # not starved behind a
+    assert nxt is not None            # not starved behind a
+    assert nxt.id == b.id
 
 
 def test_the_worktree_lock_admits_one_run_at_a_time(tmp_path, monkeypatch):

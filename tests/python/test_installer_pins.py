@@ -26,13 +26,15 @@ INST = REPO / "installer"
 
 def test_the_payload_exports_the_lock_pins():
     src = (INST / "build_payload.sh").read_text()
-    assert "uv export --frozen" in src and "--no-emit-local" in src
+    assert "uv export --frozen" in src
+    assert "--no-emit-local" in src
     assert 'lock-pins.txt' in src
 
 
 def test_the_shipped_uv_is_the_locked_wheel_from_the_index():
     src = (INST / "build_payload.sh").read_text()
-    assert 'pip download' in src and '"uv==$ver"' in src
+    assert 'pip download' in src
+    assert '"uv==$ver"' in src
     assert "curl" not in _code(INST / "build_payload.sh")
 
 

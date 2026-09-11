@@ -7,6 +7,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { j } from '../api/core';
+import { AuthedEventSource } from '../api/stream';
 
 type Msg = { role?: string; content?: string };
 type LlmCall = {
@@ -45,7 +46,7 @@ export default function LlmTrace() {
   // Optional live tail.
   useEffect(() => {
     if (!id || !follow) return;
-    const es = new EventSource(`/api/llm-trace/${id}/stream`);
+    const es = new AuthedEventSource(`/api/llm-trace/${id}/stream`);
     es.onmessage = e => {
       try {
         const d = JSON.parse(e.data);

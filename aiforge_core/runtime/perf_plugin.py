@@ -42,9 +42,9 @@ class PerfPlugin(BasePlugin):
         return None
 
     async def on_model_error_callback(self, *, callback_context, llm_request, error):  # noqa: ANN001
-        self._stop(self._model_key(callback_context), "LLM",
-                   getattr(callback_context, "agent_name", "") or "agent")
-        return None
+        # A failed call still took the time: recorded like a finished one.
+        return await self.after_model_callback(callback_context=callback_context,
+                                               llm_response=None)
 
     # ── tool calls: keyed by the function call id ────────────────────────
     @staticmethod
@@ -60,5 +60,5 @@ class PerfPlugin(BasePlugin):
         return None
 
     async def on_tool_error_callback(self, *, tool, tool_args, tool_context, error):  # noqa: ANN001
-        self._stop(self._tool_key(tool_context), "Tool", getattr(tool, "name", "tool"))
-        return None
+        return await self.after_tool_callback(tool=tool, tool_args=tool_args,
+                                              tool_context=tool_context, result=None)

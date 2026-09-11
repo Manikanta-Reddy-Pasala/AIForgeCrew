@@ -43,7 +43,8 @@ def test_teardown_reaches_every_keyed_resource(monkeypatch):
     monkeypatch.setattr(browser, "destroy_context", lambda rid: killed.append(("browser", rid)))
     monkeypatch.setattr(ipython_kernel, "destroy_kernel", lambda rid: killed.append(("ipython", rid)))
     run_resources.destroy_run_resources("run-A")
-    assert ("bash", "run-A") in killed and ("browser", "run-A") in killed
+    assert ("bash", "run-A") in killed
+    assert ("browser", "run-A") in killed
     assert ("ipython", "run-A") in killed
 
 
@@ -70,9 +71,11 @@ def test_a_stalled_team_run_is_stopped_at_its_deadline(monkeypatch):
     monkeypatch.setattr(cp, "_drive_run_events", _stuck)
     q: queue.Queue = queue.Queue()
     out = asyncio.run(cp._events_under_deadline(_Agen(), None, q, 1, None, []))
-    assert out is None and closed.get("yes")
+    assert out is None
+    assert closed.get("yes")
     events = [q.get_nowait() for _ in range(q.qsize())]
-    assert events[0]["type"] == "error" and "deadline" in events[0]["text"]
+    assert events[0]["type"] == "error"
+    assert "deadline" in events[0]["text"]
     assert events[1] == {"type": "stopped", "reason": "deadline"}
 
 
@@ -87,7 +90,8 @@ def test_team_chat_uses_the_context_filter():
     pytest.importorskip("google.adk.plugins.context_filter_plugin")
     from aiforge_core.runtime import chat_pipeline as cp
     names = [type(p).__name__ for p in cp._team_plugins()]
-    assert "ContextFilterPlugin" in names and "PhantomToolGuardPlugin" in names
+    assert "ContextFilterPlugin" in names
+    assert "PhantomToolGuardPlugin" in names
 
 
 # ── delegate_to_agent builds the role it is asked for ──────────────────────
@@ -102,4 +106,5 @@ def test_every_delegable_role_builds(role):
 
 def test_unknown_roles_build_nothing():
     from aiforge_core.runtime.pipeline import build_role_agent
-    assert build_role_agent("doer") is None and build_role_agent("") is None
+    assert build_role_agent("doer") is None
+    assert build_role_agent("") is None

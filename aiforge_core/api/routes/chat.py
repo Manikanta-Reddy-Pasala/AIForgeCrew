@@ -121,10 +121,15 @@ class _ChatAgentBody(BaseModel):
         "builder that ends by calling the matching finalize tool)")
 
 
+def _request_repo_root() -> "str | None":
+    from aiforge_core.runtime import request_context
+    return request_context.get_repo_root()
+
+
 def _default_cwd() -> str:
     return (
         os.environ.get("AIFORGE_WORKSPACE_DIR")
-        or os.environ.get("AIFORGE_REPO_ROOT")
+        or _request_repo_root()
         or os.getcwd()
     )
 

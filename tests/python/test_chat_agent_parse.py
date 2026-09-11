@@ -83,19 +83,22 @@ def test_prose_mentioning_action_is_not_dispatched(prose):
 
 def test_protocol_action_line_still_dispatches():
     step = ca._parse('THOUGHT: read it\nACTION: file_read\nARGS_JSON: {"path": "a.py"}')
-    assert step["kind"] == "action" and step["tool"] == "file_read"
+    assert step["kind"] == "action"
+    assert step["tool"] == "file_read"
     assert step["args"] == {"path": "a.py"}
 
 
 def test_inline_registered_tool_still_dispatches():
     step = ca._parse('I will read it. ACTION: file_read ARGS_JSON: {"path": "a.py"}')
-    assert step["kind"] == "action" and step["tool"] == "file_read"
+    assert step["kind"] == "action"
+    assert step["tool"] == "file_read"
 
 
 def test_a_deliberate_call_to_a_missing_tool_still_dispatches():
     """So the model is told the tool does not exist (e.g. web_search)."""
     step = ca._parse('ACTION: web_search\nARGS_JSON: {"q": "x"}')
-    assert step["kind"] == "action" and step["tool"] == "web_search"
+    assert step["kind"] == "action"
+    assert step["tool"] == "web_search"
 
 
 def test_tool_names_with_digits_are_not_cut():

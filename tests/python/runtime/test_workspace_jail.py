@@ -300,6 +300,48 @@ def test_deleting_chats_drops_their_grants(monkeypatch, tmp_path):
     g.grant(1, ["/a"])
     g.grant(2, ["/b"])
     g.forget(1)
-    assert g.granted(1) == [] and g.granted(2) == ["/b"]
+    assert g.granted(1) == []
+    assert g.granted(2) == ["/b"]
     g.forget_all()
     assert g.granted(2) == []
+
+
+def test_a_shell_write_outside_asks_too(monkeypatch, tmp_path):
+    """run_command with `cat > /elsewhere` was the agent's way around a refused
+    file_write; in a chat it now gets the same Allow prompt."""
+    import types
+
+    from aiforge_core.runtime import chat_approve, shell_writes
+    from aiforge_core.runtime.chat_agent import _loop
+    monkeypatch.setenv("AIFORGE_CHAT_WORKSPACE_JAIL", "1")
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setattr(shell_writes, "_temp_roots", lambda: ())  # tmp_path is /tmp
+    monkeypatch.setattr(chat_approve, "request", lambda sid: 3)
+    monkeypatch.setattr(chat_approve, "wait", lambda sid: {"decision": "reject"})
+    ws = tmp_path / "session-1"
+    ws.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    st = types.SimpleNamespace(convo=[], user_roots=[], session_id=5)
+    events, ret = _drive(_loop._pre_tool_checks(
+        st, "run_command", {"cmd": f"cat > {other}/x.py <<'EOF'\nx\nEOF"},
+        str(ws), None))
+    assert events[0]["type"] == "approval"
+    assert events[0]["grant_roots"] == [os.path.realpath(other)]
+    assert ret == "return"
+
+
+def test_an_unattended_shell_write_is_left_alone(monkeypatch, tmp_path):
+    """Unattended runs are fenced by their worktree and scope allowlist; the
+    shell reading is a chat-only prompt, so it never blocks a ticket's build."""
+    import types
+
+    from aiforge_core.runtime.chat_agent import _loop
+    monkeypatch.setenv("AIFORGE_CHAT_WORKSPACE_JAIL", "1")
+    ws = tmp_path / "wt"
+    ws.mkdir()
+    st = types.SimpleNamespace(convo=[], user_roots=[])
+    events, ret = _drive(_loop._pre_tool_checks(
+        st, "run_command", {"cmd": "mkdir -p /srv/cache/x"}, str(ws), None))
+    assert events == []
+    assert ret is None

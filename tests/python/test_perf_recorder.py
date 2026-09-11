@@ -174,7 +174,8 @@ def test_snapshot_only_counts_the_window(tmp_path):
         {"family": "LLM", "name": "doer", "ms": 100.0, "ts": now - 60},
     ])
     snap = perf_recorder.snapshot(86400)
-    assert snap["samples"] == 1 and snap["rows"][0]["max_ms"] == 100.0
+    assert snap["samples"] == 1
+    assert snap["rows"][0]["max_ms"] == 100.0
     assert perf_recorder.snapshot(0)["samples"] == 2          # 0 = everything
 
 
@@ -182,8 +183,10 @@ def test_rows_carry_avg_and_p95(tmp_path):
     for ms in range(1, 101):
         perf_recorder.record("Tool", "grep", float(ms))
     row = perf_recorder.snapshot()["rows"][0]
-    assert row["count"] == 100 and row["avg_ms"] == 50.5
-    assert row["p95_ms"] == 95.0 and row["max_ms"] == 100.0
+    assert row["count"] == 100
+    assert row["avg_ms"] == 50.5
+    assert row["p95_ms"] == 95.0
+    assert row["max_ms"] == 100.0
 
 
 def test_trim_drops_samples_past_retention_not_a_line_count(tmp_path, monkeypatch):

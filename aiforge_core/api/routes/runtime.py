@@ -9,6 +9,7 @@ their inline function-local imports; env writes go through the shared
 from __future__ import annotations
 
 import os
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -310,7 +311,8 @@ def llm_settings_set(body: _RuntimeSettingsBody) -> dict:
 
 
 @router.get("/api/runtime/perf")
-def runtime_perf(window_s: int = Query(86400, ge=0, le=30 * 86400)) -> dict:
+def runtime_perf(
+        window_s: Annotated[int, Query(ge=0, le=30 * 86400)] = 86400) -> dict:
     """Per-step perf snapshot of the last ``window_s`` seconds (0 = every
     sample kept), backed by the ndjson perf recorder.
 

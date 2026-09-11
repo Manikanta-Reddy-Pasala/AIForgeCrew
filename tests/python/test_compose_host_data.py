@@ -30,7 +30,8 @@ def test_the_only_host_folder_is_aiforge():
 
 def test_the_host_filesystem_is_not_mounted():
     vols = " ".join(_svc()["volumes"])
-    assert ":/host" not in vols and "AIFORGE_HOST_ROOT" not in vols
+    assert ":/host" not in vols
+    assert "AIFORGE_HOST_ROOT" not in vols
 
 
 def test_the_named_volume_holds_only_reinstallable_state():

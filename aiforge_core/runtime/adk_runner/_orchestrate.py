@@ -640,12 +640,49 @@ def _root_identifier(ticket) -> str:
         return ticket.identifier
 
 
+def _run_workflow_ticket(ticket) -> None:
+    """A ticket routed to a named workflow (route='workflow') runs THAT
+    workflow's handler — not the code pipeline. The route was stored, shown in
+    the UI and validated on save, but nothing ever called
+    ``workflows.dispatch``: a Tally trial-balance ticket went through the LLM
+    code cascade in a repo worktree instead of its deterministic handler.
+
+    The handler returns a doer-outcome dict. Its report (``udiff`` is the
+    Markdown for a report workflow) lands as a comment; material problems block
+    the ticket, a clean run completes it. An unknown workflow id raises, and
+    the caller blocks the ticket with the error."""
+    import dataclasses
+
+    from aiforge_core import workflows
+    wf = ticket.route_workflow or ""
+    log.info("ticket=%s route=workflow workflow=%s", ticket.identifier, wf)
+    out = workflows.dispatch(wf, dataclasses.asdict(ticket), log=log) or {}
+    report = str(out.get("udiff") or "")
+    if report:
+        tickets_mod.add_comment(ticket.id, "workflow", report[:60000],
+                                {"workflow": wf, "target": out.get("target")})
+    problems = list(out.get("problems") or [])[:20]
+    blocked = bool(out.get("blocked_by_detectors"))
+    patch = {"workflow": wf, "workflow_target": out.get("target"),
+             "workflow_problems": problems}
+    if blocked:
+        patch["blocked_reason"] = ("; ".join(
+            f"{p.get('mode', 'problem')}: {p.get('evidence', '')}"[:300]
+            for p in problems if isinstance(p, dict))
+            or "the workflow reported material gaps")
+    tickets_mod.update_status(ticket.id, "blocked" if blocked else "done",
+                              role="workflow", metadata_patch=patch)
+
+
 def _run_claimed_ticket(ticket) -> None:
     """Everything after the claim, inside ONE try: a failure in workspace setup
     or preparation used to escape it and strand the ticket in_progress until
     the lease lapsed — and then loop back through a reclaim."""
     prior_env = None
     try:
+        if getattr(ticket, "route", "code") == "workflow":
+            _run_workflow_ticket(ticket)       # deterministic: no brief, no repo
+            return
         if _clarify_parked(ticket):
             return
         _probe_local_lm(ticket)

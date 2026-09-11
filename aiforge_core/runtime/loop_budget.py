@@ -95,15 +95,13 @@ def _coerce_doer_outcome(value: Any) -> dict | None:
 
 
 def _repo_root_for_loc() -> str:
-    """The repo to measure — AIFORGE_REPO_ROOT, else the request context's. ""
-    when neither resolves to a real directory."""
-    root = (os.environ.get("AIFORGE_REPO_ROOT") or "").strip()
-    if not root:
-        try:
-            from aiforge_core.runtime import request_context
-            root = request_context.get_repo_root() or ""
-        except Exception:  # noqa: BLE001
-            root = ""
+    """The repo to measure — this run's repo root (request context, then
+    AIFORGE_REPO_ROOT). "" when it does not resolve to a real directory."""
+    try:
+        from aiforge_core.runtime import request_context
+        root = (request_context.get_repo_root() or "").strip()
+    except Exception:  # noqa: BLE001
+        root = ""
     return root if root and os.path.isdir(root) else ""
 
 

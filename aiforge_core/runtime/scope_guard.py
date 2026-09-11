@@ -289,7 +289,7 @@ def user_named_roots(texts) -> list[str]:
 
 
 def outside_workspace(tool_name: str, args: dict, cwd: str | None,
-                      extra_roots=()) -> list[str]:
+                      extra_roots=(), include_shell: bool = False) -> list[str]:
     """The paths ``tool_name`` wants to WRITE that resolve outside ``cwd`` and
     outside every folder in ``extra_roots`` (see :func:`user_named_roots`).
 
@@ -305,7 +305,10 @@ def outside_workspace(tool_name: str, args: dict, cwd: str | None,
     Symlinks are resolved, so a link inside the workspace pointing out is
     blocked too. Soft-fail: any error → [] (never block on a matcher bug).
 
-    Same KNOWN LIMIT as the glob guard above: shell tools are not parsed.
+    ``include_shell`` also reads a shell tool's command for the paths it
+    writes (runtime/shell_writes — best effort; temp dirs never count). Only
+    interactive chats pass it: there the answer is an Allow prompt, while an
+    unattended run is already fenced by its worktree and scope allowlist.
     """
     if not cwd or not workspace_jail_on():
         return []
@@ -316,7 +319,13 @@ def outside_workspace(tool_name: str, args: dict, cwd: str | None,
         return []
     allowed = [root] + [os.path.realpath(r) for r in (extra_roots or ()) if r]
     out: list[str] = []
-    for raw in _path_from_args(tool_name, args or {}):
+    targets = list(_path_from_args(tool_name, args or {}))
+    if include_shell:
+        from . import shell_writes
+        if tool_name in shell_writes.SHELL_TOOLS:
+            targets += shell_writes.shell_write_targets(
+                shell_writes.command_of(args), root)
+    for raw in targets:
         try:
             target = os.path.realpath(os.path.join(root, str(raw)))
         except Exception:  # noqa: BLE001

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
+import { AuthedEventSource } from '../api/stream';
 
 // Trace = live SSE stream of graph-runner log lines filtered by ticket.
 // Each 'Step N' divider opens a new card; subsequent lines (action code,
@@ -23,7 +24,7 @@ export default function Trace() {
 
   useEffect(() => {
     if (!id) return;
-    const es = new EventSource(`/api/trace/${id}/stream`);
+    const es = new AuthedEventSource(`/api/trace/${id}/stream`);
     es.onopen = () => setConnected(true);
     es.onerror = () => setConnected(false);
     es.onmessage = ev => {
@@ -42,8 +43,9 @@ export default function Trace() {
         const durMatch = /Step \d+: Duration ([\d.]+) seconds\| Input tokens: ([\d,]+) \| Output tokens: ([\d,]+)/.exec(line);
         if (durMatch) {
           setSteps(s => {
-            if (s.length === 0) return s;
-            const last = { ...s.at(-1) };
+            const prev = s.at(-1);
+            if (!prev) return s;
+            const last: StepCard = { ...prev };
             last.durationMs = Number.parseFloat(durMatch[1]) * 1000;
             last.tokens = `in=${durMatch[2]} out=${durMatch[3]}`;
             return [...s.slice(0, -1), last];
@@ -52,8 +54,9 @@ export default function Trace() {
         }
         // Regular line — attach to last card (or stray)
         setSteps(s => {
-          if (s.length === 0) return [{ n: 0, started: Date.now(), lines: [line] }];
-          const last = { ...s.at(-1), lines: [...s.at(-1)!.lines, line] };
+          const prev = s.at(-1);
+          if (!prev) return [{ n: 0, started: Date.now(), lines: [line] }];
+          const last: StepCard = { ...prev, lines: [...prev.lines, line] };
           return [...s.slice(0, -1), last];
         });
       } catch { /* ignore */ }

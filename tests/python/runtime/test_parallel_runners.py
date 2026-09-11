@@ -703,7 +703,8 @@ def test_a_ticket_another_run_already_claimed_is_not_run(parallel):
     """The runner PROCESS may hold it — the in-process guard cannot see that."""
     parallel["claimable"] = False
     agg = R.run_subtasks_parallel(_ticket())
-    assert agg["ok"] is False and "already running" in agg["error"]
+    assert agg["ok"] is False
+    assert "already running" in agg["error"]
     assert "count" not in parallel                    # nothing was fanned out
     assert 7 not in R._INFLIGHT                       # and the guard is released
 

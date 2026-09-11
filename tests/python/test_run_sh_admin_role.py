@@ -63,7 +63,8 @@ def test_docker_mode_passes_the_role_flags_into_the_sandbox(tmp_path: Path):
                  "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"})
     assert proc.returncode == 0, proc.stderr
     up = [ln for ln in log.read_text().splitlines() if ln.startswith("compose up")]
-    assert up and "RUN_ARGS=--admin --port 9001" in up[0], log.read_text()
+    assert up, log.read_text()
+    assert "RUN_ARGS=--admin --port 9001" in up[0], log.read_text()
     assert f"UID={os.getuid()}" in up[0]
     assert "AIForge sandbox" in proc.stdout
 
@@ -97,7 +98,8 @@ def test_repos_must_be_a_folder(tmp_path: Path):
     proc = _run(tmp_path, ["--repos", str(tmp_path / "nope")],
                 {"AIFORGE_MODE": "docker",
                  "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"})
-    assert proc.returncode == 1 and "is not a folder" in proc.stderr
+    assert proc.returncode == 1
+    assert "is not a folder" in proc.stderr
 
 
 def test_docker_mode_is_the_default(tmp_path: Path):

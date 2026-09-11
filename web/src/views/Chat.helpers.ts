@@ -82,6 +82,9 @@ export function toAgentStep(raw: any): AgentStep | null {
   if (raw.type === 'tool' || raw.kind === 'tool') {
     return { kind: 'tool', name: raw.name || '', args: raw.args || {}, result: raw.result || {}, role: raw.role };
   }
+  if (raw.type === 'message' || raw.kind === 'message') {
+    return { kind: 'message', text: raw.text || '', role: raw.role };
+  }
   if (raw.type === 'error' || raw.kind === 'error') {
     return { kind: 'error', text: raw.text || '' };
   }

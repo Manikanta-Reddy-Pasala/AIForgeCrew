@@ -5,12 +5,12 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   base: '/ui/',
   plugins: [react()],
-  // React builds a component stack from Function.name, and esbuild mangles
-  // every function name in a production build — so the ErrorBoundary's
-  // "in: …" block would read "at Bs / at As", which is exactly as
-  // unactionable as the bare message it was added to replace. This is the
-  // shipped path (Dockerfile runs `npm run build`; the API serves web/dist).
-  esbuild: { keepNames: true },
+  // React builds a component stack from Function.name, and the minifier
+  // mangles every function name in a production build — so the
+  // ErrorBoundary's "in: …" block would read "at Bs / at As", which is exactly
+  // as unactionable as the bare message it was added to replace. Vite 8
+  // bundles and minifies with rolldown/oxc, so the old `esbuild.keepNames`
+  // was silently ignored; rolldown's own output.keepNames is the switch.
   server: {
     proxy: {
       '/api': {
@@ -25,6 +25,7 @@ export default defineConfig({
     chunkSizeWarningLimit: 900,
     rollupOptions: {
       output: {
+        keepNames: true,
         // Vite 8 bundles with rolldown, which replaced the `manualChunks`
         // object form with `advancedChunks.groups` (it only accepts
         // manualChunks as a FUNCTION, so the old object silently became

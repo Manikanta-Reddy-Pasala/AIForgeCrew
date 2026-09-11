@@ -227,6 +227,11 @@ export function AgentStepRow({ step }: Readonly<{ step: AgentStep }>) {
   if (step.kind === 'thought') {
     return <ThoughtRow step={step} />;
   }
+  if (step.kind === 'message') {
+    // A supplementary report was added to the steps and then rendered by no
+    // branch at all, so it vanished; shown like a thought (long ones fold).
+    return <ThoughtRow step={{ kind: 'thought', text: step.text, role: step.role }} />;
+  }
   if (step.kind === 'tool') {
     return <ToolStepRow step={step} />;
   }

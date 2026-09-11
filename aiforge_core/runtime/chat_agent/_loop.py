@@ -1710,6 +1710,41 @@ def _ask_write_grant(st, name, args, cwd, jailed):
     return None
 
 
+def _workspace_jail(st, name, args, cwd):
+    """Workspace jail (on by default). The session's cwd is otherwise only a
+    DEFAULT: an absolute path in a mutating file tool (or, in a chat, a shell
+    write) lands anywhere, and an off-topic recall must never turn into an edit
+    in a repo the user never brought into this chat. Interactive: ASK the user
+    (one click grants the folder for the rest of this chat). Unattended: refuse
+    without writing. Returns "continue"/"return" to skip the call, else None."""
+    interactive = getattr(st, "session_id", None) is not None
+    try:
+        from aiforge_core.runtime import scope_guard as _sg_jail
+        _roots = list(getattr(st, "user_roots", ()) or ())
+        _jailed = _sg_jail.outside_workspace(
+            name, args or {}, cwd, _roots, include_shell=interactive)
+    except Exception:  # noqa: BLE001 — never break dispatch
+        _jailed, _roots = [], []
+    if not _jailed:
+        return None
+    if interactive:
+        return (yield from _ask_write_grant(st, name, args, cwd, _jailed))
+    _allowed = [cwd] + _roots
+    result = {
+        "ok": False, "error": "outside_workspace",
+        "blocked_paths": _jailed, "allowed_folders": _allowed,
+        "hint": ("Write refused: this unattended run may only write in "
+                 + ", ".join(map(str, _allowed)) + ". Do NOT write there "
+                 "another way (a shell redirect, cp, mv); do the work "
+                 "inside those folders or report that it needs a folder "
+                 "outside them."),
+    }
+    yield {"type": "tool", "name": name, "args": args, "result": result}
+    st.convo.append({"role": "user",
+                     "content": f"OBSERVATION: {json.dumps(result)}"})
+    return "continue"
+
+
 def _pre_tool_checks(st, name, args, cwd, _scope_globs):
     """PreToolUse hook block, workspace jail and autonomous scope-allowlist
     enforcement. Returns "continue"/"return" when the call must not run (a
@@ -1728,36 +1763,9 @@ def _pre_tool_checks(st, name, args, cwd, _scope_globs):
     except Exception:  # noqa: BLE001 — hooks must never break dispatch
         _hook_block = None
 
-    # Workspace jail (on by default). The session's cwd is otherwise only a
-    # DEFAULT: an absolute path in a mutating file tool writes anywhere, and an
-    # off-topic recall must never turn into an edit in a repo the user never
-    # brought into this chat. Interactive: ASK the user (one click grants the
-    # folder for the rest of this chat). Unattended: refuse without writing.
-    try:
-        from aiforge_core.runtime import scope_guard as _sg_jail
-        _roots = list(getattr(st, "user_roots", ()) or ())
-        _jailed = _sg_jail.outside_workspace(name, args or {}, cwd, _roots)
-    except Exception:  # noqa: BLE001 — never break dispatch
-        _jailed, _roots = [], []
-    if _jailed and getattr(st, "session_id", None) is not None:
-        _sig = yield from _ask_write_grant(st, name, args, cwd, _jailed)
-        if _sig is not None:
-            return _sig
-    elif _jailed:
-        _allowed = [cwd] + _roots
-        result = {
-            "ok": False, "error": "outside_workspace",
-            "blocked_paths": _jailed, "allowed_folders": _allowed,
-            "hint": ("Write refused: this unattended run may only write in "
-                     + ", ".join(map(str, _allowed)) + ". Do NOT write there "
-                     "another way (a shell redirect, cp, mv); do the work "
-                     "inside those folders or report that it needs a folder "
-                     "outside them."),
-        }
-        yield {"type": "tool", "name": name, "args": args, "result": result}
-        st.convo.append({"role": "user",
-                         "content": f"OBSERVATION: {json.dumps(result)}"})
-        return "continue"
+    _sig = yield from _workspace_jail(st, name, args, cwd)
+    if _sig is not None:
+        return _sig
 
     # Scope allowlist enforcement (autonomous Doer path). Reject a
     # mutating file tool whose resolved target path is outside the
@@ -1985,6 +1993,27 @@ def _compute_caps(max_steps, session_id):
     return _cap_base, _caller_cap, _unattended, safety, _capped
 
 
+def _writable_roots(messages, session_id) -> list:
+    """Folders this chat may write to beyond its cwd: the ones the user named
+    in their own turns (scope_guard.user_named_roots — `messages` is the real
+    history; recall is injected as system blocks, not here), plus the ones the
+    user allowed when the jail asked (chat_write_grants)."""
+    try:
+        from aiforge_core.runtime import scope_guard as _sg_roots
+        roots = _sg_roots.user_named_roots(
+            _text_of(m).split("\n\n---\n[Interpreted request")[0]
+            for m in (messages or [])
+            if isinstance(m, dict) and (m.get("role") or "user") == "user")
+    except Exception:  # noqa: BLE001 — never break a turn over this
+        roots = []
+    try:
+        from aiforge_core.runtime import chat_write_grants as _grants
+        roots += [r for r in _grants.granted(session_id) if r not in roots]
+    except Exception:  # noqa: BLE001
+        pass
+    return roots
+
+
 def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
                       session_id, mode, scope_globs, builder, strict_finish):
     """Assemble everything the ReAct loop needs (native detection, mode/read-only
@@ -2032,23 +2061,7 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     # with an "[Interpreted request …]" enhancer block; key off the user's RAW
     # words (split that marker off) so recall/skills/mentions aren't diluted by
     # the boilerplate + restatement.
-    # Folders the user named in their own turns: the workspace jail treats
-    # them as consent to write (scope_guard.user_named_roots). `messages` is
-    # the real chat history — recall is injected as system blocks, not here.
-    try:
-        from aiforge_core.runtime import scope_guard as _sg_roots
-        _user_roots = _sg_roots.user_named_roots(
-            _text_of(m).split("\n\n---\n[Interpreted request")[0]
-            for m in (messages or [])
-            if isinstance(m, dict) and (m.get("role") or "user") == "user")
-    except Exception:  # noqa: BLE001 — never break a turn over this
-        _user_roots = []
-    try:
-        from aiforge_core.runtime import chat_write_grants as _grants
-        _user_roots += [r for r in _grants.granted(session_id)
-                        if r not in _user_roots]
-    except Exception:  # noqa: BLE001
-        pass
+    _user_roots = _writable_roots(messages, session_id)
 
     convo, _bundle, _asks, _dropped_playbooks = _build_convo(
         messages, cwd, role, readonly_mode=readonly_mode,

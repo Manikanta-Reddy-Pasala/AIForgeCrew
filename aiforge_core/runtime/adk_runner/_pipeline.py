@@ -223,6 +223,13 @@ def _condensing_filter(tail_trim, strategy: str):
     return _filter
 
 
+def _run_repo_root() -> str:
+    """This run's repo: the request context (team chat sets it per run), then
+    AIFORGE_REPO_ROOT (the ticket runner's worktree)."""
+    from aiforge_core.runtime import request_context
+    return request_context.get_repo_root() or ""
+
+
 def _phantom_tool_guard() -> list:
     """Keep the pipeline alive when a text agent emits a hallucinated
     function_call — ADK would otherwise raise "Tool X not found" and abort the
@@ -473,7 +480,7 @@ def _collect_repo_rules(ticket, scope_seed: list) -> str:
             query = (f"{getattr(ticket, 'title', '') or ''}\n"
                      f"{getattr(ticket, 'body', '') or ''}")
         rules_md, ambiguous = repo_rules.collect_or_ask(
-            os.environ.get("AIFORGE_REPO_ROOT", ""), scope_seed, query)
+            _run_repo_root(), scope_seed, query)
         if ticket is not None:
             _emit_ambiguous_rule_notice(ticket, ambiguous)
         return rules_md
@@ -489,7 +496,7 @@ def _emit_rules_injected(ticket, scope_seed: list) -> None:
         from aiforge_core.runtime import observability as _obs
         from aiforge_core.runtime import repo_rules
         names = repo_rules.matched_names(
-            os.environ.get("AIFORGE_REPO_ROOT", ""), scope_seed)
+            _run_repo_root(), scope_seed)
         tid = getattr(ticket, "id", None)
         if tid is not None and names:
             _obs.emit_context_injected(ticket_id=tid, agent_role="pipeline",
@@ -525,7 +532,7 @@ def _user_prefs_md() -> str:
         pass
     try:
         from aiforge_core.runtime.chat_agent import _preferences_context
-        block = _preferences_context(os.environ.get("AIFORGE_REPO_ROOT") or ".")
+        block = _preferences_context(_run_repo_root() or ".")
         if block:
             parts.append(block)
     except Exception:  # noqa: BLE001

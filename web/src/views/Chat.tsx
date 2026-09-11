@@ -430,7 +430,7 @@ function OrchSelect({ chatMode, orchOptions, orchModel, setOrchModel, chatProvid
 function OverflowMenu({ menuRef, menuOpen, setMenuOpen, chatMode, selectedModel, setModelActive,
                         fullPipeline, toggleFullPipeline, busy, compactionDisabled, toggleCompaction,
                         activeSession, openCheckpoints, killAll, deleteSession }: Readonly<{
-  menuRef: React.RefObject<HTMLDivElement | null>; menuOpen: boolean;
+  menuRef: React.RefObject<HTMLDivElement>; menuOpen: boolean;
   setMenuOpen: React.Dispatch<React.SetStateAction<boolean>>; chatMode: ChatMode;
   selectedModel: string; setModelActive: React.Dispatch<React.SetStateAction<boolean>>;
   fullPipeline: boolean; toggleFullPipeline: (next: boolean) => void; busy: boolean;
@@ -867,7 +867,7 @@ export default function Chat() {
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   // Header overflow menu (secondary session actions).
   const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!menuOpen) return;
     const onDoc = (e: MouseEvent) => {
@@ -1504,7 +1504,7 @@ export default function Chat() {
       const finalElapsed = Math.floor((Date.now() - sendStartRef.current) / 1000);
       setElapsedSec(finalElapsed);
       setLiveTurn(prev => prev ? { ...prev, streaming: false, elapsedSec: finalElapsed } : null);
-      await loadSession(sessionId);
+      if (sessionId != null) await loadSession(sessionId);
       setLiveTurn(null);
       if (isFirstMessage) {
         await loadSessions(true);

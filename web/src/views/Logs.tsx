@@ -18,6 +18,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { logStreamURL } from '../api';
 import { Icon } from '../icons';
 import { clickable } from '../a11y';
+import { AuthedEventSource } from '../api/stream';
 
 const ROLES = [
   'chat', 'adk_runner', 'enhancer', 'architect', 'planner', 'doer',
@@ -87,7 +88,7 @@ export default function Logs() {
   );
 
   const idxRef = useRef(0);
-  const sourcesRef = useRef<Record<Role, EventSource | null>>(
+  const sourcesRef = useRef<Record<Role, AuthedEventSource | null>>(
     Object.fromEntries(ROLES.map(r => [r, null])) as any,
   );
   const boxRef = useRef<HTMLDivElement | null>(null);
@@ -111,7 +112,7 @@ export default function Logs() {
     const targets: Role[] = role === 'ALL' ? [...ROLES] : [role];
 
     targets.forEach(r => {
-      const es = new EventSource(logStreamURL(r));
+      const es = new AuthedEventSource(logStreamURL(r));
       sourcesRef.current[r] = es;
       es.onopen = () => setConnState(s => ({ ...s, [r]: 'open' }));
       es.onerror = () => setConnState(s => ({ ...s, [r]: 'closed' }));

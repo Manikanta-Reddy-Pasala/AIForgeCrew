@@ -53,7 +53,8 @@ def test_the_agent_is_told_to_install_what_it_needs(sandbox, monkeypatch):
     from aiforge_core.runtime.chat_agent import _loop
     monkeypatch.setenv("AIFORGE_REPO_ROOT", "/home/me/.aiforge/repos")
     d = _loop._sandbox_directive(readonly_mode=False)
-    assert "Install ANY tool" in d and "never stop because a tool is missing" in d
+    assert "Install ANY tool" in d
+    assert "never stop because a tool is missing" in d
     assert "/home/me/.aiforge/repos" in d
     assert _loop._sandbox_directive(readonly_mode=True) == ""
 
@@ -67,7 +68,8 @@ def test_no_directive_outside_the_sandbox(monkeypatch):
 def test_the_image_turns_the_sandbox_on():
     import pathlib
     df = (pathlib.Path(__file__).resolve().parents[3] / "Dockerfile").read_text()
-    assert "AIFORGE_SANDBOX=1" in df and "AIFORGE_ALLOW_SUDO_INSTALL=1" in df
+    assert "AIFORGE_SANDBOX=1" in df
+    assert "AIFORGE_ALLOW_SUDO_INSTALL=1" in df
 
 
 @pytest.mark.parametrize("cmd", ["cat ~/.netrc", "head ~/.npmrc", "cp ~/.aiforge/security/netrc /tmp/x"])

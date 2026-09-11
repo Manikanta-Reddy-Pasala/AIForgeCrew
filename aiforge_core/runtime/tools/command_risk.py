@@ -160,19 +160,25 @@ def assess(cmd: str) -> dict:
             return {"level": DANGEROUS, "reason": why}
     if any(delete_guard.is_destructive_delete(f) for f in forms):
         return {"level": DANGEROUS, "reason": "deletes files/data"}
+    return _caution_verdict(forms)
+
+
+def _caution_verdict(forms) -> dict:
+    """The caution tier for a command already cleared of the dangerous one."""
     sandbox = in_sandbox()
     for rx, why in _CAUTION_C:
-        if any(rx.search(f) for f in forms):
-            # ssh escape hatch: with AIFORGE_ALLOW_SSH, a caution-tier ssh
-            # command (the remote runs sudo/systemctl/etc.) runs free. Dangerous
-            # remote commands already returned above, so they still gate.
-            if _ssh_allowed() and any(_SSH_RE.match(f) for f in forms):
-                return {"level": SAFE, "reason": ""}
-            # sandbox: box-local reasons run free; keep scanning, so a command
-            # that is ALSO external (`sudo … && git push`) still asks.
-            if sandbox and why in _BOX_LOCAL:
-                continue
-            return {"level": CAUTION, "reason": why}
+        if not any(rx.search(f) for f in forms):
+            continue
+        # ssh escape hatch: with AIFORGE_ALLOW_SSH, a caution-tier ssh command
+        # (the remote runs sudo/systemctl/etc.) runs free. Dangerous remote
+        # commands already returned in assess(), so they still gate.
+        if _ssh_allowed() and any(_SSH_RE.match(f) for f in forms):
+            return {"level": SAFE, "reason": ""}
+        # sandbox: box-local reasons run free; keep scanning, so a command that
+        # is ALSO external (`sudo … && git push`) still asks.
+        if sandbox and why in _BOX_LOCAL:
+            continue
+        return {"level": CAUTION, "reason": why}
     return {"level": SAFE, "reason": ""}
 
 

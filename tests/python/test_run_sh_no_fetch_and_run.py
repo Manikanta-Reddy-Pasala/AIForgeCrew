@@ -290,7 +290,8 @@ def test_pip_only_ever_bootstraps_uv():
     hits = [i for i, ln in enumerate(lines) if "-m pip install" in ln]
     assert len(hits) == 1, [lines[i] for i in hits]
     # the one package it installs: uv, at the version uv.lock pins
-    assert '"uv${_uvv:+==$_uvv}"' in SRC and '_uvv="$(_lock_version uv)"' in SRC
+    assert '"uv${_uvv:+==$_uvv}"' in SRC
+    assert '_uvv="$(_lock_version uv)"' in SRC
 
 
 def test_python_deps_are_the_locks_versions_from_the_index_as_wheels():
@@ -336,7 +337,8 @@ def test_codegraph_is_pinned_exactly_by_a_committed_lock():
     assert re.fullmatch(r"\d+\.\d+\.\d+", pin), f"not an exact pin: {pin}"
     lock = json.loads((d / "package-lock.json").read_text())["packages"]
     top = lock["node_modules/@colbymchenry/codegraph"]
-    assert top["version"] == pin and top["integrity"].startswith("sha512-")
+    assert top["version"] == pin
+    assert top["integrity"].startswith("sha512-")
     # the native binary is a per-platform optional package; all must be locked
     for plat in ("linux-x64", "linux-arm64", "darwin-arm64", "darwin-x64"):
         assert f"node_modules/@colbymchenry/codegraph-{plat}" in lock, plat
@@ -429,9 +431,12 @@ def test_first_boot_installs_the_lock_and_second_boot_installs_nothing(synced_bo
     r, calls = run()
     assert "AIForge connectivity test" in r.stdout, r.stdout + r.stderr
     exp, deps, local = calls[:3]
-    assert exp.startswith("export --frozen") and "--extra toolchain" in exp, calls
-    assert "--default-index https://localhost" in deps and "--no-build" in deps, deps
-    assert "--override" in deps and "--no-config" in deps, deps
+    assert exp.startswith("export --frozen"), calls
+    assert "--extra toolchain" in exp, calls
+    assert "--default-index https://localhost" in deps, deps
+    assert "--no-build" in deps, deps
+    assert "--override" in deps, deps
+    assert "--no-config" in deps, deps
     assert "--no-deps -e ./packages/aiforge_memory -e ." in local, local
     r, again = run()
     assert again == calls, "an unchanged lock was installed again — boot needs the network"
@@ -451,7 +456,8 @@ def test_an_unresolvable_index_stops_the_install_and_never_goes_public(synced_bo
     pp.write_text(pp.read_text().replace("localhost", "artifactory.invalid"))
     r, calls = run()
     assert r.returncode == 1
-    assert "does not resolve" in r.stderr and "artifactory.invalid" in r.stderr
+    assert "does not resolve" in r.stderr
+    assert "artifactory.invalid" in r.stderr
     assert not calls, calls
     assert "pypi.org" not in r.stdout + r.stderr
 

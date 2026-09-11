@@ -57,6 +57,11 @@ dependencies = [
   "grep-ast>=0.9",
   "tree-sitter-language-pack>=0.13",
   "networkx>=3.2",
+  # networkx's pagerank IS scipy (nx >= 3.0 has no pure-Python path in the
+  # public API). aider-chat used to bring scipy along; with it dropped, a box
+  # whose extras did not happen to pull scipy rendered an EMPTY repo map
+  # ("No module named 'scipy'", logged at info and swallowed).
+  "scipy>=1.13",
   "diskcache>=5.6",
   "pygments>=2.20",
   # Doer runtime tools: execute_ipython_cell (jupyter kernel) + browse

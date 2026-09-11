@@ -415,5 +415,6 @@ def test_the_live_logs_stream_delivers_its_events(client, monkeypatch):
     with client.stream("GET", "/api/logs/chat/stream") as r:
         assert r.status_code == 200
         body = "".join(r.iter_text())
-    assert "data: first" in body and "data: second" in body
+    assert "data: first" in body
+    assert "data: second" in body
     assert closed.get("inner_finally") is True

@@ -148,6 +148,19 @@ def _p95(values: list) -> float:
     return s[min(len(s) - 1, int(round(0.95 * (len(s) - 1))))] if s else 0.0
 
 
+def _parse_sample(raw: str) -> "tuple[tuple[str, str], float, float] | None":
+    """``((family, name), ms, ts)`` for one ndjson line, None when malformed."""
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        rec = json.loads(raw)
+        return ((str(rec.get("family", "Other")), str(rec.get("name", "?"))),
+                float(rec.get("ms", 0.0)), float(rec.get("ts") or 0.0))
+    except Exception:
+        return None
+
+
 def snapshot(window_s: "float | None" = DEFAULT_WINDOW_S) -> dict:
     """Group the samples of the last ``window_s`` seconds (all of them when
     ``window_s`` is 0/None) by (family, name).
@@ -167,19 +180,11 @@ def snapshot(window_s: "float | None" = DEFAULT_WINDOW_S) -> dict:
         oldest = None
         with open(path, "r", encoding="utf-8") as fh:
             for raw in fh:
-                raw = raw.strip()
-                if not raw:
+                sample = _parse_sample(raw)
+                if sample is None or (since is not None and sample[2] < since):
                     continue
-                try:
-                    rec = json.loads(raw)
-                    ms = float(rec.get("ms", 0.0))
-                    ts = float(rec.get("ts") or 0.0)
-                except Exception:
-                    continue
-                if since is not None and ts < since:
-                    continue
+                key, ms, ts = sample
                 oldest = ts if oldest is None else min(oldest, ts)
-                key = (str(rec.get("family", "Other")), str(rec.get("name", "?")))
                 buckets.setdefault(key, []).append(ms)
         rows = []
         for (family, name), vals in buckets.items():

@@ -9,6 +9,8 @@ export type AgentStep =
   | { kind: 'thought'; text: string; role?: string }
   | { kind: 'tool'; name: string; args: object; result: object; role?: string; pending?: boolean; call_id?: number }
   | { kind: 'error'; text: string; role?: string }
+  // A supplementary report (a team member's extra message) shown inline.
+  | { kind: 'message'; text: string; role?: string }
   | { kind: 'changes'; files: ChangeFile[]; summary: { files: number; additions: number; deletions: number } };
 
 // `slug` and `status` are the only fields every producer sets. The label is

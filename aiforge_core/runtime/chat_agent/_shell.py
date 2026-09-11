@@ -12,7 +12,7 @@ _BASH = '.bash'
 
 # Digits too: a tool name like `s3_get` was cut to `s`. See _prompt._credible_action
 # for why a match alone is not yet a tool call.
-_ACTION_RE = re.compile(r"ACTION:\s*([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
+_ACTION_RE = re.compile(r"ACTION:\s*([a-z_]\w*)", re.IGNORECASE | re.ASCII)
 _ARGS_RE = re.compile(r"ARGS_JSON:\s*(\{.*\})", re.IGNORECASE | re.DOTALL)
 _FINAL_RE = re.compile(r"FINAL:\s*(.*)", re.IGNORECASE | re.DOTALL)
 _ASK_RE = re.compile(r"ASK:\s*(.*)", re.IGNORECASE | re.DOTALL)

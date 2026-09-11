@@ -30,6 +30,7 @@ const ROLE_ORDER: AgentRole[] = [
 ];
 
 const ROLE_HINTS: Record<AgentRole, string> = {
+  enhancer:  'Rewrites the ticket into a clear brief before planning.',
   architect: 'External operator session. Drives ticket creation; never edits code.',
   planner:   'Reads parent ticket; emits plan + child subtickets.',
   verifier:  'Plan critic. Single-turn judge BEFORE execution. Reject → re-plan.',
