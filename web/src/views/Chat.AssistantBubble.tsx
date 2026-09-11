@@ -28,6 +28,7 @@ function stepKey(s: AgentStep): string {
 
 export function AssistantBubble({
   text,
+  draft,
   steps,
   streaming,
   elapsedSec,
@@ -38,6 +39,8 @@ export function AssistantBubble({
   onRerunFresh,
 }: Readonly<{
   text: string;
+  /** muted tail of what the model is writing that is not the answer yet */
+  draft?: string;
   steps: AgentStep[];
   streaming: boolean;
   elapsedSec?: number;
@@ -91,6 +94,13 @@ export function AssistantBubble({
       {changeSteps.length > 0 && (
         <div style={{ marginTop: text ? 8 : 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {changeSteps.map((s) => <AgentStepRow key={`chg-${stepKey(s)}`} step={s} />)}
+        </div>
+      )}
+      {streaming && !text && draft && (
+        <div className="xs muted" title="What the model is writing right now"
+             style={{ fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                      opacity: 0.75, maxHeight: '4.5em', overflow: 'hidden', margin: '2px 2px 4px' }}>
+          {draft.replace(/\s+/g, ' ').trim()}
         </div>
       )}
       {streaming && !text && steps.length === 0 && (

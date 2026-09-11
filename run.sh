@@ -27,6 +27,8 @@
 #   --stop | --logs | --shell   stop / follow / open a shell in the sandbox
 #   --repos DIR  mount YOUR projects folder into the sandbox (same path) as its
 #                project root; default ~/.aiforge/repos (or AIFORGE_REPOS_DIR)
+#   --mount DIR  also mount DIR into the sandbox (same path); repeatable, and
+#                remembered in ~/.aiforge/mounts.list — the list Settings edits
 #   --skip-web   don't (re)build the web UI
 #   --test       probe the configured model endpoint, then exit
 #   --admin      this box is THE memory admin (exactly one per fleet); it
@@ -221,6 +223,7 @@ SKIP_WEB=0
 TEST=0
 MODE="${AIFORGE_MODE:-docker}"          # docker (default) | native
 DOCKER_ACTION=up
+_MOUNT_ARGS=()
 _ORIG_ARGS=("$@")
 WITH_GRAPHIFY=0
 WITH_LANGFUSE="${AIFORGE_LANGFUSE:-0}"
@@ -232,6 +235,7 @@ while [[ $# -gt 0 ]]; do
     --logs) DOCKER_ACTION=logs ;;
     --shell) DOCKER_ACTION=shell ;;
     --repos) AIFORGE_REPOS_DIR="${2:-}"; shift ;;
+    --mount) _MOUNT_ARGS+=("${2:-}"); shift ;;
     --lite|--hybrid|--no-build) : ;;                 # legacy no-ops
     --migrate) MIGRATE=1 ;;
     --dedupe) MAINT=dedupe ;;
@@ -435,11 +439,60 @@ if [[ "$MODE" == "docker" ]]; then
   mkdir -p "$AIFORGE_CONFIG_DIR/repos"
   # Your own projects folder: mounted at the same path, it becomes the box's
   # project root (docker/compose.repos.yml). Nothing else of the host is added.
+  # Compose files: COMPOSE_FILE (a site override) or the default, plus ours.
+  # Passing any -f makes compose ignore COMPOSE_FILE, so it is folded in here.
+  _cfiles=()
+  if [[ -n "${COMPOSE_FILE:-}" ]]; then IFS=':' read -ra _cfiles <<< "$COMPOSE_FILE"
+  else _cfiles=(docker-compose.yml); fi
+  _extra=0
   if [[ -n "${AIFORGE_REPOS_DIR:-}" ]]; then
     [[ -d "$AIFORGE_REPOS_DIR" ]] || _fatal "--repos: '$AIFORGE_REPOS_DIR' is not a folder."
     AIFORGE_REPOS_DIR="$(cd "$AIFORGE_REPOS_DIR" && pwd -P)"
     export AIFORGE_REPOS_DIR
-    DC+=(-f docker-compose.yml -f docker/compose.repos.yml)
+    _cfiles+=(docker/compose.repos.yml); _extra=1
+  fi
+  # Extra folders: ~/.aiforge/mounts.list (Settings edits it; --mount adds to
+  # it), each mounted at the same path. Generated per start, so a folder added
+  # from inside the box is mounted on the next ./run.sh.
+  _mounts_file="$AIFORGE_CONFIG_DIR/mounts.list"
+  for _m in ${_MOUNT_ARGS[@]+"${_MOUNT_ARGS[@]}"}; do
+    [[ -n "$_m" ]] || continue
+    _m="${_m/#\~/$HOME}"
+    grep -qxF "$_m" "$_mounts_file" 2>/dev/null || printf '%s\n' "$_m" >> "$_mounts_file"
+  done
+  # ~/.aiforge is always mounted, at $HOME/.aiforge inside the box.
+  _mounted=("$AIFORGE_HOME/.aiforge")
+  [[ -n "${AIFORGE_REPOS_DIR:-}" ]] && _mounted+=("$AIFORGE_REPOS_DIR")
+  _mount_yml="$AIFORGE_CONFIG_DIR/.sandbox/mounts.compose.yml"
+  mkdir -p "$(dirname "$_mount_yml")"
+  printf 'services:\n  aiforge:\n    volumes:\n' > "$_mount_yml.tmp"
+  _n=0
+  while IFS= read -r _m || [[ -n "$_m" ]]; do
+    _m="${_m%%#*}"; _m="${_m#"${_m%%[![:space:]]*}"}"; _m="${_m%"${_m##*[![:space:]]}"}"
+    [[ -n "$_m" ]] || continue
+    _m="${_m/#\~/$HOME}"
+    if [[ "$_m" == *:* || "$_m" != /* ]]; then
+      echo "!! mount skipped: '$_m' (needs an absolute path without ':')" >&2; continue
+    fi
+    if [[ ! -d "$_m" ]]; then
+      echo "!! mount skipped: '$_m' is not a folder on this machine" >&2; continue
+    fi
+    _m="$(cd "$_m" && pwd -P)"
+    case "$_m/" in "$AIFORGE_CONFIG_DIR"/*|"${AIFORGE_REPOS_DIR:-/nonexistent}"/*) continue ;; esac
+    printf '      - "%s:%s"\n' "$_m" "$_m" >> "$_mount_yml.tmp"
+    _mounted+=("$_m"); _n=$((_n + 1))
+  done < <(cat "$_mounts_file" 2>/dev/null)
+  if (( _n > 0 )); then
+    mv "$_mount_yml.tmp" "$_mount_yml"; _cfiles+=("$_mount_yml"); _extra=1
+  else
+    rm -f "$_mount_yml.tmp" "$_mount_yml"
+  fi
+  # What the box actually has mounted — Settings shows it (and what is waiting
+  # for a restart).
+  export AIFORGE_MOUNTS
+  AIFORGE_MOUNTS="$(IFS=:; echo "${_mounted[*]}")"
+  if (( _extra )) || [[ -n "${COMPOSE_FILE:-}" ]]; then
+    for _f in "${_cfiles[@]}"; do DC+=(-f "$_f"); done
   fi
 
   _pass=()                              # everything but the docker-only flags
@@ -448,7 +501,7 @@ if [[ "$MODE" == "docker" ]]; then
     if (( _skip )); then _skip=0; continue; fi
     case "$_a" in
       --docker|--native|--stop|--logs|--shell) ;;
-      --repos) _skip=1 ;;
+      --repos|--mount) _skip=1 ;;
       *) _pass+=("$_a") ;;
     esac
   done
@@ -470,7 +523,7 @@ if [[ "$MODE" == "docker" ]]; then
   "${DC[@]}" up -d --build
   echo ""
   echo "  AIForge sandbox → $(_ui_scheme)://${HOST}:${PORT}/ui/"
-  echo "  sees from this machine: $AIFORGE_CONFIG_DIR${AIFORGE_REPOS_DIR:+ and $AIFORGE_REPOS_DIR}"
+  echo "  sees from this machine: ${AIFORGE_MOUNTS//:/, }"
   echo "  projects: ${AIFORGE_REPOS_DIR:-$AIFORGE_CONFIG_DIR/repos}   (full rights inside the box)"
   echo "  first start installs its dependencies — follow it: ./run.sh --logs"
   echo "  stop: ./run.sh --stop   ·   shell inside: ./run.sh --shell   ·   on the host: ./run.sh --native"

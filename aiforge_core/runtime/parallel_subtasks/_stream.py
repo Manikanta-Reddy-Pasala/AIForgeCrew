@@ -418,6 +418,23 @@ def _build_verdict(ok, cwd: str) -> str:
             "toolchain is available.")
 
 
+def _outcome_verdict(agg: dict, ok, cwd: str) -> str:
+    """The verdict line, honest about subtasks that never landed. A run whose
+    every subtask failed (the model endpoint dropped mid-run) reported
+    "0/5 subtasks built + merged. ✅ Built — all tests pass": the test runner
+    found nothing to fail on an empty tree, and nothing said so."""
+    done, total = int(agg.get("done") or 0), int(agg.get("total") or 0)
+    if total and done == 0:
+        return ("❌ **Nothing was built** — every subtask failed, so there is no "
+                "code to test. Check that the model endpoint stayed reachable, "
+                "then run the request again.")
+    verdict = _build_verdict(ok, cwd)
+    if total and done < total:
+        return (f"⚠️ **{total - done} of {total} subtasks failed** and are not "
+                f"in the tree. " + verdict.replace("✅ ", ""))
+    return verdict
+
+
 def _finalize(cwd: str, subs: list, spec_md: str, agg: dict, start_sha: str,
               cancelled):
     """Verify against SPEC, reconcile the merged tree, and report."""
@@ -454,7 +471,7 @@ def _finalize(cwd: str, subs: list, spec_md: str, agg: dict, start_sha: str,
     # pytest); the report's ok can disagree — it uses a separate runner that may
     # miss deps.
     ok = res.get("ok") if "ok" in res else rep.get("ok")
-    build_verdict = _build_verdict(ok, cwd)
+    build_verdict = _outcome_verdict(agg, ok, cwd)
     # Only attach the detailed integration report when it AGREES with the
     # authoritative verdict — otherwise it contradicts (e.g. "✅ all tests pass"
     # followed by "❌ tests failed" from a different runner that missed a dep).

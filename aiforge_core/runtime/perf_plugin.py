@@ -37,6 +37,10 @@ class PerfPlugin(BasePlugin):
         return None
 
     async def after_model_callback(self, *, callback_context, llm_response):  # noqa: ANN001
+        # A streamed call reports every chunk here; only the last one (not
+        # partial) ends the call — else the sample would be time-to-first-token.
+        if getattr(llm_response, "partial", False):
+            return None
         self._stop(self._model_key(callback_context), "LLM",
                    getattr(callback_context, "agent_name", "") or "agent")
         return None

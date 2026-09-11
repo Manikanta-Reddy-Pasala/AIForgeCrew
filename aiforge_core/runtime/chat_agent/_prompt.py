@@ -140,6 +140,8 @@ Tool arguments:
 - set_repo_folder {{"repo": "foo", "path": "/abs/path/to/foo"}}   (persist the local folder for a repo — call when the user says "use /x/y for repo foo"; tickets for that repo then resolve to it)
 - set_repo_root {{"path": "/abs/base"}}   (persist the GLOBAL base folder holding all repos — call when the user says "all repos live under /x"; project `foo` then resolves to `/x/foo`)
 - list_repos {{}}   (show the configured base folder + per-repo paths + git repos found under the base)
+- mount_folder {{"path": "/abs/host/folder"}}   (docker sandbox: the user wants you to work in a host folder you cannot see — records it; it is mounted when they restart with ./run.sh on the host, so TELL them that)
+- save_secret {{"name": "jira_token", "value": "...", "purpose": "Jira API"}}   (a key/token/password the user gives you: stored in ~/.aiforge/security/secrets, memory keeps only its location — NEVER put a secret value in memory_write, notes or files)
 - email_send    {{"to": "a@b.com", "subject": "...", "body": "..."}}   (send an email via the configured SMTP — optional "cc"/"bcc"/"html"; needs your Approve)
 - email_read    {{"query": "...", "limit": 10}}                        (read recent inbox emails via IMAP — optional "folder"/"unseen_only")
 - gitlab_search {{"query": "..."}}  (find issues; optional "project": "group/proj", "state": "opened")

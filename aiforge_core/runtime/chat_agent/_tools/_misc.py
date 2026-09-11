@@ -277,3 +277,64 @@ def _t_stop_service(args: dict, cwd: str) -> dict:
 def _t_list_services(args: dict, cwd: str) -> dict:
     from aiforge_core.runtime.tools import serve
     return serve.list_services(args, cwd)
+
+
+def _t_mount_folder(args: dict, _cwd: str) -> dict:
+    """Ask for a HOST folder to be mounted into the docker-mode sandbox (same
+    path inside). A running box cannot mount into itself: the folder is added to
+    ~/.aiforge/mounts.list and mounted when the host restarts it with
+    ``./run.sh`` — the result says so, so the agent tells the user instead of
+    trying to reach a path that is not there yet."""
+    from aiforge_core.runtime import sandbox_mounts
+    try:
+        sandbox_mounts.add(str(args.get("path") or ""))
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    st = sandbox_mounts.state()
+    path = sandbox_mounts.validate(str(args.get("path") or ""))
+    row = next((r for r in st["folders"] if r["path"] == path), {})
+    if not st["sandbox"]:
+        return {"ok": True, "path": path, "status": "recorded",
+                "note": "AIForge is running natively, so it already sees this "
+                        "machine's files; the folder is mounted when it runs in "
+                        "the sandbox."}
+    return {"ok": True, "path": path, "status": row.get("status", "waiting"),
+            "note": "Tell the user: restart AIForge on the host with ./run.sh to "
+                    "mount it (Settings → Sandbox folders shows it). Until then "
+                    "the folder is not visible here."}
+
+
+_SECRET_NAME_RE = re.compile(r"^[\w.-]{1,64}$", re.ASCII)
+
+
+def _t_save_secret(args: dict, cwd: str) -> dict:
+    """Store a key/token/password the user gave in ~/.aiforge/security/secrets/
+    (0600, in the 0700 security folder the box mounts) and record WHERE it is in
+    memory — never the value. Memory is recalled into prompts and synced across
+    machines; a secret written there is a leaked secret."""
+    import os as _os
+
+    from aiforge_core.config import _atomic, secure_store
+    name = str(args.get("name") or "").strip()
+    value = args.get("value")
+    purpose = str(args.get("purpose") or "").strip()[:200]
+    if not _SECRET_NAME_RE.match(name):
+        return {"ok": False, "error": "name: 1-64 of letters, digits, _ . -"}
+    if not isinstance(value, str) or not value.strip():
+        return {"ok": False, "error": "missing arg: value"}
+    args["value"] = "[saved to security/secrets]"   # never echoed in the step
+    folder = secure_store.security_dir(create=True) / "secrets"
+    folder.mkdir(mode=0o700, exist_ok=True)
+    _os.chmod(folder, 0o700)
+    path = folder / name
+    _atomic.write_text(str(path), value)
+    _os.chmod(path, 0o600)
+    note = (f"Secret `{name}`" + (f" ({purpose})" if purpose else "")
+            + f" is stored at {path}. Read it from that file when needed "
+            "(e.g. $(cat <path>)); the value itself is not kept in memory.")
+    from ._memory import _t_memory_write
+    noted = _t_memory_write({"text": note, "kind": "note", "scope": "global",
+                             "tags": ["secret-ref", name]}, cwd)
+    return {"ok": True, "name": name, "path": str(path),
+            "memory_note": bool(noted.get("ok", True)) if isinstance(noted, dict) else True,
+            "use": f"$(cat {path})"}

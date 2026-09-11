@@ -153,6 +153,13 @@ CATALOG: dict = {
     "set_repo_root": ("Persist the global base folder for all repos.",
                       {"path": "s"}, ("path",)),
     "list_repos": ("Show configured repo folders.", {}, ()),
+    "mount_folder": ("Docker sandbox: ask for a HOST folder to be mounted (same "
+                     "path); it is mounted on the next ./run.sh — tell the user.",
+                     {"path": "s"}, ("path",)),
+    "save_secret": ("Store a key/token/password the user gives you in the "
+                    "security folder; memory records only where it is. NEVER "
+                    "write a secret into memory, notes or other files.",
+                    {"name": "s", "value": "s", "purpose": "s"}, ("name", "value")),
     # ── code graph ───────────────────────────────────────────────────────
     "codegraph_query": ("Query the code graph.",
                         {"query": "s", "symbol": "s"}, ()),

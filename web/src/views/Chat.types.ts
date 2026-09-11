@@ -48,6 +48,11 @@ export type LiveTurn = {
   text: string;
   steps: AgentStep[];
   streaming: boolean;
+  // The reply as the model writes it ('delta' events): shown until the step
+  // resolves into a tool call or the final message replaces it. `draft` is the
+  // tail of a tool step / reasoning being written, shown as a muted line.
+  streamText?: string;
+  draft?: string;
   elapsedSec?: number;
   awaiting?: boolean;   // agent asked a question — waiting for your reply
   subtasks?: SubtaskItem[];   // Planner decomposition (team mode)

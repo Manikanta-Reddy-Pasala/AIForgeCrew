@@ -63,6 +63,36 @@ type LogLine = {
 
 type Tagged = LogLine & { _role: Role; _idx: number };
 
+// What a line is ABOUT. Rows showed only the event name — a screen of
+// "THOUGHT THOUGHT THOUGHT" — while the text, the tool, the error and the chat
+// it belongs to sat unread in fields the row never rendered.
+const SUMMARY_KEYS = ['text', 'message', 'msg', 'error', 'reason', 'note', 'detail'] as const;
+const SHOWN_KEYS = new Set(['ts', 'level', 'role', 'event', 'tool', 'ticket', 'dur_ms',
+  'tokens_out', 'turn', '_role', '_idx', ...SUMMARY_KEYS]);
+
+function summaryOf(l: LogLine): string {
+  for (const k of SUMMARY_KEYS) {
+    const v = l[k];
+    if (v !== undefined && v !== null && String(v).trim()) return String(v).replace(/\s+/g, ' ').trim();
+  }
+  return '';
+}
+
+// A few identifying extras shown inline (session, name, ok) — the rest is one
+// click away in the expanded record.
+function extrasOf(l: LogLine): string {
+  const out: string[] = [];
+  if (l.session != null) out.push(`chat ${l.session}`);
+  if (l.name) out.push(String(l.name));
+  if (l.tool_ok === false) out.push('failed');
+  return out.join(' · ');
+}
+
+function restOf(l: LogLine): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(l).filter(([k, v]) =>
+    !k.startsWith('_') && v !== null && v !== undefined && (!SHOWN_KEYS.has(k) || SUMMARY_KEYS.includes(k as any))));
+}
+
 const MAX_LINES = 1000;
 
 export default function Logs() {
@@ -78,6 +108,12 @@ export default function Logs() {
   const [paused, setPaused] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   const [filter, setFilter] = useState('');
+  const [open, setOpen] = useState<Set<number>>(new Set());
+  const toggleOpen = (idx: number) => setOpen(prev => {
+    const next = new Set(prev);
+    if (next.has(idx)) next.delete(idx); else next.add(idx);
+    return next;
+  });
   const [ticketFilter, setTicketFilter] = useState('');
   const [connState, setConnState] =
     useState<Record<Role, 'open' | 'closed'>>(
@@ -165,7 +201,7 @@ export default function Logs() {
       // Match against a wide haystack so the filter is intuitive.
       const hay = [
         l.event, l.tool, l.ticket, l.level, l.role,
-        l.ts, l.note, l.error, l.message,
+        l.ts, l.note, l.error, l.message, l.text, l.name, l.reason,
       ].filter(Boolean).join(' ').toLowerCase();
       return hay.includes(f);
     });
@@ -250,7 +286,9 @@ export default function Logs() {
             </div>
           )}
           {shown.map(l => (
-            <div key={l._idx} className="event-row">
+            <div key={l._idx}>
+            <div className="event-row" {...clickable(() => toggleOpen(l._idx))}
+                 style={{ cursor: 'pointer' }} title="Click for the full record">
               <span className="ts">{(l.ts || '').slice(11, 23)}</span>
               <span className="chip sm"
                     style={{
@@ -275,7 +313,21 @@ export default function Logs() {
               {typeof l.dur_ms === 'number' && <span className="muted">· {l.dur_ms}ms</span>}
               {typeof l.tokens_out === 'number' && <span className="muted">· out={l.tokens_out}</span>}
               {typeof l.turn === 'number' && <span className="muted">· turn={l.turn}</span>}
-              {l.note && <span className="muted">· {String(l.note).slice(0, 80)}</span>}
+              {extrasOf(l) && <span className="muted">· {extrasOf(l)}</span>}
+              {summaryOf(l) && (
+                <span style={{ color: l.level === 'error' ? 'var(--err)' : 'var(--fg-1)', minWidth: 0,
+                               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                  {summaryOf(l).slice(0, 300)}
+                </span>
+              )}
+            </div>
+            {open.has(l._idx) && (
+              <pre className="xs" style={{ margin: '2px 0 8px 24px', padding: 8, background: 'var(--bg-1)',
+                                           border: '1px solid var(--border-1)', borderRadius: 4,
+                                           whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 360, overflow: 'auto' }}>
+                {JSON.stringify(restOf(l), null, 2)}
+              </pre>
+            )}
             </div>
           ))}
         </div>

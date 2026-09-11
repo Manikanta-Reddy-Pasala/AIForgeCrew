@@ -172,9 +172,33 @@ function appendStepFor(prev: LiveTurn, evt: any): LiveTurn | null {
   return null;
 }
 
+// A 'delta' event: the reply as the model writes it. "answer" text streams into
+// the bubble; "draft" (a tool step being written) and "thinking" (reasoning)
+// keep only a short muted tail; "reset" starts a new model call afresh.
+const DRAFT_TAIL = 240;
+function reduceDelta(prev: LiveTurn, evt: any): LiveTurn {
+  switch (evt.phase) {
+    case 'reset': return { ...prev, streamText: '', draft: '' };
+    case 'answer': return { ...prev, streamText: (prev.streamText ?? '') + (evt.text ?? '') };
+    case 'draft':
+    case 'thinking': return { ...prev, draft: ((prev.draft ?? '') + (evt.text ?? '')).slice(-DRAFT_TAIL) };
+    default: return prev;
+  }
+}
+
+// Events that settle a model call: its streamed text is replaced by the real
+// step / answer they carry.
+const SETTLES_STREAM = new Set(['thought', 'tool_start', 'tool', 'message', 'error', 'done']);
+
 // The live-turn "step" reducer (subtasks/thought/tool/changes/message/…).
 function reduceTurn(prev: LiveTurn | null, evt: any, onAwaiting: () => void): LiveTurn | null {
   if (!prev) return prev;
+  if (evt.type === 'delta') return reduceDelta(prev, evt);
+  const next = reduceStep(prev, evt, onAwaiting);
+  return next && SETTLES_STREAM.has(evt.type) ? { ...next, streamText: '', draft: '' } : next;
+}
+
+function reduceStep(prev: LiveTurn, evt: any, onAwaiting: () => void): LiveTurn | null {
   if (evt.type === 'subtasks') {
     return { ...prev, subtasks: evt.items || [] };
   }
@@ -1949,7 +1973,8 @@ export default function Chat() {
                   <div className="bubble-avatar">AI</div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <AssistantBubble
-                      text={liveTurn.text}
+                      text={liveTurn.text || liveTurn.streamText || ''}
+                      draft={liveTurn.draft}
                       steps={liveTurn.steps}
                       streaming={liveTurn.streaming}
                       elapsedSec={liveTurn.streaming ? elapsedSec : liveTurn.elapsedSec}

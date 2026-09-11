@@ -7,6 +7,7 @@ from ._generation import (
     _GEN_SEM,
     _gen_sem,
     _complete_cancellable,
+    _complete_live,
     _progress_recap,
     _stuck_recovery_max,
 )

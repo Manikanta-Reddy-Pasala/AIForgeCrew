@@ -684,3 +684,20 @@ def test_steer_feedback_is_interleaved(monkeypatch):
     out = list(st._drain_run(_RealQ([{"type": "tool"}, None]), 1, _subs(),
                              "/cwd", lambda: False))
     assert [e["type"] for e in out] == ["tool", "thought"]
+
+
+def test_nothing_built_is_never_reported_as_built(tmp_path):
+    """An endpoint that dropped mid-run left every subtask failed; the report
+    read "0/5 subtasks built + merged. ✅ Built — all tests pass"."""
+    from aiforge_core.runtime.parallel_subtasks import _stream as st2
+    out = st2._outcome_verdict({"done": 0, "total": 5}, True, str(tmp_path))
+    assert out.startswith("❌ **Nothing was built**")
+    assert "all tests pass" not in out
+
+
+def test_a_partial_build_says_how_many_failed(tmp_path):
+    from aiforge_core.runtime.parallel_subtasks import _stream as st2
+    out = st2._outcome_verdict({"done": 3, "total": 5}, True, str(tmp_path))
+    assert out.startswith("⚠️ **2 of 5 subtasks failed**")
+    assert st2._outcome_verdict({"done": 5, "total": 5}, True, str(tmp_path)) \
+        == "✅ **Built — all tests pass.**"

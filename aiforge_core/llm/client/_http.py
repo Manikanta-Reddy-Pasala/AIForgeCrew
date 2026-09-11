@@ -45,6 +45,95 @@ def set_cancel_event(ev) -> None:
     _CANCEL.set(ev)
 
 
+# Optional per-thread sink for STREAMED tokens: ``sink(kind, text)`` with kind
+# "start" (a response began — a retry restarts the text), "content" or
+# "reasoning". Bound by the chat loop next to the cancel token, so
+# only the cancellable path streams; the response is reassembled into the
+# normal non-streamed body, so retries, metering and tool calls are unchanged.
+# Unset → one blocking request, as before.
+_DELTA_SINK: contextvars.ContextVar = contextvars.ContextVar(
+    "aiforge_llm_delta_sink", default=None)
+
+
+def set_delta_sink(fn) -> None:
+    """Bind ``fn(kind, text)`` to receive this thread's streamed tokens."""
+    _DELTA_SINK.set(fn)
+
+
+class _StreamAssembler:
+    """Folds OpenAI-style ``chat.completion.chunk`` events back into one
+    ``chat.completion`` body, handing each text piece to the sink as it comes."""
+
+    def __init__(self, sink) -> None:
+        self.sink = sink
+        self.content: list[str] = []
+        self.reasoning: list[str] = []
+        self.tools: dict[int, dict] = {}
+        self.finish = None
+        self.usage = None
+        self.meta: dict = {}
+
+    def _emit(self, kind: str, text: str) -> None:
+        try:
+            self.sink(kind, text)
+        except Exception:  # noqa: BLE001 — a display hook never fails a call
+            pass
+
+    def _merge_tool(self, tc: dict) -> None:
+        slot = self.tools.setdefault(int(tc.get("index", len(self.tools))), {
+            "id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+        if tc.get("id"):
+            slot["id"] = tc["id"]
+        fn = tc.get("function") or {}
+        slot["function"]["name"] += fn.get("name") or ""
+        slot["function"]["arguments"] += fn.get("arguments") or ""
+
+    def feed(self, chunk: dict) -> None:
+        _raise_if_model_dropped(chunk)
+        for k in ("id", "model", "created"):
+            if chunk.get(k) is not None:
+                self.meta.setdefault(k, chunk[k])
+        if chunk.get("usage"):
+            self.usage = chunk["usage"]
+        for ch in chunk.get("choices") or []:
+            self._feed_choice(ch)
+
+    def _feed_choice(self, ch: dict) -> None:
+        d = ch.get("delta") or {}
+        if d.get("content"):
+            self.content.append(d["content"])
+            self._emit("content", d["content"])
+        r = d.get("reasoning_content") or d.get("reasoning")
+        if r:
+            self.reasoning.append(r)
+            self._emit("reasoning", r)
+        for tc in d.get("tool_calls") or []:
+            self._merge_tool(tc)
+        if ch.get("finish_reason"):
+            self.finish = ch["finish_reason"]
+
+    def body(self) -> dict:
+        msg: dict = {"role": "assistant", "content": "".join(self.content)}
+        if self.reasoning:
+            msg["reasoning_content"] = "".join(self.reasoning)
+        if self.tools:
+            msg["tool_calls"] = [self.tools[i] for i in sorted(self.tools)]
+            msg["content"] = msg["content"] or None
+        out = {**self.meta, "object": "chat.completion",
+               "choices": [{"index": 0, "message": msg,
+                            "finish_reason": self.finish}]}
+        if self.usage is not None:
+            out["usage"] = self.usage
+        return out
+
+
+def _streaming_payload(payload: bytes) -> bytes:
+    body = json.loads(payload)
+    body["stream"] = True
+    body["stream_options"] = {"include_usage": True}
+    return json.dumps(body).encode()
+
+
 # Marker attribute set on an exception whose prompt REACHED the model and was
 # abandoned on a read timeout. Callers above the transport (the chat loop's own
 # retry sweep) must not re-issue that completion: each attempt leaves another
@@ -198,11 +287,64 @@ def _read_http_response(conn, url: str) -> dict:
     return body
 
 
+def _read_sse_response(conn, url: str, sink) -> dict:
+    """Read a streamed completion, feeding each token to ``sink``, and return
+    it reassembled as a normal body. A server that ignored ``stream`` and
+    answered with plain JSON is read as such."""
+    resp = conn.getresponse()
+    if resp.status >= 400:
+        data = resp.read()
+        raise urllib.error.HTTPError(
+            url, resp.status, resp.reason, resp.headers, io.BytesIO(data))
+    if "text/event-stream" not in (resp.getheader("Content-Type") or ""):
+        body = json.loads(resp.read())
+        _raise_if_model_dropped(body)
+        return body
+    asm = _StreamAssembler(sink)
+    asm._emit("start", "")          # a retried call starts its text afresh
+    while True:
+        line = resp.readline()
+        if not line:
+            break
+        line = line.strip()
+        if not line.startswith(b"data:"):
+            continue
+        data = line[5:].strip()
+        if data == b"[DONE]":
+            break
+        try:
+            chunk = json.loads(data)
+        except ValueError:
+            continue
+        asm.feed(chunk)
+    body = asm.body()
+    _raise_if_model_dropped(body)
+    return body
+
+
 def _post_cancellable(ep: Endpoint, payload: bytes, timeout_s: int,
-                      cancel, sent: "list | None" = None) -> dict:
+                      cancel, sent: "list | None" = None,
+                      stream: bool = True) -> dict:
     """POST via http.client so a watcher thread can close the connection the
     instant ``cancel`` fires — interrupting an otherwise-blocking generation.
-    Used only when a cancel token is bound for this thread."""
+    Used only when a cancel token is bound for this thread. Streams when a
+    delta sink is bound too (see :func:`set_delta_sink`); a server that
+    rejects the stream request (400) is asked once more without it."""
+    sink = _DELTA_SINK.get() if stream else None
+    if sink is not None:
+        try:
+            return _post_cancellable_once(ep, _streaming_payload(payload),
+                                          timeout_s, cancel, sent, sink)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 400:
+                raise
+            _log.info("llm stream refused (400) by %s — retrying unstreamed",
+                      ep.base_url)
+    return _post_cancellable_once(ep, payload, timeout_s, cancel, sent, None)
+
+
+def _post_cancellable_once(ep: Endpoint, payload: bytes, timeout_s: int,
+                           cancel, sent, sink) -> dict:
     url = f"{ep.base_url.rstrip('/')}/chat/completions"
     conn, path = _open_connection(ep, url, timeout_s)
     stop = threading.Event()
@@ -218,6 +360,8 @@ def _post_cancellable(ep: Endpoint, payload: bytes, timeout_s: int,
         # they surface as a bare TimeoutError from http.client.
         if sent is not None:
             sent[0] = True
+        if sink is not None:
+            return _read_sse_response(conn, url, sink)
         return _read_http_response(conn, url)
     except OSError as exc:
         if cancel.is_set():

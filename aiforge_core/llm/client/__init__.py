@@ -77,6 +77,7 @@ from ._http import (
     _post_with_retry,
     _preflight,
     set_cancel_event,
+    set_delta_sink,
     shipped_timeout,  # re-export: callers above the transport
 )
 from ._http import TIMEOUT_SHIPPED_ATTR as _TIMEOUT_SHIPPED_ATTR
@@ -96,6 +97,7 @@ __all__ = [
     "complete",
     "complete_raw",
     "set_cancel_event",
+    "set_delta_sink",
     "resolve",
     "escalate",
     "fallback",

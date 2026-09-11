@@ -16,6 +16,7 @@ import AgentSettings from './AgentSettings';
 import MemorySyncCard from './Home.MemorySyncCard';
 import EgressCard from './Settings.EgressCard';
 import CaCard from './Settings.CaCard';
+import MountsCard from './Settings.MountsCard';
 
 // ── config-first Home page ─────────────────────────────────────────
 //
@@ -439,6 +440,8 @@ export default function Home() {
           thing an operator found and the first thing they needed. Above the
           tab bar it is also mounted ONCE, rather than once per tab. */}
       <CaCard />
+      {/* Which host folders the sandbox can see — and adding one. */}
+      <MountsCard />
 
       {/* ── Settings tabs: Agent | Integrations ──────────────────── */}
       <div className="row" style={{ gap: 4, marginBottom: 16, borderBottom: '1px solid var(--border-1)' }}>

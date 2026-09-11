@@ -165,3 +165,30 @@ def test_autodetect_disabled_falls_to_static(monkeypatch):
     monkeypatch.setenv("AIFORGE_AUTODETECT_CTX", "0")
     from aiforge_core.config import model_registry
     assert model_registry.effective_context_window("doer") == 131072
+
+
+def test_lm_studio_loaded_context_is_read_from_its_own_api(monkeypatch):
+    """/v1/models has no length on LM Studio; /api/v0/models has the LOADED one
+    (a 262K-loaded model had resolved to the 128K default)."""
+    bodies = {
+        "http://h:1234/v1/models": {"data": [{"id": "qwen", "object": "model"}]},
+        "http://h:1234/api/v0/models": {"data": [
+            {"id": "qwen", "state": "loaded", "max_context_length": 1000000,
+             "loaded_context_length": 262144},
+            {"id": "other", "state": "not-loaded", "max_context_length": 131072},
+        ]},
+    }
+    monkeypatch.setattr("urllib.request.urlopen",
+                        lambda req, *a, **k: _Resp(bodies[req.full_url]))
+    assert health.probe_context_window("http://h:1234/v1") == 262144
+
+
+def test_nothing_loaded_stays_unknown(monkeypatch):
+    bodies = {
+        "http://h:1234/v1/models": {"data": [{"id": "qwen"}]},
+        "http://h:1234/api/v0/models": {"data": [
+            {"id": "qwen", "state": "not-loaded", "max_context_length": 262144}]},
+    }
+    monkeypatch.setattr("urllib.request.urlopen",
+                        lambda req, *a, **k: _Resp(bodies[req.full_url]))
+    assert health.probe_context_window("http://h:1234/v1") is None

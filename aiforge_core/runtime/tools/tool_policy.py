@@ -95,6 +95,8 @@ _DEFAULT_ASK = {"confluence_create", "confluence_update",
                 "gitlab_mr_create", "gitlab_mr_comment", "github_pr",
                 # Sends an email out to real recipients — approval-gated.
                 "email_send",
+                # Widens what the sandbox can see of the host on its next start.
+                "mount_folder",
                 # Arbitrary-code execution in a live kernel — approval-gated
                 # in chat like Claude Code / Cursor gate code execution.
                 "execute_ipython_cell",

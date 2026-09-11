@@ -391,3 +391,17 @@ def test_a_cost_rollup_is_grouped_and_bounded(client, monkeypatch):
     assert body["group_by"] == "day"
     assert body["days_back"] == 7
     assert seen == {"group_by": "day", "days": 7}
+
+
+# ─── sandbox mounts ─────────────────────────────────────────────────────
+
+
+def test_sandbox_folders_are_listed_and_added(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("AIFORGE_MOUNTS", "/home/me/.aiforge")
+    assert client.post("/api/runtime/mounts", json={"path": "/opt/data"}).status_code == 200
+    body = client.get("/api/runtime/mounts").json()
+    assert [r["path"] for r in body["folders"]] == ["/home/me/.aiforge", "/opt/data"]
+    assert client.post("/api/runtime/mounts", json={"path": "x"}).status_code == 400
+    after = client.delete("/api/runtime/mounts", params={"path": "/opt/data"}).json()
+    assert [r["path"] for r in after["folders"]] == ["/home/me/.aiforge"]

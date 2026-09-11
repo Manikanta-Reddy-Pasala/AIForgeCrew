@@ -35,6 +35,7 @@ services:
     # reads itself.
     environment:
       - AIFORGE_RUN_ARGS
+      - AIFORGE_MOUNTS
       - AIFORGE_APT_MIRROR
       - AIFORGE_LM_BASE_URL
       - AIFORGE_API_TOKEN

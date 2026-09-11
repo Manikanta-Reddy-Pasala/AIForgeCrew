@@ -108,20 +108,37 @@ def _complete_cancellable(complete_fn, role, convo, session_id):
     return the ``_CANCELLED`` sentinel the instant it's set — abandoning the
     call (it finishes in the background, daemon thread, result ignored). The
     sentinel (not ``None``) keeps a legitimately-empty completion distinct from
-    a cancel. No session → call inline."""
+    a cancel. No session → call inline. See :func:`_complete_live` for the
+    streaming form the chat step uses."""
+    gen = _complete_live(complete_fn, role, convo, session_id, stream=False)
+    while True:
+        try:
+            next(gen)
+        except StopIteration as stop:
+            return stop.value
+
+
+def _stream_enabled() -> bool:
+    return os.environ.get("AIFORGE_CHAT_STREAM", "1").strip().lower() not in (
+        "0", "false", "no", "off")
+
+
+def _acquire_slot(sem, session_id) -> bool:
+    """A generation slot, waited for cancellably. At the cap, a fresh
+    generation blocks until a prior (possibly abandoned) one finishes."""
     from aiforge_core.runtime import chat_cancel
-    if session_id is None:
-        return complete_fn(role, convo)
-    import threading as _th
-    sem = _gen_sem()
-    # Acquire a generation slot (cancellable wait). At the cap, a fresh
-    # generation blocks until a prior (possibly abandoned) one finishes.
     while not sem.acquire(timeout=0.2):
         if chat_cancel.is_cancelled(session_id):
-            return _CANCELLED
+            return False
+    return True
 
+
+def _start_call(complete_fn, role, convo, sem, deltas):
+    """Start the call on a daemon thread. Returns (thread, result box, the
+    per-call abort event for the client HTTP layer)."""
+    import threading as _th
     box: dict = {}
-    ev = _th.Event()             # per-call abort signal for the client HTTP layer
+    ev = _th.Event()
     # A new thread starts with an EMPTY context, so the request context the
     # turn bound (session id, role) would be invisible to the LLM client —
     # which is what attributes a request to this chat in the call meter (and
@@ -132,19 +149,19 @@ def _complete_cancellable(complete_fn, role, convo, session_id):
     def _call():
         # The role this generation runs as — so the meter's by_role breakdown
         # ("which agent is burning the calls") is not permanently empty.
-        # request_context.set_role has no other caller.
         try:
             from aiforge_core.runtime import request_context as _rc
             _rc.set_role(role)
         except Exception:  # noqa: BLE001
             pass
         # Bind the cancel token on THIS thread so the LLM client's HTTP layer
-        # aborts the in-flight request the instant Stop fires (true model-
-        # reclaim, not just abandoning the thread). Best-effort — a stub
-        # complete_fn that never reaches the client is simply unaffected.
+        # aborts the in-flight request the instant Stop fires; and, when the
+        # caller streams, the sink that receives each token as it arrives.
         try:
             from aiforge_core.llm import client as _client
             _client.set_cancel_event(ev)
+            if deltas is not None:
+                _client.set_delta_sink(lambda kind, text: deltas.put((kind, text)))
         except Exception:  # noqa: BLE001
             pass
         try:
@@ -156,11 +173,34 @@ def _complete_cancellable(complete_fn, role, convo, session_id):
 
     t = _th.Thread(target=lambda: _ctx.run(_call), daemon=True)
     t.start()
+    return t, box, ev
+
+
+def _complete_live(complete_fn, role, convo, session_id, stream: bool = True):
+    """:func:`_complete_cancellable` that also YIELDS the answer as the model
+    writes it: ``{"type": "delta", "phase": ...}`` events (see
+    :class:`_DeltaShaper`), batched every ~60 ms. The whole answer used to
+    arrive in one piece when the call finished. Returns the completion (or
+    ``_CANCELLED``) like the plain form."""
+    from aiforge_core.runtime import chat_cancel
+    if session_id is None:
+        return complete_fn(role, convo)
+    sem = _gen_sem()
+    if not _acquire_slot(sem, session_id):
+        return _CANCELLED
+    import queue as _q
+    deltas = _q.SimpleQueue() if stream and _stream_enabled() else None
+    t, box, ev = _start_call(complete_fn, role, convo, sem, deltas)
+    shaper = _DeltaShaper() if deltas is not None else None
     while t.is_alive():
         if chat_cancel.is_cancelled(session_id):
             ev.set()             # abort the in-flight HTTP request
             return _CANCELLED    # slot frees when the (now-aborting) request ends
-        t.join(timeout=0.2)
+        t.join(timeout=0.06 if shaper else 0.2)
+        if shaper:
+            yield from shaper.drain(deltas)
+    if shaper:
+        yield from shaper.drain(deltas)
     # The request may have been aborted just as it finished — treat any
     # post-loop cancel as a cancel, not an error.
     if chat_cancel.is_cancelled(session_id):
@@ -168,3 +208,92 @@ def _complete_cancellable(complete_fn, role, convo, session_id):
     if "err" in box:
         raise box["err"]
     return box.get("out")
+
+
+# What the user should SEE of a completion while it is written. The text
+# protocol writes "THOUGHT: … ACTION: … ARGS_JSON: …" for a tool step and
+# "FINAL: <answer>" / "ASK: <question>" to finish; a native-FC model writes the
+# answer as plain content. Only the answer part streams into the reply; the
+# rest is a muted draft line, and a model's reasoning a "thinking" line.
+_ANSWER_MARK_RE = _re.compile(r"^[ \t]*(?:FINAL|ASK):[ \t]*", _re.MULTILINE)
+_PROTOCOL_HEADS = ("THOUGHT:", "ACTION:", "ARGS_JSON:")
+
+
+class _DeltaShaper:
+    def __init__(self) -> None:
+        self.buf = ""
+        self.mode = ""           # "", "plain" or "final": which answer was sent
+        self.sent = 0            # chars of that answer already sent
+        self.started = False
+
+    def _answer(self) -> "tuple[str, str]":
+        """(kind, answer text so far): kind "draft" = nothing to show yet."""
+        b = self.buf
+        head = b.lstrip()
+        if head.startswith("<think>"):
+            if "</think>" not in head:
+                return "draft", ""
+            b = head.split("</think>", 1)[1]
+        marks = list(_ANSWER_MARK_RE.finditer(b))
+        last = marks[-1] if marks else None
+        if last is not None:
+            return "final", b[last.end():]
+        head = b.lstrip()
+        if not head or any(p.startswith(head) or head.startswith(p)
+                           for p in _PROTOCOL_HEADS):
+            return "draft", ""
+        return "plain", head
+
+    def _shape(self, chunk: str) -> list:
+        self.buf += chunk
+        kind, text = self._answer()
+        if kind == "draft":
+            return [{"type": "delta", "phase": "draft", "text": chunk}]
+        out: list = []
+        if self.mode and kind != self.mode:     # a plain start turned into FINAL:
+            out.append({"type": "delta", "phase": "reset"})
+            self.sent = 0
+        self.mode = kind
+        new, self.sent = text[self.sent:], len(text)
+        if new:
+            out.append({"type": "delta", "phase": "answer", "text": new})
+        return out
+
+    def _restart(self) -> list:
+        """A new model call (a retry) begins: forget the previous text."""
+        had = self.started
+        self.buf, self.mode, self.sent, self.started = "", "", 0, True
+        return [{"type": "delta", "phase": "reset"}] if had else []
+
+    def _emit_run(self, kind: str, parts: list) -> list:
+        if not parts:
+            return []
+        if kind == "reasoning":
+            return [{"type": "delta", "phase": "thinking", "text": "".join(parts)}]
+        return self._shape("".join(parts))
+
+    def drain(self, q) -> list:
+        """Everything queued since the last drain, in arrival order, with runs
+        of the same kind merged into one event."""
+        import queue as _q
+        items: list = []
+        while True:
+            try:
+                items.append(q.get_nowait())
+            except _q.Empty:
+                break
+        out: list = []
+        if items and not self.started:
+            self.started = True
+            out.append({"type": "delta", "phase": "reset"})
+        run_kind, run = "", []
+        for kind, text in items:
+            if kind != run_kind:
+                out += self._emit_run(run_kind, run)
+                run_kind, run = kind, []
+            if kind == "start":
+                out += self._restart()
+            else:
+                run.append(text)
+        out += self._emit_run(run_kind, run)
+        return out

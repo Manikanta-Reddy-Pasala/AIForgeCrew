@@ -108,6 +108,35 @@ def _part_events(author: str, part) -> list[dict]:
     return out
 
 
+def _team_streaming() -> dict:
+    """RunConfig kwargs that make team agents stream their text as they write
+    it (SSE partial events). AIFORGE_CHAT_TEAM_STREAM=0 turns it off."""
+    if os.environ.get("AIFORGE_CHAT_TEAM_STREAM", "1").strip().lower() in (
+            "0", "false", "no", "off"):
+        return {}
+    try:
+        from google.adk.agents.run_config import StreamingMode
+        return {"streaming_mode": StreamingMode.SSE}
+    except Exception:  # noqa: BLE001 — an ADK without it just does not stream
+        return {}
+
+
+def partial_events(event) -> list[dict]:
+    """One streamed ADK chunk as 'delta' events: an agent's text is its live
+    draft (muted in the UI until the finished step replaces it), reasoning is
+    'thinking'. Tool-call fragments are not shown — the finished event has the
+    whole call."""
+    author = getattr(event, "author", None) or "agent"
+    parts = getattr(getattr(event, "content", None), "parts", None) or []
+    out: list[dict] = []
+    for p in parts:
+        text = getattr(p, "text", None)
+        if text:
+            out.append({"type": "delta", "role": author, "text": text,
+                        "phase": "thinking" if getattr(p, "thought", False) else "draft"})
+    return out
+
+
 def map_event(event) -> list[dict]:
     """Map one ADK event to conversational dicts. Pure — unit-testable."""
     author = getattr(event, "author", None) or "agent"
@@ -433,10 +462,15 @@ async def _drive_run_events(agen, runner, q, session_id, chat_interject,
             await _close_team_run(agen, runner)
             q.put({"type": "error", "text": "stopped by user", "stopped": True})
             break
-        for ev in map_event(event):
-            reason = _process_team_event(ev, q, steps, by_role, acc)
-            if reason is not None:
-                enhancer_blocked = reason
+        if getattr(event, "partial", False):
+            # A streamed chunk: shown live as the agent's draft line. The full
+            # (non-partial) event that follows carries the same text and is
+            # what becomes the step, the answer and the accumulators.
+            for ev in partial_events(event):
+                q.put(ev)
+            continue
+        enhancer_blocked = _fold_team_event(event, q, steps, by_role, acc) \
+            or enhancer_blocked
         if enhancer_blocked:
             await _close_team_run(agen, runner)
             break
@@ -445,6 +479,17 @@ async def _drive_run_events(agen, runner, q, session_id, chat_interject,
             final = t
     return {"by_role": by_role, "final": final, "sub_items": acc["sub_items"],
             "enhancer_blocked": enhancer_blocked}
+
+
+def _fold_team_event(event, q, steps, by_role, acc):
+    """Map one finished ADK event into the queue + accumulators; returns the
+    Enhancer's too-vague reason when it blocked, else None."""
+    blocked = None
+    for ev in map_event(event):
+        reason = _process_team_event(ev, q, steps, by_role, acc)
+        if reason is not None:
+            blocked = reason
+    return blocked
 
 
 def _bind_team_session(session_id, q) -> None:
@@ -726,8 +771,9 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
             # High cap — a real multi-agent build legitimately needs
             # many calls; the repeat_guard stops genuine stuck loops, so
             # we don't rely on a low ceiling. Tune AIFORGE_CHAT_MAX_LLM_CALLS.
-            kw["run_config"] = RunConfig(max_llm_calls=int(
-                os.environ.get("AIFORGE_CHAT_MAX_LLM_CALLS", "600")))
+            kw["run_config"] = RunConfig(
+                max_llm_calls=int(os.environ.get("AIFORGE_CHAT_MAX_LLM_CALLS", "600")),
+                **_team_streaming())
         except Exception:
             pass
         agen = runner.run_async(**kw)

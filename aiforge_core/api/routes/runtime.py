@@ -475,3 +475,35 @@ def egress_hosts_put(body: EgressHostsBody) -> dict:
         # message names what is wrong with which entry.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "extra_hosts": saved, **egress_hosts.describe()}
+
+
+# ─── sandbox mounts ─────────────────────────────────────────────────────
+
+
+class _MountBody(BaseModel):
+    path: str = Field(..., description="absolute host folder to mount (same path inside the box)")
+
+
+@router.get("/api/runtime/mounts")
+def runtime_mounts() -> dict:
+    """Host folders the docker-mode sandbox sees, and ones waiting for the next
+    ./run.sh (a running container cannot mount into itself)."""
+    from aiforge_core.runtime import sandbox_mounts
+    return sandbox_mounts.state()
+
+
+@router.post("/api/runtime/mounts", responses={400: {"description": "Bad request"}})
+def runtime_mounts_add(body: _MountBody) -> dict:
+    from aiforge_core.runtime import sandbox_mounts
+    try:
+        sandbox_mounts.add(body.path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return sandbox_mounts.state()
+
+
+@router.delete("/api/runtime/mounts")
+def runtime_mounts_remove(path: str) -> dict:
+    from aiforge_core.runtime import sandbox_mounts
+    sandbox_mounts.remove(path)
+    return sandbox_mounts.state()

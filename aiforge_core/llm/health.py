@@ -190,8 +190,7 @@ def _extract_ctx_len(body: object) -> int | None:
     return min(best, _CTX_CEILING) if best > 0 else None
 
 
-def _probe_ctx_window(base_url: str, api_key: str = "") -> int | None:
-    url = f"{base_url.rstrip('/')}/models"
+def _get_json(url: str, base_url: str, api_key: str) -> object:
     req = urllib.request.Request(
         url, method="GET",
         headers={"Authorization": f"Bearer {api_key or 'na'}",
@@ -199,10 +198,33 @@ def _probe_ctx_window(base_url: str, api_key: str = "") -> int | None:
     ctx = _ssl_context_for(base_url)
     try:
         with urllib.request.urlopen(req, timeout=_ctx_timeout(), context=ctx) as resp:
-            body = json.loads(resp.read().decode("utf-8", "replace"))
+            return json.loads(resp.read().decode("utf-8", "replace"))
     except Exception:  # noqa: BLE001 — soft-fail: any error → unknown
         return None
-    return _extract_ctx_len(body)
+
+
+def _lmstudio_loaded_ctx(base_url: str, api_key: str) -> int | None:
+    """LM Studio's OpenAI-compatible /v1/models carries no context length, so a
+    262K-loaded model resolved to the 128K default and compacted at half its
+    window. Its own REST API (/api/v0/models) reports ``loaded_context_length``
+    per model; only LOADED ones count — ``max_context_length`` is what the
+    model could take, not what it was loaded with."""
+    root = base_url.rstrip("/")
+    if not root.endswith("/v1"):
+        return None
+    body = _get_json(root[:-3] + "/api/v0/models", base_url, api_key)
+    if not isinstance(body, dict) or not isinstance(body.get("data"), list):
+        return None
+    loaded = [e for e in body["data"]
+              if isinstance(e, dict) and e.get("state") == "loaded"]
+    return _extract_ctx_len({"data": loaded}) if loaded else None
+
+
+def _probe_ctx_window(base_url: str, api_key: str = "") -> int | None:
+    body = _get_json(f"{base_url.rstrip('/')}/models", base_url, api_key)
+    if body is None:
+        return None
+    return _extract_ctx_len(body) or _lmstudio_loaded_ctx(base_url, api_key)
 
 
 def probe_context_window(base_url: str, api_key: str = "") -> int | None:
