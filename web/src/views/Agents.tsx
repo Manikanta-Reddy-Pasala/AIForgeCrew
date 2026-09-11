@@ -14,7 +14,7 @@ export default function Agents() {
     { key: 'orchestrator', label: 'Orchestrator', blurb: 'Turn the request into a plan: clean → design → split.' },
     { key: 'pipeline', label: 'Pipeline', blurb: 'The sequential build loop: triage → plan → verify → research → do → refine → feedback → learn.' },
     { key: 'fanout', label: 'Fan-out & helpers', blurb: 'Parallel context gatherers, axis critics, and post-build checks.' },
-    { key: 'chat', label: 'Chat', blurb: 'The dashboard chat assistant.' },
+    { key: 'chat', label: 'Chat', blurb: 'The chat assistant.' },
   ];
   const byGroup = (g: string) => agents.filter((a: any) => (a.group || 'pipeline') === g);
 

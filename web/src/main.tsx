@@ -10,10 +10,8 @@ import { Icon } from './icons';
 import { ErrorBoundary } from './ErrorBoundary';
 import LlmMeter from './components/LlmMeter';
 
-// Dashboard is the biggest view (pulls recharts). Lazy-load so the
-// main bundle stays small and other pages load instantly.
+// Lazy-load every view so the main bundle stays small and pages load instantly.
 const Home         = lazy(() => import('./views/Home'));
-const Dashboard    = lazy(() => import('./views/Dashboard'));
 const Tickets      = lazy(() => import('./views/Tickets'));
 const Jobs         = lazy(() => import('./views/Jobs'));
 const TicketDetail = lazy(() => import('./views/TicketDetail'));
@@ -23,7 +21,6 @@ const Memory       = lazy(() => import('./views/Memory'));
 const Chat         = lazy(() => import('./views/Chat'));
 const Library      = lazy(() => import('./views/Library'));
 const Tools        = lazy(() => import('./views/Tools'));
-const Kanban       = lazy(() => import('./views/Kanban'));
 const Trace        = lazy(() => import('./views/Trace'));
 const LlmTrace     = lazy(() => import('./views/LlmTrace'));
 const WorkflowGraph = lazy(() => import('./views/WorkflowGraph'));
@@ -59,8 +56,6 @@ const NAV: { group: string; items: NavItem[] }[] = [
   {
     group: 'Operate',
     items: [
-      { to: '/dashboard', label: 'Dashboard',  icon: 'Dashboard' },
-      { to: '/board',     label: 'Board',      icon: 'Board' },
       { to: '/tickets',   label: 'Tickets',    icon: 'Tickets' },
       { to: '/jobs',      label: 'Jobs',       icon: 'Refresh' },
       { to: '/chat',      label: 'Chat',       icon: 'Chat' },
@@ -90,8 +85,6 @@ const NAV: { group: string; items: NavItem[] }[] = [
 
 const TITLE_MAP: Record<string, string> = {
   '/':           'Home',
-  '/dashboard':  'Dashboard',
-  '/board':      'Board',
   '/tickets':    'Tickets',
   '/jobs':       'Scheduled Jobs',
   '/chat':       'Chat',
@@ -149,7 +142,7 @@ function ThemeToggle() {
 function TopBar({ onToggleSidebar, collapsed }: Readonly<{ onToggleSidebar: () => void; collapsed?: boolean }>) {
   const loc = useLocation();
   const title = useTitle(loc.pathname);
-  const tip = collapsed ? 'Show dashboard' : 'Hide dashboard';
+  const tip = collapsed ? 'Show sidebar' : 'Hide sidebar';
 
   return (
     <div className="topbar">
@@ -203,7 +196,7 @@ const SIDEBAR_KEY = 'aiforge.sidebar.collapsed';
 function Shell() {
   // Icons-only by DEFAULT (a wide 26" screen otherwise wastes a big gap between
   // the labelled panel and the content). Persisted; expand via the toolbar
-  // "Show dashboard" toggle.
+  // "Show sidebar" toggle.
   const [collapsed, setCollapsed] = useState(() => {
     try { const v = localStorage.getItem(SIDEBAR_KEY); if (v !== null) return v === '1'; } catch { /* storage off */ }
     return true;
@@ -226,8 +219,9 @@ function Shell() {
         <Suspense fallback={<RouteFallback />}>
           <Routes>
             <Route path="/" element={<Home />} />
-            <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/board" element={<Kanban />} />
+            {/* Dashboard and Board were removed; old bookmarks land on Tickets. */}
+            <Route path="/dashboard" element={<Navigate to="/tickets" replace />} />
+            <Route path="/board" element={<Navigate to="/tickets" replace />} />
             <Route path="/tickets" element={<Tickets />} />
             <Route path="/tickets/:id" element={<TicketDetail />} />
             <Route path="/jobs" element={<Jobs />} />

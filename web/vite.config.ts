@@ -20,19 +20,17 @@ export default defineConfig({
     },
   },
   build: {
-    // Keep a single bundle simple, but split heavy chart & dnd libs so
-    // the initial JS parse cost is lower on pages that don't need them.
+    // Keep a single bundle simple, but split react-query out so the initial
+    // JS parse cost is lower on pages that don't need it.
     chunkSizeWarningLimit: 900,
     rollupOptions: {
       output: {
         // Vite 8 bundles with rolldown, which replaced the `manualChunks`
         // object form with `advancedChunks.groups` (it only accepts
         // manualChunks as a FUNCTION, so the old object silently became
-        // "manualChunks is not a function" at build time). Same three splits.
+        // "manualChunks is not a function" at build time).
         advancedChunks: {
           groups: [
-            { name: 'recharts', test: /[\\/]node_modules[\\/]recharts[\\/]/ },
-            { name: 'dnd', test: /[\\/]node_modules[\\/]@dnd-kit[\\/]/ },
             { name: 'query', test: /[\\/]node_modules[\\/]@tanstack[\\/]react-query[\\/]/ },
           ],
         },
