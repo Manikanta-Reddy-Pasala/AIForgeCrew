@@ -1674,18 +1674,21 @@ def _pre_tool_checks(st, name, args, cwd, _scope_globs):
     # mentioned in this chat.
     try:
         from aiforge_core.runtime import scope_guard as _sg_jail
-        _jailed = _sg_jail.outside_workspace(name, args or {}, cwd)
+        _roots = list(getattr(st, "user_roots", ()) or ())
+        _jailed = _sg_jail.outside_workspace(name, args or {}, cwd, _roots)
     except Exception:  # noqa: BLE001 — never break dispatch
-        _jailed = []
+        _jailed, _roots = [], []
     if _jailed:
+        _allowed = [cwd] + _roots
         result = {
             "ok": False, "error": "outside_workspace",
-            "blocked_paths": _jailed, "workspace": cwd,
-            "hint": ("Write refused: the path is outside this session's "
-                     f"workspace ({cwd}). Write inside it, or ask the user to "
-                     "point this chat at that project. If writing there is "
-                     "genuinely intended, the operator can set "
-                     "AIFORGE_CHAT_WORKSPACE_JAIL=0 — do not assume it; ask."),
+            "blocked_paths": _jailed, "allowed_folders": _allowed,
+            "hint": ("Write refused: the path is outside the folders this chat "
+                     "may write to: " + ", ".join(map(str, _allowed)) + ". "
+                     "Those are the session workspace plus any folder the user "
+                     "named in this chat. Do NOT write there another way (a "
+                     "shell redirect, cp, mv) — ask the user to name the folder "
+                     "or point this chat at that project."),
         }
         yield {"type": "tool", "name": name, "args": args, "result": result}
         st.convo.append({"role": "user",
@@ -1965,6 +1968,18 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     # with an "[Interpreted request …]" enhancer block; key off the user's RAW
     # words (split that marker off) so recall/skills/mentions aren't diluted by
     # the boilerplate + restatement.
+    # Folders the user named in their own turns: the workspace jail treats
+    # them as consent to write (scope_guard.user_named_roots). `messages` is
+    # the real chat history — recall is injected as system blocks, not here.
+    try:
+        from aiforge_core.runtime import scope_guard as _sg_roots
+        _user_roots = _sg_roots.user_named_roots(
+            _text_of(m).split("\n\n---\n[Interpreted request")[0]
+            for m in (messages or [])
+            if isinstance(m, dict) and (m.get("role") or "user") == "user")
+    except Exception:  # noqa: BLE001 — never break a turn over this
+        _user_roots = []
+
     convo, _bundle, _asks, _dropped_playbooks = _build_convo(
         messages, cwd, role, readonly_mode=readonly_mode,
         plan_mode=plan_mode, analyze_mode=analyze_mode, builder=builder,
@@ -2076,6 +2091,7 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         builder=builder, strict_finish=strict_finish, plan_mode=plan_mode,
         analyze_mode=analyze_mode, readonly_mode=readonly_mode,
         scope_globs=_scope_globs, asks=_asks, bundle=_bundle, meter=_meter,
+        user_roots=_user_roots,
         dropped_playbooks=_dropped_playbooks, native_on=_native_on)
     return st
 

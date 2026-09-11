@@ -149,3 +149,69 @@ def test_pre_tool_checks_lets_the_write_through_when_inside(monkeypatch, tmp_pat
 
     assert events == []
     assert ret is None                           # no block → normal dispatch
+
+
+# ── a folder the user named is consent ─────────────────────────────────────
+# "put validate.py in /home/me/code/proj" was refused as outside_workspace, and
+# the agent then wrote it anyway with `cat >` / `mv` — three wasted steps and no
+# protection. The jail's job is repos the user never brought into the chat.
+
+def test_user_named_folder_and_file_parent_become_roots(tmp_path):
+    proj = tmp_path / "code" / "proj"
+    proj.mkdir(parents=True)
+    other = tmp_path / "other"
+    other.mkdir()
+    roots = scope_guard.user_named_roots([
+        f"create validate.py and put the file in the folder {proj}.",
+        f"also write {other}/new_file.txt please",
+        "and/or see http://example.com/a/b and /api/health",
+    ])
+    assert roots == [os.path.realpath(proj), os.path.realpath(other)]
+
+
+def test_a_user_named_folder_is_writable(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_CHAT_WORKSPACE_JAIL", "1")
+    ws = tmp_path / "session-1"
+    ws.mkdir()
+    proj = tmp_path / "code" / "proj"
+    proj.mkdir(parents=True)
+    roots = scope_guard.user_named_roots([f"put it in {proj}"])
+    assert scope_guard.outside_workspace(
+        "file_write", _args(str(proj / "validate.py")), str(ws), roots) == []
+    # a sibling the user did NOT name stays blocked
+    sib = str(tmp_path / "code" / "elsewhere" / "x.py")
+    assert scope_guard.outside_workspace(
+        "file_write", _args(sib), str(ws), roots) == [sib]
+
+
+def test_the_loop_takes_roots_from_user_turns_only(monkeypatch, tmp_path):
+    """Recall and tool output are not consent: only role=user text counts."""
+    from aiforge_core.runtime.chat_agent import _loop
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    recalled = tmp_path / "recalled"
+    recalled.mkdir()
+    st = _loop._build_loop_state(
+        [{"role": "assistant", "content": f"I remember {recalled}"},
+         {"role": "user", "content": f"write it in {proj}"}],
+        str(tmp_path / "ws"), "chat", 3, lambda *a, **k: "FINAL: x",
+        None, "act", None, None, False)
+    assert st.user_roots == [os.path.realpath(proj)]
+
+
+def test_refusal_lists_the_allowed_folders_and_forbids_the_shell_route(monkeypatch, tmp_path):
+    import types
+
+    from aiforge_core.runtime.chat_agent import _loop
+    monkeypatch.setenv("AIFORGE_CHAT_WORKSPACE_JAIL", "1")
+    ws = tmp_path / "session-1"
+    ws.mkdir()
+    named = tmp_path / "named"
+    named.mkdir()
+    st = types.SimpleNamespace(convo=[], user_roots=[str(named)])
+    events, ret = _drive(_loop._pre_tool_checks(
+        st, "file_write", {"path": str(tmp_path / "x" / "a.py"), "content": "x"},
+        str(ws), None))
+    result = events[0]["result"]
+    assert result["allowed_folders"] == [str(ws), str(named)]
+    assert "Do NOT write there another way" in result["hint"]

@@ -257,8 +257,41 @@ def workspace_jail_on() -> bool:
     return (val or "1") not in _JAIL_OFF
 
 
-def outside_workspace(tool_name: str, args: dict, cwd: str | None) -> list[str]:
-    """The paths ``tool_name`` wants to WRITE that resolve outside ``cwd``.
+# An absolute (or ~) path in the user's own words: POSIX, or a Windows drive.
+_USER_PATH_RE = re.compile(r"""(?<![\w.:/])(~?/[^\s'"`<>|;,()]+|[A-Za-z]:\\[^\s'"`<>|;,()]+)""")
+
+
+def user_named_roots(texts) -> list[str]:
+    """Folders the USER named in their own chat messages — the jail treats a
+    path the user typed as consent to write there.
+
+    The jail exists so that a repo the user never brought into this chat (one
+    the agent only saw in recall) is never edited. A folder the user named is
+    the opposite case: "put validate.py in /home/me/code/proj" was refused as
+    outside_workspace, and the agent then wrote it anyway through the shell —
+    three wasted steps and no protection. Each path counts as: itself when it
+    is a directory; else its parent when that exists (a file to create, or one
+    that exists). Pass ONLY user-authored text — never recall or tool output.
+    """
+    roots: list[str] = []
+    for text in texts or ():
+        for raw in _USER_PATH_RE.findall(str(text or "")):
+            p = raw.rstrip(".:!?*_`")
+            try:
+                real = os.path.realpath(os.path.expanduser(p))
+            except Exception:  # noqa: BLE001
+                continue
+            root = real if os.path.isdir(real) else os.path.dirname(real)
+            if root in ("", os.sep) or not os.path.isdir(root) or root in roots:
+                continue
+            roots.append(root)
+    return roots
+
+
+def outside_workspace(tool_name: str, args: dict, cwd: str | None,
+                      extra_roots=()) -> list[str]:
+    """The paths ``tool_name`` wants to WRITE that resolve outside ``cwd`` and
+    outside every folder in ``extra_roots`` (see :func:`user_named_roots`).
 
     Empty when the jail is off (AIFORGE_CHAT_WORKSPACE_JAIL=0), when there is
     no cwd, or when every target is inside it. A session with no cwd is NOT
@@ -281,15 +314,18 @@ def outside_workspace(tool_name: str, args: dict, cwd: str | None) -> list[str]:
     except Exception as exc:  # noqa: BLE001
         log.debug("workspace jail: bad cwd %r (allow): %s", cwd, exc)
         return []
+    allowed = [root] + [os.path.realpath(r) for r in (extra_roots or ()) if r]
     out: list[str] = []
     for raw in _path_from_args(tool_name, args or {}):
         try:
             target = os.path.realpath(os.path.join(root, str(raw)))
         except Exception:  # noqa: BLE001
             continue
-        if target != root and not target.startswith(root + os.sep):
+        if not any(target == a or target.startswith(a.rstrip(os.sep) + os.sep)
+                   for a in allowed):
             out.append(str(raw))
     return out
 
 
-__all__ = ["make_scope_guard_callback", "outside_workspace", "workspace_jail_on"]
+__all__ = ["make_scope_guard_callback", "outside_workspace", "user_named_roots",
+           "workspace_jail_on"]

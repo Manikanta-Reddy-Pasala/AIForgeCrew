@@ -64,3 +64,39 @@ def test_parse_inline_args_rescue():
     # genuinely empty args stay empty
     step = ca._parse("ACTION: list_services\nARGS_JSON: {}")
     assert step["args"] == {}
+
+
+# ── prose is not a tool call ───────────────────────────────────────────────
+# Native mode hands a plain-text reply to _parse; the case-insensitive,
+# unanchored ACTION regex turned "Recommended action: the …" into a call to a
+# tool named `the` ("unknown tool: the" in the chat).
+
+@pytest.mark.parametrize("prose", [
+    "The file lists the steps. Recommended action: the config must be validated first.",
+    "Next action:\nthe schema needs a $id field.",
+    "- Action: the team reviews it on Monday",
+])
+def test_prose_mentioning_action_is_not_dispatched(prose):
+    step = ca._parse(prose)
+    assert step["kind"] != "action", step
+
+
+def test_protocol_action_line_still_dispatches():
+    step = ca._parse('THOUGHT: read it\nACTION: file_read\nARGS_JSON: {"path": "a.py"}')
+    assert step["kind"] == "action" and step["tool"] == "file_read"
+    assert step["args"] == {"path": "a.py"}
+
+
+def test_inline_registered_tool_still_dispatches():
+    step = ca._parse('I will read it. ACTION: file_read ARGS_JSON: {"path": "a.py"}')
+    assert step["kind"] == "action" and step["tool"] == "file_read"
+
+
+def test_a_deliberate_call_to_a_missing_tool_still_dispatches():
+    """So the model is told the tool does not exist (e.g. web_search)."""
+    step = ca._parse('ACTION: web_search\nARGS_JSON: {"q": "x"}')
+    assert step["kind"] == "action" and step["tool"] == "web_search"
+
+
+def test_tool_names_with_digits_are_not_cut():
+    assert ca._ACTION_RE.search("ACTION: s3_get").group(1) == "s3_get"

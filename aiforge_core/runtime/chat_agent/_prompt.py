@@ -623,10 +623,42 @@ def _scaffolding_only(out: str) -> bool:
         "", out).strip().strip("`").strip()
 
 
+def _known_tool(name: str) -> bool:
+    try:
+        from ._registry import TOOLS
+        return name in TOOLS
+    except Exception:  # noqa: BLE001 — registry import must never break parsing
+        return False
+
+
+def _credible_action(out: str):
+    """The first ``ACTION:`` match that is really a tool call, or None.
+
+    The marker regex is case-insensitive and unanchored, so a native-mode reply
+    that is plain prose — "Recommended action: the config must…" — used to be
+    dispatched as a call to a tool named ``the`` ("unknown tool: the" in the
+    chat). A match counts when the name is a registered tool or a completion
+    pseudo-tool (anywhere, as before), or when it is written as a protocol
+    line: ``ACTION:`` at the start of a line and the name followed by the end
+    of the line, ``{`` or ``ARGS_JSON``. A deliberate call to a tool that does
+    not exist (``ACTION: web_search`` + ARGS_JSON) still dispatches, so the
+    model gets told why; prose falls through to the answer."""
+    for m in _ACTION_RE.finditer(out):
+        name = m.group(1)
+        if name.lower() in _COMPLETION_TOOL_NAMES or _known_tool(name):
+            return m
+        line_head = out[out.rfind("\n", 0, m.start()) + 1:m.start()]
+        if (not re.sub(r"[\s>*_`#-]", "", line_head)
+                and re.match(r"[ \t*_`]*(?:$|\n|\{|ARGS_JSON)", out[m.end():],
+                             re.IGNORECASE)):
+            return m
+    return None
+
+
 def _parse(out: str) -> dict:
     """Parse a model turn into {kind, ...}. Tolerant of code fences,
     pretty-printed JSON, and stray markdown around the protocol."""
-    act = _ACTION_RE.search(out)
+    act = _credible_action(out)
     # Prefer ACTION when present (models sometimes mention "final" in prose).
     if act:
         name = act.group(1).strip()

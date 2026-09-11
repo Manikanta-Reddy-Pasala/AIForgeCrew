@@ -131,22 +131,55 @@ function ChangesView({ files, summary }: Readonly<{ files: ChangeFile[]; summary
   );
 }
 
+// Shorten from the MIDDLE: a path keeps its filename, a command its tail. The
+// old cut (`JSON.stringify(v).slice(0, 40)`) chopped `path="/home/me/code/proj/
+// missi` mid-word, lost the closing quote and gave no way to see the rest.
+function middle(s: string, max: number): string {
+  if (s.length <= max) return s;
+  const head = Math.floor(max * 0.4);
+  return s.slice(0, head) + '…' + s.slice(s.length - (max - head - 1));
+}
+
+const ARG_PREVIEW = 3;
+const ARG_CHARS = 72;
+const DETAIL_CHARS = 20000;
+
+function argsPreview(args: Record<string, unknown>): string {
+  const entries = Object.entries(args ?? {});
+  const shown = entries.slice(0, ARG_PREVIEW)
+    .map(([k, v]) => `${k}=${middle(JSON.stringify(v) ?? String(v), ARG_CHARS)}`);
+  if (entries.length > ARG_PREVIEW) shown.push(`+${entries.length - ARG_PREVIEW} more`);
+  return shown.join(', ');
+}
+
+function pretty(v: unknown): string {
+  const s = typeof v === 'string' ? v : (JSON.stringify(v, null, 2) ?? String(v));
+  return s.length > DETAIL_CHARS ? s.slice(0, DETAIL_CHARS) + '\n… (truncated)' : s;
+}
+
 // One tool-call step: name(args) → result snippet, tinted by pending/ok/error.
+// Click the row for the full arguments and the full result.
 function ToolStepRow({ step }: Readonly<{ step: Extract<AgentStep, { kind: 'tool' }> }>) {
+  const [open, setOpen] = useState(false);
   const res = step.result as any;
   const ok = res?.ok !== false && !res?.error;
   let snippet: string;
   if (step.pending) snippet = 'running…';
-  else if (ok) snippet = res?.output ? String(res.output).slice(0, 120) : 'ok';
-  else snippet = res?.error ? String(res.error).slice(0, 120) : 'error';
+  else if (ok) snippet = res?.output ? middle(String(res.output).replace(/\s+/g, ' '), 120) : 'ok';
+  else snippet = res?.error ? middle(String(res.error), 120) : 'error';
   const toolTextColor = (step.pending || ok) ? 'var(--fg-1)' : 'var(--err)';
   let arrowColor: string;
   if (step.pending) arrowColor = 'var(--fg-2, var(--fg-1))';
   else if (ok) arrowColor = 'var(--ok)';
   else arrowColor = 'var(--err)';
+  const detailBox = {
+    margin: '4px 0 0', padding: '6px 8px', maxHeight: 320, overflow: 'auto',
+    background: 'var(--bg-code)', border: '1px solid var(--border-0)',
+    borderRadius: 'var(--r-sm)', whiteSpace: 'pre-wrap' as const,
+    wordBreak: 'break-word' as const, color: 'var(--fg-1)',
+  };
   return (
     <div style={{
-      display: 'flex', gap: 6, alignItems: 'flex-start',
       padding: '5px 10px',
       background: 'var(--bg-1)',
       border: '1px solid var(--border-0)',
@@ -156,20 +189,33 @@ function ToolStepRow({ step }: Readonly<{ step: Extract<AgentStep, { kind: 'tool
       fontFamily: 'var(--font-mono)',
       color: toolTextColor,
     }}>
-      <span style={{ flexShrink: 0, marginTop: 1 }}>{step.pending ? '⏳' : '🔧'}</span>
-      <AgentBadge role={step.role} />
-      <span>
-        <strong>{step.name}</strong>
-        {'('}
-        {Object.entries(step.args as Record<string, unknown>).slice(0, 3).map(([k, v], i) =>
-          `${i > 0 ? ', ' : ''}${k}=${JSON.stringify(v).slice(0, 40)}`
-        ).join('')}
-        {')'}
-        {' → '}
-        <span style={{ color: arrowColor }}>
-          {snippet}
+      <button type="button" onClick={() => setOpen(o => !o)}
+        aria-expanded={open} title={open ? 'hide details' : 'show full arguments and result'}
+        style={{
+          display: 'flex', gap: 6, alignItems: 'flex-start', width: '100%',
+          padding: 0, background: 'transparent', border: 0, cursor: 'pointer',
+          font: 'inherit', color: 'inherit', textAlign: 'left',
+        }}>
+        <span style={{ flexShrink: 0, marginTop: 1 }}>{step.pending ? '⏳' : '🔧'}</span>
+        <AgentBadge role={step.role} />
+        <span style={{ flex: 1, minWidth: 0, wordBreak: 'break-word' }}>
+          <strong>{step.name}</strong>
+          {'('}{argsPreview(step.args as Record<string, unknown>)}{')'}
+          {' → '}
+          <span style={{ color: arrowColor }}>{snippet}</span>
         </span>
-      </span>
+        <span style={{ flexShrink: 0, color: 'var(--fg-3)', transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .1s' }}>▸</span>
+      </button>
+      {open && (
+        <div>
+          <div style={{ marginTop: 6, color: 'var(--fg-3)' }}>arguments</div>
+          <pre style={detailBox}>{pretty(step.args)}</pre>
+          {!step.pending && (<>
+            <div style={{ marginTop: 6, color: 'var(--fg-3)' }}>result</div>
+            <pre style={detailBox}>{pretty(res)}</pre>
+          </>)}
+        </div>
+      )}
     </div>
   );
 }
