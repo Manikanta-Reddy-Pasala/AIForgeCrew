@@ -14,10 +14,13 @@ WorkingDirectory=%h/AIForgeCrew
 # --host needs to be passed here since run.sh's own HOST default (127.0.0.1)
 # is a hardcoded shell var, NOT overridable by the .env's AIFORGE_BIND_HOST.
 Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-# --native: this unit IS the host process. Docker mode (run.sh's default)
-# would start the sandbox container and exit, and systemd would read that as
-# the service ending.
-ExecStart=%h/AIForgeCrew/run.sh --native --host 0.0.0.0
+# AIFORGE_IN_SANDBOX=1: this unit IS the process that serves the API. Without
+# it run.sh would start the sandbox container and exit, and systemd would read
+# that exit as the service ending. AIForge otherwise always runs in the sandbox;
+# this is the one deliberate exception, and it is the same variable
+# docker/entrypoint.sh exports before exec'ing run.sh inside the box.
+Environment=AIFORGE_IN_SANDBOX=1
+ExecStart=%h/AIForgeCrew/run.sh --host 0.0.0.0
 Restart=always
 RestartSec=5
 

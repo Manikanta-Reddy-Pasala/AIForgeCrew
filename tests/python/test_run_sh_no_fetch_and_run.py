@@ -84,7 +84,7 @@ def box(tmp_path, toolless_path):
         "HOME": str(home),
         "AIFORGE_CONFIG_DIR": str(home / ".aiforge"),
         "AIFORGE_INSTALL_TMUX": "0",
-        "AIFORGE_MODE": "native",           # these tests are about the host path
+        "AIFORGE_IN_SANDBOX": "1",          # these tests are about the app path
         # run.sh now pip-installs the uv wheel on a box without uv. The test is
         # about what is NOT fetched, so give pip nowhere to fetch from.
         "PIP_NO_INDEX": "1",
@@ -412,7 +412,7 @@ def synced_box(tmp_path):
            "AIFORGE_CONFIG_DIR": str(tmp_path / "home" / ".aiforge"),
            "AIFORGE_LM_BASE_URL": "http://127.0.0.1:9/v1",
            "AIFORGE_INSTALL_TMUX": "0", "AIFORGE_FIX_PERMS": "0",
-           "AIFORGE_MODE": "native",
+           "AIFORGE_IN_SANDBOX": "1",
            "AIFORGE_AUTO_MIGRATE": "0", "AIFORGE_MIGRATE_OKF": "0",
            "AIFORGE_SKIP_AIDER": "1", "AIFORGE_SKIP_INTEGRATIONS": "1"}
     for k in ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "AIFORGE_EXTRAS"):

@@ -36,7 +36,9 @@ def _run(tmp_path: Path, args: list[str], extra_env: dict | None = None):
     env = {**os.environ,
            "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}",
            "AIFORGE_CONFIG_DIR": str(tmp_path / "cfg"),
-           "AIFORGE_MODE": "docker"}
+           # Force the sandbox branch: this suite runs INSIDE a container, where
+           # detection would otherwise take the in-box path and never call docker.
+           "AIFORGE_IN_SANDBOX": "0"}
     env.pop("COMPOSE_FILE", None)
     env.update(extra_env or {})
     proc = subprocess.run(["bash", str(dst), *args], cwd=str(tmp_path),

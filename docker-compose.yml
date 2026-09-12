@@ -4,7 +4,8 @@
 # An Ubuntu 24.04 sandbox. Inside it the agent has full rights (your uid +
 # passwordless sudo, no workspace jail) and open outbound network. It sees ONE
 # host folder: ~/.aiforge, mounted at the same path — settings, credentials
-# (security/), memory, tickets, and ~/.aiforge/workspace where projects live.
+# (security/), memory, tickets, and ~/.aiforge/repos where projects live
+# (or the folder passed to --repos).
 # Nothing else on the host is visible to it.
 #
 # The app copy and everything installed for it (.venv, node_modules, web/dist,

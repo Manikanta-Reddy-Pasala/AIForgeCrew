@@ -114,10 +114,11 @@ installer/build_payload.sh              # web UI → wheel, + uv for all three t
 installer/linux/build-deb.sh            # needs dpkg-deb   (Linux, or a container)
 installer/macos/build-dmg.sh            # needs hdiutil    (macOS)
 installer/windows/build-msi.sh          # needs wixl       (brew install msitools)
+installer/portable/build-portable.sh --target macos|linux|windows
 ```
 
-or `make installers` for all three (skipping any whose toolchain is absent).
-Artifacts land in `dist/installer/`.
+or `make installers` for the lot (skipping any whose toolchain is absent).
+Artifacts land in `dist/installer/`. Build detail: [BUILDING.md](BUILDING.md).
 
 `build-msi.sh` produces a real MSI from macOS/Linux via `wixl`, so all three
 come out of one CI job rather than needing a Windows runner. Its **structure**

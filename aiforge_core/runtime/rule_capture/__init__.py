@@ -23,8 +23,6 @@ chat-set flags entirely for autonomous runs (session_id is None).
 Everything FAILS OPEN: any error in classify/store/recognition returns a safe
 default and never raises into the chat turn. A capture must never break a chat.
 
-See ``docs/superpowers/specs/2026-06-26-rule-memory-capture-design.md``.
-
 This module was split (grouped by concern) into ``_base`` / ``_classify`` /
 ``_store`` / ``_gates`` / ``_transparency`` submodules; this package re-exports
 the full former top-level surface so ``from aiforge_core.runtime import

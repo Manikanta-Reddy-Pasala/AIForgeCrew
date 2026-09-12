@@ -164,14 +164,12 @@ launch.
 
 ## What is deliberately NOT bundled
 
-**A Python interpreter.** Nothing is fetched from GitHub, and uv's managed
-CPython is a GitHub release asset — there is no package index that carries an
-interpreter. So the target brings Python 3.12 from its own package manager
-(the `.deb` depends on `python3.12`; on Ubuntu 22.04 that means deadsnakes),
-and first-run stops with the install command when it is missing.
+**A Python interpreter** — uv's managed CPython is a GitHub release asset and no
+package index carries an interpreter. The target brings Python 3.12 from its own
+package manager (the `.deb` depends on `python3.12`; Ubuntu 22.04 means
+deadsnakes), and first run stops with the install command when it is missing.
 
-**The venv.** It is built per user, on first run, in their profile — not by the
+**The venv** — built per user on first run, in their profile, not by the
 installer as root. The agent runs as that user against their repos and their
-`~/.aiforge`; a runtime only an administrator could repair would be the wrong
-shape, and a root-owned venv in a per-user app is a support ticket waiting to
+`~/.aiforge`; a root-owned venv in a per-user app is a support ticket waiting to
 happen.

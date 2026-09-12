@@ -56,8 +56,8 @@ def test_your_projects_folder_is_mounted_only_when_asked():
     assert "AIFORGE_REPO_ROOT=${APP_HOME}/.aiforge/repos" in (_ROOT / "Dockerfile").read_text()
 
 
-def test_the_box_boots_the_same_run_sh_as_native_mode():
-    assert "AIFORGE_MODE=native" in _ENTRY
+def test_the_box_boots_the_same_run_sh_the_host_would():
+    assert "AIFORGE_IN_SANDBOX=1" in _ENTRY
     assert "./run.sh ${AIFORGE_RUN_ARGS:-}" in _ENTRY
 
 

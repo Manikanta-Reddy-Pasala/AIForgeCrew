@@ -38,7 +38,7 @@ _LAUNCH_BANNER_SENTINEL = "code context: RepoMap + CodeGraph"
 def _bash(script: Path, args: list[str], cwd: Path, extra_env: dict | None,
           timeout: float) -> subprocess.CompletedProcess:
     env = dict(os.environ)
-    env["AIFORGE_MODE"] = "native"   # the host path; docker mode starts a container
+    env["AIFORGE_IN_SANDBOX"] = "1"  # the app path; otherwise run.sh starts a container
     env.update(extra_env or {})
     return subprocess.run(
         ["bash", str(script), *args],
@@ -104,12 +104,41 @@ def test_port_and_host_values_are_consumed_not_left_dangling() -> None:
 
 
 def test_legacy_noop_flags_are_still_accepted() -> None:
-    """--lite/--hybrid/--no-build are kept as backwards-compat no-ops (the
-    stack is single-mode SQLite now). Pin that they don't error and don't
-    swallow an extra token -- a real compatibility guarantee worth locking in."""
-    proc = _run(["--lite", "--hybrid", "--no-build", "--sentinel-xyz"])
+    """--lite/--hybrid/--no-build/--docker are kept as backwards-compat no-ops
+    (the stack is single-mode SQLite, and the sandbox is the only mode). Pin
+    that they don't error and don't swallow an extra token -- a real
+    compatibility guarantee worth locking in."""
+    proc = _run(["--lite", "--hybrid", "--no-build", "--docker", "--sentinel-xyz"])
     assert proc.returncode != 0
     assert "unknown arg: --sentinel-xyz" in proc.stderr
+
+
+def test_native_is_no_longer_a_flag() -> None:
+    """AIForge always runs in the sandbox, so there is no host mode to pick."""
+    proc = _run(["--native"])
+    assert proc.returncode != 0
+    assert "unknown arg: --native" in proc.stderr
+
+
+def test_the_mode_env_var_is_gone_too() -> None:
+    """``AIFORGE_MODE`` selected the mode; there are no modes now. Setting it
+    must be inert rather than resurrect a branch or trip a validator."""
+    proc = _run(["--this-flag-does-not-exist"], extra_env={"AIFORGE_MODE": "native"})
+    assert "AIFORGE_MODE" not in proc.stderr
+    assert "unknown arg: --this-flag-does-not-exist" in proc.stderr
+
+
+def test_running_INSIDE_the_box_still_runs_the_app() -> None:
+    """Removing the choice must not remove the code path behind it.
+
+    ``docker/entrypoint.sh`` exports ``AIFORGE_IN_SANDBOX=1`` and execs this
+    script, so that path is HOW the box runs itself — lose it and the sandbox
+    cannot boot. Every run in this file sets that variable (see ``_bash``), so
+    reaching an ordinary argument error, rather than a container being started,
+    is the proof it is still honoured.
+    """
+    proc = _run(["--this-flag-does-not-exist"])
+    assert "unknown arg: --this-flag-does-not-exist" in proc.stderr
 
 
 def test_every_flag_shifts_exactly_its_own_tokens() -> None:

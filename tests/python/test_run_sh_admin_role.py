@@ -25,7 +25,7 @@ def _run(tmp_path: Path, args: list[str], extra_env: dict | None = None):
     shutil.copy(RUN_SH, dst)
     env = dict(os.environ)
     env["AIFORGE_CONFIG_DIR"] = str(tmp_path / "cfg")
-    env["AIFORGE_MODE"] = "native"   # the host path; docker mode starts a container
+    env["AIFORGE_IN_SANDBOX"] = "1"  # the app path; otherwise run.sh starts a container
     env.pop("AIFORGE_ADMIN_URL", None)
     env.pop("AIFORGE_ROLE", None)
     env.update(extra_env or {})
@@ -59,7 +59,9 @@ def test_docker_mode_passes_the_role_flags_into_the_sandbox(tmp_path: Path):
     fake.write_text(f'#!/bin/sh\necho "$* | RUN_ARGS=$AIFORGE_RUN_ARGS | UID=$AIFORGE_UID" >> "{log}"\nexit 0\n')
     fake.chmod(0o755)
     proc = _run(tmp_path, ["--admin", "--port", "9001"],
-                {"AIFORGE_MODE": "docker",
+                {"AIFORGE_IN_SANDBOX": "0",   # force the sandbox branch: the
+                 # suite itself runs in a container, where detection would
+                 # otherwise take the in-box path.
                  "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"})
     assert proc.returncode == 0, proc.stderr
     up = [ln for ln in log.read_text().splitlines() if ln.startswith("compose up")]
@@ -80,7 +82,9 @@ def test_repos_mounts_your_folder_and_is_not_passed_inward(tmp_path: Path):
     code = tmp_path / "code"
     code.mkdir()
     proc = _run(tmp_path, ["--repos", str(code), "--dev"],
-                {"AIFORGE_MODE": "docker",
+                {"AIFORGE_IN_SANDBOX": "0",   # force the sandbox branch: the
+                 # suite itself runs in a container, where detection would
+                 # otherwise take the in-box path.
                  "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"})
     assert proc.returncode == 0, proc.stderr
     up = [ln for ln in log.read_text().splitlines() if " up " in f" {ln} "][0]
@@ -96,7 +100,9 @@ def test_repos_must_be_a_folder(tmp_path: Path):
     (bindir / "docker").write_text("#!/bin/sh\nexit 0\n")
     (bindir / "docker").chmod(0o755)
     proc = _run(tmp_path, ["--repos", str(tmp_path / "nope")],
-                {"AIFORGE_MODE": "docker",
+                {"AIFORGE_IN_SANDBOX": "0",   # force the sandbox branch: the
+                 # suite itself runs in a container, where detection would
+                 # otherwise take the in-box path.
                  "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"})
     assert proc.returncode == 1
     assert "is not a folder" in proc.stderr
@@ -113,8 +119,11 @@ def test_docker_mode_is_the_default(tmp_path: Path):
     env = {"PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"}
     dst = tmp_path / "run.sh"
     shutil.copy(RUN_SH, dst)
-    full = {**os.environ, "AIFORGE_CONFIG_DIR": str(tmp_path / "cfg"), **env}
-    full.pop("AIFORGE_MODE", None)
+    full = {**os.environ, "AIFORGE_CONFIG_DIR": str(tmp_path / "cfg"), **env,
+            # Nothing selects the sandbox any more — it is what you get. Forced
+            # to "0" because this suite runs INSIDE a container, where bare
+            # detection would take the in-box path and never call docker.
+            "AIFORGE_IN_SANDBOX": "0"}
     subprocess.run(["bash", str(dst)], cwd=str(tmp_path), capture_output=True,
                    text=True, env=full, timeout=60)
     assert "compose up -d --build" in log.read_text()

@@ -60,8 +60,8 @@ export default function MountsCard() {
         </p>
       ) : (
         <p style={{ fontSize: 13, opacity: 0.8 }}>
-          Native mode (<code>./run.sh --native</code>): AIForge runs directly on this machine, so
-          nothing is mounted — the list below applies when you run it in the sandbox.
+          Running outside the sandbox: AIForge is on this machine directly, so nothing is
+          mounted — the list below applies when you run it in the sandbox.
         </p>
       )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10 }}>

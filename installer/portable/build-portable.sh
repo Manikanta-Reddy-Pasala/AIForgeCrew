@@ -71,6 +71,10 @@ if [[ "$OFFLINE" == "1" ]]; then
     macos-x64)   PLAT=(--platform macosx_10_12_x86_64 --platform macosx_10_13_x86_64 --platform macosx_11_0_x86_64) ;;
     linux)       PLAT=(--platform manylinux2014_x86_64 --platform manylinux_2_17_x86_64 --platform manylinux_2_28_x86_64) ;;
     linux-arm64) PLAT=(--platform manylinux2014_aarch64 --platform manylinux_2_17_aarch64 --platform manylinux_2_28_aarch64) ;;
+    # Unreachable while the guard above runs first, and kept anyway: without it
+    # a new target would leave PLAT unset and fail further down on an expansion
+    # error rather than saying which target has no wheel platforms.
+    *) echo "build-portable: no wheel platforms known for target '$TARGET'" >&2; exit 2 ;;
   esac
   echo "==> vendoring the locked dependency wheels for $TARGET"
   "${PYTHON:-python3}" -m pip download --quiet --disable-pip-version-check --no-deps \

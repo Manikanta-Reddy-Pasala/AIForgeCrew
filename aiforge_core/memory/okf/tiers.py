@@ -1,7 +1,5 @@
 """Two-tier knowledge compaction — the mesh fold, and the local view.
 
-``docs/superpowers/specs/2026-07-20-two-tier-knowledge-compaction.md``.
-
 **Tier 1 — the admin, once for everybody.** Every spoke pushes what it authored
 to the admin, where it lands in ``peers/<origin>/``. The admin folds that inbox
 together with its own ``okf/`` into its own subtree of ``mesh/``: one node per

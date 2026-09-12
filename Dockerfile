@@ -91,7 +91,7 @@ ENV HOME=${APP_HOME} \
     AIFORGE_CONFIG_DIR=${APP_HOME}/.aiforge \
     AIFORGE_REPO_ROOT=${APP_HOME}/.aiforge/repos \
     AIFORGE_SANDBOX=1 AIFORGE_ALLOW_SUDO_INSTALL=1 \
-    AIFORGE_MODE=native AIFORGE_CHAT_WORKSPACE_JAIL=0 AIFORGE_FIX_PERMS=0 \
+    AIFORGE_IN_SANDBOX=1 AIFORGE_CHAT_WORKSPACE_JAIL=0 AIFORGE_FIX_PERMS=0 \
     PATH=/var/lib/aiforge/app/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EXPOSE 8799
 ENTRYPOINT ["/usr/local/bin/aiforge-entrypoint"]

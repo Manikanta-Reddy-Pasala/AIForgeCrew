@@ -1,36 +1,44 @@
 # Tool Reference
 
 Complete reference for every agent tool. Sources of truth:
-`aiforge_core/runtime/chat_agent.py` (`TOOLS` registry, 93 tools),
-`aiforge_core/runtime/doer_tools.py` (pipeline `FunctionTool` registry),
-`aiforge_core/agents/agents.yaml` (per-role allowlists),
-`aiforge_core/runtime/tools/tool_policy.py` (gating).
+`runtime/chat_agent/_registry.py` (`TOOLS`, **112 tools**),
+`runtime/chat_agent/_tools/_schemas.py` (the model-facing descriptions),
+`runtime/doer_tools/` (pipeline `FunctionTool` registry),
+`agents/agents.yaml` (per-role allowlists),
+`runtime/tools/tool_policy.py` (gating).
 
 Two registries, one contract: chat speaks the text ReAct protocol
 (`handler(args, cwd) → dict`), the pipeline Doer uses typed ADK
 `FunctionTool`s. Tools that must exist on both surfaces are declared in
-`runtime/tool_manifest.py` (`CROSS_SURFACE`) — a CI parity test plus a
-startup check fail loudly on drift.
+`runtime/tool_manifest.py` (`CROSS_SURFACE`) — a CI parity test plus a startup
+check fail loudly on drift.
 
 ## Gating legend
 
 | Mark | Meaning | Enforced by |
 |---|---|---|
-| RO | Read-only — never prompts, allowed in Plan mode | `tool_policy._READONLY_ALWAYS_ALLOW` + `chat_agent._READONLY_TOOLS` |
+| RO | Read-only — never prompts, allowed in Plan mode | `tool_policy._READONLY_ALWAYS_ALLOW` + `_registry._READONLY_TOOLS` |
 | ASK | Pauses for Approve/Reject in chat | `tool_policy._DEFAULT_ASK` → `chat_approve` |
 | RISK | Command text is risk-classified; dangerous → ASK, caution → ASK by default | `tools/command_risk.py` via `tool_policy` |
-| EDIT | Write is held by the diff-preview review gate; deletes need confirmation | `chat_agent._MUTATING`, `tools/delete_guard.py` |
+| EDIT | Write is held by the diff-preview review gate; deletes need confirmation | `_registry._MUTATING`, `tools/delete_guard.py` |
 
-Plan mode blocks everything not RO (`chat_agent._READONLY_TOOLS`, ~line 2000).
+Plan mode blocks everything not RO (`_registry._READONLY_TOOLS`).
 `AIFORGE_TOOL_POLICY="tool=allow|ask|deny"` overrides any default.
+Anything carrying a shell command is risk-assessed — `run_command`, `bash`,
+`run_shell`, `serve`, `watch_until` **and `ui_check`** (it starts the app it is
+about to look at, through the same shell); `execute_ipython_cell` is assessed
+on its code. **Inside the docker sandbox** three ASK tools drop to allow,
+because their blast radius ends at the box: `execute_ipython_cell`,
+`create_job_script`, `mount_folder` (`tool_policy._BOX_LOCAL_TOOLS`).
 
-## Chat agent tools (full registry — 93 + `plan_progress`)
+## Chat agent tools
 
 ### Files & editing
 
 | Tool | Args | Does | Gate |
 |---|---|---|---|
 | `file_read` | `{path}` | read a file | RO |
+| `read_files` | `{paths: [...]}` | read MANY files in ONE call — preferred over one-at-a-time | RO |
 | `read_lines` | `{path, start, end}` | read a line range | RO |
 | `list_dir` | `{path}` | list a directory | RO |
 | `file_write` / `file_create` | `{path, content}` | create/overwrite (syntax-checked; `force` to override) | EDIT |
@@ -38,6 +46,7 @@ Plan mode blocks everything not RO (`chat_agent._READONLY_TOOLS`, ~line 2000).
 | `editor` | `{command: view\|create\|str_replace\|insert\|undo_edit, path, …}` | structured editor with undo; view is RO | EDIT (writes) |
 | `multi_edit` | `{edits: [{path, old_str, new_str}…]}` | batch edits across files, validated then all-or-nothing | EDIT |
 | `rename_symbol` | `{path, old, new}` | project-wide symbol rename | EDIT |
+| `summarize_doc` | `{path, pages}` | summarize an attached pdf/docx/xlsx; `pages` narrows it | RO |
 
 ### Search & navigation
 
@@ -45,9 +54,23 @@ Plan mode blocks everything not RO (`chat_agent._READONLY_TOOLS`, ~line 2000).
 |---|---|---|---|
 | `grep` | `{pattern, path}` | ripgrep recursive search | RO |
 | `find` | `{name, kind, glob}` | fuzzy-locate files/dirs | RO |
+| `lsp` | `{command, path, line, character}` | goto-def / find-refs / hover | RO |
 
-(The AST repo map and graphify graph are injected as *context* in chat; the
-`repo_map` / `graphify_lookup` *tools* are Doer/pipeline-side — see below.)
+The AST repo map and the graphify graph are injected as *context* in chat; the
+`repo_map` / `graphify_lookup` *tools* are Doer/pipeline-side — see below.
+
+### Code graph
+
+Symbol relations from a pre-indexed SQLite graph built by the local `codegraph`
+binary — explicit answers without scanning files (`tools/codegraph.py`;
+`AIFORGE_CODEGRAPH_BIN`, `AIFORGE_CODEGRAPH_PATH`). All RO.
+
+| Tool | Does |
+|---|---|
+| `codegraph_impact` | blast radius of changing a symbol (run it BEFORE editing) |
+| `codegraph_callers` / `codegraph_callees` | who calls a symbol / what it calls |
+| `codegraph_query` | find a symbol |
+| `codegraph_explore` | relevant symbols + source for a natural-language query |
 
 ### Code execution & verification
 
@@ -57,47 +80,50 @@ Plan mode blocks everything not RO (`chat_agent._READONLY_TOOLS`, ~line 2000).
 | `run_tests` | `{mode, pattern}` | project test runner, per-test filter | allow |
 | `typecheck` | `{}` | tsc/mypy/go vet … | allow |
 | `format` | `{path}` | ruff/prettier/gofmt | EDIT |
-| `lsp` | `{command, path, line, character}` | goto-def / find-refs / hover | RO |
 | `project` | `{action: build\|test\|run}` | detect + install + build/test/run | RISK-adjacent (runs toolchain) |
-| `ensure_runtime` | `{tools: [java, mvn…]}` | install + verify missing toolchain | allow |
+| `ensure_runtime` | `{tools: [java, mvn…]}` | install + verify missing toolchain (apt/brew/apk/dnf/yum) | allow |
 | `serve` | `{cmd, port}` | background dev server (cmd is risk-assessed) | RISK |
 | `stop_service` / `list_services` | `{pid}` / `{}` | stop / list `serve`d processes | allow / RO |
-| `execute_ipython_cell` | `{code}` | persistent Jupyter kernel | ASK |
-| `browse` | `{action, url…}` | Playwright browser automation | allow (degrades if absent) |
+| `execute_ipython_cell` | `{code}` | persistent Jupyter kernel | ASK (allow in-box) |
 | `mcp` | `{server, tool, args}` | call an MCP server tool | allow |
 | `delegate` / `delegate_to_agent` | `{agent, task}` | spawn a sub-agent (depth-capped) | allow |
+
+### Browser & visual
+
+| Tool | Args | Does | Gate |
+|---|---|---|---|
+| `browse` | `{command: goto\|screenshot\|click\|fill\|extract_text\|…}` | Playwright automation; a missing Chromium build is fetched once on first launch | allow |
+| `ui_check` | `{url \| cmd}` | open the running app headless, screenshot it, report what a vision model SEES plus console + network errors | RISK (`cmd` runs) |
+| `ui_ask` | `{capture_id, question}` | follow-up question to the vision model about a capture `ui_check` took | allow |
 
 ### Waiting & scheduling
 
 | Tool | Args | Does | Gate |
 |---|---|---|---|
 | `watch_until` | `{cmd, until, interval_s, max_checks, timeout_s, cmd_timeout}` | re-run one command until a condition holds — the loop is code, so a 30-check watch costs ONE model request | RISK (runs `cmd`) |
-| `schedule_task` | `{action: create\|list\|cancel, instruction, cron\|every_minutes, until, job_id}` | a recurring job that outlives the chat; each run files a ticket | allow |
+| `schedule_task` | `{action: create\|list\|cancel, instruction, cron\|every_minutes, until, job_id}` | a recurring job that outlives the chat; each run files a ticket | ASK |
 
 **Every loop ends.** `watch_until` holds the turn open, so it caps at 30 minutes
-(`AIFORGE_WATCH_MAX_SECONDS`) and refuses anything longer by name, pointing at
-`schedule_task` — silently clamping made the agent claim a two-hour watch it
-never ran.
+(`AIFORGE_WATCH_MAX_SECONDS`, 1800s) and refuses anything longer by name,
+pointing at `schedule_task` — silently clamping made the agent claim a two-hour
+watch it never ran.
 
 `schedule_task` outlives the chat, so it carries an END:
 
 - `until` takes the user's own words — `"tomorrow"` (through the end of that
   day), `"3d"`, `"90m"`, an ISO date/time.
-- **Omitted, the job closes itself after 2 hours** (`AIFORGE_JOB_DEFAULT_TTL_MINUTES`).
-  A loop set up during an incident must not outlive the incident.
+- **Omitted, the job closes itself after 2 hours**
+  (`AIFORGE_JOB_DEFAULT_TTL_MINUTES`, 120). A loop set up during an incident
+  must not outlive the incident.
 - `until: "forever"` is the only way to get a job that never self-closes.
 - An explicit end is capped at 30 days (`AIFORGE_JOB_MAX_TTL_MINUTES`).
 
 **A close keeps the learning and the scripts, and nothing else** — the same for
 an expiry, a chat `cancel`, and a delete from the Jobs page
-(`aiforge_core/jobs/lifecycle.py`):
-
-- a memory capture records what the loop watched, how it ended, and whether it
-  was failing;
-- `*.sh` / `*.py` the job wrote are moved into `~/.aiforge/jobs`, where a script
-  job can be pointed at them;
-- the scratch workspace (`/tmp/aiforge-job-<id>`) is deleted, and so is the job
-  row — a disabled row is a loop nobody closed.
+(`jobs/lifecycle.py`): a memory capture records what the loop watched, how it
+ended and whether it was failing; `*.sh` / `*.py` the job wrote move into
+`~/.aiforge/jobs`; the scratch workspace (`/tmp/aiforge-job-<id>`) and the job
+row are deleted — a disabled row is a loop nobody closed.
 
 ### Git / VCS
 
@@ -107,12 +133,13 @@ an expiry, a chat `cancel`, and a delete from the Jobs page
 | `github_pr` | `{title, body, base, draft}` | open a GitHub PR via `gh` | ASK |
 | `gitlab_mr_create` / `gitlab_mr_comment` | `{project, source_branch…}` / `{project, iid, body}` | open / comment a GitLab MR | ASK |
 
-### Jira (21 tools)
+### Jira (22 tools)
 
 | Tool | Args | Does | Gate |
 |---|---|---|---|
 | `jira_search` | `{query}` or `{jql, time}` | find issues (optionally with time fields) | RO |
 | `jira_read` | `{key}` | issue + comments + time tracking | RO |
+| `jira_comments` | `{key, limit}` | read an issue's comments | RO |
 | `jira_worklog` | `{key}` | logged time: who/how much/when + rollup | RO |
 | `jira_remote_links` | `{key}` | linked Confluence pages + web links | RO |
 | `jira_myself` / `jira_projects` | `{}` | current user / visible projects | RO |
@@ -175,6 +202,10 @@ effective value comes back as `unattended_budget_s`.
 | `web_fetch` | `{url, max_chars}` | read a page's text | RO; `AIFORGE_ALLOW_WEB_FETCH=1` egress gate everywhere, chat included; `AIFORGE_WEB_FETCH_DISABLE=1` is the hard-off |
 | `web_crawl` | `{url}` | page → clean markdown, saved to `work/web/<slug>/` dossier | RO; same egress gate |
 
+There is **no web search**. The name and its aliases (`search_web`,
+`websearch`, `google`, …) are intercepted and answered `web_search_removed`,
+in chat and in the Doer alike — the query string was unfiltered outbound data.
+
 ### Context, resolvers & settings
 
 | Tool | Args | Does | Gate |
@@ -186,6 +217,14 @@ effective value comes back as `unattended_budget_s`.
 | `set_repo_folder` / `set_repo_root` | `{repo, path}` / `{path}` | persist repo → folder mapping | allow |
 | `set_integration_default` | `{tool, value}` | persist default Jira project / Confluence space | allow |
 
+### Sandbox & secrets
+
+| Tool | Args | Does | Gate |
+|---|---|---|---|
+| `mount_folder` | `{path}` | **request** a host folder — it lands on the next `./run.sh`, and only once the HOST approves it (`--mount` or a prompt). An entry is a request, never a grant | ASK (allow in-box) |
+| `unmount_folder` | `{path}` | drop a folder from the request list | allow |
+| `save_secret` | `{name, value, purpose}` | store a key/token in the `security/` folder; memory records only WHERE it is, never the value | allow |
+
 ### Memory & learning
 
 | Tool | Args | Does | Gate |
@@ -193,26 +232,32 @@ effective value comes back as `unattended_budget_s`.
 | `memory_lookup` | `{query}` | unified recall (all sources, ranked) | RO |
 | `memory_write` | `{text, kind, tags, scope}` | save a fact; `scope:"global"` = recalled everywhere | allow |
 | `remember_rule` | `{text, description, triggers, scope}` | persist an always-on user rule | allow |
+| `note_consolidate` / `note_curate` | `{path, text}` / `{path}` | merge new knowledge into a note's OKR sections / re-verify a note against its live source | allow |
 | `skill_search` / `learn_skill` | `{query}` / `{name, description, body, triggers, scope}` | find / author a reusable skill | RO / allow |
 | `workflow_search` / `learn_workflow` | `{query}` / `{…, scripts: [{name, content, test}]}` | find / author a workflow; every script's test command is **actually run** before save (hard gate) | RO / allow |
-| `create_job_script` | `{name, cron, script}` | save + schedule a recurring cron job | ASK |
+| `create_job_script` | `{name, cron, script}` | save + schedule a recurring cron job | ASK (allow in-box) |
 
 ### Progress
 
-| Tool | Args | Does | Gate |
-|---|---|---|---|
-| `plan_progress` | `{slug, status: running\|done\|failed}` | flip a checklist item for multi-part asks (handled in the chat loop, not the registry) | allow |
+`plan_progress` `{slug, status: running|done|failed}` flips a checklist item for
+multi-part asks. It is handled in the chat loop before dispatch
+(`chat_agent/_loop.py`), not in the `TOOLS` registry.
 
 ## Pipeline Doer tools
 
-The Doer's registry is `runtime/doer_tools.py` (typed `FunctionTool`s); what
-the model may actually call is the `agents.yaml` allowlist:
+The Doer's registry is `runtime/doer_tools/` (typed `FunctionTool`s).
 
-- **Allowed** (`agents.yaml → doer.tools.allowed`): `editor`, `bash`,
-  `file_read`, `file_write`, `file_patch`, `list_dir`, `run_shell`, `think`,
-  `finish`, `graphify_lookup`, `memory_lookup`, `skill_search`, `learn_skill`,
-  `repo_map`, `impacted_tests`, `grep_repo`, `serve`, `stop_service`,
-  `subtask_update`, `git_commit`, plus Jira/Confluence **reads**
+> **`agents.yaml` does NOT filter the Doer.** `agents/doer.py` builds its tools
+> via `adk_function_tools()` with no `role=`, so the Doer block is
+> *documentation of intended scope*, not enforcement. Turning enforcement on
+> without reconciling the list would strip the Doer's file/shell surface and
+> brick it.
+
+- **Intended scope**: `editor`, `bash`, `file_read`, `file_write`, `file_patch`,
+  `list_dir`, `run_shell`, `think`, `finish`, `graphify_lookup`,
+  `memory_lookup`, `skill_search`, `learn_skill`, `repo_map`, the five
+  `codegraph_*` tools, `impacted_tests`, `grep_repo`, `serve`, `stop_service`,
+  `subtask_update`, `git_commit`, `web_crawl`, plus Jira/Confluence **reads**
   (`jira_search/read/worklog/remote_links/transitions`,
   `confluence_search/read/children`).
 - **Forbidden**: `ask_user`, `write_fact`, `write_plan`, `create_child_ticket`,
@@ -222,23 +267,26 @@ the model may actually call is the `agents.yaml` allowlist:
   `subtask_update`, `impacted_tests` (diff → covering tests), `memory_block`.
 - Alias names a local model may emit (`read`, `write`, `bash`, `glob`,
   `todo_write`, `commit`, …) map to the canonical tools in `doer_tools.__all__`.
+- Contract: `max_turns: 40`, `max_wall_s: 1500`, writes must resolve inside
+  `scope_allowlist_globs`, halt after 2 consecutive compile failures.
 
 ## Which agent gets which tools
 
-From `aiforge_core/agents/agents.yaml` (enforced twice: the tool schema is
-filtered per role before the agent boots — `agents/loader.tools_schema_for_role`
-— and every call is re-checked at the tool boundary):
+From `agents/agents.yaml`. For every role **except the Doer** this is enforced
+twice: the tool schema is filtered per role before the agent boots
+(`agents/loader.tools_schema_for_role`) and every call is re-checked at the tool
+boundary.
 
 | Agent | Tools |
 |---|---|
-| **Chat** (simple/act) | the full 93-tool registry above |
-| **Chat** (plan mode) | read-only subset only (`_READONLY_TOOLS`) — inspect, recall, all Jira/Confluence/GitLab/web **reads**, `context_gather`, resolvers; every mutating tool returns `blocked: plan_mode` |
-| **Doer** | full build set above (edit + shell + verify + reads) |
-| **Researcher** | repo reads + `memory_lookup`/`graphify_lookup` + page reads (`web_read`, `web_crawl`) for a URL it was GIVEN (there is no web search), plus Jira/Confluence reads; no writes/shell |
-| **Architect** | `graphify_lookup`, `memory_lookup`, view-only `editor`, `grep_repo`, `repo_map`, `resolve_repo`, Jira/Confluence reads; no writes/shell |
-| **Planner** | same read set as Architect + `jira_worklog`; plan-writing ops (`write_plan`, `create_child_ticket`) are server-side, not model tools |
-| **Live-verifier** | `bash`, `file_read`, `grep` (runs the real recipe; can't edit) |
-| **Ctx fan-out** (`ctx_memory` / `ctx_repomap` / `ctx_conventions`) | narrow read sets (`memory_lookup` / repo-map + grep + view-editor / grep + view-editor) |
+| **Chat** (simple/act) | the full 112-tool registry above |
+| **Chat** (plan mode) | read-only subset only (`_registry._READONLY_TOOLS`) — inspect, recall, all Jira/Confluence/GitLab/web **reads**, `context_gather`, resolvers; every mutating tool returns `blocked: plan_mode` |
+| **Doer** | full build set above (edit + shell + verify + reads); unfiltered at runtime |
+| **Researcher** | `file_read`, `list_dir`, `grep`/`grep_repo`, `repo_map`, `graphify_lookup`, `memory_lookup`, view-only `editor`, `web_read` + `web_crawl` for a URL it was GIVEN (there is no web search), Jira/Confluence reads. No writes, no shell, no `git_commit` |
+| **Architect** | `graphify_lookup`, `memory_lookup`, view-only `editor`, `grep_repo`, `repo_map`, `resolve_repo`, `web_crawl`, Jira/Confluence reads. No writes/shell — and no `file_read` (the view-editor is the read path) |
+| **Planner** | same read set as Architect + `jira_worklog`; `write_plan` / `create_child_ticket` are server-side ops, not model tools |
+| **Live-verifier** | `bash`, `file_read`, `grep`, `web_crawl` (runs the real recipe; can't edit) |
+| **Ctx fan-out** | narrow read sets — `ctx_memory`: `memory_lookup`; `ctx_repomap`: repo-map + graphify + grep + `file_read` + view-editor; `ctx_conventions`: grep + `file_read` + view-editor |
 | **Enhancer / gap_eval** | no allowlist, but all write/exec tools forbidden |
 | **Verifier, Refiner, Feedback, Learner, Triage, Validator, verify_*** | tool-less (`forbidden: ALL`) — pure text stages |
 
@@ -255,8 +303,15 @@ integration (URL + auth from Settings). Read-only tools only, by default;
 
 ## Graphify graph
 
-`graphify` output (`<repo>/graphify-out/graph.json`) is loaded into Neo4j by
-`aiforge_core/indexing/graphify_loader.py` (idempotent upserts) and queried by
-the `graphify_lookup` tool (Architect/Planner/Doer/Researcher/ctx_repomap).
-Refresh scripts: `scripts/runtime/aiforge-graphify-all.sh`,
-`scripts/runtime/graphify-nightly.sh`, install via `run.sh --with-graphify`.
+`graphify_lookup` reads a repo's `graphify-out/graph.json` **directly** — no
+database, no loader step. Pass a label, file path or substring and get the
+matched nodes plus their k-hop neighbours typed by relation (`calls`, `uses`,
+`contains`, `inherits`, `imports_from`, and the LLM-extracted `rationale_for`
+edges that source alone cannot give you). The graph is parsed once per process;
+`ok: false` when no repo scope is known or the file is unreadable, so the agent
+loop keeps moving (`runtime/graphify_lookup_tool.py`). Available to
+Architect/Planner/Doer/Researcher/ctx_repomap.
+
+Refresh: `scripts/runtime/aiforge-graphify-all.sh`,
+`scripts/runtime/graphify-nightly.sh`; install the CLI via
+`run.sh --with-graphify`.

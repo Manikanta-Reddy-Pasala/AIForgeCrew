@@ -16,10 +16,10 @@ Everything you need to go from clone → running → configured → doing real w
 
 ## 1. Run it
 
-**Prereqs:** `git`, `python 3.12`, and one reachable model endpoint (LM Studio,
-vLLM, Ollama, OpenRouter, a cloud key…). **No Docker required** — the stack is
-single-mode: embedded SQLite + Markdown memory, all on the host. (Docker is only
-needed for the optional self-hosted Langfuse trace UI.)
+**Prereqs:** **Docker**, `git`, and one reachable model endpoint (LM Studio,
+vLLM, Ollama, OpenRouter, a cloud key…). AIForge runs in an Ubuntu 24.04
+sandbox — the only mode; there is no host option. Storage is embedded SQLite +
+Markdown memory: no Postgres, no Neo4j, no GPU.
 
 You do **not** need Node installed: it comes in as a Python dependency for the
 UI build. Nor `uv` — same. `run.sh` never pipes a remote installer into a shell;
@@ -36,16 +36,9 @@ every box, which `run.sh` reads and never writes to. Anything per-box (the
 model endpoint, the memory role, keys) goes in the real environment, which
 overrides the file. There is no `.env`.
 
-Open **http://127.0.0.1:8799/ui/**. First boot builds the venv + UI and starts
-the api + team-pipeline runner on the host — it does **not** download anything
-heavy, so it comes up fast.
-
-**Upgrading an OLD install** (a previous dockerized Postgres/Neo4j setup)? Just
-`git pull && ./run.sh` — the first boot AUTO-migrates your data (Postgres →
-SQLite tickets/chat, Neo4j facts → OKR briefs, briefs → `compacted/` folder, okf
-DAG → `memory-archive/`) and removes the DB-infra containers (keeps Langfuse).
-Force a re-converge anytime with `./run.sh --migrate`. No data loss; nothing to
-hand-edit.
+Open **http://127.0.0.1:8799/ui/**. First boot builds the sandbox image, then
+the venv + UI inside it, and starts the api + team-pipeline runner in the box —
+a few minutes once, then fast. Follow it with `./run.sh --logs`.
 
 **Memory recall — hash (default) vs semantic:**
 
@@ -211,21 +204,22 @@ searching files.
 
 ## Data, security & where things live
 
-- **Storage:** SQLite under `~/.aiforge/`, in every mode including `--docker`.
-  There is no Postgres/Neo4j option any more: the drivers are not installed
-  (psycopg/pymongo are absent outright, neo4j is the `aiforge-memory[graph]`
-  extra), run.sh strips `AIFORGE_PG_URL` / `NEO4J_URI` from the environment on
-  boot, and `deploy/converge.py` comments them out of a stale `.env` and tears
-  down any leftover `aiforge-neo4j` / `aiforge-postgres` container. Setting
-  those variables does nothing.
+- **Storage:** SQLite under `~/.aiforge/` — the one folder of this machine the
+  sandbox sees.
 - **Config + user data:** `~/.aiforge/` (agent config, chat db, jobs, skills,
   workflows, rules, memory).
-- **Security:** by default the chat agent has **full unsandboxed filesystem + shell**
-  on the host. Set `AIFORGE_WORKSPACE_DIR=/path` to clamp it, and use `--docker` for
-  shared/untrusted deploys. Binding non-loopback (`--host 0.0.0.0`) requires
+- **Security:** the agent has full rights **inside its box**, and from this machine
+  reaches only `~/.aiforge` plus folders you approved with `--mount`. The exception is
+  `AIFORGE_IN_SANDBOX=1` — how the box runs itself, and how a host service such as
+  `scripts/runtime/nuc/aiforge-api.service` runs: there it has **full, unsandboxed
+  filesystem + shell**, so set `AIFORGE_WORKSPACE_DIR=/path` to clamp it.
+  Binding non-loopback (`--host 0.0.0.0`) requires
   `AIFORGE_API_TOKEN` (or the explicit `AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1` opt-out
   when you front it with your own auth/tunnel); the check reads the real socket, so
   a bare `uvicorn --host 0.0.0.0` is refused too. **If a reverse proxy on the same
   host fronts the API, also set `AIFORGE_TRUST_LOOPBACK=0`** — otherwise every
-  proxied request looks like `127.0.0.1` and skips the token. `/admin` always needs
-  the token when one is set.
+  proxied request looks like `127.0.0.1` and skips the token. `/admin` follows that
+  same loopback-or-token rule — it is **not** token-only (that special case was
+  reverted in `11f5778`: a browser navigation cannot send an `Authorization` header,
+  so the page stopped opening the day a token existed). What protects it instead is
+  that a remote caller is refused **even with a valid token**.

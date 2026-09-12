@@ -66,7 +66,7 @@ chown "$APP_UID:$APP_GID" "$STATE" "$APP" "$CFG/repos" 2>/dev/null || true
 
 # Inside the box there is nothing to protect from the agent: full rights, no
 # workspace jail. run.sh's own host-permission fixes do not apply here.
-export AIFORGE_MODE=native AIFORGE_CHAT_WORKSPACE_JAIL=0 AIFORGE_FIX_PERMS=0
+export AIFORGE_IN_SANDBOX=1 AIFORGE_CHAT_WORKSPACE_JAIL=0 AIFORGE_FIX_PERMS=0
 # Projects live in ~/.aiforge/repos by default, or in the folder you mounted
 # with --repos (clone/create them there, then point a chat or ticket at one);
 # unpinned chats get their own ~/.aiforge/chat-workspaces/session-N as before.

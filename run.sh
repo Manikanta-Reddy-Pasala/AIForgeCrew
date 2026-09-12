@@ -14,16 +14,15 @@
 #
 # DOCKER MODE by default: an Ubuntu 24.04 sandbox where the agent has full
 # rights, sees only ~/.aiforge from the host, and has open outbound network
-# (see docker-compose.yml). `--native` runs on the host instead (full host fs
-# and shell access). Storage is embedded SQLite + Markdown memory. UI on
+# (see docker-compose.yml). There is no host mode to choose: AIForge always
+# runs in the sandbox. Storage is embedded SQLite + Markdown memory. UI on
 # http://localhost:8799/ui/.
 #
 # Flags:
 #   --port N     listen port (default 8799)
 #   --host H     bind host (default 127.0.0.1)
 #   --dev        uvicorn --reload
-#   --native     run on the host, not in the sandbox (or AIFORGE_MODE=native)
-#   --docker     the sandbox (the default; or AIFORGE_MODE=docker)
+#   --docker     accepted and ignored: the sandbox is the only mode
 #   --stop | --logs | --shell   stop / follow / open a shell in the sandbox
 #   --repos DIR  mount YOUR projects folder into the sandbox (same path) as its
 #                project root; default ~/.aiforge/repos (or AIFORGE_REPOS_DIR)
@@ -227,7 +226,23 @@ ADMIN_URL_SET=""
 GROUP_SET=""
 SKIP_WEB=0
 TEST=0
-MODE="${AIFORGE_MODE:-docker}"          # docker (default) | native
+# There is no mode to choose. Run from a host and you get the sandbox; run
+# INSIDE the box (docker/entrypoint.sh execs this script there) and you get the
+# app itself. That is detected, not configured — a flag or an env var for it was
+# only ever a way to get the answer wrong. AIFORGE_IN_SANDBOX forces the inner
+# behaviour for a host service that deliberately IS the process (see
+# scripts/runtime/nuc/aiforge-api.service).
+# Three states on purpose. Detection alone is wrong for anything that runs the
+# tests (or a build) INSIDE a container while meaning to exercise the host path:
+# /.dockerenv is there, so every call would look like the inner one. An explicit
+# 0 forces the host behaviour, 1 forces the inner, and unset detects.
+_in_box() {
+  case "${AIFORGE_IN_SANDBOX:-}" in
+    1|true|yes|on)  return 0 ;;
+    0|false|no|off) return 1 ;;
+  esac
+  [[ -f /.dockerenv || -f /run/.containerenv ]]
+}
 DOCKER_ACTION=up
 _MOUNT_ARGS=()
 _ORIG_ARGS=("$@")
@@ -235,8 +250,7 @@ WITH_GRAPHIFY=0
 WITH_LANGFUSE="${AIFORGE_LANGFUSE:-0}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --docker) MODE=docker ;;
-    --native) MODE=native ;;
+    --docker) : ;;                                   # legacy no-op: always the sandbox
     --stop) DOCKER_ACTION=stop ;;
     --logs) DOCKER_ACTION=logs ;;
     --shell) DOCKER_ACTION=shell ;;
@@ -305,8 +319,6 @@ if [[ $ADMIN -eq 1 && $UNADMIN -eq 1 ]]; then
   echo "error: --admin and --spoke are opposites; pass one." >&2
   exit 2
 fi
-[[ "$MODE" == "docker" || "$MODE" == "native" ]] \
-  || { echo "error: AIFORGE_MODE must be docker or native, not '$MODE'" >&2; exit 2; }
 if [[ $ADMIN -eq 1 && -n "${AIFORGE_ADMIN_URL:-}" ]]; then
   # Refused, not overridden: silently promoting a spoke gives the fleet two
   # admins, both stamping `derived: mesh`.
@@ -363,7 +375,7 @@ if [[ $ADMIN -eq 1 ]]; then
   export AIFORGE_ROLE=admin
 fi
 
-if [[ "$MODE" != "docker" ]]; then
+if _in_box; then
   if [[ "${AIFORGE_ROLE:-}" == "admin" ]]; then
     echo "  memory: ADMIN — merges every machine's knowledge and serves the result back"
     if [[ -n "${AIFORGE_ADMIN_URL:-}" ]]; then
@@ -424,14 +436,14 @@ _ui_scheme() {
   fi
 }
 
-# ── docker mode: the sandbox (the default) ────────────────────────────────
+# ── the sandbox ───────────────────────────────────────────────────────────
 # run.sh on the host only starts the box; the run.sh INSIDE it does the rest
 # (install on first start, API, runner, memory sync) with the flags passed
 # through. The box sees ~/.aiforge and nothing else of this machine.
-if [[ "$MODE" == "docker" ]]; then
+if ! _in_box; then
   command -v docker >/dev/null 2>&1 \
-    || _fatal "docker mode (the default) needs Docker." \
-              "Install Docker, or run on the host instead: ./run.sh --native"
+    || _fatal "AIForge runs in a Docker sandbox, and Docker was not found." \
+              "Install Docker, then run ./run.sh again."
   if docker compose version >/dev/null 2>&1; then DC=(docker compose)
   elif command -v docker-compose >/dev/null 2>&1; then DC=(docker-compose)
   else _fatal "docker mode needs Docker Compose (the 'docker compose' plugin)."; fi
@@ -586,7 +598,7 @@ if [[ "$MODE" == "docker" ]]; then
   for _a in ${_ORIG_ARGS[@]+"${_ORIG_ARGS[@]}"}; do
     if (( _skip )); then _skip=0; continue; fi
     case "$_a" in
-      --docker|--native|--stop|--logs|--shell) ;;
+      --docker|--stop|--logs|--shell) ;;
       --repos|--mount) _skip=1 ;;
       *) _pass+=("$_a") ;;
     esac
@@ -612,7 +624,7 @@ if [[ "$MODE" == "docker" ]]; then
   echo "  sees from this machine: ${AIFORGE_MOUNTS//:/, }"
   echo "  projects: ${AIFORGE_REPOS_DIR:-$AIFORGE_CONFIG_DIR/repos}   (full rights inside the box)"
   echo "  first start installs its dependencies — follow it: ./run.sh --logs"
-  echo "  stop: ./run.sh --stop   ·   shell inside: ./run.sh --shell   ·   on the host: ./run.sh --native"
+  echo "  stop: ./run.sh --stop   ·   shell inside: ./run.sh --shell"
   exit 0
 fi
 

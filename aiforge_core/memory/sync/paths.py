@@ -12,8 +12,7 @@ anything else new from another peer lands under ``peers/<origin>/``. Every peer
 derives the same answer from the same inputs, so the layout converges along with
 the content.
 
-Four directories under the memory root, each with exactly one writer
-(``docs/superpowers/specs/2026-07-20-two-tier-knowledge-compaction.md``):
+Four directories under the memory root, each with exactly one writer:
 
 * ``okf/``          — this machine's own authored knowledge; the only thing we
                       contribute to the mesh.

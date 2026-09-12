@@ -20,8 +20,7 @@ every existing install keeps working with no configuration and no migration.
 and is believed, exactly as it states its peer id and is believed (see
 ``inbox``). The check is a routing and consistency rule: it stops a
 misconfigured client writing into the wrong pool, not a hostile one on the same
-network. Bind the admin to a trusted interface; see the security posture section
-of ``docs/superpowers/specs/2026-08-26-group-memory-sync-design.md``.
+network. Bind the admin to a trusted interface.
 """
 from __future__ import annotations
 

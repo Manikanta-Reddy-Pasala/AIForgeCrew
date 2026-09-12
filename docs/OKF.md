@@ -2,7 +2,7 @@
 
 AIForge's memory bundles follow **OKF v0.1** (Google Cloud) — a directory of
 Markdown files that is a portable, linkable knowledge graph. Single source of
-truth in code: [`aiforge_core/memory/okf.py`](../aiforge_core/memory/okf.py)
+truth in code: [`aiforge_core/memory/okf/spec.py`](../aiforge_core/memory/okf/spec.py)
 (`OKF_RULES` is injected into the compaction + learner LLM prompts so both
 **produce** compliant files).
 
@@ -54,8 +54,8 @@ truth in code: [`aiforge_core/memory/okf.py`](../aiforge_core/memory/okf.py)
 
 | Producer | Hook |
 |---|---|
-| Compaction (fold notes → knowledge) | `work_notes._CONSOLIDATE_SYS` appends `OKF_RULES` |
-| Learner (fact distillation) | `prompts/learner.py` — OKF concept/link note |
+| Compaction (fold notes → knowledge) | `work_notes/_consolidate.py` appends `OKF_RULES` |
+| Learner (fact distillation) | `runtime/prompts/learner.py` — OKF concept/link note |
 | OKR node renderer | `okf/nodes.render_node` (type + preserved recommended fields) |
 | `index.md` | `okf/store._write_index` (regenerated per save) |
 | Helpers | `okf.okf_frontmatter`, `okf.append_log`, `okf.render_index`, `okf.validate_file` |
