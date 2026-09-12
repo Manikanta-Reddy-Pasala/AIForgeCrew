@@ -613,18 +613,32 @@ def _make_enhancer_guard():
             if not raw or not isinstance(body, str):
                 return None
             text = body.strip()
-            if not text or text.startswith("ENHANCE_BLOCKED"):
-                return None
-            from .parallel_subtasks import _spec_degenerate
-            bad = _spec_degenerate(raw, text)
-            if bad:
-                st["enhanced_body"] = raw
-                logging.getLogger("aiforge.pipeline").warning(
-                    "enhancer output rejected (%s) — raw ask restored", bad)
+            if text:
+                _repair_enhanced_body(st, raw, text)
         except Exception:  # noqa: BLE001 — the guard must never break a run
             pass
         return None
     return _cb
+
+
+def _repair_enhanced_body(st, raw: str, text: str) -> None:
+    """Restore the RAW ask when what the Enhancer produced cannot serve as the
+    brief — either a degenerate rewrite, or a sentinel that is not a refusal."""
+    if text.startswith("ENHANCE_BLOCKED"):
+        # A REAL refusal belongs to the runner, untouched. A sentinel that
+        # actually says "this is already fine" would otherwise become the
+        # Doer's brief — restore the raw ask, which is what the Enhancer
+        # should have returned under Rule 2.
+        from .prompts.enhancer import block_reason
+        if block_reason(text) is None:
+            st["enhanced_body"] = raw
+        return
+    from .parallel_subtasks import _spec_degenerate
+    bad = _spec_degenerate(raw, text)
+    if bad:
+        st["enhanced_body"] = raw
+        logging.getLogger("aiforge.pipeline").warning(
+            "enhancer output rejected (%s) — raw ask restored", bad)
 
 
 def _append_callback(agent, attr: str, cb) -> None:

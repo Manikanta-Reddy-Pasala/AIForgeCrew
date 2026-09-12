@@ -18,9 +18,11 @@ from aiforge_core.runtime.tools import _http_integration as hi
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
+    from tests.python.tls_pin_fixture import clear_ca_env
     for var in ("JIRA_INSECURE_TLS", "JIRA_CA_BUNDLE", "AIFORGE_CA_BUNDLE",
                 "JIRA_BASE_URL", "JIRA_TOKEN"):
         monkeypatch.delenv(var, raising=False)
+    clear_ca_env(monkeypatch)   # incl. SSL_CERT_FILE / REQUESTS_CA_BUNDLE
     monkeypatch.setattr("aiforge_core.config.integrations.get", lambda _n: {})
 
 

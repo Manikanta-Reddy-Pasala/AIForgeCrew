@@ -105,9 +105,11 @@ def test_a_just_written_fact_surfaces_before_it_is_embedded(monkeypatch,
                                                             embedded):
     from aiforge_core.memory import sqlite_memory
     seen: dict = {}
+    # The row has to be ABOUT the question: the hot cache is query-gated now, so
+    # freshness alone no longer buys a place in the answer (_relevant_recent).
     monkeypatch.setattr(sqlite_memory, "recent",
                         lambda limit=None, repo=None: seen.update(limit=limit)
-                        or [{"text": "just captured"}])
+                        or [{"text": "just captured: sync retries 3x"}])
     monkeypatch.setenv("AIFORGE_UMEM_RECENT_N", "3")
     ctx = _ctx(monkeypatch)
     Q._src_recent(ctx)

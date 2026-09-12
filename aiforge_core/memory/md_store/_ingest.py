@@ -36,7 +36,7 @@ def _ingest_unit(*, title: str, body: str, kind: str, tags: list[str],
             if replace:
                 # embed-only-on-change: if the source's row already holds this
                 # exact text, leave it — skip a needless delete + re-embed.
-                if _sqlmem.source_text_unchanged(source, f"{title}\n\n{body}".strip()):
+                if _sqlmem.source_text_unchanged(source, text, repo):
                     return
                 _sqlmem.delete_by_source(source)
             _sqlmem.write_unit(text=text, kind=kind, source=source,
@@ -232,14 +232,23 @@ def _brief_unit(p, d: dict) -> tuple[dict, str, str, str, str, bool]:
     the compacted-<key> stem as the title; both are replaced here. Envelope
     stripped so recall vectors carry knowledge, not boilerplate.
     """
-    repo = _brief_scope_key(p.stem)
+    from ._render import _parse_brief
+    from . import _topics
+    key = _brief_scope_key(p.stem)
+    raw = p.read_text(encoding="utf-8", errors="replace")
+    # Same scope rule compaction writes: a topic brief stays repo-agnostic here
+    # too. Scoping it to its own key (what this used to do) made it invisible to
+    # every repo-scoped recall the moment a hand edit re-ingested it. Tags come
+    # from _parse_brief — a brief writes them as a YAML BLOCK list, which the
+    # line-splitting frontmatter reader hands back empty.
+    repo = _topics.brief_repo_scope(key, "topic", _parse_brief(raw)["tags"])
     body = d["body"]
     try:
         from aiforge_core.runtime import work_notes
         body = work_notes.knowledge_text(d["body"])
     except Exception:  # noqa: BLE001
         pass
-    return ({**d, "title": _brief_title(repo)}, body, "knowledge",
+    return ({**d, "title": _brief_title(key)}, body, "knowledge",
             f"compacted:{p.stem}", repo, True)     # replace → reclaim the row
 
 

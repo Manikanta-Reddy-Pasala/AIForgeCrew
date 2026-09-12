@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import re
 
+from aiforge_core.config import _atomic
 from ._base import (
     _CAPTURE_SIG_RE,
     _FM_RE,
@@ -96,7 +97,7 @@ def _render_brief(key: str, *, facts: list[str], body_md: str = "",
 
 def _parse_brief(raw: str) -> dict:
     """Parse a brief (OKR or legacy) → {"facts", "learnings", "body", "title",
-    "links", "key_results", "sources"}.
+    "links", "key_results", "sources", "tags"}.
     A legacy brief's ``## Recent`` bullets migrate into facts; its prose stays
     in body. Never raises."""
     from aiforge_core.runtime import work_notes
@@ -113,7 +114,10 @@ def _parse_brief(raw: str) -> dict:
             "links": list(parsed["sections"].get("links") or []),
             "key_results": list(parsed["sections"].get("key_results") or []),
             "sources": _stems(
-                (parsed.get("frontmatter") or {}).get("sources"))}
+                (parsed.get("frontmatter") or {}).get("sources")),
+            # Tags identify a brief's axis (repo:<slug>) and survive re-writes
+            # only if every writer carries them forward.
+            "tags": list((parsed.get("frontmatter") or {}).get("tags") or [])}
 
 
 def _stems(values) -> list[str]:
@@ -208,11 +212,15 @@ def _load_brief_sections(path) -> dict:
     """
     if not path.exists():
         return {"facts": [], "body": "", "learnings": [], "key_results": [],
-                "sources": [], "title": ""}
+                "sources": [], "title": "", "links": [], "tags": []}
     b = _parse_brief(path.read_text(encoding="utf-8", errors="replace"))
+    # Links and tags come back too: this path REWRITES the whole brief, so a
+    # section it doesn't read is a section every capture silently deletes —
+    # map_scopes' cross-links and the repo:<slug> tag that marks the axis.
     return {"facts": b["facts"], "body": b["body"],
             "learnings": b["learnings"], "key_results": b["key_results"],
-            "sources": b["sources"], "title": b["title"]}
+            "sources": b["sources"], "title": b["title"],
+            "links": b["links"], "tags": b["tags"]}
 
 
 def _supersede_key(fact: str) -> str | None:
@@ -282,12 +290,21 @@ def _seed_ticket_key(fact: str, key_results: list) -> None:
         return
 
 
-def _bound_facts(facts: list, body: str) -> None:
-    """Past ``_BRIEF_CAP`` drop the OLDEST facts first — the consolidated body
-    is the keeper."""
-    while len(facts) > 1 and \
-            (len(body) + sum(len(f) + 3 for f in facts)) > _BRIEF_CAP:
-        facts.pop(0)
+def _bound_facts(facts: list, body: str) -> str:
+    """Past ``_BRIEF_CAP`` the OLDEST facts move INTO the body; returns the new
+    body. They used to be POPPED — permanently, and for a structured brief
+    (whose body is empty) that deleted the oldest knowledge outright, exactly
+    what the "the consolidated body is the keeper" comment assumed it didn't.
+    In the body they stay readable and the next LLM fold re-consolidates them."""
+    budget = max(1000, _BRIEF_CAP - len(body))
+    moved: list[str] = []
+    while len(facts) > 1 and sum(len(f) + 3 for f in facts) > budget:
+        moved.append(facts.pop(0))
+    if not moved:
+        return body
+    tail = "\n".join(f"- {m}" for m in moved)
+    return ((body + "\n\n" if body else "")
+            + "### Older facts (awaiting the next fold)\n\n" + tail).strip()
 
 
 def _brief_upsert(repo: str, text: str, *, topic: str | None = None) -> None:
@@ -311,8 +328,7 @@ def _brief_upsert(repo: str, text: str, *, topic: str | None = None) -> None:
     with _WRITE_LOCK:
         sec = _load_brief_sections(path)
         facts, body = sec["facts"], sec["body"]
-        # already captured (contained in an existing fact) or folded into prose
-        if any(fact in _fact_body(f) for f in facts) or (fact and fact in body):
+        if _already_captured(fact, facts, body):
             return
         drop = _superseded_by(fact, _supersede_key(fact))
         dropped = [f for f in facts if drop(f)]
@@ -320,13 +336,29 @@ def _brief_upsert(repo: str, text: str, *, topic: str | None = None) -> None:
         facts.append(item)
         _unindex_dropped(dropped, slug)
         _seed_ticket_key(fact, sec["key_results"])
-        _bound_facts(facts, body)
-        path.write_text(
+        body = _bound_facts(facts, body)
+        _atomic.write_text(
+            str(path),
             _render_brief(repo, facts=facts, body_md=body,
                           learnings=sec["learnings"], title=sec["title"],
                           key_results=sec["key_results"],
-                          sources=sec["sources"]),
-            encoding="utf-8")
+                          links=sec["links"], tags=sec["tags"] or None,
+                          sources=sec["sources"]))
+
+
+def _already_captured(fact: str, facts: list, body: str) -> bool:
+    """Whether the brief already holds this fact.
+
+    An existing fact counts only when it IS this fact or EXTENDS it (starts with
+    it). Plain containment also matched a fact that merely quotes this one
+    inside a longer sentence — "no retries 3x" swallowed "retries 3x", so the
+    correction could never be recorded."""
+    f = fact.strip().lower()
+    if not f:
+        return True
+    if any(_fact_body(x).strip().lower().startswith(f) for x in facts):
+        return True
+    return bool(re.search(rf"(?:^|\n)[-*]?\s*{re.escape(fact)}(?!\w)", body))
 
 
 def migrate_to_okr() -> dict:
@@ -357,11 +389,13 @@ def migrate_to_okr() -> dict:
         b = _parse_brief(raw)
         with _WRITE_LOCK:
             try:
-                p.write_text(
+                _atomic.write_text(
+                    str(p),
                     _render_brief(key, facts=b["facts"], body_md=b["body"],
                                   learnings=b["learnings"], title=b["title"],
-                                  sources=b["sources"]),
-                    encoding="utf-8")
+                                  key_results=b["key_results"],
+                                  links=b["links"], tags=b["tags"] or None,
+                                  sources=b["sources"]))
             except OSError:
                 continue
         migrated.append(p.name)

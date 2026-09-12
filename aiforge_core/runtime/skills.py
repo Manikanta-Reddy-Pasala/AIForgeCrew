@@ -190,9 +190,14 @@ def load(cwd: str | None = None) -> list[Skill]:
     """Skills, de-duped by name. Priority order (later wins on name conflict):
     BUILT-IN defaults → global user skills → repo-local. So a CUSTOM skill always
     overrides a shipped default of the same name, and ranks above it."""
+    from aiforge_core.runtime import library_defaults
+    off = library_defaults.disabled("skill")
     by_name: dict[str, Skill] = {}
     # 1. built-in defaults — lowest priority (custom overrides by name + outranks).
+    # A default this box has DISABLED is skipped; the shipped file stays put.
     for sk in _scan_dir(_builtin_dir()):
+        if sk.name in off:
+            continue
         by_name[sk.name] = replace(sk, source="builtin", priority=sk.priority - 100)
     # 2. global user (custom).
     for sk in _scan_dir(_global_dir()):
@@ -520,31 +525,44 @@ def _unlink_skill_file(src: str, roots) -> "str | None":
 
 
 def delete_skill(name: str, cwd: str | None = None) -> dict:
-    """Delete the skill(s) named ``name`` by unlinking the backing file (custom
-    OR shipped default). Bounded to the playbook dirs. Returns
-    ``{ok, removed:[paths]}`` or ``{ok: False, error}``."""
+    """Remove the skill named ``name``.
+
+    A custom skill is unlinked. A SHIPPED DEFAULT is disabled on this box
+    instead (:mod:`runtime.library_defaults`) — the file belongs to the package,
+    the next upgrade restores it, and a read-only install cannot unlink it at
+    all. Returns ``{ok, removed:[paths], disabled}`` or ``{ok: False, error}``."""
+    from aiforge_core.runtime import library_defaults
     name = (name or "").strip()
     if not name:
         return {"ok": False, "error": "name required"}
     roots = _deletable_roots(cwd)
     removed: list[str] = []
+    disabled = False
     for sk in load(cwd):
         if sk.name != name:
             continue
+        src = getattr(sk, "source", "")
+        if library_defaults.is_builtin(src):
+            disabled = library_defaults.disable("skill", name) or disabled
+            continue
         try:
-            got = _unlink_skill_file(getattr(sk, "source", ""), roots)
+            got = _unlink_skill_file(src, roots)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
         if got:
             removed.append(got)
-    if not removed:
+    if not removed and not disabled:
         return {"ok": False, "error": f"no deletable skill named {name!r}"}
-    return {"ok": True, "name": name, "removed": removed}
+    return {"ok": True, "name": name, "removed": removed, "disabled": disabled}
 
 
 def clear_skills(cwd: str | None = None) -> dict:
-    """Delete every deletable skill (custom + defaults). Returns count removed."""
-    names = {s.name for s in load(cwd)}
+    """Delete every CUSTOM skill. Shipped defaults are left in place — one
+    "clear" must not silently switch off the company's playbooks (disable them
+    one by one if that is really what you want). Returns the count removed."""
+    from aiforge_core.runtime import library_defaults
+    names = {s.name for s in load(cwd)
+             if not library_defaults.is_builtin(getattr(s, "source", ""))}
     removed = 0
     for n in names:
         r = delete_skill(n, cwd)

@@ -18,8 +18,8 @@ Caller surface
 --------------
 ``graphify_lookup(query, hops=1, max_neighbors=25, repo_root=None)``
 returns ``{ok, matches: [...], neighbors: [...]}`` on success. ``ok=False``
-when the graph file is missing or unreadable — the agent loop keeps
-moving instead of crashing.
+when no repo scope is known, or the graph file is missing or unreadable —
+the agent loop keeps moving instead of crashing.
 """
 from __future__ import annotations
 
@@ -31,19 +31,22 @@ from pathlib import Path
 _CACHE: dict[str, tuple[dict, dict, dict, dict]] = {}
 
 
-def _resolve_repo_root(repo_root: str | None) -> Path:
+def _resolve_repo_root(repo_root: str | None) -> "Path | None":
+    """The repo whose graph answers this call: the explicit argument, else the
+    request's repo root. ``None`` when neither is known.
+
+    There used to be a third step — walk up from THIS file until a
+    ``graphify-out/`` turned up — which resolves to AIForge's own checkout
+    whenever nothing else is set. A simple chat sets no repo root, so every such
+    chat had AIForge's internal call graph pulled into recall at a fixed high
+    score, as if it were knowledge about the user's project. A graph that
+    belongs to no one is worse than no graph: answer "unknown" instead.
+    """
     if repo_root:
         return Path(repo_root).expanduser().resolve()
     from aiforge_core.runtime import request_context
-    env = request_context.get_repo_root()
-    if env:
-        return Path(env).expanduser().resolve()
-    # Fallback: walk up from this file until graphify-out/ exists.
-    here = Path(__file__).resolve()
-    for p in [here.parent, *here.parents]:
-        if (p / "graphify-out" / "graph.json").is_file():
-            return p
-    return here.parents[2]  # AIForgeCrew/ from aiforge_core/runtime/
+    scoped = request_context.get_repo_root()
+    return Path(scoped).expanduser().resolve() if scoped else None
 
 
 def _build_indexes(nodes: list) -> tuple[dict, dict, dict]:
@@ -228,8 +231,9 @@ def graphify_lookup(query: str, hops: int = 1,
       hops: 1 (direct neighbours) or 2 (neighbours-of-neighbours, capped).
       max_matches: cap on resolved seed nodes.
       max_neighbors: cap on returned neighbour entries (per call, not per seed).
-      repo_root: override search root. Falls back to ``AIFORGE_REPO_ROOT``
-        env var, then walks up from this module.
+      repo_root: which repo's graph to read. Falls back to the request's repo
+        root (contextvar / ``AIFORGE_REPO_ROOT``); with neither, the call is
+        refused rather than guessing a checkout.
 
     Returns:
       ``{ok, matches: [{id, label, source_file, ...}],
@@ -243,8 +247,11 @@ def graphify_lookup(query: str, hops: int = 1,
     if hops not in (1, 2):
         return {"ok": False, "error": f"hops must be 1 or 2, got {hops}"}
 
+    root_path = _resolve_repo_root(repo_root)
+    if root_path is None:
+        return {"ok": False, "error": "no repo scope for this request — pass "
+                                      "repo_root to name the graph to read"}
     try:
-        root_path = _resolve_repo_root(repo_root)
         nodes_by_id, adj, file_index, label_index = _load(root_path)
     except (OSError, json.JSONDecodeError) as exc:
         return {"ok": False, "error": f"graphify graph load failed: {exc}"}

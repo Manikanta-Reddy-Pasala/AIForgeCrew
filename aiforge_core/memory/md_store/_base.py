@@ -104,11 +104,18 @@ def _md_path_for_stem(stem: str) -> Path:
 
 def _brief_part_paths(base: str) -> list[Path]:
     """Split-part briefs ``compacted-<base>-N.md`` from the briefs folder AND the
-    legacy root (pre-migration), de-duplicated by name, sorted."""
+    legacy root (pre-migration), de-duplicated by name, sorted.
+
+    Only a NUMERIC suffix is a part of this brief. The glob alone also matched
+    every sibling whose name merely starts with it — ``auth`` swallowed
+    ``auth-service``, ``shared`` swallowed every ``shared-*`` topic — so a
+    re-fold silently absorbed other briefs' facts into this one."""
     seen: dict[str, Path] = {}
+    part_re = re.compile(rf"^compacted-{re.escape(base)}-\d+$")
     for p in list(briefs_dir().glob(f"compacted-{base}-*.md")) \
             + list(memory_dir().glob(f"compacted-{base}-*.md")):
-        seen.setdefault(p.name, p)
+        if part_re.match(p.stem):
+            seen.setdefault(p.name, p)
     return [seen[k] for k in sorted(seen)]
 
 

@@ -608,14 +608,49 @@ def _run_recompact_step(i: int, total: int, name: str, fn, out: dict,
     _notify_step(on_step, name, "done", out[name])
 
 
-def force_recompact_all(on_step=None) -> dict:
+def _run_recompact_steps(steps, out: dict, on_step, checkpoint) -> bool:
+    """Run the compact-all steps in order. True when the pass STOPPED early —
+    the user came back, or a step yielded — so the caller reports it unfinished
+    and the next idle window resumes from the checkpoint."""
+    for i, (name, fn) in enumerate(steps, 1):
+        if checkpoint is not None and checkpoint.step_done_already(name):
+            continue
+        if checkpoint is not None and checkpoint.should_stop():
+            return True
+        _run_recompact_step(i, len(steps), name, fn, out, on_step)
+        res = out.get(name)
+        if isinstance(res, dict) and res.get("stopped"):
+            return True
+        # A step that FAILED is not done. Marking it done (what this used to do)
+        # meant a model outage produced a cycle reported as complete, with the
+        # steps that never ran skipped until the next one a day later.
+        if checkpoint is not None and not (isinstance(res, dict)
+                                           and res.get("ok") is False):
+            checkpoint.step_done(name)
+    return False
+
+
+def force_recompact_all(on_step=None, checkpoint=None) -> dict:
     """COMPACT ALL — redo EVERYTHING from scratch: tidy legacy/cryptic briefs,
     re-chunk (chonkie) + re-run the LLM over EVERY flat brief (not just new
     files), sweep stale captures, rebuild the OKR repo CARDS from learnings, and
     re-ingest into the search index. Heavy (full LLM pass); run on demand.
     Soft-fail per step. ``on_step(name, phase, result)`` is called at the start
-    ('run') and end ('done') of each step for progress reporting."""
+    ('run') and end ('done') of each step for progress reporting.
+
+    ``checkpoint`` (the idle compactor's, runtime.compact_idle.Checkpoint) makes
+    the pass RESUMABLE: steps and brief groups it already finished are skipped,
+    and it stops between groups the moment ``checkpoint.should_stop()`` says the
+    user is back — returning ``{"stopped": True}`` so the next idle window
+    carries on from there. Without one (the Compact-all button) it runs whole."""
     from aiforge_core.memory import md_store
+
+    def _resumable(axis):
+        if checkpoint is None:
+            return {}
+        return {"skip_keys": checkpoint.groups_done(axis),
+                "should_stop": checkpoint.should_stop,
+                "on_group_done": lambda key: checkpoint.group_done(axis, key)}
 
     # per-group sub-progress for the (slow, LLM-per-brief) compact steps →
     # surfaced through on_step so the UI shows 'topic 12/34' not a frozen 0/6.
@@ -637,10 +672,10 @@ def force_recompact_all(on_step=None) -> dict:
         ("tidy_legacy", lambda: md_store.cleanup_legacy_compacted(refold=False)),
         ("repo", lambda: md_store.compact(group_by="repo", force=True,
                                           model_role="learner", archive_sources=False,
-                                          progress=_prog("repo"))),
+                                          progress=_prog("repo"), **_resumable("repo"))),
         ("topic", lambda: md_store.compact(group_by="topic", force=True,
                                            model_role="learner", archive_sources=True,
-                                           progress=_prog("topic"))),
+                                           progress=_prog("topic"), **_resumable("topic"))),
         ("sweep", lambda: md_store.sweep_stale_captures(archive=True)),
         ("sweep_empty", lambda: md_store.sweep_empty_briefs(archive=True)),
         ("dedupe", dedupe_all),
@@ -687,10 +722,16 @@ def force_recompact_all(on_step=None) -> dict:
         ("reingest", lambda: md_store.ingest_dir()),
     ]
     log.info("compact-all: START (%d steps)", len(steps))
-    for i, (name, fn) in enumerate(steps, 1):
-        _run_recompact_step(i, len(steps), name, fn, out, on_step)
+    if _run_recompact_steps(steps, out, on_step, checkpoint):
+        return {**out, "ok": True, "stopped": True}
     out["ok"] = True
-    log.info("compact-all: DONE")
+    # Which steps soft-failed, so a caller (the idle scheduler) can retry the
+    # cycle instead of recording a pass that half ran as a success.
+    out["failed_steps"] = [n for n, _ in steps
+                           if isinstance(out.get(n), dict)
+                           and out[n].get("ok") is False]
+    log.info("compact-all: DONE%s", (" (failed: " + ", ".join(out["failed_steps"])
+                                     + ")") if out["failed_steps"] else "")
     return out
 
 

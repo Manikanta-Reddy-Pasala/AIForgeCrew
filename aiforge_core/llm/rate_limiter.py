@@ -204,14 +204,15 @@ def global_rpm() -> float:
             return _DEFAULT_GLOBAL_RPM
 
 
-#: Roles whose LLM traffic is memory/compaction, not interactive. These share
-#: the SEPARATE, smaller "compaction" sub-ceiling so background folding can
-#: never crowd out a user's chat. "learner" is the only memory-side sender
-#: today (okf tiers, work_notes.consolidate, the boot fold all run as it); add
-#: future memory roles here.
+#: Roles whose LLM traffic is memory/compaction, not interactive. They count
+#: against the "compaction" category, whose default ceiling is 0 = bounded
+#: only by the global window — so compaction uses whatever chat leaves of the
+#: total (all of it while chat is idle). "learner" is the only memory-side
+#: sender today (okf tiers, work_notes.consolidate, the boot fold all run as
+#: it); add future memory roles here.
 _COMPACTION_ROLES = frozenset({"learner"})
 
-_DEFAULT_COMPACTION_RPM = 5.0
+_DEFAULT_COMPACTION_RPM = 0.0
 _DEFAULT_CHAT_RPM = 15.0
 
 
@@ -505,6 +506,10 @@ def _acquire_pass(provider, cat: str,
     window_s = 0.0
     if hold_s <= 0:
         if rpm <= 0 and cat_rpm <= 0:
+            # Same rule as acquire_global's fast path: an unthrottled
+            # compaction send is still counted, so the meter shows it.
+            if cat == "compaction":
+                _force_take(rpm, cat)
             return True, 0.0, rpm, hold_s
         claimed, window_s = _take(rpm, cat, cat_rpm, provider)
         if claimed:
@@ -564,6 +569,14 @@ def acquire_global(*, max_wait_s: float = 120.0,
         if _comp_cap > 0:
             max_wait_s = max(max_wait_s, _comp_cap)
     if global_rpm() <= 0 and cat_rpm <= 0 and held_for(provider) <= 0:
+        # Nothing throttles this call — but the window is also the toolbar's
+        # METER, and background traffic must never go invisible. Chat keeps the
+        # old behaviour (no ceiling asked for, no window kept); compaction does
+        # not, because its own sub-ceiling is 0 by default now ("use whatever
+        # chat leaves"), and uncapped AND unseen is the exact defect this
+        # gateway exists to prevent.
+        if cat == "compaction":
+            _force_take(global_rpm(), cat)
         return 0.0
     waited = 0.0
     with _WAIT_LOCK:

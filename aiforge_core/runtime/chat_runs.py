@@ -52,6 +52,11 @@ class _Run:
         self.pending_deltas: list[dict] = []
         self.subscribers: set[queue.Queue] = set()
         self.done = False
+        # The turn's `done` went out — only saving the turn and the post-answer
+        # work (next-step suggestion, learning) remain. A new message arriving
+        # now waits for that instead of a 409 (see settle()).
+        self.answered = False
+        self.finished = threading.Event()
         self.started_at = time.time()         # epoch secs — for reattach timer
         self.lock = threading.Lock()
 
@@ -61,10 +66,18 @@ class _Run:
         with self.lock:
             if self.done:
                 return
+            # Every event is ACTIVITY. Touching only on start/finish left a long
+            # turn looking idle from the moment it began, so the idle compactor
+            # (which treats "no chat activity for N minutes" as nobody home)
+            # started folding memory in the middle of a run that was still
+            # calling tools. Cheap: one float assignment per event.
+            _touch()
             # Don't buffer heartbeats — iter_subscription generates its own per
             # subscriber. Buffering the producer's pings would replay a growing
             # pile of them to every re-attach. Forward live but don't store.
             kind = event.get("type")
+            if kind == "done":
+                self.answered = True
             if kind == "delta":
                 self._hold_delta(event)
             elif kind != "ping":
@@ -89,8 +102,10 @@ class _Run:
     def finish(self) -> None:
         with self.lock:
             self.done = True
+            self.finished.set()
             for q in self.subscribers:
                 q.put(_SENTINEL)
+        _touch()
 
     # -- consumer side -------------------------------------------------------
 
@@ -135,8 +150,29 @@ def _prune_locked() -> None:
             del _RUNS[sid]
 
 
+# When a chat run last started or ended — the idle compactor's "is anyone
+# using this?" signal (runtime.compact_idle).
+_LAST_ACTIVITY = [0.0]
+
+
+def _touch() -> None:
+    _LAST_ACTIVITY[0] = time.time()
+
+
+def last_activity() -> float:
+    """Epoch seconds of the last chat run start/finish (0 = none yet)."""
+    return _LAST_ACTIVITY[0]
+
+
+def any_active() -> bool:
+    """Whether any chat run is in flight right now."""
+    with _LOCK:
+        return any(not r.done for r in _RUNS.values())
+
+
 def start(session_id: int) -> _Run:
     """Register a fresh run for ``session_id``, replacing any prior one."""
+    _touch()
     with _LOCK:
         run = _Run(session_id)
         _RUNS[session_id] = run
@@ -152,6 +188,19 @@ def get(session_id: int) -> _Run | None:
 def is_running(session_id: int) -> bool:
     run = get(session_id)
     return bool(run and not run.done)
+
+
+def settle(session_id: int, timeout: float = 30.0) -> bool:
+    """True when the session has no run in flight — waiting up to ``timeout``
+    for one that already ANSWERED (sent `done`) to finish its bookkeeping. The
+    UI's "Approve & Execute" and a quick follow-up used to hit a 409 in that
+    gap. False while a run is genuinely still working (or it overruns)."""
+    run = get(session_id)
+    if run is None or run.done:
+        return True
+    if not run.answered:
+        return False
+    return run.finished.wait(timeout)
 
 
 def publish(session_id: int, event: dict) -> None:

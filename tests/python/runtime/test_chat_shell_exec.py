@@ -131,7 +131,7 @@ def gates(monkeypatch):
     monkeypatch.setattr(delete_guard, "allow_delete",
                         lambda envs=None: state["allow_delete"])
     monkeypatch.setattr(delete_guard, "is_destructive_delete",
-                        lambda cmd: state["destructive"])
+                        lambda cmd, cwd=None: state["destructive"])
     return state
 
 

@@ -1628,7 +1628,15 @@ def _finalize_produce_turn(session_id, cwd, prompt, final_text, steps, awaiting,
     # run object (not by session id — a newer turn for the same session
     # may have already replaced it in the registry). Done LAST so a
     # re-attach during persistence still tails live.
-    run.finish()
+    #
+    # …except when the team driver owns the run: it is still working on a
+    # background thread here, and finishing its run made the box look IDLE for
+    # the rest of the turn — the idle compactor then folded memory mid-run
+    # (LLM calls and rate-limit budget) while the team was still calling tools.
+    # chat_pipeline._drive_teardown finishes it, in the driver's own finally,
+    # so a crash still wakes every subscriber.
+    if not path["driver"]:
+        run.finish()
     try:
         _awake_release()
     except Exception:  # noqa: BLE001 — power policy never fails a turn
@@ -2387,7 +2395,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     # guards on `busy`; this is the server-side backstop. Use /attach to watch
     # the in-flight run instead.
     from aiforge_core.runtime import chat_runs
-    if chat_runs.is_running(session_id):
+    if chat_runs.is_running(session_id) and not chat_runs.settle(session_id):
         raise HTTPException(409, "a run is already in progress for this session "
                                  "— stop it or attach to it before sending again")
 

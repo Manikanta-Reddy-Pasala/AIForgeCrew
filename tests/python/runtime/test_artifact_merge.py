@@ -362,9 +362,10 @@ def test_merging_an_always_on_rule_widens_rather_than_narrows(stub_llm):
 
 
 def test_the_sweep_counts_against_the_background_ceiling_not_chat():
-    """role=learner is what keeps a nightly sweep at compaction_rpm (5/min by
-    default) instead of competing with interactive chat at chat_rpm. Pinned
-    because the role is a one-word change with no visible symptom."""
+    """role=learner is what meters a nightly sweep as compaction (the part of
+    the global ceiling chat leaves) instead of competing with interactive chat
+    at chat_rpm. Pinned because the role is a one-word change with no visible
+    symptom."""
     from aiforge_core.llm import rate_limiter
     assert rate_limiter._category("learner") == "compaction"
 

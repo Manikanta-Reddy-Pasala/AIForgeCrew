@@ -65,6 +65,7 @@ from ._compact import (
     archive_covered_captures,
     cleanup_legacy_compacted,
     compact,
+    prune_archive,
     sweep_empty_briefs,
     sweep_stale_captures,
 )
@@ -158,6 +159,7 @@ __all__ = [
     "reheal_scopes",
     "resolve_contradictions",
     "seed_memory_block",
+    "prune_archive",
     "sweep_empty_briefs",
     "sweep_stale_captures",
     "upsert_section",

@@ -77,8 +77,9 @@ def test_a_self_hosted_box_with_a_self_signed_cert_is_not_refused(monkeypatch):
     """The explicit opt-out (or a trusted internal host) selects the PINNED
     context — verification stays on, anchored to that box's own certificate
     (net.trust) — while a public host verifies against the ordinary roots."""
-    from tests.python.tls_pin_fixture import stub_pin, trusts_the_pin
+    from tests.python.tls_pin_fixture import clear_ca_env, stub_pin, trusts_the_pin
 
+    clear_ca_env(monkeypatch)      # a configured bundle deliberately wins
     stub_pin(monkeypatch)
     monkeypatch.setattr(H, "_ssl_ca_bundle", lambda: None)
     monkeypatch.setattr(H, "_ssl_auto_relax", lambda base: False)

@@ -108,10 +108,41 @@ def _src_keyword(ctx: "_RecallCtx") -> None:
         ctx.errors.append(f"keyword: {exc}")
 
 
+def _recent_min_overlap() -> float:
+    """How much of the question a fresh row must actually mention to be offered
+    (``AIFORGE_UMEM_RECENT_MIN_OVERLAP``, default 0.2; 0 = ungated)."""
+    try:
+        return max(0.0, float(
+            os.environ.get("AIFORGE_UMEM_RECENT_MIN_OVERLAP", "0.2")))
+    except (TypeError, ValueError):
+        return 0.2
+
+
+def _relevant_recent(rows: list, text: str) -> list:
+    """Recent rows that are ABOUT the query, scored by how well they match.
+
+    ``recent()`` scores by position — the newest row gets 1.0 — which with the
+    channel weight made the last thing written score 0.7 on EVERY query,
+    above a genuine cosine hit. Recency is a tie-breaker, not relevance: scale
+    each row's recency score by its overlap with the question and drop the rows
+    that say nothing about it, so the hot cache can surface a just-captured
+    fact without displacing a real match."""
+    from ._helpers import _lexical_overlap
+    floor = _recent_min_overlap()
+    out = []
+    for r in rows:
+        overlap = _lexical_overlap(text, f"{r.get('title') or ''} {r.get('text') or ''}")
+        if overlap < floor or overlap <= 0.0:
+            continue
+        out.append({**r, "score": float(r.get("score") or 0.0) * overlap})
+    return out
+
+
 def _src_recent(ctx: "_RecallCtx") -> None:
     """1c) HOT CACHE — the N most-recently-written units (fresh facts that may
     not be embedded/compacted yet), so a just-captured learning surfaces
-    immediately. Embedded backend only; gated by AIFORGE_UMEM_RECENT."""
+    immediately. Query-gated (see :func:`_relevant_recent`). Embedded backend
+    only; gated by AIFORGE_UMEM_RECENT."""
     try:
         from aiforge_core.memory import backend_select as _bsel
         if _bsel.embedded() and os.environ.get("AIFORGE_UMEM_RECENT", "1") == "1":
@@ -120,7 +151,8 @@ def _src_recent(ctx: "_RecallCtx") -> None:
                 rn = max(1, int(os.environ.get("AIFORGE_UMEM_RECENT_N", "5")))
             except (TypeError, ValueError):
                 rn = 5
-            rrows = _sqlmem.recent(limit=rn, repo=ctx._repo_or_env())
+            rrows = _relevant_recent(
+                _sqlmem.recent(limit=rn, repo=ctx._repo_or_env()), ctx.text)
             if rrows:
                 ctx.used.append("recent")
                 ctx.raw_hits.extend(ctx.pkg._tag(rrows, source="recent",

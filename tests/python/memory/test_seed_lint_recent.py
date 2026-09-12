@@ -98,9 +98,22 @@ def test_recent_returns_newest_first(mem):
 
 
 def test_unified_query_includes_recent_source(mem):
+    """The hot cache surfaces a just-written fact that ANSWERS the question —
+    before it is embedded or compacted."""
+    from aiforge_core.memory import sqlite_memory as sm, unified_query as uq
+    sm.write_unit(text="freshly captured deploy note about nucbox restart",
+                  kind="learning", repo="svc", source="fresh")
+    res = uq.query("nucbox deploy restart note", repo="svc", limit=5)
+    assert "recent" in res["used_sources"]
+    assert any("freshly captured" in (h.get("text") or "") for h in res["hits"])
+
+
+def test_the_hot_cache_does_not_answer_an_unrelated_question(mem):
+    """Recency is a tie-breaker, not relevance: before the gate, the newest row
+    scored 0.7 on EVERY query and outranked real matches."""
     from aiforge_core.memory import sqlite_memory as sm, unified_query as uq
     sm.write_unit(text="freshly captured deploy note about nucbox restart",
                   kind="learning", repo="svc", source="fresh")
     res = uq.query("something totally unrelated xyzzy", repo="svc", limit=5)
-    assert "recent" in res["used_sources"]
-    assert any("freshly captured" in (h.get("text") or "") for h in res["hits"])
+    assert not any("freshly captured" in (h.get("text") or "")
+                   for h in res["hits"])

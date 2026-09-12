@@ -97,6 +97,48 @@ def _abs_weight() -> float:
     return min(1.0, max(0.0, v))
 
 
+def _group_key(h: dict) -> str:
+    """The scaling unit: which retrieval CHANNEL answered.
+
+    ``source`` is the unit's STORED origin (``compacted:<stem>``, ``doer``,
+    ``recent``…), so on real recall rows it is effectively unique per row —
+    grouping on it put every hit in a band of one, ``span`` was always 0, and
+    the per-channel rescaling this function exists for never ran. ``channel``
+    is stamped by :func:`_helpers._tag`; fall back to ``source`` for rows built
+    by hand (direct callers, older tests) so their grouping is unchanged.
+    """
+    return str(h.get("channel") or h.get("source") or "")
+
+
+# Channels whose score IS a relevance measure (cosine similarity), so a low
+# value genuinely means "this does not answer the query". Everything else
+# scores by RANK (keyword/BM25, recent) or a constant (ticket, graphify): a
+# low number there means "last of several real matches", not "irrelevant", so
+# a floor would cut good hits. Those channels are bounded at their source
+# instead (the recent channel gates on query overlap, graphify on repo scope).
+_COSINE_CHANNELS = frozenset({"memory", "vector"})
+
+
+def _min_relevance() -> float:
+    """Absolute floor a cosine hit must clear to be returned at all
+    (``AIFORGE_UMEM_MIN_RELEVANCE``, default 0.15; 0 disables). Without it a
+    query with no real match still returns its least-bad rows, and filler in
+    the prompt reads to the model exactly like recalled fact."""
+    try:
+        return max(0.0, float(os.environ.get("AIFORGE_UMEM_MIN_RELEVANCE", "0.15")))
+    except (TypeError, ValueError):
+        return 0.15
+
+
+def _above_floor(hits: list[dict]) -> list[dict]:
+    """Drop cosine hits below the relevance floor (see :func:`_min_relevance`)."""
+    floor = _min_relevance()
+    if floor <= 0.0:
+        return hits
+    return [h for h in hits
+            if _group_key(h) not in _COSINE_CHANNELS or _raw_of(h) >= floor]
+
+
 def _normalize_scores(hits: list[dict]) -> list[dict]:
     """Rank-fair per-source scaling that PRESERVES an absolute relevance floor.
 
@@ -115,19 +157,21 @@ def _normalize_scores(hits: list[dict]) -> list[dict]:
     (clamped) × weight — NOT 1.0 — so a weak singleton stays weak.
 
     Uses ``_raw_score`` / ``_weight`` stashed by :func:`_tag` (falls back to
-    the existing ``score``). Monotonic within a source → within-source order
+    the existing ``score``). Monotonic within a channel → within-channel order
     preserved. Gated by ``AIFORGE_UMEM_NORMALIZE`` (default on; 0/false keeps
-    the legacy weight-scaled ``score`` untouched)."""
-    # Rescores IN PLACE and hands the same list back. Three early `return hits`
-    # made that look like a choice between outcomes when there was only ever
-    # one; the guards now just skip the work.
+    the legacy weight-scaled ``score`` untouched). Hits below the absolute
+    relevance floor are then dropped (:func:`_above_floor`)."""
+    # Rescores IN PLACE. Three early `return hits` made that look like a choice
+    # between outcomes when there was only ever one; the guards now just skip
+    # the work. The floor is the one thing that changes the LIST, so the return
+    # value (not the argument) is what the caller must keep.
     enabled = os.environ.get("AIFORGE_UMEM_NORMALIZE", "1").strip().lower() \
         not in ("0", "false", "no", "off")
     if hits and enabled:
         abs_w = _abs_weight()
         groups: dict[str, list[dict]] = {}
         for h in hits:
-            groups.setdefault(str(h.get("source") or ""), []).append(h)
+            groups.setdefault(_group_key(h), []).append(h)
 
         for group in groups.values():
             raws = [_raw_of(h) for h in group]
@@ -143,7 +187,7 @@ def _normalize_scores(hits: list[dict]) -> list[dict]:
                 else:
                     norm = (_raw_of(h) - lo) / span
                     h["score"] = (abs_w * raw_c + (1.0 - abs_w) * norm) * w
-    return hits
+    return _above_floor(hits)
 
 
 def _raw_of(h: dict) -> float:

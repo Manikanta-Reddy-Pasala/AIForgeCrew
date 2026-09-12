@@ -189,3 +189,27 @@ def test_startup_migration_folds_without_the_learner_outside_the_window(
     monkeypatch.setenv("AIFORGE_STARTUP_COMPACT", "off")
     migrations.run_startup_migrations()
     assert seen == []                    # skipped entirely
+
+
+# ── idle mode (the default) ─────────────────────────────────────────────
+
+def test_idle_mode_is_the_default_and_folds_only_when_idle(monkeypatch):
+    monkeypatch.delenv("AIFORGE_COMPACT_AT_HOUR", raising=False)
+    monkeypatch.delenv("AIFORGE_COMPACT_EVERY_H", raising=False)
+    for k in ("AIFORGE_PERIODIC_DISABLE", "AIFORGE_JOBS_DISABLE", "AIFORGE_REINDEX_DAILY"):
+        monkeypatch.delenv(k, raising=False)
+    from aiforge_core.runtime import compact_idle
+    assert compact_window.idle_mode() is True
+    assert compact_window.at_hour() is None
+    monkeypatch.setattr(compact_idle, "user_active", lambda: True)
+    assert compact_window.open_now() is False          # someone is working
+    monkeypatch.setattr(compact_idle, "user_active", lambda: False)
+    assert compact_window.open_now() is True
+
+
+def test_an_explicit_hour_leaves_idle_mode(monkeypatch):
+    monkeypatch.setenv("AIFORGE_COMPACT_AT_HOUR", "18")
+    assert compact_window.idle_mode() is False
+    monkeypatch.delenv("AIFORGE_COMPACT_AT_HOUR")
+    monkeypatch.setenv("AIFORGE_COMPACT_EVERY_H", "1")
+    assert compact_window.idle_mode() is False

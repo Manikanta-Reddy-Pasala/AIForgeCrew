@@ -97,15 +97,20 @@ def _dedupe_query(repo: "str | None", max_scan: int) -> "tuple[str, tuple]":
     if repo is not None:
         where += " AND (repo IS ? OR repo = ?)"
         params = (repo, repo)
-    return (f"SELECT id, kind, embedding FROM memory_units {where} "
+    return (f"SELECT id, kind, repo, embedding FROM memory_units {where} "
             "ORDER BY id DESC LIMIT ?", (*params, max_scan))
 
 
-def _is_near_dup(kind: str, vec: list, kept: list, threshold: float) -> bool:
+def _is_near_dup(kind: str, repo, vec: list, kept: list, threshold: float) -> bool:
     """True when ``vec`` is within ``threshold`` cosine of an already-kept unit of
-    the same ``kind``."""
-    for _kid, kkind, kvec in kept:
-        if kkind == kind and local_embed.cosine(vec, kvec) >= threshold:
+    the same ``kind`` AND the same ``repo``.
+
+    Scope is part of identity here: the same sentence learned in two projects is
+    two facts, and deleting one of them removes that project's only copy — for a
+    learner row there is no md file to rebuild it from."""
+    for _kid, kkind, krepo, kvec in kept:
+        if kkind == kind and krepo == repo \
+                and local_embed.cosine(vec, kvec) >= threshold:
             return True
     return False
 
@@ -124,24 +129,24 @@ def dedupe(*, repo: str | None = None, threshold: float = 0.95,
     """Periodic SEMANTIC dedup sweep. write_unit only dedups EXACT (repo,text);
     paraphrases ("README had 3 X" vs "README contained 3 X refs") accumulate.
     This collapses near-duplicates (cosine >= ``threshold`` on the STORED
-    embeddings — no sidecar call) within the same ``kind``, keeping the NEWEST
-    (highest id) and deleting the rest. Preferences (``kind='preference'``) are
+    embeddings — no sidecar call) within the same ``kind`` AND ``repo``, keeping
+    the NEWEST (highest id) and deleting the rest. Preferences (``preference``) are
     left alone (they're subject-upserted + distinct on purpose). Returns
     ``{scanned, removed}``. Best-effort — a bad row never stops the sweep."""
     with _LOCK, _conn() as c:
         sql, params = _dedupe_query(repo, max_scan)
         rows = c.execute(sql, params).fetchall()
         # rows are newest-first; keep the first of each near-duplicate cluster.
-        kept: list[tuple[int, str, list]] = []
+        kept: list[tuple[int, str, "str | None", list]] = []
         remove: list[int] = []
         for r in rows:
             vec = _row_vector(r)
             if not vec:
                 continue                     # no vector → can't compare, keep
-            if _is_near_dup(r["kind"], vec, kept, threshold):
+            if _is_near_dup(r["kind"], r["repo"], vec, kept, threshold):
                 remove.append(r["id"])
             else:
-                kept.append((r["id"], r["kind"], vec))
+                kept.append((r["id"], r["kind"], r["repo"], vec))
         for rid in remove:
             c.execute("DELETE FROM memory_units WHERE id = ?", (rid,))
         return {"scanned": len(rows), "removed": len(remove)}

@@ -63,6 +63,54 @@ def _linked_brief_keys(d: dict | None) -> list[str]:
 
 _BRIEF_MAX_LINKED = 3        # cap linked-brief blocks (AIFORGE_OKR_BRIEF_MAX_LINKED)
 _BRIEF_TOTAL_CAP = 12000     # hard ceiling on the assembled brief text
+_BRIEF_MAX_PARTS = 8         # how far to follow a split brief's -2/-3/… parts
+_PROJECT_BUDGET = 6000       # per-block char budgets, newest kept (_clip_knowledge)
+_LINKED_BUDGET = 2000
+_GLOBAL_BUDGET = 3000
+_TRIMMED_NOTE = "_…older entries trimmed (full brief on disk)._"
+
+
+def _clip_knowledge(text: str, budget: int) -> str:
+    """``text`` within ``budget``, cut on a LINE boundary, keeping the NEWEST.
+
+    These blocks used to be head slices (``knowledge[:6000]``). A brief renders
+    Key Results, then Facts oldest-first, then the most recent Learnings, then
+    the consolidated body — so a head slice cut mid-fact and threw away exactly
+    the newest facts and every Learning, which are the highest-signal lines in
+    the file. Keep whole lines from the end and say that older ones were cut,
+    so the model doesn't read the remainder as the whole story."""
+    text = (text or "").strip()
+    if len(text) <= budget:
+        return text
+    if budget <= len(_TRIMMED_NOTE):
+        return ""                    # no room for even one line plus the note
+    kept: list[str] = []
+    used = len(_TRIMMED_NOTE) + 1
+    for ln in reversed(text.splitlines()):
+        if used + len(ln) + 1 > budget:
+            break
+        kept.append(ln)
+        used += len(ln) + 1
+    kept.reverse()
+    return "\n".join([_TRIMMED_NOTE, *kept]).strip()
+
+
+def _brief_text(key: str) -> str:
+    """One brief's knowledge INCLUDING its split parts.
+
+    A brief that outgrows the topic split cap is written as
+    ``compacted-<key>.md`` + ``compacted-<key>-2.md`` …, and only part 1 was
+    ever loaded here: on exactly the biggest briefs — the ones with the most to
+    say — every fact past the first page was invisible to the model. The parts
+    carry the continuation, so read them in order until one is missing."""
+    from aiforge_core.memory import md_store
+    parts = [_brief_knowledge(md_store.read_file(f"compacted-{key}"))]
+    for i in range(2, _BRIEF_MAX_PARTS + 1):
+        nxt = _brief_knowledge(md_store.read_file(f"compacted-{key}-{i}"))
+        if not nxt:
+            break
+        parts.append(nxt)
+    return "\n".join(p for p in parts if p).strip()
 
 
 def _dedup_lines(text: str, seen: set[str]) -> str:
@@ -102,26 +150,36 @@ def _project_parts(repo: str, slug: str, seen_keys: set, seen_lines: set) -> lis
     seen_keys.add(slug)
     out: list[str] = []
     d = md_store.read_file(f"compacted-{slug}")
-    knowledge = _dedup_lines(_brief_knowledge(d), seen_lines)
+    knowledge = _dedup_lines(_brief_text(slug), seen_lines)
     if knowledge:
-        out.append("PROJECT MEMORY (" + repo + "):\n" + knowledge[:6000])
+        out.append("PROJECT MEMORY (" + repo + "):\n"
+                   + _clip_knowledge(knowledge, _PROJECT_BUDGET))
     # R5/R4: follow this brief's cross-scope links (bounded count).
     for lk in _linked_brief_keys(d)[:_max_linked()]:
         if lk in seen_keys:
             continue
         seen_keys.add(lk)
-        lk_know = _dedup_lines(
-            _brief_knowledge(md_store.read_file(f"compacted-{lk}")), seen_lines)
+        lk_know = _dedup_lines(_brief_text(lk), seen_lines)
         if lk_know:
-            out.append(f"LINKED MEMORY ({lk}):\n" + lk_know[:2000])
+            out.append(f"LINKED MEMORY ({lk}):\n"
+                       + _clip_knowledge(lk_know, _LINKED_BUDGET))
     return out
 
 
-def _clamp_brief(out: str) -> str:
-    """Hard ceiling, cut on a line boundary — never mid-fact."""
-    if len(out) > _BRIEF_TOTAL_CAP:
-        return out[:_BRIEF_TOTAL_CAP].rsplit("\n", 1)[0]
-    return out
+def _clamp_brief(parts: list) -> str:
+    """Hard ceiling over the assembled blocks — never cut mid-fact.
+
+    Blocks are already in priority order (project, then what it links to, then
+    global), so the ceiling spends the budget in that order and the block that
+    crosses it keeps its newest lines rather than being chopped mid-sentence."""
+    out: list[str] = []
+    left = _BRIEF_TOTAL_CAP
+    for part in parts:
+        if left <= len(_TRIMMED_NOTE):
+            break
+        out.append(part if len(part) <= left else _clip_knowledge(part, left))
+        left -= len(out[-1]) + 2        # the "\n\n" join between blocks
+    return "\n\n".join(p for p in out if p.strip())
 
 
 def project_brief_text(repo: str) -> str:
@@ -141,11 +199,10 @@ def project_brief_text(repo: str) -> str:
     if slug and slug != "shared":
         parts += _project_parts(repo, slug, seen_keys, seen_lines)
     # Global compacted brief — unioned into EVERY context.
-    gk = _dedup_lines(_brief_knowledge(md_store.read_file("compacted-shared")),
-                      seen_lines)
+    gk = _dedup_lines(_brief_text("shared"), seen_lines)
     if gk:
-        parts.append("GLOBAL MEMORY:\n" + gk[:3000])
-    return _clamp_brief("\n\n".join(parts))
+        parts.append("GLOBAL MEMORY:\n" + _clip_knowledge(gk, _GLOBAL_BUDGET))
+    return _clamp_brief(parts)
 
 
 def _project_brief(cwd: str) -> str:

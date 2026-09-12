@@ -326,8 +326,41 @@ def _topic_labels(files: list[dict], role: str) -> dict:
     return out
 
 
+# One labelling call's worth of titles. The listing used to be sliced to this
+# and sent as a single call, so on a box with a backlog only the first ~50 notes
+# were ever themed: the rest stayed un-topic'd, were never archived, and were
+# re-read (and re-truncated) on every pass — a queue that could not drain.
+_LABEL_LISTING_CAP = 4000
+
+
+def _label_batches(files: list[dict], cap: int) -> list[list[dict]]:
+    """``files`` split into groups whose listing fits one call."""
+    batches: list[list[dict]] = []
+    cur: list[dict] = []
+    size = 0
+    for d in files:
+        cost = len((d.get("title") or d.get("file") or "")[:80]) + 8
+        if cur and size + cost > cap:
+            batches.append(cur)
+            cur, size = [], 0
+        cur.append(d)
+        size += cost
+    if cur:
+        batches.append(cur)
+    return batches
+
+
 def _llm_topic_labels(files: list[dict], role: str,
                       shortlist: list[str]) -> dict:
+    """Theme every leftover note, in as many calls as it takes."""
+    labels: dict = {}
+    for batch in _label_batches(files, _LABEL_LISTING_CAP):
+        labels.update(_llm_topic_labels_once(batch, role, shortlist))
+    return labels
+
+
+def _llm_topic_labels_once(files: list[dict], role: str,
+                           shortlist: list[str]) -> dict:
     """Ask the model to theme ONLY the notes the deterministic snap could not
     place, choosing from ``shortlist`` when one fits. Small payload by design:
     the leftover titles and at most a dozen candidate topics. Empty on any
@@ -355,7 +388,7 @@ def _llm_topic_labels(files: list[dict], role: str,
              "abbreviation. Reply ONLY a JSON object mapping each index (as a "
              'string) to its topic slug, e.g. {"0":"data-sync"}. '
              "Every index must appear once." + known},
-            {"role": "user", "content": listing[:4000]},
+            {"role": "user", "content": listing[:_LABEL_LISTING_CAP]},
         ], _Topics, max_tokens=600, max_retries=1, temperature=0.0).root
     except Exception:  # noqa: BLE001
         return {}
@@ -457,14 +490,16 @@ def _part_xref(base: str, i: int, n: int) -> list[str]:
 
 
 def _brief_parts(key: str, sections: dict, tags, title: str,
-                 sources: list[str] | None = None) -> list[tuple[str, str]]:
+                 sources: list[str] | None = None,
+                 body_md: str = "") -> list[tuple[str, str]]:
     """Render an OKR knowledge brief → ``[(stem, content), …]``. Facts are paged
     under the split cap: a topic that fits is ONE file; a topic that outgrows it
     splits into compacted-<key>.md + compacted-<key>-2.md … each carrying the
     OKR envelope (kind/tags/objective) and a cross-reference back to part 1 /
     forward to the next (the "split and refer" pattern). Key Results + Learnings
     stay on part 1 (the canonical head) — and so does ``sources``, the
-    provenance of the whole fold: one claim per topic, on its canonical head."""
+    provenance of the whole fold: one claim per topic, on its canonical head.
+    ``body_md`` (the no-model path's consolidated prose) also rides part 1."""
     from aiforge_core.runtime import work_notes
     pages = _page_facts([str(f) for f in (sections.get("facts") or [])],
                         _topic_split_cap())
@@ -474,15 +509,18 @@ def _brief_parts(key: str, sections: dict, tags, title: str,
     for i, page in enumerate(pages):
         stem = f"compacted-{base}" if i == 0 else f"compacted-{base}-{i + 1}"
         parts.append((stem, _render_part(work_notes, key, base, sections, tags,
-                                         title, sources, page, i, n)))
+                                         title, sources, page, i, n, body_md)))
     return parts
 
 
 def _render_part(work_notes, key: str, base: str, sections: dict, tags,
-                 title: str, sources, page: list, i: int, n: int) -> str:
+                 title: str, sources, page: list, i: int, n: int,
+                 body_md: str = "") -> str:
     """One page of a (possibly split) brief. The canonical head (part 1) is the
     only part that carries Key Results, Learnings and the fold's provenance."""
     first = i == 0
+    body = "\n\n".join(x for x in ([body_md] if first else [])
+                       + _part_xref(base, i, n) if x)
     return work_notes.render_note(
         "knowledge", key if first else f"{key}-{i + 1}",
         title=(title if n == 1 else f"{title} (part {i + 1}/{n})"),
@@ -491,7 +529,7 @@ def _render_part(work_notes, key: str, base: str, sections: dict, tags,
         facts=page, links=(sections.get("links") or []),
         learnings=((sections.get("learnings") or []) if first else None),
         sources=(sources if first else None),
-        tags=tags, body_md="\n\n".join(_part_xref(base, i, n)))
+        tags=tags, body_md=body)
 
 
 def _union_back(new_list, old_list) -> list:
@@ -565,7 +603,33 @@ def _consolidate_brief_sections(key: str, path, blocks: list[str],
     # loses that content permanently on the daily recompact.
     for fld in ("learnings", "key_results", "links"):
         merged[fld] = _union_back(merged.get(fld), existing.get(fld))
+    merged["facts"] = _kept_facts(merged.get("facts"), existing.get("facts"), key)
     return merged, list(prev_tags) + list(tags or [])
+
+
+# A fold may legitimately shrink the Facts list (dedupe, supersede), but not to
+# nothing and not to a sliver — below this share of what went in, the result is
+# treated as a failed fold rather than as the brief's new truth.
+_FOLD_FLOOR = 0.25
+
+
+def _kept_facts(new_facts, old_facts, key: str) -> list:
+    """The folded Facts — unless the fold collapsed them, in which case the
+    brief keeps what it had.
+
+    The LLM's Facts list REPLACES the brief's (that is what consolidation is
+    for), so one truncated, refused or malformed reply could erase a brief's
+    entire knowledge with nothing to rebuild it from. Learnings, Key Results and
+    Links are already union-backed; this is the same protection for the section
+    that carries the most."""
+    new = list(new_facts or [])
+    old = list(old_facts or [])
+    if not old or len(new) >= max(1, int(len(old) * _FOLD_FLOOR)):
+        return new
+    _log.warning("compact: fold of '%s' returned %d of %d facts — keeping the "
+                 "brief's own facts (treated as a failed fold)",
+                 key, len(new), len(old))
+    return _union_back(new, old)
 
 
 def _consolidate_brief_content(key: str, path, blocks: list[str], title: str,
@@ -660,6 +724,63 @@ def archive_covered_captures() -> dict:
             "archive": str(dst)}
 
 
+# How long a retired capture/brief stays readable in archive/ before it is
+# removed. Everything in there has already been folded into a brief, so this is
+# a copy — but it is the copy you reach for when a fold went wrong, which is why
+# the default is months rather than days. 0 disables the sweep entirely.
+_ARCHIVE_KEEP_DAYS = 180
+# archive/<stamp>/ — written by _now_iso() with the colons stripped. Only a
+# folder shaped like that is ever removed; anything else a human put in
+# archive/ is left alone.
+_ARCHIVE_STAMP_RE = re.compile(r"^(?:cleanup-)?\d{4}-\d{2}-\d{2}T\d{6}")
+
+
+def _expired_archive_dirs(root, cutoff: float):
+    """Archive folders older than ``cutoff``. Anything not named like a stamp is
+    not ours to remove, and an unreadable entry is left alone."""
+    for d in sorted(root.iterdir()):
+        if not d.is_dir() or not _ARCHIVE_STAMP_RE.match(d.name):
+            continue
+        try:
+            if d.stat().st_mtime < cutoff:
+                yield d
+        except OSError:
+            continue
+
+
+def prune_archive(*, days: "int | None" = None, dry_run: bool = False) -> dict:
+    """Remove archive folders older than the retention window.
+
+    The archive had no retention at all: every compaction moved its consumed
+    captures in and nothing ever took them out, so the one folder guaranteed to
+    grow without bound was the one holding copies."""
+    import shutil
+    import time
+    if days is None:
+        try:
+            days = int(os.environ.get("AIFORGE_ARCHIVE_KEEP_DAYS",
+                                      _ARCHIVE_KEEP_DAYS))
+        except (TypeError, ValueError):
+            days = _ARCHIVE_KEEP_DAYS
+    root = memory_dir() / "archive"
+    if days <= 0 or not root.is_dir():
+        return {"ok": True, "removed": 0, "skipped": "disabled"}
+    cutoff = time.time() - days * 86400
+    removed: list[str] = []
+    for d in _expired_archive_dirs(root, cutoff):
+        try:
+            if not dry_run:
+                shutil.rmtree(d)
+            removed.append(d.name)
+        except OSError:
+            continue
+    if removed:
+        _log.info("compact: pruned %d archive folder(s) older than %d days",
+                  len(removed), days)
+    return {"ok": True, "removed": len(removed), "folders": removed,
+            "days": days, "dry_run": dry_run}
+
+
 def _live_capture_notes(group_by: str) -> list[dict]:
     """The raw capture units eligible for this axis.
 
@@ -719,13 +840,37 @@ def _apply_topic_floor(groups: dict, live: list[dict]) -> dict:
     return {k: v for k, v in groups.items() if k in keep or len(v) >= floor}
 
 
-def _add_existing_briefs(result: dict) -> None:
-    """force: re-consolidate every EXISTING brief too — add each
+def _brief_axis(p) -> str:
+    """"repo" or "topic" — which axis owns this brief file."""
+    from . import _topics
+    key = p.stem[len("compacted-"):] or "shared"
+    if key == "shared":
+        return "repo"           # the shared brief folds with the repo axis
+    try:
+        # _parse_brief, not _parse: a brief's tags are a YAML BLOCK list, which
+        # the line-splitting frontmatter reader returns as nothing at all.
+        tags = _parse_brief(p.read_text(encoding="utf-8", errors="replace"))["tags"]
+    except OSError:
+        tags = []
+    return "repo" if _topics.is_repo_brief(key, tags) else "topic"
+
+
+def _add_existing_briefs(result: dict, group_by: str) -> None:
+    """force: re-consolidate every EXISTING brief of THIS axis too — add each
     compacted-<scope>.md as its own group so the loop re-reads + re-summarises
     it even with no new live sources. Split-part / per-run-named files are
-    skipped (they fold via their primary scope)."""
+    skipped (they fold via their primary scope).
+
+    Axis matters. Adding every brief to both axes re-folded each one TWICE per
+    cycle — two lossy LLM passes and double the cost — and, worse, folding a
+    repo brief on the topic axis re-indexed it as repo-agnostic, so one
+    project's knowledge became visible in every other project's recall."""
+    if group_by not in ("repo", "topic"):
+        return
     for p in iter_briefs():
         if re.search(r"-\d{8}-[0-9a-f]{6}$", p.stem):
+            continue
+        if _brief_axis(p) != group_by:
             continue
         key = p.stem[len("compacted-"):] or "shared"
         result.setdefault(key, [])   # empty live → existing_body re-consolidated
@@ -747,7 +892,7 @@ def _gather_planned(group_by: str, min_group: int, model_role: str,
         groups = _apply_topic_floor(groups, live)
     result = {k: v for k, v in groups.items() if len(v) >= min_group}
     if force:
-        _add_existing_briefs(result)
+        _add_existing_briefs(result, group_by)
     return result
 
 
@@ -843,6 +988,10 @@ def _prepare_group(key: str, items: list[dict], *, group_by: str,
             key, path, blocks, model_role, all_tags)
         return {"items": items, "base_stem": stem, "key": key, "tags": all_tags,
                 "summarized": True,
+                # The fold ran for minutes with no lock held (by design), so the
+                # write must re-check for facts captured meanwhile — see
+                # _late_facts. Everything it needs to re-render is kept here.
+                "sections": merged, "title": title, "sources": fold_sources,
                 "parts": _brief_parts(key, merged, all_tags, title,
                                       sources=fold_sources)}
 
@@ -859,15 +1008,18 @@ def _prepare_group(key: str, items: list[dict], *, group_by: str,
         body = _capped_merge(merged_prefix + _SECTION_SEP.join(sections), title)
 
     if group_by in ("repo", "topic"):
-        # No model: keep the OKR envelope, consolidation lives in the body
-        # (Facts reset — they were folded in); Learnings survive verbatim.
-        prev_learnings = _parse_brief(
-            path.read_text(encoding="utf-8", errors="replace")
-        )["learnings"] if path.exists() else []
-        parts = [(stem, _render_brief(
-            key, facts=[], body_md=re.sub(r"^#\s[^\n]*\n+", "", body.strip()),
-            learnings=prev_learnings, title=title, tags=all_tags,
-            sources=fold_sources))]
+        # No model: the new notes are merged into the PROSE body, and every
+        # section the brief already had is carried forward untouched. Rendering
+        # `facts=[]` here (what this used to do) deleted the whole consolidated
+        # Facts list of every brief it touched — a boot with compaction off, or
+        # with a ticket still in progress, wiped knowledge no fold could rebuild.
+        existing, prev_tags = _existing_brief_sections(path, _slug(key))
+        # The brief's own tags carry its axis (repo:<slug>), so they must
+        # survive a fold that did not go through the model either.
+        all_tags = sorted(set(list(prev_tags) + list(all_tags)))
+        parts = _brief_parts(
+            key, existing, all_tags, title, sources=fold_sources,
+            body_md=re.sub(r"^#\s[^\n]*\n+", "", body.strip()))
     else:
         parts = [(stem, _kind_frontmatter(title, stem, all_tags, len(items),
                                           did_summarize, fold_sources)
@@ -902,6 +1054,9 @@ def _write_prepared(prepared: list, archive, archive_sources: bool,
     moved = 0
     archive.mkdir(parents=True, exist_ok=True)
     for p in prepared:
+        # Re-render FIRST (it can add a page back), then retire the parts the
+        # final shape really doesn't have.
+        _late_facts(p)
         _retire_stale_parts(p, archive, shutil)
         if not _write_parts(p, out_files, summarized_files):
             continue
@@ -918,13 +1073,42 @@ def _write_prepared(prepared: list, archive, archive_sources: bool,
     return moved
 
 
+def _late_facts(p: dict) -> None:
+    """Carry facts captured DURING the fold into the parts about to be written.
+
+    ``_prepare_group`` reads the brief, then spends minutes in the LLM with no
+    write lock held; a chat turn capturing a fact in that window wrote it to the
+    same brief, and this write replaced it. Re-read under the caller's lock and
+    re-render with anything new."""
+    sections = p.get("sections")
+    if not sections:
+        return                        # prose/kind path: nothing to re-render
+    base = _slug(p["key"])
+    current, _tags = _existing_brief_sections(_md_path_for_stem(p["base_stem"]),
+                                             base)
+    have = {str(f) for f in sections.get("facts") or []}
+    late = [f for f in (current.get("facts") or []) if str(f) not in have]
+    if not late:
+        return
+    _log.info("compact: %d fact(s) captured during the fold of '%s' — kept",
+              len(late), p["key"])
+    merged = {**sections, "facts": list(sections.get("facts") or []) + late}
+    p["sections"] = merged
+    p["parts"] = _brief_parts(p["key"], merged, p["tags"], p.get("title") or "",
+                              sources=p.get("sources"))
+
+
 def _write_parts(p: dict, out_files: list, summarized_files: list) -> bool:
     """Write this group's file part(s); True when at least one landed."""
+    from aiforge_core.config import _atomic
     wrote_any = False
     for st, content in p["parts"]:
         fpath = _md_path_for_stem(st)
         try:
-            fpath.write_text(content, encoding="utf-8")
+            # Atomic: a brief half-written by a crash (or a reader catching the
+            # truncated file) loses the whole fold, and this is the write that
+            # replaces the ONLY copy of that knowledge.
+            _atomic.write_text(str(fpath), content)
         except Exception:  # noqa: BLE001 — keep originals; skip
             continue
         out_files.append(fpath.name)
@@ -952,13 +1136,9 @@ def _ingest_brief(p: dict, st: str, group_by: str) -> None:
     # repo query); a topic brief → NULL (repo-agnostic, globally visible).
     # Burying every brief under 'notes' (the old default) made all consolidated
     # OKR knowledge invisible to repo-scoped recall.
+    from . import _topics
     bkey = p.get("key")
-    if not bkey:
-        brepo = "notes"
-    elif group_by == "topic":
-        brepo = None
-    else:
-        brepo = bkey
+    brepo = _topics.brief_repo_scope(bkey, group_by, p.get("tags"))
     # real kind ('knowledge') + clean human title (see ingest_dir)
     _ingest_unit(title=_brief_title(bkey or st), body=ingest_body,
                  kind="knowledge", tags=p["tags"], source=f"compacted:{st}",
@@ -993,10 +1173,49 @@ def _heal_after_compact(model_role: str, summarize: bool) -> tuple[dict, dict]:
                                      summarize=bool(summarize))
 
 
+def _report_progress(progress, i: int, total: int, key: str) -> None:
+    if not progress:
+        return
+    try:
+        progress(i, total, key)
+    except Exception:  # noqa: BLE001 — a progress callback never fails a fold
+        pass
+
+
+def _fold_groups(planned: dict, o: dict) -> "tuple[int, bool]":
+    """Fold every planned group, writing each as it is done → ``(moved,
+    stopped)``. Split out of :func:`compact` so the pass reads as one loop;
+    ``o`` carries the fold's settings and the accumulators it appends to."""
+    moved, stopped = 0, False
+    total = len(planned)
+    for i, (key, items) in enumerate(sorted(planned.items()), 1):
+        if o["skip_keys"] and key in o["skip_keys"]:
+            continue
+        if o["should_stop"] is not None and o["should_stop"]():
+            stopped = True
+            break
+        _report_progress(o["progress"], i, total, key)
+        _log.info("compact[%s]: [%d/%d] folding '%s' (%d file%s)…",
+                  o["group_by"], i, total, key, len(items),
+                  "" if len(items) == 1 else "s")
+        prepared = [_prepare_group(
+            key, items, group_by=o["group_by"], summarize=o["summarize"],
+            model_role=o["model_role"], archive_sources=o["archive_sources"])]
+        with _WRITE_LOCK:
+            moved += _write_prepared(prepared, o["archive"],
+                                     o["archive_sources"], o["out_files"],
+                                     o["summarized_files"])
+        _reingest_prepared(prepared, o["group_by"], o["out_files"])
+        if o["on_group_done"] is not None:
+            o["on_group_done"](key)
+    return moved, stopped
+
+
 def compact(*, group_by: str = "kind", min_group: int = 2,
             dry_run: bool = False, summarize: bool = True,
             model_role: str = "learner", archive_sources: bool = True,
-            force: bool = False, progress=None) -> dict:
+            force: bool = False, progress=None, skip_keys=None,
+            should_stop=None, on_group_done=None) -> dict:
     """Consolidate the sprawl of per-session ``.md`` memories into ONE
     standardized file per group, so the Memory folder stays legible.
 
@@ -1051,26 +1270,20 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
         _log.info("compact[%s]: %d brief(s) to fold%s", group_by, total,
                   " via LLM" if (summarize and group_by in ("repo", "topic"))
                   else " (deterministic)")
-        prepared: list[dict] = []
-        for i, (key, items) in enumerate(sorted(planned.items()), 1):
-            if progress:
-                try:
-                    progress(i, total, key)
-                except Exception:  # noqa: BLE001
-                    pass
-            _log.info("compact[%s]: [%d/%d] folding '%s' (%d file%s)…",
-                      group_by, i, total, key, len(items),
-                      "" if len(items) == 1 else "s")
-            prepared.append(_prepare_group(
-                key, items, group_by=group_by, summarize=summarize,
-                model_role=model_role, archive_sources=archive_sources))
-        with _WRITE_LOCK:
-            moved = _write_prepared(prepared, archive, archive_sources,
-                                    out_files, summarized_files)
-        _reingest_prepared(prepared, group_by, out_files)
+        # Each group is written (and re-ingested) as soon as it is folded, not
+        # all at the end: a pass that stops early — the idle compactor yields
+        # the moment the user is back — keeps every group it finished, and
+        # ``skip_keys`` lets the next pass resume after them.
+        moved, stopped = _fold_groups(planned, {
+            "group_by": group_by, "summarize": summarize,
+            "model_role": model_role, "archive_sources": archive_sources,
+            "archive": archive, "out_files": out_files,
+            "summarized_files": summarized_files, "skip_keys": skip_keys,
+            "should_stop": should_stop, "progress": progress,
+            "on_group_done": on_group_done})
 
     merged, healed = ({}, {})
-    if group_by == "topic":
+    if group_by == "topic" and not stopped:
         merged, healed = _heal_after_compact(model_role, summarize)
     return {
         "ok": True, "dry_run": False, "group_by": group_by,
@@ -1080,6 +1293,7 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
         "merged_topics": merged.get("merged", 0),
         "selfheal": healed,
         "archive": str(archive),
+        "stopped": stopped,
     }
 
 
@@ -1161,7 +1375,11 @@ def _fold_one_stale(pth, archive) -> tuple[int, bool]:
         if not f.strip():
             continue
         try:
-            capture("topic_learning", f.strip(), repo="notes",
+            # repo=None ⇒ the SHARED (global) scope. Re-capturing these under
+            # "notes" fed a loop: the repo axis minted compacted-notes.md, whose
+            # key is itself "cryptic", so the next cleanup folded it and
+            # re-captured every fact again — one classify call per fact, forever.
+            capture("topic_learning", f.strip(), repo=None,
                     source="cleanup:legacy-compacted")
             moved += 1
         except Exception:  # noqa: BLE001

@@ -108,3 +108,29 @@ def test_unknown_roles_build_nothing():
     from aiforge_core.runtime.pipeline import build_role_agent
     assert build_role_agent("doer") is None
     assert build_role_agent("") is None
+
+
+# ── an optional context gatherer running out of time never fails the run ──
+
+def test_a_slow_gatherer_is_stopped_gracefully(monkeypatch):
+    """"Node 'ctx_conventions' timed out after 300 seconds" aborted a whole
+    team build on the 27B model; the gatherer is pure enrichment."""
+    import types as _t
+
+    pytest.importorskip("google.adk.models.llm_response")
+    from aiforge_core.agents import _base
+    clock = {"t": 1000.0}
+    monkeypatch.setattr("time.monotonic", lambda: clock["t"])
+    cb = _base.soft_wall_callback("ctx_conventions", 300)
+    ctx = _t.SimpleNamespace(invocation_id="inv-1")
+    assert cb(ctx, None) is None                   # within budget: the model runs
+    clock["t"] += 301
+    out = cb(ctx, None)
+    text = out.content.parts[0].text
+    assert "stopped after 300s" in text
+    assert not out.content.parts[0].function_call  # no tool call → agent ends
+
+
+def test_only_the_enrichment_gatherers_get_the_soft_stop():
+    from aiforge_core.agents import _base
+    assert _base.ENRICHMENT_ROLES == {"researcher", "ctx_repomap", "ctx_conventions"}

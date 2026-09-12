@@ -46,7 +46,7 @@ def test_defaults(rs, monkeypatch):
         # provider's — two windows never agree on where a minute starts, so
         # equal ones collide rather than merely touch.
         "llm_max_rpm": 15,
-        "compaction_rpm": 5,
+        "compaction_rpm": 0,
         "chat_rpm": 15,
         "llm_rate_limit_backoff_s": 20,
         "llm_rate_limit_cap_s": 60}

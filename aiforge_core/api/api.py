@@ -475,7 +475,20 @@ def _scan_one_session(s: dict, *, idle_only: bool, state: dict,
     return failed
 
 
-def _compact_chat_md() -> bool:
+def _axis_done(groups_done, axis: str):
+    """The groups this axis already folded in the current cycle (or None)."""
+    return groups_done(axis) if groups_done else None
+
+
+def _axis_recorder(group_done, axis: str):
+    """Record a folded group against its axis (or don't record at all)."""
+    if group_done is None:
+        return None
+    return lambda key: group_done(axis, key)
+
+
+def _compact_chat_md(should_stop=None, skip_keys=None,
+                     on_group_done=None) -> "bool | str":
     """HOURLY CHAT-MD COMPACTION — per-turn writes append forever to
     ~/.aiforge/memory/*.md; md_store.compact() consolidates them (map-reduce
     summary, archives originals) so the memory folder stays bounded + legible.
@@ -497,10 +510,23 @@ def _compact_chat_md() -> bool:
         # session is often its own topic, so min_group=2 would leave it
         # sitting raw forever ("nothing to compact"). Singletons still get
         # organized by topic + archived.
+        # Each axis keeps its OWN done-set: the same key names a repo brief on
+        # one axis and a topic brief on the other, so one shared set would skip
+        # a group that never ran.
         r_repo = md_store.compact(group_by="repo", min_group=1, summarize=True,
-                                  model_role="learner", archive_sources=False)
+                                  model_role="learner", archive_sources=False,
+                                  should_stop=should_stop,
+                                  skip_keys=_axis_done(skip_keys, "repo"),
+                                  on_group_done=_axis_recorder(on_group_done, "repo"))
+        if r_repo.get("stopped"):
+            return "stopped"
         r_topic = md_store.compact(group_by="topic", min_group=1, summarize=True,
-                                   model_role="learner", archive_sources=True)
+                                   model_role="learner", archive_sources=True,
+                                   should_stop=should_stop,
+                                   skip_keys=_axis_done(skip_keys, "topic"),
+                                   on_group_done=_axis_recorder(on_group_done, "topic"))
+        if r_topic.get("stopped"):
+            return "stopped"
         # Retire per-run captures that masquerade as canonical briefs
         # (compacted-<desc>-YYYYMMDD-hex.md) — compact() can never see them,
         # so they'd pile up forever; their facts already live in the real
@@ -510,6 +536,9 @@ def _compact_chat_md() -> bool:
         # boilerplate Objective (facts migrated elsewhere / emptied /
         # compacted-compacted-* artifact). They read as "empty" memories.
         r_empty = md_store.sweep_empty_briefs(archive=True)
+        # …and retire what has sat in archive/ past the retention window: every
+        # sweep above MOVES files in there and nothing ever took them out.
+        md_store.prune_archive()
         # Apply the CROSS-BRIEF rules on every compaction (not just Compact
         # all): merge topics, drop global-dup facts, resolve contradictions
         # (latest wins), sweep emptied stubs, lint + (re)link briefs. Without
@@ -668,6 +697,83 @@ def _register_legacy_compaction(_pd) -> None:
                          "AIFORGE_RECOMPACT_HOUR", 2, low=0))))
 
 
+def _idle_sessions_stage(cp) -> str:
+    """Fold every session with new turns, yielding between sessions."""
+    if _compact_mode_skips(False):
+        return "done"
+    try:
+        from aiforge_core.runtime import chat_store
+        sessions = chat_store.list_sessions() or []
+    except Exception as exc:  # noqa: BLE001
+        _af_log.warning("idle compaction: session scan failed: %s", exc)
+        return "failed"
+    max_windows = _int_env_or("AIFORGE_SESSION_COMPACT_MAX_WINDOWS", 20)
+    failed = False
+    for s in sessions:
+        if (s or {}).get("id") is None:
+            continue
+        if cp.should_stop():
+            return "stopped"
+        failed = _scan_one_session(s, idle_only=False, state=_SESSION_SCAN_STATE,
+                                   max_windows=max_windows) or failed
+    return "failed" if failed else "done"
+
+
+def _idle_briefs_stage(cp) -> str:
+    """Fold the md briefs, RESUMING at the group the last window stopped on.
+
+    Without the checkpoint's per-group memory every interruption sent the next
+    idle window back to group one — on a box used in short bursts the early
+    groups were re-folded (LLM calls and all) over and over and the later ones
+    were never reached."""
+    res = _compact_chat_md(should_stop=cp.should_stop,
+                           skip_keys=cp.groups_done, on_group_done=cp.group_done)
+    if res == "stopped":
+        return "stopped"
+    return "done" if res else "failed"
+
+
+def _idle_recompact_stage(cp) -> str:
+    if os.environ.get("AIFORGE_RECOMPACT_DAILY", "1") == "0":
+        return "done"
+    try:
+        from aiforge_core.memory import migrations
+        out = migrations.force_recompact_all(checkpoint=cp)
+    except Exception as exc:  # noqa: BLE001
+        _af_log.warning("idle compaction: full re-fold failed: %s", exc)
+        return "failed"
+    if out.get("stopped"):
+        return "stopped"
+    # Soft-failed steps mean the cycle did NOT do its work — retry it (bounded
+    # by _MAX_STAGE_FAILURES) rather than recording the stage as complete.
+    if out.get("failed_steps"):
+        _af_log.warning("idle compaction: re-fold steps failed: %s",
+                        ", ".join(out["failed_steps"]))
+        return "failed"
+    return "done"
+
+
+def _idle_compact() -> None:
+    """The idle pass: compact (or resume compacting) only while nobody is using
+    AIForge — see runtime.compact_idle."""
+    from aiforge_core.runtime import compact_idle
+    outcome = compact_idle.run_when_idle([
+        ("sessions", _idle_sessions_stage),
+        ("briefs", _idle_briefs_stage),
+        ("recompact", _idle_recompact_stage),
+    ])
+    if outcome not in ("busy", "not-due"):
+        _af_log.info("idle compaction: %s", outcome)
+
+
+def _register_idle_compaction(_pd) -> None:
+    """COMPACTION WHENEVER IDLE (default): a cheap check every
+    AIFORGE_COMPACT_CHECK_S (300 s) that compacts — resuming any unfinished
+    cycle — only while nobody is using the box."""
+    _pd.register("idle-compact", _idle_compact,
+                 every_s=_int_env_or("AIFORGE_COMPACT_CHECK_S", 300, low=30))
+
+
 def _register_daily_compaction(_pd, daily_hour: int) -> None:
     """ONE COMPACTION A DAY, IN THE EVENING (default).
 
@@ -730,14 +836,16 @@ def _start_daily_reindex() -> None:
     _register_hourly_jobs(_pd, hour)
     _register_artifact_merge(_pd)
     # Compaction is ENABLED BY DEFAULT (Option A): the per-category rate limiter
-    # caps it at compaction_rpm (default 5/min), so it can no longer spend a
+    # meters it as compaction (the remainder of llm_max_rpm), so it can no longer spend a
     # burst of requests before the app is usable. Turn it OFF from Settings
     # (persists AIFORGE_COMPACT_DISABLE=1). One source of truth for the flag:
     # compact_window.disabled(). Reindex + hourly jobs run regardless.
     from aiforge_core.runtime import compact_window as _cw
     if not _cw.disabled():
         daily_hour = _compact_at_hour()
-        if daily_hour is None:
+        if _cw.idle_mode():
+            _register_idle_compaction(_pd)
+        elif daily_hour is None:
             _register_legacy_compaction(_pd)
         else:
             _register_daily_compaction(_pd, daily_hour)

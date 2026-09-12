@@ -39,9 +39,25 @@ def disabled() -> bool:
         "1", "true", "yes")
 
 
+def idle_mode() -> bool:
+    """The DEFAULT schedule: compact whenever AIForge is idle (runtime.
+    compact_idle). An explicit AIFORGE_COMPACT_AT_HOUR (an hour, or off) or a
+    positive AIFORGE_COMPACT_EVERY_H selects the older fixed-hour / hourly
+    schedules instead."""
+    if os.environ.get("AIFORGE_COMPACT_AT_HOUR") is not None:
+        return False
+    try:
+        return int(os.environ.get("AIFORGE_COMPACT_EVERY_H", "") or 0) <= 0
+    except (TypeError, ValueError):
+        return True
+
+
 def at_hour() -> "int | None":
     """Local hour of the single daily compaction pass, or None when the daily
-    schedule is off (explicit ``off``/``0``, or an explicit hourly interval)."""
+    schedule is off (idle mode — the default —, explicit ``off``/``0``, or an
+    explicit hourly interval)."""
+    if idle_mode():
+        return None
     raw = os.environ.get("AIFORGE_COMPACT_AT_HOUR")
     if raw is None:
         try:
@@ -83,7 +99,7 @@ def daily_pass_registered() -> bool:
         return False
     if os.environ.get("AIFORGE_REINDEX_DAILY", "1") in ("0", "false", "no"):
         return False
-    return at_hour() is not None
+    return idle_mode() or at_hour() is not None
 
 
 def catch_up_enabled() -> bool:
@@ -103,10 +119,18 @@ def open_now(now: "datetime | None" = None) -> bool:
     fold is skipped: the daily pass walks every session anyway, so nothing is
     lost — it just happens in the evening, which is what the operator asked for.
     """
+    if idle_mode():
+        # The idle pass folds everything the moment nobody is using the box;
+        # an opportunistic fold fires on a chat switch — i.e. while someone IS.
+        if not daily_pass_registered():
+            return True
+        from aiforge_core.runtime import compact_idle
+        return not compact_idle.user_active()
     hour = at_hour()
     if hour is None or not daily_pass_registered() or catch_up_enabled():
         return True
     return (now or datetime.now()).hour >= hour
 
 
-__all__ = ["at_hour", "open_now", "daily_pass_registered", "catch_up_enabled"]
+__all__ = ["at_hour", "open_now", "daily_pass_registered", "catch_up_enabled",
+           "idle_mode"]

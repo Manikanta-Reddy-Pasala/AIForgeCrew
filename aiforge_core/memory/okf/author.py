@@ -783,13 +783,18 @@ def _body_for(facts: list[str]) -> tuple[str, list[str]]:
     """
     kept: list[str] = []
     size = 0
-    for fact in facts:
+    # NEWEST first-served. Filling from the front meant that once a node hit the
+    # cap it froze: every fact learned afterwards fell off the end and the node
+    # kept the same oldest 4000 characters forever, so the newest knowledge was
+    # the one thing that never reached another machine.
+    for fact in reversed(facts):
         line = f"- {fact}"
         cost = len(line) + (1 if kept else 0)
         if size + cost > _BODY_CHARS:
             break
         kept.append(fact)
         size += cost
+    kept.reverse()                     # back into the order they were learned
     return "\n".join(f"- {f}" for f in kept), kept
 
 
@@ -805,11 +810,24 @@ def _learning_by_topic(g) -> dict:
     return out
 
 
+def _topic_scope(topic: str) -> str:
+    """``global`` for a topic brief, ``repo:<name>`` for a project one.
+
+    A repo brief published as a global node put one project's facts in front of
+    every other project, on every machine it synced to — the exact scope leak
+    the brief axes exist to prevent."""
+    try:
+        from aiforge_core.memory.md_store import _topics
+        return f"repo:{topic}" if _topics.is_repo_brief(topic) else "global"
+    except Exception:  # noqa: BLE001 — unknown ⇒ the narrower claim is not safe
+        return "global"                                    # to invent either way
+
+
 def _create_topic_node(topic: str, facts: list) -> tuple[int, int]:
     """``(created, dropped)`` for a topic no node holds yet."""
     body, kept = _body_for(facts)
     ok = _store.save_node("learning", None,
-                          {"scope": "global", "category": topic,
+                          {"scope": _topic_scope(topic), "category": topic,
                            "title": f"{topic} knowledge",
                            "tags": [f"topic:{topic}"]},
                           body, reindex=False).get("ok")
@@ -823,8 +841,13 @@ def _update_topic_node(topic: str, facts: list, held) -> tuple[int, int]:
     fresh = [f for f in facts if f not in have]
     if not fresh:
         return 0, 0       # unchanged: no write, no rev bump, nothing to sync
-    body, kept = _body_for(have + fresh)
-    dropped = len(have) + len(fresh) - len(kept)
+    # The BRIEF's own ordered list, not `have + fresh`: the node keeps the
+    # newest facts that fit, and that choice is only stable if the input order
+    # is. Concatenating what the node already held with what is new reorders
+    # them on every pass, so the cap-reached guard below never matched and a
+    # full topic rewrote itself (and re-triggered the admin fold) forever.
+    body, kept = _body_for(facts)
+    dropped = len(facts) - len(kept)
     if _fact_lines(body) == have:
         # The node is full: every fresh fact fell off the end, so writing would
         # produce byte-identical content at a higher rev — and would do so on
@@ -833,7 +856,7 @@ def _update_topic_node(topic: str, facts: list, held) -> tuple[int, int]:
                   "fact(s) not carried", topic, _BODY_CHARS, len(fresh))
         return 0, dropped
     meta = dict(node.get("meta") or {})
-    meta.setdefault("scope", "global")
+    meta.setdefault("scope", _topic_scope(topic))
     meta.setdefault("category", topic)
     ok = _store.save_node("learning", nid, meta, body, reindex=False).get("ok")
     return (1 if ok else 0), dropped

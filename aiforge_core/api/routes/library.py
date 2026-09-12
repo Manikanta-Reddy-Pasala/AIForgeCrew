@@ -110,7 +110,11 @@ def library_create(kind: str, payload: Annotated[dict, Body()]) -> dict:
 
 @router.delete("/api/library/{kind}/{name}", responses={404: {"description": "Not found"}})
 def library_delete(kind: str, name: str) -> dict:
-    """Delete a single skill / workflow / rule by name (custom or default)."""
+    """Remove a single skill / workflow / rule by name.
+
+    A custom one is deleted. A SHIPPED DEFAULT is disabled on this box instead
+    (``disabled: true`` in the reply) — the package's own file is never touched,
+    and ``POST /api/library/{kind}/{name}/restore`` puts it back."""
     if kind == "skills":
         from aiforge_core.runtime import skills
         res = skills.delete_skill(name)
@@ -127,9 +131,32 @@ def library_delete(kind: str, name: str) -> dict:
     return res
 
 
+_KIND_SINGULAR = {"skills": "skill", "workflows": "workflow", "rules": "rule"}
+
+
+@router.post("/api/library/{kind}/{name}/restore",
+             responses={404: {"description": "Not found"}})
+def library_restore(kind: str, name: str) -> dict:
+    """Re-enable a shipped default this box had disabled."""
+    from aiforge_core.runtime import library_defaults
+    single = _KIND_SINGULAR.get(kind)
+    if not single:
+        raise HTTPException(404, f"unknown kind {kind!r}")
+    return {"ok": library_defaults.enable(single, name), "name": name,
+            "disabled": library_defaults.state()}
+
+
+@router.get("/api/library/disabled")
+def library_disabled() -> dict:
+    """Shipped defaults turned off on this box, per kind."""
+    from aiforge_core.runtime import library_defaults
+    return library_defaults.state()
+
+
 @router.delete("/api/library/{kind}", responses={404: {"description": "Not found"}})
 def library_clear(kind: str) -> dict:
-    """Clear ALL skills / workflows / rules of a kind (custom + defaults)."""
+    """Clear every CUSTOM skill / workflow / rule of a kind. Shipped defaults
+    stay: disable those one at a time, deliberately."""
     if kind == "skills":
         from aiforge_core.runtime import skills
         return skills.clear_skills()

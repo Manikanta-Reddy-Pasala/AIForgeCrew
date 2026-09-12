@@ -72,6 +72,34 @@ def _tag(rows: list[dict], *, source: str, weight: float) -> list[dict]:
     return out
 
 
+_WORD_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{2,}")
+# Words that match everything and therefore mean nothing as evidence that a
+# freshly-written row has anything to do with the question.
+_STOPWORDS = frozenset({
+    "the", "and", "for", "with", "that", "this", "from", "was", "were", "are",
+    "how", "why", "what", "when", "where", "which", "who", "you", "your",
+    "can", "did", "does", "not", "but", "its", "our", "have", "has", "had",
+    "use", "used", "using", "into", "than", "then", "them", "they", "all",
+})
+
+
+def _content_words(text: str) -> set:
+    return {w for w in _WORD_RE.findall((text or "").lower())
+            if w not in _STOPWORDS}
+
+
+def _lexical_overlap(query: str, text: str) -> float:
+    """Share of the query's content words that ``text`` also uses, in [0,1].
+
+    Deliberately not an embedding: this gates the RECENT channel, which exists
+    to surface a just-written fact before it is indexed — so it must not itself
+    need the index, and it runs on every recall."""
+    q = _content_words(query)
+    if not q:
+        return 0.0
+    return len(q & _content_words(text)) / len(q)
+
+
 _SYMBOL_HINT_RE = re.compile(r"\b[A-Z]\w+\b")
 
 

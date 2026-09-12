@@ -41,6 +41,34 @@ def contract_for(role: str) -> AgentContract:
     return contracts[role]
 
 
+# Context gatherers whose output only ENRICHES the planner/doer (they already
+# get the memory brief + repo map up front): running out of time must end
+# them gracefully, never fail the run.
+ENRICHMENT_ROLES = frozenset({"researcher", "ctx_repomap", "ctx_conventions"})
+
+
+def soft_wall_callback(role: str, budget_s: float):
+    """A before_model callback that, once ``budget_s`` has passed since this
+    agent's first model call in the invocation, answers in the model's place:
+    a short "stopped, continuing without the rest" note with no tool call, so
+    the agent finishes with what it gathered and the graph moves on."""
+    import time
+    started: dict = {}
+
+    def _cb(callback_context, llm_request):  # noqa: ARG001 — ADK signature
+        key = getattr(callback_context, "invocation_id", "") or "-"
+        t0 = started.setdefault(key, time.monotonic())
+        if time.monotonic() - t0 < budget_s:
+            return None
+        from google.adk.models.llm_response import LlmResponse
+        from google.genai import types
+        note = (f"[{role}: stopped after {int(budget_s)}s — this context is "
+                "optional; continuing with what was gathered so far]")
+        return LlmResponse(content=types.Content(
+            role="model", parts=[types.Part.from_text(text=note)]))
+    return _cb
+
+
 def build_llm_agent(role: str, instruction: "str | Callable", output_key: str,
                     tools_factory: Callable[[], list] | None,
                     model_factory: ModelFactory):
@@ -72,6 +100,13 @@ def build_llm_agent(role: str, instruction: "str | Callable", output_key: str,
         "output_key": output_key,
         "timeout": c.contract.max_wall_s,
     }
+    if role in ENRICHMENT_ROLES:
+        # Pure enrichment: past its wall budget the gatherer is told to stop
+        # and hand over what it has — a hard node timeout here aborted the
+        # WHOLE team run ("Node 'ctx_conventions' timed out after 300s") on a
+        # slow local model. The node timeout stays only as a far backstop.
+        kwargs["before_model_callback"] = soft_wall_callback(role, c.contract.max_wall_s)
+        kwargs["timeout"] = c.contract.max_wall_s * 3
     tools = tools_factory() if tools_factory else None
     if tools:
         kwargs["tools"] = tools

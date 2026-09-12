@@ -199,3 +199,30 @@ def test_live_subscribers_still_get_every_chunk():
     for piece in ("x", "y"):
         run.publish({"type": "delta", "phase": "answer", "text": piece})
     assert [q.get_nowait()["text"] for _ in range(q.qsize())] == ["x", "y"]
+
+
+# ── a message right after `done` waits for the bookkeeping, not a 409 ─────
+
+def test_an_answered_run_is_waited_for_not_refused():
+    import threading
+
+    from aiforge_core.runtime import chat_runs
+    run = chat_runs._Run(77)
+    chat_runs._RUNS[77] = run
+    try:
+        run.publish({"type": "done"})                       # answer is out
+        threading.Timer(0.2, run.finish).start()           # bookkeeping ends
+        assert chat_runs.settle(77, timeout=5) is True
+    finally:
+        chat_runs._RUNS.pop(77, None)
+
+
+def test_a_run_still_working_is_refused():
+    from aiforge_core.runtime import chat_runs
+    run = chat_runs._Run(78)
+    chat_runs._RUNS[78] = run
+    try:
+        run.publish({"type": "thought", "text": "working"})
+        assert chat_runs.settle(78, timeout=5) is False     # no wait at all
+    finally:
+        chat_runs._RUNS.pop(78, None)

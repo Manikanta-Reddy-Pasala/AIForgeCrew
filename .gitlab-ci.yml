@@ -82,6 +82,11 @@ build:
   stage: build
   #tags: [restricted-offline]
   extends: [.default_rules, .artifactory_setup]
+  # One build job at a time for this project. Two pipelines' build jobs on the
+  # same runner share `/builds/<namespace>/<project>`, and the newer one clears
+  # that directory before cloning — which is what an older job that finished its
+  # script and then could not cd back in to save its cache/artifacts looks like.
+  resource_group: build
   cache:
     key: "uv-$CI_COMMIT_REF_SLUG"
     paths:
@@ -117,6 +122,11 @@ build:
       --cov-report=xml:sonar/coverage.xml
       --cov-report=term
     - cp test-results/junit.xml sonar/junit.xml
+    # Say in the LOG how many tests ran. The junit report is an ARTIFACT, so
+    # when the upload step is what fails, the job's own log is the only place
+    # left to answer "did the tests actually run?" — and it could not.
+    - |
+      echo "== tests: $(grep -o '<testcase' test-results/junit.xml | wc -l) case(s), $(grep -o '<failure' test-results/junit.xml | wc -l) failure(s), $(grep -o '<error' test-results/junit.xml | wc -l) error(s)"
 
     # Host-only scoping is enough; the registry path need not match.
     - |
@@ -138,6 +148,19 @@ build:
       fi
     - uv run cyclonedx-py environment .venv -o blackduck/sbom.cyclonedx.json
     - cp dist/*.whl dist/*.tar.gz blackduck/ 2>/dev/null || true
+
+    # The job has failed with `cd: $CI_PROJECT_DIR: No such file or directory`
+    # at "Saving cache" and "Uploading artifacts" — phases that run AFTER this
+    # script and each begin by cd-ing here. So the build directory went away
+    # between the last command below and those steps, which is the runner's
+    # half of the job, not ours (an after_script cannot report it: the runner
+    # cds into the same missing directory to run that too). This line is the
+    # last thing the script sees; if it prints a healthy directory and the next
+    # phase still cannot cd into it, the loss is outside the script — look at
+    # concurrent jobs sharing this build dir, and at the runner's disk.
+    - |
+      echo "== build dir at script end: $(ls -d "$CI_PROJECT_DIR") ($(ls -A "$CI_PROJECT_DIR" | wc -l) entries)"
+      df -h "$CI_PROJECT_DIR" | tail -1
 
   artifacts:
     name: "$CI_PROJECT_NAME-$CI_COMMIT_SHORT_SHA"

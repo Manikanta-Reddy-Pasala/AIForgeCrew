@@ -431,7 +431,7 @@ def _topic_clusters(keys: list[str]) -> list[list[str]]:
 
 
 _EMPTY_BRIEF = {"facts": [], "learnings": [], "links": [], "key_results": [],
-                "body": "", "title": ""}
+                "body": "", "title": "", "sources": [], "tags": []}
 
 
 def _protected_topics() -> set:
@@ -468,7 +468,23 @@ def _canonical_name(cluster: list[str], protected: set) -> str:
     no shared first word fall back to the shortest member. Never a protected
     name."""
     prefix = _common_token_prefix(cluster)
-    return prefix if (prefix and prefix not in protected) else cluster[0]
+    if prefix and prefix not in protected and _mintable(prefix):
+        return prefix
+    return cluster[0]
+
+
+def _mintable(name: str) -> bool:
+    """Whether a NEW brief may be created under this name.
+
+    The family prefix is minted as a file, so it has to clear the same
+    admission control every other topic does: ``api`` + ``api-gateway`` sharing
+    a first word is not a reason to create ``compacted-api.md``, which is
+    precisely the generic magnet the topic vocabulary exists to keep out."""
+    from .. import _topics
+    try:
+        return bool(_topics.topic_ok(name))
+    except Exception:  # noqa: BLE001 — unknown ⇒ don't invent a new name
+        return False
 
 
 def _load_brief(path) -> dict | None:
@@ -500,7 +516,10 @@ def _absorb(into: dict, other: dict) -> None:
 
 
 def _drop_brief(path, topic: str, facts: list) -> None:
-    """Remove a folded duplicate: its index rows, its vectors, then the file."""
+    """Retire a folded duplicate: its index rows, its vectors, then the file
+    itself — ARCHIVED, not deleted. Its content now lives in the canonical
+    brief, but a merge that picked the wrong cluster is otherwise unrecoverable,
+    so the file moves to ``archive/`` the way every other retirement does."""
     _reconcile_dropped_index(facts, topic)
     try:
         from aiforge_core.memory import backend_select, sqlite_memory
@@ -509,10 +528,40 @@ def _drop_brief(path, topic: str, facts: list) -> None:
             sqlite_memory.delete_by_source(f"md:compacted-{topic}")
     except Exception:  # noqa: BLE001
         pass
+    _archive_file(path)
+
+
+def _archive_file(path) -> None:
+    """Move one brief into ``archive/<stamp>/``; unlink only if that fails."""
+    import shutil
+    from .._base import _now_iso, memory_dir
+    try:
+        dst = memory_dir() / "archive" / _now_iso().replace(":", "")
+        dst.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(path), str(dst / path.name))
+        return
+    except OSError:          # shutil.Error is an OSError subclass
+        pass
     try:
         path.unlink()
     except OSError:
         pass
+
+
+def _write_brief_file(path, name: str, acc: dict) -> bool:
+    """Render + atomically write one merged brief. False when it did not land —
+    the caller must then keep the members it was about to retire."""
+    from aiforge_core.config import _atomic
+    try:
+        _atomic.write_text(str(path), _render_brief(
+            name, facts=acc["facts"], body_md=acc["body"],
+            learnings=acc["learnings"], title=acc["title"] or name,
+            key_results=acc["key_results"], links=acc["links"],
+            sources=acc.get("sources") or None, tags=acc.get("tags") or None))
+        return True
+    except OSError as exc:
+        _log.warning("topic merge: %s not written (%s) — members kept", path, exc)
+        return False
 
 
 def _merge_cluster(cluster: list[str], protected: set) -> int:
@@ -526,8 +575,10 @@ def _merge_cluster(cluster: list[str], protected: set) -> int:
         return 0
     acc = {**acc, "facts": list(acc["facts"]), "learnings": list(acc["learnings"]),
            "links": list(acc.get("links") or []),
-           "key_results": list(acc["key_results"])}
-    merged = 0
+           "key_results": list(acc["key_results"]),
+           "sources": list(acc.get("sources") or []),
+           "tags": list(acc.get("tags") or [])}
+    absorbed = []
     for other in [m for m in cluster if m != canonical]:
         opath = brief_path(other)
         if not opath.exists():
@@ -536,15 +587,16 @@ def _merge_cluster(cluster: list[str], protected: set) -> int:
         if ob is None:
             continue
         _absorb(acc, ob)
-        _drop_brief(opath, other, ob["facts"])
-        merged += 1
-    if merged:
-        cpath.write_text(
-            _render_brief(canonical, facts=acc["facts"], body_md=acc["body"],
-                          learnings=acc["learnings"], title=acc["title"],
-                          key_results=acc["key_results"], links=acc["links"]),
-            encoding="utf-8")
-    return merged
+        absorbed.append((opath, other, ob["facts"]))
+    if not absorbed:
+        return 0
+    # WRITE FIRST, retire second. Deleting the members before the merged file
+    # landed meant one failed write destroyed every one of their facts.
+    if not _write_brief_file(cpath, canonical, acc):
+        return 0
+    for opath, other, facts in absorbed:
+        _drop_brief(opath, other, facts)
+    return len(absorbed)
 
 
 def merge_similar_topics() -> dict:
@@ -590,22 +642,21 @@ def _fold_kind_briefs(*, dry_run: bool) -> int:
     acc = {**acc, "facts": list(acc["facts"]), "learnings": list(acc["learnings"]),
            "links": list(acc.get("links") or []),
            "key_results": list(acc["key_results"]),
+           "sources": list(acc.get("sources") or []),
+           "tags": list(acc.get("tags") or []),
            "title": acc["title"] or "shared"}
-    folded = 0
+    absorbed = []
     for p in kind_paths:
         kb = _load_brief(p)
         if kb is None:
             continue
         _absorb(acc, kb)
-        _drop_brief(p, p.stem[len("compacted-"):], kb["facts"])
-        folded += 1
-    if folded:
-        sp.write_text(
-            _render_brief("shared", facts=acc["facts"], body_md=acc["body"],
-                          learnings=acc["learnings"], title=acc["title"],
-                          key_results=acc["key_results"], links=acc["links"]),
-            encoding="utf-8")
-    return folded
+        absorbed.append((p, p.stem[len("compacted-"):], kb["facts"]))
+    if not absorbed or not _write_brief_file(sp, "shared", acc):
+        return 0                      # write first — see _merge_cluster
+    for p, name, facts in absorbed:
+        _drop_brief(p, name, facts)
+    return len(absorbed)
 
 
 def fold_kind_briefs() -> dict:

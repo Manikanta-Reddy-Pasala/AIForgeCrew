@@ -202,11 +202,9 @@ def _enhancer_block_reason(state: dict | None) -> str | None:
     body = (state or {}).get("enhanced_body") or ""
     if not isinstance(body, str):
         return None
-    text = body.strip()
-    if not text.startswith("ENHANCE_BLOCKED"):
-        return None
-    return (text.split(":", 1)[-1].strip()[:300]
-            or "ticket body too vague for the enhancer to act on")
+    from aiforge_core.runtime.prompts.enhancer import block_reason
+    return block_reason(
+        body, default="ticket body too vague for the enhancer to act on")
 
 
 def _extract_verdict(state: dict) -> str:

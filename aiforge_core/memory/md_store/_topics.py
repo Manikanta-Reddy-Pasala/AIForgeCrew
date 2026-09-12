@@ -97,13 +97,68 @@ def _repo_brief_names() -> set[str]:
     """Brief names that belong to the REPO axis, not the topic axis. A note must
     never snap onto one: repo briefs are per-project and folding cross-cutting
     knowledge into them (or vice versa) breaks scope, which is the one thing
-    keeping another project's facts out of this turn."""
+    keeping another project's facts out of this turn.
+
+    Three sources, not one: repos discovered next to the running checkout (which
+    finds nothing in the sandbox, where the process runs from a different tree),
+    the registered memory sources, and the repos folder the agent works in. A
+    repo brief that none of them names would be treated as a topic and lose its
+    scope — see :func:`is_repo_brief` for the per-brief fallback."""
+    from ._base import _slug
+    names: set[str] = set()
     try:
         from ..migrations import _discover_repos
-        from ._base import _slug
-        return {_slug(r) for r in (_discover_repos() or [])}
+        names |= {_slug(r) for r in (_discover_repos() or [])}
     except Exception:  # noqa: BLE001
-        return set()
+        pass
+    try:
+        from aiforge_core.runtime import memory_sources
+        names |= {_slug(s.get("name") or "") for s in memory_sources.list_sources()
+                  if (s.get("kind") or "") == "repo"}
+    except Exception:  # noqa: BLE001
+        pass
+    names |= {_slug(n) for n in _repo_root_names()}
+    return {n for n in names if n}
+
+
+def _repo_root_names() -> list[str]:
+    """Folder names under the agent's repos root (AIFORGE_REPO_ROOT, else
+    <config>/repos) — the checkouts a sandboxed agent actually works in."""
+    import os
+    from aiforge_core.config.paths import config_dir
+    root = os.environ.get("AIFORGE_REPO_ROOT", "").strip() or str(
+        config_dir() / "repos")
+    try:
+        return [n for n in os.listdir(root)
+                if os.path.isdir(os.path.join(root, n))]
+    except OSError:
+        return []
+
+
+def is_repo_brief(key: str, tags=None) -> bool:
+    """Whether ``compacted-<key>.md`` is a REPO brief (per-project) rather than a
+    topic brief. ``tags`` is the brief's own tag list: every capture made in a
+    repo carries ``repo:<slug>``, so a brief tagged with its OWN key is that
+    repo's — the fallback for a repo none of the discovery sources can see."""
+    key = (key or "").strip()
+    if not key or key == "shared":
+        return False
+    return key in _repo_brief_names() or f"repo:{key}" in list(tags or [])
+
+
+def brief_repo_scope(key, group_by: str = "topic", tags=None) -> "str | None":
+    """The ``repo`` a brief is indexed under. ONE rule, used by both ingest
+    paths (compaction and the whole-dir re-ingest) — they used to disagree, so
+    re-reading a topic brief from disk re-scoped it to its own key and hid it
+    from every repo-scoped recall."""
+    key = (key or "").strip()
+    if not key:
+        return "notes"
+    if key == "shared" or is_repo_brief(key, tags):
+        return key        # 'shared' is global by name; a repo brief is its repo
+    if group_by == "repo":
+        return key        # folded on the repo axis ⇒ a repo it discovered
+    return None           # topic brief: repo-agnostic, visible to every query
 
 
 def existing_topics() -> list[str]:

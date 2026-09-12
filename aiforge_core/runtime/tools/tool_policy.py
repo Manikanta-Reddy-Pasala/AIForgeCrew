@@ -110,6 +110,13 @@ _DEFAULT_ASK = {"confluence_create", "confluence_update",
                 "schedule_task"}
 
 
+# ASK-by-default tools whose effect stays inside the sandbox box.
+# (schedule_task stays: it writes AIForge's own job table, and its cancel
+# deletes an operator's job for good.)
+_BOX_LOCAL_TOOLS = frozenset({"execute_ipython_cell", "create_job_script",
+                              "mount_folder"})
+
+
 def _parse_map(raw: str) -> dict[str, str]:
     out: dict[str, str] = {}
     for part in (raw or "").split(","):
@@ -231,10 +238,13 @@ def decide(tool: str, args: dict | None = None) -> dict:
     if tool in _READONLY_ALWAYS_ALLOW and tool not in cfg:
         return {"policy": ALLOW, "reason": "", "risk": ""}
     # Mutating-external tools default to ASK; an explicit env policy still wins.
-    default = ASK if tool in _DEFAULT_ASK else ALLOW
+    # Inside the docker sandbox the box-local ones (a notebook cell, a cron job
+    # in the box, a mount REQUEST the host still has to approve) run free.
+    ask_tools = _DEFAULT_ASK - _BOX_LOCAL_TOOLS if command_risk.in_sandbox() else _DEFAULT_ASK
+    default = ASK if tool in ask_tools else ALLOW
     configured = cfg.get(tool, default)
     policy, reason = configured, ""
-    if tool in _DEFAULT_ASK and tool not in cfg:
+    if tool in ask_tools and tool not in cfg:
         reason = f"'{tool}' writes to an external system — confirm first"
 
     # EGRESS first, and as a DENY. A refused web_fetch that the agent reruns as

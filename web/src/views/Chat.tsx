@@ -726,7 +726,7 @@ export default function Chat() {
   // Compaction toggle: turn ALL memory compaction LLM folds off (the daily
   // pass, the boot fold and the sync-loop OKF fold — one switch). Persisted
   // server-side (runtime.env). ENABLED BY DEFAULT now — the rate limiter caps
-  // compaction at compaction_rpm (5/min) — so seed the checkbox UNCHECKED to
+  // compaction at compaction_rpm (default: what chat leaves) — so seed the checkbox UNCHECKED to
   // match the real default (unset ⇒ enabled) before the GET resolves.
   const [compactionDisabled, setCompactionDisabled] = useState(false);
   useEffect(() => {
@@ -2133,6 +2133,21 @@ export default function Chat() {
                   )}
                 </div>
               )}
+
+              {/* The predicted next step for the turn that just ended, at the
+                  BOTTOM OF THE TRANSCRIPT — it belongs to the conversation, and
+                  beside the Run button it read as part of the composer's
+                  controls. Shown whether it was ACTED on or is being OFFERED: a
+                  chip that appeared only for questions would teach the user that
+                  no chip means nothing happened. */}
+              {suggestion && !busy && (
+                <SuggestionChip s={suggestion}
+                                onSend={(text) => {
+                                  setSuggestion(null);
+                                  sentFromSuggestion.current = true;
+                                  send(text);
+                                }} />
+              )}
             </div>
 
             {/* Pinned subtask dock — the Planner decomposition stays stuck to
@@ -2273,18 +2288,6 @@ export default function Chat() {
                   );
                 })()}
               </div>
-              {/* The predicted next step for the turn that just ended. Shown
-                  whether it was ACTED on or is being OFFERED — a chip that
-                  appeared only for questions would teach the user that no chip
-                  means nothing happened. */}
-              {suggestion && !busy && (
-                <SuggestionChip s={suggestion}
-                                onSend={(text) => {
-                                  setSuggestion(null);
-                                  sentFromSuggestion.current = true;
-                                  send(text);
-                                }} />
-              )}
               {/* Plan→approve→execute (Gap B): one-click run the approved plan
                   as a team build. */}
               {planReady && !busy && (

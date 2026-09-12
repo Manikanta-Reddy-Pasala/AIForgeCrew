@@ -122,18 +122,29 @@ def prune_missing_file_rows(present_sources) -> int:
         return len(ids)
 
 
-def source_text_unchanged(source: str, text: str) -> bool:
+_UNSET = object()
+
+
+def source_text_unchanged(source: str, text: str, repo=_UNSET) -> bool:
     """True if a row for ``source`` already holds exactly this ``text`` — lets a
-    re-ingest SKIP the delete+re-embed when nothing changed (embed-on-change)."""
+    re-ingest SKIP the delete+re-embed when nothing changed (embed-on-change).
+
+    ``repo`` is part of "unchanged": the same brief text under the WRONG scope
+    is not the same row. Without it a brief mis-scoped by an earlier pass (a
+    project brief indexed as repo-agnostic, visible to every other project)
+    could never be corrected — every re-ingest saw matching text and returned
+    early. Omit it only when the caller does not set a scope."""
     source = (source or "").strip()
     text = (text or "").strip()
     if not source or not text:
         return False
+    sql = "SELECT 1 FROM memory_units WHERE source = ? AND text = ?"
+    args: list = [source, text]
+    if repo is not _UNSET:
+        sql += " AND repo IS ?"          # IS, so NULL compares equal to NULL
+        args.append(repo)
     with _LOCK, _conn() as c:
-        row = c.execute(
-            "SELECT 1 FROM memory_units WHERE source = ? AND text = ? LIMIT 1",
-            (source, text)).fetchone()
-        return row is not None
+        return c.execute(sql + " LIMIT 1", args).fetchone() is not None
 
 
 def delete_by_source(source: str) -> int:

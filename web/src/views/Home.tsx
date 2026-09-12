@@ -729,11 +729,8 @@ function AgentLimitsCard() {
         {field('llm_max_rpm', 'LLM calls per minute (global)',
                'Ceiling on model requests in any 60 seconds, shared by EVERY AIForge process on this machine — chat, the routers, jobs, the team-pipeline runner and memory\u2019s structured extractions (not embeddings, which go to a local sidecar). 0 = no ceiling. Set it BELOW your provider\u2019s published limit, not at it. One agent turn is routinely 10-40 calls and the memory fold runs alongside it, so a low value queues ordinary work for minutes. Calls WAIT, they are never failed; the toolbar shows \u23f3 while any are parked, and says whether the ceiling is machine-wide or has fallen back to this process alone.',
                0, 100_000)}
-        {field('compaction_rpm', 'Compaction calls per minute',
-               'Sub-ceiling for MEMORY / compaction LLM calls only - the background folding (okf tiers, note consolidation, the boot fold) on the "learner" role. Kept small so background distillation can never crowd out your chat or flood the provider. 0 = bounded only by the global ceiling above. Default 5. To stop compaction from calling the model AT ALL, use the Disable-compaction toggle instead.',
-               0, 100_000)}
         {field('chat_rpm', 'Chat / other calls per minute',
-               'Sub-ceiling for chat and every OTHER (non-compaction) LLM call. 0 = bounded only by the global ceiling above. Default 15. Compaction + chat are independent buckets that together fit under the global cap (5 + 15 = 20).',
+               'Sub-ceiling for chat and every OTHER (non-compaction) LLM call. 0 = bounded only by the global ceiling above. Default 15. Compaction takes whatever of the global ceiling chat is not using.',
                0, 100_000)}
         {field('llm_rate_limit_backoff_s', 'Rate-limit backoff (s)',
                'How long to wait after the PROVIDER rejects us for sending too fast and sends no Retry-After. It is counting a minute, so a sub-second backoff just re-earns the rejection and pays a request to do it. 0 = ordinary exponential backoff. Default 20.',

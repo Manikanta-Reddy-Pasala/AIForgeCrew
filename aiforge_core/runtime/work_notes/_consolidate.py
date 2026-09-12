@@ -84,10 +84,15 @@ _JUNK_ITEM_RE = re.compile(
 
 def _dedupe_ci(items) -> list[str]:
     """Order-preserving dedupe of a section's items. Beyond exact (case/space-
-    insensitive) dupes it drops a shorter item fully CONTAINED in a longer kept
-    one (the common near-dupe: "status: Done" vs "status: Done (auto)") and
-    strips obvious junk lines (markdown headers/rules/fences, source markers)
-    that leak in when a raw blob is folded without an LLM."""
+    insensitive) dupes it drops a shorter item a longer kept one EXTENDS (the
+    common near-dupe: "status: Done" vs "status: Done (auto)") and strips
+    obvious junk lines (markdown headers/rules/fences, source markers) that leak
+    in when a raw blob is folded without an LLM.
+
+    Extends, not merely contains: "retries 3x" is contained in "no retries 3x",
+    which says the OPPOSITE — dropping the shorter one there deletes a fact and
+    keeps its negation. Only a longer item that STARTS with the shorter one is
+    treated as the same fact with more detail."""
     cleaned: list[str] = []
     seen: set[str] = set()
     for it in _as_items(items):
@@ -103,7 +108,7 @@ def _dedupe_ci(items) -> list[str]:
     keys = [_ci_key(c) for c in cleaned]
     for i, c in enumerate(cleaned):
         ki = keys[i]
-        if any(i != j and ki in keys[j] and len(keys[j]) > len(ki)
+        if any(i != j and keys[j].startswith(ki) and len(keys[j]) > len(ki)
                for j in range(len(cleaned))):
             continue
         out.append(c)
@@ -130,15 +135,36 @@ def _blob_facts(new_content: str) -> list[str]:
 
     Splitting first means the junk filter removes the heading LINE it was aimed
     at and the content under it survives as its own fact.
+
+    A BULLET LIST is split per item as well. A re-fold feeds a brief's own facts
+    back as one "- a\n- b\n- c" block, so splitting on blank lines alone turned
+    the whole list into a single run-on fact — and on the next pass every real
+    fact was a substring of that mega-fact and :func:`_dedupe_ci` dropped them
+    all. One LLM outage was enough to flatten a brief permanently.
     """
     out: list[str] = []
     for block in re.split(r"\n\s*\n", str(new_content or "")):
-        kept = [ln.strip() for ln in block.splitlines()
-                if ln.strip() and not _JUNK_ITEM_RE.match(ln.strip())]
-        fact = re.sub(r"\s+", " ", " ".join(kept)).strip()
-        if fact:
-            out.append(fact)
+        out += _block_facts(block)
     return out
+
+
+_LIST_ITEM_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
+
+
+def _block_facts(block: str) -> list[str]:
+    """One block → its facts: each bullet is its own, prose stays joined."""
+    items: list[list[str]] = []
+    for raw in block.splitlines():
+        ln = raw.strip()
+        if not ln or _JUNK_ITEM_RE.match(ln):
+            continue
+        m = _LIST_ITEM_RE.match(ln)
+        if m or not items:
+            items.append([ln[m.end():] if m else ln])
+        else:
+            items[-1].append(ln)          # continuation of the current item
+    facts = [re.sub(r"\s+", " ", " ".join(it)).strip() for it in items]
+    return [f for f in facts if f]
 
 
 def _deterministic_merge(existing: dict, new_content: str) -> dict:

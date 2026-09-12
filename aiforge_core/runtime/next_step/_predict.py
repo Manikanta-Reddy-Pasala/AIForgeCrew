@@ -32,8 +32,29 @@ _SYS = (
     "a failure. Never restate, rephrase, confirm or summarise what was just "
     "asked or just done: repeating the request back is not a next step. A real "
     "next step names the tool it would use; if you cannot name one, your "
-    "confidence must be below 0.5."
+    "confidence must be below 0.5.\n"
+    "WRITE THE ACTION AS A COMMAND THE AGENT CAN RUN WITH NOTHING ELSE IN FRONT "
+    "OF IT. It is SENT BACK AS THE NEXT CHAT MESSAGE, on its own, so anything it "
+    "does not name is lost. Start with a verb, name the concrete target (the "
+    "file path, command, ticket key or symbol), and keep it under 15 words. No "
+    "pronouns standing in for the target ('fix it', 'run them again'), no "
+    "hedging ('maybe', 'consider', 'you could'), no politeness, no question."
 )
+
+_HEDGE_RE = re.compile(r"^\s*(?:please\s+|maybe\s+|perhaps\s+|consider\s+|"
+                       r"you\s+(?:could|should|may|might)\s+|"
+                       r"we\s+(?:could|should)\s+|i\s+(?:can|could|will)\s+)+", re.I)
+
+
+def tidy_action(action: str) -> str:
+    """Strip the hedge/politeness opener so the sentence starts with its verb.
+
+    Only the opener: a "vague" filter that also dropped terse or pronoun-ful
+    actions was tried and removed — a suggestion like "check it" is short
+    BECAUSE the turn it follows supplies the subject, and killing those emptied
+    the feature. Wording is the prompt's job (see :data:`_SYS`); this is the
+    one repair worth making after the fact."""
+    return _HEDGE_RE.sub("", str(action or "")).strip()
 
 _MAX_EXAMPLES = 5
 _DEFAULT_TIMEOUT_S = 10
@@ -182,7 +203,7 @@ def _parse(raw: str) -> dict | None:
         return None
     if not isinstance(obj, dict):
         return None
-    action = str(obj.get("action") or "").strip().replace("\n", " ")
+    action = tidy_action(str(obj.get("action") or "").strip().replace("\n", " "))
     if not action:
         return None
     try:

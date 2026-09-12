@@ -58,8 +58,11 @@ def test_the_chat_tool_records_and_says_to_restart(monkeypatch):
     assert "/work/proj" in sm.requested()
 
 
-def test_mounting_a_folder_needs_approval():
+def test_mounting_a_folder_needs_approval_outside_the_box(monkeypatch):
+    """Natively it asks; in the sandbox the request is free because the HOST
+    still has to approve it before anything is mounted."""
     from aiforge_core.runtime.tools import tool_policy
+    monkeypatch.delenv("AIFORGE_SANDBOX", raising=False)
     assert tool_policy.decide("mount_folder", {"path": "/x"})["policy"] == tool_policy.ASK
 
 

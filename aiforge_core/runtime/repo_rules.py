@@ -202,28 +202,41 @@ def _unlink_rule_file(src: str, roots) -> "str | None":
 
 
 def delete_rule(name: str) -> dict:
-    """Delete the global rule(s) named ``name`` by unlinking the backing file,
-    bounded to the rules dirs. Returns ``{ok, removed:[paths]}``."""
+    """Remove the rule named ``name``.
+
+    An operator-authored rule is unlinked. A SHIPPED DEFAULT is disabled on this
+    box instead (:mod:`runtime.library_defaults`): the file belongs to the
+    package, the next upgrade would restore it anyway, and on a read-only
+    install the unlink simply fails. Returns ``{ok, removed:[paths], disabled}``.
+    """
+    from aiforge_core.runtime import library_defaults
     name = (name or "").strip()
     if not name:
         return {"ok": False, "error": "name required"}
-    roots = [_global_rules_dir().resolve(), _builtin_rules_dir().resolve()]
+    roots = [_global_rules_dir().resolve()]
     removed: list[str] = []
-    for r in load_global_rules():
+    disabled = False
+    for r in load_global_and_builtin():
         if r.name != name:
             continue
+        src = getattr(r, "source", "")
+        if library_defaults.is_builtin(src):
+            disabled = library_defaults.disable("rule", name) or disabled
+            continue
         try:
-            got = _unlink_rule_file(getattr(r, "source", ""), roots)
+            got = _unlink_rule_file(src, roots)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
         if got:
             removed.append(got)
-    if not removed:
+    if not removed and not disabled:
         return {"ok": False, "error": f"no deletable rule named {name!r}"}
-    return {"ok": True, "name": name, "removed": removed}
+    return {"ok": True, "name": name, "removed": removed, "disabled": disabled}
 
 
 def clear_rules() -> dict:
+    """Clear the OPERATOR's rules. Shipped defaults are left alone — "clear my
+    rules" must not quietly turn off the company's."""
     names = {r.name for r in load_global_rules()}
     removed = 0
     for n in names:
@@ -243,28 +256,26 @@ def load_global_and_builtin() -> list[Rule]:
     """Built-in defaults + operator-global rules (no repo-local) — for the
     Library UI, which lists rules independent of any one repo. Global overrides
     a builtin of the same name."""
-    from dataclasses import replace as _replace
     by_name: dict[str, Rule] = {}
-    bdir = _builtin_rules_dir()
-    if bdir.is_dir():
-        for path in sorted(bdir.glob("*.md")) + sorted(bdir.glob("*.mdc")):
-            r = _parse_rule_file(path)
-            if r is not None:
-                by_name[r.name] = _replace(r, source="builtin")
+    _load_builtin_rules(by_name)
     for r in load_global_rules():
         by_name[r.name] = r
     return list(by_name.values())
 
 
 def _load_builtin_rules(by_name: dict) -> None:
-    """Layer 1 (lowest): shipped default rules, tagged source=builtin."""
+    """Layer 1 (lowest): shipped default rules, tagged source=builtin. A default
+    DISABLED on this box is skipped — the shipped file itself is never touched."""
     from dataclasses import replace as _replace
+
+    from aiforge_core.runtime import library_defaults
+    off = library_defaults.disabled("rule")
     bdir = _builtin_rules_dir()
     if not bdir.is_dir():
         return
     for path in sorted(bdir.glob("*.md")) + sorted(bdir.glob("*.mdc")):
         r = _parse_rule_file(path)
-        if r is not None:
+        if r is not None and r.name not in off:
             by_name[r.name] = _replace(r, source="builtin")
 
 

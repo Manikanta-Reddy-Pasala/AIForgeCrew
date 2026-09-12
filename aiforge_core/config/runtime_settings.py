@@ -138,11 +138,14 @@ _SPEC: dict[str, tuple[str, int]] = {
     "llm_max_rpm": ("AIFORGE_LLM_MAX_RPM", 15),
     # Sub-ceiling for memory/compaction LLM calls (okf tier folds,
     # work_notes.consolidate, the boot fold — everything on the "learner" role).
-    # 5 rpm by default: bounded background distillation that never floods the
-    # provider or starves chat. 0 = disable compaction's own throttle (still
-    # bounded by llm_max_rpm). Set to a small number, NOT 0, to slow it; the
-    # separate AIFORGE_COMPACT_DISABLE hard-off skips the LLM entirely.
-    "compaction_rpm": ("AIFORGE_COMPACTION_RPM", 5),
+    # Not on the Settings page (the user: it is only ever "what chat leaves of
+    # the total") — kept as a hidden operator knob.
+    # 0 by default = compaction uses WHATEVER the global llm_max_rpm leaves:
+    # all of it while chat is idle, the remainder while chat is using its
+    # share (the global window counts both). A fixed 5 left 3/4 of the budget
+    # unused on an idle box while a fold took hours. Set a number to cap it;
+    # AIFORGE_COMPACT_DISABLE skips the LLM entirely.
+    "compaction_rpm": ("AIFORGE_COMPACTION_RPM", 0),
     # Sub-ceiling for chat + all other (non-compaction) LLM calls. 15 rpm by
     # default. 0 = bounded only by the global llm_max_rpm.
     "chat_rpm": ("AIFORGE_CHAT_RPM", 15),

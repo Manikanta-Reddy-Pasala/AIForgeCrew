@@ -95,8 +95,13 @@ def load(cwd: str | None = None) -> list[Skill]:
     """Workflows, de-duped by name. Priority: BUILT-IN defaults → global user →
     repo-local (later wins). A CUSTOM workflow overrides + outranks a default."""
     from dataclasses import replace as _replace
+
+    from aiforge_core.runtime import library_defaults
+    off = library_defaults.disabled("workflow")
     by_name: dict[str, Skill] = {}
     for wf in _scan_dir(_builtin_dir()):
+        if wf.name in off:      # disabled on this box; the shipped file stays
+            continue
         by_name[wf.name] = _replace(wf, source="builtin", priority=wf.priority - 100)
     for wf in _scan_dir(_global_dir()):
         by_name[wf.name] = wf
@@ -536,35 +541,56 @@ def _deletable_path(wf, roots: list) -> Path | None:
     return p if any(_sk._within(p, r) for r in roots) else None
 
 
+def _unlink_workflow(wf, roots, removed: list) -> "str | None":
+    """Delete one custom workflow's file, appending it to ``removed``. Returns
+    an error message when the unlink failed, else None (a file already gone, or
+    one outside the deletable roots, is not an error)."""
+    p = _deletable_path(wf, roots)
+    if p is None:
+        return None
+    try:
+        p.unlink()
+        _prune_workflow_dir(p, roots)
+        removed.append(str(p))
+    except FileNotFoundError:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        return str(exc)
+    return None
+
+
 def delete_workflow(name: str, cwd: str | None = None) -> dict:
-    """Delete the workflow(s) named ``name`` by unlinking the backing file
-    (custom OR shipped default), bounded to the playbook dirs."""
+    """Remove the workflow named ``name``.
+
+    A custom workflow is unlinked; a SHIPPED DEFAULT is disabled on this box
+    instead — see :func:`skills.delete_skill` for why the package's own files
+    are never touched."""
+    from aiforge_core.runtime import library_defaults
     name = (name or "").strip()
     if not name:
         return {"ok": False, "error": "name required"}
     roots = [r.resolve() for r in _deletable_roots(cwd)]
     removed: list[str] = []
+    disabled = False
     for wf in load(cwd):
         if wf.name != name:
             continue
-        p = _deletable_path(wf, roots)
-        if p is None:
+        if library_defaults.is_builtin(getattr(wf, "source", "")):
+            disabled = library_defaults.disable("workflow", name) or disabled
             continue
-        try:
-            p.unlink()
-            _prune_workflow_dir(p, roots)
-            removed.append(str(p))
-        except FileNotFoundError:
-            pass
-        except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "error": str(exc)}
-    if not removed:
+        err = _unlink_workflow(wf, roots, removed)
+        if err:
+            return {"ok": False, "error": err}
+    if not removed and not disabled:
         return {"ok": False, "error": f"no deletable workflow named {name!r}"}
-    return {"ok": True, "name": name, "removed": removed}
+    return {"ok": True, "name": name, "removed": removed, "disabled": disabled}
 
 
 def clear_workflows(cwd: str | None = None) -> dict:
-    names = {w.name for w in load(cwd)}
+    """Clear the CUSTOM workflows; shipped defaults stay (see clear_skills)."""
+    from aiforge_core.runtime import library_defaults
+    names = {w.name for w in load(cwd)
+             if not library_defaults.is_builtin(getattr(w, "source", ""))}
     removed = 0
     for n in names:
         r = delete_workflow(n, cwd)

@@ -1,7 +1,8 @@
-"""ONE local memory compaction a day, in the evening (AIFORGE_COMPACT_AT_HOUR).
-
-Every fold costs learner-LLM calls, so the hourly chat-compact + the per-idle
--session fold + the 02:00 recompact are collapsed into one evening pass.
+"""Memory compaction scheduling. The DEFAULT is the idle pass (compact
+whenever nobody is using AIForge — runtime.compact_idle); an explicit
+AIFORGE_COMPACT_AT_HOUR selects ONE evening pass, whose mechanics these tests
+still cover (every fold costs learner-LLM calls, so the hourly chat-compact +
+the per-idle-session fold + the 02:00 recompact collapse into that one pass).
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ _KNOBS = ("AIFORGE_JOBS_DISABLE", "AIFORGE_REINDEX_DAILY", "AIFORGE_REINDEX_EVER
           "AIFORGE_REINDEX_HOUR", "AIFORGE_COMPACT_EVERY_H", "AIFORGE_COMPACT_AT_HOUR",
           "AIFORGE_RECOMPACT_DAILY", "AIFORGE_RECOMPACT_HOUR", "AIFORGE_SESSION_COMPACT",
           "AIFORGE_SESSION_IDLE_MIN", "AIFORGE_SESSION_COMPACT_MAX_WINDOWS",
-          "AIFORGE_COMPACT_DISABLE")
+          "AIFORGE_COMPACT_DISABLE", "AIFORGE_COMPACT_CHECK_S")
 
 
 def _api(monkeypatch, tmp_path):
@@ -29,7 +30,7 @@ def _api(monkeypatch, tmp_path):
     return api
 
 
-def _registered(monkeypatch, tmp_path, *, compaction="0", **env):
+def _registered(monkeypatch, tmp_path, *, compaction="0", idle=False, **env):
     """Task names _start_daily_reindex registers, without running any of them.
 
     Compaction is DISABLED BY DEFAULT now, so these scheduling-behaviour tests
@@ -38,6 +39,9 @@ def _registered(monkeypatch, tmp_path, *, compaction="0", **env):
     api = _api(monkeypatch, tmp_path)
     if compaction is not None:               # after _api — it clears the knobs
         monkeypatch.setenv("AIFORGE_COMPACT_DISABLE", compaction)
+    if not idle:
+        # The evening-pass tests pin the hour; the default is the idle pass.
+        env.setdefault("AIFORGE_COMPACT_AT_HOUR", "18")
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     from aiforge_core.runtime import periodic as p
@@ -48,7 +52,8 @@ def _registered(monkeypatch, tmp_path, *, compaction="0", **env):
 
 
 @pytest.mark.parametrize("raw,want", [
-    (None, 18), ("18", 18), ("20", 20), ("24", 0),      # 24 = midnight
+    (None, None),                                        # unset = idle mode
+    ("18", 18), ("20", 20), ("24", 0),                   # 24 = midnight
     ("off", None), ("", None), ("none", None),
     ("0", None), ("-3", None),                           # 0 = off, like the siblings
     ("nonsense", 18), ("99", 23),
@@ -71,7 +76,15 @@ def test_explicit_interval_opts_out_of_the_daily_pass(monkeypatch, tmp_path):
     assert api._compact_at_hour() == 18
 
 
-def test_default_registers_one_evening_task(monkeypatch, tmp_path):
+def test_default_registers_the_idle_pass(monkeypatch, tmp_path):
+    """Default: compact whenever nobody is using the box, not at 18:00."""
+    tasks = _registered(monkeypatch, tmp_path, idle=True)
+    assert tasks["idle-compact"].every_s == 300
+    for gone in ("daily-compact", "chat-compact", "session-okr-compact", "recompact-all"):
+        assert gone not in tasks
+
+
+def test_an_explicit_hour_registers_one_evening_task(monkeypatch, tmp_path):
     tasks = _registered(monkeypatch, tmp_path)
     assert "daily-compact" in tasks
     assert tasks["daily-compact"].at_hour == 18
@@ -445,11 +458,10 @@ def test_api_delegates_the_hour_parse_to_compact_window(monkeypatch):
 def test_compaction_enabled_by_default_registers_the_fold(monkeypatch, tmp_path):
     """ENABLED BY DEFAULT (Option A): with AIFORGE_COMPACT_DISABLE unset the boot
     gate registers the single evening daily-compact pass. The per-category rate
-    limiter caps it at compaction_rpm (5/min), so it can no longer burn a burst
-    of requests before the app is usable — the fix for the user's report."""
-    tasks = _registered(monkeypatch, tmp_path, compaction=None)   # real default
-    assert "daily-compact" in tasks
-    assert tasks["daily-compact"].at_hour == 18
+    limiter meters it as compaction (what chat leaves of the global ceiling), so
+    it can no longer burn a burst ahead of chat — the fix for the user's report."""
+    tasks = _registered(monkeypatch, tmp_path, compaction=None, idle=True)
+    assert "idle-compact" in tasks              # real default: the idle pass
     assert "reindex" in tasks                 # non-LLM maintenance still on
 
 

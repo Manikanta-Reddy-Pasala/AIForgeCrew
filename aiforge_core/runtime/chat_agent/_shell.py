@@ -740,7 +740,7 @@ def _run_refusal(cmd: str, args: dict, base: str) -> dict | None:
     allow_delete = delete_guard.allow_delete(
         ("AIFORGE_CHAT_ALLOW_DELETE", "AIFORGE_ALLOW_DELETE"))
     if not allow_delete and not args.get("confirm_delete") \
-            and delete_guard.is_destructive_delete(cmd):
+            and delete_guard.is_destructive_delete(cmd, base):
         return {"ok": False, "blocked": "delete",
                 "error": delete_guard.REFUSAL + " (re-issue with "
                          "confirm_delete=true after the user agrees.)"}

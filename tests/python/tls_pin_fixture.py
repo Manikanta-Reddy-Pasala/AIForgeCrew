@@ -59,6 +59,20 @@ def no_pin(monkeypatch) -> None:
                         lambda host, port=443: "")
 
 
+def clear_ca_env(monkeypatch) -> None:
+    """Unset every variable that names a CA bundle.
+
+    ``net.ca.bundle()`` reads ``AIFORGE_CA_BUNDLE``, ``SSL_CERT_FILE`` and
+    ``REQUESTS_CA_BUNDLE``, and a configured bundle deliberately WINS over
+    trust-on-first-use — so on any box that has an estate CA installed (the
+    docker sandbox, a CI image that trusts an internal Artifactory) these tests
+    exercised the CA path while claiming to test the pinned one, and failed.
+    The behaviour is correct; the test just has to say which path it means."""
+    for var in ("AIFORGE_LLM_CA_BUNDLE", "AIFORGE_CA_BUNDLE", "SSL_CERT_FILE",
+                "REQUESTS_CA_BUNDLE"):
+        monkeypatch.delenv(var, raising=False)
+
+
 def trusts_the_pin(ctx) -> bool:
     """Whether ``ctx`` verifies against the stubbed certificate."""
     for cert in ctx.get_ca_certs():

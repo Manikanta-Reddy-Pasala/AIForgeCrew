@@ -1,7 +1,17 @@
 """Public SaaS model endpoints must verify TLS by default; only intrinsically
 internal hosts auto-relax. (Regression: configuring OpenRouter silently
 disabled TLS verification because its host was a 'configured service host'.)"""
+import pytest
+
 from aiforge_core.net import ssl as s
+
+
+@pytest.fixture(autouse=True)
+def _no_ca_env(monkeypatch):
+    """A configured CA bundle keeps verification on for EVERY host, so on a box
+    that has one these tests would be asserting the wrong path."""
+    from tests.python.tls_pin_fixture import clear_ca_env
+    clear_ca_env(monkeypatch)
 
 
 def test_public_saas_endpoints_verify(monkeypatch):

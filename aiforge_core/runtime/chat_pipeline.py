@@ -298,6 +298,15 @@ def _drive_teardown(root_token, my_lock_gen, prev_root, session_id, cwd,
         # Team mode does NOT fold steers mid-run — but still clear so a queued
         # steer can't leak into the next turn.
         chat_interject.clear(session_id)
+        # END THE RUN HERE, last. The SSE producer deliberately leaves it open
+        # for a team turn (this driver owns the run's lifetime, the same way it
+        # owns persistence), so this is what wakes every subscriber and tells
+        # the idle compactor the box is free again. Finishing it in the producer
+        # marked the run done the moment the driver was launched: minutes of
+        # team work then looked like an idle box, and memory compaction folded
+        # briefs in the middle of a run that was still calling tools.
+        from aiforge_core.runtime import chat_runs
+        chat_runs.finish(session_id)
     q.put(_SENTINEL)
 
 
@@ -403,10 +412,12 @@ def _enhancer_block_reason(ev: dict) -> "str | None":
     else None. The sentinel (its stand-in for a clarifying question it must never
     ask) must never reach the user as a raw thought and must STOP the run —
     otherwise it silently becomes the Planner/Doer's brief and burns minutes."""
-    if (ev.get("type") == "thought" and ev.get("role") == "enhancer"
-            and (ev.get("text") or "").strip().startswith("ENHANCE_BLOCKED")):
-        return ((ev.get("text") or "").strip().split(":", 1)[-1].strip()[:300]
-                or "the request is too vague to build a concrete plan from")
+    if ev.get("type") == "thought" and ev.get("role") == "enhancer":
+        # prompts.enhancer owns the contract — including the case where the
+        # Enhancer emits the line to say the request is FINE, which must not
+        # stop the run.
+        from aiforge_core.runtime.prompts.enhancer import block_reason
+        return block_reason(ev.get("text") or "")
     return None
 
 

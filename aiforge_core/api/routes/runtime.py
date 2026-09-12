@@ -168,7 +168,7 @@ def get_compaction() -> dict:
     """Whether memory compaction's LLM folds are turned off.
 
     ENABLED BY DEFAULT (unset ⇒ compaction ON): the rate limiter caps it at
-    compaction_rpm (default 5/min). One source of truth for the flag —
+    compaction_rpm (default: the remainder of llm_max_rpm). One source of truth for the flag —
     ``compact_window.disabled()`` — shared by the daily pass, the boot fold and
     the sync-loop OKF fold. Only an explicit ``1``/``true``/``yes`` disables."""
     from aiforge_core.runtime import compact_window as _cw

@@ -70,7 +70,9 @@ Use AFM citations.
        ENHANCE_BLOCKED: <one-sentence reason>
 
    The runner will surface this to the operator instead of starting
-   the pipeline.
+   the pipeline. NEVER use this line to report that the body is FINE —
+   "already complete", "no enhancement needed" and the like are Rule 2,
+   so return the body itself. This line STOPS the run.
 4. Keep total length under 1200 words. Local model context is finite.
 5. Never include code blocks larger than 20 lines. Pointers,
    not transplants — let the Doer read the file itself.
@@ -81,4 +83,46 @@ Use AFM citations.
 """
 
 
-__all__ = ["ENHANCER"]
+_SENTINEL = "ENHANCE_BLOCKED"
+
+# Reasons that mean the opposite of a refusal. Rule 3's line is the Enhancer's
+# stand-in for a clarifying question it cannot ask; a local model reliably
+# answers RULE 2 with it instead — "ENHANCE_BLOCKED: the request is already in a
+# complete, actionable form … no enhancement is needed" — which aborted a whole
+# team build in 55 seconds and wrote nothing. A sentinel that says nothing is
+# wrong is not a refusal, whatever it is prefixed with.
+_NOT_A_REFUSAL = (
+    "already complete", "already in a complete", "already actionable",
+    "already in the required", "already in this shape", "no enhancement",
+    "needs no enhancement", "not vague", "no ambiguity", "is clear",
+    "meets all rules", "nothing to add", "nothing to clarify",
+    "no changes needed", "no clarification",
+)
+
+
+_DEFAULT_REASON = "the request is too vague to build a concrete plan from"
+
+
+def block_reason(text: str, *, default: str = _DEFAULT_REASON) -> "str | None":
+    """The Enhancer's refusal reason, or ``None`` when it did not really refuse.
+
+    One predicate for every reader of the contract (the chat pipeline, the
+    ticket runner, the ADK guard), so they can never disagree about whether a
+    run should stop.
+
+    Two established shapes are kept deliberately: a line with NO colon reports
+    the marker itself (there is nothing to split, and it still stops the run),
+    and an empty reason falls back to ``default`` — which the ticket runner
+    words differently from chat."""
+    s = (text or "").strip()
+    if not s.startswith(_SENTINEL):
+        return None
+    if ":" not in s:
+        return s[:300]
+    reason = s.split(":", 1)[1].strip()
+    if reason and any(p in reason.lower() for p in _NOT_A_REFUSAL):
+        return None
+    return reason[:300] or default
+
+
+__all__ = ["ENHANCER", "block_reason"]

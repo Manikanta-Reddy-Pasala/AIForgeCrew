@@ -66,6 +66,27 @@ def test_compaction_subceiling_independent_of_global(monkeypatch):
     assert rl._take(100, "chat", 100, "p")[0] is True
 
 
+def test_compaction_uses_what_chat_leaves_of_the_total_by_default(monkeypatch):
+    """Default compaction_rpm is 0: compaction takes the whole global ceiling
+    while chat is idle, and only the remainder while chat is using its share.
+    A fixed 5/min left three quarters of the budget idle while a fold ran."""
+    monkeypatch.setenv("AIFORGE_LLM_SHARED_WINDOW", "0")
+    monkeypatch.delenv("AIFORGE_COMPACTION_RPM", raising=False)
+    from aiforge_core.config import runtime_settings as rs
+    rs.set_many({"llm_max_rpm": 20, "chat_rpm": 15})
+    rs.unset(["compaction_rpm"])
+    assert rl._cat_rpm("compaction") == 0            # no sub-cap by default
+    rl.reset_global()
+    for _ in range(20):                                # chat idle → all 20
+        assert rl._take(20, "compaction", 0, "p")[0] is True
+    assert rl._take(20, "compaction", 0, "p")[0] is False
+    rl.reset_global()
+    for _ in range(12):                                # chat used 12 …
+        assert rl._take(20, "chat", 15, "p")[0] is True
+    got = sum(rl._take(20, "compaction", 0, "p")[0] for _ in range(20))
+    assert got == 8                                    # … compaction gets 8
+
+
 def _fake_clock(monkeypatch):
     """A clock the test drives. The window ages out in real seconds, so a
     no-op sleep would spin forever — advance the clock BY the sleep instead."""

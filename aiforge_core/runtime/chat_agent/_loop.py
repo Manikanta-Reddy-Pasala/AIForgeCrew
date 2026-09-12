@@ -709,13 +709,13 @@ _SHELL_TOOLS = ("run_command", "bash", "run_shell", "shell", "serve",
                 "watch_until", "ui_check")
 
 
-def _is_destructive_delete(cmd: str) -> bool:
+def _is_destructive_delete(cmd: str, cwd: "str | None" = None) -> bool:
     """Whether ``cmd`` deletes, unless the env opt-in already allows deletes."""
     try:
         from aiforge_core.runtime.tools import delete_guard
         return (not delete_guard.allow_delete(
             ("AIFORGE_CHAT_ALLOW_DELETE", "AIFORGE_ALLOW_DELETE"))
-            and delete_guard.is_destructive_delete(cmd))
+            and delete_guard.is_destructive_delete(cmd, cwd))
     except Exception:  # noqa: BLE001
         return False
 
@@ -788,7 +788,7 @@ def _command_gate_flags(name, args, cwd, session_id, _mode_approvals):
         return False, False
     cmd = args.get("cmd") or args.get("command") or ""
     repo = _repo_name(cwd)
-    destructive_del = _is_destructive_delete(cmd)
+    destructive_del = _is_destructive_delete(cmd, cwd)
     auto_commit = _commit_auto_approved(cmd, repo, session_id)
     if destructive_del and _delete_pre_confirmed(cmd, repo, session_id,
                                                  _mode_approvals):
@@ -985,8 +985,11 @@ def _approval_gate(name, args, cwd, session_id, convo):
         result = {"ok": False, "blocked": "policy",
                   "error": f"'{name}' is denied by policy: {verdict['reason']}"}
         yield {"type": "tool", "name": name, "args": args, "result": result}
+        from ._blocked import GUIDANCE
+        kind = "egress" if "host_not_allowed" in str(verdict.get("reason")) else "policy"
+        seen = {"next_step": GUIDANCE[kind], **result}
         convo.append({"role": "user",
-                      "content": f"OBSERVATION: {json.dumps(result)}"})
+                      "content": f"OBSERVATION: {json.dumps(seen)}"})
         return "continue"
     _gate, _destructive_del, _force_review, _bypass = _compute_gate_decision(
         name, args, cwd, session_id, verdict)
@@ -1894,6 +1897,13 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
         st.builder_finalized = True
         yield {"type": "builder_done", "kind": name}
     _obs_cap = _MAX_OBS_READ if name in _READ_OBS_TOOLS else _MAX_OBS
+    # A blocked / unreachable call tells the model to change approach instead
+    # of retrying or routing around the block (see _blocked). The guidance
+    # goes FIRST so a long result cannot truncate it away.
+    from ._blocked import for_model as _blocked_for_model
+    _seen = _blocked_for_model(st, name, result)
+    if _seen is not result:
+        result = {"next_step": _seen["next_step"], **result}
     # Content-READ tools: cut oversized documents at a STRUCTURE boundary
     # (chonkie) with a continuation note, instead of a blunt slice that
     # hands the model a broken JSON/sentence tail. Others keep the slice.
