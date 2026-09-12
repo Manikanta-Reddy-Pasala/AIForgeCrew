@@ -115,7 +115,7 @@ Settings (GitLab, Jira, the model key) land here too.
 ### Environment
 
 Set in the shell that runs `./run.sh`; compose passes them through, and they
-apply to native mode too. `aiforge.env` holds what is identical on every box
+reach the box. `aiforge.env` holds what is identical on every box
 and is never written to — the environment wins. Catalogue: `.env.example`.
 
 | Var | Default | Purpose |
@@ -123,7 +123,6 @@ and is never written to — the environment wins. Catalogue: `.env.example`.
 | `AIFORGE_LM_BASE_URL` | `aiforge.env` | the model endpoint |
 | `AIFORGE_CONFIG_DIR` | `~/.aiforge` | state, settings, credentials (host side) |
 | `AIFORGE_REPOS_DIR` | `~/.aiforge/repos` | project root (same as `--repos`) |
-| `AIFORGE_IN_SANDBOX` | detected | `1` runs the app right here instead of starting the box — what `docker/entrypoint.sh` sets inside it, and what a host service needs. `0` forces the sandbox. Unset detects (`/.dockerenv`) |
 | `AIFORGE_WORKSPACE_DIR` | — | clamps the chat agent's file scope |
 | `AIFORGE_APT_MIRROR` | archive.ubuntu.com | Ubuntu mirror (e.g. Artifactory's ubuntu remote) for the box's apt. Passed as the `APT_MIRROR` build arg **and** re-applied at every start, so the agent's own `apt-get` uses it too |
 | `AIFORGE_BASE_REGISTRY` | Docker Hub | prefix for the `ubuntu:24.04` base image (`BASE_REGISTRY` build arg) |
@@ -223,6 +222,4 @@ by default.
   open the admin page from another machine.
 
 The agent has full rights inside its box but sees only `~/.aiforge` and the
-folders you approved. `AIFORGE_IN_SANDBOX=1` — how the box runs itself, and how a
-host service such as `scripts/runtime/nuc/aiforge-api.service` runs — has your
-whole machine instead.
+folders you approved. There is no host mode.

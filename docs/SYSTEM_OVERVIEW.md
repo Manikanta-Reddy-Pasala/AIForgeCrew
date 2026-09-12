@@ -306,6 +306,6 @@ files each as a ticket (cron/systemd-timer friendly; `AIFORGE_RESOLVER_GH_REPO`,
 | `AIFORGE_DECOMP_MAX_DEPTH` | 2 | how deep a failed subtask may re-decompose |
 | `AIFORGE_ESCALATION_MODEL` | unset | stronger model for a stuck reconcile residual |
 | `AIFORGE_CAVE_MODE` | 1 (on) | lean context; `0` opts out on a big-window model |
-| `AIFORGE_WORKSPACE_DIR` | unset | clamps the chat file scope (native mode) |
+| `AIFORGE_WORKSPACE_DIR` | unset | clamps the chat agent's file scope |
 | `AIFORGE_EXTRAS` | unset | optional extras: `structured,crawl,chunking,embed-static` |
 | `LANGFUSE_HOST` / `_PUBLIC_KEY` / `_SECRET_KEY` | unset | enables trace mirroring (`AIFORGE_LANGFUSE_DISABLE=1` kills it) |

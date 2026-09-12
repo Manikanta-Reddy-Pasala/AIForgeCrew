@@ -95,10 +95,8 @@ endpoint, Jira/Confluence/GitLab, `git` and the installs. Verification is never 
 a self-signed endpoint is pinned, not trusted blindly.
 
 > ⚠️ **Security.** The agent has full rights inside its box, but reaches only `~/.aiforge`
-> plus folders you approved and mounted. The one way out of that is `AIFORGE_IN_SANDBOX=1` —
-> how the box runs itself internally, and how a host service such as
-> `scripts/runtime/nuc/aiforge-api.service` runs. There it has **full, unsandboxed filesystem
-> and shell access**: set `AIFORGE_WORKSPACE_DIR=/path` and treat it like a terminal.
+> plus folders you approved and mounted. There is no host mode — nothing runs AIForge
+> outside the sandbox.
 
 ## Features
 

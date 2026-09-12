@@ -209,11 +209,8 @@ searching files.
 - **Config + user data:** `~/.aiforge/` (agent config, chat db, jobs, skills,
   workflows, rules, memory).
 - **Security:** the agent has full rights **inside its box**, and from this machine
-  reaches only `~/.aiforge` plus folders you approved with `--mount`. The exception is
-  `AIFORGE_IN_SANDBOX=1` — how the box runs itself, and how a host service such as
-  `scripts/runtime/nuc/aiforge-api.service` runs: there it has **full, unsandboxed
-  filesystem + shell**, so set `AIFORGE_WORKSPACE_DIR=/path` to clamp it.
-  Binding non-loopback (`--host 0.0.0.0`) requires
+  reaches only `~/.aiforge` plus folders you approved with `--mount`. There is no host
+  mode. Binding non-loopback (`--host 0.0.0.0`) requires
   `AIFORGE_API_TOKEN` (or the explicit `AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1` opt-out
   when you front it with your own auth/tunnel); the check reads the real socket, so
   a bare `uvicorn --host 0.0.0.0` is refused too. **If a reverse proxy on the same

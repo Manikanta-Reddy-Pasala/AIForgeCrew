@@ -1,28 +1,25 @@
 [Unit]
-Description=AIForge (hybrid: infra in Docker, api+runner on host) via run.sh
+Description=AIForge sandbox via run.sh
 After=network-online.target docker.service
 Wants=network-online.target
+Requires=docker.service
 
 [Service]
 WorkingDirectory=%h/AIForgeCrew
-# run.sh is the single source of truth for hybrid-mode env wiring (Postgres/
-# Neo4j/embed/rerank URLs, network lockdown, AIFORGE_REPO_ROOT, etc.) and for
-# bringing up the docker infra services + the host-side runner loop — do NOT
-# duplicate that here as hardcoded Environment= lines, they will drift out of
-# sync with run.sh's actual hybrid branch. It also sources %h/AIForgeCrew/.env
-# itself (AIFORGE_BIND_HOST, AIFORGE_ALLOW_UNAUTH_NONLOOPBACK, etc.) — only
-# --host needs to be passed here since run.sh's own HOST default (127.0.0.1)
-# is a hardcoded shell var, NOT overridable by the .env's AIFORGE_BIND_HOST.
+# run.sh is the single source of truth for env wiring and for bringing the box
+# up — do NOT duplicate that here as hardcoded Environment= lines, they drift.
+# It reads %h/AIForgeCrew/aiforge.env itself; only --host needs passing, because
+# run.sh's own HOST default (127.0.0.1) is a shell variable, not something the
+# env file can override.
 Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-# AIFORGE_IN_SANDBOX=1: this unit IS the process that serves the API. Without
-# it run.sh would start the sandbox container and exit, and systemd would read
-# that exit as the service ending. AIForge otherwise always runs in the sandbox;
-# this is the one deliberate exception, and it is the same variable
-# docker/entrypoint.sh exports before exec'ing run.sh inside the box.
-Environment=AIFORGE_IN_SANDBOX=1
+# There is no host mode. run.sh starts the sandbox and returns, so this unit is
+# oneshot + RemainAfterExit: what actually serves the API is the container, kept
+# alive by its own `restart: unless-stopped`, not by systemd re-running this.
+# (It used to run the API on the host, which is why it needed to BE the process.)
+Type=oneshot
+RemainAfterExit=yes
 ExecStart=%h/AIForgeCrew/run.sh --host 0.0.0.0
-Restart=always
-RestartSec=5
+ExecStop=%h/AIForgeCrew/run.sh --stop
 
 [Install]
 WantedBy=default.target
