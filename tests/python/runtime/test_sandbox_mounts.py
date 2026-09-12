@@ -142,6 +142,44 @@ def test_run_sh_mounts_the_list_at_the_same_path(tmp_path):
     assert r.returncode == 0, r.stderr
 
 
+def test_unmounting_needs_a_path():
+    from aiforge_core.runtime.chat_agent._tools._misc import _t_unmount_folder
+    out = _t_unmount_folder({"path": "   "}, "/repo")
+    assert out["ok"] is False
+    assert out["error"] == "path is required"
+
+
+def test_an_entry_validate_would_reject_can_still_be_removed(monkeypatch):
+    """Narrowing access never needs host approval, so unmount must not inherit
+    mount's validation: a folder since deleted, or added by hand, still has to
+    be removable from the list."""
+    from aiforge_core.runtime.chat_agent._tools import _misc
+
+    def _reject(_path):
+        raise ValueError("is not a folder on this machine")
+
+    removed: list[str] = []
+    monkeypatch.setattr(sm, "requested", lambda: ["/gone/forever"])
+    monkeypatch.setattr(sm, "validate", _reject)
+    monkeypatch.setattr(sm, "remove", removed.append)
+    monkeypatch.setattr(sm, "mounted", list)
+
+    out = _misc._t_unmount_folder({"path": "/gone/forever"}, "/repo")
+    assert removed == ["/gone/forever"]
+    assert out["ok"] is True
+    assert out["path"] == "/gone/forever"
+
+
+def test_unmounting_something_absent_says_so_rather_than_pretending(monkeypatch):
+    from aiforge_core.runtime.chat_agent._tools import _misc
+    monkeypatch.setattr(sm, "requested", list)
+    monkeypatch.setattr(sm, "validate", lambda p: p)
+    monkeypatch.setattr(sm, "remove", lambda _p: None)
+    monkeypatch.setattr(sm, "mounted", list)
+    out = _misc._t_unmount_folder({"path": "/never/added"}, "/repo")
+    assert out["status"] == "not listed"
+
+
 def test_a_secret_is_masked_before_the_tool_even_runs(monkeypatch, tmp_path):
     """tool_start leaves before the tool runs; it must already be masked."""
     from aiforge_core.runtime.chat_agent import _loop

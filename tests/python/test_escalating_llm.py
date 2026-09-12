@@ -1020,3 +1020,23 @@ def test_a_stream_failure_after_the_first_chunk_is_not_retried(
     with pytest.raises(RuntimeError):
         _drive(e, stream=True)
     assert primary.calls == 1
+
+
+def test_a_broken_throttle_cannot_take_the_stream_down(_meter, monkeypatch) -> None:
+    """The rate ceiling is obeyed here, but it is bookkeeping: if the throttle
+    itself raises — a corrupt window file, a clock jump — the answer must still
+    stream. Letting it escape turns an accounting bug into a dead turn, which
+    is the one failure the user cannot work around."""
+    from aiforge_core.runtime.escalating_llm import _wrapper as w
+
+    async def _boom(*_a, **_k):
+        raise RuntimeError("rate window unavailable")
+
+    monkeypatch.setattr(w, "_throttle_global", _boom)
+    primary = _FlakyStream(model="primary", fail_times=0,
+                           script=[_resp("answered anyway")])
+    e = EscalatingLlm(model="primary", role="doer", primary_model=primary,
+                      chain_models=[], chain_labels=[])
+    out = _drive(e, stream=True)
+    assert len(out) == 1
+    assert primary.calls == 1

@@ -99,3 +99,39 @@ def test_a_candidate_that_is_not_on_disk_can_still_be_scored():
     cand = am.item_from("skills", "testing before a push", "run tests", [], _BODY)
     assert am.similarity(cand, _SKILL) > 0.9
     assert am.similarity(cand, _OTHER) < 0.5
+
+
+# ── admission into the cross-kind pass ───────────────────────────────────
+
+def test_a_cluster_decided_on_an_earlier_night_is_not_reconsidered(monkeypatch):
+    """The same admission rule the per-kind passes use. Without it the sweep
+    pays a model call every night to reach the verdict it already reached."""
+    cluster = [_RULE, _SKILL]
+    monkeypatch.setattr(am, "cross_kind_clusters", lambda *a, **k: [cluster])
+    monkeypatch.setattr(am, "_seen", lambda _state, _fp: True)
+    assert list(am._cross_kind_pairs(am.KINDS, {}, False)) == []
+
+
+def test_force_reconsiders_it_and_files_it_under_the_most_specific_kind(monkeypatch):
+    cluster = [_RULE, _SKILL]
+    monkeypatch.setattr(am, "cross_kind_clusters", lambda *a, **k: [cluster])
+    monkeypatch.setattr(am, "_seen", lambda _state, _fp: True)
+    assert list(am._cross_kind_pairs(am.KINDS, {}, True)) == [("skills", cluster)]
+
+
+def test_an_undecided_cluster_is_yielded(monkeypatch):
+    cluster = [_RULE, _WORKFLOW]
+    monkeypatch.setattr(am, "cross_kind_clusters", lambda *a, **k: [cluster])
+    monkeypatch.setattr(am, "_seen", lambda _state, _fp: False)
+    assert list(am._cross_kind_pairs(am.KINDS, {}, False)) == [("workflows", cluster)]
+
+
+def test_the_pass_reads_nothing_when_it_is_switched_off(monkeypatch):
+    """It is a generator so the disk is not touched until the per-kind merges
+    have finished writing; switched off, it must not read at all."""
+    def _explode(*_a, **_k):
+        raise AssertionError("must not look for cross-kind clusters")
+
+    monkeypatch.setenv("AIFORGE_MERGE_CROSS_KIND", "0")
+    monkeypatch.setattr(am, "cross_kind_clusters", _explode)
+    assert list(am._cross_kind_pairs(am.KINDS, {}, False)) == []
