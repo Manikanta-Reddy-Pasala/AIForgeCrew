@@ -339,8 +339,19 @@ def test_a_killed_process_is_reaped(run):
 def test_a_process_that_cannot_be_signalled_is_killed_directly(run,
                                                                monkeypatch):
     from aiforge_core.runtime import proc_signals as _ps
-    monkeypatch.setattr(_ps.os, "killpg",
-                        lambda pgid, sig: (_ for _ in ()).throw(OSError("gone")))
+    # "Cannot be signalled" has to mean BOTH routes fail. `stop_group` tries the
+    # process GROUP and then the bare pid, so patching killpg alone left the real
+    # os.kill running against this stub's hardcoded pid 4321 — and whether that
+    # pid exists is a property of the BOX, not of the code under test. A
+    # same-uid zombie at 4321 is enough: os.kill succeeds, stop_group reports the
+    # process stopped, the direct-kill fallback never runs and returncode stays
+    # None. (It also sent a real SIGTERM/SIGKILL to an unrelated process.)
+    def _gone(*_args):
+        raise OSError("gone")
+
+    monkeypatch.setattr(_ps.os, "getpgid", lambda pid: 4321)
+    monkeypatch.setattr(_ps.os, "killpg", _gone)
+    monkeypatch.setattr(_ps.os, "kill", _gone)
     proc = _Proc()
     S._kill_proc(proc)
     assert proc.returncode == -9

@@ -139,6 +139,7 @@ from ._misc import (
     _t_set_repo_folder,
     _t_set_repo_root,
     _t_mount_folder,
+    _t_unmount_folder,
     _t_save_secret,
     _t_list_repos,
     _t_set_integration_default,

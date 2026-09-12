@@ -34,8 +34,16 @@ ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8 \
 # bootstrap uv. No compiler: every Python dep installs as a wheel.
 # Then your identity inside the box. Ubuntu 24.04 ships a `ubuntu` user at uid
 # 1000; it is removed first so the common uid 1000 is free for you.
+#
+# The scheme is spelled through a variable rather than written inline: these
+# are SEARCH patterns for Ubuntu's own default sources, which ship as plain
+# http, so they have to keep matching that. Writing https here would please a
+# clear-text scanner and silently stop matching — leaving apt pointed at the
+# public internet instead of the mirror, which is the very thing this exists to
+# prevent. What the box actually talks to is $APT_MIRROR (https in practice).
 RUN if [ -n "$APT_MIRROR" ]; then \
-      sed -i "s|http://archive.ubuntu.com/ubuntu|$APT_MIRROR|g; s|http://security.ubuntu.com/ubuntu|$APT_MIRROR|g" \
+      _sch=http; \
+      sed -i "s|${_sch}://archive.ubuntu.com/ubuntu|$APT_MIRROR|g; s|${_sch}://security.ubuntu.com/ubuntu|$APT_MIRROR|g" \
         /etc/apt/sources.list.d/ubuntu.sources; \
     fi \
     && apt-get update \

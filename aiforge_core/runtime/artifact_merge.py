@@ -257,6 +257,19 @@ def _tokens(item: _Item) -> set[str]:
     return _sk._tokens(text)
 
 
+def item_from(kind: str, name: str, description: str, triggers, body: str,
+              source: str = "") -> _Item:
+    """A comparable artifact that is not on disk yet.
+
+    So a writer can ask "do we already have this?" with the SAME similarity the
+    sweep uses. Two definitions of similar — one for merging, one for
+    admission — would drift, and the pair that drifted apart would be exactly
+    the duplicate nobody catches."""
+    return _Item(kind, (name or "").strip(), (description or "").strip(),
+                 tuple(t.strip().lower() for t in (triggers or []) if t),
+                 body or "", source, ())
+
+
 def similarity(a: _Item, b: _Item) -> float:
     """0..1 overlap between two artifacts.
 
@@ -342,12 +355,53 @@ _SYSTEM = (
 )
 
 
+def _cross_kind_enabled() -> bool:
+    """Whether the sweep also reconciles ACROSS kinds
+    (``AIFORGE_MERGE_CROSS_KIND``, default on)."""
+    return os.environ.get("AIFORGE_MERGE_CROSS_KIND", "1").strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
+# Which kind a MIXED cluster collapses into: the most specific one present.
+# A workflow spells out steps, a skill explains an approach, a rule only
+# asserts — folding the specific into the general is the lossy direction.
+_KIND_RANK = {"workflows": 3, "skills": 2, "rules": 1}
+
+
+def target_kind(cluster: list[_Item]) -> str:
+    """The kind a cluster should end up as (see :data:`_KIND_RANK`)."""
+    return max((i.kind for i in cluster),
+               key=lambda k: _KIND_RANK.get(k, 0), default="rules")
+
+
+def cross_kind_clusters(threshold: float | None = None) -> list[list[_Item]]:
+    """Near-duplicates that span KINDS — one instruction saved as a rule AND
+    as a skill, which the per-kind sweep can never see because it only ever
+    compares a kind with itself.
+
+    Only genuinely mixed clusters are returned; a cluster wholly inside one
+    kind is the per-kind pass's job and merging it twice would be waste."""
+    pool = [i for k in KINDS for i in load(k)]
+    return [c for c in find_clusters("", items=pool, threshold=threshold)
+            if len({i.kind for i in c}) > 1]
+
+
 def _merge_prompt(kind: str, cluster: list[_Item]) -> str:
-    parts = [f"These {len(cluster)} {kind} say substantially the same thing. "
-             "Produce ONE that replaces all of them.\n"]
-    for n, item in enumerate(cluster, 1):
+    kinds = {i.kind for i in cluster}
+    what = kind if len(kinds) == 1 else "library artifacts"
+    parts = [f"These {len(cluster)} {what} say substantially the same thing. "
+             f"Produce ONE {kind[:-1]} that replaces all of them.\n"]
+    if len(kinds) > 1:
+        # The model must SEE the mix: a workflow's numbered steps and a rule's
+        # one-line assertion are the same instruction at different resolutions,
+        # and the merged artifact has to keep the steps.
         parts.append(
-            f"\n--- {kind[:-1]} {n}: {item.name} ---\n"
+            f"They are currently a mix of {', '.join(sorted(kinds))}; keep "
+            "every concrete step and condition from the most detailed one.\n")
+    for n, item in enumerate(cluster, 1):
+        label = item.kind[:-1] if len(kinds) > 1 else kind[:-1]
+        parts.append(
+            f"\n--- {label} {n}: {item.name} ---\n"
             f"description: {item.description}\n"
             f"triggers: {', '.join(item.triggers) or '(none)'}\n"
             f"{item.body.strip()}\n")
@@ -626,13 +680,36 @@ def _pending(kind: str, state: dict, force: bool = False) -> list[list[_Item]]:
             if force or not _seen(state, cluster_fingerprint(c))]
 
 
-def _collect(kinds, state, dry_run: bool, force: bool,
-             budget: int) -> list[dict]:
-    rows: list[dict] = []
+def _per_kind_pairs(kinds, state, force):
+    """``(kind, cluster)`` for the ordinary same-kind passes."""
     for kind in kinds:
         if kind not in KINDS:
             continue
         for cluster in _pending(kind, state, force):
+            yield kind, cluster
+
+
+def _cross_kind_pairs(kinds, state, force):
+    """…then the ones no per-kind pass can see: the same instruction saved as a
+    rule AND a skill. Drained last, so a plain duplicate is still collapsed
+    within its own kind first and the cross-kind pass sees the tidied result —
+    which is why this is a generator: nothing here reads the disk until the
+    per-kind merges above have finished writing to it.
+    """
+    if not (_cross_kind_enabled() and set(kinds) >= set(KINDS)):
+        return
+    for cluster in cross_kind_clusters():
+        if not force and _seen(state, cluster_fingerprint(cluster)):
+            continue
+        yield target_kind(cluster), cluster
+
+
+def _collect(kinds, state, dry_run: bool, force: bool,
+             budget: int) -> list[dict]:
+    rows: list[dict] = []
+    for pairs in (_per_kind_pairs(kinds, state, force),
+                  _cross_kind_pairs(kinds, state, force)):
+        for kind, cluster in pairs:
             # The budget is a COST ceiling, so it bounds model calls — a dry
             # run makes none and must show the operator every cluster, not the
             # first five of them.
@@ -690,6 +767,7 @@ def scheduled_pass() -> dict:
         return {"ok": False, "error": str(exc)[:200], "rows": []}
 
 
-__all__ = ["KINDS", "archive", "archive_dir", "cluster_fingerprint", "enabled",
-           "find_clusters", "last_report", "load", "load_state", "mergeable",
-           "run", "scheduled_pass", "similarity", "too_large", "validate_merge"]
+__all__ = ["KINDS", "archive", "archive_dir", "cluster_fingerprint",
+           "cross_kind_clusters", "enabled", "find_clusters", "last_report",
+           "load", "load_state", "mergeable", "run", "scheduled_pass",
+           "similarity", "target_kind", "too_large", "validate_merge"]

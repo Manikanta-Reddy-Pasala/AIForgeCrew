@@ -29,6 +29,12 @@
 #                project root; default ~/.aiforge/repos (or AIFORGE_REPOS_DIR)
 #   --mount DIR  also mount DIR into the sandbox (same path); repeatable, and
 #                remembered in ~/.aiforge/mounts.list — the list Settings edits
+#   --isolated   put the box on an INTERNAL docker network with no route out:
+#                every outbound request goes through a proxy that only allows
+#                AIFORGE_EGRESS_ALLOW_HOSTS, so the allowlist is enforced by the
+#                network rather than only by AIForge's own code. The UI is
+#                published through a small proxy; the model endpoint is then
+#                reached as host.docker.internal, not 127.0.0.1
 #   --skip-web   don't (re)build the web UI
 #   --test       probe the configured model endpoint, then exit
 #   --admin      this box is THE memory admin (exactly one per fleet); it
@@ -236,6 +242,7 @@ while [[ $# -gt 0 ]]; do
     --shell) DOCKER_ACTION=shell ;;
     --repos) AIFORGE_REPOS_DIR="${2:-}"; shift ;;
     --mount) _MOUNT_ARGS+=("${2:-}"); shift ;;
+    --isolated) ISOLATED=1 ;;
     --lite|--hybrid|--no-build) : ;;                 # legacy no-ops
     --migrate) MIGRATE=1 ;;
     --dedupe) MAINT=dedupe ;;
@@ -432,6 +439,49 @@ if [[ "$MODE" == "docker" ]]; then
     || _fatal "cannot talk to the Docker daemon as $(id -un 2>/dev/null || id -u)." \
               "Add yourself to the docker group (sudo usermod -aG docker \$USER, then log in again)."
 
+  # Config for --isolated: the proxy that IS the egress boundary, and the UI
+  # proxy that publishes the port the box itself cannot. Written from the same
+  # AIFORGE_EGRESS_ALLOW_HOSTS the app reads, so Settings and the network can
+  # never disagree about what is allowed.
+  _write_isolated_conf() {
+    local d="$AIFORGE_CONFIG_DIR/.sandbox"
+    mkdir -p "$d"
+    {
+      echo "Port 8888"
+      echo "Listen 0.0.0.0"
+      echo "Timeout 600"
+      echo "LogLevel Warning"
+      # Default-deny: tinyproxy refuses any host not filtered IN below.
+      echo "FilterURLs Off"
+      echo "FilterExtended On"
+      echo "FilterDefaultDeny Yes"
+      echo "Filter \"/etc/tinyproxy/allow.txt\""
+    } > "$d/tinyproxy.conf.tmp" && mv "$d/tinyproxy.conf.tmp" "$d/tinyproxy.conf"
+    : > "$d/allow.txt.tmp"
+    local _h
+    IFS=',' read -ra _h <<< "${AIFORGE_EGRESS_ALLOW_HOSTS:-}"
+    for _a in ${_h[@]+"${_h[@]}"}; do
+      _a="$(printf '%s' "$_a" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      [[ -n "$_a" ]] && printf '%s\n' "$_a" >> "$d/allow.txt.tmp"
+    done
+    mv "$d/allow.txt.tmp" "$d/allow.txt"
+    {
+      echo "server {"
+      echo "  listen 8799;"
+      echo "  location / {"
+      echo "    proxy_pass http://aiforge:8799;"
+      echo "    proxy_set_header Host \$host;"
+      echo "    proxy_http_version 1.1;"
+      echo "    proxy_set_header Upgrade \$http_upgrade;"
+      echo "    proxy_set_header Connection \"upgrade\";"
+      echo "    proxy_buffering off;"      # SSE: the chat streams
+      echo "    proxy_read_timeout 3600s;"
+      echo "  }"
+      echo "}"
+    } > "$d/ui-proxy.conf.tmp" && mv "$d/ui-proxy.conf.tmp" "$d/ui-proxy.conf"
+    echo "==> isolated network: egress limited to ${AIFORGE_EGRESS_ALLOW_HOSTS:-(nothing — set AIFORGE_EGRESS_ALLOW_HOSTS)}"
+  }
+
   # The box is built for YOU: files the agent writes into ~/.aiforge stay yours.
   export AIFORGE_UID AIFORGE_GID AIFORGE_USER AIFORGE_HOME
   AIFORGE_UID="$(id -u)"; AIFORGE_GID="$(id -g)"
@@ -443,7 +493,17 @@ if [[ "$MODE" == "docker" ]]; then
   # Passing any -f makes compose ignore COMPOSE_FILE, so it is folded in here.
   _cfiles=()
   if [[ -n "${COMPOSE_FILE:-}" ]]; then IFS=':' read -ra _cfiles <<< "$COMPOSE_FILE"
+  elif [[ "${ISOLATED:-0}" == 1 ]]; then _cfiles=(docker-compose.isolated.yml)
   else _cfiles=(docker-compose.yml); fi
+  # --isolated REPLACES the base rather than overlaying one: compose cannot take
+  # `network_mode: host` back off (declaring `networks:` beside it is an error),
+  # so the isolated shape has to be the base file itself.
+  if [[ "${ISOLATED:-0}" == 1 ]]; then
+    [[ -z "${COMPOSE_FILE:-}" ]] || _fatal \
+      "--isolated cannot be combined with COMPOSE_FILE: both are base files."
+    _write_isolated_conf
+    export AIFORGE_HOST="$HOST" AIFORGE_PORT="$PORT"
+  fi
   _extra=0
   if [[ -n "${AIFORGE_REPOS_DIR:-}" ]]; then
     [[ -d "$AIFORGE_REPOS_DIR" ]] || _fatal "--repos: '$AIFORGE_REPOS_DIR' is not a folder."
@@ -513,7 +573,11 @@ if [[ "$MODE" == "docker" ]]; then
   # for a restart).
   export AIFORGE_MOUNTS
   AIFORGE_MOUNTS="$(IFS=:; echo "${_mounted[*]}")"
-  if (( _extra )) || [[ -n "${COMPOSE_FILE:-}" ]]; then
+  # -f is needed whenever the file set is not compose's own default: extra
+  # overlays, a site COMPOSE_FILE, or --isolated. Omitting it under --isolated
+  # silently ran docker-compose.yml instead — `network_mode: host`, no proxy,
+  # no internal network: the box looked isolated and was not.
+  if (( _extra )) || [[ -n "${COMPOSE_FILE:-}" ]] || [[ "${ISOLATED:-0}" == 1 ]]; then
     for _f in "${_cfiles[@]}"; do DC+=(-f "$_f"); done
   fi
 

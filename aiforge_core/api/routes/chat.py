@@ -947,6 +947,15 @@ def _chat_learn_writeback(cwd, prompt, final_text, steps, session_id) -> None:
             session_id=session_id)
         _warn_if_not_persisted(lr, "chat_learner", repo)
         _warn_if_not_persisted(pc, "preference_capture", repo)
+        # …and the LIBRARY half: a turn that established a repeatable procedure
+        # becomes a skill or workflow. Rules already capture themselves; skills
+        # and workflows only ever existed when the agent remembered to ask for
+        # one, so procedures — the thing most worth having back — were the one
+        # thing nothing wrote down. Declines cheaply on an ordinary turn.
+        from aiforge_core.runtime import artifact_capture
+        artifact_capture.capture_from_chat(
+            prompt=prompt, final_text=final_text, steps=steps, cwd=cwd,
+            session_id=session_id)
         _capture_chat_cue(prompt, repo, session_id,
                           bool(isinstance(pc, dict) and pc.get("captured")))
     except Exception as exc:  # noqa: BLE001

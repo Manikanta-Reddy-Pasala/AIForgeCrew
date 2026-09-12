@@ -33,6 +33,12 @@ _APT = {
     "rustc": "rustc", "cargo": "cargo",
     "git": "git", "make": "make", "gcc": "gcc", "g++": "g++",
     "curl": "curl", "unzip": "unzip", "ruby": "ruby", "php": "php",
+    # Session tooling and a browser, so "check the UI" is a thing the agent can
+    # fit out for itself. The Playwright-driven Chromium installs through
+    # tools.browser (its own download, not apt); these cover a bare host and
+    # the headless-display case.
+    "tmux": "tmux", "chromium": "chromium", "xvfb": "xvfb",
+    "chromium-browser": "chromium",
 }
 _BREW = {
     "java": "openjdk", "javac": "openjdk", "jar": "openjdk",

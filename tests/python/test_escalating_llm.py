@@ -950,3 +950,73 @@ def test_a_registry_row_on_ANOTHER_host_is_skipped_in_team_mode(monkeypatch, _me
                       chain_models=[cloud], chain_labels=["cloud"])
     assert _drive(e)[0].content.parts[0].text == "cloud answer"
     assert "cloud/only" not in primary.seen
+
+
+# ─── streaming: primary only, but no longer bare ──────────────────────
+
+
+class _FlakyStream(BaseLlm):
+    """Fails its first ``fail_times`` calls, then streams ``script``."""
+
+    script: list = []
+    fail_times: int = 0
+    calls: int = 0
+    emit_then_fail: bool = False
+
+    async def generate_content_async(self, llm_request, stream=False):
+        self.calls += 1
+        if self.emit_then_fail:
+            yield _resp("partial")
+            raise RuntimeError("503 service unavailable")
+        if self.calls <= self.fail_times:
+            raise RuntimeError("503 service unavailable")
+        for r in self.script:
+            yield r
+
+    @classmethod
+    def supported_models(cls):
+        return []
+
+
+def test_a_streamed_answer_records_its_spend(_meter, monkeypatch) -> None:
+    """Spend was recorded on the buffered path only, so a streamed turn's
+    tokens never reached the budget — and streaming is the default now."""
+    seen: dict = {}
+    primary = _StubModel(model="primary", script=[_resp("hello")])
+    e = EscalatingLlm(model="primary", role="doer", primary_model=primary,
+                      chain_models=[], chain_labels=[])
+    monkeypatch.setattr(
+        type(e), "_record_spend",
+        lambda self, m, buffered, tok: seen.update(model=m, n=len(buffered)))
+    out = _drive(e, stream=True)
+    assert len(out) == 1
+    assert seen == {"model": "primary", "n": 1}
+
+
+def test_a_transient_stream_failure_retries_the_same_endpoint(
+        _meter, monkeypatch) -> None:
+    """The reason streaming was opt-in: one 5xx ended a team agent. Retried on
+    the SAME endpoint, because nothing had been emitted yet."""
+    monkeypatch.setenv("AIFORGE_LLM_ATTEMPT_RETRIES", "2")
+    primary = _FlakyStream(model="primary", fail_times=1,
+                           script=[_resp("second try")])
+    cloud = _StubModel(model="cloud", script=[_resp("rescued")])
+    e = EscalatingLlm(model="primary", role="doer", primary_model=primary,
+                      chain_models=[cloud], chain_labels=["cloud"])
+    out = _drive(e, stream=True)
+    assert len(out) == 1
+    assert primary.calls == 2
+    # …and the chain STAYS unwalked mid-stream: a consumer that has seen text
+    # cannot be handed a second beginning (test_streaming_honours_primary).
+    assert cloud.calls == 0
+
+
+def test_a_stream_failure_after_the_first_chunk_is_not_retried(
+        _meter, monkeypatch) -> None:
+    monkeypatch.setenv("AIFORGE_LLM_ATTEMPT_RETRIES", "3")
+    primary = _FlakyStream(model="primary", emit_then_fail=True)
+    e = EscalatingLlm(model="primary", role="doer", primary_model=primary,
+                      chain_models=[], chain_labels=[])
+    with pytest.raises(RuntimeError):
+        _drive(e, stream=True)
+    assert primary.calls == 1

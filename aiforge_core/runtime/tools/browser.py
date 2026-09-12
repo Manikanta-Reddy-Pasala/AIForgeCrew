@@ -11,7 +11,9 @@ agent loop survives on dev boxes without the install.
 from __future__ import annotations
 
 import base64
+import contextlib
 import contextvars
+import logging
 import os
 import re
 import uuid
@@ -20,6 +22,8 @@ from typing import Any
 from aiforge_core.runtime.sandbox import resolve_inside_root
 
 from ._trace import emit
+
+log = logging.getLogger("aiforge.tools.browser")
 
 # Run the browser context belongs to. The Doer FunctionTool wrapper omits
 # ``_run_id``, so fall back to a contextvar the runner sets, then a STABLE
@@ -260,6 +264,66 @@ def _teardown_globals() -> None:
         _pw_handle = None
 
 
+# Playwright's own wording when the PACKAGE is installed but its browser build
+# is not — the state a fresh sandbox is in, since the image ships the package
+# and not the ~150MB Chromium download.
+_BROWSER_MISSING_HINTS = ("executable doesn't exist", "playwright install",
+                          "browsertype.launch", "please run the following")
+
+
+def _browser_install_allowed() -> bool:
+    """Same switch ensure_runtime uses, same default (on)."""
+    return os.environ.get("AIFORGE_ALLOW_INSTALL", "1").strip().lower() not in (
+        "0", "false", "no", "off")
+
+
+def _install_chromium() -> str:
+    """Download the Chromium build Playwright drives. ``""`` on success.
+
+    The sandbox is a disposable box the agent is expected to fit out for the
+    task — a missing browser is a thing to install, not a dead end. Without
+    this the first ui_check on a fresh box died on "Executable doesn't exist"
+    and the agent had no way to get past it.
+    """
+    import subprocess
+    import sys
+    try:
+        p = subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            capture_output=True, text=True, timeout=1800)
+        if p.returncode != 0:
+            return ((p.stderr or p.stdout or "").strip()[-200:]
+                    or f"playwright install exited {p.returncode}")
+    except Exception as exc:  # noqa: BLE001
+        return str(exc)[:200]
+    # The shared libraries Chromium links against (libnss3, libatk…) are a
+    # separate step and need root; best-effort, because the image may already
+    # carry them and a refusal here should not sink a working download.
+    import shutil as _shutil
+    if _shutil.which("sudo"):
+        with contextlib.suppress(Exception):
+            subprocess.run(["sudo", "-n", sys.executable, "-m", "playwright",
+                            "install-deps", "chromium"],
+                           capture_output=True, text=True, timeout=1800)
+    return ""
+
+
+def _launch_chromium(pw: Any) -> Any:
+    """Headless Chromium, installing the browser build ONCE if it is missing."""
+    try:
+        return pw.chromium.launch(headless=True)
+    except Exception as exc:  # noqa: BLE001 — decide then re-raise or retry
+        msg = str(exc).lower()
+        if not (_browser_install_allowed()
+                and any(h in msg for h in _BROWSER_MISSING_HINTS)):
+            raise
+        log.info("browser: chromium build missing — installing it once")
+        err = _install_chromium()
+        if err:
+            raise RuntimeError(f"chromium install failed: {err}") from exc
+        return pw.chromium.launch(headless=True)
+
+
 def _get_context(run_id: str) -> Any:
     """Lazy-create the per-run BrowserContext. Returns the context or raises."""
     global _pw_handle, _browser
@@ -273,7 +337,7 @@ def _get_context(run_id: str) -> Any:
         if _pw_handle is None:
             _pw_handle = sync_playwright().start()
         if _browser is None:
-            _browser = _pw_handle.chromium.launch(headless=True)
+            _browser = _launch_chromium(_pw_handle)
         ctx = _browser.new_context()
         page = ctx.new_page()
         _console[run_id] = []

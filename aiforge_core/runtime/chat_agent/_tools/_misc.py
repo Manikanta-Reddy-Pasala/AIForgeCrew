@@ -299,9 +299,43 @@ def _t_mount_folder(args: dict, _cwd: str) -> dict:
                         "machine's files; the folder is mounted when it runs in "
                         "the sandbox."}
     return {"ok": True, "path": path, "status": row.get("status", "waiting"),
-            "note": "Tell the user: on the host, run ./run.sh in a terminal — it "
-                    "asks them to approve the folder, then mounts it (Settings → "
-                    "Sandbox folders shows it). Until then it is not visible here."}
+            "next_step": f"./run.sh --mount {path}",
+            "note": "Tell the user to run this on the HOST, in a terminal: "
+                    f"./run.sh --mount {path} — that approves the folder and "
+                    "restarts the box with it mounted at the same path. (Plain "
+                    "./run.sh works too: it asks for approval at a prompt. "
+                    "Settings → Sandbox folders lists it either way.) Until then "
+                    "the folder is NOT visible here, so do not try to read it."}
+
+
+def _t_unmount_folder(args: dict, _cwd: str) -> dict:
+    """Stop mounting a HOST folder into the sandbox.
+
+    The twin of :func:`_t_mount_folder`, and the same asymmetry applies: this
+    edits the request list, and a running box cannot unmount from itself, so the
+    folder stays visible until the host restarts it. Narrowing access needs no
+    host approval — only widening does."""
+    from aiforge_core.runtime import sandbox_mounts
+    path = str(args.get("path") or "").strip()
+    if not path:
+        return {"ok": False, "error": "path is required"}
+    before = sandbox_mounts.requested()
+    try:
+        target = sandbox_mounts.validate(path)
+    except ValueError:
+        target = path            # still allow removing an odd existing entry
+    sandbox_mounts.remove(target)
+    if target not in before:
+        return {"ok": True, "path": target, "status": "not listed",
+                "note": "That folder was not in the mount list; nothing changed."}
+    still_mounted = target in sandbox_mounts.mounted()
+    return {"ok": True, "path": target,
+            "status": "removed — still mounted until restart" if still_mounted
+                      else "removed",
+            "note": ("Tell the user it is removed from the list; it stays visible "
+                     "until they restart the box with ./run.sh on the host."
+                     if still_mounted else
+                     "Tell the user it is removed from the mount list.")}
 
 
 _SECRET_NAME_RE = re.compile(r"^[\w.-]{1,64}$", re.ASCII)

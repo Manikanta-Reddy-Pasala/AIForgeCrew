@@ -110,12 +110,16 @@ def _part_events(author: str, part) -> list[dict]:
 
 def _team_streaming() -> dict:
     """RunConfig kwargs that make team agents stream their text as they write
-    it (SSE partial events). OFF unless AIFORGE_CHAT_TEAM_STREAM=1: ADK's
-    streamed call goes through EscalatingLlm._stream_primary, which skips the
-    per-model request stamping, retries, fallback chain, empty-reply escalation
-    and spend recording that the unstreamed path has — a single 5xx would end a
-    team agent instead of being retried."""
-    if os.environ.get("AIFORGE_CHAT_TEAM_STREAM", "0").strip().lower() not in (
+    it (SSE partial events). ON by default: a team build is minutes of work and
+    watching it arrive in one lump at the end is the worst version of it.
+
+    This was opt-in while ``EscalatingLlm._stream_primary`` was bare — it
+    skipped the stamping, retries and spend recording the buffered path had, so
+    one transient 5xx ended a team agent. It now carries all of those (the
+    fallback CHAIN stays deliberately unwalked mid-stream: a consumer that has
+    already seen text cannot be handed a second beginning). Set
+    AIFORGE_CHAT_TEAM_STREAM=0 to go back to buffered replies."""
+    if os.environ.get("AIFORGE_CHAT_TEAM_STREAM", "1").strip().lower() not in (
             "1", "true", "yes", "on"):
         return {}
     try:

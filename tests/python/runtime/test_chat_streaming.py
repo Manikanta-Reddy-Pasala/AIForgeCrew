@@ -112,18 +112,19 @@ def test_a_streamed_team_chunk_is_a_draft_delta():
     ]
 
 
-def test_team_streaming_is_opt_in(monkeypatch):
-    """Off by default: ADK's streamed call skips the escalating wrapper's
-    retries, fallback chain and spend recording."""
+def test_team_streaming_is_on_by_default(monkeypatch):
+    """A team build is minutes of work; it streams now. It was opt-in only
+    while the streamed path was bare — it now carries the stamping, the
+    same-endpoint retry and spend recording the buffered path has."""
     import pytest
     pytest.importorskip("google.adk.agents.run_config")
     from google.adk.agents.run_config import StreamingMode
 
     from aiforge_core.runtime import chat_pipeline as cp
     monkeypatch.delenv("AIFORGE_CHAT_TEAM_STREAM", raising=False)
-    assert cp._team_streaming() == {}
-    monkeypatch.setenv("AIFORGE_CHAT_TEAM_STREAM", "1")
     assert cp._team_streaming() == {"streaming_mode": StreamingMode.SSE}
+    monkeypatch.setenv("AIFORGE_CHAT_TEAM_STREAM", "0")
+    assert cp._team_streaming() == {}
 
 
 def test_partial_chunks_never_become_steps_or_the_answer():

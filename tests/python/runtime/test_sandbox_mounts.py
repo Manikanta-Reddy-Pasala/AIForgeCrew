@@ -58,6 +58,44 @@ def test_the_chat_tool_records_and_says_to_restart(monkeypatch):
     assert "/work/proj" in sm.requested()
 
 
+def test_the_mount_tool_hands_over_the_exact_host_command(monkeypatch):
+    """"Run ./run.sh" leaves the user guessing; --mount approves in one step."""
+    from aiforge_core.runtime.chat_agent import TOOLS
+    monkeypatch.setenv("AIFORGE_MOUNTS", "/home/me/.aiforge")
+    out = TOOLS["mount_folder"]({"path": "/work/proj"}, "/")
+    assert out["next_step"] == "./run.sh --mount /work/proj"
+    assert "--mount /work/proj" in out["note"]
+
+
+def test_the_chat_tool_can_unmount_too(monkeypatch):
+    """Settings has Remove; chat had no counterpart at all."""
+    from aiforge_core.runtime.chat_agent import TOOLS
+    monkeypatch.setenv("AIFORGE_MOUNTS", "/home/me/.aiforge:/work/proj")
+    sm.add("/work/proj")
+    out = TOOLS["unmount_folder"]({"path": "/work/proj"}, "/")
+    assert out["ok"] is True
+    assert "/work/proj" not in sm.requested()
+    # it is still mounted in THIS box until the host restarts it — say so
+    assert "restart" in out["note"]
+    assert out["status"].startswith("removed")
+
+
+def test_unmounting_a_folder_that_was_never_listed_changes_nothing(monkeypatch):
+    from aiforge_core.runtime.chat_agent import TOOLS
+    out = TOOLS["unmount_folder"]({"path": "/not/listed"}, "/")
+    assert out["ok"] is True
+    assert out["status"] == "not listed"
+
+
+def test_unmounting_needs_no_approval(monkeypatch):
+    """Mounting WIDENS what the box can see and is gated; unmounting narrows it,
+    so gating it would only teach the user to click through prompts."""
+    from aiforge_core.runtime.tools import tool_policy
+    monkeypatch.delenv("AIFORGE_SANDBOX", raising=False)
+    assert tool_policy.decide("unmount_folder",
+                              {"path": "/x"})["policy"] == tool_policy.ALLOW
+
+
 def test_mounting_a_folder_needs_approval_outside_the_box(monkeypatch):
     """Natively it asks; in the sandbox the request is free because the HOST
     still has to approve it before anything is mounted."""
