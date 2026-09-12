@@ -36,15 +36,18 @@ for ca in "$SEC/ca/custom-ca.pem" "${AIFORGE_CA_BUNDLE:-}"; do
 done
 
 # The agent may apt-install what a task needs; point apt at the mirror too.
-# The scheme goes through a variable because these are SEARCH patterns for
-# Ubuntu's own defaults, which ship as plain http: they must keep matching it.
-# Writing https would quiet a clear-text scanner and silently stop matching,
-# leaving apt on the public internet rather than the mirror. The destination —
-# $AIFORGE_APT_MIRROR — is what the box actually fetches from.
+# The sources file is REWRITTEN rather than substituted. Rewriting says what the
+# box may fetch from; substituting had to carry Ubuntu's own default URLs as
+# search patterns, so anything they failed to match stayed pointed at the public
+# internet — the opposite of the intent, and invisible when it happened.
 if [[ -n "${AIFORGE_APT_MIRROR:-}" ]]; then
-  _sch=http
-  sed -i "s|${_sch}://archive.ubuntu.com/ubuntu|$AIFORGE_APT_MIRROR|g; s|${_sch}://security.ubuntu.com/ubuntu|$AIFORGE_APT_MIRROR|g" \
-    /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
+  {
+    echo 'Types: deb'
+    echo "URIs: $AIFORGE_APT_MIRROR"
+    echo 'Suites: noble noble-updates noble-backports noble-security'
+    echo 'Components: main universe restricted multiverse'
+    echo 'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg'
+  } > /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
 fi
 
 # Credentials live in ~/.aiforge/security (the one host folder the box sees).

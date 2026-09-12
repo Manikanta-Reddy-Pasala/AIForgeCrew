@@ -100,7 +100,8 @@ services:
     ports:
       - "${AIFORGE_HOST:-127.0.0.1}:${AIFORGE_PORT:-8799}:8799"
     volumes:
-      - ${AIFORGE_CONFIG_DIR:-~/.aiforge}/.sandbox/ui-proxy.conf:/etc/nginx/conf.d/default.conf:ro
+      # Static config, versioned with the repo rather than generated at start-up.
+      - ./docker/ui-proxy.conf:/etc/nginx/conf.d/default.conf:ro
 
 networks:
   box:

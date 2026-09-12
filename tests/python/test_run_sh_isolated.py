@@ -93,13 +93,22 @@ def test_an_empty_allowlist_still_writes_a_file(tmp_path: Path):
     assert (_sandbox(tmp_path) / "allow.txt").exists()
 
 
-def test_the_ui_is_published_through_its_own_proxy(tmp_path: Path):
-    """A container on an internal network cannot publish a port itself."""
-    _run(tmp_path, ["--isolated"], {"AIFORGE_EGRESS_ALLOW_HOSTS": "x.internal"})
-    conf = (_sandbox(tmp_path) / "ui-proxy.conf").read_text()
+def test_the_ui_is_published_through_its_own_proxy():
+    """A container on an internal network cannot publish a port itself, so the
+    UI is served by an nginx that sits on both networks.
+
+    Its config varies with nothing, so it is a file in the repo rather than
+    something run.sh echoes out at start-up — compose mounts it directly."""
+    conf = (REPO / "docker" / "ui-proxy.conf").read_text()
     assert "proxy_pass http://aiforge:8799;" in conf
     # SSE: the chat streams, so buffering would hold every token to the end.
     assert "proxy_buffering off;" in conf
+
+
+def test_compose_mounts_that_static_proxy_config():
+    """The file is only useful if the ui container actually gets it."""
+    compose = (REPO / "docker-compose.isolated.yml").read_text()
+    assert "./docker/ui-proxy.conf:/etc/nginx/conf.d/default.conf:ro" in compose
 
 
 def test_isolated_refuses_to_fight_a_site_compose_file(tmp_path: Path):

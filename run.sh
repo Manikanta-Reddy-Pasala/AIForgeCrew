@@ -477,20 +477,9 @@ if ! _in_box; then
       [[ -n "$_a" ]] && printf '%s\n' "$_a" >> "$d/allow.txt.tmp"
     done
     mv "$d/allow.txt.tmp" "$d/allow.txt"
-    {
-      echo "server {"
-      echo "  listen 8799;"
-      echo "  location / {"
-      echo "    proxy_pass http://aiforge:8799;"
-      echo "    proxy_set_header Host \$host;"
-      echo "    proxy_http_version 1.1;"
-      echo "    proxy_set_header Upgrade \$http_upgrade;"
-      echo "    proxy_set_header Connection \"upgrade\";"
-      echo "    proxy_buffering off;"      # SSE: the chat streams
-      echo "    proxy_read_timeout 3600s;"
-      echo "  }"
-      echo "}"
-    } > "$d/ui-proxy.conf.tmp" && mv "$d/ui-proxy.conf.tmp" "$d/ui-proxy.conf"
+    # The UI proxy's config is STATIC — it varies with nothing — so it lives in
+    # the repo at docker/ui-proxy.conf and compose mounts it directly. Nothing
+    # to generate here.
     echo "==> isolated network: egress limited to ${AIFORGE_EGRESS_ALLOW_HOSTS:-(nothing — set AIFORGE_EGRESS_ALLOW_HOSTS)}"
   }
 
