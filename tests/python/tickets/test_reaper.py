@@ -94,9 +94,21 @@ def test_reap_ignores_todo_and_done(store):
 
 
 def test_reap_env_default_lease(store, monkeypatch):
-    monkeypatch.setenv("AIFORGE_TICKET_LEASE_S", "10")
+    """No argument → the lease comes from the environment, not the 3600 default.
+
+    The numbers are not arbitrary. ``lease_seconds`` CLAMPS with ``max(60, ...)``,
+    so the "10" this test used to set was silently 60 — against a claim backdated
+    by exactly 60 seconds. Whether ``claimed_at < now - 60s`` then held came down
+    to whether the backdating UPDATE and the reaper's SELECT landed in the same
+    SQLite millisecond: true on a busy box, false on an idle one, which is the
+    wrong way round for anyone trying to read the result. 120 clears the clamp
+    and 600 clears 120 by eight minutes, while staying well under the 3600
+    default — so the test still fails if the environment is ignored, which is
+    the whole point of it.
+    """
+    monkeypatch.setenv("AIFORGE_TICKET_LEASE_S", "120")
     store.create(title="lease one", body="x")
     claimed = store.claim_next_any()
-    _backdate_claimed_at(claimed.id, 60)      # older than the 10s env lease
+    _backdate_claimed_at(claimed.id, 600)     # past the 120s env lease, under 3600
     reset = list(store.reap_stale_in_progress())   # no arg → env default
     assert claimed.id in reset
