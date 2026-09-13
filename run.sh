@@ -59,6 +59,8 @@
 #   AIFORGE_CA_BUNDLE      /path/to/ca.pem     (keeps verification ON)
 #   AIFORGE_ROLE=admin     on exactly one machine in a fleet
 #   AIFORGE_EXTRAS=structured,crawl,chunking,embed-static   optional extras
+#   AIFORGE_SKIP_DEPS=1    trust the .venv as built (uv sync, a wheel install);
+#                          only honoured when it already imports aiforge_core
 #   UV_DEFAULT_INDEX       PyPI-type index (default: pyproject's Artifactory)
 #   npm_config_registry    npm registry (default: AIFORGE_NPM_REGISTRY, Artifactory)
 #
@@ -947,7 +949,16 @@ for _e in ${_extras[@]+"${_extras[@]}"}; do
 done
 _STAMP=".venv/.aiforge-deps"
 _want="$(cat pyproject.toml uv.lock 2>/dev/null | cksum) ${_EXTRAS[*]}"
-if ! _venv_ready || [[ "$(cat "$_STAMP" 2>/dev/null)" != "$_want" ]]; then
+# AIFORGE_SKIP_DEPS=1 — take the venv as it stands, for a box that built it by
+# some other honest route: `uv sync` (which is what CI does) populates .venv but
+# writes no stamp, so run.sh saw "deps stale", reached for the index, and either
+# reinstalled everything from the network mid-run or refused to start on a box
+# that cannot resolve it. Guarded by _venv_ready, so it can only skip work that
+# is genuinely already done — a venv that cannot import aiforge_core is still
+# installed, toggle or no toggle.
+if _venv_ready && [[ "${AIFORGE_SKIP_DEPS:-0}" == "1" ]]; then
+  echo "==> deps: AIFORGE_SKIP_DEPS=1 and .venv imports — left as built"
+elif ! _venv_ready || [[ "$(cat "$_STAMP" 2>/dev/null)" != "$_want" ]]; then
   _pick_index
   echo "==> installing python deps: uv.lock versions from the index (${_EXTRAS[*]})"
   _pins=".venv/.aiforge-pins.txt"

@@ -195,6 +195,13 @@ def test_test_flag_reaches_the_probe_not_the_launch_banner(tmp_path: Path) -> No
         "AIFORGE_SKIP_AIDER": "1",
         "AIFORGE_SKIP_INTEGRATIONS": "1",
         "AIFORGE_SKIP_CODEGRAPH": "1",
+        # ...and the dependency step is the no-op this docstring assumes. It
+        # was not: run.sh decides "deps are current" from a stamp file it
+        # writes itself, and a venv built by `uv sync` (CI's own step) carries
+        # no stamp — so this test reinstalled every dependency from the index
+        # before reaching the flag it exists to check, and failed outright on a
+        # box that cannot resolve that index.
+        "AIFORGE_SKIP_DEPS": "1",
         "AIFORGE_AUTO_MIGRATE": "0",
         "AIFORGE_MIGRATE_OKF": "0",
         "AIFORGE_FIX_PERMS": "0",
