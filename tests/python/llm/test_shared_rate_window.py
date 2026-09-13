@@ -388,12 +388,52 @@ def test_reset_does_not_create_a_store_just_to_clear_it(tmp_path, monkeypatch):
 
 # ── real contention, which is the claim that most needs proving ─────
 
+# ── starting several processes at ONE instant ───────────────────────────
+#
+# Every multi-process test below has to make its children overlap: a child that
+# starts after the others have finished measures nothing, and its absence looks
+# exactly like the implementation behaving. The children were told to start at a
+# fixed `now + 2s`, which is a bet on how long six or twelve interpreters take to
+# import the package — a bet a loaded box loses. Observed: (60, [20, 40, 0, 0])
+# where two children never took part, and six racers reporting one attempt each
+# against a window that had already closed.
+#
+# So the parent names the instant instead, and only once every child has said it
+# is up. The thresholds each test asserts are unchanged; only the starting gun is.
+_WAIT_FOR_GO = """
+    RV = {rendezvous!r}
+    open(os.path.join(RV, "ready-%d" % os.getpid()), "w").close()
+    _go = os.path.join(RV, "go")
+    while not os.path.exists(_go):
+        time.sleep(0.005)
+    start = float(open(_go).read().strip())
+"""
+
+
+def _rendezvous(tmp_path) -> str:
+    rv = str(tmp_path / "rv")
+    os.makedirs(rv, exist_ok=True)
+    return rv
+
+
+def _start_together(rv: str, procs: list, *, lead: float = 0.5) -> None:
+    """Block until every child has signalled ready, then name the start."""
+    deadline = time.time() + 180
+    while len([n for n in os.listdir(rv) if n.startswith("ready-")]) < len(procs):
+        assert time.time() < deadline, "the children never came up"
+        for p in procs:
+            assert p.poll() in (None, 0), (p.poll(), p.communicate()[1])
+        time.sleep(0.02)
+    with open(os.path.join(rv, "go"), "w") as fh:
+        fh.write(str(time.time() + lead))
+
+
 _RACER = textwrap.dedent("""
     import os, sys, time
     sys.path.insert(0, {root!r})
     os.environ["AIFORGE_CONFIG_DIR"] = {cfg!r}
     from aiforge_core.llm import _shared_window as sw
-    start = {start!r}
+""" + _WAIT_FOR_GO + """
     # A fixed DURATION, not a fixed attempt count. With a count, a child that
     # imported slowly could finish all its attempts before another child began
     # — the intervals would not overlap and the test would flake without the
@@ -420,12 +460,13 @@ def test_no_two_processes_get_the_same_last_slot(tmp_path, monkeypatch):
     os.makedirs(cfg, exist_ok=True)
     root = os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.dirname(os.path.abspath(__file__)))))
-    start = time.time() + 2.0
+    rv = _rendezvous(tmp_path)
     procs = [subprocess.Popen(
-        [sys.executable, "-c", _RACER.format(root=root, cfg=cfg, start=start,
+        [sys.executable, "-c", _RACER.format(root=root, cfg=cfg, rendezvous=rv,
                                              limit=20)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         for _ in range(6)]
+    _start_together(rv, procs)
     rows = []
     for p in procs:
         so, se = p.communicate(timeout=120)
@@ -501,7 +542,8 @@ _OPENER = textwrap.dedent("""
     sys.path.insert(0, {root!r})
     os.environ["AIFORGE_CONFIG_DIR"] = {cfg!r}
     from aiforge_core.llm import _shared_window as sw
-    while time.time() < {start!r}:
+""" + _WAIT_FOR_GO + """
+    while time.time() < start:
         pass
     ok = sw.take(1000) is not None
     print("1" if ok else "0")
@@ -523,11 +565,12 @@ def test_a_cold_start_stampede_does_not_hand_out_private_allowances(tmp_path):
     assert not os.path.exists(os.path.join(cfg, "llm_rate.db"))
     root = os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.dirname(os.path.abspath(__file__)))))
-    start = time.time() + 2.0
+    rv = _rendezvous(tmp_path)
     procs = [subprocess.Popen(
-        [sys.executable, "-c", _OPENER.format(root=root, cfg=cfg, start=start)],
+        [sys.executable, "-c", _OPENER.format(root=root, cfg=cfg, rendezvous=rv)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         for _ in range(12)]
+    _start_together(rv, procs)
     ok = []
     for p in procs:
         so, se = p.communicate(timeout=120)
@@ -665,18 +708,7 @@ _STEPPER = textwrap.dedent("""
     from aiforge_core.llm import _shared_window as sw
     OFFSET = {offset!r}
     real = time.time
-    # RENDEZVOUS: say "imported and ready", then wait for the parent to name
-    # the start instant. A fixed now+2s start was a race — on a loaded box a
-    # child could still be importing when it passed, and a child that starts
-    # late spends a window of its OWN, which is the exact quantity this test
-    # measures. The observed failure was (60, [20, 40, 0, 0]): two children
-    # never took part at all.
-    RV = {rendezvous!r}
-    open(os.path.join(RV, "ready-%d" % os.getpid()), "w").close()
-    _go = os.path.join(RV, "go")
-    while not os.path.exists(_go):
-        time.sleep(0.005)
-    start = float(open(_go).read().strip())
+""" + _WAIT_FOR_GO + """
     step_at = start + {step_after!r}
     def clocked():
         t = real()
@@ -712,8 +744,7 @@ def test_a_clock_step_costs_ONE_window_not_one_per_caller(tmp_path):
     """
     cfg = str(tmp_path / "cfg")
     os.makedirs(cfg, exist_ok=True)
-    rv = str(tmp_path / "rv")
-    os.makedirs(rv, exist_ok=True)
+    rv = _rendezvous(tmp_path)
     root = os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.dirname(os.path.abspath(__file__)))))
     procs = [subprocess.Popen(
@@ -722,17 +753,7 @@ def test_a_clock_step_costs_ONE_window_not_one_per_caller(tmp_path):
             offset=900.0, limit=20, threads=4)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         for _ in range(4)]
-    # Start the clock only once every child is up, so "one window per step"
-    # is measured against four participants and not against however many
-    # finished importing in time.
-    deadline = time.time() + 120
-    while len([n for n in os.listdir(rv) if n.startswith("ready-")]) < 4:
-        assert time.time() < deadline, "the stepper children never came up"
-        assert all(p.poll() is None for p in procs), \
-            [p.communicate()[1] for p in procs if p.poll() not in (None, 0)]
-        time.sleep(0.02)
-    with open(os.path.join(rv, "go"), "w") as fh:
-        fh.write(str(time.time() + 0.5))
+    _start_together(rv, procs)
     got = []
     for p in procs:
         so, se = p.communicate(timeout=180)
