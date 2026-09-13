@@ -96,7 +96,27 @@ def test_the_answer_is_spelled_from_the_filesystem_not_the_caller(tmp_path):
     assert answered == os.path.join(str(tmp_path), "Repo")
 
 
+def _case_sensitive_fs(tmp_path) -> bool:
+    """Whether two names differing only in case can coexist HERE.
+
+    macOS (APFS) is case-insensitive by default, so "Repo" and "repo" are one
+    directory and the premise of the test below cannot be built — it died in
+    setup with FileExistsError on every Mac while passing in CI. Asked at
+    runtime rather than off sys.platform: an APFS volume can be formatted
+    case-sensitive, and a Linux box can mount one that is not.
+    """
+    probe = tmp_path / "_CaseProbe"
+    probe.mkdir()
+    try:
+        return not (tmp_path / "_caseprobe").exists()
+    finally:
+        probe.rmdir()
+
+
 def test_an_exact_match_wins_over_a_differently_cased_one(tmp_path):
+    if not _case_sensitive_fs(tmp_path):
+        pytest.skip("case-insensitive filesystem: 'Repo' and 'repo' are one "
+                    "directory here, so the exact match cannot be staged")
     (tmp_path / "Repo").mkdir()
     (tmp_path / "repo").mkdir()
     assert safe_paths._respelled(str(tmp_path / "repo")) \

@@ -108,4 +108,11 @@ def test_a_firing_while_the_previous_run_is_still_going_is_skipped(monkeypatch):
     release.set()
     assert _wait_until(lambda: not scheduler.is_running(job["id"]))
     assert scheduler._fire_agent(job) is True          # free again afterwards
-    release.set()
+    # ...and that last run is drained before the test returns. Leaving it in
+    # flight leaked this job id into scheduler._RUNNING for the REST of the
+    # session: every later test whose job is also id 1 (each test gets a fresh
+    # jobs.db, so ids restart) then looked "still running", and close_job
+    # correctly refused to clean up a workspace it believed an agent was using.
+    # That is how three test_jobs_expiry tests failed whenever this file ran
+    # first — the failure was here, one file away from where it was reported.
+    assert _wait_until(lambda: not scheduler.is_running(job["id"]))

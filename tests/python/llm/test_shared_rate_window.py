@@ -663,9 +663,21 @@ _STEPPER = textwrap.dedent("""
     sys.path.insert(0, {root!r})
     os.environ["AIFORGE_CONFIG_DIR"] = {cfg!r}
     from aiforge_core.llm import _shared_window as sw
-    start, step_at = {start!r}, {step_at!r}
     OFFSET = {offset!r}
     real = time.time
+    # RENDEZVOUS: say "imported and ready", then wait for the parent to name
+    # the start instant. A fixed now+2s start was a race — on a loaded box a
+    # child could still be importing when it passed, and a child that starts
+    # late spends a window of its OWN, which is the exact quantity this test
+    # measures. The observed failure was (60, [20, 40, 0, 0]): two children
+    # never took part at all.
+    RV = {rendezvous!r}
+    open(os.path.join(RV, "ready-%d" % os.getpid()), "w").close()
+    _go = os.path.join(RV, "go")
+    while not os.path.exists(_go):
+        time.sleep(0.005)
+    start = float(open(_go).read().strip())
+    step_at = start + {step_after!r}
     def clocked():
         t = real()
         return t + OFFSET if t >= step_at else t
@@ -700,15 +712,27 @@ def test_a_clock_step_costs_ONE_window_not_one_per_caller(tmp_path):
     """
     cfg = str(tmp_path / "cfg")
     os.makedirs(cfg, exist_ok=True)
+    rv = str(tmp_path / "rv")
+    os.makedirs(rv, exist_ok=True)
     root = os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.dirname(os.path.abspath(__file__)))))
-    start = time.time() + 2.0
     procs = [subprocess.Popen(
         [sys.executable, "-c", _STEPPER.format(
-            root=root, cfg=cfg, start=start, step_at=start + 0.4,
+            root=root, cfg=cfg, rendezvous=rv, step_after=0.4,
             offset=900.0, limit=20, threads=4)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         for _ in range(4)]
+    # Start the clock only once every child is up, so "one window per step"
+    # is measured against four participants and not against however many
+    # finished importing in time.
+    deadline = time.time() + 120
+    while len([n for n in os.listdir(rv) if n.startswith("ready-")]) < 4:
+        assert time.time() < deadline, "the stepper children never came up"
+        assert all(p.poll() is None for p in procs), \
+            [p.communicate()[1] for p in procs if p.poll() not in (None, 0)]
+        time.sleep(0.02)
+    with open(os.path.join(rv, "go"), "w") as fh:
+        fh.write(str(time.time() + 0.5))
     got = []
     for p in procs:
         so, se = p.communicate(timeout=180)
