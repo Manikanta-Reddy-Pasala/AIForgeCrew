@@ -165,14 +165,23 @@ def recall(text: str, *, limit: int = 8, repo: str | None = None,
     return _dedupe_by_text(_score_rows(rows, qvec, boost), limit)
 
 
+# WHEN a unit happened, for ordering: the recorded ``event_time`` (epoch
+# seconds, e.g. a ticket's created_at carried over by the learner) when the
+# writer knew it, else the row's own write time. Ordering on created_at ALONE
+# made an ingest of three-week-old tickets outrank yesterday's real work in the
+# hot cache, purely because it was written later.
+_HAPPENED_AT = "COALESCE(event_time, CAST(strftime('%s', created_at) AS REAL))"
+
+
 def recent(*, limit: int = 5, repo: str | None = None,
            exclude_kind: str | None = None) -> list[dict]:
-    """The most-recently-written memory units (hot cache) — newest first, by
-    ``created_at``/``id``. A just-captured fact surfaces immediately, before the
-    embedding index or the next compaction folds it into a brief. ``repo`` filters
-    to that repo + global/agnostic rows; ``exclude_kind`` drops a kind (e.g. the
-    consolidated 'compacted'/'knowledge' briefs, so this returns raw fresh facts).
-    Never raises."""
+    """The most-recently-written memory units (hot cache) — newest first by WHEN
+    THEY HAPPENED (``event_time``, falling back to ``created_at``/``id``). A
+    just-captured fact surfaces immediately, before the embedding index or the
+    next compaction folds it into a brief, while a backfilled old event does not
+    displace it. ``repo`` filters to that repo + global/agnostic rows;
+    ``exclude_kind`` drops a kind (e.g. the consolidated 'compacted'/'knowledge'
+    briefs, so this returns raw fresh facts). Never raises."""
     if limit <= 0:
         return []
     where = []
@@ -186,7 +195,7 @@ def recent(*, limit: int = 5, repo: str | None = None,
     sql = "SELECT * FROM memory_units"
     if where:
         sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
+    sql += f" ORDER BY {_HAPPENED_AT} DESC, id DESC LIMIT ?"
     params.append(int(limit))
     try:
         with _conn() as c:
@@ -207,5 +216,66 @@ def recent(*, limit: int = 5, repo: str | None = None,
             "kind": r["kind"], "ticket": r["ticket"], "repo": r["repo"],
             # descending score preserves recency order through normalization
             "score": 1.0 - (i / max(1, len(rows))),
+        })
+    return out
+
+
+CONSTRAINT_KIND = "constraint"
+
+
+def _collapse_echo(text: str) -> str:
+    r"""Collapse a row whose body merely repeats its own title.
+
+    An md-captured rule is stored as "<title>\n\n<body>", and capture derives
+    the title from the body's first line — so a one-line rule ingests as the
+    same sentence twice. Harmless in a search snippet, but these rows are
+    rendered into a MANDATORY rules block, where a rule stuttering at the agent
+    reads like two rules.
+    """
+    parts = [p.strip() for p in (text or "").split("\n\n") if p.strip()]
+    if len(parts) == 2 and parts[0] == parts[1]:
+        return parts[0]
+    return (text or "").strip()
+
+
+def constraints(*, repo: str | None = None, limit: int = 12) -> list[dict]:
+    """Every standing RULE in force for ``repo`` — newest first.
+
+    Not a search: constraints are not retrieved by relevance, they are retrieved
+    because they apply. A rule that only reaches the prompt when the question
+    happens to share vocabulary with it ("never push straight to production" vs
+    a question about kafka lag) is a rule the agent breaks. Scope is this repo
+    plus the repo-agnostic/shared rules, mirroring :func:`recent`.
+
+    Returns hit-shaped dicts (the same keys recall/recent emit) so a caller can
+    hand them straight to the ranker, with a fixed 1.0 score — they are pinned,
+    not ranked. Never raises."""
+    if limit <= 0:
+        return []
+    sql = "SELECT * FROM memory_units WHERE kind = ?"
+    params: list = [CONSTRAINT_KIND]
+    if repo:
+        sql += " AND (repo = ? OR repo IS NULL OR repo = 'shared')"
+        params.append(repo)
+    sql += f" ORDER BY {_HAPPENED_AT} DESC, id DESC LIMIT ?"
+    params.append(int(limit))
+    try:
+        with _conn() as c:
+            rows = c.execute(sql, params).fetchall()
+    except Exception:  # noqa: BLE001 — a rule lookup never breaks a recall
+        return []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for r in rows:
+        txt = r["text"]
+        if not txt or txt in seen:
+            continue
+        seen.add(txt)
+        out.append({
+            "text": _collapse_echo(txt), "title": r["title"],
+            "source": r["source"] or "constraint",
+            "group": f"constraint:{r['id']}",
+            "kind": r["kind"], "ticket": r["ticket"], "repo": r["repo"],
+            "score": 1.0,
         })
     return out

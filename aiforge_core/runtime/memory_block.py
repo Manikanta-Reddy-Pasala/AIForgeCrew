@@ -56,6 +56,28 @@ def _render_hit_lines(prefix: str, hits: list, result: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _rules_block(hits: list) -> str:
+    """The pinned CONSTRAINT hits, rendered VERBATIM as mandatory rules.
+
+    They are pulled out before the map→summarize fold: a rule that goes through
+    an LLM summariser comes back paraphrased, merged with a neighbour, or gone —
+    and a paraphrased obligation is not the obligation the user set.
+    """
+    rules = []
+    for h in hits:
+        if not h.get("pinned"):
+            continue
+        txt = (h.get("text") or "").strip().replace("\n", " ")
+        if txt.upper().startswith("CONSTRAINT:"):
+            txt = txt[len("CONSTRAINT:"):].strip()
+        if txt:
+            rules.append(f"- {txt[:400]}")
+    if not rules:
+        return ""
+    return ("## RULES — MANDATORY, non-negotiable (check your plan against each "
+            "before acting)\n\n" + "\n".join(rules) + "\n\n")
+
+
 def fetch(ticket) -> str:
     """Return a markdown ``## Memory hits`` block, or ``""`` when the backend is
     unreachable / produced nothing."""
@@ -63,7 +85,9 @@ def fetch(ticket) -> str:
     if result is None:
         return ""
     prefix = _project_brief_prefix(ticket)
-    hits = result.get("hits") or []
+    all_hits = result.get("hits") or []
+    prefix = _rules_block(all_hits) + prefix
+    hits = [h for h in all_hits if not h.get("pinned")]
     if not hits:
         return prefix
     # Map→summarize: when many scattered hits come back, fold them into ONE

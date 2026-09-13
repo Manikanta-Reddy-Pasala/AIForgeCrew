@@ -359,6 +359,41 @@ def _fuse_and_rank(ctx: "_RecallCtx") -> "tuple[list[dict], list[dict]]":
     return hits[:ctx.limit], ranked_predupe
 
 
+def _pinned_constraints(ctx: _RecallCtx) -> list[dict]:
+    """STANDING RULES for this repo, pinned ahead of the ranked hits.
+
+    Deliberately NOT one of ``_RECALL_SOURCES``: a constraint must not be
+    ranked. Going through the fuser would put it back in competition with
+    cosine hits, where "never push straight to production" loses to six kafka
+    notes on a kafka question — and a rule that is only injected when the
+    question happens to share vocabulary with it is a rule the agent breaks.
+    Added after ranking, so it also survives the limit.
+
+    Bounded by AIFORGE_UMEM_CONSTRAINTS_N (default 8) so a store full of rules
+    can't crowd out retrieval; off with AIFORGE_UMEM_CONSTRAINTS=0. Soft-fails.
+    """
+    if os.environ.get("AIFORGE_UMEM_CONSTRAINTS", "1") != "1":
+        return []
+    try:
+        from aiforge_core.memory import backend_select as _bsel
+        if not _bsel.embedded():
+            return []
+        from aiforge_core.memory import sqlite_memory as _sqlmem
+        try:
+            cn = max(1, int(os.environ.get("AIFORGE_UMEM_CONSTRAINTS_N", "8")))
+        except (TypeError, ValueError):
+            cn = 8
+        rows = _sqlmem.constraints(repo=ctx._repo_or_env(), limit=cn)
+        if not rows:
+            return []
+        ctx.used.append("constraint")
+        return [{**r, "channel": "constraint", "pinned": True,
+                 "_raw_score": 1.0, "_weight": 1.0} for r in rows]
+    except Exception as exc:  # noqa: BLE001 — rules must never break recall
+        ctx.errors.append(f"constraint: {exc}")
+        return []
+
+
 def _linked_additions(ctx: "_RecallCtx", top: list[dict]) -> "list[dict]":
     """LINK EXPANSION: follow each matched brief's Links section (wired by
     map_scopes) and return the connected briefs' FULL knowledge text so a hit
@@ -389,6 +424,30 @@ def _linked_additions(ctx: "_RecallCtx", top: list[dict]) -> "list[dict]":
     except Exception as exc:  # noqa: BLE001 — expansion must never break query
         ctx.errors.append(f"linked: {exc}")
         return []
+
+
+def _apply_pinned_rules(ctx: _RecallCtx, top: list, ranked: list) -> tuple:
+    """Put the repo's standing rules at the HEAD of both hit lists.
+
+    Applied AFTER ranking and the limit: a rule is an obligation, not a result,
+    and a truncated obligation is a broken one.
+
+    The de-dup runs the OTHER way round from the usual: a rule that also
+    happened to match the query is still a rule, so the RANKED copy goes and
+    the pinned one stays. Dropping the pinned copy instead cost the rule its
+    framing — it came back as an 0.08-scoring search result with no obligation
+    attached, and the pipeline's mandatory-RULES heading vanished with it.
+    """
+    rules = _pinned_constraints(ctx)
+    if not rules:
+        return top, ranked
+    pinned_txt = {(r.get("text") or "").strip() for r in rules}
+
+    def _not_pinned(h) -> bool:
+        return (h.get("text") or "").strip() not in pinned_txt
+
+    return (rules + [h for h in top if _not_pinned(h)],
+            rules + [h for h in ranked if _not_pinned(h)])
 
 
 def _mirror_recall_to_langfuse(text: str, repo, used: list, result: dict,
@@ -466,6 +525,7 @@ def query(
     if add:
         top = top + add
         ranked_predupe = ranked_predupe + add
+    top, ranked_predupe = _apply_pinned_rules(ctx, top, ranked_predupe)
 
     result = {
         "query": text,
@@ -492,6 +552,10 @@ def render(result: dict) -> str:
     for i, h in enumerate(result["hits"], 1):
         src = h.get("source") or "?"
         text = (h.get("text") or "")[:300].replace("\n", " ")
+        if h.get("pinned"):
+            # A rule reads as a rule, not as the top search result.
+            lines.append(f"  {i}. [RULE] {text}")
+            continue
         try:
             sc = float(h.get("score", 0) or 0)
         except (TypeError, ValueError):

@@ -89,14 +89,24 @@ def reembed_all() -> dict:
     return {"reembedded": n, "failed": failed}
 
 
+# Kinds the semantic sweep must never touch. A preference is subject-upserted and
+# distinct on purpose; a CONSTRAINT is a standing rule — two restatements of one
+# rule ("run tests on the nuc, never the laptop" / "always run tests on the nuc")
+# sit well inside the near-dup threshold, and the sweep would delete the older
+# wording, which is the one other memories were written against. Rules are cheap
+# to keep and expensive to lose.
+_DEDUPE_EXEMPT_KINDS = ("preference", "constraint")
+
+
 def _dedupe_query(repo: "str | None", max_scan: int) -> "tuple[str, tuple]":
-    """The scan SQL + params for the dedupe sweep (preferences excluded; scoped
-    to ``repo`` when given), newest-first."""
-    where = "WHERE kind != 'preference'"
-    params: tuple = ()
+    """The scan SQL + params for the dedupe sweep (preferences and constraints
+    excluded; scoped to ``repo`` when given), newest-first."""
+    holes = ", ".join("?" * len(_DEDUPE_EXEMPT_KINDS))
+    where = f"WHERE kind NOT IN ({holes})"
+    params: tuple = tuple(_DEDUPE_EXEMPT_KINDS)
     if repo is not None:
         where += " AND (repo IS ? OR repo = ?)"
-        params = (repo, repo)
+        params = (*params, repo, repo)
     return (f"SELECT id, kind, repo, embedding FROM memory_units {where} "
             "ORDER BY id DESC LIMIT ?", (*params, max_scan))
 
@@ -130,8 +140,10 @@ def dedupe(*, repo: str | None = None, threshold: float = 0.95,
     paraphrases ("README had 3 X" vs "README contained 3 X refs") accumulate.
     This collapses near-duplicates (cosine >= ``threshold`` on the STORED
     embeddings — no sidecar call) within the same ``kind`` AND ``repo``, keeping
-    the NEWEST (highest id) and deleting the rest. Preferences (``preference``) are
-    left alone (they're subject-upserted + distinct on purpose). Returns
+    the NEWEST (highest id) and deleting the rest. Preferences and constraints
+    (:data:`_DEDUPE_EXEMPT_KINDS`) are left alone — a preference is
+    subject-upserted and distinct on purpose, a constraint is a standing rule
+    whose restatements must not collapse into one. Returns
     ``{scanned, removed}``. Best-effort — a bad row never stops the sweep."""
     with _LOCK, _conn() as c:
         sql, params = _dedupe_query(repo, max_scan)

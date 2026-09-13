@@ -31,6 +31,11 @@ log = logging.getLogger("aiforge.learner_persist")
 
 
 _DECISION_PREFIX = "DECISION:"
+# A standing RULE the agent must obey ("never run the suite on the laptop",
+# "always use the prod kubeconfig"). Stored as its own kind so it is exempt from
+# the dedupe sweep and pinned into every recall, instead of competing for a slot
+# with whatever the current question happens to be about.
+_CONSTRAINT_PREFIX = "CONSTRAINT:"
 
 
 class _OkrDagDisabled(Exception):
@@ -62,8 +67,9 @@ def _coerce_facts(raw: Any) -> list[dict]:
 
 def _write_one_fact_sqlite(fact: dict, repo: str, ticket_identifier,
                            session_id: str, event_time, sqlmem, out: dict) -> None:
-    """Write one fact as a SQLite unit (decision for DECISION: prefix, else
-    learning). Skips an empty fact; records a per-fact error on failure."""
+    """Write one fact as a SQLite unit — ``constraint`` for a CONSTRAINT: prefix,
+    ``decision`` for DECISION:, else ``learning``. Skips an empty fact; records a
+    per-fact error on failure."""
     text = (fact.get("text") or "").strip()
     if not text:
         return
@@ -72,7 +78,14 @@ def _write_one_fact_sqlite(fact: dict, repo: str, ticket_identifier,
         tags.append(f"ticket:{ticket_identifier}")
     meta = {"refs": list(fact.get("about") or []), "session_id": session_id}
     try:
-        if text.startswith(_DECISION_PREFIX):
+        if text.startswith(_CONSTRAINT_PREFIX):
+            title = text[len(_CONSTRAINT_PREFIX):].strip()[:120] or "constraint"
+            sqlmem.write_unit(text=text, kind="constraint", source="learner",
+                              title=title, tags=[*tags, "constraint"],
+                              metadata=meta, repo=repo,
+                              ticket=ticket_identifier, event_time=event_time)
+            out["written_constraints"] += 1
+        elif text.startswith(_DECISION_PREFIX):
             title = text[len(_DECISION_PREFIX):].strip()[:120] or "decision"
             sqlmem.write_unit(text=text, kind="decision", source="learner",
                               title=title, tags=tags, metadata=meta, repo=repo,
@@ -91,18 +104,21 @@ def _persist_facts_embedded(
     *, facts: list[dict], repo: str, ticket_identifier: str | None,
     session_id: str, event_time: float | None,
 ) -> dict:
-    """SQLite-backed Learner persistence (zero-infra). DECISION: facts
-    become ``decision`` units, the rest ``learning`` units. Soft-fails
-    per fact."""
+    """SQLite-backed Learner persistence (zero-infra). CONSTRAINT: facts become
+    ``constraint`` units, DECISION: facts ``decision`` units, the rest
+    ``learning`` units. Soft-fails per fact."""
     from aiforge_core.memory import sqlite_memory as _sqlmem
-    out = {"written_observations": 0, "written_decisions": 0, "errors": []}
+    out = {"written_observations": 0, "written_decisions": 0,
+           "written_constraints": 0, "errors": []}
     for fact in facts:
         _write_one_fact_sqlite(fact, repo, ticket_identifier, session_id,
                                event_time, _sqlmem, out)
     log.info(
-        "learner_persist[sqlite]: repo=%s ticket=%s observations=%d decisions=%d",
+        "learner_persist[sqlite]: repo=%s ticket=%s observations=%d decisions=%d "
+        "constraints=%d",
         repo, ticket_identifier or "-",
         out["written_observations"], out["written_decisions"],
+        out["written_constraints"],
     )
     return out
 
@@ -113,8 +129,13 @@ def _mirror_one_fact(f, repo: str, session_id: str, md) -> None:
     txt = ((f.get("text") if isinstance(f, dict) else str(f)) or "").strip()
     if not txt:
         return
-    kind = ("project_learning" if txt.upper().startswith("DECISION:")
-            else "learning")
+    upper = txt.upper()
+    if upper.startswith("CONSTRAINT:"):
+        kind = "constraint"          # a rule stays a rule on the md side too:
+    elif upper.startswith("DECISION:"):   # md_store's global-rescope pass only
+        kind = "project_learning"         # demotes type=="learning" rows.
+    else:
+        kind = "learning"
     topic = None
     if isinstance(f, dict):
         topic = f.get("topic") or ((f.get("tags") or [None]) or [None])[0]
@@ -247,10 +268,12 @@ def persist_facts(
     ticket / run actually happened. When supplied it lands on every unit
     we write, separate from the ingest ``created_at``.
 
-    Returns ``{written_observations, written_decisions, errors}``.
+    Returns ``{written_observations, written_decisions, written_constraints,
+    errors}``.
     Soft-fails on any backend error — never raises into the agent loop.
     """
-    out = {"written_observations": 0, "written_decisions": 0, "errors": []}
+    out = {"written_observations": 0, "written_decisions": 0,
+           "written_constraints": 0, "errors": []}
     if _is_disabled():
         out["errors"].append("disabled_via_env")
         return out

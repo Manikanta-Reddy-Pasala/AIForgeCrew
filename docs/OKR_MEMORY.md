@@ -129,6 +129,56 @@ Other knobs: `AIFORGE_SEED_TOC`, `AIFORGE_UMEM_RECENT`,
 
 ---
 
+## Constraints: rules, not results
+
+A **constraint** is a standing obligation — "never tag a release unless asked",
+"always run the tests on the nuc", "never query MongoDB except through
+MongoDbService". It is stored as its own `kind` (`constraint`) rather than as a
+learning, because everything the memory layer does to a learning is wrong for a
+rule:
+
+| Reaper | What it did to a rule stored as a learning |
+|---|---|
+| Semantic dedupe (`sqlite_memory.dedupe`) | Two wordings of one rule sit well inside the 0.95 near-dup threshold, so the older phrasing — the one other memories were written against — was deleted |
+| Global rescope (`md_store.rescope_globals`) | DEMOTED any global learning naming a file or path out of global scope, silently. "never hand-edit `~/.aiforge/security`" names a path |
+| Recall | Competed on cosine score with code chunks and observations. A rule only reaches the prompt when the question happens to share vocabulary with it — which is exactly when it is least needed |
+
+So constraints are **exempt** from the dedupe sweep (`_DEDUPE_EXEMPT_KINDS`,
+alongside preferences), carry their own md `type` so the global-rescope pass
+(which only walks `type == "learning"`) cannot demote them, and are **pinned**
+into recall rather than ranked.
+
+**Pinning.** `unified_query` fetches them through `_pinned_constraints` AFTER
+ranking and the limit have been applied, and puts them at the HEAD of `hits`
+with `pinned: True` (`render()` prints them as `[RULE]`). They are not one of
+`_RECALL_SOURCES` on purpose: going through the fuser would put an obligation
+back in competition with search results. Deduped against the ranked hits, so a
+rule that also matched the query appears once.
+
+**Writing one.**
+
+| Path | How |
+|---|---|
+| Learner | `CONSTRAINT:` prefix on a fact — the third prefix beside `DECISION:`. The prompt is explicit that it is only for a stated hard boundary, never for a fact that merely describes how something is |
+| Doer, mid-run | `memory_write(text=..., constraint=True)` → label `Constraint_v1` |
+| Direct | `sqlite_memory.write_unit(kind="constraint", repo=<repo or None>)` — `repo=None`/`"shared"` makes it global |
+
+`sqlite_memory.constraints(repo=...)` reads them back: that repo plus the
+global/shared rules, newest first, other repos excluded.
+
+Knobs: `AIFORGE_UMEM_CONSTRAINTS=0` disables pinning entirely;
+`AIFORGE_UMEM_CONSTRAINTS_N` (default 8) caps how many are pinned.
+
+## Event time: when it happened, not when it was written
+
+Units carry an `event_time` (epoch seconds — the learner lifts a ticket's
+`created_at` into it). The hot cache (`sqlite_memory.recent`) now orders by
+`COALESCE(event_time, created_at)`, so **ingesting three-week-old tickets no
+longer outranks yesterday's work** purely because the rows were written later.
+Rows with no `event_time` keep plain write-order recency.
+
+---
+
 ## Dormant: the OKR-DAG
 
 *(Behind `AIFORGE_OKR_DAG=1`. Not active — kept for reversibility.)*

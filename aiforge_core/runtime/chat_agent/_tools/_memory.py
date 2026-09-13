@@ -409,6 +409,37 @@ def _repo_rule_bullets(cwd: str) -> tuple[list[str], list]:
     return always, tagged
 
 
+def _constraint_bullets(cwd: str) -> list[str]:
+    """Always-on bullets for the CONSTRAINT units in the memory store.
+
+    The md rule books hold what the user typed into the rules UI; these are the
+    rules the LEARNER captured from a pipeline run or the user stated in chat
+    ("never tag a release unless I ask"). Both are the same obligation to the
+    agent, so they land in the same mandatory block instead of waiting to be
+    RECALLED — a rule that only shows up when the question happens to mention
+    it is not a rule. Repo-scoped plus global; best-effort, never raises.
+    """
+    try:
+        from aiforge_core.memory import backend_select as _bsel
+        if not _bsel.embedded():
+            return []
+        from aiforge_core.memory import sqlite_memory as _sqlmem
+        rows = _sqlmem.constraints(repo=_chat_repo_key(cwd) or None, limit=20)
+    except Exception:  # noqa: BLE001 — rules must never break a turn
+        return []
+    out: list[str] = []
+    for r in rows:
+        txt = (r.get("text") or "").strip().replace("\n", " ")
+        # The learner stores the prefix; it is scaffolding for the writer, not
+        # something the reader needs to see under a heading that already says
+        # these are mandatory.
+        if txt.upper().startswith("CONSTRAINT:"):
+            txt = txt[len("CONSTRAINT:"):].strip()
+        if txt:
+            out.append("- " + txt[:400])
+    return out
+
+
 def _select_tagged(tagged: list, query: str) -> tuple[list[str], str]:
     """``(bullets, ambiguous_note)`` for the trigger-gated rules.
 
@@ -449,10 +480,11 @@ def _capped_rules(blocks: list[str]) -> str:
 
 
 def _rules_context(cwd: str, query: str = "") -> str:
-    """The user's persistent rule book (global + this-repo), injected into
-    EVERY session so the rules are always honoured. Untagged bullets are
-    always-on (legacy). Bullets tagged with an inline '[triggers: ...]'
-    prefix are gated by relevance to ``query`` via the shared scorer; a
+    """The user's persistent rule book (global + this-repo) plus the stored
+    CONSTRAINT units, injected into EVERY session so the rules are always
+    honoured. Untagged bullets are always-on (legacy). Bullets tagged with an
+    inline '[triggers: ...]' prefix are gated by relevance to ``query`` via the
+    shared scorer; a
     near-tie among tagged bullets injects an ASK note instead of silently
     picking one."""
     try:
@@ -462,6 +494,7 @@ def _rules_context(cwd: str, query: str = "") -> str:
         except Exception:  # noqa: BLE001 — repo_rules read is best-effort
             repo_always, repo_tagged = [], []
         always += repo_always
+        always += _constraint_bullets(cwd)
         tagged += repo_tagged
         selected, ambiguous_note = (_select_tagged(tagged, query) if tagged
                                     else ([], ""))

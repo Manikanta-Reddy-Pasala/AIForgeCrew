@@ -68,6 +68,10 @@ _CONSOLIDATE_SYS = (
     "never reword or invent); Learnings = discoveries, gotchas, dated changes.\n"
     "- Keep every item ONE concise sentence. Do NOT invent facts not present in "
     "the inputs. Preserve existing content unless a rule above removes it.\n"
+    "- A line starting with 'CONSTRAINT:' is a standing RULE, not information: "
+    "carry it through VERBATIM in Facts, never reword it, never merge it into "
+    "another line, and never drop it as redundant. Two constraints that sound "
+    "similar are two rules — the DEDUPE rule above does not apply to them.\n"
     "\n"
     + _okf_rules()
 )

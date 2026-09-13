@@ -22,6 +22,11 @@ from ._scope import classify_scope
 _CAPTURE_KINDS = {
     "user_comment", "learning", "project_learning",
     "topic_learning", "topic_suggestion",
+    # constraint — a standing rule. Its own kind so the global-rescope self-heal
+    # (which demotes any GLOBAL learning naming a file/path out of global scope)
+    # cannot silently unscope "never hand-edit ~/.aiforge/security": that pass
+    # only looks at type=="learning".
+    "constraint",
 }
 def _promote_scope(text: str, repo: "str | None", topic: "str | None",
                    classify: bool) -> "tuple[str | None, str | None]":

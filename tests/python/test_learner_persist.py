@@ -36,7 +36,8 @@ def test_persist_facts_disabled_via_env(monkeypatch) -> None:
 
 def test_persist_facts_no_facts_returns_zero() -> None:
     out = lp.persist_facts(facts=[], repo="r")
-    assert out == {"written_observations": 0, "written_decisions": 0, "errors": []}
+    assert out == {"written_observations": 0, "written_decisions": 0,
+                   "written_constraints": 0, "errors": []}
 
 
 def test_persist_facts_no_repo_returns_zero() -> None:

@@ -46,6 +46,7 @@ def memory_write(
     tags: list[str] | None = None,
     media_refs: list[str] | None = None,
     decision: bool = False,
+    constraint: bool = False,
     repo: str | None = None,
     source: str = "doer",
     embed_vec: "list[float] | None" = None,
@@ -56,8 +57,8 @@ def memory_write(
     to the recalls and LLM calls they feed."""
     res = _memory_write_impl(text=text, kind=kind, tags=tags,
                              media_refs=media_refs, decision=decision,
-                             repo=repo, source=source, embed_vec=embed_vec,
-                             scope=scope)
+                             constraint=constraint, repo=repo, source=source,
+                             embed_vec=embed_vec, scope=scope)
     try:
         import json as _json
 
@@ -65,7 +66,7 @@ def memory_write(
         if _lf.enabled():
             _lf.record_generation(
                 role="memory.write",
-                model="decision" if decision else (kind or "note"),
+                model=_effective_kind(kind or "note", decision, constraint),
                 messages=[{"role": "user", "content": (text or "")[:2000]}],
                 output=_json.dumps({k: res.get(k) for k in
                                     ("ok", "id", "label", "error")
@@ -140,21 +141,35 @@ def _feed_brief(kind: str, text: str, repo: str | None, tags: list,
         pass
 
 
+def _effective_kind(kind: str, decision: bool, constraint: bool) -> str:
+    """The stored kind. A constraint outranks a decision: a rule the agent must
+    obey is not merely a choice that was made."""
+    if constraint:
+        return "constraint"
+    return "decision" if decision else kind
+
+
 def _write_sqlite(text: str, kind: str, decision: bool, source: str,
-                  tags: list, media_refs, repo) -> dict[str, Any]:
+                  tags: list, media_refs, repo,
+                  constraint: bool = False) -> dict[str, Any]:
     """Embedded (zero-infra) path — persist to the SQLite memory store."""
+    stored_kind = _effective_kind(kind, decision, constraint)
     try:
         from aiforge_core.memory import sqlite_memory as _sqlmem
         rid = _sqlmem.write_unit(
-            text=text, kind=("decision" if decision else kind), source=source,
+            text=text, kind=stored_kind, source=source,
             tags=tags, metadata={"media_refs": media_refs or []}, repo=repo)
     except Exception as exc:  # noqa: BLE001
         log.warning("memory_write[sqlite] failed: %s", exc)
         return {"ok": False, "error": f"sqlite: {exc}"}
-    _feed_brief(kind, text, repo, tags, source)
-    return {"ok": True, "id": rid,
-            "label": "Decision_v2" if decision else "Observation_v2",
-            "deduped": rid == 0}
+    _feed_brief(stored_kind if constraint else kind, text, repo, tags, source)
+    if constraint:
+        label = "Constraint_v1"
+    elif decision:
+        label = "Decision_v2"
+    else:
+        label = "Observation_v2"
+    return {"ok": True, "id": rid, "label": label, "deduped": rid == 0}
 
 
 def _memory_write_impl(
@@ -163,6 +178,7 @@ def _memory_write_impl(
     tags: list[str] | None = None,
     media_refs: list[str] | None = None,
     decision: bool = False,
+    constraint: bool = False,
     repo: str | None = None,
     source: str = "doer",
     embed_vec: "list[float] | None" = None,
@@ -181,13 +197,19 @@ def _memory_write_impl(
         decision: when True, write as a ``Decision_v2`` instead of
             ``Observation_v2``. Use for "we decided to do X over Y";
             otherwise leave False.
+        constraint: when True, write as a ``Constraint_v1`` — a standing RULE
+            that must hold from now on ("never run the suite on the laptop",
+            "always use the prod kubeconfig"). Constraints are exempt from the
+            dedupe sweep and are pinned into every later recall for the repo
+            instead of competing for a slot on relevance. Use it only for an
+            obligation, never for a fact.
         source: writer label recorded on the unit (SQLite ``source``).
             Defaults to ``"doer"``; ingest passes ``"ingest"`` so chunks
             aren't mislabeled as Doer self-writes.
 
     Returns:
         ``{"ok": True, "id": str, "label": "Observation_v2" |
-        "Decision_v2", "deduped": bool}`` on success;
+        "Decision_v2" | "Constraint_v1", "deduped": bool}`` on success;
         ``{"ok": False, "error": str}`` on any failure.
     """
     # unused, deliberately: embedding is computed by the store, not passed in.
@@ -199,7 +221,8 @@ def _memory_write_impl(
     if err:
         return {"ok": False, "error": err}
     tags = _write_tags(tags, source)
-    return _write_sqlite(text, kind, decision, source, tags, media_refs, repo)
+    return _write_sqlite(text, kind, decision, source, tags, media_refs, repo,
+                         constraint=constraint)
 
 
 __all__ = ["memory_write"]

@@ -53,7 +53,9 @@ from ._keyword import (
     keyword_search,
 )
 from ._recall import (
+    CONSTRAINT_KIND,
     _vec_recall,
+    constraints,
     recall,
     recent,
 )
@@ -73,6 +75,8 @@ __all__ = [
     "upsert_by_tag",
     "recall",
     "recent",
+    "constraints",
+    "CONSTRAINT_KIND",
     "delete_stale_compacted_notes",
     "prune_missing_file_rows",
     "stored_dim_mismatch",
