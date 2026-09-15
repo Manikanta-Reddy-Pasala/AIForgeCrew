@@ -72,6 +72,46 @@ There is no macOS or Windows job, because a Linux runner cannot produce those
 binaries. Build them on a Mac and a Windows box with the commands above and
 upload them with the same `curl -k` line the publish job prints.
 
+## Working in parallel on one machine
+
+This follows what the other terminal agents settled on, rather than inventing a
+scheme:
+
+* **opencode** runs a local server and attaches thin clients to it; a session
+  lives on the server and clients come and go. AIForge is the same shape — the
+  sandbox holds the sessions, `aiforge` is a client.
+* **Claude Code** has no server and no container per session: every terminal is
+  an independent process, state is keyed by project path, and the documented way
+  to run several agents at once is **a git worktree per task**.
+* **Codex CLI** and Claude Code both sandbox per command at the OS level rather
+  than per session.
+
+So, on one VM with several terminals:
+
+| You want | Do this |
+|---|---|
+| Two chats in different repos | Just run `aiforge` in each. Different folder → different session → they run concurrently (only TEAM mode serialises). |
+| Two chats in the SAME repo | `git worktree add ../feature-x` and run `aiforge` there. A worktree is a different folder, so it is a different session — and it is also how you keep two agents from editing one checkout. |
+| To watch a run someone else started | `aiforge attach <id>` — read-only. Esc says so; Ctrl+C detaches and leaves the run alone. |
+| To stop only your own run | `Esc`, or `/stop`. Scoped to your session. |
+| To reset a wedged box | `/kill-all` — global, so it names the other running sessions and asks first. |
+
+What one terminal **cannot** do to another:
+
+* `box down` / `box restart` refuse while any run is in flight (`--force` says
+  their work is lost).
+* A second `Ctrl+C` will not fire the global reset when another session is
+  running; it stops your chat and tells you to use `/kill-all` deliberately.
+* Sending into a chat another terminal already runs answers 409, and the client
+  falls back to **watching** it read-only instead of fighting for it.
+* Two cold starts race for one box behind an flock: the first creates it, the
+  rest wait.
+
+The one thing still shared by everyone: **mounts**. One box means one mount set,
+so a chat in repo A can read repo B's files if both are mounted. If that is not
+acceptable, the isolation unit has to become a box per project (a container,
+port and state volume each) — not built.
+
 ## Uploading by hand
 
 ```bash

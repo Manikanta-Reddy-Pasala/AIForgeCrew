@@ -502,12 +502,16 @@ def test_box_restart_refuses_the_same_way(tmp_path):
         app.box_command(["restart"])
 
 
-def test_force_takes_the_box_down_anyway(tmp_path):
+def test_force_takes_the_box_down_anyway(tmp_path, monkeypatch):
+    from aiforge_cli import box as boxmod
+    stopped = []
+    monkeypatch.setattr(boxmod, "stop", lambda cfg: stopped.append(cfg))
     client = FakeClient(running=[4])
     client.sessions_rows.append({"id": 4})
     app = _app(tmp_path, client, answers=["n"])
     app.force = True
     assert app.box_command(["down"]) == EXIT_OK
+    assert stopped, "--force should have gone through to the stop"
 
 
 def test_a_second_ctrl_c_does_not_wipe_another_sessions_run(tmp_path):
