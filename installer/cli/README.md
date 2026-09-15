@@ -91,10 +91,27 @@ So, on one VM with several terminals:
 | You want | Do this |
 |---|---|
 | Two chats in different repos | Just run `aiforge` in each. Different folder → different session → they run concurrently (only TEAM mode serialises). |
-| Two chats in the SAME repo | `git worktree add ../feature-x` and run `aiforge` there. A worktree is a different folder, so it is a different session — and it is also how you keep two agents from editing one checkout. |
+| Two chats in the SAME repo | `aiforge worktree add fix-retry` — the CLI makes the worktree, puts it on branch `wt/fix-retry`, and starts a chat in it. Add a message to send straight away: `aiforge worktree add fix-retry "make the retry test deterministic"`. |
+| To see what is already parallel | `aiforge worktree ls` — the one you are in is marked. |
+| To clean one up | `aiforge worktree rm fix-retry` — refuses while a chat is running in it (`--force` overrides). |
 | To watch a run someone else started | `aiforge attach <id>` — read-only. Esc says so; Ctrl+C detaches and leaves the run alone. |
 | To stop only your own run | `Esc`, or `/stop`. Scoped to your session. |
 | To reset a wedged box | `/kill-all` — global, so it names the other running sessions and asks first. |
+
+`worktree add` is deliberately cheap: the tree lands at
+`<repo>/.worktrees/<name>`, which is **inside the repo's existing mount**, so
+there is no mount change, no container restart, and nobody else on the machine
+is interrupted. git itself runs **inside the sandbox** (which has git, and sees
+the repo at the same path) as your own uid, so the host still needs nothing but
+docker and the files it creates stay yours rather than root's.
+
+If you run `aiforge` in a folder whose chat is already running in another
+terminal, it offers the same thing rather than fighting for the session:
+
+```
+! chat #12 is already running in this folder (another terminal, or the web UI).
+  [w] work in a new worktree  [a] attach read-only  [n] neither:
+```
 
 What one terminal **cannot** do to another:
 

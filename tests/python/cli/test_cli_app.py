@@ -579,3 +579,127 @@ def test_an_involuntary_attach_is_read_only(tmp_path):
     app.send("go")
     assert ("attach", 7) in client.calls
     assert not [c for c in client.calls if c[0] == "stop"]
+
+
+# ── same repo vs different repo ────────────────────────────────────────────
+
+
+class FakeGit:
+    """Enough of worktrees.Git to drive App, with a record of what was asked."""
+
+    def __init__(self, repo="/work/repo", trees=None):
+        self.repo = repo
+        self.added: list[str] = []
+        self.removed: list[str] = []
+        from aiforge_cli.worktrees import Worktree
+        self.trees = trees if trees is not None else [
+            Worktree(path=repo, branch="main", head="abc123")]
+        self._Worktree = Worktree
+
+    def repo_root(self, cwd):
+        return self.repo if str(cwd).startswith(self.repo) else None
+
+    def list(self, repo):
+        return list(self.trees)
+
+    def add(self, repo, name, branch=None):
+        from aiforge_cli.worktrees import branch_name, worktree_path
+        self.added.append(name)
+        tree = self._Worktree(path=worktree_path(repo, name),
+                              branch=branch or branch_name(name), head="def456")
+        self.trees.append(tree)
+        return tree
+
+    def remove(self, repo, name, force=False):
+        self.removed.append(name)
+
+
+def test_a_different_repo_needs_no_worktree_just_another_folder(tmp_path):
+    client = FakeClient()
+    app = _app(tmp_path, client, answers=["n"])
+    app.git = FakeGit(repo="/somewhere/else")
+    lines = app.worktree_command(["ls"])
+    assert "not inside a git repository" in "\n".join(lines)
+    assert "run aiforge in each folder" in "\n".join(lines)
+
+
+def test_worktree_add_starts_a_chat_in_the_new_tree(tmp_path):
+    client = FakeClient()
+    repo = tmp_path / "repo"
+    (repo / ".worktrees").mkdir(parents=True)
+    app = _app(tmp_path, client, answers=["n"], cwd=repo)
+    app.git = FakeGit(repo=str(repo))
+    app.worktree_command(["add", "fix-retry"])
+    assert app.git.added == ["fix-retry"]
+    # The chat is pinned to the worktree, and nothing was mounted or restarted.
+    created = [c for c in client.calls if c[0] == "create"]
+    assert created and created[-1][1].endswith("/.worktrees/fix-retry")
+    assert "wt/fix-retry" in _printed(app)
+
+
+def test_worktree_add_takes_a_message_and_runs_it_there(tmp_path):
+    client = FakeClient(events=[{"type": "message", "text": "done"},
+                                {"type": "done"}])
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    app = _app(tmp_path, client, answers=["n"], cwd=repo)
+    app.git = FakeGit(repo=str(repo))
+    app.worktree_command(["add", "fix-retry", "make", "the", "test", "deterministic"])
+    sent = [c for c in client.calls if c[0] == "send"]
+    assert sent and sent[-1][2] == "make the test deterministic"
+
+
+def test_the_bare_form_is_add(tmp_path):
+    client = FakeClient()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    app = _app(tmp_path, client, answers=["n"], cwd=repo)
+    app.git = FakeGit(repo=str(repo))
+    app.worktree_command(["spike"])
+    assert app.git.added == ["spike"]
+
+
+def test_a_worktree_with_a_live_run_is_not_removed(tmp_path):
+    client = FakeClient(running=[7])
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    app = _app(tmp_path, client, answers=["n"], cwd=repo)
+    app.git = FakeGit(repo=str(repo))
+    app.worktree_command(["add", "busy"])           # pins chat #7 to it
+    client.sessions_rows.append({"id": 7})
+    lines = app.worktree_command(["rm", "busy"])
+    assert "is running in busy" in "\n".join(lines)
+    assert app.git.removed == []
+
+
+def test_a_busy_folder_offers_a_worktree_instead_of_a_second_writer(tmp_path):
+    # Two agents in one checkout overwrite each other, so the answer is a
+    # second working tree, not a second writer.
+    client = FakeClient(running=[5])
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    app = _app(tmp_path, client, answers=["w"], cwd=repo)
+    app.git = FakeGit(repo=str(repo))
+    client.sessions_rows.append({"id": 5})
+    from aiforge_cli import paths, sessions
+    sessions.remember(app.cfg.sessions_file,
+                      paths.to_box(paths.normalize_host(str(repo))), 5)
+    app._resolve_session()
+    assert app.git.added and app.git.added[0].startswith("repo-")
+    assert app.session_id != 5                      # its own chat, its own tree
+
+
+def test_declining_the_offer_attaches_read_only(tmp_path):
+    client = FakeClient(running=[5], events=[{"type": "attached", "running": True},
+                                             {"type": "done"}])
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    app = _app(tmp_path, client, answers=["a"], cwd=repo)
+    app.git = FakeGit(repo=str(repo))
+    client.sessions_rows.append({"id": 5})
+    from aiforge_cli import paths, sessions
+    sessions.remember(app.cfg.sessions_file,
+                      paths.to_box(paths.normalize_host(str(repo))), 5)
+    app._resolve_session()
+    assert ("attach", 5) in client.calls
+    assert app.git.added == []

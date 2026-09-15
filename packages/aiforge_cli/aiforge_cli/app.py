@@ -26,6 +26,7 @@ from . import commands as tbl
 from . import help as helptext
 from . import integrations as integ
 from . import mounts as mountlist
+from . import worktrees as wt
 from .colors import Palette
 from .config import Config, approvals_file
 from .keys import CTRL_C, ENTER, ESC, KeyWatcher
@@ -99,7 +100,7 @@ class App:
     def __init__(self, cfg: Config, pal: Palette, *, cwd: Path | None = None,
                  out=None, env: dict[str, str] | None = None,
                  client: api.Client | None = None, err=None,
-                 ask: Callable[[str], str] | None = None,
+                 ask: Callable[[str], str] | None = None, git=None,
                  interactive_stdin: bool | None = None,
                  sleep: Callable[[float], None] = time.sleep):
         self.cfg = cfg
@@ -119,6 +120,7 @@ class App:
         self.review_edits = False
         self.force = False
         self._sleep = sleep
+        self.git = git or wt.Git(container=box.container_name(env))
         self._approve_all = False
         self._asked: list[str] = []        # every question, for the tests
         self._ask = ask or (lambda prompt: _terminal_ask(prompt, self.msg_out))
@@ -291,6 +293,8 @@ class App:
         known = {int(s["id"]) for s in listed if str(s.get("id", "")).isdigit()}
         boxpath = paths.to_box(paths.normalize_host(str(self.cwd)))
         found = sessions.for_folder(self.cfg.sessions_file, boxpath, known)
+        if found is not None and self._offer_worktree(found):
+            return
         if found is not None:
             self.session_id = found
             row = next((s for s in listed if int(s.get("id", -1)) == found), {})
@@ -305,6 +309,44 @@ class App:
             sessions.remember(self.cfg.sessions_file, boxpath, self.session_id)
         where = paths.to_host(str(created.get("cwd") or boxpath))
         self.ok(f"chat #{self.session_id}", where)
+
+    def _offer_worktree(self, session_id: int) -> bool:
+        """This folder's chat is busy in another terminal — offer a worktree.
+
+        Two agents in one checkout overwrite each other, so the answer is a
+        second working tree rather than a second writer. Declining leaves the
+        old behaviour: watch the run read-only.
+        """
+        if not self.client.is_running(session_id) or not self.interactive_stdin:
+            return False
+        self.say(f"{self.pal('!', 'warn')} chat #{session_id} is already running in "
+                 f"this folder (another terminal, or the web UI).")
+        answer = self.ask(f"  [{self.pal('w', 'ok')}] work in a new worktree  "
+                          f"[{self.pal('a', 'ok')}] attach read-only  "
+                          f"[{self.pal('n', 'dim')}] neither: ").lower()
+        if not answer.startswith("w"):
+            if answer.startswith("a"):
+                self.session_id = session_id
+                self.attach(session_id)
+            return answer.startswith("a")
+        repo = self.git.repo_root(paths.normalize_host(str(self.cwd)))
+        if repo is None:
+            self.warn("not a git repository — no worktree to make")
+            return False
+        name = self._free_worktree_name(repo)
+        lines = self.worktree_command(["add", name])
+        if lines:
+            self.say(*lines)
+            return False
+        return True
+
+    def _free_worktree_name(self, repo: str) -> str:
+        taken = {t.name for t in self.git.list(repo)}
+        for n in range(2, 100):
+            name = f"{Path(repo).name}-{n}"
+            if name not in taken:
+                return name
+        return f"{Path(repo).name}-many"
 
     # ── one turn ───────────────────────────────────────────────────────────
 
@@ -620,6 +662,7 @@ class App:
             "/mounts": lambda a: self.say(*self.mount_command(a)),
             "/mount": lambda a: self.say(*self.mount_command(a)),
             "/cd": self._slash_cd,
+            "/worktree": lambda a: self.say(*self.worktree_command(a or ["ls"])),
             "/box": self._slash_box,
         }
 
@@ -839,6 +882,74 @@ class App:
         return [f"{self.pal('✓', 'ok')} {kind} saved   {self.pal(note, 'dim')}",
                 *[f"  {k.ljust(18)} {self.pal(v, 'dim')}"
                   for k, v in integ.summary(kind, saved)]]
+
+    def worktree_command(self, args: list[str]) -> list[str]:
+        """Parallel work in ONE repo: a worktree per task, on its own branch."""
+        action = args[0] if args else "ls"
+        if action not in tbl.WORKTREE_ACTIONS:
+            # `aiforge worktree fix-retry` is the obvious shorthand for add.
+            args = ["add", action, *args[1:]]
+            action = "add"
+        repo = self.git.repo_root(paths.normalize_host(str(self.cwd)))
+        if repo is None:
+            return [f"{self.pal('✗', 'fail')} {self.cwd} is not inside a git repository",
+                    self.pal("  two chats in two DIFFERENT repos need no worktree — "
+                             "just run aiforge in each folder", "dim")]
+        try:
+            if action == "ls":
+                return self._worktree_ls(repo)
+            if action == "rm":
+                return self._worktree_rm(repo, args[1:])
+            return self._worktree_add(repo, args[1:])
+        except wt.GitError as exc:
+            return [f"{self.pal('✗', 'fail')} {exc}"]
+
+    def _worktree_ls(self, repo: str) -> list[str]:
+        trees = self.git.list(repo)
+        out = [self.pal("worktrees", "head")]
+        here = paths.normalize_host(str(self.cwd))
+        for tree in trees:
+            mark = "▸" if tree.path == here else " "
+            out.append(f"  {self.pal(mark, 'user')} {tree.name.ljust(24)}"
+                       f"{self.pal(tree.branch, 'code')}   {self.pal(tree.path, 'dim')}")
+        if len(trees) <= 1:
+            out.append(self.pal("  aiforge worktree add <name> for a parallel chat here",
+                                "dim"))
+        return out
+
+    def _worktree_rm(self, repo: str, rest: list[str]) -> list[str]:
+        if not rest:
+            return [f"{self.pal('✗', 'fail')} which one? aiforge worktree rm <name>"]
+        name = rest[0]
+        path = wt.worktree_path(repo, name)
+        boxpath = paths.to_box(path)
+        # Somebody may be working in it: removing it under a live run deletes
+        # the files that run is editing.
+        known = {int(s["id"]) for s in self._sessions_safe()
+                 if str(s.get("id", "")).isdigit()}
+        sid = sessions.for_folder(self.cfg.sessions_file, boxpath, known)
+        if sid is not None and self.client.is_running(sid) and not self.force:
+            return [f"{self.pal('✗', 'fail')} chat #{sid} is running in {name} — "
+                    f"stop it first, or --force"]
+        self.git.remove(repo, name, force=self.force)
+        if sid is not None:
+            sessions.forget(self.cfg.sessions_file, sid)
+        return [f"{self.pal('✓', 'ok')} removed worktree {name}"]
+
+    def _worktree_add(self, repo: str, rest: list[str]) -> list[str]:
+        if not rest:
+            return [f"{self.pal('✗', 'fail')} name it: aiforge worktree add <name>"]
+        name, message = rest[0], " ".join(rest[1:]).strip()
+        tree = self.git.add(repo, name)
+        self.say(f"{self.pal('✓', 'ok')} worktree {tree.name}   "
+                 f"{self.pal(tree.branch, 'code')}   {self.pal(tree.path, 'dim')}")
+        # Inside the repo, therefore inside the repo's mount: no new mount, no
+        # container restart, nobody else on this machine interrupted.
+        self.cwd = Path(tree.path)
+        self._resolve_session(mounted=True)
+        if message:
+            self.send(message)
+        return []
 
     def _integration_safe(self, kind: str) -> dict:
         try:

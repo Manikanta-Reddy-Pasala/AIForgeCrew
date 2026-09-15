@@ -135,6 +135,13 @@ def _dispatch(app: App, command: str | None, rest: list[str], opts) -> int:
         print(helptext.command_help(app.pal, command))
         return EXIT_USAGE
 
+    if command == "worktree":
+        app.ensure_api()
+        lines = app.worktree_command(rest or ["ls"])
+        if lines:
+            print("\n".join(lines))
+        return EXIT_OK
+
     if command == "sessions":
         app.ensure_api()
         from .app import _session_lines

@@ -23,6 +23,7 @@ ARG_TOGGLE = "toggle"
 ARG_BOX = "box"
 ARG_COMMAND = "command"
 ARG_KIND = "kind"
+ARG_WORKTREE = "worktree"
 
 MODES = ("simple", "plan", "team")
 SHELLS = ("bash", "zsh", "fish", "powershell")
@@ -30,6 +31,7 @@ BOX_ACTIONS = ("up", "down", "restart", "status", "logs", "shell")
 MOUNT_ACTIONS = ("add", "rm", "ls", "approve")
 INTEGRATIONS = ("jira", "confluence", "gitlab", "email")
 INTEGRATION_ACTIONS = ("ls", "get", "set", "test")
+WORKTREE_ACTIONS = ("add", "ls", "rm")
 
 
 @dataclass(frozen=True)
@@ -79,6 +81,21 @@ TOP: tuple[Command, ...] = (
                       "aiforge integrations set jira base_url=https://jira.internal "
                       "default_project=ONE",
                       "aiforge integrations test confluence")),
+    Command("worktree", "<add|ls|rm> [name]",
+            "a second chat in the SAME repo, on its own branch",
+            arg=ARG_WORKTREE, choices=WORKTREE_ACTIONS, group="main",
+            long=("Two chats in two repos need nothing: a different folder is already a\n"
+                  "different session. Two chats in ONE repo need a worktree, or the two\n"
+                  "agents edit the same files.\n"
+                  "\n"
+                  "`add` creates <repo>/.worktrees/<name> on branch wt/<name> and starts a\n"
+                  "chat there. It is inside the repo, so it is already inside the repo's\n"
+                  "mount — no new mount, no box restart, nobody else interrupted.\n"
+                  "\n"
+                  "git runs inside the sandbox, so the host still needs only docker."),
+            examples=("aiforge worktree add fix-retry",
+                      'aiforge worktree add fix-retry "make the retry test deterministic"',
+                      "aiforge worktree ls", "aiforge worktree rm fix-retry")),
     Command("sessions", "", "list chats, newest first", group="main",
             examples=("aiforge sessions",)),
     Command("resume", "<id>", "continue a chat by id", arg=ARG_SESSION, group="main",
@@ -125,6 +142,8 @@ SLASH: tuple[Command, ...] = (
     Command("/mount", "<add|rm> DIR", "mount or unmount a folder", arg=ARG_DIR,
             choices=("add", "rm")),
     Command("/cd", "<dir>", "move this chat to another folder", arg=ARG_DIR),
+    Command("/worktree", "<add|ls|rm> [name]", "a parallel chat in this repo",
+            arg=ARG_WORKTREE, choices=WORKTREE_ACTIONS),
     Command("/box", "<logs|shell|restart|status>", "the sandbox", arg=ARG_BOX,
             choices=BOX_ACTIONS),
     Command("/exit", "", "leave (Ctrl+D also works)"),
