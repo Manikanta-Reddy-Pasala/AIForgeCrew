@@ -57,3 +57,33 @@ def test_title_after_reasoning_is_extracted(monkeypatch):
         lambda *a, **k: "Thinking Process:\nThe user wants X.\nGPS Outage Report",
         raising=False)
     assert ct.suggest_title("gps outage", role="triage") == "GPS Outage Report"
+
+
+def test_tool_output_is_never_a_title():
+    """The model sometimes obeys the first message instead of titling it.
+
+    Both of these came back from a real run: a chat opened with "run pwd and
+    reply with ONLY the path" was titled `/home/user`, and one opened with
+    "run ls -1 in this folder …" was titled with ls's error. They are short and
+    reasoning-free, so the earlier guard let them through.
+    """
+    from aiforge_core.runtime import chat_title
+
+    prompt = "run ls -1 in this folder and reply with ONLY the filename you see"
+    for leaked in ("/home/user",
+                   "ls: cannot access 'this folder': No such file or directory",
+                   "only-in-a.txt",
+                   "~/work/repo",
+                   "error: no such table",
+                   "42"):
+        title = chat_title._extract_title(leaked, prompt)
+        assert title != leaked, f"{leaked!r} became a title"
+        # Falls back to the deterministic provisional title instead.
+        assert title == chat_title.provisional_title(prompt)
+
+
+def test_a_real_title_still_survives():
+    from aiforge_core.runtime import chat_title
+
+    for good in ("Retry Test Determinism", "Fix The Push Sync", "Mount Approval Flow"):
+        assert chat_title._extract_title(good, "whatever") == good
