@@ -80,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
         if exc.message:
             print(exc.message, file=sys.stderr)
         return exc.code
-    except api.ApiDown as exc:
+    except (api.ApiDown, api.Busy, api.Stalled) as exc:
         # The sandbox answered badly or stopped answering. One line and an
         # environment status, not a traceback.
         print(f"aiforge: the sandbox API failed — {exc}\n"
@@ -108,8 +108,7 @@ def _dispatch(app: App, command: str | None, rest: list[str], opts) -> int:
         return EXIT_OK
 
     if command == "integrations":
-        if not app.client.healthy():
-            app.boot()
+        app.ensure_api()
         lines = app.integrations_command(rest or ["ls"])
         if lines:
             print("\n".join(lines))
@@ -122,8 +121,7 @@ def _dispatch(app: App, command: str | None, rest: list[str], opts) -> int:
         return EXIT_USAGE
 
     if command == "sessions":
-        if not app.client.healthy():
-            app.boot()
+        app.ensure_api()
         from .app import _session_lines
         print("\n".join(_session_lines(app._sessions_safe(), app.pal)))
         return EXIT_OK

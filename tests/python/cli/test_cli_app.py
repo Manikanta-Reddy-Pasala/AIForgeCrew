@@ -8,6 +8,7 @@ no sandbox, no terminal and no network.
 from __future__ import annotations
 
 import io
+import json
 import queue
 
 import pytest
@@ -82,7 +83,7 @@ class FakeClient:
 
 
 def _app(tmp_path, client, *, answers=None, cwd=None, verbosity=0, json_events=False,
-         auto_mount=False, interactive=True):
+         auto_mount=False, interactive=True, err=None):
     cfg = Config(port=8799, config_dir=tmp_path / ".aiforge", repo=None,
                  image="aiforge-sandbox:local", auto_mount=auto_mount,
                  verbosity=verbosity, json_events=json_events)
@@ -90,14 +91,16 @@ def _app(tmp_path, client, *, answers=None, cwd=None, verbosity=0, json_events=F
     replies = list(answers or [])
     work = cwd or (tmp_path / "work")
     work.mkdir(parents=True, exist_ok=True)
-    app = App(cfg, PLAIN, cwd=work, out=io.StringIO(), env={"HOME": str(tmp_path)},
-              client=client, ask=lambda _p: replies.pop(0) if replies else "",
+    app = App(cfg, PLAIN, cwd=work, out=io.StringIO(), err=err or io.StringIO(),
+              env={"HOME": str(tmp_path)}, client=client,
+              ask=lambda _p: replies.pop(0) if replies else "",
               interactive_stdin=interactive, sleep=lambda _s: None)
     return app
 
 
 def _printed(app) -> str:
-    return app.out.getvalue()
+    """Everything the user saw — stdout plus the operator stream."""
+    return app.out.getvalue() + app.msg_out.getvalue()
 
 
 # ── boot ───────────────────────────────────────────────────────────────────
@@ -178,6 +181,19 @@ TURN = [
 ]
 
 
+def test_the_final_message_continues_the_streamed_line(tmp_path):
+    # As `lines` the remainder closed the streamed row and split the answer,
+    # then added a blank line between the halves.
+    client = FakeClient(events=[{"type": "delta", "text": "Added "},
+                                {"type": "message", "text": "Added retry."},
+                                {"type": "done"}])
+    app = _app(tmp_path, client, answers=["n"])
+    app.boot()
+    app.send("go")
+    assert "Added retry." in _printed(app)
+    assert "Added\nretry." not in _printed(app)
+
+
 def test_a_turn_streams_and_exits_zero(tmp_path):
     client = FakeClient(events=TURN)
     app = _app(tmp_path, client, answers=["n"])
@@ -196,14 +212,18 @@ def test_an_agent_error_exits_one(tmp_path):
     assert "model down" in _printed(app)
 
 
-def test_json_mode_emits_one_object_per_line_and_still_reports_failure(tmp_path):
+def test_json_mode_puts_nothing_but_json_on_stdout(tmp_path):
     client = FakeClient(events=[{"type": "error", "text": "x"}, {"type": "done"}])
     app = _app(tmp_path, client, answers=["n"], json_events=True)
     app.boot()
     status = app.send("go")
-    lines = [line for line in _printed(app).splitlines() if line.startswith("{")]
+    stdout = app.out.getvalue()
     assert status == EXIT_AGENT
-    assert len(lines) == 2
+    # Every line must parse: a `jq -c .` consumer sees only events, and the
+    # boot ticks, warnings and the user echo all leave by stderr.
+    parsed = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+    assert [e["type"] for e in parsed] == ["error", "done"]
+    assert "sandbox" not in stdout and "▸" not in stdout
 
 
 def test_the_model_a_chat_is_pinned_to_rides_every_turn(tmp_path):
@@ -358,15 +378,44 @@ def test_keys_esc_stops_and_typing_steers(tmp_path):
     assert ("steer", 7, "hi") in client.calls
 
 
-def test_two_interrupts_reset_everything(tmp_path):
+def test_an_interrupt_key_takes_the_same_path_as_the_signal(tmp_path):
+    # cbreak leaves ISIG on, so POSIX raises KeyboardInterrupt and only Windows
+    # delivers \x03 as a byte. Counting it in two places gave the two
+    # platforms different exit codes.
     client = FakeClient()
     app = _app(tmp_path, client, answers=["n"])
     app.boot()
     source: queue.Queue[str] = queue.Queue()
     source.put("\x03")
-    source.put("\x03")
     kb = KeyWatcher(source=source)
-    app._keys(kb, 0, [])
+    with pytest.raises(KeyboardInterrupt):
+        app._keys(kb, 0, [])
+
+
+def test_two_interrupts_reset_everything(tmp_path):
+    class TwiceInterrupting(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.rounds = 0
+
+        def send(self, session_id, content, **kw):
+            def gen():
+                yield {"type": "thought", "text": "one"}
+                raise KeyboardInterrupt
+            return gen()
+
+        def attach(self, session_id):
+            self.rounds += 1
+
+            def gen():
+                yield {"type": "attached", "running": True}
+                raise KeyboardInterrupt
+            return gen()
+
+    client = TwiceInterrupting()
+    app = _app(tmp_path, client, answers=["n"])
+    app.boot()
+    assert app.send("go") == EXIT_INTERRUPT
     assert ("kill_all",) in client.calls
 
 
@@ -404,8 +453,8 @@ def test_an_interrupted_run_does_not_report_success(tmp_path):
     assert ("stop", 7) in client.calls
 
 
-def test_an_attached_run_cannot_be_reset_from_the_keyboard(tmp_path):
-    client = FakeClient()
+def test_an_attached_run_cannot_be_stopped_or_reset_from_the_keyboard(tmp_path):
+    client = FakeClient(events=[{"type": "attached", "running": True}])
     app = _app(tmp_path, client, answers=["n"])
     app.boot()
     source: queue.Queue[str] = queue.Queue()
@@ -416,11 +465,16 @@ def test_an_attached_run_cannot_be_reset_from_the_keyboard(tmp_path):
     assert not [c for c in client.calls if c[0] in ("stop", "kill_all")]
 
 
-def test_json_mode_still_answers_an_approval(tmp_path):
+def test_json_mode_still_answers_an_approval_without_dirtying_stdout(tmp_path):
     client = FakeClient(events=[{"type": "approval", "id": 2, "tool": "file_write"},
                                 {"type": "done"}])
-    app = _app(tmp_path, client, answers=["n", ""], json_events=True)
+    app = _app(tmp_path, client, answers=["n", ""], json_events=True,
+               interactive=False)
     app.boot()
     app.send("go")
-    # Ignoring the gate in JSON mode hung the run until the server timed out.
+    # Ignoring the gate in JSON mode hung the run until the server timed out;
+    # answering it must not put prose in the middle of the JSON.
     assert ("approve", 7, 2, "reject") in client.calls
+    for line in app.out.getvalue().splitlines():
+        if line.strip():
+            json.loads(line)

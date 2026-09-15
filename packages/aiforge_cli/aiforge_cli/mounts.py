@@ -41,10 +41,16 @@ def approved(approvals_file: Path) -> list[str]:
 def effective(mounts_file: Path, approvals_file: Path, *,
               home: str | None = None, platform: str | None = None) -> list[str]:
     """What will actually be mounted on the next box start: requested AND
-    approved AND still a sane folder to hand over."""
+    approved AND still a sane folder to hand over.
+
+    The approvals file's own directory is passed in as a guard, so an approval
+    for it (however it got there) still cannot take effect.
+    """
     ok = set(approved(approvals_file))
+    guards = (str(approvals_file.parent),)
     return [m for m in requested(mounts_file)
-            if m in ok and paths.mount_refusal(m, home=home, platform=platform) is None]
+            if m in ok and paths.mount_refusal(m, home=home, platform=platform,
+                                               extra_guards=guards) is None]
 
 
 def pending(mounts_file: Path, approvals_file: Path) -> list[str]:

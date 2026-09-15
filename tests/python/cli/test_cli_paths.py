@@ -142,3 +142,39 @@ def test_a_windows_drive_relative_path_is_not_treated_as_absolute():
 def test_a_newline_in_a_path_is_refused(tmp_path):
     assert "newline" in paths.mount_refusal("/work/we\nird", home=str(tmp_path),
                                             platform="posix")
+
+
+def test_the_approvals_directory_is_guarded_wherever_xdg_puts_it(tmp_path):
+    # XDG_CONFIG_HOME elsewhere is a supported setup, and a literal ~/.config
+    # guard missed it — write access to approved-mounts lets the box approve
+    # every line it appends to mounts.list.
+    home = tmp_path / "home"
+    xdg = home / "dotfiles" / "xdg"
+    (xdg / "aiforge").mkdir(parents=True)
+    why = paths.mount_refusal(str(home / "dotfiles"), home=str(home),
+                              platform="posix",
+                              extra_guards=(str(xdg / "aiforge"),))
+    assert why is not None and "approve its own mounts" in why
+
+
+def test_a_guard_reached_under_its_other_name_is_still_a_guard(tmp_path):
+    import os
+    # macOS: /etc IS /private/etc. A literal guard list missed the real path.
+    home = tmp_path / "home"
+    home.mkdir()
+    real = tmp_path / "private" / "keys"
+    real.mkdir(parents=True)
+    link = home / ".ssh"
+    os.symlink(real, link)
+    why = paths.mount_refusal(str(real), home=str(home), platform="posix")
+    assert why is not None and "credentials" in why
+
+
+def test_an_empty_path_is_refused(tmp_path):
+    assert paths.mount_refusal("", home=str(tmp_path), platform="posix") == "is empty"
+
+
+def test_a_windows_path_with_no_drive_is_not_mangled():
+    got = paths.normalize_host(r"\\\\nas\\dev\\proj", home=r"C:\\Users\\m",
+                               cwd=r"C:\\Users\\m", platform="nt")
+    assert ":." not in got

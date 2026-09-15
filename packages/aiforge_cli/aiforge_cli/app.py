@@ -52,14 +52,27 @@ class Exit(Exception):
         self.message = message
 
 
+def _close(stream):
+    """Drop a stream we are abandoning, closing its connection if it has one."""
+    close = getattr(stream, "close", None)
+    if callable(close):
+        with contextlib.suppress(Exception):
+            close()
+    return None
+
+
 def _attach_to(client, session_id: int) -> Callable[[], object]:
     """A factory that re-opens the run's stream, for the reconnect path."""
     return lambda: client.attach(session_id)
 
 
-def _terminal_ask(prompt: str) -> str:
+def _terminal_ask(prompt: str, stream=None) -> str:
+    """Ask on ``stream`` (stderr under --json), read the answer from stdin."""
+    stream = stream or sys.stderr
     try:
-        return input(prompt)
+        stream.write(prompt)
+        stream.flush()
+        return input("")
     except (EOFError, KeyboardInterrupt):
         return ""
 
@@ -67,7 +80,7 @@ def _terminal_ask(prompt: str) -> str:
 class App:
     def __init__(self, cfg: Config, pal: Palette, *, cwd: Path | None = None,
                  out=None, env: dict[str, str] | None = None,
-                 client: api.Client | None = None,
+                 client: api.Client | None = None, err=None,
                  ask: Callable[[str], str] | None = None,
                  interactive_stdin: bool | None = None,
                  sleep: Callable[[float], None] = time.sleep):
@@ -75,9 +88,12 @@ class App:
         self.pal = pal
         self.cwd = Path.cwd() if cwd is None else cwd
         self.out = out or sys.stdout
+        # --json makes stdout a machine-readable stream, so every human line —
+        # status, warnings, an approval prompt — has to leave by another door.
+        self.msg_out = (err or sys.stderr) if cfg.json_events else self.out
         self.env = env
         self.client = client or api.Client(cfg.base_url)
-        self.tail = Tail(self.out, pal=pal)
+        self.tail = Tail(self.msg_out, pal=pal)
         self.render = Renderer(pal, verbosity=cfg.verbosity)
         self.session_id: int | None = None
         self.mode = "simple"
@@ -87,7 +103,7 @@ class App:
         self._sleep = sleep
         self._approve_all = False
         self._asked: list[str] = []        # every question, for the tests
-        self._ask = ask or _terminal_ask
+        self._ask = ask or (lambda prompt: _terminal_ask(prompt, self.msg_out))
         if interactive_stdin is None:
             try:
                 interactive_stdin = bool(sys.stdin.isatty())
@@ -329,7 +345,7 @@ class App:
                     # Re-open INSIDE the try on the next pass: calling attach()
                     # here put the retry's own failure outside the handler that
                     # exists to absorb it.
-                    stream = None
+                    stream = _close(stream)
                     open_stream = _attach_to(self.client, self.session_id)
                 except KeyboardInterrupt:
                     interrupts += 1
@@ -347,17 +363,21 @@ class App:
                     # The interrupt arrived while blocked on the read, so that
                     # generator is finished. Re-attach to watch the stop land
                     # (and to leave a second Ctrl+C somewhere to arrive).
-                    stream = None
+                    stream = _close(stream)
+                    self.render.begin_replay()
                     open_stream = _attach_to(self.client, self.session_id)
         self.tail.clear()
         return EXIT_INTERRUPT if interrupted else status
 
     def _apply(self, event: dict, status: int, kb: KeyWatcher) -> tuple[int, bool]:
         op = self.render.handle(event)
-        if op.lines:
-            self.tail.write(op.lines)
+        # stream FIRST: the only Op carrying both is the final message, whose
+        # `stream` is the rest of the sentence the deltas started. Committing
+        # `lines` first closed that row and split the answer in two.
         if op.stream:
             self.tail.stream(op.stream)
+        if op.lines:
+            self.tail.write(op.lines)
         if op.tail is not None:
             self.tail.set(op.tail or None)
         if op.approval is not None:
@@ -380,17 +400,11 @@ class App:
                 self.warn("stopping…")
                 self._stop_run()
             elif key == CTRL_C:
-                if detach_only:
-                    self.tail.clear()
-                    self.say(self.pal("detached — the run keeps going", "dim"))
-                    raise KeyboardInterrupt
-                interrupts += 1
-                if interrupts >= 2:
-                    self._kill_all()
-                    self.warn("everything reset")
-                else:
-                    self._stop_run()
-                    self.warn("stopping — Ctrl+C again to reset everything")
+                # One path for an interrupt however it arrived: cbreak leaves
+                # ISIG on, so POSIX raises this as a signal and only Windows
+                # delivers the byte. Counting it in two places gave the two
+                # platforms different exit codes.
+                raise KeyboardInterrupt
             elif key == ENTER and steer:
                 text = "".join(steer).strip()
                 steer = []

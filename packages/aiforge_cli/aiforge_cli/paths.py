@@ -55,7 +55,12 @@ def normalize_host(path: str, *, home: str | None = None, cwd: str | None = None
 def _normpath(path: str, win: bool) -> str:
     """Collapse ``.``, ``..`` and duplicate separators, for either flavour."""
     if win:
-        drive, _, rest = path.partition(":")
+        drive, sep, rest = path.partition(":")
+        if not sep:
+            # No drive letter (a UNC share, say). Partitioning would have put
+            # the whole path in `drive` and normalised "" to ".", producing
+            # `\\nas\dev:.` — a path that exists nowhere.
+            return posixpath.normpath(path.replace("\\", "/")).replace("/", "\\")
         collapsed = posixpath.normpath(rest.replace("\\", "/"))
         return f"{drive}:" + collapsed.replace("/", "\\")
     return posixpath.normpath(path)
@@ -124,7 +129,15 @@ GUARDED_HOME_DIRS = (".config", ".ssh", ".gnupg", ".aws", ".kube", ".docker",
 GUARDED_ABSOLUTE = ("/etc", "/var/run", "/run", "/proc", "/sys", "/boot", "/dev")
 
 
-def _guarded(path: str, home: str, *, platform: str | None = None) -> str | None:
+def _resolve(path: str) -> str:
+    try:
+        return os.path.realpath(path)
+    except OSError:
+        return path
+
+
+def _guarded(path: str, home: str, *, platform: str | None = None,
+             extra_guards: tuple[str, ...] = ()) -> str | None:
     """The reason this folder is off limits, or None.
 
     Checked in BOTH directions — a guard inside the candidate is as bad as the
@@ -132,21 +145,49 @@ def _guarded(path: str, home: str, *, platform: str | None = None) -> str | None
     and against the resolved path as well as the typed one, so a symlink is not
     a way around the list.
     """
-    for candidate in _candidates(path):
-        for name in GUARDED_HOME_DIRS:
-            guard = os.path.join(home, name)
-            if (_within(candidate, guard, platform=platform)
-                    or _within(guard, candidate, platform=platform)):
-                if name == ".config":
-                    return ("holds the host's mount approvals (~/.config/aiforge) — "
-                            "mounting it would let the sandbox approve its own mounts")
-                return f"holds credentials (~/{name})"
-        if not _is_windows(platform):
-            for guard in GUARDED_ABSOLUTE:
-                if (_within(candidate, guard, platform=platform)
-                        or _within(guard, candidate, platform=platform)):
-                    return f"is inside {guard} — system files, not a project"
+    # The approvals file's own directory, wherever XDG_CONFIG_HOME puts it. A
+    # literal "~/.config" guard missed the supported case of an XDG home
+    # elsewhere, and write access to approved-mounts is the one-way door: the
+    # box could then approve every line it appends to mounts.list itself.
+    for guard in extra_guards:
+        if _touches(path, guard, platform=platform):
+            return ("holds this host's mount approvals — mounting it would let "
+                    "the sandbox approve its own mounts")
+    for name in GUARDED_HOME_DIRS:
+        if _touches(path, os.path.join(home, name), platform=platform):
+            if name == ".config":
+                return ("holds the host's mount approvals (~/.config/aiforge) — "
+                        "mounting it would let the sandbox approve its own mounts")
+            return f"holds credentials (~/{name})"
+    if not _is_windows(platform):
+        for guard in GUARDED_ABSOLUTE:
+            if _touches(path, guard, platform=platform):
+                return f"is inside {guard} — system files, not a project"
     return None
+
+
+def _touches(path: str, guard: str, *, platform: str | None = None) -> bool:
+    """Whether a bind of ``path`` would expose ``guard``, or vice versa.
+
+    Both sides are canonicalised, not just the candidate: on macOS /etc IS
+    /private/etc, and a home that is itself a symlink made every ~/… guard
+    unmatchable under the resolved name.
+    """
+    for candidate in _candidates(path):
+        for target in {guard, _resolve(guard)}:
+            if (_within(candidate, target, platform=platform)
+                    or _within(target, candidate, platform=platform)):
+                return True
+    return False
+
+
+def _touches_home(path: str, home: str, *, platform: str | None = None) -> bool:
+    """Home itself, or anything containing it."""
+    for candidate in _candidates(path):
+        for target in {home, _resolve(home)}:
+            if _within(target, candidate, platform=platform):
+                return True
+    return False
 
 
 def _candidates(path: str) -> tuple[str, ...]:
@@ -162,7 +203,8 @@ def _candidates(path: str) -> tuple[str, ...]:
     return (path,) if real == path else (path, real)
 
 
-def mount_refusal(path: str, *, home: str | None = None, platform: str | None = None) -> str | None:
+def mount_refusal(path: str, *, home: str | None = None, platform: str | None = None,
+                  extra_guards: tuple[str, ...] = ()) -> str | None:
     """Why this folder must not be mounted, or None if it may be.
 
     Mirrors run.sh's own checks so both entry points refuse the same things.
@@ -171,6 +213,8 @@ def mount_refusal(path: str, *, home: str | None = None, platform: str | None = 
     not be able to edit.
     """
     home = os.path.expanduser("~") if home is None else home
+    if not path:
+        return "is empty"
     win = _is_windows(platform)
     # A mount line becomes `"<host>:<box>"` in a compose file, so a path
     # carrying the separator (or a shell/compose metacharacter) would break the
@@ -195,11 +239,9 @@ def mount_refusal(path: str, *, home: str | None = None, platform: str | None = 
             return "needs an absolute path"
         if path == "/":
             return "is the whole filesystem — too broad"
-    if _within(home, path, platform=platform):
+    if _touches_home(path, home, platform=platform):
         return "is your home folder (or above it) — too broad"
-    if any(_within(home, c, platform=platform) for c in _candidates(path)):
-        return "contains your home folder — too broad"
-    guard = _guarded(path, home, platform=platform)
+    guard = _guarded(path, home, platform=platform, extra_guards=extra_guards)
     if guard is not None:
         return guard
     if not os.path.isdir(path):

@@ -61,3 +61,14 @@ def test_approvals_are_written_owner_only(tmp_path):
     work.mkdir()
     mounts.add(listed, approved, str(work), approve=True)
     assert oct(approved.stat().st_mode)[-3:] == "600"
+
+
+def test_an_approval_for_the_approvals_directory_still_cannot_take_effect(tmp_path):
+    # However the line got there, the intersection re-validates it.
+    listed, approved = _files(tmp_path)
+    approvals_dir = tmp_path / "approvals"
+    approvals_dir.mkdir()
+    approved_file = approvals_dir / "approved-mounts"
+    listed.write_text(f"{approvals_dir}\n")
+    approved_file.write_text(f"{approvals_dir}\n")
+    assert mounts.effective(listed, approved_file, home=str(tmp_path / "home")) == []
