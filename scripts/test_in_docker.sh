@@ -15,9 +15,15 @@ IMAGE="${AIFORGE_TEST_IMAGE:-python:3.12}"
 # /builds/architecture/aiforgecrew mirrors the GitLab runner's checkout path.
 WORKDIR="/builds/architecture/aiforgecrew"
 
+# UV_DEFAULT_INDEX / UV_INDEX are forwarded so this works off a box that can
+# reach the internal Artifactory as well as on one that cannot (pyproject pins
+# the internal index as the default; without an override the build requires
+# fail on a DNS error before any test runs).
 exec docker run --rm -i \
   -v "$REPO_ROOT":/src:ro \
   -e PIP_DISABLE_PIP_VERSION_CHECK=1 \
+  -e UV_DEFAULT_INDEX \
+  -e UV_INDEX \
   "$IMAGE" bash -euo pipefail -c '
     apt-get update -qq
     apt-get install -y -qq --no-install-recommends git curl ca-certificates tmux >/dev/null
