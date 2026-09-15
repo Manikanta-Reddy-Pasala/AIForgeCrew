@@ -29,6 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-color", dest="no_color", action="store_true")
     parser.add_argument("--tail", dest="tail", type=int, default=200)
     parser.add_argument("-f", "--follow", dest="follow", action="store_true")
+    parser.add_argument("--force", dest="force", action="store_true")
     parser.add_argument("--version", dest="version", action="store_true")
     parser.add_argument("-h", "--help", dest="help", action="store_true")
     return parser
@@ -42,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     except SystemExit:
         return EXIT_USAGE
     opts.verbosity = 1 if opts.verbose else (-1 if opts.quiet else 0)
+    colors.enable_windows_ansi()
     pal = colors.Palette(False) if opts.no_color else colors.detect()
     cfg = config.load(opts)
 
@@ -53,7 +55,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"aiforge {__version__}")
         return EXIT_OK
     if opts.help or command == "help":
-        print(helptext.command_help(pal, rest[0]) if rest
+        # `aiforge mount -h` must describe mount, not reprint the index: the
+        # command word is in `command`, and only `help` puts it in `rest`.
+        topic = rest[0] if rest else (command if command != "help" else None)
+        print(helptext.command_help(pal, topic) if topic
               else helptext.top_help(pal, version=__version__))
         return EXIT_OK
     if command == "completion":
@@ -65,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
 
     app = App(cfg, pal, cwd=Path.cwd())
     app.mode = opts.mode
+    app.force = bool(opts.force)
     try:
         return _dispatch(app, command, rest, opts)
     except Exit as exc:
@@ -84,7 +90,7 @@ def _dispatch(app: App, command: str | None, rest: list[str], opts) -> int:
     are how you fix it — so they run before any boot.
     """
     if command == "box":
-        return app.box_command(rest or ["status"])
+        return app.box_command(rest or ["status"], tail=opts.tail, follow=opts.follow)
     if command == "mount":
         lines = app.mount_command(rest or ["ls"])
         if lines:
@@ -99,6 +105,12 @@ def _dispatch(app: App, command: str | None, rest: list[str], opts) -> int:
             print("\n".join(lines))
         return EXIT_OK
 
+    # Usage errors are settled BEFORE the sandbox is touched: `aiforge attach`
+    # with no id used to boot (creating a session) and then print usage.
+    if command in ("attach", "resume") and not (rest and rest[0].isdigit()):
+        print(helptext.command_help(app.pal, command))
+        return EXIT_USAGE
+
     if command == "sessions":
         if not app.client.healthy():
             app.boot()
@@ -109,14 +121,8 @@ def _dispatch(app: App, command: str | None, rest: list[str], opts) -> int:
     app.boot()
 
     if command == "attach":
-        if not rest or not rest[0].isdigit():
-            print(helptext.command_help(app.pal, "attach"))
-            return EXIT_USAGE
         return app.attach(int(rest[0]))
     if command == "resume":
-        if not rest or not rest[0].isdigit():
-            print(helptext.command_help(app.pal, "resume"))
-            return EXIT_USAGE
         app.session_id = int(rest[0])
         return app.interactive()
 

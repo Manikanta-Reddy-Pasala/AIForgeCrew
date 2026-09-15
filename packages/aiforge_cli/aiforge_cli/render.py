@@ -136,6 +136,7 @@ class Renderer:
         self._tools = 0
         self._failed = 0
         self._usage: dict[str, Any] = {}
+        self._files: set[str] = set()
         self._elapsed: float | None = None
 
     # ── turn boundaries ────────────────────────────────────────────────────
@@ -151,6 +152,7 @@ class Renderer:
         self._tools = 0
         self._failed = 0
         self._usage = {}
+        self._files = set()
         self._elapsed = None
 
     def begin_replay(self) -> None:
@@ -185,7 +187,8 @@ class Renderer:
             return Op()
         if self.verbosity < 0:
             return Op(tail=self._tail(_ellipsize(text, 60)))
-        return Op(lines=[f"{self.pal('●', 'thought')} {self.pal(text, 'thought')}"],
+        return Op(lines=[f"{self.pal('●', 'thought')} "
+                         f"{self.pal('thinking', 'thought')} {self.pal(text, 'thought')}"],
                   tail=self._tail())
 
     def _on_tool_start(self, ev: dict[str, Any]) -> Op:
@@ -195,8 +198,14 @@ class Renderer:
 
     def _on_tool(self, ev: dict[str, Any]) -> Op:
         name = str(ev.get("name") or (self._tool or {}).get("name") or "tool")
-        key = f"tool:{ev.get('call_id', '')}:{name}:{self._tools}"
-        if self._dup(key):
+        # The identity of a call, stable across a replay: its call_id, or —
+        # for producers that do not send one — the name and arguments. The
+        # running tool COUNT must not be part of it: on a replay the count has
+        # already moved, so every line looked new and the transcript doubled.
+        ident = ev.get("call_id")
+        if ident is None:
+            ident = json.dumps(ev.get("args"), sort_keys=True, default=str)
+        if self._dup(f"tool:{name}:{ident}"):
             return Op()
         pending = self._tool or {}
         self._tool = None
@@ -217,6 +226,11 @@ class Renderer:
         lines = [line]
         if self.verbosity < 0:
             lines = []
+        if isinstance(result, dict) and _diff_text(result):
+            for key in ("path", "file"):
+                if result.get(key):
+                    self._files.add(str(result[key]))
+                    break
         diff = _diff_text(result)
         if diff and self.verbosity >= 0:
             lines += _diff_lines(diff, self.pal, DIFF_LINES[min(max(self.verbosity, -1), 1)])
@@ -240,9 +254,12 @@ class Renderer:
             fresh = self._replayed[self._emitted:]
             self._emitted = len(self._replayed)
             return Op(stream=fresh if self.verbosity >= 0 else "")
-        self._streamed += text
         if self.verbosity < 0:
+            # Quiet prints the ANSWER and nothing else, so the fragments are
+            # not accumulated here — accumulating them made _on_message think
+            # the answer was already on screen and print nothing at all.
             return Op()
+        self._streamed += text
         self._emitted += len(text)
         return Op(stream=text)
 
@@ -250,12 +267,15 @@ class Renderer:
         text = str(ev.get("text") or "").rstrip()
         if not text or self._dup(f"message:{hash(text)}"):
             return Op()
-        streamed = self._streamed.strip()
         self._answered = True
-        if streamed and text.strip() == streamed:
+        # Compare against what actually REACHED the screen, unstripped: slicing
+        # a stripped prefix off the final text re-printed the characters strip()
+        # had removed.
+        streamed = self._streamed if self._emitted else ""
+        if streamed and text == streamed.rstrip():
             return Op(lines=[""], tail=self._tail())       # already on screen
-        if streamed and text.strip().startswith(streamed):
-            return Op(lines=[text.strip()[len(streamed):], ""], tail=self._tail())
+        if streamed and text.startswith(streamed):
+            return Op(lines=[text[len(streamed):], ""], tail=self._tail())
         return Op(lines=[*_answer_lines(text, self.pal), ""], tail=self._tail())
 
     def _on_usage(self, ev: dict[str, Any]) -> Op:
@@ -324,6 +344,34 @@ class Renderer:
     def _on_ticket(self, ev: dict[str, Any]) -> Op:
         return Op(lines=[f"{self.pal('✓', 'ok')} ticket {ev.get('id') or ''} created"])
 
+    def _on_agent(self, ev: dict[str, Any]) -> Op:
+        """A pipeline note about which agent is speaking (team mode)."""
+        text = str(ev.get("text") or "").strip()
+        role = str(ev.get("role") or "").strip()
+        if not text:
+            return Op()
+        return Op(lines=[f"{self.pal('▸', 'code')} {self.pal(role or 'agent', 'head')} "
+                         f"{self.pal(text, 'dim')}"], tail=self._tail())
+
+    def _on_changes(self, ev: dict[str, Any]) -> Op:
+        """The file set a turn touched, with its diff summary."""
+        files = ev.get("files") or []
+        summary = ev.get("summary") or {}
+        if not isinstance(files, list) or not files:
+            return Op()
+        head = (f"{len(files)} file{'s' if len(files) != 1 else ''}  "
+                f"+{summary.get('additions', 0)} -{summary.get('deletions', 0)}")
+        lines = [f"{self.pal('±', 'head')} {head}"]
+        for entry in files[:20]:
+            if not isinstance(entry, dict):
+                continue
+            self._files.add(str(entry.get("path") or ""))
+            status = str(entry.get("status") or "?")[:1]
+            counts = f"+{entry.get('additions', 0)} -{entry.get('deletions', 0)}"
+            lines.append(f"  {self.pal(status, 'warn')} {entry.get('path')}   "
+                         f"{self.pal(counts, 'dim')}")
+        return Op(lines=lines, tail=self._tail())
+
     def _on_stopped(self, _ev: dict[str, Any]) -> Op:
         return Op(lines=[self.pal("■ stopped", "warn")], finished=True)
 
@@ -341,6 +389,8 @@ class Renderer:
         self._elapsed = ev.get("elapsed_s") or self._elapsed
         bits = [_fmt_duration(self._elapsed)] if self._elapsed else []
         bits.append(f"{self._tools} tool{'s' if self._tools != 1 else ''}")
+        if self._files:
+            bits.append(f"{len(self._files)} file{'s' if len(self._files) != 1 else ''}")
         if self._failed:
             bits.append(self.pal(f"{self._failed} failed", "fail"))
         pct = _pct(self._usage)
@@ -373,8 +423,15 @@ class Renderer:
             parts.append(str(self._tool["name"]))
         pct = _pct(self._usage)
         if pct is not None:
-            parts.append(self.pal(f"ctx {pct:.0f}%", self.pal.ctx(pct)))
-        req = self._usage.get("llmSession") or self._usage.get("llmTurn")
+            window = self._usage.get("window_tokens")
+            context = self._usage.get("context_tokens")
+            detail = (f" ({_k(context)}/{_k(window)})"
+                      if isinstance(window, int) and isinstance(context, int) else "")
+            parts.append(self.pal(f"ctx {pct:.0f}%{detail}", self.pal.ctx(pct)))
+        out = self._usage.get("llm_turn_tokens_out")
+        if isinstance(out, int) and out:
+            parts.append(self.pal(f"out {_k(out)}", "dim"))
+        req = self._usage.get("llm_session") or self._usage.get("llm_turn")
         if req:
             parts.append(self.pal(f"req {req}", "dim"))
         parts.append(self.pal("esc stop", "dim"))
@@ -386,6 +443,13 @@ class Renderer:
             return True
         self._seen.add(key)
         return False
+
+
+def _k(value: Any) -> str:
+    """23180 -> 23k. The tail has one line; exact token counts do not fit."""
+    if not isinstance(value, int):
+        return str(value)
+    return f"{value // 1000}k" if value >= 1000 else str(value)
 
 
 def _pct(usage: dict[str, Any]) -> float | None:

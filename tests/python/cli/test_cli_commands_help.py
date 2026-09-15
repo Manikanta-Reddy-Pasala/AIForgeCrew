@@ -31,11 +31,25 @@ def test_every_command_is_completable_in_every_shell():
             assert cmd.name in text, f"{cmd.name} is not completable in {shell}"
 
 
-def test_subcommand_choices_reach_the_shell_scripts():
-    for shell in ("bash", "zsh", "fish", "powershell"):
-        text = completion.script(shell)
-        for action in tbl.BOX_ACTIONS:
-            assert action in text, f"box {action} missing from {shell} completion"
+def test_subcommand_choices_are_attached_to_their_own_command():
+    # Asserting "the word appears somewhere in the script" stayed green even
+    # with every per-command branch deleted. Check the branch itself.
+    bash = completion.script("bash")
+    branch = next(line for line in bash.splitlines() if line.strip().startswith("box)"))
+    for action in tbl.BOX_ACTIONS:
+        assert action in branch, f"box {action} missing from its bash branch"
+    zsh = completion.script("zsh")
+    zsh_branch = next(line for line in zsh.splitlines() if "box)" in line)
+    for action in tbl.BOX_ACTIONS:
+        assert action in zsh_branch
+    fish = completion.script("fish")
+    assert "__fish_seen_subcommand_from box" in fish
+    assert "'box'" in completion.script("powershell")
+
+
+def test_a_command_with_no_choices_gets_no_stale_branch():
+    bash = completion.script("bash")
+    assert "sessions)" not in bash          # nothing to complete after it
 
 
 def test_an_unknown_shell_is_refused_by_name():

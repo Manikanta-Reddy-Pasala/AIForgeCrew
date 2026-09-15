@@ -52,3 +52,33 @@ def test_a_real_folder_is_allowed(tmp_path):
 def test_a_path_with_a_compose_metacharacter_is_refused(tmp_path):
     assert "without" in paths.mount_refusal("/work:/etc", home=str(tmp_path),
                                             platform="posix")
+
+
+def test_the_approvals_directory_can_never_be_mounted(tmp_path):
+    # ~/.config/aiforge holds approved-mounts. Mounting it would let the box
+    # approve its own future mounts — a one-way door out of the sandbox.
+    home = tmp_path / "home"
+    (home / ".config" / "aiforge").mkdir(parents=True)
+    why = paths.mount_refusal(str(home / ".config" / "aiforge"), home=str(home),
+                              platform="posix")
+    assert why is not None and "approve its own mounts" in why
+
+
+def test_credential_directories_are_refused(tmp_path):
+    home = tmp_path / "home"
+    for name in (".ssh", ".aws", ".kube"):
+        (home / name).mkdir(parents=True)
+        why = paths.mount_refusal(str(home / name), home=str(home), platform="posix")
+        assert why is not None and "credentials" in why
+
+
+def test_system_directories_are_refused(tmp_path):
+    assert "system files" in paths.mount_refusal("/etc/nginx", home=str(tmp_path),
+                                                 platform="posix")
+
+
+def test_a_project_folder_next_to_a_guarded_one_is_still_allowed(tmp_path):
+    home = tmp_path / "home"
+    (home / "work").mkdir(parents=True)
+    assert paths.mount_refusal(str(home / "work"), home=str(home),
+                               platform="posix") is None

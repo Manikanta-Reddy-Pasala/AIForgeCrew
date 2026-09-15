@@ -83,6 +83,34 @@ def covering_mount(path: str, mounts: list[str], *, platform: str | None = None)
     return max(hits, key=len) if hits else None
 
 
+# Folders that must never be handed to the agent, relative to home. The first
+# is the load-bearing one: ~/.config/aiforge holds approved-mounts, the host's
+# answer to the box's mount requests. Mounting it (or any ancestor) would let
+# the box approve its own future mounts — a one-way door out of the sandbox.
+# The rest hold credentials that would turn a mount into a key handover.
+GUARDED_HOME_DIRS = (".config", ".ssh", ".gnupg", ".aws", ".kube", ".docker",
+                     ".gitconfig", ".netrc", ".npmrc", ".pypirc")
+GUARDED_ABSOLUTE = ("/etc", "/var/run", "/run", "/proc", "/sys", "/boot", "/dev")
+
+
+def _guarded(path: str, home: str, *, platform: str | None = None) -> str | None:
+    """The reason this folder is off limits, or None."""
+    import os.path as _p
+    for name in GUARDED_HOME_DIRS:
+        guard = _p.join(home, name)
+        if _within(path, guard, platform=platform) or _within(guard, path,
+                                                              platform=platform):
+            if name == ".config":
+                return ("holds the host's mount approvals (~/.config/aiforge) — "
+                        "mounting it would let the sandbox approve its own mounts")
+            return f"holds credentials (~/{name})"
+    if not _is_windows(platform):
+        for guard in GUARDED_ABSOLUTE:
+            if _within(path, guard, platform=platform):
+                return f"is inside {guard} — system files, not a project"
+    return None
+
+
 def mount_refusal(path: str, *, home: str | None = None, platform: str | None = None) -> str | None:
     """Why this folder must not be mounted, or None if it may be.
 
@@ -112,6 +140,9 @@ def mount_refusal(path: str, *, home: str | None = None, platform: str | None = 
             return "is the whole filesystem — too broad"
     if _within(home, path, platform=platform):
         return "is your home folder (or above it) — too broad"
+    guard = _guarded(path, home, platform=platform)
+    if guard is not None:
+        return guard
     if not os.path.isdir(path):
         return "is not a folder on this machine"
     return None

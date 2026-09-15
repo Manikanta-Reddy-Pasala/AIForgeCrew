@@ -85,12 +85,24 @@ def _find_repo(env: dict[str, str], cwd: Path) -> Path | None:
         cand.append(Path(env["AIFORGE_REPO"]))
     cand += [cwd, *cwd.parents, Path.home() / "AIForgeCrew"]
     for c in cand:
-        try:
-            if (c / "run.sh").is_file() and (c / "docker-compose.yml").is_file():
-                return c
-        except OSError:
-            continue
+        if is_repo(c):
+            return c
     return None
+
+
+# `run.sh` + a compose file is what a great many repos look like, and the box
+# strategy RUNS that script on the host. Identity has to be checked, or
+# standing in an untrusted checkout and typing `aiforge` would execute its
+# run.sh. These three exist only in this project.
+_MARKERS = ("run.sh", "docker-compose.yml", "aiforge_core/api/routes/chat.py")
+
+
+def is_repo(path: Path) -> bool:
+    """True when this directory is an AIForgeCrew checkout, not just any repo."""
+    try:
+        return all((path / marker).exists() for marker in _MARKERS)
+    except OSError:
+        return False
 
 
 def load(args=None, env: dict[str, str] | None = None, cwd: Path | None = None) -> Config:

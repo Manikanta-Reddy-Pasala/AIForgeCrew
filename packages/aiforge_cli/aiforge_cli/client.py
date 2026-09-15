@@ -57,8 +57,11 @@ class Client:
     def sessions(self) -> list[dict[str, Any]]:
         return self._json("GET", "/api/chat/sessions")
 
-    def create_session(self, box_cwd: str) -> dict[str, Any]:
-        return self._json("POST", "/api/chat/sessions", json={"cwd": box_cwd})
+    def create_session(self, box_cwd: str | None) -> dict[str, Any]:
+        """A new chat. ``None`` lets the API give the session its own workspace
+        inside the box — the right answer when the folder is not mounted."""
+        body = {"cwd": box_cwd} if box_cwd else {}
+        return self._json("POST", "/api/chat/sessions", json=body)
 
     def models(self) -> Any:
         return self._json("GET", "/api/chat/models")
@@ -79,8 +82,11 @@ class Client:
         return self._json("POST", f"/api/chat/sessions/{session_id}/stop")
 
     def steer(self, session_id: int, text: str) -> dict[str, Any]:
+        # The server's field is `content` (_SteerBody). Sending `text` was
+        # silently dropped by pydantic and the required field was missing, so
+        # every steer answered 422.
         return self._json("POST", f"/api/chat/sessions/{session_id}/steer",
-                          json={"text": text})
+                          json={"content": text})
 
     def approve(self, session_id: int, approval_id: Any, decision: str,
                 note: str | None = None) -> dict[str, Any]:
@@ -104,20 +110,38 @@ class Client:
     # ── streams ────────────────────────────────────────────────────────────
 
     def send(self, session_id: int, content: str, *, mode: str = "simple",
-             quick: bool = False, review_edits: bool = False) -> Iterator[dict[str, Any]]:
+             quick: bool = False, review_edits: bool = False,
+             role: str | None = None) -> Iterator[dict[str, Any]]:
         """Post a turn and yield its events as they arrive.
 
         A 409 means something else is already running this session (a second
         terminal, the web UI): the caller attaches to that run instead of
         starting a rival producer, which the server would refuse anyway.
         """
-        body = {"content": content, "mode": mode, "quick": quick,
-                "review_edits": review_edits}
+        body: dict[str, Any] = {"content": content, "mode": mode, "quick": quick,
+                                "review_edits": review_edits}
+        if role:
+            body["role"] = role          # the model, switched server-side
         yield from self._sse("POST", f"/api/chat/sessions/{session_id}/message", json=body)
 
     def attach(self, session_id: int) -> Iterator[dict[str, Any]]:
         """Replay an in-flight run's buffered events, then tail it live."""
         yield from self._sse("GET", f"/api/chat/sessions/{session_id}/attach")
+
+    def is_running(self, session_id: int) -> bool:
+        """Whether a run is in flight for this session.
+
+        The session list carries no such field — `running` only exists on the
+        attach stream's first event — so this opens the stream, reads that one
+        event and closes it. Cheap, and the only honest source: the guard that
+        refuses to recreate the box under a live run depends on it.
+        """
+        try:
+            for event in self.attach(session_id):
+                return bool(event.get("running"))
+        except (Stalled, ApiDown, Busy):
+            return False
+        return False
 
     # ── internals ──────────────────────────────────────────────────────────
 
@@ -128,10 +152,17 @@ class Client:
             raise ApiDown(str(exc)) from exc
         if r.status_code == 409:
             raise Busy(_detail(r))
-        r.raise_for_status()
+        if r.status_code >= 400:
+            # Every failure leaves through one door. raise_for_status() used to
+            # run outside the try, so a 500 escaped as httpx.HTTPStatusError
+            # past callers that were carefully catching ApiDown.
+            raise ApiDown(f"{r.status_code} {_detail(r)}")
         if r.status_code == 204 or not r.content:
             return {}
-        return r.json()
+        try:
+            return r.json()
+        except ValueError as exc:
+            raise ApiDown(f"the API answered {r.status_code} with non-JSON") from exc
 
     def _sse(self, method: str, path: str, **kw) -> Iterator[dict[str, Any]]:
         timeout = httpx.Timeout(15.0, read=STREAM_READ_TIMEOUT)

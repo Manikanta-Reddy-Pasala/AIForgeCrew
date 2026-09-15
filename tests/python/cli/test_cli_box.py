@@ -41,10 +41,31 @@ def test_only_approved_folders_reach_the_compose_file(tmp_path):
     assert str(sneaky) not in text
 
 
-def test_windows_mounts_land_under_host_drive(tmp_path):
+def test_windows_mounts_land_under_host_drive_in_single_quotes(tmp_path):
     cfg = _cfg(tmp_path)
     text = box.render_compose(cfg, [r"C:\Users\m\work"], env={}, plat="nt")
-    assert r'"C:\Users\m\work:/host/c/Users/m/work"' in text
+    # SINGLE quotes: a double-quoted YAML scalar reads \U as a unicode escape,
+    # so every Windows path made the compose file unparseable.
+    assert r"'C:\Users\m\work:/host/c/Users/m/work'" in text
+    assert r'"C:\Users' not in text
+
+
+def test_the_box_mount_list_is_joined_for_the_platform(tmp_path):
+    cfg = _cfg(tmp_path)
+    nt = box.render_compose(cfg, [r"C:\a", r"D:\b"], env={}, plat="nt")
+    line = next(li for li in nt.splitlines() if "AIFORGE_MOUNTS" in li)
+    assert ";" in line and "/host/c/a" in line and "/host/d/b" in line
+
+
+def test_the_compose_file_is_not_written_where_the_box_can_read_it(tmp_path,
+                                                                   monkeypatch):
+    cfg = _cfg(tmp_path)
+    env = {"XDG_CONFIG_HOME": str(tmp_path / "cfg")}
+    path = box.compose_path(cfg, env)
+    # ~/.aiforge is mounted INTO the box; the compose file lists every host
+    # mount and every passthrough env value, proxy credentials included.
+    assert str(cfg.config_dir) not in str(path)
+    assert "cfg" in str(path)
 
 
 def test_only_set_passthrough_variables_are_written(tmp_path):
@@ -63,9 +84,12 @@ def test_waiting_for_health_gives_up_with_the_command_that_explains_why(tmp_path
     assert "box logs" in str(exc.value)
 
 
-def test_a_healthy_api_returns_immediately(tmp_path):
-    waited = box.wait_healthy(lambda: True, clock=lambda: 7.0, sleep=lambda _s: None)
-    assert waited == 0.0
+def test_a_healthy_api_returns_as_soon_as_it_answers(tmp_path):
+    ticks = iter([0.0, 0.5, 1.5])
+    answers = iter([False, True])
+    waited = box.wait_healthy(lambda: next(answers), interval=0.1,
+                              clock=lambda: next(ticks), sleep=lambda _s: None)
+    assert waited == 1.5          # the clock moved: it really did wait a round
 
 
 def test_a_missing_image_and_no_repo_names_all_three_ways_out(tmp_path, monkeypatch):

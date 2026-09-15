@@ -37,6 +37,24 @@ def test_a_bare_word_is_not_an_assignment():
         integ.parse_assignments(["jira"])
 
 
+def test_the_email_fields_are_the_servers_own_names():
+    rows = dict(integ.summary("email", {"smtp_host": "mail.internal", "smtp_port": 587,
+                                        "has_smtp_password": True,
+                                        "smtp_starttls": True}))
+    assert rows["smtp_host"] == "mail.internal"
+    assert rows["has_smtp_password"] == "configured"
+    assert rows["smtp_starttls"] == "yes"
+
+
+def test_a_field_from_another_integration_is_refused():
+    # The server models ignore unknown keys, so this answered 200 having saved
+    # nothing while the CLI printed a tick.
+    with pytest.raises(ValueError) as exc:
+        integ.check_keys("jira", {"project": "FOO"})
+    assert "no field project" in str(exc.value)
+    integ.check_keys("jira", {"default_project": "ONE"})       # the real one
+
+
 def test_a_hyperlink_is_only_emitted_when_asked():
     assert integ.link("ONE-320", "https://j/ONE-320", enabled=False) == "ONE-320"
     assert "\033]8;;https://j/ONE-320" in integ.link("ONE-320", "https://j/ONE-320")

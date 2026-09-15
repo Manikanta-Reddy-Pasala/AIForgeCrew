@@ -31,22 +31,28 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-command -v python3 >/dev/null || { echo "need python3 to build (not to run)" >&2; exit 3; }
+# Git Bash on Windows ships `python`, not `python3`.
+PY=python3
+command -v "$PY" >/dev/null || PY=python
+command -v "$PY" >/dev/null || { echo "need python to build (not to run)" >&2; exit 3; }
 
 BUILD="$(mktemp -d)"
 trap 'rm -rf "$BUILD"' EXIT
 
 echo "==> venv for the build only: $BUILD/venv"
-python3 -m venv "$BUILD/venv"
+"$PY" -m venv "$BUILD/venv"
 # shellcheck disable=SC1091
 . "$BUILD/venv/bin/activate" 2>/dev/null || . "$BUILD/venv/Scripts/activate"
 
-PIP_ARGS=(--only-binary=:all: --disable-pip-version-check)
+PIP_ARGS=(--disable-pip-version-check)
 [[ -n "${UV_DEFAULT_INDEX:-}" ]] && PIP_ARGS+=(--index-url "$UV_DEFAULT_INDEX")
 
 echo "==> build tools (pinned)"
-python -m pip install -q "${PIP_ARGS[@]}" -r "$HERE/pins.txt"
+# Wheels only for anything off the index — nothing is fetched and built here.
+python -m pip install -q "${PIP_ARGS[@]}" --only-binary=:all: -r "$HERE/pins.txt"
 echo "==> the CLI and its two runtime deps"
+# NOT --only-binary here: $PKG is a local source tree, which pip must build a
+# wheel from; --only-binary=:all: refuses that outright.
 python -m pip install -q "${PIP_ARGS[@]}" "$PKG"
 
 NAME="aiforge"
@@ -64,7 +70,7 @@ python -m PyInstaller \
   --noconfirm --clean --console \
   --collect-submodules aiforge_cli \
   "${EXTRA[@]}" \
-  "$PKG/aiforge_cli/__main__.py"
+  "$PKG/aiforge_cli/_entry.py"
 
 BIN="$OUT/$NAME"
 [[ -f "$BIN.exe" ]] && BIN="$BIN.exe"

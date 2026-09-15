@@ -23,7 +23,22 @@ FIELDS: dict[str, tuple[str, ...]] = {
     "jira": ("base_url", "user", "default_project", "has_token", "env_managed"),
     "confluence": ("base_url", "user", "default_space", "has_token", "env_managed"),
     "gitlab": ("base_url", "project", "has_token", "env_managed"),
-    "email": ("host", "port", "user", "from_addr", "tls", "has_password", "env_managed"),
+    # The server's own names (_EmailCfg): smtp_* / imap_*, not host/port/user.
+    "email": ("smtp_host", "smtp_port", "smtp_user", "smtp_from", "smtp_starttls",
+              "has_smtp_password", "imap_host", "imap_port", "imap_user", "imap_ssl",
+              "has_imap_password", "env_managed"),
+}
+
+# What `set` is allowed to send per kind — the server's models ignore unknown
+# keys, so a typo (or a field from another integration) answered 200 and saved
+# nothing while the CLI printed a tick.
+SETTABLE: dict[str, tuple[str, ...]] = {
+    "jira": ("base_url", "token", "user", "insecure_tls", "default_project"),
+    "confluence": ("base_url", "token", "user", "insecure_tls", "default_space"),
+    "gitlab": ("base_url", "token", "project", "insecure_tls"),
+    "email": ("smtp_host", "smtp_port", "smtp_user", "smtp_password", "smtp_from",
+              "smtp_starttls", "imap_host", "imap_port", "imap_user", "imap_password",
+              "imap_ssl"),
 }
 
 SECRET_KEYS = ("token", "password", "secret")
@@ -85,6 +100,15 @@ def parse_assignments(args: list[str]) -> dict[str, Any]:
         else:
             patch[key] = value
     return patch
+
+
+def check_keys(kind: str, patch: dict[str, Any]) -> None:
+    """Refuse a field this integration does not have."""
+    allowed = SETTABLE.get(kind, ())
+    unknown = [k for k in patch if k not in allowed]
+    if unknown:
+        raise ValueError(f"{kind} has no field {', '.join(unknown)} — "
+                         f"try: {', '.join(allowed)}")
 
 
 def link(text: str, url: str, *, enabled: bool = True) -> str:

@@ -50,6 +50,31 @@ class Palette:
         return "ok" if pct < 60 else ("warn" if pct < 85 else "fail")
 
 
+def _looks_windows(env: dict[str, str]) -> bool:
+    return os.name == "nt" or env.get("OS", "").startswith("Windows")
+
+
+def enable_windows_ansi() -> None:
+    """Turn on VT processing so the Windows console honours SGR escapes.
+
+    Windows 10+ supports them but not by default for a console attached to an
+    exe. Without this the binary prints the escape bytes literally.
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32                       # type: ignore[attr-defined]
+        for handle in (-11, -12):                               # stdout, stderr
+            mode = ctypes.c_uint32()
+            if kernel32.GetConsoleMode(kernel32.GetStdHandle(handle),
+                                       ctypes.byref(mode)):
+                kernel32.SetConsoleMode(kernel32.GetStdHandle(handle),
+                                        mode.value | 0x0004)
+    except Exception:  # noqa: BLE001 — an old console simply stays monochrome
+        pass
+
+
 def detect(stream=None, env: dict[str, str] | None = None) -> Palette:
     """Colour unless the environment says otherwise.
 
@@ -63,7 +88,13 @@ def detect(stream=None, env: dict[str, str] | None = None) -> Palette:
         return Palette(False)
     if env.get("AIFORGE_CLI_COLOR") == "always":
         return Palette(True)
-    if env.get("TERM", "") in ("dumb", ""):
+    if env.get("TERM", "") == "dumb":
+        return Palette(False)
+    # TERM is normally UNSET on Windows, where the console speaks ANSI once VT
+    # processing is on (see enable_windows_ansi). Treating an empty TERM as
+    # "no colour" made the entire Windows binary monochrome; only POSIX reads
+    # an empty TERM as a dumb terminal.
+    if not env.get("TERM") and not _looks_windows(env):
         return Palette(False)
     try:
         tty = bool(stream.isatty())

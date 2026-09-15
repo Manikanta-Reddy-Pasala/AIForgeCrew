@@ -32,6 +32,29 @@ TRANSCRIPT = [
 ]
 
 
+def test_the_tool_count_and_files_are_not_doubled_by_a_replay():
+    r = Renderer(PLAIN)
+    r.begin_turn()
+    for ev in TRANSCRIPT[:4]:
+        r.handle(ev)
+    r.begin_replay()
+    lines = []
+    for ev in TRANSCRIPT:
+        lines += r.handle(ev).lines
+    done = [line for line in lines if line.startswith("done")]
+    assert done and "1 tool" in done[0]
+
+
+def test_a_changed_file_set_is_summarised():
+    _, lines, _ = _run([{"type": "changes",
+                         "files": [{"path": "A.java", "status": "modified",
+                                    "additions": 3, "deletions": 1}],
+                         "summary": {"files": 1, "additions": 3, "deletions": 1}},
+                        {"type": "done"}])
+    body = "\n".join(lines)
+    assert "1 file" in body and "A.java" in body and "+3 -1" in body
+
+
 def test_a_whole_turn_renders_one_line_per_step():
     _, lines, streamed = _run(TRANSCRIPT)
     text = "\n".join(lines)
@@ -88,9 +111,16 @@ def test_replayed_events_do_not_double_the_transcript():
     assert streamed_after == ""                          # nothing owed to the screen
 
 
-def test_quiet_prints_no_steps_and_verbose_prints_the_result():
-    _, quiet_lines, _ = _run(TRANSCRIPT, verbosity=-1)
+def test_quiet_prints_the_answer_and_nothing_else():
+    _, quiet_lines, quiet_stream = _run(TRANSCRIPT, verbosity=-1)
     assert not any("read_file" in line for line in quiet_lines)
+    assert not any("thinking" in line for line in quiet_lines)
+    # "answers only" means the answer IS printed: accumulating the deltas
+    # without emitting them made the final message look already-on-screen.
+    assert "Added retry." in quiet_stream + "\n".join(quiet_lines)
+
+
+def test_verbose_prints_the_result():
     _, loud_lines, _ = _run(TRANSCRIPT, verbosity=1)
     assert any('"lines": 312' in line for line in loud_lines)
 
