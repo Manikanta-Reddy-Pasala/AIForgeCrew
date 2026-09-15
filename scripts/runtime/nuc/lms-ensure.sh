@@ -33,7 +33,12 @@ if [[ -z "$HOST" ]]; then
     echo "lms-ensure: AIFORGE_LMS_HOST unset — skipping (no remote LM Studio to manage)"
     exit 0
 fi
-BIN="${AIFORGE_LMS_BIN:-lms}"
+# The documented default, not a bare name: `lms` lives in ~/.lmstudio/bin,
+# which macOS does NOT put on the PATH of a non-interactive ssh shell. With
+# the bare name every reload died as `command not found: lms` (exit 127) —
+# so the model stayed at whatever context a JIT load had given it, which is
+# the exact failure this script exists to prevent.
+BIN="${AIFORGE_LMS_BIN:-\$HOME/.lmstudio/bin/lms}"
 LEGACY_MODEL="${AIFORGE_LMS_MODEL:-qwen/qwen3-coder-next}"
 LEGACY_CTX="${AIFORGE_LMS_CTX:-262144}"
 LEGACY_TTL="${AIFORGE_LMS_TTL:-43200}"
