@@ -1,0 +1,5 @@
+# Build-time only — the tools that freeze the CLI into a single-file binary.
+# NOT in uv.lock on purpose: run.sh installs from the lockfiles alone, and the
+# app never imports these. Resolved from the configured index like everything
+# else (UV_DEFAULT_INDEX / pyproject's index), wheels only.
+pyinstaller==6.11.1

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aiforge-cli"
+version = "0.1.0"
+description = "AIForge terminal client — streaming chat against the sandboxed AIForge API"
+requires-python = ">=3.11"
+authors = [{name = "Manikanta Reddy Pasala"}]
+license = {text = "MIT"}
+# Deliberately tiny. This package is frozen into a ~15 MB single-file binary
+# per OS, so its dependency tree is the binary's size and its import time is
+# the CLI's startup latency. The engine's tree (ADK, litellm, scipy,
+# tree-sitter) stays in the sandbox image where it belongs — see
+# tests/python/cli/test_cli_import_graph.py, which fails if aiforge_cli ever
+# imports aiforge_core.
+dependencies = [
+  "httpx>=0.27",
+  "prompt_toolkit>=3.0",
+]
+
+[project.scripts]
+aiforge-cli = "aiforge_cli.__main__:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.4"]
+
+[tool.setuptools.packages.find]
+include = ["aiforge_cli*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

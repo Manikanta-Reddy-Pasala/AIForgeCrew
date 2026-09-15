@@ -1,0 +1,134 @@
+"""The renderer as a pure function: events in, text out, no terminal."""
+
+from __future__ import annotations
+
+from aiforge_cli.colors import Palette
+from aiforge_cli.render import Renderer
+
+PLAIN = Palette(False)
+
+
+def _run(events, verbosity=0):
+    r = Renderer(PLAIN, verbosity=verbosity)
+    r.begin_turn()
+    lines, streamed = [], ""
+    for ev in events:
+        op = r.handle(ev)
+        lines += op.lines
+        streamed += op.stream
+    return r, lines, streamed
+
+
+TRANSCRIPT = [
+    {"type": "thought", "text": "reading PosServerBackendService"},
+    {"type": "tool_start", "name": "read_file", "args": {"path": "A.java"}},
+    {"type": "tool", "name": "read_file", "args": {"path": "A.java"},
+     "result": {"lines": 312}, "duration_s": 0.4, "call_id": 1},
+    {"type": "usage", "pct": 18.0, "llmTurn": 3},
+    {"type": "delta", "text": "Added "},
+    {"type": "delta", "text": "retry."},
+    {"type": "message", "text": "Added retry."},
+    {"type": "done", "elapsed_s": 102.0},
+]
+
+
+def test_a_whole_turn_renders_one_line_per_step():
+    _, lines, streamed = _run(TRANSCRIPT)
+    text = "\n".join(lines)
+    assert "● thinking reading PosServerBackendService" in text
+    assert "✓ read_file" in text and "312 lines" in text and "0.4s" in text
+    assert streamed == "Added retry."
+    assert "done" in text and "1m42s" in text and "1 tool" in text and "ctx 18%" in text
+
+
+def test_the_final_message_is_not_printed_twice_after_streaming():
+    _, lines, streamed = _run(TRANSCRIPT)
+    assert streamed.count("Added retry.") == 1
+    assert "\n".join(lines).count("Added retry.") == 0
+
+
+def test_a_message_that_extends_the_stream_prints_only_the_remainder():
+    events = [{"type": "delta", "text": "Added "},
+              {"type": "message", "text": "Added retry to the push sync."}]
+    _, lines, streamed = _run(events)
+    assert streamed == "Added "
+    assert lines[0] == "retry to the push sync."
+
+
+def test_a_failed_tool_is_marked_and_counted():
+    _, lines, _ = _run([
+        {"type": "tool", "name": "run_command", "args": {"cmd": "mvn"},
+         "result": {"error": "exit 1: compile failed"}, "call_id": 7},
+        {"type": "done"},
+    ])
+    assert "✗ run_command" in lines[0]
+    assert "compile failed" in lines[0]
+    assert "1 failed" in lines[-1]
+
+
+def test_replayed_events_do_not_double_the_transcript():
+    # A dropped stream re-attaches; the API replays the run from its start.
+    r = Renderer(PLAIN)
+    r.begin_turn()
+    first = []
+    for ev in TRANSCRIPT[:5]:
+        op = r.handle(ev)
+        first += op.lines
+    streamed_before = r.handle(TRANSCRIPT[5]).stream
+
+    r.begin_replay()
+    again, streamed_after = [], ""
+    for ev in TRANSCRIPT:
+        op = r.handle(ev)
+        again += op.lines
+        streamed_after += op.stream
+
+    assert streamed_before == "retry."
+    assert "read_file" not in "\n".join(again)          # already on screen
+    assert streamed_after == ""                          # nothing owed to the screen
+
+
+def test_quiet_prints_no_steps_and_verbose_prints_the_result():
+    _, quiet_lines, _ = _run(TRANSCRIPT, verbosity=-1)
+    assert not any("read_file" in line for line in quiet_lines)
+    _, loud_lines, _ = _run(TRANSCRIPT, verbosity=1)
+    assert any('"lines": 312' in line for line in loud_lines)
+
+
+def test_a_diff_result_is_shown_with_its_hunks():
+    _, lines, _ = _run([{"type": "tool", "name": "edit_file", "args": {"path": "M.java"},
+                         "result": {"diff": "@@ -1 +1 @@\n-old\n+new",
+                                    "additions": 1, "deletions": 1}, "call_id": 2}])
+    body = "\n".join(lines)
+    assert "+1 -1" in body and "@@ -1 +1 @@" in body and "+new" in body
+
+
+def test_an_unknown_event_never_raises():
+    r = Renderer(PLAIN, verbosity=1)
+    r.begin_turn()
+    op = r.handle({"type": "a_future_event", "payload": 1})
+    assert op.lines and "a_future_event" in op.lines[0]
+    assert Renderer(PLAIN).handle({"type": "a_future_event"}).lines == []
+
+
+def test_an_approval_asks_and_carries_the_preview():
+    r = Renderer(PLAIN)
+    r.begin_turn()
+    op = r.handle({"type": "approval", "id": 3, "tool": "file_write",
+                   "args": {"path": "x"}, "preview": "@@\n+one"})
+    assert op.approval is not None and op.approval["id"] == 3
+    assert any("+one" in line for line in op.lines)
+
+
+def test_tool_arguments_are_ellipsized_in_the_middle():
+    long_path = "/very/long/path/" + "x" * 200 + "/Target.java"
+    _, lines, _ = _run([{"type": "tool", "name": "read_file",
+                         "args": {"path": long_path}, "result": {}, "call_id": 4}])
+    assert "…" in lines[0]
+    assert "Target.java" in lines[0]       # the end survives, which is the point
+
+
+def test_the_status_line_colours_context_by_pressure():
+    assert PLAIN.ctx(10) == "ok"
+    assert PLAIN.ctx(70) == "warn"
+    assert PLAIN.ctx(90) == "fail"
