@@ -116,6 +116,7 @@ SLASH: tuple[Command, ...] = (
     Command("/sessions", "", "list chats"),
     Command("/resume", "<id>", "switch to another chat", arg=ARG_SESSION),
     Command("/stop", "", "stop the run in flight (same as Esc)"),
+    Command("/kill-all", "", "reset EVERY session on this machine (asks first)"),
     Command("/compact", "", "fold this chat's history into a summary now"),
     Command("/ctx", "", "context window, requests and mode"),
     Command("/mounts", "", "what the sandbox can see"),

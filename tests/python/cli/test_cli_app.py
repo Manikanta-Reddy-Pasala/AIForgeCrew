@@ -478,3 +478,100 @@ def test_json_mode_still_answers_an_approval_without_dirtying_stdout(tmp_path):
     for line in app.out.getvalue().splitlines():
         if line.strip():
             json.loads(line)
+
+
+# ── one machine, many terminals ────────────────────────────────────────────
+
+
+def test_box_down_refuses_while_another_terminal_is_running(tmp_path):
+    # One machine runs ONE sandbox: `box down` is not a local action.
+    client = FakeClient(running=[4])
+    client.sessions_rows.append({"id": 4, "title": "someone else"})
+    app = _app(tmp_path, client, answers=["n"])
+    with pytest.raises(Exit) as exc:
+        app.box_command(["down"])
+    assert exc.value.code == EXIT_ENV
+    assert "attach 4" in exc.value.message and "--force" in exc.value.message
+
+
+def test_box_restart_refuses_the_same_way(tmp_path):
+    client = FakeClient(running=[4])
+    client.sessions_rows.append({"id": 4})
+    app = _app(tmp_path, client, answers=["n"])
+    with pytest.raises(Exit):
+        app.box_command(["restart"])
+
+
+def test_force_takes_the_box_down_anyway(tmp_path):
+    client = FakeClient(running=[4])
+    client.sessions_rows.append({"id": 4})
+    app = _app(tmp_path, client, answers=["n"])
+    app.force = True
+    assert app.box_command(["down"]) == EXIT_OK
+
+
+def test_a_second_ctrl_c_does_not_wipe_another_sessions_run(tmp_path):
+    class Interrupting(FakeClient):
+        def send(self, session_id, content, **kw):
+            def gen():
+                yield {"type": "thought", "text": "working"}
+                raise KeyboardInterrupt
+            return gen()
+
+        def attach(self, session_id):
+            def gen():
+                yield {"type": "attached", "running": True}
+                raise KeyboardInterrupt
+            return gen()
+
+    client = Interrupting(running=[4, 7])
+    client.sessions_rows += [{"id": 4}, {"id": 7}]
+    app = _app(tmp_path, client, answers=["n"])
+    app.session_id = 7
+    assert app.send("go") == EXIT_INTERRUPT
+    # #4 belongs to another terminal: a twitchy second Ctrl+C must not reset it.
+    assert ("kill_all",) not in client.calls
+    assert ("stop", 7) in client.calls
+    assert "still running on this box" in _printed(app)
+
+
+def test_kill_all_asks_before_resetting_other_peoples_sessions(tmp_path):
+    client = FakeClient(running=[4])
+    client.sessions_rows.append({"id": 4})
+    app = _app(tmp_path, client, answers=["n", "no"])
+    app.boot()
+    app.slash("/kill-all")
+    assert ("kill_all",) not in client.calls
+    assert "EVERY session" in _printed(app)
+
+
+def test_kill_all_goes_ahead_when_you_confirm(tmp_path):
+    client = FakeClient(running=[4])
+    client.sessions_rows.append({"id": 4})
+    app = _app(tmp_path, client, answers=["n", "yes"])
+    app.boot()
+    app.slash("/kill-all")
+    assert ("kill_all",) in client.calls
+
+
+def test_an_involuntary_attach_is_read_only(tmp_path):
+    # Sending into a chat another terminal is already running answers 409; we
+    # watch it, and Esc here must not stop THEIR run.
+    class Taken(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.first = True
+
+        def send(self, session_id, content, **kw):
+            raise api.Busy("a run is already in progress")
+
+        def attach(self, session_id):
+            self.calls.append(("attach", session_id))
+            return iter([{"type": "attached", "running": True}, {"type": "done"}])
+
+    client = Taken()
+    app = _app(tmp_path, client, answers=["n"])
+    app.boot()
+    app.send("go")
+    assert ("attach", 7) in client.calls
+    assert not [c for c in client.calls if c[0] == "stop"]

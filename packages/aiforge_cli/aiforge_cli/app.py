@@ -246,6 +246,26 @@ class App:
         self.tail.clear()
         self.ok(f"mounted {target}")
 
+    def _refuse_if_busy(self, what: str) -> None:
+        """Stop one terminal from taking the box away from another.
+
+        One machine runs ONE sandbox, shared by every terminal, so `box down`
+        and `box restart` are not local actions: they end somebody else's run
+        too. `--force` says you meant it.
+        """
+        if self.force:
+            return
+        busy = self._busy_sessions()
+        if not busy:
+            return
+        ids = ", ".join(f"#{s}" for s in busy)
+        raise Exit(EXIT_ENV,
+                   f"{self.pal('✗', 'error')} {len(busy)} run(s) in flight ({ids}) — "
+                   f"refusing to {what}.\n"
+                   f"  Watch one:  aiforge attach {busy[0]}\n"
+                   f"  Or insist:  aiforge --force box "
+                   f"{'down' if 'stop' in what else 'restart'}   (their work is lost)")
+
     def _busy_sessions(self) -> list[int]:
         """Sessions with a run in flight.
 
@@ -332,6 +352,10 @@ class App:
                     if not self._reconnect(run, exc):
                         self.tail.clear()
                         return EXIT_ENV
+                    # A 409 means somebody else is already running this chat
+                    # (another terminal, the web UI). We watch it — read-only,
+                    # so Esc here cannot stop THEIR run.
+                    detach_only = detach_only or isinstance(exc, api.Busy)
                     open_stream = _attach_to(self.client, self.session_id)
                 except KeyboardInterrupt:
                     leave = self._interrupted(run, detach_only)
@@ -394,7 +418,7 @@ class App:
             self.say(self.pal("detached — the run keeps going", "dim"))
             return EXIT_INTERRUPT
         if run.interrupts >= 2:
-            self._kill_all()
+            self._kill_all(only_if_alone=True)
             return EXIT_INTERRUPT
         self._stop_run()
         self.warn("stopping — Ctrl+C again to reset everything")
@@ -509,9 +533,26 @@ class App:
         with contextlib.suppress(api.ApiDown, api.Busy):
             self.client.stop(self.session_id)          # type: ignore[arg-type]
 
-    def _kill_all(self) -> None:
+    def _kill_all(self, *, only_if_alone: bool = False) -> bool:
+        """The global escape hatch. Resets EVERY session's in-flight state.
+
+        With ``only_if_alone`` it declines when another session is running: a
+        second Ctrl+C is a twitch, and on a shared machine it would wipe a
+        colleague's two-hour run along with your own.
+        """
+        if only_if_alone:
+            others = [s for s in self._busy_sessions() if s != self.session_id]
+            if others:
+                ids = ", ".join(f"#{s}" for s in others)
+                self.warn(f"not resetting everything — {ids} still running on this box")
+                self.warn("this chat is stopped; /kill-all resets every session")
+                return False
+        result: dict = {}
         with contextlib.suppress(api.ApiDown, api.Busy):
-            self.client.kill_all()
+            result = self.client.kill_all() or {}
+        count = result.get("count")
+        self.ok("everything reset", f"{count} run(s)" if isinstance(count, int) else "")
+        return True
 
     # ── the loop ───────────────────────────────────────────────────────────
 
@@ -529,8 +570,7 @@ class App:
             except KeyboardInterrupt:
                 interrupts += 1
                 if interrupts >= 2:
-                    self._kill_all()
-                    self.warn("everything reset")
+                    self._kill_all(only_if_alone=True)
                     interrupts = 0
                 continue
             except EOFError:
@@ -573,6 +613,7 @@ class App:
             "/sessions": lambda _a: self.say(*_session_lines(self._sessions_safe(), self.pal)),
             "/resume": self._slash_resume,
             "/stop": self._slash_stop,
+            "/kill-all": self._slash_kill_all,
             "/compact": self._slash_compact,
             "/ctx": lambda _a: self.say(*self._ctx_lines()),
             "/integrations": lambda a: self.say(*self.integrations_command(a or ["ls"])),
@@ -619,6 +660,18 @@ class App:
     def _slash_stop(self, _args: list[str]) -> None:
         self._stop_run()
         self.ok("stopped")
+
+    def _slash_kill_all(self, _args: list[str]) -> None:
+        """Deliberate, global reset — it asks, because it is not local."""
+        others = [s for s in self._busy_sessions() if s != self.session_id]
+        if others and self.interactive_stdin:
+            ids = ", ".join(f"#{s}" for s in others)
+            self.say(f"{self.pal('!', 'warn')} this resets EVERY session on this box, "
+                     f"including {ids}.")
+            if self.ask("  type 'yes' to continue: ").lower() != "yes":
+                self.warn("left alone")
+                return
+        self._kill_all()
 
     def _slash_compact(self, _args: list[str]) -> None:
         self.client.compact(self.session_id)          # type: ignore[arg-type]
@@ -807,8 +860,11 @@ class App:
         if action == "status":
             return self._box_status()
         if action in ("up", "restart"):
+            if action == "restart":
+                self._refuse_if_busy("restart the sandbox")
             return self._box_up(recreate=action == "restart")
         if action == "down":
+            self._refuse_if_busy("stop the sandbox")
             box.stop(self.cfg)
             self.ok("sandbox stopped")
             return EXIT_OK
