@@ -14,6 +14,9 @@ from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[3] / "packages" / "aiforge_cli" / "aiforge_cli"
 ALLOWED_THIRD_PARTY = {"httpx", "prompt_toolkit"}
+# _entry.py imports `aiforge_cli.cli` absolutely: PyInstaller runs the frozen
+# entry script as top-level __main__, where a relative import has no parent.
+OWN = {"aiforge_cli"}
 
 
 def _imports(path: Path) -> set[str]:
@@ -39,5 +42,6 @@ def test_the_dependency_set_is_the_declared_one():
     for path in SRC.glob("*.py"):
         third_party |= {i for i in _imports(path)
                         if i not in stdlib and not i.startswith("_")}
+    third_party -= OWN
     assert third_party <= ALLOWED_THIRD_PARTY, (
         f"undeclared dependency in the CLI: {sorted(third_party - ALLOWED_THIRD_PARTY)}")

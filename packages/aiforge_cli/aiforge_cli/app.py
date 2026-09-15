@@ -241,10 +241,10 @@ class App:
             raise Exit(EXIT_USAGE, "no chat to send to")
         self.render.begin_turn()
         self.say("", self.render.user_line(message))
-        stream = self.client.send(self.session_id, message, mode=self.mode,
-                                  quick=quick, review_edits=self.review_edits,
-                                  role=self.role)
-        return self._consume(stream)
+        return self._consume(
+            lambda: self.client.send(self.session_id, message, mode=self.mode,
+                                     quick=quick, review_edits=self.review_edits,
+                                     role=self.role))
 
     def attach(self, session_id: int) -> int:
         """Watch a run that belongs to another producer.
@@ -256,19 +256,28 @@ class App:
         self.session_id = session_id
         self.render.begin_turn()
         self.render.begin_replay()
-        return self._consume(self.client.attach(session_id), detach_only=True)
+        return self._consume(lambda: self.client.attach(session_id), detach_only=True)
 
-    def _consume(self, stream, *, detach_only: bool = False) -> int:
-        """Render an event stream, handling keys and reconnects as it goes."""
+    def _consume(self, open_stream: Callable[[], object], *,
+                 detach_only: bool = False) -> int:
+        """Render an event stream, handling keys and reconnects as it goes.
+
+        Takes a factory rather than an iterator: opening the stream is itself a
+        request that can fail (a 500, a sandbox that just went away), and that
+        failure deserves the same reconnect path as one that arrives mid-run.
+        """
         assert self.session_id is not None
         status = EXIT_OK
         interrupts = 0
         reconnects = 0
         steer: list[str] = []
         last_spin = 0.0
+        stream: object | None = None
         with KeyWatcher() as kb:
             while True:
                 try:
+                    if stream is None:
+                        stream = open_stream()
                     for event in stream:
                         if self.cfg.json_events:
                             self.out.write(json.dumps(event) + "\n")
@@ -299,7 +308,7 @@ class App:
                               f"({reconnects}/{MAX_RECONNECTS})")
                     self._sleep(wait)
                     self.render.begin_replay()
-                    stream = self.client.attach(self.session_id)
+                    stream = self.client.attach(self.session_id)   # type: ignore[assignment]
                 except KeyboardInterrupt:
                     interrupts += 1
                     if detach_only:

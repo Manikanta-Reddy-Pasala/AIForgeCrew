@@ -16,11 +16,11 @@ def _cfg(tmp_path, repo=None) -> Config:
 def test_the_generated_compose_publishes_loopback_and_mounts_the_config_dir(tmp_path):
     cfg = _cfg(tmp_path)
     text = box.render_compose(cfg, [], env={}, plat="posix")
-    assert "image: aiforge-sandbox:local" in text
+    assert "image: 'aiforge-sandbox:local'" in text
     # Published port, not host networking: Docker Desktop has no usable host
     # network on macOS or Windows, and the API must answer on 127.0.0.1.
-    assert '"127.0.0.1:8799:8799"' in text
-    assert f'"{cfg.config_dir}:/home/aiforge/.aiforge"' in text
+    assert "'127.0.0.1:8799:8799'" in text
+    assert f"'{cfg.config_dir}:/home/aiforge/.aiforge'" in text
     assert "aiforge-state:/var/lib/aiforge" in text
 
 
