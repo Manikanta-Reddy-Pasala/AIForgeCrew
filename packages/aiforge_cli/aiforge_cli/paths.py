@@ -184,7 +184,9 @@ def mount_refusal(path: str, *, home: str | None = None, platform: str | None = 
     if any(c in path for c in "\n\r\t"):
         return "needs a path without a newline or tab"
     if win:
-        if len(path) < 3 or path[1] != ":" or ":" in path[2:]:
+        # `C:work` is drive-RELATIVE: it resolves against that drive's own
+        # working directory, so it names different folders at different times.
+        if len(path) < 3 or path[1] != ":" or path[2] != "\\" or ":" in path[2:]:
             return "needs an absolute path"
         if len(path.rstrip("\\")) <= 2:
             return "is a whole drive — too broad"
