@@ -19,13 +19,12 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from . import box
+from . import box, paths, sessions
 from . import client as api
 from . import commands as tbl
 from . import help as helptext
 from . import integrations as integ
 from . import mounts as mountlist
-from . import paths, sessions
 from .colors import Palette
 from .config import Config, approvals_file
 from .keys import CTRL_C, ENTER, ESC, KeyWatcher

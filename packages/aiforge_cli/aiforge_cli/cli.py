@@ -11,9 +11,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import __version__, colors
+from . import __version__, colors, completion, config
 from . import commands as tbl
-from . import completion, config
 from . import help as helptext
 from .app import EXIT_OK, EXIT_USAGE, App, Exit
 
