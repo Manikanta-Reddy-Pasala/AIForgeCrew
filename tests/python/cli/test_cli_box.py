@@ -65,7 +65,7 @@ def test_the_compose_file_is_not_written_where_the_box_can_read_it(tmp_path,
                                                                    monkeypatch):
     cfg = _cfg(tmp_path)
     env = {"XDG_CONFIG_HOME": str(tmp_path / "cfg")}
-    path = box.compose_path(cfg, env)
+    path = box.compose_path(env)
     # ~/.aiforge is mounted INTO the box; the compose file lists every host
     # mount and every passthrough env value, proxy credentials included.
     assert str(cfg.config_dir) not in str(path)

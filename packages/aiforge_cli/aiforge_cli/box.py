@@ -121,7 +121,7 @@ def container_state(exe: str) -> str:
 # ── compose file the CLI owns ─────────────────────────────────────────────
 
 
-def compose_path(cfg: Config, env: dict[str, str] | None = None) -> Path:
+def compose_path(env: dict[str, str] | None = None) -> Path:
     """Next to the approvals file, NOT inside ~/.aiforge.
 
     ~/.aiforge is bind-mounted into the box, so a compose file written there
@@ -197,7 +197,7 @@ def _box_config_dir(box_home: str) -> str:
 
 
 def write_compose(cfg: Config, *, env: dict[str, str] | None = None) -> Path:
-    path = compose_path(cfg, env)
+    path = compose_path(env)
     path.parent.mkdir(parents=True, exist_ok=True)
     mount_paths = mountlist.effective(cfg.mounts_file, approvals_file(env))
     path.write_text(render_compose(cfg, mount_paths, env=env))
@@ -311,7 +311,7 @@ def stop(cfg: Config) -> None:
         subprocess.run(["bash", str(cfg.repo / RUN_SH), "--stop"],
                        cwd=str(cfg.repo), capture_output=True, text=True)
         return
-    subprocess.run([exe, "compose", "-p", PROJECT, "-f", str(compose_path(cfg)), "stop"],
+    subprocess.run([exe, "compose", "-p", PROJECT, "-f", str(compose_path()), "stop"],
                    capture_output=True, text=True)  # noqa: S603 — fixed argv
 
 

@@ -38,6 +38,23 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _verbosity(opts) -> int:
+    if opts.verbose:
+        return 1
+    return -1 if opts.quiet else 0
+
+
+def _help_topic(command: str | None, rest: list[str]) -> str | None:
+    """What `-h` should describe: the argument, else the command itself.
+
+    `aiforge mount -h` must document mount, not reprint the index — and only
+    `help` puts its topic in `rest`.
+    """
+    if rest:
+        return rest[0]
+    return command if command != "help" else None
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     parser = build_parser()
@@ -45,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
         opts = parser.parse_args(argv)
     except SystemExit:
         return EXIT_USAGE
-    opts.verbosity = 1 if opts.verbose else (-1 if opts.quiet else 0)
+    opts.verbosity = _verbosity(opts)
     colors.enable_windows_ansi()
     pal = colors.Palette(False) if opts.no_color else colors.detect()
     cfg = config.load(opts)
@@ -58,9 +75,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"aiforge {__version__}")
         return EXIT_OK
     if opts.help or command == "help":
-        # `aiforge mount -h` must describe mount, not reprint the index: the
-        # command word is in `command`, and only `help` puts it in `rest`.
-        topic = rest[0] if rest else (command if command != "help" else None)
+        topic = _help_topic(command, rest)
         print(helptext.command_help(pal, topic) if topic
               else helptext.top_help(pal, version=__version__))
         return EXIT_OK

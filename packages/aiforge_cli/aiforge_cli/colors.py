@@ -96,8 +96,11 @@ def detect(stream=None, env: dict[str, str] | None = None) -> Palette:
     # an empty TERM as a dumb terminal.
     if not env.get("TERM") and not _looks_windows(env):
         return Palette(False)
+    return Palette(_is_tty(stream))
+
+
+def _is_tty(stream) -> bool:
     try:
-        tty = bool(stream.isatty())
+        return bool(stream.isatty())
     except Exception:  # noqa: BLE001 — a stub stream without isatty()
-        tty = False
-    return Palette(tty)
+        return False
