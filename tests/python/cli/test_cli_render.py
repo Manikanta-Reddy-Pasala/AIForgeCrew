@@ -70,12 +70,66 @@ def test_the_final_message_is_not_printed_twice_after_streaming():
     assert "\n".join(lines).count("Added retry.") == 0
 
 
-def test_a_message_that_extends_the_stream_prints_only_the_remainder():
+def test_a_message_that_extends_the_stream_continues_the_same_line():
     events = [{"type": "delta", "text": "Added "},
               {"type": "message", "text": "Added retry to the push sync."}]
-    _, lines, streamed = _run(events)
-    assert streamed == "Added "
-    assert lines[0] == "retry to the push sync."
+    r = Renderer(PLAIN)
+    r.begin_turn()
+    streamed = ""
+    lines = []
+    for ev in events:
+        op = r.handle(ev)
+        streamed += op.stream
+        lines += op.lines
+    # As a `lines` entry the remainder would close the streamed row first and
+    # split the answer mid-sentence.
+    assert streamed == "Added retry to the push sync."
+    assert lines == [""]
+
+
+def test_the_final_usage_event_does_not_wipe_the_context_meter():
+    # The last usage event carries only the llm_* counters.
+    r = Renderer(PLAIN)
+    r.begin_turn()
+    r.handle({"type": "usage", "pct": 42.0, "window_tokens": 128000,
+              "context_tokens": 53000})
+    r.handle({"type": "usage", "llm_turn": 9, "final": True})
+    done = r.handle({"type": "done", "elapsed_s": 2.0})
+    assert "ctx 42%" in done.lines[0]
+
+
+def test_the_context_meter_reports_tokens_as_well_as_a_percentage():
+    r = Renderer(PLAIN)
+    r.begin_turn()
+    op = r.handle({"type": "usage", "pct": 18.0, "window_tokens": 128000,
+                   "context_tokens": 23000, "llm_session": 7})
+    assert "ctx 18% (23k/128k)" in op.tail
+    assert "req 7" in op.tail
+
+
+def test_quiet_still_prints_the_answer_after_a_reconnect():
+    r = Renderer(PLAIN, verbosity=-1)
+    r.begin_turn()
+    r.begin_replay()
+    out = ""
+    lines = []
+    for ev in [{"type": "delta", "text": "the "}, {"type": "delta", "text": "answer"},
+               {"type": "message", "text": "the answer"}]:
+        op = r.handle(ev)
+        out += op.stream
+        lines += op.lines
+    assert "the answer" in out + "\n".join(lines)
+
+
+def test_two_identical_untagged_calls_are_both_counted():
+    events = [{"type": "tool", "name": "run_command", "args": {"cmd": "ls"},
+               "result": {}},
+              {"type": "tool", "name": "run_command", "args": {"cmd": "ls"},
+               "result": {}},
+              {"type": "done"}]
+    _, lines, _ = _run(events)
+    assert len([li for li in lines if "run_command" in li]) == 2
+    assert "2 tools" in lines[-1]
 
 
 def test_a_failed_tool_is_marked_and_counted():

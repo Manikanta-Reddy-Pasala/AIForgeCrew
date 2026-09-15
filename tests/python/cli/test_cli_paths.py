@@ -82,3 +82,63 @@ def test_a_project_folder_next_to_a_guarded_one_is_still_allowed(tmp_path):
     (home / "work").mkdir(parents=True)
     assert paths.mount_refusal(str(home / "work"), home=str(home),
                                platform="posix") is None
+
+
+def test_a_dotdot_path_cannot_walk_into_a_guarded_directory(tmp_path):
+    # ~/work/../.ssh used to slip past every guard as a string while the
+    # filesystem resolved it perfectly well.
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    (home / "work").mkdir()
+    walked = paths.normalize_host("../.ssh", cwd=str(home / "work"), home=str(home),
+                                  platform="posix")
+    assert walked == str(home / ".ssh")
+    assert paths.mount_refusal(walked, home=str(home), platform="posix") is not None
+
+
+def test_the_parent_of_home_is_refused(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    parent = paths.normalize_host(str(home / ".."), home=str(home), platform="posix")
+    assert paths.mount_refusal(parent, home=str(home), platform="posix") is not None
+
+
+def test_case_is_folded_where_the_filesystem_folds_it(tmp_path):
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    why = paths.mount_refusal(str(home / ".SSH"), home=str(home), platform="darwin")
+    assert why is not None and "credentials" in why
+
+
+def test_a_symlink_into_a_guarded_directory_is_refused(tmp_path):
+    import os
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    (home / "work").mkdir()
+    link = home / "work" / "keys"
+    os.symlink(home / ".ssh", link)
+    # docker resolves the link when it binds, so the guard has to as well.
+    why = paths.mount_refusal(str(link), home=str(home), platform="posix")
+    assert why is not None and "credentials" in why
+
+
+def test_a_folder_that_CONTAINS_a_guarded_directory_is_refused(tmp_path):
+    home = tmp_path / "home"
+    (home / ".aws").mkdir(parents=True)
+    why = paths.mount_refusal(str(home), home=str(home), platform="posix")
+    assert why is not None
+
+
+def test_var_is_refused_because_var_run_is(tmp_path):
+    # /var/run/docker.sock inside the box is a way out of it.
+    assert paths.mount_refusal("/var", home=str(tmp_path), platform="posix") is not None
+
+
+def test_a_windows_drive_relative_path_is_not_treated_as_absolute():
+    assert "absolute" in paths.mount_refusal(r"C:work", home=r"C:\Users\m",
+                                             platform="nt")
+
+
+def test_a_newline_in_a_path_is_refused(tmp_path):
+    assert "newline" in paths.mount_refusal("/work/we\nird", home=str(tmp_path),
+                                            platform="posix")

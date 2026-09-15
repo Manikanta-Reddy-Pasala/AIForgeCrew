@@ -134,6 +134,7 @@ class Renderer:
         self._failed = 0
         self._usage: dict[str, Any] = {}
         self._files: set[str] = set()
+        self._seq = 0
         self._elapsed: float | None = None
 
     # ── turn boundaries ────────────────────────────────────────────────────
@@ -150,10 +151,12 @@ class Renderer:
         self._failed = 0
         self._usage = {}
         self._files = set()
+        self._seq = 0
         self._elapsed = None
 
     def begin_replay(self) -> None:
         self._replay = True
+        self._seq = 0
 
     def user_line(self, text: str) -> str:
         return f"{self.pal('▸', 'user')} {text}"
@@ -201,7 +204,11 @@ class Renderer:
         # already moved, so every line looked new and the transcript doubled.
         ident = ev.get("call_id")
         if ident is None:
-            ident = json.dumps(ev.get("args"), sort_keys=True, default=str)
+            # No call_id: fall back to the position in the turn. `_seq` is
+            # reset by begin_replay(), so a replay regenerates the same keys
+            # while two genuinely identical calls still get different ones.
+            self._seq += 1
+            ident = f"#{self._seq}"
         if self._dup(f"tool:{name}:{ident}"):
             return Op()
         pending = self._tool or {}
@@ -247,11 +254,16 @@ class Renderer:
             # sits past the character count already printed.
             self._replayed += text
             self._streamed = self._replayed
+            if self.verbosity < 0:
+                # Quiet prints the final message instead, so nothing is owed —
+                # and _emitted must not move, or _on_message would decide the
+                # answer was already on screen and print nothing at all.
+                return Op()
             if len(self._replayed) <= self._emitted:
                 return Op()
             fresh = self._replayed[self._emitted:]
             self._emitted = len(self._replayed)
-            return Op(stream=fresh if self.verbosity >= 0 else "")
+            return Op(stream=fresh)
         if self.verbosity < 0:
             # Quiet prints the ANSWER and nothing else, so the fragments are
             # not accumulated here — accumulating them made _on_message think
@@ -273,11 +285,16 @@ class Renderer:
         if streamed and text == streamed.rstrip():
             return Op(lines=[""], tail=self._tail())       # already on screen
         if streamed and text.startswith(streamed):
-            return Op(lines=[text[len(streamed):], ""], tail=self._tail())
+            # The REST of the same sentence: a `lines` entry would close the
+            # streamed line first and split the answer mid-sentence.
+            return Op(stream=text[len(streamed):], lines=[""], tail=self._tail())
         return Op(lines=[*_answer_lines(text, self.pal), ""], tail=self._tail())
 
     def _on_usage(self, ev: dict[str, Any]) -> Op:
-        self._usage = {k: v for k, v in ev.items() if k != "type"}
+        # MERGE, never replace: the final usage event carries only the llm_*
+        # counters, so overwriting dropped pct/window_tokens and the context
+        # meter vanished for the rest of the turn.
+        self._usage.update({k: v for k, v in ev.items() if k != "type"})
         return Op(tail=self._tail())
 
     def _on_approval(self, ev: dict[str, Any]) -> Op:
@@ -363,7 +380,8 @@ class Renderer:
         for entry in files[:20]:
             if not isinstance(entry, dict):
                 continue
-            self._files.add(str(entry.get("path") or ""))
+            if entry.get("path"):
+                self._files.add(str(entry["path"]))
             status = str(entry.get("status") or "?")[:1]
             counts = f"+{entry.get('additions', 0)} -{entry.get('deletions', 0)}"
             lines.append(f"  {self.pal(status, 'warn')} {entry.get('path')}   "

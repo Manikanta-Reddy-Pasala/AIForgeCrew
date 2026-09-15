@@ -50,11 +50,14 @@ def test_windows_mounts_land_under_host_drive_in_single_quotes(tmp_path):
     assert r'"C:\Users' not in text
 
 
-def test_the_box_mount_list_is_joined_for_the_platform(tmp_path):
+def test_the_box_mount_list_is_always_colon_joined(tmp_path):
+    # The reader is inside the box (sandbox_mounts splits on ":"), and these
+    # are box paths, where a Windows drive colon is already /host/<drive>.
     cfg = _cfg(tmp_path)
     nt = box.render_compose(cfg, [r"C:\a", r"D:\b"], env={}, plat="nt")
     line = next(li for li in nt.splitlines() if "AIFORGE_MOUNTS" in li)
-    assert ";" in line and "/host/c/a" in line and "/host/d/b" in line
+    assert "/host/c/a:/host/d/b" in line
+    assert ";" not in line
 
 
 def test_the_compose_file_is_not_written_where_the_box_can_read_it(tmp_path,

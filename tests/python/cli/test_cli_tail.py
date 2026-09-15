@@ -58,3 +58,22 @@ def test_truncation_counts_columns_not_escape_bytes():
     cut = _truncate(coloured, 8)
     assert _visible_len(cut) == 8
     assert cut.endswith("\033[0m")     # never cut mid-escape, never leak colour
+
+
+def test_a_streamed_fragment_is_separated_from_the_next_line_when_disabled():
+    # A redirect has no status line to erase, but the next permanent line still
+    # has to start on its own row instead of being glued to the fragment.
+    out = io.StringIO()
+    tail = Tail(out, enabled=False)
+    tail.stream("I'll read the file")
+    tail.write(["✓ read_file"])
+    assert out.getvalue() == "I'll read the file\n✓ read_file\n"
+
+
+def test_two_streams_in_a_row_stay_on_one_line():
+    out = io.StringIO()
+    tail = Tail(out, enabled=True)
+    tail.stream("half ")
+    tail.stream("an answer")
+    assert out.getvalue().endswith("half an answer")
+    assert out.getvalue().count("\n") == 0

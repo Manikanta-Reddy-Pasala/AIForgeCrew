@@ -90,15 +90,13 @@ class Tail:
 
     def clear(self) -> None:
         """Erase the status line, or close a streamed line, leaving neither."""
-        if not self.enabled:
-            self._shown = ""
-            return
         if self._dirty:
             self._out.write("\n")
             self._dirty = False
-        else:
+            self._out.flush()
+        elif self.enabled:
             self._out.write("\r\033[2K")
-        self._out.flush()
+            self._out.flush()
         self._shown = ""
 
     # ── committing permanent output ────────────────────────────────────────
@@ -109,8 +107,7 @@ class Tail:
         if not lines:
             return
         held = self._shown
-        if self.enabled:
-            self.clear()
+        self.clear()
         for line in lines:
             self._out.write(line + "\n")
         self._out.flush()
@@ -125,8 +122,10 @@ class Tail:
             self._out.write("\r\033[2K")     # take the status line's row
         self._out.write(text)
         self._out.flush()
-        if self.enabled:
-            self._dirty = True
+        # Tracked even when disabled: a redirect has no status line to erase,
+        # but the next permanent line still has to start on its own row rather
+        # than being glued onto the streamed fragment.
+        self._dirty = True
 
     def _draw(self, text: str) -> None:
         frame = next(self._frames)

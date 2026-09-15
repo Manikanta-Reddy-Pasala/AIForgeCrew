@@ -12,9 +12,10 @@ import sys
 from pathlib import Path
 
 from . import __version__, colors, completion, config
+from . import client as api
 from . import commands as tbl
 from . import help as helptext
-from .app import EXIT_OK, EXIT_USAGE, App, Exit
+from .app import EXIT_ENV, EXIT_OK, EXIT_USAGE, App, Exit
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -79,6 +80,13 @@ def main(argv: list[str] | None = None) -> int:
         if exc.message:
             print(exc.message, file=sys.stderr)
         return exc.code
+    except api.ApiDown as exc:
+        # The sandbox answered badly or stopped answering. One line and an
+        # environment status, not a traceback.
+        print(f"aiforge: the sandbox API failed — {exc}\n"
+              f"  aiforge box status    then   aiforge box logs --tail 50",
+              file=sys.stderr)
+        return EXIT_ENV
     except KeyboardInterrupt:
         return 130
     finally:
@@ -120,10 +128,14 @@ def _dispatch(app: App, command: str | None, rest: list[str], opts) -> int:
         print("\n".join(_session_lines(app._sessions_safe(), app.pal)))
         return EXIT_OK
 
+    if command == "attach":
+        # No boot: attaching must not create a session for this folder, and
+        # must never offer to restart the box under the run being watched.
+        app.ensure_api()
+        return app.attach(int(rest[0]))
+
     app.boot()
 
-    if command == "attach":
-        return app.attach(int(rest[0]))
     if command == "resume":
         app.session_id = int(rest[0])
         return app.interactive()

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import posixpath
+import sys
 
 BOX_PREFIX = "/host"
 
@@ -22,10 +23,13 @@ def _is_windows(platform: str | None = None) -> bool:
 
 def normalize_host(path: str, *, home: str | None = None, cwd: str | None = None,
                    platform: str | None = None) -> str:
-    """Absolute, no trailing separator, ``~`` expanded — as typed otherwise.
+    """Absolute, collapsed, no trailing separator, ``~`` expanded.
 
-    Symlinks are deliberately NOT resolved: the user mounts the path they said,
-    and that is the path they will see inside the box.
+    ``..`` is collapsed HERE, before anything is compared: without it
+    ``~/work/../.ssh`` slipped past every guard as a string while the
+    filesystem cheerfully resolved it. Symlinks are left alone — the user
+    mounts the path they typed and that is the path they see inside the box —
+    so the guards resolve them separately (see :func:`mount_refusal`).
     """
     home = os.path.expanduser("~") if home is None else home
     if path.startswith("~"):
@@ -33,15 +37,28 @@ def normalize_host(path: str, *, home: str | None = None, cwd: str | None = None
     win = _is_windows(platform)
     if win:
         path = path.replace("/", "\\")
-        absolute = len(path) > 1 and path[1] == ":"
+        # `C:work` is drive-RELATIVE on Windows, not absolute: it resolves
+        # against that drive's own working directory, which is not something to
+        # hand a container.
+        absolute = len(path) > 2 and path[1] == ":" and path[2] == "\\"
     else:
         absolute = path.startswith("/")
     if not absolute:
         path = os.path.join(cwd if cwd is not None else os.getcwd(), path)
     sep = "\\" if win else "/"
+    path = _normpath(path, win)
     while len(path) > 1 and path.endswith(sep) and not path.endswith(":" + sep):
         path = path[:-1]
     return path
+
+
+def _normpath(path: str, win: bool) -> str:
+    """Collapse ``.``, ``..`` and duplicate separators, for either flavour."""
+    if win:
+        drive, _, rest = path.partition(":")
+        collapsed = posixpath.normpath(rest.replace("\\", "/"))
+        return f"{drive}:" + collapsed.replace("/", "\\")
+    return posixpath.normpath(path)
 
 
 def to_box(path: str, *, platform: str | None = None) -> str:
@@ -64,9 +81,23 @@ def to_host(path: str, *, platform: str | None = None) -> str:
     return f"{drive.upper()}:\\" + tail.replace("/", "\\")
 
 
+def _case_insensitive(platform: str | None = None) -> bool:
+    """Whether path comparison must fold case.
+
+    Windows always, and macOS by default — APFS is case-INsensitive, so
+    ``~/.SSH`` and ``~/.ssh`` are the same directory and a case-sensitive
+    guard let the second one through under the first one's name.
+    """
+    if _is_windows(platform):
+        return True
+    if platform is None:
+        return sys.platform == "darwin"
+    return platform == "darwin"
+
+
 def _within(child: str, parent: str, *, platform: str | None = None) -> bool:
     sep = "\\" if _is_windows(platform) else "/"
-    if _is_windows(platform):
+    if _case_insensitive(platform):
         child, parent = child.lower(), parent.lower()
     if child == parent:
         return True
@@ -94,21 +125,41 @@ GUARDED_ABSOLUTE = ("/etc", "/var/run", "/run", "/proc", "/sys", "/boot", "/dev"
 
 
 def _guarded(path: str, home: str, *, platform: str | None = None) -> str | None:
-    """The reason this folder is off limits, or None."""
-    import os.path as _p
-    for name in GUARDED_HOME_DIRS:
-        guard = _p.join(home, name)
-        if _within(path, guard, platform=platform) or _within(guard, path,
-                                                              platform=platform):
-            if name == ".config":
-                return ("holds the host's mount approvals (~/.config/aiforge) — "
-                        "mounting it would let the sandbox approve its own mounts")
-            return f"holds credentials (~/{name})"
-    if not _is_windows(platform):
-        for guard in GUARDED_ABSOLUTE:
-            if _within(path, guard, platform=platform):
-                return f"is inside {guard} — system files, not a project"
+    """The reason this folder is off limits, or None.
+
+    Checked in BOTH directions — a guard inside the candidate is as bad as the
+    candidate inside a guard, because docker binds the whole tree either way —
+    and against the resolved path as well as the typed one, so a symlink is not
+    a way around the list.
+    """
+    for candidate in _candidates(path):
+        for name in GUARDED_HOME_DIRS:
+            guard = os.path.join(home, name)
+            if (_within(candidate, guard, platform=platform)
+                    or _within(guard, candidate, platform=platform)):
+                if name == ".config":
+                    return ("holds the host's mount approvals (~/.config/aiforge) — "
+                            "mounting it would let the sandbox approve its own mounts")
+                return f"holds credentials (~/{name})"
+        if not _is_windows(platform):
+            for guard in GUARDED_ABSOLUTE:
+                if (_within(candidate, guard, platform=platform)
+                        or _within(guard, candidate, platform=platform)):
+                    return f"is inside {guard} — system files, not a project"
     return None
+
+
+def _candidates(path: str) -> tuple[str, ...]:
+    """The typed path and where it actually leads.
+
+    docker resolves a symlinked bind at the host, so `ln -s ~/.ssh keys` would
+    otherwise mount the keys under a name no guard recognises.
+    """
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        return (path,)
+    return (path,) if real == path else (path, real)
 
 
 def mount_refusal(path: str, *, home: str | None = None, platform: str | None = None) -> str | None:
@@ -128,6 +179,10 @@ def mount_refusal(path: str, *, home: str | None = None, platform: str | None = 
     bad = '#"$' if win else ':#"\\$'
     if any(c in path for c in bad) or (not win and ":" in path):
         return f"needs a path without {' '.join(bad)}"
+    # A newline would split the single-quoted compose scalar across lines and
+    # the file would not parse — a folder nobody can mount is better told so.
+    if any(c in path for c in "\n\r\t"):
+        return "needs a path without a newline or tab"
     if win:
         if len(path) < 3 or path[1] != ":" or ":" in path[2:]:
             return "needs an absolute path"
@@ -140,6 +195,8 @@ def mount_refusal(path: str, *, home: str | None = None, platform: str | None = 
             return "is the whole filesystem — too broad"
     if _within(home, path, platform=platform):
         return "is your home folder (or above it) — too broad"
+    if any(_within(home, c, platform=platform) for c in _candidates(path)):
+        return "contains your home folder — too broad"
     guard = _guarded(path, home, platform=platform)
     if guard is not None:
         return guard

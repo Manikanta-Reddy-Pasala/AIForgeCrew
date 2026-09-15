@@ -115,9 +115,13 @@ class App:
 
     # ── boot ───────────────────────────────────────────────────────────────
 
-    def boot(self) -> None:
+    def ensure_api(self) -> None:
+        """The sandbox, and nothing else — no mount question, no session."""
         if not self.client.healthy():
             self._start_box()
+
+    def boot(self) -> None:
+        self.ensure_api()
         mounted = self._ensure_mounted()
         self._resolve_session(mounted)
 
@@ -278,6 +282,7 @@ class App:
         status = EXIT_OK
         interrupts = 0
         reconnects = 0
+        interrupted = False
         steer: list[str] = []
         last_spin = 0.0
         stream: object | None = None
@@ -292,6 +297,11 @@ class App:
                             self.out.flush()
                             if event.get("type") == "error":
                                 status = EXIT_AGENT
+                            if event.get("type") == "approval":
+                                # Still answered: a machine-readable stream that
+                                # silently ignores the gate hangs until the
+                                # server's approval timeout.
+                                self._answer_approval(event, kb)
                             finished = event.get("type") in ("done", "stopped")
                         else:
                             status, finished = self._apply(event, status, kb)
@@ -323,6 +333,7 @@ class App:
                     open_stream = _attach_to(self.client, self.session_id)
                 except KeyboardInterrupt:
                     interrupts += 1
+                    interrupted = True
                     if detach_only:
                         self.tail.clear()
                         self.say(self.pal("detached — the run keeps going", "dim"))
@@ -333,8 +344,13 @@ class App:
                         return EXIT_INTERRUPT
                     self._stop_run()
                     self.warn("stopping — Ctrl+C again to reset everything")
+                    # The interrupt arrived while blocked on the read, so that
+                    # generator is finished. Re-attach to watch the stop land
+                    # (and to leave a second Ctrl+C somewhere to arrive).
+                    stream = None
+                    open_stream = _attach_to(self.client, self.session_id)
         self.tail.clear()
-        return status
+        return EXIT_INTERRUPT if interrupted else status
 
     def _apply(self, event: dict, status: int, kb: KeyWatcher) -> tuple[int, bool]:
         op = self.render.handle(event)
@@ -364,6 +380,10 @@ class App:
                 self.warn("stopping…")
                 self._stop_run()
             elif key == CTRL_C:
+                if detach_only:
+                    self.tail.clear()
+                    self.say(self.pal("detached — the run keeps going", "dim"))
+                    raise KeyboardInterrupt
                 interrupts += 1
                 if interrupts >= 2:
                     self._kill_all()
@@ -377,6 +397,8 @@ class App:
                 if text:
                     self._steer(text)
             elif key in ("\x7f", "\b"):
+                if detach_only:
+                    continue
                 steer = steer[:-1]
                 self.tail.set(f"steer: {''.join(steer)}  (enter to send)"
                               if steer else None)

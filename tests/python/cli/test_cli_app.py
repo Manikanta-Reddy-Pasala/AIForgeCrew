@@ -380,3 +380,47 @@ def test_an_attached_run_is_read_only(tmp_path):
     app._keys(kb, 0, [], True)
     assert not [c for c in client.calls if c[0] == "stop"]
     assert EXIT_INTERRUPT == 130
+
+
+def test_an_interrupted_run_does_not_report_success(tmp_path):
+    class Interrupting(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.stopped = False
+
+        def send(self, session_id, content, **kw):
+            def gen():
+                yield {"type": "thought", "text": "working"}
+                raise KeyboardInterrupt
+            return gen()
+
+        def attach(self, session_id):
+            return iter([{"type": "stopped"}])
+
+    client = Interrupting()
+    app = _app(tmp_path, client, answers=["n"])
+    app.boot()
+    assert app.send("go") == EXIT_INTERRUPT
+    assert ("stop", 7) in client.calls
+
+
+def test_an_attached_run_cannot_be_reset_from_the_keyboard(tmp_path):
+    client = FakeClient()
+    app = _app(tmp_path, client, answers=["n"])
+    app.boot()
+    source: queue.Queue[str] = queue.Queue()
+    source.put("\x03")
+    kb = KeyWatcher(source=source)
+    with pytest.raises(KeyboardInterrupt):
+        app._keys(kb, 0, [], True)
+    assert not [c for c in client.calls if c[0] in ("stop", "kill_all")]
+
+
+def test_json_mode_still_answers_an_approval(tmp_path):
+    client = FakeClient(events=[{"type": "approval", "id": 2, "tool": "file_write"},
+                                {"type": "done"}])
+    app = _app(tmp_path, client, answers=["n", ""], json_events=True)
+    app.boot()
+    app.send("go")
+    # Ignoring the gate in JSON mode hung the run until the server timed out.
+    assert ("approve", 7, 2, "reject") in client.calls
