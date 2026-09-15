@@ -39,7 +39,11 @@ _REASON_START = re.compile(
 # of tool OUTPUT, which a title never has.
 _TOOL_OUTPUT = re.compile(
     r"^(?:[~/]|[a-z]:[\\/])"                       # a path: /home/x, ~/y, C:\z
-    r"|^\S+: (?:no such|not found|permission denied|command not found)"
+    # The keyword is not always right after "cmd:" — `ls: cannot access 'x':
+    # No such file or directory` puts it at the end — so these are searched
+    # for anywhere in the line.
+    r"|(?:no such file|not found|permission denied|cannot access|cannot open"
+    r"|command not found|is a directory)"
     r"|^(?:error|fatal|traceback|usage):"
     r"|^\S+\.(?:py|txt|json|md|ya?ml|log|sh|java|ts|tsx|js)$"   # a bare filename
     r"|^[-+]?\d+(?:\.\d+)?$",                       # a bare number
