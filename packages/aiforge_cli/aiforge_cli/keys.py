@@ -101,9 +101,16 @@ class KeyWatcher:
         self._stop = threading.Event()
         self.__enter__()
 
-    def drain(self) -> None:
+    def drain(self) -> int:
+        """Throw away anything typed but unread; returns how much.
+
+        Called before a prompt takes the terminal back, so keystrokes meant for
+        the run do not arrive as an answer to a question.
+        """
+        dropped = 0
         while self.get() is not None:
-            pass
+            dropped += 1
+        return dropped
 
     def get(self) -> str | None:
         """The next keypress, or None if nothing is waiting."""

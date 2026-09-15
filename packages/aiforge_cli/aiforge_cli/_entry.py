@@ -13,4 +13,9 @@ import sys
 from aiforge_cli.cli import main
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        # 130 is what a shell reads as "the user stopped it". main() lets the
+        # interrupt through on purpose; this is the process boundary.
+        sys.exit(130)

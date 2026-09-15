@@ -45,6 +45,14 @@ class _Cache:
         return value
 
 
+def _at_reference(text: str) -> bool:
+    """True when the cursor sits in an `@path` reference."""
+    at = text.rfind("@")
+    if at == -1 or "/" in text[:at]:
+        return False
+    return at == 0 or text[at - 1].isspace()
+
+
 class ChatCompleter(Completer):
     def __init__(self, *, models: Callable[[], list[tuple[str, str]]],
                  sessions: Callable[[], list[tuple[str, str]]]):
@@ -56,21 +64,27 @@ class ChatCompleter(Completer):
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
-        # @file — a path the user wants the agent to read, completed in place.
-        at = text.rfind("@")
-        if at != -1 and (at == 0 or text[at - 1].isspace()) and "/" not in text[:at]:
-            yield from self._delegate(self._paths, document, text[at + 1:], complete_event)
+        if _at_reference(text):
+            # @file — a path the user wants the agent to read, completed in place.
+            yield from self._delegate(self._paths, document, text[text.rfind("@") + 1:],
+                                      complete_event)
             return
         if not text.startswith("/"):
             return
         parts = text.split()
         if len(parts) <= 1 and not text.endswith(" "):
-            word = parts[0] if parts else "/"
-            for cmd in tbl.SLASH:
-                if cmd.name.startswith(word):
-                    yield Completion(cmd.name, start_position=-len(word),
-                                     display=cmd.name, display_meta=cmd.help)
+            yield from self._commands(parts[0] if parts else "/")
             return
+        yield from self._arguments(document, text, parts, complete_event)
+
+    @staticmethod
+    def _commands(word: str):
+        for cmd in tbl.SLASH:
+            if cmd.name.startswith(word):
+                yield Completion(cmd.name, start_position=-len(word),
+                                 display=cmd.name, display_meta=cmd.help)
+
+    def _arguments(self, document, text: str, parts: list[str], complete_event):
         cmd = tbl.by_name(parts[0], tbl.SLASH)
         if cmd is None:
             return

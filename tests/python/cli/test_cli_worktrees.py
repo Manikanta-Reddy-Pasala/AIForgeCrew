@@ -66,7 +66,8 @@ def test_git_runs_inside_the_box_so_the_host_needs_no_git():
     git.list("/home/ai/work/repo")
     argv = runner.calls[0]
     assert argv[:2] == ["docker", "exec"]
-    assert "aiforge" in argv and "git" in argv
+    assert "aiforge" in argv
+    assert "git" in argv
 
 
 def test_the_box_acts_as_the_host_user_not_root():
@@ -77,7 +78,8 @@ def test_the_box_acts_as_the_host_user_not_root():
     git = wt.Git(runner=runner, as_user="1000:1000")
     git.list("/repo")
     argv = runner.calls[0]
-    assert "-u" in argv and argv[argv.index("-u") + 1] == "1000:1000"
+    assert "-u" in argv
+    assert argv[argv.index("-u") + 1] == "1000:1000"
 
 
 def test_the_host_git_is_only_a_fallback():
@@ -150,7 +152,8 @@ def test_a_new_worktree_gets_its_own_branch():
     tree = git.add("/home/ai/work/repo", "new-thing")
     assert tree.branch == "wt/new-thing"
     add = next(c for c in calls if "worktree add" in " ".join(c))
-    assert "-b" in add and "wt/new-thing" in add
+    assert "-b" in add
+    assert "wt/new-thing" in add
 
 
 def test_an_existing_branch_is_checked_out_rather_than_recreated():

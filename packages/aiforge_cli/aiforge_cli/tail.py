@@ -23,7 +23,11 @@ import sys
 from collections.abc import Iterable
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-_SGR = re.compile(r"\033\[[0-9;]*m")
+# Carriage return + erase-the-whole-line: how the status line is replaced in
+# place. Hex rather than octal escapes, which read as a file mode.
+ERASE_LINE = "\r\x1b[2K"
+RESET = "\x1b[0m"
+_SGR = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _visible_len(text: str) -> int:
@@ -52,7 +56,7 @@ def _truncate(text: str, width: int) -> str:
         out.append(text[i])
         shown += 1
         i += 1
-    return "".join(out) + "\033[0m"
+    return "".join(out) + RESET
 
 
 class Tail:
@@ -95,7 +99,7 @@ class Tail:
             self._dirty = False
             self._out.flush()
         elif self.enabled:
-            self._out.write("\r\033[2K")
+            self._out.write(ERASE_LINE)
             self._out.flush()
         self._shown = ""
 
@@ -119,7 +123,7 @@ class Tail:
         if not text:
             return
         if self.enabled and not self._dirty:
-            self._out.write("\r\033[2K")     # take the status line's row
+            self._out.write(ERASE_LINE)       # take the status line's row
         self._out.write(text)
         self._out.flush()
         # Tracked even when disabled: a redirect has no status line to erase,
@@ -132,5 +136,5 @@ class Tail:
         if self._pal is not None:
             frame = self._pal(frame, "code")
         width = max(shutil.get_terminal_size((100, 24)).columns - 2, 20)
-        self._out.write("\r\033[2K" + _truncate(f"{frame} {text}", width))
+        self._out.write(ERASE_LINE + _truncate(f"{frame} {text}", width))
         self._out.flush()

@@ -47,7 +47,9 @@ class Palette:
 
     def ctx(self, pct: float) -> str:
         """Context-usage role: green, amber past 60%, red past 85%."""
-        return "ok" if pct < 60 else ("warn" if pct < 85 else "fail")
+        if pct < 60:
+            return "ok"
+        return "warn" if pct < 85 else "fail"
 
 
 def _looks_windows(env: dict[str, str]) -> bool:
@@ -102,5 +104,6 @@ def detect(stream=None, env: dict[str, str] | None = None) -> Palette:
 def _is_tty(stream) -> bool:
     try:
         return bool(stream.isatty())
-    except Exception:  # noqa: BLE001 — a stub stream without isatty()
+    # A stub stream without isatty(), which the tests and some pipes provide.
+    except Exception:  # noqa: BLE001
         return False

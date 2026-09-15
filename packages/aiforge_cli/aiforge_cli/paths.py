@@ -209,41 +209,80 @@ def mount_refusal(path: str, *, home: str | None = None, platform: str | None = 
 
     Mirrors run.sh's own checks so both entry points refuse the same things.
     Mounting home (or anything above it) would hand the agent every dotfile,
-    every key and the approvals file itself, which is the one thing the box must
-    not be able to edit.
+    every key and the approvals file itself, which is the one thing the box
+    must not be able to edit.
     """
     home = os.path.expanduser("~") if home is None else home
     if not path:
         return "is empty"
+    return (_refuse_characters(path, platform)
+            or _refuse_shape(path, platform)
+            or _refuse_scope(path, home, platform, extra_guards)
+            or _refuse_missing(path))
+
+
+def _refuse_characters(path: str, platform: str | None) -> str | None:
+    """A mount line becomes `"<host>:<box>"` in a compose file, so a path
+    carrying the separator (or a metacharacter) would break the file rather
+    than mount the folder. Windows paths legitimately contain a drive colon
+    and backslashes, so only the rest is refused there."""
     win = _is_windows(platform)
-    # A mount line becomes `"<host>:<box>"` in a compose file, so a path
-    # carrying the separator (or a shell/compose metacharacter) would break the
-    # file rather than mount the folder. Windows paths legitimately contain a
-    # drive colon and backslashes, so only the rest is refused there.
     bad = '#"$' if win else ':#"\\$'
     if any(c in path for c in bad) or (not win and ":" in path):
         return f"needs a path without {' '.join(bad)}"
-    # A newline would split the single-quoted compose scalar across lines and
-    # the file would not parse — a folder nobody can mount is better told so.
+    # A newline would split the single-quoted compose scalar across lines.
     if any(c in path for c in "\n\r\t"):
         return "needs a path without a newline or tab"
-    if win:
+    return None
+
+
+def _refuse_shape(path: str, platform: str | None) -> str | None:
+    """Absolute, and not a whole drive or the whole filesystem."""
+    if _is_windows(platform):
         # `C:work` is drive-RELATIVE: it resolves against that drive's own
         # working directory, so it names different folders at different times.
         if len(path) < 3 or path[1] != ":" or path[2] != "\\" or ":" in path[2:]:
             return "needs an absolute path"
         if len(path.rstrip("\\")) <= 2:
             return "is a whole drive — too broad"
-    else:
-        if not path.startswith("/"):
-            return "needs an absolute path"
-        if path == "/":
-            return "is the whole filesystem — too broad"
+        return None
+    if not path.startswith("/"):
+        return "needs an absolute path"
+    if path == "/":
+        return "is the whole filesystem — too broad"
+    return None
+
+
+def _refuse_scope(path: str, home: str, platform: str | None,
+                  extra_guards: tuple[str, ...]) -> str | None:
     if _touches_home(path, home, platform=platform):
         return "is your home folder (or above it) — too broad"
-    guard = _guarded(path, home, platform=platform, extra_guards=extra_guards)
-    if guard is not None:
-        return guard
-    if not os.path.isdir(path):
-        return "is not a folder on this machine"
-    return None
+    return _guarded(path, home, platform=platform, extra_guards=extra_guards)
+
+
+def _refuse_missing(path: str) -> str | None:
+    return None if os.path.isdir(path) else "is not a folder on this machine"
+
+
+def _touches_home(path: str, home: str, *, platform: str | None = None) -> bool:
+    """Home itself, or anything containing it."""
+    for candidate in _candidates(path):
+        for target in {home, _resolve(home)}:
+            if _within(target, candidate, platform=platform):
+                return True
+    return False
+
+
+def _candidates(path: str) -> tuple[str, ...]:
+    """The typed path and where it actually leads.
+
+    docker resolves a symlinked bind at the host, so `ln -s ~/.ssh keys` would
+    otherwise mount the keys under a name no guard recognises.
+    """
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        return (path,)
+    return (path,) if real == path else (path, real)
+
+

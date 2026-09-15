@@ -135,18 +135,17 @@ def test_declining_the_mount_gives_the_chat_the_boxs_own_workspace(tmp_path):
     assert ("create", None) in client.calls
 
 
-def test_a_folder_that_must_not_be_mounted_is_explained_not_offered(tmp_path):
+def test_a_folder_that_must_not_be_mounted_is_explained_not_offered(tmp_path,
+                                                                    monkeypatch):
     home = tmp_path / "home"
     guarded = home / ".ssh"
     guarded.mkdir(parents=True)
     app = _app(tmp_path, FakeClient(), cwd=guarded)
     app.env = {"HOME": str(home)}
-    import os
-    os.environ["HOME"] = str(home)
-    try:
-        app.boot()
-    finally:
-        os.environ.pop("HOME", None)
+    # paths.mount_refusal resolves ~ itself, so HOME has to move with the
+    # fixture — monkeypatch puts it back whatever the test does.
+    monkeypatch.setenv("HOME", str(home))
+    app.boot()
     assert app._asked == []
     assert "cannot be mounted" in _printed(app)
 
@@ -200,7 +199,9 @@ def test_a_turn_streams_and_exits_zero(tmp_path):
     app.boot()
     assert app.send("go") == EXIT_OK
     out = _printed(app)
-    assert "▸ go" in out and "read_file" in out and "done thinking" in out
+    assert "▸ go" in out
+    assert "read_file" in out
+    assert "done thinking" in out
 
 
 def test_an_agent_error_exits_one(tmp_path):
@@ -223,7 +224,8 @@ def test_json_mode_puts_nothing_but_json_on_stdout(tmp_path):
     # boot ticks, warnings and the user echo all leave by stderr.
     parsed = [json.loads(line) for line in stdout.splitlines() if line.strip()]
     assert [e["type"] for e in parsed] == ["error", "done"]
-    assert "sandbox" not in stdout and "▸" not in stdout
+    assert "sandbox" not in stdout
+    assert "▸" not in stdout
 
 
 def test_the_model_a_chat_is_pinned_to_rides_every_turn(tmp_path):
@@ -353,7 +355,8 @@ def test_ctx_reports_the_request_counts_the_api_actually_returns(tmp_path):
     app.boot()
     app.slash("/ctx")
     out = _printed(app)
-    assert "turn 3" in out and "session 9" in out
+    assert "turn 3" in out
+    assert "session 9" in out
 
 
 def test_mount_ls_separates_approved_from_waiting(tmp_path):
@@ -362,7 +365,8 @@ def test_mount_ls_separates_approved_from_waiting(tmp_path):
     work.mkdir()
     app.cfg.mounts_file.write_text(f"{work}\n")
     lines = "\n".join(app.mount_command(["ls"]))
-    assert "waiting for your approval" in lines and str(work) in lines
+    assert "waiting for your approval" in lines
+    assert str(work) in lines
 
 
 def test_keys_esc_stops_and_typing_steers(tmp_path):
@@ -491,7 +495,8 @@ def test_box_down_refuses_while_another_terminal_is_running(tmp_path):
     with pytest.raises(Exit) as exc:
         app.box_command(["down"])
     assert exc.value.code == EXIT_ENV
-    assert "attach 4" in exc.value.message and "--force" in exc.value.message
+    assert "attach 4" in exc.value.message
+    assert "--force" in exc.value.message
 
 
 def test_box_restart_refuses_the_same_way(tmp_path):
@@ -633,7 +638,8 @@ def test_worktree_add_starts_a_chat_in_the_new_tree(tmp_path):
     assert app.git.added == ["fix-retry"]
     # The chat is pinned to the worktree, and nothing was mounted or restarted.
     created = [c for c in client.calls if c[0] == "create"]
-    assert created and created[-1][1].endswith("/.worktrees/fix-retry")
+    assert created
+    assert created[-1][1].endswith("/.worktrees/fix-retry")
     assert "wt/fix-retry" in _printed(app)
 
 
@@ -646,7 +652,8 @@ def test_worktree_add_takes_a_message_and_runs_it_there(tmp_path):
     app.git = FakeGit(repo=str(repo))
     app.worktree_command(["add", "fix-retry", "make", "the", "test", "deterministic"])
     sent = [c for c in client.calls if c[0] == "send"]
-    assert sent and sent[-1][2] == "make the test deterministic"
+    assert sent
+    assert sent[-1][2] == "make the test deterministic"
 
 
 def test_the_bare_form_is_add(tmp_path):
@@ -685,7 +692,8 @@ def test_a_busy_folder_offers_a_worktree_instead_of_a_second_writer(tmp_path):
     sessions.remember(app.cfg.sessions_file,
                       paths.to_box(paths.normalize_host(str(repo))), 5)
     app._resolve_session()
-    assert app.git.added and app.git.added[0].startswith("repo-")
+    assert app.git.added
+    assert app.git.added[0].startswith("repo-")
     assert app.session_id != 5                      # its own chat, its own tree
 
 

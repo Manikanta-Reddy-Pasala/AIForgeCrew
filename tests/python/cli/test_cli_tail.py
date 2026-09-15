@@ -17,7 +17,8 @@ def test_nothing_is_redrawn_when_the_output_is_not_a_terminal():
     tail.stream("text")
     text = out.getvalue()
     assert text == "a line\ntext"
-    assert "\r" not in text and "\033" not in text
+    assert "\r" not in text
+    assert "\033" not in text
 
 
 def test_a_streamed_answer_survives_the_spinner():

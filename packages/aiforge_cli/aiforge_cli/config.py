@@ -68,7 +68,8 @@ def _toml(path: Path) -> dict:
         with path.open("rb") as fh:
             data = tomllib.load(fh)
         return data.get("cli", data) if isinstance(data, dict) else {}
-    except Exception:  # noqa: BLE001 — missing, unreadable or malformed
+    # Missing, unreadable or malformed: every value it holds is also a flag.
+    except Exception:  # noqa: BLE001
         return {}
 
 

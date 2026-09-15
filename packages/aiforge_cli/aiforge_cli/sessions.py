@@ -17,7 +17,8 @@ def load(path: Path) -> dict[str, int]:
     try:
         data = json.loads(path.read_text())
         return {str(k): int(v) for k, v in data.items() if str(v).isdigit()}
-    except Exception:  # noqa: BLE001 — absent, unreadable or malformed
+    # Absent, unreadable or malformed — the cost of losing it is one new chat.
+    except Exception:  # noqa: BLE001
         return {}
 
 

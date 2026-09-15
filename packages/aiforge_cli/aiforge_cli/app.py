@@ -505,26 +505,33 @@ class App:
             # different exit codes.
             raise KeyboardInterrupt
         if key == ESC:
-            if detach_only:
-                self.warn("attached read-only — Ctrl+C to detach")
-                return steer
-            self.warn("stopping…")
-            self._stop_run()
+            return self._key_stop(steer, detach_only)
+        if detach_only:
+            return steer                     # an attach is read-only
+        return self._key_steer(key, steer)
+
+    def _key_stop(self, steer: list[str], detach_only: bool) -> list[str]:
+        if detach_only:
+            self.warn("attached read-only — Ctrl+C to detach")
             return steer
-        if key == ENTER and steer:
+        self.warn("stopping…")
+        self._stop_run()
+        return steer
+
+    def _key_steer(self, key: str, steer: list[str]) -> list[str]:
+        """Typing during a run builds a steer message; Enter sends it."""
+        if key == ENTER:
             text = "".join(steer).strip()
             if text:
                 self._steer(text)
             return []
         if key in ("\x7f", "\b"):
-            if detach_only:
-                return steer
             steer = steer[:-1]
-            self.tail.set(f"steer: {''.join(steer)}  (enter to send)" if steer else None)
-            return steer
-        if key.isprintable() and not detach_only:
+        elif key.isprintable():
             steer = [*steer, key]
-            self.tail.set(f"steer: {''.join(steer)}  (enter to send)")
+        else:
+            return steer
+        self.tail.set(f"steer: {''.join(steer)}  (enter to send)" if steer else None)
         return steer
 
     def _answer_approval(self, event: dict, kb: KeyWatcher | None = None) -> None:

@@ -42,7 +42,8 @@ def test_the_tool_count_and_files_are_not_doubled_by_a_replay():
     for ev in TRANSCRIPT:
         lines += r.handle(ev).lines
     done = [line for line in lines if line.startswith("done")]
-    assert done and "1 tool" in done[0]
+    assert done
+    assert "1 tool" in done[0]
 
 
 def test_a_changed_file_set_is_summarised():
@@ -52,16 +53,23 @@ def test_a_changed_file_set_is_summarised():
                          "summary": {"files": 1, "additions": 3, "deletions": 1}},
                         {"type": "done"}])
     body = "\n".join(lines)
-    assert "1 file" in body and "A.java" in body and "+3 -1" in body
+    assert "1 file" in body
+    assert "A.java" in body
+    assert "+3 -1" in body
 
 
 def test_a_whole_turn_renders_one_line_per_step():
     _, lines, streamed = _run(TRANSCRIPT)
     text = "\n".join(lines)
     assert "● thinking reading PosServerBackendService" in text
-    assert "✓ read_file" in text and "312 lines" in text and "0.4s" in text
+    assert "✓ read_file" in text
+    assert "312 lines" in text
+    assert "0.4s" in text
     assert streamed == "Added retry."
-    assert "done" in text and "1m42s" in text and "1 tool" in text and "ctx 18%" in text
+    assert "done" in text
+    assert "1m42s" in text
+    assert "1 tool" in text
+    assert "ctx 18%" in text
 
 
 def test_the_final_message_is_not_printed_twice_after_streaming():
@@ -184,14 +192,17 @@ def test_a_diff_result_is_shown_with_its_hunks():
                          "result": {"diff": "@@ -1 +1 @@\n-old\n+new",
                                     "additions": 1, "deletions": 1}, "call_id": 2}])
     body = "\n".join(lines)
-    assert "+1 -1" in body and "@@ -1 +1 @@" in body and "+new" in body
+    assert "+1 -1" in body
+    assert "@@ -1 +1 @@" in body
+    assert "+new" in body
 
 
 def test_an_unknown_event_never_raises():
     r = Renderer(PLAIN, verbosity=1)
     r.begin_turn()
     op = r.handle({"type": "a_future_event", "payload": 1})
-    assert op.lines and "a_future_event" in op.lines[0]
+    assert op.lines
+    assert "a_future_event" in op.lines[0]
     assert Renderer(PLAIN).handle({"type": "a_future_event"}).lines == []
 
 
@@ -200,7 +211,8 @@ def test_an_approval_asks_and_carries_the_preview():
     r.begin_turn()
     op = r.handle({"type": "approval", "id": 3, "tool": "file_write",
                    "args": {"path": "x"}, "preview": "@@\n+one"})
-    assert op.approval is not None and op.approval["id"] == 3
+    assert op.approval is not None
+    assert op.approval["id"] == 3
     assert any("+one" in line for line in op.lines)
 
 

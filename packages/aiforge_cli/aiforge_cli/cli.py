@@ -71,20 +71,11 @@ def main(argv: list[str] | None = None) -> int:
     command = words[0] if words and words[0] in tbl.top_names() else None
     rest = words[1:] if command else words
 
-    if opts.version or command == "version":
-        print(f"aiforge {__version__}")
-        return EXIT_OK
-    if opts.help or command == "help":
-        topic = _help_topic(command, rest)
-        print(helptext.command_help(pal, topic) if topic
-              else helptext.top_help(pal, version=__version__))
-        return EXIT_OK
-    if command == "completion":
-        if not rest:
-            print(helptext.command_help(pal, "completion"))
-            return EXIT_USAGE
-        print(completion.script(rest[0]), end="")
-        return EXIT_OK
+    # Version, help and completion are answers, not work: they must not need a
+    # sandbox, a config that parses, or anything on the network.
+    answered = _answer_offline(opts, pal, command, rest)
+    if answered is not None:
+        return answered
 
     app = App(cfg, pal, cwd=Path.cwd())
     app.mode = opts.mode
@@ -102,32 +93,40 @@ def main(argv: list[str] | None = None) -> int:
               f"  aiforge box status    then   aiforge box logs --tail 50",
               file=sys.stderr)
         return EXIT_ENV
-    except KeyboardInterrupt:
-        return 130
+    # KeyboardInterrupt is deliberately NOT caught here: swallowing it turns an
+    # interrupted process into a normal exit. It propagates to the entry point,
+    # which maps it to 130 — and `finally` still closes the client on the way.
     finally:
         app.client.close()
 
 
-def _dispatch(app: App, command: str | None, rest: list[str], opts) -> int:
-    """One place that decides which commands need a live sandbox.
+def _answer_offline(opts, pal, command: str | None, rest: list[str]) -> int | None:
+    """version / help / completion — or None when there is real work to do."""
+    if opts.version or command == "version":
+        print(f"aiforge {__version__}")
+        return EXIT_OK
+    if opts.help or command == "help":
+        topic = _help_topic(command, rest)
+        print(helptext.command_help(pal, topic) if topic
+              else helptext.top_help(pal, version=__version__))
+        return EXIT_OK
+    if command == "completion":
+        if not rest:
+            print(helptext.command_help(pal, "completion"))
+            return EXIT_USAGE
+        print(completion.script(rest[0]), end="")
+        return EXIT_OK
+    return None
 
-    `box` and `mount` are the two that must work when the box is down — they
-    are how you fix it — so they run before any boot.
-    """
+
+def _dispatch(app: App, command: str | None, rest: list[str], opts) -> int:
+    """One place that decides which commands need a live sandbox."""
+    # `box` and `mount` must work when the box is down — they are how you fix
+    # it — so they run before any boot.
     if command == "box":
         return app.box_command(rest or ["status"], tail=opts.tail, follow=opts.follow)
     if command == "mount":
-        lines = app.mount_command(rest or ["ls"])
-        if lines:
-            print("\n".join(lines))
-        return EXIT_OK
-
-    if command == "integrations":
-        app.ensure_api()
-        lines = app.integrations_command(rest or ["ls"])
-        if lines:
-            print("\n".join(lines))
-        return EXIT_OK
+        return _print_lines(app.mount_command(rest or ["ls"]))
 
     # Usage errors are settled BEFORE the sandbox is touched: `aiforge attach`
     # with no id used to boot (creating a session) and then print usage.
@@ -135,18 +134,9 @@ def _dispatch(app: App, command: str | None, rest: list[str], opts) -> int:
         print(helptext.command_help(app.pal, command))
         return EXIT_USAGE
 
-    if command == "worktree":
-        app.ensure_api()
-        lines = app.worktree_command(rest or ["ls"])
-        if lines:
-            print("\n".join(lines))
-        return EXIT_OK
-
-    if command == "sessions":
-        app.ensure_api()
-        from .app import _session_lines
-        print("\n".join(_session_lines(app._sessions_safe(), app.pal)))
-        return EXIT_OK
+    listed = _dispatch_api_only(app, command, rest)
+    if listed is not None:
+        return listed
 
     if command == "attach":
         # No boot: attaching must not create a session for this folder, and
@@ -155,11 +145,29 @@ def _dispatch(app: App, command: str | None, rest: list[str], opts) -> int:
         return app.attach(int(rest[0]))
 
     app.boot()
-
     if command == "resume":
         app.session_id = int(rest[0])
         return app.interactive()
+    return _chat(app, rest)
 
+
+def _dispatch_api_only(app: App, command: str | None, rest: list[str]) -> int | None:
+    """Commands that need the API up but no session and no mount question."""
+    if command == "worktree":
+        app.ensure_api()
+        return _print_lines(app.worktree_command(rest or ["ls"]))
+    if command == "integrations":
+        app.ensure_api()
+        return _print_lines(app.integrations_command(rest or ["ls"]))
+    if command == "sessions":
+        app.ensure_api()
+        from .app import _session_lines
+        return _print_lines(_session_lines(app._sessions_safe(), app.pal))
+    return None
+
+
+def _chat(app: App, rest: list[str]) -> int:
+    """A message on the command line, one piped in, or the interactive loop."""
     message = " ".join(rest).strip()
     if message:
         return app.send(message)
@@ -170,3 +178,11 @@ def _dispatch(app: App, command: str | None, rest: list[str], opts) -> int:
         print("nothing to do: no message, and stdin is empty", file=sys.stderr)
         return EXIT_USAGE
     return app.interactive()
+
+
+def _print_lines(lines) -> int:
+    if isinstance(lines, int):
+        return lines
+    if lines:
+        print("\n".join(lines))
+    return EXIT_OK

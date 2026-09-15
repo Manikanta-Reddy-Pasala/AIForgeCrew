@@ -61,7 +61,8 @@ def test_the_approvals_directory_can_never_be_mounted(tmp_path):
     (home / ".config" / "aiforge").mkdir(parents=True)
     why = paths.mount_refusal(str(home / ".config" / "aiforge"), home=str(home),
                               platform="posix")
-    assert why is not None and "approve its own mounts" in why
+    assert why is not None
+    assert "approve its own mounts" in why
 
 
 def test_credential_directories_are_refused(tmp_path):
@@ -69,7 +70,8 @@ def test_credential_directories_are_refused(tmp_path):
     for name in (".ssh", ".aws", ".kube"):
         (home / name).mkdir(parents=True)
         why = paths.mount_refusal(str(home / name), home=str(home), platform="posix")
-        assert why is not None and "credentials" in why
+        assert why is not None
+        assert "credentials" in why
 
 
 def test_system_directories_are_refused(tmp_path):
@@ -107,7 +109,8 @@ def test_case_is_folded_where_the_filesystem_folds_it(tmp_path):
     home = tmp_path / "home"
     (home / ".ssh").mkdir(parents=True)
     why = paths.mount_refusal(str(home / ".SSH"), home=str(home), platform="darwin")
-    assert why is not None and "credentials" in why
+    assert why is not None
+    assert "credentials" in why
 
 
 def test_a_symlink_into_a_guarded_directory_is_refused(tmp_path):
@@ -119,7 +122,8 @@ def test_a_symlink_into_a_guarded_directory_is_refused(tmp_path):
     os.symlink(home / ".ssh", link)
     # docker resolves the link when it binds, so the guard has to as well.
     why = paths.mount_refusal(str(link), home=str(home), platform="posix")
-    assert why is not None and "credentials" in why
+    assert why is not None
+    assert "credentials" in why
 
 
 def test_a_folder_that_CONTAINS_a_guarded_directory_is_refused(tmp_path):
@@ -154,7 +158,8 @@ def test_the_approvals_directory_is_guarded_wherever_xdg_puts_it(tmp_path):
     why = paths.mount_refusal(str(home / "dotfiles"), home=str(home),
                               platform="posix",
                               extra_guards=(str(xdg / "aiforge"),))
-    assert why is not None and "approve its own mounts" in why
+    assert why is not None
+    assert "approve its own mounts" in why
 
 
 def test_a_guard_reached_under_its_other_name_is_still_a_guard(tmp_path):
@@ -167,7 +172,8 @@ def test_a_guard_reached_under_its_other_name_is_still_a_guard(tmp_path):
     link = home / ".ssh"
     os.symlink(real, link)
     why = paths.mount_refusal(str(real), home=str(home), platform="posix")
-    assert why is not None and "credentials" in why
+    assert why is not None
+    assert "credentials" in why
 
 
 def test_an_empty_path_is_refused(tmp_path):

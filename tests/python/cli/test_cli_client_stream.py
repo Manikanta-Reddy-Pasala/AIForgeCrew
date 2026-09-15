@@ -47,16 +47,18 @@ def test_a_second_producer_is_told_the_session_is_busy():
     def handler(_request):
         return httpx.Response(409, json={"detail": "a run is already in progress"})
 
+    stream = _client(handler).send(1, "x")
     with pytest.raises(api.Busy):
-        list(_client(handler).send(1, "x"))
+        list(stream)
 
 
 def test_a_dead_api_raises_apidown_not_a_transport_error():
     def handler(_request):
         raise httpx.ConnectError("connection refused")
 
+    client = _client(handler)
     with pytest.raises(api.ApiDown):
-        _client(handler).sessions()
+        client.sessions()
 
 
 def test_healthy_is_false_rather_than_raising():
@@ -70,8 +72,9 @@ def test_a_stalled_stream_is_a_stalled_error():
     def handler(_request):
         raise httpx.ReadTimeout("timed out")
 
+    stream = _client(handler).attach(4)
     with pytest.raises(api.Stalled):
-        list(_client(handler).attach(4))
+        list(stream)
 
 
 def test_parse_sse_line_only_accepts_data_objects():

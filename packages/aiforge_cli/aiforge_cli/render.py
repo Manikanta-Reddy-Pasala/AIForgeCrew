@@ -70,28 +70,43 @@ def _digest(result: Any) -> str:
     """
     if result is None:
         return ""
-    if isinstance(result, str):
-        return _ellipsize(result, MAX_DIGEST)
     if not isinstance(result, dict):
-        return _ellipsize(str(result), MAX_DIGEST)
+        return _ellipsize(result if isinstance(result, str) else str(result), MAX_DIGEST)
     for key in ("error", "detail"):
         if result.get(key):
             return _ellipsize(str(result[key]), MAX_DIGEST)
+    bits = _count_bits(result) or _first_descriptive(result)
+    return _ellipsize("  ".join(bits) if bits else "ok", MAX_DIGEST)
+
+
+# What a tool reports about size, in the order a human reads it.
+_COUNT_KEYS = (("lines", "lines"), ("bytes", "bytes"), ("files", "files"),
+               ("count", "hits"), ("exit_code", "exit"))
+# Where to look for one descriptive line when there are no counts.
+_TEXT_KEYS = ("summary", "stdout", "output", "message")
+_NAME_KEYS = ("path", "file")
+
+
+def _count_bits(result: dict) -> list[str]:
     bits: list[str] = []
     if "additions" in result or "deletions" in result:
         bits.append(f"+{result.get('additions', 0)} -{result.get('deletions', 0)}")
-    for key, label in (("lines", "lines"), ("bytes", "bytes"), ("files", "files"),
-                       ("count", "hits"), ("exit_code", "exit")):
-        if isinstance(result.get(key), int):
-            bits.append(f"{result[key]} {label}" if label != "exit"
-                        else f"exit {result[key]}")
-    if not bits:
-        for key in ("path", "file", "summary", "stdout", "output", "message"):
-            if result.get(key):
-                bits.append(str(result[key]).strip().splitlines()[0] if key in
-                            ("stdout", "output", "summary", "message") else str(result[key]))
-                break
-    return _ellipsize("  ".join(bits) if bits else "ok", MAX_DIGEST)
+    for key, label in _COUNT_KEYS:
+        value = result.get(key)
+        if isinstance(value, int):
+            bits.append(f"exit {value}" if label == "exit" else f"{value} {label}")
+    return bits
+
+
+def _first_descriptive(result: dict) -> list[str]:
+    for key in _NAME_KEYS:
+        if result.get(key):
+            return [str(result[key])]
+    for key in _TEXT_KEYS:
+        if result.get(key):
+            first = str(result[key]).strip().splitlines()
+            return [first[0]] if first else []
+    return []
 
 
 def _diff_lines(text: str, pal: Palette, budget: int) -> list[str]:
@@ -199,14 +214,11 @@ class Renderer:
     def _on_tool(self, ev: dict[str, Any]) -> Op:
         name = str(ev.get("name") or (self._tool or {}).get("name") or "tool")
         # The identity of a call, stable across a replay: its call_id, or —
-        # for producers that do not send one — the name and arguments. The
-        # running tool COUNT must not be part of it: on a replay the count has
-        # already moved, so every line looked new and the transcript doubled.
+        # for producers that do not send one — its position in the turn.
         ident = ev.get("call_id")
         if ident is None:
-            # No call_id: fall back to the position in the turn. `_seq` is
-            # reset by begin_replay(), so a replay regenerates the same keys
-            # while two genuinely identical calls still get different ones.
+            # `_seq` is reset by begin_replay(), so a replay regenerates the
+            # same keys while two genuinely identical calls still differ.
             self._seq += 1
             ident = f"#{self._seq}"
         if self._dup(f"tool:{name}:{ident}"):
@@ -215,34 +227,47 @@ class Renderer:
         self._tool = None
         self._tools += 1
         result = ev.get("result")
-        failed = bool(isinstance(result, dict)
-                      and (result.get("error") or result.get("ok") is False))
+        failed = _tool_failed(result)
         self._failed += 1 if failed else 0
-        mark = self.pal("✗", "fail") if failed else self.pal("✓", "ok")
-        args = _fmt_args(ev.get("args") if ev.get("args") is not None
-                         else pending.get("args"),
-                         MAX_ARGS if self.verbosity <= 0 else 400)
-        dur = _fmt_duration(ev.get("duration_s") or ev.get("elapsed_s"))
-        digest = _digest(result)
-        line = f"{mark} {self.pal(name, 'head')}  {args}"
-        trailer = "  ".join(x for x in (digest, dur) if x)
-        if trailer:
-            line += f"   {self.pal(trailer, 'dim' if not failed else 'fail')}"
-        lines = [line]
+        self._remember_touched_file(result)
         if self.verbosity < 0:
-            lines = []
-        if isinstance(result, dict) and _diff_text(result):
-            for key in ("path", "file"):
-                if result.get(key):
-                    self._files.add(str(result[key]))
-                    break
+            return Op(tail=self._tail())
+        lines = [self._tool_line(name, ev, pending, result, failed)]
+        lines += self._tool_detail(result)
+        return Op(lines=lines, tail=self._tail())
+
+    def _tool_line(self, name: str, ev: dict[str, Any], pending: dict[str, Any],
+                   result: Any, failed: bool) -> str:
+        mark = self.pal("✗", "fail") if failed else self.pal("✓", "ok")
+        budget = MAX_ARGS if self.verbosity <= 0 else 400
+        args = _fmt_args(ev.get("args") if ev.get("args") is not None
+                         else pending.get("args"), budget)
+        trailer = "  ".join(x for x in (_digest(result),
+                                        _fmt_duration(ev.get("duration_s")
+                                                      or ev.get("elapsed_s"))) if x)
+        line = f"{mark} {self.pal(name, 'head')}  {args}"
+        if trailer:
+            line += f"   {self.pal(trailer, 'fail' if failed else 'dim')}"
+        return line
+
+    def _tool_detail(self, result: Any) -> list[str]:
+        """The diff a tool produced, and its whole result under -v."""
+        lines: list[str] = []
         diff = _diff_text(result)
-        if diff and self.verbosity >= 0:
+        if diff:
             lines += _diff_lines(diff, self.pal, DIFF_LINES[min(max(self.verbosity, -1), 1)])
         if self.verbosity > 0 and isinstance(result, dict):
             dump = json.dumps(result, indent=2, default=str).splitlines()[:60]
             lines += ["  " + self.pal(line, "dim") for line in dump]
-        return Op(lines=lines, tail=self._tail())
+        return lines
+
+    def _remember_touched_file(self, result: Any) -> None:
+        if not isinstance(result, dict) or not _diff_text(result):
+            return
+        for key in ("path", "file"):
+            if result.get(key):
+                self._files.add(str(result[key]))
+                return
 
     def _on_delta(self, ev: dict[str, Any]) -> Op:
         text = str(ev.get("text") or ev.get("delta") or "")
@@ -475,6 +500,11 @@ def _pct(usage: dict[str, Any]) -> float | None:
     return None
 
 
+def _tool_failed(result: Any) -> bool:
+    return bool(isinstance(result, dict)
+                and (result.get("error") or result.get("ok") is False))
+
+
 def _diff_text(result: Any) -> str:
     if not isinstance(result, dict):
         return ""
@@ -497,21 +527,30 @@ def _answer_lines(text: str, pal: Palette) -> list[str]:
     for line in text.splitlines():
         if line.startswith("```"):
             fenced = not fenced
-            lang = line[3:].strip()
-            out.append(pal(f"┌ {lang}" if fenced and lang else ("┌" if fenced else "└"), "dim"))
-            continue
-        if fenced:
+            out.append(pal(_fence_rule(line, fenced), "dim"))
+        elif fenced:
             out.append(pal("│ ", "dim") + pal(line, "code"))
-            continue
-        if line.startswith("#"):
-            out.append(pal(line.lstrip("# ").strip(), "head"))
-            continue
-        if line.lstrip().startswith(("- ", "* ")):
-            indent = line[:len(line) - len(line.lstrip())]
-            out.append(f"{indent}{pal('•', 'code')} {line.lstrip()[2:]}")
-            continue
-        out.append(_inline_code(line, pal))
+        else:
+            out.append(_prose_line(line, pal))
     return out
+
+
+def _prose_line(line: str, pal: Palette) -> str:
+    """One line of answer text outside a code fence."""
+    if line.startswith("#"):
+        return pal(line.lstrip("# ").strip(), "head")
+    if line.lstrip().startswith(("- ", "* ")):
+        indent = line[:len(line) - len(line.lstrip())]
+        return f"{indent}{pal('•', 'code')} {line.lstrip()[2:]}"
+    return _inline_code(line, pal)
+
+
+def _fence_rule(line: str, fenced: bool) -> str:
+    """The rule drawn where a code fence opens or closes."""
+    if not fenced:
+        return "└"
+    lang = line[3:].strip()
+    return f"┌ {lang}" if lang else "┌"
 
 
 def _inline_code(line: str, pal: Palette) -> str:
