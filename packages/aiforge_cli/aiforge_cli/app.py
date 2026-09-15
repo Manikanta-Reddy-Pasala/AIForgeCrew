@@ -17,6 +17,7 @@ import json
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import box, paths, sessions
@@ -41,6 +42,23 @@ EXIT_INTERRUPT = 130
 # away would otherwise spin here silently for as long as the terminal is open.
 MAX_RECONNECTS = 5
 RECONNECT_BACKOFF = (1.0, 2.0, 4.0, 8.0, 15.0)
+
+
+@dataclass
+class _Run:
+    """One turn's mutable state, shared by the pump and its handlers.
+
+    Passed around rather than stored on self: two terminals can drive the same
+    App object (a /quick inside an interactive session), and a turn's reconnect
+    count has no business outliving the turn.
+    """
+
+    status: int = 0
+    interrupts: int = 0
+    reconnects: int = 0
+    interrupted: bool = False
+    stream: object | None = None
+    steer: list[str] = field(default_factory=list)
 
 
 class Exit(Exception):
@@ -144,11 +162,18 @@ class App:
     def _start_box(self) -> None:
         self.tail.set("sandbox starting…")
         try:
-            box.start(self.cfg, on_line=self._box_line, env=self.env)
-            waited = box.wait_healthy(self.client.healthy, timeout=120.0,
-                                      on_tick=lambda s: self.tail.set(
-                                          f"sandbox starting… {s:.0f}s"),
-                                      sleep=self._sleep)
+            with box.start_lock(self.env) as mine:
+                if mine:
+                    box.start(self.cfg, on_line=self._box_line, env=self.env)
+                else:
+                    # Another terminal is creating the one shared box. Waiting
+                    # for it beats racing `compose up` and losing on a
+                    # container-name conflict.
+                    self.tail.set("another terminal is starting the sandbox…")
+                waited = box.wait_healthy(self.client.healthy, timeout=120.0,
+                                          on_tick=lambda s: self.tail.set(
+                                              f"sandbox starting… {s:.0f}s"),
+                                          sleep=self._sleep)
         except box.BoxError as exc:
             self.tail.clear()
             raise Exit(EXIT_ENV, f"{self.pal('✗', 'error')} {exc}") from exc
@@ -295,79 +320,90 @@ class App:
         failure deserves the same reconnect path as one that arrives mid-run.
         """
         assert self.session_id is not None
-        status = EXIT_OK
-        interrupts = 0
-        reconnects = 0
-        interrupted = False
-        steer: list[str] = []
-        last_spin = 0.0
-        stream: object | None = None
+        run = _Run(status=EXIT_OK)
         with KeyWatcher() as kb:
             while True:
                 try:
-                    if stream is None:
-                        stream = open_stream()
-                    for event in stream:
-                        if self.cfg.json_events:
-                            self.out.write(json.dumps(event) + "\n")
-                            self.out.flush()
-                            if event.get("type") == "error":
-                                status = EXIT_AGENT
-                            if event.get("type") == "approval":
-                                # Still answered: a machine-readable stream that
-                                # silently ignores the gate hangs until the
-                                # server's approval timeout.
-                                self._answer_approval(event, kb)
-                            finished = event.get("type") in ("done", "stopped")
-                        else:
-                            status, finished = self._apply(event, status, kb)
-                        now = time.monotonic()
-                        if now - last_spin > 0.12:
-                            self.tail.spin()
-                            last_spin = now
-                        interrupts, steer = self._keys(kb, interrupts, steer, detach_only)
-                        if finished:
-                            break
+                    if run.stream is None:
+                        run.stream = open_stream()
+                    self._pump(run, kb, detach_only)
                     break
                 except (api.Stalled, api.ApiDown, api.Busy) as exc:
-                    reconnects += 1
-                    if reconnects > MAX_RECONNECTS:
-                        self.warn(f"gave up re-attaching after {MAX_RECONNECTS} tries "
-                                  f"({exc})")
-                        self.warn("aiforge box logs --tail 50   shows what the sandbox saw")
+                    if not self._reconnect(run, exc):
                         self.tail.clear()
                         return EXIT_ENV
-                    wait = RECONNECT_BACKOFF[min(reconnects - 1, len(RECONNECT_BACKOFF) - 1)]
-                    self.warn(f"stream dropped ({exc}) — re-attaching in {wait:.0f}s "
-                              f"({reconnects}/{MAX_RECONNECTS})")
-                    self._sleep(wait)
-                    self.render.begin_replay()
-                    # Re-open INSIDE the try on the next pass: calling attach()
-                    # here put the retry's own failure outside the handler that
-                    # exists to absorb it.
-                    stream = _close(stream)
                     open_stream = _attach_to(self.client, self.session_id)
                 except KeyboardInterrupt:
-                    interrupts += 1
-                    interrupted = True
-                    if detach_only:
+                    leave = self._interrupted(run, detach_only)
+                    if leave is not None:
                         self.tail.clear()
-                        self.say(self.pal("detached — the run keeps going", "dim"))
-                        return EXIT_INTERRUPT
-                    if interrupts >= 2:
-                        self._kill_all()
-                        self.tail.clear()
-                        return EXIT_INTERRUPT
-                    self._stop_run()
-                    self.warn("stopping — Ctrl+C again to reset everything")
-                    # The interrupt arrived while blocked on the read, so that
-                    # generator is finished. Re-attach to watch the stop land
-                    # (and to leave a second Ctrl+C somewhere to arrive).
-                    stream = _close(stream)
-                    self.render.begin_replay()
+                        return leave
                     open_stream = _attach_to(self.client, self.session_id)
         self.tail.clear()
-        return EXIT_INTERRUPT if interrupted else status
+        return EXIT_INTERRUPT if run.interrupted else run.status
+
+    def _pump(self, run: _Run, kb: KeyWatcher, detach_only: bool) -> None:
+        """Drain the stream until the turn ends, spinning and reading keys."""
+        last_spin = 0.0
+        for event in run.stream:                      # type: ignore[union-attr]
+            if self.cfg.json_events:
+                finished = self._emit_json(event, run)
+            else:
+                run.status, finished = self._apply(event, run.status, kb)
+            now = time.monotonic()
+            if now - last_spin > 0.12:
+                self.tail.spin()
+                last_spin = now
+            run.interrupts, run.steer = self._keys(kb, run.interrupts, run.steer,
+                                                   detach_only)
+            if finished:
+                return
+
+    def _emit_json(self, event: dict, run: _Run) -> bool:
+        """--json: one object per line on stdout, and nothing else there."""
+        self.out.write(json.dumps(event) + "\n")
+        self.out.flush()
+        if event.get("type") == "error":
+            run.status = EXIT_AGENT
+        if event.get("type") == "approval":
+            # A machine-readable stream that silently ignores the gate hangs
+            # until the server's approval timeout.
+            self._answer_approval(event, None)
+        return event.get("type") in ("done", "stopped")
+
+    def _reconnect(self, run: _Run, exc: Exception) -> bool:
+        """Re-attach after a dropped stream. False = give up."""
+        run.reconnects += 1
+        if run.reconnects > MAX_RECONNECTS:
+            self.warn(f"gave up re-attaching after {MAX_RECONNECTS} tries ({exc})")
+            self.warn("aiforge box logs --tail 50   shows what the sandbox saw")
+            return False
+        wait = RECONNECT_BACKOFF[min(run.reconnects - 1, len(RECONNECT_BACKOFF) - 1)]
+        self.warn(f"stream dropped ({exc}) — re-attaching in {wait:.0f}s "
+                  f"({run.reconnects}/{MAX_RECONNECTS})")
+        self._sleep(wait)
+        self.render.begin_replay()
+        run.stream = _close(run.stream)
+        return True
+
+    def _interrupted(self, run: _Run, detach_only: bool) -> int | None:
+        """Ctrl+C. Returns an exit status to leave with, or None to watch on."""
+        run.interrupts += 1
+        run.interrupted = True
+        if detach_only:
+            self.say(self.pal("detached — the run keeps going", "dim"))
+            return EXIT_INTERRUPT
+        if run.interrupts >= 2:
+            self._kill_all()
+            return EXIT_INTERRUPT
+        self._stop_run()
+        self.warn("stopping — Ctrl+C again to reset everything")
+        # The interrupt arrived while blocked on the read, so that generator is
+        # finished. Re-attach to watch the stop land (and to leave a second
+        # Ctrl+C somewhere to arrive).
+        run.stream = _close(run.stream)
+        self.render.begin_replay()
+        return None
 
     def _apply(self, event: dict, status: int, kb: KeyWatcher) -> tuple[int, bool]:
         op = self.render.handle(event)
@@ -388,39 +424,42 @@ class App:
 
     def _keys(self, kb: KeyWatcher, interrupts: int, steer: list[str],
               detach_only: bool = False) -> tuple[int, list[str]]:
-        """Esc stops, typing steers, Ctrl+C twice resets everything."""
+        """Esc stops, typing steers, Ctrl+C raises (one interrupt path)."""
         while True:
             key = kb.get()
             if key is None:
                 return interrupts, steer
-            if key == ESC:
-                if detach_only:
-                    self.warn("attached read-only — Ctrl+C to detach")
-                    continue
-                self.warn("stopping…")
-                self._stop_run()
-            elif key == CTRL_C:
-                # One path for an interrupt however it arrived: cbreak leaves
-                # ISIG on, so POSIX raises this as a signal and only Windows
-                # delivers the byte. Counting it in two places gave the two
-                # platforms different exit codes.
-                raise KeyboardInterrupt
-            elif key == ENTER and steer:
-                text = "".join(steer).strip()
-                steer = []
-                if text:
-                    self._steer(text)
-            elif key in ("\x7f", "\b"):
-                if detach_only:
-                    continue
-                steer = steer[:-1]
-                self.tail.set(f"steer: {''.join(steer)}  (enter to send)"
-                              if steer else None)
-            elif key.isprintable():
-                if detach_only:
-                    continue
-                steer.append(key)
-                self.tail.set(f"steer: {''.join(steer)}  (enter to send)")
+            steer = self._key(key, steer, detach_only)
+
+    def _key(self, key: str, steer: list[str], detach_only: bool) -> list[str]:
+        if key == CTRL_C:
+            # One path for an interrupt however it arrived: cbreak leaves ISIG
+            # on, so POSIX raises this as a signal and only Windows delivers
+            # the byte. Counting it in two places gave the two platforms
+            # different exit codes.
+            raise KeyboardInterrupt
+        if key == ESC:
+            if detach_only:
+                self.warn("attached read-only — Ctrl+C to detach")
+                return steer
+            self.warn("stopping…")
+            self._stop_run()
+            return steer
+        if key == ENTER and steer:
+            text = "".join(steer).strip()
+            if text:
+                self._steer(text)
+            return []
+        if key in ("\x7f", "\b"):
+            if detach_only:
+                return steer
+            steer = steer[:-1]
+            self.tail.set(f"steer: {''.join(steer)}  (enter to send)" if steer else None)
+            return steer
+        if key.isprintable() and not detach_only:
+            steer = [*steer, key]
+            self.tail.set(f"steer: {''.join(steer)}  (enter to send)")
+        return steer
 
     def _answer_approval(self, event: dict, kb: KeyWatcher | None = None) -> None:
         """The one place the CLI blocks on the user mid-run.
@@ -508,62 +547,89 @@ class App:
 
     def slash(self, text: str) -> tuple[bool, int | None]:
         """Client-side commands. Anything unknown goes to the agent, which
-        resolves user-defined commands from .aiforge/commands/*.md."""
+        resolves user-defined commands from .aiforge/commands/*.md.
+
+        A table rather than a ladder: each handler takes the argument list and
+        returns an exit status to leave with, or None to stay in the loop.
+        """
         parts = text.split()
         name, args = parts[0], parts[1:]
         if tbl.by_name(name, tbl.SLASH) is None:
             return False, None
-        if name == "/exit":
-            return True, EXIT_OK
-        if name == "/help":
-            self.say(helptext.command_help(self.pal, args[0]) if args
-                     else helptext.slash_help(self.pal))
-        elif name == "/mode":
-            if args and args[0] in tbl.MODES:
-                self.mode = args[0]
-                self.ok(f"mode {self.mode}")
-            else:
-                self.say(f"  mode {self.pal(self.mode, 'head')}   "
-                         f"{self.pal('/mode ' + '|'.join(tbl.MODES), 'dim')}")
-        elif name == "/model":
-            self.say(*self._model_command(args))
-        elif name == "/review-edits":
-            self.review_edits = bool(args and args[0] == "on")
-            self.ok(f"review-edits {'on' if self.review_edits else 'off'}")
-        elif name == "/quick":
-            if args:
-                self.send(" ".join(args), quick=True)
-        elif name == "/new":
-            self._resolve_new_session()
-        elif name == "/sessions":
-            self.say(*_session_lines(self._sessions_safe(), self.pal))
-        elif name == "/resume":
-            if args and args[0].isdigit():
-                self.session_id = int(args[0])
-                sessions.remember(self.cfg.sessions_file,
-                                  paths.to_box(paths.normalize_host(str(self.cwd))),
-                                  self.session_id)
-                self.ok(f"chat #{self.session_id}")
-        elif name == "/stop":
-            self._stop_run()
-            self.ok("stopped")
-        elif name == "/compact":
-            self.client.compact(self.session_id)          # type: ignore[arg-type]
-            self.ok("history folded into a summary")
-        elif name == "/ctx":
-            self.say(*self._ctx_lines())
-        elif name == "/integrations":
-            self.say(*self.integrations_command(args or ["ls"]))
-        elif name in ("/mounts", "/mount"):
-            self.say(*self.mount_command(args))
-        elif name == "/cd":
-            if args:
-                self.cwd = Path(paths.normalize_host(args[0], cwd=str(self.cwd)))
-                mounted = self._ensure_mounted()
-                self._resolve_session(mounted)
-        elif name == "/box":
-            self.box_command(args)
-        return True, None
+        handler = self._slash_handlers().get(name)
+        if handler is None:
+            return True, None
+        return True, handler(args)
+
+    def _slash_handlers(self) -> dict[str, Callable[[list[str]], int | None]]:
+        return {
+            "/exit": lambda _a: EXIT_OK,
+            "/help": self._slash_help,
+            "/mode": self._slash_mode,
+            "/model": lambda a: self.say(*self._model_command(a)),
+            "/review-edits": self._slash_review_edits,
+            "/quick": self._slash_quick,
+            "/new": lambda _a: self._resolve_new_session(),
+            "/sessions": lambda _a: self.say(*_session_lines(self._sessions_safe(), self.pal)),
+            "/resume": self._slash_resume,
+            "/stop": self._slash_stop,
+            "/compact": self._slash_compact,
+            "/ctx": lambda _a: self.say(*self._ctx_lines()),
+            "/integrations": lambda a: self.say(*self.integrations_command(a or ["ls"])),
+            "/mounts": lambda a: self.say(*self.mount_command(a)),
+            "/mount": lambda a: self.say(*self.mount_command(a)),
+            "/cd": self._slash_cd,
+            "/box": self._slash_box,
+        }
+
+    def _slash_quick(self, args: list[str]) -> None:
+        # Deliberately drops the turn's status: a /quick inside the REPL is one
+        # turn, not a reason to leave it.
+        if args:
+            self.send(" ".join(args), quick=True)
+
+    def _slash_box(self, args: list[str]) -> None:
+        self.box_command(args)
+
+    def _slash_help(self, args: list[str]) -> None:
+        self.say(helptext.command_help(self.pal, args[0]) if args
+                 else helptext.slash_help(self.pal))
+
+    def _slash_mode(self, args: list[str]) -> None:
+        if args and args[0] in tbl.MODES:
+            self.mode = args[0]
+            self.ok(f"mode {self.mode}")
+            return
+        self.say(f"  mode {self.pal(self.mode, 'head')}   "
+                 f"{self.pal('/mode ' + '|'.join(tbl.MODES), 'dim')}")
+
+    def _slash_review_edits(self, args: list[str]) -> None:
+        self.review_edits = bool(args and args[0] == "on")
+        self.ok(f"review-edits {'on' if self.review_edits else 'off'}")
+
+    def _slash_resume(self, args: list[str]) -> None:
+        if not (args and args[0].isdigit()):
+            return
+        self.session_id = int(args[0])
+        sessions.remember(self.cfg.sessions_file,
+                          paths.to_box(paths.normalize_host(str(self.cwd))),
+                          self.session_id)
+        self.ok(f"chat #{self.session_id}")
+
+    def _slash_stop(self, _args: list[str]) -> None:
+        self._stop_run()
+        self.ok("stopped")
+
+    def _slash_compact(self, _args: list[str]) -> None:
+        self.client.compact(self.session_id)          # type: ignore[arg-type]
+        self.ok("history folded into a summary")
+
+    def _slash_cd(self, args: list[str]) -> None:
+        if not args:
+            return
+        self.cwd = Path(paths.normalize_host(args[0], cwd=str(self.cwd)))
+        mounted = self._ensure_mounted()
+        self._resolve_session(mounted)
 
     def _resolve_new_session(self) -> None:
         boxpath = paths.to_box(paths.normalize_host(str(self.cwd)))
@@ -659,38 +725,49 @@ class App:
             action = "get"
         kinds = [args[1]] if len(args) > 1 and args[1] in integ.KINDS else list(integ.KINDS)
         if action == "ls":
-            out = [self.pal("integrations", "head")]
-            for kind in kinds:
-                rows = dict(integ.summary(kind, self._integration_safe(kind)))
-                state = rows.get("has_token") or rows.get("has_smtp_password") or "not set"
-                where = rows.get("base_url") or rows.get("smtp_host") or ""
-                mark = "ok" if state == "configured" else "dim"
-                out.append(f"  {self.pal('•', mark)} {kind.ljust(11)}"
-                           f"{self.pal(state, mark)}   {self.pal(where, 'dim')}")
-            out.append(self.pal("  aiforge integrations get <kind> for the detail", "dim"))
-            return out
+            return self._integrations_ls(kinds)
         if action == "get":
-            out = []
-            for kind in kinds:
-                out.append(self.pal(kind, "head"))
-                for key, value in integ.summary(kind, self._integration_safe(kind)):
-                    out.append(f"  {key.ljust(18)} {self.pal(value, 'dim')}")
-            return out
+            return self._integrations_get(kinds)
         if action == "test":
-            out = []
-            for kind in kinds:
-                try:
-                    result = self.client.integration_test(kind)
-                except (api.ApiDown, api.Busy) as exc:
-                    out.append(f"{self.pal('✗', 'fail')} {kind}: {exc}")
-                    continue
-                good = bool(result.get("ok") or result.get("success"))
-                detail = str(result.get("detail") or result.get("message")
-                             or result.get("error") or "").strip()
-                out.append(f"{self.pal('✓' if good else '✗', 'ok' if good else 'fail')} "
-                           f"{kind} {self.pal(detail[:120], 'dim')}")
-            return out
-        # set
+            return self._integrations_test(kinds)
+        return self._integrations_set(args)
+
+    def _integrations_ls(self, kinds: list[str]) -> list[str]:
+        out = [self.pal("integrations", "head")]
+        for kind in kinds:
+            rows = dict(integ.summary(kind, self._integration_safe(kind)))
+            state = rows.get("has_token") or rows.get("has_smtp_password") or "not set"
+            where = rows.get("base_url") or rows.get("smtp_host") or ""
+            mark = "ok" if state == "configured" else "dim"
+            out.append(f"  {self.pal('•', mark)} {kind.ljust(11)}"
+                       f"{self.pal(state, mark)}   {self.pal(where, 'dim')}")
+        out.append(self.pal("  aiforge integrations get <kind> for the detail", "dim"))
+        return out
+
+    def _integrations_get(self, kinds: list[str]) -> list[str]:
+        out: list[str] = []
+        for kind in kinds:
+            out.append(self.pal(kind, "head"))
+            for key, value in integ.summary(kind, self._integration_safe(kind)):
+                out.append(f"  {key.ljust(18)} {self.pal(value, 'dim')}")
+        return out
+
+    def _integrations_test(self, kinds: list[str]) -> list[str]:
+        out: list[str] = []
+        for kind in kinds:
+            try:
+                result = self.client.integration_test(kind)
+            except (api.ApiDown, api.Busy) as exc:
+                out.append(f"{self.pal('✗', 'fail')} {kind}: {exc}")
+                continue
+            good = bool(result.get("ok") or result.get("success"))
+            detail = str(result.get("detail") or result.get("message")
+                         or result.get("error") or "").strip()
+            out.append(f"{self.pal('✓' if good else '✗', 'ok' if good else 'fail')} "
+                       f"{kind} {self.pal(detail[:120], 'dim')}")
+        return out
+
+    def _integrations_set(self, args: list[str]) -> list[str]:
         if len(args) < 2 or args[1] not in integ.KINDS:
             return [f"{self.pal('✗', 'fail')} which one? "
                     f"aiforge integrations set <{'|'.join(integ.KINDS)}> key=value …"]
@@ -728,33 +805,38 @@ class App:
 
     def _box_action(self, action: str, *, tail: int, follow: bool) -> int:
         if action == "status":
-            strategy = f"run.sh {self.cfg.repo}" if self.cfg.repo else "compose"
-            exe = box.docker_bin()
-            state = box.container_state(exe) if exe else "no docker"
-            healthy = self.client.healthy()
-            self.say(f"  container {self.pal(state, 'ok' if state == 'running' else 'warn')}",
-                     f"  api       "
-                     f"{self.pal('up' if healthy else 'down', 'ok' if healthy else 'fail')}"
-                     f"   {self.pal(self.cfg.base_url, 'dim')}",
-                     f"  image     {self.pal(self.cfg.image, 'dim')}",
-                     f"  strategy  {self.pal(strategy, 'dim')}")
-            return EXIT_OK if healthy else EXIT_ENV
+            return self._box_status()
         if action in ("up", "restart"):
-            box.start(self.cfg, on_line=self._box_line, recreate=action == "restart",
-                      env=self.env)
-            box.wait_healthy(self.client.healthy, timeout=120.0, sleep=self._sleep)
-            self.ok(f"sandbox {action}")
-            return EXIT_OK
+            return self._box_up(recreate=action == "restart")
         if action == "down":
             box.stop(self.cfg)
             self.ok("sandbox stopped")
             return EXIT_OK
         if action == "logs":
-            return box.logs(self.cfg, tail=tail, follow=follow)
+            return box.logs(tail=tail, follow=follow)
         if action == "shell":
-            return box.shell(self.cfg)
+            return box.shell()
         self.warn(f"box: unknown action '{action}' ({', '.join(tbl.BOX_ACTIONS)})")
         return EXIT_USAGE
+
+    def _box_status(self) -> int:
+        exe = box.docker_bin()
+        state = box.container_state(exe) if exe else "no docker"
+        healthy = self.client.healthy()
+        strategy = f"run.sh {self.cfg.repo}" if self.cfg.repo else "compose"
+        self.say(f"  container {self.pal(state, 'ok' if state == 'running' else 'warn')}",
+                 f"  api       "
+                 f"{self.pal('up' if healthy else 'down', 'ok' if healthy else 'fail')}"
+                 f"   {self.pal(self.cfg.base_url, 'dim')}",
+                 f"  image     {self.pal(self.cfg.image, 'dim')}",
+                 f"  strategy  {self.pal(strategy, 'dim')}")
+        return EXIT_OK if healthy else EXIT_ENV
+
+    def _box_up(self, *, recreate: bool) -> int:
+        box.start(self.cfg, on_line=self._box_line, recreate=recreate, env=self.env)
+        box.wait_healthy(self.client.healthy, timeout=120.0, sleep=self._sleep)
+        self.ok(f"sandbox {'restart' if recreate else 'up'}")
+        return EXIT_OK
 
     # ── completion sources ─────────────────────────────────────────────────
 

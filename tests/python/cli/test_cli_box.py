@@ -106,3 +106,20 @@ def test_a_missing_image_and_no_repo_names_all_three_ways_out(tmp_path, monkeypa
     assert "docker pull" in message
     assert "AIFORGE_SANDBOX_IMAGE" in message
     assert "run.sh" in message
+
+
+def test_one_sandbox_is_shared_the_second_starter_waits(tmp_path):
+    # Every connection uses ONE box. Two cold starts at once both ran
+    # `compose up`, and the loser got "container name already in use".
+    env = {"XDG_CONFIG_HOME": str(tmp_path / "cfg")}
+    with box.start_lock(env) as first:
+        assert first is True
+        with box.start_lock(env) as second:
+            assert second is False        # waits for the holder instead
+    with box.start_lock(env) as again:
+        assert again is True              # released when the holder is done
+
+
+def test_the_start_lock_lives_outside_the_mounted_config_dir(tmp_path):
+    env = {"XDG_CONFIG_HOME": str(tmp_path / "cfg")}
+    assert ".aiforge" not in str(box.start_lock_path(env))

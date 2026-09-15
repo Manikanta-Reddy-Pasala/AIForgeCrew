@@ -29,6 +29,7 @@ from . import paths
 from .config import Config, approvals_file
 
 PROJECT = "aiforge"          # docker compose -p
+RUN_SH = "run.sh"            # the repo strategy's entry point
 SERVICE = "aiforge"
 CONTAINER = "aiforge"
 
@@ -226,6 +227,51 @@ def _run_stream(cmd: list[str], cwd: Path | None = None) -> Iterator[str]:
                        f"See `aiforge box logs`.")
 
 
+def start_lock_path(env: dict[str, str] | None = None) -> Path:
+    return approvals_file(env).parent / "sandbox" / ".start.lock"
+
+
+@contextlib.contextmanager
+def start_lock(env: dict[str, str] | None = None, *, wait: bool = False):
+    """Serialise sandbox creation across terminals.
+
+    Every connection shares ONE box, and a second `aiforge` only touches docker
+    when the API does not answer — but two cold starts at the same moment both
+    run `compose up`, and the loser gets `Conflict. The container name
+    "/aiforge" is already in use`. The holder creates the box; anyone else
+    waits for it instead of racing (yields False).
+
+    POSIX only: flock is what makes this cheap and automatically released when
+    the process dies. On Windows the lock is skipped rather than faked.
+    """
+    path = start_lock_path(env)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fh = path.open("a+")
+    except OSError:
+        yield True                       # no lock file, no serialisation
+        return
+    try:
+        import fcntl
+    except ImportError:                  # pragma: no cover - Windows
+        fh.close()
+        yield True
+        return
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        yield False                      # somebody else is starting it
+        return
+    try:
+        yield True
+    finally:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+
 def start(cfg: Config, *, on_line: Callable[[str], None] | None = None,
           recreate: bool = False, env: dict[str, str] | None = None) -> None:
     """Bring the sandbox up. Idempotent; never asks anything."""
@@ -234,9 +280,9 @@ def start(cfg: Config, *, on_line: Callable[[str], None] | None = None,
     say = on_line or (lambda _s: None)
 
     if cfg.repo is not None and shutil.which("bash"):
-        args = ["bash", str(cfg.repo / "run.sh"), "--port", str(cfg.port), "--skip-web"]
+        args = ["bash", str(cfg.repo / RUN_SH), "--port", str(cfg.port), "--skip-web"]
         if recreate:
-            subprocess.run(["bash", str(cfg.repo / "run.sh"), "--stop"],
+            subprocess.run(["bash", str(cfg.repo / RUN_SH), "--stop"],
                            cwd=str(cfg.repo), capture_output=True, text=True)
         for line in _run_stream(args, cwd=cfg.repo):
             say(line)
@@ -262,14 +308,16 @@ def stop(cfg: Config) -> None:
     """Stop, not remove: the box keeps whatever the agent installed in it."""
     exe = require_docker()
     if cfg.repo is not None and shutil.which("bash"):
-        subprocess.run(["bash", str(cfg.repo / "run.sh"), "--stop"],
+        subprocess.run(["bash", str(cfg.repo / RUN_SH), "--stop"],
                        cwd=str(cfg.repo), capture_output=True, text=True)
         return
     subprocess.run([exe, "compose", "-p", PROJECT, "-f", str(compose_path(cfg)), "stop"],
                    capture_output=True, text=True)  # noqa: S603 — fixed argv
 
 
-def logs(cfg: Config, *, tail: int = 200, follow: bool = False) -> int:
+def logs(*, tail: int = 200, follow: bool = False) -> int:
+    """`docker logs` on the sandbox. Takes no config: the container is named,
+    not derived from it (AIFORGE_CONTAINER overrides)."""
     exe = require_docker()
     cmd = [exe, "logs", f"--tail={tail}"]
     if follow:
@@ -278,7 +326,7 @@ def logs(cfg: Config, *, tail: int = 200, follow: bool = False) -> int:
     return subprocess.call(cmd)
 
 
-def shell(cfg: Config) -> int:
+def shell() -> int:
     """A shell inside the box, with the user's own tty."""
     exe = require_docker()
     return subprocess.call([exe, "exec", "-it", container_name(), "bash", "-l"])
