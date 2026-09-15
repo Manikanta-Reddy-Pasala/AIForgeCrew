@@ -892,8 +892,12 @@ _pick_index() {                          # only when something is installed
   _INDEX="${UV_DEFAULT_INDEX:-${UV_INDEX_URL:-$(_pyproject_index)}}"
   [[ -n "$_INDEX" ]] || _fatal "no package index: pyproject names none and UV_DEFAULT_INDEX is unset."
   local host="${_INDEX#*://}"; host="${host%%[:/]*}"; host="${host##*@}"
+  # The second line names WHERE to set it, because in docker mode exporting it
+  # and re-running changes nothing: compose bakes the environment into the
+  # container when it is CREATED, so a box that already exists keeps the index
+  # it was born with until it is recreated.
   _resolves "$host" || _fatal "the package index host '$host' does not resolve from this box." \
-    "AIForge installs only from $_INDEX — check DNS/VPN, or set UV_DEFAULT_INDEX."
+    "AIForge installs only from $_INDEX — check DNS/VPN, or set UV_DEFAULT_INDEX. In the sandbox it must be set BEFORE the container is created (compose bakes the env at creation): docker rm -f aiforge, then UV_DEFAULT_INDEX=… ./run.sh."
   echo "==> index: $_INDEX"
 }
 
