@@ -187,7 +187,7 @@ def platform_is_windows(plat: str | None = None) -> bool:
 
 
 def _yaml(value: str) -> str:
-    """A single-quoted YAML scalar — the one form with no escape sequences.
+    r"""A single-quoted YAML scalar — the one form with no escape sequences.
 
     A double-quoted scalar interprets backslashes, so `C:\Users\m` contained
     `\U` (a unicode escape) and the file would not parse at all.
