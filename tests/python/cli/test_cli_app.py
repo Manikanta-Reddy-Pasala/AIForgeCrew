@@ -8,12 +8,14 @@ no sandbox, no terminal and no network.
 from __future__ import annotations
 
 import io
+import queue
 
 import pytest
 from aiforge_cli import client as api
 from aiforge_cli.app import EXIT_AGENT, EXIT_ENV, EXIT_INTERRUPT, EXIT_OK, App, Exit
 from aiforge_cli.colors import Palette
 from aiforge_cli.config import Config
+from aiforge_cli.keys import KeyWatcher
 
 PLAIN = Palette(False)
 
@@ -344,8 +346,6 @@ def test_mount_ls_separates_approved_from_waiting(tmp_path):
 
 
 def test_keys_esc_stops_and_typing_steers(tmp_path):
-    import queue
-    from aiforge_cli.keys import KeyWatcher
     client = FakeClient()
     app = _app(tmp_path, client, answers=["n"])
     app.boot()
@@ -359,8 +359,6 @@ def test_keys_esc_stops_and_typing_steers(tmp_path):
 
 
 def test_two_interrupts_reset_everything(tmp_path):
-    import queue
-    from aiforge_cli.keys import KeyWatcher
     client = FakeClient()
     app = _app(tmp_path, client, answers=["n"])
     app.boot()
@@ -373,8 +371,6 @@ def test_two_interrupts_reset_everything(tmp_path):
 
 
 def test_an_attached_run_is_read_only(tmp_path):
-    import queue
-    from aiforge_cli.keys import KeyWatcher
     client = FakeClient()
     app = _app(tmp_path, client, answers=["n"])
     app.boot()

@@ -8,7 +8,7 @@ bug waiting to be reported.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 # What a completer should offer for an argument. Resolved late (live lists come
 # from the API), so the table stays data.

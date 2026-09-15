@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from aiforge_cli import commands as tbl
-from aiforge_cli import completion, help as helptext
+from aiforge_cli import completion
+from aiforge_cli import help as helptext
 from aiforge_cli.colors import Palette
 
 PLAIN = Palette(False)

@@ -97,8 +97,7 @@ class ChatCompleter(Completer):
     @staticmethod
     def _delegate(sub: PathCompleter, document, word: str, complete_event):
         from prompt_toolkit.document import Document
-        for completion in sub.get_completions(Document(word, len(word)), complete_event):
-            yield completion
+        yield from sub.get_completions(Document(word, len(word)), complete_event)
 
 
 def build_session(history_file: Path, completer: Completer) -> PromptSession:

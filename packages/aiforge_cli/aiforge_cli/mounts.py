@@ -9,6 +9,7 @@ rule run.sh enforces, so the two entry points cannot disagree.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 from . import paths
@@ -80,7 +81,5 @@ def _append(file: Path, value: str, *, mode: int) -> None:
     file.parent.mkdir(parents=True, exist_ok=True)
     with file.open("a") as fh:
         fh.write(value + "\n")
-    try:
+    with contextlib.suppress(OSError):
         file.chmod(mode)
-    except OSError:
-        pass

@@ -48,10 +48,7 @@ def _fmt_args(args: Any, budget: int) -> str:
         return _ellipsize(str(args or ""), budget)
     parts = []
     for key, value in args.items():
-        if isinstance(value, str):
-            shown = value
-        else:
-            shown = json.dumps(value, default=str)
+        shown = value if isinstance(value, str) else json.dumps(value, default=str)
         parts.append(f"{key}={shown}")
     return _ellipsize("  ".join(parts), budget)
 
@@ -211,7 +208,8 @@ class Renderer:
         self._tool = None
         self._tools += 1
         result = ev.get("result")
-        failed = bool(isinstance(result, dict) and (result.get("error") or result.get("ok") is False))
+        failed = bool(isinstance(result, dict)
+                      and (result.get("error") or result.get("ok") is False))
         self._failed += 1 if failed else 0
         mark = self.pal("✗", "fail") if failed else self.pal("✓", "ok")
         args = _fmt_args(ev.get("args") if ev.get("args") is not None
@@ -235,8 +233,8 @@ class Renderer:
         if diff and self.verbosity >= 0:
             lines += _diff_lines(diff, self.pal, DIFF_LINES[min(max(self.verbosity, -1), 1)])
         if self.verbosity > 0 and isinstance(result, dict):
-            lines += ["  " + self.pal(l, "dim")
-                      for l in json.dumps(result, indent=2, default=str).splitlines()[:60]]
+            dump = json.dumps(result, indent=2, default=str).splitlines()[:60]
+            lines += ["  " + self.pal(line, "dim") for line in dump]
         return Op(lines=lines, tail=self._tail())
 
     def _on_delta(self, ev: dict[str, Any]) -> Op:
@@ -286,8 +284,7 @@ class Renderer:
         rule = self.pal("── approval ──────────────────────────────", "approval")
         lines = [rule]
         tool = ev.get("tool") or ev.get("name") or "action"
-        lines.append(f"  {self.pal(str(tool), 'head')}  "
-                     f"{_fmt_args(ev.get('args'), 200)}")
+        lines.append(f"  {self.pal(str(tool), 'head')}  {_fmt_args(ev.get('args'), 200)}")
         preview = ev.get("preview") or ev.get("diff") or ev.get("command")
         if isinstance(preview, str) and preview.strip():
             lines += _diff_lines(preview, self.pal, DIFF_LINES[1])
@@ -316,7 +313,8 @@ class Renderer:
         head = self.pal(f"⋮ plan · {len(items)} subtasks", "head")
         lines = [head]
         for item in items[:12]:
-            goal = item.get("goal") or item.get("title") or item.get("slug") if isinstance(item, dict) else str(item)
+            goal = (item.get("goal") or item.get("title") or item.get("slug")
+                    if isinstance(item, dict) else str(item))
             lines.append("  " + self.pal(f"– {_ellipsize(str(goal), 88)}", "dim"))
         return Op(lines=lines, tail=self._tail())
 

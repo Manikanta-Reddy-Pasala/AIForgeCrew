@@ -12,13 +12,17 @@ in a docstring.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
 
-from . import box, client as api, commands as tbl, help as helptext
+from . import box
+from . import client as api
+from . import commands as tbl
+from . import help as helptext
 from . import integrations as integ
 from . import mounts as mountlist
 from . import paths, sessions
@@ -428,16 +432,12 @@ class App:
             self.warn(f"steer failed: {exc}")
 
     def _stop_run(self) -> None:
-        try:
+        with contextlib.suppress(api.ApiDown, api.Busy):
             self.client.stop(self.session_id)          # type: ignore[arg-type]
-        except (api.ApiDown, api.Busy):
-            pass
 
     def _kill_all(self) -> None:
-        try:
+        with contextlib.suppress(api.ApiDown, api.Busy):
             self.client.kill_all()
-        except (api.ApiDown, api.Busy):
-            pass
 
     # ── the loop ───────────────────────────────────────────────────────────
 
@@ -693,6 +693,7 @@ class App:
 
     def _box_action(self, action: str, *, tail: int, follow: bool) -> int:
         if action == "status":
+            strategy = f"run.sh {self.cfg.repo}" if self.cfg.repo else "compose"
             exe = box.docker_bin()
             state = box.container_state(exe) if exe else "no docker"
             healthy = self.client.healthy()
@@ -701,8 +702,7 @@ class App:
                      f"{self.pal('up' if healthy else 'down', 'ok' if healthy else 'fail')}"
                      f"   {self.pal(self.cfg.base_url, 'dim')}",
                      f"  image     {self.pal(self.cfg.image, 'dim')}",
-                     f"  strategy  "
-                     f"{self.pal('run.sh ' + str(self.cfg.repo) if self.cfg.repo else 'compose', 'dim')}")
+                     f"  strategy  {self.pal(strategy, 'dim')}")
             return EXIT_OK if healthy else EXIT_ENV
         if action in ("up", "restart"):
             box.start(self.cfg, on_line=self._box_line, recreate=action == "restart",

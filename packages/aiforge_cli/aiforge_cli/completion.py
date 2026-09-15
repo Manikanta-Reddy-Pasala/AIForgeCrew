@@ -59,24 +59,25 @@ def zsh() -> str:
             subs.append(f"      {cmd.name}) _files -/ ;;")
         elif cmd.arg == tbl.ARG_COMMAND:
             subs.append(f"      {cmd.name}) _values command {' '.join(tbl.top_names())} ;;")
-    return """#compdef aiforge
+    template = """#compdef aiforge
 # aiforge completion for zsh — generated, do not edit.
 _aiforge() {
   local -a cmds
   cmds=(
-%s
+{{CMDS}}
   )
   if (( CURRENT == 2 )); then
     _describe -t commands 'aiforge command' cmds
     return
   fi
   case "${words[2]}" in
-%s
+{{SUBS}}
       *) _files ;;
   esac
 }
 _aiforge "$@"
-""" % ("\n".join(lines), "\n".join(subs))
+"""
+    return template.replace("{{CMDS}}", "\n".join(lines)).replace("{{SUBS}}", "\n".join(subs))
 
 
 def fish() -> str:
