@@ -711,3 +711,19 @@ def test_declining_the_offer_attaches_read_only(tmp_path):
     app._resolve_session()
     assert ("attach", 5) in client.calls
     assert app.git.added == []
+
+
+def test_a_bad_command_line_is_a_message_not_a_traceback():
+    # argparse's own answer is print-and-SystemExit, which a library function
+    # must not do; the parser raises instead and main turns it into usage.
+    from aiforge_cli import cli
+    assert cli.main(["--nope"]) == 2
+
+
+def test_a_slash_command_keeps_the_loop_and_exit_leaves_it(tmp_path):
+    client = FakeClient()
+    app = _app(tmp_path, client, answers=["n"])
+    app.boot()
+    assert app._line("/mounts") == -1          # handled, stay
+    assert app._line("/exit") == EXIT_OK       # handled, leave
+    assert app._line("do the thing") is None   # not a command: send it

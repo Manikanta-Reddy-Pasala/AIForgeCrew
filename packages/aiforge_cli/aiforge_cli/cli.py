@@ -18,10 +18,20 @@ from . import help as helptext
 from .app import EXIT_ENV, EXIT_OK, EXIT_USAGE, App, Exit
 
 
+class UsageError(Exception):
+    """A bad command line. argparse's own answer is to print and SystemExit,
+    which a library function must not do and callers must not swallow."""
+
+
+class _Parser(argparse.ArgumentParser):
+    def error(self, message: str):        # noqa: D102 - argparse's own contract
+        raise UsageError(message)
+
+
 def build_parser() -> argparse.ArgumentParser:
     # add_help=False: `aiforge help` is the documented surface and it renders
     # commands.py, so argparse's own -h must not print a second, thinner one.
-    parser = argparse.ArgumentParser(prog="aiforge", add_help=False)
+    parser = _Parser(prog="aiforge", add_help=False)
     parser.add_argument("args", nargs="*")
     parser.add_argument("-q", "--quiet", dest="quiet", action="store_true")
     parser.add_argument("-v", "--verbose", dest="verbose", action="store_true")
@@ -60,7 +70,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     try:
         opts = parser.parse_args(argv)
-    except SystemExit:
+    except UsageError as exc:
+        print(f"aiforge: {exc}\n  aiforge help", file=sys.stderr)
         return EXIT_USAGE
     opts.verbosity = _verbosity(opts)
     colors.enable_windows_ansi()

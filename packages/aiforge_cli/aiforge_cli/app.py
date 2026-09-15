@@ -38,6 +38,10 @@ EXIT_AGENT = 1
 EXIT_USAGE = 2
 EXIT_ENV = 3
 EXIT_INTERRUPT = 130
+# _line's "handled, stay in the loop" answer. Not an exit status: a sentinel
+# keeps the two meanings apart, where None used to mean both "not a command"
+# and "command handled".
+_STAY = -1
 
 # A dropped stream is re-attached, but not forever: a sandbox that has gone
 # away would otherwise spin here silently for as long as the terminal is open.
@@ -505,18 +509,18 @@ class App:
             # different exit codes.
             raise KeyboardInterrupt
         if key == ESC:
-            return self._key_stop(steer, detach_only)
+            self._key_stop(detach_only)
+            return steer
         if detach_only:
             return steer                     # an attach is read-only
         return self._key_steer(key, steer)
 
-    def _key_stop(self, steer: list[str], detach_only: bool) -> list[str]:
+    def _key_stop(self, detach_only: bool) -> None:
         if detach_only:
             self.warn("attached read-only — Ctrl+C to detach")
-            return steer
+            return
         self.warn("stopping…")
         self._stop_run()
-        return steer
 
     def _key_steer(self, key: str, steer: list[str]) -> list[str]:
         """Typing during a run builds a steer message; Enter sends it."""
@@ -606,8 +610,10 @@ class App:
     # ── the loop ───────────────────────────────────────────────────────────
 
     def interactive(self) -> int:
+        """Read, send, render, repeat — until Ctrl+D or /exit."""
         from .input import ChatCompleter, build_session
-        completer = ChatCompleter(models=self._model_choices, sessions=self._session_choices)
+        completer = ChatCompleter(models=self._model_choices,
+                                  sessions=self._session_choices)
         session = build_session(self.cfg.history_file, completer)
         self.say(self.pal("/help for commands · esc stops a run · ctrl+d exits", "dim"), "")
         status = EXIT_OK
@@ -617,22 +623,35 @@ class App:
                 text = session.prompt("▸ ").strip()
                 interrupts = 0
             except KeyboardInterrupt:
-                interrupts += 1
-                if interrupts >= 2:
-                    self._kill_all(only_if_alone=True)
-                    interrupts = 0
+                interrupts = self._idle_interrupt(interrupts)
                 continue
             except EOFError:
                 return status
             if not text:
                 continue
-            if text.startswith("/"):
-                handled, leave_with = self.slash(text)
-                if handled:
-                    if leave_with is not None:
-                        return leave_with
-                    continue
+            leave = self._line(text)
+            if leave == _STAY:
+                continue
+            if leave is not None:
+                return leave
             status = self.send(text)
+
+    def _line(self, text: str) -> int | None:
+        """A typed line: a client-side command, or None to send it as a turn."""
+        if not text.startswith("/"):
+            return None
+        handled, leave_with = self.slash(text)
+        if handled:
+            return leave_with if leave_with is not None else _STAY
+        return None
+
+    def _idle_interrupt(self, interrupts: int) -> int:
+        """Ctrl+C at the prompt: clear the line, twice resets everything."""
+        interrupts += 1
+        if interrupts < 2:
+            return interrupts
+        self._kill_all(only_if_alone=True)
+        return 0
 
     def slash(self, text: str) -> tuple[bool, int | None]:
         """Client-side commands. Anything unknown goes to the agent, which
