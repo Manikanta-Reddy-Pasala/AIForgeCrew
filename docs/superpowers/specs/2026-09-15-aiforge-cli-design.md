@@ -59,11 +59,19 @@ Host requirements: the binary and `docker`. No python, git or node.
 aiforge                      interactive chat in the current folder
 aiforge "fix the retry"      one-shot: stream, print, exit with status
 aiforge box up|down|restart|status|logs|shell
-aiforge mount add DIR | rm DIR | ls
+aiforge mount add DIR | rm DIR | ls | approve DIR
+aiforge integrations ls|get|set|test [jira|confluence|gitlab|email]
 aiforge sessions | resume N | attach N
 aiforge completion bash|zsh|fish|powershell
-aiforge help [command]
+aiforge help [command] | version
 ```
+
+`integrations` is settings only. USING Jira and Confluence needs nothing here:
+they are agent tools inside the sandbox, so asking a chat to file an issue
+already works and arrives as a rendered tool step. Secrets are write-only —
+a read reports `configured` or `not set`, and `set` refuses a field the chosen
+integration does not have (the server's models ignore unknown keys, so a typo
+would otherwise answer 200 having saved nothing).
 
 Local only. There is no remote/`--server` mode and no API token: the backend
 trusts loopback, and `127.0.0.1:<port>` (default 8799, `~/.aiforge/cli.toml`)
@@ -77,11 +85,13 @@ aiforge
  2 GET /api/health (1.5s)            200 -> step 5
  3 docker present? daemon up?        no -> one-line fix, exit 3
  4 docker compose -p aiforge up -d   (pull progress as lines)
-   poll /api/health, 60s cap
+   poll /api/health, 120s cap
  5 GET /api/runtime/mounts           cwd inside a mount?
    no -> the ONE prompt: mount it? [Y/n]   (Enter = yes)
-         yes: POST /api/runtime/mounts, then compose up -d --force-recreate
-              REFUSED while any run is in flight (names the session)
+         yes: append to ~/.aiforge/mounts.list AND to the host's
+              ~/.config/aiforge/approved-mounts, then recreate the container
+              REFUSED while any run is in flight (names the session; --force
+              overrides and loses the run)
  6 session: sessions.json[boxpath] -> resume, else POST /api/chat/sessions {cwd}
  7 header, then the prompt
 ```
@@ -91,6 +101,28 @@ python 3.12 and the binary must not.
 
 `--yes` / `AIFORGE_CLI_AUTO_MOUNT=1` answers the mount prompt. Everything else
 is silent: image pull, health wait, session create, model probe.
+
+**Mounts are host files, not an API call.** `~/.aiforge/mounts.list` is
+mounted into the box, so the agent can append to it — a line there is a
+REQUEST. The host's answer lives in `~/.config/aiforge/approved-mounts`, which
+the box cannot see, and only the intersection is ever mounted. That is the rule
+`run.sh` already enforces, so both entry points agree; `GET /api/runtime/mounts`
+is read for what a running box actually has. Folders that can never be
+mounted: `$HOME` or above, `~/.config` (it holds the approvals file, so
+mounting it would let the box approve its own future mounts), `~/.ssh`,
+`~/.gnupg`, `~/.aws`, `~/.kube`, `~/.docker`, and `/etc`, `/run`, `/proc`,
+`/sys`, `/boot`, `/dev`.
+
+**Which container.** With an AIForgeCrew checkout on the host (identified by
+this project's own markers, not merely by having a `run.sh`), `run.sh` owns the
+box: it builds the image, generates the mount overlay and knows every env
+passthrough. Without one — the normal case for a binary install, and the only
+case on Windows, which has no bash — the CLI writes its own compose file from
+an embedded template against a prebuilt image, with the port published on
+loopback rather than host networking (Docker Desktop has no usable host
+network). That file is written to `~/.config/aiforge/sandbox/`, mode 0600, NOT
+inside the bind-mounted `~/.aiforge`: it lists every mounted folder and every
+passthrough value, proxy credentials included.
 
 ### Windows paths
 
@@ -159,9 +191,12 @@ log: no spinner, no `\r`, no color.
 
 ### Colour
 
-Resolved once: truecolor -> 256 -> 16 -> none. Off for `NO_COLOR`, `TERM=dumb`,
-non-TTY. Only the 8 ANSI roles plus dim/bold, never a background, so the user's
-theme stays in charge and light terminals stay readable.
+Colour or no colour, decided once. Eight ANSI roles plus dim/bold and never a
+background, so there is nothing for a 256-colour or truecolor ladder to add and
+the user's theme stays in charge on a light terminal as well as a dark one. Off
+for `NO_COLOR`, `TERM=dumb` and any non-TTY destination; `AIFORGE_CLI_COLOR=always`
+forces it through a pipe. On Windows `TERM` is normally unset, which is not the
+same as dumb, and VT processing is switched on at startup.
 
 | role | colour |
 |---|---|
@@ -190,6 +225,10 @@ twice kill-all · `Ctrl+R` history search · `Up` history
 
 Completion, from `commands.py` in both directions:
 
+`--force` overrides the in-flight-run guard on a mount change. A run in flight
+is detected by asking each session's attach stream (its first event is the only
+place the server reports `running`) — the session list carries no such field.
+
 * **shell**: `aiforge completion <shell>` prints a static script generated from
   the table; installers place it. Frozen binaries cannot use runtime python
   completion hooks, so the script is plain shell.
@@ -215,6 +254,8 @@ already resolves `.aiforge/commands/*.md`.
 | mount while run live | name the busy session, offer `--force` |
 | model endpoint down | the `error` event verbatim + `box logs --tail 50` hint |
 | no `ping` for 120s | reconnect via `/attach`, say so on screen |
+| the stream keeps dropping | at most 5 reconnects, backing off 1/2/4/8/15s, then exit 3 |
+| an approval with no terminal | rejected, never assumed — and an empty answer at the prompt is also a reject |
 
 Exit codes: 0 ok · 1 agent error · 2 usage · 3 environment · 130 interrupted.
 
@@ -236,4 +277,12 @@ one-liners, media upload, checkpoints, tickets.
 * Fake-server tests: a stub replaying recorded SSE transcripts, including a
   mid-stream drop plus `/attach` replay, asserting no duplicated lines.
 * Import-graph test: no `aiforge_core` import from `aiforge_cli`.
+* app-level tests over an injected `ask` callable and a fake client: boot asks
+  exactly one question (the mount) and none once the folder is mounted,
+  approvals default to reject, `attach N` adopts session N, a repeatedly
+  dropping stream gives up instead of spinning, keys stop/steer/reset.
+* `Tail` against a StringIO: no escape bytes when disabled, and a streamed
+  answer that survives the spinner.
 * e2e on the nuc, in docker, against a real box and model.
+
+Everything runs on the nuc, in a clean container — never on the laptop.
