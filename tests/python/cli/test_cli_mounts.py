@@ -6,7 +6,15 @@ from aiforge_cli import mounts
 
 
 def _files(tmp_path):
-    return tmp_path / "mounts.list", tmp_path / "approved-mounts"
+    """The two files, as siblings of the project tree rather than above it.
+
+    The approvals file's own directory is itself a guard (mounting it would let
+    the sandbox approve its own mounts), so a fixture that put it in a PARENT
+    of the folder under test was asking for something that must be refused.
+    """
+    cfg = tmp_path / "cfg" / "aiforge"
+    cfg.mkdir(parents=True, exist_ok=True)
+    return tmp_path / "list" / "mounts.list", cfg / "approved-mounts"
 
 
 def test_a_requested_folder_is_not_mounted_until_it_is_approved(tmp_path):

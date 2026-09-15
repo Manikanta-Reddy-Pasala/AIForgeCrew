@@ -33,7 +33,8 @@ def test_only_approved_folders_reach_the_compose_file(tmp_path):
     sneaky.mkdir()
     # The agent can append to mounts.list; only `work` was approved by the host.
     cfg.mounts_file.write_text(f"{work}\n{sneaky}\n")
-    approvals = tmp_path / "approved"
+    approvals = tmp_path / "cfg" / "aiforge" / "approved-mounts"
+    approvals.parent.mkdir(parents=True)
     approvals.write_text(f"{work}\n")
     effective = mounts.effective(cfg.mounts_file, approvals, home=str(tmp_path / "home"))
     text = box.render_compose(cfg, effective, env={}, plat="posix")
