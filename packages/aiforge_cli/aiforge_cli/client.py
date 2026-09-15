@@ -18,6 +18,10 @@ import httpx
 # caller re-attaches instead of waiting forever.
 STREAM_READ_TIMEOUT = 130.0
 
+# A health reply can take seconds on a box that is mid-run; the connect budget
+# stays short, because loopback either connects at once or not at all.
+HEALTH_READ_TIMEOUT = 12.0
+
 
 class Stalled(Exception):
     """The event stream went silent past every keepalive."""
@@ -34,7 +38,11 @@ class ApiDown(Exception):
 class Client:
     def __init__(self, base_url: str, *, timeout: float = 15.0):
         self._base = base_url.rstrip("/")
-        self._http = httpx.Client(base_url=self._base, timeout=timeout)
+        # trust_env=False: this client only ever talks to 127.0.0.1, and a
+        # proxy inherited from the environment would route loopback through it
+        # and fail.
+        self._http = httpx.Client(base_url=self._base, timeout=timeout,
+                                  trust_env=False)
 
     def close(self) -> None:
         self._http.close()
@@ -48,11 +56,25 @@ class Client:
     # ── plain calls ────────────────────────────────────────────────────────
 
     def healthy(self, timeout: float = 1.5) -> bool:
+        """Is the sandbox's API there?
+
+        "Nothing is listening" and "listening but busy" are different answers.
+        Connecting to a loopback port either works immediately or fails
+        immediately, so the short budget belongs on the CONNECT; the reply can
+        take seconds on a box that is mid-run (measured: /api/health answers in
+        0.1s idle and 3s under load), and timing that out would have the CLI
+        conclude the box is down and try to start a second one.
+        """
+        limits = httpx.Timeout(timeout, read=max(timeout, HEALTH_READ_TIMEOUT))
         try:
-            r = self._http.get("/api/health", timeout=timeout)
+            r = self._http.get("/api/health", timeout=limits)
             return r.status_code == 200
-        except httpx.HTTPError:
+        except (httpx.ConnectError, httpx.ConnectTimeout):
             return False
+        except httpx.HTTPError:
+            # Something answered the connection and then took too long, or the
+            # read broke: the port is occupied, so the box exists.
+            return True
 
     def sessions(self) -> list[dict[str, Any]]:
         return self._json("GET", "/api/chat/sessions")

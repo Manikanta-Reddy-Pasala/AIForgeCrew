@@ -79,3 +79,30 @@ def test_parse_sse_line_only_accepts_data_objects():
     assert api.parse_sse_line("event: ping") is None
     assert api.parse_sse_line("data: [1, 2]") is None
     assert api.parse_sse_line("") is None
+
+
+def test_a_slow_health_reply_does_not_mean_the_box_is_missing():
+    # /api/health answers in 0.1s idle and 3s under load on a real box. Timing
+    # that out had the CLI decide nothing was there and start a second sandbox.
+    def handler(_request):
+        raise httpx.ReadTimeout("slow")
+
+    assert _client(handler).healthy() is True
+
+
+def test_a_refused_connection_does_mean_the_box_is_missing():
+    def handler(_request):
+        raise httpx.ConnectError("connection refused")
+
+    assert _client(handler).healthy() is False
+
+
+def test_the_client_ignores_a_proxy_from_the_environment(monkeypatch):
+    # It only ever talks to 127.0.0.1; an inherited proxy would route loopback
+    # through it and fail.
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.internal:3128")
+    c = api.Client("http://127.0.0.1:8799")
+    try:
+        assert c._http.trust_env is False
+    finally:
+        c.close()
