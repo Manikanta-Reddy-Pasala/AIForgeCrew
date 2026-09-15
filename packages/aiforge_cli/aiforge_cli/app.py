@@ -49,6 +49,11 @@ class Exit(Exception):
         self.message = message
 
 
+def _attach_to(client, session_id: int) -> Callable[[], object]:
+    """A factory that re-opens the run's stream, for the reconnect path."""
+    return lambda: client.attach(session_id)
+
+
 def _terminal_ask(prompt: str) -> str:
     try:
         return input(prompt)
@@ -308,7 +313,11 @@ class App:
                               f"({reconnects}/{MAX_RECONNECTS})")
                     self._sleep(wait)
                     self.render.begin_replay()
-                    stream = self.client.attach(self.session_id)   # type: ignore[assignment]
+                    # Re-open INSIDE the try on the next pass: calling attach()
+                    # here put the retry's own failure outside the handler that
+                    # exists to absorb it.
+                    stream = None
+                    open_stream = _attach_to(self.client, self.session_id)
                 except KeyboardInterrupt:
                     interrupts += 1
                     if detach_only:
