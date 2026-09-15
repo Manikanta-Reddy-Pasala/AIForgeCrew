@@ -24,6 +24,11 @@ exec docker run --rm -i \
     curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null
     . "$HOME/.local/bin/env"
     mkdir -p "$(dirname "'"$WORKDIR"'")"
+    # /src is the host checkout, owned by the host uid; git in the container
+    # runs as root and refuses to read a repo it does not own ("dubious
+    # ownership"), which failed the clone before it started.
+    git config --global --add safe.directory /src
+    git config --global --add safe.directory /src/.git
     git clone -q /src "'"$WORKDIR"'"
     cd "'"$WORKDIR"'"
     uv sync --all-extras --dev --frozen >/dev/null
