@@ -24,9 +24,13 @@ stages:
   - build
   - sast_analysis
   - sca_analysis
+  - package
 
 variables:
   ARTIFACTORY_HOST: "artifactory.internal"
+  # Where `cli:publish` puts the binaries. A generic (not pypi/npm) repo: these
+  # are plain files, not packages.
+  CLI_ARTIFACT_REPO: "generic-local"
   BUILD_IMAGE: "ubuntu:24.04"
   UBUNTU_SUITE: "noble"
   UV_VERSION: "0.12.10"
@@ -178,3 +182,89 @@ build:
         coverage_format: cobertura
         path: sonar/coverage.xml
   coverage: '/^TOTAL\s+.*\s+(\d+(?:\.\d+)?)%$/'
+
+# ── the aiforge CLI binaries ────────────────────────────────────────────────
+# PyInstaller freezes the interpreter it RUNS on: it cannot cross-compile. So a
+# Linux runner can build the Linux variants and nothing else — the Windows .exe
+# and the macOS universal2 binary have to be built on those systems (see
+# installer/cli/README.md). Pretending otherwise in a job here would just move
+# the failure into the pipeline.
+
+.cli_binary:
+  stage: package
+  extends: [.default_rules, .artifactory_setup]
+  variables:
+    # The script installs the pinned PyInstaller and this package from the
+    # index; .artifactory_setup has already written ~/.netrc and the CA.
+    UV_DEFAULT_INDEX: "$PIP_INDEX_URL"
+  script:
+    - installer/cli/build-binary.sh --out "dist/cli/$CLI_TARGET"
+    - "\"dist/cli/$CLI_TARGET/aiforge\" --version"
+    - ls -lh "dist/cli/$CLI_TARGET"
+  artifacts:
+    name: "aiforge-cli-$CLI_TARGET-$CI_COMMIT_SHORT_SHA"
+    expire_in: 1 month
+    paths:
+      - dist/cli/
+
+cli:linux-amd64:
+  extends: .cli_binary
+  image: $BUILD_IMAGE
+  variables:
+    CLI_TARGET: "linux-amd64"
+
+cli:linux-arm64:
+  extends: .cli_binary
+  # Needs an arm64 runner, or binfmt/qemu registered on an x86_64 one. Manual
+  # and allow_failure on purpose: a runner without binfmt should report that,
+  # not redden the pipeline.
+  image:
+    name: $BUILD_IMAGE
+    docker:
+      platform: linux/arm64
+  variables:
+    CLI_TARGET: "linux-arm64"
+  when: manual
+  allow_failure: true
+
+cli:publish:
+  stage: package
+  image: $BUILD_IMAGE
+  extends: .default_rules
+  # MANUAL, and with -k: the upload skips certificate verification against the
+  # internal host, which is a decision a human takes per release rather than
+  # something a pipeline does on every push.
+  when: manual
+  needs:
+    - job: cli:linux-amd64
+      artifacts: true
+    - job: cli:linux-arm64
+      artifacts: true
+      optional: true
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates
+  script:
+    - |
+      : "${ARTIFACTORY_USER:?set as a CI/CD variable}" "${ARTIFACTORY_TOKEN:?set as a masked CI/CD variable}"
+      VER="$(sed -n 's/^version = "\(.*\)"/\1/p' packages/aiforge_cli/pyproject.toml)"
+      BASE="https://$ARTIFACTORY_HOST/artifactory/$CLI_ARTIFACT_REPO/aiforge-cli/$VER"
+      echo "== publishing aiforge-cli $VER to $BASE"
+      found=0
+      for dir in dist/cli/*/; do
+        target="$(basename "$dir")"
+        for f in "$dir"aiforge "$dir"aiforge.exe "$dir"aiforge-completion.*; do
+          [ -f "$f" ] || continue
+          found=1
+          echo "-> $target/$(basename "$f")"
+          curl -k -sS --fail-with-body -u "$ARTIFACTORY_USER:$ARTIFACTORY_TOKEN" \
+               -T "$f" "$BASE/$target/$(basename "$f")"
+          echo
+        done
+      done
+      [ "$found" = 1 ] || { echo "nothing in dist/cli/ to publish"; exit 1; }
+      # The same line, for the macOS and Windows binaries a Linux runner cannot
+      # build. Run it on that machine after installer/cli/build-binary.sh.
+      echo
+      echo "for a mac or windows build, from that machine:"
+      echo "  curl -k -u \"\$ARTIFACTORY_USER:\$ARTIFACTORY_TOKEN\" -T dist/cli/aiforge \\"
+      echo "       \"$BASE/<macos-universal2|windows-amd64>/aiforge\""
