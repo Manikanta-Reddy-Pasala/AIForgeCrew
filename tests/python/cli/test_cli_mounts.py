@@ -14,7 +14,9 @@ def _files(tmp_path):
     """
     cfg = tmp_path / "cfg" / "aiforge"
     cfg.mkdir(parents=True, exist_ok=True)
-    return tmp_path / "list" / "mounts.list", cfg / "approved-mounts"
+    listed = tmp_path / "list"
+    listed.mkdir(parents=True, exist_ok=True)   # write_text needs the dir
+    return listed / "mounts.list", cfg / "approved-mounts"
 
 
 def test_a_requested_folder_is_not_mounted_until_it_is_approved(tmp_path):
