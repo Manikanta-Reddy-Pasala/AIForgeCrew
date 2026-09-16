@@ -4,6 +4,7 @@ Subcommands (all idempotent, all best-effort, all log+exit-0 on
 soft errors so a failed timer firing doesn't cascade):
 
     aiforge-maint memory decay       → memory.decay.run()
+    aiforge-maint memory repair      → md_store.repair_captures()
     aiforge-maint index merkle <path>          → index.merkle.build()
     aiforge-maint docs ingest <library> <url>  → index.docs_index.ingest()
     aiforge-maint cost snapshot                → runtime.cost.snapshot() print
@@ -83,6 +84,20 @@ def _cmd_memory_migrate_okr(args) -> int:
     return 0
 
 
+def _cmd_memory_repair(args) -> int:
+    """Retire captures that were never facts + collapse duplicate claims.
+
+    Compaction runs this automatically; the command exists so an operator can
+    SEE what a store is carrying (``--dry-run``) before anything moves, and can
+    repair a store without waiting for the next compaction."""
+    from aiforge_core.memory import md_store
+    out = md_store.repair_captures(dry_run=args.dry_run,
+                                   archive=not args.delete,
+                                   limit=args.limit)
+    print(json.dumps({"cmd": "memory.repair", **out}))
+    return 0 if out.get("ok") else 1
+
+
 def _cmd_repo_notes(args) -> int:
     from aiforge_core.indexing.repo_notes import generate_repo_notes
     try:
@@ -132,6 +147,17 @@ def main(argv: list[str] | None = None) -> int:
                        help="rewrite legacy compacted-*.md knowledge briefs "
                             "into the standard OKR envelope (idempotent)"
                        ).set_defaults(func=_cmd_memory_migrate_okr)
+    rep = mem_sub.add_parser(
+        "repair",
+        help="retire captures that are not facts (CLI fragments, headings, raw "
+             "chat turns) and collapse duplicate/truncated claims")
+    rep.add_argument("--dry-run", action="store_true",
+                     help="report what would go, change nothing")
+    rep.add_argument("--delete", action="store_true",
+                     help="delete outright instead of archiving (NOT reversible)")
+    rep.add_argument("--limit", type=int, default=None,
+                     help="stop after N notes")
+    rep.set_defaults(func=_cmd_memory_repair)
 
     idx = sub.add_parser("index")
     idx_sub = idx.add_subparsers(dest="action", required=True)

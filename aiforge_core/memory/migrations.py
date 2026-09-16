@@ -756,5 +756,8 @@ if __name__ == "__main__":       # python -m aiforge_core.memory.migrations [fla
         print(force_recompact_all())
     elif "--migrate-okf" in sys.argv:        # okr→okf dir + all md → OKF frontmatter
         print(migrate_okf_format())
+    elif "--repair" in sys.argv:             # retire non-facts + collapse dupes
+        from aiforge_core.memory import md_store as _md
+        print(_md.repair_captures(dry_run="--dry-run" in sys.argv))
     else:
         print(run_startup_migrations())
