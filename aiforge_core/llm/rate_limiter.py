@@ -207,10 +207,25 @@ def global_rpm() -> float:
 #: Roles whose LLM traffic is memory/compaction, not interactive. They count
 #: against the "compaction" category, whose default ceiling is 0 = bounded
 #: only by the global window — so compaction uses whatever chat leaves of the
-#: total (all of it while chat is idle). "learner" is the only memory-side
-#: sender today (okf tiers, work_notes.consolidate, the boot fold all run as
-#: it); add future memory roles here.
-_COMPACTION_ROLES = frozenset({"learner"})
+#: total (all of it while chat is idle).
+#:
+#: ``memory`` is here because distillation and consolidation moved to their own
+#: reasoning role: left out, every fold counted against the 15 rpm INTERACTIVE
+#: ceiling and compaction crawled on a completely idle box — the opposite of
+#: what the category exists for.
+_COMPACTION_ROLES = frozenset({"learner", "memory"})
+
+
+def _compaction_roles() -> frozenset:
+    """:data:`_COMPACTION_ROLES`, plus whatever ``AIFORGE_MEMORY_MODEL_ROLE``
+    points at.
+
+    Pointing memory work at another role is a supported override, and it must
+    not silently move that traffic onto the interactive ceiling. Read from the
+    environment rather than importing md_store: this module sits underneath it.
+    """
+    extra = (os.environ.get("AIFORGE_MEMORY_MODEL_ROLE") or "").strip()
+    return _COMPACTION_ROLES | ({extra} if extra else frozenset())
 
 _DEFAULT_COMPACTION_RPM = 0.0
 _DEFAULT_CHAT_RPM = 15.0
@@ -218,7 +233,7 @@ _DEFAULT_CHAT_RPM = 15.0
 
 def _category(role: "str | None") -> str:
     """Which sub-ceiling this call counts against: 'compaction' or 'chat'."""
-    return "compaction" if role in _COMPACTION_ROLES else "chat"
+    return "compaction" if role in _compaction_roles() else "chat"
 
 
 def _cat_rpm(cat: str) -> float:
