@@ -216,8 +216,8 @@ def test_quick_mode_keeps_a_step_for_the_answer(_two_files):
 
 
 def test_a_batch_stops_before_it_outgrows_the_context(_two_files, monkeypatch):
-    from aiforge_core.runtime.chat_agent import _loop
-    monkeypatch.setattr(_loop, "_tail_budget_chars", lambda *a, **k: 5)
+    from aiforge_core.runtime.chat_agent._turn import _batch
+    monkeypatch.setattr(_batch, "_tail_budget_chars", lambda *a, **k: 5)
     fn, calls = _batching_fn(_reads("a", "b", "c"), "FINAL: ok")
     evs = _run(_two_files, fn)
     assert _paths(evs) == ["a.txt"]
