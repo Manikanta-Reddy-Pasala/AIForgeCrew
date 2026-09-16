@@ -47,6 +47,8 @@ from ._base import (
     read_file,
 )
 from ._capture import _CAPTURE_KINDS, capture
+from ._repair import repair_captures
+from ._role import memory_role
 from ._compact import (
     _COMPACT_BODY_CAP,
     _CRYPTIC_KEY_RE,
@@ -132,6 +134,8 @@ __all__ = [
     "brief_path",
     "briefs_dir",
     "capture",
+    "memory_role",
+    "repair_captures",
     "captures_dir",
     "classify_scope",
     "classify_scopes",

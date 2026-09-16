@@ -49,6 +49,11 @@
 #   --stop-langfuse     stop it again (traces are ephemeral)
 #   --migrate           force a re-converge of a prior install
 #   --dedupe | --recompact-all | --migrate-okf | --purge-code
+#   --repair-memory [--dry-run]   retire captures that are not facts (CLI
+#                                 fragments, headings, raw chat turns) and
+#                                 collapse duplicate/truncated claims. Runs
+#                                 inside every compaction too — this is for
+#                                 seeing (--dry-run) or forcing it now.
 #                       memory maintenance, then exit
 #   (--lite/--hybrid/--no-build are legacy no-ops)
 #
@@ -265,6 +270,8 @@ while [[ $# -gt 0 ]]; do
     --recompact-all) MAINT=recompact ;;
     --migrate-okf) MAINT=migrateokf ;;
     --purge-code) MAINT=purge ;;
+    --repair-memory) MAINT=repair ;;
+    --dry-run) MAINT_DRY=1 ;;
     --install-model2vec|--install-semantic) SHOW_MODEL2VEC=1 ;;
     --dev) DEV=1 ;;
     --admin) ADMIN=1; ADMIN_PAGE=1 ;;
@@ -820,6 +827,12 @@ if [[ -n "${MAINT:-}" ]]; then
     echo "==> no .venv yet — run ./run.sh once before a maintenance command" >&2
     exit 1
   fi
+  if [[ -n "${MAINT_DRY:-}" && "$MAINT" != repair ]]; then
+    # --dry-run is honoured ONLY by --repair-memory. Accepting it silently
+    # elsewhere would run a REAL recompact while the operator reads "dry run".
+    echo "==> --dry-run applies to --repair-memory only" >&2
+    exit 2
+  fi
   case "$MAINT" in
     dedupe)     echo "==> dedupe: removing duplicate OKR nodes + chat sessions…"
                 .venv/bin/python -m aiforge_core.memory.migrations --dedupe; exit $? ;;
@@ -829,6 +842,10 @@ if [[ -n "${MAINT:-}" ]]; then
                 .venv/bin/python -m aiforge_core.memory.migrations --migrate-okf; exit $? ;;
     purge)      echo "==> purge-code: dropping code-as-learnings…"
                 .venv/bin/python -m aiforge_core.memory.migrations --purge-code; exit $? ;;
+    repair)     echo "==> repair-memory: retiring captures that are not facts +"
+                echo "    collapsing duplicate claims${MAINT_DRY:+ (dry run)}…"
+                .venv/bin/python -m aiforge_core.memory.migrations --repair \
+                  ${MAINT_DRY:+--dry-run}; exit $? ;;
   esac
 fi
 
@@ -902,6 +919,23 @@ _pick_index() {                          # only when something is installed
 }
 
 # ── uv ────────────────────────────────────────────────────────────────────
+# A TLS failure against the index reads as a VERSION error ("No matching
+# distribution found for uv==0.12.11"), because pip reports "no versions" when
+# it could not read the index at all. Say what actually happened instead, and
+# which of the two fixes applies.
+_tls_diagnose() {                        # $1 = index url
+  local url="$1" host port
+  [[ "$url" == https://* ]] || return 0
+  host="$(printf '%s' "$url" | sed -E 's#^[a-zA-Z]+://([^/:]+).*#\1#')"
+  port="$(printf '%s' "$url" | sed -nE 's#^[a-zA-Z]+://[^/:]+:([0-9]+).*#\1#p')"
+  [[ -n "$host" ]] || return 0
+  # In-repo script, not an inline heredoc: the diagnosis has to be the same on
+  # every box and testable on its own (scripts/net/tls_probe.py).
+  [[ -r scripts/net/tls_probe.py ]] || return 0
+  .venv/bin/python scripts/net/tls_probe.py "$host" "${port:-443}" || true
+}
+
+
 # uv is a wheel: pip puts the version uv.lock pins into .venv, from the index.
 _lock_version() {                        # $1 = package name in uv.lock
   sed -n "/^name = \"$1\"\$/{n;s/^version = \"\(.*\)\"/\1/p;}" uv.lock 2>/dev/null | head -1 || true
@@ -917,8 +951,9 @@ if [[ -z "$UV" ]]; then
   # --no-input: on a 401 pip otherwise PROMPTS, and dies in an EOFError.
   .venv/bin/python -m pip install -q --no-input --disable-pip-version-check --only-binary=:all: \
       ${_pip_index[@]+"${_pip_index[@]}"} "uv${_uvv:+==$_uvv}" \
-    || _fatal "pip could not install uv into .venv from $_INDEX." \
-              "Check ~/.netrc credentials and the CA (AIFORGE_CA_BUNDLE)."
+    || { _tls_diagnose "$_INDEX"
+         _fatal "pip could not install uv into .venv from $_INDEX." \
+                "Check ~/.netrc credentials and the CA (AIFORGE_CA_BUNDLE)."; }
   UV="$PWD/.venv/bin/uv"
 fi
 export UV

@@ -464,7 +464,11 @@ def apply_to_roles(model_id: str, roles: list[str]) -> dict:
 # Roles that benefit from a reasoning/"thinking" model (deep planning/judging).
 _THINKING_ROLES = ("planner", "architect", "reviewer",
                    "validator", "critic", "reasoner", "judge", "orchestrator",
-                   "gap_eval", "verify")
+                   "gap_eval", "verify",
+                   # memory = distil/consolidate. Judging what is durable and
+                   # what supersedes what needs reasoning; the fast role is what
+                   # let fragments and raw chat turns through as "facts".
+                   "memory")
 # QUICK, direct-output roles — a reasoning/"thinking" model is WRONG here: it
 # spends its whole budget thinking and returns EMPTY on these short tasks
 # (rephrase a query, distil a fact, classify, title). Force the fast

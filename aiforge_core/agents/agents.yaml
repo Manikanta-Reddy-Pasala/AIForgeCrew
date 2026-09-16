@@ -458,6 +458,45 @@ agents:
       - server-side write_fact plugin acks each row, or learner re-runs once
 
   # ---------------------------------------------------------------------------
+  # 6b. MEMORY  (distillation + consolidation)
+  # ---------------------------------------------------------------------------
+  # Deciding what is durable, what a fact is ABOUT, what it supersedes and what
+  # contradicts it is judgement, not transcription — so memory work runs on the
+  # REASONING model, not the fast direct-output one the learner uses. Callers
+  # reach it through md_store._role.memory_role() (AIFORGE_MEMORY_MODEL_ROLE
+  # overrides); an empty answer from a thinking model retries once on learner.
+  # ---------------------------------------------------------------------------
+  memory:
+    identity:
+      runtime: adk_agent_direct_litellm
+      model: Qwen3.6-27B-MLX-4bit
+      backend: direct_litellm
+      base_url: http://127.0.0.1:1234/v1
+      ctx_window: 128000
+    contract:
+      inputs:
+        - transcript_window            # or an existing brief + new facts
+      outputs:
+        - facts_json                   # [{text, kind, subject, evidence}]
+      max_turns: 1
+      max_wall_s: 300
+    tools:
+      allowed: []                      # capture() is server-side, not a tool
+      forbidden:
+        - ALL
+    memory:
+      read_scope: scoped
+      write_scope: ":Fact"
+    rule: >
+      Memory emits only complete, standalone claims that name a subject and the
+      evidence behind them. A heading, a table row, a CLI usage fragment, a
+      question, a raw user request or a truncated line is NOT a fact and must be
+      omitted. It never touches source files.
+    termination_contract:
+      - "every item carries text + kind + subject + evidence"
+      - "items that fail the fact gate are dropped by the caller, not stored"
+
+  # ---------------------------------------------------------------------------
   # 7. TRIAGE  (extended pipeline — option G)
   # ---------------------------------------------------------------------------
   # Runs FIRST on the parent ticket. Single-turn JSON classifier that tags the

@@ -51,10 +51,55 @@ def _ingest_unit(*, title: str, body: str, kind: str, tags: list[str],
         pass  # md file is the source of truth; DB mirror is best-effort
 
 
+def _frontmatter(*, title: str, kind: str, tags: list[str], source: str,
+                 repo: str, topic: str | None, created: str,
+                 subject: str | None = None, evidence: str | None = None,
+                 confidence: str | None = None,
+                 updated: str | None = None) -> str:
+    """The note header. ``subject``/``evidence``/``confidence`` are the fact
+    record fields — a note says what it is ABOUT and where that came from, so a
+    later pass can re-key, re-scope or drop it without re-reading the prose."""
+    rows = [f"title: {title}", f"kind: {kind}", f"tags: {', '.join(tags)}",
+            f"source: {source}", f"repo: {repo or ''}", f"topic: {topic or ''}"]
+    for name, val in (("subject", subject), ("evidence", evidence),
+                      ("confidence", confidence)):
+        if (val or "").strip():
+            rows.append(f"{name}: {str(val).strip()}")
+    rows.append(f"created: {created}")
+    if updated:
+        rows.append(f"updated: {updated}")
+    return "---\n" + "\n".join(rows) + "\n---\n\n"
+
+
+def rewrite_body(path, body: str, *, evidence: str | None = None) -> dict:
+    """Replace a note's body IN PLACE (frontmatter kept, ``updated`` stamped)
+    and re-ingest it. Used by the subject upsert, so folding a new claim into a
+    subject updates one file instead of minting another dated copy."""
+    d = _parse(path)
+    tags = list(d.get("tags") or [])
+    ev = evidence or d.get("evidence") or None
+    fm = _frontmatter(title=d.get("title") or path.stem, kind=d.get("kind") or "note",
+                      tags=tags, source=d.get("source") or "manual",
+                      repo=d.get("repo") or "", topic=d.get("topic") or None,
+                      created=d.get("created") or _now_iso(),
+                      subject=d.get("subject") or d.get("title"), evidence=ev,
+                      confidence=d.get("confidence") or None, updated=_now_iso())
+    with _WRITE_LOCK:
+        path.write_text(fm + (body or "").strip() + "\n", encoding="utf-8")
+    _ingest_unit(title=d.get("title") or path.stem, body=body,
+                 kind=d.get("kind") or "note", tags=tags,
+                 source=f"md:{path.stem}", repo=d.get("repo") or "notes",
+                 replace=True)
+    out = _parse(path)
+    out.pop("body", None)
+    return out
+
+
 def write(title: str, text: str, *, kind: str = "note",
           tags: list[str] | None = None, source: str = "manual",
           repo: str = "notes", topic: str | None = None,
-          ingest: bool = True) -> dict:
+          ingest: bool = True, subject: str | None = None,
+          evidence: str | None = None, confidence: str | None = None) -> dict:
     """Create an md memory file + ingest it into the searchable backend.
 
     ``repo`` and ``topic`` are written into the frontmatter (NOT just the DB
@@ -90,17 +135,9 @@ def write(title: str, text: str, *, kind: str = "note",
         except Exception:  # noqa: BLE001
             continue
     path = _md_path_for_stem(stem)
-    fm = (
-        "---\n"
-        f"title: {title}\n"
-        f"kind: {kind}\n"
-        f"tags: {', '.join(tags)}\n"
-        f"source: {source}\n"
-        f"repo: {repo or ''}\n"
-        f"topic: {topic or ''}\n"
-        f"created: {created}\n"
-        "---\n\n"
-    )
+    fm = _frontmatter(title=title, kind=kind, tags=tags, source=source,
+                      repo=repo, topic=topic, created=created, subject=subject,
+                      evidence=evidence, confidence=confidence)
     path.write_text(fm + (text or "").strip() + "\n", encoding="utf-8")
     # ingest=False: md file only (compaction source) — used when the caller
     # already wrote this fact to the backend (e.g. the learner), so we don't

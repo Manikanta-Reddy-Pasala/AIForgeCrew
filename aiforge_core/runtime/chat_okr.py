@@ -32,6 +32,16 @@ from aiforge_core.config import _atomic
 
 log = logging.getLogger("aiforge.chat_okr")
 
+# Distillation (the prompt, the model call, and what is accepted back) lives in
+# chat_okr_extract; this module keeps the session bookkeeping. Re-exported so
+# callers and tests keep one import.
+from aiforge_core.runtime.chat_okr_extract import (  # noqa: E402
+    _EXTRACT_SYS,
+    _extract,
+    _extract_max_tokens,
+    _valid_items,
+)
+
 # PER-SESSION lock: serializes folds (+ the message snapshot) of the SAME
 # session so a create-fold racing a delete-fold can't double-capture, WITHOUT a
 # single global lock stalling an unrelated session's delete behind a slow fold's
@@ -98,25 +108,6 @@ class _SessionFoldLock:
 
 def _fold_lock(session_id) -> "_SessionFoldLock":
     return _SessionFoldLock(str(session_id))
-
-_EXTRACT_SYS = (
-    "You distil a chat session between an engineer and an AI assistant into "
-    "ATOMIC durable knowledge items worth remembering across sessions. Keep "
-    "ONLY meaningful content: decisions, conventions, learnings, gotchas, "
-    "config/stack facts, tickets worked, and MEANINGFUL user inputs "
-    "(preferences, corrections, instructions the user gave). DROP pleasantries, "
-    "small talk, transient status, and anything trivial or already obvious. "
-    "Each item is ONE concise sentence tagged with a kind:\n"
-    "  learning          a general lesson (applies across projects)\n"
-    "  project_learning  a lesson about ONE repository/service\n"
-    "  topic_learning    a lesson about a cross-cutting theme/workflow\n"
-    "  user_comment      a meaningful thing the USER said to keep (intent/preference)\n"
-    "PRESERVE EXACT IDENTIFIERS verbatim — jira/issue keys (ONE-3), version "
-    "numbers, file paths, commands, config values, ports, error codes. Never "
-    "generalize away or reword an id.\n"
-    "Return an items list; empty if nothing durable was said."
-)
-
 
 def _disabled() -> bool:
     return os.environ.get("AIFORGE_SESSION_COMPACT", "idle") in (
@@ -214,43 +205,6 @@ def _transcript(turns: list[dict], limit: int,
         used += sep + len(line)
         taken += 1
     return "\n\n".join(lines), taken, 0
-
-
-def _extract(transcript: str, role: str) -> "list | None":
-    """LLM → list of items (each ``.text`` + ``.kind``); **None on failure**.
-
-    The empty list means "nothing durable in these turns" (this is also the
-    MEANINGFUL-input filter — the prompt drops chit-chat); None means the model
-    never answered. The caller must not advance the durable offset on None, or
-    one provider hiccup silently marks a whole window as folded with zero
-    captures.
-    """
-    try:
-        from pydantic import BaseModel
-
-        from aiforge_core.llm.structured import structured_complete
-
-        class SessionItem(BaseModel):
-            text: str = ""
-            kind: str = "learning"
-
-        class SessionItems(BaseModel):
-            items: list[SessionItem] = []
-
-        res = structured_complete(
-            role,
-            [{"role": "system", "content": _EXTRACT_SYS},
-             # NO extra truncation here: the caller sized the window and the
-             # durable offset advances over exactly those turns, so a second,
-             # smaller cap would mark turns folded that the model never saw.
-             {"role": "user", "content": transcript}],
-            SessionItems,
-            max_tokens=_int_env("AIFORGE_SESSION_COMPACT_MAX_TOKENS", 2000),
-            max_retries=1, temperature=0.0)
-        return list(getattr(res, "items", None) or [])
-    except Exception as exc:  # noqa: BLE001 — model down → retry next pass
-        log.warning("chat_okr extract failed (offset not advanced): %s", exc)
-        return None
 
 
 def _marker_path():
@@ -392,22 +346,27 @@ def _capture_items(md_store, items, session_id, repo, role) -> tuple[int, list]:
     whole window's items — and this function must never raise.
     """
     rows = [((getattr(it, "text", "") or "").strip(),
-             (getattr(it, "kind", "") or "learning").strip()) for it in items]
+             (getattr(it, "kind", "") or "learning").strip(),
+             (getattr(it, "subject", "") or "").strip(),
+             (getattr(it, "evidence", "") or "").strip())
+            for it in _valid_items(items)]
     rows = [r for r in rows if r[0]]
     try:
-        scopes = md_store.classify_scopes([t for t, _ in rows], hint_repo=repo,
+        scopes = md_store.classify_scopes([r[0] for r in rows], hint_repo=repo,
                                           role=role)
     except Exception as exc:  # noqa: BLE001
         log.warning("chat_okr scope classification failed: %s", exc)
         scopes = [{"scope": "project", "repo": repo, "topic": None}
                   for _ in rows]
     captured = 0
-    for (text, kind), sc in zip(rows, scopes):
+    for (text, kind, subject, evidence), sc in zip(rows, scopes):
         try:
-            md_store.capture(kind, text, repo=sc["repo"], topic=sc["topic"],
-                             classify=False,
-                             source=f"chat-session:{session_id}")
-            captured += 1
+            res = md_store.capture(kind, text, repo=sc["repo"], topic=sc["topic"],
+                                   classify=False, subject=subject or None,
+                                   evidence=evidence or None,
+                                   source=f"chat-session:{session_id}")
+            if not (isinstance(res, dict) and res.get("skipped")):
+                captured += 1
         except Exception as exc:  # noqa: BLE001 — one bad item never aborts the fold
             log.debug("chat_okr capture failed: %s", exc)
     return captured, rows
@@ -434,7 +393,7 @@ def _advance_offset(session_id, last: int, taken: int, next_part: int,
 
 
 def compact_session(session_id, *, repo: str | None = None,
-                    role: str = "learner", min_turns: int = 2) -> dict:
+                    role: str | None = None, min_turns: int = 2) -> dict:
     """Distil ONE session into scoped OKR briefs. Never raises.
 
     Only messages AFTER the last-compacted offset are re-extracted (a durable
@@ -448,6 +407,11 @@ def compact_session(session_id, *, repo: str | None = None,
         return {"ok": False, "skipped": "disabled", "captured": 0}
     try:
         from aiforge_core.memory import md_store
+        from aiforge_core.memory.md_store import _role as _mrole
+
+        # Distillation is a judgement task → the memory (thinking) role by
+        # default; callers that already picked one still win.
+        role = role or _mrole.memory_role()
         from aiforge_core.runtime import chat_store
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc), "captured": 0}

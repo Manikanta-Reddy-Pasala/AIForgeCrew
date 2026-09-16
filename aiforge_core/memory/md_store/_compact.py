@@ -1157,6 +1157,24 @@ def _reingest_prepared(prepared: list, group_by: str, out_files: list) -> None:
                 pass
 
 
+def _auto_repair() -> dict:
+    """Run the non-fact/duplicate repair pass unless it is switched off.
+
+    Part of every compaction by design: the store is written to continuously by
+    agents, so cleanup has to be automatic — a manual script only ever runs on
+    the box someone remembered to run it on."""
+    import os
+    if os.environ.get("AIFORGE_MEMORY_AUTO_REPAIR", "1").strip().lower() in (
+            "0", "off", "false", "no"):
+        return {"skipped": "disabled"}
+    try:
+        from . import _repair
+        return _repair.repair_captures()
+    except Exception as exc:  # noqa: BLE001 — repair never breaks a compaction
+        _log.debug("auto-repair skipped: %s", exc)
+        return {"ok": False, "error": str(exc)}
+
+
 def _heal_after_compact(model_role: str, summarize: bool) -> tuple[dict, dict]:
     """Fold near-duplicate topics + repair data written before the scope/topic
     guards existed. Runs INSIDE compaction so the vocabulary self-heals every
@@ -1213,7 +1231,7 @@ def _fold_groups(planned: dict, o: dict) -> "tuple[int, bool]":
 
 def compact(*, group_by: str = "kind", min_group: int = 2,
             dry_run: bool = False, summarize: bool = True,
-            model_role: str = "learner", archive_sources: bool = True,
+            model_role: str | None = None, archive_sources: bool = True,
             force: bool = False, progress=None, skip_keys=None,
             should_stop=None, on_group_done=None) -> dict:
     """Consolidate the sprawl of per-session ``.md`` memories into ONE
@@ -1253,6 +1271,14 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
 
     out_files: list[str] = []
     summarized_files: list[str] = []
+    from . import _role
+    # Consolidation is a judgement task (what is durable, what contradicts
+    # what) → the memory/thinking role unless the caller pinned one.
+    model_role = model_role or _role.memory_role()
+    # SELF-REPAIR FIRST: retire captures that were never facts and collapse the
+    # truncation ladders the old append-only writer left, so this pass does not
+    # consolidate junk into a brief (where it is far harder to pick back out).
+    repaired = _auto_repair()
     # Serialize compactions against each other so two concurrent runs can't read
     # the same stale consolidated state and clobber each other. Held across the
     # (slow) summarise, but it is NOT _WRITE_LOCK, so it does NOT block ordinary
@@ -1262,8 +1288,12 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
         # (fresh sources + the just-written consolidated file as existing_body).
         planned = _gather_planned(group_by, min_group, model_role, force)
         if not planned:
+            # Carries "repaired" like the success return: the repair pass ran
+            # BEFORE the lock, and dropping its result exactly when there was
+            # nothing to compact hid the one number this call produced.
             return {"ok": True, "dry_run": False, "group_by": group_by,
                     "groups": {}, "files_in": 0, "files_out": 0,
+                    "repaired": repaired,
                     "note": "nothing to compact (no group ≥ min_group)"}
         archive = memory_dir() / "archive" / _now_iso().replace(":", "")
         total = len(planned)
@@ -1286,7 +1316,7 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
     if group_by == "topic" and not stopped:
         merged, healed = _heal_after_compact(model_role, summarize)
     return {
-        "ok": True, "dry_run": False, "group_by": group_by,
+        "ok": True, "dry_run": False, "group_by": group_by, "repaired": repaired,
         "groups": {k: len(v) for k, v in sorted(planned.items())},
         "files_in": moved, "files_out": len(out_files),
         "compacted": out_files, "summarized": summarized_files,
@@ -1359,6 +1389,27 @@ def _facts_to_recapture(pth, parsed: dict) -> list:
             if ln.strip() and not ln.startswith("#")][:200]
 
 
+def _recapture_kind(parsed: dict) -> str:
+    """The kind a legacy brief's facts should be re-captured under.
+
+    Hardcoding ``topic_learning`` is what stamped EVERY re-captured fact as a
+    topic learning — whole stores show one kind on every row. A brief's own
+    ``type`` is its ENVELOPE kind (``knowledge``/``compacted``), never a capture
+    kind, so the honest source is the capture kind carried in its tags; failing
+    that a plain ``learning``, which is the one kind that claims nothing about
+    scope.
+    """
+    from ._capture import _CAPTURE_KINDS
+    fm = parsed.get("frontmatter") or {}
+    tags = fm.get("tags") or []
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(",")]
+    for t in tags:
+        if str(t).strip() in _CAPTURE_KINDS:
+            return str(t).strip()
+    return "learning"
+
+
 def _fold_one_stale(pth, archive) -> tuple[int, bool]:
     """Re-capture the brief's facts as topic units and archive it (reversible).
     Returns ``(facts_moved, folded)``."""
@@ -1371,6 +1422,7 @@ def _fold_one_stale(pth, archive) -> tuple[int, bool]:
     except Exception:  # noqa: BLE001
         return 0, False
     moved = 0
+    refused = 0
     for f in _facts_to_recapture(pth, parsed):
         if not f.strip():
             continue
@@ -1379,11 +1431,23 @@ def _fold_one_stale(pth, archive) -> tuple[int, bool]:
             # "notes" fed a loop: the repo axis minted compacted-notes.md, whose
             # key is itself "cryptic", so the next cleanup folded it and
             # re-captured every fact again — one classify call per fact, forever.
-            capture("topic_learning", f.strip(), repo=None,
-                    source="cleanup:legacy-compacted")
-            moved += 1
+            res = capture(_recapture_kind(parsed), f.strip(), repo=None,
+                          source="cleanup:legacy-compacted")
+            # capture() now REFUSES a non-fact instead of raising, so counting
+            # unconditionally reported facts as migrated that were dropped —
+            # and the brief they came from was archived anyway.
+            if not (isinstance(res, dict) and res.get("skipped")):
+                moved += 1
+            else:
+                refused += 1
         except Exception:  # noqa: BLE001
             pass
+    if moved == 0 and refused:
+        # Every fact in this brief was refused. Archiving it now would delete
+        # them from the live store with nothing carried over, so leave it.
+        _log.info("tidy-legacy: keeping %s — all %d fact(s) refused by the gate",
+                  pth.name, refused)
+        return 0, False
     try:
         shutil.move(str(pth), str(archive / pth.name))
         return moved, True
@@ -1392,7 +1456,7 @@ def _fold_one_stale(pth, archive) -> tuple[int, bool]:
 
 
 def cleanup_legacy_compacted(*, dry_run: bool = False,
-                             model_role: str = "learner",
+                             model_role: str | None = None,
                              refold: bool = True, progress=None) -> dict:
     """One-time tidy: fold id-keyed / per-kind ``compacted-*`` briefs back into
     the TOPIC axis. Each stale file's Facts are re-captured as topic units (no
