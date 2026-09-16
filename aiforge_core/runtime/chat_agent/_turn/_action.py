@@ -101,6 +101,15 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
     return None
 
 
+def _safely(fn, *args):
+    """Progress bookkeeping must never end a turn (an odd path, a vanished
+    file). A failed note simply does not count."""
+    try:
+        return fn(*args)
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def _loop_nudge(name, reason, recap) -> str:
     if reason == "often":
         return (f"[loop guard — not the user] You have run `{name}` many times "
@@ -290,7 +299,7 @@ def _record_edit(st, name, args, result, cwd):
     """When an edit tool landed: bump the edit counter, invalidate the duplicate-
     read guard, and run a post-edit syntax self-check that surfaces + feeds back
     any error this step. Yields the syntax-warning events."""
-    if note_write(st, name, args, result, cwd):
+    if _safely(note_write, st, name, args, result, cwd):
         st.edits_made += 1
         st.read_sigs_seen.clear()   # a file just changed → re-reads are valid again
         # D: post-edit self-check. Immediately syntax-check the file just
@@ -347,8 +356,8 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     # Remember a successful read so a later identical re-read short-circuits.
     _record_read(st, name, sig, result, _long_chain_help)
     if name in _READ_OBS_TOOLS:
-        note_read(st, args, result, cwd)
-    note_command(st, name, result, cwd)
+        _safely(note_read, st, args, result, cwd)
+    _safely(note_command, st, name, result, cwd)
     yield from _record_edit(st, name, args, result, cwd)
     # Builder finalize: a successful create_job_script / learn_skill /
     # learn_workflow / remember_rule ends the interview. Signal the UI so it

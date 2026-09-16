@@ -716,3 +716,12 @@ def test_a_timed_out_command_still_shows_its_output(tmp_path, monkeypatch):
         {"cmd": "echo started; sleep 30", "timeout": 1}, str(tmp_path))
     assert res["timed_out"] is True
     assert "started" in res["stdout"]
+
+
+def test_odd_paths_never_end_a_turn(tmp_path):
+    from aiforge_core.runtime.chat_agent._turn._action import _safely
+    st = _loop_state()
+    assert _safely(_progress.note_write, st, "file_write", {"path": "a\0b"},
+                   {"ok": True}, tmp_path) in (True, False)
+    assert _safely(_progress.note_read, st, {"path": "a\0b"}, {"ok": True},
+                   tmp_path) in (None, False)
