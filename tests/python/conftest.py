@@ -113,7 +113,12 @@ def _reset_llm_ceiling():
     of real blocking to every later test in the run — a suite that hangs, with
     the cause several files away from the symptom.
     """
+    from aiforge_core.llm import endpoint_breaker as _breaker
     from aiforge_core.llm import rate_limiter as _rl
     _rl.reset_global()
+    _breaker.reset()
     yield
     _rl.reset_global()
+    # Same hazard as the ceiling: a test that fails a connect on purpose would
+    # otherwise mark that host down for the next thirty seconds of the run.
+    _breaker.reset()

@@ -589,6 +589,8 @@ def _preflight(base_url: str) -> None:
         return
     import socket as _socket
     from urllib.parse import urlparse as _urlparse
+
+    from aiforge_core.llm import endpoint_breaker as _breaker
     try:
         u = _urlparse(base_url)
         host = u.hostname
@@ -597,12 +599,23 @@ def _preflight(base_url: str) -> None:
         port = u.port or (443 if u.scheme == "https" else 80)
     except Exception:  # noqa: BLE001 — malformed url → let the real call surface it
         return
+    # An endpoint that has just failed to connect, repeatedly, is skipped
+    # without a network wait — otherwise every call (and every retry of every
+    # call) paid the full connect budget against a host that is gone.
+    skipped = _breaker.is_open(base_url)
+    if skipped:
+        raise ConnectionError(f"LLM endpoint unreachable ({host}:{port}): {skipped}")
     try:
         _socket.create_connection((host, port), timeout=ct).close()
     except OSError as exc:
+        # This probe is connect-ONLY, so every failure here is a connect
+        # failure — including the bare TimeoutError a sleeping host produces,
+        # which the generic classifier could not tell from a read timeout.
+        _breaker.record_failure(base_url, str(exc))
         raise ConnectionError(
             f"LLM endpoint unreachable ({host}:{port}) within {ct:g}s "
             f"connect budget: {exc}") from exc
+    _breaker.record_success(base_url)
 
 
 class _RetryCfg:
