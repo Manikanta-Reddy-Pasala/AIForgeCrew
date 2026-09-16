@@ -14,8 +14,12 @@ import os
 import re
 
 # ── Tunables (env-overridable; the gate is ON by default) ────────────────────
-_MIN_CHARS_DEFAULT = 20
-_MIN_WORDS_DEFAULT = 4
+# A real fact can be terse ("OrderController maps /orders") — three words is
+# subject + verb + object, and shorter than that is a label, not a claim. The
+# junk this gate exists for ("Final", "[ c | clear l") is caught by the
+# scaffolding/dangling/truncation rules, not by length.
+_MIN_CHARS_DEFAULT = 18
+_MIN_WORDS_DEFAULT = 3
 
 
 def _i_env(key: str, default: int) -> int:

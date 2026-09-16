@@ -747,6 +747,8 @@ def test_every_recompact_step_runs(monkeypatch):
                         lambda i, total, name, fn, out, on_step: ran.append(name))
     out = mg.force_recompact_all()
     assert out["ok"] is True
-    assert ran[:3] == ["tidy_legacy", "repo", "topic"]
+    # "repair" leads: retiring non-fact captures and collapsing duplicate
+    # claims BEFORE anything consolidates them keeps junk out of the briefs.
+    assert ran[:4] == ["repair", "tidy_legacy", "repo", "topic"]
     assert "reingest" in ran
     assert "map_scopes" in ran
