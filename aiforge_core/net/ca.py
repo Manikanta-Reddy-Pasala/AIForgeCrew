@@ -62,9 +62,20 @@ SUBPROCESS_VARS = (
 #: Filename under ``$AIFORGE_CONFIG_DIR/security/ca`` for the UI-saved bundle.
 _STORE_NAME = "custom-ca.pem"
 
+#: What a corporate root actually arrives as. Windows hands out ``.cer``, an
+#: internal PKI page hands out ``.crt``, openssl writes ``.pem`` — and an
+#: operator who drops any of them into the ca/ folder means the same thing by
+#: it. Only ``custom-ca.pem`` used to be read, so the other three were ignored
+#: in silence and every https call still failed.
+_CERT_SUFFIXES = (".pem", ".crt", ".cer", ".cert", ".der")
+#: Where several dropped certificates are merged. An estate issues a root AND
+#: intermediates, and a client needs the chain, not the first file we happened
+#: to glob.
+_MERGED_NAME = "bundle.pem"
 
-def stored_path(*, create: bool = False) -> Path:
-    """Where a certificate saved from the UI lives."""
+
+def ca_dir(*, create: bool = False) -> Path:
+    """The folder holding operator-supplied certificates."""
     from aiforge_core.config.secure_store import security_dir
     d = security_dir(create=create) / "ca"
     if create:
@@ -73,7 +84,82 @@ def stored_path(*, create: bool = False) -> Path:
             d.chmod(0o700)
         except OSError as exc:  # noqa: BLE001 — a mode we cannot set is a log
             log.warning("ca: could not chmod %s — %s", d, exc)
-    return d / _STORE_NAME
+    return d
+
+
+def _parses_as_certificate(pem: str) -> None:
+    """Raise unless ``pem`` really is one or more X.509 certificates.
+
+    ``ssl.DER_cert_to_PEM_cert`` does NOT validate — it base64-wraps whatever
+    bytes it is handed, so a text file of notes renamed to .cer comes back as a
+    perfectly-shaped BEGIN CERTIFICATE block full of nonsense. Loading it is
+    the only check that parses the structure for real.
+    """
+    import ssl
+    ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(cadata=pem)
+
+
+def _pem_text(path: Path) -> str:
+    """``path`` as VALIDATED PEM text, converting DER when that is what it holds.
+
+    A ``.cer`` from a Windows export is usually DER — binary. Concatenating it
+    into a bundle produces a file openssl silently reads as empty, which looks
+    exactly like having installed nothing.
+    """
+    import ssl
+    raw = path.read_bytes()
+    pem = (raw.decode("utf-8", "replace") if b"-----BEGIN" in raw
+           else ssl.DER_cert_to_PEM_cert(raw))
+    _parses_as_certificate(pem)
+    return pem
+
+
+def dropped_certs() -> list[Path]:
+    """Operator-supplied certificate files, newest name order, merged file
+    excluded."""
+    d = ca_dir()
+    if not d.is_dir():
+        return []
+    return sorted(p for p in d.iterdir()
+                  if p.is_file() and p.name != _MERGED_NAME
+                  and p.suffix.lower() in _CERT_SUFFIXES)
+
+
+def _merged_bundle(paths: list[Path]) -> Path | None:
+    """One PEM holding every dropped certificate, rebuilt when an input changes.
+
+    Returns None when nothing could be read — a bundle that silently lost a
+    certificate is worse than no bundle, because verification would then fail
+    with the operator believing their CA was installed.
+    """
+    out = ca_dir() / _MERGED_NAME
+    try:
+        newest = max(p.stat().st_mtime for p in paths)
+        if out.is_file() and out.stat().st_mtime >= newest:
+            return out
+    except OSError:  # noqa: BLE001 — rebuild rather than trust a failed stat
+        pass
+    blocks: list[str] = []
+    for p in paths:
+        try:
+            blocks.append(_pem_text(p).strip())
+        except Exception as exc:  # noqa: BLE001 — name the file that is wrong
+            log.error("ca: %s is not a certificate we can read (%s) — it is NOT "
+                      "in the trust bundle", p.name, exc)
+    if not blocks:
+        return None
+    try:
+        out.write_text("\n".join(blocks) + "\n", encoding="utf-8")
+        out.chmod(0o600)
+    except OSError as exc:  # noqa: BLE001
+        log.error("ca: could not write %s — %s", out, exc)
+        return None
+    return out
+
+
+def stored_path(*, create: bool = False) -> Path:
+    """Where a certificate saved from the UI lives."""
+    return ca_dir(create=create) / _STORE_NAME
 
 
 def bundle() -> str | None:
@@ -87,7 +173,21 @@ def bundle() -> str | None:
         if val:
             return val
     saved = stored_path()
-    return str(saved) if saved.is_file() else None
+    if saved.is_file():
+        return str(saved)
+    # Nothing from the UI — but the operator may simply have dropped their
+    # corporate root into the folder, under whatever name their PKI gave it.
+    dropped = dropped_certs()
+    if not dropped:
+        return None
+    if len(dropped) == 1 and dropped[0].suffix.lower() in (".pem", ".crt"):
+        try:
+            if "-----BEGIN" in dropped[0].read_text(encoding="utf-8", errors="replace"):
+                return str(dropped[0])       # already a usable PEM, use it as-is
+        except OSError:  # noqa: BLE001 — fall through to the merge
+            pass
+    merged = _merged_bundle(dropped)
+    return str(merged) if merged else None
 
 
 def source() -> str:
@@ -100,12 +200,15 @@ def source() -> str:
     click would have locked them out of the button they had just used. So a
     value that IS our stored file is reported as what it is.
     """
-    ours = str(stored_path())
+    ours = {str(stored_path()), str(ca_dir() / _MERGED_NAME)}
+    ours.update(str(p) for p in dropped_certs())
     for var in ENV_VARS:
         val = (os.environ.get(var) or "").strip()
-        if val and val != ours:
+        if val and val not in ours:
             return var
-    return "ui" if stored_path().is_file() else ""
+    if stored_path().is_file():
+        return "ui"
+    return "dropped" if dropped_certs() else ""
 
 
 def _certificates(pem: str) -> list[str]:

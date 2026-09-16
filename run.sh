@@ -62,6 +62,8 @@
 # environment, which overrides the file:
 #   AIFORGE_LM_BASE_URL    https://your-box:1234/v1
 #   AIFORGE_CA_BUNDLE      /path/to/ca.pem     (keeps verification ON)
+#                          or drop the file your PKI gave you — .pem/.crt/.cer/
+#                          .cert/.der — into ~/.aiforge/security/ca/
 #   AIFORGE_ROLE=admin     on exactly one machine in a fleet
 #   AIFORGE_EXTRAS=structured,crawl,chunking,embed-static   optional extras
 #   AIFORGE_SKIP_DEPS=1    trust the .venv as built (uv sync, a wheel install);
@@ -154,13 +156,43 @@ _system_ca_file() {
   .venv/bin/python -c 'import certifi; print(certifi.where())' 2>/dev/null
 }
 
+# A corporate root arrives as whatever the PKI handed out: .crt from an
+# internal CA page, .cer from a Windows export, .pem from openssl. Only
+# custom-ca.pem used to be read, so a dropped .crt sat in the folder being
+# ignored while every https call still failed. Take any of them, and when there
+# are several (an estate issues a root AND intermediates) merge the chain.
+_dropped_ca() {
+  local dir out n=0 f
+  dir="${AIFORGE_SECURITY_DIR:-${AIFORGE_CONFIG_DIR:-$HOME/.aiforge}/security}/ca"
+  [[ -d "$dir" ]] || return 0
+  out="$dir/dropped-chain.pem"
+  : > "$out.tmp" 2>/dev/null || return 0
+  for f in "$dir"/*.pem "$dir"/*.crt "$dir"/*.cer "$dir"/*.cert "$dir"/*.der; do
+    [[ -r "$f" ]] || continue
+    [[ "$f" == "$out" || "$f" == "$out.tmp" ]] && continue
+    if grep -q -- "-----BEGIN CERTIFICATE-----" "$f" 2>/dev/null; then
+      cat "$f" >> "$out.tmp"; printf '\n' >> "$out.tmp"; n=$((n+1))
+    elif command -v openssl >/dev/null 2>&1 \
+         && openssl x509 -inform DER -in "$f" -outform PEM >> "$out.tmp" 2>/dev/null; then
+      # A DER .cer concatenated raw reads as an EMPTY bundle — same symptom as
+      # installing nothing at all, which is the worst way to fail.
+      printf '\n' >> "$out.tmp"; n=$((n+1))
+    else
+      echo "==> WARN: $(basename "$f") is not a certificate we can read — NOT trusted" >&2
+    fi
+  done
+  if [[ $n -eq 0 ]]; then rm -f "$out.tmp"; return 0; fi
+  mv "$out.tmp" "$out" && chmod 600 "$out" 2>/dev/null
+  printf '%s' "$out"
+}
+
+
 _ca_bootstrap() {
   local ca="" v var sys merged
   for v in AIFORGE_CA_BUNDLE SSL_CERT_FILE REQUESTS_CA_BUNDLE; do
     [[ -n "${!v:-}" ]] && { ca="${!v}"; break; }
   done
-  [[ -z "$ca" ]] \
-    && ca="${AIFORGE_SECURITY_DIR:-${AIFORGE_CONFIG_DIR:-$HOME/.aiforge}/security}/ca/custom-ca.pem"
+  [[ -z "$ca" ]] && ca="$(_dropped_ca)"
   [[ -r "$ca" ]] || return 0
   export AIFORGE_CA_BUNDLE="$ca"
 
