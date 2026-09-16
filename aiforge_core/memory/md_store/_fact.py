@@ -154,16 +154,18 @@ def _candidate_tokens(text: str) -> list[str]:
     return [w.strip(".,;:!?()[]{}\"'") for w in re.split(r"\s+", text.strip()) if w]
 
 
-def derive_subject(text: str) -> str:
-    """Best-effort "what is this about" for a fact the caller did not label.
+def strong_subject(text: str) -> str | None:
+    """A subject we are CONFIDENT about: a quoted identifier, a path/dotted name,
+    or a CamelCase/ALLCAPS token — something the text names outright.
 
-    Preference order mirrors how the facts actually read: an explicitly quoted
-    identifier, then a path/dotted name, then a CamelCase or ALLCAPS token, then
-    the leading non-stopword words.
+    Only a strong subject may merge two captures into one note. The weak
+    fallback below is a guess good enough to TITLE a note, but merging on a
+    guess buckets unrelated facts together ("svc: rule a" and "svc: rule b"
+    both reduce to "svc rule"), and a wrong merge is not recoverable.
     """
     t = (text or "").strip()
     if not t:
-        return "note"
+        return None
     backticked = re.findall(r"`([^`]{2,60})`", t)
     if backticked:
         return backticked[0].strip()
@@ -175,6 +177,19 @@ def derive_subject(text: str) -> str:
         if len(w) > 2 and _IDENT_RE.match(w) and (
                 re.search(r"[a-z][A-Z]", w) or (w.isupper() and len(w) > 2)):
             return w
+    return None
+
+
+def derive_subject(text: str) -> str:
+    """Best-effort "what is this about" for a fact the caller did not label —
+    the strong subject when there is one, else the leading non-stopwords."""
+    t = (text or "").strip()
+    if not t:
+        return "note"
+    strong = strong_subject(t)
+    if strong:
+        return strong
+    toks = _candidate_tokens(t)
     head = [w for w in toks if w.lower() not in _STOP][:4]
     return " ".join(head) or toks[0]
 
@@ -204,4 +219,5 @@ def title_for(subject: str, claim: str) -> str:
 
 
 __all__ = ["claim_key", "derive_subject", "gate_enabled", "is_wellformed",
-           "issues", "structural_issues", "supersedes", "title_for"]
+           "issues", "strong_subject", "structural_issues", "supersedes",
+           "title_for"]

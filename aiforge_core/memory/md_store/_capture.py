@@ -85,9 +85,14 @@ def capture(kind: str, text: str, *, repo: str | None = None,
     repo, topic = _promote_scope(text, repo, topic, classify)
     subj = (subject or "").strip() or _fact.derive_subject(text)
     ttl = title or _fact.title_for(subj, text)
+    # Only a subject the caller STATED, or one the text names outright, is
+    # trustworthy enough to merge two captures into one note — see
+    # _fact.strong_subject.
+    may_fold = bool((subject or "").strip()) or bool(_fact.strong_subject(text))
     res = _write_or_fold(ttl, text, kind=k, repo=repo, topic=topic, subject=subj,
                          source=source, tags=tags, ingest=ingest,
-                         evidence=evidence, confidence=confidence)
+                         evidence=evidence, confidence=confidence,
+                         may_fold=may_fold)
     # WRITE-TIME brief maintenance: fold the fact into the repo's compacted brief
     # RIGHT NOW (cheap, no LLM), so recall (which reads compacted-<repo>.md) sees
     # just-written data instead of waiting for the periodic compaction. Global
@@ -103,12 +108,14 @@ def capture(kind: str, text: str, *, repo: str | None = None,
 def _write_or_fold(ttl: str, text: str, *, kind: str, repo: str | None,
                    topic: str | None, subject: str, source: str,
                    tags: list[str] | None, ingest: bool,
-                   evidence: str | None, confidence: str | None) -> dict:
+                   evidence: str | None, confidence: str | None,
+                   may_fold: bool = True) -> dict:
     """Fold the claim into this subject's existing note, else write a new one."""
     existing = None
     try:
-        existing = _subject.find_note(ttl, kind=kind, repo=repo or "shared",
-                                      topic=topic)
+        if may_fold:
+            existing = _subject.find_note(ttl, kind=kind, repo=repo or "shared",
+                                          topic=topic)
     except Exception:  # noqa: BLE001 — a lookup failure must not lose the fact
         existing = None
     if existing is not None:
