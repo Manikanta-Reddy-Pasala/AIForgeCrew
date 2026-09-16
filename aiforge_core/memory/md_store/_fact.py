@@ -14,11 +14,13 @@ import os
 import re
 
 # ── Tunables (env-overridable; the gate is ON by default) ────────────────────
-# A real fact can be terse ("OrderController maps /orders") — three words is
-# subject + verb + object, and shorter than that is a label, not a claim. The
-# junk this gate exists for ("Final", "[ c | clear l") is caught by the
-# scaffolding/dangling/truncation rules, not by length.
-_MIN_CHARS_DEFAULT = 18
+# A real fact can be terse ("OrderController maps /orders", "svc: rule one") —
+# three words is subject + verb + object, and fewer than that is a label, not a
+# claim. Character length is NOT a signal: every junk string this gate exists
+# for is caught by the scaffolding/request/dangling/truncation rules, and a
+# character floor only ever cost us real terse facts. The knob stays for an
+# operator who wants one; it is off by default.
+_MIN_CHARS_DEFAULT = 0
 _MIN_WORDS_DEFAULT = 3
 
 
