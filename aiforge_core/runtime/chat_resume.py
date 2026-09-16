@@ -403,9 +403,10 @@ def _request_behind(rows: list) -> str:
     """The newest user message that is a request, not a "continue"."""
     for r in reversed(rows):
         if isinstance(r, dict) and r.get("role") == "user":
-            text = _txt(r.get("content"))
-            if text and not _CONTINUE_RE.match(text):
-                return text.split("\n\n---\n[RESUME]")[0].strip()
+            raw = r.get("content")
+            raw = raw if isinstance(raw, str) else _txt(raw)
+            if raw.strip() and not _CONTINUE_RE.match(_txt(raw)):
+                return raw.split("\n\n---\n[RESUME]")[0].strip()
     return ""
 
 

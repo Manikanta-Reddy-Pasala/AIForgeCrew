@@ -89,34 +89,122 @@ def test_the_total_recoveries_are_capped(tmp_path, monkeypatch):
 def test_a_long_edit_and_test_cycle_is_never_a_loop(tmp_path):
     st = _loop_state()
     f = tmp_path / "a.py"
-    for i in range(100):
+    for i in range(89):
         f.write_text(f"version {i}")
         _progress.note_write(st, "file_write", {"path": "a.py"}, {"ok": True}, tmp_path)
-        st.action_counts["pytest"] = i + 1
         assert not _progress.strike(st, "run_command|pytest")
+    # …until the lifetime ceiling asks it to step back (not "same args")
+    f.write_text("version 89")
+    _progress.note_write(st, "file_write", {"path": "a.py"}, {"ok": True}, tmp_path)
+    assert _progress.strike(st, "run_command|pytest") == "often"
 
 
-def test_a_shell_edit_is_a_new_state(tmp_path):
+@pytest.fixture
+def _repo(tmp_path):
+    import shutil
     import subprocess
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    (tmp_path / "a.py").write_text("v1")
+    if not shutil.which("git"):
+        pytest.skip("git is not installed")
+    sub = tmp_path / "pkg"
+    sub.mkdir()
+    (sub / "a.py").write_text("v1")
+    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t"]
+    subprocess.run([*git, "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run([*git, "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run([*git, "commit", "-qm", "init"], cwd=tmp_path, check=True)
+    return sub
+
+
+def _shell_ran(st, cwd):
+    _progress.note_command(st, "run_command", {"ok": True}, str(cwd))
+    _progress._refresh_tree(st)
+
+
+def test_a_shell_edit_is_a_new_state(_repo):
+    """The workspace is a folder inside the repository: git's paths are
+    relative to the repository root."""
     st = _loop_state()
-    _progress.note_command(st, "run_command", {"ok": True}, str(tmp_path))
-    first = st.state_fp
-    (tmp_path / "a.py").write_text("v2 — changed by sed")
-    _progress.note_command(st, "run_command", {"ok": True}, str(tmp_path))
-    assert st.state_fp != first
-    _progress.note_command(st, "run_command", {"ok": True}, str(tmp_path))
-    assert st.new_states == 2                      # nothing changed the third time
-    _progress.note_command(st, "file_read", {"ok": True}, str(tmp_path))
+    _shell_ran(st, _repo)                          # clean tree: nothing yet
+    assert st.new_states == 0
+    (_repo / "a.py").write_text("v2 — changed by sed")
+    _shell_ran(st, _repo)
+    assert st.new_states == 1
+    (_repo / "a.py").write_text("v3")              # an already-dirty file again
+    _shell_ran(st, _repo)
     assert st.new_states == 2
+    _progress.note_command(st, "file_read", {"ok": True}, str(_repo))
+    assert not st.tree_pending                     # not a shell command
+    assert st.new_states == 2
+
+
+def test_git_is_asked_only_when_a_repeat_nears_a_loop(_repo, monkeypatch):
+    calls = []
+    real = _progress._tracked_changes
+    monkeypatch.setattr(_progress, "_tracked_changes",
+                        lambda st, cwd: calls.append(1) or real(st, cwd))
+    st = _loop_state(cwd=str(_repo))
+    for _ in range(3):
+        _progress.note_command(st, "run_command", {"ok": True}, str(_repo))
+        assert not _progress.strike(st, "run_command|pytest")
+    assert calls == []
+    (_repo / "a.py").write_text("fixed by sed")
+    _progress.note_command(st, "run_command", {"ok": True}, str(_repo))
+    assert not _progress.strike(st, "run_command|pytest")   # 4th: tree looked at
+    assert calls == [1]
+
+
+def test_edits_that_name_no_file_cannot_keep_a_loop_alive(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_LOOP_BACKSTOP", "5")
+    st = _loop_state()
+    hits = []
+    for _ in range(20):
+        _progress.note_write(st, "rename_symbol", {"old": "a", "new": "b"},
+                             {"ok": True}, tmp_path)
+        hits.append(bool(_progress.strike(st, "run_command|pytest")))
+    assert hits.index(True) == 4                   # the backstop, not reset
+
+
+def test_the_lifetime_ceiling_holds_across_real_progress(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_LOOP_BACKSTOP", "5")
+    st = _loop_state()
+    f = tmp_path / "a.py"
+    hits = []
+    for i in range(20):
+        f.write_text(f"v{i}")
+        _progress.note_write(st, "file_write", {"path": "a.py"}, {"ok": True}, tmp_path)
+        hits.append(bool(_progress.strike(st, "run_command|pytest")))
+    assert hits.index(True) == 14                  # 3 × the backstop
+
+
+def test_rewriting_the_same_bytes_or_flipping_back_is_not_new(_repo):
+    import os
+    import time as _t
+    st = _loop_state()
+    f = _repo / "a.py"
+    f.write_text("B")
+    _shell_ran(st, _repo)
+    seen = st.new_states
+    for content in ("B", "C", "B", "C", "B"):
+        _t.sleep(0.01)
+        f.write_text(content)
+        os.utime(f)
+        _shell_ran(st, _repo)
+    assert st.new_states == seen + 1               # only "C" was new
+
+
+def test_untracked_output_files_are_not_progress(_repo):
+    st = _loop_state()
+    for i in range(3):
+        (_repo / "report.xml").write_text(f"<run {i}/>")
+        _shell_ran(st, _repo)
+    assert st.new_states == 0
 
 
 def test_a_repeated_read_between_new_ones_is_stopped_by_the_backstop(monkeypatch):
     monkeypatch.setenv("AIFORGE_CHAT_LOOP_BACKSTOP", "5")
     st = _loop_state()
     hits = [_progress.strike(st, "list_dir|.", per_state=False) for _ in range(5)]
-    assert hits == [False, False, False, False, True]
+    assert hits == ["", "", "", "", "often"]
 
 
 def test_closing_a_task_refills_the_recovery_ceiling(monkeypatch):
@@ -126,6 +214,12 @@ def test_closing_a_task_refills_the_recovery_ceiling(monkeypatch):
     assert not _progress.may_recover(st)
     st.board["a"]["status"] = "done"
     assert _progress.may_recover(st)
+    # flipping the same item back and forth is not more progress
+    st.recoveries_total = 2
+    st.board["a"]["status"] = "running"
+    assert not _progress.may_recover(st)
+    st.board["a"]["status"] = "done"
+    assert not _progress.may_recover(st)
 
 
 def test_an_unchanged_or_flipped_file_is_not_a_new_state(tmp_path):
@@ -168,9 +262,14 @@ def test_slicing_one_file_forever_stops(tmp_path):
                     f'"start": {i + 1}, "end": {i + 2}}}',
                     'ACTION: list_dir\nARGS_JSON: {"path": "."}']
     fn, calls = _scripted(replies)
-    evs = _run(tmp_path, fn)
+    import os
+    os.environ["AIFORGE_CHAT_LOOP_BACKSTOP"] = "10"
+    try:
+        evs = _run(tmp_path, fn)
+    finally:
+        del os.environ["AIFORGE_CHAT_LOOP_BACKSTOP"]
     assert evs[-1]["type"] == "done"
-    assert len(calls) < 350
+    assert len(calls) < 150
 
 
 # ── the task board ───────────────────────────────────────────────────────
@@ -253,6 +352,14 @@ def test_the_reminder_is_bounded(tmp_path):
     assert [e for e in evs if e["type"] == "message"][-1]["text"] == "gave up"
     nudges = [e for e in evs if "still open" in str(e.get("text", ""))]
     assert len(nudges) == 2
+
+
+def test_plan_mode_keeps_the_planners_panel(tmp_path):
+    fn, _ = _scripted([_plan("extra", title="my own step"), "FINAL: the plan"])
+    evs = _run(tmp_path, fn, mode="plan")
+    assert not [e for e in evs if e["type"] == "subtasks"
+                and any(i["slug"] == "extra" for i in e["items"])]
+    assert {"type": "subtask_update", "slug": "extra", "status": "pending"} in evs
 
 
 def test_plan_mode_is_not_pushed_to_do_the_plan(tmp_path):
@@ -484,11 +591,13 @@ def test_stored_tool_results_are_cut(monkeypatch):
     assert slim_event(thought) is thought
 
 
-def test_approval_cards_are_stored_whole():
+def test_approval_cards_are_stored_whole_unless_huge():
     from aiforge_core.runtime.chat_event_slim import slim_event
     card = {"type": "approval", "args": {"content": "c" * 30000},
             "preview": "p" * 30000}
-    assert slim_event(card) is card
+    assert slim_event(card) == card
+    huge = {"type": "approval", "preview": "p" * 3_000_000}
+    assert len(slim_event(huge)["preview"]) < 1_100_000
 
 
 def test_stored_arguments_and_long_lists_are_cut():
@@ -529,20 +638,34 @@ def test_runaway_output_is_stopped(tmp_path, monkeypatch):
     from aiforge_core.runtime.chat_agent import _shell
     monkeypatch.delenv("AIFORGE_WORKSPACE_DIR", raising=False)
     monkeypatch.setenv("AIFORGE_CHAT_CMD_OUTPUT_MAX_MB", "1")
-    res = _shell._t_run_command({"cmd": "yes spam", "timeout": 30}, str(tmp_path))
+    res = _shell._t_run_command(
+        {"cmd": "head -c 3000000 /dev/zero; sleep 30", "timeout": 60}, str(tmp_path))
     assert res["ok"] is False and "more than 1 MB" in res["error"]
 
 
 def test_progress_bars_become_lines(tmp_path, monkeypatch):
     from aiforge_core.runtime.chat_agent import _shell
     monkeypatch.delenv("AIFORGE_WORKSPACE_DIR", raising=False)
-    res = _shell._t_run_command({"cmd": "printf '10%%\\r50%%\\rdone\\n'"},
+    res = _shell._t_run_command({"cmd": "printf '10%%\\r50%%\\rdone\\nnext\\n'"},
                                 str(tmp_path))
-    assert res["stdout"].splitlines() == ["10%", "50%", "done"]
+    assert res["stdout"].splitlines() == ["done", "next"]
 
 
-def test_a_background_child_does_not_outlive_the_command(tmp_path, monkeypatch):
-    import os
+def _running(pid):
+    try:
+        with open(f"/proc/{pid}/stat") as fh:
+            return fh.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        return False
+
+
+_LINUX = pytest.mark.skipif(not __import__("os").path.isdir("/proc"),
+                            reason="Linux only")
+
+
+@_LINUX
+def test_a_bare_background_child_is_stopped_with_the_command(tmp_path, monkeypatch):
+    """It writes into the command's output, as it did into the old pipe."""
     import time as _t
 
     from aiforge_core.runtime.chat_agent import _shell
@@ -552,13 +675,28 @@ def test_a_background_child_does_not_outlive_the_command(tmp_path, monkeypatch):
     assert res["ok"] is True
     pid = int((tmp_path / "child.pid").read_text())
     for _ in range(50):
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not _running(pid):
             break
         _t.sleep(0.1)
     else:
         pytest.fail("the background child is still running")
+
+
+@_LINUX
+def test_a_redirected_background_child_keeps_running(tmp_path, monkeypatch):
+    import os
+    import signal
+
+    from aiforge_core.runtime.chat_agent import _shell
+    monkeypatch.delenv("AIFORGE_WORKSPACE_DIR", raising=False)
+    res = _shell._t_run_command(
+        {"cmd": "sleep 300 > app.log 2>&1 & echo $! > child.pid"}, str(tmp_path))
+    pid = int((tmp_path / "child.pid").read_text())
+    try:
+        assert res["ok"] is True
+        assert _running(pid)
+    finally:
+        os.kill(pid, signal.SIGKILL)
 
 
 def test_a_timed_out_command_still_shows_its_output(tmp_path, monkeypatch):

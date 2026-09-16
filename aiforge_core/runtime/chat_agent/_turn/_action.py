@@ -19,6 +19,7 @@ from ._approval import (
     _handle_rejection,
 )
 from ._progress import (
+    count_key,
     forgive,
     may_recover,
     note_command,
@@ -47,8 +48,9 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
     # strikes — and the stall guard would never fire on the very runaway
     # this table exists to catch. move_to_end on each touch makes the
     # eviction least-recently-SEEN instead.
-    st.action_counts[sig] = st.action_counts.get(sig, 0) + 1
-    st.action_counts.move_to_end(sig)
+    key = count_key(name, sig)
+    st.action_counts[key] = st.action_counts.get(key, 0) + 1
+    st.action_counts.move_to_end(key)
     while len(st.action_counts) > _ACTION_SIG_MAX:
         st.action_counts.popitem(last=False)
     # Duplicate-READ short-circuit: a local model on a long sweep re-issues a
@@ -87,15 +89,8 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
             _recap = _progress_recap(st.convo)
             yield {"type": "thought", "role": "system",
                    "text": f"↺ repeated `{name}` — recap + nudge to continue"}
-            st.convo.append({"role": "user", "content":
-                f"[loop guard — not the user] You already ran `{name}` with "
-                "these exact args and its result is ABOVE — repeating it makes "
-                "no progress. "
-                + (_recap + ". " if _recap else "")
-                + "Do the NEXT, DIFFERENT step now: act on something not yet "
-                "done (e.g. the next unread file from the request), or output "
-                "`FINAL: <answer>` if everything is complete. Do NOT repeat a "
-                "previous action."})
+            st.convo.append({"role": "user", "content": _loop_nudge(
+                name, looping, _recap)})
             return "continue"
         yield {"type": "message", "awaiting_input": True,
                "text": f"I keep trying the same step (`{name}`) without "
@@ -104,6 +99,23 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
         yield {"type": "done"}
         return "return"
     return None
+
+
+def _loop_nudge(name, reason, recap) -> str:
+    if reason == "often":
+        return (f"[loop guard — not the user] You have run `{name}` many times "
+                "in this run without finishing. Step back: say what the recent "
+                "results have in common, then try a different approach — or, "
+                "if you are blocked, finish with FINAL and say what blocks you. "
+                + (recap + "." if recap else ""))
+    return (f"[loop guard — not the user] You already ran `{name}` with "
+            "these exact args and its result is ABOVE — repeating it makes "
+            "no progress. "
+            + (recap + ". " if recap else "")
+            + "Do the NEXT, DIFFERENT step now: act on something not yet "
+            "done (e.g. the next unread file from the request), or output "
+            "`FINAL: <answer>` if everything is complete. Do NOT repeat a "
+            "previous action.")
 
 
 def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
@@ -118,6 +130,11 @@ def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
         result, events = apply_progress(st.board, args)
         st.board_used = st.board_used or any(
             ev["type"] == "subtasks" for ev in events)
+        if readonly_mode:
+            # Plan mode's panel holds the planner's steps; a whole-list
+            # event would replace them.
+            events = [{"type": "subtask_update", "slug": result.get("slug"),
+                       "status": result.get("status")}] if result.get("ok") else []
         yield from events
         yield {"type": "tool", "name": name, "args": args, "result": result}
         st.convo.append({"role": "user",

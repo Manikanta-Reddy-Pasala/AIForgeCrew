@@ -30,6 +30,7 @@ class _Pending:
     decision: str = "reject"   # default-deny if the wait times out
     note: str = ""
     seq: int = 0
+    expired: bool = False
 
 
 _LOCK = threading.Lock()
@@ -168,12 +169,14 @@ def wait(session_id: int) -> dict:
         return {"decision": "reject", "note": "no pending approval"}
     ok = p.event.wait(timeout=_timeout_s())
     if not ok:
-        # Forget the expired request, so a late Approve on its card resolves
-        # nothing instead of looking accepted.
         with _LOCK:
-            if _PENDING.get(session_id) is p:
-                _PENDING.pop(session_id, None)
-        return {"decision": "reject", "note": "approval timed out"}
+            if not p.event.is_set():
+                # Expired: a late Approve on its card must resolve nothing.
+                # The entry stays, so the next request's number moves on.
+                p.expired = True
+                p.event.set()
+                return {"decision": "reject", "note": "approval timed out"}
+        # The user answered just as the wait ran out: their answer counts.
     return {"decision": p.decision, "note": p.note}
 
 
@@ -186,7 +189,7 @@ def resolve(session_id: int, decision: str, note: str = "",
         p = _PENDING.get(session_id)
         if p is None:
             return False
-        if seq is not None and seq != p.seq:
+        if (seq is not None and seq != p.seq) or p.expired:
             return False
         p.decision = "approve" if str(decision).lower() in (
             "approve", "approved", "yes", "ok", "allow") else "reject"

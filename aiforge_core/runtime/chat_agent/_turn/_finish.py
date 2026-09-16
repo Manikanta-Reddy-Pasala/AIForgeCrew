@@ -212,7 +212,8 @@ def _turn_summary(st) -> str:
     """
     try:
         counts = getattr(st, "action_counts", None) or {}
-        names = [str(k) for k, v in counts.items() if v]
+        names = list(dict.fromkeys(str(k).split("|", 1)[0]
+                                   for k, v in counts.items() if v))
     except Exception:  # noqa: BLE001
         return ""
     return ", ".join(names[:8])

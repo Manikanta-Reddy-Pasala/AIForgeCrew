@@ -69,7 +69,9 @@ def apply_progress(board: dict, args: dict) -> tuple[dict, list[dict]]:
     if slug not in board and not title:
         # Just a progress flip for the dock (the old convention); only an
         # item with a title goes on the board.
-        return ({"ok": True, "slug": slug, "status": status or "done"},
+        note = ({"note": "not on your task board; open items: "
+                 + ", ".join(open_items(board)[:20])} if open_items(board) else {})
+        return ({"ok": True, "slug": slug, "status": status or "done", **note},
                 [{"type": "subtask_update", "slug": slug,
                   "status": status or "done"}])
     added = slug not in board
@@ -139,7 +141,8 @@ def turn_pin(st) -> str | None:
         return None
     parts = ["ORIGINAL TASK (stay on this until it's fully done + verified):",
              goal[:1200]]
-    if getattr(st, "unlimited", False):
+    if (getattr(st, "unlimited", False) and not getattr(st, "readonly_mode", False)
+            and not getattr(st, "builder", None)):
         # Only a run long enough to be condensed gets this reminder.
         from .._prompt import LONG_RUN_RULE
         parts.append(LONG_RUN_RULE)
@@ -163,7 +166,7 @@ def board_nudge_allowed(st) -> bool:
     """Up to _BOARD_NUDGES reminders without progress in between; closing
     an item gives the next premature FINAL its reminders back."""
     closed = len(st.board) - len(open_items(st.board))
-    if closed != getattr(st, "board_closed_mark", None):
+    if closed > (st.board_closed_mark if st.board_closed_mark is not None else -1):
         st.board_closed_mark = closed
         st.board_nudges = 0
     if st.board_nudges >= _BOARD_NUDGES:

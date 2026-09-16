@@ -90,6 +90,19 @@ def test_a_second_unanswered_approval_pauses_the_run():
     assert {"type": "stopped", "reason": "approval_timeout"} in second
 
 
+def test_a_late_click_on_an_expired_card_approves_nothing(monkeypatch):
+    from aiforge_core.runtime import chat_approve
+    monkeypatch.setattr(chat_approve, "_timeout_s", lambda: 0.01)
+    first = chat_approve.request(77)
+    assert chat_approve.wait(77)["note"] == "approval timed out"
+    second = chat_approve.request(77)
+    assert second != first
+    assert chat_approve.resolve(77, "approve", seq=first) is False
+    assert chat_approve.resolve(77, "approve", seq=second) is True
+    assert chat_approve.wait(77)["decision"] == "approve"
+    chat_approve.finish(77)
+
+
 def test_a_real_rejection_still_stops():
     from aiforge_core.runtime.chat_agent._turn import _approval
     gen = _approval._handle_rejection("run_command", {"cmd": "x"}, 5, [],
@@ -132,6 +145,33 @@ def test_a_crashed_turn_comes_back_as_a_stopped_turn(_store, monkeypatch):
     found = chat_resume.last_stopped_turn(rows)
     assert found and found[1] == "migrate the database"
     assert chat_turn_save.recover_all() == 0            # the file is gone
+
+
+def test_a_failed_recovery_keeps_the_file(_store, monkeypatch):
+    from aiforge_core.runtime import chat_turn_save
+    sid = _store.create_session("t")["id"]
+    chat_turn_save.TurnSaver(sid).save([{"type": "thought", "text": "x"}], [])
+    monkeypatch.setattr(_store, "add_message",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    assert chat_turn_save.recover_all() == 0
+    assert chat_turn_save._path(sid).exists()
+
+
+def test_a_turn_another_live_server_is_saving_is_left_alone(_store, monkeypatch):
+    import os
+
+    from aiforge_core.runtime import chat_turn_save
+    sid = _store.create_session("t")["id"]
+    chat_turn_save.TurnSaver(sid).save([{"type": "thought", "text": "x"}], [])
+    path = chat_turn_save._path(sid)
+    data = json.loads(path.read_text())
+    data["pid"] = os.getppid()                  # alive, and not this process
+    path.write_text(json.dumps(data))
+    assert chat_turn_save.recover_all() == 0
+    assert path.exists()
+    old = path.stat().st_mtime - 3600           # …unless it stopped saving
+    os.utime(path, (old, old))
+    assert chat_turn_save.recover_all() == 1
 
 
 def test_a_finished_turn_leaves_nothing_behind(_store):
@@ -254,3 +294,14 @@ def test_an_expired_service_is_still_listed(monkeypatch):
     assert listed["expired"] == [{"pid": 42, "url": "http://x", "cmd": "npm run dev",
                                   "alive": False, "stopped": "ran past its ttl_s (1s)"}]
     assert "expired" not in serve.list_services()          # reported once
+
+
+def test_timeouts_in_an_earlier_turn_do_not_count():
+    from aiforge_core.runtime.chat_agent._turn import _approval
+    _approval._TIMEOUTS.clear()
+    timeout = {"decision": "reject", "note": "approval timed out"}
+    list(_approval._handle_rejection("a", {}, 11, [], timeout))
+    assert _approval._TIMEOUTS[11] == 1
+    _approval.new_turn(11)
+    events = list(_approval._handle_rejection("b", {}, 11, [], timeout))
+    assert not any(e.get("awaiting_input") for e in events)

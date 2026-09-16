@@ -48,6 +48,11 @@ def _resolve_complete_fn(complete_fn, role):
     return complete_fn, _native_on
 
 
+#: Blocks the server appends to the user's message before the loop sees it.
+_ADDED_BLOCKS = ("\n\n---\n[Interpreted request", "\n\n---\n[RESUME]",
+                 "\n\n---\n[Deliverable")
+
+
 def _turn_goal(messages) -> str:
     """This turn's request: the last user message, without the enhancer's
     restatement."""
@@ -58,7 +63,9 @@ def _turn_goal(messages) -> str:
             quoted = quoted_request(text)       # "continue" + a resume brief
             if quoted:
                 return quoted
-            return text.split("\n\n---\n[")[0].strip() or text
+            for marker in _ADDED_BLOCKS:
+                text = text.split(marker)[0]
+            return text.strip() or _text_of(m).strip()
     return ""
 
 
@@ -156,6 +163,8 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     _user_roots = _writable_roots(messages, session_id)
 
     _unlimited = not _capped and _turn_budget_s <= 0
+    from ._approval import new_turn as _approvals_new_turn
+    _approvals_new_turn(session_id)
     convo, _bundle, _asks, _dropped_playbooks = _build_convo(
         messages, cwd, role, readonly_mode=readonly_mode,
         plan_mode=plan_mode, analyze_mode=analyze_mode, builder=builder,

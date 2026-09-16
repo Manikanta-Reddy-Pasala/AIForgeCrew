@@ -156,7 +156,8 @@ def _recent_tail_count(convo: list[dict], budget: int, *,
 
 
 _HARNESS_NOTE = re.compile(
-    r"^(OBSERVATION:|\[(?:[^\]]*not the user|system reminder)[^\]]*\])")
+    r"^(OBSERVATION:|\[(?:[^\]]*not the user|system reminder)[^\]]*\]"
+    r"|You (?:narrated|signalled|described) )")
 
 
 def _is_harness_note(content: str) -> bool:

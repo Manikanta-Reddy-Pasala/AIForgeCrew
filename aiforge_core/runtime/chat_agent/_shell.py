@@ -6,7 +6,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from ._spool import Spool, proc_group
+from ._spool import Spool
 
 _BASH = '.bash'
 
@@ -718,8 +718,9 @@ _SERVER_START_REFUSAL = (
     "This starts a long-lived server/dev process that won't return, so "
     "run_command would block the whole turn. Use the `serve` tool instead — "
     "serve(cmd=\"…\") starts it in the background and gives you the URL "
-    "immediately (stop it later with stop_service). If you truly want it in "
-    "the foreground, append ` &` to background it yourself.")
+    "immediately (stop it later with stop_service). If you must start it "
+    "yourself, redirect its output: `cmd > app.log 2>&1 &` (a bare `&` "
+    "child is stopped when the command returns).")
 
 
 def _run_refusal(cmd: str, args: dict, base: str) -> dict | None:
@@ -863,14 +864,11 @@ def _t_run_command(args: dict, cwd: str) -> dict:
         if spool is not None:
             spool.close()
         return {"ok": False, "error": str(exc)}
-    spool.pgid = proc_group(proc)
+    spool.pgid = proc.pid             # start_new_session: its own group
     try:
         return _run_to_end(proc, timeout, spool)
     finally:
-        # A child left running in the background (`cmd &`) would outlive the
-        # turn and keep writing into a deleted file; `serve` is the way to
-        # keep a process. Its group goes with the command.
-        spool.kill_group()
+        spool.release_children()
         spool.close()
 
 

@@ -205,6 +205,11 @@ _MAX_TIMEOUTS = 2
 _TIMEOUTS: dict = {}
 
 
+def new_turn(session_id) -> None:
+    """A new turn starts with no unanswered approvals behind it."""
+    _TIMEOUTS.pop(session_id, None)
+
+
 def _handle_rejection(name, args, session_id, convo, decision):
     """Handle a rejected/expired approval: reject-with-guidance folds the note in
     as a steer and continues; interactive reject-without-guidance stops and waits
@@ -220,9 +225,14 @@ def _handle_rejection(name, args, session_id, convo, decision):
         _TIMEOUTS[session_id] = _TIMEOUTS.get(session_id, 0) + 1
         if _TIMEOUTS[session_id] >= _MAX_TIMEOUTS:
             _TIMEOUTS.pop(session_id, None)
+            yield {"type": "tool", "name": name, "args": args,
+                   "result": {"ok": False, "approval_timed_out": True,
+                              "error": "not approved in time; skipped"}}
             yield {"type": "message", "awaiting_input": True,
-                   "text": f"Paused — `{name}` and an earlier action are waiting "
-                           "for your approval. Reply to continue."}
+                   "text": f"Paused — `{name}` and an earlier action needed your "
+                           "approval, which did not come in time, so both were "
+                           "skipped. Reply to continue, and say whether to try "
+                           "them again."}
             yield {"type": "stopped", "reason": "approval_timeout"}
             yield {"type": "done"}
             return "return"

@@ -145,19 +145,6 @@ def _repair_config_permissions() -> None:
 
 
 @app.on_event("startup")
-def _recover_interrupted_turns() -> None:
-    """A chat turn that was running when the server died becomes a stopped
-    turn, so Retry resumes it instead of the work being lost."""
-    try:
-        from aiforge_core.runtime import chat_turn_save
-        n = chat_turn_save.recover_all()
-        if n:
-            logging.getLogger("aiforge").info("recovered %d interrupted chat turn(s)", n)
-    except Exception as exc:  # noqa: BLE001 — never block boot on this
-        logging.getLogger("aiforge").warning("turn recovery skipped: %s", exc)
-
-
-@app.on_event("startup")
 def _publish_ca_bundle() -> None:
     """Put the estate's CA into this process's environment before anything
     spawns a subprocess.
@@ -268,6 +255,19 @@ def _reload_models_to_context(below: list[str], want: int) -> None:
             _af_log.info("boot ctx-reload: %s -> %d", mid, want)
         except Exception as _e:  # noqa: BLE001
             _af_log.debug("boot ctx-reload failed for %s: %s", mid, _e)
+
+
+@app.on_event("startup")
+def _recover_interrupted_turns() -> None:
+    """A chat turn that was running when the server died becomes a stopped
+    turn, so Retry resumes it instead of the work being lost."""
+    try:
+        from aiforge_core.runtime import chat_turn_save
+        n = chat_turn_save.recover_all()
+        if n:
+            logging.getLogger("aiforge").info("recovered %d interrupted chat turn(s)", n)
+    except Exception as exc:  # noqa: BLE001 — never block boot on this
+        logging.getLogger("aiforge").warning("turn recovery skipped: %s", exc)
 
 
 @app.on_event("startup")

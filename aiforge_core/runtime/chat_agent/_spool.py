@@ -3,13 +3,12 @@
 A pipe holds about 64 KB. A build that writes more blocks until someone reads
 it, and ``run_command`` only read after the command exited — so a verbose
 maven or pytest run hung until the timeout killed it. A file never fills up;
-the size is capped instead (``AIFORGE_CHAT_CMD_OUTPUT_MAX_MB``, default 200)
-so a runaway command cannot fill the disk.
+the size is capped instead (``AIFORGE_CHAT_CMD_OUTPUT_MAX_MB``, default 200,
+checked every 0.2 s, so a very fast writer can overshoot it).
 """
 from __future__ import annotations
 
 import os
-import signal
 import tempfile
 
 #: Characters of each stream kept for the model (the tail).
@@ -24,9 +23,19 @@ def _max_bytes() -> int:
     return int(mb * 1024 * 1024) if mb > 0 else 0
 
 
-def proc_group(proc) -> int | None:
-    from aiforge_core.runtime import proc_signals
-    return proc_signals.group_of(proc)
+def _group_members(pgid: int) -> list[int]:
+    members = []
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{name}/stat", "rb") as fh:
+                fields = fh.read().rsplit(b")", 1)[1].split()
+            if int(fields[2]) == pgid:        # state, ppid, pgrp
+                members.append(int(name))
+        except (OSError, IndexError, ValueError):
+            continue
+    return members
 
 
 class Spool:
@@ -41,8 +50,10 @@ class Spool:
         end = fh.seek(0, os.SEEK_END)
         fh.seek(max(0, end - TAIL_CHARS * 4))
         text = fh.read().decode("utf-8", "replace")
-        # Progress bars redraw with a bare carriage return.
-        return text.replace("\r\n", "\n").replace("\r", "\n")[-TAIL_CHARS:]
+        # Progress bars redraw a line with a bare carriage return: keep what
+        # the line finally showed.
+        lines = text.replace("\r\n", "\n").split("\n")
+        return "\n".join(line.rsplit("\r", 1)[-1] for line in lines)[-TAIL_CHARS:]
 
     def read(self) -> tuple[str, str]:
         return self._tail(self.out), self._tail(self.err)
@@ -72,7 +83,47 @@ class Spool:
         if self.pgid is None:
             return
         from aiforge_core.runtime import proc_signals
-        proc_signals.kill_group(self.pgid, signal.SIGKILL)
+        proc_signals.stop_group(self.pgid, pause_s=0.2)
+
+    def release_children(self) -> None:
+        """After the command exits: a child still writing into this output (a
+        bare `cmd &`) is stopped, as it was when the output went through a
+        pipe. On Linux a child that redirected its own output keeps running;
+        elsewhere every leftover child is stopped."""
+        if self.pgid is None:
+            return
+        try:
+            os.killpg(self.pgid, 0)
+        except OSError:
+            return                          # nothing left in the group
+        if not os.path.isdir("/proc"):
+            # No way to tell who writes where: stop the group, as the closed
+            # pipe used to.
+            self.kill_group()
+        elif any(self._writes_here(pid) for pid in _group_members(self.pgid)):
+            self.kill_group()
+
+    def _writes_here(self, pid: int) -> bool:
+        ours = set()
+        for fh in (self.out, self.err):
+            try:
+                st = os.fstat(fh.fileno())
+                ours.add((st.st_dev, st.st_ino))
+            except (OSError, ValueError):
+                pass
+        fd_dir = f"/proc/{pid}/fd"
+        try:
+            fds = os.listdir(fd_dir)
+        except OSError:
+            return False
+        for fd in fds:
+            try:
+                st = os.stat(os.path.join(fd_dir, fd))
+            except OSError:
+                continue
+            if (st.st_dev, st.st_ino) in ours:
+                return True
+        return False
 
     def close(self) -> None:
         for fh in (self.out, self.err):

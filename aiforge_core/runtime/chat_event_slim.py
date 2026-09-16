@@ -21,6 +21,8 @@ def _cap() -> int:
         return 8000
 
 
+#: Characters of an approval card kept per value.
+_APPROVAL_CAP = 1_000_000
 #: List items kept in a stored copy (a grep can return thousands).
 _MAX_ITEMS = 200
 
@@ -47,10 +49,16 @@ def _cut(value, cap: int, depth: int):
 def slim_event(event: dict) -> dict:
     """The event to store: a copy of a tool event with long argument and
     result values cut; any other event is returned as is."""
-    keys = [k for k in ("args", "result") if k in event]
-    # An approval card is shown again on re-attach; the user must see the
-    # whole change they are approving, so it is never cut.
-    if event.get("type") != "tool" or not keys:
+    kind = event.get("type")
+    if kind == "approval":
+        # Shown again on re-attach: the user must see the change they are
+        # approving, so only a pathological card is cut.
+        keys, cap = ("args", "preview"), _APPROVAL_CAP
+    elif kind == "tool":
+        keys, cap = ("args", "result"), _cap()
+    else:
         return event
-    cap = _cap()
-    return {**event, **{k: _cut(event[k], cap, 3) for k in keys}}
+    present = [k for k in keys if k in event]
+    if not present:
+        return event
+    return {**event, **{k: _cut(event[k], cap, 3) for k in present}}

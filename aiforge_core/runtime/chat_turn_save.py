@@ -76,8 +76,9 @@ class TurnSaver:
         try:
             _dir().mkdir(parents=True, exist_ok=True)
             tmp = _path(self.session_id).with_suffix(".tmp")
-            tmp.write_text(json.dumps({"mode": self.mode, "steps": rows},
-                                      default=str), encoding="utf-8")
+            tmp.write_text(json.dumps({"mode": self.mode, "pid": os.getpid(),
+                                       "steps": rows}, default=str),
+                           encoding="utf-8")
             os.replace(tmp, _path(self.session_id))
         except OSError as exc:
             log.warning("could not save running turn %s: %s", self.session_id, exc)
@@ -89,6 +90,24 @@ class TurnSaver:
             _path(self.session_id).unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def _alive_elsewhere(pid) -> bool:
+    if not isinstance(pid, int) or pid == os.getpid():
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _fresh(path: Path) -> bool:
+    """Written recently enough that its owner is plausibly still saving it."""
+    try:
+        return time.time() - path.stat().st_mtime < 5 * _interval_s()
+    except OSError:
+        return False
 
 
 def recover_all() -> int:
@@ -104,14 +123,21 @@ def recover_all() -> int:
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
             session_id = int(f.stem)
+        except (OSError, ValueError):
+            log.warning("unreadable running-turn file %s; left in place", f.name)
+            continue
+        if _alive_elsewhere(data.get("pid")) and _fresh(f):
+            continue                  # another server on this config dir owns it
+        try:
             if chat_store.get_session(session_id) is not None:
                 steps = list(data.get("steps") or [])
                 steps.append({"type": "stopped", "reason": "server_restart"})
                 chat_store.add_message(session_id, "assistant", INTERRUPTED_TEXT,
                                        steps, mode=data.get("mode") or "simple")
                 recovered += 1
-        except Exception as exc:  # noqa: BLE001 — a bad file must not block boot
+        except Exception as exc:  # noqa: BLE001 — keep the file for next boot
             log.warning("could not recover running turn %s: %s", f.name, exc)
+            continue
         try:
             f.unlink(missing_ok=True)
         except OSError:
