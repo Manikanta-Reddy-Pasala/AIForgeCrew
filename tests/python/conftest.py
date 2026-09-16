@@ -31,6 +31,10 @@ os.environ.setdefault("AIFORGE_OKR_SCOPE_LLM", "0")
 # server-imposed HOLD applies even at rpm=0, lives in module state, and outlives
 # the test that armed it by up to 60 real seconds.
 os.environ.setdefault("AIFORGE_LLM_MAX_RPM", "0")
+# Same reason: background sends yield to interactive ones for 45s by
+# default, so a test that sends as chat and then as compaction would sit
+# out the window. The gate's own tests switch it back on.
+os.environ.setdefault("AIFORGE_BACKGROUND_YIELD_S", "0")
 
 # Recall map→summarize (recall_summary.summarize_hits) makes one learner-role
 # LLM call when a query returns many hits. Off by default in the suite so recall
@@ -113,7 +117,12 @@ def _reset_llm_ceiling():
     of real blocking to every later test in the run — a suite that hangs, with
     the cause several files away from the symptom.
     """
+    from aiforge_core.llm import interactive_gate as _gate
     from aiforge_core.llm import rate_limiter as _rl
     _rl.reset_global()
+    _gate.reset()
     yield
     _rl.reset_global()
+    # A test that sends as chat would otherwise make every later background
+    # send wait out the interactive window.
+    _gate.reset()
