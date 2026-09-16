@@ -87,18 +87,31 @@ def ca_dir(*, create: bool = False) -> Path:
     return d
 
 
+def _parses_as_certificate(pem: str) -> None:
+    """Raise unless ``pem`` really is one or more X.509 certificates.
+
+    ``ssl.DER_cert_to_PEM_cert`` does NOT validate — it base64-wraps whatever
+    bytes it is handed, so a text file of notes renamed to .cer comes back as a
+    perfectly-shaped BEGIN CERTIFICATE block full of nonsense. Loading it is
+    the only check that parses the structure for real.
+    """
+    import ssl
+    ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(cadata=pem)
+
+
 def _pem_text(path: Path) -> str:
-    """``path`` as PEM text, converting DER when that is what it holds.
+    """``path`` as VALIDATED PEM text, converting DER when that is what it holds.
 
     A ``.cer`` from a Windows export is usually DER — binary. Concatenating it
     into a bundle produces a file openssl silently reads as empty, which looks
     exactly like having installed nothing.
     """
-    raw = path.read_bytes()
-    if b"-----BEGIN" in raw:
-        return raw.decode("utf-8", "replace")
     import ssl
-    return ssl.DER_cert_to_PEM_cert(raw)      # raises on anything that is not DER
+    raw = path.read_bytes()
+    pem = (raw.decode("utf-8", "replace") if b"-----BEGIN" in raw
+           else ssl.DER_cert_to_PEM_cert(raw))
+    _parses_as_certificate(pem)
+    return pem
 
 
 def dropped_certs() -> list[Path]:
