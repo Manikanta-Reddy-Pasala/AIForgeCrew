@@ -504,9 +504,9 @@ def test_the_writeback_runs_preference_capture_and_the_learner(monkeypatch):
     monkeypatch.setattr(chat_learner, "learn_from_chat",
                         lambda **kw: calls.append("learn") or {"ok": True})
     monkeypatch.setattr(ch, "_capture_chat_cue",
-                        lambda p, r, s, c: calls.append(f"cue:{c}"))
+                        lambda p, r, s: calls.append("cue"))
     ch._chat_learn_writeback("/repo", "always squash", "done", [], 7)
-    assert calls == ["pref", "learn", "cue:True"]
+    assert calls == ["pref", "learn", "cue"]
 
 
 def test_a_crash_in_the_writeback_never_affects_the_turn(monkeypatch):
