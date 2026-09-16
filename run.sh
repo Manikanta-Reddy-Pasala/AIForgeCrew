@@ -169,7 +169,12 @@ _dropped_ca() {
   : > "$out.tmp" 2>/dev/null || return 0
   for f in "$dir"/*.pem "$dir"/*.crt "$dir"/*.cer "$dir"/*.cert "$dir"/*.der; do
     [[ -r "$f" ]] || continue
-    [[ "$f" == "$out" || "$f" == "$out.tmp" ]] && continue
+    # Skip what WE generate: run.sh's own system-merged bundle lives in this
+    # folder, and folding it back in would re-add every public root as if the
+    # operator had dropped it.
+    case "$(basename "$f")" in
+      dropped-chain.pem|bundle.pem|bundle-with-system.pem) continue ;;
+    esac
     if grep -q -- "-----BEGIN CERTIFICATE-----" "$f" 2>/dev/null; then
       cat "$f" >> "$out.tmp"; printf '\n' >> "$out.tmp"; n=$((n+1))
     elif command -v openssl >/dev/null 2>&1 \

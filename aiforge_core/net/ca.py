@@ -72,6 +72,12 @@ _CERT_SUFFIXES = (".pem", ".crt", ".cer", ".cert", ".der")
 #: intermediates, and a client needs the chain, not the first file we happened
 #: to glob.
 _MERGED_NAME = "bundle.pem"
+#: Files in ca/ that WE generate. run.sh writes its system-merged bundle next
+#: to the operator's certificate, so globbing the folder blindly folds every
+#: public root back in as if they had dropped it — and the Settings panel then
+#: lists ~150 of them as "added by you".
+_GENERATED_NAMES = frozenset({_MERGED_NAME, "dropped-chain.pem",
+                              "bundle-with-system.pem"})
 
 
 def ca_dir(*, create: bool = False) -> Path:
@@ -121,7 +127,7 @@ def dropped_certs() -> list[Path]:
     if not d.is_dir():
         return []
     return sorted(p for p in d.iterdir()
-                  if p.is_file() and p.name != _MERGED_NAME
+                  if p.is_file() and p.name not in _GENERATED_NAMES
                   and p.suffix.lower() in _CERT_SUFFIXES)
 
 
