@@ -14,7 +14,7 @@ from ._shell import (_MAX_OBS, _MAX_OBS_READ, _READ_OBS_TOOLS, _smart_truncate_o
 from ._tools import (_ROOT_SCOPED_TOOLS, _chat_repo_key, _preferences_context, _rules_context, _scoped_root)
 from ._registry import (TOOLS, _ANALYZE_BANNER, _BUILDER_FINALIZE_TOOL, _BUILDER_NUDGE_AFTER, _FINALIZE_TOOLS, _PLAN_BANNER, _READONLY_TOOLS, _is_mutating, _perf_family)
 from ._preview import (_diff_preview)
-from ._prompt import (_SYSTEM, _parse, _strip_reasoning_prefix)
+from ._prompt import (BATCH_READS_RULE, _SYSTEM, _parse, _strip_reasoning_prefix)
 from ._context import (_CANCELLED, _EDIT_TOOL_NAMES, _LOOP_REPEAT, _OUTPUT_REPEAT, _WEB_LOOKUP_DIRECTIVE, _cap_system_prompt, _cave_mode, _chat_session_recall, _claims_file_edits, _compact_convo, _complete_cancellable, _complete_live, _compress_prompt, _ctx_budget_chars, _ctx_on, _edit_claim_disclaimer, _edit_claim_guard_enabled, _edit_claim_nudge, _fire_stop, _has_web_intent, _post_edit_syntax_error, _progress_recap, _extension_budget, _repo_name, _stuck_recovery_max, _run_project_verify, _safety_cap, _split_asks, _sys_prompt_budget_chars, _unattended_cap, _text_of, _turn_deadline_s, _verify_fix_message, _verify_max_rounds, _verify_on_final_enabled, _worktree_fingerprint)
 
 _log = logging.getLogger("aiforge.chat_agent")
@@ -387,7 +387,7 @@ def _sandbox_directive(readonly_mode: bool) -> str:
 
 
 def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
-                 analyze_mode, builder, strict_finish, session_id):
+                 analyze_mode, builder, strict_finish, session_id, native=False):
     """Build the ReAct conversation: assemble the budget-capped system prompt
     (rules, prefs, banners, catalog/codegraph gates, multi-ask checklist, and
     every dynamic context block via the shared bundle), fold history + vision
@@ -434,6 +434,8 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
             sys_msg += addition[:room] + "\n…(truncated to fit context)\n"
         _sys_dropped.append(label)
 
+    if native:
+        _add_sys_block("batch-reads", BATCH_READS_RULE)
     # WEB-LOOKUP directive FIRST — it's short + critical, so it must outrank the
     # big optional blocks (repo-map/recall) under a tight window (blocks added
     # LATER drop first). Without top priority the "no web access" notice got
@@ -2103,7 +2105,7 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     convo, _bundle, _asks, _dropped_playbooks = _build_convo(
         messages, cwd, role, readonly_mode=readonly_mode,
         plan_mode=plan_mode, analyze_mode=analyze_mode, builder=builder,
-        strict_finish=strict_finish, session_id=session_id)
+        strict_finish=strict_finish, session_id=session_id, native=_native_on)
 
     # OrderedDict, not dict: the prune below needs least-recently-SEEN order,
     # which only move_to_end can maintain (see its call site).
@@ -2212,8 +2214,29 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         analyze_mode=analyze_mode, readonly_mode=readonly_mode,
         scope_globs=_scope_globs, asks=_asks, bundle=_bundle, meter=_meter,
         user_roots=_user_roots,
-        dropped_playbooks=_dropped_playbooks, native_on=_native_on)
+        dropped_playbooks=_dropped_playbooks, native_on=_native_on,
+        pending_steps=[])
     return st
+
+
+def _queue_batched_reads(st):
+    """Keep the read-only calls the model batched after its first one."""
+    take = getattr(st.complete_fn, "take_queued", None)
+    if callable(take):
+        st.pending_steps.extend(take())
+
+
+def _pop_queued_step(st, session_id):
+    """The next batched read, or None when there is none or the user has since
+    stopped or steered the run — then the model decides again with that input."""
+    if not st.pending_steps:
+        return None
+    from aiforge_core.runtime import chat_cancel, chat_interject
+    if session_id is not None and (chat_cancel.is_cancelled(session_id)
+                                   or chat_interject.pending(session_id)):
+        st.pending_steps.clear()
+        return None
+    return st.pending_steps.pop(0)
 
 
 def _emit_loop_prelude(st):
@@ -2381,12 +2404,17 @@ def run_chat_agent(
     yield from _emit_loop_prelude(st)
     while True:
         n += 1
-        out, _sig = yield from _step_prologue(
-            st, n, cwd, role, complete_fn, session_id, builder)
-        if _sig == "return":
-            return
-        if _sig == "continue":
-            continue
+        # A batch of reads from the last reply runs without asking the model
+        # again; each still passes every gate in _dispatch_step.
+        out = _pop_queued_step(st, session_id)
+        if out is None:
+            out, _sig = yield from _step_prologue(
+                st, n, cwd, role, complete_fn, session_id, builder)
+            if _sig == "return":
+                return
+            if _sig == "continue":
+                continue
+            _queue_batched_reads(st)
         _sig = yield from _dispatch_step(
             st, out, n, cwd, role, complete_fn, session_id, builder, strict_finish)
         if _sig == "return":

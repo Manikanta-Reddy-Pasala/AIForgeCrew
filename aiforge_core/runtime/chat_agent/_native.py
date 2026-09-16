@@ -184,7 +184,8 @@ def _synth_step(msg: dict) -> str:
     already understands. A ``tool_calls`` reply → a synthetic ACTION/ARGS_JSON
     line carrying the REAL structured args; a plain reply → its recovered text
     (content, else the reasoning channel, think-stripped). Only the FIRST tool
-    call is taken — the loop runs one action per turn. Returns the
+    call becomes this step; :func:`_queued_steps` hands the loop the rest when
+    they are all read-only. Returns the
     ``_NATIVE_ARGS_UNRECOVERABLE`` sentinel when a named call's arguments were
     attempted but can't be parsed (caller falls back to text for that turn)."""
     from aiforge_core.llm.client._text import _msg_text, _strip_think
@@ -204,6 +205,43 @@ def _synth_step(msg: dict) -> str:
     if not isinstance(args, dict):
         return _NATIVE_ARGS_UNRECOVERABLE
     return f"ACTION: {name}\nARGS_JSON: {json.dumps(args, ensure_ascii=False)}"
+
+
+def _queue_cap() -> int:
+    try:
+        return max(0, int(os.environ.get("AIFORGE_CHAT_PARALLEL_READS", "8")))
+    except (TypeError, ValueError):
+        return 8
+
+
+def _queued_steps(msg: dict) -> list[str]:
+    """Steps for the 2nd..Nth tool calls of one reply, so a model that asks for
+    five file reads at once gets them without four more round trips.
+
+    Only when EVERY call in the reply is read-only: a write depends on what the
+    model saw before it, so a mixed batch keeps the one-call-per-turn contract
+    (the first call runs; the model asks again). Duplicate and malformed calls
+    are dropped. Each queued step still goes through every loop gate."""
+    calls = msg.get("tool_calls") or []
+    cap = _queue_cap()
+    if len(calls) < 2 or not cap:
+        return []
+    from ._registry import _READONLY_TOOLS
+    parsed = []
+    for c in calls:
+        fn = (c or {}).get("function") or {}
+        name = fn.get("name") or ""
+        args = _resolve_call_args(fn.get("arguments"))
+        if name not in _READONLY_TOOLS:
+            return []
+        if isinstance(args, dict):
+            parsed.append(f"ACTION: {name}\nARGS_JSON: {json.dumps(args, ensure_ascii=False)}")
+    first = _synth_step(msg)
+    out: list[str] = []
+    for step in parsed:
+        if step != first and step not in out:
+            out.append(step)
+    return out[:cap]
 
 
 def _native_error_is_permanent(exc, model: str) -> bool:
@@ -248,7 +286,16 @@ def make_native_complete_fn():
     from aiforge_core.llm import client
     from ._tools._schemas import NATIVE_TOOL_SCHEMAS
 
+    queued: list[str] = []
+
+    def take_queued() -> list[str]:
+        """The read-only calls the last reply batched after its first one."""
+        items = list(queued)
+        queued.clear()
+        return items
+
     def _fn(role: str, convo: list[dict]) -> str:
+        queued.clear()
         # Known-incapable model (a prior turn hit a definitive tools-rejection) →
         # text protocol, transparently. This is the ONLY thing that disables
         # native, and it's per-model + self-discovered, never transient.
@@ -272,6 +319,8 @@ def make_native_complete_fn():
             # redo this turn on the hardened text path rather than emit empty args
             log.info("native args unrecoverable → text fallback for this turn")
             return client.complete(role, convo)
+        queued.extend(_queued_steps(msg))
         return step
 
+    _fn.take_queued = take_queued
     return _fn
