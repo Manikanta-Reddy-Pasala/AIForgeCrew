@@ -192,12 +192,12 @@ def test_rewriting_the_same_bytes_or_flipping_back_is_not_new(_repo):
     assert st.new_states == seen + 1               # only "C" was new
 
 
-def test_untracked_output_files_are_not_progress(_repo):
+def test_a_file_the_shell_creates_is_progress_once(_repo):
     st = _loop_state()
-    for i in range(3):
-        (_repo / "report.xml").write_text(f"<run {i}/>")
+    for _ in range(3):
+        (_repo / "new.py").write_text("def f(): pass\n")    # cat > new.py <<EOF
         _shell_ran(st, _repo)
-    assert st.new_states == 0
+    assert st.new_states == 1
 
 
 def test_a_repeated_read_between_new_ones_is_stopped_by_the_backstop(monkeypatch):
@@ -649,6 +649,16 @@ def test_progress_bars_become_lines(tmp_path, monkeypatch):
     res = _shell._t_run_command({"cmd": "printf '10%%\\r50%%\\rdone\\nnext\\n'"},
                                 str(tmp_path))
     assert res["stdout"].splitlines() == ["done", "next"]
+
+
+def test_a_bar_that_ends_in_a_carriage_return_keeps_its_last_frame():
+    from aiforge_core.runtime.chat_agent._spool import Spool
+    sp = Spool()
+    try:
+        sp.out.write(b"file 10%\rfile 100%\r")
+        assert sp.read()[0] == "file 100%"
+    finally:
+        sp.close()
 
 
 def _running(pid):

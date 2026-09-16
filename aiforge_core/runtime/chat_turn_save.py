@@ -77,6 +77,7 @@ class TurnSaver:
             _dir().mkdir(parents=True, exist_ok=True)
             tmp = _path(self.session_id).with_suffix(".tmp")
             tmp.write_text(json.dumps({"mode": self.mode, "pid": os.getpid(),
+                                       "started": _started(os.getpid()),
                                        "steps": rows}, default=str),
                            encoding="utf-8")
             os.replace(tmp, _path(self.session_id))
@@ -92,14 +93,29 @@ class TurnSaver:
             pass
 
 
-def _alive_elsewhere(pid) -> bool:
+def _started(pid: int) -> str:
+    """When ``pid`` started (Linux), so a reused pid is not mistaken for the
+    server that wrote a file. "" when unknown."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as fh:
+            return fh.read().rsplit(b")", 1)[1].split()[19].decode()
+    except (OSError, IndexError):
+        return ""
+
+
+def _owned_elsewhere(data: dict, path: Path) -> bool:
+    """Another live server is still running this turn."""
+    pid = data.get("pid")
     if not isinstance(pid, int) or pid == os.getpid():
         return False
     try:
         os.kill(pid, 0)
     except OSError:
         return False
-    return True
+    recorded, now = data.get("started") or "", _started(pid)
+    if recorded and now:
+        return recorded == now        # the same process, however long it is quiet
+    return _fresh(path)               # no start times: trust only a recent file
 
 
 def _fresh(path: Path) -> bool:
@@ -123,10 +139,12 @@ def recover_all() -> int:
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
             session_id = int(f.stem)
+            if not isinstance(data, dict):
+                raise ValueError("not an object")
         except (OSError, ValueError):
             log.warning("unreadable running-turn file %s; left in place", f.name)
             continue
-        if _alive_elsewhere(data.get("pid")) and _fresh(f):
+        if _owned_elsewhere(data, f):
             continue                  # another server on this config dir owns it
         try:
             if chat_store.get_session(session_id) is not None:

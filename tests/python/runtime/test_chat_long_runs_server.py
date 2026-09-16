@@ -101,6 +101,11 @@ def test_a_late_click_on_an_expired_card_approves_nothing(monkeypatch):
     assert chat_approve.resolve(77, "approve", seq=second) is True
     assert chat_approve.wait(77)["decision"] == "approve"
     chat_approve.finish(77)
+    # a new turn: its first card must not share a number with an old one
+    third = chat_approve.request(77)
+    assert third not in (first, second)
+    assert chat_approve.resolve(77, "approve", seq=first) is False
+    chat_approve.finish(77)
 
 
 def test_a_real_rejection_still_stops():
@@ -166,11 +171,41 @@ def test_a_turn_another_live_server_is_saving_is_left_alone(_store, monkeypatch)
     path = chat_turn_save._path(sid)
     data = json.loads(path.read_text())
     data["pid"] = os.getppid()                  # alive, and not this process
+    data["started"] = ""                        # start time unknown
     path.write_text(json.dumps(data))
     assert chat_turn_save.recover_all() == 0
     assert path.exists()
     old = path.stat().st_mtime - 3600           # …unless it stopped saving
     os.utime(path, (old, old))
+    assert chat_turn_save.recover_all() == 1
+
+
+def test_a_bad_file_does_not_stop_the_others(_store):
+    from aiforge_core.runtime import chat_turn_save
+    sid = _store.create_session("t")["id"]
+    chat_turn_save.TurnSaver(sid).save([{"type": "thought", "text": "x"}], [])
+    chat_turn_save._path(999999).write_text("[1, 2]")
+    assert chat_turn_save.recover_all() == 1
+
+
+def test_a_quiet_live_turn_is_not_taken_over(_store):
+    """A 30-minute build writes nothing; the owner is still the same process."""
+    import os
+
+    from aiforge_core.runtime import chat_turn_save
+    if not chat_turn_save._started(os.getppid()):
+        pytest.skip("no process start times here")
+    sid = _store.create_session("t")["id"]
+    chat_turn_save.TurnSaver(sid).save([{"type": "thought", "text": "x"}], [])
+    path = chat_turn_save._path(sid)
+    data = json.loads(path.read_text())
+    data.update(pid=os.getppid(), started=chat_turn_save._started(os.getppid()))
+    path.write_text(json.dumps(data))
+    old = path.stat().st_mtime - 3600
+    os.utime(path, (old, old))
+    assert chat_turn_save.recover_all() == 0
+    data["started"] = "1"                      # the pid now belongs to someone else
+    path.write_text(json.dumps(data))
     assert chat_turn_save.recover_all() == 1
 
 

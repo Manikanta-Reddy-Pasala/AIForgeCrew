@@ -122,20 +122,21 @@ def note_write(st, name, args, result, cwd) -> bool:
         return False
     paths = _named_paths(args, None) or _named_paths(None, result)
     files = [_full(p, cwd) for p in paths]
-    if files and not any(os.path.isdir(f) for f in files):
+    known = bool(files) and not any(os.path.isdir(f) for f in files)
+    if known:
         for full in files:
             _remember(st.file_hashes, full, _digest(full))
     else:
         # A tool that does not say which files it touched, or names a folder
         # (a rename across the tree): nothing to compare, so a new state.
         st.unknown_edits += 1
-    _enter_state(st, _state_of(st), known=bool(files))
+    _enter_state(st, _state_of(st), known=known)
     return True
 
 
 def _state_of(st) -> str:
     """The workspace state: content of the files written by tools, content
-    of the tracked files the shell changed, and edits that named no file."""
+    of the files the shell changed or created, and edits that named no file."""
     state = json.dumps([sorted(st.file_hashes.items()),
                         sorted(st.tree_hashes.items()), st.unknown_edits])
     return hashlib.sha1(state.encode()).hexdigest()  # noqa: S324
@@ -174,8 +175,8 @@ def _git(st, cwd, *args):
 
 
 def _tracked_changes(st, cwd) -> dict | None:
-    """Content hashes of the tracked files git reports as changed, or None
-    outside a repository. A file is re-hashed only when its size or
+    """Content hashes of the files git reports as changed or new (an ignored
+    file is never listed), or None outside a repository. A file is re-hashed only when its size or
     modification time moved."""
     if st.git_off:
         return None
@@ -184,7 +185,10 @@ def _tracked_changes(st, cwd) -> dict | None:
         st.git_root = top.decode("utf-8", "replace").strip() if top else ""
     if not st.git_root:
         return None
-    raw = _git(st, cwd, "status", "--porcelain", "-z", "--untracked-files=no")
+    # "normal" lists an untracked folder once, so a tree whose node_modules is
+    # not ignored costs one entry, not a walk; such a folder is fingerprinted
+    # by its direct entries.
+    raw = _git(st, cwd, "status", "--porcelain", "-z", "--untracked-files=normal")
     if raw is None:
         return None
     entries = raw.split(b"\0")
@@ -198,8 +202,20 @@ def _tracked_changes(st, cwd) -> dict | None:
         if entry[:1] in (b"R", b"C"):
             i += 1                    # the rename's old path follows
         path = os.path.join(st.git_root, entry[3:].decode("utf-8", "replace"))
-        changed[path] = _cached_digest(st, path)
+        changed[path] = (_folder_digest(path) if os.path.isdir(path)
+                         else _cached_digest(st, path))
     return changed
+
+
+def _folder_digest(path: str) -> str:
+    """Names, sizes and times of a folder's direct entries (not a walk)."""
+    try:
+        with os.scandir(path) as it:
+            rows = sorted(f"{e.name}:{e.stat().st_size}:{e.stat().st_mtime_ns}"
+                          for e in it)
+    except OSError:
+        return _NO_FILE
+    return hashlib.sha1("|".join(rows[:_MAX_CHANGED]).encode()).hexdigest()  # noqa: S324
 
 
 def _cached_digest(st, path: str) -> str:
@@ -226,7 +242,7 @@ def note_command(st, name, result, cwd) -> None:
 
 
 def _refresh_tree(st) -> None:
-    """Fold the tracked files the shell changed into the state. Rewriting a
+    """Fold the files the shell changed or created into the state. Rewriting a
     file with the same bytes, or flipping it back, is not new."""
     st.tree_pending = False
     changed = _tracked_changes(st, getattr(st, "tree_cwd", None) or getattr(st, "cwd", ""))

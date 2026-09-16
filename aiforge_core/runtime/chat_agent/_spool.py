@@ -53,7 +53,8 @@ class Spool:
         # Progress bars redraw a line with a bare carriage return: keep what
         # the line finally showed.
         lines = text.replace("\r\n", "\n").split("\n")
-        return "\n".join(line.rsplit("\r", 1)[-1] for line in lines)[-TAIL_CHARS:]
+        return "\n".join(line.rstrip("\r").rsplit("\r", 1)[-1]
+                         for line in lines)[-TAIL_CHARS:]
 
     def read(self) -> tuple[str, str]:
         return self._tail(self.out), self._tail(self.err)

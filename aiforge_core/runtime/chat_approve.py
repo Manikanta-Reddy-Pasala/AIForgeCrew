@@ -35,6 +35,7 @@ class _Pending:
 
 _LOCK = threading.Lock()
 _PENDING: dict[int, _Pending] = {}
+_LAST_SEQ: dict[int, int] = {}
 
 # Per-session "review edits" flag (Gap D). When True, EVERY file-mutating
 # tool call is held for human Approve/Reject (with a real diff preview) before
@@ -151,7 +152,10 @@ def request(session_id: int) -> int:
     it first so that waiter unblocks instead of hanging to its timeout."""
     with _LOCK:
         prev = _PENDING.get(session_id)
-        seq = (prev.seq + 1) if prev else 1
+        # Numbers only ever grow for a session, across turns too: a late
+        # click on an old card must never match a newer request.
+        seq = _LAST_SEQ.get(session_id, 0) + 1
+        _LAST_SEQ[session_id] = seq
         if prev is not None and not prev.event.is_set():
             prev.decision = "reject"
             prev.note = "superseded"

@@ -719,8 +719,9 @@ _SERVER_START_REFUSAL = (
     "run_command would block the whole turn. Use the `serve` tool instead — "
     "serve(cmd=\"…\") starts it in the background and gives you the URL "
     "immediately (stop it later with stop_service). If you must start it "
-    "yourself, redirect its output: `cmd > app.log 2>&1 &` (a bare `&` "
-    "child is stopped when the command returns).")
+    "yourself, redirect its output on Linux: `cmd > app.log 2>&1 &` (a "
+    "bare `&` child, and on other systems any child, is stopped when the "
+    "command returns).")
 
 
 def _run_refusal(cmd: str, args: dict, base: str) -> dict | None:
