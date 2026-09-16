@@ -907,19 +907,23 @@ def _warn_if_not_persisted(res, label: str, repo: str) -> None:
 
 
 def _capture_chat_cue(prompt, repo: str, session_id, pref_captured: bool) -> None:
-    """A user comment / topic suggestion the user explicitly states → md capture
-    (repo + topic stamped) so it reaches the compaction axes. Preference turns
-    are captured elsewhere, so skip those for the plain-comment branch."""
+    """An explicit "track this as a topic" → md capture (repo stamped) so it
+    reaches the compaction axes.
+
+    This used to ALSO store the raw prompt verbatim as a ``user_comment`` on any
+    preference cue, which is what filled memory with chat turns ("can you add
+    gitlab ci file for this repo", "attahced his solution"). Every turn already
+    goes through preference_capture + chat_learner, which DISTIL it; the raw
+    text added nothing but noise, so that branch is gone. ``pref_captured``
+    stays in the signature for callers and is no longer needed here.
+    """
     try:
         from aiforge_core.memory import md_store as _md2
-        from aiforge_core.runtime import capture_cues as _cc
         low = (prompt or "").lower()
         if any(ph in low for ph in _TOPIC_CUE_PHRASES):
             _md2.capture("topic_suggestion", (prompt or "").strip(),
-                         repo=repo, source=f"chat:{session_id or ''}")
-        elif not pref_captured and _cc.has_cue(prompt or ""):
-            _md2.capture("user_comment", (prompt or "").strip(),
-                         repo=repo, source=f"chat:{session_id or ''}")
+                         repo=repo, source=f"chat:{session_id or ''}",
+                         evidence=f"chat session {session_id or '?'}")
     except Exception:  # noqa: BLE001
         pass
 

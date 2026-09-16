@@ -1,9 +1,11 @@
 """md_store internals: the unified `capture()` entry every learning flows
-through, plus its accepted `kind` set. Builds on `_base`, `_scope`, `_ingest`
-and `_render`."""
+through, plus its accepted `kind` set. Builds on `_base`, `_scope`, `_ingest`,
+`_fact` (is this a fact, and about what) and `_subject` (one note per subject).
+"""
 from __future__ import annotations
 
-from ._base import _slug
+from . import _fact, _subject
+from ._base import _log, _slug
 from ._ingest import write
 from ._render import _brief_upsert
 from ._scope import classify_scope
@@ -45,28 +47,47 @@ def _promote_scope(text: str, repo: "str | None", topic: "str | None",
     return repo, topic
 
 
+def _reject(text: str, reasons: list[str], kind: str, source: str) -> dict:
+    """A string that is not a fact is DROPPED, loudly enough to audit.
+
+    Silently accepting everything is what filled memory with CLI fragments,
+    headings and raw chat turns; each one then cost an embed, a brief slot and
+    a line of recall context forever.
+    """
+    _log.info("capture: dropped %s from %s (%s): %r",
+              kind, source, "; ".join(reasons), text[:80])
+    return {"skipped": "not_a_fact", "reasons": reasons}
+
+
 def capture(kind: str, text: str, *, repo: str | None = None,
             topic: str | None = None, title: str | None = None,
             source: str = "capture", tags: list[str] | None = None,
-            ingest: bool = True, classify: bool = True) -> dict:
-    """Persist one captured item as an md memory (repo + topic stamped + tagged),
-    so it flows into both compaction axes. ``kind`` should be one of
-    ``_CAPTURE_KINDS`` (falls back to a plain note otherwise). Returns the parsed
-    md, or ``{"skipped": ...}`` for empty text."""
+            ingest: bool = True, classify: bool = True,
+            subject: str | None = None, evidence: str | None = None,
+            confidence: str | None = None) -> dict:
+    """Persist one captured FACT as an md memory (repo + topic stamped + tagged),
+    so it flows into both compaction axes.
+
+    The text must read as a durable claim (see :mod:`_fact`); a fragment,
+    heading, question or raw chat turn is dropped with ``{"skipped":
+    "not_a_fact"}``. Facts are keyed by ``subject`` (derived when not given):
+    a new claim about a known subject is folded into that subject's note rather
+    than minting another dated file. ``kind`` should be one of
+    ``_CAPTURE_KINDS`` (falls back to a plain note otherwise).
+    """
     text = (text or "").strip()
     if not text:
         return {"skipped": "empty"}
+    ok, reasons = _fact.is_wellformed(text)
+    if not ok:
+        return _reject(text, reasons, kind, source)
     k = kind if kind in _CAPTURE_KINDS else "note"
     repo, topic = _promote_scope(text, repo, topic, classify)
-    tset = list(tags or [])
-    if repo:
-        tset.append(f"repo:{_slug(repo)}")
-    if topic:
-        tset.append(f"topic:{_slug(topic)}")
-    tset.append(k)
-    ttl = title or (text.splitlines()[0][:70] if text else k)
-    res = write(ttl, text, kind=k, tags=list(dict.fromkeys(tset)),
-                source=source, repo=repo or "shared", topic=topic, ingest=ingest)
+    subj = (subject or "").strip() or _fact.derive_subject(text)
+    ttl = title or _fact.title_for(subj, text)
+    res = _write_or_fold(ttl, text, kind=k, repo=repo, topic=topic, subject=subj,
+                         source=source, tags=tags, ingest=ingest,
+                         evidence=evidence, confidence=confidence)
     # WRITE-TIME brief maintenance: fold the fact into the repo's compacted brief
     # RIGHT NOW (cheap, no LLM), so recall (which reads compacted-<repo>.md) sees
     # just-written data instead of waiting for the periodic compaction. Global
@@ -76,4 +97,30 @@ def capture(kind: str, text: str, *, repo: str | None = None,
         _brief_upsert(repo or "shared", text, topic=topic)
     except Exception:  # noqa: BLE001 — brief upkeep never breaks a write
         pass
+    return res
+
+
+def _write_or_fold(ttl: str, text: str, *, kind: str, repo: str | None,
+                   topic: str | None, subject: str, source: str,
+                   tags: list[str] | None, ingest: bool,
+                   evidence: str | None, confidence: str | None) -> dict:
+    """Fold the claim into this subject's existing note, else write a new one."""
+    existing = None
+    try:
+        existing = _subject.find_note(ttl, kind=kind, repo=repo or "shared",
+                                      topic=topic)
+    except Exception:  # noqa: BLE001 — a lookup failure must not lose the fact
+        existing = None
+    if existing is not None:
+        return _subject.append_claim(existing, text, evidence=evidence)
+    tset = list(tags or [])
+    if repo:
+        tset.append(f"repo:{_slug(repo)}")
+    if topic:
+        tset.append(f"topic:{_slug(topic)}")
+    tset.append(kind)
+    res = write(ttl, text, kind=kind, tags=list(dict.fromkeys(tset)),
+                source=source, repo=repo or "shared", topic=topic, ingest=ingest,
+                subject=subject, evidence=evidence, confidence=confidence)
+    res["action"] = "created"
     return res

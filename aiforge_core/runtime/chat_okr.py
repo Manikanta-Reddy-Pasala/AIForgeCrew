@@ -114,6 +114,15 @@ _EXTRACT_SYS = (
     "PRESERVE EXACT IDENTIFIERS verbatim — jira/issue keys (ONE-3), version "
     "numbers, file paths, commands, config values, ports, error codes. Never "
     "generalize away or reword an id.\n"
+    "Every item MUST also carry:\n"
+    "  subject   the ONE thing the item is about (service, file, command, "
+    "ticket, setting) — never a pronoun\n"
+    "  evidence  where it came from (a command, path, id, or what was observed)\n"
+    "Each `text` must be a COMPLETE standalone sentence that still makes sense "
+    "a year from now with no chat around it. NEVER emit a heading, a table row, "
+    "a CLI usage fragment, a question, a request the user made, or a truncated "
+    "line — if you cannot state it as a full claim about a named subject, omit "
+    "it.\n"
     "Return an items list; empty if nothing durable was said."
 )
 
@@ -229,28 +238,58 @@ def _extract(transcript: str, role: str) -> "list | None":
         from pydantic import BaseModel
 
         from aiforge_core.llm.structured import structured_complete
+        from aiforge_core.memory.md_store import _role
 
         class SessionItem(BaseModel):
+            # subject/evidence are REQUIRED by the prompt: a model that cannot
+            # name what a line is about, or where it came from, was echoing a
+            # heading rather than reporting a learning. Defaults keep a partial
+            # response parseable — _valid_items() drops the incomplete rows.
             text: str = ""
             kind: str = "learning"
+            subject: str = ""
+            evidence: str = ""
 
         class SessionItems(BaseModel):
             items: list[SessionItem] = []
 
-        res = structured_complete(
-            role,
-            [{"role": "system", "content": _EXTRACT_SYS},
-             # NO extra truncation here: the caller sized the window and the
-             # durable offset advances over exactly those turns, so a second,
-             # smaller cap would mark turns folded that the model never saw.
-             {"role": "user", "content": transcript}],
-            SessionItems,
-            max_tokens=_int_env("AIFORGE_SESSION_COMPACT_MAX_TOKENS", 2000),
-            max_retries=1, temperature=0.0)
-        return list(getattr(res, "items", None) or [])
+        msgs = [{"role": "system", "content": _EXTRACT_SYS},
+                # NO extra truncation here: the caller sized the window and the
+                # durable offset advances over exactly those turns, so a second,
+                # smaller cap would mark turns folded that the model never saw.
+                {"role": "user", "content": transcript}]
+
+        def _run(r: str) -> list:
+            res = structured_complete(
+                r, msgs, SessionItems,
+                max_tokens=_extract_max_tokens(r),
+                max_retries=1, temperature=0.0)
+            return list(getattr(res, "items", None) or [])
+
+        items = _run(role)
+        # A reasoning model can burn its whole budget thinking and answer with
+        # nothing (model_registry documents this). Rather than mark the window
+        # folded with zero facts, retry ONCE on the fast role.
+        if not items and _role.is_thinking_role(role):
+            fb = _role.fallback_role()
+            log.info("chat_okr: %s returned no items — retrying on %s", role, fb)
+            items = _run(fb)
+        return items
     except Exception as exc:  # noqa: BLE001 — model down → retry next pass
         log.warning("chat_okr extract failed (offset not advanced): %s", exc)
         return None
+
+
+def _extract_max_tokens(role: str) -> int:
+    """Token budget for one extract. A thinking role needs headroom for the
+    reasoning phase BEFORE the first item is emitted, or it truncates to
+    nothing — the exact failure that made memory work fast-role-only."""
+    from aiforge_core.memory.md_store import _role
+
+    base = _int_env("AIFORGE_SESSION_COMPACT_MAX_TOKENS", 2000)
+    if _role.is_thinking_role(role):
+        return max(base, _int_env("AIFORGE_SESSION_COMPACT_THINK_TOKENS", 6000))
+    return base
 
 
 def _marker_path():
@@ -383,6 +422,28 @@ def _record_window_failure(session_id, entry: dict, taken: int,
         _save_marker(marker)
 
 
+def _valid_items(items) -> list:
+    """Items the distiller returned that are actually facts.
+
+    The model is asked for subject+evidence and a standalone claim; anything
+    missing one is a fragment it echoed out of the transcript. Dropping here
+    keeps the scope-classify call (one per window) off junk as well.
+    """
+    from aiforge_core.memory.md_store import _fact
+
+    out = []
+    for it in items or []:
+        text = (getattr(it, "text", "") or "").strip()
+        if not text:
+            continue
+        ok, why = _fact.is_wellformed(text)
+        if not ok:
+            log.info("chat_okr: dropped item (%s): %r", "; ".join(why), text[:80])
+            continue
+        out.append(it)
+    return out
+
+
 def _capture_items(md_store, items, session_id, repo, role) -> tuple[int, list]:
     """``(captured, rows)``.
 
@@ -392,22 +453,27 @@ def _capture_items(md_store, items, session_id, repo, role) -> tuple[int, list]:
     whole window's items — and this function must never raise.
     """
     rows = [((getattr(it, "text", "") or "").strip(),
-             (getattr(it, "kind", "") or "learning").strip()) for it in items]
+             (getattr(it, "kind", "") or "learning").strip(),
+             (getattr(it, "subject", "") or "").strip(),
+             (getattr(it, "evidence", "") or "").strip())
+            for it in _valid_items(items)]
     rows = [r for r in rows if r[0]]
     try:
-        scopes = md_store.classify_scopes([t for t, _ in rows], hint_repo=repo,
+        scopes = md_store.classify_scopes([r[0] for r in rows], hint_repo=repo,
                                           role=role)
     except Exception as exc:  # noqa: BLE001
         log.warning("chat_okr scope classification failed: %s", exc)
         scopes = [{"scope": "project", "repo": repo, "topic": None}
                   for _ in rows]
     captured = 0
-    for (text, kind), sc in zip(rows, scopes):
+    for (text, kind, subject, evidence), sc in zip(rows, scopes):
         try:
-            md_store.capture(kind, text, repo=sc["repo"], topic=sc["topic"],
-                             classify=False,
-                             source=f"chat-session:{session_id}")
-            captured += 1
+            res = md_store.capture(kind, text, repo=sc["repo"], topic=sc["topic"],
+                                   classify=False, subject=subject or None,
+                                   evidence=evidence or None,
+                                   source=f"chat-session:{session_id}")
+            if not (isinstance(res, dict) and res.get("skipped")):
+                captured += 1
         except Exception as exc:  # noqa: BLE001 — one bad item never aborts the fold
             log.debug("chat_okr capture failed: %s", exc)
     return captured, rows
@@ -434,7 +500,7 @@ def _advance_offset(session_id, last: int, taken: int, next_part: int,
 
 
 def compact_session(session_id, *, repo: str | None = None,
-                    role: str = "learner", min_turns: int = 2) -> dict:
+                    role: str | None = None, min_turns: int = 2) -> dict:
     """Distil ONE session into scoped OKR briefs. Never raises.
 
     Only messages AFTER the last-compacted offset are re-extracted (a durable
@@ -448,6 +514,11 @@ def compact_session(session_id, *, repo: str | None = None,
         return {"ok": False, "skipped": "disabled", "captured": 0}
     try:
         from aiforge_core.memory import md_store
+        from aiforge_core.memory.md_store import _role as _mrole
+
+        # Distillation is a judgement task → the memory (thinking) role by
+        # default; callers that already picked one still win.
+        role = role or _mrole.memory_role()
         from aiforge_core.runtime import chat_store
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc), "captured": 0}

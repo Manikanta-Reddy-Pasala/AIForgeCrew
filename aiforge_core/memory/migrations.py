@@ -433,7 +433,7 @@ def _startup_compact(out: dict) -> None:
     masquerading captures NOW, so the brief→OKR step sees consolidated briefs.
     Idempotent; safe every boot.
 
-    BUT: ``summarize=True, model_role="learner"`` is one LLM call per brief, and
+    BUT: ``summarize=True, model_role=md_store.memory_role()`` is one LLM call per brief, and
     this runs on EVERY API boot — which on a laptop means every morning the lid
     opens. That is the same "compaction is running in my working day" intrusion
     the evening window exists to remove, arriving by a path the scheduler never
@@ -461,9 +461,9 @@ def _startup_compact(out: dict) -> None:
         llm = (not compaction_off) and (
             mode == "always" or compact_window.open_now())
         r_repo = md_store.compact(group_by="repo", min_group=1, summarize=llm,
-                                  model_role="learner", archive_sources=False)
+                                  model_role=md_store.memory_role(), archive_sources=False)
         r_topic = md_store.compact(group_by="topic", min_group=1, summarize=llm,
-                                   model_role="learner", archive_sources=True)
+                                   model_role=md_store.memory_role(), archive_sources=True)
         r_sweep = md_store.sweep_stale_captures(archive=True)
         out["compact"] = {"repo_in": r_repo.get("files_in"),
                           "topic_in": r_topic.get("files_in"),
@@ -669,12 +669,16 @@ def force_recompact_all(on_step=None, checkpoint=None) -> dict:
         # fold cryptic/id-named files only — the topic step below does the heavy
         # LLM consolidation (with progress), so don't re-fold here (was the 600s
         # 'stuck at tidy_legacy').
+        # FIRST: retire captures that were never facts (CLI fragments, headings,
+        # raw chat turns) and collapse the truncation ladders the old
+        # append-only writer left, so nothing below consolidates junk.
+        ("repair", lambda: md_store.repair_captures()),
         ("tidy_legacy", lambda: md_store.cleanup_legacy_compacted(refold=False)),
         ("repo", lambda: md_store.compact(group_by="repo", force=True,
-                                          model_role="learner", archive_sources=False,
+                                          model_role=md_store.memory_role(), archive_sources=False,
                                           progress=_prog("repo"), **_resumable("repo"))),
         ("topic", lambda: md_store.compact(group_by="topic", force=True,
-                                           model_role="learner", archive_sources=True,
+                                           model_role=md_store.memory_role(), archive_sources=True,
                                            progress=_prog("topic"), **_resumable("topic"))),
         ("sweep", lambda: md_store.sweep_stale_captures(archive=True)),
         ("sweep_empty", lambda: md_store.sweep_empty_briefs(archive=True)),

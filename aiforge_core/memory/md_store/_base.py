@@ -216,6 +216,11 @@ def _parse(path: Path) -> dict:
         # topic falls back to a `topic:<slug>` tag when not an explicit field.
         "repo": meta.get("repo") or "",
         "topic": meta.get("topic") or "",
+        # Fact-record fields (see _fact): what the note is ABOUT, where the
+        # claim came from, and how sure we are. Absent on pre-fact notes.
+        "subject": meta.get("subject") or "",
+        "evidence": meta.get("evidence") or "",
+        "confidence": meta.get("confidence") or "",
         "preview": body[:240],
         "body": body,
         "path": str(path),
