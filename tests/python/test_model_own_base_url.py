@@ -81,8 +81,8 @@ def test_picking_a_model_moves_the_endpoint_with_it(monkeypatch, tmp_path):
                                       "model": "qwen-a",
                                       "base_url": "http://host-a:1234/v1"})
     monkeypatch.setattr(chat_routes._acfg, "set_role", _fake_set_role)
-    monkeypatch.setattr(chat_routes, "_served_model_ids_for_role", lambda _r: [])
-    monkeypatch.setattr(chat_routes, "_model_env_override", lambda _r: None)
+    monkeypatch.setattr(chat_routes._models, "_served_model_ids_for_role", lambda _r: [])
+    monkeypatch.setattr(chat_routes._models, "_model_env_override", lambda _r: None)
 
     body = chat_routes._ChatModelBody(model="llama-b", apply_all=True)
     chat_routes.chat_model_set(body)
@@ -106,8 +106,8 @@ def test_picking_an_unregistered_model_keeps_the_current_endpoint(monkeypatch, t
     monkeypatch.setattr(chat_routes._acfg, "set_role",
                         lambda role, provider, model, **kw:
                             saved.setdefault(role, kw) or {"model": model, **kw})
-    monkeypatch.setattr(chat_routes, "_served_model_ids_for_role", lambda _r: [])
-    monkeypatch.setattr(chat_routes, "_model_env_override", lambda _r: None)
+    monkeypatch.setattr(chat_routes._models, "_served_model_ids_for_role", lambda _r: [])
+    monkeypatch.setattr(chat_routes._models, "_model_env_override", lambda _r: None)
 
     chat_routes.chat_model_set(
         chat_routes._ChatModelBody(model="env-pinned-model", apply_all=False))
@@ -196,8 +196,8 @@ def test_picking_names_the_endpoint(monkeypatch, tmp_path):
     monkeypatch.setattr(chat_routes._acfg, "set_role",
                         lambda role, provider, model, **kw:
                             saved.setdefault(role, kw) or {"model": model, **kw})
-    monkeypatch.setattr(chat_routes, "_served_model_ids_for_role", lambda _r: [])
-    monkeypatch.setattr(chat_routes, "_model_env_override", lambda _r: None)
+    monkeypatch.setattr(chat_routes._models, "_served_model_ids_for_role", lambda _r: [])
+    monkeypatch.setattr(chat_routes._models, "_model_env_override", lambda _r: None)
 
     chat_routes.chat_model_set(chat_routes._ChatModelBody(
         model="qwen-a", base_url="http://host-b:5678/v1", apply_all=False))
@@ -219,8 +219,8 @@ def test_an_explicit_endpoint_is_honoured_even_if_unregistered(monkeypatch, tmp_
     monkeypatch.setattr(chat_routes._acfg, "set_role",
                         lambda role, provider, model, **kw:
                             saved.setdefault(role, kw) or {"model": model, **kw})
-    monkeypatch.setattr(chat_routes, "_served_model_ids_for_role", lambda _r: [])
-    monkeypatch.setattr(chat_routes, "_model_env_override", lambda _r: None)
+    monkeypatch.setattr(chat_routes._models, "_served_model_ids_for_role", lambda _r: [])
+    monkeypatch.setattr(chat_routes._models, "_model_env_override", lambda _r: None)
 
     chat_routes.chat_model_set(chat_routes._ChatModelBody(
         model="unlisted", base_url="http://host-c:9999/v1", apply_all=False))

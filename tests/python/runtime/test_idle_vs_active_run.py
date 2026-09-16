@@ -60,8 +60,8 @@ def test_the_producer_leaves_a_driver_owned_run_to_the_driver():
     block, and the thing worth pinning is that the call stays guarded."""
     from pathlib import Path
     # chat_runs.py lives in aiforge_core/runtime/, so parents[1] IS aiforge_core.
-    src = Path(chat_runs.__file__).resolve().parents[1] / "api" / "routes" / "chat.py"
-    text = src.read_text(encoding="utf-8")
+    src = Path(chat_runs.__file__).resolve().parents[1] / "api" / "routes" / "_chat"
+    text = "\n".join(f.read_text(encoding="utf-8") for f in sorted(src.glob("*.py")))
     guard = text.index('if not path["driver"]:\n        run.finish()')
     assert guard > 0
 
