@@ -583,6 +583,13 @@ def acquire_global(*, max_wait_s: float = 120.0,
         _comp_cap = _compaction_hold_cap()
         if _comp_cap > 0:
             max_wait_s = max(max_wait_s, _comp_cap)
+    # PRIORITY, before any ceiling: background sends step aside while someone
+    # is being served. This must run ahead of the unthrottled fast path below,
+    # which returns immediately — and with no ceiling configured (the default)
+    # that is the only path there is.
+    yielded = _priority_gate(cat, max_wait_s)
+    if yielded:
+        max_wait_s = max(0.0, max_wait_s - yielded)
     if global_rpm() <= 0 and cat_rpm <= 0 and held_for(provider) <= 0:
         # Nothing throttles this call — but the window is also the toolbar's
         # METER, and background traffic must never go invisible. Chat keeps the
@@ -592,8 +599,8 @@ def acquire_global(*, max_wait_s: float = 120.0,
         # gateway exists to prevent.
         if cat == "compaction":
             _force_take(global_rpm(), cat)
-        return 0.0
-    waited = 0.0
+        return yielded
+    waited = yielded
     with _WAIT_LOCK:
         _waiting += 1
     try:
@@ -612,6 +619,19 @@ def acquire_global(*, max_wait_s: float = 120.0,
     finally:
         with _WAIT_LOCK:
             _waiting -= 1
+
+
+def _priority_gate(cat: str, max_wait_s: float) -> float:
+    """Interactive sends mark the endpoint busy; background sends wait while it
+    is. Returns the seconds this send waited. Never raises."""
+    try:
+        from . import interactive_gate as _gate
+        if cat == "compaction":
+            return _gate.yield_to_interactive(max_wait_s)
+        _gate.note_interactive()
+    except Exception:  # noqa: BLE001  # priority is an optimisation, not a gate
+        pass
+    return 0.0
 
 
 def govern_send(*, role: "str | None" = None, provider: "str | None" = None,
