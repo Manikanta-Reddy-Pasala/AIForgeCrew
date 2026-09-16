@@ -81,9 +81,11 @@ _DANGLING_RE = re.compile(
     # a pronoun standing IN for the subject — "this is the data architect
     # problem". A determiner ("This repo's CI runs on Tekton", "That deployment
     # uses…") names its subject in the next word and is a fine fact.
-    r"(?:this|that|it|these|those)\s+(?:is|was|are|were|has|have|had|will|"
-    r"would|should|means|does|did|can|comes|goes|needs|looks|seems|gets)\b"
-    r"|(?:he|him|his|she|her|they|them|their)\s"
+    r"(?:this|that|it|these|those|he|she|they)\s+(?:is|was|are|were|has|have|"
+    r"had|will|would|should|means|does|did|can|comes|goes|needs|looks|seems|"
+    r"gets)\b"
+    # A possessive is a determiner too — "Their tokens are stored in Redis"
+    # names tokens. "attahced his solution" is caught by its own lead word.
     r"|(?:also|and|but|so|then|attached|attahced)\s"
     r")",
     re.IGNORECASE)
