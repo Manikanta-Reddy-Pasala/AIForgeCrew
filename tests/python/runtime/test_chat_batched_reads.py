@@ -27,51 +27,80 @@ def test_all_read_calls_after_the_first_are_queued():
     msg = _reply(_call("file_read", path="a.py"), _call("file_read", path="b.py"),
                  _call("grep", pattern="TODO"))
     assert _native._synth_step(msg).endswith('{"path": "a.py"}')
-    queued = _native._queued_steps(msg)
-    assert queued == ['ACTION: file_read\nARGS_JSON: {"path": "b.py"}',
-                      'ACTION: grep\nARGS_JSON: {"pattern": "TODO"}']
+    assert _native._queued_steps(msg) == (
+        ['ACTION: file_read\nARGS_JSON: {"path": "b.py"}',
+         'ACTION: grep\nARGS_JSON: {"pattern": "TODO"}'], 0)
 
 
-def test_a_batch_with_a_write_keeps_one_call_per_turn():
-    """A write depends on what the model saw first; it must ask again."""
-    msg = _reply(_call("file_read", path="a.py"),
-                 _call("file_write", path="a.py", content="x"))
-    assert _native._queued_steps(msg) == []
-    msg = _reply(_call("file_read", path="a.py"), _call("run_command", cmd="ls"))
-    assert _native._queued_steps(msg) == []
+@pytest.mark.parametrize("other", [
+    _call("file_write", path="a.py", content="x"),
+    _call("run_command", cmd="ls"),
+    _call("gitlab_pipeline_watch", project="p", pipeline_id=1),
+])
+def test_a_batch_with_a_write_or_slow_tool_runs_one_call(other):
+    """A write depends on what the model saw first; a slow read would run far
+    past the turn deadline. The model is told the rest did not run."""
+    msg = _reply(_call("file_read", path="a.py"), other)
+    assert _native._queued_steps(msg) == ([], 1)
+    assert _native._queued_steps(_reply(other, _call("file_read", path="a.py"))) \
+        == ([], 1)
 
 
-def test_duplicates_and_broken_calls_are_dropped():
+def test_duplicates_are_dropped_and_broken_calls_counted():
     msg = _reply(_call("file_read", path="a.py"), _call("file_read", path="a.py"),
                  {"function": {"name": "grep", "arguments": "{broken"}},
                  _call("list_dir", path="."), _call("list_dir", path="."))
-    assert _native._queued_steps(msg) == ['ACTION: list_dir\nARGS_JSON: {"path": "."}']
+    assert _native._queued_steps(msg) == (
+        ['ACTION: list_dir\nARGS_JSON: {"path": "."}'], 1)
 
 
-def test_the_queue_is_capped(monkeypatch):
+def test_the_cap_counts_the_whole_reply(monkeypatch):
     msg = _reply(*[_call("file_read", path=f"{i}.py") for i in range(20)])
-    assert len(_native._queued_steps(msg)) == 8
-    monkeypatch.setenv("AIFORGE_CHAT_PARALLEL_READS", "2")
-    assert len(_native._queued_steps(msg)) == 2
-    monkeypatch.setenv("AIFORGE_CHAT_PARALLEL_READS", "0")
-    assert _native._queued_steps(msg) == []
+    steps, skipped = _native._queued_steps(msg)
+    assert (len(steps), skipped) == (7, 12)       # 1 + 7 = 8 per reply
+    monkeypatch.setenv("AIFORGE_CHAT_BATCH_READS", "2")
+    assert len(_native._queued_steps(msg)[0]) == 1
+    monkeypatch.setenv("AIFORGE_CHAT_BATCH_READS", "0")
+    assert _native._queued_steps(msg) == ([], 19)
 
 
 def test_a_single_call_queues_nothing():
-    assert _native._queued_steps(_reply(_call("file_read", path="a.py"))) == []
-    assert _native._queued_steps({"content": "done"}) == []
+    assert _native._queued_steps(_reply(_call("file_read", path="a.py"))) == ([], 0)
+    assert _native._queued_steps({"content": "done"}) == ([], 0)
 
 
-def test_native_fn_hands_over_the_batch_once(monkeypatch):
+def _native_fn(monkeypatch, *replies):
     from aiforge_core.llm import client
     _native.reset_native_cache()
     monkeypatch.setattr(_native, "_model_for", lambda role: "m-batch")
-    monkeypatch.setattr(client, "complete_raw", lambda *a, **k: _reply(
+    seq = list(replies)
+    monkeypatch.setattr(client, "complete_raw", lambda *a, **k: seq.pop(0))
+    monkeypatch.setattr(client, "complete", lambda role, convo: "TEXT")
+    return _native.make_native_complete_fn()
+
+
+def test_native_fn_hands_over_the_batch_once(monkeypatch):
+    fn = _native_fn(monkeypatch, _reply(
         _call("file_read", path="a.py"), _call("file_read", path="b.py")))
-    fn = _native.make_native_complete_fn()
     assert fn("chat", []).startswith("ACTION: file_read")
-    assert fn.take_queued() == ['ACTION: file_read\nARGS_JSON: {"path": "b.py"}']
-    assert fn.take_queued() == []
+    assert fn.take_queued() == (['ACTION: file_read\nARGS_JSON: {"path": "b.py"}'], 0)
+    assert fn.take_queued() == ([], 0)
+
+
+def test_a_new_model_call_forgets_an_untaken_batch(monkeypatch):
+    two = _reply(_call("file_read", path="a.py"), _call("file_read", path="b.py"))
+    fn = _native_fn(monkeypatch, two, {"content": "FINAL: done"})
+    fn("chat", [])
+    assert fn("chat", []) == "FINAL: done"
+    assert fn.take_queued() == ([], 0)
+
+
+def test_a_text_fallback_turn_queues_nothing(monkeypatch):
+    broken = _reply({"function": {"name": "file_read", "arguments": "{bad"}},
+                    _call("file_read", path="b.py"))
+    fn = _native_fn(monkeypatch, broken)
+    assert fn("chat", []) == "TEXT"
+    assert fn.take_queued() == ([], 0)
 
 
 @pytest.fixture
@@ -82,8 +111,8 @@ def _two_files(tmp_path):
     return tmp_path
 
 
-def _batching_fn(batch, final):
-    """A fake native model: first reply asks for every file, second answers."""
+def _batching_fn(batch, final, skipped=0):
+    """A fake native model: first reply asks for the whole batch, then answers."""
     calls = []
     queued = []
 
@@ -98,39 +127,104 @@ def _batching_fn(batch, final):
     def take_queued():
         items = list(queued)
         queued.clear()
-        return items
+        return items, skipped
 
     _fn.take_queued = take_queued
     return _fn, calls
 
 
+def _reads(*names):
+    return [f'ACTION: file_read\nARGS_JSON: {{"path": "{n}.txt"}}' for n in names]
+
+
+def _run(tmp, fn, **kw):
+    return list(ca.run_chat_agent(
+        [{"role": "user", "content": "read a, b and c"}], cwd=str(tmp),
+        complete_fn=fn, **kw))
+
+
+def _paths(evs):
+    return [e["args"]["path"] for e in evs
+            if e["type"] == "tool" and e["name"] == "file_read"]
+
+
+def _seen(calls, i):
+    return "\n".join(str(m.get("content")) for m in calls[i])
+
+
 def test_the_loop_runs_the_whole_batch_before_asking_again(_two_files):
-    steps = [f'ACTION: file_read\nARGS_JSON: {{"path": "{n}.txt"}}' for n in "abc"]
-    fn, calls = _batching_fn(steps, "FINAL: read all three")
-    evs = list(ca.run_chat_agent(
-        [{"role": "user", "content": "read a, b and c"}],
-        cwd=str(_two_files), complete_fn=fn))
-    reads = [e for e in evs if e["type"] == "tool" and e["name"] == "file_read"]
-    assert [e["args"]["path"] for e in reads] == ["a.txt", "b.txt", "c.txt"]
+    fn, calls = _batching_fn(_reads("a", "b", "c"), "FINAL: read all three")
+    evs = _run(_two_files, fn)
+    assert _paths(evs) == ["a.txt", "b.txt", "c.txt"]
     assert len(calls) == 2, "three reads cost one model call, not three"
-    seen = "\n".join(str(m.get("content")) for m in calls[1])
     for text in ("alpha", "beta", "gamma"):
-        assert text in seen
+        assert text in _seen(calls, 1)
+    assert "tool calls in your last reply" not in _seen(calls, 1)
     assert [e for e in evs if e["type"] == "message"][0]["text"] == "read all three"
+
+
+def test_the_model_is_told_about_calls_that_did_not_run(_two_files):
+    fn, calls = _batching_fn(_reads("a"), "FINAL: ok", skipped=2)
+    _run(_two_files, fn)
+    assert "NOTE: 2 of the tool calls in your last reply did not run" \
+        in _seen(calls, 1)
 
 
 def test_a_steer_drops_the_rest_of_the_batch(_two_files, monkeypatch):
     from aiforge_core.runtime import chat_interject
-    steps = [f'ACTION: file_read\nARGS_JSON: {{"path": "{n}.txt"}}' for n in "abc"]
-    fn, calls = _batching_fn(steps, "FINAL: ok")
+    fn, calls = _batching_fn(_reads("a", "b", "c"), "FINAL: ok")
     monkeypatch.setattr(chat_interject, "pending", lambda sid: True)
     monkeypatch.setattr(chat_interject, "drain_items", lambda sid: [])
-    evs = list(ca.run_chat_agent(
-        [{"role": "user", "content": "read"}], cwd=str(_two_files),
-        complete_fn=fn, session_id=987654))
-    reads = [e for e in evs if e["type"] == "tool" and e["name"] == "file_read"]
-    assert [e["args"]["path"] for e in reads] == ["a.txt"]
+    evs = _run(_two_files, fn, session_id=987654)
+    assert _paths(evs) == ["a.txt"]
     assert len(calls) == 2
+    assert "2 of the tool calls" in _seen(calls, 1)
+
+
+def test_stop_drops_the_rest_of_the_batch(_two_files, monkeypatch):
+    from aiforge_core.runtime import chat_cancel
+    fn, calls = _batching_fn(_reads("a", "b", "c"), "FINAL: ok")
+    ran = []
+    real = chat_cancel.is_cancelled
+    monkeypatch.setattr(chat_cancel, "is_cancelled",
+                        lambda sid: bool(ran) or real(sid))
+    _orig = fn.take_queued
+
+    def _take():
+        ran.append(1)
+        return _orig()
+    fn.take_queued = _take
+    evs = _run(_two_files, fn, session_id=987655)
+    assert _paths(evs) == ["a.txt"]
+    assert len(calls) == 1
+    assert any(e["type"] == "error" and "stopped" in e["text"] for e in evs)
+
+
+def test_quick_mode_keeps_a_step_for_the_answer(_two_files):
+    fn, calls = _batching_fn(_reads("a", "b", "c"), "FINAL: two were enough")
+    evs = _run(_two_files, fn, max_steps=3)
+    assert _paths(evs) == ["a.txt", "b.txt"]
+    assert [e for e in evs if e["type"] == "message"][0]["text"] == "two were enough"
+    assert "(step budget)" in _seen(calls, 1)
+
+
+def test_a_batch_stops_before_it_outgrows_the_context(_two_files, monkeypatch):
+    from aiforge_core.runtime.chat_agent import _loop
+    monkeypatch.setattr(_loop, "_ctx_budget_chars", lambda *a, **k: 20)
+    fn, calls = _batching_fn(_reads("a", "b", "c"), "FINAL: ok")
+    evs = _run(_two_files, fn)
+    assert _paths(evs) == ["a.txt"]
+    assert "(context space)" in _seen(calls, 1)
+
+
+def test_a_refused_call_drops_the_rest_of_the_batch(_two_files, monkeypatch):
+    monkeypatch.setenv("AIFORGE_TOOL_POLICY", "list_dir=deny")
+    batch = [_reads("a")[0], 'ACTION: list_dir\nARGS_JSON: {"path": "."}',
+             _reads("c")[0]]
+    fn, calls = _batching_fn(batch, "FINAL: ok")
+    evs = _run(_two_files, fn)
+    assert _paths(evs) == ["a.txt"]
+    assert "(an earlier call was refused)" in _seen(calls, 1)
 
 
 def test_only_native_runs_are_told_to_batch(tmp_path):

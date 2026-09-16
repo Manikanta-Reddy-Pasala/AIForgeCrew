@@ -179,6 +179,10 @@ def _resolve_call_args(raw):
     return None
 
 
+def _action_text(name: str, args: dict) -> str:
+    return f"ACTION: {name}\nARGS_JSON: {json.dumps(args, ensure_ascii=False)}"
+
+
 def _synth_step(msg: dict) -> str:
     """Adapt a native assistant message into the text step the loop's ``_parse``
     already understands. A ``tool_calls`` reply → a synthetic ACTION/ARGS_JSON
@@ -204,44 +208,55 @@ def _synth_step(msg: dict) -> str:
     args = _resolve_call_args(fn.get("arguments"))
     if not isinstance(args, dict):
         return _NATIVE_ARGS_UNRECOVERABLE
-    return f"ACTION: {name}\nARGS_JSON: {json.dumps(args, ensure_ascii=False)}"
+    return _action_text(name, args)
 
 
-def _queue_cap() -> int:
+def _batch_cap() -> int:
+    """Most calls one reply may run without asking the model again."""
     try:
-        return max(0, int(os.environ.get("AIFORGE_CHAT_PARALLEL_READS", "8")))
+        return max(0, int(os.environ.get("AIFORGE_CHAT_BATCH_READS", "8")))
     except (TypeError, ValueError):
         return 8
 
 
-def _queued_steps(msg: dict) -> list[str]:
-    """Steps for the 2nd..Nth tool calls of one reply, so a model that asks for
-    five file reads at once gets them without four more round trips.
+#: Read-only, but each can take many minutes: a batch of them would run far
+#: past the turn deadline before anything checks it.
+_SLOW_READS = frozenset({"gitlab_pipeline_watch", "web_crawl"})
 
-    Only when EVERY call in the reply is read-only: a write depends on what the
-    model saw before it, so a mixed batch keeps the one-call-per-turn contract
-    (the first call runs; the model asks again). Duplicate and malformed calls
-    are dropped. Each queued step still goes through every loop gate."""
+
+def _queued_steps(msg: dict) -> "tuple[list[str], int]":
+    """``(steps, skipped)`` for the 2nd..Nth tool calls of one reply, so a model
+    that asks for five lookups at once gets them without four more round trips.
+
+    Only when EVERY call is a quick read-only tool: a write depends on what the
+    model saw before it, so a mixed batch keeps one call per turn (the first
+    call runs; the model asks again). ``skipped`` counts the distinct calls that
+    will not run — the loop tells the model. Each queued step still goes
+    through every loop gate."""
     calls = msg.get("tool_calls") or []
-    cap = _queue_cap()
-    if len(calls) < 2 or not cap:
-        return []
+    if len(calls) < 2:
+        return [], 0
     from ._registry import _READONLY_TOOLS
-    parsed = []
-    for c in calls:
+    first = _synth_step(msg)
+    batchable = True
+    broken = 0
+    wanted: list[str] = []
+    for c in calls[1:]:
         fn = (c or {}).get("function") or {}
         name = fn.get("name") or ""
+        batchable = batchable and name in _READONLY_TOOLS and name not in _SLOW_READS
         args = _resolve_call_args(fn.get("arguments"))
-        if name not in _READONLY_TOOLS:
-            return []
-        if isinstance(args, dict):
-            parsed.append(f"ACTION: {name}\nARGS_JSON: {json.dumps(args, ensure_ascii=False)}")
-    first = _synth_step(msg)
-    out: list[str] = []
-    for step in parsed:
-        if step != first and step not in out:
-            out.append(step)
-    return out[:cap]
+        if not isinstance(args, dict):
+            broken += 1
+            continue
+        step = _action_text(name, args)
+        if step != first and step not in wanted:
+            wanted.append(step)
+    first_name = ((calls[0] or {}).get("function") or {}).get("name") or ""
+    if not batchable or first_name not in _READONLY_TOOLS or first_name in _SLOW_READS:
+        return [], len(wanted) + broken
+    steps = wanted[:max(0, _batch_cap() - 1)]
+    return steps, len(wanted) - len(steps) + broken
 
 
 def _native_error_is_permanent(exc, model: str) -> bool:
@@ -287,15 +302,18 @@ def make_native_complete_fn():
     from ._tools._schemas import NATIVE_TOOL_SCHEMAS
 
     queued: list[str] = []
+    skipped = [0]
 
-    def take_queued() -> list[str]:
-        """The read-only calls the last reply batched after its first one."""
-        items = list(queued)
+    def take_queued() -> "tuple[list[str], int]":
+        """The read-only calls the last reply batched after its first one, and
+        how many of its other calls will not run."""
+        items, n = list(queued), skipped[0]
         queued.clear()
-        return items
+        skipped[0] = 0
+        return items, n
 
     def _fn(role: str, convo: list[dict]) -> str:
-        queued.clear()
+        take_queued()
         # Known-incapable model (a prior turn hit a definitive tools-rejection) →
         # text protocol, transparently. This is the ONLY thing that disables
         # native, and it's per-model + self-discovered, never transient.
@@ -319,7 +337,7 @@ def make_native_complete_fn():
             # redo this turn on the hardened text path rather than emit empty args
             log.info("native args unrecoverable → text fallback for this turn")
             return client.complete(role, convo)
-        queued.extend(_queued_steps(msg))
+        queued[:], skipped[0] = _queued_steps(msg)
         return step
 
     _fn.take_queued = take_queued

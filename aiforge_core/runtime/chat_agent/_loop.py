@@ -2215,26 +2215,66 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         scope_globs=_scope_globs, asks=_asks, bundle=_bundle, meter=_meter,
         user_roots=_user_roots,
         dropped_playbooks=_dropped_playbooks, native_on=_native_on,
-        pending_steps=[])
+        pending_steps=[], batch_skipped=0, batch_mark=len(convo))
     return st
 
 
 def _queue_batched_reads(st):
     """Keep the read-only calls the model batched after its first one."""
     take = getattr(st.complete_fn, "take_queued", None)
-    if callable(take):
-        st.pending_steps.extend(take())
+    if not callable(take):
+        return
+    steps, skipped = take()
+    st.pending_steps[:] = steps
+    st.batch_skipped = skipped
+    st.batch_mark = len(st.convo)
 
 
-def _pop_queued_step(st, session_id):
-    """The next batched read, or None when there is none or the user has since
-    stopped or steered the run — then the model decides again with that input."""
-    if not st.pending_steps:
-        return None
+def _batch_stop_reason(st, n, session_id):
+    """Why the rest of a batch must wait for the model, or None."""
     from aiforge_core.runtime import chat_cancel, chat_interject
-    if session_id is not None and (chat_cancel.is_cancelled(session_id)
-                                   or chat_interject.pending(session_id)):
-        st.pending_steps.clear()
+    if session_id is not None and chat_cancel.is_cancelled(session_id):
+        return "stopped"
+    if session_id is not None and chat_interject.pending(session_id):
+        return "the user sent new instructions"
+    # Leave the model a step to answer in: a capped run (Quick mode) must not
+    # spend its whole budget on one batch.
+    if st.capped and n >= st.safety:
+        return "step budget"
+    if st.turn_deadline is not None and time.monotonic() > st.turn_deadline:
+        return "turn deadline"
+    # Condensing drops the oldest results first; a batch bigger than the tail
+    # it keeps would be summarised away before the model read it.
+    budget = _ctx_budget_chars(st.role)
+    added = sum(len(_text_of(m)) for m in st.convo[st.batch_mark:])
+    if budget and added > budget // 2:
+        return "context space"
+    return None
+
+
+def _drop_batch(st, reason):
+    """Tell the model which of its batched calls did not run, once."""
+    skipped = st.batch_skipped + len(st.pending_steps)
+    st.pending_steps.clear()
+    st.batch_skipped = 0
+    if skipped and reason != "stopped":
+        _append_directive(st, (
+            f"NOTE: {skipped} of the tool calls in your last reply did not run "
+            f"({reason}). Request again any you still need."))
+
+
+def _pop_queued_step(st, n, session_id):
+    """The next batched read, or None: none left, or the run was stopped,
+    steered, or hit a limit — then the model decides again."""
+    if not st.pending_steps:
+        if st.batch_skipped:
+            _drop_batch(st, "only read-only calls run together, up to "
+                            "AIFORGE_CHAT_BATCH_READS per reply; a reply with "
+                            "a write or a slow tool runs its first call only")
+        return None
+    reason = _batch_stop_reason(st, n, session_id)
+    if reason:
+        _drop_batch(st, reason)
         return None
     return st.pending_steps.pop(0)
 
@@ -2324,6 +2364,9 @@ def _run_action_path(st, step, n, cwd, session_id):
     if _sig == "return":
         return "return"
     if _sig == "continue":
+        # Refused or rejected: the rest of the batch waits for the model to
+        # read why.
+        _drop_batch(st, "an earlier call was refused")
         return "continue"
     _hb = yield from _pre_tool_checks(st, name, args, cwd, st.scope_globs)
     if _hb in ("continue", "return"):
@@ -2406,7 +2449,7 @@ def run_chat_agent(
         n += 1
         # A batch of reads from the last reply runs without asking the model
         # again; each still passes every gate in _dispatch_step.
-        out = _pop_queued_step(st, session_id)
+        out = _pop_queued_step(st, n, session_id)
         if out is None:
             out, _sig = yield from _step_prologue(
                 st, n, cwd, role, complete_fn, session_id, builder)
