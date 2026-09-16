@@ -112,6 +112,20 @@ def issues(text: str) -> list[str]:
     return out
 
 
+#: Reasons that are a matter of DEGREE rather than shape. They belong at the
+#: write door (where the distiller can be told to do better) but must not
+#: retroactively delete someone's existing note — a terse line that a human
+#: wrote by hand is still theirs.
+_SOFT_REASONS = frozenset({"too short"})
+
+
+def structural_issues(text: str) -> list[str]:
+    """Only the reasons that make ``text`` structurally not-a-claim: scaffolding,
+    a dangling reference, a request, a truncation. Used by the repair pass, which
+    DELETES, so it holds a higher bar than the write gate."""
+    return [r for r in issues(text) if r not in _SOFT_REASONS]
+
+
 def is_wellformed(text: str) -> tuple[bool, list[str]]:
     """``(ok, reasons)``. With the gate off every non-empty string passes."""
     reasons = issues(text)
@@ -188,4 +202,4 @@ def title_for(subject: str, claim: str) -> str:
 
 
 __all__ = ["claim_key", "derive_subject", "gate_enabled", "is_wellformed",
-           "issues", "supersedes", "title_for"]
+           "issues", "structural_issues", "supersedes", "title_for"]

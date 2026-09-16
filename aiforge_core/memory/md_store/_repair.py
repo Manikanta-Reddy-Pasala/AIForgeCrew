@@ -56,7 +56,7 @@ def _junk_reasons(d: dict) -> list[str]:
     claims = _subject.claims_of(d.get("body") or "")
     if not claims:
         return ["empty note"]
-    per_claim = [_fact.issues(c) for c in claims]
+    per_claim = [_fact.structural_issues(c) for c in claims]
     if all(reasons for reasons in per_claim):
         return sorted({r for reasons in per_claim for r in reasons})
     return []
@@ -70,7 +70,7 @@ def _dedupe_claims(path, d: dict) -> int:
     claims = _subject.claims_of(d.get("body") or "")
     kept: list[str] = []
     for c in claims:
-        if _fact.issues(c):
+        if _fact.structural_issues(c):
             continue                      # a bad bullet inside a good note
         kept, _ = _subject.merge_claim(kept, c)
     if kept == claims:
