@@ -1061,10 +1061,12 @@ def _step_cap_guard(st, n):
         if _may_extend(st, n):
             st.safety += st.cap_base
             _before_ext = len(st.convo)
+            _unread = _unread_batch_msgs(st)
             st.convo = _compact_convo(st.convo, keep_recent=8, role=st.role,
                                    complete_fn=st.complete_fn,
                                    session_id=st.session_id, force=True,
-                                   keep_min=_unread_batch_msgs(st))
+                                   keep_min=_unread)
+            _rebase_batch(st, _unread)
             if len(st.convo) < _before_ext:
                 st.read_sigs_seen.clear()   # results dropped → re-reads are valid
             _did = ("condensed the history and " if len(st.convo) < _before_ext
@@ -1096,10 +1098,12 @@ def _deadline_guard(st, n):
         if _may_extend(st, n):
             st.turn_deadline = time.monotonic() + st.turn_budget_s
             _before_ext = len(st.convo)
+            _unread = _unread_batch_msgs(st)
             st.convo = _compact_convo(st.convo, keep_recent=8, role=st.role,
                                    complete_fn=st.complete_fn,
                                    session_id=st.session_id, force=True,
-                                   keep_min=_unread_batch_msgs(st))
+                                   keep_min=_unread)
+            _rebase_batch(st, _unread)
             if len(st.convo) < _before_ext:
                 st.read_sigs_seen.clear()
             _did = ("condensed the history and " if len(st.convo) < _before_ext
@@ -1176,8 +1180,10 @@ def _condense_and_report(st, role, complete_fn, session_id, _meter):
     # can't overflow the model's context window (MUST). Tell the user it
     # happened (one-time per condense) for transparency.
     _before = len(st.convo)
+    _unread = _unread_batch_msgs(st)
     st.convo = _compact_convo(st.convo, role=role, complete_fn=complete_fn,
-                           session_id=session_id, keep_min=_unread_batch_msgs(st))
+                           session_id=session_id, keep_min=_unread)
+    _rebase_batch(st, _unread)
     if len(st.convo) < _before:
         # The dropped turns took their tool RESULTS with them, so a read
         # whose output is no longer in the window is no longer a duplicate.
@@ -2241,6 +2247,13 @@ def _unread_batch_msgs(st):
     return len(st.convo) - st.batch_mark if st.batch_unread else 0
 
 
+def _rebase_batch(st, unread):
+    """Point batch_mark at the same results after a condense shortened the
+    history (a condense keeps them, or gives up on them if they don't fit)."""
+    if st.batch_unread:
+        st.batch_mark = max(1, len(st.convo) - unread)
+
+
 def _batch_stop_reason(st, n, session_id):
     """Why the rest of a batch must wait for the model, or None."""
     from aiforge_core.runtime import chat_cancel, chat_interject
@@ -2263,15 +2276,24 @@ def _batch_stop_reason(st, n, session_id):
     return None
 
 
+_NOT_BATCHABLE = ("only quick read-only calls run together (at most "
+                  "AIFORGE_CHAT_BATCH_READS per reply), and a call with "
+                  "unreadable arguments never runs")
+
+
 def _drop_batch(st, reason):
-    """Tell the model which of its batched calls did not run, once."""
-    skipped = st.batch_skipped + len(st.pending_steps)
+    """Tell the model which of its batched calls did not run, and why, once."""
+    parts = []
+    if st.pending_steps:
+        parts.append(f"{len(st.pending_steps)} because {reason}")
+    if st.batch_skipped:
+        parts.append(f"{st.batch_skipped} because {_NOT_BATCHABLE}")
     st.pending_steps.clear()
     st.batch_skipped = 0
-    if skipped and reason != "stopped":
+    if parts and reason != "stopped":
         _append_directive(st, (
-            f"NOTE: {skipped} of the tool calls in your last reply did not run: "
-            f"{reason}. Request any you still need in your next reply."))
+            "NOTE: some tool calls in your last reply did not run: "
+            + "; ".join(parts) + ". Request any you still need in your next reply."))
 
 
 def _pop_queued_step(st, n, session_id):
@@ -2279,9 +2301,7 @@ def _pop_queued_step(st, n, session_id):
     steered, or hit a limit — then the model decides again."""
     if not st.pending_steps:
         if st.batch_skipped:
-            _drop_batch(st, "only quick read-only calls run together (at most "
-                            "AIFORGE_CHAT_BATCH_READS per reply), and a call "
-                            "with unreadable arguments never runs")
+            _drop_batch(st, _NOT_BATCHABLE)
         return None
     reason = _batch_stop_reason(st, n, session_id)
     if reason:
@@ -2340,6 +2360,7 @@ def _step_prologue(st, n, _cwd, role, complete_fn, session_id, builder):
     yield from _drain_steering(st, session_id)
     yield from _condense_and_report(st, role, complete_fn, session_id, st.meter)
     out = yield from _run_completion(st, role, complete_fn, session_id, st.meter)
+    st.batch_unread = False        # the model has now read the last batch
     if out is _RETRY_STOP:
         return None, "return"
     _sig = yield from _stuck_output_guard(st, out)

@@ -173,8 +173,8 @@ def test_the_loop_runs_the_whole_batch_before_asking_again(_two_files):
 def test_the_model_is_told_about_calls_that_did_not_run(_two_files):
     fn, calls = _batching_fn(_reads("a"), "FINAL: ok", skipped=2)
     _run(_two_files, fn)
-    assert "NOTE: 2 of the tool calls in your last reply did not run" \
-        in _seen(calls, 1)
+    assert "some tool calls in your last reply did not run: 2 because only " \
+        "quick read-only calls run together" in _seen(calls, 1)
 
 
 def test_a_steer_drops_the_rest_of_the_batch(_two_files, monkeypatch):
@@ -185,7 +185,7 @@ def test_a_steer_drops_the_rest_of_the_batch(_two_files, monkeypatch):
     evs = _run(_two_files, fn, session_id=987654)
     assert _paths(evs) == ["a.txt"]
     assert len(calls) == 2
-    assert "2 of the tool calls" in _seen(calls, 1)
+    assert "2 because the user sent new instructions" in _seen(calls, 1)
 
 
 def test_stop_drops_the_rest_of_the_batch(_two_files, monkeypatch):
@@ -272,14 +272,48 @@ def test_the_deadline_stops_a_batch():
 
 def test_a_condense_keeps_results_the_model_has_not_read(monkeypatch):
     from aiforge_core.runtime.chat_agent._context import _compaction
+    monkeypatch.setattr(_compaction, "_ctx_budget_chars", lambda *a, **k: 10000)
+    convo = [{"role": "system", "content": "sys"}] + [
+        {"role": "user" if i % 2 else "assistant", "content": f"{i:02} " + "x" * 300}
+        for i in range(60)]
+    kept = _compaction._compact_convo(convo, role="chat", keep_min=25)
+    assert kept[-25:] == convo[-25:]
+    assert len(kept) == 26
+    assert len(_compaction._compact_convo(convo, role="chat")) < 26
+
+
+def test_unread_results_too_big_for_the_window_are_not_forced_in(monkeypatch):
+    """Keeping them would only make the model call fail."""
+    from aiforge_core.runtime.chat_agent._context import _compaction
     monkeypatch.setattr(_compaction, "_ctx_budget_chars", lambda *a, **k: 1000)
     convo = [{"role": "system", "content": "sys"}] + [
-        {"role": "user" if i % 2 else "assistant", "content": f"{i} " + "x" * 300}
+        {"role": "user" if i % 2 else "assistant", "content": "x" * 300}
         for i in range(30)]
-    kept = _compaction._compact_convo(convo, role="chat", keep_min=12)
-    assert kept[-12:] == convo[-12:]
-    assert len(kept) == 13
-    assert len(_compaction._compact_convo(convo, role="chat")) < 13
+    assert len(_compaction._compact_convo(convo, role="chat", keep_min=12)) < 13
+
+
+def test_the_note_names_each_reason():
+    from types import SimpleNamespace
+
+    from aiforge_core.runtime.chat_agent import _loop
+    st = SimpleNamespace(pending_steps=["a", "b"], batch_skipped=3,
+                         convo=[{"role": "user", "content": "OBSERVATION: x"}])
+    _loop._drop_batch(st, "an earlier call was blocked")
+    note = st.convo[-1]["content"]
+    assert "2 because an earlier call was blocked" in note
+    assert "3 because only quick read-only calls" in note
+    assert st.pending_steps == [] and st.batch_skipped == 0
+    _loop._drop_batch(st, "an earlier call was blocked")
+    assert st.convo[-1]["content"] == note          # nothing new to report
+
+
+def test_the_mark_follows_the_results_through_a_condense():
+    from types import SimpleNamespace
+
+    from aiforge_core.runtime.chat_agent import _loop
+    st = SimpleNamespace(batch_unread=True, batch_mark=40, convo=[{}] * 10)
+    _loop._rebase_batch(st, 6)
+    assert st.batch_mark == 4 and _loop._unread_batch_msgs(st) == 6
 
 
 def test_only_native_runs_are_told_to_batch(tmp_path, monkeypatch):

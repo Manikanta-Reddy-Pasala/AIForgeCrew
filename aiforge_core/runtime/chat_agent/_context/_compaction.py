@@ -283,6 +283,10 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
     # CHARS), floor 4 — so condense lands ~50% of budget even when recent turns
     # are large (a fixed count kept N huge tool-outputs verbatim and barely freed
     # the window). ``keep_recent`` is the ceiling.
+    # Unread results are kept only while they fit: past the budget, keeping
+    # them would just fail the model call.
+    if keep_min and sum(len(_text_of(m)) for m in convo[-keep_min:]) > budget:
+        keep_min = 0
     keep_recent = max(_recent_tail_count(convo, budget, ceiling=keep_recent),
                       keep_min)
     if len(convo) <= keep_recent + 2:
