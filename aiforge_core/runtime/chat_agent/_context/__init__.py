@@ -43,6 +43,7 @@ from ._compaction import (
     _condense_timeout_s,
     _llm_summarize_middle,
     _compact_convo,
+    _tail_budget_chars,
 )
 from ._window import (
     _resolved_window,

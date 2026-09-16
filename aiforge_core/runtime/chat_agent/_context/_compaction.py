@@ -112,6 +112,26 @@ def _llm_summarize_middle(middle: list[dict], complete_fn, session_id=None) -> s
     return box.get("out", "")
 
 
+def _tail_fraction(frac: float = 0.5) -> float:
+    """Share of the history budget a condense keeps verbatim."""
+    try:
+        frac = float(os.environ.get("AIFORGE_CONDENSE_TAIL_FRACTION", frac))
+    except (TypeError, ValueError):
+        pass
+    return min(0.9, max(0.1, frac))
+
+
+def _system_chars(convo: list[dict]) -> int:
+    return (len(_text_of(convo[0]))
+            if convo and convo[0].get("role") == "system" else 0)
+
+
+def _tail_budget_chars(convo: list[dict], role: str | None = None) -> int:
+    """Characters of recent history a condense keeps verbatim (0 = no limit)."""
+    budget = _ctx_budget_chars(role, sys_chars=_system_chars(convo))
+    return int(budget * _tail_fraction()) if budget > 0 else 0
+
+
 def _recent_tail_count(convo: list[dict], budget: int, *,
                        ceiling: int = 18, floor: int = 4,
                        frac: float = 0.5) -> int:
@@ -124,12 +144,7 @@ def _recent_tail_count(convo: list[dict], budget: int, *,
     big. Env ``AIFORGE_CONDENSE_TAIL_FRACTION`` overrides ``frac``."""
     if budget <= 0:
         return floor
-    try:
-        frac = float(os.environ.get("AIFORGE_CONDENSE_TAIL_FRACTION", frac))
-    except (TypeError, ValueError):
-        pass
-    frac = min(0.9, max(0.1, frac))
-    cap = int(budget * frac)
+    cap = int(budget * _tail_fraction(frac))
     kept = total = 0
     for m in reversed(convo[1:]):          # newest → oldest, skip system
         ln = len(_text_of(m))
@@ -245,7 +260,8 @@ def _stripped_system(convo: list[dict]) -> str:
 
 
 def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None = None,
-                   complete_fn=None, session_id=None, force: bool = False) -> list[dict]:
+                   complete_fn=None, session_id=None, force: bool = False,
+                   keep_min: int = 0) -> list[dict]:
     """Auto-condense a long chat history so the context can't overflow.
 
     Keeps the system message + the last ``keep_recent`` turns verbatim and
@@ -254,21 +270,25 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
     it's cheap and runs every turn. ``force=True`` condenses regardless of the
     budget (the caller wants a fresh window, not just a safe one). The agent can
     re-read files / ask the user if it needs detail from before the condense
-    point."""
+    point. ``keep_min`` trailing messages are always kept: tool results the
+    model has not read yet must not be summarised away."""
     # M1: reserve the ACTUAL system-prompt size (convo[0]) rather than the fixed
     # 14K estimate, and DON'T re-count it in the over-budget sum below (it's
     # reserved, not history) — the old code both subtracted a constant AND
     # summed the real system chars = a double-count.
-    sys_chars = (len(_text_of(convo[0]))
-                 if convo and convo[0].get("role") == "system" else 0)
-    budget = _ctx_budget_chars(role, sys_chars=sys_chars)
+    budget = _ctx_budget_chars(role, sys_chars=_system_chars(convo))
     if budget <= 0:
         return convo
     # Size-aware tail: keep the newest messages up to ~half the budget (by
     # CHARS), floor 4 — so condense lands ~50% of budget even when recent turns
     # are large (a fixed count kept N huge tool-outputs verbatim and barely freed
     # the window). ``keep_recent`` is the ceiling.
-    keep_recent = _recent_tail_count(convo, budget, ceiling=keep_recent)
+    # Unread results are kept only while they fit: past the budget, keeping
+    # them would just fail the model call.
+    if keep_min and sum(len(_text_of(m)) for m in convo[-keep_min:]) > budget:
+        keep_min = 0
+    keep_recent = max(_recent_tail_count(convo, budget, ceiling=keep_recent),
+                      keep_min)
     if len(convo) <= keep_recent + 2:
         return convo
     # ``force`` condenses even when the history still FITS — used when the loop
