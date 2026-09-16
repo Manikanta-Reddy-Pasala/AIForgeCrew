@@ -24,7 +24,7 @@ OpenAI-compatible endpoint works, no native tool-calling needed. One command:
 
 ### 2a. Chat, simple mode
 
-1. The server (`api/routes/chat.py`) routes the message to the chat agent
+1. The server (`api/routes/_chat/`: `_message` then `_routing`) routes the message to the chat agent
    (`runtime/chat_agent/`, a package: `_loop` · `_registry` · `_prompt` ·
    `_tools/` · `_shell` · `_context`).
 2. Context is assembled in a fixed order (`runtime/context_bundle.py`):
@@ -47,7 +47,7 @@ OpenAI-compatible endpoint works, no native tool-calling needed. One command:
    never escalates.
 
 Answers **stream** to the UI as SSE, in simple and team mode alike
-(`api/routes/chat.py`, `api/routes/_sse.py`).
+(`api/routes/chat.py` and `api/routes/_chat/`, `api/routes/_sse.py`).
 
 ### 2b. Pipeline (team mode / tickets)
 

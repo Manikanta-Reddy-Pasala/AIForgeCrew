@@ -26,7 +26,7 @@ def test_chat_models_unions_registry_with_served(monkeypatch, tmp_path):
     api = _api(monkeypatch, tmp_path)
 
     # Registry has 3 configured models incl. an embedding; only one is loaded.
-    monkeypatch.setattr(api._r_chat, "_served_model_ids_for_role",
+    monkeypatch.setattr(api._r_chat._models, "_served_model_ids_for_role",
                         lambda role: {"qwen/qwen3-coder-next"})
     monkeypatch.setattr(api._acfg, "get",
                         lambda role: {"provider": "local",
@@ -57,7 +57,7 @@ def test_chat_models_unions_registry_with_served(monkeypatch, tmp_path):
 
 def test_chat_models_served_not_in_registry_still_listed(monkeypatch, tmp_path):
     api = _api(monkeypatch, tmp_path)
-    monkeypatch.setattr(api._r_chat, "_served_model_ids_for_role",
+    monkeypatch.setattr(api._r_chat._models, "_served_model_ids_for_role",
                         lambda role: {"mystery/loaded-model"})
     monkeypatch.setattr(api._acfg, "get", lambda role: {"provider": "local"})
     monkeypatch.setattr(api._acfg, "archetypes", lambda: ["chat"])

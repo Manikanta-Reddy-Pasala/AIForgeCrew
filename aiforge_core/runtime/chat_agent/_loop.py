@@ -2172,9 +2172,9 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     # read before.
     _reads_new = 0
     # Request meter: READ ONLY here. The turn boundary belongs to the route
-    # (chat.py `_produce`), which owns the whole turn — including the enhancer
-    # and classifier calls that happen before this loop, and team mode, which
-    # never enters this function at all.
+    # (`_produce` in `api/routes/_chat/_producer.py`), which owns the whole
+    # turn — including the enhancer and classifier calls that happen before
+    # this loop, and team mode, which never enters this function at all.
     try:
         from aiforge_core.llm import call_meter as _meter
     except Exception:  # noqa: BLE001 — metering must never break a turn

@@ -820,9 +820,9 @@ def test_a_crash_in_the_verifier_never_breaks_the_turn(integration):
 def postrun(monkeypatch):
     import aiforge_core.runtime.parallel_subtasks as ps
     state: dict = {"wrote": True, "worth": True, "changes": [{"type": "changes"}]}
-    monkeypatch.setattr(C, "_turn_wrote_source", lambda cwd: state["wrote"])
-    monkeypatch.setattr(C, "_worth_verifying", lambda cwd: state["worth"])
-    monkeypatch.setattr(C, "_integration_verify_events",
+    monkeypatch.setattr(C._stages, "_turn_wrote_source", lambda cwd: state["wrote"])
+    monkeypatch.setattr(C._stages, "_worth_verifying", lambda cwd: state["worth"])
+    monkeypatch.setattr(C._stages, "_integration_verify_events",
                         lambda cwd: iter([{"type": "verify"}]))
     monkeypatch.setattr(ps, "_emit_changes",
                         lambda cwd, sha, include_worktree=False:
