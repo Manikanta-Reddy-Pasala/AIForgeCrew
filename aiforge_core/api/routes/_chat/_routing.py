@@ -332,7 +332,6 @@ def _rule_capture_pass(prompt, cwd, session_id, _pctx):
         # preference/directive cue. Ordinary turns ("hi", "fix the bug")
         # skip the classifier entirely — no per-turn LLM cost.
         if _rc.should_classify(prompt):
-
             _res = _run_capture_pass(_rc, prompt, _repo, cwd, session_id)
             if _res is not None:
                 _cls, _stored, _intent = _res

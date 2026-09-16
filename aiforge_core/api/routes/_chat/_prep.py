@@ -157,6 +157,7 @@ def _gen_title(prompt, session_id):
     except Exception:  # noqa: BLE001 — titling must never break a run
         pass
 
+
 def _auto_checkpoint(pc):
     from aiforge_core.runtime import chat_store
     # Snapshot the working dir at turn start so the user can roll back
@@ -179,6 +180,7 @@ def _auto_checkpoint(pc):
             chat_store.set_message_checkpoint(pc._user_msg_id, _snap["sha"])
     except Exception:  # noqa: BLE001
         pass
+
 
 def _with_resume(pc, text):
     """Attach the resume brief to a PLANNER-facing prompt/spec.

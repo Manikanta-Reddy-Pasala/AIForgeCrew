@@ -174,7 +174,6 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     _path = {"parallel": False, "driver": False}
 
 
-
     # The PRODUCER runs on a background daemon thread and publishes every event
     # into the per-session run registry (chat_runs). It NO LONGER yields to the
     # HTTP response, so a client that navigates away (aborting the fetch) can't

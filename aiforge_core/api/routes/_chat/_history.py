@@ -1,5 +1,4 @@
-"""Turn history shaping, learning write-back, session summaries, and
-turn-level logging."""
+"""Turn history shaping, learning write-back, and session summaries."""
 from __future__ import annotations
 
 import os

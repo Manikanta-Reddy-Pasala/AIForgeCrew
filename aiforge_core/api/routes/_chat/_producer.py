@@ -1,5 +1,6 @@
 """The per-turn producer: builds the event stream and runs it in the
-background."""
+background, with its turn-setup helpers (logger, request meter,
+stale-notes notice)."""
 from __future__ import annotations
 
 import json
@@ -94,6 +95,7 @@ def _note_staleness_notice(cwd):
                                 + "; ".join(_cres["changes"]))}
     except Exception as _nexc2:  # noqa: BLE001 — must never break a turn
         _af_log.debug("note staleness pass skipped: %s", _nexc2)
+
 
 def _events(pc):
     pctx0 = {"done": False}
@@ -201,6 +203,7 @@ def _events(pc):
         return
     yield from _post_run_events(pc.prompt, pc.cwd, pc.agent_mode, _simple_sha)
 
+
 def _produce(pc):
     from aiforge_core.runtime import chat_approve as _chat_approve
     from aiforge_core.runtime import parallel_subtasks as _psub
@@ -279,6 +282,7 @@ def _produce(pc):
             pc.team, pc._path, pc._turn_mode, pc._turn_t0,
             _TurnResetContext(_meter, _meter_token, _reqctx, _sess_token, _repo_token),
             pc.run, _awake_release)
+
 
 def _stream(pc):
     from aiforge_core.runtime import chat_runs
