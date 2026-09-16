@@ -1210,7 +1210,7 @@ def test_the_tools_are_reachable_by_the_agent():
                                                            _READONLY_TOOLS)
     from aiforge_core.runtime.tools.tool_policy import _READONLY_ALWAYS_ALLOW
     from aiforge_core.runtime.chat_agent._tools._schemas import CATALOG
-    from aiforge_core.runtime.chat_agent import _prompt
+    from aiforge_core.runtime.chat_agent import _prompt_text as _prompt
     for name in ("gitlab_pipelines", "gitlab_pipeline", "gitlab_pipeline_watch"):
         assert name in TOOLS, f"{name} is not dispatchable"
         assert name in CATALOG, f"{name} has no schema for the model to read"
