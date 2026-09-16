@@ -110,7 +110,7 @@ Settings (GitLab, Jira, the model key) land here too.
 | `security/netrc` | pip, uv |
 | `security/npmrc` | npm |
 | `security/gitconfig`, `security/ssh/` | git (identity, SSH keys) |
-| `security/ca/custom-ca.pem` | the internal CA — installed into the box's trust store |
+| `security/ca/` | your internal CA — any `.pem`/`.crt`/`.cer`/`.cert`/`.der`; merged and installed into the box's trust store (`custom-ca.pem` is what Settings writes) |
 
 ### Environment
 
@@ -189,8 +189,49 @@ wheel baked in (`installer/BUILDING.md`, `build-portable.sh --offline`).
 
 ### Behind a corporate CA or proxy
 
-Paste the root **and its intermediates** into Settings → *Local certificate
-authority*, or set `AIFORGE_CA_BUNDLE` before the first run. `run.sh` publishes
+**On a first run, use the folder.** Settings needs a running app, and the
+install that fails is the one that gets you there — so the pre-UI answer is to
+drop the file in and re-run:
+
+```bash
+mkdir -p ~/.aiforge/security/ca
+cp whatever-your-pki-gave-you.crt ~/.aiforge/security/ca/
+./run.sh
+```
+
+* **The filename is irrelevant.** The extension is not: `.pem`, `.crt`, `.cer`,
+  `.cert`, `.der` are read, anything else is ignored.
+* **A `.cer` is usually DER** — binary. It is converted; concatenating one into
+  a bundle raw makes openssl read the whole file as empty, which looks exactly
+  like having installed nothing.
+* **Several files are merged** into one chain, because an estate issues a root
+  *and* intermediates and a client needs both.
+* **Copy the root, not the leaf.** `artifactory.internal`'s own certificate is
+  the leaf; you need what signed it. If your server does not serve the root,
+  get it from IT or your OS trust store — `openssl s_client -showcerts` only
+  shows what the server chooses to send.
+* A file that is not a readable certificate is **named in a warning** and left
+  out of the bundle.
+
+`.key` is deliberately not accepted: a private key has no place in a trust
+store.
+
+**When the install still fails, read which failure it is.** `pip` reports any
+unreadable index as `No matching distribution found for uv==0.12.11`, which
+sends you hunting a version that was never the problem. `run.sh` now probes the
+index host and says which of the three it actually is:
+
+```
+==> CA:  <host> presents a certificate this machine does not trust   → cert
+==> NET: cannot reach <host>                                         → proxy/DNS
+==> TLS to <host> verifies — the failure is NOT the CA               → ~/.netrc
+```
+
+The third one matters most: it rules the certificate out entirely, and the
+remaining causes are credentials or a mirror that does not carry the package.
+
+Alternatively paste the root **and its intermediates** into Settings → *Local
+certificate authority*, or set `AIFORGE_CA_BUNDLE` before the first run. `run.sh` publishes
 it to `git`, `curl`, `npm`, `uv` and every subprocess before the first install,
 **merged with the platform's own root bundle** — `SSL_CERT_FILE` *replaces* the
 trust store rather than adding to it, so a corporate-root-only file fixes the
