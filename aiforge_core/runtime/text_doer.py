@@ -37,6 +37,8 @@ import os
 from collections.abc import Callable
 from typing import Any
 
+from aiforge_core.runtime.tools.mutating import FILE_WRITE_TOOLS
+
 # Doer tool name → quality-signal state key. This MIRRORS
 # ``quality_gate._TOOL_SIGNAL_KEYS`` exactly (run_tests→tests_ok,
 # typecheck→typecheck_ok, format→lint_ok); we replicate the native
@@ -459,12 +461,12 @@ except Exception:  # noqa: BLE001 — fall back to the documented mapping
 
 # Tools that actually MUTATE files — used by the no-edit guard to tell a real
 # implementation pass from a hallucinated "already done" one (which only reads
-# + compiles). Canonical names + the aliases chat_agent may surface.
-# NOTE: run_command/bash/run_shell are shells, NOT edits — deliberately absent.
-_EDIT_TOOLS = frozenset({
-    "file_write", "file_patch", "multi_edit", "str_replace", "editor",
-    "rename_symbol", "write", "patch", "edit",
-})
+# + compiles). The shared list, MINUS ``format``: a formatter pass rewrites
+# files without implementing anything, so on its own it must still trip the
+# guard. (The private copy also lacked file_create/create_file, so a Doer that
+# only CREATED files was told it had made zero edits.)
+# Shells (run_command/bash) are not edits — they are not in the list at all.
+_EDIT_TOOLS = FILE_WRITE_TOOLS - {"format"}
 
 # Appended to the seed on a corrective retry when the Doer finished with zero
 # edits. Confronts the specific failure: assuming the change already exists.

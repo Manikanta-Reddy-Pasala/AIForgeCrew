@@ -26,34 +26,25 @@ import re
 
 from aiforge_core.runtime import chat_approve, chat_cancel
 from aiforge_core.runtime.tools import tool_policy
+from aiforge_core.runtime.tools.mutating import (
+    EDITOR_READONLY_CMDS,
+    FILE_WRITE_TOOLS,
+    writes_files,
+)
 
 log = logging.getLogger("aiforge.tool_gate")
 
-# Canonical mutating tools AND the ADK Doer's edit aliases (doer_tools.py):
-# write→file_write, patch/edit/str_replace→file_patch. The gate sees the alias
-# NAME the model called, so the aliases must be listed here too or review-mode
-# edits made via an alias would skip the human Approve/Reject gate.
-_MUTATING = {"editor", "file_write", "file_patch", "file_create",
-             "write", "patch", "edit", "str_replace"}
-
-# The Anthropic ``editor`` tool multiplexes read + write sub-commands on one
-# tool NAME (view/create/str_replace/insert/undo_edit). Only the WRITE
-# sub-commands mutate — ``view`` (and any read/list) must NOT trip the
-# review-edits gate.
-_EDITOR_READONLY_CMDS = {"view", "read", "list", "ls", "cat", "open"}
+# The gate sees the NAME the model called, so every alias has to count — the
+# shared list in tools.mutating is the only one. A private copy here missed
+# multi_edit, rename_symbol and format, which the Doer is handed, and those
+# changed files with review-edits armed.
+_MUTATING = FILE_WRITE_TOOLS
+_EDITOR_READONLY_CMDS = EDITOR_READONLY_CMDS
 
 
 def _is_mutating(name: str, args: dict | None) -> bool:
-    """True when a tool call actually writes. For ``editor`` this depends on its
-    ``command`` sub-command (view → read-only); every other mutating tool name
-    always mutates."""
-    if name not in _MUTATING:
-        return False
-    if name == "editor":
-        cmd = str((args or {}).get("command")
-                  or (args or {}).get("sub_command") or "").strip().lower()
-        return cmd not in _EDITOR_READONLY_CMDS
-    return True
+    """True when a tool call actually writes (``editor view`` does not)."""
+    return writes_files(name, args)
 
 
 def _rich_preview(tool_name: str, args: dict) -> str:

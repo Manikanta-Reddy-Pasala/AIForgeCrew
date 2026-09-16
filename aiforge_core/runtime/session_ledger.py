@@ -14,6 +14,11 @@ from __future__ import annotations
 
 import os
 
+from aiforge_core.runtime.tools.mutating import (
+    FILE_WRITE_TOOLS,
+    PATCH_STYLE_TOOLS,
+)
+
 def _outcome_mark(ok):
     """✅/❌/• for a True/False/other outcome."""
     if ok is True:
@@ -25,9 +30,12 @@ def _outcome_mark(ok):
 
 # Tools whose args carry a shell command.
 _CMD_TOOLS = {"run_command", "bash", "run_shell", "shell", "serve"}
-# File-mutating tools → key by path.
-_WRITE_TOOLS = {"file_write", "file_create", "editor"}
-_PATCH_TOOLS = {"file_patch"}
+# File-mutating tools → key by path, labelled "wrote" or "patched". Derived
+# from the shared list: the private copy knew four names, so a str_replace,
+# write or rename_symbol never reached the ledger and a resumed session could
+# redo it.
+_PATCH_TOOLS = PATCH_STYLE_TOOLS
+_WRITE_TOOLS = FILE_WRITE_TOOLS - PATCH_STYLE_TOOLS
 # External writes worth remembering by a stable identity.
 _EXTERNAL = {
     "confluence_create": ("confluence page", ("title",)),
