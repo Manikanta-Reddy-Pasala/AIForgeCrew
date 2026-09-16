@@ -449,21 +449,24 @@ def test_a_topic_suggestion_is_captured(monkeypatch, prompt):
     from aiforge_core.memory import md_store
     seen: dict = {}
     monkeypatch.setattr(md_store, "capture",
-                        lambda kind, text, repo=None, source=None:
-                        seen.update(kind=kind, repo=repo, source=source))
+                        lambda kind, text, **kw: seen.update(kind=kind, **kw))
     ch._capture_chat_cue(prompt, "app", 7, pref_captured=False)
     assert seen["kind"] == "topic_suggestion"
     assert seen["source"] == "chat:7"
+    assert "7" in seen["evidence"]          # a fact records where it came from
 
 
-def test_a_plain_preference_cue_is_captured_as_a_comment(monkeypatch):
+def test_a_plain_preference_cue_is_no_longer_stored_verbatim(monkeypatch):
+    """A preference cue used to store the RAW prompt as a user_comment.
+
+    That is what filled the store with chat turns ("can you do chnages",
+    "attahced his solution"). preference_capture and chat_learner both run on
+    every turn and DISTIL it, so the verbatim copy only ever added noise.
+    """
     from aiforge_core.memory import md_store
-    seen: dict = {}
     monkeypatch.setattr(md_store, "capture",
-                        lambda kind, text, repo=None, source=None:
-                        seen.update(kind=kind))
+                        lambda *a, **k: pytest.fail("stored the raw prompt"))
     ch._capture_chat_cue("always squash merges", "app", 7, pref_captured=False)
-    assert seen["kind"] == "user_comment"
 
 
 def test_a_turn_already_owned_by_the_preference_capture_is_not_duplicated(monkeypatch):

@@ -34,7 +34,6 @@ def _retire(path, dst, archive: bool) -> bool:
             shutil.move(str(path), str(dst / path.name))
         else:
             delete_file(path.name)
-            return True
     except Exception as exc:  # noqa: BLE001 — repair is best-effort upkeep
         _log.debug("repair: could not retire %s: %s", path.name, exc)
         return False
@@ -62,21 +61,35 @@ def _junk_reasons(d: dict) -> list[str]:
     return []
 
 
-def _dedupe_claims(path, d: dict) -> int:
-    """Re-fold a note's own claims through the merge rules. Returns how many
-    claims were dropped (a truncation ladder collapses to its fullest member)."""
+def _dedupe_claims(path, d: dict) -> tuple[int, list]:
+    """Re-fold a note's own claims through the merge rules.
+
+    Returns ``(dropped, detail)``. Dropping a bullet INSIDE a surviving note is
+    not covered by the archive — the file stays, the line is gone — so every
+    drop is reported and logged rather than vanishing silently.
+    """
     from ._ingest import rewrite_body
 
     claims = _subject.claims_of(d.get("body") or "")
     kept: list[str] = []
+    detail: list[dict] = []
     for c in claims:
-        if _fact.structural_issues(c):
+        why = _fact.structural_issues(c)
+        if why:
+            detail.append({"file": path.name, "claim": c[:120],
+                           "why": "; ".join(why)})
             continue                      # a bad bullet inside a good note
-        kept, _ = _subject.merge_claim(kept, c)
+        before = len(kept)
+        kept, action = _subject.merge_claim(kept, c)
+        if len(kept) <= before and action != "added":
+            detail.append({"file": path.name, "claim": c[:120], "why": action})
     if kept == claims:
-        return 0
+        return 0, []
+    for row in detail:
+        _log.info("repair: dropped claim from %s (%s): %r",
+                  row["file"], row["why"], row["claim"])
     rewrite_body(path, _subject.render_claims(kept))
-    return len(claims) - len(kept)
+    return len(claims) - len(kept), detail
 
 
 def repair_captures(*, archive: bool = True, dry_run: bool = False,
@@ -88,6 +101,7 @@ def repair_captures(*, archive: bool = True, dry_run: bool = False,
     while ``archive`` is True.
     """
     retired: list[dict] = []
+    dropped_claims: list[dict] = []
     collapsed = 0
     scanned = 0
     dst = _archive_dir()
@@ -108,7 +122,9 @@ def repair_captures(*, archive: bool = True, dry_run: bool = False,
                                         "title": d.get("title") or ""})
                     continue
                 if not dry_run:
-                    collapsed += _dedupe_claims(path, d)
+                    n, detail = _dedupe_claims(path, d)
+                    collapsed += n
+                    dropped_claims.extend(detail)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc), "scanned": scanned,
                 "retired": len(retired), "collapsed": collapsed}
@@ -118,7 +134,8 @@ def repair_captures(*, archive: bool = True, dry_run: bool = False,
                   " [dry-run]" if dry_run else "")
     return {"ok": True, "scanned": scanned, "retired": len(retired),
             "collapsed": collapsed, "archived": archive and not dry_run,
-            "dry_run": dry_run, "files": retired[:200]}
+            "dry_run": dry_run, "files": retired[:200],
+            "dropped_claims": dropped_claims[:200]}
 
 
 __all__ = ["repair_captures"]

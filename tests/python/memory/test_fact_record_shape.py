@@ -91,10 +91,12 @@ def test_title_is_the_subject_not_the_first_70_chars():
 # ── the truncation ladder ────────────────────────────────────────────────────
 def test_a_fuller_claim_supersedes_the_fragment_it_grew_from():
     from aiforge_core.memory.md_store import _fact, _subject
+    # Each rung is VISIBLY cut off (unclosed bracket) — that is what makes it a
+    # fragment rather than a shorter, complete fact.
     ladder = [
-        "clear lockout takes a cphash",
-        "clear lockout takes a cphash value",
-        "clear lockout takes a cphash value from setup parameters",
+        "[ c | clear l",
+        "[ c | clear lockout] [ s | setup",
+        "[ c | clear lockout] [ s | setup parameters] [ h | help",
     ]
     claims: list[str] = []
     for rung in ladder:
@@ -153,8 +155,8 @@ def test_repair_retires_non_fact_notes_and_collapses_ladders(cfg):
     from aiforge_core.memory.md_store import _subject
     # written the OLD way — straight through write(), no gate
     m.write("Final", "Final", kind="topic_learning", repo="svc")
-    m.write("clear lockout", "- clear lockout takes a cphash\n"
-                             "- clear lockout takes a cphash value from setup",
+    m.write("clear lockout", "- clear lockout takes a cphash and\n"
+                             "- clear lockout takes a cphash and a setup value",
             kind="learning", repo="svc")
     m.write("MongoDbService", "MongoDbService is the mandatory MongoDB gateway.",
             kind="project_learning", repo="svc")
@@ -193,3 +195,95 @@ def test_memory_role_is_overridable(monkeypatch):
     monkeypatch.setenv("AIFORGE_MEMORY_MODEL_ROLE", "learner")
     assert _role.memory_role() == "learner"
     assert not _role.is_thinking_role("memory")
+
+
+# ── regressions from the adversarial review ──────────────────────────────────
+# Each of these was a real defect: the gate rejected true facts, or a merge
+# destroyed one. Superseding DELETES with no archive, so it is the sharpest
+# edge in the module.
+KEEP_ANYWAY = [
+    # brackets inside prose or a code span are not a truncated line
+    r"The scaffold rule rejects any line matching ^\s*[|\[] at the write door.",
+    "The regex is `^\\s*[|\\[]` and it rejects table rows.",
+    "Build order is 1) oneshell-commons, 2) MongoDbService, 3) PosClientBackend.",
+    "The CI runner exits 0 even when pytest fails :)",
+    "A single backtick ` starts command substitution in bash.",
+    # a lead word that merely starts with a pronoun, or names its subject next
+    "There are exactly two deployment modes: Docker and Kubernetes.",
+    "Same-origin policy blocks the fetch from the Electron renderer.",
+    "These retries are capped at 3 attempts by the JetStream consumer.",
+    "Their tokens are stored in Redis with a 7-day TTL.",
+    "Is-a relationships are modelled as INFERRED edges in graphify.",
+    # a fact is a fact in any script
+    "Модуль синхронизации работает каждые 30 секунд.",
+    "決済サービスは8090番ポートで動作する。",
+]
+
+DROP_ANYWAY = [
+    "Gateway access",            # the heading, with the ### stripped
+    "Final Summary",
+    "Next Steps",
+    "Continued in part 2",       # the compaction artifact, markup stripped
+    "2026-09-16 12:00:01 INFO  [main] Started PosClientBackend in 4.213 seconds",
+    "ok thanks",
+    "yes exactly",
+]
+
+
+@pytest.mark.parametrize("text", KEEP_ANYWAY)
+def test_a_real_fact_is_not_rejected_for_its_punctuation(text):
+    from aiforge_core.memory.md_store import _fact
+    ok, reasons = _fact.is_wellformed(text)
+    assert ok, f"{text!r} rejected for {reasons}"
+    # and, since repair DELETES on these, it must not be deletable either
+    assert _fact.structural_issues(text) == []
+
+
+@pytest.mark.parametrize("text", DROP_ANYWAY)
+def test_markup_free_junk_is_still_junk(text):
+    from aiforge_core.memory.md_store import _fact
+    ok, _ = _fact.is_wellformed(text)
+    assert not ok, f"{text!r} should have been rejected"
+
+
+@pytest.mark.parametrize("old,new", [
+    # a different NUMBER, not a fuller version of the same claim
+    ("JetStream batch size is 50", "JetStream batch size is 500 for the DLQ job"),
+    ("ADK is pinned at 2.1", "ADK is pinned at 2.11 in the nuc image"),
+    ("Ollama listens on port 11434", "Ollama listens on port 114345 in the rig"),
+    # a different SUBJECT that happens to share a prefix
+    ("svc: rule a", "svc: rule applies only to admins"),
+    ("OrderController maps /orders",
+     "OrderController maps /orders-v2 to the legacy handler"),
+])
+def test_a_complete_fact_is_never_destroyed_by_a_longer_one(old, new):
+    from aiforge_core.memory.md_store import _fact, _subject
+    assert not _fact.supersedes(new, old)
+    claims, action = _subject.merge_claim([old], new)
+    assert action == "added"
+    assert old in claims and new in claims
+
+
+def test_a_visible_fragment_is_still_superseded():
+    from aiforge_core.memory.md_store import _fact, _subject
+    frag = "clear lockout takes a cphash and"        # dangling conjunction
+    full = "clear lockout takes a cphash and a setup parameter"
+    assert _fact.looks_truncated(frag)
+    assert _fact.supersedes(full, frag)
+    claims, action = _subject.merge_claim([frag], full)
+    assert action == "superseded" and claims == [full]
+
+
+@pytest.mark.parametrize("text,not_subject", [
+    ("Docker builds, e.g. the nuc image, need --dns 1.1.1.1 to resolve pypi.", "e.g"),
+    ("The invoice OCR confidence threshold is 0.85 for line items.", "0.85"),
+    ("SELECT COUNT(*) FROM sales WHERE businessId IS NULL returns 0 rows.", "SELECT"),
+    ("The API returns 404 when the JWT has expired.", "API"),
+    ("`50` is the JetStream batch size.", "50"),
+    ("The value `true` disables the pull loop.", "true"),
+])
+def test_a_generic_or_value_token_is_not_a_subject(text, not_subject):
+    from aiforge_core.memory.md_store import _fact
+    # a junk subject is not cosmetic: capture() FOLDS on a strong subject, so
+    # every fact mentioning 0.85 or SELECT would land in one note.
+    assert _fact.strong_subject(text) != not_subject

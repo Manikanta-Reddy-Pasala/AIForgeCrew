@@ -52,17 +52,29 @@ _SCAFFOLD_RES = (
 # A question or a request is an INSTRUCTION, not a durable fact. The distiller
 # is supposed to restate what was learned; storing the prompt verbatim is what
 # produced "can you add gitlab ci file for this repo".
+#
+# Only leads that are unambiguously a REQUEST. A bare auxiliary ("is", "are",
+# "will", "do") leads plenty of plain statements — "Is-a relationships are
+# modelled as INFERRED edges", "Will Smith owns the kubeconfig rotation" — and
+# a real question already ends in "?", which is checked separately. The
+# trailing \s matters: without it "Is-a" trips the "is" branch.
 _REQUEST_RE = re.compile(
-    r"^\s*(?:can|could|would|will|should|shall|do|does|did|is|are|was|were|"
-    r"please|pls|kindly|let'?s|lets|help\s+me|i\s+need\s+you\s+to)\b",
+    r"^\s*(?:can|could|would|please|pls|kindly|let'?s|lets|help\s+me|"
+    r"i\s+need\s+you\s+to)\s",
     re.IGNORECASE)
 
-# Leads with a pronoun/connective and therefore only means something inside the
-# conversation it came from ("this is the data architect problem",
+# Leads with a bare pronoun/connective and therefore only means something inside
+# the conversation it came from ("this is the data architect problem",
 # "attahced his solution", "also we need another service…").
+#
+# Deliberately NOT here: these/those/their/there/here/such/same/its. Those lead
+# perfectly good facts that name their subject in the next word ("These retries
+# are capped at 3", "There are exactly two deployment modes", "Same-origin
+# policy blocks the fetch") — and this reason also DELETES during repair, so a
+# lexical accident like "Same-origin" must not qualify.
 _DANGLING_RE = re.compile(
-    r"^\s*(?:this|that|these|those|it|its|he|him|his|she|her|they|them|their|"
-    r"also|and|but|so|then|there|here|such|same|above|below|attached|attahced)\b",
+    r"^\s*(?:this|that|it|he|him|his|she|her|they|them|"
+    r"also|and|but|so|then|attached|attahced)\s",
     re.IGNORECASE)
 
 # Ends mid-thought: an ellipsis, or a dangling conjunction. Deliberately NOT
@@ -72,25 +84,84 @@ _TRUNCATED_TAIL_RE = re.compile(
     r"(?:\.\.\.|…|\b(?:and|or|but|with|that|which|because|so\s+that)\s*)$",
     re.IGNORECASE)
 
+# Every scaffold rule above keys on the MARKUP, so stripping one character
+# defeats it: "### Gateway access" is caught, "Gateway access" is not. These
+# catch the same things by SHAPE.
+#: A section label: a short noun phrase naming a part of a document.
+_HEADING_WORDS = frozenset({
+    "summary", "overview", "introduction", "intro", "conclusion", "background",
+    "steps", "step", "notes", "note", "appendix", "references", "contents",
+    "access", "usage", "options", "parameters", "example", "examples",
+    "prerequisites", "requirements", "installation", "setup", "final",
+    "continued", "part", "next", "previous", "todo", "tbd",
+})
+_CONTINUED_RE = re.compile(r"^\s*continued\s+in\b", re.IGNORECASE)
+_PART_RE = re.compile(r"^\s*part\s+\d+\s*$", re.IGNORECASE)
+#: A log line: it records one moment, not something true afterwards.
+_LOG_LINE_RE = re.compile(r"^\s*\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}")
+#: Conversational acknowledgement — a turn, never a fact.
+_ACK_RE = re.compile(
+    r"^\s*(?:ok|okay|yes|yeah|yep|no|nope|thanks|thank\s+you|thx|sure|done|"
+    r"great|perfect|nice|cool|got\s+it|makes\s+sense|understood|will\s+do)\b"
+    r"[\s\w!.,]*$", re.IGNORECASE)
+
+
+def _is_section_label(text: str) -> bool:
+    """A bare heading: few words, all of them label vocabulary or capitalised,
+    and no verb to make it a claim. "Gateway access", "Final Summary",
+    "Next Steps" — true of nothing, so nothing to remember."""
+    toks = [w.strip(".,:;") for w in text.split() if w.strip(".,:;")]
+    if not toks or len(toks) > 4:
+        return False
+    lowered = [w.lower() for w in toks]
+    if not any(w in _HEADING_WORDS for w in lowered):
+        return False
+    # "Part 2 of the migration runs on the nuc" has a verb and keeps going;
+    # a label does not. Capitalisation is the other half of the signal.
+    return all(w[0].isupper() or w.lower() in _HEADING_WORDS
+               or w.isdigit() for w in toks)
+
+
 _OPENERS = {"(": ")", "[": "]", "{": "}"}
+_CODE_SPAN_RE = re.compile(r"`[^`]*`")
 
 
 def _unbalanced(text: str) -> bool:
-    """A fragment cut out of a larger block leaves brackets/backticks open."""
-    if text.count("`") % 2:
-        return True
-    depth = {o: 0 for o in _OPENERS}
+    """True when a bracket is left OPEN — the mark of a line cut out of a
+    larger block ("[ c | clear lockout] [ s | setup parameters] [").
+
+    Two things it deliberately does not do, because this reason also DELETES
+    during repair:
+    * a closer with no opener is NOT unbalanced. "1) commons, 2) MongoDbService"
+      and "the runner exits 0 even when pytest fails :)" are ordinary prose.
+    * brackets inside a code span do not count, and an odd number of backticks
+      is not itself a fault ("A single backtick ` starts a command substitution",
+      "the regex is `^\\s*[|\\[]`").
+    """
+    stripped = _CODE_SPAN_RE.sub("", text or "")
+    depth = 0
     closers = {c: o for o, c in _OPENERS.items()}
-    for ch in text:
+    for ch in stripped:
         if ch in _OPENERS:
-            depth[ch] += 1
+            depth += 1
         elif ch in closers:
-            depth[closers[ch]] -= 1
-    return any(v != 0 for v in depth.values())
+            depth = max(0, depth - 1)      # an unopened closer is not a fault
+    return depth > 0
+
+
+#: CJK writes without spaces, so whitespace tokens under-count it; each
+#: ideograph carries about as much as a word.
+_CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+#: Any script's letters — a fact in Russian or Japanese is still a fact.
+_LETTER_RE = re.compile(r"[^\W\d_]{2,}", re.UNICODE)
 
 
 def _word_count(text: str) -> int:
-    return len([w for w in re.split(r"\s+", text.strip()) if w])
+    t = (text or "").strip()
+    cjk = len(_CJK_RE.findall(t))
+    if cjk >= 2:
+        return max(cjk, len([w for w in re.split(r"\s+", t) if w]))
+    return len([w for w in re.split(r"\s+", t) if w])
 
 
 def issues(text: str) -> list[str]:
@@ -109,11 +180,17 @@ def issues(text: str) -> list[str]:
         out.append("a request/question, not a fact")
     if _DANGLING_RE.match(t):
         out.append("leads with a dangling reference (no subject)")
+    if _is_section_label(t) or _CONTINUED_RE.match(t) or _PART_RE.match(t):
+        out.append("a section label, not a claim")
+    if _LOG_LINE_RE.match(t):
+        out.append("a log line, not a claim")
+    if _ACK_RE.match(t):
+        out.append("an acknowledgement, not a claim")
     if _TRUNCATED_TAIL_RE.search(t):
         out.append("truncated mid-thought")
     if _unbalanced(t):
         out.append("unbalanced brackets")
-    if not re.search(r"[A-Za-z]{3}", t):
+    if not _LETTER_RE.search(t) and not _CJK_RE.search(t):
         out.append("no words")
     return out
 
@@ -154,6 +231,30 @@ _STOP = frozenset(
 
 _CODEY_RE = re.compile(r"^[\w./\\:-]*[/._\\][\w./\\:-]*$")   # path / dotted name
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+#: Tokens that LOOK like an identifier but name nothing in particular. Folding
+#: on one of these buckets unrelated facts into a single note — every fact
+#: mentioning SELECT would land in a note titled "SELECT".
+_GENERIC_SUBJECTS = frozenset({
+    "e.g", "eg", "i.e", "ie", "etc", "vs", "aka", "n/a", "and/or", "24/7",
+    "select", "insert", "update", "delete", "from", "where", "join", "null",
+    "true", "false", "none", "get", "post", "put", "patch", "head", "options",
+    "api", "url", "uri", "http", "https", "json", "yaml", "xml", "csv", "sql",
+    "todo", "fixme", "note", "warn", "warning", "error", "info", "debug",
+    "ok", "id", "ids", "key", "value", "name", "type", "file", "path",
+})
+#: A number, a version, a port — a VALUE the fact is about something else with.
+_VALUE_TOKEN_RE = re.compile(r"^[\d.,:/_-]+$")
+_SUBJECT_MAX = 70
+
+
+def _usable_subject(tok: str) -> bool:
+    """A token is a subject only if it names something specific."""
+    t = (tok or "").strip().strip(".,;:!?")
+    if not t or len(t) > _SUBJECT_MAX:
+        return False
+    if _VALUE_TOKEN_RE.match(t):
+        return False
+    return t.lower() not in _GENERIC_SUBJECTS
 
 
 def _candidate_tokens(text: str) -> list[str]:
@@ -172,15 +273,18 @@ def strong_subject(text: str) -> str | None:
     t = (text or "").strip()
     if not t:
         return None
-    backticked = re.findall(r"`([^`]{2,60})`", t)
-    if backticked:
-        return backticked[0].strip()
+    for span in re.findall(r"`([^`]{2,60})`", t):
+        # A backticked VALUE (`50`, `true`) is what the fact says, not what it
+        # is about — folding on it merges every fact that mentions 50.
+        if _usable_subject(span.strip()):
+            return span.strip()
     toks = _candidate_tokens(t)
     for w in toks:
-        if len(w) > 2 and _CODEY_RE.match(w) and not w.endswith("."):
+        if len(w) > 2 and _CODEY_RE.match(w) and not w.endswith(".") \
+                and _usable_subject(w):
             return w
     for w in toks:
-        if len(w) > 2 and _IDENT_RE.match(w) and (
+        if len(w) > 2 and _IDENT_RE.match(w) and _usable_subject(w) and (
                 re.search(r"[a-z][A-Z]", w) or (w.isupper() and len(w) > 2)):
             return w
     return None
@@ -206,15 +310,37 @@ def claim_key(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
 
 
-def supersedes(new: str, old: str) -> bool:
-    """True when ``new`` is a strictly fuller version of ``old``.
+def looks_truncated(text: str) -> bool:
+    """True when ``text`` visibly stops mid-thought — an ellipsis, a dangling
+    conjunction, or an unclosed bracket. This is what a truncation-ladder rung
+    looks like, as opposed to a short but COMPLETE fact."""
+    t = (text or "").strip()
+    return bool(t) and (bool(_TRUNCATED_TAIL_RE.search(t)) or _unbalanced(t))
 
-    The truncation ladder in the wild (``[ c | clear l`` → ``[ c | clear
-    lockout] [ s | setup`` → the full line) is exactly a prefix chain, so the
-    longest member replaces the rest instead of piling up three notes.
+
+def supersedes(new: str, old: str) -> bool:
+    """True when ``new`` is the finished version of the FRAGMENT ``old``.
+
+    The ladder in the wild (``[ c | clear l`` → ``[ c | clear lockout] [ s |
+    setup`` → the full line) is a prefix chain, and collapsing it is the point.
+    But a bare prefix test is silent data loss, because superseding DELETES the
+    older claim with no archive:
+
+    * ``JetStream batch size is 50`` is a character prefix of ``JetStream batch
+      size is 500 for the DLQ replay`` — two different numbers, and the true
+      one would vanish. Hence the word boundary.
+    * ``svc: rule a`` is a prefix of ``svc: rule applies to admins``, and
+      ``OrderController maps /orders`` of ``... /orders-v2 to the legacy
+      handler`` — both COMPLETE facts about different things. Hence: only a
+      claim that visibly stops mid-thought can be superseded at all.
+
+    Everything else is kept as a separate claim. A duplicate note is cheap; a
+    deleted fact is not recoverable.
     """
     a, b = claim_key(new), claim_key(old)
-    return bool(a) and bool(b) and a != b and a.startswith(b)
+    if not (a and b) or a == b:
+        return False
+    return a.startswith(b + " ") and looks_truncated(old)
 
 
 def title_for(subject: str, claim: str) -> str:
@@ -225,5 +351,5 @@ def title_for(subject: str, claim: str) -> str:
 
 
 __all__ = ["claim_key", "derive_subject", "gate_enabled", "is_wellformed",
-           "issues", "strong_subject", "structural_issues", "supersedes",
-           "title_for"]
+           "issues", "looks_truncated", "strong_subject", "structural_issues",
+           "supersedes", "title_for"]
