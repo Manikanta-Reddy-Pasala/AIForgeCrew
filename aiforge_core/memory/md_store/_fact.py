@@ -14,14 +14,15 @@ import os
 import re
 
 # ── Tunables (env-overridable; the gate is ON by default) ────────────────────
-# A real fact can be terse ("OrderController maps /orders", "svc: rule one") —
-# three words is subject + verb + object, and fewer than that is a label, not a
-# claim. Character length is NOT a signal: every junk string this gate exists
-# for is caught by the scaffolding/request/dangling/truncation rules, and a
-# character floor only ever cost us real terse facts. The knob stays for an
-# operator who wants one; it is off by default.
+# The gate errs toward KEEPING: a fragment that slips through is caught again by
+# compaction, but a real fact rejected here is silent data loss. So the floor is
+# only what cannot possibly be a claim — a single bare word ("Final"). Two words
+# is already a subject and something said about it ("svc: alpha"). Character
+# length is not a signal at all; every junk string this exists for is caught by
+# the scaffolding/request/dangling rules instead. Both knobs stay for an
+# operator who wants them stricter.
 _MIN_CHARS_DEFAULT = 0
-_MIN_WORDS_DEFAULT = 3
+_MIN_WORDS_DEFAULT = 2
 
 
 def _i_env(key: str, default: int) -> int:
