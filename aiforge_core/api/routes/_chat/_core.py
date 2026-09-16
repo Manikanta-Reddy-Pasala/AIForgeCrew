@@ -139,9 +139,3 @@ def chat_agent(body: _ChatAgentBody) -> StreamingResponse:
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     return sse_response(_gen(), label="chat-agent")
-
-
-class _NewSessionBody(BaseModel):
-    title: str | None = Field(None)
-    cwd: str | None = Field(None)
-    role: str = Field("chat", description="model slot driving chat (default: chat)")

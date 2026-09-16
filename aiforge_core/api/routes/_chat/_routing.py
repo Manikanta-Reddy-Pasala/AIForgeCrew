@@ -7,9 +7,43 @@ import os
 from ._core import (
     _af_log,
 )
-from ._sessions import (
-    _quick_step_cap,
-)
+
+
+def _quick_step_cap(quick: bool) -> int | None:
+    """Hard step cap for a quick turn, or None for the normal open loop.
+
+    The chat agent normally runs until it decides it is done (a stuck-loop
+    detector bounds it, not a step count) — right for real work, and the reason
+    a one-line ask can still cost minutes of exploration. Quick mode trades that
+    thoroughness for latency: the agent gets a handful of steps, and if it needs
+    more the user can simply ask again without the toggle.
+    """
+    import os as _os
+
+    if not quick:
+        return None
+    try:
+        return max(1, int(_os.environ.get("AIFORGE_CHAT_QUICK_STEPS", "6")))
+    except ValueError:
+        return 6
+
+
+def _maybe_downgrade_team(team, prompt, history, cwd, session_id):
+    """Auto-route a small team follow-up down to simple mode. Run HERE (off the
+    response-open path) so a slow/unreachable classify LLM never delays the
+    StreamingResponse. Returns ``(team, auto_downgraded)``; routing must never
+    block a turn."""
+    if not team:
+        return team, False
+    try:
+        from aiforge_core.runtime import turn_router as _tr
+        if _tr.should_downgrade_team(prompt, history, cwd):
+            _af_log.info("chat: team turn auto-downgraded to simple "
+                         "(small follow-up) session=%s", session_id)
+            return False, True
+    except Exception as exc:  # noqa: BLE001
+        _af_log.debug("turn_router skipped: %s", exc)
+    return team, False
 
 
 def _pipeline_route(_pp, prompt, cwd, session_id, history, _with_resume, _path,

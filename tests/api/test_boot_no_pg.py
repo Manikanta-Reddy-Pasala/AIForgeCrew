@@ -197,7 +197,7 @@ def test_chat_sessions_crud_and_message(client, monkeypatch):
 def test_chat_models_endpoint(client, monkeypatch):
     c, _ = client
     import aiforge_core.api.api as api
-    monkeypatch.setattr(api._r_chat, "_served_model_ids_for_role",
+    monkeypatch.setattr(api._r_chat._models, "_served_model_ids_for_role",
                         lambda role: {"qwen-coder-x", "m2"})
     body = c.get("/api/chat/models").json()
     assert body["provider"]

@@ -35,7 +35,7 @@ def test_api_titles_on_triage_role():
     # ac is now a package (config/agent_config/__init__.py), so aiforge_core
     # is parents[2] (was parents[1] when agent_config was a plain module).
     src = pathlib.Path(ac.__file__).parents[2] / "api" / "routes" / "_chat"
-    text = (src / "_prep.py").read_text(encoding="utf-8")
+    text = "\n".join(f.read_text(encoding="utf-8") for f in sorted(src.glob("*.py")))
     assert 'suggest_title(prompt, role="triage")' in text
 
 

@@ -8,10 +8,11 @@ from ._core import (
     _PRODUCE_SEM,
 )
 from ._history import (
-    _TERMINAL_SUBTASK,
     _chat_learn_writeback,
     _chat_summarize_session,
 )
+
+_TERMINAL_SUBTASK = {"done", "failed", "skipped", "won", "planned"}
 
 
 def _drive_produce_stream(_events, st: dict, steps: list, run, session_id,

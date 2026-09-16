@@ -1,20 +1,22 @@
 """Chat routes (/api/chat/*) — split out of api.py (APIRouter).
 
 The code lives in ``routes/_chat/``, one module per job; this module
-re-exports every name it used to define, so ``chat.<name>`` keeps working.
-Patch a helper in the ``_chat`` module that calls it. The file itself must
-stay: the frozen ``aiforge`` CLI recognises a checkout by this path.
+re-exports every name it used to define, so ``chat.<name>`` and ``router``
+keep working. Import this module, not a ``_chat`` one, to get every route on
+the router. Patch a helper in the ``_chat`` module that calls it: a patch on
+``chat.<name>`` reaches nothing. This file must stay: the frozen ``aiforge``
+CLI recognises a checkout by its path.
 """
 from __future__ import annotations
 
-# Imports the single module exposed; tests reach some through it.
+# Shared modules the single file exposed; patching their attributes still
+# reaches every caller.
 from aiforge_core.config import agent_config as _acfg  # noqa: F401
 from aiforge_core.config import model_registry as _model_registry  # noqa: F401
-from aiforge_core.config.paths import config_dir  # noqa: F401
-from aiforge_core.runtime.background import spawn as _spawn  # noqa: F401
 from aiforge_core.tickets import store as tickets_mod  # noqa: F401
 
 from ._chat import (
+    _control,  # noqa: F401
     _core,  # noqa: F401
     _history,  # noqa: F401
     _message,  # noqa: F401
@@ -26,6 +28,17 @@ from ._chat import (
     _stages,  # noqa: F401
     _turn_events,  # noqa: F401
 )
+from ._chat._control import (  # noqa: F401
+    _CheckpointBody,
+    _RestoreBody,
+    _SessionTicketBody,
+    chat_session_checkpoint_create,
+    chat_session_checkpoint_restore,
+    chat_session_checkpoints,
+    chat_session_ticket,
+    suggestion_history,
+    suggestion_outcome,
+)
 from ._chat._core import (  # noqa: F401
     _NEW_CHAT,
     _PRODUCE_SEM,
@@ -35,7 +48,6 @@ from ._chat._core import (  # noqa: F401
     _ChatAskBody,
     _ChatMessage,
     _default_cwd,
-    _NewSessionBody,
     _request_repo_root,
     approval_settings_get,
     approval_settings_set,
@@ -46,17 +58,12 @@ from ._chat._core import (  # noqa: F401
 )
 from ._chat._history import (  # noqa: F401
     _DIGEST_ARG_KEYS,
-    _TERMINAL_SUBTASK,
     _TOPIC_CUE_PHRASES,
-    _bind_turn_meter,
     _capture_chat_cue,
     _chat_history_for_agent,
     _chat_learn_writeback,
     _chat_summarize_session,
     _history_row_content,
-    _maybe_downgrade_team,
-    _note_staleness_notice,
-    _setup_chat_logger,
     _step_arg,
     _step_digest,
     _step_mark,
@@ -64,22 +71,14 @@ from ._chat._history import (  # noqa: F401
 )
 from ._chat._message import (  # noqa: F401
     _ApproveBody,
-    _CheckpointBody,
-    _RestoreBody,
-    _SessionTicketBody,
+    _SessionMsgBody,
     _SteerBody,
     chat_kill_all,
     chat_session_approve,
     chat_session_attach,
-    chat_session_checkpoint_create,
-    chat_session_checkpoint_restore,
-    chat_session_checkpoints,
     chat_session_message,
     chat_session_steer,
     chat_session_stop,
-    chat_session_ticket,
-    suggestion_history,
-    suggestion_outcome,
 )
 from ._chat._models import (  # noqa: F401
     _ORCHESTRATOR_ROLES,
@@ -111,15 +110,20 @@ from ._chat._prep import (  # noqa: F401
     _with_resume,
 )
 from ._chat._producer import (  # noqa: F401
+    _bind_turn_meter,
     _events,
+    _note_staleness_notice,
     _produce,
+    _setup_chat_logger,
     _stream,
 )
 from ._chat._routing import (  # noqa: F401
     _decide_chat_route,
     _doc_task_route,
+    _maybe_downgrade_team,
     _pipeline_route,
     _plan_mode_route,
+    _quick_step_cap,
     _rule_capture_pass,
     _run_capture_pass,
     _should_skip_enhance,
@@ -129,9 +133,8 @@ from ._chat._sessions import (  # noqa: F401
     _delete_chat_workspace,
     _is_isolated_workspace,
     _MediaDescBody,
-    _quick_step_cap,
+    _NewSessionBody,
     _RenameBody,
-    _SessionMsgBody,
     _sweep_orphan_session_dirs,
     chat_media_delete,
     chat_media_describe,
@@ -168,6 +171,7 @@ from ._chat._stages import (  # noqa: F401
     _worth_verifying,
 )
 from ._chat._turn_events import (  # noqa: F401
+    _TERMINAL_SUBTASK,
     _clean_and_log_produce_event,
     _consume_produce_events,
     _drive_produce_stream,

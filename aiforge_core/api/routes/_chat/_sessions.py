@@ -14,43 +14,18 @@ from aiforge_core.config.paths import config_dir
 from ._core import (
     _NEW_CHAT,
     _default_cwd,
-    _NewSessionBody,
     router,
 )
 
 
+class _NewSessionBody(BaseModel):
+    title: str | None = Field(None)
+    cwd: str | None = Field(None)
+    role: str = Field("chat", description="model slot driving chat (default: chat)")
+
+
 class _RenameBody(BaseModel):
     title: str = Field(..., min_length=1)
-
-
-class _SessionMsgBody(BaseModel):
-    content: str = Field(..., min_length=1)
-    role: str | None = Field(None, description="override the session's model (archetype)")
-    mode: str = Field("simple", description="'simple' (single agent) | 'plan' (read-only single agent) | 'team' (full ADK flow)")
-    review_edits: bool = Field(False, description="Hold every file-mutating tool call for human Approve/Reject (with diff) before it lands, in simple/plan mode. Default OFF — file writes/patches auto-apply. Opt in per-request here, or globally with AIFORGE_CHAT_REVIEW_EDITS=1.")
-    edit_from_message_id: int | None = Field(None, description="Edit-and-resend: truncate history at this user message (restoring the workspace to that turn's checkpoint) before running this new content")
-    builder: str | None = Field(None, description="task builder charter: job|skill|workflow|rule — runs an interactive single-agent builder that ends by calling the matching finalize tool (bypasses the enhancer/team pipeline)")
-    quick: bool = Field(False, description="Quick mode: one doer, a hard step cap (AIFORGE_CHAT_QUICK_STEPS, default 6) instead of an open-ended ReAct loop. For small asks — a rename, a one-line fix, a question — where the agent's own exploration costs more than the change.")
-    resume: bool | None = Field(None, description="Resume the previous STOPPED turn instead of redoing it: prepends a brief of what already landed and what is still pending. null = decide automatically (re-sending the same words after a stopped turn resumes); true = resume even though the wording changed; false = FORCE a clean rerun and ignore the partial work.")
-
-
-def _quick_step_cap(quick: bool) -> int | None:
-    """Hard step cap for a quick turn, or None for the normal open loop.
-
-    The chat agent normally runs until it decides it is done (a stuck-loop
-    detector bounds it, not a step count) — right for real work, and the reason
-    a one-line ask can still cost minutes of exploration. Quick mode trades that
-    thoroughness for latency: the agent gets a handful of steps, and if it needs
-    more the user can simply ask again without the toggle.
-    """
-    import os as _os
-
-    if not quick:
-        return None
-    try:
-        return max(1, int(_os.environ.get("AIFORGE_CHAT_QUICK_STEPS", "6")))
-    except ValueError:
-        return 6
 
 
 def _chat_workspace_root() -> str:

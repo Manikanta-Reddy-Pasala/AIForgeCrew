@@ -10,8 +10,6 @@ from ._core import (
 from ._routing import (
     _doc_task_route,
     _pipeline_route,
-)
-from ._sessions import (
     _quick_step_cap,
 )
 

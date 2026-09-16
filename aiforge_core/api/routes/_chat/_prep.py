@@ -48,7 +48,6 @@ def _expand_slash_command(session, body):
     answered inline. Done here — before persist/title/fold — so one interception
     covers simple, plan AND team modes. Returns ``(expanded_name, help_text)``.
     Fail-open: any error → raw text."""
-    from aiforge_core.runtime import chat_store  # noqa: F401 (parity w/ caller)
     _cmd_expanded: str | None = None
     _cmd_help_text: str | None = None
     try:

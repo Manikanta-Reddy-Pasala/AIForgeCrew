@@ -7,12 +7,7 @@ import os
 
 from ._core import (
     _PRODUCE_SEM,
-)
-from ._history import (
-    _bind_turn_meter,
-    _maybe_downgrade_team,
-    _note_staleness_notice,
-    _setup_chat_logger,
+    _af_log,
 )
 from ._prep import (
     _auto_checkpoint,
@@ -20,6 +15,7 @@ from ._prep import (
 )
 from ._routing import (
     _decide_chat_route,
+    _maybe_downgrade_team,
     _plan_mode_route,
     _rule_capture_pass,
     _should_skip_enhance,
@@ -40,6 +36,64 @@ from ._turn_events import (
     _TurnResetContext,
 )
 
+
+def _setup_chat_logger():
+    """The shared "chat" observability logger + its emit fn, so the Logs "chat"
+    tab tails one file. Returns ``(clog, emit)`` — ``(None, None)`` if the
+    observability module is unavailable. (Don't stash a per-session ticket on the
+    process-wide singleton — concurrent sessions would clobber it; the caller
+    stamps ``session`` per emit.)"""
+    try:
+        from aiforge_core.observability.logging import emit, get_logger
+        return get_logger("chat"), emit
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+def _bind_turn_meter(session_id):
+    """Bind THE per-turn request-meter boundary here (not inside the ReAct loop):
+    the enhancer / team-downgrade classifier / capture probes below are requests
+    THIS message caused, and team mode never enters run_chat_agent at all — a
+    reset in the loop left its per-turn number cumulative for the session.
+    Returns ``(meter, meter_token)``; metering must never break a turn."""
+    try:
+        from aiforge_core.llm import call_meter as _meter
+        return _meter, _meter.bind_turn(_meter.turn_reset(session_id))
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+def _note_staleness_notice(cwd):
+    """Staleness auto-curation: a session bound to a jira/confluence context
+    folder re-verifies that note when it crosses AIFORGE_NOTE_STALE_HOURS. The
+    pre-check is cheap + network-free; the curation re-fetches the source so it
+    is HARD time-boxed — a dead Jira must never stall the turn. Yields a curator
+    thought ONLY when something actually drifted. FAILS OPEN."""
+    try:
+        from aiforge_core.runtime import note_curator as _nc
+        _stale_note = _nc.stale_note_path(cwd)
+        if _stale_note:
+            import concurrent.futures as _ncf
+            _cres = None
+            _nex = _ncf.ThreadPoolExecutor(max_workers=1)
+            try:
+                _nbudget = float(os.environ.get(
+                    "AIFORGE_NOTE_CURATE_BUDGET_S", "10"))
+                _cres = _nex.submit(_nc.curate_note,
+                                    _stale_note).result(timeout=_nbudget)
+            except Exception as _nexc:  # noqa: BLE001 — timeout/any → skip
+                _af_log.debug("note curation timed out/failed: %s", _nexc)
+            finally:
+                _nex.shutdown(wait=False)
+            # Visible only when something actually drifted — a silent
+            # freshness bump shouldn't add chat noise.
+            if _cres and _cres.get("ok") and _cres.get("changes"):
+                yield {"type": "thought", "role": "curator",
+                       "text": ("Auto-curated stale note "
+                                f"{os.path.basename(_stale_note)}: "
+                                + "; ".join(_cres["changes"]))}
+    except Exception as _nexc2:  # noqa: BLE001 — must never break a turn
+        _af_log.debug("note staleness pass skipped: %s", _nexc2)
 
 def _events(pc):
     pctx0 = {"done": False}
