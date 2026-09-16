@@ -42,7 +42,7 @@ def _promote_scope(text: str, repo: "str | None", topic: "str | None",
     try:
         if classify_scope(text, hint_repo=repo, hint_topic=topic)["scope"] == "global":
             return None, None
-    except Exception:  # noqa: BLE001 — scope upkeep never breaks a write
+    except Exception:  # noqa: BLE001  # scope upkeep never breaks a write
         pass
     return repo, topic
 
@@ -100,7 +100,7 @@ def capture(kind: str, text: str, *, repo: str | None = None,
     # _project_brief unions into every context.
     try:
         _brief_upsert(repo or "shared", text, topic=topic)
-    except Exception:  # noqa: BLE001 — brief upkeep never breaks a write
+    except Exception:  # noqa: BLE001  # brief upkeep never breaks a write
         pass
     return res
 
@@ -116,7 +116,7 @@ def _write_or_fold(ttl: str, text: str, *, kind: str, repo: str | None,
         if may_fold:
             existing = _subject.find_note(ttl, kind=kind, repo=repo or "shared",
                                           topic=topic)
-    except Exception:  # noqa: BLE001 — a lookup failure must not lose the fact
+    except Exception:  # noqa: BLE001  # a lookup failure must not lose the fact
         existing = None
     if existing is not None:
         return _subject.append_claim(existing, text, evidence=evidence)

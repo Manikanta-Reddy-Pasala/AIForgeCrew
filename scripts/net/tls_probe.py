@@ -41,9 +41,9 @@ def main(argv: list[str]) -> int:
     port = int(argv[1]) if len(argv) > 1 else 443
     try:
         ctx = ssl.create_default_context()
-        with socket.create_connection((host, port), timeout=8) as raw:
-            with ctx.wrap_socket(raw, server_hostname=host):
-                pass
+        with socket.create_connection((host, port), timeout=8) as raw, \
+                ctx.wrap_socket(raw, server_hostname=host) as tls:
+            tls.getpeercert()          # completing the handshake IS the test
     except ssl.SSLCertVerificationError as exc:
         _verify_failed(host, port, exc)
     except ssl.SSLError as exc:

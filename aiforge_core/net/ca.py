@@ -82,7 +82,7 @@ def ca_dir(*, create: bool = False) -> Path:
         d.mkdir(parents=True, exist_ok=True)
         try:
             d.chmod(0o700)
-        except OSError as exc:  # noqa: BLE001 — a mode we cannot set is a log
+        except OSError as exc:  # noqa: BLE001  # a mode we cannot set is a log
             log.warning("ca: could not chmod %s — %s", d, exc)
     return d
 
@@ -137,22 +137,22 @@ def _merged_bundle(paths: list[Path]) -> Path | None:
         newest = max(p.stat().st_mtime for p in paths)
         if out.is_file() and out.stat().st_mtime >= newest:
             return out
-    except OSError:  # noqa: BLE001 — rebuild rather than trust a failed stat
+    except OSError:  # noqa: BLE001  # rebuild rather than trust a failed stat
         pass
     blocks: list[str] = []
     for p in paths:
         try:
             blocks.append(_pem_text(p).strip())
-        except Exception as exc:  # noqa: BLE001 — name the file that is wrong
-            log.error("ca: %s is not a certificate we can read (%s) — it is NOT "
-                      "in the trust bundle", p.name, exc)
+        except Exception:  # noqa: BLE001  # name the file that is wrong
+            log.exception("ca: %s is not a certificate we can read — it is NOT "
+                          "in the trust bundle", p.name)
     if not blocks:
         return None
     try:
         out.write_text("\n".join(blocks) + "\n", encoding="utf-8")
         out.chmod(0o600)
-    except OSError as exc:  # noqa: BLE001
-        log.error("ca: could not write %s — %s", out, exc)
+    except OSError:
+        log.exception("ca: could not write %s", out)
         return None
     return out
 
@@ -184,7 +184,7 @@ def bundle() -> str | None:
         try:
             if "-----BEGIN" in dropped[0].read_text(encoding="utf-8", errors="replace"):
                 return str(dropped[0])       # already a usable PEM, use it as-is
-        except OSError:  # noqa: BLE001 — fall through to the merge
+        except OSError:  # noqa: BLE001  # fall through to the merge
             pass
     merged = _merged_bundle(dropped)
     return str(merged) if merged else None
@@ -226,7 +226,7 @@ def _certificates(pem: str) -> list[str]:
     for b in blocks:
         try:
             ssl.PEM_cert_to_DER_cert(b + "\n")
-        except Exception as exc:  # noqa: BLE001 — the operator's paste
+        except Exception as exc:  # noqa: BLE001  # the operator's paste
             raise ValueError(f"certificate could not be read: {exc}") from exc
     return blocks
 
@@ -239,7 +239,7 @@ def _is_ca(cert) -> bool:
         bc = cert.extensions.get_extension_for_oid(
             ExtensionOID.BASIC_CONSTRAINTS).value
         return bool(bc.ca)
-    except Exception:  # noqa: BLE001 — no extension means not a CA
+    except Exception:  # noqa: BLE001  # no extension means not a CA
         return False
 
 

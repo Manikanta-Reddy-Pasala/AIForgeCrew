@@ -180,35 +180,57 @@ def _word_count(text: str) -> int:
     return len([w for w in re.split(r"\s+", t) if w])
 
 
+def _too_short(t: str) -> bool:
+    return len(t) < _i_env("AIFORGE_MEMORY_FACT_MIN_CHARS", _MIN_CHARS_DEFAULT)
+
+
+def _too_few_words(t: str) -> bool:
+    return _word_count(t) < _i_env("AIFORGE_MEMORY_FACT_MIN_WORDS",
+                                   _MIN_WORDS_DEFAULT)
+
+
+def _is_scaffolding(t: str) -> bool:
+    return any(rx.search(t) for rx in _SCAFFOLD_RES)
+
+
+def _is_request(t: str) -> bool:
+    return t.endswith("?") or bool(_REQUEST_RE.match(t))
+
+
+def _is_label(t: str) -> bool:
+    return bool(_is_section_label(t) or _CONTINUED_RE.match(t)
+                or _PART_RE.match(t))
+
+
+def _has_no_words(t: str) -> bool:
+    return not _LETTER_RE.search(t) and not _CJK_RE.search(t)
+
+
+#: (predicate, reason). One table rather than a ladder of ifs: the reasons are
+#: independent, every one is reported, and adding a rule is a row — which also
+#: keeps this readable as the list of everything the gate believes.
+_RULES: tuple = (
+    (_too_short, "too short"),
+    (_too_few_words, "too few words"),
+    (_is_scaffolding, "scaffolding, not a claim"),
+    (_is_request, "a request/question, not a fact"),
+    (lambda t: bool(_DANGLING_RE.match(t)),
+     "leads with a dangling reference (no subject)"),
+    (_is_label, "a section label, not a claim"),
+    (lambda t: bool(_LOG_LINE_RE.match(t)), "a log line, not a claim"),
+    (lambda t: bool(_ACK_RE.match(t)), "an acknowledgement, not a claim"),
+    (lambda t: bool(_TRUNCATED_TAIL_RE.search(t)), "truncated mid-thought"),
+    (_unbalanced, "unbalanced brackets"),
+    (_has_no_words, "no words"),
+)
+
+
 def issues(text: str) -> list[str]:
     """Every reason ``text`` is not a durable fact (empty list = it is one)."""
     t = (text or "").strip()
     if not t:
         return ["empty"]
-    out: list[str] = []
-    if len(t) < _i_env("AIFORGE_MEMORY_FACT_MIN_CHARS", _MIN_CHARS_DEFAULT):
-        out.append("too short")
-    if _word_count(t) < _i_env("AIFORGE_MEMORY_FACT_MIN_WORDS", _MIN_WORDS_DEFAULT):
-        out.append("too few words")
-    if any(rx.search(t) for rx in _SCAFFOLD_RES):
-        out.append("scaffolding, not a claim")
-    if t.endswith("?") or _REQUEST_RE.match(t):
-        out.append("a request/question, not a fact")
-    if _DANGLING_RE.match(t):
-        out.append("leads with a dangling reference (no subject)")
-    if _is_section_label(t) or _CONTINUED_RE.match(t) or _PART_RE.match(t):
-        out.append("a section label, not a claim")
-    if _LOG_LINE_RE.match(t):
-        out.append("a log line, not a claim")
-    if _ACK_RE.match(t):
-        out.append("an acknowledgement, not a claim")
-    if _TRUNCATED_TAIL_RE.search(t):
-        out.append("truncated mid-thought")
-    if _unbalanced(t):
-        out.append("unbalanced brackets")
-    if not _LETTER_RE.search(t) and not _CJK_RE.search(t):
-        out.append("no words")
-    return out
+    return [reason for check, reason in _RULES if check(t)]
 
 
 #: Reasons that are a matter of DEGREE or inference rather than shape. They
@@ -245,8 +267,13 @@ _STOP = frozenset(
     "have had there here as at by from into over under about after before while "
     "user users use used using new now only also very just".split())
 
-_CODEY_RE = re.compile(r"^[\w./\\:-]*[/._\\][\w./\\:-]*$")   # path / dotted name
-_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# A path or dotted name. Written as "only these characters, and at least one of
+# them is a separator" rather than <chars><sep><chars>: the latter has two
+# variable-length runs either side of a character that is itself in both, so a
+# non-match backtracks over every split of the token.
+_CODEY_CHARS_RE = re.compile(r"^[\w./\\:-]+$")
+_CODEY_SEP = ("/", ".", "_", "\\")
+_IDENT_RE = re.compile(r"^[^\W\d]\w*$", re.ASCII)
 #: Tokens that LOOK like an identifier but name nothing in particular. Folding
 #: on one of these buckets unrelated facts into a single note — every fact
 #: mentioning SELECT would land in a note titled "SELECT".
@@ -273,6 +300,12 @@ def _usable_subject(tok: str) -> bool:
     return t.lower() not in _GENERIC_SUBJECTS
 
 
+def _is_codey(tok: str) -> bool:
+    """True for a path or dotted name (``run.sh/_ca_bootstrap``, ``a.b.c``)."""
+    return (bool(_CODEY_CHARS_RE.match(tok)) and not tok.endswith(".")
+            and any(sep in tok for sep in _CODEY_SEP))
+
+
 def _candidate_tokens(text: str) -> list[str]:
     return [w.strip(".,;:!?()[]{}\"'") for w in re.split(r"\s+", text.strip()) if w]
 
@@ -296,8 +329,7 @@ def strong_subject(text: str) -> str | None:
             return span.strip()
     toks = _candidate_tokens(t)
     for w in toks:
-        if len(w) > 2 and _CODEY_RE.match(w) and not w.endswith(".") \
-                and _usable_subject(w):
+        if len(w) > 2 and _is_codey(w) and _usable_subject(w):
             return w
     for w in toks:
         if len(w) > 2 and _IDENT_RE.match(w) and _usable_subject(w) and (

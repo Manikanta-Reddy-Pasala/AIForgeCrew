@@ -75,7 +75,7 @@ def find_note(subject: str, *, kind: str, repo: str,
             seen.add(path.name)
             try:
                 d = _parse(path)
-            except Exception:  # noqa: BLE001 — an unreadable note is not a match
+            except Exception:  # noqa: BLE001  # an unreadable note is not a match
                 continue
             if d.get("title") == subject and _matches(d, kind=kind, repo=repo,
                                                       topic=topic):

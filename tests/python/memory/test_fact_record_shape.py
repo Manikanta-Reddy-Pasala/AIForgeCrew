@@ -162,7 +162,9 @@ def test_repair_retires_non_fact_notes_and_collapses_ladders(cfg):
             kind="project_learning", repo="svc")
 
     out = m.repair_captures()
-    assert out["ok"] and out["retired"] == 1 and out["collapsed"] == 1
+    assert out["ok"]
+    assert out["retired"] == 1
+    assert out["collapsed"] == 1
     names = sorted(p.name.split("-")[0] for p in m.captures_dir().glob("*.md"))
     assert "final" not in names
     ladder = next(iter(m.captures_dir().glob("clear-lockout-*.md")))
@@ -261,7 +263,8 @@ def test_a_complete_fact_is_never_destroyed_by_a_longer_one(old, new):
     assert not _fact.supersedes(new, old)
     claims, action = _subject.merge_claim([old], new)
     assert action == "added"
-    assert old in claims and new in claims
+    assert old in claims
+    assert new in claims
 
 
 def test_a_visible_fragment_is_still_superseded():
@@ -271,7 +274,8 @@ def test_a_visible_fragment_is_still_superseded():
     assert _fact.looks_truncated(frag)
     assert _fact.supersedes(full, frag)
     claims, action = _subject.merge_claim([frag], full)
-    assert action == "superseded" and claims == [full]
+    assert action == "superseded"
+    assert claims == [full]
 
 
 @pytest.mark.parametrize("text,not_subject", [
@@ -355,4 +359,5 @@ def test_extract_falls_back_to_the_fast_role_when_the_model_is_unreachable(
     monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _fake)
     items = ex._extract("some transcript", "memory")
     assert calls == ["memory", "learner"]
-    assert items and items[0].subject == "MessageRetryService"
+    assert items
+    assert items[0].subject == "MessageRetryService"

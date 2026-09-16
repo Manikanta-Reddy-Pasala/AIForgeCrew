@@ -34,6 +34,10 @@ EXTENDED_ROLES = {
     "verify_correctness", "verify_scope", "verify_risk",
     # 2026-06-18: research-completeness critic (research-gap loop).
     "gap_eval",
+    # 2026-09-16: memory distillation/consolidation. Its own role because
+    # deciding what is durable is judgement — it runs on the reasoning model,
+    # not the fast one the learner uses.
+    "memory",
 }
 EXPECTED_ROLES = CORE_ROLES | EXTENDED_ROLES
 
