@@ -107,18 +107,22 @@ def issues(text: str) -> list[str]:
         out.append("a request/question, not a fact")
     if _DANGLING_RE.match(t):
         out.append("leads with a dangling reference (no subject)")
-    if _TRUNCATED_TAIL_RE.search(t) or _unbalanced(t):
+    if _TRUNCATED_TAIL_RE.search(t):
         out.append("truncated mid-thought")
+    if _unbalanced(t):
+        out.append("unbalanced brackets")
     if not re.search(r"[A-Za-z]{3}", t):
         out.append("no words")
     return out
 
 
-#: Reasons that are a matter of DEGREE rather than shape. They belong at the
-#: write door (where the distiller can be told to do better) but must not
-#: retroactively delete someone's existing note — a terse line that a human
-#: wrote by hand is still theirs.
-_SOFT_REASONS = frozenset({"too short"})
+#: Reasons that are a matter of DEGREE or inference rather than shape. They
+#: belong at the write door (where the distiller can be told to do better) but
+#: must not retroactively delete someone's existing note — a terse line a human
+#: wrote by hand is still theirs. "truncated mid-thought" is an INFERENCE from a
+#: trailing article/conjunction, and it does read a legitimate terse line
+#: ("svc: rule a") as truncated, so deleting on it would be guessing.
+_SOFT_REASONS = frozenset({"too short", "truncated mid-thought"})
 
 
 def structural_issues(text: str) -> list[str]:
