@@ -906,7 +906,7 @@ def _warn_if_not_persisted(res, label: str, repo: str) -> None:
                         res.get("error"))
 
 
-def _capture_chat_cue(prompt, repo: str, session_id, pref_captured: bool) -> None:
+def _capture_chat_cue(prompt, repo: str, session_id) -> None:
     """An explicit "track this as a topic" → md capture (repo stamped) so it
     reaches the compaction axes.
 
@@ -914,8 +914,8 @@ def _capture_chat_cue(prompt, repo: str, session_id, pref_captured: bool) -> Non
     preference cue, which is what filled memory with chat turns ("can you add
     gitlab ci file for this repo", "attahced his solution"). Every turn already
     goes through preference_capture + chat_learner, which DISTIL it; the raw
-    text added nothing but noise, so that branch is gone. ``pref_captured``
-    stays in the signature for callers and is no longer needed here.
+    text added nothing but noise, so that branch is gone — and with it the
+    ``pref_captured`` argument, which only ever guarded that branch.
     """
     try:
         from aiforge_core.memory import md_store as _md2
@@ -960,8 +960,7 @@ def _chat_learn_writeback(cwd, prompt, final_text, steps, session_id) -> None:
         artifact_capture.capture_from_chat(
             prompt=prompt, final_text=final_text, steps=steps, cwd=cwd,
             session_id=session_id)
-        _capture_chat_cue(prompt, repo, session_id,
-                          bool(isinstance(pc, dict) and pc.get("captured")))
+        _capture_chat_cue(prompt, repo, session_id)
     except Exception as exc:  # noqa: BLE001
         _af_log.warning("chat learn/capture thread failed: %s", exc)
 

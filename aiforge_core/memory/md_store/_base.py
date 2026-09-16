@@ -190,18 +190,23 @@ def _now_iso() -> str:
     return datetime.datetime.now().isoformat(timespec="seconds")
 
 
+def _split_frontmatter(raw: str) -> tuple[dict, str]:
+    """``(meta, body)``. No frontmatter means the whole file is the body."""
+    m = _FM_RE.match(raw)
+    if not m:
+        return {}, raw
+    meta: dict = {}
+    for line in m.group(1).splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            # OKR-envelope briefs (work_notes) write JSON-quoted scalars
+            meta[k.strip()] = v.strip().strip('"')
+    return meta, m.group(2).strip()
+
+
 def _parse(path: Path) -> dict:
     raw = path.read_text(encoding="utf-8", errors="replace")
-    meta: dict = {}
-    body = raw
-    m = _FM_RE.match(raw)
-    if m:
-        body = m.group(2).strip()
-        for line in m.group(1).splitlines():
-            if ":" in line:
-                k, v = line.split(":", 1)
-                # OKR-envelope briefs (work_notes) write JSON-quoted scalars
-                meta[k.strip()] = v.strip().strip('"')
+    meta, body = _split_frontmatter(raw)
     return {
         "name": path.stem,
         "file": path.name,

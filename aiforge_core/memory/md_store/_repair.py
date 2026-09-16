@@ -14,6 +14,7 @@ is left alone rather than reduced to its bullets.
 """
 from __future__ import annotations
 
+import itertools
 import shutil
 
 from . import _fact, _subject
@@ -57,9 +58,9 @@ def _junk_reasons(d: dict) -> list[str]:
     if not claims:
         return ["empty note"]
     per_claim = [_fact.structural_issues(c) for c in claims]
-    if all(reasons for reasons in per_claim):
-        return sorted({r for reasons in per_claim for r in reasons})
-    return []
+    if not all(per_claim):
+        return []
+    return sorted(set(itertools.chain.from_iterable(per_claim)))
 
 
 def _retire(path, dst, archive: bool) -> bool:
@@ -82,13 +83,13 @@ def _retire(path, dst, archive: bool) -> bool:
                 shutil.move(str(path), str(dst / path.name))
             elif not delete_file(path.name):
                 return False
-        except Exception as exc:  # noqa: BLE001 — repair is best-effort upkeep
+        except Exception as exc:  # noqa: BLE001  # repair is best-effort upkeep
             _log.debug("repair: could not retire %s: %s", path.name, exc)
             return False
     try:
         from aiforge_core.memory import sqlite_memory as _sqlmem
         _sqlmem.delete_by_source(f"md:{path.stem}")
-    except Exception:  # noqa: BLE001 — md file is the source of truth
+    except Exception:  # noqa: BLE001  # md file is the source of truth
         pass
     return True
 
@@ -141,7 +142,7 @@ def _dedupe_claims(path, d: dict, dst, archive: bool) -> tuple[int, list]:
         try:
             dst.mkdir(parents=True, exist_ok=True)
             shutil.copy2(str(path), str(dst / f"pre-collapse-{path.name}"))
-        except Exception as exc:  # noqa: BLE001 — no copy, no rewrite
+        except Exception as exc:  # noqa: BLE001  # no copy, no rewrite
             _log.debug("repair: could not archive %s before collapse: %s",
                        path.name, exc)
             return 0, []
@@ -157,7 +158,7 @@ def _repair_one(path, dst, archive: bool,
     """``(retired_row, collapsed, dropped_detail)`` for one note."""
     try:
         d = _parse(path)
-    except Exception:  # noqa: BLE001 — unreadable note, leave it
+    except Exception:  # noqa: BLE001  # unreadable note, leave it
         return None, 0, []
     reasons = _junk_reasons(d)
     if reasons:

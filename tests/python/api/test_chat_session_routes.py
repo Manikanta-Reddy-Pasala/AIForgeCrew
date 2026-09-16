@@ -450,7 +450,7 @@ def test_a_topic_suggestion_is_captured(monkeypatch, prompt):
     seen: dict = {}
     monkeypatch.setattr(md_store, "capture",
                         lambda kind, text, **kw: seen.update(kind=kind, **kw))
-    ch._capture_chat_cue(prompt, "app", 7, pref_captured=False)
+    ch._capture_chat_cue(prompt, "app", 7)
     assert seen["kind"] == "topic_suggestion"
     assert seen["source"] == "chat:7"
     assert "7" in seen["evidence"]          # a fact records where it came from
@@ -466,28 +466,31 @@ def test_a_plain_preference_cue_is_no_longer_stored_verbatim(monkeypatch):
     from aiforge_core.memory import md_store
     monkeypatch.setattr(md_store, "capture",
                         lambda *a, **k: pytest.fail("stored the raw prompt"))
-    ch._capture_chat_cue("always squash merges", "app", 7, pref_captured=False)
+    ch._capture_chat_cue("always squash merges", "app", 7)
 
 
-def test_a_turn_already_owned_by_the_preference_capture_is_not_duplicated(monkeypatch):
+def test_a_preference_turn_is_never_stored_twice(monkeypatch):
+    """preference_capture owns a preference turn. This path used to store a
+    second, verbatim copy of it as a user_comment; now it stores nothing at
+    all, so there is no way to duplicate the turn."""
     from aiforge_core.memory import md_store
     monkeypatch.setattr(md_store, "capture",
                         lambda *a, **k: pytest.fail("captured the same turn twice"))
-    ch._capture_chat_cue("always squash merges", "app", 7, pref_captured=True)
+    ch._capture_chat_cue("always squash merges", "app", 7)
 
 
 def test_ordinary_chatter_is_not_captured(monkeypatch):
     from aiforge_core.memory import md_store
     monkeypatch.setattr(md_store, "capture",
                         lambda *a, **k: pytest.fail("captured plain chatter"))
-    ch._capture_chat_cue("what does this do?", "app", 7, pref_captured=False)
+    ch._capture_chat_cue("what does this do?", "app", 7)
 
 
 def test_a_capture_failure_is_swallowed(monkeypatch):
     from aiforge_core.memory import md_store
     monkeypatch.setattr(md_store, "capture",
                         lambda *a, **k: (_ for _ in ()).throw(OSError("disk")))
-    ch._capture_chat_cue("topic: x", "app", 7, pref_captured=False)
+    ch._capture_chat_cue("topic: x", "app", 7)
 
 
 def test_the_writeback_runs_preference_capture_and_the_learner(monkeypatch):

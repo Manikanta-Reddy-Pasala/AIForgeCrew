@@ -102,7 +102,7 @@ def _extract(transcript: str, role: str) -> "list | None":
             log.info("chat_okr: %s returned no items — retrying on %s", role, fb)
             items = _run(fb)
         return items
-    except Exception as exc:  # noqa: BLE001 — model down → retry next pass
+    except Exception as exc:  # noqa: BLE001  # model down → retry next pass
         log.warning("chat_okr extract failed (offset not advanced): %s", exc)
         return None
 

@@ -51,7 +51,8 @@ def test_delete_mode_removes_the_file_and_leaves_no_archive(cfg):
     from aiforge_core.memory import md_store as m
     _junk(m)
     out = m.repair_captures(archive=False)
-    assert out["retired"] == 1 and out["archived"] is False
+    assert out["retired"] == 1
+    assert out["archived"] is False
     assert not list(m.captures_dir().glob("final-*.md"))
     assert not list((m.memory_dir() / "archive").rglob("*.md"))
 
@@ -74,7 +75,8 @@ def test_an_unreadable_note_is_skipped_not_retired(cfg, monkeypatch):
     monkeypatch.setattr(_repair, "_parse",
                         lambda p: (_ for _ in ()).throw(OSError("bad sector")))
     out = m.repair_captures()
-    assert out["ok"] and out["retired"] == 0
+    assert out["ok"]
+    assert out["retired"] == 0
     assert path.exists()
 
 
@@ -110,7 +112,8 @@ def test_the_pass_reports_a_failure_rather_than_raising(cfg, monkeypatch):
     monkeypatch.setattr(_repair, "_capture_md_files",
                         lambda: (_ for _ in ()).throw(RuntimeError("disk gone")))
     out = m.repair_captures()
-    assert out["ok"] is False and "disk gone" in out["error"]
+    assert out["ok"] is False
+    assert "disk gone" in out["error"]
 
 
 def test_a_note_of_a_kind_repair_does_not_own_is_never_judged(cfg):

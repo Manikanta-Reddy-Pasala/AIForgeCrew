@@ -18,7 +18,8 @@ def test_a_loopback_bind_says_so_and_says_how_to_widen(host):
     assert "THIS machine only" in lines
     assert "ssh -L 8799:127.0.0.1:8799" in lines
     # the widening hint must carry the token, or the next attempt is refused
-    assert "AIFORGE_API_TOKEN" in lines and "--host 0.0.0.0" in lines
+    assert "AIFORGE_API_TOKEN" in lines
+    assert "--host 0.0.0.0" in lines
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "::"])
