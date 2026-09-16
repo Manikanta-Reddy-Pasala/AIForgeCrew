@@ -17,27 +17,21 @@ def subs():
 
 
 def _drain(monkeypatch, session_id, texts, subs, cwd, apply_side_effect=None):
-    monkeypatch.setattr(_stream.chat_interject if hasattr(_stream, "chat_interject")
-                        else _stream, "_noop", None, raising=False)
+    """Drive _steering_drain with a controlled queue.
 
-    class _FakeInterject:
-        @staticmethod
-        def pending(_sid):
-            return True
+    The real modules are patched in place rather than swapped in sys.modules:
+    `_steering_drain` does `from aiforge_core.runtime import chat_interject`,
+    which reads the attribute already bound on the package once anything has
+    imported that submodule. Replacing sys.modules therefore works when this
+    file runs alone and is ignored in a full-suite run — which is exactly how
+    this test first passed alone and failed in the suite.
+    """
+    from aiforge_core.runtime import chat_interject, chat_steer
 
-        @staticmethod
-        def drain(_sid):
-            return list(texts)
-
-    class _FakeSteer:
-        @staticmethod
-        def steer_event(text):
-            return {"type": "steer", "text": text}
-
-    import sys
-    monkeypatch.setitem(sys.modules, "aiforge_core.runtime.chat_interject",
-                        _FakeInterject)
-    monkeypatch.setitem(sys.modules, "aiforge_core.runtime.chat_steer", _FakeSteer)
+    monkeypatch.setattr(chat_interject, "pending", lambda _sid: True)
+    monkeypatch.setattr(chat_interject, "drain", lambda _sid: list(texts))
+    monkeypatch.setattr(chat_steer, "steer_event",
+                        lambda text: {"type": "steer", "text": text})
     if apply_side_effect is not None:
         monkeypatch.setattr(_stream, "_apply_steer", apply_side_effect)
     return list(_stream._steering_drain(session_id, subs, str(cwd)))
