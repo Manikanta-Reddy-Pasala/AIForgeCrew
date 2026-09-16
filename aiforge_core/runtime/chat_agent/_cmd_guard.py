@@ -1,5 +1,6 @@
-"""Reading a shell command before it runs: blanket git staging, and whether
-it starts a long-lived server (which would block run_command)."""
+"""Reading a shell command before it runs: blanket git staging, whether it
+starts a long-lived server (which would block run_command), and whether the
+script it runs exists."""
 from __future__ import annotations
 
 import os
