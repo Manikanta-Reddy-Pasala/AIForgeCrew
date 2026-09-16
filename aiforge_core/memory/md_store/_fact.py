@@ -64,10 +64,11 @@ _DANGLING_RE = re.compile(
     r"also|and|but|so|then|there|here|such|same|above|below|attached|attahced)\b",
     re.IGNORECASE)
 
-# Ends mid-thought: an ellipsis, or a trailing word that cannot end a sentence.
+# Ends mid-thought: an ellipsis, or a dangling conjunction. Deliberately NOT
+# articles/prepositions — a line ending "rule a" or "part of" reads as truncated
+# to a regex but is usually a terse label, and rejecting those cost real facts.
 _TRUNCATED_TAIL_RE = re.compile(
-    r"(?:\.\.\.|…|\b(?:and|or|but|the|a|an|to|of|in|on|for|with|that|which|"
-    r"from|by|as|at|is|are|was|were|be|been)\s*)$",
+    r"(?:\.\.\.|…|\b(?:and|or|but|with|that|which|because|so\s+that)\s*)$",
     re.IGNORECASE)
 
 _OPENERS = {"(": ")", "[": "]", "{": "}"}
