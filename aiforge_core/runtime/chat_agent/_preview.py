@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import time
 from collections.abc import Callable, Iterator
@@ -29,27 +28,12 @@ def _fence(body: str, lang: str = "") -> str:
 
 
 def _xhtml_to_md(xhtml: str) -> str:
-    """Light Confluence storage-XHTML → readable markdown, so the approval
-    preview shows formatted text instead of raw ``<p>…</ac:…>`` tags."""
-    import html
-    s = xhtml or ""
-    for i in range(6, 0, -1):                       # headings
-        s = re.sub(rf"<h{i}[^>]*>(.*?)</h{i}>",
-                   lambda m, i=i: "\n" + "#" * i + " " + m.group(1).strip() + "\n",
-                   s, flags=re.I | re.S)
-    s = re.sub(r"<pre[^>]*>(.*?)</pre>", lambda m: "\n```\n" + m.group(1).strip()
-               + "\n```\n", s, flags=re.I | re.S)
-    s = re.sub(r"<code[^>]*>(.*?)</code>", r"`\1`", s, flags=re.I | re.S)
-    s = re.sub(r"<(strong|b)[^>]*>(.*?)</\1>", r"**\2**", s, flags=re.I | re.S)
-    s = re.sub(r"<(em|i)[^>]*>(.*?)</\1>", r"*\2*", s, flags=re.I | re.S)
-    s = re.sub(r'''<a\b[^>]{0,400}href=["']([^"']{1,2000})["'][^>]{0,400}>(.*?)</a>''', r"[\2](\1)",
-               s, flags=re.I | re.S)
-    s = re.sub(r"<li[^>]*>(.*?)</li>", r"\n- \1", s, flags=re.I | re.S)
-    s = re.sub(r"<br\s*/?>", "\n", s, flags=re.I)
-    s = re.sub(r"</(p|div|ul|ol|h[1-6]|tr|table|ac:[\w-]+)>", "\n\n", s, flags=re.I)
-    s = re.sub(r"<[^>]+>", "", s)                    # strip remaining tags + macros
-    s = html.unescape(s)
-    return re.sub(r"\n{3,}", "\n\n", s).strip()
+    """Confluence storage-XHTML → readable markdown, so the approval preview
+    shows formatted text instead of raw ``<p>…</ac:…>`` tags. The one converter
+    lives in ``tools.markup_read``; the dossier uses it too, so a page reads the
+    same wherever it is shown."""
+    from aiforge_core.runtime.tools.markup_read import storage_to_md
+    return storage_to_md(xhtml)
 
 
 def _change_diff(old: str, new: str, label: str) -> str:
