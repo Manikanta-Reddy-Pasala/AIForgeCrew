@@ -49,23 +49,39 @@ def _steer_headings(target: str, note: str) -> tuple[str, str]:
               "satisfy it.")
 
 
-def _append_spec_mandate(cwd: str, heading: str, text: str) -> None:
+def _append_spec_mandate(cwd: str, heading: str, text: str) -> str:
+    """Write the mandate into SPEC.md. Returns "" on success, else the reason.
+
+    This used to swallow the write error, so a steer the run could not record
+    still answered "folded into the plan" — the user believed their new
+    requirement was in the spec when the file had never been touched.
+    """
+    err = ""
     try:
         with open(os.path.join(cwd, _SPEC_MD), "a", encoding="utf-8") as fh:
             fh.write(f"\n\n{heading}\n- **MUST:** {text}\n")
-    except Exception:  # noqa: BLE001
-        pass
-    # Record globally so the reconcile prompt can re-assert it.
+    except Exception as exc:  # noqa: BLE001
+        err = str(exc)
+    # Record globally either way: the reconcile prompt re-asserts these, so a
+    # failed spec write still leaves the requirement binding on the merge.
     try:
         _USER_MANDATES.setdefault(cwd, []).append(text)
     except Exception:  # noqa: BLE001
         pass
+    return err
 
 
 def _apply_steer(text: str, subs: list, cwd: str) -> str:
     """Route ONE steer to its target and pin it. Returns the confirmation."""
-    route = _route_steering(text, subs)
-    target, note = route["target"], route["note"]
+    try:
+        route = _route_steering(text, subs)
+        target, note = route["target"], route["note"]
+    except Exception as exc:  # noqa: BLE001
+        # Routing asks the model which subtask this belongs to. If it is down,
+        # the steer is still a REQUIREMENT — treat it as global rather than
+        # dropping the user's instruction on the floor.
+        log.warning("steer routing failed (%s) — treating as global", exc)
+        target, note = "global", "could not classify this steer, applied to the whole run"
     # A user comment is a MANDATORY requirement, not a hint — the subtask build
     # and the final reconcile MUST satisfy it. A steer naming a subtask that no
     # longer exists falls back to a global one.
@@ -73,7 +89,12 @@ def _apply_steer(text: str, subs: list, cwd: str) -> str:
               if target not in ("global", "new") else None)
     heading, feedback = pinned or _steer_headings(
         "new" if target == "new" else "global", note)
-    _append_spec_mandate(cwd, heading, text)
+    err = _append_spec_mandate(cwd, heading, text)
+    if err:
+        return (f"{feedback}\n\n⚠ could NOT write it into SPEC.md ({err}). "
+                "It is still binding on the final reconcile, but the spec "
+                "document does not show it — fix the workspace and re-state it "
+                "if the subtasks need to read it.")
     return feedback
 
 
@@ -101,17 +122,30 @@ def _steering_drain(session_id, subs: list, cwd: str):
         from aiforge_core.runtime import chat_interject, chat_steer
         if not chat_interject.pending(session_id):
             return
-        for raw in chat_interject.drain(session_id):
-            text = (raw or "").strip()
-            if not text:
-                continue
-            # Echo the user's steer TEXT (role:steer) so it shows + persists in
-            # the UI for team mode too — same as the simple/plan loop.
+        # drain() REMOVES the pending steers, so they exist only here. A raise
+        # partway through used to abandon the rest of the list — the user's
+        # second and third instructions were gone with no message at all.
+        drained = list(chat_interject.drain(session_id))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("steering drain failed: %s", exc)
+        return
+    for raw in drained:
+        text = (raw or "").strip()
+        if not text:
+            continue
+        # Echo the user's steer TEXT (role:steer) so it shows + persists in
+        # the UI for team mode too — same as the simple/plan loop.
+        try:
             yield chat_steer.steer_event(text)
             yield {"type": "thought", "role": "planner",
                    "text": _apply_steer(text, subs, cwd)}
-    except Exception:  # noqa: BLE001
-        return
+        except Exception as exc:  # noqa: BLE001
+            # Never silent: an instruction the run could not apply has to be
+            # visible, or the user waits for a change that will never come.
+            log.warning("could not apply steer %r: %s", text[:80], exc)
+            yield {"type": "thought", "role": "planner",
+                   "text": f"⚠ could not apply your instruction ({exc}). "
+                           f"It was NOT added to the plan: {text[:200]}"}
 
 
 def _arm_session(session_id) -> None:
