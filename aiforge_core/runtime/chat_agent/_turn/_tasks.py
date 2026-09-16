@@ -144,7 +144,7 @@ def turn_pin(st) -> str | None:
     if (getattr(st, "unlimited", False) and not getattr(st, "readonly_mode", False)
             and not getattr(st, "builder", None)):
         # Only a run long enough to be condensed gets this reminder.
-        from .._prompt import LONG_RUN_RULE
+        from .._prompt_text import LONG_RUN_RULE
         parts.append(LONG_RUN_RULE)
     steers = [" ".join(s.split())[:300] for s in getattr(st, "steers", [])][-5:]
     if steers:

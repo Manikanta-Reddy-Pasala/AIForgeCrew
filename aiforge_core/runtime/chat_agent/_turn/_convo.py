@@ -16,7 +16,7 @@ from .._context import (
     _text_of,
 )
 from .._native import _batch_cap
-from .._prompt import _SYSTEM, BATCH_READS_RULE, LONG_RUN_RULE
+from .._prompt_text import _SYSTEM, BATCH_READS_RULE, LONG_RUN_RULE
 from .._tools import (
     _preferences_context,
     _rules_context,
