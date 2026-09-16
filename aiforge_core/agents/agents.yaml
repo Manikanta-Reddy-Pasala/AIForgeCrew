@@ -253,7 +253,13 @@ agents:
         - issues
         - rationale
       max_turns: 1
-      max_wall_s: 60
+      # This is the node's HARD timeout (agents/_base.py), and a hard node
+      # timeout aborts the whole team run. 60s dated from the original
+      # scaffold and starved the judge with the largest input of any: the
+      # ticket, the plan, every subticket, the repo index and memory — the
+      # work of verify_correctness + verify_scope + verify_risk (300s each)
+      # in ONE call. Matches validator, the other large-input judge.
+      max_wall_s: 600
     tools:
       allowed: []
       forbidden:
