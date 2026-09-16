@@ -27,6 +27,7 @@ from ._shared import (
     _THE_FINALIZE_TOOL,
     _log,
 )
+from ._tasks import board_nudge_allowed, open_planned, unfinished_reminder
 
 
 def _verify_on_final(st, cwd, plan_mode, builder):
@@ -43,6 +44,8 @@ def _verify_on_final(st, cwd, plan_mode, builder):
     if (not plan_mode and not builder and st.edits_made > 0
             and st.verify_rounds < _verify_max_rounds()
             and _verify_on_final_enabled()):
+        yield {"type": "thought", "role": "system",
+               "text": "⧗ running the project's checks before finishing…"}
         _vok, _vout = _run_project_verify(cwd)
         if _vok is False:
             try:
@@ -147,6 +150,18 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
                 "to make progress, or output `FINAL: <answer>` ONLY when "
                 "the work is actually done. Do not just narrate or 'test'."})
             return "continue"
+    # Task board gate: the model planned items and some are still open. A
+    # long run must not stop to report half the work; bounded so a model
+    # that cannot finish still exits.
+    if (st.board_used and open_planned(st.board) and not builder
+            and not st.readonly_mode and board_nudge_allowed(st)):
+        if step.get("text"):
+            yield {"type": "thought", "text": step["text"]}
+        yield {"type": "thought", "role": "system",
+               "text": f"☐ {len(open_planned(st.board))} task(s) still open — "
+                       "continuing"}
+        st.convo.append({"role": "user", "content": unfinished_reminder(st.board)})
+        return "continue"
     # Multi-ask completeness gate (once): before accepting FINAL on a
     # multi-part message, make the model self-check its answer against
     # the checklist — the #1 simple-mode complaint is answering ask 1
@@ -197,7 +212,8 @@ def _turn_summary(st) -> str:
     """
     try:
         counts = getattr(st, "action_counts", None) or {}
-        names = [str(k) for k, v in counts.items() if v]
+        names = list(dict.fromkeys(str(k).split("|", 1)[0]
+                                   for k, v in counts.items() if v))
     except Exception:  # noqa: BLE001
         return ""
     return ", ".join(names[:8])
@@ -269,8 +285,10 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
     # to flip.
     if _asks:
         for _i in range(len(_asks)):
-            yield {"type": "subtask_update",
-                   "slug": f"part-{_i + 1}", "status": "done"}
+            _slug = f"part-{_i + 1}"
+            if st.board.get(_slug, {}).get("status") in ("failed", "skipped"):
+                continue            # the model said so; don't overwrite it
+            yield {"type": "subtask_update", "slug": _slug, "status": "done"}
     _fire_stop("final", cwd)
     yield {"type": "message", "text": _strip_reasoning_prefix(step["text"])}
     yield from _emit_suggestion(_last_user_message(st), _turn_summary(st), cwd)

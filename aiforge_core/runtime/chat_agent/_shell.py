@@ -4,9 +4,9 @@ import json
 import os
 import re
 import subprocess
-import time
-from collections.abc import Callable, Iterator
 from pathlib import Path
+
+from ._spool import Spool
 
 _BASH = '.bash'
 
@@ -506,7 +506,7 @@ _SYNTAX_EXTS = (".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".kt", ".kts",
                 ".rb", ".swift", ".scala")
 
 
-def _syntax_check(path: str, content: str, args: dict) -> "str | None":
+def _syntax_check(path: str, content: str, args: dict) -> str | None:
     """Return an error string if ``content`` is broken code, else None. Only
     runs for known code extensions, skips empty files, and honours force:true."""
     if args.get("force") or not content.strip():
@@ -718,8 +718,10 @@ _SERVER_START_REFUSAL = (
     "This starts a long-lived server/dev process that won't return, so "
     "run_command would block the whole turn. Use the `serve` tool instead — "
     "serve(cmd=\"…\") starts it in the background and gives you the URL "
-    "immediately (stop it later with stop_service). If you truly want it in "
-    "the foreground, append ` &` to background it yourself.")
+    "immediately (stop it later with stop_service). If you must start it "
+    "yourself, redirect its output on Linux: `cmd > app.log 2>&1 &` (a "
+    "bare `&` child, and on other systems any child, is stopped when the "
+    "command returns).")
 
 
 def _run_refusal(cmd: str, args: dict, base: str) -> dict | None:
@@ -765,7 +767,7 @@ def _drain(proc, timeout: float = 5) -> tuple[str, str] | None:
     return out or "", err or ""
 
 
-def _timeout_result(proc, timeout: int) -> dict:
+def _timeout_result(proc, timeout: int, spool=None) -> dict:
     """Capture whatever the command buffered BEFORE we kill it, so the agent
     sees partial output (e.g. which tests ran/passed before the hang) and can
     adapt — instead of a blind "timeout" with no signal."""
@@ -773,7 +775,16 @@ def _timeout_result(proc, timeout: int) -> dict:
 
     from aiforge_core.runtime import proc_signals
     proc_signals.kill_group(proc_signals.group_of(proc), _sig.SIGTERM)
-    drained = _drain(proc)
+    if spool is not None:
+        try:
+            proc.wait(timeout=5)
+        except Exception:  # noqa: BLE001 — ignored SIGTERM
+            pass
+        # The shell may be gone while a child that ignored SIGTERM is not.
+        spool.kill_group()
+        drained = spool.read()
+    else:
+        drained = _drain(proc)
     if drained is None:
         _kill_proc(proc)
         drained = ("", "")
@@ -788,9 +799,10 @@ def _timeout_result(proc, timeout: int) -> dict:
             "NOT undo your edits over a timeout."}
 
 
-def _await_exit(proc, timeout: int, sid) -> dict | None:
+def _await_exit(proc, timeout: int, sid, spool=None) -> dict | None:
     """Poll until the process exits; a dict when it was stopped or timed out."""
     import time as _time
+
     from aiforge_core.runtime import chat_cancel
     deadline = _time.monotonic() + timeout
     while proc.poll() is None:
@@ -798,15 +810,24 @@ def _await_exit(proc, timeout: int, sid) -> dict | None:
             _kill_proc(proc)
             return {"ok": False, "stopped": True, "error": "stopped by user"}
         if _time.monotonic() > deadline:
-            return _timeout_result(proc, timeout)
+            return _timeout_result(proc, timeout, spool)
+        if spool is not None and spool.too_big():
+            spool.kill_group()
+            _kill_proc(proc)
+            out, err = spool.read()
+            return {"ok": False, "code": None, "stdout": out[-_MAX_OBS:],
+                    "stderr": err[-_MAX_OBS:], "error": spool.too_big_error()}
         _time.sleep(0.2)
     return None
 
 
-def _collect_output(proc) -> tuple[str, str]:
+def _collect_output(proc, spool=None) -> tuple[str, str]:
     """Bound communicate(): a daemon grandchild inheriting the stdout pipe
     (e.g. `npm run dev &`) keeps it open after the process exits, so an
-    un-timed communicate() blocks forever even past the deadline."""
+    un-timed communicate() blocks forever even past the deadline. Spooled
+    output is simply read back."""
+    if spool is not None:
+        return spool.read()
     try:
         ct = int(os.environ.get("AIFORGE_COMMUNICATE_TIMEOUT_S", "10"))
     except (TypeError, ValueError):
@@ -830,27 +851,40 @@ def _t_run_command(args: dict, cwd: str) -> dict:
     # pip install) aren't killed mid-run; agent may override per call.
     default_to = int(os.environ.get("AIFORGE_CHAT_CMD_TIMEOUT_S", "600"))
     timeout = int(args.get("timeout", default_to))
-    from aiforge_core.runtime import chat_cancel
-    sid = chat_cancel.active()
+    spool = None
     try:
+        spool = Spool()
         # Its own process group, so the Stop button can kill the whole tree
         # (the shell + its children).
         proc = subprocess.Popen(
-            cmd, shell=True, cwd=base, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cmd, shell=True, cwd=base,
+            stdout=spool.out, stderr=spool.err,
             start_new_session=True,
         )
     except Exception as exc:  # noqa: BLE001
+        if spool is not None:
+            spool.close()
         return {"ok": False, "error": str(exc)}
+    spool.pgid = proc.pid             # start_new_session: its own group
+    try:
+        return _run_to_end(proc, timeout, spool)
+    finally:
+        spool.release_children()
+        spool.close()
+
+
+def _run_to_end(proc, timeout: int, spool) -> dict:
+    from aiforge_core.runtime import chat_cancel
+    sid = chat_cancel.active()
     if sid is not None:
         try:
             chat_cancel.track_pgid(sid, os.getpgid(proc.pid))
         except Exception:  # noqa: BLE001
             pass
-    stopped = _await_exit(proc, timeout, sid)
+    stopped = _await_exit(proc, timeout, sid, spool)
     if stopped is not None:
         return stopped
-    out, err = _collect_output(proc)
+    out, err = _collect_output(proc, spool)
     return {"ok": proc.returncode == 0, "code": proc.returncode,
             "stdout": out[-_MAX_OBS:], "stderr": err[-_MAX_OBS:]}
 

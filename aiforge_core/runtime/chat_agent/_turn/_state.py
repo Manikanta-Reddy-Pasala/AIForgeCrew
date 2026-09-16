@@ -19,6 +19,8 @@ from .._context import (
 from ._convo import (
     _build_convo,
 )
+from ._progress import progress_fields
+from ._tasks import seed_board
 
 
 def _resolve_complete_fn(complete_fn, role):
@@ -44,6 +46,27 @@ def _resolve_complete_fn(complete_fn, role):
             pass
 
     return complete_fn, _native_on
+
+
+#: Blocks the server appends to the user's message before the loop sees it.
+_ADDED_BLOCKS = ("\n\n---\n[Interpreted request", "\n\n---\n[RESUME]",
+                 "\n\n---\n[Deliverable")
+
+
+def _turn_goal(messages) -> str:
+    """This turn's request: the last user message, without the enhancer's
+    restatement."""
+    from aiforge_core.runtime.chat_resume import quoted_request
+    for m in reversed(messages or []):
+        if isinstance(m, dict) and m.get("role") == "user":
+            text = _text_of(m).strip()
+            quoted = quoted_request(text)       # "continue" + a resume brief
+            if quoted:
+                return quoted
+            for marker in _ADDED_BLOCKS:
+                text = text.split(marker)[0]
+            return text.strip() or _text_of(m).strip()
+    return ""
 
 
 def _compute_caps(max_steps, session_id):
@@ -139,14 +162,18 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     # the boilerplate + restatement.
     _user_roots = _writable_roots(messages, session_id)
 
+    _unlimited = not _capped and _turn_budget_s <= 0
+    from ._approval import new_turn as _approvals_new_turn
+    _approvals_new_turn(session_id)
     convo, _bundle, _asks, _dropped_playbooks = _build_convo(
         messages, cwd, role, readonly_mode=readonly_mode,
         plan_mode=plan_mode, analyze_mode=analyze_mode, builder=builder,
-        strict_finish=strict_finish, session_id=session_id, native=_native_on)
+        strict_finish=strict_finish, session_id=session_id, native=_native_on,
+        unlimited=_unlimited)
 
     # OrderedDict, not dict: the prune in ``_action`` needs least-recently-SEEN order,
     # which only move_to_end can maintain (see its call site).
-    action_counts: "collections.OrderedDict[str, int]" = collections.OrderedDict()
+    action_counts: collections.OrderedDict[str, int] = collections.OrderedDict()
     recent_outputs: collections.deque = collections.deque(maxlen=_OUTPUT_REPEAT)
     condensed_notified = False
     continue_nudges = 0   # consecutive "narrated but didn't act" re-prompts
@@ -162,7 +189,7 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     # no step ceiling to hold it down. Losing the oldest entries only means an
     # ancient read can count as "new knowledge" a second time — the failure
     # direction that grants an extension, never one that hides a runaway.
-    read_sigs_ever: "collections.OrderedDict[str, bool]" = collections.OrderedDict()
+    read_sigs_ever: collections.OrderedDict[str, bool] = collections.OrderedDict()
     _long_chain_help = _stuck_recovery_max() > 0   # 0 → full legacy behaviour
 
     # Mid-run steering (simple mode): let the user type WHILE the agent works —
@@ -253,5 +280,8 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         user_roots=_user_roots,
         dropped_playbooks=_dropped_playbooks, native_on=_native_on,
         pending_steps=[], batch_skipped=0, batch_mark=len(convo),
-        batch_unread=False)
+        batch_unread=False, board=seed_board(_asks), board_used=False,
+        board_nudges=0, board_closed_mark=None, unlimited=_unlimited,
+        goal=_turn_goal(messages), steers=[],
+        **progress_fields())
     return st

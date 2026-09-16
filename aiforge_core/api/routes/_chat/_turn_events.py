@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from aiforge_core.runtime.chat_event_slim import slim_event
+
 from ._core import (
     _PRODUCE_SEM,
 )
@@ -48,6 +50,8 @@ def _consume_produce_events(_events, st, steps, run, session_id, turn_t0,
     """Clean + route + publish each producer event, breaking on a mid-stream Stop
     (coercing in-flight subtasks to a terminal state so nothing reloads stuck).
     "planned" is a settled, never-run plan-mode state — NOT in-flight, left."""
+    from aiforge_core.runtime.chat_turn_save import TurnSaver
+    saver = TurnSaver(session_id, turn_mode)
     for ev in _events():
         ev = _clean_and_log_produce_event(ev, session_id, turn_t0, turn_mode,
                                           clog, emit)
@@ -55,6 +59,7 @@ def _consume_produce_events(_events, st, steps, run, session_id, turn_t0,
             continue
         _route_produce_event(ev, st, steps)
         run.publish(ev)
+        saver.maybe_save(steps, st["subtasks"])
         if chat_cancel.is_cancelled(session_id):
             for row in st["subtasks"]:
                 if row.get("status") not in _TERMINAL_SUBTASK:
@@ -114,7 +119,7 @@ def _route_produce_event(ev, st: dict, steps: list) -> None:
     elif (etype == "message" and ev.get("supplementary")
           or etype in ("thought", "tool", "error", "changes", "stopped",
                        "plan_ready", "captured")):
-        steps.append(ev)
+        steps.append(slim_event(ev))
     elif etype == "subtasks":
         st["subtasks"] = list(ev.get("items") or [])
     elif etype == "subtask_update":
@@ -138,7 +143,7 @@ class _TurnResetContext:
     repo_token: object
 
 
-def _reset_turn_context(ctx: "_TurnResetContext") -> None:
+def _reset_turn_context(ctx: _TurnResetContext) -> None:
     """Reset the per-turn meter boundary + the session/repo-root contextvars.
     Each soft-fails independently."""
     try:
@@ -238,6 +243,13 @@ def _finalize_produce_turn(session_id, cwd, prompt, final_text, steps, awaiting,
         _persist_produce_turn(session_id, cwd, prompt, final_text, steps,
                               awaiting, team, path, _turn_mode, _turn_t0,
                               cancelled)
+    # The turn ended here (or its driver owns persistence): the crash copy
+    # must not come back as a second, "interrupted" answer.
+    try:
+        from aiforge_core.runtime.chat_turn_save import TurnSaver
+        TurnSaver(session_id).discard()
+    except Exception:  # noqa: BLE001
+        pass
     # Wake every subscriber (this stream + any /attach) and close THIS
     # run object (not by session id — a newer turn for the same session
     # may have already replaced it in the registry). Done LAST so a

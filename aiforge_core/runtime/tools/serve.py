@@ -23,6 +23,9 @@ import time
 
 # pid → {proc, cmd, url, port, log_path, pgid, started_at, ttl}
 _SERVICES: dict[int, dict] = {}
+# Services the reaper stopped for running past their ttl, so the next
+# list_services can say so instead of the service silently vanishing.
+_EXPIRED: dict[int, dict] = {}
 _REAPER_STARTED = False
 _REAPER_LOCK = threading.Lock()
 
@@ -62,6 +65,10 @@ def _reap() -> int:
         elif expired:
             _kill_pgid(pid, s.get("pgid"))
             _SERVICES.pop(pid, None)
+            _EXPIRED[pid] = {"pid": pid, "url": s.get("url"), "cmd": s.get("cmd"),
+                             "alive": False, "stopped": f"ran past its ttl_s ({int(ttl)}s)"}
+            while len(_EXPIRED) > 20:
+                _EXPIRED.pop(next(iter(_EXPIRED)))
             reaped += 1
     return reaped
 
@@ -286,7 +293,10 @@ def list_services(_args: dict | None = None, _cwd: str | None = None) -> dict:
             _SERVICES.pop(pid, None)
         out.append({"pid": pid, "url": s.get("url"), "cmd": s.get("cmd"),
                     "alive": alive})
-    return {"ok": True, "services": out}
+    expired = list(_EXPIRED.values())
+    _EXPIRED.clear()                  # each is reported once
+    return {"ok": True, "services": out,
+            **({"expired": expired} if expired else {})}
 
 
 __all__ = ["serve", "stop_service", "list_services"]

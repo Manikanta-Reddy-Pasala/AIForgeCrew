@@ -30,10 +30,12 @@ class _Pending:
     decision: str = "reject"   # default-deny if the wait times out
     note: str = ""
     seq: int = 0
+    expired: bool = False
 
 
 _LOCK = threading.Lock()
 _PENDING: dict[int, _Pending] = {}
+_LAST_SEQ: dict[int, int] = {}
 
 # Per-session "review edits" flag (Gap D). When True, EVERY file-mutating
 # tool call is held for human Approve/Reject (with a real diff preview) before
@@ -150,7 +152,10 @@ def request(session_id: int) -> int:
     it first so that waiter unblocks instead of hanging to its timeout."""
     with _LOCK:
         prev = _PENDING.get(session_id)
-        seq = (prev.seq + 1) if prev else 1
+        # Numbers only ever grow for a session, across turns too: a late
+        # click on an old card must never match a newer request.
+        seq = _LAST_SEQ.get(session_id, 0) + 1
+        _LAST_SEQ[session_id] = seq
         if prev is not None and not prev.event.is_set():
             prev.decision = "reject"
             prev.note = "superseded"
@@ -168,7 +173,14 @@ def wait(session_id: int) -> dict:
         return {"decision": "reject", "note": "no pending approval"}
     ok = p.event.wait(timeout=_timeout_s())
     if not ok:
-        return {"decision": "reject", "note": "approval timed out"}
+        with _LOCK:
+            if not p.event.is_set():
+                # Expired: a late Approve on its card must resolve nothing.
+                # The entry stays, so the next request's number moves on.
+                p.expired = True
+                p.event.set()
+                return {"decision": "reject", "note": "approval timed out"}
+        # The user answered just as the wait ran out: their answer counts.
     return {"decision": p.decision, "note": p.note}
 
 
@@ -181,7 +193,7 @@ def resolve(session_id: int, decision: str, note: str = "",
         p = _PENDING.get(session_id)
         if p is None:
             return False
-        if seq is not None and seq != p.seq:
+        if (seq is not None and seq != p.seq) or p.expired:
             return False
         p.decision = "approve" if str(decision).lower() in (
             "approve", "approved", "yes", "ok", "allow") else "reject"

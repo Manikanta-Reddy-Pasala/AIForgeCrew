@@ -33,6 +33,10 @@ def _step_arg(args) -> str:
     return ""
 
 
+#: Tool calls a digest names; a longer turn shows its first and last ones.
+_DIGEST_CALLS = 12
+
+
 def _step_digest(steps: list) -> str:
     """One compact line summarising what an assistant turn DID — tool calls +
     outcomes — so the next turn's history carries the agent's actions, not just
@@ -41,18 +45,30 @@ def _step_digest(steps: list) -> str:
     transcribe into its final answer vanished."""
     if not isinstance(steps, list):
         return ""
+    from aiforge_core.runtime.tools.mutating import writes_files
     bits: list[str] = []
+    written: dict[str, None] = {}
     for s in steps:
         if not isinstance(s, dict) or s.get("type") != "tool":
             continue
         name = s.get("name") or "tool"
-        arg = _step_arg(s.get("args") or {})
+        args = s.get("args") or {}
+        arg = _step_arg(args)
         mark = _step_mark(s.get("result") or {})
         bits.append(f"{name}({arg}){mark}" if arg else f"{name}{mark}")
-        if len(bits) >= 12:
-            bits.append("…")
-            break
-    return ", ".join(bits)
+        if isinstance(args, dict) and writes_files(name, args) and args.get("path"):
+            written[str(args["path"])] = None
+    long_turn = len(bits) > _DIGEST_CALLS
+    if long_turn:
+        # A long turn: how it started and, more useful, how it ended.
+        hidden = len(bits) - _DIGEST_CALLS
+        bits = bits[:4] + [f"… {hidden} more …"] + bits[-(_DIGEST_CALLS - 4):]
+    digest = ", ".join(bits)
+    if long_turn and written:
+        names = list(written)
+        more = f" (+{len(names) - 20} more)" if len(names) > 20 else ""
+        digest += "; files written: " + ", ".join(names[-20:]) + more
+    return digest
 
 
 def _history_row_content(m: dict, role: str) -> str:

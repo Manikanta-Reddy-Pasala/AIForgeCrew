@@ -34,6 +34,8 @@ import threading
 import time
 from typing import Any
 
+from aiforge_core.runtime.chat_event_slim import slim_event
+
 # Sentinel pushed onto every subscriber queue when a run completes, so a
 # tailing consumer knows to stop without polling ``done``.
 _SENTINEL = object()
@@ -82,7 +84,9 @@ class _Run:
                 self._hold_delta(event)
             elif kind != "ping":
                 self.pending_deltas = []      # this event settles the stream
-                self.events.append(event)
+                # A replay needs the row, not an 80 KB read result; an
+                # hours-long run would otherwise hold every one in memory.
+                self.events.append(slim_event(event))
             for q in self.subscribers:
                 q.put(event)
 

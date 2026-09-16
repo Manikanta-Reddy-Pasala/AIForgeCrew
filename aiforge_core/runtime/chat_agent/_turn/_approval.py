@@ -20,7 +20,7 @@ _SHELL_TOOLS = ("run_command", "bash", "run_shell", "shell", "serve",
                 "watch_until", "ui_check")
 
 
-def _is_destructive_delete(cmd: str, cwd: "str | None" = None) -> bool:
+def _is_destructive_delete(cmd: str, cwd: str | None = None) -> bool:
     """Whether ``cmd`` deletes, unless the env opt-in already allows deletes."""
     try:
         from aiforge_core.runtime.tools import delete_guard
@@ -198,6 +198,18 @@ def _autonomous_decision(name, args, _destructive_del, verdict=None):
     return decision
 
 
+#: chat_approve.wait's note when nobody answered.
+_APPROVAL_TIMED_OUT = "approval timed out"
+#: Unanswered approvals in a row, per session, before the run pauses.
+_MAX_TIMEOUTS = 2
+_TIMEOUTS: dict = {}
+
+
+def new_turn(session_id) -> None:
+    """A new turn starts with no unanswered approvals behind it."""
+    _TIMEOUTS.pop(session_id, None)
+
+
 def _handle_rejection(name, args, session_id, convo, decision):
     """Handle a rejected/expired approval: reject-with-guidance folds the note in
     as a steer and continues; interactive reject-without-guidance stops and waits
@@ -205,6 +217,35 @@ def _handle_rejection(name, args, session_id, convo, decision):
     "continue"/"return"."""
     from aiforge_core.runtime import chat_steer
     _rnote = decision.get("note") or ""
+    if session_id is not None and _rnote == _APPROVAL_TIMED_OUT:
+        # Nobody answered — the user may be away for hours. That is not a
+        # "no": skip this call and let the run carry on with other work. A
+        # second timeout in a row means the work is blocked on the user:
+        # pause instead of waiting another round.
+        _TIMEOUTS[session_id] = _TIMEOUTS.get(session_id, 0) + 1
+        if _TIMEOUTS[session_id] >= _MAX_TIMEOUTS:
+            _TIMEOUTS.pop(session_id, None)
+            yield {"type": "tool", "name": name, "args": args,
+                   "result": {"ok": False, "approval_timed_out": True,
+                              "error": "not approved in time; skipped"}}
+            yield {"type": "message", "awaiting_input": True,
+                   "text": f"Paused — `{name}` and an earlier action needed your "
+                           "approval, which did not come in time, so both were "
+                           "skipped. Reply to continue, and say whether to try "
+                           "them again."}
+            yield {"type": "stopped", "reason": "approval_timeout"}
+            yield {"type": "done"}
+            return "return"
+        result = {"ok": False, "approval_timed_out": True,
+                  "error": f"`{name}` needs the user's approval, which did not "
+                           "come in time. It did not run."}
+        yield {"type": "tool", "name": name, "args": args, "result": result}
+        convo.append({"role": "user", "content":
+                      f"OBSERVATION: {json.dumps(result)} Continue with any "
+                      "work that does not need this call. If nothing else can "
+                      "be done, finish with FINAL and say what is waiting for "
+                      "approval."})
+        return "continue"
     _user_guidance = chat_steer.user_guidance(_rnote)
     result = {"ok": False, "rejected": True,
               "error": "user rejected this action"
@@ -264,8 +305,10 @@ def _run_approval(name, args, cwd, session_id, convo, verdict, _destructive_del)
     # M4: a gate left unanswered (user navigated away) auto-rejects on
     # timeout — surface it explicitly so the UI shows "approval expired"
     # instead of silently moving on with a rejected action.
-    if decision.get("note") == "approval timed out":
+    if decision.get("note") == _APPROVAL_TIMED_OUT:
         yield {"type": "approval_expired", "id": seq, "name": name}
+    if decision.get("note") != _APPROVAL_TIMED_OUT and session_id is not None:
+        _TIMEOUTS.pop(session_id, None)       # the user answered
     if decision.get("decision") != "approve":
         return (yield from _handle_rejection(
             name, args, session_id, convo, decision))

@@ -173,7 +173,7 @@ def test_the_loop_runs_the_whole_batch_before_asking_again(_two_files):
 def test_the_model_is_told_about_calls_that_did_not_run(_two_files):
     fn, calls = _batching_fn(_reads("a"), "FINAL: ok", skipped=2)
     _run(_two_files, fn)
-    assert "some tool calls in your last reply did not run: 2 because only " \
+    assert "tool calls in your last reply did not run: 2 because only " \
         "quick read-only calls run together" in _seen(calls, 1)
 
 

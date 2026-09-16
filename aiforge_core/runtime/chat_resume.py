@@ -32,6 +32,7 @@ resume nobody gets.
 from __future__ import annotations
 
 import logging
+import re
 
 from aiforge_core.runtime.tools.mutating import (
     EDITOR_READONLY_CMDS,
@@ -332,7 +333,9 @@ def build_brief(row: dict, _cwd: str = "") -> str:
         tail_bits += [f"  - {t}" for t in got["steers"][-_MAX_ERRORS:]]
     if got["errors"]:
         tail_bits.append("It failed with:")
-        tail_bits += [f"  - {e}" for e in got["errors"][:_MAX_ERRORS]]
+        # The LAST errors: after hours of work the first ones are stale; the
+        # run died on the recent ones.
+        tail_bits += [f"  - {e}" for e in got["errors"][-_MAX_ERRORS:]]
     tail_bits.append(
         "Rules for this run: read the files above before rewriting them; keep "
         "work that is already correct; do ONLY what is still missing; if "
@@ -350,9 +353,17 @@ def build_brief(row: dict, _cwd: str = "") -> str:
            got["attempted"], _MAX_FILES, budget, body)
     budget = _brief_block("Subtasks already completed:", done, _MAX_PENDING, budget, body)
     budget = _brief_block("Subtasks still PENDING:", pending, _MAX_PENDING, budget, body)
-    budget = _brief_block("Commands that already ran successfully:", got["commands"], 5, budget, body)
+    budget = _brief_block("Commands that already ran successfully (most recent):",
+                          got["commands"][-5:], 5, budget, body)
 
     return "\n".join([head, *body, tail])
+
+
+#: A short "carry on" message after a stopped turn is a resume too.
+_CONTINUE_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:continue|resume|keep going|carry on|go on|"
+    r"retry|try again|proceed)(?:\s+(?:please|from where you (?:left off|stopped)))?"
+    r"\s*[.!]*\s*$", re.IGNORECASE)
 
 
 def resume_preamble(rows: list, prompt: str, cwd: str = "",
@@ -372,9 +383,38 @@ def resume_preamble(rows: list, prompt: str, cwd: str = "",
     if not found:
         return ""
     row, prev_prompt = found
-    if not forced and _txt(prompt) != _txt(prev_prompt):
+    same = _txt(prompt) == _txt(prev_prompt)
+    if not forced and not same and not _CONTINUE_RE.match(_txt(prompt)):
         return ""
-    return build_brief(row, cwd)
+    brief = build_brief(row, cwd)
+    if brief and not same:
+        # "continue" says nothing about the task: quote it, so the run (and
+        # every condense after it) still knows what it is doing.
+        brief = (f"{brief}\n{REQUEST_OPEN}\n{_request_behind(rows)[:4000]}\n"
+                 f"{REQUEST_CLOSE}")
+    return brief
 
 
-__all__ = ["last_stopped_turn", "build_brief", "resume_preamble"]
+REQUEST_OPEN = "ORIGINAL REQUEST (the user's words, quoted):"
+REQUEST_CLOSE = "END OF ORIGINAL REQUEST"
+
+
+def _request_behind(rows: list) -> str:
+    """The newest user message that is a request, not a "continue"."""
+    for r in reversed(rows):
+        if isinstance(r, dict) and r.get("role") == "user":
+            raw = r.get("content")
+            raw = raw if isinstance(raw, str) else _txt(raw)
+            if raw.strip() and not _CONTINUE_RE.match(_txt(raw)):
+                return raw.split("\n\n---\n[RESUME]")[0].strip()
+    return ""
+
+
+def quoted_request(text: str) -> str:
+    """The request a resume brief quotes, or ""."""
+    m = re.search(re.escape(REQUEST_OPEN) + r"\n(.*?)\n" + re.escape(REQUEST_CLOSE),
+                  text or "", re.S)
+    return m.group(1).strip() if m else ""
+
+
+__all__ = ["last_stopped_turn", "build_brief", "resume_preamble", "quoted_request"]

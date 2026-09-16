@@ -691,6 +691,10 @@ def _exhausted_error(role: str, primary: Endpoint, fb, cloud,
     if shipped.get("timeout"):
         # The prompt DID reach the model — callers above must not re-issue it.
         setattr(exhausted, _TIMEOUT_SHIPPED_ATTR, True)
+    # The last transport error, for callers deciding whether to wait for the
+    # endpoint. An attribute, not __cause__: the breaker walks the cause chain
+    # and has already counted this failure.
+    exhausted.transport_error = shipped.get("exc")
     return exhausted
 
 

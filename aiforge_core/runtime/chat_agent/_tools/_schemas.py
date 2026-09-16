@@ -27,6 +27,12 @@ _T = {
 # is optional at the schema level except those in the required tuple; the object
 # stays open (additionalProperties) so an extra documented key still passes.
 CATALOG: dict = {
+    # ── handled by the loop itself, not the TOOLS registry ───────────────
+    "plan_progress": ("Your task board for long or multi-part work. A new slug "
+                      "with a title adds an item; a known slug changes its "
+                      "status. Keep one item running and mark each done when "
+                      "it is finished.",
+                      {"slug": "s", "title": "s", "status": "s"}, ("slug",)),
     # ── files / editing ──────────────────────────────────────────────────
     "file_read": ("Read a file's contents.", {"path": "s"}, ("path",)),
     "read_files": ("Read MANY files in ONE call (batched file_read). Pass a "
@@ -97,8 +103,8 @@ CATALOG: dict = {
     "run_tests": ("Run the project's tests. mode fast|all|discover.",
                   {"mode": "s", "pattern": "s"}, ()),
     "typecheck": ("Run the project's type-checker.", {}, ()),
-    "serve": ("Start a server/app in the background.", {"cmd": "s", "port": "i"},
-              ("cmd",)),
+    "serve": ("Start a server/app in the background. It is stopped after ttl_s "
+              "seconds (default 1800); ttl_s: 0 keeps it until stop_service.", {"cmd": "s", "port": "i", "ttl_s": "i"}, ("cmd",)),
     "stop_service": ("Stop a service started with serve.", {"pid": "i"},
                      ("pid",)),
     "list_services": ("List background services you started.", {}, ()),
@@ -357,9 +363,13 @@ def _registry_names() -> list[str]:
         return list(CATALOG)
 
 
+#: Tools the chat loop handles before the registry is consulted.
+LOOP_TOOLS = ("plan_progress",)
+
+
 def _build() -> list[dict]:
     out: list[dict] = []
-    for name in _registry_names():
+    for name in dict.fromkeys([*_registry_names(), *LOOP_TOOLS]):
         if name in CATALOG:
             desc, props, req = CATALOG[name]
             out.append(_fn(name, desc, props, req))

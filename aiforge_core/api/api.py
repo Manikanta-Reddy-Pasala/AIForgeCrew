@@ -258,6 +258,19 @@ def _reload_models_to_context(below: list[str], want: int) -> None:
 
 
 @app.on_event("startup")
+def _recover_interrupted_turns() -> None:
+    """A chat turn that was running when the server died becomes a stopped
+    turn, so Retry resumes it instead of the work being lost."""
+    try:
+        from aiforge_core.runtime import chat_turn_save
+        n = chat_turn_save.recover_all()
+        if n:
+            logging.getLogger("aiforge").info("recovered %d interrupted chat turn(s)", n)
+    except Exception as exc:  # noqa: BLE001 — never block boot on this
+        logging.getLogger("aiforge").warning("turn recovery skipped: %s", exc)
+
+
+@app.on_event("startup")
 def _ensure_model_context_on_boot() -> None:
     """Post-deploy, LM Studio JIT-loads the local model at its small default
     context (e.g. 8192), which HTTP-400s the big prompts a multi-file build needs

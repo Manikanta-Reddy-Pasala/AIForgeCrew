@@ -155,6 +155,17 @@ def _recent_tail_count(convo: list[dict], budget: int, *,
     return max(floor, min(kept, ceiling))
 
 
+_HARNESS_NOTE = re.compile(
+    r"^(OBSERVATION:|\[(?:[^\]]*not the user|system reminder)[^\]]*\]"
+    r"|You (?:narrated|signalled|described) )")
+
+
+def _is_harness_note(content: str) -> bool:
+    """A user-role message the loop wrote (a tool result or a nudge), not the
+    user's own words — it must not crowd out the real asks."""
+    return bool(_HARNESS_NOTE.match(content))
+
+
 def _middle_signals(middle: list[dict]) -> tuple[list[str], list[str], list[str]]:
     """``(tools, user_asks, finals)`` distilled from the dropped middle.
 
@@ -178,7 +189,7 @@ def _middle_signals(middle: list[dict]) -> tuple[list[str], list[str], list[str]
             elif (content and "ACTION:" not in content
                     and not _claims_file_edits(content)):
                 finals.append(content.replace("\n", " ")[:160])
-        elif role == "user" and content and not content.startswith("OBSERVATION:"):
+        elif role == "user" and content and not _is_harness_note(content):
             user_asks.append(content.replace("\n", " ")[:120])
     return tools, user_asks, finals
 
@@ -233,12 +244,20 @@ def _breadcrumb(middle: list, used: str, summary: str, llm_summary: str) -> str:
     return f"{_CONDENSE_OPEN}\n{body}\n{_CONDENSE_CLOSE}"
 
 
-def _pin_goal(sys_text: str, convo: list[dict]) -> str:
+def _pin_goal(sys_text: str, convo: list[dict], pin: "str | None" = None) -> str:
     """Pin the ORIGINAL task into the system prompt ONCE, OUTSIDE the strippable
     condense sentinel — so a long, repeatedly-condensed run never loses WHAT it
     is building. The first user turn gets summarised out of the middle, and on
     later condenses it is gone entirely; small-window models otherwise drift
-    off-goal mid-task."""
+    off-goal mid-task.
+
+    ``pin`` is the loop's own text for the block (this turn's task, later
+    instructions, files changed); it replaces the previous one each time."""
+    if pin is not None:
+        sys_text = re.sub(r"\s*" + re.escape(_GOAL_PIN_OPEN) + r".*?"
+                          + re.escape(_GOAL_PIN_CLOSE), "", sys_text, flags=re.S)
+        return (sys_text + "\n\n" + _GOAL_PIN_OPEN + "\n" + pin + "\n"
+                + _GOAL_PIN_CLOSE).strip()
     if _GOAL_PIN_OPEN in sys_text:
         return sys_text
     goal = next((_text_of(m).strip() for m in convo[1:]
@@ -255,13 +274,13 @@ def _pin_goal(sys_text: str, convo: list[dict]) -> str:
 def _stripped_system(convo: list[dict]) -> str:
     """The system message without any prior sentinel block, so it can't grow
     unbounded across repeated condenses."""
-    return re.sub(re.escape(_CONDENSE_OPEN) + r".*?" + re.escape(_CONDENSE_CLOSE),
+    return re.sub(r"\s*" + re.escape(_CONDENSE_OPEN) + r".*?" + re.escape(_CONDENSE_CLOSE),
                   "", convo[0].get("content") or "", flags=re.S).rstrip()
 
 
 def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None = None,
                    complete_fn=None, session_id=None, force: bool = False,
-                   keep_min: int = 0) -> list[dict]:
+                   keep_min: int = 0, pin: "str | None" = None) -> list[dict]:
     """Auto-condense a long chat history so the context can't overflow.
 
     Keeps the system message + the last ``keep_recent`` turns verbatim and
@@ -316,6 +335,6 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
     # Fold the breadcrumb INTO the system message rather than inserting a
     # separate 'user' turn — that avoids two consecutive same-role messages
     # (some providers reject those) and keeps the tail's alternation intact.
-    sys_text = _pin_goal(_stripped_system(convo), convo)
+    sys_text = _pin_goal(_stripped_system(convo), convo, pin)
     head = [{"role": "system", "content": (sys_text + "\n\n" + note).strip()}]
     return head + convo[-keep_recent:]
