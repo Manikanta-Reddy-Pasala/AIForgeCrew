@@ -36,6 +36,8 @@ def test_all_read_calls_after_the_first_are_queued():
     _call("file_write", path="a.py", content="x"),
     _call("run_command", cmd="ls"),
     _call("gitlab_pipeline_watch", project="p", pipeline_id=1),
+    _call("web_crawl", url="https://example.com"),
+    _call("typecheck", path="."),
 ])
 def test_a_batch_with_a_write_or_slow_tool_runs_one_call(other):
     """A write depends on what the model saw first; a slow read would run far
@@ -44,6 +46,11 @@ def test_a_batch_with_a_write_or_slow_tool_runs_one_call(other):
     assert _native._queued_steps(msg) == ([], 1)
     assert _native._queued_steps(_reply(other, _call("file_read", path="a.py"))) \
         == ([], 1)
+
+
+def test_every_batchable_tool_is_read_only():
+    from aiforge_core.runtime.chat_agent._registry import _READONLY_TOOLS
+    assert _native.BATCHABLE_READS <= set(_READONLY_TOOLS)
 
 
 def test_duplicates_are_dropped_and_broken_calls_counted():
@@ -205,16 +212,16 @@ def test_quick_mode_keeps_a_step_for_the_answer(_two_files):
     evs = _run(_two_files, fn, max_steps=3)
     assert _paths(evs) == ["a.txt", "b.txt"]
     assert [e for e in evs if e["type"] == "message"][0]["text"] == "two were enough"
-    assert "(step budget)" in _seen(calls, 1)
+    assert "step budget is nearly used up" in _seen(calls, 1)
 
 
 def test_a_batch_stops_before_it_outgrows_the_context(_two_files, monkeypatch):
     from aiforge_core.runtime.chat_agent import _loop
-    monkeypatch.setattr(_loop, "_ctx_budget_chars", lambda *a, **k: 20)
+    monkeypatch.setattr(_loop, "_tail_budget_chars", lambda *a, **k: 5)
     fn, calls = _batching_fn(_reads("a", "b", "c"), "FINAL: ok")
     evs = _run(_two_files, fn)
     assert _paths(evs) == ["a.txt"]
-    assert "(context space)" in _seen(calls, 1)
+    assert "would not fit in the context window" in _seen(calls, 1)
 
 
 def test_a_refused_call_drops_the_rest_of_the_batch(_two_files, monkeypatch):
@@ -224,10 +231,58 @@ def test_a_refused_call_drops_the_rest_of_the_batch(_two_files, monkeypatch):
     fn, calls = _batching_fn(batch, "FINAL: ok")
     evs = _run(_two_files, fn)
     assert _paths(evs) == ["a.txt"]
-    assert "(an earlier call was refused)" in _seen(calls, 1)
+    assert "an earlier call was blocked" in _seen(calls, 1)
 
 
-def test_only_native_runs_are_told_to_batch(tmp_path):
+def test_a_repeated_read_in_a_batch_does_not_drop_the_rest(_two_files):
+    """The duplicate-read guard only skips that call."""
+    replies = iter([_reads("a")[0], None, "FINAL: ok"])
+    calls, queued = [], []
+
+    def fn(role, convo):
+        calls.append(list(convo))
+        out = next(replies)
+        if out is None:
+            queued[:] = _reads("b", "c")
+            return _reads("a")[0]
+        return out
+
+    def take():
+        items = list(queued)
+        queued.clear()
+        return items, 0
+    fn.take_queued = take
+    evs = _run(_two_files, fn)
+    assert _paths(evs) == ["a.txt", "b.txt", "c.txt"]
+    assert len(calls) == 3
+    assert "tool calls in your last reply" not in _seen(calls, 2)
+
+
+def test_the_deadline_stops_a_batch():
+    import time
+    from types import SimpleNamespace
+
+    from aiforge_core.runtime.chat_agent import _loop
+    st = SimpleNamespace(capped=False, safety=0, turn_deadline=time.monotonic() - 1,
+                         convo=[], batch_mark=0, role="chat")
+    assert _loop._batch_stop_reason(st, 1, None) == "the turn deadline passed"
+    st.turn_deadline = None
+    assert _loop._batch_stop_reason(st, 1, None) is None
+
+
+def test_a_condense_keeps_results_the_model_has_not_read(monkeypatch):
+    from aiforge_core.runtime.chat_agent._context import _compaction
+    monkeypatch.setattr(_compaction, "_ctx_budget_chars", lambda *a, **k: 1000)
+    convo = [{"role": "system", "content": "sys"}] + [
+        {"role": "user" if i % 2 else "assistant", "content": f"{i} " + "x" * 300}
+        for i in range(30)]
+    kept = _compaction._compact_convo(convo, role="chat", keep_min=12)
+    assert kept[-12:] == convo[-12:]
+    assert len(kept) == 13
+    assert len(_compaction._compact_convo(convo, role="chat")) < 13
+
+
+def test_only_native_runs_are_told_to_batch(tmp_path, monkeypatch):
     msgs = [{"role": "user", "content": "hi"}]
     kw = dict(readonly_mode=False, plan_mode=False, analyze_mode=False,
               builder=None, strict_finish=False, session_id=None)
@@ -235,6 +290,9 @@ def test_only_native_runs_are_told_to_batch(tmp_path):
     native, *_ = _build_convo(msgs, str(tmp_path), "chat", native=True, **kw)
     assert "BATCH READS" not in text[0]["content"]
     assert "BATCH READS" in native[0]["content"]
+    monkeypatch.setenv("AIFORGE_CHAT_BATCH_READS", "1")
+    off, *_ = _build_convo(msgs, str(tmp_path), "chat", native=True, **kw)
+    assert "BATCH READS" not in off[0]["content"]
 
 
 def test_the_prompt_forbids_promises_and_made_up_results():

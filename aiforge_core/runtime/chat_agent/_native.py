@@ -219,16 +219,26 @@ def _batch_cap() -> int:
         return 8
 
 
-#: Read-only, but each can take many minutes: a batch of them would run far
-#: past the turn deadline before anything checks it.
-_SLOW_READS = frozenset({"gitlab_pipeline_watch", "web_crawl"})
+#: Reads that return in seconds. The turn deadline is only checked between
+#: calls, so a slow read-only tool (a pipeline watch, a crawl, a type check, a
+#: document summary that calls a model) never joins a batch.
+BATCHABLE_READS = frozenset({
+    "file_read", "read_files", "read_lines", "list_dir", "find", "grep",
+    "git_status", "git_diff", "git_log", "git_blame",
+    "memory_lookup", "search_chat_sessions", "skill_search", "workflow_search",
+    "codegraph_query", "codegraph_callers", "codegraph_callees",
+    "codegraph_impact", "resolve_repo", "list_services",
+    "jira_read", "jira_search", "jira_transitions", "jira_worklog",
+    "confluence_read", "confluence_search", "confluence_children",
+    "gitlab_read", "gitlab_search",
+})
 
 
 def _queued_steps(msg: dict) -> "tuple[list[str], int]":
     """``(steps, skipped)`` for the 2nd..Nth tool calls of one reply, so a model
     that asks for five lookups at once gets them without four more round trips.
 
-    Only when EVERY call is a quick read-only tool: a write depends on what the
+    Only when EVERY call is in :data:`BATCHABLE_READS`: a write depends on what the
     model saw before it, so a mixed batch keeps one call per turn (the first
     call runs; the model asks again). ``skipped`` counts the distinct calls that
     will not run — the loop tells the model. Each queued step still goes
@@ -236,7 +246,6 @@ def _queued_steps(msg: dict) -> "tuple[list[str], int]":
     calls = msg.get("tool_calls") or []
     if len(calls) < 2:
         return [], 0
-    from ._registry import _READONLY_TOOLS
     first = _synth_step(msg)
     batchable = True
     broken = 0
@@ -244,7 +253,7 @@ def _queued_steps(msg: dict) -> "tuple[list[str], int]":
     for c in calls[1:]:
         fn = (c or {}).get("function") or {}
         name = fn.get("name") or ""
-        batchable = batchable and name in _READONLY_TOOLS and name not in _SLOW_READS
+        batchable = batchable and name in BATCHABLE_READS
         args = _resolve_call_args(fn.get("arguments"))
         if not isinstance(args, dict):
             broken += 1
@@ -253,7 +262,7 @@ def _queued_steps(msg: dict) -> "tuple[list[str], int]":
         if step != first and step not in wanted:
             wanted.append(step)
     first_name = ((calls[0] or {}).get("function") or {}).get("name") or ""
-    if not batchable or first_name not in _READONLY_TOOLS or first_name in _SLOW_READS:
+    if not batchable or first_name not in BATCHABLE_READS:
         return [], len(wanted) + broken
     steps = wanted[:max(0, _batch_cap() - 1)]
     return steps, len(wanted) - len(steps) + broken

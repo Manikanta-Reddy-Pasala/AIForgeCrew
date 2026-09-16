@@ -14,8 +14,9 @@ from ._shell import (_MAX_OBS, _MAX_OBS_READ, _READ_OBS_TOOLS, _smart_truncate_o
 from ._tools import (_ROOT_SCOPED_TOOLS, _chat_repo_key, _preferences_context, _rules_context, _scoped_root)
 from ._registry import (TOOLS, _ANALYZE_BANNER, _BUILDER_FINALIZE_TOOL, _BUILDER_NUDGE_AFTER, _FINALIZE_TOOLS, _PLAN_BANNER, _READONLY_TOOLS, _is_mutating, _perf_family)
 from ._preview import (_diff_preview)
+from ._native import _batch_cap
 from ._prompt import (BATCH_READS_RULE, _SYSTEM, _parse, _strip_reasoning_prefix)
-from ._context import (_CANCELLED, _EDIT_TOOL_NAMES, _LOOP_REPEAT, _OUTPUT_REPEAT, _WEB_LOOKUP_DIRECTIVE, _cap_system_prompt, _cave_mode, _chat_session_recall, _claims_file_edits, _compact_convo, _complete_cancellable, _complete_live, _compress_prompt, _ctx_budget_chars, _ctx_on, _edit_claim_disclaimer, _edit_claim_guard_enabled, _edit_claim_nudge, _fire_stop, _has_web_intent, _post_edit_syntax_error, _progress_recap, _extension_budget, _repo_name, _stuck_recovery_max, _run_project_verify, _safety_cap, _split_asks, _sys_prompt_budget_chars, _unattended_cap, _text_of, _turn_deadline_s, _verify_fix_message, _verify_max_rounds, _verify_on_final_enabled, _worktree_fingerprint)
+from ._context import (_CANCELLED, _EDIT_TOOL_NAMES, _LOOP_REPEAT, _OUTPUT_REPEAT, _WEB_LOOKUP_DIRECTIVE, _cap_system_prompt, _cave_mode, _chat_session_recall, _claims_file_edits, _compact_convo, _complete_cancellable, _complete_live, _compress_prompt, _ctx_budget_chars, _ctx_on, _edit_claim_disclaimer, _edit_claim_guard_enabled, _edit_claim_nudge, _fire_stop, _has_web_intent, _post_edit_syntax_error, _progress_recap, _extension_budget, _repo_name, _stuck_recovery_max, _run_project_verify, _safety_cap, _split_asks, _sys_prompt_budget_chars, _tail_budget_chars, _unattended_cap, _text_of, _turn_deadline_s, _verify_fix_message, _verify_max_rounds, _verify_on_final_enabled, _worktree_fingerprint)
 
 _log = logging.getLogger("aiforge.chat_agent")
 
@@ -434,7 +435,7 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
             sys_msg += addition[:room] + "\n…(truncated to fit context)\n"
         _sys_dropped.append(label)
 
-    if native:
+    if native and _batch_cap() > 1:
         _add_sys_block("batch-reads", BATCH_READS_RULE)
     # WEB-LOOKUP directive FIRST — it's short + critical, so it must outrank the
     # big optional blocks (repo-map/recall) under a tight window (blocks added
@@ -1062,7 +1063,8 @@ def _step_cap_guard(st, n):
             _before_ext = len(st.convo)
             st.convo = _compact_convo(st.convo, keep_recent=8, role=st.role,
                                    complete_fn=st.complete_fn,
-                                   session_id=st.session_id, force=True)
+                                   session_id=st.session_id, force=True,
+                                   keep_min=_unread_batch_msgs(st))
             if len(st.convo) < _before_ext:
                 st.read_sigs_seen.clear()   # results dropped → re-reads are valid
             _did = ("condensed the history and " if len(st.convo) < _before_ext
@@ -1096,7 +1098,8 @@ def _deadline_guard(st, n):
             _before_ext = len(st.convo)
             st.convo = _compact_convo(st.convo, keep_recent=8, role=st.role,
                                    complete_fn=st.complete_fn,
-                                   session_id=st.session_id, force=True)
+                                   session_id=st.session_id, force=True,
+                                   keep_min=_unread_batch_msgs(st))
             if len(st.convo) < _before_ext:
                 st.read_sigs_seen.clear()
             _did = ("condensed the history and " if len(st.convo) < _before_ext
@@ -1174,7 +1177,7 @@ def _condense_and_report(st, role, complete_fn, session_id, _meter):
     # happened (one-time per condense) for transparency.
     _before = len(st.convo)
     st.convo = _compact_convo(st.convo, role=role, complete_fn=complete_fn,
-                           session_id=session_id)
+                           session_id=session_id, keep_min=_unread_batch_msgs(st))
     if len(st.convo) < _before:
         # The dropped turns took their tool RESULTS with them, so a read
         # whose output is no longer in the window is no longer a duplicate.
@@ -2215,12 +2218,14 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         scope_globs=_scope_globs, asks=_asks, bundle=_bundle, meter=_meter,
         user_roots=_user_roots,
         dropped_playbooks=_dropped_playbooks, native_on=_native_on,
-        pending_steps=[], batch_skipped=0, batch_mark=len(convo))
+        pending_steps=[], batch_skipped=0, batch_mark=len(convo),
+        batch_unread=False)
     return st
 
 
 def _queue_batched_reads(st):
-    """Keep the read-only calls the model batched after its first one."""
+    """Keep the read-only calls the model batched after its first one. Called
+    right after a model call, so any earlier batch has now been read."""
     take = getattr(st.complete_fn, "take_queued", None)
     if not callable(take):
         return
@@ -2228,6 +2233,12 @@ def _queue_batched_reads(st):
     st.pending_steps[:] = steps
     st.batch_skipped = skipped
     st.batch_mark = len(st.convo)
+    st.batch_unread = bool(steps)
+
+
+def _unread_batch_msgs(st):
+    """Messages a condense must keep: a batch's results the model has not read."""
+    return len(st.convo) - st.batch_mark if st.batch_unread else 0
 
 
 def _batch_stop_reason(st, n, session_id):
@@ -2240,15 +2251,15 @@ def _batch_stop_reason(st, n, session_id):
     # Leave the model a step to answer in: a capped run (Quick mode) must not
     # spend its whole budget on one batch.
     if st.capped and n >= st.safety:
-        return "step budget"
+        return "the step budget is nearly used up"
     if st.turn_deadline is not None and time.monotonic() > st.turn_deadline:
-        return "turn deadline"
-    # Condensing drops the oldest results first; a batch bigger than the tail
-    # it keeps would be summarised away before the model read it.
-    budget = _ctx_budget_chars(st.role)
+        return "the turn deadline passed"
+    # Unread results are never condensed away, so a batch bigger than the tail
+    # a condense keeps would crowd out the rest of the history.
+    tail = _tail_budget_chars(st.convo, st.role)
     added = sum(len(_text_of(m)) for m in st.convo[st.batch_mark:])
-    if budget and added > budget // 2:
-        return "context space"
+    if tail and added > tail:
+        return "their results would not fit in the context window"
     return None
 
 
@@ -2259,8 +2270,8 @@ def _drop_batch(st, reason):
     st.batch_skipped = 0
     if skipped and reason != "stopped":
         _append_directive(st, (
-            f"NOTE: {skipped} of the tool calls in your last reply did not run "
-            f"({reason}). Request again any you still need."))
+            f"NOTE: {skipped} of the tool calls in your last reply did not run: "
+            f"{reason}. Request any you still need in your next reply."))
 
 
 def _pop_queued_step(st, n, session_id):
@@ -2268,9 +2279,9 @@ def _pop_queued_step(st, n, session_id):
     steered, or hit a limit — then the model decides again."""
     if not st.pending_steps:
         if st.batch_skipped:
-            _drop_batch(st, "only read-only calls run together, up to "
-                            "AIFORGE_CHAT_BATCH_READS per reply; a reply with "
-                            "a write or a slow tool runs its first call only")
+            _drop_batch(st, "only quick read-only calls run together (at most "
+                            "AIFORGE_CHAT_BATCH_READS per reply), and a call "
+                            "with unreadable arguments never runs")
         return None
     reason = _batch_stop_reason(st, n, session_id)
     if reason:
@@ -2349,11 +2360,26 @@ def _run_action_path(st, step, n, cwd, session_id):
     # crash. An empty dict lets the tool return its own instructive error.
     args = step["args"] if isinstance(step["args"], dict) else {}
     sig = name + "|" + json.dumps(args, sort_keys=True, default=str)
+    _sig = yield from _gated_action(st, step, name, args, sig, n, cwd, session_id)
+    if _sig == "repeat":
+        return "continue"
+    if _sig == "continue":
+        # A gate refused or redirected this call: the rest of the batch waits
+        # for the model to read why.
+        _drop_batch(st, "an earlier call was blocked")
+    return _sig
+
+
+def _gated_action(st, step, name, args, sig, n, cwd, session_id):
+    """Stall guard, gates, dispatch and bookkeeping for one tool call. Returns
+    return/continue/None, or "repeat" when a read already done was skipped."""
+    repeat = bool(st.long_chain_help and name in _READ_OBS_TOOLS
+                  and sig in st.read_sigs_seen)
     _sig = yield from _action_stall_guard(st, name, args, sig, st.long_chain_help)
     if _sig == "return":
         return "return"
     if _sig == "continue":
-        return "continue"
+        return "repeat" if repeat else "continue"
     if step.get("thought"):
         yield {"type": "thought", "text": step["thought"]}
     _sig = yield from _pre_dispatch_gates(st, name, args, st.readonly_mode,
@@ -2364,9 +2390,6 @@ def _run_action_path(st, step, n, cwd, session_id):
     if _sig == "return":
         return "return"
     if _sig == "continue":
-        # Refused or rejected: the rest of the batch waits for the model to
-        # read why.
-        _drop_batch(st, "an earlier call was refused")
         return "continue"
     _hb = yield from _pre_tool_checks(st, name, args, cwd, st.scope_globs)
     if _hb in ("continue", "return"):
