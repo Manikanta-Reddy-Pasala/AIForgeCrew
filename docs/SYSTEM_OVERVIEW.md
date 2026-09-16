@@ -47,7 +47,7 @@ OpenAI-compatible endpoint works, no native tool-calling needed. One command:
    never escalates.
 
 Answers **stream** to the UI as SSE, in simple and team mode alike
-(`api/routes/chat.py`, `api/routes/_sse.py`).
+(`api/routes/chat.py` and `api/routes/_chat/`, `api/routes/_sse.py`).
 
 ### 2b. Pipeline (team mode / tickets)
 

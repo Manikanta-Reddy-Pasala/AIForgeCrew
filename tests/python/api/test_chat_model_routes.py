@@ -243,7 +243,7 @@ def test_the_picker_lists_configured_and_served_models(client, registry,
                                                        monkeypatch):
     """Served-only would hide every model the user added but hasn't loaded."""
     registry.append({"model": "unloaded", "base_url": "http://boxA:1234/v1"})
-    monkeypatch.setattr(ch, "_served_model_ids_for_role", lambda role: {"coder"})
+    monkeypatch.setattr(ch._models, "_served_model_ids_for_role", lambda role: {"coder"})
     body = client.get("/api/chat/models").json()
     ids = [m["id"] for m in body["models"]]
     assert "unloaded" in ids
@@ -255,7 +255,7 @@ def test_the_picker_lists_configured_and_served_models(client, registry,
 
 def test_an_undiscoverable_endpoint_assumes_the_current_model_is_active(
         client, registry, monkeypatch):
-    monkeypatch.setattr(ch, "_served_model_ids_for_role", lambda role: set())
+    monkeypatch.setattr(ch._models, "_served_model_ids_for_role", lambda role: set())
     assert client.get("/api/chat/models").json()["current_active"] is True
 
 
@@ -263,7 +263,7 @@ def test_an_env_pin_is_surfaced_so_the_picker_can_warn(client, registry,
                                                        monkeypatch):
     """Otherwise the picker silently saves a model that never runs."""
     monkeypatch.setenv("AIFORGE_CHAT_MODEL", "pinned-model")
-    monkeypatch.setattr(ch, "_served_model_ids_for_role", lambda role: set())
+    monkeypatch.setattr(ch._models, "_served_model_ids_for_role", lambda role: set())
     body = client.get("/api/chat/models").json()
     assert body["env_override"] == {"var": "AIFORGE_CHAT_MODEL",
                                     "model": "pinned-model"}
@@ -319,7 +319,7 @@ def save(monkeypatch):
     monkeypatch.setattr(ch._acfg, "set_role", _set_role)
     monkeypatch.setattr(ch._model_registry, "connection_for",
                         lambda model, want: {"base_url": "http://boxB/v1"})
-    monkeypatch.setattr(ch, "_served_model_ids_for_role", lambda role: {"new-model"})
+    monkeypatch.setattr(ch._models, "_served_model_ids_for_role", lambda role: {"new-model"})
     from aiforge_core.runtime import vision_detect
     monkeypatch.setattr(vision_detect, "reset_vision_cache", lambda: None)
     monkeypatch.setattr(vision_detect, "warm_vision_async", lambda role: None)
@@ -342,7 +342,7 @@ def test_a_pick_can_be_scoped_to_chat_only(client, save):
 
 
 def test_an_inactive_model_is_saved_but_flagged(client, save, monkeypatch):
-    monkeypatch.setattr(ch, "_served_model_ids_for_role", lambda role: {"other"})
+    monkeypatch.setattr(ch._models, "_served_model_ids_for_role", lambda role: {"other"})
     assert client.put("/api/chat/model",
                       json={"model": "new-model"}).json()["active"] is False
 
@@ -434,7 +434,7 @@ def test_an_out_of_range_context_length_is_rejected(client, reload_env):
 def test_the_orchestrator_picks_from_the_chat_model_universe(client, monkeypatch):
     """Probing the planner's own base_url would empty the dropdown when it is a
     per-model proxy that serves no /v1/models list."""
-    monkeypatch.setattr(ch, "_served_model_ids_for_role", lambda role: {"coder"})
+    monkeypatch.setattr(ch._models, "_served_model_ids_for_role", lambda role: {"coder"})
     body = client.get("/api/chat/orchestrator-model").json()
     assert body["model"] == "thinker"
     assert {m["id"] for m in body["models"]} == {"coder", "thinker"}
@@ -538,6 +538,6 @@ def test_a_missing_workspace_root_sweeps_nothing(monkeypatch, tmp_path):
 
 def test_the_workspace_root_defaults_under_the_config_dir(monkeypatch, tmp_path):
     monkeypatch.delenv("AIFORGE_CHAT_WORKSPACE_ROOT", raising=False)
-    monkeypatch.setattr(ch, "config_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(ch._sessions, "config_dir", lambda: str(tmp_path))
     assert ch._chat_workspace_root() == os.path.join(str(tmp_path),
                                                      "chat-workspaces")
