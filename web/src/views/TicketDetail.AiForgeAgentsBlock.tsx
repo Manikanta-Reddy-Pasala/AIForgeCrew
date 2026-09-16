@@ -1,3 +1,5 @@
+import { toText } from '../util';
+
 export function AiForgeAgentsBlock({ m }: Readonly<{ m: any }>) {
   const plan = m.plan || {};
   const steps = plan.steps || [];
@@ -31,7 +33,7 @@ export function AiForgeAgentsBlock({ m }: Readonly<{ m: any }>) {
             <summary className="small"><strong>Stage timings (s)</strong></summary>
             <ul className="small mono" style={{ marginTop: 4 }}>
               {Object.entries(stages).map(([k, v]) => (
-                <li key={k}>{k}: {String(v)}</li>
+                <li key={k}>{k}: {toText(v)}</li>
               ))}
             </ul>
           </details>

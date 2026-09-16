@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Icon } from '../icons';
 import { AgentStep, ChangeFile } from './Chat.types';
+import { toText } from '../util';
 
 // ── Agent step row ─────────────────────────────────────────────────────────────
 
@@ -86,7 +87,10 @@ function DiffBody({ diff }: Readonly<{ diff: string }>) {
         if (/^\+\+\+|^---|^diff |^index |^@@/.test(ln)) { color = 'var(--fg-3)'; }
         else if (ln.startsWith('+')) { color = 'var(--ok)'; bg = 'rgba(63,185,80,.10)'; }
         else if (ln.startsWith('-')) { color = 'var(--err)'; bg = 'rgba(248,81,73,.10)'; }
-        return <div key={i} style={{ color, background: bg, whiteSpace: 'pre' }}>{ln || ' '}</div>;
+        // key=index: one immutable diff rendered once; diff lines duplicate
+        // (blank context lines, repeated braces) and never reorder, so a
+        // content key would collide. (S6479 exception)
+        return <div key={i} style={{ color, background: bg, whiteSpace: 'pre' }}>{ln || ' '}</div>; // NOSONAR
       })}
     </pre>
   );
@@ -147,13 +151,13 @@ const DETAIL_CHARS = 20000;
 function argsPreview(args: Record<string, unknown>): string {
   const entries = Object.entries(args ?? {});
   const shown = entries.slice(0, ARG_PREVIEW)
-    .map(([k, v]) => `${k}=${middle(JSON.stringify(v) ?? String(v), ARG_CHARS)}`);
+    .map(([k, v]) => `${k}=${middle(toText(v), ARG_CHARS)}`);
   if (entries.length > ARG_PREVIEW) shown.push(`+${entries.length - ARG_PREVIEW} more`);
   return shown.join(', ');
 }
 
 function pretty(v: unknown): string {
-  const s = typeof v === 'string' ? v : (JSON.stringify(v, null, 2) ?? String(v));
+  const s = typeof v === 'string' ? v : (JSON.stringify(v, null, 2) ?? toText(v));
   return s.length > DETAIL_CHARS ? s.slice(0, DETAIL_CHARS) + '\n… (truncated)' : s;
 }
 

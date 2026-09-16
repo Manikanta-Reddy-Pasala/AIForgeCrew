@@ -535,7 +535,7 @@ function CheckpointsModal({ checkpoints, setCheckpoints, restoreCheckpoint }: Re
         display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50,
       }}
     >
-      <div role="dialog" aria-modal="true" aria-label="Workspace checkpoints"
+      <dialog open className="dialog-reset" aria-modal="true" aria-label="Workspace checkpoints"
            onClick={e => e.stopPropagation()}
            onKeyDown={e => e.stopPropagation()} style={{
         width: 'min(560px, 92vw)', maxHeight: '70vh', overflow: 'auto',
@@ -567,7 +567,7 @@ function CheckpointsModal({ checkpoints, setCheckpoints, restoreCheckpoint }: Re
             ))}
           </div>
         )}
-      </div>
+      </dialog>
     </div>
   );
 }
@@ -2197,7 +2197,7 @@ export default function Chat() {
               <div {...clickable(() => setSpecModal(null))} aria-label="Close"
                    style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
                             display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-                <div role="dialog" aria-modal="true" aria-label="SPEC.md"
+                <dialog open className="dialog-reset" aria-modal="true" aria-label="SPEC.md"
               // Not a control: this panel exists only to stop the overlay's click
               // from closing the dialog. A matching key handler keeps that
               // true for keyboard users without announcing it as a button.
@@ -2212,7 +2212,7 @@ export default function Chat() {
                   </div>
                   {specModal.loading ? <div className="muted">Loading…</div>
                     : <MdLite text={specModal.content} />}
-                </div>
+                </dialog>
               </div>
             )}
 

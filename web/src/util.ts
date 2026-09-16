@@ -75,3 +75,47 @@ export function identifierPrefix(id: string): string {
   const m = /^([A-Z]+)-/.exec(id || '');
   return m ? m[1] : '';
 }
+
+/**
+ * Any value as display text. `String(v)` on an object renders the literal
+ * "[object Object]" — which is what several panels showed for a nested value.
+ * Scalars read naturally; everything else is JSON.
+ */
+export function toText(v: unknown): string {
+  if (v == null) return '';
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') {
+    return v.toString();
+  }
+  try {
+    return JSON.stringify(v) ?? '';
+  } catch {
+    return '';                       // a cyclic structure has no text form
+  }
+}
+
+/**
+ * Copy via a hidden textarea — the only route that works outside a secure
+ * context. navigator.clipboard is UNDEFINED over plain http, and this app is
+ * routinely reached that way on a LAN IP, so there is no modern replacement to
+ * move to. Returns whether the copy happened.
+ */
+export function legacyCopy(text: string): boolean {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.top = '-9999px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    // NOSONAR (S1874) — deprecated, but the ONLY copy path over plain http,
+    // where navigator.clipboard does not exist. See the comment above.
+    const ok = document.execCommand('copy'); // NOSONAR
+    ta.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}

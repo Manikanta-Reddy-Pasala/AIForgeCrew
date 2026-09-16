@@ -199,7 +199,7 @@ export function NotesPanel() {
              style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                       zIndex: 1000, padding: 20 }}>
-          <div role="dialog" aria-modal="true" aria-label={open.title}
+          <dialog open className="dialog-reset" aria-modal="true" aria-label={open.title}
                onClick={e => e.stopPropagation()}
                onKeyDown={e => e.stopPropagation()}
                style={{ background: 'var(--bg-0)', border: '1px solid var(--border-1)',
@@ -211,7 +211,7 @@ export function NotesPanel() {
             </div>
             <div className="small muted" style={{ margin: '4px 0' }}>{open.file}</div>
             <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13, margin: 0 }}>{open.body}</pre>
-          </div>
+          </dialog>
         </div>
       )}
     </div>

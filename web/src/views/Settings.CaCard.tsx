@@ -74,12 +74,15 @@ export default function CaCard() {
 
       {!!st?.certificates.length && (
         <div style={{ marginBottom: 10 }}>
-          <div {...{ onClick: () => setOpen(v => !v), role: 'button', tabIndex: 0,
-                     onKeyDown: (e: React.KeyboardEvent) => {
-                       if (e.key === 'Enter' || e.key === ' ') setOpen(v => !v);
-                     } }}
+          {/* A real <button>: keyboard, focus and screen-reader behaviour come
+              for free, which a div with role="button" only imitates. The
+              style strips the button chrome so it still reads as a header. */}
+          <button type="button" onClick={() => setOpen(v => !v)}
+            aria-expanded={open}
             style={{ fontSize: 12, marginBottom: 6, cursor: 'pointer',
-                     userSelect: 'none' }}>
+                     userSelect: 'none', display: 'block', width: '100%',
+                     textAlign: 'left', background: 'none', border: 0,
+                     padding: 0, font: 'inherit', color: 'inherit' }}>
             {open ? '▾' : '▸'} {st.certificates.length} added by you, from{' '}
             <b>{st.source === 'ui' ? 'this screen' : st.source}</b>
             {!st.readable && (
@@ -96,7 +99,7 @@ export default function CaCard() {
                 {st.others_in_bundle === 1 ? '' : 's'} in the bundle
               </span>
             )}
-          </div>
+          </button>
           {open && st.certificates.map(c => (
             <div key={c.sha256} style={{
               display: 'flex', alignItems: 'center', gap: 8, fontSize: 11,

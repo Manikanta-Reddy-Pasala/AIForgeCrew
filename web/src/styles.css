@@ -1615,3 +1615,23 @@ button.icon:hover:not(:disabled) { color: var(--fg-0); background: var(--bg-3); 
 }
 .llm-meter-row > b { flex: none; }
 .llm-meter-note { font-size: 10px; color: var(--warn); }
+
+/* A <dialog open> used as an in-page panel. The UA stylesheet styles a dialog
+ * for showModal(): absolute positioning with inset-inline-start:0, auto
+ * margins, a border, 1em padding and CanvasText colour. Every panel here
+ * positions and styles itself, and CanvasText is black on the dark theme — so
+ * neutralise all of it. :where() keeps specificity at ZERO, so a panel's own
+ * class (.llm-meter-panel) or inline style always wins over this reset. */
+:where(dialog.dialog-reset) {
+  position: static;
+  inset: auto;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  max-width: none;
+  max-height: none;
+  width: auto;
+  height: auto;
+}

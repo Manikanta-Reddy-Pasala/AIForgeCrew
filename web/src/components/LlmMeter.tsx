@@ -50,7 +50,7 @@ function Sparkline({ data, fails }: Readonly<{ data: number[]; fails?: number[] 
           // bucket series (values duplicate, e.g. zeros); slot i IS the identity
           // and the series never reorders. (S6479 exception)
           <span
-            key={i}
+            key={i} // NOSONAR
             style={{
               height: `${h}px`,
               background: tot > 0 ? 'var(--accent)' : 'var(--border-0)',
@@ -247,7 +247,7 @@ function MeterPanel({ u, stale, n, perMin, hour, failMin, failHour, series, fail
 }>) {
   const live = !!u && !stale;
   return (
-    <div className="llm-meter-panel" role="dialog" aria-label="LLM requests">
+    <dialog open className="dialog-reset llm-meter-panel" aria-label="LLM requests">
       <div className="llm-meter-head">
         <b>LLM requests</b>
         <span className="llm-meter-sub">every call at the wire — chat, pipeline, jobs, memory</span>
@@ -270,7 +270,7 @@ function MeterPanel({ u, stale, n, perMin, hour, failMin, failHour, series, fail
       </>}
 
       <MeterNotes u={u} down={down} />
-    </div>
+    </dialog>
   );
 }
 

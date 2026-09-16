@@ -4,6 +4,7 @@ import { api, MemoryOverview } from '../api';
 import { Icon } from '../icons';
 import { OVERVIEW_STORES } from './Memory.helpers';
 import { clickable } from '../a11y';
+import { toText } from '../util';
 
 export function OverviewPanel() {
   const [ov, setOv] = useState<MemoryOverview | null>(null);
@@ -137,7 +138,7 @@ export function OverviewPanel() {
                   {(ov.stores.sources.count ?? 0).toLocaleString()} registered
                   {Object.keys(ov.stores.sources.by_status || {}).length > 0 &&
                     ` — ${Object.entries(ov.stores.sources.by_status || {})
-                      .map(([k, v]) => k + ' ' + v).join(', ')}`}
+                      .map(([k, v]) => `${k} ${toText(v)}`).join(', ')}`}
                 </div>
                 <div className="muted xs" style={{ marginTop: 2 }}>
                   preserved across clears — re-index to repopulate
