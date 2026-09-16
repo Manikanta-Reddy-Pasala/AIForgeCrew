@@ -33,21 +33,17 @@ from __future__ import annotations
 
 import logging
 
+from aiforge_core.runtime.tools.mutating import (
+    EDITOR_READONLY_CMDS,
+    FILE_WRITE_TOOLS,
+)
+
 log = logging.getLogger("aiforge.chat_resume")
 
-# Tools that CHANGE the workspace. Union of tool_gate._MUTATING (the review
-# gate's list, aliases included) and the chat agent's own edit-tool set — the
-# two had already drifted apart, and a tool missing here is an edit the brief
-# does not know about, so the resume repeats it.
-_EDIT_TOOLS = frozenset((
-    "write_file", "file_write", "edit", "editor", "edit_block", "file_patch",
-    "patch", "apply_patch", "str_replace", "create_file", "multi_edit",
-    "file_create", "write", "rename_symbol", "format",
-))
-
-# ``editor`` multiplexes read and write on ONE tool name. Only the write
-# sub-commands touch anything (mirrors tool_gate._EDITOR_READONLY_CMDS).
-_EDITOR_READONLY_CMDS = frozenset({"view", "read", "list", "ls", "cat", "open"})
+# Tools that CHANGE the workspace — the shared list. A tool missing here is an
+# edit the brief does not know about, so the resume repeats it.
+_EDIT_TOOLS = FILE_WRITE_TOOLS
+_EDITOR_READONLY_CMDS = EDITOR_READONLY_CMDS
 
 # Where a tool call keeps its path — same key list the syntax-check guard uses.
 _PATH_KEYS = ("path", "file", "filename", "file_path", "target")
