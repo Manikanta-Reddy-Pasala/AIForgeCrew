@@ -232,6 +232,31 @@ UNADMIN=0
 ADMIN_URL_SET=""
 GROUP_SET=""
 SKIP_WEB=0
+
+# The printed URL looks like a working address from anywhere, but the default
+# bind is loopback: from a phone, another laptop, or a Windows browser pointed
+# at a WSL box, the page simply never connects and nothing says why. Say which
+# machine can reach it, and how to widen it — including the token the boot
+# guard requires, so the obvious next try (--host 0.0.0.0) does not just get
+# refused at startup.
+_say_reachability() {
+  case "$HOST" in
+    127.0.0.1|localhost|::1)
+      echo "  reachable: from THIS machine only (bound to $HOST)."
+      echo "    from another machine, either tunnel:"
+      echo "      ssh -L ${PORT}:127.0.0.1:${PORT} $(whoami)@$(hostname -s 2>/dev/null || echo this-host)"
+      echo "    or bind wider — a non-loopback bind needs a token, or it refuses to boot:"
+      echo "      AIFORGE_API_TOKEN=\$(openssl rand -hex 24) ./run.sh --host 0.0.0.0"
+      ;;
+    0.0.0.0|::|"")
+      echo "  reachable: from any machine that can route to this host."
+      ;;
+    *)
+      echo "  reachable: on $HOST (and this machine)."
+      ;;
+  esac
+}
+
 TEST=0
 # There is no mode to choose. Run from a host and you get the sandbox; run
 # INSIDE the box (docker/entrypoint.sh execs this script there) and you get the
@@ -1235,6 +1260,7 @@ fi
 
 echo ""
 echo "  AIForge → $(_ui_scheme)://${HOST}:${PORT}/ui/   storage: SQLite + scoped-OKF memory"
+_say_reachability
 echo "  code context: RepoMap + CodeGraph"
 [[ -n "${AIFORGE_WORKSPACE_DIR:-}" ]] \
   && echo "  chat fs scope: ${AIFORGE_WORKSPACE_DIR}" \

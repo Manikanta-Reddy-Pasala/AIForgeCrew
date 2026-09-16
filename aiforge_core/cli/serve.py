@@ -147,13 +147,38 @@ def _terminate(proc: subprocess.Popen) -> None:
             proc.kill()
 
 
+LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
+
+
+def reachability(host: str, port: int) -> list[str]:
+    """The lines that say WHICH machines can open the URL just printed.
+
+    The URL reads like an address anyone can use, but the default bind is
+    loopback: from another laptop, a phone, or a Windows browser pointed at a
+    WSL box, it simply never connects and nothing explains why. The widening
+    hint carries the token too, because a non-loopback bind without one is
+    refused at boot — so the obvious next attempt would fail as well.
+    """
+    if host in LOOPBACK_HOSTS:
+        return [f"  reachable: from THIS machine only (bound to {host}).",
+                "    from another machine, tunnel:",
+                f"      ssh -L {port}:127.0.0.1:{port} <user>@<this-host>",
+                "    or bind wider (a non-loopback bind needs a token):",
+                f"      AIFORGE_API_TOKEN=$(openssl rand -hex 24) aiforge "
+                f"--host 0.0.0.0 --port {port}"]
+    if host in ("0.0.0.0", "::", ""):
+        return ["  reachable: from any machine that can route to this host."]
+    return [f"  reachable: on {host} (and this machine)."]
+
+
 def _announce(host: str, port: int) -> None:
     print("")
     print(f"  AIForge → {ui_url(host, port)}")
     print("  storage: SQLite + scoped-OKR memory under "
           f"{os.environ.get('AIFORGE_CONFIG_DIR') or '~/.aiforge'}")
-    if host not in ("127.0.0.1", "::1", "localhost") \
-            and not os.environ.get("AIFORGE_API_TOKEN"):
+    for line in reachability(host, port):
+        print(line)
+    if host not in LOOPBACK_HOSTS and not os.environ.get("AIFORGE_API_TOKEN"):
         # Same rule run.sh enforces: off-loopback without a token is an open
         # box, and the installers make off-loopback a checkbox away.
         print("  ! bound off-loopback with no AIFORGE_API_TOKEN — anyone who can "
