@@ -72,6 +72,12 @@ _CERT_SUFFIXES = (".pem", ".crt", ".cer", ".cert", ".der")
 #: intermediates, and a client needs the chain, not the first file we happened
 #: to glob.
 _MERGED_NAME = "bundle.pem"
+#: Files in ca/ that WE generate. run.sh writes its system-merged bundle next
+#: to the operator's certificate, so globbing the folder blindly folds every
+#: public root back in as if they had dropped it — and the Settings panel then
+#: lists ~150 of them as "added by you".
+_GENERATED_NAMES = frozenset({_MERGED_NAME, "dropped-chain.pem",
+                              "bundle-with-system.pem"})
 
 
 def ca_dir(*, create: bool = False) -> Path:
@@ -121,7 +127,7 @@ def dropped_certs() -> list[Path]:
     if not d.is_dir():
         return []
     return sorted(p for p in d.iterdir()
-                  if p.is_file() and p.name != _MERGED_NAME
+                  if p.is_file() and p.name not in _GENERATED_NAMES
                   and p.suffix.lower() in _CERT_SUFFIXES)
 
 
@@ -383,14 +389,50 @@ def clear() -> bool:
     return True
 
 
+def own_certificates() -> list[dict]:
+    """The certificates the OPERATOR supplied — pasted in, or dropped into the
+    ca/ folder. Each carries ``origin`` so the screen knows which it can remove.
+
+    Not the same as the certificates in force. The bundle actually used is
+    merged with the platform's roots (``SSL_CERT_FILE`` REPLACES the trust
+    store rather than adding to it), so describing the bundle listed ~150
+    public roots and buried the one file the operator cared about.
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+    sources = [(stored_path(), "ui")] + [(p, "dropped") for p in dropped_certs()]
+    for path, origin in sources:
+        if not path.is_file():
+            continue
+        try:
+            pem = _pem_text(path)
+        except Exception:  # noqa: BLE001  # an unreadable file is reported by gaps()
+            continue
+        for c in describe(pem):
+            if c["sha256"] in seen:
+                continue                  # the same root dropped twice
+            seen.add(c["sha256"])
+            out.append({**c, "origin": origin, "file": path.name})
+    return out
+
+
 def status() -> dict:
     """Everything the Settings screen needs in one call."""
     b = bundle()
-    certs = describe()
+    mine = own_certificates()
+    # How many are in the bundle in force. Shown as a count, never as rows:
+    # the operator wants to see what THEY added, but hiding the difference
+    # entirely would misrepresent what this box trusts.
+    try:
+        total = len(describe())
+    except Exception:  # noqa: BLE001  # a bundle we cannot parse is still a bundle
+        total = 0
     return {"configured": bool(b), "source": source(), "path": b or "",
-            "readable": readable(b), "warnings": gaps(certs),
+            "readable": readable(b), "warnings": gaps(mine),
             "certificates": [{k: v for k, v in c.items() if k != "pem"}
-                             for c in certs],
+                             for c in mine],
+            "bundle_total": total,
+            "others_in_bundle": max(0, total - len(mine)),
             "applies_to": ["the model endpoint", "Jira, Confluence, GitLab",
                            "AIForge's own HTTP", "git, curl, npm and the "
                            "agent's shell"]}

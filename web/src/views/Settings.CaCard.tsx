@@ -28,6 +28,9 @@ export default function CaCard() {
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
   const files = useRef<HTMLInputElement>(null);
+  // Collapsed by default: this is a list you check once and then scroll past
+  // on your way to the paste box, which is the thing you actually came for.
+  const [open, setOpen] = useState(false);
 
   const load = () => api.ca().then(setSt).catch(() => setSt(null));
   useEffect(() => { load(); }, []);
@@ -71,16 +74,30 @@ export default function CaCard() {
 
       {!!st?.certificates.length && (
         <div style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 12, marginBottom: 6 }}>
-            {st.certificates.length} trusted, from{' '}
+          <div {...{ onClick: () => setOpen(v => !v), role: 'button', tabIndex: 0,
+                     onKeyDown: (e: React.KeyboardEvent) => {
+                       if (e.key === 'Enter' || e.key === ' ') setOpen(v => !v);
+                     } }}
+            style={{ fontSize: 12, marginBottom: 6, cursor: 'pointer',
+                     userSelect: 'none' }}>
+            {open ? '▾' : '▸'} {st.certificates.length} added by you, from{' '}
             <b>{st.source === 'ui' ? 'this screen' : st.source}</b>
             {!st.readable && (
               <span style={{ color: 'var(--danger, #b00)' }}>
                 {' '}— the file cannot be read
               </span>
             )}
+            {/* The bundle in force also carries the platform's own roots. Say
+                how many rather than listing them: ~150 public roots buried the
+                one certificate the operator actually added. */}
+            {!!st.others_in_bundle && (
+              <span style={{ opacity: 0.6 }}>
+                {' '}· + {st.others_in_bundle} system root
+                {st.others_in_bundle === 1 ? '' : 's'} in the bundle
+              </span>
+            )}
           </div>
-          {st.certificates.map(c => (
+          {open && st.certificates.map(c => (
             <div key={c.sha256} style={{
               display: 'flex', alignItems: 'center', gap: 8, fontSize: 11,
               padding: '5px 8px', marginBottom: 4,
@@ -101,7 +118,16 @@ export default function CaCard() {
                   {c.not_after ? ` · expires ${c.not_after.slice(0, 10)}` : ''}
                 </div>
               </span>
-              {st.source === 'ui' && (
+              {/* Only a certificate THIS screen saved can be removed from
+                  here. One dropped into the ca/ folder is a file on disk, and
+                  a Remove button that silently did nothing would be worse than
+                  no button — so it says where it came from instead. */}
+              {c.origin === 'dropped' ? (
+                <span style={{ fontSize: 10, opacity: 0.6, whiteSpace: 'nowrap' }}
+                      title={`dropped into the ca/ folder as ${c.file}`}>
+                  file: {c.file}
+                </span>
+              ) : (
                 <button type="button" className="ghost" disabled={busy}
                         onClick={() => run(() => api.removeCa(c.sha256))}>
                   Remove

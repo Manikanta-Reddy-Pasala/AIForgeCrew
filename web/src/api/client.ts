@@ -31,8 +31,16 @@ export type CaStatus = {
   source: string;
   path: string;
   readable: boolean;
+  /** Only what the operator supplied — pasted in, or dropped into the ca/
+   *  folder. NOT the bundle in force: that is merged with the platform's own
+   *  roots, and listing those buried the one certificate they added. */
   certificates: { sha256: string; subject: string; issuer: string;
-                  not_after: string; kind: string; is_ca: boolean }[];
+                  not_after: string; kind: string; is_ca: boolean;
+                  origin: 'ui' | 'dropped'; file: string }[];
+  /** How many certificates the bundle in force holds in total, and how many of
+   *  those are not the operator's — shown as a count, so nothing is hidden. */
+  bundle_total: number;
+  others_in_bundle: number;
   /** Things worth saying out loud — an intermediate whose root is missing,
    *  or a server certificate pasted in place of a CA. Never a refusal: most
    *  servers send their chain, so the bundle still works. */
