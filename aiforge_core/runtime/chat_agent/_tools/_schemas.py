@@ -23,7 +23,7 @@ _T = {
 }
 
 # name -> (description, {prop: type_code}, (required, …))
-# Arg shapes mirror the system-prompt tool catalog (_prompt.py). Every property
+# Arg shapes mirror the system-prompt tool catalog (_prompt_text.py). Every property
 # is optional at the schema level except those in the required tuple; the object
 # stays open (additionalProperties) so an extra documented key still passes.
 CATALOG: dict = {
