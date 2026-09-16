@@ -185,25 +185,63 @@ def _note_for(kind: str, key: str, primary: dict,
         body_md=_md_for(kind, primary))
 
 
-def _md_for(kind: str, ent: dict) -> str:
+#: A body longer than this is cut at a line boundary (fences closed).
+_BODY_MD_CAP = 8000
+
+
+def _quoted(author, body: str) -> str:
+    """A comment as a blockquote. EVERY line needs the ``>`` — prefixing only
+    the first let a multi-line comment fall out of the quote after one line."""
+    lines = (body or "").split("\n")
+    head = f"> **{author}:** {lines[0]}" if lines else f"> **{author}:**"
+    return "\n".join([head] + [f"> {ln}" for ln in lines[1:]])
+
+
+def _attachment_lines(ent: dict) -> list[str]:
+    return [f"- [image/doc] {a.get('filename')} — "
+            f"{a.get('description') or a.get('error') or ''}"
+            for a in (ent.get("attachments") or [])]
+
+
+def _md_for(kind: str, ent: dict, *, level: int = 1, prefix: str = "") -> str:
+    """One Jira issue or Confluence page as markdown.
+
+    ``level`` is the heading level of the entity's own title: 1 when it is the
+    whole document (its own .md file), 2 inside a dossier, where the note's
+    title is the h1. The body's own headings are pushed below the title, and
+    the body itself is converted — Jira arrives as wiki markup and Confluence
+    as storage XHTML, and both used to be pasted in raw, so a preview showed
+    ``h2. Plan`` or ``<h2>Plan</h2>`` and a numbered list rendered as a stack
+    of top-level headings.
+    """
+    from aiforge_core.runtime.tools.markup_read import (
+        shift_headings,
+        storage_to_md,
+        truncate_md,
+        wiki_to_md,
+    )
+    h = "#" * level
     if kind == "jira":
-        lines = [f"# {ent.get('key','')} — {ent.get('summary','')}",
+        body = wiki_to_md(ent.get("description") or "")
+        lines = [f"{h} {prefix}{ent.get('key', '')} — {ent.get('summary', '')}", "",
                  f"- status: {ent.get('status')}  type: {ent.get('type')}  "
                  f"assignee: {ent.get('assignee')}",
-                 f"- url: {ent.get('url','')}", "",
-                 (ent.get("description") or "")]
-        for c in (ent.get("comments") or []):
-            lines.append(f"\n> {c.get('author')}: {c.get('body','')[:1000]}")
-        for a in (ent.get("attachments") or []):
-            d = a.get("description") or a.get("error") or ""
-            lines.append(f"\n[image/doc] {a.get('filename')} — {d}")
-        return "\n".join(lines)
-    # confluence
-    lines = [f"# {ent.get('title','')}", f"- url: {ent.get('url','')}", "",
-             (ent.get("body") or "")[:8000]]
-    for a in (ent.get("attachments") or []):
-        d = a.get("description") or a.get("error") or ""
-        lines.append(f"\n[image/doc] {a.get('filename')} — {d}")
+                 f"- url: {ent.get('url', '')}", "",
+                 shift_headings(truncate_md(body, _BODY_MD_CAP), level + 1)]
+        comments = ent.get("comments") or []
+        if comments:
+            lines += ["", f"{h}# Comments", ""]
+            lines += ["\n\n".join(_quoted(c.get("author"),
+                                          wiki_to_md(c.get("body") or "")[:1000])
+                                  for c in comments)]
+    else:                                                   # confluence
+        body = storage_to_md(ent.get("body") or "")
+        lines = [f"{h} {prefix}{ent.get('title', '')}", "",
+                 f"- url: {ent.get('url', '')}", "",
+                 shift_headings(truncate_md(body, _BODY_MD_CAP), level + 1)]
+    att = _attachment_lines(ent)
+    if att:
+        lines += ["", f"{h}# Attachments", ""] + att
     return "\n".join(lines)
 
 
@@ -271,12 +309,16 @@ def _render_dossier(kind: str, key: str, primary: dict,
     managed note (same envelope as ticket.md/page.md) so the dossier carries
     machine-readable identity + links up top."""
     from aiforge_core.runtime import work_notes
+    # One outline: the note title is h1, the envelope sections are h2, so the
+    # primary item and every linked item are h2 as well. A linked item used to
+    # be an "## Linked jira" h2 immediately followed by the item's own h1 —
+    # the heading hierarchy upside down, right in the middle of the preview.
     parts = [f"_gathered {len(secondaries)} linked item(s)_", "",
-             _md_for(kind, primary)]
+             _md_for(kind, primary, level=2)]
     for skind, ent in secondaries:
         parts.append("\n\n---\n")
-        parts.append(f"## Linked {skind}\n")
-        parts.append(_md_for(skind, ent))
+        parts.append(_md_for(skind, ent, level=2,
+                             prefix=f"Linked {skind}: "))
     return work_notes.render_note(
         kind, key, title=f"Dossier — {kind}:{key}",
         source_url=primary.get("url") or "",

@@ -222,7 +222,10 @@ def test_a_ticket_renders_with_its_comments_and_attachments():
         "comments": [{"author": "Bo", "body": "looks right"}],
         "attachments": [{"filename": "shot.png", "description": "a chart"}]})
     assert md.startswith("# ENG-1 — Fix it")
-    assert "> Bo: looks right" in md
+    # the comment is quoted under its own section, author emphasised
+    assert "## Comments" in md
+    assert "> **Bo:** looks right" in md
+    assert "## Attachments" in md
     assert "[image/doc] shot.png — a chart" in md
 
 
