@@ -89,10 +89,25 @@ Recall is **keyword + spell-correction** by default, no download. Add vector KNN
 `--install-model2vec`, or an embeddings endpoint you already run:
 `AIFORGE_EMBED_BACKEND=api AIFORGE_EMBED_API_MODEL=<model>`.
 
-**Behind a corporate CA?** Paste the root **and its intermediates** into Settings → *Local
-certificate authority*, or set `AIFORGE_CA_BUNDLE=/path/ca.pem` — one answer for the model
-endpoint, Jira/Confluence/GitLab, `git` and the installs. Verification is never turned off:
-a self-signed endpoint is pinned, not trusted blindly.
+**Behind a corporate CA?** On the FIRST run there is no UI yet — the install itself has to
+reach your index — so drop the certificate your PKI gave you into
+`~/.aiforge/security/ca/` and run again:
+
+```bash
+mkdir -p ~/.aiforge/security/ca
+cp corp-root.crt ~/.aiforge/security/ca/     # any name; .pem .crt .cer .cert .der
+./run.sh
+```
+
+The **name does not matter**; the extension does. A DER `.cer` (the usual Windows export) is
+converted, several files are merged into one chain, and anything unreadable is named in a
+warning rather than silently poisoning the bundle. Copy the **root** (plus intermediates) —
+the server's own certificate is the leaf and trusting it achieves nothing.
+
+After the first run you can instead paste it into Settings → *Local certificate authority*,
+or set `AIFORGE_CA_BUNDLE=/path/ca.pem`. Any of the three is one answer for the model
+endpoint, Jira/Confluence/GitLab, `git`, `npm` and the installs. Verification is never turned
+off: a self-signed endpoint is pinned, not trusted blindly.
 
 > ⚠️ **Security.** The agent has full rights inside its box, but reaches only `~/.aiforge`
 > plus folders you approved and mounted. There is no host mode — nothing runs AIForge
