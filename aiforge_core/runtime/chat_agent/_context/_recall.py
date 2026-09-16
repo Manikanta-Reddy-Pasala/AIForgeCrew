@@ -98,13 +98,46 @@ _ASK_LEAD_RE = re.compile(
 
 
 _BULLET_RE = re.compile(r"^(?:[-*•]|\d+[.)])\s+")
+#: A YAML sequence item is written EXACTLY like a markdown bullet. Pasting a
+#: config file therefore used to produce one "ask" per value — a netplan paste
+#: became the checklist "part-1 10.130.212.1/24, part-2 8.8.8.8, part-5
+#: metric: 105". A user's own list sits at the left margin; a YAML sequence is
+#: nested under its key, so indentation separates them.
+_MAX_BULLET_INDENT = 1
+#: `key: value` with nothing else — a mapping entry, not something asked for.
+_SCALAR_ENTRY_RE = re.compile(r"^[\w.-]+:\s*\S+$")
+_FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
+
+
+def _strip_fenced(t: str) -> str:
+    """Drop fenced code blocks. Text the user pasted AS a block is content they
+    want read, never a list of things they are asking for."""
+    out, in_fence = [], False
+    for ln in (t or "").splitlines():
+        if _FENCE_RE.match(ln):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            out.append(ln)
+    return "\n".join(out)
+
+
+def _is_ask_bullet(line: str) -> bool:
+    """One bullet line that is really a request, not pasted data."""
+    if len(line) - len(line.lstrip(" \t")) > _MAX_BULLET_INDENT:
+        return False                      # nested → part of a pasted structure
+    body = _BULLET_RE.sub("", line.strip()).strip()
+    if len(body.split()) < 2:
+        return False                      # a bare value: "8.8.8.8", "1500"
+    return not _SCALAR_ENTRY_RE.match(body)
 
 
 def _bulleted_asks(t: str) -> list:
     """Bullets or numbered lines, stripped of their marker. Fewer than two is
     not a list — fall through to sentence segmentation."""
-    lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
-    bullets = [_BULLET_RE.sub("", ln) for ln in lines if _BULLET_RE.match(ln)]
+    lines = [ln for ln in t.splitlines() if ln.strip()]
+    bullets = [_BULLET_RE.sub("", ln.strip()) for ln in lines
+               if _BULLET_RE.match(ln.strip()) and _is_ask_bullet(ln)]
     return bullets if len(bullets) >= 2 else []
 
 
@@ -134,11 +167,12 @@ def _split_asks(text: str, cap: int = 8) -> list[str]:
     and conservative: bullets/numbered lines count as-is; otherwise sentence
     segments that look like a question or an imperative. Returns [] (no
     checklist) when only one ask is found."""
-    t = (text or "").strip()
+    t = _strip_fenced(text or "").strip()
     if len(t) < 25:
         return []
     # An explicit list beats any heuristic: if the user bulleted or numbered
-    # their asks, those ARE the asks.
+    # their asks, those ARE the asks — but only their OWN list, not the
+    # sequence items of a config file they pasted (see _is_ask_bullet).
     parts = _bulleted_asks(t) or _sentence_asks(t)
     parts = [p[:160] for p in parts if p.strip()][:cap]
     return parts if len(parts) >= 2 else []
