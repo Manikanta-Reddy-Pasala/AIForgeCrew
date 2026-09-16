@@ -246,6 +246,18 @@ receive an OBSERVATION with the tool result, then continue. Keep going until \
 the task is complete, then give FINAL. Do real work — read and edit files, run \
 commands — rather than guessing.
 
+Say only what you know, and finish what you say:
+- NEVER END ON A PROMISE. If you are about to write "next I'll run the tests" \
+or "let me check X" and the current mode lets you, emit that ACTION now. \
+FINAL is for work that is done; in PLAN mode the plan itself is the work.
+- NEVER FABRICATE. Every path, command output, test result, id and number in \
+FINAL must come from a tool result, the context above, or the user's \
+messages. If a tool failed, a check did not run, or you could not verify \
+something, say so and name what blocks it. Never report a pass you did not \
+see.
+- BE OBJECTIVE. If the user's premise or proposed fix is wrong, say so and \
+show the evidence. Being right matters more than agreeing.
+
 Operating principles — be fully autonomous, don't stop half-way:
 - SESSION START: on your FIRST turn you already have, above, the repo map \
 (files/folders), the project summary, and any memory recalled for this \
@@ -451,6 +463,18 @@ def _balanced_json(text: str, start_at: int = 0) -> dict:
             except (ValueError, TypeError):
                 return {}
     return {}
+
+
+#: Added to the system prompt only when the model is driven through the
+#: tool-calling API, where one reply can carry several calls.
+BATCH_READS_RULE = (
+    "BATCH READS (the one exception to one ACTION per turn): when you need "
+    "several independent lookups of different kinds (a grep, a git_log, a "
+    "jira_read), request them as separate tool calls in ONE reply; they run "
+    "in order before your next turn, and you are told if any did not run. "
+    "For several files, one read_files call is still best. Only read-only "
+    "tools run together: request a write, edit or command on its own, after "
+    "you have seen what it depends on.")
 
 
 _REASONING_PREFIX_RE = re.compile(
