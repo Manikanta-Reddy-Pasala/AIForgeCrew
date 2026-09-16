@@ -232,6 +232,8 @@ BATCHABLE_READS = frozenset({
     "confluence_read", "confluence_search", "confluence_children",
     "gitlab_read", "gitlab_search",
 })
+#: Bookkeeping the loop handles itself; safe to run inside a batch of reads.
+_BATCHABLE = BATCHABLE_READS | {"plan_progress"}
 
 
 def _queued_steps(msg: dict) -> "tuple[list[str], int]":
@@ -253,7 +255,7 @@ def _queued_steps(msg: dict) -> "tuple[list[str], int]":
     for c in calls[1:]:
         fn = (c or {}).get("function") or {}
         name = fn.get("name") or ""
-        batchable = batchable and name in BATCHABLE_READS
+        batchable = batchable and name in _BATCHABLE
         args = _resolve_call_args(fn.get("arguments"))
         if not isinstance(args, dict):
             broken += 1
@@ -262,7 +264,7 @@ def _queued_steps(msg: dict) -> "tuple[list[str], int]":
         if step != first and step not in wanted:
             wanted.append(step)
     first_name = ((calls[0] or {}).get("function") or {}).get("name") or ""
-    if not batchable or first_name not in BATCHABLE_READS:
+    if not batchable or first_name not in _BATCHABLE:
         return [], len(wanted) + broken
     steps = wanted[:max(0, _batch_cap() - 1)]
     return steps, len(wanted) - len(steps) + broken

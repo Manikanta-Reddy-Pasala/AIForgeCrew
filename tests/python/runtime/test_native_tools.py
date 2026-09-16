@@ -104,9 +104,11 @@ def test_probe_definitive_rejection_caches_false(monkeypatch):
 
 def test_every_registry_tool_is_native():
     from aiforge_core.runtime.chat_agent._registry import TOOLS
+    from aiforge_core.runtime.chat_agent._tools._schemas import LOOP_TOOLS
     # EVERY registry tool is exposed natively (rich or permissive), and every
-    # native name dispatches through the real registry — no orphans either way.
-    assert set(NATIVE_TOOL_NAMES) == set(TOOLS)
+    # native name dispatches through the real registry or the loop itself —
+    # no orphans either way.
+    assert set(NATIVE_TOOL_NAMES) == set(TOOLS) | set(LOOP_TOOLS)
     # schemas are well-formed OpenAI function tools
     for s in NATIVE_TOOL_SCHEMAS:
         assert s["type"] == "function"

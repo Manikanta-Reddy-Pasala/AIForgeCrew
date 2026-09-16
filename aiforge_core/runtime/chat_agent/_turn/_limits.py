@@ -28,6 +28,7 @@ from ._convo import (
 from ._shared import (
     _THE_FINALIZE_TOOL,
 )
+from ._tasks import pin_board
 
 
 def _may_extend(st, n):
@@ -89,7 +90,7 @@ def _step_cap_guard(st, n):
                                    complete_fn=st.complete_fn,
                                    session_id=st.session_id, force=True,
                                    keep_min=_unread)
-            _rebase_batch(st, _unread)
+            _after_condense(st, _unread, _before_ext)
             if len(st.convo) < _before_ext:
                 st.read_sigs_seen.clear()   # results dropped → re-reads are valid
             _did = ("condensed the history and " if len(st.convo) < _before_ext
@@ -126,7 +127,7 @@ def _deadline_guard(st, n):
                                    complete_fn=st.complete_fn,
                                    session_id=st.session_id, force=True,
                                    keep_min=_unread)
-            _rebase_batch(st, _unread)
+            _after_condense(st, _unread, _before_ext)
             if len(st.convo) < _before_ext:
                 st.read_sigs_seen.clear()
             _did = ("condensed the history and " if len(st.convo) < _before_ext
@@ -182,7 +183,7 @@ def _condense_and_report(st, role, complete_fn, session_id, _meter):
     _unread = _unread_batch_msgs(st)
     st.convo = _compact_convo(st.convo, role=role, complete_fn=complete_fn,
                            session_id=session_id, keep_min=_unread)
-    _rebase_batch(st, _unread)
+    _after_condense(st, _unread, _before)
     if len(st.convo) < _before:
         # The dropped turns took their tool RESULTS with them, so a read
         # whose output is no longer in the window is no longer a duplicate.
@@ -243,6 +244,25 @@ def _condense_and_report(st, role, complete_fn, session_id, _meter):
                "llm_turn_tokens_out": _calls.get("turn_tokens_out", 0)}
 
 
+def _after_condense(st, unread, before):
+    """Re-point the batch at its results and, when the history shrank, pin
+    the task board back where the model can see it."""
+    _rebase_batch(st, unread)
+    if len(st.convo) < before and st.board:
+        pin_board(st.convo, st.board)
+
+
+def refill_recoveries(st):
+    """Give back the stuck-recovery budget once the run has made progress
+    since the last recovery. The budget bounds a run that is stuck, not how
+    many times an hours-long run may ever lose its way."""
+    mark = (st.edits_made, st.reads_new)
+    if getattr(st, "recovery_mark", None) != mark:
+        if st.stuck_recoveries:
+            st.stuck_recoveries = 0
+    st.recovery_mark = mark
+
+
 def _stuck_output_guard(st, out):
     """Stuck-output guard: on N identical model replies, first recover with a
     progress recap + nudge (bounded); if it keeps repeating, stop and ask the
@@ -255,6 +275,7 @@ def _stuck_output_guard(st, out):
     st.recent_outputs.append(out.strip())
     if (len(st.recent_outputs) == _OUTPUT_REPEAT
             and len(set(st.recent_outputs)) == 1):
+        refill_recoveries(st)
         if st.stuck_recoveries < _stuck_recovery_max():
             st.stuck_recoveries += 1
             st.recent_outputs.clear()          # fresh slate for the recovered plan

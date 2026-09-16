@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from aiforge_core.runtime.chat_event_slim import slim_event
+
 from ._core import (
     _PRODUCE_SEM,
 )
@@ -114,7 +116,7 @@ def _route_produce_event(ev, st: dict, steps: list) -> None:
     elif (etype == "message" and ev.get("supplementary")
           or etype in ("thought", "tool", "error", "changes", "stopped",
                        "plan_ready", "captured")):
-        steps.append(ev)
+        steps.append(slim_event(ev))
     elif etype == "subtasks":
         st["subtasks"] = list(ev.get("items") or [])
     elif etype == "subtask_update":

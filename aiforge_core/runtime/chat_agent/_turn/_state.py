@@ -19,6 +19,7 @@ from .._context import (
 from ._convo import (
     _build_convo,
 )
+from ._tasks import seed_board
 
 
 def _resolve_complete_fn(complete_fn, role):
@@ -253,5 +254,6 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         user_roots=_user_roots,
         dropped_playbooks=_dropped_playbooks, native_on=_native_on,
         pending_steps=[], batch_skipped=0, batch_mark=len(convo),
-        batch_unread=False)
+        batch_unread=False, board=seed_board(_asks), board_used=False,
+        board_nudges=0)
     return st

@@ -21,9 +21,11 @@ from .._shell import _MAX_OBS, _MAX_OBS_READ, _READ_OBS_TOOLS, _smart_truncate_o
 from ._approval import (
     _handle_rejection,
 )
+from ._limits import refill_recoveries
 from ._shared import (
     _ACTION_SIG_MAX,
 )
+from ._tasks import apply_progress
 
 
 def _action_stall_guard(st, name, args, sig, _long_chain_help):
@@ -64,6 +66,7 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
     while len(st.action_counts) > _ACTION_SIG_MAX:
         st.action_counts.popitem(last=False)
     if st.action_counts[sig] >= _LOOP_REPEAT:
+        refill_recoveries(st)
         # A local model on a long chain re-issues an action it already ran —
         # most often re-reading a file it read earlier (it lost track over the
         # growing history), which the old hard bail turned into an abandoned
@@ -102,14 +105,10 @@ def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
     # the UI's subtasks dock. Pure bookkeeping — no side effects, allowed
     # in every mode (incl. plan), never gated.
     if name == "plan_progress":
-        _slug = str(args.get("slug") or args.get("part") or "").strip()
-        _st = str(args.get("status") or "done").strip().lower()
-        if _st not in ("pending", "running", "done", "failed"):
-            _st = "done"
-        if _slug:
-            yield {"type": "subtask_update", "slug": _slug, "status": _st}
-        result = {"ok": bool(_slug), "slug": _slug, "status": _st,
-                  **({} if _slug else {"error": "missing 'slug'"})}
+        st.board_used = True
+        result, events = apply_progress(st.board, args)
+        for ev in events:
+            yield ev
         yield {"type": "tool", "name": name, "args": args, "result": result}
         st.convo.append({"role": "user",
                       "content": f"OBSERVATION: {json.dumps(result)}"})
@@ -268,6 +267,9 @@ def _record_edit(st, name, args, result, cwd):
             isinstance(result, dict) and result.get("ok") is False):
         st.edits_made += 1
         st.read_sigs_seen.clear()   # a file just changed → re-reads are valid again
+        # …and so is re-running a command: the fourth `pytest` of an
+        # edit-test-edit cycle is progress, not a loop.
+        st.action_counts.clear()
         # D: post-edit self-check. Immediately syntax-check the file just
         # written and, if broken, hand the model the error THIS step (tight
         # feedback) instead of letting it surface only at the end-of-run test
