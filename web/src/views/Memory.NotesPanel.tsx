@@ -3,7 +3,7 @@ import { toast } from 'sonner';
 import { api } from '../api';
 import { Icon } from '../icons';
 import { Category, CATEGORY_ORDER, CAT_ICON, categoryOf, cleanTitle } from './Memory.helpers';
-import { clickable } from '../a11y';
+import { clickable, backdrop } from '../a11y';
 
 // The clickable tag chips for one note row. Extracted so the row-rendering
 // chain stays within the nested-function depth limit.
@@ -194,14 +194,12 @@ export function NotesPanel() {
           );
         })()}
       {open && (
-        <div {...clickable(() => setOpen(null))}
+        <div {...backdrop(() => setOpen(null))}
              aria-label="Close"
              style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                       zIndex: 1000, padding: 20 }}>
-          <div role="dialog" aria-modal="true" aria-label={open.title}
-               onClick={e => e.stopPropagation()}
-               onKeyDown={e => e.stopPropagation()}
+          <dialog open className="dialog-reset" aria-modal="true" aria-label={open.title}
                style={{ background: 'var(--bg-0)', border: '1px solid var(--border-1)',
                         borderRadius: 10, maxWidth: 820, width: '100%', maxHeight: '85vh',
                         overflow: 'auto', padding: 16, boxShadow: '0 12px 48px rgba(0,0,0,0.45)' }}>
@@ -211,7 +209,7 @@ export function NotesPanel() {
             </div>
             <div className="small muted" style={{ margin: '4px 0' }}>{open.file}</div>
             <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13, margin: 0 }}>{open.body}</pre>
-          </div>
+          </dialog>
         </div>
       )}
     </div>

@@ -82,13 +82,14 @@ export default function EgressCard() {
       <Chips hosts={data.env}
              note="From AIFORGE_EGRESS_ALLOW_HOSTS (.env — edit there, not here)" />
 
-      <label style={{ fontSize: 12, opacity: 0.7 }}>
+      <label htmlFor="egress-read-hosts" style={{ fontSize: 12, opacity: 0.7 }}>
         Additional hosts to READ, one per line (a URL or a bare host both work).
         These are fetch-only: the agent can read pages there, but cannot post,
         upload or send anything to them. A destination that needs to receive
         data has to be set up as an integration.
       </label>
       <textarea
+        id="egress-read-hosts"
         value={draft}
         onChange={e => setDraft(e.target.value)}
         rows={4}
@@ -97,7 +98,7 @@ export default function EgressCard() {
         placeholder={'docs.python.org\nhttps://pypi.org'}
       />
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 }}>
-        <button onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
+        <button type="button" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
         <span style={{ fontSize: 12, opacity: 0.75 }}>{msg}</span>
       </div>
     </div>

@@ -133,7 +133,7 @@ export default function LlmTrace() {
                       roles/content duplicate across turns and it never reorders,
                       so a content key would collide. (S6479 exception) */}
                   {(c.messages || []).map((m, mi) => (
-                    <details key={mi} style={{ marginBottom: 6 }}>
+                    <details key={mi} style={{ marginBottom: 6 }} /* NOSONAR */>
                       <summary className="small">
                         <strong>→ {m.role || '?'}</strong>
                         <span className="muted">

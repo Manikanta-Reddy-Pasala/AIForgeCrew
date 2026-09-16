@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { toText } from '../util';
 
 export function EnrichmentBlock({ enrichment }: Readonly<{ enrichment: any }>) {
   const i = enrichment.intent || {};
@@ -69,7 +70,7 @@ export function EnrichmentBlock({ enrichment }: Readonly<{ enrichment: any }>) {
           <summary className="small"><strong>Build commands</strong></summary>
           <ul className="small mono" style={{ marginTop: 4 }}>
             {Object.entries(cmds).map(([k, v]) => (
-              <li key={k}><strong>{k}:</strong> {String(v)}</li>
+              <li key={k}><strong>{k}:</strong> {toText(v)}</li>
             ))}
           </ul>
         </details>

@@ -12,6 +12,7 @@
  * react-markdown / remark transitive tree.
  */
 import React from 'react';
+import { legacyCopy } from './util';
 
 // Allow only safe link schemes — reject javascript:/data:/vbscript: etc. so a
 // model-emitted [x](javascript:…) link can't run script in the app origin.
@@ -33,20 +34,7 @@ export function copyText(text: string): Promise<void> {
   if (navigator.clipboard && window.isSecureContext) {
     return navigator.clipboard.writeText(text);
   }
-  return new Promise((resolve, reject) => {
-    try {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed';
-      ta.style.top = '-9999px';
-      document.body.appendChild(ta);
-      ta.focus();
-      ta.select();
-      const ok = document.execCommand('copy');
-      ta.remove();
-      ok ? resolve() : reject(new Error('copy failed'));
-    } catch (e) { reject(e as Error); }
-  });
+  return legacyCopy(text) ? Promise.resolve() : Promise.reject(new Error('copy failed'));
 }
 
 /** A small Copy button that flips to a check for ~1.2s. Reused for code blocks,
@@ -90,20 +78,49 @@ function CodeFence({ body, children }:
 }
 
 // ── inline ──────────────────────────────────────────────────────────────────
-// Earliest-match tokenizer. Order in the alternation matters: ** before *,
-// __ before _, so bold wins over italic.
-const INLINE_RE =
-  /(`[^`]+`)|(\*\*(?:[^*]|\*(?!\*))+\*\*)|(__(?:[^_]|_(?!_))+__)|(\*[^*\n]+?\*)|(_[^_\n]+?_)|(\[[^\]]+\]\([^)\s]+\))|(\bhttps?:\/\/[^\s<>()]+)/;
+// Earliest-match tokenizer over a list of SIMPLE patterns rather than one
+// alternation (which scored cognitive complexity 46). List ORDER is the
+// tie-break for two matches at the same index: ** before *, __ before _, so
+// bold wins over italic.
+//
+// Measured, not assumed: the old bold branches could not actually backtrack —
+// `[^*]` and `\*(?!\*)` never match the same character — so splitting them was
+// for readability. The one GENUINELY quadratic case was the link: `\[[^\]]+`
+// lets link text contain `[`, so on a run of unclosed brackets every start
+// position scanned to the end of the string (20 KB of `[` took ~160 ms, in the
+// old pattern and in a naive split alike). Link text now excludes `[`, which
+// stops each attempt at the very next bracket.
+const INLINE_PATTERNS: readonly RegExp[] = [
+  /`[^`]+`/,                                  // code
+  /\*\*[^*]+(?:\*[^*]+)*\*\*/,                   // **bold** (may hold a lone *)
+  /__[^_]+(?:_[^_]+)*__/,                     // __bold__
+  /\*[^*\n]+\*/,                               // *italic*
+  /_[^_\n]+_/,                                 // _italic_
+  /\[[^[\]]+\]\([^)\s]+\)/,                     // [text](url) — text holds no [
+  /\bhttps?:\/\/[^\s<>()]+/,                     // bare URL
+];
+
+/** The earliest inline token in `text`, or null. */
+function nextToken(text: string): { index: number; tok: string } | null {
+  let best: { index: number; tok: string } | null = null;
+  for (const re of INLINE_PATTERNS) {
+    const m = re.exec(text);
+    if (m && (best === null || m.index < best.index)) {
+      best = { index: m.index, tok: m[0] };
+    }
+  }
+  return best;
+}
 
 function renderInline(text: string, key: string): React.ReactNode[] {
   const out: React.ReactNode[] = [];
   let rest = text;
   let n = 0;
   while (rest) {
-    const m = INLINE_RE.exec(rest);
+    const m = nextToken(rest);
     if (!m) { out.push(rest); break; }
     if (m.index > 0) out.push(rest.slice(0, m.index));
-    const tok = m[0];
+    const { tok } = m;
     const kk = `${key}-${n++}`;
     if (tok.startsWith('`')) {
       out.push(<code key={kk}>{tok.slice(1, -1)}</code>);
@@ -167,7 +184,7 @@ function renderDiffFence(body: string, k: number): React.ReactNode {
         const { color, background } = diffLineStyle(ln);
         // key=index: immutable fence text rendered once; diff lines
         // legitimately duplicate and never reorder. (S6479 exception)
-        return <div key={j} style={{ color, background, padding: '0 4px' }}>{ln || ' '}</div>;
+        return <div key={j} style={{ color, background, padding: '0 4px' }}>{ln || ' '}</div>; // NOSONAR
       })}
     </pre>
     </CodeFence>
@@ -226,10 +243,10 @@ function tableBlock(lines: string[], i: number, k: number): Block {
     // content key would collide) and column/row order is positional and
     // never reorders. (S6479 exception)
     <table key={`tb-${k}`} className="md-table">
-      <thead><tr>{header.map((c, ci) => <th key={ci}>{renderInline(c, `th-${k + 1}-${ci}`)}</th>)}</tr></thead>
+      <thead><tr>{header.map((c, ci) => <th key={ci}>{renderInline(c, `th-${k + 1}-${ci}`)}</th>) /* NOSONAR */}</tr></thead>
       <tbody>
         {rows.map((r, ri) => (
-          <tr key={ri}>{header.map((_, ci) => <td key={ci}>{renderInline(r[ci] ?? '', `td-${k + 1}-${ri}-${ci}`)}</td>)}</tr>
+          <tr key={ri} /* NOSONAR */>{header.map((_, ci) => <td key={ci}>{renderInline(r[ci] ?? '', `td-${k + 1}-${ri}-${ci}`)}</td>) /* NOSONAR */}</tr>
         ))}
       </tbody>
     </table>
@@ -273,7 +290,7 @@ function orderedListBlock(lines: string[], i: number, k: number): Block {
   const node = (
     <ol key={`ol-${k}`} start={startNum}>
       {/* key=index: immutable parsed items, may duplicate, never reorder. (S6479 exception) */}
-      {items.map((it, idx) => <li key={idx}>{renderInline(it, `oli-${k + 1}-${idx}`)}</li>)}
+      {items.map((it, idx) => <li key={idx}>{renderInline(it, `oli-${k + 1}-${idx}`)}</li>) /* NOSONAR */}
     </ol>
   );
   return { node, next: j, k: k + 1 };
@@ -291,7 +308,7 @@ function unorderedListBlock(lines: string[], i: number, k: number): Block {
   const node = (
     <ul key={`ul-${k}`}>
       {/* key=index: immutable parsed items, may duplicate, never reorder. (S6479 exception) */}
-      {items.map((it, idx) => <li key={idx}>{renderInline(it, `li-${k + 1}-${idx}`)}</li>)}
+      {items.map((it, idx) => <li key={idx}>{renderInline(it, `li-${k + 1}-${idx}`)}</li>) /* NOSONAR */}
     </ul>
   );
   return { node, next: j, k: k + 1 };
@@ -322,7 +339,7 @@ function paragraphBlock(lines: string[], i: number, k: number): NonNullable<Bloc
       {/* key=index: soft-wrapped lines of one immutable paragraph; positional,
           may duplicate, never reorder. (S6479 exception) */}
       {pLines.map((pl, idx) => (
-        <React.Fragment key={idx}>
+        <React.Fragment key={idx} /* NOSONAR */>
           {idx > 0 && <br />}
           {renderInline(pl, `p-${k + 1}-${idx}`)}
         </React.Fragment>

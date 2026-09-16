@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import { api } from '../api';
 import { OKF_TYPE_BADGE } from './Memory.helpers';
 import { OkfMeta } from './Memory.OkfMeta';
+import { toText } from '../util';
 
 export function OkrPanel() {
   const [g, setG] = useState<any>(null);
@@ -23,7 +24,7 @@ export function OkrPanel() {
       <div className="card-header">
         <h2>🎯 OKR memory <span className="muted small">goal graph · Open Knowledge Format (OKF v0.1)</span></h2>
         <div className="row" style={{ gap: 6 }}>
-          {g.counts && <span className="muted xs">{Object.entries(g.counts).map(([k, v]) => `${v} ${k}`).join(' · ')}</span>}
+          {g.counts && <span className="muted xs">{Object.entries(g.counts).map(([k, v]) => `${toText(v)} ${k}`).join(' · ')}</span>}
           <button type="button" className="ghost sm" disabled={busy} onClick={async () => {
             setBusy(true);
             try { const r = await api.memoryOkrMigrate(); toast.success(`Seeded ${r.migrated} topics into the graph`); load(); }

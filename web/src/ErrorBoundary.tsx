@@ -1,4 +1,5 @@
 import React from 'react';
+import { legacyCopy } from './util';
 
 /* A render-error firewall. Chat renders arbitrary model output; a single
  * malformed payload that throws during render would otherwise unmount the whole
@@ -53,18 +54,10 @@ export class ErrorBoundary extends React.Component<
     } catch { if (this.legacyCopy(text)) done(); }
   };
 
+  // The crash boundary must not depend on anything that could itself be the
+  // crash; util.ts is dependency-free, which is why the fallback lives there.
   private legacyCopy(text: string): boolean {
-    try {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      const ok = document.execCommand('copy');
-      ta.remove();
-      return ok;
-    } catch { return false; }
+    return legacyCopy(text);
   }
 
   reset = () => this.setState({ error: null, info: '', copied: false });
