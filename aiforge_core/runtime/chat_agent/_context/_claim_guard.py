@@ -10,7 +10,7 @@ the detection half:
 * :func:`_worktree_fingerprint` — did the working tree actually change?
 
 The loop combines the two (claim asserted + zero landed edits + tree unchanged
-→ nudge, then annotate) — see the ``final`` branch in ``_loop.py``. Kept
+→ nudge, then annotate) — see ``_handle_final`` in ``_turn/_finish.py``. Kept
 separate from ``_verify.py`` (test/build gate) by concern.
 """
 from __future__ import annotations

@@ -25,7 +25,7 @@ OpenAI-compatible endpoint works, no native tool-calling needed. One command:
 ### 2a. Chat, simple mode
 
 1. The server (`api/routes/_chat/`: `_message` then `_routing`) routes the message to the chat agent
-   (`runtime/chat_agent/`, a package: `_loop` · `_registry` · `_prompt` ·
+   (`runtime/chat_agent/`, a package: `_loop` (driver) · `_turn/` (its jobs) · `_registry` · `_prompt` ·
    `_tools/` · `_shell` · `_context`).
 2. Context is assembled in a fixed order (`runtime/context_bundle.py`):
    preferences → **rules (injected every turn, always)** → project brief →
@@ -34,7 +34,7 @@ OpenAI-compatible endpoint works, no native tool-calling needed. One command:
    AST repo map → memory recall.
 3. A multi-part message ("fix X. also why Y? and add Z") gets a derived
    **checklist** pinned into the context; the agent flips items live via the
-   `plan_progress` tool (`chat_agent/_loop.py`).
+   `plan_progress` tool (`chat_agent/_turn/_action.py`).
 4. The model runs a ReAct loop speaking a **text protocol** — each turn is
    `THOUGHT:` + `ACTION: <tool>` + `ARGS_JSON: {...}`, or `FINAL: <answer>`.
    No native tool-calling, so it works on any backend (LM Studio, vLLM,

@@ -6,6 +6,7 @@ import types
 
 from aiforge_core.runtime import next_step
 from aiforge_core.runtime.chat_agent import _loop
+from aiforge_core.runtime.chat_agent._turn import _finish
 
 
 def _prediction(verdict=next_step.ACT, action="check it", tool="read_file"):
@@ -20,7 +21,7 @@ def _prediction(verdict=next_step.ACT, action="check it", tool="read_file"):
 
 
 def _events(monkeypatch, prediction):
-    monkeypatch.setattr(_loop, "_predict_next_step", lambda *a, **k: prediction)
+    monkeypatch.setattr(_finish, "_predict_next_step", lambda *a, **k: prediction)
     return list(_loop._emit_suggestion("hello", "read_file", "/repo"))
 
 
@@ -43,7 +44,7 @@ def test_a_raising_predictor_emits_nothing_and_does_not_propagate(monkeypatch):
     def _boom(*a, **k):
         raise RuntimeError("model down")
 
-    monkeypatch.setattr(_loop, "_predict_next_step", _boom)
+    monkeypatch.setattr(_finish, "_predict_next_step", _boom)
     assert list(_loop._emit_suggestion("hello", "did a thing", "/repo")) == []
 
 
@@ -203,7 +204,7 @@ def test_the_kill_switch_costs_nothing_not_merely_emits_nothing(monkeypatch):
     prediction context before honouring the switch meant a disabled feature
     still paid for a subprocess per turn."""
     calls = []
-    monkeypatch.setattr(_loop, "_is_clean_tree", lambda cwd: calls.append(cwd) or False)
+    monkeypatch.setattr(_finish, "_is_clean_tree", lambda cwd: calls.append(cwd) or False)
     monkeypatch.setenv("AIFORGE_PREDICT_DISABLE", "1")
 
     assert list(_loop._emit_suggestion("hi", "read_file", "/repo")) == []
@@ -223,7 +224,7 @@ def test_a_toolless_prediction_reaches_the_wire_as_an_offer(monkeypatch, tmp_pat
         _np, "_llm",
         lambda *a, **k: '{"action":"pears and the price of them","tool":"",'
                         '"args":{},"confidence":0.99,"rationale":"x"}')
-    monkeypatch.setattr(_loop, "_is_clean_tree", lambda *a, **k: True)
+    monkeypatch.setattr(_finish, "_is_clean_tree", lambda *a, **k: True)
 
     evs = list(_loop._emit_suggestion("what is a pear", "answered", "/repo"))
 
@@ -241,7 +242,7 @@ def test_an_echo_emits_no_event_at_all(monkeypatch, tmp_path):
         lambda *a, **k: '{"action":"Explain what the run lock in chat_pipeline '
                         'protects.","tool":"read_file","args":{"path":"x"},'
                         '"confidence":0.95,"rationale":"x"}')
-    monkeypatch.setattr(_loop, "_is_clean_tree", lambda *a, **k: True)
+    monkeypatch.setattr(_finish, "_is_clean_tree", lambda *a, **k: True)
 
     evs = list(_loop._emit_suggestion(
         "In one short sentence: what does the run lock in chat_pipeline "

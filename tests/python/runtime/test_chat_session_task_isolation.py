@@ -17,6 +17,7 @@ These pin the two halves of the fix in ``_append_recall_blocks``:
 import types
 
 from aiforge_core.runtime.chat_agent import _loop
+from aiforge_core.runtime.chat_agent._turn import _blocks
 
 
 def _bundle():
@@ -33,8 +34,8 @@ def _capture(monkeypatch):
         seen["prev_session_on"] = prev_session_on
         seen["cwd"] = cwd
 
-    monkeypatch.setattr(_loop, "_append_learning_recall", _fake_learning)
-    monkeypatch.setattr(_loop, "_append_session_blocks",
+    monkeypatch.setattr(_blocks, "_append_learning_recall", _fake_learning)
+    monkeypatch.setattr(_blocks, "_append_session_blocks",
                         lambda *a, **k: [])
     return blocks, seen
 

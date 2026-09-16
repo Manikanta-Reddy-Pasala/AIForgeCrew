@@ -6,7 +6,7 @@ This module was split (grouped by concern) into private submodules —
 ``_code`` (codegraph/read/rename), ``_skills`` (skill/workflow + strong
 editor tools), ``_pipeline`` (mcp/browser/ipython/delegate) and ``_misc``.
 This package re-exports the full former top-level surface so
-``from ._tools import <name>`` (used by ``__init__``, ``_registry``, ``_loop``,
+``from ._tools import <name>`` (used by ``__init__``, ``_registry``, ``_turn``,
 ``_context``) keeps working IDENTICALLY.
 """
 

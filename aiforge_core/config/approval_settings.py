@@ -10,7 +10,7 @@ A hard ``deny`` policy still blocks either way — that is a safety floor, not a
 chat-mode approval, and the toggle cannot lift it.
 
 DESTRUCTIVE DELETES: in an INTERACTIVE chat run, approvals-off IS the
-confirmation — see ``_command_gate_flags`` in runtime/chat_agent/_loop.py. It
+confirmation — see ``_command_gate_flags`` in runtime/chat_agent/_turn/_approval.py. It
 did not used to be, and the result was a toggle that felt broken: the delete
 guard matches the whole command string, so routine remote maintenance
 (``ssh host 'docker rm -f c'``, ``kubectl delete pod``, ``git clean -fdx``)
