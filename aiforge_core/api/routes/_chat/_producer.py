@@ -204,10 +204,30 @@ def _events(pc):
     yield from _post_run_events(pc.prompt, pc.cwd, pc.agent_mode, _simple_sha)
 
 
+def _wait_for_slot(pc) -> bool:
+    """Take a producer slot, telling the user when other runs hold them all.
+    Stop works while waiting. False when the user stopped the run."""
+    from aiforge_core.runtime import chat_cancel
+    if _PRODUCE_SEM.acquire(blocking=False):
+        return True
+    pc.run.publish({"type": "thought", "role": "system",
+                    "text": "⏳ waiting for a free slot — other chats are still "
+                            "running (AIFORGE_MAX_CHAT_RUNS)"})
+    while not _PRODUCE_SEM.acquire(timeout=2):
+        if chat_cancel.is_cancelled(pc.session_id):
+            pc.run.publish({"type": "error", "text": "stopped by user"})
+            pc.run.publish({"type": "done"})
+            chat_cancel.finish(pc.session_id)
+            pc.run.finish()
+            return False
+    return True
+
+
 def _produce(pc):
     from aiforge_core.runtime import chat_approve as _chat_approve
     from aiforge_core.runtime import parallel_subtasks as _psub
-    _PRODUCE_SEM.acquire()   # bounded — block until a producer slot frees
+    if not _wait_for_slot(pc):
+        return
     # Bind this producer thread to the session so LLM tracing (Langfuse
     # sessions/scores) tags every generation with the run it belongs to.
     # Covers ALL modes here (simple/plan run inline in this thread; team's
@@ -219,29 +239,51 @@ def _produce(pc):
     # answer to "will my work survive me locking the screen" is yes for
     # anything the user can start, not just the two slowest paths. The
     # refcount makes the overlap free — nested holders share one child.
+    from aiforge_core.runtime import request_context as _reqctx
     from aiforge_core.runtime.keep_awake import acquire as _awake_acquire
     from aiforge_core.runtime.keep_awake import release as _awake_release
-    _awake_acquire()
-    from aiforge_core.runtime import request_context as _reqctx
-    _sess_token = _reqctx.set_session_id(pc.session_id)
-    # THE turn boundary for the request meter. Here, not inside the ReAct
-    # loop: the enhancer / team-downgrade classifier / capture probes below
-    # are requests this message caused, and resetting after them erased
-    # them from the count. Team mode never enters run_chat_agent at all, so
-    # a reset in the loop left its per-turn number cumulative for the whole
-    # session — a lifetime total presented as one message's cost.
-    _meter, _meter_token = _bind_turn_meter(pc.session_id)
-    # Bind the repo root to the turn's cwd so the codegraph gate (which some
-    # Doer-side call sites resolve via request_context.get_repo_root() with
-    # NO cwd) sees the SAME repo the tools run against. Without this, simple
-    # chat left the repo root unset and those sites fell back to "." (the
-    # AIForge process dir), so codegraph was mis-gated off the wrong folder.
-    _repo_token = _reqctx.set_repo_root(pc.cwd)
+    steps: list[dict] = []
+    # Live subtask panel state, persisted so it survives a navigate-away.
+    st = {"final_text": "", "awaiting": False, "subtasks": []}
+    _meter = _meter_token = _sess_token = _repo_token = None
+    try:
+        _awake_acquire()
+        _sess_token = _reqctx.set_session_id(pc.session_id)
+        # THE turn boundary for the request meter. Here, not inside the ReAct
+        # loop: the enhancer / team-downgrade classifier / capture probes
+        # below are requests this message caused, and resetting after them
+        # erased them from the count. Team mode never enters run_chat_agent,
+        # so a reset in the loop left its per-turn number cumulative for the
+        # whole session — a lifetime total presented as one message's cost.
+        _meter, _meter_token = _bind_turn_meter(pc.session_id)
+        # Bind the repo root to the turn's cwd so the codegraph gate (which
+        # some Doer-side call sites resolve via request_context.get_repo_root()
+        # with NO cwd) sees the SAME repo the tools run against.
+        _repo_token = _reqctx.set_repo_root(pc.cwd)
+        _prepare_turn(pc, _chat_approve, _psub)
+        # Mirror chat activity into the observability NDJSON so the Logs page
+        # shows live runs (the page tails orchestrator-<role>.ndjson).
+        _clog, emit = _setup_chat_logger()
+        _auto_checkpoint(pc)   # snapshot first (off the response-open path)
+        _drive_produce_stream(lambda: _events(pc), st, steps, pc.run, pc.session_id,
+                              pc._turn_t0, pc._turn_mode, _clog, emit)
+    except Exception as exc:  # noqa: BLE001 — setup failed before the stream
+        st["final_text"] = f"⚠️ {exc}"
+        pc.run.publish({"type": "error", "text": str(exc)})
+        pc.run.publish({"type": "done"})
+    finally:
+        _finalize_produce_turn(
+            pc.session_id, pc.cwd, pc.prompt, st["final_text"], steps, st["awaiting"],
+            pc.team, pc._path, pc._turn_mode, pc._turn_t0,
+            _TurnResetContext(_meter, _meter_token, _reqctx, _sess_token, _repo_token),
+            pc.run, _awake_release)
+
+
+def _prepare_turn(pc, _chat_approve, _psub) -> None:
+    """Route the turn (team or simple) and set its approval gates."""
     # Auto-route classify + its dependents, run HERE (already off the
-    # response-open path — see the note where `team`/`_parallel_team`
-    # were declared above) rather than in the synchronous request
-    # handler, so a slow/unreachable classify LLM never delays the
-    # StreamingResponse itself.
+    # response-open path) rather than in the synchronous request handler,
+    # so a slow/unreachable classify LLM never delays the StreamingResponse.
     pc.team, pc._auto_downgraded = _maybe_downgrade_team(
         pc.team, pc.prompt, pc.history, pc.cwd, pc.session_id)
     pc._parallel_team = pc.team and _psub.enabled()
@@ -263,25 +305,6 @@ def _produce(pc):
     else:
         _eff_mode = "simple"
     _chat_approve.set_mode(pc.session_id, _eff_mode)
-    steps: list[dict] = []
-    final_text = ""
-    awaiting = False   # turn ended with a question / pause, not an outcome
-    _subtasks: list[dict] = []   # live subtask panel state, persisted so it
-    #                              survives a navigate-away / reload
-    # Mirror chat activity into the observability NDJSON so the Logs page
-    # shows live runs (the page tails orchestrator-<role>.ndjson).
-    _clog, emit = _setup_chat_logger()
-    _auto_checkpoint(pc)   # snapshot first (off the response-open path)
-    st = {"final_text": final_text, "awaiting": awaiting, "subtasks": _subtasks}
-    try:
-        _drive_produce_stream(lambda: _events(pc), st, steps, pc.run, pc.session_id,
-                              pc._turn_t0, pc._turn_mode, _clog, emit)
-    finally:
-        _finalize_produce_turn(
-            pc.session_id, pc.cwd, pc.prompt, st["final_text"], steps, st["awaiting"],
-            pc.team, pc._path, pc._turn_mode, pc._turn_t0,
-            _TurnResetContext(_meter, _meter_token, _reqctx, _sess_token, _repo_token),
-            pc.run, _awake_release)
 
 
 def _stream(pc):

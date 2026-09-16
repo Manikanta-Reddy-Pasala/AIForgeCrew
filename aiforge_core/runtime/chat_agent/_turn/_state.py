@@ -48,6 +48,16 @@ def _resolve_complete_fn(complete_fn, role):
     return complete_fn, _native_on
 
 
+def _turn_goal(messages) -> str:
+    """This turn's request: the last user message, without the enhancer's
+    restatement."""
+    for m in reversed(messages or []):
+        if isinstance(m, dict) and m.get("role") == "user":
+            text = _text_of(m).strip()
+            return text.split("\n\n---\n[Interpreted request")[0].strip() or text
+    return ""
+
+
 def _compute_caps(max_steps, session_id):
     """Compute the step-cap budget: the operator/default cap, a positive caller
     max_steps override, the unattended fallback, and the effective safety cap.
@@ -149,7 +159,7 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
 
     # OrderedDict, not dict: the prune in ``_action`` needs least-recently-SEEN order,
     # which only move_to_end can maintain (see its call site).
-    action_counts: "collections.OrderedDict[str, int]" = collections.OrderedDict()
+    action_counts: collections.OrderedDict[str, int] = collections.OrderedDict()
     recent_outputs: collections.deque = collections.deque(maxlen=_OUTPUT_REPEAT)
     condensed_notified = False
     continue_nudges = 0   # consecutive "narrated but didn't act" re-prompts
@@ -165,7 +175,7 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     # no step ceiling to hold it down. Losing the oldest entries only means an
     # ancient read can count as "new knowledge" a second time — the failure
     # direction that grants an extension, never one that hides a runaway.
-    read_sigs_ever: "collections.OrderedDict[str, bool]" = collections.OrderedDict()
+    read_sigs_ever: collections.OrderedDict[str, bool] = collections.OrderedDict()
     _long_chain_help = _stuck_recovery_max() > 0   # 0 → full legacy behaviour
 
     # Mid-run steering (simple mode): let the user type WHILE the agent works —
@@ -257,5 +267,6 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         dropped_playbooks=_dropped_playbooks, native_on=_native_on,
         pending_steps=[], batch_skipped=0, batch_mark=len(convo),
         batch_unread=False, board=seed_board(_asks), board_used=False,
-        board_nudges=0, **progress_fields())
+        board_nudges=0, goal=_turn_goal(messages), steers=[],
+        **progress_fields())
     return st

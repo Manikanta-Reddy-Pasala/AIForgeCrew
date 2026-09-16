@@ -449,3 +449,25 @@ def test_the_replay_buffer_keeps_the_cut_copy():
     big = {"type": "tool", "name": "file_read", "result": {"content": "z" * 20000}}
     run.publish(big)
     assert len(run.events[0]["result"]["content"]) < 8200
+
+
+# ── long commands ────────────────────────────────────────────────────────
+
+def test_a_command_with_a_lot_of_output_does_not_hang(tmp_path, monkeypatch):
+    """A pipe holds about 64 KB; a verbose build used to block on it until
+    the timeout killed it."""
+    from aiforge_core.runtime.chat_agent import _shell
+    monkeypatch.delenv("AIFORGE_WORKSPACE_DIR", raising=False)
+    cmd = "python3 -c \"import sys; sys.stdout.write('x' * 2_000_000); print('END')\""
+    res = _shell._t_run_command({"cmd": cmd, "timeout": 20}, str(tmp_path))
+    assert res["ok"] is True, res.get("error")
+    assert res["stdout"].rstrip().endswith("END")
+
+
+def test_a_timed_out_command_still_shows_its_output(tmp_path, monkeypatch):
+    from aiforge_core.runtime.chat_agent import _shell
+    monkeypatch.delenv("AIFORGE_WORKSPACE_DIR", raising=False)
+    res = _shell._t_run_command(
+        {"cmd": "echo started; sleep 30", "timeout": 1}, str(tmp_path))
+    assert res["timed_out"] is True
+    assert "started" in res["stdout"]

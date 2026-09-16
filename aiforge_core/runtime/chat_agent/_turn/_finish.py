@@ -44,7 +44,13 @@ def _verify_on_final(st, cwd, plan_mode, builder):
     if (not plan_mode and not builder and st.edits_made > 0
             and st.verify_rounds < _verify_max_rounds()
             and _verify_on_final_enabled()):
+        yield {"type": "thought", "role": "system",
+               "text": "⧗ running the project's checks before finishing…"}
         _vok, _vout = _run_project_verify(cwd)
+        if _vok is True:
+            # Green: a later FINAL on a long run, after more work, gets its
+            # own fix rounds.
+            st.verify_rounds, st.verify_stalls, st.verify_prev_fails = 0, 0, None
         if _vok is False:
             try:
                 from aiforge_core.runtime.parallel_subtasks import _fail_count

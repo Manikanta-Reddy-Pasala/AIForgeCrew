@@ -756,6 +756,36 @@ def _run_refusal(cmd: str, args: dict, base: str) -> dict | None:
     return None
 
 
+class _Spool:
+    """A command's output, written to temp files instead of pipes.
+
+    A pipe holds about 64 KB; a build that writes more blocks until someone
+    reads it, and the loop only read after the exit — so a verbose maven or
+    pytest run hung until the timeout killed it. A file never fills up."""
+
+    def __init__(self) -> None:
+        import tempfile
+        self.out = tempfile.TemporaryFile()
+        self.err = tempfile.TemporaryFile()
+
+    @staticmethod
+    def _tail(fh) -> str:
+        fh.flush()
+        end = fh.seek(0, os.SEEK_END)
+        fh.seek(max(0, end - _MAX_OBS * 4))
+        return fh.read().decode("utf-8", "replace")
+
+    def read(self) -> tuple[str, str]:
+        return self._tail(self.out), self._tail(self.err)
+
+    def close(self) -> None:
+        for fh in (self.out, self.err):
+            try:
+                fh.close()
+            except OSError:
+                pass
+
+
 def _drain(proc, timeout: float = 5) -> tuple[str, str] | None:
     """Whatever the process buffered, or None if it could not be collected."""
     try:
@@ -765,7 +795,7 @@ def _drain(proc, timeout: float = 5) -> tuple[str, str] | None:
     return out or "", err or ""
 
 
-def _timeout_result(proc, timeout: int) -> dict:
+def _timeout_result(proc, timeout: int, spool=None) -> dict:
     """Capture whatever the command buffered BEFORE we kill it, so the agent
     sees partial output (e.g. which tests ran/passed before the hang) and can
     adapt — instead of a blind "timeout" with no signal."""
@@ -773,7 +803,14 @@ def _timeout_result(proc, timeout: int) -> dict:
 
     from aiforge_core.runtime import proc_signals
     proc_signals.kill_group(proc_signals.group_of(proc), _sig.SIGTERM)
-    drained = _drain(proc)
+    if spool is not None:
+        try:
+            proc.wait(timeout=5)
+        except Exception:  # noqa: BLE001 — ignored SIGTERM
+            _kill_proc(proc)
+        drained = spool.read()
+    else:
+        drained = _drain(proc)
     if drained is None:
         _kill_proc(proc)
         drained = ("", "")
@@ -788,7 +825,7 @@ def _timeout_result(proc, timeout: int) -> dict:
             "NOT undo your edits over a timeout."}
 
 
-def _await_exit(proc, timeout: int, sid) -> dict | None:
+def _await_exit(proc, timeout: int, sid, spool=None) -> dict | None:
     """Poll until the process exits; a dict when it was stopped or timed out."""
     import time as _time
     from aiforge_core.runtime import chat_cancel
@@ -798,15 +835,18 @@ def _await_exit(proc, timeout: int, sid) -> dict | None:
             _kill_proc(proc)
             return {"ok": False, "stopped": True, "error": "stopped by user"}
         if _time.monotonic() > deadline:
-            return _timeout_result(proc, timeout)
+            return _timeout_result(proc, timeout, spool)
         _time.sleep(0.2)
     return None
 
 
-def _collect_output(proc) -> tuple[str, str]:
+def _collect_output(proc, spool=None) -> tuple[str, str]:
     """Bound communicate(): a daemon grandchild inheriting the stdout pipe
     (e.g. `npm run dev &`) keeps it open after the process exits, so an
-    un-timed communicate() blocks forever even past the deadline."""
+    un-timed communicate() blocks forever even past the deadline. Spooled
+    output is simply read back."""
+    if spool is not None:
+        return spool.read()
     try:
         ct = int(os.environ.get("AIFORGE_COMMUNICATE_TIMEOUT_S", "10"))
     except (TypeError, ValueError):
@@ -830,27 +870,36 @@ def _t_run_command(args: dict, cwd: str) -> dict:
     # pip install) aren't killed mid-run; agent may override per call.
     default_to = int(os.environ.get("AIFORGE_CHAT_CMD_TIMEOUT_S", "600"))
     timeout = int(args.get("timeout", default_to))
-    from aiforge_core.runtime import chat_cancel
-    sid = chat_cancel.active()
+    spool = _Spool()
     try:
         # Its own process group, so the Stop button can kill the whole tree
         # (the shell + its children).
         proc = subprocess.Popen(
-            cmd, shell=True, cwd=base, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cmd, shell=True, cwd=base,
+            stdout=spool.out, stderr=spool.err,
             start_new_session=True,
         )
     except Exception as exc:  # noqa: BLE001
+        spool.close()
         return {"ok": False, "error": str(exc)}
+    try:
+        return _run_to_end(proc, timeout, spool)
+    finally:
+        spool.close()
+
+
+def _run_to_end(proc, timeout: int, spool) -> dict:
+    from aiforge_core.runtime import chat_cancel
+    sid = chat_cancel.active()
     if sid is not None:
         try:
             chat_cancel.track_pgid(sid, os.getpgid(proc.pid))
         except Exception:  # noqa: BLE001
             pass
-    stopped = _await_exit(proc, timeout, sid)
+    stopped = _await_exit(proc, timeout, sid, spool)
     if stopped is not None:
         return stopped
-    out, err = _collect_output(proc)
+    out, err = _collect_output(proc, spool)
     return {"ok": proc.returncode == 0, "code": proc.returncode,
             "stdout": out[-_MAX_OBS:], "stderr": err[-_MAX_OBS:]}
 

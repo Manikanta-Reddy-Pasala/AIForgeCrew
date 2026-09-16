@@ -9,6 +9,7 @@ reminder.
 """
 from __future__ import annotations
 
+import os
 import re
 
 _BOARD_OPEN = "<<AIFORGE_TASK_BOARD>>"
@@ -115,6 +116,28 @@ def pin_board(convo: list[dict], board: dict) -> None:
         return
     text = _BOARD_RE.sub("", text).rstrip()
     convo[0] = {**convo[0], "content": text + "\n\n" + render_board(board)}
+
+
+def turn_pin(st) -> str | None:
+    """What a condense must keep in view: this turn's task, the instructions
+    the user sent while it ran, and the files it has changed so far. None
+    when the turn has no task text (the compactor then pins its own)."""
+    goal = (getattr(st, "goal", "") or "").strip()
+    if not goal:
+        return None
+    parts = ["ORIGINAL TASK (stay on this until it's fully done + verified):",
+             goal[:1200]]
+    steers = [" ".join(s.split())[:300] for s in getattr(st, "steers", [])][-5:]
+    if steers:
+        parts.append("LATER INSTRUCTIONS FROM THE USER (newest last; they "
+                     "override the task where they differ):")
+        parts += [f"- {s}" for s in steers]
+    changed = [os.path.relpath(p, st.cwd) if st.cwd else p
+               for p in getattr(st, "file_hashes", {})]
+    if changed:
+        more = f" (+{len(changed) - 40} more)" if len(changed) > 40 else ""
+        parts.append("FILES CHANGED SO FAR: " + ", ".join(changed[-40:]) + more)
+    return "\n".join(parts)
 
 
 def unfinished_reminder(board: dict) -> str:

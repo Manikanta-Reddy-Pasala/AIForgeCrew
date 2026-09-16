@@ -221,6 +221,9 @@ class _Proc:
             raise subprocess.TimeoutExpired("cmd", timeout or 0)
         return self._out, self._err
 
+    def wait(self, timeout=None):
+        return self.returncode
+
     def kill(self):
         self.returncode = -9
 
@@ -230,9 +233,15 @@ def run(monkeypatch, repo, gates):
     from aiforge_core.runtime import chat_cancel
     state: dict = {"proc": _Proc(), "sid": None, "cancelled": False,
                    "killed": [], "pgids": [], "spawn": None}
-    monkeypatch.setattr(S.subprocess, "Popen",
-                        lambda cmd, **kw: state.update(spawn=(cmd, kw))
-                        or state["proc"])
+    def _spawn(cmd, **kw):
+        # run_command spools output to files; the fake writes into them.
+        state.update(spawn=(cmd, kw))
+        proc = state["proc"]
+        for key, text in (("stdout", proc._out), ("stderr", proc._err)):
+            if hasattr(kw.get(key), "write"):
+                kw[key].write(text.encode())
+        return proc
+    monkeypatch.setattr(S.subprocess, "Popen", _spawn)
     monkeypatch.setattr(S.os, "getpgid", lambda pid: 999)
     from aiforge_core.runtime import proc_signals as _ps
     monkeypatch.setattr(_ps.os, "killpg",

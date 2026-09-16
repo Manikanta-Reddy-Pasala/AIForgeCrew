@@ -384,7 +384,9 @@ def test_the_digest_names_the_tools_and_their_outcomes():
 def test_the_digest_is_capped():
     steps = [{"type": "tool", "name": f"t{i}", "result": {"ok": True}}
              for i in range(30)]
-    assert ch._step_digest(steps).endswith("…")
+    digest = ch._step_digest(steps)
+    assert "… 18 more …" in digest
+    assert digest.startswith("t0✓") and digest.endswith("t29✓")
 
 
 def test_a_turn_with_no_tools_has_no_digest():

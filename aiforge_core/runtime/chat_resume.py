@@ -32,6 +32,7 @@ resume nobody gets.
 from __future__ import annotations
 
 import logging
+import re
 
 from aiforge_core.runtime.tools.mutating import (
     EDITOR_READONLY_CMDS,
@@ -332,7 +333,9 @@ def build_brief(row: dict, _cwd: str = "") -> str:
         tail_bits += [f"  - {t}" for t in got["steers"][-_MAX_ERRORS:]]
     if got["errors"]:
         tail_bits.append("It failed with:")
-        tail_bits += [f"  - {e}" for e in got["errors"][:_MAX_ERRORS]]
+        # The LAST errors: after hours of work the first ones are stale; the
+        # run died on the recent ones.
+        tail_bits += [f"  - {e}" for e in got["errors"][-_MAX_ERRORS:]]
     tail_bits.append(
         "Rules for this run: read the files above before rewriting them; keep "
         "work that is already correct; do ONLY what is still missing; if "
@@ -350,9 +353,17 @@ def build_brief(row: dict, _cwd: str = "") -> str:
            got["attempted"], _MAX_FILES, budget, body)
     budget = _brief_block("Subtasks already completed:", done, _MAX_PENDING, budget, body)
     budget = _brief_block("Subtasks still PENDING:", pending, _MAX_PENDING, budget, body)
-    budget = _brief_block("Commands that already ran successfully:", got["commands"], 5, budget, body)
+    budget = _brief_block("Commands that already ran successfully (most recent):",
+                          got["commands"][-5:], 5, budget, body)
 
     return "\n".join([head, *body, tail])
+
+
+#: A short "carry on" message after a stopped turn is a resume too.
+_CONTINUE_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:continue|resume|keep going|carry on|go on|"
+    r"retry|try again|proceed)(?:\s+(?:please|from where you (?:left off|stopped)))?"
+    r"\s*[.!]*\s*$", re.IGNORECASE)
 
 
 def resume_preamble(rows: list, prompt: str, cwd: str = "",
@@ -372,7 +383,8 @@ def resume_preamble(rows: list, prompt: str, cwd: str = "",
     if not found:
         return ""
     row, prev_prompt = found
-    if not forced and _txt(prompt) != _txt(prev_prompt):
+    if not forced and _txt(prompt) != _txt(prev_prompt) \
+            and not _CONTINUE_RE.match(_txt(prompt)):
         return ""
     return build_brief(row, cwd)
 
