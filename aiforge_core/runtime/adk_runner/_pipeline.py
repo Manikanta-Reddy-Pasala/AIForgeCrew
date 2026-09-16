@@ -659,8 +659,15 @@ async def _drive_pipeline(runner, session_svc, session_id: str,
         log.warning("pipeline run aborted (%s)%s — returning partial state",
                     name, _why)
         state = await _session_state(session_svc, session_id)
+        # An aborted run must not pass, so the verdict is still "fail" — but
+        # this is NOT the Feedback judge's opinion, and it used to be recorded
+        # as if it were ("feedback: fail: no rationale provided"), telling the
+        # operator the code was judged bad when the model was unreachable.
+        # The cause travels with it so the audit row can say what happened.
         state["feedback_verdict"] = "fail"
         state["_pipeline_abort"] = "deadline" if is_deadline else name
+        state["_pipeline_abort_detail"] = (
+            "llm call cap reached" if is_limit else str(exc))[:300]
         return state
 
 
