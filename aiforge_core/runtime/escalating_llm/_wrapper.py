@@ -13,6 +13,8 @@ from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 
+from aiforge_core.llm import endpoint_breaker as _breaker
+
 from ._quieting import log
 from ._policy import (
     _api_base_of,
@@ -670,14 +672,27 @@ class EscalatingLlm(BaseLlm):
         call is finished."""
         req = self._stamp_request(llm_request, model)
         target = getattr(model, "model", None)
+        base = _api_base_of(model)
+        # Shared with the chat client: an endpoint that just failed to connect
+        # is skipped for the cooldown, so the chain moves on at once instead of
+        # every role, on every call, re-paying the connect budget on a dead host.
+        skipped = _breaker.is_open(base)
+        if skipped:
+            log.info("llm.candidate_skipped role=%s attempt=%s reason=%s",
+                     self.role, label, skipped)
+            state["exc"] = ConnectionError(f"LLM endpoint unreachable: {skipped}")
+            return
         meter: dict = {}
         try:
             buffered = await self._attempt(model, req, label, target, meter)
         except Exception as exc:  # noqa: BLE001
+            if _breaker.is_connect_error(exc):
+                _breaker.record_failure(base, str(exc))
             async for r in self._rescue_after_failure(exc, model, req, label,
                                                       target, t0, state):
                 yield r
             return
+        _breaker.record_success(base)
 
         if not buffered or all(_is_empty(r) for r in buffered):
             self._note_empty(label, model, buffered, meter.get("token"))
