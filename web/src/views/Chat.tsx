@@ -1693,6 +1693,13 @@ export default function Chat() {
     }
   }
 
+  // Does this session actually HAVE a SPEC.md? Six different producers feed the
+  // task dock and only the team/parallel one writes a spec, so the chip used to
+  // offer a document that does not exist — you clicked it and were told so.
+  // Asking the server is truthful for every producer AND for turns restored
+  // from history, where no event flag would survive.
+  const [specExists, setSpecExists] = useState(false);
+
   // Subtasks for the pinned bottom dock: the live run's list (updates status
   // live), else the most recent finished turn that carried a decomposition.
   const dockSubtasks: SubtaskItem[] | undefined = (() => {
@@ -1703,6 +1710,18 @@ export default function Chat() {
     }
     return undefined;
   })();
+
+  // Re-checked when the session changes and whenever the dock appears or the
+  // run ends — a team run writes SPEC.md partway through, so a single check at
+  // mount would say "no spec" for the rest of the session.
+  useEffect(() => {
+    let live = true;
+    if (activeId === null || !dockSubtasks?.length) { setSpecExists(false); return; }
+    chatSessionSpec(activeId)
+      .then(r => { if (live) setSpecExists(!!r.exists); })
+      .catch(() => { if (live) setSpecExists(false); });
+    return () => { live = false; };
+  }, [activeId, dockSubtasks?.length, busy]);
 
   function onKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -2167,7 +2186,8 @@ export default function Chat() {
                     and all — because the only boundary is around the whole
                     route. A panel should degrade to a panel. */}
                 <ErrorBoundary fallback={tasksPanelFallback}>
-                  <SubtaskList items={dockSubtasks} onViewSpec={openSpec} />
+                  <SubtaskList items={dockSubtasks}
+                               onViewSpec={specExists ? openSpec : undefined} />
                 </ErrorBoundary>
               </div>
             )}
