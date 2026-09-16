@@ -1,5 +1,6 @@
-"""Building the turn's conversation: the budget-capped system prompt, the
-history folded into it, and directives appended mid-turn."""
+"""Building the turn's conversation: the budget-capped system prompt with its
+codegraph and sandbox directives, the history folded into it, and
+directives appended mid-turn."""
 from __future__ import annotations
 
 import os
@@ -22,9 +23,43 @@ from .._tools import (
 )
 from ._blocks import (
     _append_context_blocks,
-    _codegraph_directive,
     _prepend_priority_blocks,
 )
+
+
+def _codegraph_directive(cwd, readonly_mode) -> str:
+    """Ensure this repo's codegraph index (skipped in read-only modes — the
+    build writes a .codegraph/ dir into the repo) and return the "CODEGRAPH IS
+    AVAILABLE" tool directive when the shared gate says it is usable this run,
+    else ''."""
+    try:
+        from aiforge_core.runtime.tools import codegraph as _cg
+        if not readonly_mode:
+            _cg.ensure_indexed(cwd)
+        if _cg.enabled_for_run(cwd):
+                return (
+                    "\n\nCODEGRAPH IS AVAILABLE (a pre-built code-relation index "
+                    "for THIS repo). USE IT — do not rediscover with grep what "
+                    "the graph already knows:\n"
+                    "- BEFORE editing or extending any EXISTING symbol, call "
+                    "codegraph_callers AND codegraph_impact on it to find every "
+                    "call site + everything a change would affect. Grep misses "
+                    "call sites and matches comments/strings; the graph does not.\n"
+                    "- To ORIENT on an unfamiliar area, call codegraph_explore "
+                    "with the task in plain words FIRST (before list_dir/grep).\n"
+                    "- To locate a definition, use codegraph_query, not grep.\n"
+                    "Tools:\n"
+                    "- codegraph_explore  {\"query\": \"where amounts are parsed\"}  "
+                    "relevant symbols + their source for a natural-language query\n"
+                    "- codegraph_query    {\"query\": \"clean_amount\"}   find a "
+                    "symbol + its defining file:line\n"
+                    "- codegraph_callers  {\"symbol\": \"foo\"}   every caller of foo\n"
+                    "- codegraph_callees  {\"symbol\": \"foo\"}   what foo calls\n"
+                    "- codegraph_impact   {\"symbol\": \"foo\"}   blast-radius of "
+                    "changing foo — ALWAYS call before editing a shared symbol")
+    except Exception:  # noqa: BLE001 — never break prompt build
+        pass
+    return ""
 
 
 def _seed_prompt(messages, cwd, readonly_mode):

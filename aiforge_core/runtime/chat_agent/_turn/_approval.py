@@ -1,5 +1,5 @@
-"""The approval gate: auto-approval rules, command risk flags, autonomous
-decisions, and rejections."""
+"""The approval gate: auto-approval rules, command risk flags and the delete
+guard, autonomous decisions, and rejections."""
 from __future__ import annotations
 
 import json
@@ -15,10 +15,20 @@ from .._registry import (
 from ._shared import (
     _log,
 )
-from ._tool_dispatch import (
-    _SHELL_TOOLS,
-    _is_destructive_delete,
-)
+
+_SHELL_TOOLS = ("run_command", "bash", "run_shell", "shell", "serve",
+                "watch_until", "ui_check")
+
+
+def _is_destructive_delete(cmd: str, cwd: "str | None" = None) -> bool:
+    """Whether ``cmd`` deletes, unless the env opt-in already allows deletes."""
+    try:
+        from aiforge_core.runtime.tools import delete_guard
+        return (not delete_guard.allow_delete(
+            ("AIFORGE_CHAT_ALLOW_DELETE", "AIFORGE_ALLOW_DELETE"))
+            and delete_guard.is_destructive_delete(cmd, cwd))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _commit_auto_approved(cmd: str, repo: str, session_id) -> bool:

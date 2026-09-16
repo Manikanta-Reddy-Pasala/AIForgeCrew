@@ -241,7 +241,7 @@ in chat and in the Doer alike — the query string was unfiltered outbound data.
 
 `plan_progress` `{slug, status: running|done|failed}` flips a checklist item for
 multi-part asks. It is handled in the chat loop before dispatch
-(`chat_agent/_loop.py`), not in the `TOOLS` registry.
+(`chat_agent/_turn/_action.py`), not in the `TOOLS` registry.
 
 ## Pipeline Doer tools
 

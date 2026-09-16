@@ -110,18 +110,3 @@ def _shown_args(name, args):
     if not keys or not isinstance(args, dict):
         return args
     return {k: ("[secret]" if k in keys else v) for k, v in args.items()}
-
-
-_SHELL_TOOLS = ("run_command", "bash", "run_shell", "shell", "serve",
-                "watch_until", "ui_check")
-
-
-def _is_destructive_delete(cmd: str, cwd: "str | None" = None) -> bool:
-    """Whether ``cmd`` deletes, unless the env opt-in already allows deletes."""
-    try:
-        from aiforge_core.runtime.tools import delete_guard
-        return (not delete_guard.allow_delete(
-            ("AIFORGE_CHAT_ALLOW_DELETE", "AIFORGE_ALLOW_DELETE"))
-            and delete_guard.is_destructive_delete(cmd, cwd))
-    except Exception:  # noqa: BLE001
-        return False

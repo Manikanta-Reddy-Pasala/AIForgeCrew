@@ -1,5 +1,5 @@
-"""Setting up a turn: builder nudge, completion function, step caps,
-writable roots, and the loop state."""
+"""Setting up a turn: completion function, step caps, writable roots, and
+the loop state."""
 from __future__ import annotations
 
 import time
@@ -16,32 +16,10 @@ from .._context import (
     _unattended_cap,
     _worktree_fingerprint,
 )
-from .._registry import (
-    _BUILDER_FINALIZE_TOOL,
-    _BUILDER_NUDGE_AFTER,
-)
 from ._convo import (
     _build_convo,
 )
-from ._shared import (
-    _THE_FINALIZE_TOOL,
-)
 
-
-def _builder_nudge(st, builder, n):
-    """Once a builder session has interviewed enough, inject a one-time reminder
-    to call the finalize tool NOW so the session ends with an artifact."""
-    # Builder nudge (#7): a local model can interview forever and never emit
-    # the finalize tool, leaving the session with no artifact. Once it has had
-    # enough back-and-forth, inject a one-time reminder to finalize NOW.
-    if builder and not st.builder_nudged and n >= _BUILDER_NUDGE_AFTER:
-        st.builder_nudged = True
-        _fin = _BUILDER_FINALIZE_TOOL.get(builder, _THE_FINALIZE_TOOL)
-        st.convo.append({"role": "user", "content":
-            f"[system reminder] You have gathered enough detail. Call "
-            f"`{_fin}` NOW with the collected values to finish — do not keep "
-            f"asking questions. If one required value is genuinely missing, "
-            f"ask ONLY for that, then finalize."})
 
 def _resolve_complete_fn(complete_fn, role):
     """Resolve the completion fn: when the caller injected none, use the default
@@ -80,7 +58,7 @@ def _compute_caps(max_steps, session_id):
     # The turn then ends the way a turn normally ends: the agent finishes, a
     # stall guard fires, the wall-clock deadline hits, or the user hits Stop.
     #
-    # …but Stop is gated on a session id (see the cancel check below), so an
+    # …but Stop is gated on a session id (see the cancel check in ``_loop._step_prologue``), so an
     # UNATTENDED run — the jobs scheduler, the analysis fan-out, the subtask
     # runners, text_doer — has no brake at all once the cap is off. "No limits"
     # is a promise to someone sitting in front of a chat; those runs keep a cap.
@@ -147,7 +125,7 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     # point on a slow local model — 2000 steps × seconds-to-minutes each is
     # effectively "forever" from the user's chair. This deadline bounds the
     # WHOLE turn regardless of step count, so a wandering or churning agent
-    # (evades the exact-repeat stall guards below by varying its args) can't
+    # (evades the exact-repeat stall guards in ``_action`` by varying its args) can't
     # run for hours. Generous default (1h) so it's a backstop, not a normal
     # limit; 0 disables. Set in Settings → Agent limits (or
     # AIFORGE_CHAT_TURN_DEADLINE_S).
@@ -166,7 +144,7 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         plan_mode=plan_mode, analyze_mode=analyze_mode, builder=builder,
         strict_finish=strict_finish, session_id=session_id, native=_native_on)
 
-    # OrderedDict, not dict: the prune below needs least-recently-SEEN order,
+    # OrderedDict, not dict: the prune in ``_action`` needs least-recently-SEEN order,
     # which only move_to_end can maintain (see its call site).
     action_counts: "collections.OrderedDict[str, int]" = collections.OrderedDict()
     recent_outputs: collections.deque = collections.deque(maxlen=_OUTPUT_REPEAT)

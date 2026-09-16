@@ -1,23 +1,23 @@
 """The chat ReAct loop's driver: one step at a time until the turn ends.
 
 Each job it drives lives in ``chat_agent/_turn/``; this module re-exports every
-name it used to define, so ``_loop.<name>`` keeps working. Patch a helper in
-the ``_turn`` module that calls it.
+name it used to define (not the names it only imported), so ``_loop.<name>``
+keeps working. Patch a helper in the ``_turn`` module that calls it.
 """
 from __future__ import annotations
 
 import json
 import os
-import time  # noqa: F401  # tests patch time.monotonic through this module
+import time  # noqa: F401  # tests patch time.sleep through this module
 from collections.abc import Callable, Iterator
 
 from ._prompt import _parse
 from ._registry import TOOLS  # noqa: F401  # re-exported
 from ._shell import _READ_OBS_TOOLS
+# Everything the single module defined stays importable from here.
 from ._turn._action import (  # noqa: F401
     _action_stall_guard,
     _ask_write_grant,
-    _handle_continue_step,
     _post_tool,
     _pre_dispatch_gates,
     _pre_tool_checks,
@@ -26,6 +26,7 @@ from ._turn._action import (  # noqa: F401
     _workspace_jail,
 )
 from ._turn._approval import (  # noqa: F401
+    _SHELL_TOOLS,
     _approval_gate,
     _autonomous_decision,
     _command_gate_flags,
@@ -33,6 +34,7 @@ from ._turn._approval import (  # noqa: F401
     _compute_gate_decision,
     _delete_pre_confirmed,
     _handle_rejection,
+    _is_destructive_delete,
     _run_approval,
 )
 from ._turn._batch import (  # noqa: F401
@@ -49,7 +51,6 @@ from ._turn._blocks import (  # noqa: F401
     _append_learning_recall,
     _append_recall_blocks,
     _append_session_blocks,
-    _codegraph_directive,
     _prepend_priority_blocks,
 )
 from ._turn._completion import (  # noqa: F401
@@ -63,6 +64,7 @@ from ._turn._completion import (  # noqa: F401
 from ._turn._convo import (  # noqa: F401
     _append_directive,
     _build_convo,
+    _codegraph_directive,
     _history_to_convo,
     _sandbox_directive,
     _seed_prompt,
@@ -71,24 +73,25 @@ from ._turn._finish import (  # noqa: F401
     _claim_guard,
     _emit_suggestion,
     _final_nudges,
+    _handle_continue_step,
     _handle_final,
     _is_clean_tree,
     _last_user_message,
     _predict_next_step,
-    _stuck_output_guard,
     _turn_summary,
     _verify_on_final,
 )
 from ._turn._limits import (  # noqa: F401
+    _builder_nudge,
     _cap_stop_reason,
     _condense_and_report,
     _deadline_guard,
     _drain_steering,
     _may_extend,
     _step_cap_guard,
+    _stuck_output_guard,
 )
 
-# Everything the single module defined stays importable from here.
 from ._turn._shared import (  # noqa: F401
     _ACTION_SIG_MAX,
     _THE_FINALIZE_TOOL,
@@ -96,7 +99,6 @@ from ._turn._shared import (  # noqa: F401
 )
 from ._turn._state import (  # noqa: F401
     _build_loop_state,
-    _builder_nudge,
     _compute_caps,
     _resolve_complete_fn,
     _writable_roots,
@@ -104,10 +106,8 @@ from ._turn._state import (  # noqa: F401
 from ._turn._tool_dispatch import (  # noqa: F401
     _REMOVED_SEARCH_TOOLS,
     _SECRET_ARGS,
-    _SHELL_TOOLS,
     _dispatch_tool,
     _invoke_tool,
-    _is_destructive_delete,
     _shown_args,
     _unknown_tool_result,
 )

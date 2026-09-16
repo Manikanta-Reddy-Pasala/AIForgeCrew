@@ -1,15 +1,22 @@
-"""Turn limits and mid-run input: step cap and deadline extensions,
-steering, and condensing."""
+"""Per-step guards and mid-run input: step cap and deadline extensions, the
+builder nudge, steering, condensing, and the stuck-output guard."""
 from __future__ import annotations
 
 import time
 
 from .._context import (
+    _OUTPUT_REPEAT,
     _compact_convo,
     _ctx_budget_chars,
     _fire_stop,
+    _progress_recap,
+    _stuck_recovery_max,
     _text_of,
     _worktree_fingerprint,
+)
+from .._registry import (
+    _BUILDER_FINALIZE_TOOL,
+    _BUILDER_NUDGE_AFTER,
 )
 from ._batch import (
     _rebase_batch,
@@ -17,6 +24,9 @@ from ._batch import (
 )
 from ._convo import (
     _append_directive,
+)
+from ._shared import (
+    _THE_FINALIZE_TOOL,
 )
 
 
@@ -231,3 +241,60 @@ def _condense_and_report(st, role, complete_fn, session_id, _meter):
                # Tokens the model has WRITTEN for this message so far,
                # as the provider reported them.
                "llm_turn_tokens_out": _calls.get("turn_tokens_out", 0)}
+
+
+def _stuck_output_guard(st, out):
+    """Stuck-output guard: on N identical model replies, first recover with a
+    progress recap + nudge (bounded); if it keeps repeating, stop and ask the
+    user. Returns continue/return/None."""
+    # Stuck-output loop: identical model reply N times running. A local model
+    # deep in a long tool chain (esp. a many-file read sweep) loses track and
+    # re-emits an action it already ran — so FIRST recover with a progress
+    # recap + "do the NEXT step" nudge (bounded); only give up if that keeps
+    # failing. The old hard bail here discarded all the work done so far.
+    st.recent_outputs.append(out.strip())
+    if (len(st.recent_outputs) == _OUTPUT_REPEAT
+            and len(set(st.recent_outputs)) == 1):
+        if st.stuck_recoveries < _stuck_recovery_max():
+            st.stuck_recoveries += 1
+            st.recent_outputs.clear()          # fresh slate for the recovered plan
+            _recap = _progress_recap(st.convo)
+            yield {"type": "thought", "role": "system",
+                   "text": "↺ repeated output — recap + nudge to continue"}
+            # Append the repeated assistant turn BEFORE the nudge — else two
+            # consecutive user turns (the prior OBSERVATION + this nudge)
+            # break providers like claude_local.
+            st.convo.append({"role": "assistant", "content": out})
+            st.convo.append({"role": "user", "content":
+                "[loop guard — not the user] You repeated the SAME output — "
+                "that makes no progress. "
+                + (_recap + ". " if _recap else "")
+                + "Take the NEXT, DIFFERENT step now: act on something not yet "
+                "done (e.g. the next unread file), or output `FINAL: <answer>` "
+                "if the task is fully complete. Do NOT repeat a previous action."})
+            return "continue"
+        yield {"type": "message", "awaiting_input": True,
+               "text": "I seem to be going in circles on this. Could you "
+                       "clarify what you'd like me to do, or give a bit "
+                       "more detail? (I stopped rather than keep retrying "
+                       "the same thing.)"}
+        yield {"type": "done"}
+        return "return"
+
+    return None
+
+
+def _builder_nudge(st, builder, n):
+    """Once a builder session has interviewed enough, inject a one-time reminder
+    to call the finalize tool NOW so the session ends with an artifact."""
+    # Builder nudge (#7): a local model can interview forever and never emit
+    # the finalize tool, leaving the session with no artifact. Once it has had
+    # enough back-and-forth, inject a one-time reminder to finalize NOW.
+    if builder and not st.builder_nudged and n >= _BUILDER_NUDGE_AFTER:
+        st.builder_nudged = True
+        _fin = _BUILDER_FINALIZE_TOOL.get(builder, _THE_FINALIZE_TOOL)
+        st.convo.append({"role": "user", "content":
+            f"[system reminder] You have gathered enough detail. Call "
+            f"`{_fin}` NOW with the collected values to finish — do not keep "
+            f"asking questions. If one required value is genuinely missing, "
+            f"ask ONLY for that, then finalize."})
