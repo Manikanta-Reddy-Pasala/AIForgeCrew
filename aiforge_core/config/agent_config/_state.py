@@ -37,6 +37,15 @@ _ARCHETYPES: tuple[str, ...] = (
     # spec) and architect (file/structure plan) → planner splits. Configurable
     # so the splitter can run on a stronger reasoning model than the workers.
     "enhancer",
+    # Judgement roles that were NOT here, and therefore could never be given a
+    # model of their own (2026-09-16). identity.model in agents.yaml is
+    # documentation only; a role absent from this list resolves to the global
+    # default, cannot be picked in Settings, and is skipped by auto-assign —
+    # so the reasoning tier named in model_registry._THINKING_ROLES never
+    # reached them.
+    #   validator — final accept/reject verdict on the diff.
+    #   memory    — distils transcripts into facts and consolidates briefs.
+    "validator", "memory",
 )
 _ROLES = _ARCHETYPES
 

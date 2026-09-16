@@ -264,9 +264,8 @@ def get(role: str) -> dict[str, Any]:
 
 
 def _row_for(role: str) -> dict[str, Any]:
-    """Like :func:`get`, but unknown roles (the ``enhancer`` /
-    ``validator`` stages, not in the configurable archetype list) resolve
-    to the global ``_default`` instead of raising — so they run on the
+    """Like :func:`get`, but a role outside the configurable archetype list
+    resolves to the global ``_default`` instead of raising — so it runs on the
     operator's configured model. ``get`` stays strict for callers (e.g.
     observability) that depend on the raise.
     """
