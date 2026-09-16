@@ -15,7 +15,7 @@ import { CtxReload } from './Chat.CtxReload';
 import { AutoApprovalsPanel } from './Chat.AutoApprovalsPanel';
 import { MediaStrip } from './Chat.MediaStrip';
 import { AssistantBubble } from './Chat.AssistantBubble';
-import { clickable } from '../a11y';
+import { clickable, backdrop } from '../a11y';
 
 // Module-level builder-launch guard: epoch-ms of the last ?builder= launch.
 // Lives OUTSIDE the component so a lazy-route/Suspense REMOUNT can't reset it
@@ -529,15 +529,14 @@ function CheckpointsModal({ checkpoints, setCheckpoints, restoreCheckpoint }: Re
   if (checkpoints === null) return null;
   return (
     <div
-      {...clickable(() => setCheckpoints(null))} aria-label="Close"
+      {...backdrop(() => setCheckpoints(null))} aria-label="Close"
       style={{
         position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)',
         display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50,
       }}
     >
       <dialog open className="dialog-reset" aria-modal="true" aria-label="Workspace checkpoints"
-           onClick={e => e.stopPropagation()}
-           onKeyDown={e => e.stopPropagation()} style={{
+           style={{
         width: 'min(560px, 92vw)', maxHeight: '70vh', overflow: 'auto',
         background: 'var(--bg-0)', border: '1px solid var(--border-1)',
         borderRadius: 10, padding: 16,
@@ -2194,15 +2193,10 @@ export default function Chat() {
 
             {/* SPEC.md preview modal */}
             {specModal && (
-              <div {...clickable(() => setSpecModal(null))} aria-label="Close"
+              <div {...backdrop(() => setSpecModal(null))} aria-label="Close"
                    style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
                             display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
                 <dialog open className="dialog-reset" aria-modal="true" aria-label="SPEC.md"
-              // Not a control: this panel exists only to stop the overlay's click
-              // from closing the dialog. A matching key handler keeps that
-              // true for keyboard users without announcing it as a button.
-              onClick={(e) => e.stopPropagation()}
-                     onKeyDown={(e) => e.stopPropagation()}
                      style={{ background: 'var(--bg-0,#0d1017)', border: '1px solid var(--border,#2a2f3a)',
                               borderRadius: 8, width: 'min(820px, 92vw)', maxHeight: '85vh', overflowY: 'auto',
                               padding: '18px 22px', boxShadow: '0 12px 40px rgba(0,0,0,0.5)' }}>
