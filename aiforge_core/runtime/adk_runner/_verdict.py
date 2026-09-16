@@ -104,6 +104,9 @@ def _extract_reason(state: dict, verdict: str) -> str:
     ``"<token>\n<reason>"`` string, a ``{"verdict", "rationale"}`` dict, or a
     role-appropriate default when there is no rationale.
     """
+    aborted = _abort_reason(state)
+    if aborted is not None:
+        return _clip(aborted)
     raw = state.get("feedback_verdict")
     text: str | None = None
     if isinstance(raw, dict):
@@ -113,11 +116,32 @@ def _extract_reason(state: dict, verdict: str) -> str:
 
     if not text:
         return _REASON_DEFAULT_PASS if verdict == "pass" else _REASON_DEFAULT_FAIL
-    # Collapse runs of whitespace so the audit body is compact.
+    return _clip(text)
+
+
+def _clip(text: str) -> str:
+    """One compact line, no longer than the audit column allows."""
     text = " ".join(text.split())
     if len(text) > _REASON_MAX_CHARS:
         text = text[: _REASON_MAX_CHARS - 1].rstrip() + "…"
     return text
+
+
+def _abort_reason(state: dict) -> "str | None":
+    """Why the run stopped, when it stopped before Feedback could judge.
+
+    The pipeline sets ``feedback_verdict="fail"`` on an abort so the ticket
+    blocks, which is right — but that is not the judge's opinion, and without
+    this the row read "no rationale provided", as if Feedback had looked at the
+    code and declined to say why.
+    """
+    abort = state.get("_pipeline_abort")
+    if not abort:
+        return None
+    why = "the wall-clock deadline" if abort == "deadline" else abort
+    detail = str(state.get("_pipeline_abort_detail") or "").strip()
+    text = f"not judged — the pipeline stopped at {why}"
+    return f"{text}: {detail}" if detail else text
 
 
 def _record_verdict_event(ticket_id: int, verdict: str, reason: str) -> None:
