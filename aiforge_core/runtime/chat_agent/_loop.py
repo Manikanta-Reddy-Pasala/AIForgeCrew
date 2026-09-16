@@ -435,8 +435,6 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
             sys_msg += addition[:room] + "\n…(truncated to fit context)\n"
         _sys_dropped.append(label)
 
-    if native and _batch_cap() > 1:
-        _add_sys_block("batch-reads", BATCH_READS_RULE)
     # WEB-LOOKUP directive FIRST — it's short + critical, so it must outrank the
     # big optional blocks (repo-map/recall) under a tight window (blocks added
     # LATER drop first). Without top priority the "no web access" notice got
@@ -445,6 +443,8 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
     # a bare URL is excluded — it already routes to web_crawl.)
     if last_user and _has_web_intent(last_user):
         _add_sys_block("web-lookup", _WEB_LOOKUP_DIRECTIVE)
+    if native and _batch_cap() > 1:
+        _add_sys_block("batch-reads", BATCH_READS_RULE)
 
     _bundle, _img_blocks = _append_context_blocks(
         _add_sys_block, cwd, last_user, messages, session_id, role, cave)
