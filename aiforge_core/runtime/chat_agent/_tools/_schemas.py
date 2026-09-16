@@ -104,8 +104,7 @@ CATALOG: dict = {
                   {"mode": "s", "pattern": "s"}, ()),
     "typecheck": ("Run the project's type-checker.", {}, ()),
     "serve": ("Start a server/app in the background. It is stopped after ttl_s "
-              "seconds (default 1800); pass ttl_s: 0 to keep it for the whole "
-              "run.", {"cmd": "s", "port": "i", "ttl_s": "i"}, ("cmd",)),
+              "seconds (default 1800); ttl_s: 0 keeps it until stop_service.", {"cmd": "s", "port": "i", "ttl_s": "i"}, ("cmd",)),
     "stop_service": ("Stop a service started with serve.", {"pid": "i"},
                      ("pid",)),
     "list_services": ("List background services you started.", {}, ()),

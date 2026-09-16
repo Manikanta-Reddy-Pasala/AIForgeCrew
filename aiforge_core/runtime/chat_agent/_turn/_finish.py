@@ -27,7 +27,7 @@ from ._shared import (
     _THE_FINALIZE_TOOL,
     _log,
 )
-from ._tasks import open_items, open_planned, unfinished_reminder
+from ._tasks import board_nudge_allowed, open_planned, unfinished_reminder
 
 
 def _verify_on_final(st, cwd, plan_mode, builder):
@@ -47,10 +47,6 @@ def _verify_on_final(st, cwd, plan_mode, builder):
         yield {"type": "thought", "role": "system",
                "text": "⧗ running the project's checks before finishing…"}
         _vok, _vout = _run_project_verify(cwd)
-        if _vok is True:
-            # Green: a later FINAL on a long run, after more work, gets its
-            # own fix rounds.
-            st.verify_rounds, st.verify_stalls, st.verify_prev_fails = 0, 0, None
         if _vok is False:
             try:
                 from aiforge_core.runtime.parallel_subtasks import _fail_count
@@ -114,23 +110,6 @@ def _claim_guard(st, step, cwd, readonly_mode, builder, _wt_fp0):
             return "continue"
         step["text"] = _edit_claim_disclaimer(step.get("text") or "")
     return None
-
-
-#: Reminders in a row a FINAL gets while task-board items are still open.
-_BOARD_NUDGES = 2
-
-
-def board_nudge_allowed(st) -> bool:
-    """Up to _BOARD_NUDGES reminders without progress in between; closing
-    an item gives the next premature FINAL its reminders back."""
-    closed = len(st.board) - len(open_items(st.board))
-    if closed != getattr(st, "board_closed_mark", None):
-        st.board_closed_mark = closed
-        st.board_nudges = 0
-    if st.board_nudges >= _BOARD_NUDGES:
-        return False
-    st.board_nudges += 1
-    return True
 
 
 def _final_nudges(st, step, builder, strict_finish, _asks):

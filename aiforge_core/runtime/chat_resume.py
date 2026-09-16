@@ -383,10 +383,37 @@ def resume_preamble(rows: list, prompt: str, cwd: str = "",
     if not found:
         return ""
     row, prev_prompt = found
-    if not forced and _txt(prompt) != _txt(prev_prompt) \
-            and not _CONTINUE_RE.match(_txt(prompt)):
+    same = _txt(prompt) == _txt(prev_prompt)
+    if not forced and not same and not _CONTINUE_RE.match(_txt(prompt)):
         return ""
-    return build_brief(row, cwd)
+    brief = build_brief(row, cwd)
+    if brief and not same:
+        # "continue" says nothing about the task: quote it, so the run (and
+        # every condense after it) still knows what it is doing.
+        brief = (f"{brief}\n{REQUEST_OPEN}\n{_request_behind(rows)[:4000]}\n"
+                 f"{REQUEST_CLOSE}")
+    return brief
 
 
-__all__ = ["last_stopped_turn", "build_brief", "resume_preamble"]
+REQUEST_OPEN = "ORIGINAL REQUEST (the user's words, quoted):"
+REQUEST_CLOSE = "END OF ORIGINAL REQUEST"
+
+
+def _request_behind(rows: list) -> str:
+    """The newest user message that is a request, not a "continue"."""
+    for r in reversed(rows):
+        if isinstance(r, dict) and r.get("role") == "user":
+            text = _txt(r.get("content"))
+            if text and not _CONTINUE_RE.match(text):
+                return text.split("\n\n---\n[RESUME]")[0].strip()
+    return ""
+
+
+def quoted_request(text: str) -> str:
+    """The request a resume brief quotes, or ""."""
+    m = re.search(re.escape(REQUEST_OPEN) + r"\n(.*?)\n" + re.escape(REQUEST_CLOSE),
+                  text or "", re.S)
+    return m.group(1).strip() if m else ""
+
+
+__all__ = ["last_stopped_turn", "build_brief", "resume_preamble", "quoted_request"]

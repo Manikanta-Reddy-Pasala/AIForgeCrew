@@ -45,10 +45,12 @@ def _cut(value, cap: int, depth: int):
 
 
 def slim_event(event: dict) -> dict:
-    """The event to store: a copy of a tool or approval event with long
-    argument and result values cut; any other event is returned as is."""
-    keys = [k for k in ("args", "result", "preview") if k in event]
-    if event.get("type") not in ("tool", "approval") or not keys:
+    """The event to store: a copy of a tool event with long argument and
+    result values cut; any other event is returned as is."""
+    keys = [k for k in ("args", "result") if k in event]
+    # An approval card is shown again on re-attach; the user must see the
+    # whole change they are approving, so it is never cut.
+    if event.get("type") != "tool" or not keys:
         return event
     cap = _cap()
     return {**event, **{k: _cut(event[k], cap, 3) for k in keys}}

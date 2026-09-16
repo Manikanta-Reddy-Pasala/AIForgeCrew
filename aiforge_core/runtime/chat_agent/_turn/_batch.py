@@ -76,7 +76,8 @@ def _drop_batch(st, reason):
     st.batch_skipped = 0
     if parts and reason != "stopped":
         _append_directive(st, (
-            "NOTE: some tool calls in your last reply did not run: "
+            "[batch note — not the user] Some tool calls in your last reply "
+            "did not run: "
             + "; ".join(parts) + ". Request any you still need in your next reply."))
 
 

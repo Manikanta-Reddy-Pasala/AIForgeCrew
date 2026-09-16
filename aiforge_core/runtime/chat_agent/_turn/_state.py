@@ -51,10 +51,14 @@ def _resolve_complete_fn(complete_fn, role):
 def _turn_goal(messages) -> str:
     """This turn's request: the last user message, without the enhancer's
     restatement."""
+    from aiforge_core.runtime.chat_resume import quoted_request
     for m in reversed(messages or []):
         if isinstance(m, dict) and m.get("role") == "user":
             text = _text_of(m).strip()
-            return text.split("\n\n---\n[Interpreted request")[0].strip() or text
+            quoted = quoted_request(text)       # "continue" + a resume brief
+            if quoted:
+                return quoted
+            return text.split("\n\n---\n[")[0].strip() or text
     return ""
 
 
@@ -151,11 +155,12 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     # the boilerplate + restatement.
     _user_roots = _writable_roots(messages, session_id)
 
+    _unlimited = not _capped and _turn_budget_s <= 0
     convo, _bundle, _asks, _dropped_playbooks = _build_convo(
         messages, cwd, role, readonly_mode=readonly_mode,
         plan_mode=plan_mode, analyze_mode=analyze_mode, builder=builder,
         strict_finish=strict_finish, session_id=session_id, native=_native_on,
-        unlimited=not _capped and _turn_budget_s <= 0)
+        unlimited=_unlimited)
 
     # OrderedDict, not dict: the prune in ``_action`` needs least-recently-SEEN order,
     # which only move_to_end can maintain (see its call site).
@@ -267,6 +272,7 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         dropped_playbooks=_dropped_playbooks, native_on=_native_on,
         pending_steps=[], batch_skipped=0, batch_mark=len(convo),
         batch_unread=False, board=seed_board(_asks), board_used=False,
-        board_nudges=0, goal=_turn_goal(messages), steers=[],
+        board_nudges=0, board_closed_mark=None, unlimited=_unlimited,
+        goal=_turn_goal(messages), steers=[],
         **progress_fields())
     return st

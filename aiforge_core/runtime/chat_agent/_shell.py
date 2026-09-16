@@ -4,9 +4,9 @@ import json
 import os
 import re
 import subprocess
-import time
-from collections.abc import Callable, Iterator
 from pathlib import Path
+
+from ._spool import Spool, proc_group
 
 _BASH = '.bash'
 
@@ -506,7 +506,7 @@ _SYNTAX_EXTS = (".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".kt", ".kts",
                 ".rb", ".swift", ".scala")
 
 
-def _syntax_check(path: str, content: str, args: dict) -> "str | None":
+def _syntax_check(path: str, content: str, args: dict) -> str | None:
     """Return an error string if ``content`` is broken code, else None. Only
     runs for known code extensions, skips empty files, and honours force:true."""
     if args.get("force") or not content.strip():
@@ -756,36 +756,6 @@ def _run_refusal(cmd: str, args: dict, base: str) -> dict | None:
     return None
 
 
-class _Spool:
-    """A command's output, written to temp files instead of pipes.
-
-    A pipe holds about 64 KB; a build that writes more blocks until someone
-    reads it, and the loop only read after the exit — so a verbose maven or
-    pytest run hung until the timeout killed it. A file never fills up."""
-
-    def __init__(self) -> None:
-        import tempfile
-        self.out = tempfile.TemporaryFile()
-        self.err = tempfile.TemporaryFile()
-
-    @staticmethod
-    def _tail(fh) -> str:
-        fh.flush()
-        end = fh.seek(0, os.SEEK_END)
-        fh.seek(max(0, end - _MAX_OBS * 4))
-        return fh.read().decode("utf-8", "replace")
-
-    def read(self) -> tuple[str, str]:
-        return self._tail(self.out), self._tail(self.err)
-
-    def close(self) -> None:
-        for fh in (self.out, self.err):
-            try:
-                fh.close()
-            except OSError:
-                pass
-
-
 def _drain(proc, timeout: float = 5) -> tuple[str, str] | None:
     """Whatever the process buffered, or None if it could not be collected."""
     try:
@@ -807,7 +777,9 @@ def _timeout_result(proc, timeout: int, spool=None) -> dict:
         try:
             proc.wait(timeout=5)
         except Exception:  # noqa: BLE001 — ignored SIGTERM
-            _kill_proc(proc)
+            pass
+        # The shell may be gone while a child that ignored SIGTERM is not.
+        spool.kill_group()
         drained = spool.read()
     else:
         drained = _drain(proc)
@@ -828,6 +800,7 @@ def _timeout_result(proc, timeout: int, spool=None) -> dict:
 def _await_exit(proc, timeout: int, sid, spool=None) -> dict | None:
     """Poll until the process exits; a dict when it was stopped or timed out."""
     import time as _time
+
     from aiforge_core.runtime import chat_cancel
     deadline = _time.monotonic() + timeout
     while proc.poll() is None:
@@ -836,6 +809,12 @@ def _await_exit(proc, timeout: int, sid, spool=None) -> dict | None:
             return {"ok": False, "stopped": True, "error": "stopped by user"}
         if _time.monotonic() > deadline:
             return _timeout_result(proc, timeout, spool)
+        if spool is not None and spool.too_big():
+            spool.kill_group()
+            _kill_proc(proc)
+            out, err = spool.read()
+            return {"ok": False, "code": None, "stdout": out[-_MAX_OBS:],
+                    "stderr": err[-_MAX_OBS:], "error": spool.too_big_error()}
         _time.sleep(0.2)
     return None
 
@@ -870,8 +849,9 @@ def _t_run_command(args: dict, cwd: str) -> dict:
     # pip install) aren't killed mid-run; agent may override per call.
     default_to = int(os.environ.get("AIFORGE_CHAT_CMD_TIMEOUT_S", "600"))
     timeout = int(args.get("timeout", default_to))
-    spool = _Spool()
+    spool = None
     try:
+        spool = Spool()
         # Its own process group, so the Stop button can kill the whole tree
         # (the shell + its children).
         proc = subprocess.Popen(
@@ -880,11 +860,17 @@ def _t_run_command(args: dict, cwd: str) -> dict:
             start_new_session=True,
         )
     except Exception as exc:  # noqa: BLE001
-        spool.close()
+        if spool is not None:
+            spool.close()
         return {"ok": False, "error": str(exc)}
+    spool.pgid = proc_group(proc)
     try:
         return _run_to_end(proc, timeout, spool)
     finally:
+        # A child left running in the background (`cmd &`) would outlive the
+        # turn and keep writing into a deleted file; `serve` is the way to
+        # keep a process. Its group goes with the command.
+        spool.kill_group()
         spool.close()
 
 

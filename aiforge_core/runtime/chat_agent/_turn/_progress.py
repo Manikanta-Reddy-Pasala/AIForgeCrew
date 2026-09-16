@@ -29,6 +29,7 @@ _MAX_TRACKED = 20_000
 _PATH_KEYS = ("path", "file", "file_path", "target", "dest", "new_path")
 _PATH_LIST_KEYS = ("paths", "files")
 _NO_FILE = "-"
+_SHELL_TOOLS = frozenset({"run_command", "bash", "shell", "run", "run_shell"})
 
 
 def _int_env(name: str, default: int) -> int:
@@ -46,7 +47,7 @@ def loop_backstop() -> int:
 
 
 def max_recoveries() -> int:
-    """Stuck recoveries one run may use in total
+    """Stuck recoveries one run may use between two closed task-board items
     (``AIFORGE_CHAT_MAX_RECOVERIES``, default 30)."""
     return _int_env("AIFORGE_CHAT_MAX_RECOVERIES", 30)
 
@@ -59,6 +60,8 @@ def progress_fields() -> dict:
         "states_seen": collections.OrderedDict({"": True}),
         "paths_read": collections.OrderedDict(),
         "strikes": collections.OrderedDict(),
+        "backstop": collections.OrderedDict(),
+        "git_fp": None,
         "new_states": 0,
         "new_files": 0,
         "recoveries_total": 0,
@@ -89,12 +92,19 @@ def _named_paths(args, result) -> list[str]:
     return found
 
 
+def _full(path: str, cwd) -> str:
+    return os.path.realpath(os.path.join(str(cwd or ""), os.path.expanduser(path)))
+
+
 def _digest(path: str) -> str:
+    digest = hashlib.sha1()  # noqa: S324  # not security
     try:
         with open(path, "rb") as fh:
-            return hashlib.sha1(fh.read()).hexdigest()  # noqa: S324  # not security
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
     except OSError:
         return _NO_FILE
+    return digest.hexdigest()
 
 
 def note_write(st, name, args, result, cwd) -> bool:
@@ -103,46 +113,113 @@ def note_write(st, name, args, result, cwd) -> bool:
         return False
     if isinstance(result, dict) and result.get("ok") is False:
         return False
-    paths = _named_paths(args, result)
-    if paths:
-        for p in paths:
-            full = os.path.normpath(os.path.join(str(cwd or ""), os.path.expanduser(p)))
+    paths = _named_paths(args, None) or _named_paths(None, result)
+    files = [_full(p, cwd) for p in paths]
+    if files and not any(os.path.isdir(f) for f in files):
+        for full in files:
             _remember(st.file_hashes, full, _digest(full))
         state = json.dumps(sorted(st.file_hashes.items()))
     else:
-        # A tool that does not say which files it touched (a rename across
-        # the tree): nothing to compare, so it is a new state.
+        # A tool that does not say which files it touched, or names a folder
+        # (a rename across the tree): nothing to compare, so a new state.
         state = f"{st.state_fp}#{len(st.states_seen)}"
-    st.state_fp = hashlib.sha1(state.encode()).hexdigest()  # noqa: S324
-    if st.state_fp not in st.states_seen:
-        st.new_states += 1
-    _remember(st.states_seen, st.state_fp)
+    _enter_state(st, hashlib.sha1(state.encode()).hexdigest())  # noqa: S324
     return True
 
 
-def note_read(st, args, result) -> None:
+def _enter_state(st, fp: str) -> None:
+    st.state_fp = fp
+    if fp not in st.states_seen:
+        st.new_states += 1
+        st.backstop.clear()           # somewhere new: repeats start over
+    _remember(st.states_seen, fp)
+
+
+#: Changed files looked at per command; a tree with more is still a change.
+_MAX_CHANGED = 500
+
+
+def _tree_state(cwd) -> str:
+    """A fingerprint of the files git reports as changed: their names, sizes
+    and modification times. "" outside a git repo."""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["git", "status", "--porcelain", "-z", "--untracked-files=all"],
+            cwd=str(cwd), capture_output=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if out.returncode != 0:
+        return ""
+    entries = [e for e in out.stdout.split(b"\0") if e]
+    parts = [out.stdout[:0]]
+    for e in entries[:_MAX_CHANGED]:
+        path = os.path.join(str(cwd), e[3:].decode("utf-8", "replace"))
+        try:
+            s = os.stat(path)
+            parts.append(f"{e[:2]!r}{path}:{s.st_size}:{s.st_mtime_ns}".encode())
+        except OSError:
+            parts.append(e)
+    parts.append(str(len(entries)).encode())
+    return hashlib.sha1(b"\n".join(parts)).hexdigest()  # noqa: S324
+
+
+def note_command(st, name, result, cwd) -> None:
+    """A shell command can change files too (sed -i, git apply, codegen). After
+    a successful one, fold the git view of the tree into the state, so an
+    edit-by-shell-then-test cycle is progress, not a loop."""
+    if name not in _SHELL_TOOLS or not (isinstance(result, dict) and result.get("ok")):
+        return
+    fp = _tree_state(cwd)
+    if not fp or fp == st.git_fp:
+        return
+    st.git_fp = fp
+    _enter_state(st, hashlib.sha1(f"{st.state_fp}|{fp}".encode()).hexdigest())  # noqa: S324
+
+
+def note_read(st, args, result, cwd=None) -> None:
     """Record the files a landed read covered."""
     if isinstance(result, dict) and result.get("ok") is False:
         return
-    for p in _named_paths(args, None):
+    for p in (_full(x, cwd) for x in _named_paths(args, None)):
         if p not in st.paths_read:
             st.new_files += 1
         _remember(st.paths_read, p)
 
 
-def strike(st, sig) -> bool:
-    """Count one more run of ``sig``; True when it now counts as a loop."""
-    key = f"{sig}@{st.state_fp}"
-    _remember(st.strikes, key, st.strikes.get(key, 0) + 1)
-    return (st.strikes[key] >= _LOOP_REPEAT
-            or st.action_counts.get(sig, 0) >= loop_backstop())
+def _short(sig: str) -> str:
+    """A fixed-size key: a signature holds the whole call, file content too."""
+    return hashlib.sha1(sig.encode("utf-8", "replace")).hexdigest()  # noqa: S324
+
+
+def strike(st, sig, per_state: bool = True) -> bool:
+    """Count one more run of ``sig``; True when it now counts as a loop.
+
+    Two counts: repeats in the current workspace state (``per_state``), and
+    repeats since the workspace last reached a state it had never been in —
+    the backstop for a run that changes files without getting anywhere."""
+    looping = False
+    sig = _short(sig)
+    if per_state:
+        key = f"{sig}@{st.state_fp}"
+        _remember(st.strikes, key, st.strikes.get(key, 0) + 1)
+        looping = st.strikes[key] >= _LOOP_REPEAT
+    _remember(st.backstop, sig, st.backstop.get(sig, 0) + 1)
+    return looping or st.backstop[sig] >= loop_backstop()
 
 
 def forgive(st, sig) -> None:
     """After a recovery nudge, give this action a fresh count."""
+    sig = _short(sig)
     st.strikes[f"{sig}@{st.state_fp}"] = 0
-    if st.action_counts.get(sig, 0) >= loop_backstop():
-        st.action_counts[sig] = 0
+    if st.backstop.get(sig, 0) >= loop_backstop():
+        st.backstop[sig] = 0
+
+
+def _closed_items(st) -> int:
+    board = getattr(st, "board", None) or {}
+    return sum(1 for it in board.values()
+               if it.get("status") in ("done", "failed", "skipped"))
 
 
 def may_recover(st) -> bool:
@@ -155,6 +232,10 @@ def may_recover(st) -> bool:
     if st.recovery_mark is not None and mark != st.recovery_mark:
         st.stuck_recoveries = 0
     st.recovery_mark = mark
+    closed = _closed_items(st)
+    if closed != getattr(st, "recoveries_closed_mark", closed):
+        st.recoveries_total = 0       # a finished task is real progress
+    st.recoveries_closed_mark = closed
     if (st.stuck_recoveries >= _stuck_recovery_max()
             or st.recoveries_total >= max_recoveries()):
         return False

@@ -42,7 +42,7 @@ def test_a_later_turns_condense_pins_that_turns_task():
 
 @pytest.mark.parametrize("note", [
     "OBSERVATION: {\"ok\": true}",
-    "NOTE: 2 of the tool calls did not run",
+    "[batch note — not the user] Some tool calls did not run",
     "[loop guard — not the user] You repeated the SAME output",
     "[task board — not the user] These items are still open",
     "[system reminder] You have gathered enough detail.",
@@ -79,6 +79,17 @@ def test_an_unanswered_approval_does_not_end_the_run():
     assert not any(e.get("awaiting_input") for e in events)
 
 
+def test_a_second_unanswered_approval_pauses_the_run():
+    from aiforge_core.runtime.chat_agent._turn import _approval
+    _approval._TIMEOUTS.clear()
+    timeout = {"decision": "reject", "note": "approval timed out"}
+    first = list(_approval._handle_rejection("a", {}, 9, [], timeout))
+    second = list(_approval._handle_rejection("b", {}, 9, [], timeout))
+    assert not any(e.get("awaiting_input") for e in first)
+    assert any(e.get("awaiting_input") for e in second)
+    assert {"type": "stopped", "reason": "approval_timeout"} in second
+
+
 def test_a_real_rejection_still_stops():
     from aiforge_core.runtime.chat_agent._turn import _approval
     gen = _approval._handle_rejection("run_command", {"cmd": "x"}, 5, [],
@@ -97,7 +108,7 @@ def test_a_real_rejection_still_stops():
 @pytest.fixture
 def _store(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
-    monkeypatch.setenv("AIFORGE_DB_PATH", str(tmp_path / "cfg" / "chat.db"))
+    monkeypatch.setenv("AIFORGE_CHAT_DB_PATH", str(tmp_path / "cfg" / "chat.db"))
     from aiforge_core.runtime import chat_store
     chat_store.reset_backend_for_tests()
     yield chat_store
@@ -132,6 +143,16 @@ def test_a_finished_turn_leaves_nothing_behind(_store):
     assert chat_turn_save.recover_all() == 0
 
 
+def test_a_huge_turn_keeps_its_start_and_end(_store):
+    from aiforge_core.runtime import chat_turn_save
+    sid = _store.create_session("t")["id"]
+    steps = [{"type": "thought", "text": str(i)} for i in range(5000)]
+    chat_turn_save.TurnSaver(sid).save(steps, [])
+    kept = json.loads(chat_turn_save._path(sid).read_text())["steps"]
+    assert len(kept) == 1551
+    assert kept[0]["text"] == "0" and kept[-1]["text"] == "4999"
+
+
 def test_saving_waits_for_the_interval(_store, monkeypatch):
     from aiforge_core.runtime import chat_turn_save
     sid = _store.create_session("t")["id"]
@@ -159,6 +180,26 @@ def _stopped_rows(errors):
 def test_saying_continue_resumes_a_stopped_turn(prompt):
     from aiforge_core.runtime import chat_resume
     assert chat_resume.resume_preamble(_stopped_rows(["boom"]), prompt).startswith("[RESUME]")
+
+
+def test_continue_keeps_the_original_request_in_view():
+    from aiforge_core.runtime import chat_resume
+    from aiforge_core.runtime.chat_agent._turn._state import _turn_goal
+    rows = _stopped_rows(["boom"])
+    brief = chat_resume.resume_preamble(rows, "continue")
+    assert "port the service" in brief
+    message = {"role": "user", "content": f"continue\n\n---\n{brief}"}
+    assert _turn_goal([message]) == "port the service"
+    # a second "continue" still finds the real request
+    rows2 = rows + [{"role": "user", "content": "continue"},
+                    {"role": "assistant", "content": "", "steps": rows[1]["steps"]}]
+    assert "port the service" in chat_resume.resume_preamble(rows2, "keep going")
+
+
+def test_the_same_words_again_need_no_quote():
+    from aiforge_core.runtime import chat_resume
+    brief = chat_resume.resume_preamble(_stopped_rows(["boom"]), "port the service")
+    assert chat_resume.REQUEST_OPEN not in brief
 
 
 def test_a_new_request_is_not_a_resume():
@@ -208,6 +249,8 @@ def test_an_expired_service_is_still_listed(monkeypatch):
              "started_at": 0.0, "pgid": None}})
     monkeypatch.setattr(serve, "_EXPIRED", {})
     monkeypatch.setattr(serve, "_kill_pgid", lambda pid, pgid: None)
-    listed = serve.list_services()["services"]
-    assert listed == [{"pid": 42, "url": "http://x", "cmd": "npm run dev",
-                       "alive": False, "stopped": "ran past its ttl_s (1s)"}]
+    listed = serve.list_services()
+    assert listed["services"] == []
+    assert listed["expired"] == [{"pid": 42, "url": "http://x", "cmd": "npm run dev",
+                                  "alive": False, "stopped": "ran past its ttl_s (1s)"}]
+    assert "expired" not in serve.list_services()          # reported once

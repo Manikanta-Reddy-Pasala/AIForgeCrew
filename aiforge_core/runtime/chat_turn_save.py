@@ -40,6 +40,18 @@ def _path(session_id: int) -> Path:
     return _dir() / f"{int(session_id)}.json"
 
 
+#: Steps kept in a crash copy: how the turn started and how far it got.
+_HEAD, _TAIL = 50, 1500
+
+
+def _kept(steps: list) -> list:
+    if len(steps) <= _HEAD + _TAIL:
+        return list(steps)
+    gap = {"type": "thought", "role": "system",
+           "text": f"… {len(steps) - _HEAD - _TAIL} steps not kept in the crash copy …"}
+    return list(steps[:_HEAD]) + [gap] + list(steps[-_TAIL:])
+
+
 class TurnSaver:
     """Writes one session's running turn to disk at most every interval."""
 
@@ -60,7 +72,7 @@ class TurnSaver:
         self._last = time.monotonic()
         self._saved_len = len(steps)
         rows = ([{"type": "subtasks", "items": list(subtasks)}] if subtasks else []) \
-            + list(steps)
+            + _kept(steps)
         try:
             _dir().mkdir(parents=True, exist_ok=True)
             tmp = _path(self.session_id).with_suffix(".tmp")

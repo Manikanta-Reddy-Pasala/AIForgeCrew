@@ -86,6 +86,48 @@ def test_the_total_recoveries_are_capped(tmp_path, monkeypatch):
     assert spent == 5
 
 
+def test_a_long_edit_and_test_cycle_is_never_a_loop(tmp_path):
+    st = _loop_state()
+    f = tmp_path / "a.py"
+    for i in range(100):
+        f.write_text(f"version {i}")
+        _progress.note_write(st, "file_write", {"path": "a.py"}, {"ok": True}, tmp_path)
+        st.action_counts["pytest"] = i + 1
+        assert not _progress.strike(st, "run_command|pytest")
+
+
+def test_a_shell_edit_is_a_new_state(tmp_path):
+    import subprocess
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "a.py").write_text("v1")
+    st = _loop_state()
+    _progress.note_command(st, "run_command", {"ok": True}, str(tmp_path))
+    first = st.state_fp
+    (tmp_path / "a.py").write_text("v2 — changed by sed")
+    _progress.note_command(st, "run_command", {"ok": True}, str(tmp_path))
+    assert st.state_fp != first
+    _progress.note_command(st, "run_command", {"ok": True}, str(tmp_path))
+    assert st.new_states == 2                      # nothing changed the third time
+    _progress.note_command(st, "file_read", {"ok": True}, str(tmp_path))
+    assert st.new_states == 2
+
+
+def test_a_repeated_read_between_new_ones_is_stopped_by_the_backstop(monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_LOOP_BACKSTOP", "5")
+    st = _loop_state()
+    hits = [_progress.strike(st, "list_dir|.", per_state=False) for _ in range(5)]
+    assert hits == [False, False, False, False, True]
+
+
+def test_closing_a_task_refills_the_recovery_ceiling(monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_MAX_RECOVERIES", "2")
+    st = _loop_state(board={"a": {"title": "a", "status": "pending"}})
+    st.recoveries_total = 2
+    assert not _progress.may_recover(st)
+    st.board["a"]["status"] = "done"
+    assert _progress.may_recover(st)
+
+
 def test_an_unchanged_or_flipped_file_is_not_a_new_state(tmp_path):
     st = _loop_state()
     f = tmp_path / "a.py"
@@ -128,7 +170,7 @@ def test_slicing_one_file_forever_stops(tmp_path):
     fn, calls = _scripted(replies)
     evs = _run(tmp_path, fn)
     assert evs[-1]["type"] == "done"
-    assert len(calls) < 150
+    assert len(calls) < 350
 
 
 # ── the task board ───────────────────────────────────────────────────────
@@ -152,11 +194,11 @@ def test_bad_progress_calls_are_refused():
     board = {}
     assert not _tasks.apply_progress(board, {})[0]["ok"]
     assert not _tasks.apply_progress(board, {"slug": "x", "status": "nope"})[0]["ok"]
-    # an unknown slug without a title is still accepted, as before, and the
-    # dock is told about it
+    # an unknown slug without a title is only a progress flip for the dock,
+    # as before: it does not go on the board
     res, evs = _tasks.apply_progress(board, {"slug": "x", "status": "in progress"})
-    assert res["ok"] and board["x"]["status"] == "running"
-    assert evs[0]["type"] == "subtasks"
+    assert res["ok"] and "x" not in board
+    assert evs == [{"type": "subtask_update", "slug": "x", "status": "running"}]
 
 
 def test_the_board_is_pinned_once_and_replaced():
@@ -267,11 +309,23 @@ def test_the_long_run_rule_only_when_the_run_is_unlimited(tmp_path):
     from aiforge_core.runtime.chat_agent._turn._convo import _build_convo
     kw = dict(readonly_mode=False, plan_mode=False, analyze_mode=False,
               builder=None, strict_finish=False, session_id=None)
-    msgs = [{"role": "user", "content": "hi"}]
-    on = _build_convo(msgs, str(tmp_path), "chat", unlimited=True, **kw)[0]
-    off = _build_convo(msgs, str(tmp_path), "chat", **kw)[0]
+    multi = [{"role": "user", "content": "fix the login bug. also add a retry to "
+              "the sync client. and update the README"}]
+    hi = [{"role": "user", "content": "hi"}]
+    on = _build_convo(multi, str(tmp_path), "chat", unlimited=True, **kw)[0]
+    capped = _build_convo(multi, str(tmp_path), "chat", **kw)[0]
+    short = _build_convo(hi, str(tmp_path), "chat", unlimited=True, **kw)[0]
     assert "LONG AND MULTI-TASK WORK" in on[0]["content"]
-    assert "LONG AND MULTI-TASK WORK" not in off[0]["content"]
+    assert "LONG AND MULTI-TASK WORK" not in capped[0]["content"]
+    assert "LONG AND MULTI-TASK WORK" not in short[0]["content"]   # a plain chat
+
+
+def test_a_condensed_long_run_is_reminded_through_the_pin(tmp_path):
+    st = SimpleNamespace(goal="port it", steers=[], cwd=str(tmp_path),
+                         file_hashes={}, unlimited=True)
+    assert "LONG AND MULTI-TASK WORK" in _tasks.turn_pin(st)
+    st.unlimited = False
+    assert "LONG AND MULTI-TASK WORK" not in _tasks.turn_pin(st)
 
 
 def test_the_board_is_a_native_tool_and_batches_with_reads():
@@ -388,10 +442,10 @@ def test_only_an_interactive_run_with_work_done_waits(monkeypatch):
         yield  # pragma: no cover
     monkeypatch.setattr(_completion, "_retry_completion", fake_retry)
     monkeypatch.setattr(_completion, "_complete_live", boom)
-    for sid, counts in ((7, {"x": 1}), (None, {"x": 1}), (7, {})):
-        st = SimpleNamespace(convo=[], edits_made=0, action_counts=counts)
+    for sid, edits in ((7, 1), (None, 1), (7, 0)):
+        st = SimpleNamespace(convo=[], edits_made=edits, action_counts={"x": 1})
         _drive(_completion._run_completion(st, "chat", None, sid, None))
-    assert seen[0] > 0 and seen[1] == 0 and seen[2] == 0
+    assert seen[0] > 0 and seen[1] == 0 and seen[2] == 0     # a read-only turn fails fast
 
 
 def test_stop_during_the_wait_stops_the_run(_no_sleep, monkeypatch):
@@ -430,6 +484,13 @@ def test_stored_tool_results_are_cut(monkeypatch):
     assert slim_event(thought) is thought
 
 
+def test_approval_cards_are_stored_whole():
+    from aiforge_core.runtime.chat_event_slim import slim_event
+    card = {"type": "approval", "args": {"content": "c" * 30000},
+            "preview": "p" * 30000}
+    assert slim_event(card) is card
+
+
 def test_stored_arguments_and_long_lists_are_cut():
     from aiforge_core.runtime.chat_event_slim import slim_event
     ev = {"type": "tool", "name": "file_write",
@@ -462,6 +523,42 @@ def test_a_command_with_a_lot_of_output_does_not_hang(tmp_path, monkeypatch):
     res = _shell._t_run_command({"cmd": cmd, "timeout": 20}, str(tmp_path))
     assert res["ok"] is True, res.get("error")
     assert res["stdout"].rstrip().endswith("END")
+
+
+def test_runaway_output_is_stopped(tmp_path, monkeypatch):
+    from aiforge_core.runtime.chat_agent import _shell
+    monkeypatch.delenv("AIFORGE_WORKSPACE_DIR", raising=False)
+    monkeypatch.setenv("AIFORGE_CHAT_CMD_OUTPUT_MAX_MB", "1")
+    res = _shell._t_run_command({"cmd": "yes spam", "timeout": 30}, str(tmp_path))
+    assert res["ok"] is False and "more than 1 MB" in res["error"]
+
+
+def test_progress_bars_become_lines(tmp_path, monkeypatch):
+    from aiforge_core.runtime.chat_agent import _shell
+    monkeypatch.delenv("AIFORGE_WORKSPACE_DIR", raising=False)
+    res = _shell._t_run_command({"cmd": "printf '10%%\\r50%%\\rdone\\n'"},
+                                str(tmp_path))
+    assert res["stdout"].splitlines() == ["10%", "50%", "done"]
+
+
+def test_a_background_child_does_not_outlive_the_command(tmp_path, monkeypatch):
+    import os
+    import time as _t
+
+    from aiforge_core.runtime.chat_agent import _shell
+    monkeypatch.delenv("AIFORGE_WORKSPACE_DIR", raising=False)
+    res = _shell._t_run_command(
+        {"cmd": "sleep 300 & echo $! > child.pid"}, str(tmp_path))
+    assert res["ok"] is True
+    pid = int((tmp_path / "child.pid").read_text())
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        _t.sleep(0.1)
+    else:
+        pytest.fail("the background child is still running")
 
 
 def test_a_timed_out_command_still_shows_its_output(tmp_path, monkeypatch):

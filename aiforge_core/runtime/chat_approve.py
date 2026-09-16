@@ -168,6 +168,11 @@ def wait(session_id: int) -> dict:
         return {"decision": "reject", "note": "no pending approval"}
     ok = p.event.wait(timeout=_timeout_s())
     if not ok:
+        # Forget the expired request, so a late Approve on its card resolves
+        # nothing instead of looking accepted.
+        with _LOCK:
+            if _PENDING.get(session_id) is p:
+                _PENDING.pop(session_id, None)
         return {"decision": "reject", "note": "approval timed out"}
     return {"decision": p.decision, "note": p.note}
 

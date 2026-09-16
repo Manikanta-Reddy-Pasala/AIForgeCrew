@@ -321,14 +321,11 @@ def test_re_reads_after_a_condense_are_not_new_knowledge(tmp_path, monkeypatch):
     evs = list(ca.run_chat_agent(
         [{"role": "user", "content": "read them forever"}], cwd=str(tmp_path),
         complete_fn=fn, session_id=_SID))
-    # 3 files = 3 new reads = at most ONE earned extension, not five. The
-    # repeated reads also count toward the loop guard, which may stop the
-    # run before the cap does.
-    assert calls["n"] <= 40                      # 20 + one 20-step extension
+    # 3 files = 3 new reads = ONE earned extension, not five.
+    assert calls["n"] == 40                      # 20 + one 20-step extension
     assert len([e for e in evs if "extended the step budget"
-                in e.get("text", "")]) <= 1
-    assert ("runaway safety cap" in _msgs(evs)
-            or "without progress" in _msgs(evs))
+                in e.get("text", "")]) == 1
+    assert "runaway safety cap" in _msgs(evs)
 
 
 def test_progress_counting_survives_stuck_recoveries_off(tmp_path, monkeypatch):

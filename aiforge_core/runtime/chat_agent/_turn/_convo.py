@@ -177,7 +177,7 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
     # a bare URL is excluded — it already routes to web_crawl.)
     if last_user and _has_web_intent(last_user):
         _add_sys_block("web-lookup", _WEB_LOOKUP_DIRECTIVE)
-    if unlimited and not readonly_mode and not builder:
+    if unlimited and len(_asks) > 1 and not readonly_mode and not builder:
         _add_sys_block("long-run", LONG_RUN_RULE)
     if native and _batch_cap() > 1:
         _add_sys_block("batch-reads", BATCH_READS_RULE)

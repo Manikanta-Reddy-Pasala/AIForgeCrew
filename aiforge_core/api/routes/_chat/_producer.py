@@ -207,7 +207,7 @@ def _events(pc):
 def _wait_for_slot(pc) -> bool:
     """Take a producer slot, telling the user when other runs hold them all.
     Stop works while waiting. False when the user stopped the run."""
-    from aiforge_core.runtime import chat_cancel
+    from aiforge_core.runtime import chat_approve, chat_cancel, chat_interject
     if _PRODUCE_SEM.acquire(blocking=False):
         return True
     pc.run.publish({"type": "thought", "role": "system",
@@ -218,6 +218,8 @@ def _wait_for_slot(pc) -> bool:
             pc.run.publish({"type": "error", "text": "stopped by user"})
             pc.run.publish({"type": "done"})
             chat_cancel.finish(pc.session_id)
+            chat_interject.clear(pc.session_id)
+            chat_approve.finish(pc.session_id)
             pc.run.finish()
             return False
     return True
@@ -246,8 +248,10 @@ def _produce(pc):
     # Live subtask panel state, persisted so it survives a navigate-away.
     st = {"final_text": "", "awaiting": False, "subtasks": []}
     _meter = _meter_token = _sess_token = _repo_token = None
+    held = []                 # release only a keep-awake hold this turn took
     try:
         _awake_acquire()
+        held.append(True)
         _sess_token = _reqctx.set_session_id(pc.session_id)
         # THE turn boundary for the request meter. Here, not inside the ReAct
         # loop: the enhancer / team-downgrade classifier / capture probes
@@ -276,7 +280,7 @@ def _produce(pc):
             pc.session_id, pc.cwd, pc.prompt, st["final_text"], steps, st["awaiting"],
             pc.team, pc._path, pc._turn_mode, pc._turn_t0,
             _TurnResetContext(_meter, _meter_token, _reqctx, _sess_token, _repo_token),
-            pc.run, _awake_release)
+            pc.run, _awake_release if held else (lambda: None))
 
 
 def _prepare_turn(pc, _chat_approve, _psub) -> None:

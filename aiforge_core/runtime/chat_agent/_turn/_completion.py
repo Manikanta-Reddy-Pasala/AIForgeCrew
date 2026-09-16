@@ -206,7 +206,7 @@ def _wait_out_outage(complete_fn, role, convo, session_id, exc, wait_s):
 
 
 def _retry_completion(complete_fn, role, convo, session_id, exc,
-                      _step_calls, _meter, _step_tok, wait_s=0.0):
+                      _step_calls, _meter, _step_tok, wait_s=0.0, worked=False):
     """Recover a failed model completion: retry (bounded by the per-step
     generation budget; 0 retries for a shipped-timeout or unserved-model error)
     with escalating backoff. Yields progress/stop events; returns the completion
@@ -255,7 +255,7 @@ def _retry_completion(complete_fn, role, convo, session_id, exc,
             complete_fn, role, convo, session_id, _last, wait_s)
     if _last is not None:
         yield from _emit_completion_failure(_cfg_error, _meter, _step_tok,
-                                            worked=wait_s > 0)
+                                            worked=worked and not _cfg_error)
         return _RETRY_STOP
     return out
 
@@ -284,11 +284,11 @@ def _run_completion(st, role, complete_fn, session_id, _meter):
         # request fails fast so the user is not left staring at nothing.
         # Only an interactive run waits: a background run has no Stop button
         # and holds a slot other work may need.
-        _worked = bool(st.edits_made or st.action_counts)
+        _worked = st.edits_made > 0
         _wait = _outage_wait_s() if _worked and session_id is not None else 0.0
         out = yield from _retry_completion(
             complete_fn, role, st.convo, session_id, exc,
-            _step_calls, _meter, _step_tok, wait_s=_wait)
+            _step_calls, _meter, _step_tok, wait_s=_wait, worked=_worked)
         if out is _RETRY_STOP:
             return _RETRY_STOP
     # The step's sends are counted; unbind before the next one binds its
