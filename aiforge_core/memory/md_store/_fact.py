@@ -43,7 +43,11 @@ def gate_enabled() -> bool:
 # compactor's own continuation marker — none of these are claims about anything.
 _SCAFFOLD_RES = (
     re.compile(r"^[|\[\]{}<>#*_=~+\-–—·•`'\"\s]*$"),        # punctuation only
-    re.compile(r"^\s*[|\[]"),                               # leads with | or [
+    re.compile(r"^\s*\|"),                                  # a table row
+    # A leading bracket is a table/usage fragment ("[ -c | --clear-l") UNLESS
+    # it is a tag or ticket key followed by prose ("[ONE-321] the GSTR session
+    # was never renewed").
+    re.compile(r"^\s*\[(?![A-Za-z0-9][\w.-]*\]\s+\S)"),
     re.compile(r"^\s*(?:#{1,6}|-{3,}|={3,}|\*{3,})\s"),     # heading / rule
     re.compile(r"^\s*\*\*continued\s+in", re.IGNORECASE),   # compaction artifact
     re.compile(r"^\s*\[[^\]]*\]\([^)]*\)\s*$"),             # a bare md link
@@ -59,8 +63,8 @@ _SCAFFOLD_RES = (
 # a real question already ends in "?", which is checked separately. The
 # trailing \s matters: without it "Is-a" trips the "is" branch.
 _REQUEST_RE = re.compile(
-    r"^\s*(?:can|could|would|please|pls|kindly|let'?s|lets|help\s+me|"
-    r"i\s+need\s+you\s+to)\s",
+    r"^\s*(?:(?:can|could|would|will)\s+(?:you|we|u)\b"
+    r"|please|pls|kindly|let'?s|lets|help\s+me|i\s+need\s+you\s+to)",
     re.IGNORECASE)
 
 # Leads with a bare pronoun/connective and therefore only means something inside
@@ -73,8 +77,15 @@ _REQUEST_RE = re.compile(
 # policy blocks the fetch") — and this reason also DELETES during repair, so a
 # lexical accident like "Same-origin" must not qualify.
 _DANGLING_RE = re.compile(
-    r"^\s*(?:this|that|it|he|him|his|she|her|they|them|"
-    r"also|and|but|so|then|attached|attahced)\s",
+    r"^\s*(?:"
+    # a pronoun standing IN for the subject — "this is the data architect
+    # problem". A determiner ("This repo's CI runs on Tekton", "That deployment
+    # uses…") names its subject in the next word and is a fine fact.
+    r"(?:this|that|it|these|those)\s+(?:is|was|are|were|has|have|had|will|"
+    r"would|should|means|does|did|can|comes|goes|needs|looks|seems|gets)\b"
+    r"|(?:he|him|his|she|her|they|them|their)\s"
+    r"|(?:also|and|but|so|then|attached|attahced)\s"
+    r")",
     re.IGNORECASE)
 
 # Ends mid-thought: an ellipsis, or a dangling conjunction. Deliberately NOT
@@ -124,6 +135,9 @@ def _is_section_label(text: str) -> bool:
 
 _OPENERS = {"(": ")", "[": "]", "{": "}"}
 _CODE_SPAN_RE = re.compile(r"`[^`]*`")
+#: An escaped bracket is a literal character — a fact quoting a regex character
+#: class (r"^\s*[|\[]") is not an unclosed delimiter.
+_ESCAPED_RE = re.compile(r"\\.")
 
 
 def _unbalanced(text: str) -> bool:
@@ -138,7 +152,7 @@ def _unbalanced(text: str) -> bool:
       is not itself a fault ("A single backtick ` starts a command substitution",
       "the regex is `^\\s*[|\\[]`").
     """
-    stripped = _CODE_SPAN_RE.sub("", text or "")
+    stripped = _ESCAPED_RE.sub("", _CODE_SPAN_RE.sub("", text or ""))
     depth = 0
     closers = {c: o for o, c in _OPENERS.items()}
     for ch in stripped:
@@ -340,7 +354,11 @@ def supersedes(new: str, old: str) -> bool:
     a, b = claim_key(new), claim_key(old)
     if not (a and b) or a == b:
         return False
-    return a.startswith(b + " ") and looks_truncated(old)
+    # No word boundary required: a real ladder rung is cut MID-WORD ("[ c |
+    # clear l"). looks_truncated is what keeps that safe — without it,
+    # "batch size is 50" is a prefix of "batch size is 500 for the DLQ job"
+    # and the true fact about 50 would be deleted.
+    return a.startswith(b) and looks_truncated(old)
 
 
 def title_for(subject: str, claim: str) -> str:

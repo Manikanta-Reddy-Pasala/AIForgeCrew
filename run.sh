@@ -827,6 +827,12 @@ if [[ -n "${MAINT:-}" ]]; then
     echo "==> no .venv yet — run ./run.sh once before a maintenance command" >&2
     exit 1
   fi
+  if [[ -n "${MAINT_DRY:-}" && "$MAINT" != repair ]]; then
+    # --dry-run is honoured ONLY by --repair-memory. Accepting it silently
+    # elsewhere would run a REAL recompact while the operator reads "dry run".
+    echo "==> --dry-run applies to --repair-memory only" >&2
+    exit 2
+  fi
   case "$MAINT" in
     dedupe)     echo "==> dedupe: removing duplicate OKR nodes + chat sessions…"
                 .venv/bin/python -m aiforge_core.memory.migrations --dedupe; exit $? ;;

@@ -1288,8 +1288,12 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
         # (fresh sources + the just-written consolidated file as existing_body).
         planned = _gather_planned(group_by, min_group, model_role, force)
         if not planned:
+            # Carries "repaired" like the success return: the repair pass ran
+            # BEFORE the lock, and dropping its result exactly when there was
+            # nothing to compact hid the one number this call produced.
             return {"ok": True, "dry_run": False, "group_by": group_by,
                     "groups": {}, "files_in": 0, "files_out": 0,
+                    "repaired": repaired,
                     "note": "nothing to compact (no group ≥ min_group)"}
         archive = memory_dir() / "archive" / _now_iso().replace(":", "")
         total = len(planned)
@@ -1388,14 +1392,22 @@ def _facts_to_recapture(pth, parsed: dict) -> list:
 def _recapture_kind(parsed: dict) -> str:
     """The kind a legacy brief's facts should be re-captured under.
 
-    Hardcoding ``topic_learning`` here is what stamped EVERY re-captured fact as
-    a topic learning — whole memory stores show one kind on every row. The
-    brief's own type is the honest answer; anything unrecognised becomes a plain
-    ``learning``."""
+    Hardcoding ``topic_learning`` is what stamped EVERY re-captured fact as a
+    topic learning — whole stores show one kind on every row. A brief's own
+    ``type`` is its ENVELOPE kind (``knowledge``/``compacted``), never a capture
+    kind, so the honest source is the capture kind carried in its tags; failing
+    that a plain ``learning``, which is the one kind that claims nothing about
+    scope.
+    """
     from ._capture import _CAPTURE_KINDS
-    kind = str((parsed.get("frontmatter") or {}).get("type")
-               or (parsed.get("frontmatter") or {}).get("kind") or "").strip()
-    return kind if kind in _CAPTURE_KINDS else "learning"
+    fm = parsed.get("frontmatter") or {}
+    tags = fm.get("tags") or []
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(",")]
+    for t in tags:
+        if str(t).strip() in _CAPTURE_KINDS:
+            return str(t).strip()
+    return "learning"
 
 
 def _fold_one_stale(pth, archive) -> tuple[int, bool]:
@@ -1410,6 +1422,7 @@ def _fold_one_stale(pth, archive) -> tuple[int, bool]:
     except Exception:  # noqa: BLE001
         return 0, False
     moved = 0
+    refused = 0
     for f in _facts_to_recapture(pth, parsed):
         if not f.strip():
             continue
@@ -1418,11 +1431,23 @@ def _fold_one_stale(pth, archive) -> tuple[int, bool]:
             # "notes" fed a loop: the repo axis minted compacted-notes.md, whose
             # key is itself "cryptic", so the next cleanup folded it and
             # re-captured every fact again — one classify call per fact, forever.
-            capture(_recapture_kind(parsed), f.strip(), repo=None,
-                    source="cleanup:legacy-compacted")
-            moved += 1
+            res = capture(_recapture_kind(parsed), f.strip(), repo=None,
+                          source="cleanup:legacy-compacted")
+            # capture() now REFUSES a non-fact instead of raising, so counting
+            # unconditionally reported facts as migrated that were dropped —
+            # and the brief they came from was archived anyway.
+            if not (isinstance(res, dict) and res.get("skipped")):
+                moved += 1
+            else:
+                refused += 1
         except Exception:  # noqa: BLE001
             pass
+    if moved == 0 and refused:
+        # Every fact in this brief was refused. Archiving it now would delete
+        # them from the live store with nothing carried over, so leave it.
+        _log.info("tidy-legacy: keeping %s — all %d fact(s) refused by the gate",
+                  pth.name, refused)
+        return 0, False
     try:
         shutil.move(str(pth), str(archive / pth.name))
         return moved, True

@@ -287,3 +287,72 @@ def test_a_generic_or_value_token_is_not_a_subject(text, not_subject):
     # a junk subject is not cosmetic: capture() FOLDS on a strong subject, so
     # every fact mentioning 0.85 or SELECT would land in one note.
     assert _fact.strong_subject(text) != not_subject
+
+
+# ── repair must not touch what it does not own ───────────────────────────────
+def test_repair_leaves_a_session_note_alone(cfg):
+    """A session log's body is '## Run 1' sections. Judged by the fact rules it
+    reads as scaffolding, and the whole file — with real facts in it — was
+    archived on the first compaction."""
+    from aiforge_core.memory import md_store as m
+    m.write("session 7", "## Run 1\n"
+                         "The change stream leader lock is renewed every 30s.\n"
+                         "## Run 2\n"
+                         "The pull sync default page size is 300 records.\n",
+            kind="session", repo="svc")
+    out = m.repair_captures()
+    assert out["retired"] == 0
+    assert list(m.captures_dir().glob("session-7-*.md"))
+
+
+def test_repair_never_rewrites_a_body_it_cannot_reconstruct(cfg):
+    """Rewriting from the claim list drops everything around the bullets — and
+    an in-place rewrite is not covered by the archive."""
+    from aiforge_core.memory import md_store as m
+    body = ("Key findings from the outage investigation:\n"
+            "\n"
+            "- This repo's CI runs on Tekton, not GitHub Actions.\n"
+            "- The change stream health check runs every 120 seconds.\n")
+    m.write("outage findings", body, kind="learning", repo="svc")
+    m.repair_captures()
+    kept = next(iter(m.captures_dir().glob("outage-findings-*.md")))
+    raw = kept.read_text(encoding="utf-8")
+    assert "Key findings from the outage investigation:" in raw
+    assert "Tekton" in raw
+
+
+def test_a_collapse_archives_a_copy_first(cfg):
+    from aiforge_core.memory import md_store as m
+    m.write("clear lockout", "- clear lockout takes a cphash and\n"
+                             "- clear lockout takes a cphash and a setup value",
+            kind="learning", repo="svc")
+    out = m.repair_captures()
+    assert out["collapsed"] == 1
+    archived = list((m.memory_dir() / "archive").rglob("pre-collapse-*.md"))
+    assert archived, "a claim was dropped with no copy kept"
+    assert out["dropped_claims"], "a dropped claim must be reported, not silent"
+
+
+# ── the distiller must survive a box with no reasoning model ─────────────────
+def test_extract_falls_back_to_the_fast_role_when_the_model_is_unreachable(
+        monkeypatch):
+    """The `memory` role points at a model a given box may not have loaded, so
+    the call RAISES. Without a fallback the window is never distilled, and
+    after enough failures the offset is force-advanced past it."""
+    from aiforge_core.runtime import chat_okr_extract as ex
+
+    calls: list[str] = []
+
+    def _fake(role, messages, model, **kw):
+        calls.append(role)
+        if role == "memory":
+            raise RuntimeError("LLM endpoint unreachable (127.0.0.1:1234)")
+        return type("R", (), {"items": [type("I", (), {
+            "text": "MessageRetryService polls every 30 seconds.",
+            "kind": "learning", "subject": "MessageRetryService",
+            "evidence": "application.yaml"})()]})()
+
+    monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _fake)
+    items = ex._extract("some transcript", "memory")
+    assert calls == ["memory", "learner"]
+    assert items and items[0].subject == "MessageRetryService"

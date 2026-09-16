@@ -82,10 +82,21 @@ def _extract(transcript: str, role: str) -> "list | None":
                 max_retries=1, temperature=0.0)
             return list(getattr(res, "items", None) or [])
 
-        items = _run(role)
-        # A reasoning model can burn its whole budget thinking and answer with
-        # nothing (model_registry documents this). Rather than mark the window
-        # folded with zero facts, retry ONCE on the fast role.
+        try:
+            items = _run(role)
+        except Exception as exc:  # noqa: BLE001
+            # The memory role may point at a model this box has not loaded, so
+            # the call RAISES rather than returning nothing. Falling back only
+            # on an empty answer would leave such a box unable to distil at all
+            # — and _record_window_failure eventually force-advances the offset,
+            # so those turns would never be revisited.
+            if not _role.is_thinking_role(role):
+                raise
+            log.info("chat_okr: %s failed (%s) — retrying on %s",
+                     role, exc, _role.fallback_role())
+            return _run(_role.fallback_role())
+        # A reasoning model can also burn its whole budget thinking and answer
+        # with nothing (model_registry documents this).
         if not items and _role.is_thinking_role(role):
             fb = _role.fallback_role()
             log.info("chat_okr: %s returned no items — retrying on %s", role, fb)
