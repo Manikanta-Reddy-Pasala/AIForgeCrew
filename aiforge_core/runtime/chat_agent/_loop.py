@@ -185,7 +185,7 @@ def _run_action_path(st, step, n, cwd, session_id):
     args = step["args"] if isinstance(step["args"], dict) else {}
     sig = name + "|" + json.dumps(args, sort_keys=True, default=str)
     _sig = yield from _gated_action(st, step, name, args, sig, n, cwd, session_id)
-    if _sig == "repeat":
+    if _sig in ("repeat", "handled"):
         return "continue"
     if _sig == "continue":
         # A gate refused or redirected this call: the rest of the batch waits
@@ -196,7 +196,8 @@ def _run_action_path(st, step, n, cwd, session_id):
 
 def _gated_action(st, step, name, args, sig, n, cwd, session_id):
     """Stall guard, gates, dispatch and bookkeeping for one tool call. Returns
-    return/continue/None, or "repeat" when a read already done was skipped."""
+    return/continue/None, "repeat" when a read already done was skipped, or
+    "handled" when the loop did the call's bookkeeping itself."""
     repeat = bool(st.long_chain_help and name in _READ_OBS_TOOLS
                   and sig in st.read_sigs_seen)
     _sig = yield from _action_stall_guard(st, name, args, sig, st.long_chain_help)
@@ -208,8 +209,8 @@ def _gated_action(st, step, name, args, sig, n, cwd, session_id):
         yield {"type": "thought", "text": step["thought"]}
     _sig = yield from _pre_dispatch_gates(st, name, args, st.readonly_mode,
                                           st.analyze_mode)
-    if _sig == "continue":
-        return "continue"
+    if _sig in ("continue", "handled"):
+        return _sig
     _sig = yield from _approval_gate(name, args, cwd, session_id, st.convo)
     if _sig == "return":
         return "return"

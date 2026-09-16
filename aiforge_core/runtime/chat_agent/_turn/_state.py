@@ -19,6 +19,7 @@ from .._context import (
 from ._convo import (
     _build_convo,
 )
+from ._progress import progress_fields
 from ._tasks import seed_board
 
 
@@ -143,7 +144,8 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     convo, _bundle, _asks, _dropped_playbooks = _build_convo(
         messages, cwd, role, readonly_mode=readonly_mode,
         plan_mode=plan_mode, analyze_mode=analyze_mode, builder=builder,
-        strict_finish=strict_finish, session_id=session_id, native=_native_on)
+        strict_finish=strict_finish, session_id=session_id, native=_native_on,
+        unlimited=not _capped and _turn_budget_s <= 0)
 
     # OrderedDict, not dict: the prune in ``_action`` needs least-recently-SEEN order,
     # which only move_to_end can maintain (see its call site).
@@ -255,5 +257,5 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         dropped_playbooks=_dropped_playbooks, native_on=_native_on,
         pending_steps=[], batch_skipped=0, batch_mark=len(convo),
         batch_unread=False, board=seed_board(_asks), board_used=False,
-        board_nudges=0)
+        board_nudges=0, **progress_fields())
     return st

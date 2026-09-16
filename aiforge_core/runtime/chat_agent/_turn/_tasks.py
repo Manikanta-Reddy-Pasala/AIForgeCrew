@@ -14,6 +14,14 @@ import re
 _BOARD_OPEN = "<<AIFORGE_TASK_BOARD>>"
 _BOARD_CLOSE = "<</AIFORGE_TASK_BOARD>>"
 _STATUSES = ("pending", "running", "done", "failed", "skipped")
+#: Words models use for the same statuses.
+_ALIASES = {"todo": "pending", "open": "pending", "queued": "pending",
+            "in_progress": "running", "in-progress": "running",
+            "started": "running", "active": "running", "doing": "running",
+            "completed": "done", "complete": "done", "finished": "done",
+            "resolved": "done", "blocked": "failed", "error": "failed",
+            "cancelled": "skipped", "canceled": "skipped", "wontfix": "skipped",
+            "not_needed": "skipped"}
 _CLOSED = frozenset({"done", "failed", "skipped"})
 _MARK = {"pending": "[ ]", "running": "[>]", "done": "[x]",
          "failed": "[!]", "skipped": "[-]"}
@@ -50,7 +58,8 @@ def apply_progress(board: dict, args: dict) -> tuple[dict, list[dict]]:
     """Apply one ``plan_progress`` call. Returns ``(result, ui_events)``."""
     slug = str(args.get("slug") or args.get("part") or "").strip()[:80]
     title = " ".join(str(args.get("title") or args.get("goal") or "").split())
-    status = str(args.get("status") or "").strip().lower()
+    status = str(args.get("status") or "").strip().lower().replace(" ", "_")
+    status = _ALIASES.get(status, status)
     if not slug:
         return {"ok": False, "error": "missing 'slug'"}, []
     if status and status not in _STATUSES:
@@ -69,9 +78,11 @@ def apply_progress(board: dict, args: dict) -> tuple[dict, list[dict]]:
         board[slug]["status"] = status or ("done" if not title else
                                            board[slug]["status"])
     item = board[slug]
+    still_open = open_items(board)
     result = {"ok": True, "slug": slug, "status": item["status"],
-              "open": len(open_items(board))}
-    if title:
+              "open": [f"{s}: {board[s]['title']}" for s in still_open[:20]],
+              "open_count": len(still_open)}
+    if added or title:
         # The dock needs the whole list to show a new or renamed item.
         return result, [{"type": "subtasks", "items": board_items(board)}]
     return result, [{"type": "subtask_update", "slug": slug,
@@ -79,16 +90,19 @@ def apply_progress(board: dict, args: dict) -> tuple[dict, list[dict]]:
 
 
 def render_board(board: dict) -> str:
-    lines = [f"{_MARK[it['status']]} {s}: {it['title']}" for s, it in board.items()]
+    lines = [f"{_MARK[it['status']]} {s}: {it['title']}"
+             for s, it in board.items()]
     left = len(open_items(board))
     return (f"{_BOARD_OPEN}\nYOUR TASK BOARD ({left} of {len(board)} still open; "
             "[x] done, [>] running, [ ] pending, [!] failed, [-] skipped). "
-            "It is current even though older messages were condensed. Keep it "
-            "up to date with plan_progress and continue with the next open "
-            "item:\n" + "\n".join(lines) + f"\n{_BOARD_CLOSE}")
+            "This is the board as of the last condense of older messages; a "
+            "plan_progress result after this point is newer and wins. Keep it "
+            "up to date and continue with the next open item:\n"
+            + "\n".join(lines) + f"\n{_BOARD_CLOSE}")
 
 
-_BOARD_RE = re.compile(re.escape(_BOARD_OPEN) + r".*?" + re.escape(_BOARD_CLOSE), re.S)
+_BOARD_RE = re.compile(r"\s*" + re.escape(_BOARD_OPEN) + r".*?"
+                       + re.escape(_BOARD_CLOSE), re.S)
 
 
 def pin_board(convo: list[dict], board: dict) -> None:

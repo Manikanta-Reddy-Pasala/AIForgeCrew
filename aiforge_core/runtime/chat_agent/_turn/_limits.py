@@ -28,6 +28,7 @@ from ._convo import (
 from ._shared import (
     _THE_FINALIZE_TOOL,
 )
+from ._progress import may_recover
 from ._tasks import pin_board
 
 
@@ -252,17 +253,6 @@ def _after_condense(st, unread, before):
         pin_board(st.convo, st.board)
 
 
-def refill_recoveries(st):
-    """Give back the stuck-recovery budget once the run has made progress
-    since the last recovery. The budget bounds a run that is stuck, not how
-    many times an hours-long run may ever lose its way."""
-    mark = (st.edits_made, st.reads_new)
-    if getattr(st, "recovery_mark", None) != mark:
-        if st.stuck_recoveries:
-            st.stuck_recoveries = 0
-    st.recovery_mark = mark
-
-
 def _stuck_output_guard(st, out):
     """Stuck-output guard: on N identical model replies, first recover with a
     progress recap + nudge (bounded); if it keeps repeating, stop and ask the
@@ -275,9 +265,7 @@ def _stuck_output_guard(st, out):
     st.recent_outputs.append(out.strip())
     if (len(st.recent_outputs) == _OUTPUT_REPEAT
             and len(set(st.recent_outputs)) == 1):
-        refill_recoveries(st)
-        if st.stuck_recoveries < _stuck_recovery_max():
-            st.stuck_recoveries += 1
+        if may_recover(st):
             st.recent_outputs.clear()          # fresh slate for the recovered plan
             _recap = _progress_recap(st.convo)
             yield {"type": "thought", "role": "system",

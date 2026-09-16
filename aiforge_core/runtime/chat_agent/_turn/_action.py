@@ -6,11 +6,8 @@ import json
 import os
 
 from .._context import (
-    _EDIT_TOOL_NAMES,
-    _LOOP_REPEAT,
     _post_edit_syntax_error,
     _progress_recap,
-    _stuck_recovery_max,
 )
 from .._preview import _diff_preview
 from .._registry import (
@@ -21,7 +18,7 @@ from .._shell import _MAX_OBS, _MAX_OBS_READ, _READ_OBS_TOOLS, _smart_truncate_o
 from ._approval import (
     _handle_rejection,
 )
-from ._limits import refill_recoveries
+from ._progress import forgive, may_recover, note_read, note_write, strike
 from ._shared import (
     _ACTION_SIG_MAX,
 )
@@ -32,24 +29,6 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
     """Stall guard for an action: short-circuit a duplicate read with a progress
     recap, and on the same tool+args repeated too often first recover with a
     recap+nudge (bounded), else pause for the user. Returns continue/return/None."""
-    # Duplicate-READ short-circuit: a local model on a long sweep re-issues a
-    # read it already ran (its result is still above in the convo). Don't
-    # re-execute or count it toward the stuck guard — hand back a cheap
-    # progress recap that points at the next unread file / the write step, so
-    # every read must make NEW progress. Cleared on any edit (a file just
-    # written is worth re-reading). Disabled with the same env switch as the
-    # recovery nudge (AIFORGE_CHAT_STUCK_RECOVERIES=0 → full legacy behaviour).
-    if _long_chain_help and name in _READ_OBS_TOOLS and sig in st.read_sigs_seen:
-        _recap = _progress_recap(st.convo)
-        yield {"type": "thought", "role": "system",
-               "text": f"⏭ duplicate read skipped ({name})"}
-        st.convo.append({"role": "user", "content":
-            "OBSERVATION: [skipped — duplicate] You ALREADY ran this exact "
-            "read; its result is above and re-reading wastes a step. "
-            + (_recap + ". " if _recap else "")
-            + "Read a DIFFERENT file you have not read yet, or if you have "
-            "enough, WRITE your output now (file_write) or emit FINAL."})
-        return "continue"
     # Bounded, LEAST-RECENTLY-USED first. An uncapped turn (cap 0) removes
     # the 2000-step ceiling that used to bound this table in practice, and
     # nothing else prunes it (convo is condensed, recent_outputs is a maxlen
@@ -65,16 +44,39 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
     st.action_counts.move_to_end(sig)
     while len(st.action_counts) > _ACTION_SIG_MAX:
         st.action_counts.popitem(last=False)
-    if st.action_counts[sig] >= _LOOP_REPEAT:
-        refill_recoveries(st)
+    looping = strike(st, sig)
+    # Every repeat counts, a skipped duplicate read included: a model that
+    # alternates new reads with a repeated one would otherwise never trip.
+    #
+    # Duplicate-READ short-circuit: a local model on a long sweep re-issues a
+    # read it already ran (its result is still above in the convo). Don't
+    # re-execute it — hand back a cheap
+    # progress recap that points at the next unread file / the write step, so
+    # every read must make NEW progress. Cleared on any edit (a file just
+    # written is worth re-reading). Disabled with the same env switch as the
+    # recovery nudge (AIFORGE_CHAT_STUCK_RECOVERIES=0 → full legacy behaviour).
+    if (not looping and _long_chain_help and name in _READ_OBS_TOOLS
+            and sig in st.read_sigs_seen):
+        _recap = _progress_recap(st.convo)
+        yield {"type": "thought", "role": "system",
+               "text": f"⏭ duplicate read skipped ({name})"}
+        st.convo.append({"role": "user", "content":
+            "OBSERVATION: [skipped — duplicate] You ALREADY ran this exact "
+            "read; its result is above and re-reading wastes a step. "
+            + (_recap + ". " if _recap else "")
+            + "Read a DIFFERENT file you have not read yet, or if you have "
+            "enough, WRITE your output now (file_write) or emit FINAL."})
+        return "continue"
+    if looping:
         # A local model on a long chain re-issues an action it already ran —
         # most often re-reading a file it read earlier (it lost track over the
         # growing history), which the old hard bail turned into an abandoned
         # task. Recover FIRST: recap what's already done + point at the next
-        # step (bounded); only give up if the model keeps repeating.
-        if st.stuck_recoveries < _stuck_recovery_max():
-            st.stuck_recoveries += 1
-            st.action_counts[sig] = 0          # clear this action's strike count
+        # step (bounded); only give up if the model keeps repeating. Repeats
+        # are counted per workspace state, so re-running a check after a real
+        # change is not a repeat.
+        if may_recover(st):
+            forgive(st, sig)
             _recap = _progress_recap(st.convo)
             yield {"type": "thought", "role": "system",
                    "text": f"↺ repeated `{name}` — recap + nudge to continue"}
@@ -100,19 +102,19 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
 def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
     """Pre-dispatch bookkeeping gates: plan_progress flips a UI subtask (pure
     bookkeeping, allowed in every mode); read-only Plan/Analyze mode blocks a
-    mutating tool. Returns continue or None."""
+    mutating tool. Returns "handled" (bookkeeping done, nothing refused),
+    continue, or None."""
     # Simple-mode task tracker: plan_progress flips a checklist item in
     # the UI's subtasks dock. Pure bookkeeping — no side effects, allowed
     # in every mode (incl. plan), never gated.
     if name == "plan_progress":
         st.board_used = True
         result, events = apply_progress(st.board, args)
-        for ev in events:
-            yield ev
+        yield from events
         yield {"type": "tool", "name": name, "args": args, "result": result}
         st.convo.append({"role": "user",
                       "content": f"OBSERVATION: {json.dumps(result)}"})
-        return "continue"
+        return "handled"
 
     # PLAN/ANALYZE mode (#2): block mutating tools — read-only only.
     if readonly_mode and name not in _READONLY_TOOLS:
@@ -263,13 +265,9 @@ def _record_edit(st, name, args, result, cwd):
     """When an edit tool landed: bump the edit counter, invalidate the duplicate-
     read guard, and run a post-edit syntax self-check that surfaces + feeds back
     any error this step. Yields the syntax-warning events."""
-    if name in _EDIT_TOOL_NAMES and not (
-            isinstance(result, dict) and result.get("ok") is False):
+    if note_write(st, name, args, result, cwd):
         st.edits_made += 1
         st.read_sigs_seen.clear()   # a file just changed → re-reads are valid again
-        # …and so is re-running a command: the fourth `pytest` of an
-        # edit-test-edit cycle is progress, not a loop.
-        st.action_counts.clear()
         # D: post-edit self-check. Immediately syntax-check the file just
         # written and, if broken, hand the model the error THIS step (tight
         # feedback) instead of letting it surface only at the end-of-run test
@@ -323,6 +321,8 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     # the verify-on-final loop — a 0-edit Q&A turn is never test-gated).
     # Remember a successful read so a later identical re-read short-circuits.
     _record_read(st, name, sig, result, _long_chain_help)
+    if name in _READ_OBS_TOOLS:
+        note_read(st, args, result)
     yield from _record_edit(st, name, args, result, cwd)
     # Builder finalize: a successful create_job_script / learn_skill /
     # learn_workflow / remember_rule ends the interview. Signal the UI so it

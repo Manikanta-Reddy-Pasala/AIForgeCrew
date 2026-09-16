@@ -255,7 +255,7 @@ def _pin_goal(sys_text: str, convo: list[dict]) -> str:
 def _stripped_system(convo: list[dict]) -> str:
     """The system message without any prior sentinel block, so it can't grow
     unbounded across repeated condenses."""
-    return re.sub(re.escape(_CONDENSE_OPEN) + r".*?" + re.escape(_CONDENSE_CLOSE),
+    return re.sub(r"\s*" + re.escape(_CONDENSE_OPEN) + r".*?" + re.escape(_CONDENSE_CLOSE),
                   "", convo[0].get("content") or "", flags=re.S).rstrip()
 
 

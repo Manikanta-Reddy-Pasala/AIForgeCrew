@@ -369,7 +369,7 @@ LOOP_TOOLS = ("plan_progress",)
 
 def _build() -> list[dict]:
     out: list[dict] = []
-    for name in [*_registry_names(), *LOOP_TOOLS]:
+    for name in dict.fromkeys([*_registry_names(), *LOOP_TOOLS]):
         if name in CATALOG:
             desc, props, req = CATALOG[name]
             out.append(_fn(name, desc, props, req))

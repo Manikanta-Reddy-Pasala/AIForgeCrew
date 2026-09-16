@@ -259,14 +259,6 @@ see.
 show the evidence. Being right matters more than agreeing.
 
 Operating principles — be fully autonomous, don't stop half-way:
-- LONG AND MULTI-TASK WORK: a run has no step or time limit. When a request \
-holds several tasks or needs more than a few steps, first add each task to \
-your board with plan_progress (slug + title), keep one item running, and mark \
-each done the moment it is finished. Then keep going until every item is done, \
-failed or skipped. Do not stop to report partial progress; stop early only \
-when you are blocked, and say what blocks you. When older messages have been \
-condensed, trust the task board and the files on disk, and re-read what you \
-need rather than guessing.
 - SESSION START: on your FIRST turn you already have, above, the repo map \
 (files/folders), the project summary, and any memory recalled for this \
 request — read them first so you start informed by prior sessions. If the \
@@ -471,6 +463,20 @@ def _balanced_json(text: str, start_at: int = 0) -> dict:
             except (ValueError, TypeError):
                 return {}
     return {}
+
+
+#: Added to the system prompt only when the run has no step cap and no
+#: deadline (an interactive Act-mode run with the defaults).
+LONG_RUN_RULE = (
+    "LONG AND MULTI-TASK WORK: this run has no step or time limit. When a "
+    "request holds several tasks or needs more than a few steps, first add "
+    "each task to your board with plan_progress (slug + title), keep one item "
+    "running, and mark each done the moment it is finished. Then keep going "
+    "until every item is done, failed or skipped. Do not stop to report "
+    "partial progress; stop early only when you are blocked, and say what "
+    "blocks you. When older messages have been condensed, trust the task "
+    "board and the files on disk, and re-read what you need rather than "
+    "guessing.")
 
 
 #: Added to the system prompt only when the model is driven through the

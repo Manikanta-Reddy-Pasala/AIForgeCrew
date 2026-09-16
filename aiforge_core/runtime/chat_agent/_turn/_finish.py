@@ -27,7 +27,7 @@ from ._shared import (
     _THE_FINALIZE_TOOL,
     _log,
 )
-from ._tasks import open_planned, unfinished_reminder
+from ._tasks import open_items, open_planned, unfinished_reminder
 
 
 def _verify_on_final(st, cwd, plan_mode, builder):
@@ -110,8 +110,21 @@ def _claim_guard(st, step, cwd, readonly_mode, builder, _wt_fp0):
     return None
 
 
-#: Reminders a FINAL gets while task-board items are still open.
+#: Reminders in a row a FINAL gets while task-board items are still open.
 _BOARD_NUDGES = 2
+
+
+def board_nudge_allowed(st) -> bool:
+    """Up to _BOARD_NUDGES reminders without progress in between; closing
+    an item gives the next premature FINAL its reminders back."""
+    closed = len(st.board) - len(open_items(st.board))
+    if closed != getattr(st, "board_closed_mark", None):
+        st.board_closed_mark = closed
+        st.board_nudges = 0
+    if st.board_nudges >= _BOARD_NUDGES:
+        return False
+    st.board_nudges += 1
+    return True
 
 
 def _final_nudges(st, step, builder, strict_finish, _asks):
@@ -156,8 +169,9 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
     # long run must not stop to report half the work; bounded so a model
     # that cannot finish still exits.
     if (st.board_used and open_planned(st.board) and not builder
-            and not st.readonly_mode and st.board_nudges < _BOARD_NUDGES):
-        st.board_nudges += 1
+            and not st.readonly_mode and board_nudge_allowed(st)):
+        if step.get("text"):
+            yield {"type": "thought", "text": step["text"]}
         yield {"type": "thought", "role": "system",
                "text": f"☐ {len(open_planned(st.board))} task(s) still open — "
                        "continuing"}
