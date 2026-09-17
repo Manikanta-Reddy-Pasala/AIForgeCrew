@@ -15,238 +15,37 @@ import os
 from typing import Any
 
 from ..pipeline import build_pipeline
-from ._base import log, tickets_mod
+from ._base import log, tickets_mod  # noqa: F401  # tests reach tickets_mod here
+from ._context import (  # noqa: F401  # re-exported
+    _as_events,
+    _cap_content,
+    _capped_part,
+    _condensing_filter,
+    _content_chars,
+    _context_window,
+    _CtxLimits,
+    _dedupe_adjacent_user,
+    _history_frac,
+    _int_env,
+    _phantom_tool_guard,
+    _run_repo_root,
+    _shorten,
+    _tail_trimmer,
+    _text_of,
+    _window,
+)
+from ._run_inputs import (  # noqa: F401  # re-exported
+    _collect_repo_rules,
+    _emit_ambiguous_rule_notice,
+    _emit_rules_injected,
+    _glob_list,
+    _pipeline_run_config,
+    _ticket_state,
+    _toolchain_md,
+    _user_prefs_md,
+    _with_images,
+)
 from ._verdict import _extract_live_verifier, _pipeline_deadline_s
-
-
-class _CtxLimits:
-    """The trimming budget, read from env once instead of by each closure."""
-
-    __slots__ = ("keep_invocations", "max_contents", "strategy",
-                 "max_chars", "max_part_chars", "min_keep")
-
-    def __init__(self) -> None:
-        self.keep_invocations = _int_env("AIFORGE_CONTEXT_KEEP_INVOCATIONS", 12)
-        self.max_contents = _int_env("AIFORGE_CONTEXT_MAX_CONTENTS", 60)
-        self.strategy = os.environ.get("AIFORGE_CONDENSER_STRATEGY", "").strip()
-        # ~4 chars/token; budget in tokens then converted to a char ceiling.
-        max_tokens = _int_env("AIFORGE_CONTEXT_MAX_TOKENS",
-                              int(_context_window() * _history_frac()))
-        self.max_chars = max(4000, max_tokens * 4)
-        self.max_part_chars = _int_env("AIFORGE_CONTEXT_MAX_PART_CHARS", 24000)
-        self.min_keep = max(4, _int_env("AIFORGE_CONTEXT_MIN_KEEP", 8))
-
-
-def _int_env(key: str, default: int) -> int:
-    try:
-        return int(os.environ.get(key, str(default)))
-    except (TypeError, ValueError):
-        return default
-
-
-def _context_window() -> int:
-    """The Doer model's EFFECTIVE window (per-model value → operator setting →
-    auto-detected → default) — the same source chat uses. It read only the
-    global setting (128K default), so a 256K model was trimmed as if 128K."""
-    try:
-        from aiforge_core.config import model_registry
-        win = int(model_registry.effective_context_window("doer"))
-        if win > 0:
-            return win
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        from aiforge_core.config import runtime_settings as _rs
-        return int(_rs.get("context_window") or 131072)
-    except Exception:  # noqa: BLE001
-        return 131072
-
-
-def _history_frac() -> float:
-    """The same compaction trigger the simple ReAct loop uses (80% of the
-    window by default), so team mode and tickets trim at the same point.
-    Soft-fails to 0.8 when the import is unavailable.
-    """
-    try:
-        from aiforge_core.runtime.chat_agent._context._window import (
-            _history_fraction)
-        return _history_fraction()
-    except Exception:  # noqa: BLE001
-        return 0.8
-
-
-def _text_of(c) -> str:
-    try:
-        return " ".join(p.text for p in (c.parts or [])
-                        if getattr(p, "text", None))
-    except Exception:  # noqa: BLE001
-        return ""
-
-
-def _dedupe_adjacent_user(contents: list) -> list:
-    """Drop adjacent duplicate user-text contents. single_turn nodes
-    append their seed input to the SHARED session events (shallow
-    session copy in ADK's wrapper), so every chat agent replays the
-    ticket+memory seed twice back-to-back — pure token waste."""
-    out: list = []
-    for c in contents:
-        dup = (out and getattr(c, "role", "") == "user"
-               and getattr(out[-1], "role", "") == "user"
-               and _text_of(c) and _text_of(c) == _text_of(out[-1]))
-        if not dup:
-            out.append(c)
-    return out
-
-
-def _content_chars(c) -> int:
-    """Estimate a content's character weight — text parts plus a rough
-    size for function_response payloads (the big tool results)."""
-    total = 0
-    for p in (getattr(c, "parts", None) or []):
-        t = getattr(p, "text", None)
-        if t:
-            total += len(t)
-            continue
-        fr = getattr(p, "function_response", None)
-        if fr is not None:
-            with contextlib.suppress(Exception):
-                total += len(str(getattr(fr, "response", "") or ""))
-    return total
-
-
-def _shorten(s: str, cap: int) -> str:
-    """Head + tail of ``s``, middle elided, when it exceeds ``cap``."""
-    if len(s) <= cap:
-        return s
-    half = max(1000, cap // 2)
-    return (s[:half] + f"\n…[truncated {len(s) - cap} "
-            f"chars to fit context]…\n" + s[-half:])
-
-
-def _capped_part(p, cap: int, gtypes):
-    """``p`` truncated to ``cap`` if it is oversized text or a fat function
-    response; the part itself otherwise."""
-    t = getattr(p, "text", None)
-    if t and len(t) > cap:
-        return gtypes.Part.from_text(text=_shorten(t, cap))
-    fr = getattr(p, "function_response", None)
-    if fr is None:
-        return p
-    resp = getattr(fr, "response", None)
-    if len(str(resp or "")) <= cap or not isinstance(resp, dict):
-        return p
-    half = max(1000, cap // 2)
-    trimmed = {k: (_shorten(v, cap) if isinstance(v, str) and len(v) > half else v)
-               for k, v in resp.items()}
-    return gtypes.Part.from_function_response(
-        name=getattr(fr, "name", "") or "", response=trimmed)
-
-
-def _cap_content(c, cap: int):
-    """Return ``c`` if within the per-content cap, else a rebuilt copy
-    with oversized text / function_response payloads truncated (head +
-    tail kept, middle elided). Falls back to the original on any error
-    so a structure we don't understand is never dropped."""
-    if cap <= 0 or _content_chars(c) <= cap:
-        return c
-    try:
-        from google.genai import types as gtypes
-        parts = [_capped_part(p, cap, gtypes)
-                 for p in (getattr(c, "parts", None) or [])]
-        return gtypes.Content(role=getattr(c, "role", "user"), parts=parts)
-    except Exception:  # noqa: BLE001
-        return c
-
-
-def _window(contents: list, n: int, adjust, is_human) -> list:
-    """The seed user message plus the last ``n`` contents, split adjusted so a
-    function response is never orphaned from its call."""
-    if n <= 0 or len(contents) <= n:
-        return list(contents)
-    split = len(contents) - n
-    with contextlib.suppress(Exception):
-        split = adjust(contents, split)
-    head_seed = [c for c in contents[:split] if is_human(c)][:1]
-    return head_seed + list(contents[split:])
-
-
-def _tail_trimmer(lim: "_CtxLimits", adjust, is_human):
-    """ADK ``custom_filter``: dedupe seed echoes, cap oversized contents, then
-    keep the seed user message + the most recent contents under BOTH the count
-    cap and the token budget (item-3: protect slow 120B models)."""
-    def _tail_trim(contents):
-        contents = [_cap_content(c, lim.max_part_chars)
-                    for c in _dedupe_adjacent_user(contents)]
-        keep_n = lim.max_contents if lim.max_contents > 0 else len(contents)
-        out = _window(contents, keep_n, adjust, is_human)
-        # Token-budget pass: if the kept window is still too heavy, shrink
-        # the tail window until under the char ceiling (or we hit min_keep).
-        while (lim.max_chars > 0 and keep_n > lim.min_keep
-               and sum(_content_chars(c) for c in out) > lim.max_chars):
-            keep_n -= 4
-            out = _window(contents, keep_n, adjust, is_human)
-        return out
-    return _tail_trim
-
-
-def _as_events(contents: list) -> list[dict]:
-    return [{"type": "content", "role": getattr(c, "role", ""),
-             "text": " ".join(getattr(p, "text", "") or ""
-                              for p in (getattr(c, "parts", None) or [])
-                              if getattr(p, "text", None))}
-            for c in contents]
-
-
-def _condensing_filter(tail_trim, strategy: str):
-    """Sub #4: optional aggressive condenser layered over the content-tail
-    trim. ``amortized`` compresses the oldest half into one synthetic block;
-    ``recent`` is keep-tail only."""
-    from aiforge_core.runtime.condensers import condense
-
-    def _filter(contents):
-        contents = tail_trim(contents)
-        condensed = condense(_as_events(contents), strategy)
-        # ADK custom_filter must return list[Content]; align tail-N of the
-        # condensed events to tail-N of the real contents and keep those
-        # objects. ``amortized`` prepends one synthetic block, which we pass
-        # through as a fresh Content.
-        summarised = bool(condensed) and condensed[0].get("role") == "condenser"
-        keep_n = len(condensed) - (1 if summarised else 0)
-        tail = list(contents[-keep_n:]) if keep_n > 0 else []
-        if not summarised:
-            return tail
-        from google.genai import types as gtypes
-        summary = gtypes.Content(
-            role="user",
-            parts=[gtypes.Part.from_text(text=condensed[0]["text"])])
-        return [summary] + tail
-    return _filter
-
-
-def _run_repo_root() -> str:
-    """This run's repo: the request context (team chat sets it per run), then
-    AIFORGE_REPO_ROOT (the ticket runner's worktree)."""
-    from aiforge_core.runtime import request_context
-    return request_context.get_repo_root() or ""
-
-
-def _phantom_tool_guard() -> list:
-    """Keep the pipeline alive when a text agent emits a hallucinated
-    function_call — ADK would otherwise raise "Tool X not found" and abort the
-    whole run. See tool_error_plugin. The perf observer goes FIRST: it returns
-    None from every callback, so it sees every call and changes none."""
-    plugins: list = []
-    try:
-        from ..perf_plugin import PerfPlugin
-        plugins.append(PerfPlugin())
-    except Exception:  # noqa: BLE001 — perf is optional
-        pass
-    try:
-        from ..tool_error_plugin import PhantomToolGuardPlugin
-        plugins.append(PhantomToolGuardPlugin())
-    except Exception:  # noqa: BLE001 — resilience is best-effort
-        pass
-    return plugins
 
 
 def _build_context_plugins() -> list:
@@ -279,7 +78,11 @@ def _build_context_plugins() -> list:
     try:
         from google.adk.plugins.context_filter_plugin import (
             ContextFilterPlugin,
+        )
+        from google.adk.plugins.context_filter_plugin import (
             _adjust_split_index_to_avoid_orphaned_function_responses as _adjust,
+        )
+        from google.adk.plugins.context_filter_plugin import (
             _is_human_user_content as _is_human,
         )
     except ImportError:
@@ -434,197 +237,6 @@ async def _run_single_agent(agent, prompt: str, *, ticket=None) -> dict:
             destroy_session(session.id)
         except Exception:  # noqa: BLE001
             pass
-
-
-def _emit_ambiguous_rule_notice(ticket, ambiguous: list) -> None:
-    """Autonomous tickets never block on an ambiguous rule match (an
-    interactive ticket already got asked via clarify.py before this code
-    runs) — best-guess is already baked into rules_md by collect_or_ask;
-    this only surfaces a visible, non-blocking notice on the trace."""
-    if not ambiguous:
-        return
-    md = getattr(ticket, "metadata", None) or {}
-    if md.get("interactive"):
-        return
-    for group in ambiguous:
-        names = " or ".join(f"'{r.name}'" for r in group)
-        try:
-            tickets_mod.add_event(
-                ticket.id, "pipeline", "ambiguous_rule_match",
-                f"Matched rules ambiguous: {names} — picked highest-priority, "
-                f"say so if wrong.", {"candidates": [r.name for r in group]})
-        except Exception as exc:  # noqa: BLE001
-            # This notice is the ONLY human-visible signal an autonomous
-            # ticket's ambiguous match ever produces — log loud (not the
-            # collect_or_ask wrapper's debug level) and keep processing the
-            # remaining groups rather than aborting the whole loop.
-            log.warning("ambiguous_rule_match notice failed ticket=%s: %s",
-                       getattr(ticket, "identifier", ticket.id), exc)
-
-
-def _glob_list(raw) -> list[str]:
-    """A glob allowlist, from a newline string or an already-parsed list."""
-    if isinstance(raw, str):
-        raw = [g.strip() for g in raw.splitlines() if g.strip()]
-    return [str(g) for g in raw if g] if isinstance(raw, list) else []
-
-
-def _collect_repo_rules(ticket, scope_seed: list) -> str:
-    """Glob-scoped repo rules (Cursor-style), collected BEFORE the build so a
-    repo that carries rules files skips the paid ctx_conventions LLM branch
-    entirely — the rules ARE the conventions, for free."""
-    try:
-        from aiforge_core.runtime import repo_rules
-        query = ""
-        if ticket is not None:
-            query = (f"{getattr(ticket, 'title', '') or ''}\n"
-                     f"{getattr(ticket, 'body', '') or ''}")
-        rules_md, ambiguous = repo_rules.collect_or_ask(
-            _run_repo_root(), scope_seed, query)
-        if ticket is not None:
-            _emit_ambiguous_rule_notice(ticket, ambiguous)
-        return rules_md
-    except Exception as exc:  # noqa: BLE001
-        log.debug("repo_rules collect failed: %s", exc)
-        return ""
-
-
-def _emit_rules_injected(ticket, scope_seed: list) -> None:
-    """Workflow-transparency: record which repo rules applied to this ticket's
-    scope so the Workflow UI can surface them."""
-    try:
-        from aiforge_core.runtime import observability as _obs
-        from aiforge_core.runtime import repo_rules
-        names = repo_rules.matched_names(
-            _run_repo_root(), scope_seed)
-        tid = getattr(ticket, "id", None)
-        if tid is not None and names:
-            _obs.emit_context_injected(ticket_id=tid, agent_role="pipeline",
-                                       rules=names)
-    except Exception as exc:  # noqa: BLE001
-        log.debug("context_injected.emit (rules) failed: %s", exc)
-
-
-def _toolchain_md() -> str:
-    """Host-verified toolchain (python3 vs python, ./mvnw vs mvn, …) so the Doer
-    uses the right commands instead of re-discovering them by trial-and-error
-    every ticket. Cheap + cached (shutil.which); never blocks a run."""
-    try:
-        from aiforge_core.config import repo_standards as _rstd
-        from aiforge_core.runtime.sandbox import root as _root
-        return _rstd.toolchain_brief(str(_root())) or ""
-    except Exception:  # noqa: BLE001
-        return ""
-
-
-def _user_prefs_md() -> str:
-    """Durable user preferences (gap #9) — global, cross-repo, so the agent
-    honours "I always want X" without being re-told. Sourced from the embedded
-    sqlite ``pref:`` units chat_capture writes.
-    """
-    parts = []
-    try:
-        from aiforge_core.runtime import user_prefs as _up
-        block = _up.preferences_block()
-        if block:
-            parts.append(block)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        from aiforge_core.runtime.chat_agent import _preferences_context
-        block = _preferences_context(_run_repo_root() or ".")
-        if block:
-            parts.append(block)
-    except Exception:  # noqa: BLE001
-        pass
-    return "\n\n".join(parts)
-
-
-def _ticket_state(ticket, scope_seed: list, rules_md: str,
-                  memory_md: str) -> dict:
-    """The session state seeded from the ticket."""
-    state: dict[str, Any] = {
-        "ticket_identifier": getattr(ticket, "identifier", "") or "",
-        "ticket_project": getattr(ticket, "project", "") or "",
-        "ticket_title": getattr(ticket, "title", "") or "",
-        # RAW ASK for the enhancer degenerate-output guard (pipeline.py): the
-        # guard compares state['enhanced_body'] against this and restores it
-        # when the rewrite collapsed / dropped every named anchor.
-        "raw_ask": ((getattr(ticket, "title", "") or "") + "\n"
-                    + (getattr(ticket, "body", "") or "")).strip(),
-    }
-    # C6 scope enforcement: the UI stores the operator's allowlist in
-    # ticket.metadata. Without this seed, scope_guard / verify_scope / the
-    # Validator's rule 2 all judged a permanently-empty field.
-    clean = _glob_list((getattr(ticket, "metadata", None) or {})
-                       .get("scope_allowlist_globs"))
-    if clean:
-        state["scope_allowlist_globs"] = clean
-        # Durable copy for plan_promote: replans clear the live key
-        # (plan-derived globs are per-plan) but the operator's seed must
-        # survive every epoch.
-        state["scope_allowlist_globs_seeded"] = list(clean)
-    if rules_md:
-        # plan_promote re-matches once the plan widens the globs. Injected via
-        # {rules_md?} in prompts.
-        state["rules_md"] = rules_md
-        _emit_rules_injected(ticket, scope_seed)
-    # Pre-flight memory recall — seeded as STATE, not stitched into the seed
-    # prompt: ONE {memory_brief_md?} instruction copy per consuming agent
-    # (enhancer/planner/doer/verify_risk) instead of 60-120 history replays.
-    # Also replaces the ctx_memory LLM agent, which re-queried the same
-    # backends.
-    if memory_md:
-        state["memory_brief_md"] = memory_md
-    for key, value in (("toolchain_md", _toolchain_md()),
-                       ("user_prefs_md", _user_prefs_md())):
-        if value:
-            state[key] = value
-    return state
-
-
-def _with_images(content, ticket, _gtypes):
-    """Sub #6 follow-up: inject multimodal image parts when the ticket has image
-    attachments AND the Doer model supports vision."""
-    try:
-        from aiforge_core.config.agent_config import load_all as get_config
-        from aiforge_core.runtime.vision_adk import inject_image_parts
-        doer_model = (get_config().get("doer", {}) or {}).get("model", "")
-        images = [str(f.get("path", ""))
-                  for f in ((ticket.metadata or {}).get("attached_files") or [])
-                  if isinstance(f, dict) and f.get("path")
-                  and str(f.get("name", "")).lower().endswith(
-                      (".png", ".jpg", ".jpeg", ".gif", ".webp"))]
-        if not images:
-            return content
-        injected = inject_image_parts([content], doer_model, images)
-        return injected[0] if injected and injected[0] is not content else content
-    except Exception as exc:  # noqa: BLE001 — best-effort
-        log.debug("vision_adk.inject failed: %s", exc)
-        return content
-
-
-def _pipeline_run_config():
-    """Hard ceiling on total LLM calls for the whole pipeline run.
-
-    A local model (Qwen) can thrash — ONE-7 made 383 calls across 52 minutes and
-    wrote ZERO files, spinning on read/think without ever committing an edit.
-    ADK's default cap is high enough that it never tripped. Bounding it means a
-    stuck local Doer aborts (and lands the ticket as blocked) instead of burning
-    an hour. The v6 Workflow graph is wider than the old Sequential pipeline —
-    triage + 4 context branches + 3 verifiers + the Doer loop (≤3×) + a possible
-    verifier-replan AND validator-replan each re-running planner/verify/doer. A
-    healthy full+replan run can use ~120-160 calls, so the old 120 ceiling
-    tripped mid-Doer exactly on the harder tickets. Tune via
-    AIFORGE_MAX_LLM_CALLS.
-    """
-    try:
-        from google.adk.agents.run_config import RunConfig
-        return RunConfig(
-            max_llm_calls=int(os.environ.get("AIFORGE_MAX_LLM_CALLS", "600")))
-    except Exception as exc:  # noqa: BLE001
-        log.debug("RunConfig unavailable: %s", exc)
-        return None
 
 
 async def _drive_pipeline(runner, session_svc, session_id: str,
