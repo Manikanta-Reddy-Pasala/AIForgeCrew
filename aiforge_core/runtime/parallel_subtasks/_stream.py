@@ -3,294 +3,40 @@
 Split from ``parallel_subtasks.py`` (mechanical move, behaviour identical)."""
 from __future__ import annotations
 
-import concurrent.futures
-import json
-import logging
 import os
-import re
-import subprocess
 import threading
 
-from pydantic import BaseModel
-
 from aiforge_core.runtime import review_gates
-from aiforge_core.runtime.git_pr import _EXCLUDE_PATHSPECS, ensure_artifact_gitignore
+from aiforge_core.runtime.git_pr import _EXCLUDE_PATHSPECS
 
-_SPEC_MD = "SPEC.md"
-
-def _pin_to_subtask(subs: list, target: str, text: str,
-                    note: str) -> tuple[str, str] | None:
-    """Attach the mandate to ONE subtask. None when that subtask is gone (the
-    caller then treats it as a global steer)."""
-    hit = next((s for s in subs if s.get("slug") == target), None)
-    if hit is None:
-        return None
-    mandate = f"\n[MANDATORY user instruction — MUST satisfy]: {text}"
-    hit["goal"] = (hit.get("goal") or "") + mandate
-    hit["_user_mandate"] = (hit.get("_user_mandate") or []) + [text]
-    label = hit.get("path") or target
-    return (f"## ⚙ User instruction (MANDATORY) → {label}",
-            f"✅ Got it — treating as a **must** for **{label}**"
-            + (f" — {note}" if note else "")
-            + ". Pinned to that subtask + SPEC; it rebuilds until satisfied.")
-
-
-def _steer_headings(target: str, note: str) -> tuple[str, str]:
-    """``(SPEC heading, user-facing confirmation)`` for a non-subtask steer."""
-    if target == "new":
-        return ("## ⚙ User instruction (MANDATORY — NEW requirement)",
-                "✅ Got it — new **must-have** requirement"
-                + (f" — {note}" if note else "")
-                + ". Pinned to SPEC; the reconcile pass builds + verifies it.")
-    return ("## ⚙ User instruction (MANDATORY — whole build)",
-            "✅ Got it — treating as a **must** across the whole build"
-            + (f" — {note}" if note else "")
-            + ". Pinned to SPEC; every remaining subtask + the reconcile must "
-              "satisfy it.")
-
-
-def _append_spec_mandate(cwd: str, heading: str, text: str) -> str:
-    """Write the mandate into SPEC.md. Returns "" on success, else the reason.
-
-    This used to swallow the write error, so a steer the run could not record
-    still answered "folded into the plan" — the user believed their new
-    requirement was in the spec when the file had never been touched.
-    """
-    err = ""
-    try:
-        with open(os.path.join(cwd, _SPEC_MD), "a", encoding="utf-8") as fh:
-            fh.write(f"\n\n{heading}\n- **MUST:** {text}\n")
-    except Exception as exc:  # noqa: BLE001
-        err = str(exc)
-    # Record globally either way: the reconcile prompt re-asserts these, so a
-    # failed spec write still leaves the requirement binding on the merge.
-    try:
-        _USER_MANDATES.setdefault(cwd, []).append(text)
-    except Exception:  # noqa: BLE001
-        pass
-    return err
-
-
-def _apply_steer(text: str, subs: list, cwd: str) -> str:
-    """Route ONE steer to its target and pin it. Returns the confirmation."""
-    try:
-        route = _route_steering(text, subs)
-        target, note = route["target"], route["note"]
-    except Exception as exc:  # noqa: BLE001
-        # Routing asks the model which subtask this belongs to. If it is down,
-        # the steer is still a REQUIREMENT — treat it as global rather than
-        # dropping the user's instruction on the floor.
-        log.warning("steer routing failed (%s) — treating as global", exc)
-        target, note = "global", "could not classify this steer, applied to the whole run"
-    # A user comment is a MANDATORY requirement, not a hint — the subtask build
-    # and the final reconcile MUST satisfy it. A steer naming a subtask that no
-    # longer exists falls back to a global one.
-    pinned = (_pin_to_subtask(subs, target, text, note)
-              if target not in ("global", "new") else None)
-    heading, feedback = pinned or _steer_headings(
-        "new" if target == "new" else "global", note)
-    err = _append_spec_mandate(cwd, heading, text)
-    if err:
-        return (f"{feedback}\n\n⚠ could NOT write it into SPEC.md ({err}). "
-                "It is still binding on the final reconcile, but the spec "
-                "document does not show it — fix the workspace and re-state it "
-                "if the subtasks need to read it.")
-    return feedback
-
-
-def _cancel_checker_for(session_id):
-    def _cancelled() -> bool:
-        if session_id is None:
-            return False
-        try:
-            from aiforge_core.runtime import chat_cancel
-            return chat_cancel.is_cancelled(session_id)
-        except Exception:  # noqa: BLE001
-            return False
-    return _cancelled
-
-
-def _steering_drain(session_id, subs: list, cwd: str):
-    """Fold any mid-run steering comment into the run — but first ANALYSE it:
-    which subtask/topic it targets (or a global change, or an entirely NEW
-    requirement) — tell the user how it was read, then route it (annotate that
-    subtask's goal + the right SPEC.md section) so the remaining subtasks +
-    reconcile pick it up. Yields feedback events."""
-    if session_id is None:
-        return
-    try:
-        from aiforge_core.runtime import chat_interject, chat_steer
-        if not chat_interject.pending(session_id):
-            return
-        # drain() REMOVES the pending steers, so they exist only here. A raise
-        # partway through used to abandon the rest of the list — the user's
-        # second and third instructions were gone with no message at all.
-        drained = list(chat_interject.drain(session_id))
-    except Exception as exc:  # noqa: BLE001
-        log.warning("steering drain failed: %s", exc)
-        return
-    for raw in drained:
-        text = (raw or "").strip()
-        if not text:
-            continue
-        # Echo the user's steer TEXT (role:steer) so it shows + persists in
-        # the UI for team mode too — same as the simple/plan loop.
-        try:
-            yield chat_steer.steer_event(text)
-            yield {"type": "thought", "role": "planner",
-                   "text": _apply_steer(text, subs, cwd)}
-        except Exception as exc:  # noqa: BLE001
-            # Never silent: an instruction the run could not apply has to be
-            # visible, or the user waits for a change that will never come.
-            log.warning("could not apply steer %r: %s", text[:80], exc)
-            yield {"type": "thought", "role": "planner",
-                   "text": f"⚠ could not apply your instruction ({exc}). "
-                           f"It was NOT added to the plan: {text[:200]}"}
-
-
-def _arm_session(session_id) -> None:
-    """Accept mid-run steering for this run, and bind its subprocesses
-    (integration build/pytest) to the session so Stop kills them."""
-    if session_id is None:
-        return
-    for module, fn, args in (("chat_interject", "set_steerable",
-                              (session_id, True)),
-                             ("chat_cancel", "set_active", (session_id,))):
-        try:
-            mod = __import__(f"aiforge_core.runtime.{module}", fromlist=[fn])
-            getattr(mod, fn)(*args)
-        except Exception:  # noqa: BLE001
-            pass
-
-
-def _plan_subtasks(prompt: str, subtasks, state: dict):
-    """Decompose (if needed) and repair the plan. Leaves the final list in
-    ``state['subs']``; an empty list means the caller should bail out."""
-    subs = subtasks
-    if not subs:
-        yield {"type": "thought", "role": "planner",
-               "text": "Decomposing into parallel subtasks…"}
-        subs = _decompose(prompt)
-    if len(subs) < 2:
-        # The caller normally falls back to sequential team mode before reaching
-        # here; this is the last-resort guard.
-        yield {"type": "message", "text":
-               "Couldn't split this into parallel subtasks — running normally."}
-        state["subs"] = []
-        return
-    # Backstop: guarantee test coverage so the build can be verified +
-    # self-healed even when the planner omitted tests.
-    subs = _ensure_test_coverage(subs)
-    # Decomposition consistency: every per-module test needs a matching impl file
-    # (test_board→board, BookServiceTest→BookService). When the architect
-    # collapses impl into one file but writes per-module tests, add the missing
-    # impl modules.
-    before = len(subs)
-    subs = _ensure_impl_modules(subs)
-    if len(subs) > before:
-        added = [s.get("path") for s in subs[before:]]
-        yield {"type": "thought", "role": "planner",
-               "text": f"Decomposition fix — {len(subs) - before} test(s) target "
-                       f"modules with no impl file; added: {', '.join(added)}"}
-    # FILE-OWNERSHIP ENFORCEMENT (don't trust the plan — check with code). Two
-    # subtasks owning the SAME file = two agents editing it in parallel = the #1
-    # cause of worktree merge conflicts. Fold duplicates into one owner so each
-    # file has exactly one author.
-    subs, dupes = _enforce_disjoint_files(subs)
-    if dupes:
-        yield {"type": "thought", "role": "planner",
-               "text": f"File-ownership check — folded {dupes} overlapping "
-                       "subtask(s) so no two agents edit the same file (conflict "
-                       "prevention)."}
-    # PLAN REVIEW — a different model checks the file manifest for typos
-    # (kvdakade→kvfacade), near-duplicate/missing modules, scope creep BEFORE any
-    # code is built (a patch-reconcile can't fix a structural naming error later).
-    try:
-        subs, note = review_gates.review_plan(prompt, subs)
-        if note:
-            yield {"type": "thought", "role": "reviewer", "text": f"🔍 {note}"}
-    except Exception as exc:  # noqa: BLE001
-        log.debug("plan review skipped: %s", exc)
-    state["subs"] = subs
-    yield {"type": "subtasks", "items": [
-        {"slug": s.get("slug") or f"sub-{i+1}",
-         "goal": s.get("goal") or "", "status": "pending"}
-        for i, s in enumerate(subs)]}
-
-
-def _write_spec(prompt: str, subs: list, cwd: str, state: dict):
-    """Requirements/plan document: persist the enhanced spec + the subtask
-    breakdown to SPEC.md in the workspace BEFORE any subtask runs. It's the
-    single source of truth — fed into every per-subtask fresh context (so each
-    isolated context knows the overall goal) and re-read by the final
-    verification pass to confirm nothing was dropped."""
-    spec_md = _render_spec_md(prompt, subs)
-    # SPEC REVIEW — check the spec before any code is built (contradictions,
-    # ambiguity, missing cases, scope creep). Refines it if needed.
-    try:
-        spec_md, note = review_gates.review_spec(prompt, spec_md)
-        if note:
-            yield {"type": "thought", "role": "reviewer", "text": f"🔍 {note}"}
-    except Exception as exc:  # noqa: BLE001
-        log.debug("spec review skipped: %s", exc)
-    state["spec_md"] = spec_md
-    try:
-        with open(os.path.join(cwd, _SPEC_MD), "w", encoding="utf-8") as fh:
-            fh.write(spec_md)
-        yield {"type": "thought", "role": "planner",
-               "text": f"Wrote SPEC.md ({len(subs)} subtasks) — the shared "
-                       "requirements doc each subtask builds against."}
-    except Exception as exc:  # noqa: BLE001
-        # A silent skip here is how runs ended up spec-less with no trace
-        # (unwritable cwd etc.) — surface it so the operator can fix the cause.
-        log.warning("SPEC.md write failed in %s: %s", cwd, exc)
-        yield {"type": "thought", "role": "planner",
-               "text": f"⚠ SPEC.md write failed ({exc}) — subtasks still get "
-                       "the spec in-context, but nothing is persisted to disk."}
-
-
-def _prepare_tree(cwd: str, subs: list):
-    """Record the pre-existing code so greenfield-only steps (scaffold, off-plan
-    prune) never touch an EXISTING repo — on a real repo they'd delete the whole
-    codebase (everything not in this task's small plan) — then scaffold when the
-    tree really is empty."""
-    preexisting = _snapshot_baseline(cwd)
-    if not _is_greenfield(cwd):
-        yield {"type": "thought", "role": "system",
-               "text": f"Existing repo ({preexisting} source files) — editing in "
-                       "place; skipping scaffold + off-plan prune (greenfield-only)."}
-        return
-    # SCAFFOLD — deterministically create every file at its canonical path (stub
-    # + API-contract header) BEFORE parallelizing, then commit to base so
-    # worktrees branch from a fixed tree. GREENFIELD ONLY (stubbing over an
-    # existing repo is wrong). Gated (default on).
-    if os.environ.get("AIFORGE_SCAFFOLD", "1") in ("0", "false"):
-        return
-    try:
-        stubs = _scaffold_stubs(cwd, subs)
-    except Exception as exc:  # noqa: BLE001
-        log.debug("scaffold skipped: %s", exc)
-        return
-    if stubs:
-        yield {"type": "tool", "role": "planner", "name": "scaffolded project",
-               "args": {}, "result": {"files": stubs}}
-
-
-def _announce_execution(subs: list):
-    """OBSERVABILITY — surface the effective execution config so a regression is
-    VISIBLE (e.g. a stray AIFORGE_SEQUENTIAL=1 forcing 1-at-a-time, or the
-    reviewer model missing). Silent config drift is what made "why only 1?" hard."""
-    sequential = os.environ.get("AIFORGE_SEQUENTIAL", "0") not in ("0", "false")
-    mode = ("SEQUENTIAL (1 at a time)" if sequential
-            else f"parallel, up to {_max_workers()} at once")
-    try:
-        reviewer = (review_gates.pick_reviewer_model()
-                    or "same model (no 2nd model loaded)")
-    except Exception:  # noqa: BLE001
-        reviewer = "?"
-    yield {"type": "thought", "role": "system",
-           "text": f"Running {len(subs)} subtasks — each in its OWN fresh context "
-                   f"+ git worktree · execution: {mode} · reviewer: {reviewer}."}
+from ._stream_changes import (  # noqa: F401  # re-exported
+    _CHANGES_HIDE,
+    _CODE_EXTS,
+    _SPEC_MD,
+    _STATUS_WORD,
+    _changed_file,
+    _emit_changes,
+    _ensure_test_coverage,
+    _numstat_counts,
+    _test_path_for,
+    _to_int,
+)
+from ._stream_prepare import (  # noqa: F401  # re-exported
+    _announce_execution,
+    _plan_subtasks,
+    _prepare_tree,
+    _write_spec,
+)
+from ._stream_steer import (  # noqa: F401  # re-exported
+    _USER_MANDATES,
+    _append_spec_mandate,
+    _apply_steer,
+    _arm_session,
+    _cancel_checker_for,
+    _pin_to_subtask,
+    _steer_headings,
+    _steering_drain,
+)
 
 
 def _spec_runner(cwd: str, spec_md: str):
@@ -607,159 +353,33 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
         return
     yield from _finalize(cwd, subs, spec_md, agg, start_sha, cancelled)
 
-
-_STATUS_WORD = {"A": "added", "M": "modified", "D": "deleted",
-                "R": "renamed"}
-
-
-def _numstat_counts(numstat: str) -> dict:
-    """``{path: (adds, dels)}`` from ``git diff --numstat``."""
-    counts: dict = {}
-    for ln in numstat.splitlines():
-        parts = ln.split("\t")
-        if len(parts) == 3:
-            counts[parts[2]] = (parts[0], parts[1])
-    return counts
-
-
-def _changed_file(name_status_line: str, counts: dict, ref: list, cwd: str,
-                  cap: int) -> dict | None:
-    """One ``--name-status`` line as a change entry, or None to skip it."""
-    parts = name_status_line.split("\t")
-    if len(parts) < 2:
-        return None
-    status, path = parts[0][:1], parts[-1]
-    if any(h in path for h in _CHANGES_HIDE):
-        return None
-    adds, dels = counts.get(path, ("0", "0"))
-    fdiff = _git(["diff", *ref, "--", path], cwd).stdout or ""
-    truncated = len(fdiff) > cap
-    return {"path": path, "status": _STATUS_WORD.get(status, "changed"),
-            "additions": _to_int(adds), "deletions": _to_int(dels),
-            "diff": fdiff[:cap] + ("\n… (truncated)" if truncated else "")}
-
-
-def _emit_changes(cwd: str, start_sha: str, include_worktree: bool = False):
-    """Yield a STRUCTURED ``changes`` event — one entry per changed file with its
-    status, +/- line counts, and unified diff — so the UI renders a clean PR-style
-    view (file list + expandable colored diffs), not a raw blob. Used after BOTH
-    the parallel pipeline (committed to base → diff ``start..HEAD``) and a
-    single-agent simple run (uncommitted working tree → ``include_worktree``:
-    intent-add untracked, diff ``start``)."""
-    if not start_sha:
-        return
-    try:
-        cap = int(os.environ.get("AIFORGE_CHANGES_FILE_DIFF_MAX", "8000"))
-    except ValueError:
-        cap = 8000
-    if include_worktree:
-        # make untracked files appear in the diff without staging their content
-        _git(["add", "-N", "--", ".", *_EXCLUDE_PATHSPECS], cwd)
-        ref = [start_sha]
-    else:
-        ref = [f"{start_sha}..HEAD"]
-    counts = _numstat_counts(_git(["diff", "--numstat", *ref], cwd).stdout or "")
-    name_status = _git(["diff", "--name-status", *ref], cwd).stdout or ""
-    files = [f for f in (_changed_file(ln, counts, ref, cwd, cap)
-                         for ln in name_status.splitlines()) if f]
-    if not files:
-        return
-    total_add = sum(f["additions"] for f in files)
-    total_del = sum(f["deletions"] for f in files)
-    yield {"type": "changes", "files": files,
-           "summary": {"files": len(files), "additions": total_add,
-                       "deletions": total_del}}
-
-
-def _to_int(s: str) -> int:
-    try:
-        return int(s)
-    except (ValueError, TypeError):
-        return 0
-
-
-# Mid-run user instructions per cwd — MANDATORY constraints re-asserted into the
-# reconcile prompt so a user's "must" survives every rebuild/fix pass.
-_USER_MANDATES: dict[str, list[str]] = {}
-
-
-# Generated / build / cache artifacts — never "real" source, skip in the Changes
-# list across languages. Substring-matched against each changed path.
-_CHANGES_HIDE = (
-    # aiforge internals
-    _SPEC_MD, ".aiforge-venv", ".aiforge-contracts", ".aiforge-baseline",
-    ".aiforge-worktrees",
-    # python
-    "__pycache__", ".pyc", ".pyo", ".egg-info", ".pytest_cache", ".ruff_cache",
-    ".mypy_cache", ".tox/", ".coverage",
-    # js / ts
-    "node_modules/", "/dist/", "/.next/", "/.nuxt/", ".min.js", ".map",
-    # jvm
-    ".class", "/target/", "/.gradle/", "/out/",
-    # go / rust / c / native
-    "/vendor/", ".rlib", "/Cargo.lock", ".o", ".obj", ".a", ".so", ".dll",
-    ".dylib", ".exe",
-    # generic build/cache/vcs junk
-    "/build/", "/bin/", "/.cache/", ".DS_Store", ".log", ".lock", ".tmp",
-    ".git/",
-)
-
-
-_CODE_EXTS = (".py", ".go", ".js", ".ts", ".rs", ".java", ".c", ".cpp", ".rb")
-
-
-def _test_path_for(path: str) -> str:
-    """Conventional test path for a code file (per language). '' when the
-    language's test layout is too involved to synthesise (rely on the
-    architect, which is instructed to include tests)."""
-    ext = os.path.splitext(path)[1].lower()
-    stem = os.path.splitext(os.path.basename(path))[0]
-    if not stem or stem.startswith("__"):
-        return ""
-    if ext == ".py":
-        return f"tests/test_{stem}.py"
-    if ext == ".go":
-        return path[:-3] + "_test.go"
-    if ext in (".js", ".ts"):
-        return path[:-len(ext)] + f".test{ext}"
-    if ext == ".rb":
-        return f"spec/{stem}_spec.rb"
-    if ext == ".rs":
-        return f"tests/{stem}_test.rs"
-    return ""
-
-
-def _ensure_test_coverage(subs: list[dict]) -> list[dict]:
-    """Backstop: if the plan has NO test files, add a unit-test subtask per code
-    module (so the build can be verified + self-healed). No-op when tests exist
-    or the languages have no easy test convention."""
-    if any(_is_test_subtask(s) for s in subs):
-        return subs
-    code = [s for s in subs if str(s.get("path") or "").endswith(_CODE_EXTS)
-            and not _is_test_subtask(s)]
-    added: list[dict] = []
-    seen = {str(s.get("path") or "") for s in subs}
-    for s in code:
-        tp = _test_path_for(str(s.get("path") or ""))
-        if tp and tp not in seen:
-            seen.add(tp)
-            added.append({
-                "slug": _slugify("test-" + os.path.basename(tp)), "path": tp,
-                "api": [],
-                "goal": f"{tp}: unit tests for {s['path']} — exercise its public "
-                        f"API (from the API contract), assert real behaviour."})
-    return subs + added
-
 # ---- cross-group names (bottom import = cycle-safe; all defs above are set) ----
 from ._contracts import _CONTRACT_DIR, _is_test_subtask, _matching_tests_for, _merge_aggs
 from ._orchestrate import _run_sequential, run_parallel
 from ._planning import _commit_turn_baseline, _ensure_git_workspace
-from ._reconcile import (_enforce_disjoint_files, _ensure_impl_modules,
-                         _prune_offplan_files, _reconcile_integration, _render_spec_md,
-                         _route_steering, _scaffold_stubs, _snapshot_baseline, _verify_against_spec)
+from ._reconcile import (
+    _enforce_disjoint_files,
+    _ensure_impl_modules,
+    _prune_offplan_files,
+    _reconcile_integration,
+    _render_spec_md,
+    _route_steering,
+    _scaffold_stubs,
+    _snapshot_baseline,
+    _verify_against_spec,
+)
 from ._runners import _default_subtask_runner
-from ._worktree import (_dirty_warning, _git, _max_workers, _slugify, default_integration_test,
-                        default_validate_one, log)
+from ._worktree import (
+    _dirty_warning,
+    _git,
+    _max_workers,
+    _slugify,
+    default_integration_test,
+    default_validate_one,
+    log,
+)
+
+
 def _decompose(*a, **k):  # live forwarder — honours monkeypatch on the package
     from aiforge_core.runtime import parallel_subtasks as _pkg
     return _pkg._decompose(*a, **k)
