@@ -18,13 +18,10 @@ Reuses the worktree machinery from :mod:`parallel_subtasks` —
 from __future__ import annotations
 
 import concurrent.futures
-import json
 import logging
 import os
-import re
 import uuid
 
-from aiforge_core.runtime.git_pr import _EXCLUDE_DIR_SEGMENTS
 from aiforge_core.runtime.parallel_subtasks import (
     _commit_all,
     _default_subtask_runner,
@@ -35,6 +32,13 @@ from aiforge_core.runtime.parallel_subtasks import (
     _max_workers,
     _merge_branch,
     _update,
+)
+
+from ._best_of_n_disk import (  # noqa: F401  # re-exported
+    _cancel_checker,
+    _cleanup,
+    _disk_preflight,
+    _tree_bytes,
 )
 
 log = logging.getLogger("aiforge.best_of_n")
@@ -170,82 +174,6 @@ def _attempt(spec: str, repo: str, base: str, i: int, run_one,
         _update(None, slug, "failed", on_status)
         return {"slug": slug, "score": 0, "why": f"post-worktree error: {exc}",
                 "branch": branch, "worktree": wt, "ok": False, "graded": False}
-
-
-def _cleanup(repo: str, attempt: dict) -> None:
-    """Discard a (loser) attempt's worktree + branch — mirrors the best-effort
-    cleanup ``parallel_subtasks.run_parallel`` does after merging."""
-    wt = attempt.get("worktree")
-    if wt and os.path.isdir(wt):
-        _git(["worktree", "remove", "--force", wt], repo)
-    if attempt.get("branch"):
-        _git(["branch", "-D", attempt["branch"]], repo)
-
-
-def _tree_bytes(cwd: str, cap: int = 50_000) -> int:
-    """Working-tree size (sum of file sizes), heavy artifact dirs pruned.
-
-    Prunes node_modules, .venv, dist, build, .git, worktrees, caches… — the
-    same set git_pr uses — so the estimate isn't inflated and the walk doesn't
-    crawl into them. Bounded by ``cap`` files on huge trees.
-    """
-    total = scanned = 0
-    for root, dirs, files in os.walk(cwd):
-        dirs[:] = [d for d in dirs if d not in _EXCLUDE_DIR_SEGMENTS]
-        for f in files:
-            try:
-                total += os.path.getsize(os.path.join(root, f))
-            except OSError:
-                pass
-            scanned += 1
-        if scanned > cap:
-            break
-    return total
-
-
-def _disk_preflight(cwd: str, n: int, *, safety: float = 1.2) -> str | None:
-    """B6/B7 — best-effort disk-space preflight before creating N worktrees.
-
-    Compares ``n × tree × safety`` against the free bytes on the filesystem
-    (``os.statvfs``). On a likely shortfall logs a clear warning with the
-    numbers and returns it; NEVER blocks (the check itself soft-fails). No
-    heavy deps — a bounded ``os.walk``."""
-    try:
-        total = _tree_bytes(cwd)
-        if total <= 0:
-            return None
-        st = os.statvfs(cwd)
-        free = st.f_bavail * st.f_frsize
-        need = total * n * safety
-        if free >= need:
-            return None
-        msg = (f"low disk: free≈{free} bytes < needed≈{int(need)} "
-               f"(tree≈{total} × n={n} × {safety}); {n} worktrees may run "
-               "out of space")
-        log.warning("best_of_n %s", msg)
-        return msg
-    except Exception as exc:  # noqa: BLE001 — preflight must never block
-        log.debug("best_of_n disk preflight skipped: %s", exc)
-        return None
-
-
-def _cancel_checker(session_id, cancel_event):
-    """The RUN-SCOPED event is authoritative. The session token is a secondary
-    trigger — when it fires we LATCH the event so cancellation sticks even after
-    ``_gen``'s finally later pops the token (the race this closes): a detached
-    worker reading a freshly-cleared token would otherwise see "not cancelled"
-    and run all N + merge."""
-    from aiforge_core.runtime import chat_cancel
-
-    def _cancelled() -> bool:
-        if cancel_event is not None and cancel_event.is_set():
-            return True
-        if session_id is not None and chat_cancel.is_cancelled(session_id):
-            if cancel_event is not None:
-                cancel_event.set()
-            return True
-        return False
-    return _cancelled
 
 
 def _run_attempts(spec, cwd, base, n, runner, on_status, run_token, session_id,
