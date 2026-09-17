@@ -1,7 +1,8 @@
 """Memory routes (/api/memory/*) — split out of api.py (APIRouter).
 
-Stats/search + markdown-file notes + OKR graph + ingestion sources +
-destructive admin (clear). Every handler keeps its inline function-local
+Stats/search + markdown-file notes + ingestion sources. The OKR graph, the
+overview and graph views and the destructive clears are in ``memory_graph``
+(re-exported here). Every handler keeps its inline function-local
 imports and behaviour exactly as it was in api.py; the module-level helpers,
 request models, and the reindex-all singleton moved here VERBATIM alongside
 the endpoints that use them.
@@ -30,8 +31,11 @@ from .memory_graph import (  # noqa: F401  # re-exported
     memory_okr_set_active,
     memory_overview_ep,
 )
+from .memory_graph import router as _memory_graph_router
 
 router = APIRouter()
+# Endpoints that live in memory_graph.py, served on this router.
+router.include_router(_memory_graph_router)
 
 _af_log = logging.getLogger("aiforge")
 
@@ -415,10 +419,3 @@ def memory_reindex_all() -> dict:
     n = sum(1 for s in _ms.list_sources() if s.get("kind") in ("repo", "docs"))
     _spawn_reindex_all()
     return {"ok": True, "reindexing": n}
-
-
-
-# Routes that live in their own modules.
-from . import memory_graph as memory_graph_mod  # noqa: E402
-
-router.include_router(memory_graph_mod.router)

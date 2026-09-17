@@ -2,7 +2,8 @@
 
 Operator runtime toggles (rate limits, LLM backend selection, force-full-
 pipeline, per-role session params, global LLM token settings), the perf +
-cost dashboards, and the on-demand operational metrics rollup. Handlers keep
+cost dashboards, and the on-demand operational metrics rollup. The CA bundle,
+egress hosts and sandbox mounts are in ``runtime_net`` (re-exported here). Handlers keep
 their inline function-local imports; env writes go through the shared
 ``_persist_env`` (runtime.env) so they survive a restart.
 """
@@ -32,8 +33,11 @@ from .runtime_net import (  # noqa: F401  # re-exported
     runtime_mounts_add,
     runtime_mounts_remove,
 )
+from .runtime_net import router as _runtime_net_router
 
 router = APIRouter()
+# Endpoints that live in runtime_net.py, served on this router.
+router.include_router(_runtime_net_router)
 
 
 @router.get("/api/runtime/token_usage")
@@ -365,10 +369,3 @@ def runtime_cost(
         return {"group_by": group_by, "days_back": days_back,
                 "rows": _cost.rollup(group_by, days_back=days_back)}
     return _cost.snapshot(ticket)
-
-
-
-# Routes that live in their own modules.
-from . import runtime_net as runtime_net_mod  # noqa: E402
-
-router.include_router(runtime_net_mod.router)

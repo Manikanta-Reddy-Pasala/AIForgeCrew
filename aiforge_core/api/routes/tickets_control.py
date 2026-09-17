@@ -12,9 +12,7 @@ from pydantic import BaseModel, Field
 from aiforge_core.api.routes._sse import sse_response
 from aiforge_core.tickets import store as tickets_mod
 
-from .tickets_rows import (
-    _ticket_row_out,
-)
+from .tickets_rows import _ticket_row_out
 
 router = APIRouter()
 

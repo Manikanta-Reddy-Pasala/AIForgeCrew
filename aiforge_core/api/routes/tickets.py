@@ -1,10 +1,10 @@
 """Ticket routes (/api/tickets/*, /api/workflows/preview) — split out of api.py.
 
-Full ticket CRUD (list/detail/create/patch/delete/reset), route override +
-detector preview, comments, parallel-subtask kickoff, live agent intervention,
-clarification answer, and the DB-sourced ticket-events SSE stream. Ticket row/
-event shaping + attachment persist/remove helpers moved here VERBATIM; handlers
-keep their inline function-local imports and behaviour.
+Full ticket CRUD (list/detail/create/patch/delete/reset), attachments and
+parallel-subtask kickoff. Comments, route override + preview, intervention,
+clarification answers and the events stream are in ``tickets_control``; row
+and event shaping in ``tickets_rows``. Their names are re-exported here — patch
+a helper in the module that calls it.
 """
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ from .tickets_control import (  # noqa: F401  # re-exported
     ticket_answer,
     workflow_preview,
 )
+from .tickets_control import router as _tickets_control_router
 from .tickets_rows import (  # noqa: F401  # re-exported
     _TERMINAL,
     _as_utc,
@@ -47,6 +48,8 @@ from .tickets_rows import (  # noqa: F401  # re-exported
 )
 
 router = APIRouter()
+# Endpoints that live in tickets_control.py, served on this router.
+router.include_router(_tickets_control_router)
 
 _af_log = logging.getLogger("aiforge")
 
@@ -486,10 +489,3 @@ def delete_ticket(identifier: str) -> None:
     if not tickets_mod.delete(identifier):
         raise HTTPException(404, f"ticket {identifier} not found")
     return None
-
-
-
-# Routes that live in their own modules.
-from . import tickets_control as tickets_control_mod  # noqa: E402
-
-router.include_router(tickets_control_mod.router)

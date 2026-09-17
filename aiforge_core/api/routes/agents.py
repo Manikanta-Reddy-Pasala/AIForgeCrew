@@ -1,7 +1,8 @@
 """Agent + model-registry config routes — split out of api.py (APIRouter).
 
-Per-archetype provider/model config (v1 + v2), the model registry, provider
-connectivity test, capability-based auto-assign, and profile presets. Handlers
+Per-archetype provider/model config (v1 + v2), the model registry,
+capability-based auto-assign, and profile presets. Provider connectivity tests
+are in ``agents_providers`` (re-exported here). Handlers
 keep their inline function-local imports; the request models + the
 _reassign_by_capability helper moved here VERBATIM.
 """
@@ -25,8 +26,11 @@ from .agents_providers import (  # noqa: F401  # re-exported
     providers_test,
     providers_test_native,
 )
+from .agents_providers import router as _agents_providers_router
 
 router = APIRouter()
+# Endpoints that live in agents_providers.py, served on this router.
+router.include_router(_agents_providers_router)
 
 
 # What each archetype does, for the Agents page.
@@ -399,10 +403,3 @@ def agents_v2_reset(keep_default: Annotated[bool, Query()] = False) -> dict:
     ``keep_default=true`` preserves the global ``_default`` row and clears only
     the per-role overrides."""
     return _acfg.reset(keep_default=keep_default)
-
-
-
-# Routes that live in their own modules.
-from . import agents_providers as agents_providers_mod  # noqa: E402
-
-router.include_router(agents_providers_mod.router)
