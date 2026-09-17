@@ -25,8 +25,11 @@ import logging
 import os
 from datetime import date as _date  # noqa: F401  # the jobs look it up here
 
-from fastapi import FastAPI, Request
-from fastapi import HTTPException  # noqa: F401  # tests use api.HTTPException
+from fastapi import (
+    FastAPI,
+    HTTPException,  # noqa: F401  # tests use api.HTTPException
+    Request,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
