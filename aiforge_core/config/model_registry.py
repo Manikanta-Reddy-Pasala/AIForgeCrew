@@ -20,6 +20,32 @@ from typing import Any
 from aiforge_core.config import _atomic
 from aiforge_core.config.paths import config_dir
 
+from ._model_context import (  # noqa: F401  # re-exported
+    _CTX_CEILING,
+    _CTX_STATIC_DEFAULT,
+    _autodetect_ctx_enabled,
+    _autodetected_window,
+    _explicit_global_window,
+    _explicit_role_window,
+    context_window_for_role,
+    context_window_source,
+    effective_context_window,
+    thinking_for,
+    vision_for,
+)
+from ._model_roles import (  # noqa: F401  # re-exported
+    _CODER_ROLES,
+    _FAST_ROLES,
+    _NON_GENERATIVE_MARKERS,
+    _THINKING_ROLES,
+    _assign_role,
+    _by_ctx,
+    _is_generative,
+    auto_assign,
+    is_fast_role,
+    suggest_assignments,
+)
+
 _LOCK = threading.Lock()
 _VISION = ("auto", "yes", "no")
 _THINKING = ("auto", "yes", "no")
@@ -289,130 +315,6 @@ def context_for(model: str, base_url: str = "") -> int:
     return 0
 
 
-# Ceiling for a detected window (256K) and the static fallback default (128K).
-# The default is the ASSUMED window for escalation/auto-condense sizing when a
-# model has no explicit per-model value AND no global override AND detection is
-# off/failed — deliberately CONSERVATIVE (128K): assuming LESS than the model's
-# physically-loaded window only makes the app condense/cap earlier, which can
-# never cause the "sent more than the served window" 400 that assuming MORE
-# would. A model that genuinely wants a bigger window sets it per-model in the
-# registry (highest-priority resolution path).
-_CTX_CEILING = 262144
-_CTX_STATIC_DEFAULT = 131072   # 128K default window
-
-
-def _autodetect_ctx_enabled() -> bool:
-    """Gate for the /v1/models context probe. Default ON; disable with
-    ``AIFORGE_AUTODETECT_CTX=0``."""
-    return os.environ.get("AIFORGE_AUTODETECT_CTX", "1") not in ("0", "false", "")
-
-
-def _explicit_role_window(role: "str | None") -> "tuple[int, str, str]":
-    """(per_model_window, base_url, api_key) for ``role``. The window is 0 when
-    no explicit per-model registry value is set; base_url/api_key are captured so
-    a later ctx probe can reach and auth to the same endpoint."""
-    if not role:
-        return 0, "", ""
-    try:
-        from aiforge_core.llm.router import resolve
-        ep = resolve(role)
-        base_url = getattr(ep, "base_url", "") or ""
-        api_key = getattr(ep, "api_key", "") or ""
-        return max(0, context_for(ep.model or "", base_url)), base_url, api_key
-    except Exception:  # noqa: BLE001
-        return 0, "", ""
-
-
-def _explicit_global_window() -> "int | None":
-    """The explicit global operator context_window (UI store or env), or None —
-    NOT the built-in default, so auto-detection can slot in below it."""
-    try:
-        from aiforge_core.config import runtime_settings
-        exp = runtime_settings.explicit("context_window")
-        return int(exp) if exp is not None else None
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _autodetected_window(base_url: str, api_key: str) -> "int | None":
-    """The live endpoint's advertised window (capped 256K), or None when
-    autodetect is off, there is no base_url, or the probe soft-fails."""
-    if not (_autodetect_ctx_enabled() and base_url):
-        return None
-    try:
-        from aiforge_core.llm import health
-        det = health.probe_context_window(base_url, api_key=api_key)
-        return min(int(det), _CTX_CEILING) if det else None
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def context_window_source(role: str | None = None) -> "tuple[int, str]":
-    """``(window, source)`` — the same resolution as
-    :func:`effective_context_window`, plus WHERE the number came from:
-    ``model`` (per-model setting), ``setting`` (global context_window),
-    ``server`` (the endpoint's /v1/models — for LM Studio that is the context
-    length the model was LOADED with, not its maximum) or ``default``. The chat
-    meter shows it, so "why 32k when the model does 256k" answers itself."""
-    per, base_url, api_key = _explicit_role_window(role)
-    if per > 0:
-        return per, "model"
-    exp = _explicit_global_window()
-    if exp is not None:
-        return exp, "setting"
-    det = _autodetected_window(base_url, api_key)
-    if det is not None:
-        return det, "server"
-    return _CTX_STATIC_DEFAULT, "default"
-
-
-def effective_context_window(role: str | None = None) -> int:
-    """The single source of truth for the input context window (tokens).
-
-    Resolution order (first that yields a value wins) — an EXPLICIT operator
-    choice ALWAYS beats auto-detection, which beats the static default:
-      1a. per-model registry window for this role's model, else
-      1b. the global ``runtime_settings`` explicit value, else
-      2.  auto-detected from the live endpoint's ``/v1/models`` (capped 256K),
-          gated by ``AIFORGE_AUTODETECT_CTX``, else
-      3.  the static default (131072 = 128K).
-    """
-    return context_window_source(role)[0]
-
-
-def context_window_for_role(role: str) -> int:
-    """The effective input context window for ``role`` — the role's model's
-    per-model value if set, else auto-detected, else the global setting. Thin
-    wrapper over :func:`effective_context_window` (kept for back-compat)."""
-    return effective_context_window(role)
-
-
-def thinking_for(model: str, base_url: str = "") -> str | None:
-    """The model's explicit reasoning setting ('yes'/'no'), or None when unset/
-    auto. Matched by id (a LiteLLM ``openai/`` prefix is ignored) and, when
-    given, base_url."""
-    model = (model or "").strip()
-    bare = model.split("/", 1)[1] if model.startswith("openai/") else model
-    for r in _load():
-        row_url = (r.get("base_url") or "").rstrip("/")
-        if r.get("model") in (model, bare) and (
-                not base_url or not row_url or row_url == base_url.rstrip("/")):
-            v = r.get("thinking") or "auto"
-            return v if v in ("yes", "no") else None
-    return None
-
-
-def vision_for(model: str, base_url: str = "") -> str | None:
-    """Explicit vision flag ('yes'/'no') for a model matched by id+url, or None
-    when unset/auto — so callers can fall back to probing."""
-    model = (model or "").strip()
-    for r in _load():
-        if r.get("model") == model and (not base_url or r.get("base_url") == base_url):
-            v = r.get("vision") or "auto"
-            return v if v in ("yes", "no") else None
-    return None
-
-
 def sync_from_config() -> dict:
     """Seed the registry from the agents' CURRENT per-role config — so a fresh
     registry isn't empty when models are already wired (e.g. via the legacy flow
@@ -459,102 +361,6 @@ def apply_to_roles(model_id: str, roles: list[str]) -> dict:
         except Exception as exc:  # noqa: BLE001
             errors[role] = str(exc)
     return {"applied": applied, "errors": errors}
-
-
-# Roles that benefit from a reasoning/"thinking" model (deep planning/judging).
-_THINKING_ROLES = ("planner", "architect", "reviewer",
-                   "validator", "critic", "reasoner", "judge", "orchestrator",
-                   "gap_eval", "verify",
-                   # memory = distil/consolidate. Judging what is durable and
-                   # what supersedes what needs reasoning; the fast role is what
-                   # let fragments and raw chat turns through as "facts".
-                   "memory")
-# QUICK, direct-output roles — a reasoning/"thinking" model is WRONG here: it
-# spends its whole budget thinking and returns EMPTY on these short tasks
-# (rephrase a query, distil a fact, classify, title). Force the fast
-# NON-thinking model. (enhancer/learner were mis-classified as thinking —
-# that's what made them return empty on a reasoning model.)
-_FAST_ROLES = ("enhancer", "learner", "triage", "feedback", "refiner",
-               "title", "summar", "classif", "ctx_", "live_verifier")
-# Code-generation-heavy roles — a fast non-reasoning coder is better + cheaper.
-_CODER_ROLES = ("doer", "developer", "coder", "implementer", "builder", "tester")
-
-
-def is_fast_role(role: str) -> bool:
-    """True when ``role`` is a QUICK, direct-output role (enhancer/learner/
-    triage/feedback/refiner/title/summary/classify/…). These want a plain answer,
-    NOT a reasoning trace — a reasoning model spends its budget thinking and
-    returns empty. Callers use this to pre-empt the reasoning phase (send
-    ``/no_think`` from the first attempt) so a fast role never wastes a round on
-    an empty reasoning-model response."""
-    rl = (role or "").strip().lower()
-    return any(f in rl for f in _FAST_ROLES)
-
-
-# Embedding / rerank models can't generate — never assign them to a chat role.
-_NON_GENERATIVE_MARKERS = (
-    "embed", "embedding", "rerank", "reranker", "bge-", "-bge", "nomic-embed",
-    "gte-", "e5-", "instructor", "sentence-transformer",
-)
-
-
-def _is_generative(model_id: str) -> bool:
-    m = (model_id or "").lower()
-    return not any(k in m for k in _NON_GENERATIVE_MARKERS)
-
-
-def _by_ctx(ms):
-    """Models sorted by DESCENDING context window (largest first)."""
-    return sorted(ms, key=lambda m: -(m.get("context_window") or 0))
-
-
-def _assign_role(rl, vision, coder, think, models, default):
-    """Best model id for one role name by capability: vision-needing -> vision,
-    fast/direct -> non-thinking coder, thinking -> reasoning, coder -> coder,
-    else the fast default."""
-    if "vision" in rl and vision:
-        return vision[0]["id"]
-    if any(f in rl for f in _FAST_ROLES):
-        return (coder or think or _by_ctx(models))[0]["id"]
-    if any(t in rl for t in _THINKING_ROLES) and think:
-        return think[0]["id"]
-    if any(c in rl for c in _CODER_ROLES) and coder:
-        return coder[0]["id"]
-    return default
-
-
-def suggest_assignments(roles: list) -> dict:
-    """Map each role to the best available model BY CAPABILITY: thinking roles →
-    a reasoning model, coder roles → a fast non-reasoning coder, vision-needing →
-    a vision model. Larger context wins within a tier. {role: model_id}.
-    Embedding/rerank models are excluded — they can't generate."""
-    models = [m for m in list_models() if _is_generative(m.get("model") or m.get("id"))]
-    if not models:
-        return {}
-    think = _by_ctx([m for m in models if m.get("has_thinking")])
-    coder = _by_ctx([m for m in models if not m.get("has_thinking")])
-    vision = _by_ctx([m for m in models if m.get("has_vision")])
-    # DEFAULT for unclassified roles (e.g. chat) = the FAST non-thinking model,
-    # not the largest-context one — a reasoning model as the blanket default is
-    # what silently made simple chat answers come back empty. Only fall to a
-    # thinking model when no fast one is configured.
-    default = (coder or think or _by_ctx(models))[0]["id"]
-    out: dict = {}
-    for role in roles:
-        out[role] = _assign_role((role or "").lower(), vision, coder, think,
-                                 models, default)
-    return out
-
-
-def auto_assign(roles: list) -> dict:
-    """Compute + APPLY capability-based assignments for ``roles``. Groups roles by
-    chosen model and writes each into agent_config. Returns the plan + results."""
-    plan = suggest_assignments(roles)
-    by_model: dict = {}
-    for role, mid in plan.items():
-        by_model.setdefault(mid, []).append(role)
-    results = {mid: apply_to_roles(mid, rs) for mid, rs in by_model.items()}
-    return {"assignments": plan, "results": results}
 
 
 __all__ = ["list_models", "get_model", "chain_after", "add_model",

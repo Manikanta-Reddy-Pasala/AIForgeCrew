@@ -46,12 +46,28 @@ Env knobs (highest priority first):
 """
 from __future__ import annotations
 
-import ipaddress
 import logging
 import os
-import socket
 import ssl
 from urllib.parse import urlsplit
+
+from ._ssl_hosts import (  # noqa: F401  # re-exported
+    _SERVICE_URL_KEYS,
+    _agent_config_hosts,
+    _configured_service_hosts,
+    _is_intrinsically_internal_host,
+    _is_trusted_internal_host,
+    _mcp_endpoint_hosts,
+    auto_relax_internal,
+)
+from ._ssl_ssrf import (  # noqa: F401  # re-exported
+    SSRFBlocked,
+    _ip_is_non_public,
+    _resolved_addresses,
+    _ssrf_allow_private,
+    _validated_host,
+    guard_public_url,
+)
 
 log = logging.getLogger("aiforge.tls")
 
@@ -124,127 +140,6 @@ def _host_of(url: str | None) -> str | None:
     except ValueError:
         return None
     return host.lower() if host else None
-
-
-_SERVICE_URL_KEYS = (
-    "AIFORGE_LM_BASE_URL", "AIFORGE_OPENAI_COMPAT_BASE_URL",
-    "AIFORGE_EMBED_URL", "AIFORGE_RERANK_URL",
-    "AIFORGE_API_BASE", "AIFORGE_MEMORY_URL",
-)
-
-
-def _mcp_endpoint_hosts(raw: str, add) -> None:
-    """Add hosts from the ``name=url,name=url`` MCP endpoints list."""
-    for pair in (raw or "").split(","):
-        pair = pair.strip()
-        if pair:
-            add(pair.split("=", 1)[1] if "=" in pair else pair)
-
-
-def _agent_config_hosts(add) -> None:
-    """Add per-role base_url hosts from the agent_config catalog. Best-effort —
-    never fail context resolution on a config read."""
-    try:
-        from aiforge_core.config import agent_config as _acfg
-        for row in (_acfg.load_all() or {}).values():
-            if isinstance(row, dict):
-                add(row.get("base_url"))
-    except Exception:  # noqa: BLE001
-        pass
-
-
-def _configured_service_hosts() -> set[str]:
-    """Hosts of the explicitly-configured AIForge service base-URLs.
-
-    Covers the model endpoint(s), embed/rerank sidecars, memory http, MCP
-    servers and AIForge's own API. Anything an operator points a base-url env var
-    at counts as a host they control, so a custom DNS name (not just a private
-    IP) for the self-hosted box is trusted.
-    """
-    hosts: set[str] = set()
-
-    def _add(val: str | None) -> None:
-        h = _host_of(val)
-        if h:
-            hosts.add(h)
-
-    env = os.environ
-    for key, val in env.items():
-        if key.endswith("_BASE_URL") and key.startswith("AIFORGE_"):
-            _add(val)
-    for key in _SERVICE_URL_KEYS:
-        _add(env.get(key))
-    _mcp_endpoint_hosts(env.get("AIFORGE_MCP_ENDPOINTS", ""), _add)
-    _agent_config_hosts(_add)
-    return hosts
-
-
-def _is_intrinsically_internal_host(host: str | None) -> bool:
-    """True ONLY for hosts that are internal by their NAME/IP alone — loopback,
-    private-IP, link-local, ``.local``/``.lan``/… suffixes, or a bare label
-    (no dot). Does NOT consult the configured base-urls, so a public SaaS host
-    you merely configured is never classed internal here."""
-    if not host:
-        return False
-    host = host.lower()
-    if host in ("localhost",) or host.endswith(".localhost"):
-        return True
-    if host.endswith(_PRIVATE_SUFFIXES):
-        return True
-    # Bare-label hostnames (no dot) are LAN-internal by convention.
-    if "." not in host and ":" not in host:
-        return True
-    try:
-        ip = ipaddress.ip_address(host)
-        if ip.is_loopback or ip.is_private or ip.is_link_local:
-            return True
-    except ValueError:
-        pass  # not an IP literal
-    return False
-
-
-def _is_trusted_internal_host(host: str | None) -> bool:
-    """Intrinsically-internal OR an explicitly-configured service host.
-
-    Used by the EXPLICIT opt-out path (``context_for`` — gated on the operator
-    having set ``AIFORGE_LLM_SSL_VERIFY=false``), where trusting a host the
-    operator pointed a base-url at is reasonable. The default-on auto-relax
-    path uses :func:`_is_intrinsically_internal_host` instead so a configured
-    public SaaS endpoint is NOT silently un-verified.
-    """
-    if _is_intrinsically_internal_host(host):
-        return True
-    return bool(host) and host.lower() in _configured_service_hosts()
-
-
-def auto_relax_internal(url: str | None) -> bool:
-    """Should an HTTPS *model endpoint* skip TLS verification by default?
-
-    True only for a trusted-internal host (loopback / private-IP /
-    ``.local``/``.lan``/``.internal`` style / bare-label / a configured
-    service host) talking HTTPS, when no CA bundle is set and the
-    operator hasn't forced strict mode. Rationale: these are
-    operator-controlled LAN boxes (e.g. ``https://chatai.internal``)
-    where a self-signed cert is the norm, so requiring a per-endpoint
-    opt-out just to reach your own model server is a footgun. PUBLIC
-    hosts are never auto-relaxed — they always verify.
-
-    Bounded to the model-endpoint call sites (probe + the LiteLLM model
-    build); the shared ``context_for`` used by embed/rerank/mcp/etc. is
-    unchanged. Opt out with ``AIFORGE_LLM_TLS_STRICT_INTERNAL=1`` (or set
-    a CA bundle, which keeps verification on for every host).
-    """
-    if not url or not str(url).lower().startswith("https://"):
-        return False
-    if _ca_bundle():
-        return False
-    raw = os.environ.get("AIFORGE_LLM_TLS_STRICT_INTERNAL", "")
-    if raw.strip().lower() not in _FALSEY:
-        return False  # operator forced strict for internal hosts
-    # Default-on path: relax ONLY intrinsically-internal hosts. A configured
-    # public SaaS endpoint (openrouter.ai, api.openai.com) must keep verifying
-    # unless the operator explicitly opts out (insecure_tls / SSL_VERIFY=false).
-    return _is_intrinsically_internal_host(_host_of(url))
 
 
 def _port_of(url: str | None) -> int:
@@ -401,119 +296,6 @@ def is_cert_error(exc: BaseException) -> bool:
             or "unable to get local issuer" in text
             or "hostname mismatch" in text
             or "certificate has expired" in text)
-
-
-# ─────────────────────────── SSRF guard ─────────────────────────────────
-# Shared guard for the public-fetch paths (the researcher's
-# ``web_read`` and the ``kind=url`` memory ingest) plus the Doer browser
-# allowlist. Parses a URL, requires an http(s) scheme, resolves the host via
-# DNS and REJECTS if ANY resolved address is private / loopback / link-local
-# (169.254.0.0/16 cloud IMDS) / reserved / multicast / unspecified. Without
-# this, a model-supplied URL can pivot to ``http://169.254.169.254/`` (cloud
-# metadata / credentials), ``http://127.0.0.1:<port>/`` internal services, or
-# an RFC-1918 LAN host. Escape hatch: ``AIFORGE_SSRF_ALLOW_PRIVATE=1`` for an
-# operator who genuinely needs to fetch an internal host (default OFF).
-
-
-class SSRFBlocked(Exception):
-    """Raised when a URL resolves to a non-public / disallowed address.
-
-    ``kind`` distinguishes a definite private/metadata target (``"private"``)
-    or a bad scheme (``"scheme"``) — both hard-block — from a DNS resolution
-    failure (``"dns"``). Callers may choose to let ``urlopen`` surface a
-    natural network error for the ``dns`` case (an unresolvable host cannot be
-    an SSRF target anyway) while always refusing ``private``/``scheme``.
-    """
-
-    def __init__(self, message: str, *, kind: str = "private") -> None:
-        super().__init__(message)
-        self.kind = kind
-
-
-def _ssrf_allow_private() -> bool:
-    """Operator escape hatch — allow fetching private/internal hosts."""
-    raw = os.environ.get("AIFORGE_SSRF_ALLOW_PRIVATE", "")
-    return raw.strip().lower() not in _FALSEY
-
-
-def _ip_is_non_public(ip: ipaddress._BaseAddress) -> bool:
-    return bool(
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_reserved
-        or ip.is_multicast
-        or ip.is_unspecified
-    )
-
-
-def _validated_host(url: str) -> "tuple[str, str]":
-    """(scheme, host) for a guardable url. Raises SSRFBlocked(kind="scheme") for
-    an empty url, a non-http(s) scheme, or a hostless url."""
-    if not url:
-        raise SSRFBlocked("empty url", kind="scheme")
-    parts = urlsplit(url)
-    scheme = (parts.scheme or "").lower()
-    if scheme not in ("http", "https"):
-        raise SSRFBlocked(f"scheme not allowed: {scheme or '(none)'}", kind="scheme")
-    if not parts.hostname:
-        raise SSRFBlocked("url has no host", kind="scheme")
-    return scheme, parts.hostname
-
-
-def _resolved_addresses(host: str, port: int) -> list:
-    """Every A/AAAA address ``host`` resolves to. Raises SSRFBlocked(kind="dns")
-    when resolution fails or yields nothing usable."""
-    try:
-        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
-    except OSError as exc:
-        raise SSRFBlocked(f"dns resolution failed for {host}: {exc}",
-                          kind="dns") from exc
-    addrs: list[ipaddress._BaseAddress] = []
-    for info in infos:
-        try:
-            addrs.append(ipaddress.ip_address(info[4][0]))
-        except (ValueError, IndexError):
-            continue
-    if not addrs:
-        raise SSRFBlocked(f"no addresses resolved for {host}", kind="dns")
-    return addrs
-
-
-def guard_public_url(url: str | None) -> str:
-    """Return ``url`` if it is safe to fetch, else raise :class:`SSRFBlocked`.
-
-    Safe = an ``http(s)`` URL whose host is a public IP, or a hostname whose
-    EVERY resolved address is public. Honours the
-    ``AIFORGE_SSRF_ALLOW_PRIVATE=1`` escape hatch (returns ``url`` unchecked).
-    A DNS resolution failure raises ``SSRFBlocked(kind="dns")`` — safer to block
-    than to fetch, though callers may downgrade that to a natural ``urlopen``
-    error (see class docstring).
-    """
-    if _ssrf_allow_private():
-        return url or ""
-    scheme, host = _validated_host(url)
-
-    # IP literal → check directly (no DNS).
-    try:
-        literal = ipaddress.ip_address(host)
-    except ValueError:
-        literal = None
-    if literal is not None:
-        if _ip_is_non_public(literal):
-            raise SSRFBlocked(f"blocked non-public address: {literal}",
-                              kind="private")
-        return url
-
-    # Hostname → resolve every A/AAAA record and reject if ANY is non-public
-    # (defends a name that points at an internal IP).
-    port = urlsplit(url).port or (443 if scheme == "https" else 80)
-    for addr in _resolved_addresses(host, port):
-        if _ip_is_non_public(addr):
-            raise SSRFBlocked(
-                f"host {host} resolves to non-public address {addr}",
-                kind="private")
-    return url
 
 
 def context_for(url: str | None) -> ssl.SSLContext | None:
