@@ -23,7 +23,8 @@ This module was split (grouped by concern) into ``_base`` / ``_workspace`` /
 ``_orchestrate`` (with ``_prompt`` / ``_outcome``) submodules; this package
 re-exports the full former public surface so ``from aiforge_core.runtime
 import adk_runner`` and every ``adk_runner.<name>`` read is unchanged. The
-re-exports are copies: patch a name on the submodule that uses it. The ``python -m`` entrypoint lives in ``__main__``.
+re-exports are copies: patch a name on the submodule that uses it. The
+``python -m`` entrypoint lives in ``__main__``.
 """
 from __future__ import annotations
 
