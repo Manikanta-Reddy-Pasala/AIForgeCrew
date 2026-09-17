@@ -8,8 +8,10 @@ from ._base import log, tickets_mod
 
 
 def _pkg():
-    """The parent module, looked up on each call so a name patched there is the
-    one used here."""
+    """``_orchestrate``, the module this code was split from, looked up on each call.
+
+    Only names read through here follow a patch on ``_orchestrate``; patch any other
+    name on this module."""
     import aiforge_core.runtime.adk_runner._orchestrate as package
     return package
 
@@ -204,3 +206,4 @@ def _ingest_ticket_external_refs(ticket) -> None:
     refs = _pkg()._external_refs(ticket)
     if not refs:
         return
+    # External-ref ingestion backend removed — nothing to persist to.

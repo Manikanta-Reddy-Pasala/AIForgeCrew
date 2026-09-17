@@ -1,11 +1,12 @@
 """ADK run drivers.
 
-The context-filter plugin wiring plus the three run entrypoints that
-actually spin an ADK ``Runner``: the full SequentialAgent pipeline
-(:func:`_run_pipeline`), the standalone post-PR live verifier
-(:func:`_run_live_verifier` / :func:`_run_single_agent`), and the
-ambiguous-rule notice emitter. Split out of the orchestrator so the
-ticket loop stays a thin driver.
+The context-filter plugin wiring plus the run entrypoints that actually
+spin an ADK ``Runner``: the full SequentialAgent pipeline
+(:func:`_run_pipeline`) and the standalone post-PR live verifier
+(:func:`_run_live_verifier` / :func:`_run_single_agent`). Split out of the
+orchestrator so the ticket loop stays a thin driver. Context trimming lives in
+``_context``; rules, preferences, ticket state and the run config (with the
+ambiguous-rule notice) in ``_run_inputs``.
 """
 from __future__ import annotations
 

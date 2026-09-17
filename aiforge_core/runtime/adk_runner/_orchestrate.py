@@ -1,9 +1,10 @@
 """Ticket-loop orchestration — the thin driver that ties the package
 together.
 
-Composes the seed prompt, resolves per-ticket overrides, claims + runs
-one ticket end-to-end (workspace → pipeline → verdict → PR → status),
-and exposes :func:`main`, the single-shot systemd entrypoint.
+Claims + runs one ticket end-to-end (workspace → pipeline → verdict → PR →
+status) and exposes :func:`main`, the single-shot systemd entrypoint. The seed
+prompt and per-ticket overrides live in ``_prompt``; the post-run verdict, PR,
+CI and status steps in ``_outcome``.
 """
 from __future__ import annotations
 

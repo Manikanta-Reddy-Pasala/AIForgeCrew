@@ -12,8 +12,10 @@ from ._context import (
 
 
 def _pkg():
-    """The parent module, looked up on each call so a name patched there is the
-    one used here."""
+    """``_pipeline``, the module this code was split from, looked up on each call.
+
+    Only names read through here follow a patch on ``_pipeline``; patch any other
+    name on this module."""
     import aiforge_core.runtime.adk_runner._pipeline as package
     return package
 

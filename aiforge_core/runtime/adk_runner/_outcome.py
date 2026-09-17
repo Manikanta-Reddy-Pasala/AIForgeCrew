@@ -8,13 +8,12 @@ from ._base import _VERDICT_TO_STATUS, log
 
 
 def _pkg():
-    """The parent module, looked up on each call so a name patched there is the
-    one used here."""
+    """``_orchestrate``, the module this code was split from, looked up on each call.
+
+    Only names read through here follow a patch on ``_orchestrate``; patch any other
+    name on this module."""
     import aiforge_core.runtime.adk_runner._orchestrate as package
     return package
-
-
-    # External-ref ingestion backend removed — nothing to persist to.
 
 
 class _Verdict:
