@@ -49,7 +49,7 @@ def steer_directive(text: str) -> str:
     the plan already in its context.
 
     NOT used by parallel-team mode: that folds steering into SPEC.md as a
-    "[MANDATORY user instruction]" line (parallel_subtasks/_stream.py), where
+    "[MANDATORY user instruction]" line (parallel_subtasks/_stream_steer.py), where
     there is no single in-flight request to replace. Deliberate — do not
     "unify" it without reading that path first.
     """
