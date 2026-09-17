@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Nightly Graphify rebuild + Neo4j mirror.
+# Nightly Graphify rebuild.
 #
 # For every repo in $REPOS_DIR/$REPO_LIST that exists, runs
-# `graphify update <repo>` to refresh that repo's graphify-out/graph.json.
-# Then merges all per-repo graphs into one combined graph.json (Python),
-# then loads the merged graph into Neo4j via
-# `python -m aiforge_core.indexing.graphify_loader`.
+# `graphify update <repo>` to refresh that repo's graphify-out/graph.json,
+# then merges all per-repo graphs into one combined merged.json (Python).
+# (The Neo4j mirror step is gone: its loader module was removed, so the
+# step failed on every run.)
 #
 # Designed for launchd / cron / systemd. Per-repo failures are logged and
 # do not abort the whole run.
@@ -17,8 +17,7 @@
 #                or path to file with one per line
 #                default: built-in AIForgeCrew set
 #   GRAPHIFY_BIN absolute path to graphify CLI    default: /Users/manikanta/.local/bin/graphify
-#   AIFORGE_VENV venv with neo4j driver           default: /Users/manikanta/AIForgeCrew/.venv
-#   AIFORGE_REPO repo root used for PYTHONPATH    default: /Users/manikanta/AIForgeCrew
+#   AIFORGE_VENV venv whose python merges graphs  default: /Users/manikanta/AIForgeCrew/.venv
 #   AIFORGE_NEO4J_URI / USER / PASSWORD          inherited by loader
 
 set -uo pipefail
@@ -27,7 +26,6 @@ REPOS_DIR="${REPOS_DIR:-/Users/manikanta/codeRepo}"
 OUT_DIR="${OUT_DIR:-/Users/manikanta/.aiforge/graphify-out}"
 GRAPHIFY_BIN="${GRAPHIFY_BIN:-/Users/manikanta/.local/bin/graphify}"
 AIFORGE_VENV="${AIFORGE_VENV:-/Users/manikanta/AIForgeCrew/.venv}"
-AIFORGE_REPO="${AIFORGE_REPO:-/Users/manikanta/AIForgeCrew}"
 LOG_DIR="${LOG_DIR:-/Users/manikanta/.aiforge/logs}"
 
 DEFAULT_REPOS=(
@@ -162,18 +160,6 @@ PYEOF
 if [[ ! -s "$MERGED_JSON" ]]; then
   log "ERROR merged.json missing or empty; abort load"
   exit 3
-fi
-
-log "LOAD merged graph -> Neo4j"
-export PYTHONPATH="$AIFORGE_REPO${PYTHONPATH:+:$PYTHONPATH}"
-if "$PY" -m aiforge_core.indexing.graphify_loader \
-        --graph "$MERGED_JSON" \
-        --repo "_merged" \
-        >>"$LOG_DIR/graphify-nightly.out" 2>>"$LOG_DIR/graphify-nightly.err"; then
-  log "LOAD ok"
-else
-  log "ERROR loader failed"
-  exit 4
 fi
 
 log "graphify nightly complete: ok=${#OK_REPOS[@]} fail=${#FAIL_REPOS[@]}"

@@ -56,8 +56,8 @@ def _gitlab() -> bool:
 
 def _email() -> bool:
     from aiforge_core.runtime.tools import email_tool
-    conf = email_tool._conf() if hasattr(email_tool, "_conf") else {}
-    return bool(conf.get("host"))
+    return bool(email_tool._smtp_conf().get("host")
+                or email_tool._imap_conf().get("host"))
 
 
 _PROBES = {"jira": _jira, "confluence": _confluence,

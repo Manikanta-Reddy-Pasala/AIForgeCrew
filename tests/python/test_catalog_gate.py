@@ -127,3 +127,28 @@ def test_legacy_search_disable_var_still_locks_fetch(monkeypatch):
     monkeypatch.setenv("AIFORGE_WEB_SEARCH_DISABLE", "1")
     out, _ = gate_catalog(_SYSTEM, ALL)
     assert "WEB ACCESS IS OFF" in out
+
+
+# ── the email probe ─────────────────────────────────────────────────────────
+# It once called an email_tool._conf() that does not exist behind a hasattr
+# guard, so email counted as unconfigured on every box and the model never
+# saw the email tools.
+
+@pytest.mark.parametrize("env", ["AIFORGE_SMTP_HOST", "AIFORGE_IMAP_HOST"])
+def test_email_counts_as_configured_when_a_mail_host_is_set(monkeypatch, env):
+    from aiforge_core.runtime.chat_agent import _catalog_gate as cg
+    from aiforge_core.runtime.tools import email_tool
+    monkeypatch.setattr(email_tool, "_stored", dict)
+    for var in ("AIFORGE_SMTP_HOST", "AIFORGE_IMAP_HOST"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv(env, "mail.example.test")
+    assert cg._email() is True
+
+
+def test_email_is_unconfigured_without_a_mail_host(monkeypatch):
+    from aiforge_core.runtime.chat_agent import _catalog_gate as cg
+    from aiforge_core.runtime.tools import email_tool
+    monkeypatch.setattr(email_tool, "_stored", dict)
+    for var in ("AIFORGE_SMTP_HOST", "AIFORGE_IMAP_HOST"):
+        monkeypatch.delenv(var, raising=False)
+    assert cg._email() is False

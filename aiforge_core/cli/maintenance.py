@@ -7,7 +7,7 @@ soft errors so a failed timer firing doesn't cascade):
     aiforge-maint memory repair      → md_store.repair_captures()
     aiforge-maint index merkle <path>          → index.merkle.build()
     aiforge-maint docs ingest <library> <url>  → index.docs_index.ingest()
-    aiforge-maint cost snapshot                → runtime.cost.snapshot() print
+    aiforge-maint cost snapshot                → observability.cost.snapshot() print
 
 Wire as console_script ``aiforge-maint`` in pyproject.toml. KISS:
 flat argparse, no plugins, JSON-line output for log scrapers.
