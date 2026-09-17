@@ -22,12 +22,15 @@ Public surface:
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import subprocess
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
+
+log = logging.getLogger("aiforge.repo_notes")
 
 
 @dataclass
@@ -282,15 +285,17 @@ def _http_clients(worktree: str) -> list[str]:
 
 
 def _commands(repo: str, worktree: str) -> dict[str, str]:
+    """Build, compile and test commands from the repo's standards manifest.
+
+    Lint and format are left out: they are per-language defaults nobody checked
+    against this repo, and the format commands rewrite files."""
     try:
         from aiforge_core.config import repo_standards as _rs
         std = _rs.get(repo, worktree=worktree)
-        return {
-            "build": std.build_cmd, "compile": std.compile_cmd,
-            "test": std.test_cmd, "lint": std.lint_cmd,
-            "format": std.format_cmd,
-        }
-    except Exception:
+        return {"build": std.build_cmd, "compile": std.compile_cmd,
+                "test": std.test_cmd}
+    except Exception:  # noqa: BLE001 — notes are best-effort
+        log.warning("repo notes: no commands for %s", repo, exc_info=True)
         return {}
 
 
@@ -421,6 +426,12 @@ def _notes_body(n: RepoNotes) -> str:
            f"{n.repo}`. KISS: ripgrep + tree-sitter, no LLM. "
            "Re-run after structural changes.", "",
            "## Purpose", n.purpose or "_(unknown)_", ""]
+    if n.commands:
+        # The header goes in whenever commands were DETECTED, even if every
+        # value came back empty — an empty section says "we looked". It sits
+        # near the top: readers cut the notes at a few thousand characters.
+        out += ["## Build / test commands", "",
+                *[f"- **{k}**: `{v}`" for k, v in n.commands.items() if v], ""]
     if n.layout:
         out += ["## Top-level layout", "```", *n.layout, "```", ""]
     out += _section(f"Controllers ({len(n.controllers)})",
@@ -438,11 +449,6 @@ def _notes_body(n: RepoNotes) -> str:
         out += ["## MongoDB collections referenced", "",
                 ", ".join(f"`{c}`" for c in n.mongo_collections), ""]
     out += _section("Outbound HTTP", _bullets(n.http_clients[:25]))
-    if n.commands:
-        # The header goes in whenever commands were DETECTED, even if every
-        # value came back empty — an empty section says "we looked".
-        out += ["## Build / test commands", "",
-                *[f"- **{k}**: `{v}`" for k, v in n.commands.items() if v], ""]
     if n.relations:
         # Same rule as the commands section: the header records that the
         # relation scan RAN, even when every bucket came back empty.
