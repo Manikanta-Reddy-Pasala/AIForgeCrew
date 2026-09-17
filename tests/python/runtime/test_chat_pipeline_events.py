@@ -323,7 +323,8 @@ def test_the_sentinel_stops_the_run_before_it_is_shown(routing):
 
 
 def test_the_planners_panel_is_emitted_once(routing, monkeypatch):
-    monkeypatch.setattr(cp, "_planner_subtask_event",
+    from aiforge_core.runtime import chat_pipeline_events as cpe
+    monkeypatch.setattr(cpe, "_planner_subtask_event",
                         lambda text: {"type": "subtasks",
                                       "items": [{"slug": "a"}]})
     ev = {"type": "thought", "role": "planner", "text": "1. a"}
