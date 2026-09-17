@@ -152,3 +152,13 @@ def test_email_is_unconfigured_without_a_mail_host(monkeypatch):
     for var in ("AIFORGE_SMTP_HOST", "AIFORGE_IMAP_HOST"):
         monkeypatch.delenv(var, raising=False)
     assert cg._email() is False
+
+
+@pytest.mark.parametrize("switch", ["AIFORGE_EMAIL_DISABLE", "AIFORGE_EGRESS_OFF"])
+def test_a_disabled_email_class_is_not_advertised(monkeypatch, switch):
+    from aiforge_core.runtime.chat_agent import _catalog_gate as cg
+    from aiforge_core.runtime.tools import email_tool
+    monkeypatch.setattr(email_tool, "_stored", dict)
+    monkeypatch.setenv("AIFORGE_SMTP_HOST", "mail.example.test")
+    monkeypatch.setenv(switch, "1")
+    assert cg._email() is False

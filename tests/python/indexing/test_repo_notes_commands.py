@@ -29,7 +29,11 @@ def test_the_commands_section_comes_before_the_long_sections():
 
 
 def test_a_broken_manifest_is_logged_not_raised(tmp_path, monkeypatch, caplog):
+    import logging
+
     from aiforge_core.config import repo_standards
+    # Importing the API sets propagate=False on "aiforge"; caplog listens on root.
+    monkeypatch.setattr(logging.getLogger("aiforge"), "propagate", True)
 
     def boom(*_a, **_k):
         raise RuntimeError("bad manifest")

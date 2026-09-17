@@ -18,7 +18,6 @@
 #                default: built-in AIForgeCrew set
 #   GRAPHIFY_BIN absolute path to graphify CLI    default: /Users/manikanta/.local/bin/graphify
 #   AIFORGE_VENV venv whose python merges graphs  default: /Users/manikanta/AIForgeCrew/.venv
-#   AIFORGE_NEO4J_URI / USER / PASSWORD          inherited by loader
 
 set -uo pipefail
 
@@ -87,7 +86,7 @@ for repo in "${REPOS[@]}"; do
   log "GRAPHIFY $repo"
   # graphify v0.4.x writes graphify-out/ inside the repo dir; we run it
   # from inside the repo and then copy/symlink the output to a stable
-  # central location so the loader has one place to look.
+  # central location so the merge has one place to look.
   if (cd "$repo_path" && "$GRAPHIFY_BIN" update . </dev/null) >>"$LOG_DIR/graphify-nightly.out" 2>>"$LOG_DIR/graphify-nightly.err"; then
     src_json="$repo_path/graphify-out/graph.json"
     if [[ -s "$src_json" ]]; then
@@ -158,7 +157,7 @@ print(f"MERGED nodes={len(merged['nodes'])} links={len(merged['links'])}")
 PYEOF
 
 if [[ ! -s "$MERGED_JSON" ]]; then
-  log "ERROR merged.json missing or empty; abort load"
+  log "ERROR merged.json missing or empty"
   exit 3
 fi
 

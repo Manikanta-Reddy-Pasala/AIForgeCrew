@@ -4,11 +4,14 @@ A function-local import inside ``try/except Exception`` fails silently: when
 ``repo_standards`` moved from ``runtime`` to ``config``, REPO_NOTES.md quietly
 lost its build commands for months. This walks the source (no imports run)
 and checks each ``aiforge_core`` import names a module that exists and a name
-that module defines.
+that module defines, and that ``getattr(mod, "x")`` / ``hasattr(mod, "x")``
+probes on an imported aiforge_core module name something it defines — a
+guarded probe of a missing name hid the email tools from the chat model.
 """
 from __future__ import annotations
 
 import ast
+from functools import cache
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -23,7 +26,8 @@ def _module_file(dotted: str) -> Path | None:
     return None
 
 
-def _defined(path: Path) -> tuple[set[str], bool]:
+@cache
+def _defined(path: Path) -> tuple[frozenset[str], bool]:
     """Names bound at module level, and whether the module is open-ended
     (``__getattr__`` or a star import)."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -40,7 +44,7 @@ def _defined(path: Path) -> tuple[set[str], bool]:
                 names.add((a.asname or a.name).split(".")[0])
         elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
             names.add(node.id)
-    return names, open_ended
+    return frozenset(names), open_ended
 
 
 def _absolute(node: ast.ImportFrom, path: Path) -> str | None:
@@ -52,10 +56,61 @@ def _absolute(node: ast.ImportFrom, path: Path) -> str | None:
     return ".".join([*pkg, *([node.module] if node.module else [])])
 
 
+def _module_aliases(scope: ast.AST, path: Path) -> dict[str, str]:
+    """Local names bound to an aiforge_core MODULE by imports directly in
+    ``scope`` (not in nested functions, so one alias reused in two functions
+    stays two separate bindings)."""
+    out: dict[str, str] = {}
+    todo = list(ast.iter_child_nodes(scope))
+    while todo:
+        node = todo.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        todo.extend(ast.iter_child_nodes(node))
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.asname and a.name.startswith("aiforge_core."):
+                    out[a.asname] = a.name
+        elif isinstance(node, ast.ImportFrom):
+            mod = _absolute(node, path)
+            if mod and mod.startswith("aiforge_core"):
+                for a in node.names:
+                    if _module_file(f"{mod}.{a.name}") is not None:
+                        out[a.asname or a.name] = f"{mod}.{a.name}"
+    return out
+
+
+def _probe_problems(tree: ast.AST, path: Path) -> list[str]:
+    out = []
+    rel = path.relative_to(ROOT)
+    scopes = [tree] + [n for n in ast.walk(tree)
+                       if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    for scope in scopes:
+        aliases = _module_aliases(scope, path)
+        if not aliases:
+            continue
+        for node in ast.walk(scope):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id in ("getattr", "hasattr") and len(node.args) >= 2):
+                continue
+            obj, attr = node.args[0], node.args[1]
+            if not (isinstance(obj, ast.Name) and obj.id in aliases
+                    and isinstance(attr, ast.Constant) and isinstance(attr.value, str)):
+                continue
+            mod = aliases[obj.id]
+            names, open_ended = _defined(_module_file(mod))
+            if not open_ended and attr.value not in names \
+                    and _module_file(f"{mod}.{attr.value}") is None:
+                out.append(f"{rel}:{node.lineno} {node.func.id}({mod}, {attr.value!r})")
+    return out
+
+
 def _problems(path: Path) -> list[str]:
     out = []
     rel = path.relative_to(ROOT)
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    out += _probe_problems(tree, path)
+    for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for a in node.names:
                 if a.name.startswith("aiforge_core.") and _module_file(a.name) is None:

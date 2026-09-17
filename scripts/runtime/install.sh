@@ -19,7 +19,7 @@ LMS=$HOME/.lmstudio/bin/lms
 [[ -d "$REPO" ]] || { echo "no $REPO — git pull first" >&2; exit 1; }
 [[ -x "$VENV/bin/python" ]] || { echo "no $VENV — run scripts/install-aiforge.sh first" >&2; exit 1; }
 
-echo ">>> 1/4 schema bootstrap is in-process (aiforge_core.tickets.store._ensure_schema)"
+echo ">>> 1/4 schema bootstrap is in-process (the ticket backend's ensure_schema)"
 echo "    no migration file applied — first connection from aiforge-api creates tables."
 
 echo ">>> 2/4 installing python deps (via uv)"

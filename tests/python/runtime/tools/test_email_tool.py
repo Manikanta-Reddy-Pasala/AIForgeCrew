@@ -10,7 +10,6 @@ import pytest
 
 from aiforge_core.runtime.tools import email_tool as et
 
-
 # ── config fixtures ───────────────────────────────────────────────────
 
 @pytest.fixture
@@ -76,9 +75,10 @@ class _FakeIMAP:
     """Minimal IMAP4_SSL stand-in returning a couple of fake messages."""
     last: "_FakeIMAP | None" = None
 
-    def __init__(self, host, port=0):
+    def __init__(self, host, port=0, timeout=None):
         self.host = host
         self.port = port
+        self.timeout = timeout
         self.selected = None
         self.search_args = None
         _FakeIMAP.last = self
@@ -326,3 +326,21 @@ def test_email_test_smtp_only_ok(tmp_path, smtp_cfg, monkeypatch):
     assert out["smtp"]["ok"] is True
     assert out["smtp"]["host"] == "smtp.internal"
     assert out["imap"] is None
+
+
+def test_read_connects_with_a_timeout(imap_cfg, monkeypatch):
+    monkeypatch.setattr("imaplib.IMAP4_SSL", _FakeIMAP)
+    assert et.email_read({})["ok"] is True
+    assert _FakeIMAP.last.timeout == et._TIMEOUT_S
+
+
+def test_read_limit_is_capped():
+    assert et._read_limit({"limit": 10_000}) == et._READ_LIMIT_MAX
+    assert et._read_limit({"limit": 0}) == 10
+
+
+def test_read_refuses_a_folder_with_a_line_break(imap_cfg, monkeypatch):
+    monkeypatch.setattr("imaplib.IMAP4_SSL", _FakeIMAP)
+    out = et.email_read({"folder": "INBOX\r\nA1 DELETE INBOX"})
+    assert out["ok"] is False and "line break" in out["error"]
+    assert _FakeIMAP.last.selected is None

@@ -91,7 +91,8 @@ def test_resolve_once_skips_existing(monkeypatch):
 
         @staticmethod
         def get(ident):
-            return {"id": 99} if ident == "GH-o-r-1" else None
+            return {"id": 99} if ident == resolver._identifier_for(
+                "https://github.com/o/r/issues/1") else None
     _patch_store(monkeypatch, _FakeStore)
     result = resolver.resolve_once(repo="o/r")
     assert result["ok"]
@@ -117,9 +118,34 @@ def test_resolve_once_handles_add_failure(monkeypatch):
 
 
 def test_the_identifier_is_stable_per_issue():
-    url = "https://github.com/octo-org/my.repo/issues/12"
-    assert resolver._identifier_for(url) == "GH-octo-org-my-repo-12"
-    assert resolver._identifier_for(url) == resolver._identifier_for(url)
+    url = "https://github.com/octo-org/My.Repo/issues/12"
+    ident = resolver._identifier_for(url)
+    assert ident == resolver._identifier_for(url)
+    assert ident.startswith("GH-octo-org-my-repo-12-")
+
+
+def test_look_alike_repos_get_different_identifiers():
+    a = resolver._identifier_for("https://github.com/a-b/c/issues/1")
+    b = resolver._identifier_for("https://github.com/a/b-c/issues/1")
+    c = resolver._identifier_for("https://ghe.example.com/a-b/c/issues/1")
+    assert len({a, b, c}) == 3
+
+
+def test_an_issue_without_a_url_is_not_imported(monkeypatch):
+    issue = _issue(3, "no url", "b")
+    issue["html_url"] = ""
+    monkeypatch.setattr(resolver, "list_open_bot_issues", lambda *a, **k: [issue])
+
+    class _FakeStore:
+        @staticmethod
+        def get(ident):
+            raise AssertionError("no lookup without a url")
+
+        @staticmethod
+        def create(**kw):
+            raise AssertionError("no import without a url")
+    _patch_store(monkeypatch, _FakeStore)
+    assert resolver.resolve_once(repo="o/r")["created"] == 0
 
 
 @pytest.fixture
@@ -148,7 +174,7 @@ def test_a_real_store_imports_an_issue_once(monkeypatch, real_store):
     monkeypatch.setattr(resolver, "list_open_bot_issues", lambda *a, **k: issues)
     first = resolver.resolve_once(repo="o/r", project="X")
     assert first["created"] == 1
-    ticket = store.get("GH-o-r-7")
+    ticket = store.get(resolver._identifier_for("https://github.com/o/r/issues/7"))
     assert ticket is not None and ticket.title == "task G"
     store.update_status(ticket.id, "done")
     second = resolver.resolve_once(repo="o/r", project="X")

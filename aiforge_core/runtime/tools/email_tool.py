@@ -270,13 +270,19 @@ def _imap_connect(c: dict):
     _ref = _egress.allow("email", str(c.get("host") or ""))
     if _ref is not None:
         raise OSError(f"egress refused IMAP: {_ref.get('error')}")
-    return (imaplib.IMAP4_SSL(c["host"], c["port"]) if c["ssl"]
-            else imaplib.IMAP4(c["host"], c["port"]))
+    return (imaplib.IMAP4_SSL(c["host"], c["port"], timeout=_TIMEOUT_S) if c["ssl"]
+            else imaplib.IMAP4(c["host"], c["port"], timeout=_TIMEOUT_S))
+
+
+_READ_LIMIT_MAX = 50
+# A query that matches nothing would otherwise download the whole mailbox, one
+# message at a time, inside a chat turn.
+_SCAN_MAX = 500
 
 
 def _read_limit(args: dict) -> int:
     try:
-        return max(1, int(args.get("limit", 10) or 10))
+        return min(_READ_LIMIT_MAX, max(1, int(args.get("limit", 10) or 10)))
     except (TypeError, ValueError):
         return 10
 
@@ -303,9 +309,11 @@ def _fetch_message(srv, num):
 def _collect_messages(srv, folder: str, *, unseen: bool, query: str,
                       limit: int) -> list[dict]:
     """Newest-first messages matching ``query`` (subject + from)."""
+    if "\r" in folder or "\n" in folder:
+        raise ValueError("folder name contains a line break")
     srv.select(folder)
     _typ, data = srv.search(None, *(["UNSEEN"] if unseen else ["ALL"]))
-    ids = list(reversed(data[0].split() if data and data[0] else []))
+    ids = list(reversed(data[0].split() if data and data[0] else []))[:_SCAN_MAX]
     out: list[dict] = []
     for num in ids:
         if len(out) >= limit:

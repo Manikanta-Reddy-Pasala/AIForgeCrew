@@ -55,7 +55,10 @@ def _gitlab() -> bool:
 
 
 def _email() -> bool:
+    from aiforge_core.net import egress
     from aiforge_core.runtime.tools import email_tool
+    if email_tool._disabled() or egress.class_off("email"):
+        return False
     return bool(email_tool._smtp_conf().get("host")
                 or email_tool._imap_conf().get("host"))
 
