@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 
 
 def _pkg():
@@ -66,31 +65,6 @@ def _install_access_log_filter() -> None:
 
 # ─────────────────────────── Helpers ────────────────────────────────────
 _INDEX_HTML = 'index.html'
-
-
-_CHAT_SYSTEM = """You are the AIForge chat agent. The operator asks
-questions about our OneShell codebase / past tickets / decisions. You
-answer ONLY from the supplied ``## Context`` block — do NOT invent
-file paths, symbols, versions, or commit shas the context doesn't
-mention.
-
-Output shape:
-- 1-2 line direct answer up top.
-- Then a short bullet list of the specific context rows you used
-  (cite by [tier] and wing or ticket identifier).
-- If the context is too thin to answer, say so in one line and
-  suggest which MCP tool the operator should run (sym_lookup,
-  cross_repo_flow, ticket_brief, etc.). No apology, no filler.
-"""
-
-
-_TICKET_RE = re.compile(r"\b(ONE-\d+)\b", re.I)
-_CLASS_RE = re.compile(r"\b([A-Z][A-Za-z0-9]{3,})\b")
-_REPO_RE = re.compile(r"\b(Pos[A-Z][A-Za-z]+|oneshell-[a-z-]+|MongoDbService|"
-                      r"GatewayService|BusinessService|TallyConnector|"
-                      r"EmailService|NotificationService|Gst[A-Z][A-Za-z]*|"
-                      r"VendorIntegrationService|WhatsappApiService|"
-                      r"Scheduler|QuartzScheduler|StoreIntelligence)\b")
 
 
 _NORMALIZE_SYSTEM = """You are a query normalizer. The user will send one

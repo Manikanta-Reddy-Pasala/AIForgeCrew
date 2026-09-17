@@ -8,7 +8,7 @@ import os
 
 from fastapi import Request
 
-from aiforge_core.api.routes import admin as _r_admin  # noqa: E402
+from aiforge_core.api.routes import admin as _r_admin
 
 
 def _pkg():

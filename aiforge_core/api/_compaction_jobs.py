@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from aiforge_core.api.routes import memory as _r_memory  # noqa: E402
+from aiforge_core.api.routes import memory as _r_memory
 
 
 def _pkg():
