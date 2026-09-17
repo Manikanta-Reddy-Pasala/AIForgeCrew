@@ -283,7 +283,7 @@ def _http_clients(worktree: str) -> list[str]:
 
 def _commands(repo: str, worktree: str) -> dict[str, str]:
     try:
-        from aiforge_core.runtime import repo_standards as _rs
+        from aiforge_core.config import repo_standards as _rs
         std = _rs.get(repo, worktree=worktree)
         return {
             "build": std.build_cmd, "compile": std.compile_cmd,
