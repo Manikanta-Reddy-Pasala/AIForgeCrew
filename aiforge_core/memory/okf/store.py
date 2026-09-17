@@ -26,7 +26,6 @@ from pathlib import Path
 
 from . import nodes as _n
 from ._store_concepts import (  # noqa: F401  # re-exported
-    __all__,
     _best_concept_match,
     _concept_of,
     _concept_threshold,
@@ -452,3 +451,7 @@ def fold_session_scopes_to_global() -> dict:
         _write_index()
     return {"ok": True, "moved": moved, "removed": ded.get("removed", 0),
             "dirs": dirs}
+
+__all__ = ["okf_root", "type_dir", "next_id", "save_node", "read_node",
+           "load_all", "okr_scopes", "migrate_scoped", "dedupe_nodes",
+           "find_by_concept", "fold_session_scopes_to_global"]

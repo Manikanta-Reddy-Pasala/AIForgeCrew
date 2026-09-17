@@ -6,7 +6,7 @@ import re
 
 
 def _pkg():
-    """The package, looked up when called, so a replaced name there is the one
+    """The parent module, looked up when called, so a replaced name there is the one
     used here."""
     import aiforge_core.memory.okf.store as package
     return package
@@ -140,7 +140,3 @@ def dedupe_nodes() -> dict:
     return {"ok": True, "removed": removed,
             "kept": sum(len(v) for v in kept.values())}
 
-
-__all__ = ["okf_root", "type_dir", "next_id", "save_node", "read_node",
-           "load_all", "okr_scopes", "migrate_scoped", "dedupe_nodes",
-           "find_by_concept", "fold_session_scopes_to_global"]

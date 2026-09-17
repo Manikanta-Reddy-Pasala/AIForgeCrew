@@ -5,9 +5,9 @@
 Helper FUNCTIONS are resolved through the package object (``_pkg``) at call
 time rather than bound as locals, so that monkeypatching
 ``unified_query.<helper>`` on the package is honoured by ``query`` exactly as
-it was when everything lived in one module. Constants (``_QCACHE`` singleton,
-``_TICKET_RE``) are imported directly — the cache is mutated on the same object
-either way, and nothing patches the regex.
+it was when everything lived in one module. The ``_QCACHE`` singleton is imported
+directly — the cache is mutated on the same object either way. The per-source
+fetchers live in ``_query_sources``.
 """
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ import time
 from ._helpers import (
     _QCACHE,
     _QCACHE_MAX,
-    _TICKET_RE,
     _extract_symbol,  # noqa: F401 — fallback namespace for _pkg resolution
     _guess_library,  # noqa: F401
     _looks_like_symbol,  # noqa: F401

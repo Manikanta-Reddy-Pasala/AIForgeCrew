@@ -24,7 +24,7 @@ from ._reconcile_names import (
 
 
 def _pkg():
-    """The package, looked up when called, so a replaced name there is the one
+    """The parent module, looked up when called, so a replaced name there is the one
     used here."""
     import aiforge_core.memory.md_store._graph._reconcile as package
     return package
@@ -42,7 +42,6 @@ def _same_subject(a: str, b: str, cache: dict) -> bool:
     whenever embedding is unavailable, so the lexical behaviour is unchanged
     on a box with no embed backend.
     """
-    import os
     try:
         cut = float(os.environ.get("AIFORGE_TOPIC_MERGE_COSINE", "0.86"))
     except (TypeError, ValueError):

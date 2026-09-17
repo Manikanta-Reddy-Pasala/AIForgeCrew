@@ -5,7 +5,7 @@ import os
 
 
 def _pkg():
-    """The package, looked up when called, so a replaced name there is the one
+    """The parent module, looked up when called, so a replaced name there is the one
     used here."""
     import aiforge_core.memory.migrations as package
     return package
@@ -190,6 +190,3 @@ def force_recompact_all(on_step=None, checkpoint=None) -> dict:
                                      + ")") if out["failed_steps"] else "")
     return out
 
-
-__all__ = ["run_startup_migrations", "purge_migrated_code",
-           "force_recompact_all", "dedupe_all", "migrate_okf_format"]

@@ -33,7 +33,6 @@ no second copy of either here. Directory literals belong to ``sync.paths``.
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import re

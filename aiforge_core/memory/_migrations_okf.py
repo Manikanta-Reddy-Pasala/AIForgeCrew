@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import json
 import os
-import re
 
 from aiforge_core.config import _atomic
 
 
 def _pkg():
-    """The package, looked up when called, so a replaced name there is the one
+    """The parent module, looked up when called, so a replaced name there is the one
     used here."""
     import aiforge_core.memory.migrations as package
     return package
@@ -287,11 +286,3 @@ def _save_marker(done: dict) -> None:
     with contextlib.suppress(OSError):
         _atomic.write_text(_marker_path(), json.dumps(done))
 
-
-# A real learning is a sentence; a drained chunk is source code. These match the
-# telltale code tokens; several hits (or one in a short body) flags a chunk.
-_CODE_TOKEN_RE = re.compile(
-    r"(?m)(^\s*(def |class |import |from \w+ import|public |private |func |"
-    r"function |const |let |var |return |package |#include|@\w+)|[{};]\s*$|"
-    r"=>|::|\bself\.|\bpublic static\b)")
-_SHORT_CODE_RE = re.compile(r"(def |import |class |[{};])")

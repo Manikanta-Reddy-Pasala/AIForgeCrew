@@ -1,6 +1,6 @@
 """Where an identity lives on disk. The single owner of the layout rule.
 
-OKF ids are per-scope counters (``aiforge_core/memory/okf/store.py:127``), so
+OKF ids are per-scope counters (``next_id`` in ``aiforge_core/memory/okf/_store_concepts.py``), so
 ``(nuc, O-01)`` and ``(ms, O-01)`` are unrelated objects that both render to
 ``O-01.md``. A peer's advertised path is therefore a hint, never an instruction:
 trusting it would let one peer silently overwrite another's node.

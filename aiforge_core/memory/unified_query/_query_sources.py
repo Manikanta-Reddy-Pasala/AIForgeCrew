@@ -4,29 +4,7 @@ from __future__ import annotations
 
 import os
 
-from ._helpers import (
-    _TICKET_RE,
-    _extract_symbol,  # noqa: F401 — fallback namespace for _pkg resolution
-    _guess_library,  # noqa: F401
-    _looks_like_symbol,  # noqa: F401
-    _qcache_ttl,  # noqa: F401
-    _resolve_weights,  # noqa: F401
-    _tag,  # noqa: F401
-)
-from ._ranking import (
-    _dedup,  # noqa: F401
-    _diversify,  # noqa: F401
-    _normalize_scores,  # noqa: F401
-    _rerank_top,  # noqa: F401
-)
-from ._sources import (
-    _chat_sessions,  # noqa: F401
-    _docs_lookup,  # noqa: F401
-    _global_vector_recall,  # noqa: F401
-    _mcp_call,  # noqa: F401
-    _ticket_brief,  # noqa: F401
-    _unpack_mcp_rows,  # noqa: F401
-)
+from ._helpers import _TICKET_RE
 
 
 class _RecallCtx:

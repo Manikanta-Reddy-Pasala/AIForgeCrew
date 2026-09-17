@@ -1,7 +1,7 @@
-"""md_store internals: the compaction pipeline — per-run capture sweeps, LLM
-summarise/consolidate helpers, grouping + split-part rendering and the
-`compact()` / `cleanup_legacy_compacted()` drivers. Builds on `_base`,
-`_render`, `_ingest` and `_capture`."""
+"""md_store internals: the ``compact()`` driver — preparing each topic group,
+writing its parts, re-ingesting the briefs and repairing the store afterwards.
+Capture sweeps, summarising, part rendering, archiving and legacy cleanup live
+in the ``_compact_*`` modules and are re-exported here."""
 from __future__ import annotations
 
 import os

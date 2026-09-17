@@ -6,7 +6,7 @@ from . import store as _store
 
 
 def _pkg():
-    """The package, looked up when called, so a replaced name there is the one
+    """The parent module, looked up when called, so a replaced name there is the one
     used here."""
     import aiforge_core.memory.okf.author as package
     return package
@@ -226,9 +226,3 @@ def sync_briefs_to_nodes() -> dict:
     return {"ok": True, "created": created, "updated": updated,
             "dropped": dropped, "topics": len(facts_by_topic)}
 
-
-__all__ = ["extract_and_save", "write_session_node", "migrate_from_briefs",
-           "sync_briefs_to_nodes",
-           "record_solution", "reclassify_global_learnings",
-           "record_repo_profile", "record_script", "record_task",
-           "build_repo_profiles"]

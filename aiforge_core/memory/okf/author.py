@@ -1,18 +1,15 @@
 """Auto-authoring — the WRITE side of the OKR DAG.
 
-Turns a chat/work session into graph nodes: an LLM reads the session and extracts
-durable Objectives (goals), Key Results (measurable milestones), and Learnings
-(rules/constraints); we allocate ids, dedupe against existing nodes by title, and
-save each into its folder with the right edges. Also writes a plain ``session``
-node from the execution ledger's working steps. Soft-fail everywhere — authoring
-is best-effort background work.
+This module records repo profiles, scripts and tasks. Session extraction
+(objectives, key results, learnings, session nodes) lives in ``_author_okr``,
+solutions in ``_author_solutions``, reclassifying in ``_author_reclassify`` and
+topic sync in ``_author_topics``; all are re-exported here. Soft-fail
+everywhere — authoring is best-effort background work.
 """
 from __future__ import annotations
 
 import logging
-import os
 
-from . import graph as _graph
 from . import store as _store
 from ._author_okr import (  # noqa: F401  # re-exported
     _EXTRACT_SYS,
@@ -47,7 +44,6 @@ from ._author_solutions import (  # noqa: F401  # re-exported
 )
 from ._author_topics import (  # noqa: F401  # re-exported
     _BODY_CHARS,
-    __all__,
     _body_for,
     _brief_facts_by_topic,
     _create_topic_node,
@@ -231,3 +227,9 @@ def build_repo_profiles() -> dict:
         if r.get("ok"):
             made += 1
     return {"ok": True, "profiles": made}
+
+__all__ = ["extract_and_save", "write_session_node", "migrate_from_briefs",
+           "sync_briefs_to_nodes",
+           "record_solution", "reclassify_global_learnings",
+           "record_repo_profile", "record_script", "record_task",
+           "build_repo_profiles"]

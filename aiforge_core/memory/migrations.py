@@ -17,17 +17,14 @@ blocks startup.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
 
-from aiforge_core.config import _atomic
+from aiforge_core.config import _atomic  # noqa: F401  # tests patch migrations._atomic
 
 from ._migrations_okf import (  # noqa: F401  # re-exported
-    _CODE_TOKEN_RE,
     _OKF_KEY_RENAMES,
-    _SHORT_CODE_RE,
     _archive_okr_dag_folder,
     _discover_repos,
     _drain_peer_files,
@@ -43,7 +40,6 @@ from ._migrations_okf import (  # noqa: F401  # re-exported
     migrate_okf_format,
 )
 from ._migrations_recompact import (  # noqa: F401  # re-exported
-    __all__,
     _notify_step,
     _run_recompact_step,
     _run_recompact_steps,
@@ -54,6 +50,16 @@ from ._migrations_recompact import (  # noqa: F401  # re-exported
 _MIGRATIONS_JSON = '.migrations.json'
 
 log = logging.getLogger("aiforge.memory.migrations")
+
+
+
+# A real learning is a sentence; a drained chunk is source code. These match the
+# telltale code tokens; several hits (or one in a short body) flags a chunk.
+_CODE_TOKEN_RE = re.compile(
+    r"(?m)(^\s*(def |class |import |from \w+ import|public |private |func |"
+    r"function |const |let |var |return |package |#include|@\w+)|[{};]\s*$|"
+    r"=>|::|\bself\.|\bpublic static\b)")
+_SHORT_CODE_RE = re.compile(r"(def |import |class |[{};])")
 
 
 def _body_looks_like_code(body: str) -> bool:
@@ -323,3 +329,6 @@ if __name__ == "__main__":       # python -m aiforge_core.memory.migrations [fla
         print(_md.repair_captures(dry_run="--dry-run" in sys.argv))
     else:
         print(run_startup_migrations())
+
+__all__ = ["run_startup_migrations", "purge_migrated_code",
+           "force_recompact_all", "dedupe_all", "migrate_okf_format"]

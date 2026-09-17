@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-# Grouped explicitly — see the note in memory/okf/tiers.py.
+# Grouped explicitly — see the note in memory/okf/_tiers_state.py.
 # POSSESSIVE quantifiers (`++`, Python 3.11+ and this project requires >=3.11).
 # The characters a model wraps a title in. `str.strip` takes a SET of them and
 # is linear by construction — the regex form (`^["\'`\s]+|["\'`\s]+$`) is the

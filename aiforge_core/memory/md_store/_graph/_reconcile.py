@@ -1,21 +1,18 @@
-"""Graph layer — cross-scope dedupe / reconcile / contradiction resolution and
-topic merging. Removes redundant/stale/contradictory facts scattered across
-scope briefs and folds near-duplicate topic briefs into one. Part of the
-``_graph`` package (split from the former flat ``_graph``)."""
+"""Graph layer — cross-scope dedupe / reconcile / contradiction resolution.
+Removes redundant/stale/contradictory facts scattered across scope briefs.
+Topic merging lives in ``_reconcile_merge``. Part of the ``_graph`` package."""
 from __future__ import annotations
 
 import os
-import re
 
 from .._base import (
     _CAPTURE_SIG_RE,
     _WRITE_LOCK,
     _log,
-    _slug,
     brief_path,
     iter_briefs,
 )
-from .._render import _fact_body, _parse_brief, _reconcile_dropped_index, _render_brief
+from .._render import _fact_body, _reconcile_dropped_index
 from ._reconcile_merge import (  # noqa: F401  # re-exported
     _EMPTY_BRIEF,
     _absorb,
