@@ -21,7 +21,8 @@ Per-call kwargs map to OpenAI body fields:
 ``{"chat_template_kwargs": {...}}`` for mlx-lm template kwargs).
 
 This module was split (grouped by concern) into ``_helpers`` / ``_text`` /
-``_errors`` / ``_http`` submodules, plus ``_attempt`` (one attempt:
+``_errors`` / ``_http`` (with ``_http_stream`` / ``_http_retry``) submodules,
+plus ``_attempt`` (one attempt:
 ``_try_post``), ``_chain`` (the model chain) and ``_missing`` (an unserved
 model). ``complete`` / ``complete_raw`` / ``_complete_impl`` /
 ``_trace_generation`` stay here. The moved code looks these names up on this
