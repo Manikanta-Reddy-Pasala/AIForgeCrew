@@ -1,4 +1,4 @@
-"""The Doer's seed prompt: the planner's context, sized to the model's window,
+"""The Doer's seed prompt: the pipeline state, sized to the model's window,
 with the codegraph mandate when a code graph is available."""
 from __future__ import annotations
 

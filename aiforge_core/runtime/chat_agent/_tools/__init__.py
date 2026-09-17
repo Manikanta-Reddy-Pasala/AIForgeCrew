@@ -1,7 +1,8 @@
 """Agent tool-wrapper functions for the deploy-anywhere chat agent.
 
 This module was split (grouped by concern) into private submodules —
-``_shared`` (cross-cutting helpers), ``_memory`` (memory/find/grep/rules),
+``_shared`` (cross-cutting helpers), ``_memory`` (memory/rules), ``_grep``
+(find/grep),
 ``_jira`` / ``_confluence`` / ``_gitlab`` / ``_git`` / ``_web`` (integrations),
 ``_code`` (codegraph/read/rename), ``_skills`` (skill/workflow + strong
 editor tools), ``_pipeline`` (mcp/browser/ipython/delegate) and ``_misc``.
@@ -24,13 +25,15 @@ from ._shared import (
     _git_cli,
     _chat_run_id,
 )
+from ._grep import (
+    _SKIP_DIRS,
+    _t_find,
+    _t_grep,
+)
 from ._memory import (
     _t_memory_lookup,
     _t_search_chat_sessions,
     _t_memory_write,
-    _SKIP_DIRS,
-    _t_find,
-    _t_grep,
     _t_remember_rule,
     _BULLET_TRIGGERS_RE,
     _parse_bullet,

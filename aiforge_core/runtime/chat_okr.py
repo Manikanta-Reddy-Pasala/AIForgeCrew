@@ -33,7 +33,7 @@ from aiforge_core.config import _atomic
 # Distillation (the prompt, the model call, and what is accepted back) lives in
 # chat_okr_extract; this module keeps the session bookkeeping. Re-exported so
 # callers and tests keep one import.
-from aiforge_core.runtime.chat_okr_extract import (  # noqa: E402
+from aiforge_core.runtime.chat_okr_extract import (  # noqa: F401  # re-exported
     _EXTRACT_SYS,
     _extract,
     _extract_max_tokens,
@@ -48,6 +48,8 @@ from .chat_okr_prior import (  # noqa: F401  # re-exported
     previous_session_id,
 )
 
+log = logging.getLogger("aiforge.chat_okr")
+
 # PER-SESSION lock: serializes folds (+ the message snapshot) of the SAME
 # session so a create-fold racing a delete-fold can't double-capture, WITHOUT a
 # single global lock stalling an unrelated session's delete behind a slow fold's
@@ -60,9 +62,6 @@ from .chat_okr_prior import (  # noqa: F401  # re-exported
 # reused (correct mutual exclusion); when refcount hits 0 no one holds it, so
 # deleting it is safe (a later fold just makes a fresh lock).
 _FOLD_LOCKS: "dict[str, list]" = {}
-log = logging.getLogger("aiforge.chat_okr")
-
-
 _FOLD_LOCKS_GUARD = threading.Lock()
 # Short-held lock JUST for the SHARED marker file's read-modify-write — different
 # sessions' per-session locks don't serialize that shared file, so without this
