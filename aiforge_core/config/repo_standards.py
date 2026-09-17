@@ -171,7 +171,8 @@ _DEFAULTS_BY_LANG["kotlin"] = {
 # only ``python3`` exists, that makes the Doer run ``python …``, fail, then
 # re-discover ``python3`` from scratch EVERY ticket. We probe the real
 # tool ONCE per (lang, worktree), cache it, and feed it into the manifest
-# so the injected command matches reality and is never re-discovered.
+# so the injected command matches reality and is never re-discovered. The
+# probe lives in ``_repo_toolchain``; the cache stays here, where tests reset it.
 _TOOLCHAIN_CACHE: dict[tuple[str, str], dict[str, str]] = {}
 
 

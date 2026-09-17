@@ -5,9 +5,9 @@ from __future__ import annotations
 import os
 import re
 
-# Hosts named in more than one list (here and in egress.py) — a scanner counts
-# three of the same string as a maintenance hazard, and it is right that the
-# cloud endpoint and the "mixed" search host should be the same name in both.
+# Hosts named more than once (``_GOOGLE_APIS`` also in egress.py) — a scanner
+# counts three of the same string as a maintenance hazard, and it is right that
+# the cloud endpoint and the "mixed" search host should be the same name.
 _AWS = "amazonaws.com"
 _GOOGLE_APIS = "googleapis.com"
 _DOCKER_HUB = "docker.io"
@@ -334,7 +334,8 @@ def command_refusal(cmd: str) -> dict | None:
 
     This is a policy gate, not containment: a determined agent can still open a
     socket in code, which is why `kernel_egress` guards the notebook kernel and
-    why the module docstring is explicit that an OS firewall is the real line.
+    why the ``net.egress`` module docstring is explicit that an OS firewall is
+    the real line.
     What it stops is the ROUTINE reroute, which is what actually happens.
     """
     pkg = _pkg()
