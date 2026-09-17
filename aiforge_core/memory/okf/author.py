@@ -1,9 +1,9 @@
 """Auto-authoring — the WRITE side of the OKR DAG.
 
 This module records repo profiles, scripts and tasks. Session extraction
-(objectives, key results, learnings, session nodes) lives in ``_author_okr``,
-solutions in ``_author_solutions``, reclassifying in ``_author_reclassify`` and
-topic sync in ``_author_topics``; all are re-exported here. Soft-fail
+(objectives, key results, learnings) lives in ``_author_okr``; solutions and
+session nodes in ``_author_solutions``; reclassifying in ``_author_reclassify``;
+brief migration and topic sync in ``_author_topics``. All are re-exported here. Soft-fail
 everywhere — authoring is best-effort background work.
 """
 from __future__ import annotations
@@ -227,6 +227,7 @@ def build_repo_profiles() -> dict:
         if r.get("ok"):
             made += 1
     return {"ok": True, "profiles": made}
+
 
 __all__ = ["extract_and_save", "write_session_node", "migrate_from_briefs",
            "sync_briefs_to_nodes",
