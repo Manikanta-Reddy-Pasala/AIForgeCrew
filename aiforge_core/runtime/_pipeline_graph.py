@@ -1,0 +1,295 @@
+"""Wiring the pipeline graph: node modes and retries, agent callbacks, edges,
+concurrency, and the enhancer guard."""
+from __future__ import annotations
+
+import logging
+import os
+
+
+def _set_node_modes(chat_nodes, single_turn) -> None:
+    """As ``Workflow`` graph nodes, LlmAgents default to single_turn
+    (include_contents='none'), which would blind each stage to the prior
+    stages' outputs. ``chat`` mode preserves the conversation history —
+    matching the old SequentialAgent behaviour — for the agents that genuinely
+    need it (multi-turn tool users + judges of the run's history).
+
+    Tool-less single-shot judges stay single_turn: they read everything they
+    need from state-templated prompt blocks ({plan_md?} etc.), so replaying the
+    full 22-node history into each of them wastes tokens massively (3 verifiers
+    × full history × up to 4 planner epochs, plus the validator) and re-creates
+    the ONE-117 KV pressure.
+    """
+    for a in chat_nodes:
+        # A text-doer FunctionNode is a pydantic model with no ``mode`` field
+        # (it drives its own ReAct loop, so chat/single_turn is meaningless) —
+        # setting it raises ValueError. Guard so the node can't break the build.
+        try:
+            a.mode = "chat"
+        except Exception:  # noqa: BLE001
+            pass
+    for a in single_turn:
+        a.mode = "single_turn"
+
+
+def _set_node_retries(branches, critical) -> None:
+    """Parallel branches share a JoinNode: if ONE branch raises (flaky local
+    mlx-lm), the ADK workflow engine sets error_shut_down and the whole graph
+    aborts — the join never fires, planning/doing never runs. Give the fan-out
+    branches a light node-level retry so a transient blip retries instead of
+    nuking the run. (EscalatingLlm already handles model-layer fallover; this
+    guards the exhausted-chain re-raise.) The serial chokepoints get it too —
+    they sit on the critical path, where one transient exception is
+    error_shut_down for the whole graph."""
+    try:
+        from google.adk.workflow import RetryConfig
+        retry = RetryConfig(max_attempts=2, initial_delay=1.0,
+                            backoff_factor=2.0)
+        for b in (*branches, *critical):
+            b.retry_config = retry
+    except Exception:  # noqa: BLE001 — retry is best-effort
+        pass
+
+
+def _attach_agent_callbacks(*, doer, refiner, learner, planner, enhancer,
+                            validator) -> None:
+    """Per-agent callbacks (they fire via agent.run_async inside the node)."""
+    from .learner_persist import make_learner_after_callback
+    from .loop_budget import build_loop_budget_callbacks
+    from .subtasks_callback import make_planner_subtasks_callback
+
+    # Persist Learner-emitted facts into the embedded SQLite memory store.
+    # Without this, state['facts_json'] dies with the session.
+    _append_after(learner, make_learner_after_callback())
+    # Record the Planner's decomposition as internal subtasks on the ticket
+    # (event-sourced) so the UI charts the breakdown + the Doer flips each
+    # subtask's status as it works through them.
+    _append_after(planner, make_planner_subtasks_callback())
+    # ENHANCER DEGENERATE-OUTPUT GUARD (same gate the parallel +
+    # escalated-simple paths get in parallel_subtasks._enhance): the enhancer
+    # is a single point of failure; a collapsed rewrite or one that dropped
+    # every named anchor must never replace the operator's ask.
+    _append_after(enhancer, _make_enhancer_guard())
+    # LOC-plateau watcher on the Refiner — sees each loop turn AFTER the Doer
+    # reported file_diffs. Sets state['loop_budget_kill'] which loop_gate reads
+    # to exit the Doer loop early.
+    _, plateau_after = build_loop_budget_callbacks()
+    _append_after(refiner, plateau_after)
+
+    # Executor context cleansing — the Doer/Refiner run in chat mode, which
+    # replays the planner/enhancer/researcher prologue into them every turn.
+    # That hand-off already reaches them via their templated prompt blocks, so
+    # strip the redundant prologue and keep only the seed + their own recent
+    # loop work. Big win for slow 120B models.
+    #
+    # Mid-run steering (Gap A, team mode) is registered AFTER focus-trim so an
+    # applied steer (the newest content) can never itself be cut by the trim.
+    # Doer + Refiner are the iterative nodes a team run spends most of its
+    # wall-clock in; see chat_steer_callback.py for why before_model (not a
+    # session state write) is the mechanism.
+    #
+    # Each attach is isolated: a text-doer FunctionNode rejects before_model,
+    # and that must not also skip the refiner's callbacks.
+    for agent, role in ((doer, "doer"), (refiner, "refiner")):
+        for module, factory in (
+                (".executor_focus", "make_executor_focus_callback"),
+                (".chat_steer_callback", "make_steer_before_model_callback")):
+            try:
+                mod = __import__(f"aiforge_core.runtime{module}",
+                                 fromlist=[factory])
+                _append_before_model(agent, getattr(mod, factory)(role))
+            except Exception:  # noqa: BLE001 — never block pipeline boot
+                pass
+
+    # Auto-consolidation after-callback on the Learner — the graph-backed
+    # consolidation store was removed, so this callback is a soft no-op now;
+    # kept wired for when a consolidation backend returns. Soft-fail.
+    try:
+        from .memory_consolidate import make_consolidate_after_callback
+        _append_after(learner, make_consolidate_after_callback())
+    except Exception:  # noqa: BLE001
+        pass
+    # Failure-memory after-callback on the Validator — writes a failure
+    # Observation_v2 when the run didn't land cleanly.
+    try:
+        from .failure_memory import make_failure_memory_after_callback
+        _append_after(validator, make_failure_memory_after_callback())
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _entry_edges(edge_cls, start, n) -> list:
+    """Entry + the cheap fast-path switch."""
+    from .graph_pipeline import ROUTE_FULL, ROUTE_TRIVIAL
+    return [edge_cls(from_node=start, to_node=n["triage"]),
+            edge_cls(from_node=n["triage"], to_node=n["triage_gate"]),
+            edge_cls(from_node=n["triage_gate"], to_node=n["doer"],
+                     route=ROUTE_TRIVIAL),
+            edge_cls(from_node=n["triage_gate"], to_node=n["enhancer"],
+                     route=ROUTE_FULL)]
+
+
+def _context_edges(edge_cls, n) -> list:
+    """context fan-out: enhancer → research_entry → branches → join → merge.
+
+    research_entry is the stable fan-out source so the research-gap loop can
+    re-enter it and re-fire ALL branches in one scheduler wave (a JoinNode
+    re-arm requirement).
+    """
+    from .graph_pipeline import ROUTE_RESEARCH_GAP, ROUTE_RESEARCH_OK
+    edges = [edge_cls(from_node=n["enhancer"], to_node=n["research_entry"])]
+    if not n["context_branches"]:
+        # Lean: no context gatherers at all → go straight to the Planner.
+        # (research_entry is a no-op fan-out source; it just passes through.)
+        return edges + [edge_cls(from_node=n["research_entry"], to_node=n["planner"])]
+    for br in n["context_branches"]:
+        edges.append(edge_cls(from_node=n["research_entry"], to_node=br))
+        edges.append(edge_cls(from_node=br, to_node=n["context_join"]))
+    edges.append(edge_cls(from_node=n["context_join"], to_node=n["merge_context"]))
+    if n["gap_gate"] is None:
+        edges.append(edge_cls(from_node=n["merge_context"], to_node=n["planner"]))
+        return edges
+    # merge_context → gap_eval → gap_gate ─┬ research_ok  → planner
+    #                                       └ research_gap → research_entry
+    edges += [
+        edge_cls(from_node=n["merge_context"], to_node=n["gap_eval"]),
+        edge_cls(from_node=n["gap_eval"], to_node=n["gap_gate"]),
+        edge_cls(from_node=n["gap_gate"], to_node=n["planner"],
+                 route=ROUTE_RESEARCH_OK),
+        edge_cls(from_node=n["gap_gate"], to_node=n["research_entry"],
+                 route=ROUTE_RESEARCH_GAP),
+    ]
+    return edges
+
+
+def _plan_edges(edge_cls, n) -> list:
+    """planner → plan_promote (parse plan JSON → scope_allowlist_globs in
+    state) → the single verifier (correctness+scope+risk in one call, writes
+    verifier_verdict) → verifier_gate, which ACTS on the verdict: a rejected
+    plan loops back to the planner once (bounded), a passing plan proceeds."""
+    from .graph_pipeline import ROUTE_VERIFY_PASS, ROUTE_VERIFY_REPLAN
+    return [
+        edge_cls(from_node=n["planner"], to_node=n["plan_promote"]),
+        edge_cls(from_node=n["plan_promote"], to_node=n["verifier"]),
+        edge_cls(from_node=n["verifier"], to_node=n["verifier_gate"]),
+        edge_cls(from_node=n["verifier_gate"], to_node=n["doer"],
+                 route=ROUTE_VERIFY_PASS),
+        edge_cls(from_node=n["verifier_gate"], to_node=n["planner"],
+                 route=ROUTE_VERIFY_REPLAN),
+    ]
+
+
+def _loop_edges(edge_cls, n) -> list:
+    """doer → refiner → feedback → loop_gate ⟲, then validator → replan back
+    to the planner, or done → learner."""
+    from .graph_pipeline import ROUTE_DONE, ROUTE_EXIT, ROUTE_LOOP, ROUTE_REPLAN
+    return [
+        edge_cls(from_node=n["doer"], to_node=n["refiner"]),
+        edge_cls(from_node=n["refiner"], to_node=n["feedback"]),
+        edge_cls(from_node=n["feedback"], to_node=n["loop_gate"]),
+        edge_cls(from_node=n["loop_gate"], to_node=n["doer"], route=ROUTE_LOOP),
+        edge_cls(from_node=n["loop_gate"], to_node=n["validator"], route=ROUTE_EXIT),
+        edge_cls(from_node=n["validator"], to_node=n["validator_gate"]),
+        edge_cls(from_node=n["validator_gate"], to_node=n["planner"],
+                 route=ROUTE_REPLAN),
+        edge_cls(from_node=n["validator_gate"], to_node=n["learner"],
+                 route=ROUTE_DONE),
+    ]
+
+
+def _workflow_concurrency() -> int | None:
+    """Cap concurrent graph-scheduled nodes. The 4-way context fan-out against
+    a single local mlx-lm endpoint is queueing, not parallelism — the server
+    processes serially while 4 in-flight chat-mode prompts multiply KV-cache
+    pressure (the ONE-117 OOM recipe). Floor is 3: with a smaller cap a replan
+    pass can re-fire the 3 verify branches across two scheduler waves, and
+    ADK's JoinNode then sees the not-yet-rescheduled third branch's stale
+    pass-1 COMPLETED status and fires early with the old axis verdict
+    (double-running merge_verdicts + verifier_gate). Raise for cloud providers
+    via AIFORGE_WORKFLOW_MAX_CONCURRENCY (0 = unlimited)."""
+    cap = int(os.environ.get("AIFORGE_WORKFLOW_MAX_CONCURRENCY", "3"))
+    if cap <= 0:
+        return None
+    return max(3, cap)
+
+
+def _unstall_chat_nodes(wf) -> None:
+    """CRITICAL un-stall: ADK's graph builder CLONES every LlmAgent into the
+    graph and forces wait_for_output=True for mode="chat" (conversational
+    re-trigger semantics, _workflow_graph_utils.py). A chat node here never
+    yields an engine "output" — its reply is message_as_output content — so the
+    node parks in WAITING and downstream never triggers: the run stalled right
+    after the enhancer. Our chat agents are one-shot graph stages; flip the flag
+    on the CLONES (mutating the pre-construction originals is useless — the
+    clone step overwrites it)."""
+    from google.adk.agents import LlmAgent as _LlmAgent
+    for node in wf.graph.nodes:
+        if isinstance(node, _LlmAgent) and getattr(node, "mode", None) == "chat":
+            node.wait_for_output = False
+
+
+def _make_enhancer_guard():
+    """After-callback for the ADK Enhancer: restore the RAW ask when the
+    rewrite is degenerate (collapsed, or lost every named file/symbol) —
+    everything downstream builds against ``enhanced_body``, so a bad rewrite
+    poisons the whole run. ``ENHANCE_BLOCKED`` sentinels pass through
+    untouched (that contract is handled by the runner)."""
+    def _cb(callback_context=None, **_kw):
+        try:
+            st = getattr(callback_context, "state", None)
+            if st is None:
+                return None
+            raw = st.get("raw_ask") or ""
+            body = st.get("enhanced_body")
+            if not raw or not isinstance(body, str):
+                return None
+            text = body.strip()
+            if text:
+                _repair_enhanced_body(st, raw, text)
+        except Exception:  # noqa: BLE001 — the guard must never break a run
+            pass
+        return None
+    return _cb
+
+
+def _repair_enhanced_body(st, raw: str, text: str) -> None:
+    """Restore the RAW ask when what the Enhancer produced cannot serve as the
+    brief — either a degenerate rewrite, or a sentinel that is not a refusal."""
+    if text.startswith("ENHANCE_BLOCKED"):
+        # A REAL refusal belongs to the runner, untouched. A sentinel that
+        # actually says "this is already fine" would otherwise become the
+        # Doer's brief — restore the raw ask, which is what the Enhancer
+        # should have returned under Rule 2.
+        from .prompts.enhancer import block_reason
+        if block_reason(text) is None:
+            st["enhanced_body"] = raw
+        return
+    from .parallel_subtasks import _spec_degenerate
+    bad = _spec_degenerate(raw, text)
+    if bad:
+        st["enhanced_body"] = raw
+        logging.getLogger("aiforge.pipeline").warning(
+            "enhancer output rejected (%s) — raw ask restored", bad)
+
+
+def _append_callback(agent, attr: str, cb) -> None:
+    """Append ``cb`` to ``agent.<attr>`` preserving existing callback(s).
+
+    ADK accepts a single callable or a list, so every attach site had to
+    re-derive the same three cases; they only ever differed in the attribute.
+    """
+    if cb is None:
+        return
+    existing = getattr(agent, attr, None)
+    merged: list = []
+    if existing is not None:
+        merged.extend(existing if isinstance(existing, list) else [existing])
+    merged.append(cb)
+    setattr(agent, attr, merged)
+
+
+def _append_after(agent, cb) -> None:
+    _append_callback(agent, "after_agent_callback", cb)
+
+
+def _append_before_model(agent, cb) -> None:
+    _append_callback(agent, "before_model_callback", cb)

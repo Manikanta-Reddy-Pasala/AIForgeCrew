@@ -15,7 +15,7 @@ each group.
 | Multi-ask checklist + `plan_progress` + FINAL completeness gate | #1 simple-mode complaint was answering part 1 of a multi-part ask and stopping; checklist is pinned high, model flips items live, and a one-time self-check gates FINAL | `chat_agent/_loop.py` | 2026-07 |
 | Rules injected EVERY turn (mandatory) | User rules are constraints, not suggestions; always-on rules survive compaction and cave mode | `chat_agent/_loop.py`; `context_bundle.py` | 2026-06 |
 | Workflows = mandatory procedures; injected before the repo map; survive cave mode; custom outranks builtin | A matched workflow is user procedure (branch/MR conventions etc.) — dropping it means skipping a mandatory step. Load order builtin → global → repo-local, later wins | `chat_agent/_context`; `runtime/workflows.py` `load()` | 2026-06/07 |
-| Workflow scripts: HARD run-before-save test gate | Each script in `<workflow>/scripts/` is syntax-checked AND its declared test command actually RUN; any failure refuses the whole save — no broken scripts persisted | `runtime/workflows.py` ~265/~343 | 2026-07-09 |
+| Workflow scripts: HARD run-before-save test gate | Each script in `<workflow>/scripts/` is syntax-checked AND its declared test command actually RUN; any failure refuses the whole save — no broken scripts persisted | `runtime/_workflow_scripts.py`: `_test_scripts_hard` / `_vet_scripts` (was `runtime/workflows.py` ~265/~343) | 2026-07-09 |
 | Router doc-veto fix: a doc-word MENTION no longer vetoes a build | A blanket "mentions docs → not a build" veto mis-routed real multi-file builds; veto now applies only when NO strong code noun matched | `runtime/chat_router.py`; commit `0530cd5` | 2026-07-09 |
 
 ## Pipeline
