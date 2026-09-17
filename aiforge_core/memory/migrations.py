@@ -52,7 +52,6 @@ _MIGRATIONS_JSON = '.migrations.json'
 log = logging.getLogger("aiforge.memory.migrations")
 
 
-
 # A real learning is a sentence; a drained chunk is source code. These match the
 # telltale code tokens; several hits (or one in a short body) flags a chunk.
 _CODE_TOKEN_RE = re.compile(
@@ -311,6 +310,10 @@ def run_startup_migrations() -> dict:
     return out
 
 
+__all__ = ["run_startup_migrations", "purge_migrated_code",
+           "force_recompact_all", "dedupe_all", "migrate_okf_format"]
+
+
 if __name__ == "__main__":       # python -m aiforge_core.memory.migrations [flag]
     import sys
     if "--purge-code" in sys.argv:
@@ -329,6 +332,3 @@ if __name__ == "__main__":       # python -m aiforge_core.memory.migrations [fla
         print(_md.repair_captures(dry_run="--dry-run" in sys.argv))
     else:
         print(run_startup_migrations())
-
-__all__ = ["run_startup_migrations", "purge_migrated_code",
-           "force_recompact_all", "dedupe_all", "migrate_okf_format"]
