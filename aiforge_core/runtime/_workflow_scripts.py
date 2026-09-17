@@ -1,5 +1,5 @@
-"""Checking and testing a workflow's scripts before they are written, and
-mirroring the workflow to memory."""
+"""A workflow's scripts and frontmatter: checking and testing the scripts
+before they are written, writing them, and mirroring the workflow to memory."""
 from __future__ import annotations
 
 import os

@@ -5,8 +5,6 @@ import datetime as _dt
 import shutil
 from pathlib import Path
 
-from aiforge_core.config.paths import config_dir
-
 from ._artifact_cluster import (
     _Item,
 )
@@ -24,7 +22,7 @@ def _pkg():
 # ── archive + apply ─────────────────────────────────────────────────────────
 
 def archive_dir(kind: str) -> Path:
-    return Path(str(config_dir())) / _pkg()._ARCHIVE_DIR / kind
+    return Path(str(_pkg().config_dir())) / _pkg()._ARCHIVE_DIR / kind
 
 
 def archive(item: _Item) -> str:

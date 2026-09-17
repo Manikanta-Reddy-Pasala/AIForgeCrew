@@ -75,7 +75,7 @@ def input_char_budget(role: str, *, output_tokens: int = _MIN_OUTPUT_TOKENS) -> 
     map-reduce passes) and too large the moment someone points a role at a 32k
     one.
     """
-    window = _ctx_window(role)
+    window = _pkg()._ctx_window(role)
     return max(4000, (window - output_tokens - _CTX_SLACK_TOKENS) * _CHARS_PER_TOKEN)
 
 
