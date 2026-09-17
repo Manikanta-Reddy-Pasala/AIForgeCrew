@@ -20,12 +20,13 @@ from __future__ import annotations
 
 import pytest
 
+from aiforge_core.runtime.chat_agent._tools import _grep as G
 from aiforge_core.runtime.chat_agent._tools import _memory as M
 
 
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
-    monkeypatch.setattr(M, "_workspace_root", lambda: str(tmp_path))
+    monkeypatch.setattr(G, "_workspace_root", lambda: str(tmp_path))
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("def main():\n    return TOKEN\n")
     (tmp_path / "src" / "util.ts").write_text("const TOKEN = 1;\n")
@@ -174,7 +175,7 @@ def test_the_result_is_bounded(workspace):
 @pytest.fixture
 def no_rg(monkeypatch):
     """Force the dependency-free path so the test is the same everywhere."""
-    monkeypatch.setattr(M, "_ripgrep", lambda *a, **kw: None)
+    monkeypatch.setattr(G, "_ripgrep", lambda *a, **kw: None)
 
 
 def test_a_pattern_is_found_with_its_file_and_line(workspace, no_rg):
@@ -243,7 +244,7 @@ def test_an_unreadable_file_does_not_stop_the_walk(workspace, no_rg,
 
 def test_ripgrep_is_used_when_it_is_installed(workspace, monkeypatch):
     seen: dict = {}
-    monkeypatch.setattr(M, "_ripgrep",
+    monkeypatch.setattr(G, "_ripgrep",
                         lambda pattern, target, glob, limit:
                         seen.update(pattern=pattern, glob=glob, limit=limit)
                         or ["src/app.py:2:TOKEN"])
@@ -257,7 +258,7 @@ def test_the_ripgrep_command_excludes_the_vendor_dirs(workspace, monkeypatch):
     import types as pytypes
     seen: dict = {}
     monkeypatch.setattr(shutil, "which", lambda n: "/usr/bin/rg")
-    monkeypatch.setattr(M.subprocess, "run",
+    monkeypatch.setattr(G.subprocess, "run",
                         lambda cmd, **kw: seen.update(cmd=cmd)
                         or pytypes.SimpleNamespace(stdout="a.py:1:hit\n"))
     assert M._ripgrep("TOKEN", str(workspace), "*.py", 10) == ["a.py:1:hit"]
@@ -274,7 +275,7 @@ def test_without_ripgrep_the_caller_falls_back(workspace, monkeypatch):
 def test_a_ripgrep_that_fails_falls_back_too(workspace, monkeypatch):
     import shutil
     monkeypatch.setattr(shutil, "which", lambda n: "/usr/bin/rg")
-    monkeypatch.setattr(M.subprocess, "run",
+    monkeypatch.setattr(G.subprocess, "run",
                         lambda cmd, **kw: (_ for _ in ()).throw(OSError("x")))
     assert M._ripgrep("x", str(workspace), None, 10) is None
 
