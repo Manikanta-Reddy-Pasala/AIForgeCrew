@@ -104,8 +104,8 @@ def _identifier_for(issue_url: str) -> str:
     for people; the hash of the full URL keeps ``a-b/c`` and ``a/b-c`` (or two
     hosts) apart. Lowercase, so a slug never looks like a Jira key."""
     path = re.sub(r"^https?://[^/]+/", "", issue_url).replace("/issues/", "-")
-    slug = re.sub(r"[^a-z0-9]+", "-", path.lower()).strip("-")[:60]
-    digest = hashlib.sha1(issue_url.encode("utf-8")).hexdigest()[:8]
+    slug = re.sub(r"[^a-z0-9]+", "-", path.lower()).strip("-")[:60].rstrip("-")
+    digest = hashlib.sha1(issue_url.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
     return f"GH-{slug}-{digest}"
 
 

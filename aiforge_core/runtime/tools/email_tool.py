@@ -151,15 +151,28 @@ def _build_message(c: dict, args: dict, to: list, cc: list) -> EmailMessage:
     return msg
 
 
+def _tls(c: dict):
+    """A certificate-verifying TLS context for the mail host. The stdlib mail
+    clients default to an UNVERIFIED context, which sent the mailbox password
+    to whoever answered. Same trust rules as every other https call (custom CA
+    bundle, pinned internal hosts)."""
+    import ssl
+
+    from aiforge_core.net import ssl as _net_ssl
+    return (_net_ssl.context_for(f"https://{c['host']}:{c['port']}")
+            or ssl.create_default_context())
+
+
 def _smtp_open(c: dict):
     """A connected, authenticated SMTP session (STARTTLS or implicit SSL)."""
     if c["starttls"]:
         srv = smtplib.SMTP(c["host"], c["port"], timeout=_TIMEOUT_S)
         srv.ehlo()
-        srv.starttls()
+        srv.starttls(context=_tls(c))
         srv.ehlo()
     else:
-        srv = smtplib.SMTP_SSL(c["host"], c["port"], timeout=_TIMEOUT_S)
+        srv = smtplib.SMTP_SSL(c["host"], c["port"], timeout=_TIMEOUT_S,
+                               context=_tls(c))
     if c["user"]:
         srv.login(c["user"], c["password"])
     return srv
@@ -270,7 +283,8 @@ def _imap_connect(c: dict):
     _ref = _egress.allow("email", str(c.get("host") or ""))
     if _ref is not None:
         raise OSError(f"egress refused IMAP: {_ref.get('error')}")
-    return (imaplib.IMAP4_SSL(c["host"], c["port"], timeout=_TIMEOUT_S) if c["ssl"]
+    return (imaplib.IMAP4_SSL(c["host"], c["port"], timeout=_TIMEOUT_S,
+                              ssl_context=_tls(c)) if c["ssl"]
             else imaplib.IMAP4(c["host"], c["port"], timeout=_TIMEOUT_S))
 
 
@@ -375,7 +389,7 @@ def _smtp_probe(c: dict) -> None:
         srv = smtplib.SMTP(c["host"], c["port"], timeout=_TIMEOUT_S)
         try:
             srv.ehlo()
-            srv.starttls()
+            srv.starttls(context=_tls(c))
             srv.ehlo()
             if c["user"]:
                 srv.login(c["user"], c["password"])
@@ -383,7 +397,8 @@ def _smtp_probe(c: dict) -> None:
             with contextlib.suppress(Exception):
                 srv.quit()
         return
-    srv = smtplib.SMTP_SSL(c["host"], c["port"], timeout=_TIMEOUT_S)
+    srv = smtplib.SMTP_SSL(c["host"], c["port"], timeout=_TIMEOUT_S,
+                               context=_tls(c))
     try:
         if c["user"]:
             srv.login(c["user"], c["password"])

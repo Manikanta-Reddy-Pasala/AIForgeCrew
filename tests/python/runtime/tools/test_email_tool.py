@@ -39,9 +39,10 @@ class _FakeSMTP:
     """Records calls; captures the EmailMessage handed to send_message."""
     instances: list = []
 
-    def __init__(self, host, port=0, timeout=None):
+    def __init__(self, host, port=0, timeout=None, context=None):
         self.host = host
         self.port = port
+        self.context = context
         self.calls: list[str] = []
         self.sent = None
         self.to_addrs = None
@@ -75,10 +76,11 @@ class _FakeIMAP:
     """Minimal IMAP4_SSL stand-in returning a couple of fake messages."""
     last: "_FakeIMAP | None" = None
 
-    def __init__(self, host, port=0, timeout=None):
+    def __init__(self, host, port=0, timeout=None, ssl_context=None):
         self.host = host
         self.port = port
         self.timeout = timeout
+        self.ssl_context = ssl_context
         self.selected = None
         self.search_args = None
         _FakeIMAP.last = self
@@ -353,3 +355,14 @@ def test_read_does_not_mark_mail_as_read(imap_cfg, monkeypatch):
     assert et.email_read({"limit": 1})["ok"] is True
     assert _FakeIMAP.last.readonly is True
     assert "PEEK" in _FakeIMAP.last.fetch_spec
+
+
+def test_mail_tls_verifies_the_server_certificate(imap_cfg, monkeypatch):
+    """The stdlib mail clients default to an unverified context; the password
+    must only go to a server whose certificate checks out."""
+    import ssl
+    monkeypatch.setattr("imaplib.IMAP4_SSL", _FakeIMAP)
+    assert et.email_read({})["ok"] is True
+    ctx = _FakeIMAP.last.ssl_context
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname

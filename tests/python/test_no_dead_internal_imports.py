@@ -26,6 +26,18 @@ def _module_file(dotted: str) -> Path | None:
     return None
 
 
+def _module_level(tree: ast.Module):
+    """Module-level statements and what they bind, without descending into
+    function or class bodies (their locals are not module attributes)."""
+    todo = list(tree.body)
+    while todo:
+        node = todo.pop()
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        todo.extend(ast.iter_child_nodes(node))
+
+
 @cache
 def _defined(path: Path) -> tuple[frozenset[str], bool]:
     """Names bound at module level, and whether the module is open-ended
@@ -33,7 +45,7 @@ def _defined(path: Path) -> tuple[frozenset[str], bool]:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     names: set[str] = set()
     open_ended = False
-    for node in ast.walk(tree):
+    for node in _module_level(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             names.add(node.name)
             open_ended |= node.name == "__getattr__"
@@ -69,7 +81,8 @@ def _module_aliases(scope: ast.AST, path: Path) -> dict[str, str]:
         todo.extend(ast.iter_child_nodes(node))
         if isinstance(node, ast.Import):
             for a in node.names:
-                if a.asname and a.name.startswith("aiforge_core."):
+                if (a.asname and a.name.startswith("aiforge_core.")
+                        and _module_file(a.name) is not None):
                     out[a.asname] = a.name
         elif isinstance(node, ast.ImportFrom):
             mod = _absolute(node, path)
@@ -80,16 +93,38 @@ def _module_aliases(scope: ast.AST, path: Path) -> dict[str, str]:
     return out
 
 
+def _own_nodes(scope: ast.AST):
+    """Nodes of ``scope`` itself, not of functions/classes nested in it."""
+    todo = list(ast.iter_child_nodes(scope))
+    while todo:
+        node = todo.pop()
+        yield node
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            todo.extend(ast.iter_child_nodes(node))
+
+
+def _rebound(scope: ast.AST) -> set[str]:
+    """Names a function scope binds itself (parameters, assignments)."""
+    if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return set()
+    out = {a.arg for a in ast.walk(scope.args) if isinstance(a, ast.arg)}
+    out |= {n.id for n in _own_nodes(scope)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+    return out
+
+
 def _probe_problems(tree: ast.AST, path: Path) -> list[str]:
     out = []
     rel = path.relative_to(ROOT)
+    module_aliases = _module_aliases(tree, path)
     scopes = [tree] + [n for n in ast.walk(tree)
                        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
     for scope in scopes:
-        aliases = _module_aliases(scope, path)
-        if not aliases:
-            continue
-        for node in ast.walk(scope):
+        own = _module_aliases(scope, path) if scope is not tree else {}
+        rebound = _rebound(scope) - set(own)
+        aliases = {k: v for k, v in module_aliases.items() if k not in rebound}
+        aliases.update(own)
+        for node in _own_nodes(scope):
             if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                     and node.func.id in ("getattr", "hasattr") and len(node.args) >= 2):
                 continue
