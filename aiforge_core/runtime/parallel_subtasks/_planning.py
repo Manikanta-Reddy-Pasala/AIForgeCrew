@@ -1,6 +1,8 @@
-"""Enhancer / Architect / Decompose planning + workspace baseline helpers.
+"""Architect / Decompose planning + workspace baseline helpers.
 
-Split from ``parallel_subtasks.py`` (mechanical move, behaviour identical)."""
+Split from ``parallel_subtasks.py`` (mechanical move, behaviour identical).
+The prompt enhancer lives in ``_planning_enhance`` and plan-shape checks in
+``_planning_shape``."""
 from __future__ import annotations
 
 import os

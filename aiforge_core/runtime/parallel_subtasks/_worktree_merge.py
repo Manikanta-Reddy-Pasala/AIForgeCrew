@@ -8,8 +8,10 @@ from aiforge_core.runtime.git_pr import _EXCLUDE_PATHSPECS
 
 
 def _pkg():
-    """The parent module, looked up on each call so a name patched there is the
-    one used here."""
+    """``_worktree``, the module this code was split from, looked up on each call.
+
+    Only names read through here follow a patch on ``_worktree``; patch any other
+    name on this module."""
     import aiforge_core.runtime.parallel_subtasks._worktree as package
     return package
 
@@ -230,6 +232,3 @@ def _merge_branch(repo: str, _base_branch: str, branch: str) -> tuple[bool, str]
     # resolution failed / disabled → abort to leave the base branch clean
     pkg._git(["merge", "--abort"], repo)
     return False, (p.stdout + p.stderr)[:300]
-
-
-# ---- cross-group names (bottom import = cycle-safe; all defs above are set) ----

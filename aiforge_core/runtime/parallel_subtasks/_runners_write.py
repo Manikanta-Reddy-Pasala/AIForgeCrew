@@ -3,6 +3,7 @@ rules, and writing the files."""
 from __future__ import annotations
 
 import os
+import re as _re
 
 
 def _enforce_target_path(worktree: str, path: str) -> None:
@@ -299,6 +300,4 @@ def _write_subtask_files(files: dict, worktree: str, scope: list):
 
 
 # ---- cross-group names (bottom import = cycle-safe; all defs above are set) ----
-import re as _re
-
 from ._worktree import log

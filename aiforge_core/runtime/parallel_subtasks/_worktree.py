@@ -1,6 +1,7 @@
-"""Git worktree isolation, per-subtask attempt/validate, conflict resolution + merge.
+"""Git worktree isolation and per-subtask attempt/validate.
 
-Split from ``parallel_subtasks.py`` (mechanical move, behaviour identical)."""
+Split from ``parallel_subtasks.py`` (mechanical move, behaviour identical).
+Conflict resolution and merging live in ``_worktree_merge``."""
 from __future__ import annotations
 
 import logging
@@ -334,4 +335,7 @@ def _update(ticket_id, slug, status, on_status=None, files=None) -> None:
         pass
 
 # ---- cross-group names (bottom import = cycle-safe; all defs above are set) ----
-from ._reconcile import _SCAFFOLD_MARK, _spec_goal
+from ._reconcile import (  # noqa: F401  # read via _pkg() or by tests
+    _SCAFFOLD_MARK,
+    _spec_goal,
+)

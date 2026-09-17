@@ -1,6 +1,8 @@
-"""stream_parallel_team chat driver, change emission, test-coverage helpers.
+"""stream_parallel_team chat driver: the verdict, finalising and draining a run.
 
-Split from ``parallel_subtasks.py`` (mechanical move, behaviour identical)."""
+Split from ``parallel_subtasks.py`` (mechanical move, behaviour identical).
+Steering lives in ``_stream_steer``, run preparation in ``_stream_prepare``, and
+change reporting and test coverage in ``_stream_changes``."""
 from __future__ import annotations
 
 import os
@@ -357,9 +359,7 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
 from ._contracts import _CONTRACT_DIR, _is_test_subtask, _matching_tests_for, _merge_aggs
 from ._orchestrate import _run_sequential, run_parallel
 from ._planning import _commit_turn_baseline, _ensure_git_workspace
-from ._reconcile import (
-    _enforce_disjoint_files,
-    _ensure_impl_modules,
+from ._reconcile import (  # noqa: F401  # read via _pkg() or by tests
     _prune_offplan_files,
     _reconcile_integration,
     _render_spec_md,
@@ -369,11 +369,10 @@ from ._reconcile import (
     _verify_against_spec,
 )
 from ._runners import _default_subtask_runner
-from ._worktree import (
+from ._worktree import (  # noqa: F401  # read via _pkg() or by tests
     _dirty_warning,
     _git,
     _max_workers,
-    _slugify,
     default_integration_test,
     default_validate_one,
     log,
@@ -383,6 +382,8 @@ from ._worktree import (
 def _decompose(*a, **k):  # live forwarder — honours monkeypatch on the package
     from aiforge_core.runtime import parallel_subtasks as _pkg
     return _pkg._decompose(*a, **k)
+
+
 def _is_greenfield(*a, **k):  # live forwarder — honours monkeypatch on the package
     from aiforge_core.runtime import parallel_subtasks as _pkg
     return _pkg._is_greenfield(*a, **k)

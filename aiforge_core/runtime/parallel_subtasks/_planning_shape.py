@@ -234,6 +234,3 @@ def _validate_plan(files: list[dict]) -> tuple[list[dict], list[str]]:
     issues: list[str] = []
     clean = _sanitized_files(files, issues)
     return clean, issues + _plan_shape_issues([f["path"] for f in clean])
-
-
-# ---- cross-group names (bottom import = cycle-safe; all defs above are set) ----

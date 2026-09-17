@@ -295,7 +295,7 @@ def _root_identifier_of(ticket) -> str:
 # ---- cross-group names (bottom import = cycle-safe; all defs above are set) ----
 from ._orchestrate import run_parallel
 from ._planning import _ensure_git_workspace
-from ._worktree import _emit, _git, default_integration_test, default_validate_one, log
+from ._worktree import _emit, _git, default_integration_test, default_validate_one
 
 
 def _decompose(*a, **k):  # live forwarder — honours monkeypatch on the package

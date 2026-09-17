@@ -6,8 +6,10 @@ import re
 
 
 def _pkg():
-    """The parent module, looked up on each call so a name patched there is the
-    one used here."""
+    """``_orchestrate``, the module this code was split from, looked up on each call.
+
+    Only names read through here follow a patch on ``_orchestrate``; patch any other
+    name on this module."""
     import aiforge_core.runtime.parallel_subtasks._orchestrate as package
     return package
 
@@ -19,11 +21,12 @@ def _pkg():
 # never merge two edits to the SAME file). A subtask that itself fails big is
 # decomposed ONE level deeper and its sub-agents run under the same scheduler
 # (bounded by AIFORGE_DECOMP_MAX_DEPTH). Guarded by AIFORGE_SHARED_WORKTREE
-# (default on); any failure falls back to the per-worktree path below.
+# (default on); any failure falls back to the per-worktree path in
+# ``_orchestrate.run_parallel``.
 
 
 def _shared_worktree_enabled() -> bool:
-    # OPT-IN (default OFF). The per-worktree path (below) is the tested,
+    # OPT-IN (default OFF). The per-worktree path (``run_parallel``) is the tested,
     # parallel-safe default: each subtask gets its OWN git index, so parallel
     # commits never race. A SHARED worktree cannot run subtasks in parallel
     # safely — they'd contend on one .git/index — so shared mode runs
@@ -220,6 +223,3 @@ def _run_wave_set(wt, subs, run_one, validate_one, on_status, ticket_id,
             results[s["slug"]] = pkg._run_one_recursive(
                 s, wt, run_one, validate_one, on_status, ticket_id,
                 should_cancel, depth)
-
-
-# ---- cross-group names (bottom import = cycle-safe; all defs above are set) ----

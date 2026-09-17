@@ -1,6 +1,8 @@
-"""Wave scheduling, sequential + shared-worktree drivers, run_parallel orchestration.
+"""Sequential driver and run_parallel orchestration.
 
-Split from ``parallel_subtasks.py`` (mechanical move, behaviour identical)."""
+Split from ``parallel_subtasks.py`` (mechanical move, behaviour identical).
+Wave scheduling and recursion live in ``_orchestrate_waves``, the shared-worktree
+driver in ``_orchestrate_shared``."""
 from __future__ import annotations
 
 import concurrent.futures
@@ -386,12 +388,11 @@ from ._reconcile import (
     _project_test_output,
     _prune_offplan_files,
 )
-from ._worktree import (
+from ._worktree import (  # noqa: F401  # read via _pkg() or by tests
     _build_or_test,
     _dirty_warning,
     _emit,
     _git,
-    _make_worktree,
     _max_workers,
     _merge_branch,
     _retries,

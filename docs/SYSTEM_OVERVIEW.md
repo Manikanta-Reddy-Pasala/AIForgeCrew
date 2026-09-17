@@ -57,13 +57,13 @@ Runs for `mode: team`, tickets, and escalated chat builds
 1. **Enhancer** rewrites the raw ask into a spec. A **degenerate-output guard**
    restores the raw ask if the rewrite collapsed or lost every named
    file/symbol (`pipeline._make_enhancer_guard`,
-   `parallel_subtasks/_planning._spec_degenerate`).
+   `parallel_subtasks/_planning_enhance._spec_degenerate`).
 2. **Architect** emits a file plan. A deterministic **plan gate** validates it
    (file dump, missing tests, mixed languages …) and gives the model exactly
    **one semantic reask**; a still-broken retry ships the sanitized plan
-   (`_planning._validate_plan`).
+   (`_planning_shape._validate_plan`).
 3. If the plan has no test files, a **test backstop** adds a unit-test subtask
-   per code module (`_stream._ensure_test_coverage`).
+   per code module (`_stream_changes._ensure_test_coverage`).
 4. **SPEC.md is always written** to the workspace before any subtask runs — the
    shared contract every worker builds against. Mid-run steering appends to it.
 5. Subtasks run **in parallel (default on, max 4 workers)**, each in its **own

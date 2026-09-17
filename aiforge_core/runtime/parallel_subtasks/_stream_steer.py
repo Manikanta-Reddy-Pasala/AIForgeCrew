@@ -6,8 +6,10 @@ import os
 
 
 def _pkg():
-    """The parent module, looked up on each call so a name patched there is the
-    one used here."""
+    """``_stream``, the module this code was split from, looked up on each call.
+
+    Only names read through here follow a patch on ``_stream``; patch any other
+    name on this module."""
     import aiforge_core.runtime.parallel_subtasks._stream as package
     return package
 
