@@ -20,31 +20,70 @@ Routes:
 """
 from __future__ import annotations
 
-import asyncio
 import hmac
-import ipaddress
-import json
 import logging
 import os
-import re
-import threading
-from datetime import UTC, date as _date
-from typing import Any
+from datetime import date as _date  # noqa: F401  # the jobs look it up here
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
-
-from aiforge_core.config import env as _cfg
-from aiforge_core.runtime.background import spawn as _spawn
-from aiforge_core.config.env import (
-    LM_STUDIO_BASE_URL,
-    LOG_DIR,
-    ROLES,
+from fastapi import (
+    FastAPI,
+    HTTPException,  # noqa: F401  # tests use api.HTTPException
+    Request,
 )
-from aiforge_core.tickets import store as tickets_mod
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from aiforge_core.runtime.background import (
+    spawn as _spawn,  # noqa: F401  # the jobs look it up here
+)
+from aiforge_core.tickets import store as tickets_mod  # noqa: F401  # api.tickets_mod
+
+from ._bind_security import (  # noqa: F401  # used here or by tests
+    _api_token,
+    _auth_exempt,
+    _extract_request_token,
+    _is_sync_path,
+    _observed_bind_hosts,
+    _request_is_loopback,
+    _security_boot_guard,
+    _sync_open,
+    _trust_loopback,
+)
+from ._compaction_jobs import (  # noqa: F401  # used here or by tests
+    _compact_at_hour,
+    _register_artifact_merge,
+    _register_daily_compaction,
+    _register_hourly_jobs,
+    _register_idle_compaction,
+    _register_legacy_compaction,
+)
+from ._startup import (  # noqa: F401  # re-exported
+    _RUNTIME_ENV_DB_KEYS,
+    _apply_runtime_env_line,
+    _check_tool_parity,
+    _ensure_model_context_on_boot,
+    _ensure_skill_workflow_dirs,
+    _guard_and_announce_backends,
+    _load_runtime_env,
+    _models_below_context,
+    _publish_ca_bundle,
+    _reassign_agents_on_boot,
+    _recover_interrupted_turns,
+    _reload_models_to_context,
+    _repair_config_permissions,
+    _run_memory_migrations,
+    _start_daily_reindex,
+    _start_jobs_scheduler,
+)
+from ._ui_serving import (  # noqa: F401  # used here or by tests
+    _DIST,
+    _INDEX_HTML,
+    _cors_origins,
+    _install_access_log_filter,
+    _MuteHighFrequencyPolls,
+    _resolve_dist,
+)
 
 # Make the aiforge.* logger family visible regardless of uvicorn's default
 # config so diagnostics (e.g. the provider-test probe) actually print.
@@ -64,22 +103,23 @@ app = FastAPI(title="AIForge API")
 # Domain route modules split out of this file (see aiforge_core/api/routes/).
 # They only import shared helpers + runtime modules (never api.py), so including
 # them here is import-safe.
-from aiforge_core.api.routes import jobs as _r_jobs  # noqa: E402
-from aiforge_core.api.routes import repos as _r_repos  # noqa: E402
-from aiforge_core.api.routes import library as _r_library  # noqa: E402
-from aiforge_core.api.routes import rules as _r_rules  # noqa: E402
-from aiforge_core.api.routes import mcp as _r_mcp  # noqa: E402
-from aiforge_core.api.routes import integrations as _r_integrations  # noqa: E402
-from aiforge_core.api.routes import memory as _r_memory  # noqa: E402
+from aiforge_core.api.routes import admin as _r_admin  # noqa: E402
 from aiforge_core.api.routes import agents as _r_agents  # noqa: E402
 from aiforge_core.api.routes import chat as _r_chat  # noqa: E402
-from aiforge_core.api.routes import tickets as _r_tickets  # noqa: E402
-from aiforge_core.api.routes import runtime as _r_runtime  # noqa: E402
-from aiforge_core.api.routes import observability as _r_observability  # noqa: E402
 from aiforge_core.api.routes import files as _r_files  # noqa: E402
-from aiforge_core.api.routes import sync as _r_sync  # noqa: E402
-from aiforge_core.api.routes import admin as _r_admin  # noqa: E402
 from aiforge_core.api.routes import groups as _r_groups  # noqa: E402
+from aiforge_core.api.routes import integrations as _r_integrations  # noqa: E402
+from aiforge_core.api.routes import jobs as _r_jobs  # noqa: E402
+from aiforge_core.api.routes import library as _r_library  # noqa: E402
+from aiforge_core.api.routes import mcp as _r_mcp  # noqa: E402
+from aiforge_core.api.routes import memory as _r_memory  # noqa: E402
+from aiforge_core.api.routes import observability as _r_observability  # noqa: E402
+from aiforge_core.api.routes import repos as _r_repos  # noqa: E402
+from aiforge_core.api.routes import rules as _r_rules  # noqa: E402
+from aiforge_core.api.routes import runtime as _r_runtime  # noqa: E402
+from aiforge_core.api.routes import sync as _r_sync  # noqa: E402
+from aiforge_core.api.routes import tickets as _r_tickets  # noqa: E402
+
 app.include_router(_r_jobs.router)
 app.include_router(_r_repos.router)
 app.include_router(_r_library.router)
@@ -97,6 +137,26 @@ app.include_router(_r_sync.router)
 app.include_router(_r_groups.router)
 app.include_router(_r_admin.router)
 
+# Startup work lives in _startup; it runs in this order, before the bind
+# security check registered further down.
+for _startup_step in (
+        _repair_config_permissions,
+        _publish_ca_bundle,
+        _guard_and_announce_backends,
+        _ensure_skill_workflow_dirs,
+        _load_runtime_env,
+        _recover_interrupted_turns,
+        _ensure_model_context_on_boot,
+        _check_tool_parity,
+        _reassign_agents_on_boot,
+        _run_memory_migrations,
+        _start_jobs_scheduler,
+        _start_daily_reindex,
+):
+    # app.router: Starlette 1.x dropped app.add_event_handler; this is what
+    # the @app.on_event decorator calls.
+    app.router.add_event_handler("startup", _startup_step)
+
 # Backwards-compat re-exports: private chat helpers relocated into
 # aiforge_core.api.routes.chat but still imported by name from
 # aiforge_core.api.api (tests). Keep them reachable at the old path.
@@ -105,6 +165,8 @@ from aiforge_core.api.routes.chat import (  # noqa: E402,F401
     _delete_chat_workspace,
     _step_digest,
 )
+from aiforge_core.api.routes.files import serve_ticket_file  # noqa: E402,F401
+
 # Ticket + file helpers/models relocated into their route modules but still
 # referenced by name from aiforge_core.api.api (tests). Keep them reachable.
 from aiforge_core.api.routes.tickets import (  # noqa: E402,F401
@@ -112,490 +174,10 @@ from aiforge_core.api.routes.tickets import (  # noqa: E402,F401
     _persist_ticket_attachments,
     _remove_ticket_attachments,
 )
-from aiforge_core.api.routes.files import serve_ticket_file  # noqa: E402,F401
+
 # agent_config re-export — the agents/chat config surface moved to route
 # modules, but tests still reach it as aiforge_core.api.api._acfg.
 from aiforge_core.config import agent_config as _acfg  # noqa: E402,F401
-
-
-@app.on_event("startup")
-def _repair_config_permissions() -> None:
-    """Tighten an existing config dir before anything else reads it.
-
-    ``_atomic`` writes new files at 0600, but that never applied to the files
-    already on disk — ``agent_config.json`` was found holding a live api_key at
-    0644 long after that hardening landed, because nothing had rewritten it.
-    Runs first so a token is not world-readable for the length of a boot."""
-    try:
-        # Consolidate first: the credential files move into security/ (0700),
-        # and the repair below then tightens whatever is left in the root.
-        # Order matters — repairing a path we are about to move is wasted work,
-        # and moving after the repair leaves a boot's worth of exposure.
-        from aiforge_core.config import secure_store
-        secure_store.migrate_all()
-    except Exception as exc:  # noqa: BLE001 — never block boot on this
-        logging.getLogger("aiforge.secure_store").warning(
-            "credential consolidation skipped: %s", exc)
-    try:
-        from aiforge_core.config import permissions
-        permissions.repair()
-    except Exception as exc:  # noqa: BLE001 — never block boot on this
-        logging.getLogger("aiforge.permissions").warning(
-            "permission repair skipped: %s", exc)
-
-
-@app.on_event("startup")
-def _publish_ca_bundle() -> None:
-    """Put the estate's CA into this process's environment before anything
-    spawns a subprocess.
-
-    An internal CA used to reach the model client and the integration helpers
-    and stop there, so ``git clone`` against an internal GitLab failed with a
-    certificate error while the REST calls to the same host worked. Publishing
-    it here means git, gh, curl, npm and anything the agent runs in its shell
-    inherit the same trust, and an operator who already set one of those
-    variables keeps their value."""
-    try:
-        from aiforge_core.net import ca
-        ca.apply_to_process_env()
-    except Exception as exc:  # noqa: BLE001 — never block boot on this
-        logging.getLogger("aiforge.ca").warning("CA bundle not applied: %s", exc)
-
-
-@app.on_event("startup")
-def _guard_and_announce_backends() -> None:
-    """FIRST boot step: in data-driven mode (AIFORGE_REQUIRE_DATA_BACKEND=1)
-    abort LOUD if any data store still resolves to embedded SQLite, then log
-    one line naming every backend. The guard is intentionally hard-fail; the
-    log is soft (never crashes boot)."""
-    from aiforge_core.config import backends
-    backends.require_data_backends()   # no-op (SQLite-only build)
-    backends.boot_log()                # soft one-line announcement
-
-
-@app.on_event("startup")
-def _ensure_skill_workflow_dirs() -> None:
-    """Create the skills + workflows folders on boot so they exist for the
-    operator (and the agent) to add ``SKILL.md`` / ``WORKFLOW.md`` files into."""
-    try:
-        from aiforge_core.runtime import workflows
-        workflows.ensure_dirs()
-    except Exception:  # noqa: BLE001
-        pass
-
-
-# Postgres/Neo4j pointers from a prior HYBRID setup that may still linger in
-# runtime.env — this build is SQLite-only, so restoring them would make tickets/
-# chat/memory try a Postgres/Neo4j that no longer exists ("Postgres unreachable"
-# spam). Never restore them (unless AIFORGE_KEEP_PG=1 for a real external PG).
-_RUNTIME_ENV_DB_KEYS = frozenset({
-    "AIFORGE_PG_URL", "AIFORGE_DSN", "AIFORGE_FORCE_PG", "AIFORGE_PGMEM_DSN",
-    "AIFORGE_NEO4J_URI", "NEO4J_URI", "AIFORGE_NEO4J_USER",
-    "AIFORGE_NEO4J_PASSWORD", "AIFORGE_NEO4J_PASS",
-    "AIFORGE_REQUIRE_DATA_BACKEND", "AIFORGE_MEMORY_BACKEND",
-})
-
-
-def _apply_runtime_env_line(line: str, keep_pg: bool) -> None:
-    """Apply one ``KEY=VALUE`` line from runtime.env into os.environ. A real env
-    var / project .env already set WINS (never clobbered); comments/blanks and
-    stale Postgres/Neo4j keys (single mode is SQLite) are ignored."""
-    line = line.strip()
-    if not line or line.startswith("#") or "=" not in line:
-        return
-    k, _, v = line.partition("=")
-    k = k.strip()
-    if k in _RUNTIME_ENV_DB_KEYS and not keep_pg:
-        return                                # SQLite-only; ignore stale DB pointers
-    if k and k not in os.environ:             # don't clobber real env/.env
-        os.environ[k] = v.strip()
-
-
-@app.on_event("startup")
-def _load_runtime_env() -> None:
-    """Restore UI-persisted toggles (runtime.env) into the process env on boot
-    using a plain KEY=VALUE parser — NOT a shell source — so a value can never
-    be executed. A real env var / project .env already in the environment WINS
-    (setdefault), keeping them the operator's explicit escape hatch. Stale
-    Postgres/Neo4j backend keys are SKIPPED (single mode is SQLite)."""
-    try:
-        from aiforge_core.api._shared import _RUNTIME_ENV_PATH
-        if not os.path.isfile(_RUNTIME_ENV_PATH):
-            return
-        keep_pg = os.environ.get("AIFORGE_KEEP_PG") == "1"
-        with open(_RUNTIME_ENV_PATH) as f:
-            for raw in f:
-                _apply_runtime_env_line(raw, keep_pg)
-    except Exception:  # noqa: BLE001
-        pass
-
-
-def _models_below_context(want: int) -> list[str]:
-    """LM Studio's loaded model ids whose context is under ``want``. Queries the
-    local /api/v0/models endpoint; raises on any network/parse error (caller
-    swallows it)."""
-    import urllib.request as _u
-    import json as _j
-    base = os.environ.get("AIFORGE_LM_BASE_URL",
-                          "http://127.0.0.1:1234/v1").rstrip("/")
-    api0 = base.rsplit("/v1", 1)[0] + "/api/v0/models"
-    data = _j.loads(_u.urlopen(api0, timeout=8).read())
-    return [mid for m in data.get("data", [])
-            if m.get("state") == "loaded"
-            and (mid := m.get("id"))
-            and (m.get("loaded_context_length") or 0) < want]
-
-
-def _reload_models_to_context(below: list[str], want: int) -> None:
-    """Reload each named model at the ``want`` context. Best-effort per model."""
-    from aiforge_core.runtime import local_starter
-    for mid in below:
-        try:
-            local_starter.load_model_now(mid, want, ttl=43200)
-            _af_log.info("boot ctx-reload: %s -> %d", mid, want)
-        except Exception as _e:  # noqa: BLE001
-            _af_log.debug("boot ctx-reload failed for %s: %s", mid, _e)
-
-
-@app.on_event("startup")
-def _recover_interrupted_turns() -> None:
-    """A chat turn that was running when the server died becomes a stopped
-    turn, so Retry resumes it instead of the work being lost."""
-    try:
-        from aiforge_core.runtime import chat_turn_save
-        n = chat_turn_save.recover_all()
-        if n:
-            logging.getLogger("aiforge").info("recovered %d interrupted chat turn(s)", n)
-    except Exception as exc:  # noqa: BLE001 — never block boot on this
-        logging.getLogger("aiforge").warning("turn recovery skipped: %s", exc)
-
-
-@app.on_event("startup")
-def _ensure_model_context_on_boot() -> None:
-    """Post-deploy, LM Studio JIT-loads the local model at its small default
-    context (e.g. 8192), which HTTP-400s the big prompts a multi-file build needs
-    — the recurring `llm.exhausted`. On boot, in a background thread, query the
-    loaded model(s) and reload any below the target context. Model-agnostic;
-    best-effort; AIFORGE_NO_CTX_RELOAD=1 skips, AIFORGE_LM_CONTEXT sets target."""
-    if os.environ.get("AIFORGE_NO_CTX_RELOAD"):
-        return
-
-    def _work():
-        try:
-            import time as _t
-            _t.sleep(8)                       # let the server + LM Studio settle
-            try:
-                want = int(os.environ.get("AIFORGE_LM_CONTEXT", "262144"))
-            except ValueError:
-                want = 262144
-            below = _models_below_context(want)
-            if below:
-                _reload_models_to_context(below, want)
-        except Exception as _exc:  # noqa: BLE001 — never break boot
-            _af_log.debug("boot ctx-reload skipped: %s", _exc)
-
-    _spawn(_work, name="ctx-reload")
-
-
-@app.on_event("startup")
-def _check_tool_parity() -> None:
-    """Warn (loudly, on the box) if a cross-surface tool drifted between the
-    chat + Doer registries — the recurring 'works in chat, not in pipeline' bug.
-    Startup check, not just CI. Never blocks startup."""
-    try:
-        from aiforge_core.runtime import tool_manifest
-        tool_manifest.validate_or_warn()
-    except Exception:  # noqa: BLE001
-        pass
-
-
-@app.on_event("startup")
-def _reassign_agents_on_boot() -> None:
-    """Re-apply capability-based agent→model assignment on every boot (when
-    auto-assign is on, the default) so EXISTING configs pick up mapping fixes —
-    e.g. quick roles (enhancer/learner) moving OFF a reasoning model that returns
-    empty, ONTO the fast model. Manual mode (AIFORGE_AUTO_ASSIGN_AGENTS=0) is
-    left untouched. Best-effort; never blocks startup."""
-    try:
-        _r_agents._reassign_by_capability()
-    except Exception:  # noqa: BLE001
-        pass
-
-
-@app.on_event("startup")
-def _run_memory_migrations() -> None:
-    """Auto-upgrade EVERY deployment's memory into the current scoped-OKR shape:
-    legacy brief format → OKR envelope, compacted briefs → OKR learnings, then
-    flat okr/ → global/ + projects/<repo>/. Idempotent (one-shot steps are
-    marker-guarded); never blocks startup. This is the migration path
-    new/upgrading users get for free on ``run.sh`` (which boots this API)."""
-    def _run():
-        try:
-            from aiforge_core.memory import migrations
-            r = migrations.run_startup_migrations()
-            _af_log.info("memory migrations: %s",
-                         {k: (v.get("moved") or v.get("migrated")
-                              or v.get("skipped") or v.get("ok"))
-                          for k, v in r.items()})
-        except Exception:  # noqa: BLE001 — migration is best-effort
-            pass
-    # background thread: the classify step calls the LLM, which must not delay
-    # the API coming up. Migrations are idempotent + marker-guarded.
-    try:
-        _spawn(_run, name="memory-migrations")
-    except Exception:  # noqa: BLE001
-        _run()
-
-
-@app.on_event("startup")
-def _start_jobs_scheduler() -> None:
-    """Scheduled-jobs tick loop — daemon thread, same pattern as the
-    other background workers. AIFORGE_JOBS_DISABLE=1 skips it.
-
-    This decorator was STOLEN on 2026-07-07: a refactor inserted
-    `_check_tool_parity` directly beneath it and took the registration with it,
-    leaving `@app.on_event("startup")` written twice on that function and none
-    on this one. Every scheduled job since has sat in the table with a
-    next_run_at that nothing advanced — rows written, tickets never filed, no
-    error anywhere. Only POST /api/jobs/{id}/run-now did anything.
-    tests/python/api/test_jobs_scheduler_started.py now asserts the
-    registration, because nothing else would notice it disappearing again."""
-    try:
-        import threading
-
-        from aiforge_core.jobs import scheduler as jobs_scheduler
-        if jobs_scheduler._disabled():
-            return
-        _spawn(jobs_scheduler.run_loop, name="jobs-scheduler")
-    except Exception:  # noqa: BLE001 — startup must never crash the API
-        pass
-
-
-def _compact_at_hour() -> "int | None":
-    """Local hour for the single daily memory-compaction pass, or None to keep
-    the old hourly/idle/nightly schedule.
-
-    Default 18 (evening): every fold costs learner-LLM calls, so re-folding the
-    same briefs all day buys little over one pass once the day's work is in.
-    ``AIFORGE_COMPACT_AT_HOUR=off`` (or an explicit ``AIFORGE_COMPACT_EVERY_H``,
-    which only means anything on the hourly schedule) restores the old cadence.
-
-    Parsing lives in ``runtime.compact_window`` so the opportunistic chat folds
-    read the SAME window as this scheduled pass.
-    """
-    from aiforge_core.runtime import compact_window
-    return compact_window.at_hour()
-
-
-def _compact_mode_skips(idle_only: bool) -> bool:
-    """True when this pass should not fold anything at all.
-
-    The DAILY pass folds for every mode except 'off': it IS the trigger, and
-    'turns'/'explicit' with no idle daemon left would mean nothing folds.
-    """
-    mode = os.environ.get("AIFORGE_SESSION_COMPACT", "idle")
-    if mode in ("off", "0", "false", "no"):
-        return True                      # off by config, not a failure
-    return idle_only and mode != "idle"   # the idle daemon only runs for 'idle'
-
-
-def _compact_due(prev: dict | None, count: int, idle_only: bool) -> bool:
-    """Has this session earned a fold on this pass?
-
-    The idle daemon wants the two-scan handshake — an unchanged turn count since
-    the last scan means the chat went quiet. The daily pass cannot use that (it
-    would defer every session by a full day), so it takes anything with new
-    turns or an unfinished walk.
-    """
-    if count <= 0:
-        return False
-    if idle_only:
-        return (prev is not None and prev.get("count") == count
-                and not prev.get("done"))
-    return (prev or {}).get("count") != count or not (prev or {}).get("done")
-
-
-def _walk_compact(sid, repo, windows: int) -> tuple[bool, bool]:
-    """Fold a session's backlog; returns ``(drained, failed)``.
-
-    WALKs the whole backlog on the daily pass. One fold only distils the turns
-    that fit in AIFORGE_SESSION_COMPACT_CHARS and advances the offset by exactly
-    those, so a day's chat needs several windows — folding once would leave the
-    rest to a 30-min-idle daemon that no longer runs. Bounded by ``windows`` so
-    a runaway session cannot hold the pass forever.
-    """
-    from aiforge_core.runtime import chat_okr
-    for _ in range(windows):
-        r = chat_okr.compact_session(sid, repo=repo) or {}
-        _af_log.info("session compact sid=%s: %s", sid, r)
-        skipped = r.get("skipped")
-        if skipped in ("no_new", "too_short", "disabled"):
-            return True, False          # nothing left to fold for this session
-        if skipped:
-            # extract_failed / capture_failed / reset: the turns are still
-            # pending. This is what a provider outage looks like — the pass must
-            # NOT report success, or the whole retry budget never engages.
-            return False, skipped in ("extract_failed", "capture_failed")
-        if not r.get("ok"):
-            return False, True
-        if not r.get("remaining"):
-            return True, False          # backlog fully folded
-    return False, False                 # window cap — revisit next pass
-
-
-def _session_turns(sid) -> int | None:
-    from aiforge_core.runtime import chat_store
-    try:
-        return len(chat_store.get_messages(sid) or [])
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _prior_scan(state: dict, sid, stamp: str) -> dict | None:
-    prev = state.get(sid)
-    if prev is not None and prev.get("stamp") != stamp:
-        return None          # id reused after a reset — not the same chat
-    return prev
-
-
-def _scan_one_session(s: dict, *, idle_only: bool, state: dict,
-                      max_windows: int) -> bool:
-    """Fold one session if it is due. Returns True when the fold FAILED."""
-    from aiforge_core.runtime.chat_agent import _chat_repo_key
-    sid = (s or {}).get("id")
-    count = _session_turns(sid)
-    if count is None:
-        return False
-    stamp = str((s or {}).get("created_at") or (s or {}).get("started_at") or "")
-    prev = _prior_scan(state, sid, stamp)
-    if not _compact_due(prev, count, idle_only):
-        if prev is None or prev.get("count") != count:
-            state[sid] = {"count": count, "stamp": stamp, "done": False}
-        return False
-    cwd = (s or {}).get("cwd")
-    repo = _chat_repo_key(cwd) if cwd else None
-    try:
-        drained, failed = _walk_compact(sid, repo,
-                                        1 if idle_only else max_windows)
-    except Exception as exc:  # noqa: BLE001
-        _af_log.warning("session compact sid=%s failed: %s", sid, exc)
-        drained, failed = False, True
-    # done=False when the walk STOPPED SHORT (window cap, model down, error):
-    # tomorrow's pass must revisit the session even if no new message arrived,
-    # or the tail of a long day is folded by nobody, ever.
-    state[sid] = {"count": count, "stamp": stamp,
-                  "done": drained or idle_only}
-    return failed
-
-
-def _axis_done(groups_done, axis: str):
-    """The groups this axis already folded in the current cycle (or None)."""
-    return groups_done(axis) if groups_done else None
-
-
-def _axis_recorder(group_done, axis: str):
-    """Record a folded group against its axis (or don't record at all)."""
-    if group_done is None:
-        return None
-    return lambda key: group_done(axis, key)
-
-
-def _compact_chat_md(should_stop=None, skip_keys=None,
-                     on_group_done=None) -> "bool | str":
-    """HOURLY CHAT-MD COMPACTION — per-turn writes append forever to
-    ~/.aiforge/memory/*.md; md_store.compact() consolidates them (map-reduce
-    summary, archives originals) so the memory folder stays bounded + legible.
-
-    Two axes, both kept (overlap intended): per-REPO → the project brief you
-    load when opening a repo; per-TOPIC → cross-repo theme notes.
-    """
-    try:
-        from aiforge_core.memory import md_store
-        # Order matters: REPO first as a non-destructive projection
-        # (archive_sources=False) so every unit is folded into its project
-        # brief while the raw file still exists. TOPIC runs second and
-        # ARCHIVES the folded raw units (archive_sources=True) — so memory is
-        # organized BY TOPIC and the per-session raw notes stop piling up in
-        # the live folder (moved to archive/<ts>/, reversible). Both briefs
-        # re-feed their own consolidated OKR sections on the next run, so a
-        # unit's knowledge survives in both briefs after its raw file clears.
-        # min_group=1: fold even a LONE note into its brief — a single
-        # session is often its own topic, so min_group=2 would leave it
-        # sitting raw forever ("nothing to compact"). Singletons still get
-        # organized by topic + archived.
-        # Each axis keeps its OWN done-set: the same key names a repo brief on
-        # one axis and a topic brief on the other, so one shared set would skip
-        # a group that never ran.
-        r_repo = md_store.compact(group_by="repo", min_group=1, summarize=True,
-                                  model_role="learner", archive_sources=False,
-                                  should_stop=should_stop,
-                                  skip_keys=_axis_done(skip_keys, "repo"),
-                                  on_group_done=_axis_recorder(on_group_done, "repo"))
-        if r_repo.get("stopped"):
-            return "stopped"
-        r_topic = md_store.compact(group_by="topic", min_group=1, summarize=True,
-                                   model_role="learner", archive_sources=True,
-                                   should_stop=should_stop,
-                                   skip_keys=_axis_done(skip_keys, "topic"),
-                                   on_group_done=_axis_recorder(on_group_done, "topic"))
-        if r_topic.get("stopped"):
-            return "stopped"
-        # Retire per-run captures that masquerade as canonical briefs
-        # (compacted-<desc>-YYYYMMDD-hex.md) — compact() can never see them,
-        # so they'd pile up forever; their facts already live in the real
-        # compacted-<topic>.md brief. Archive them out (reversible).
-        r_sweep = md_store.sweep_stale_captures(archive=True)
-        # Retire DEAD briefs — a compacted-<key>.md left with only the
-        # boilerplate Objective (facts migrated elsewhere / emptied /
-        # compacted-compacted-* artifact). They read as "empty" memories.
-        r_empty = md_store.sweep_empty_briefs(archive=True)
-        # …and retire what has sat in archive/ past the retention window: every
-        # sweep above MOVES files in there and nothing ever took them out.
-        md_store.prune_archive()
-        # Apply the CROSS-BRIEF rules on every compaction (not just Compact
-        # all): merge topics, drop global-dup facts, resolve contradictions
-        # (latest wins), sweep emptied stubs, lint + (re)link briefs. Without
-        # this the hourly/Compact path never linked or deduped across briefs.
-        r_rules = md_store.finalize_briefs(role="learner", recent_only=True)
-        _af_log.info("md brief: repo=%s topic=%s sweep=%s empty=%s rules=%s",
-                     r_repo, r_topic, r_sweep, r_empty, r_rules)
-        return True
-    except Exception as exc:  # noqa: BLE001
-        _af_log.warning("md compaction failed: %s", exc)
-        return False
-
-
-def _dedupe_memory() -> None:
-    """Daily SEMANTIC DEDUP of the embedded memory store — write_unit only
-    dedups exact (repo,text); paraphrases pile up. Collapses near-duplicates on
-    the stored vectors (no sidecar)."""
-    try:
-        from aiforge_core.memory import backend_select
-        if backend_select.memory_backend() != "sqlite":
-            return
-        from aiforge_core.memory import sqlite_memory
-        _af_log.info("memory dedup: %s", sqlite_memory.dedupe())
-    except Exception as exc:  # noqa: BLE001
-        _af_log.warning("memory dedup failed: %s", exc)
-
-
-def _recompact_all() -> bool:
-    """Daily FULL RECOMPACT — the hourly chat-compact only folds briefs with NEW
-    live captures; a fact-only brief whose topic saw no new note keeps raw Facts
-    in its inbox, never LLM-consolidated into prose. Once a day, force a full
-    recompact so EVERY brief is re-folded through the model (dedupe / supersede
-    / re-map its accumulated facts), then dedupe + repo-profiles + reingest.
-    Heavy (LLM per brief) → daily, off-peak, opt-out via
-    AIFORGE_RECOMPACT_DAILY=0. Serializes against manual compact-all on
-    _COMPACT_LOCK, so overlap is safe."""
-    try:
-        from aiforge_core.memory import migrations
-        _af_log.info("daily recompact-all: %s", migrations.force_recompact_all())
-        return True
-    except Exception as exc:  # noqa: BLE001
-        _af_log.warning("daily recompact-all failed: %s", exc)
-        return False
-
 
 # Session-end OKR compaction — IDLE trigger. AIFORGE_SESSION_COMPACT selects
 # the trigger (idle | turns | explicit | off); the daemon only runs the idle
@@ -607,43 +189,6 @@ def _recompact_all() -> bool:
 _SESSION_SCAN_STATE: dict = {}
 
 
-def _compact_idle_sessions(idle_only: bool = True) -> bool:
-    """Fold every session that has earned it. False = a fold FAILED.
-
-    idle_only=False (the daily pass): fold EVERY session that has new turns.
-    compact_session is offset-based, so a session still in flight loses
-    nothing — tomorrow's pass picks up the turns added after this one.
-    """
-    if _compact_mode_skips(idle_only):
-        return True
-    try:
-        from aiforge_core.runtime import chat_store
-        sessions = chat_store.list_sessions() or []
-    except Exception as exc:  # noqa: BLE001
-        _af_log.warning("session-okr scan setup failed: %s", exc)
-        return False
-    max_windows = _int_env_or("AIFORGE_SESSION_COMPACT_MAX_WINDOWS", 20)
-    failed = False
-    for s in sessions:
-        if (s or {}).get("id") is None:
-            continue
-        failed = _scan_one_session(
-            s, idle_only=idle_only, state=_SESSION_SCAN_STATE,
-            max_windows=max_windows) or failed
-    live = {(s or {}).get("id") for s in sessions}
-    for sid in tuple(_SESSION_SCAN_STATE):
-        if sid not in live:
-            _SESSION_SCAN_STATE.pop(sid, None)
-    return not failed
-
-
-def _int_env_or(key: str, default: int, *, low: int = 1) -> int:
-    try:
-        return max(low, int(os.environ.get(key, str(default))))
-    except (TypeError, ValueError):
-        return default
-
-
 # Which stages of the evening pass already succeeded TODAY. The pass raises so
 # a failure is retried — but the retry must not re-run the heavy stages that
 # worked (one broken session fold otherwise costs a second full recompact),
@@ -651,513 +196,9 @@ def _int_env_or(key: str, default: int, *, low: int = 1) -> int:
 _PASS_DONE: dict = {"day": None, "stages": set()}
 
 
-def _daily_compact() -> None:
-    """THE one evening pass. Order matters: sessions → captures first, then
-    captures → briefs, then the full re-fold of every brief, so a day's chat
-    reaches its brief in the SAME pass instead of waiting a day."""
-    today = _date.today()
-    if _PASS_DONE["day"] != today:
-        _PASS_DONE.update(day=today, stages=set())
-    recompact_on = os.environ.get("AIFORGE_RECOMPACT_DAILY", "1") != "0"
-    ok = True
-    # Each stage is isolated: as three separately registered tasks one could
-    # not cancel the others, and folding them into one function must not
-    # quietly reintroduce that coupling.
-    stages = (("sessions", lambda: _compact_idle_sessions(idle_only=False)),
-              ("briefs", _compact_chat_md),
-              ("recompact", _recompact_all if recompact_on else lambda: True))
-    for stage, run in stages:
-        if stage in _PASS_DONE["stages"]:
-            continue                     # already done today — skip on retry
-        try:
-            if run():
-                _PASS_DONE["stages"].add(stage)
-            else:
-                ok = False
-        except Exception as exc:  # noqa: BLE001
-            _af_log.warning("daily compaction stage %s failed: %s", stage, exc)
-            ok = False
-    if not ok:
-        # RAISE so the scheduler retries (bounded) instead of counting a pass
-        # that did nothing as today's compaction.
-        raise RuntimeError("daily compaction pass failed — see warnings")
-
-
-def _register_hourly_jobs(_pd, hour: int) -> None:
-    """The jobs that run regardless of which compaction schedule is in force."""
-    # Run the INCREMENTAL reindex frequently (default every 3h), not once a day,
-    # so all indexed layers (chunks + tree-sitter symbols + graphify) refresh
-    # within hours of a commit. Cheap: reindex_all merkle-skips unchanged repos,
-    # so an idle tick is a near-instant no-op; only a CHANGED repo pays.
-    every_h = _int_env_or("AIFORGE_REINDEX_EVERY_H", 3)
-    _pd.register("reindex", _r_memory._spawn_reindex_all, every_s=every_h * 3600)
-    _pd.register("memory-dedup", _dedupe_memory,
-                 at_hour=max(0, min(23, hour + 3)))
-
-
-def _register_legacy_compaction(_pd) -> None:
-    """The old hourly/idle/nightly schedule (AIFORGE_COMPACT_AT_HOUR=off)."""
-    _pd.register("chat-compact", _compact_chat_md,
-                 every_s=_int_env_or("AIFORGE_COMPACT_EVERY_H", 1) * 3600)
-    _pd.register("session-okr-compact", _compact_idle_sessions,
-                 every_s=max(300, _int_env_or("AIFORGE_SESSION_IDLE_MIN", 30) * 60))
-    # A NIGHT local hour (AIFORGE_RECOMPACT_HOUR, default 02:00 local) — a
-    # dedicated knob, NOT tied to the reindex hour, so the heavy nightly
-    # compact-all lands off-peak regardless of when reindex runs.
-    if os.environ.get("AIFORGE_RECOMPACT_DAILY", "1") != "0":
-        _pd.register("recompact-all", _recompact_all,
-                     at_hour=max(0, min(23, _int_env_or(
-                         "AIFORGE_RECOMPACT_HOUR", 2, low=0))))
-
-
-def _idle_sessions_stage(cp) -> str:
-    """Fold every session with new turns, yielding between sessions."""
-    if _compact_mode_skips(False):
-        return "done"
-    try:
-        from aiforge_core.runtime import chat_store
-        sessions = chat_store.list_sessions() or []
-    except Exception as exc:  # noqa: BLE001
-        _af_log.warning("idle compaction: session scan failed: %s", exc)
-        return "failed"
-    max_windows = _int_env_or("AIFORGE_SESSION_COMPACT_MAX_WINDOWS", 20)
-    failed = False
-    for s in sessions:
-        if (s or {}).get("id") is None:
-            continue
-        if cp.should_stop():
-            return "stopped"
-        failed = _scan_one_session(s, idle_only=False, state=_SESSION_SCAN_STATE,
-                                   max_windows=max_windows) or failed
-    return "failed" if failed else "done"
-
-
-def _idle_briefs_stage(cp) -> str:
-    """Fold the md briefs, RESUMING at the group the last window stopped on.
-
-    Without the checkpoint's per-group memory every interruption sent the next
-    idle window back to group one — on a box used in short bursts the early
-    groups were re-folded (LLM calls and all) over and over and the later ones
-    were never reached."""
-    res = _compact_chat_md(should_stop=cp.should_stop,
-                           skip_keys=cp.groups_done, on_group_done=cp.group_done)
-    if res == "stopped":
-        return "stopped"
-    return "done" if res else "failed"
-
-
-def _idle_recompact_stage(cp) -> str:
-    if os.environ.get("AIFORGE_RECOMPACT_DAILY", "1") == "0":
-        return "done"
-    try:
-        from aiforge_core.memory import migrations
-        out = migrations.force_recompact_all(checkpoint=cp)
-    except Exception as exc:  # noqa: BLE001
-        _af_log.warning("idle compaction: full re-fold failed: %s", exc)
-        return "failed"
-    if out.get("stopped"):
-        return "stopped"
-    # Soft-failed steps mean the cycle did NOT do its work — retry it (bounded
-    # by _MAX_STAGE_FAILURES) rather than recording the stage as complete.
-    if out.get("failed_steps"):
-        _af_log.warning("idle compaction: re-fold steps failed: %s",
-                        ", ".join(out["failed_steps"]))
-        return "failed"
-    return "done"
-
-
-def _idle_compact() -> None:
-    """The idle pass: compact (or resume compacting) only while nobody is using
-    AIForge — see runtime.compact_idle."""
-    from aiforge_core.runtime import compact_idle
-    outcome = compact_idle.run_when_idle([
-        ("sessions", _idle_sessions_stage),
-        ("briefs", _idle_briefs_stage),
-        ("recompact", _idle_recompact_stage),
-    ])
-    if outcome not in ("busy", "not-due"):
-        _af_log.info("idle compaction: %s", outcome)
-
-
-def _register_idle_compaction(_pd) -> None:
-    """COMPACTION WHENEVER IDLE (default): a cheap check every
-    AIFORGE_COMPACT_CHECK_S (300 s) that compacts — resuming any unfinished
-    cycle — only while nobody is using the box."""
-    _pd.register("idle-compact", _idle_compact,
-                 every_s=_int_env_or("AIFORGE_COMPACT_CHECK_S", 300, low=30))
-
-
-def _register_daily_compaction(_pd, daily_hour: int) -> None:
-    """ONE COMPACTION A DAY, IN THE EVENING (default).
-
-    Every local fold is LLM-heavy, and running them hourly / per idle session
-    spends tokens all day re-folding briefs that barely moved.
-
-    STRICT hour: the missed-slot catch-up must NOT drag this pass into the
-    working day. The whole point of the evening slot is that the LLM-heavy fold
-    happens when the operator is done — a laptop that was asleep at 18:00
-    yesterday would otherwise start compacting at 09:00 the next morning, which
-    is exactly the intrusion the schedule exists to remove. It simply waits for
-    today's 18:00 instead. AIFORGE_COMPACT_CATCH_UP=1 restores run-at-next-wake.
-    """
-    from aiforge_core.runtime import compact_window as _cw
-    _pd.register("daily-compact", _daily_compact, at_hour=daily_hour,
-                 strict_hour=not _cw.catch_up_enabled(),
-                 strict_max_skip_days=_int_env_or(
-                     "AIFORGE_COMPACT_MAX_SKIP_DAYS", 3, low=0))
-
-
-def _register_artifact_merge(_pd) -> None:
-    """Nightly library merge — fold duplicate rules / skills / workflows.
-
-    They accumulate because the writers key on a slug: "run tests first" and
-    "always run the tests" are two files saying one thing, and every one of
-    them is prompt overhead on turns that never use it. Runs in the small hours
-    (AIFORGE_MERGE_HOUR, default 04:00) at role=learner, so it is under the same
-    rate ceiling as every other unattended sender; AIFORGE_ARTIFACT_MERGE=0
-    turns it off.
-
-    NOT strict_hour: unlike compaction there is no working-day intrusion to
-    avoid — the pass is a handful of small completions — so a laptop that was
-    asleep at 04:00 should still reconcile the library at the next wake.
-    """
-    from aiforge_core.runtime import artifact_merge as _am
-    if not _am.enabled():
-        return
-    # Clamped to a real hour: periodic treats at_hour as [0-23] and a typo'd
-    # 25 would give a task whose next-run time never arrives.
-    hour = min(23, _int_env_or("AIFORGE_MERGE_HOUR", 4, low=0))
-    _pd.register("artifact-merge", _am.scheduled_pass, at_hour=hour)
-
-
-@app.on_event("startup")
-def _start_daily_reindex() -> None:
-    """Once a day, re-index EVERY registered repo/docs source so semantic
-    recall + the graphify graph stay current with the code (the RepoMap is
-    already on-the-fly fresh; this refreshes the chunk/graph layers). Runs at
-    AIFORGE_REINDEX_HOUR (local, default 03:00). Off with
-    AIFORGE_REINDEX_DAILY=0 or AIFORGE_JOBS_DISABLE=1."""
-    if os.environ.get("AIFORGE_REINDEX_DAILY", "1") in ("0", "false", "no"):
-        return
-    if os.environ.get("AIFORGE_JOBS_DISABLE", "") in ("1", "true", "yes"):
-        return
-    try:
-        hour = max(0, min(23, int(os.environ.get("AIFORGE_REINDEX_HOUR", "3"))))
-    except ValueError:
-        hour = 3
-    from aiforge_core.runtime import periodic as _pd
-    _register_hourly_jobs(_pd, hour)
-    _register_artifact_merge(_pd)
-    # Compaction is ENABLED BY DEFAULT (Option A): the per-category rate limiter
-    # meters it as compaction (the remainder of llm_max_rpm), so it can no longer spend a
-    # burst of requests before the app is usable. Turn it OFF from Settings
-    # (persists AIFORGE_COMPACT_DISABLE=1). One source of truth for the flag:
-    # compact_window.disabled(). Reindex + hourly jobs run regardless.
-    from aiforge_core.runtime import compact_window as _cw
-    if not _cw.disabled():
-        daily_hour = _compact_at_hour()
-        if _cw.idle_mode():
-            _register_idle_compaction(_pd)
-        elif daily_hour is None:
-            _register_legacy_compaction(_pd)
-        else:
-            _register_daily_compaction(_pd, daily_hour)
-    _pd.start()
-
-
-# ─────────────────────── API auth + bind-host guard ─────────────────────
-# This control plane RUNS SHELL and EDITS FILES over HTTP, so exposing it
-# unauthenticated is a remote-code-execution surface. Design (pragmatic, must
-# not break local dev / the UI / the tests):
-#   * AIFORGE_API_TOKEN set  → every /api/* route (except health) requires
-#     EITHER a matching ``Authorization: Bearer <token>`` (or
-#     ``X-AIForge-Token``) OR — only while AIFORGE_TRUST_LOOPBACK is on — a
-#     loopback peer address. Loopback is trusted by default because reaching
-#     the socket from this machine already implies read/write access to the
-#     same files over the filesystem.
-#   * THE ADMIN SURFACE (``/admin`` + ``/api/admin/*``) ALWAYS requires the
-#     token when one is configured, loopback or not: it is the highest-value
-#     screen and must not rest on the weakest signal we have.
-#   * token unset → open (preserves local dev + the UI on localhost); a
-#     non-loopback bind in that state is refused at boot instead.
-#   * NON-loopback bind + no token → REFUSE TO BOOT (see _security_boot_guard).
-# The UI static assets, ``/files`` and ``/`` stay open (no token) so the app
-# shell can load; the browser then sends the operator-configured token on API
-# calls. A single shared token — not user accounts. Keep it simple.
-
-
-def _api_token() -> str:
-    return os.environ.get("AIFORGE_API_TOKEN", "").strip()
-
-
-def _sync_open() -> bool:
-    """Whether the hub sync surface answers without a credential.
-
-    **Open by default.** The admin's whole job is to receive every machine's
-    memory and serve back what it distilled, and the deployment this was built
-    for puts it on a trusted interface (a LAN or a WireGuard address) where the
-    spokes need no secret to keep in step. ``AIFORGE_SYNC_AUTH=1`` closes it
-    again, and then the ordinary API token is what a spoke must present.
-
-    This is a *scoped* decision: it opens ``/api/memory/sync/*`` and nothing
-    else. The control plane — which runs shells and writes config — still
-    requires ``AIFORGE_API_TOKEN`` from every non-loopback caller, so an open
-    sync surface never becomes an open shell.
-    """
-    return not _flag_on("AIFORGE_SYNC_AUTH", "0")
-
-
-def _is_sync_path(path: str) -> bool:
-    """The hub sync surface ``AIFORGE_SYNC_AUTH=0`` opens (and ONLY it).
-
-    Matched on the raw request path, so a dot-segment or encoded-traversal
-    variant (``/api/memory/sync/../chat/agent``) is rejected here rather than
-    trusted to dead-end at the router: Starlette does not collapse ``..``, but a
-    fronting proxy might, and an open sync path must never be a path that could
-    dispatch to the control plane. The legitimate sync paths contain none of
-    these, so refusing them costs nothing.
-    """
-    if not path.startswith("/api/memory/sync/"):
-        return False
-    lowered = path.lower()
-    return not ("//" in path or ".." in path
-                or "%2e" in lowered or "%2f" in lowered or "%5c" in lowered)
-
-
-def _flag_on(name: str, default: str = "1") -> bool:
-    return (os.environ.get(name) or default).strip().lower() \
-        not in ("0", "false", "no", "off")
-
-
-def _trust_loopback() -> bool:
-    """Whether a loopback TCP peer counts as authenticated (AIFORGE_TRUST_LOOPBACK).
-
-    Default ON so a bare local run keeps working with no configuration. It MUST
-    be set to ``0`` on any deployment that is fronted by a reverse proxy on the
-    same host (Cloudflare → nginx → this app is the documented one): the peer
-    address the app sees is then the proxy's ``127.0.0.1`` for every request on
-    earth, so implicit loopback trust becomes a full auth bypass. The trust is
-    a deliberate configuration statement, never an accident of topology.
-    """
-    return _flag_on("AIFORGE_TRUST_LOOPBACK")
-
-
-def _bind_host() -> str:
-    """Pre-boot HINT for the host uvicorn binds to (AIFORGE_BIND_HOST, set by
-    run.sh / docker-compose). Only a hint: the real listening address is read
-    off the running server by ``_observed_bind_hosts`` — an env var says nothing
-    about what a ``uvicorn --host 0.0.0.0`` actually did."""
-    return (os.environ.get("AIFORGE_BIND_HOST") or "127.0.0.1").strip() or "127.0.0.1"
-
-
-def _find_uvicorn_server():
-    """Walk the coroutine frames of the live asyncio tasks for the running
-    uvicorn ``Server``. Startup hooks run inside uvicorn's lifespan task, not
-    under ``Server.startup``, so the server is not on our own stack. None under
-    TestClient / no running loop / anything we cannot introspect."""
-    try:
-        import asyncio
-        tasks = asyncio.all_tasks()
-    except Exception:  # noqa: BLE001
-        return None
-    for task in tasks:
-        coro = task.get_coro()
-        while coro is not None:
-            frame = getattr(coro, "cr_frame", None)
-            if frame is None:
-                break
-            obj = frame.f_locals.get("self")
-            cls = type(obj)
-            if cls.__name__ == "Server" and cls.__module__.split(".")[0] == "uvicorn":
-                return obj
-            coro = getattr(coro, "cr_await", None)
-    return None
-
-
-def _server_socket_hosts(server) -> list[str]:
-    """The hosts of the server's REAL listening sockets (``getsockname``)."""
-    hosts: list[str] = []
-    for asgi_server in (getattr(server, "servers", None) or []):
-        for sock in (getattr(asgi_server, "sockets", None) or []):
-            try:
-                hosts.append(str(sock.getsockname()[0]))
-            except Exception:  # noqa: BLE001 — a unix socket has no host tuple
-                continue
-    return hosts
-
-
-def _observed_bind_hosts() -> list[str]:
-    """The addresses this process is REALLY listening on, or ``[]`` if unknown.
-
-    ``AIFORGE_BIND_HOST`` is exported by run.sh only, so a systemd unit, a
-    Dockerfile CMD or a developer typing ``uvicorn --host 0.0.0.0`` used to
-    satisfy the boot guard with the loopback default while publishing a
-    shell-running control plane to the LAN. So ask the server, not the env.
-
-    Real listening sockets win when they exist; ``config.host`` is the answer
-    during startup, before the sockets are created. Returns ``[]`` under
-    TestClient / gunicorn / anything else we cannot introspect, which the caller
-    must treat as "unobserved", not as "loopback".
-    """
-    server = _find_uvicorn_server()
-    if server is None:
-        return []
-    hosts = _server_socket_hosts(server)
-    if hosts:
-        return hosts
-    config = getattr(server, "config", None)
-    if getattr(config, "uds", None) or getattr(config, "fd", None) is not None:
-        return []                      # not an inet bind we can reason about
-    host = getattr(config, "host", None)
-    return [str(host)] if host else []
-
-
-def _is_loopback_host(host: str) -> bool:
-    h = (host or "").strip().lower()
-    if h in ("", "localhost", "127.0.0.1", "::1"):
-        return True
-    if h.endswith(".localhost"):
-        return True
-    try:
-        return ipaddress.ip_address(h).is_loopback
-    except ValueError:
-        return False
-
-
-def _compute_exposed_hosts(hosts, token, boot_log):
-    """The non-loopback hosts this process is actually exposed on (observed binds, or the AIFORGE_BIND_HOST fallback with a warning when no token)."""
-    observed = _observed_bind_hosts() if hosts is None else list(hosts)
-    if observed:
-        exposed = [h for h in observed if not _is_loopback_host(h)]
-    else:
-        # Nothing to observe (TestClient, gunicorn, an embedder): fall back to
-        # the pre-boot hint and SAY SO, because the fallback is the thing that
-        # used to be trusted silently.
-        env_host = _bind_host()
-        exposed = [] if _is_loopback_host(env_host) else [env_host]
-        if not token:
-            boot_log.warning(
-                "could not observe the real listening address; falling back to "
-                "AIFORGE_BIND_HOST=%s for the security guard — if this process "
-                "actually binds a non-loopback address, set AIFORGE_API_TOKEN.",
-                env_host)
-    return exposed
-
-
-def _log_sync_openness(boot_log):
-    """Log whether the open (credential-less) memory-sync endpoints are reachable only from loopback (info) or bound to a non-loopback host (warning)."""
-    if _sync_open():
-        # Not a refusal — it is the documented default (see ``_sync_open``) —
-        # but the severity depends entirely on what this box is bound to, so the
-        # line says which case it is rather than stating the setting and leaving
-        # the operator to work it out.
-        _bound = _bind_host()
-        if _is_loopback_host(_bound):
-            boot_log.info("memory sync is open (no credential) on "
-                          "/api/memory/sync/* — reachable from this machine "
-                          "only, since the bind host is %s.", _bound)
-        else:
-            boot_log.warning(
-                "memory sync is OPEN (no credential) on /api/memory/sync/* AND "
-                "bound to %s. Anything that can reach this port can WRITE "
-                "memory that the merge folds into every machine's working "
-                "knowledge. Keep this on a trusted interface (LAN/WireGuard), "
-                "or set AIFORGE_SYNC_AUTH=1 here and AIFORGE_API_TOKEN on every "
-                "machine.", _bound)
-
-
-
-def _security_boot_guard(hosts: list[str] | None = None) -> None:
-    """Refuse to boot when a shell-running control plane is listening on a
-    non-loopback address without a token. Raises ``RuntimeError`` — called from
-    a startup hook (where the REAL bind is observable) AND directly
-    unit-testable by passing ``hosts``."""
-    token = _api_token()
-    boot_log = logging.getLogger("aiforge.boot")
-
-    _log_sync_openness(boot_log)
-    exposed = _compute_exposed_hosts(hosts, token, boot_log)
-    if not exposed:
-        return
-    where = ", ".join(exposed)
-    # Escape hatch: the operator fronts the api with their OWN access layer
-    # (Cloudflare Access / a WireGuard-only reverse proxy / nginx auth) and
-    # accepts responsibility for exposure. Explicit opt-out so a bind to a
-    # tunnel/LAN interface works without the app requiring a token.
-    fronted = os.environ.get("AIFORGE_ALLOW_UNAUTH_NONLOOPBACK", "").strip().lower() \
-        in ("1", "true", "yes", "on")
-    if not token and not fronted:
-        raise RuntimeError(
-            f"AIForge refuses to boot: listening on a non-loopback host ({where}) "
-            "exposes a shell-running control plane. Set AIFORGE_API_TOKEN to a "
-            "shared secret (and configure the UI with it), bind 127.0.0.1, OR "
-            "set AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1 if you front it yourself "
-            "(Cloudflare / WireGuard-only proxy)."
-        )
-    if not token and fronted:
-        boot_log.warning(
-            "api listening on %s WITHOUT a token (AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1) "
-            "— ensure your own access layer (Cloudflare/WireGuard/nginx) fronts it, "
-            "and set AIFORGE_TRUST_LOOPBACK=0 so the proxy's loopback peer address "
-            "does not read as authenticated.", where)
-    elif token and _trust_loopback():
-        boot_log.warning(
-            "api listening on %s with AIFORGE_TRUST_LOOPBACK on — if a reverse "
-            "proxy on THIS host forwards to it, every request arrives from "
-            "127.0.0.1 and skips the token; set AIFORGE_TRUST_LOOPBACK=0.", where)
-
-
 @app.on_event("startup")
 def _enforce_bind_security() -> None:
     _security_boot_guard()
-
-
-def _is_admin_path(path: str) -> bool:
-    """The operator admin surface: the page and its data endpoint."""
-    return path == "/admin" or path.startswith("/admin/") or path.startswith("/api/admin")
-
-
-def _auth_exempt(path: str) -> bool:
-    """Routes reachable without a token even when one is configured: health,
-    the UI shell / static assets and the root redirect. Everything else under
-    ``/api/`` is protected — as is the admin surface, which lives outside
-    ``/api/`` but is never exempt."""
-    if _is_admin_path(path):
-        return False
-    if path == "/api/health":
-        return True
-    # The hub sync surface, unless the operator closed it. Exempt rather than
-    # "authenticated by a second credential": there is no mesh key any more, so
-    # a spoke either needs the control-plane token (AIFORGE_SYNC_AUTH=1) or
-    # nothing at all — and "nothing at all" is exactly an exemption.
-    if _sync_open() and _is_sync_path(path):
-        return True
-    return not path.startswith("/api/")
-
-
-def _request_is_loopback(request: Request) -> bool:
-    """True when the request's TCP peer is this machine.
-
-    Delegates to ``routes.admin._require_loopback`` — the admin page already
-    owns this predicate, and a security check with two implementations WILL
-    drift. That helper decides purely from ``request.client.host`` (the real
-    peer address); X-Forwarded-For / X-Real-IP / Host / Forwarded are
-    attacker-controlled and are deliberately never consulted. It raises
-    ``HTTPException`` for "not local", which is adapted to a bool here.
-    """
-    from fastapi import HTTPException as _HTTPException
-    try:
-        _r_admin._require_loopback(request)
-    except _HTTPException:
-        return False
-    return True
-
-
-def _extract_request_token(request: Request) -> str:
-    auth = request.headers.get("authorization", "")
-    if auth[:7].lower() == "bearer ":
-        return auth[7:].strip()
-    return (request.headers.get("x-aiforge-token", "") or "").strip()
 
 
 @app.middleware("http")
@@ -1205,62 +246,12 @@ async def _require_token(request: Request, call_next):
     return await call_next(request)
 
 
-def _cors_origins() -> list[str]:
-    """Allowlist from AIFORGE_CORS_ORIGINS (comma-separated); defaults to the
-    localhost UI origins. NEVER ``*`` — this control plane mutates state."""
-    raw = os.environ.get("AIFORGE_CORS_ORIGINS", "").strip()
-    if raw:
-        return [o.strip() for o in raw.split(",") if o.strip()]
-    return ["http://127.0.0.1:8799", "http://localhost:8799"]
-
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-# Quiet the uvicorn ACCESS log for high-frequency polls: the /admin page hits
-# /api/admin/sync-status every 10s and probes hit /api/health, so each would
-# otherwise write an access line several times a minute, forever, burying the
-# lines that matter. This filters ONLY those paths (and only the access log —
-# errors and app logs are untouched); override the set with
-# AIFORGE_ACCESS_LOG_MUTE (comma-separated substrings), or "" to mute nothing.
-class _MuteHighFrequencyPolls(logging.Filter):
-    """Drop uvicorn.access lines whose path matches any muted substring."""
-
-    def __init__(self, muted: list[str]):
-        super().__init__()
-        self._muted = muted
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        # uvicorn.access passes (client, method, full_path, http_ver, status)
-        # as record.args; fall back to the formatted message otherwise.
-        try:
-            path = str(record.args[2]) if record.args else record.getMessage()
-        except (IndexError, TypeError):
-            path = record.getMessage()
-        return not any(m in path for m in self._muted)
-
-
-def _install_access_log_filter() -> None:
-    raw = os.environ.get("AIFORGE_ACCESS_LOG_MUTE",
-                         "/api/admin/sync-status,/api/health")
-    muted = [s.strip() for s in raw.split(",") if s.strip()]
-    if not muted:
-        return
-    log = logging.getLogger("uvicorn.access")
-    # Match by CLASS NAME, not isinstance. A module reload (the test suite does
-    # several, and uvicorn --reload does it in dev) rebinds this module's
-    # `_MuteHighFrequencyPolls` to a BRAND NEW class object, so the filter
-    # installed by the previous incarnation is not an instance of it — the
-    # isinstance guard passed every time and stacked another filter on the
-    # process-wide `uvicorn.access` logger. Reached 40 in one suite run.
-    if not any(type(f).__name__ == "_MuteHighFrequencyPolls"
-               for f in log.filters):
-        log.addFilter(_MuteHighFrequencyPolls(muted))
 
 
 _install_access_log_filter()
@@ -1274,105 +265,6 @@ try:
     _otel.setup()
 except Exception as _exc:
     print(f"[boot] otel setup skipped: {_exc}")
-
-
-# ─────────────────────────── Helpers ────────────────────────────────────
-_INDEX_HTML = 'index.html'
-
-
-_CHAT_SYSTEM = """You are the AIForge chat agent. The operator asks
-questions about our OneShell codebase / past tickets / decisions. You
-answer ONLY from the supplied ``## Context`` block — do NOT invent
-file paths, symbols, versions, or commit shas the context doesn't
-mention.
-
-Output shape:
-- 1-2 line direct answer up top.
-- Then a short bullet list of the specific context rows you used
-  (cite by [tier] and wing or ticket identifier).
-- If the context is too thin to answer, say so in one line and
-  suggest which MCP tool the operator should run (sym_lookup,
-  cross_repo_flow, ticket_brief, etc.). No apology, no filler.
-"""
-
-
-_TICKET_RE = re.compile(r"\b(ONE-\d+)\b", re.I)
-_CLASS_RE = re.compile(r"\b([A-Z][A-Za-z0-9]{3,})\b")
-_REPO_RE = re.compile(r"\b(Pos[A-Z][A-Za-z]+|oneshell-[a-z-]+|MongoDbService|"
-                      r"GatewayService|BusinessService|TallyConnector|"
-                      r"EmailService|NotificationService|Gst[A-Z][A-Za-z]*|"
-                      r"VendorIntegrationService|WhatsappApiService|"
-                      r"Scheduler|QuartzScheduler|StoreIntelligence)\b")
-
-
-_NORMALIZE_SYSTEM = """You are a query normalizer. The user will send one
-short question that may contain typos, bad grammar, or missing articles.
-Rewrite it as ONE clean English line that preserves intent, expands
-obvious acronyms (pos → pos client backend, wg → wireguard), and fixes
-typos. Do NOT answer the question. Do NOT add anything beyond the
-rewritten query. Max 200 chars."""
-
-
-def _normalize_query(query: str) -> str:
-    """Tiny LLM pass that cleans typos + grammar so retrieval (BM25 and
-    vector) actually hits. Falls back to the raw query on any failure.
-
-    Skipped for queries already clean-ish (length < 12 chars, OR only
-    one word) to avoid burning a call on trivial inputs.
-    """
-    q = query.strip()
-    if len(q) < 12 or " " not in q:
-        return q
-    from aiforge_core.llm import complete as _complete
-    try:
-        result = _complete(
-            "chat",
-            [
-                {"role": "system", "content": _NORMALIZE_SYSTEM},
-                {"role": "user", "content": q[:600]},
-            ],
-            max_tokens=128, temperature=0.0,
-            timeout_s=30,
-        )
-        if not result:
-            return q
-        # Strip stray quoting / leading labels.
-        result = result.strip().strip('"\' ')
-        for prefix in ("normalized:", "query:", "rewritten:"):
-            if result.lower().startswith(prefix):
-                result = result[len(prefix):].strip()
-        return result[:300] or q
-    except Exception:
-        return q
-
-# ─────────────────────────── Static UI ──────────────────────────────────
-# If the Vite production build exists, serve it at /ui/ and redirect "/" to it.
-#
-# Two places, and the CHECKOUT one comes first:
-#   1. A REPO CHECKOUT — ../../web/dist, where `npm run build` puts it.
-#   2. INSTALLED (wheel / .deb / .app / .msi) — the build copies web/dist into
-#      the package as aiforge_core/web_dist, because ../../web/dist from inside
-#      site-packages is nowhere at all. Without this the packaged app serves a
-#      working API and a 404 for its own UI.
-#
-# The order used to be the other way round, and it cost a real afternoon: once
-# installer/build_payload.sh has run in a checkout, aiforge_core/web_dist stays
-# behind as an untracked copy and SHADOWED the freshly built UI for ever after.
-# The symptom is a new screen that never appears no matter how many times you
-# rebuild — the API is new, the UI is frozen at whenever the payload was last
-# built. An installed package has no ../../web/dist, so it is unaffected.
-def _resolve_dist() -> str:
-    here = os.path.dirname(__file__)
-    candidates = (
-        os.path.join(here, "..", "..", "web", "dist"),
-        os.path.join(here, "..", "web_dist"),
-    )
-    return next((os.path.abspath(c) for c in candidates
-                 if os.path.isdir(os.path.abspath(c))),
-                os.path.abspath(candidates[0]))
-
-
-_DIST = _resolve_dist()
 
 if os.path.isdir(_DIST):
     # SPA fallback: any unknown path under /ui/ returns index.html so

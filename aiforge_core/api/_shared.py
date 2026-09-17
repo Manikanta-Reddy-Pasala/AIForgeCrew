@@ -44,7 +44,7 @@ def _ticket_files_base():
 
 
 # runtime.env — UI-persisted toggles restored into the process env on boot.
-# The path + lock live here (shared) so both api.py's startup loader and the
+# The path + lock live here (shared) so both the startup loader (api/_startup.py) and the
 # runtime route module's _persist_env write/read the same single location.
 def _runtime_env_path() -> str:
     """runtime.env holds DB URLs and whatever key the Settings UI persisted, so

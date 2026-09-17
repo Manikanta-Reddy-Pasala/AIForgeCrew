@@ -85,7 +85,7 @@ build_wheel() {
         npm ci --ignore-scripts --no-audit --no-fund --loglevel=error && npm run build --silent )
   fi
   # The API resolves its UI from aiforge_core/web_dist when installed (see the
-  # two candidates in api.py) — the repo path does not exist inside site-packages.
+  # two candidates in api/_ui_serving.py) — the repo path does not exist inside site-packages.
   echo "==> staging the UI into the package (aiforge_core/web_dist)"
   rm -rf "$REPO_ROOT/aiforge_core/web_dist"
   if [[ -d "$REPO_ROOT/web/dist" ]]; then

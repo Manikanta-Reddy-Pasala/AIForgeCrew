@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # build-ui: build the Vite/React dashboard + restart aiforge-api.
 #
-# FastAPI mounts web/dist at /ui/ when it exists (see aiforge_core/runtime/
-# api.py line ~480). NUC ships the sources but the build artifact is
+# FastAPI mounts web/dist at /ui/ when it exists (see
+# aiforge_core/api/_ui_serving.py, _resolve_dist). NUC ships the sources but the build artifact is
 # git-ignored, so a fresh deploy needs an explicit build.
 #
 # Run on NUC:

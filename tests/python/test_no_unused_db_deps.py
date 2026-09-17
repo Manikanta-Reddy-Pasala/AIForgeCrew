@@ -1,7 +1,7 @@
 """Postgres/Mongo/Neo4j drivers stay OUT of the default install.
 
 This build is SQLite-only: run.sh strips AIFORGE_NEO4J_* / AIFORGE_PG_* from
-the environment on boot, and api.py lists those keys in _RUNTIME_ENV_DB_KEYS so
+the environment on boot, and api/_startup.py lists those keys in _RUNTIME_ENV_DB_KEYS so
 a stale .env cannot restore them. pymongo was declared as a core dependency and
 imported by nothing at all.
 
