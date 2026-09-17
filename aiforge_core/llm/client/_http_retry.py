@@ -197,7 +197,7 @@ def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
             # the kwarg appears exactly where someone needs the token back.
             extra = {"meter": meter} if meter is not None else {}
             return pkg._post(ep, payload, timeout_s, role=role, sent=sent,
-                         max_wait_s=cfg.left(), throttled=throttled, **extra)
+                             max_wait_s=cfg.left(), throttled=throttled, **extra)
         except Exception as exc:  # noqa: BLE001 — classifier handles
             retry, label = pkg._is_transient_exc(exc)
             last = exc
