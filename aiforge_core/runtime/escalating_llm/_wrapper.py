@@ -22,6 +22,7 @@ from ._policy import (
     _demote_after,
     _is_empty,
     _is_transient_llm_error,
+    _looks_like_missing_model,  # noqa: F401  # kept for callers that patch it here
 )
 from ._quieting import log
 from ._rescue import _RescueMixin
@@ -198,7 +199,6 @@ class EscalatingLlm(_RescueMixin, _StreamMixin, BaseLlm):
         if self.primary_fail_streak >= _demote_after():
             self.primary_demoted = True
 
-
     def _record_spend(self, model_name: str, responses: list, token) -> None:
         """Meter + budget for one answered request.
 
@@ -216,7 +216,6 @@ class EscalatingLlm(_RescueMixin, _StreamMixin, BaseLlm):
                            input_tokens=in_t, output_tokens=out_t)
         except Exception as exc:  # noqa: BLE001 — accounting is best-effort
             log.debug("budget.record failed: %s", exc)
-
 
     def _candidates(self) -> list[tuple[str, BaseLlm]]:
         """Attempt order: primary (skipped if sticky-demoted) → cloud chain →
@@ -299,7 +298,6 @@ class EscalatingLlm(_RescueMixin, _StreamMixin, BaseLlm):
                 raise
         return buffered
 
-
     def _note_success(self, label: str) -> None:
         """Flag bookkeeping for a candidate that answered."""
         # primary_retry success — clear the demotion so subsequent calls go back
@@ -351,7 +349,6 @@ class EscalatingLlm(_RescueMixin, _StreamMixin, BaseLlm):
                     getattr(model, "model", "?"), len(buffered))
         if label == "primary":
             self._record_primary_failure()
-
 
     async def _try_candidate(self, label, model, llm_request, t0, state: dict):
         """One candidate end to end: attempt, then the rescues. Yields the

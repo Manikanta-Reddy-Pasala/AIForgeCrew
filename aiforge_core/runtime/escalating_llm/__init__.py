@@ -21,7 +21,8 @@ the retry chain — partial-chunk re-emission across providers would
 violate the streaming contract.
 
 This module was split (grouped by concern) into ``_quieting`` /
-``_policy`` / ``_builder`` / ``_wrapper`` submodules; this package
+``_policy`` / ``_builder`` / ``_wrapper`` submodules (the wrapper's rescue and
+streaming methods live in the ``_rescue`` / ``_streaming`` mixins); this package
 re-exports the full former top-level surface so every
 ``escalating_llm.<name>`` attribute access is unchanged.
 """
