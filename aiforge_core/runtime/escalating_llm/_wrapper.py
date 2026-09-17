@@ -15,16 +15,18 @@ from google.adk.models.llm_response import LlmResponse
 
 from aiforge_core.llm import endpoint_breaker as _breaker
 
-from ._quieting import log
+from ._builder import _build_one, _mirror_to_langfuse
 from ._policy import (
     _api_base_of,
     _attempt_retries,
     _demote_after,
     _is_empty,
     _is_transient_llm_error,
-    _looks_like_missing_model,
+    _looks_like_missing_model,  # noqa: F401  # kept for callers that patch it here
 )
-from ._builder import _build_one, _mirror_to_langfuse
+from ._quieting import log
+from ._rescue import _RescueMixin
+from ._streaming import _StreamMixin
 
 
 async def _throttle_global(role: "str | None" = None) -> None:
@@ -137,7 +139,7 @@ def _meter_tokens(role: str, in_t: int, out_t: int, token=None) -> None:
         pass
 
 
-class EscalatingLlm(BaseLlm):
+class EscalatingLlm(_RescueMixin, _StreamMixin, BaseLlm):
     """Primary ADK model + ordered cloud fallback chain.
 
     Pydantic-friendly: stores child models as plain attributes via
@@ -197,127 +199,6 @@ class EscalatingLlm(BaseLlm):
         if self.primary_fail_streak >= _demote_after():
             self.primary_demoted = True
 
-    @staticmethod
-    def _substitution_allowed(exc) -> bool:
-        """Whether a stand-in is warranted at all.
-
-        Trigger differs by source: a MISSING model is a config error and every
-        candidate is worth trying, while a model that is served but not
-        answering only justifies the registry chain.
-
-        The operator's kill switch applies HERE too. The direct-client rescue is
-        gated on it and documents why: someone comparing models wants a wrong id
-        to be a hard failure. Honouring it in chat and ignoring it in team mode
-        is the same silent substitution the flag exists to prevent, on the path
-        that runs a whole ticket.
-        """
-        if not (_looks_like_missing_model(exc) or _is_transient_llm_error(exc)):
-            return False
-        try:
-            from aiforge_core.llm.client import _autofallback_enabled
-            return bool(_autofallback_enabled())
-        except Exception:  # noqa: BLE001
-            return True
-
-    @staticmethod
-    def _registry_substitute(mid: str, base: str) -> str:
-        """The operator's next configured model ON THIS ENDPOINT, or "".
-
-        The same chain the chat path walks, so "I added four models, use the
-        others when one dies" means the same thing in team mode. Registry rows
-        that name ANOTHER host are for the text path, which can rebuild the
-        endpoint; here the request is bound to this agent's own client, so only
-        a different model on this endpoint is usable.
-        """
-        try:
-            from aiforge_core.config import model_registry as _mr
-            rows = _mr.chain_after(mid, base)
-        except Exception:  # noqa: BLE001 — the registry is optional
-            return ""
-        want = (base or "").rstrip("/")
-        for row in rows:
-            if not (isinstance(row, dict) and str(row.get("model") or "").strip()):
-                continue
-            url = str(row.get("base_url") or "").strip().rstrip("/")
-            if url and url != want:
-                continue
-            return str(row["model"]).strip()
-        return ""
-
-    @staticmethod
-    def _served_substitute(model, mid: str, base: str) -> str | None:
-        """A model this endpoint reports as loaded — the only option when the
-        failure is "that model is not loaded here". None means the probe itself
-        failed, and a rescue must never add a failure.
-
-        Probed WITH the key: /v1/models is authenticated on most hosted
-        endpoints, and an unauthenticated probe 401s, returns "no answer", and
-        the rescue silently never fires — team mode dying on the exact config
-        line chat recovers from.
-        """
-        try:
-            from aiforge_core.llm.client._models import (
-                model_is_missing, pick_substitute)
-            served = model_is_missing(base, mid, _api_key_of(model))
-            return pick_substitute(mid, served or [])
-        except Exception:  # noqa: BLE001
-            return None
-
-    def _substitute_id(self, exc, model) -> str:
-        """The model id to stand in with, or "" for none. Registry first, then
-        (for a missing model only) whatever the endpoint says it serves."""
-        base = _api_base_of(model)
-        if not base:
-            return ""
-        mid = getattr(model, "model", "") or ""
-        sub = self._registry_substitute(mid, base)
-        if sub or not _looks_like_missing_model(exc):
-            return sub
-        return self._served_substitute(model, mid, base) or ""
-
-    async def _substitute_model(self, exc, model, req, label, meta: dict):
-        """Re-issue ONE attempt against a model this endpoint actually serves.
-
-        Yields the responses when the stand-in worked and nothing when it did
-        not — the caller then falls through to the cloud chain exactly as
-        before. LiteLlm picks ``llm_request.model`` before its own, so the
-        substitution is a stamped request, not a rebuilt model object.
-        """
-        if not self._substitution_allowed(exc):
-            return
-        sub = self._substitute_id(exc, model)
-        if not sub:
-            return
-        log.warning(
-            "llm.model_substituted role=%s attempt=%s configured=%s using=%s "
-            "api_base=%s — the configured model is not served here; fix the "
-            "role config or load it", self.role, label,
-            getattr(model, "model", "?"), sub, _api_base_of(model))
-        # PER-CALL, via the caller's dict. Stored on the instance it would be
-        # cross-attributed the moment two calls share this EscalatingLlm (it is
-        # built once per role per ticket), billing one call's tokens to the
-        # other's model.
-        meta["model"] = sub
-        _tok = None
-        try:
-            await _throttle_global(self.role)
-            _tok = _meter_record(self.role, sub)
-            meta["token"] = _tok
-            out = []
-            async for r in model.generate_content_async(
-                    req.model_copy(update={"model": sub}), stream=False):
-                out.append(r)
-        except Exception as sub_exc:  # noqa: BLE001
-            _meter_fail(_tok, sub_exc)
-            log.warning("llm.model_substitute_failed role=%s err=%.200s",
-                        self.role, str(sub_exc))
-            return
-        if not out or all(_is_empty(r) for r in out):
-            _meter_fail(_tok, reason="empty")
-            return
-        for r in out:
-            yield r
-
     def _record_spend(self, model_name: str, responses: list, token) -> None:
         """Meter + budget for one answered request.
 
@@ -335,84 +216,6 @@ class EscalatingLlm(BaseLlm):
                            input_tokens=in_t, output_tokens=out_t)
         except Exception as exc:  # noqa: BLE001 — accounting is best-effort
             log.debug("budget.record failed: %s", exc)
-
-    def _stream_retry_ok(self, emitted: bool, attempt: int, tries: int,
-                         exc: BaseException) -> bool:
-        """Whether to try the SAME endpoint again after a failed stream.
-
-        A second try is only honest while NOTHING has been emitted — once text
-        is out, the consumer cannot be handed a second beginning. The fallback
-        chain stays unwalked for that same reason.
-        """
-        return (not emitted and attempt + 1 < tries
-                and _is_transient_llm_error(exc))
-
-    def _settle_stream(self, tok, target, answered: bool,
-                       buffered: list) -> None:
-        """Account for a stream that ended without raising."""
-        if not answered:
-            # A stream that ends having yielded nothing is the same outcome
-            # the non-streaming path calls `empty` — counting it as a success
-            # would let a wedged model look healthy.
-            _meter_fail(tok, reason="empty")
-        elif buffered:
-            # Spend was recorded on the buffered path and not here, so a
-            # streamed turn's tokens were invisible in the budget.
-            self._record_spend(target or "primary", buffered, tok)
-
-    async def _stream_primary(self, llm_request: LlmRequest):
-        """The streaming path: primary only — but no longer bare.
-
-        The fallback CHAIN stays deliberately unwalked: re-emitting partial
-        chunks from a second provider mid-answer would violate the streaming
-        contract (a consumer that has already seen text cannot be handed a
-        second beginning). What this now carries, because none of it re-emits
-        anything, is the rest of what the buffered path had: the per-model
-        request STAMPING, a bounded retry on the SAME endpoint while nothing
-        has been emitted yet, and SPEND RECORDING on success. Without those, a
-        single transient 5xx ended a team agent outright — which is the reason
-        team streaming was opt-in, and why answers arrived in one lump.
-        """
-        assert self.primary_model is not None
-        model = self.primary_model
-        target = getattr(model, "model", None)
-        req = self._stamp_request(llm_request, model)
-        tries = _attempt_retries()
-        for attempt in range(tries):
-            emitted = False          # has the consumer seen ANY chunk yet?
-            answered = False         # has it seen any real CONTENT?
-            buffered: list = []
-            try:
-                await _throttle_global(self.role)
-            except Exception:  # noqa: BLE001 — nothing here may break a stream
-                pass
-            tok = _meter_record(self.role, target)
-            try:
-                async for r in model.generate_content_async(req, stream=True):
-                    emitted = True
-                    # Track CONTENT, not chunk count: `_is_empty` strips
-                    # <think> blocks, so a reasoning model that streams a
-                    # think-only reply yields plenty of chunks and answers
-                    # nothing. Counting chunks let exactly that — the
-                    # local-model failure this codebase documents as the common
-                    # one — read healthy here while the non-streaming path
-                    # called the identical reply `empty`.
-                    if not answered and not _is_empty(r):
-                        answered = True
-                    buffered.append(r)
-                    yield r
-            except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001
-                # NOT bare BaseException: a consumer that stops iterating throws
-                # GeneratorExit in here, and abandoning a stream the model
-                # answered fine is not a failed request.
-                _meter_fail(tok, exc)
-                if self._stream_retry_ok(emitted, attempt, tries, exc):
-                    log.warning("llm.stream_retry role=%s try=%d/%d err=%.140s",
-                                self.role, attempt + 1, tries, str(exc))
-                    continue
-                raise
-            self._settle_stream(tok, target, answered, buffered)
-            return
 
     def _candidates(self) -> list[tuple[str, BaseLlm]]:
         """Attempt order: primary (skipped if sticky-demoted) → cloud chain →
@@ -495,94 +298,6 @@ class EscalatingLlm(BaseLlm):
                 raise
         return buffered
 
-    async def _rescue_by_substitution(self, exc, model, req, label, t0):
-        """Yield a stand-in model's answer, or nothing.
-
-        PRIMARY only, like the LM-crash recovery and like the client-side
-        rescue, which only ever substitutes the primary. A cloud candidate's 404
-        for a decommissioned id must not be silently re-issued against whatever
-        a proxy happens to serve: that is a billed generation on a model nobody
-        chose.
-        """
-        if label not in ("primary", "primary_retry"):
-            return
-        meta: dict = {}
-        out: list = []
-        async for r in self._substitute_model(exc, model, req, label, meta):
-            out.append(r)
-        if not out:
-            return
-        # The stand-in produced the answer, so the accounting names IT: tokens,
-        # budget and the Langfuse trace all used to short-circuit here, leaving
-        # a rescued team run counted as a request with zero tokens and traced
-        # against the model that generated nothing.
-        used = meta.get("model")
-        self._record_spend(used or label, out, meta.get("token"))
-        # A rescue that worked clears the demotion the failure would otherwise
-        # leave behind — else every later call re-walks the whole cloud chain
-        # before reaching the same rescue.
-        self.primary_demoted = False
-        _mirror_to_langfuse(self.role, req, out,
-                            used or getattr(model, "model", "") or label,
-                            int((_time.monotonic() - t0) * 1000))
-        for r in out:
-            yield r
-
-    def _should_try_lm_reload(self, label: str, err_str: str) -> bool:
-        """LM Studio MLX crash mid-pipeline ("model has crashed" / "No models
-        loaded"). Without the reload, sticky-demotion locks us off the local
-        primary for the rest of the ticket and a stress run starves on cloud
-        rate limits. One attempt per pipeline run — a flapping LM Studio would
-        otherwise trigger an SSH-load storm."""
-        if label not in ("primary", "primary_retry") or self.lm_recovery_tried:
-            return False
-        from .. import local_starter
-        return bool(local_starter.looks_like_lm_crash(err_str))
-
-    async def _rescue_by_lm_reload(self, model, req, label, target, t0,
-                                   out: dict):
-        """Force-reload the crashed local model and retry the SAME attempt once.
-        Yields its answer, or nothing. ``out["exc"]`` carries a retry failure
-        back to the caller so the chain reports the freshest error."""
-        from .. import local_starter
-        self.lm_recovery_tried = True
-        recovered = local_starter.try_recover(_api_base_of(model))
-        log.warning("llm.lm_crash_recovery role=%s recovered=%s",
-                    self.role, recovered)
-        if not recovered:
-            return
-        buffered: list[LlmResponse] = []
-        tok = None
-        try:
-            # Gated like every other send: a recovery retry is a real request to
-            # the model and must be both throttled and counted.
-            await _throttle_global(self.role)
-            tok = _meter_record(self.role, target)
-            async for r in model.generate_content_async(req, stream=False):
-                buffered.append(r)
-        except Exception as exc:  # noqa: BLE001
-            _meter_fail(tok, exc)
-            out["exc"] = exc
-            log.warning("llm.recovery_retry_failed role=%s err=%s",
-                        self.role, str(exc)[:200])
-            return
-        if not buffered or all(_is_empty(r) for r in buffered):
-            # Counted, answered nothing — the same failure the `attempt_empty`
-            # branch records for the normal path.
-            _meter_fail(tok, reason="empty")
-            return
-        # A recovered response is a real one: count what it WROTE and record its
-        # spend. This branch yielded and returned before ever reaching the
-        # accounting block, so a crash-and-recover box reported traffic with no
-        # tokens behind it.
-        self._record_spend(target or label, buffered, tok)
-        log.info("llm.recovered role=%s after_lm_reload", self.role)
-        _mirror_to_langfuse(self.role, req, buffered,
-                            getattr(model, "model", "") or label,
-                            int((_time.monotonic() - t0) * 1000))
-        for r in buffered:
-            yield r
-
     def _note_success(self, label: str) -> None:
         """Flag bookkeeping for a candidate that answered."""
         # primary_retry success — clear the demotion so subsequent calls go back
@@ -633,36 +348,6 @@ class EscalatingLlm(BaseLlm):
                     "responses=%d", self.role, label,
                     getattr(model, "model", "?"), len(buffered))
         if label == "primary":
-            self._record_primary_failure()
-
-    async def _rescue_after_failure(self, exc, model, req, label, target, t0,
-                                    state: dict):
-        """Both rescue paths for a failed attempt, in order: a stand-in model,
-        then an LM-Studio reload. Yields a rescued answer, or nothing — in which
-        case the caller moves on to the next candidate."""
-        state["exc"] = exc
-        async for r in self._rescue_by_substitution(exc, model, req, label, t0):
-            state["done"] = True
-            yield r
-        if state["done"]:
-            return
-        err_str = str(exc)
-        log.warning(
-            "llm.attempt_failed role=%s attempt=%s model=%s api_base=%s "
-            "errtype=%s err=%s", self.role, label,
-            getattr(model, "model", "?"), _api_base_of(model) or "?",
-            type(exc).__name__, err_str[:800])
-        if self._should_try_lm_reload(label, err_str):
-            out: dict = {}
-            async for r in self._rescue_by_lm_reload(model, req, label,
-                                                     target, t0, out):
-                state["done"] = True
-                yield r
-            if not state["done"] and "exc" in out:
-                # The chain reports the freshest error, so a recovery retry that
-                # died replaces the crash that triggered it.
-                state["exc"] = out["exc"]
-        if not state["done"] and label == "primary":
             self._record_primary_failure()
 
     async def _try_candidate(self, label, model, llm_request, t0, state: dict):
