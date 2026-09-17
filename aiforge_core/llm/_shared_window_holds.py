@@ -21,7 +21,6 @@ def _rollback(db) -> None:
     may still hold the lock, and it is cached per-thread, so keeping it wedges
     this thread and blocks every other process indefinitely.
     """
-    pkg = _pkg()
     try:
         db.execute("ROLLBACK")
     except Exception:  # noqa: BLE001
@@ -30,6 +29,7 @@ def _rollback(db) -> None:
         db.close()
     except Exception:  # noqa: BLE001
         pass
+    pkg = _pkg()
     pkg._LOCAL.db = None
     pkg._LOCAL.path = None
 
