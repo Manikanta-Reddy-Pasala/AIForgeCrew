@@ -8,8 +8,8 @@ import time
 
 
 def _pkg():
-    """The package, looked up when called, so a replaced name there is the one
-    used here."""
+    """The parent module, looked up on each call so a name patched there is the
+    one used here."""
     import aiforge_core.llm._shared_window as package
     return package
 
@@ -21,6 +21,7 @@ def _rollback(db) -> None:
     may still hold the lock, and it is cached per-thread, so keeping it wedges
     this thread and blocks every other process indefinitely.
     """
+    pkg = _pkg()
     try:
         db.execute("ROLLBACK")
     except Exception:  # noqa: BLE001
@@ -29,8 +30,8 @@ def _rollback(db) -> None:
         db.close()
     except Exception:  # noqa: BLE001
         pass
-    _pkg()._LOCAL.db = None
-    _pkg()._LOCAL.path = None
+    pkg._LOCAL.db = None
+    pkg._LOCAL.path = None
 
 
 def _busy(exc: Exception) -> bool:
@@ -112,7 +113,8 @@ def set_hold(key: str, until_ts: float, cap: "float | None" = None) -> None:
     the 429, and without a shared hold the others keep sending into a wall the
     server has already named.
     """
-    db = _pkg()._conn()
+    pkg = _pkg()
+    db = pkg._conn()
     if db is None:
         return
     # CLAMPED ON WRITE. `MAX(until, excluded.until)` means one poisoned row
@@ -135,7 +137,7 @@ def set_hold(key: str, until_ts: float, cap: "float | None" = None) -> None:
         # so counting contention as failure armed the cooldown at the one
         # moment the shared ceiling matters most.
         if not _busy(exc):
-            _pkg()._degrade(exc)
+            pkg._degrade(exc)
 
 
 def _drop_poisoned_hold(db, keys, marks, now, cap, left):
@@ -164,7 +166,8 @@ def _drop_poisoned_hold(db, keys, marks, now, cap, left):
 def hold_left(keys: "tuple[str, ...]", now: float | None = None,
               cap: "float | None" = None) -> "float | None":
     """Seconds left on the longest hold matching any of ``keys``."""
-    db = _pkg()._conn()
+    pkg = _pkg()
+    db = pkg._conn()
     if db is None:
         return None
     now = time.time() if now is None else now
@@ -175,7 +178,7 @@ def hold_left(keys: "tuple[str, ...]", now: float | None = None,
             keys).fetchone()
     except Exception as exc:  # noqa: BLE001
         if not _busy(exc):
-            _pkg()._degrade(exc)
+            pkg._degrade(exc)
         return None
     if not row or row[0] is None:
         return 0.0
@@ -196,12 +199,13 @@ def writable() -> bool:
     is exactly the state an operator is trying to diagnose. Probe the write
     path, then undo it.
     """
-    db = _pkg()._conn()
+    pkg = _pkg()
+    db = pkg._conn()
     if db is None:
         return False
     try:
         try:
-            db.execute(_pkg()._BEGIN_IMMEDIATE)
+            db.execute(pkg._BEGIN_IMMEDIATE)
             db.execute("DELETE FROM sends WHERE ts < 0")
             db.execute("COMMIT")
         except BaseException:

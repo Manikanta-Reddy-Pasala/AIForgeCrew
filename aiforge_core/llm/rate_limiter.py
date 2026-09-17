@@ -20,14 +20,13 @@ Local providers (mlx-lm) opt out by returning ``rate_limits=None``;
 Separately, :func:`acquire_global` is the OPERATOR's own ceiling across every
 provider and caller — a sliding 60s window rather than a bucket, shared by
 every AIForge process on the machine (see :mod:`_shared_window`; the
-in-process window below is the fallback when that store is unavailable).
+in-process window in :mod:`_rate_settings` is the fallback when that store is unavailable).
 """
 from __future__ import annotations
 
 import logging
 import threading
 import time
-from dataclasses import dataclass  # noqa: F401  # used by the moved _Bucket's users
 
 from ._rate_holds import (  # noqa: F401  # re-exported
     _hold_left_locked,
@@ -63,6 +62,7 @@ from ._rate_settings import (  # noqa: F401  # re-exported
 )
 
 log = logging.getLogger("aiforge.rate_limiter")
+# Callers currently parked on the global ceiling.
 _waiting = 0
 
 

@@ -12,8 +12,8 @@ from ._meter_keys import (
 
 
 def _pkg():
-    """The package, looked up when called, so a replaced name there is the one
-    used here."""
+    """The parent module, looked up on each call so a name patched there is the
+    one used here."""
     import aiforge_core.llm.call_meter as package
     return package
 
@@ -21,13 +21,14 @@ def _pkg():
 def _trim_recent_locked(now: float) -> None:
     """Keep the raw ring to the last 60 seconds. Destructive, cheap, and the
     reason the per-minute rate stays exact and O(1)-ish to read."""
-    cutoff = now - _pkg()._WINDOW_S
-    while _pkg()._recent and _pkg()._recent[0] < cutoff:
-        _pkg()._recent.popleft()
+    pkg = _pkg()
+    cutoff = now - pkg._WINDOW_S
+    while pkg._recent and pkg._recent[0] < cutoff:
+        pkg._recent.popleft()
     # Same window, sorted list (see `_recent_fail`): drop the aged-out head.
-    i = bisect.bisect_left(_pkg()._recent_fail, cutoff)
+    i = bisect.bisect_left(pkg._recent_fail, cutoff)
     if i:
-        del _pkg()._recent_fail[:i]
+        del pkg._recent_fail[:i]
 
 
 def _mkey(ts: float) -> int:
@@ -42,57 +43,60 @@ def _new_bucket() -> dict:
 
 
 def _bump_bucket_locked(ts: float, role, provider, model) -> None:
+    pkg = _pkg()
     key = _mkey(ts)
-    b = _pkg()._buckets.get(key)
+    b = pkg._buckets.get(key)
     if b is None:
         b = _new_bucket()
-        _pkg()._buckets[key] = b
+        pkg._buckets[key] = b
         # Drop everything older than the hour. Bounded by construction: at
         # most _BUCKETS + 1 slots, whatever the call rate. Evict by minute KEY,
         # not by insertion order — the two differ the moment a caller passes an
         # out-of-order `now` (tests do), and evicting the wrong slot silently
         # deletes live minutes.
-        while len(_pkg()._buckets) > _pkg()._BUCKETS + 1:
-            _pkg()._buckets.pop(min(_pkg()._buckets), None)
+        while len(pkg._buckets) > pkg._BUCKETS + 1:
+            pkg._buckets.pop(min(pkg._buckets), None)
     b["n"] += 1
     for field, val in (("roles", role), ("provs", provider),
                        ("models", model)):
-        v = str(val or "").strip()[:_pkg()._LABEL_MAX]
+        v = str(val or "").strip()[:pkg._LABEL_MAX]
         if not v:
             continue
         slot = b[field]
-        if v in slot or len(slot) < _pkg()._LABELS_PER_BUCKET:
+        if v in slot or len(slot) < pkg._LABELS_PER_BUCKET:
             slot[v] = slot.get(v, 0) + 1
         else:
-            slot[_pkg()._OVERFLOW_BUCKET] = slot.get(_pkg()._OVERFLOW_BUCKET, 0) + 1
+            slot[pkg._OVERFLOW_BUCKET] = slot.get(pkg._OVERFLOW_BUCKET, 0) + 1
 
 
 def _bump_fail_bucket_locked(ts: float, reason) -> None:
     """Charge one failure to the minute of its SEND. Creates the bucket if the
     minute has no successful send in it (a minute in which every attempt failed
     is the most important minute the meter can show)."""
+    pkg = _pkg()
     key = _mkey(ts)
-    b = _pkg()._buckets.get(key)
+    b = pkg._buckets.get(key)
     if b is None:
         b = _new_bucket()
-        _pkg()._buckets[key] = b
-        while len(_pkg()._buckets) > _pkg()._BUCKETS + 1:
-            _pkg()._buckets.pop(min(_pkg()._buckets), None)
+        pkg._buckets[key] = b
+        while len(pkg._buckets) > pkg._BUCKETS + 1:
+            pkg._buckets.pop(min(pkg._buckets), None)
     b["f"] = int(b.get("f") or 0) + 1
-    v = str(reason or "").strip()[:_pkg()._LABEL_MAX] or "error"
+    v = str(reason or "").strip()[:pkg._LABEL_MAX] or "error"
     fails = b.setdefault("fails", {})
-    if v in fails or len(fails) < _pkg()._LABELS_PER_BUCKET:
+    if v in fails or len(fails) < pkg._LABELS_PER_BUCKET:
         fails[v] = fails.get(v, 0) + 1
     else:
-        fails[_pkg()._OVERFLOW_BUCKET] = fails.get(_pkg()._OVERFLOW_BUCKET, 0) + 1
+        fails[pkg._OVERFLOW_BUCKET] = fails.get(pkg._OVERFLOW_BUCKET, 0) + 1
 
 
 def _prune_buckets_locked(now: float) -> None:
     """Forget minutes that have aged out — a process idle for a day must not
     report yesterday's burst as "the last hour"."""
-    oldest = _mkey(now) - _pkg()._BUCKETS
-    for key in [k for k in _pkg()._buckets if k < oldest]:
-        _pkg()._buckets.pop(key, None)
+    pkg = _pkg()
+    oldest = _mkey(now) - pkg._BUCKETS
+    for key in [k for k in pkg._buckets if k < oldest]:
+        pkg._buckets.pop(key, None)
 
 
 def _bucket_sum_locked(now: float, minutes: int) -> int:
@@ -161,9 +165,10 @@ def _breakdown_locked(now: float, minutes: int) -> "tuple[dict, dict, dict]":
 def _series_locked(now: float, field: str = "n") -> list:
     """Requests (``n``) or failures (``f``) per minute for the last hour,
     oldest → newest. Same index in both series is the same minute."""
+    pkg = _pkg()
     newest = _mkey(now)
-    first = newest - (_pkg()._BUCKETS - 1)
-    return [int((_pkg()._buckets.get(k) or {}).get(field) or 0)
+    first = newest - (pkg._BUCKETS - 1)
+    return [int((pkg._buckets.get(k) or {}).get(field) or 0)
             for k in range(first, newest + 1)]
 
 
@@ -181,29 +186,30 @@ def snapshot(session_id=None) -> dict:
     """Live counts: this turn, this session, this process, and the rate over
     the last minute (across ALL sessions — the machine's load is what the user
     feels, not one chat's share of it)."""
+    pkg = _pkg()
     sid = _key(session_id)
-    with _pkg()._lock:
+    with pkg._lock:
         # Clock read INSIDE the lock: sampled outside, a call appended while
         # this reader waited would carry a timestamp NEWER than `now` and fall
         # out of the newest bucket.
         now = time.monotonic()
-        slot = _slot(sid) if sid is not None and sid in _pkg()._sessions else None
+        slot = _slot(sid) if sid is not None and sid in pkg._sessions else None
         _prune_buckets_locked(now)
         s = slot or {}
         return {
             "turn": int(s.get("turn") or 0),
             "session": int(s.get("total") or 0),
-            "total": _pkg()._total,
+            "total": pkg._total,
             "per_minute": _per_minute_locked(now),
             "last_15m": _bucket_sum_locked(now, 15),
-            "last_60m": _bucket_sum_locked(now, _pkg()._BUCKETS),
+            "last_60m": _bucket_sum_locked(now, pkg._BUCKETS),
             "by_role": dict(s.get("by_role") or {}),
             # Failures are a SUBSET of the counts above, never a separate
             # population: `turn` is every attempt this message made and
             # `turn_failed` is how many of them came back with nothing.
             "turn_failed": int(s.get("turn_failed") or 0),
             "session_failed": int(s.get("failed") or 0),
-            "failed": _pkg()._fail_total,
+            "failed": pkg._fail_total,
             "failed_per_minute": _fail_per_minute_locked(now),
             # What the model actually WROTE for this message and this chat —
             # the number a "be brief" instruction is meant to move, and the one
@@ -228,42 +234,43 @@ def global_snapshot(*, series: bool = True) -> dict:
     # stats (and mkdirs) the config dir. Doing that under the lock put two
     # filesystem syscalls in front of every `record()` — on the LLM hot path,
     # on a config dir that may be network-mounted.
+    pkg = _pkg()
     _limits = _limit_state()
-    with _pkg()._lock:
+    with pkg._lock:
         now = time.monotonic()
         _prune_buckets_locked(now)
-        by_role, by_provider, by_model = _breakdown_locked(now, _pkg()._BUCKETS)
+        by_role, by_provider, by_model = _breakdown_locked(now, pkg._BUCKETS)
         out = {
-            "total": _pkg()._total,
+            "total": pkg._total,
             "per_minute": _per_minute_locked(now),
             "last_15m": _bucket_sum_locked(now, 15),
-            "last_60m": _bucket_sum_locked(now, _pkg()._BUCKETS),
+            "last_60m": _bucket_sum_locked(now, pkg._BUCKETS),
             # How many of those attempts failed, over the SAME windows — a
             # subset of the numbers above, not a second population. A rate that
             # hid them would read lowest exactly when the box is in trouble.
-            "failed": _pkg()._fail_total,
+            "failed": pkg._fail_total,
             "failed_per_minute": _fail_per_minute_locked(now),
             "failed_15m": _fail_sum_locked(now, 15),
-            "failed_60m": _fail_sum_locked(now, _pkg()._BUCKETS),
-            "by_fail_reason": _fail_reasons_locked(now, _pkg()._BUCKETS),
+            "failed_60m": _fail_sum_locked(now, pkg._BUCKETS),
+            "by_fail_reason": _fail_reasons_locked(now, pkg._BUCKETS),
             # Tokens as REPORTED by the provider, over the same windows.
-            "tokens_in": _pkg()._tokens_in_total,
-            "tokens_out": _pkg()._tokens_out_total,
+            "tokens_in": pkg._tokens_in_total,
+            "tokens_out": pkg._tokens_out_total,
             "tokens_out_15m": _token_sums_locked(now, 15)[1],
-            "tokens_out_60m": _token_sums_locked(now, _pkg()._BUCKETS)[1],
-            "tokens_in_60m": _token_sums_locked(now, _pkg()._BUCKETS)[0],
-            "tokens_out_by_role": _tokens_by_role_locked(now, _pkg()._BUCKETS),
+            "tokens_out_60m": _token_sums_locked(now, pkg._BUCKETS)[1],
+            "tokens_in_60m": _token_sums_locked(now, pkg._BUCKETS)[0],
+            "tokens_out_by_role": _tokens_by_role_locked(now, pkg._BUCKETS),
             "by_role": by_role,
             "by_provider": by_provider,
             "by_model": by_model,
-            "uptime_s": round(now - _pkg()._started, 1),
+            "uptime_s": round(now - pkg._started, 1),
             # The operator's ceiling and how many callers are parked on it.
             # Without these a throttled box looks broken rather than capped —
             # the meter is where someone goes to ask "why is this slow".
             **_limits,
             # An ACTUAL loss, and only within the window it can affect: the
             # 60s ring evicted calls that would otherwise be in `per_minute`.
-            "rate_capped": (now - _pkg()._dropped_at) < _pkg()._WINDOW_S if _pkg()._dropped_at else False,
+            "rate_capped": (now - pkg._dropped_at) < pkg._WINDOW_S if pkg._dropped_at else False,
         }
         if series:
             out["series_60m"] = _series_locked(now)

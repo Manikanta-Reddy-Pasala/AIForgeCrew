@@ -1,18 +1,17 @@
 """HTTP transport for the LLM client: cancel token, request-body building,
 the (default urllib + opt-in cancellable http.client) POST paths, the
-connect-preflight, and the bounded transient-retry wrapper.
+connect-preflight. The streaming reader lives in :mod:`._http_stream` and the
+bounded transient-retry wrapper in :mod:`._http_retry`; both are re-exported.
 
 Layers on the leaf helpers (:mod:`._helpers`, :mod:`._errors`) plus the sibling
 ``providers`` / ``rate_limiter`` / ``_ssl`` modules of ``aiforge_core.llm``."""
 from __future__ import annotations
 
 import contextvars
-import http.client
-import io
 import json
-import random
+import random  # noqa: F401  # tests patch _http.random
 import threading
-import time
+import time  # noqa: F401  # tests patch _http.time
 import urllib.error
 import urllib.request
 
@@ -25,23 +24,12 @@ from .._ssl import insecure_context as _ssl_insecure
 from ..types import Endpoint
 from ..user_agent import user_agent as _user_agent
 from ._errors import (
-    _http_err_body,
     _is_transient_exc,
     _LLMCancelled,
     _raise_if_model_dropped,
 )
 from ._helpers import _estimate_tokens, _float_env, _int_env, _log
-from ._http_stream import (  # noqa: F401  # re-exported
-    TIMEOUT_SHIPPED_ATTR,
-    _NO_STREAM,
-    _StreamAssembler,
-    _pump_sse,
-    _read_http_response,
-    _read_sse_response,
-    _streaming_payload,
-)
 from ._http_retry import (  # noqa: F401  # re-exported
-    _RetryCfg,
     _budget_exhausted,
     _log_budget_exhausted,
     _log_timeout_not_retried,
@@ -52,7 +40,17 @@ from ._http_retry import (  # noqa: F401  # re-exported
     _post_with_retry,
     _rate_limited_sleep,
     _retry_after_s,
+    _RetryCfg,
     _timeout_already_shipped,
+)
+from ._http_stream import (  # noqa: F401  # re-exported
+    _NO_STREAM,
+    TIMEOUT_SHIPPED_ATTR,
+    _pump_sse,
+    _read_http_response,
+    _read_sse_response,
+    _StreamAssembler,
+    _streaming_payload,
 )
 
 # Optional per-thread cancel token. When a caller (the chat agent's Stop path)

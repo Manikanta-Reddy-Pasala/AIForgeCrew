@@ -3,8 +3,8 @@ from __future__ import annotations
 
 
 def _pkg():
-    """The package, looked up when called, so a replaced name there is the one
-    used here."""
+    """The parent module, looked up on each call so a name patched there is the
+    one used here."""
     import aiforge_core.llm.call_meter as package
     return package
 
@@ -14,17 +14,18 @@ def _key(session_id) -> "str | None":
 
 
 def _slot(sid: str) -> dict:
-    slot = _pkg()._sessions.get(sid)
+    pkg = _pkg()
+    slot = pkg._sessions.get(sid)
     if slot is None:
         slot = {"total": 0, "turn": 0, "by_role": {}, "epoch": 0,
                 "failed": 0, "turn_failed": 0,
                 "tokens_out": 0, "turn_tokens_out": 0,
                 "tokens_in": 0, "turn_tokens_in": 0}
-        _pkg()._sessions[sid] = slot
-        while len(_pkg()._sessions) > _pkg()._MAX_SESSIONS:
-            _pkg()._sessions.popitem(last=False)     # oldest out
+        pkg._sessions[sid] = slot
+        while len(pkg._sessions) > pkg._MAX_SESSIONS:
+            pkg._sessions.popitem(last=False)     # oldest out
     else:
-        _pkg()._sessions.move_to_end(sid)
+        pkg._sessions.move_to_end(sid)
     return slot
 
 

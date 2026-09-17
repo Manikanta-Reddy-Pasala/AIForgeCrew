@@ -35,7 +35,7 @@ class _Bucket:
 # Locks keyed by provider name so concurrent doer/feedback/learner
 # calls don't trample each other's bucket math.
 _LOCKS: dict[str, threading.Lock] = {}
-# Callers currently parked on the global ceiling.
+# Guards ``rate_limiter._waiting``.
 _WAIT_LOCK = threading.Lock()
 _RPM_BUCKETS: dict[str, _Bucket] = {}
 _TPM_BUCKETS: dict[str, _Bucket] = {}
@@ -103,6 +103,13 @@ _ANY = ""
 _holds: "dict[str, float]" = {}
 
 
+def _pkg():
+    """The parent module, looked up on each call so a name patched there is the
+    one used here."""
+    import aiforge_core.llm.rate_limiter as package
+    return package
+
+
 def _setting(name: str, env: str, default: float) -> float:
     """Stored setting -> env -> built-in default, like every other runtime knob.
 
@@ -126,8 +133,8 @@ def _hold_cap() -> float:
     from a misconfigured or shared-tenant gateway would otherwise park every
     caller in the process for its full wait budget, once per call, for an hour
     — from one header. Same knob that caps the caller's own backoff."""
-    return max(1.0, _setting("llm_rate_limit_cap_s",
-                             "AIFORGE_LLM_RATE_LIMIT_CAP_S", 60.0))
+    return max(1.0, _pkg()._setting("llm_rate_limit_cap_s",
+                                    "AIFORGE_LLM_RATE_LIMIT_CAP_S", 60.0))
 
 
 def _compaction_hold_cap() -> float:
@@ -138,8 +145,8 @@ def _compaction_hold_cap() -> float:
     ceiling by queuing for its turn instead. A 5-rpm bucket frees a slot every
     ~12s, so this is only the safety ceiling on a pathological wait. Set to 0 to
     fall back to the interactive overrun."""
-    return max(0.0, _setting("compaction_rate_limit_cap_s",
-                             "AIFORGE_COMPACTION_RATE_LIMIT_CAP_S", 900.0))
+    return max(0.0, _pkg()._setting("compaction_rate_limit_cap_s",
+                                    "AIFORGE_COMPACTION_RATE_LIMIT_CAP_S", 900.0))
 
 
 def _now() -> float:

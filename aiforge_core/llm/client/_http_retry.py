@@ -5,7 +5,6 @@ from __future__ import annotations
 import random
 import time
 import urllib.error
-import urllib.request
 
 from .. import rate_limiter as _rl
 from ..types import Endpoint
@@ -19,8 +18,8 @@ from ._http_stream import (
 
 
 def _pkg():
-    """The package, looked up when called, so a replaced name there is the one
-    used here."""
+    """The parent module, looked up on each call so a name patched there is the
+    one used here."""
     import aiforge_core.llm.client._http as package
     return package
 
@@ -184,6 +183,7 @@ def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
     never a stub with a few seconds on it, which would manufacture exactly the
     abandoned generation this is written to avoid. The bound is per CHAIN;
     ``client.complete``'s empty-response loop can start several."""
+    pkg = _pkg()
     cfg = _RetryCfg(timeout_s)
     last: Exception | None = None
     for attempt in range(1, cfg.max_attempts + 1):
@@ -196,10 +196,10 @@ def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
             # test that fakes `_post` with the old signature stays valid, and
             # the kwarg appears exactly where someone needs the token back.
             extra = {"meter": meter} if meter is not None else {}
-            return _pkg()._post(ep, payload, timeout_s, role=role, sent=sent,
+            return pkg._post(ep, payload, timeout_s, role=role, sent=sent,
                          max_wait_s=cfg.left(), throttled=throttled, **extra)
         except Exception as exc:  # noqa: BLE001 — classifier handles
-            retry, label = _pkg()._is_transient_exc(exc)
+            retry, label = pkg._is_transient_exc(exc)
             last = exc
             cfg.extend(throttled[0])
             sleep_s = _next_sleep(cfg, attempt, exc, label, ep.provider)

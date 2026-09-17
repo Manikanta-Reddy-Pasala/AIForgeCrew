@@ -14,8 +14,8 @@ from ._rate_settings import (
 
 
 def _pkg():
-    """The package, looked up when called, so a replaced name there is the one
-    used here."""
+    """The parent module, looked up on each call so a name patched there is the
+    one used here."""
     import aiforge_core.llm.rate_limiter as package
     return package
 

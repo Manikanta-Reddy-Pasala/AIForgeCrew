@@ -6,12 +6,11 @@ import http.client
 import io
 import json
 import urllib.error
-import urllib.request
 
 
 def _pkg():
-    """The package, looked up when called, so a replaced name there is the one
-    used here."""
+    """The parent module, looked up on each call so a name patched there is the
+    one used here."""
     import aiforge_core.llm.client._http as package
     return package
 
@@ -121,6 +120,7 @@ def _read_sse_response(conn, url: str, sink) -> dict:
     """Read a streamed completion, feeding each token to ``sink``, and return
     it reassembled as a normal body. A server that ignored ``stream`` and
     answered with plain JSON is read as such."""
+    pkg = _pkg()
     resp = conn.getresponse()
     if resp.status >= 400:
         data = resp.read()
@@ -128,7 +128,7 @@ def _read_sse_response(conn, url: str, sink) -> dict:
             url, resp.status, resp.reason, resp.headers, io.BytesIO(data))
     if "text/event-stream" not in (resp.getheader("Content-Type") or ""):
         body = json.loads(resp.read())
-        _pkg()._raise_if_model_dropped(body)
+        pkg._raise_if_model_dropped(body)
         return body
     asm = _StreamAssembler(sink)
     asm._emit("start", "")          # a retried call starts its text afresh
@@ -138,7 +138,7 @@ def _read_sse_response(conn, url: str, sink) -> dict:
         # made half an answer the FINAL.
         raise ConnectionError("model stream ended before the answer was complete")
     body = asm.body()
-    _pkg()._raise_if_model_dropped(body)
+    pkg._raise_if_model_dropped(body)
     return body
 
 
