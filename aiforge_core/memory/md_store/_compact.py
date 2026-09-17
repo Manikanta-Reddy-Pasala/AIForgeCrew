@@ -96,6 +96,7 @@ from ._compact_sweep import (  # noqa: F401  # re-exported
     sweep_stale_captures,
 )
 from ._ingest import _ingest_unit
+from ._render import brief_source_stems  # noqa: F401  # _compact_archive looks it up here
 
 
 def _kind_frontmatter(title: str, stem: str, all_tags: list, count: int,
