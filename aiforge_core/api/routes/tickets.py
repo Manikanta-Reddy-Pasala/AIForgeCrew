@@ -1,23 +1,16 @@
 """Ticket routes (/api/tickets/*, /api/workflows/preview) — split out of api.py.
 
-Full ticket CRUD (list/detail/create/patch/delete/reset), route override +
-detector preview, comments, parallel-subtask kickoff, live agent intervention,
-clarification answer, and the DB-sourced ticket-events SSE stream. Ticket row/
-event shaping + attachment persist/remove helpers moved here VERBATIM; handlers
-keep their inline function-local imports and behaviour.
+Full ticket CRUD (list/detail/create/patch/delete/reset), attachments and
+parallel-subtask kickoff. Comments, route override + preview, intervention,
+clarification answers and the events stream are in ``tickets_control``; row
+and event shaping in ``tickets_rows``. Their names are re-exported here — patch
+a helper in the module that calls it.
 """
 from __future__ import annotations
 
-import json
 import logging
-import os
-import threading
-from datetime import UTC
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import StreamingResponse
-
-from aiforge_core.api.routes._sse import sse_response
 from pydantic import BaseModel, Field
 
 from aiforge_core.api._shared import _ticket_files_base
@@ -25,65 +18,40 @@ from aiforge_core.config import env as _cfg
 from aiforge_core.runtime.background import spawn as _spawn
 from aiforge_core.tickets import store as tickets_mod
 
+from .tickets_control import (  # noqa: F401  # re-exported
+    _TERMINAL_TICKET,
+    CommentCreate,
+    RoutePreview,
+    RouteUpdate,
+    _event_payload,
+    _new_events,
+    _resolve_active_task_dirs,
+    _sse,
+    _terminal_line,
+    _ticket_event_stream,
+    _TicketAnswerBody,
+    add_comment,
+    intervene,
+    override_route,
+    stream_ticket_events,
+    ticket_answer,
+    workflow_preview,
+)
+from .tickets_control import router as _tickets_control_router
+from .tickets_rows import (  # noqa: F401  # re-exported
+    _TERMINAL,
+    _as_utc,
+    _duration_s,
+    _event_row_out,
+    _iso,
+    _ticket_row_out,
+)
+
 router = APIRouter()
+# Endpoints that live in tickets_control.py, served on this router.
+router.include_router(_tickets_control_router)
 
 _af_log = logging.getLogger("aiforge")
-
-_TERMINAL = {"done", "cancelled"}
-
-
-def _as_utc(ts):
-    from datetime import datetime
-    if ts is None:
-        return datetime.now(UTC)
-    return ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts
-
-
-def _duration_s(started, completed, status) -> float | None:
-    """Seconds from start to completion — or to NOW while the run is still
-    going. None until it has started."""
-    if started is None:
-        return None
-    end = completed if (completed and status in _TERMINAL) else None
-    return max(0.0, (_as_utc(end) - _as_utc(started)).total_seconds())
-
-
-def _iso(ts):
-    return ts.isoformat() if ts else None
-
-
-def _ticket_row_out(r: dict) -> dict:
-    started, completed = r.get("started_at"), r.get("completed_at")
-    return {
-        "id": r["id"], "identifier": r["identifier"], "title": r["title"],
-        "body": r["body"], "status": r["status"], "priority": r["priority"],
-        "assignee_role": (_cfg.canonical_role(r["assignee_role"])
-                          if r.get("assignee_role") else None),
-        "active_role": r.get("active_role"),
-        "parent_id": r["parent_id"],
-        "branch": r["branch"], "project": r["project"],
-        "labels": list(r["labels"] or []),
-        "metadata": dict(r["metadata"] or {}),
-        "created_at": _iso(r.get("created_at")),
-        "updated_at": _iso(r["updated_at"]),
-        "completed_at": _iso(completed),
-        "started_at": _iso(started),
-        "duration_s": _duration_s(started, completed, r.get("status")),
-        "route": r.get("route") or "code",
-        "route_workflow": r.get("route_workflow"),
-        "route_source": r.get("route_source") or "auto",
-        "route_confidence": r.get("route_confidence"),
-    }
-
-
-def _event_row_out(r: dict) -> dict:
-    return {
-        "id": r["id"], "ticket_id": r["ticket_id"],
-        "agent_role": r["agent_role"], "kind": r["kind"],
-        "body": r["body"] or "",
-        "metadata": dict(r["metadata"] or {}),
-        "created_at": r["created_at"].isoformat() if r["created_at"] else None,
-    }
 
 
 # ─────────────────────────── Tickets ────────────────────────────────────
@@ -124,20 +92,6 @@ class TicketCreate(BaseModel):
     deploy_target: str | None = None            # 'none' | 'qa' | 'prod' | None
 
 
-class RouteUpdate(BaseModel):
-    route: str                                  # 'code' | 'workflow'
-    route_workflow: str | None = None           # required when route='workflow'
-    route_source: str = "manual"                # default to manual for UI overrides
-    route_confidence: float | None = None
-
-
-class RoutePreview(BaseModel):
-    title: str = ""
-    body: str
-    attachments: list[str] = Field(default_factory=list)
-    intent: dict | None = None
-
-
 class TicketPatch(BaseModel):
     status: str | None = None
     assignee_role: str | None = None
@@ -150,11 +104,6 @@ class TicketPatch(BaseModel):
     # materializes surviving attachments into the worktree for the Doer.
     attached_files: list[AttachedFile] = Field(default_factory=list)
     remove_files: list[str] = Field(default_factory=list)
-
-
-class CommentCreate(BaseModel):
-    body: str
-    author: str = "human"
 
 
 @router.get("/api/tickets")
@@ -501,52 +450,6 @@ def patch_ticket(identifier: str, payload: TicketPatch) -> dict:
     return get_ticket(identifier)
 
 
-@router.post("/api/workflows/preview")
-def workflow_preview(payload: RoutePreview) -> dict:
-    """Run the route detector against a candidate ticket WITHOUT
-    creating it. UI debounces this on body change to show the
-    detected workflow chip live."""
-    from aiforge_core.workflows.detector import preview
-    return preview(
-        body=payload.body, title=payload.title,
-        attachments=payload.attachments, intent=payload.intent,
-    )
-
-
-@router.put("/api/tickets/{identifier}/route", responses={400: {"description": "Bad request"}, 404: {"description": "Not found"}})
-def override_route(identifier: str, payload: RouteUpdate) -> dict:
-    """Manual route override — UI 'override' link calls this. Sets
-    route_source='manual' by default so the audit trail distinguishes
-    operator overrides from auto-detected picks."""
-    if payload.route == "workflow":
-        from aiforge_core.workflows import get as _get_wf
-        if not payload.route_workflow:
-            raise HTTPException(400, "route='workflow' requires route_workflow")
-        if _get_wf(payload.route_workflow) is None:
-            raise HTTPException(
-                400, f"unknown workflow id: {payload.route_workflow!r}",
-            )
-    t = tickets_mod.update_route(
-        identifier,
-        route=payload.route,
-        route_workflow=payload.route_workflow,
-        route_source=payload.route_source,
-        route_confidence=payload.route_confidence,
-    )
-    if t is None:
-        raise HTTPException(404, f"ticket {identifier} not found")
-    return _ticket_row_out({
-        "id": t.id, "identifier": t.identifier, "title": t.title,
-        "body": t.body, "status": t.status, "priority": t.priority,
-        "assignee_role": t.assignee_role, "parent_id": t.parent_id,
-        "branch": t.branch, "project": t.project, "labels": t.labels,
-        "metadata": t.metadata, "created_at": t.created_at,
-        "updated_at": t.updated_at, "completed_at": t.completed_at,
-        "route": t.route, "route_workflow": t.route_workflow,
-        "route_source": t.route_source, "route_confidence": t.route_confidence,
-    })
-
-
 @router.post("/api/tickets/{identifier}/run-parallel", status_code=202, responses={404: {"description": "Not found"}})
 def run_subtasks_parallel(identifier: str) -> dict:
     """Run this ticket's subtasks CONCURRENTLY (each in its own worktree),
@@ -556,7 +459,6 @@ def run_subtasks_parallel(identifier: str) -> dict:
     t = tickets_mod.get(identifier)
     if t is None:
         raise HTTPException(404, f"ticket {identifier} not found")
-    import threading
 
     def _bg():
         try:
@@ -567,15 +469,6 @@ def run_subtasks_parallel(identifier: str) -> dict:
 
     _spawn(_bg, name=f"parallel-{identifier}")
     return {"started": True, "identifier": identifier}
-
-
-@router.post("/api/tickets/{identifier}/comments", status_code=201, responses={404: {"description": "Not found"}})
-def add_comment(identifier: str, payload: CommentCreate) -> dict:
-    t = tickets_mod.get(identifier)
-    if t is None:
-        raise HTTPException(404, f"ticket {identifier} not found")
-    eid = tickets_mod.add_comment(t.id, payload.author, payload.body)
-    return {"event_id": eid}
 
 
 @router.post("/api/tickets/reset")
@@ -596,168 +489,3 @@ def delete_ticket(identifier: str) -> None:
     if not tickets_mod.delete(identifier):
         raise HTTPException(404, f"ticket {identifier} not found")
     return None
-
-
-# ─────────── Live agent intervention (GA _stop / _keyinfo / _intervene) ────
-# Uses GA's task-intervention mechanism (commit 62ac73c). Harness writes
-# control files into the running agent's task_dir; GA's turn_end_callback
-# polls them and applies. Lets us steer or stop a live agent without
-# restarting the runtime.
-
-
-def _resolve_active_task_dirs(identifier: str) -> list[str]:
-    """Return GA temp dirs that match a running agent for this ticket."""
-    # AIFORGE_GA_DIR override first, else the genericagent checkout in the
-    # running user's home — no hardcoded per-operator absolute paths.
-    ga_root_candidates = (
-        os.environ.get("AIFORGE_GA_DIR", ""),
-        os.path.expanduser("~/genericagent"),
-    )
-    # The identifier comes off an HTTP request. One segment or nothing: a
-    # ticket id containing "../" is not a ticket id, and sanitising it quietly
-    # would hide that.
-    from aiforge_core.config.safe_paths import safe_dir, safe_segment
-    ident = safe_segment(identifier)
-    if not ident:
-        return []
-    prefixes = (f"aiforge-{ident}-", f"aiforge-planner-{ident}-")
-    for root in ga_root_candidates:
-        base = safe_dir(os.path.join(root, "temp")) if root else ""
-        if not base:
-            continue
-        # List the directory and keep the entries whose NAME starts with the
-        # identifier, rather than building `glob(f"...{ident}-*")`: the
-        # identifier is compared, never joined into a path. Same answer, and
-        # nothing off the request reaches the filesystem call.
-        try:
-            with os.scandir(base) as entries:
-                return sorted(os.path.join(base, e.name) for e in entries
-                              if e.is_dir() and e.name.startswith(prefixes))
-        except OSError:
-            return []
-    return []
-
-
-@router.post("/api/tickets/{identifier}/intervene", responses={400: {"description": "Bad request"}, 404: {"description": "Not found"}})
-def intervene(identifier: str, payload: dict) -> dict:
-    """Inject a runtime instruction into a running agent.
-
-    payload shape: ``{"kind": "stop|keyinfo|intervene", "body": "..."}``
-    - stop: write `_stop` (empty) — the agent halts at next turn.
-    - keyinfo: write `_keyinfo` with the body — the agent merges it into
-      working memory's key_info.
-    - intervene: write `_intervene` with the body — the agent prepends
-      the body to its next user prompt.
-
-    See GA ga.py:539-542. No-op (404) if no active agent for the ticket.
-    """
-    kind = (payload.get("kind") or "").strip()
-    body = payload.get("body", "")
-    if kind not in ("stop", "keyinfo", "intervene"):
-        raise HTTPException(400, "kind must be one of: stop, keyinfo, intervene")
-    targets = _resolve_active_task_dirs(identifier)
-    if not targets:
-        raise HTTPException(404, f"no active agent task dir for {identifier}")
-    fname = f"_{kind}"
-    written: list[str] = []
-    for d in targets:
-        try:
-            with open(os.path.join(d, fname), "w", encoding="utf-8") as fh:
-                fh.write(body if kind != "stop" else "")
-            written.append(d)
-        except Exception:
-            continue
-    return {"written": written, "kind": kind}
-
-
-class _TicketAnswerBody(BaseModel):
-    content: str = Field(..., min_length=1)
-
-
-@router.post("/api/tickets/{identifier}/answer", responses={404: {"description": "Not found"}})
-def ticket_answer(identifier: str, body: _TicketAnswerBody) -> dict:
-    """Answer a clarification a chat/interactive ticket asked. Folds the
-    answer into the ticket body, marks it clarified, and re-queues it so
-    the pipeline resumes with the new context."""
-    t = tickets_mod.get(identifier)
-    if t is None:
-        raise HTTPException(404, f"ticket {identifier} not found")
-    ans = body.content.strip()
-    tickets_mod.append_body(t.id, f"\n\n## Clarification\n{ans}\n")
-    tickets_mod.add_comment(t.id, "user", ans)
-    tickets_mod.add_event(t.id, "clarify", "clarification_answer", ans, {})
-    tickets_mod.update_status(
-        t.id, "todo", role="chat",
-        metadata_patch={"clarified": True, "awaiting_input": False},
-    )
-    return {"ticket": t.identifier, "status": "todo",
-            "trace_url": f"/api/tickets/{t.identifier}/events/stream"}
-
-
-_TERMINAL_TICKET = {"done", "qa", "qa_failed", "cancelled"}
-
-
-def _sse(payload: dict) -> str:
-    return "data: " + json.dumps(payload) + "\n\n"
-
-
-def _event_payload(e: dict) -> dict:
-    created = e.get("created_at")
-    return {"kind": e.get("kind"), "agent_role": e.get("agent_role"),
-            "body": e.get("body") or "", "metadata": e.get("metadata") or {},
-            "created_at": (created.isoformat()
-                           if hasattr(created, "isoformat") else created)}
-
-
-def _new_events(tid, seen: set):
-    for e in tickets_mod.comments(tid, 1000):
-        eid = e.get("id")
-        if eid not in seen:
-            seen.add(eid)
-            yield _sse(_event_payload(e))
-
-
-def _terminal_line(t) -> str | None:
-    """The closing ``done`` event, or None while the run continues."""
-    if t.status in _TERMINAL_TICKET:
-        return _sse({"kind": "done", "status": t.status})
-    if t.status == "blocked":
-        return _sse({"kind": "done", "status": "blocked"})
-    return None
-
-
-def _ticket_event_stream(identifier: str):
-    import time as _t
-    t0 = tickets_mod.get(identifier)
-    if t0 is None:
-        yield _sse({"kind": "error", "body": "ticket not found"})
-        return
-    seen: set = set()
-    for _ in range(1200):   # ~40 min at 2s
-        t = tickets_mod.get(identifier)
-        if t is None:
-            return
-        yield from _new_events(t0.id, seen)
-        meta = t.metadata or {}
-        awaiting = bool(meta.get("awaiting_input"))
-        yield _sse({"kind": "status", "status": t.status,
-                    "awaiting_input": awaiting,
-                    "clarify_questions": meta.get("clarify_questions") or []})
-        if awaiting:
-            return
-        done = _terminal_line(t)
-        if done:
-            yield done
-            return
-        _t.sleep(2)
-
-
-@router.get("/api/tickets/{identifier}/events/stream")
-def stream_ticket_events(identifier: str) -> StreamingResponse:
-    """Live stage updates for a ticket, sourced from ``ticket_events`` in
-    the DB (shared across the api + runner containers — unlike the
-    log-tail trace). Emits every event for the ticket, then polls for new
-    ones; emits the clarification + status when the run pauses awaiting
-    the user; closes on a terminal status. Chat Pipeline mode streams
-    this."""
-    return sse_response(_ticket_event_stream(identifier))
