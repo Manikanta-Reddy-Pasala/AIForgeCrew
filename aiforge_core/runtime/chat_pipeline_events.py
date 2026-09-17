@@ -1,5 +1,5 @@
-"""Turning the team pipeline's ADK events into chat events: text parts, streaming
-deltas, planner subtasks, edit-claim guards and steer acknowledgements."""
+"""Turning the team pipeline's ADK events into chat events: text parts,
+streaming deltas, planner subtasks and the edit-claim guard."""
 from __future__ import annotations
 
 import os
