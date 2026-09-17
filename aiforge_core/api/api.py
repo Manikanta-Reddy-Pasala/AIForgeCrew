@@ -39,7 +39,7 @@ from aiforge_core.runtime.background import (
 )
 from aiforge_core.tickets import store as tickets_mod  # noqa: F401  # api.tickets_mod
 
-from ._bind_security import (  # noqa: F401  # used here, or reached as api.<name>
+from ._bind_security import (  # noqa: F401  # used here or by tests
     _api_token,
     _auth_exempt,
     _extract_request_token,
@@ -50,7 +50,7 @@ from ._bind_security import (  # noqa: F401  # used here, or reached as api.<nam
     _sync_open,
     _trust_loopback,
 )
-from ._compaction_jobs import (  # noqa: F401  # used here, or reached as api.<name>
+from ._compaction_jobs import (  # noqa: F401  # used here or by tests
     _compact_at_hour,
     _register_artifact_merge,
     _register_daily_compaction,
@@ -76,7 +76,7 @@ from ._startup import (  # noqa: F401  # re-exported
     _start_daily_reindex,
     _start_jobs_scheduler,
 )
-from ._ui_serving import (  # noqa: F401  # used here, or reached as api.<name>
+from ._ui_serving import (  # noqa: F401  # used here or by tests
     _DIST,
     _INDEX_HTML,
     _cors_origins,
@@ -153,7 +153,9 @@ for _startup_step in (
         _start_jobs_scheduler,
         _start_daily_reindex,
 ):
-    app.add_event_handler("startup", _startup_step)
+    # app.router: Starlette 1.x dropped app.add_event_handler; this is what
+    # the @app.on_event decorator calls.
+    app.router.add_event_handler("startup", _startup_step)
 
 # Backwards-compat re-exports: private chat helpers relocated into
 # aiforge_core.api.routes.chat but still imported by name from

@@ -10,14 +10,6 @@ from fastapi import Request
 
 from aiforge_core.api.routes import admin as _r_admin
 
-
-def _pkg():
-    """The package, looked up when called, so a replaced name there is the one
-    used here."""
-    import aiforge_core.api.api as package
-    return package
-
-
 # ─────────────────────── API auth + bind-host guard ─────────────────────
 # This control plane RUNS SHELL and EDITS FILES over HTTP, so exposing it
 # unauthenticated is a remote-code-execution surface. Design (pragmatic, must

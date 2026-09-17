@@ -21,30 +21,28 @@ Per-call kwargs map to OpenAI body fields:
 ``{"chat_template_kwargs": {...}}`` for mlx-lm template kwargs).
 
 This module was split (grouped by concern) into ``_helpers`` / ``_text`` /
-``_errors`` / ``_http`` submodules; the call-orchestration pipeline
-(``complete`` / ``_complete_impl`` / ``_try_post`` / ``_trace_generation`` /
-``_is_fast_role``) stays defined here so the existing tests that
-``monkeypatch.setattr("aiforge_core.llm.client.<name>", …)`` and rely on an
-in-package consumer picking up the patch keep working unchanged. This package
-re-exports the full former top-level surface (public AND private) so every
-``client.<name>`` access — and ``from aiforge_core.llm.client import <name>`` —
-is identical to before.
+``_errors`` / ``_http`` submodules, plus ``_attempt`` (one attempt:
+``_try_post``), ``_chain`` (the model chain) and ``_missing`` (an unserved
+model). ``complete`` / ``complete_raw`` / ``_complete_impl`` /
+``_trace_generation`` stay here. The moved code looks these names up on this
+package when it runs, so a test that replaces them here still takes effect:
+``resolve``, ``escalate``, ``fallback``, ``_try_post``, ``_post_with_retry``,
+``_record_usage``, ``_build_body``, ``_log``, ``_complete_impl``,
+``complete`` and ``complete_raw``. Other helpers must be patched in the module
+that defines them. The package re-exports the former top-level surface, so
+``client.<name>`` and ``from aiforge_core.llm.client import <name>`` work as
+before.
 """
 from __future__ import annotations
 
 import contextvars
 import io
-import json
+import json  # noqa: F401  # tests reach client.json
 import logging
-import os
-import random
 import re
 import threading
-import time
-import urllib.error
+import time  # noqa: F401  # tests patch time.sleep through client
 import urllib.request
-from dataclasses import replace
-from typing import cast
 
 from .. import providers as _providers
 from .. import rate_limiter as _rl
@@ -96,8 +94,6 @@ from ._http import (
     set_delta_sink,
     shipped_timeout,  # re-export: callers above the transport
 )
-from ._http import TIMEOUT_SHIPPED_ATTR as _TIMEOUT_SHIPPED_ATTR
-from ._http import shipped_timeout as _shipped_timeout
 from ._missing import (  # noqa: F401  # re-exported
     _autofallback_enabled,
     _diagnose_missing,
@@ -107,8 +103,8 @@ from ._missing import (  # noqa: F401  # re-exported
     _model_missing_error,
     _substitute_attempt,
 )
-from ._models import MODEL_MISSING_ATTR, model_missing
-from ._text import (
+from ._models import model_missing
+from ._text import (  # noqa: F401  # tests reach these as client.<name>
     _THINK_CLOSE_ONLY_RE,
     _THINK_LEAD_RE,
     _THINK_OPEN_RE,

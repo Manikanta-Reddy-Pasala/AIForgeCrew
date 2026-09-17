@@ -248,16 +248,16 @@ def _start_jobs_scheduler() -> None:
     """Scheduled-jobs tick loop — daemon thread, same pattern as the
     other background workers. AIFORGE_JOBS_DISABLE=1 skips it.
 
-    This decorator was STOLEN on 2026-07-07: a refactor inserted
+    Its registration was STOLEN on 2026-07-07: a refactor inserted
     `_check_tool_parity` directly beneath it and took the registration with it,
     leaving `@app.on_event("startup")` written twice on that function and none
     on this one. Every scheduled job since has sat in the table with a
     next_run_at that nothing advanced — rows written, tickets never filed, no
     error anywhere. Only POST /api/jobs/{id}/run-now did anything.
-    tests/python/api/test_jobs_scheduler_started.py now asserts the
-    registration, because nothing else would notice it disappearing again."""
+    It is now registered in api.py's startup tuple, and
+    tests/python/api/test_jobs_scheduler_started.py asserts the registration,
+    because nothing else would notice it disappearing again."""
     try:
-
         from aiforge_core.jobs import scheduler as jobs_scheduler
         if jobs_scheduler._disabled():
             return

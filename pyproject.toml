@@ -222,8 +222,8 @@ include = ["aiforge_core*"]
     "indexing/repomap/queries/*/*.scm",
     "indexing/repomap/queries/*/README.md",
     # The built UI, copied in by installer/build_payload.sh. Absent in a plain
-    # checkout — a repo run serves web/dist directly (see api.py's two
-    # candidates), so this pattern matching nothing is normal there.
+    # checkout — a repo run serves web/dist directly (see api/_ui_serving.py's
+    # two candidates), so this pattern matching nothing is normal there.
     "web_dist/**/*",
 ]
 

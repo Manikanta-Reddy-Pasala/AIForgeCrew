@@ -1,16 +1,9 @@
-"""Serving the web UI and quieting the access log: noisy poll paths, query
-normalisation, and finding the built front end."""
+"""Serving the web UI and quieting the access log: CORS origins, noisy poll
+paths, and finding the built front end."""
 from __future__ import annotations
 
 import logging
 import os
-
-
-def _pkg():
-    """The package, looked up when called, so a replaced name there is the one
-    used here."""
-    import aiforge_core.api.api as package
-    return package
 
 
 def _cors_origins() -> list[str]:
@@ -66,46 +59,6 @@ def _install_access_log_filter() -> None:
 # ─────────────────────────── Helpers ────────────────────────────────────
 _INDEX_HTML = 'index.html'
 
-
-_NORMALIZE_SYSTEM = """You are a query normalizer. The user will send one
-short question that may contain typos, bad grammar, or missing articles.
-Rewrite it as ONE clean English line that preserves intent, expands
-obvious acronyms (pos → pos client backend, wg → wireguard), and fixes
-typos. Do NOT answer the question. Do NOT add anything beyond the
-rewritten query. Max 200 chars."""
-
-
-def _normalize_query(query: str) -> str:
-    """Tiny LLM pass that cleans typos + grammar so retrieval (BM25 and
-    vector) actually hits. Falls back to the raw query on any failure.
-
-    Skipped for queries already clean-ish (length < 12 chars, OR only
-    one word) to avoid burning a call on trivial inputs.
-    """
-    q = query.strip()
-    if len(q) < 12 or " " not in q:
-        return q
-    from aiforge_core.llm import complete as _complete
-    try:
-        result = _complete(
-            "chat",
-            [
-                {"role": "system", "content": _NORMALIZE_SYSTEM},
-                {"role": "user", "content": q[:600]},
-            ],
-            max_tokens=128, temperature=0.0,
-            timeout_s=30,
-        )
-        if not result:
-            return q
-        # Strip stray quoting / leading labels.
-        result = result.strip().strip('"\' ')
-        for prefix in ("normalized:", "query:", "rewritten:"):
-            if result.lower().startswith(prefix):
-                result = result[len(prefix):].strip()
-        return result[:300] or q
-    except Exception:
-        return q
 
 # ─────────────────────────── Static UI ──────────────────────────────────
 # If the Vite production build exists, serve it at /ui/ and redirect "/" to it.
