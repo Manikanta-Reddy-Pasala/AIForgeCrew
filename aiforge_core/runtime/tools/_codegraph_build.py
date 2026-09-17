@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import os
 import subprocess
-import threading as _threading  # noqa: E402
-import time as _time  # noqa: E402
-from collections import defaultdict as _defaultdict  # noqa: E402
+import threading as _threading
+import time as _time
+from collections import defaultdict as _defaultdict
 
 
 def _pkg():

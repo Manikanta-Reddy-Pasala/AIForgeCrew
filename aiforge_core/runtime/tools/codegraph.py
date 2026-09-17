@@ -248,8 +248,6 @@ def enabled_for_run(cwd: str | None = None) -> bool:
             and not _ticket_opts_out())
 
 
-
-
 def _run(args: list[str], cwd: str | None) -> dict:
     exe = _bin()
     if not exe:

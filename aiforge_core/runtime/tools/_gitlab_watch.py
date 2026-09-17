@@ -2,9 +2,6 @@
 the gitlab_pipeline_watch tool."""
 from __future__ import annotations
 
-from ._gitlab_jobs import (
-    gitlab_pipeline,
-)
 from ._gitlab_pipes import (
     _is_fatal,
     _pipe_env,
@@ -95,7 +92,7 @@ def _watch_stopped(state: dict, checks: int, started: float, err: dict) -> dict:
 def _watch_finished(args: dict, cwd, res: dict, pinned, checks: int,
                     started: float) -> dict:
     """The pipeline is done — now, and only now, pay for the jobs and logs."""
-    final = gitlab_pipeline({**args, "pipeline_id": pinned}, cwd)
+    final = _pkg().gitlab_pipeline({**args, "pipeline_id": pinned}, cwd)
     if final.get("ok"):
         return {**final, **_watch_envelope(checks, started)}
     # The ONE call that was going to fetch the logs failed (a 429 right at
@@ -187,7 +184,7 @@ def _poll_args(args: dict, pinned) -> dict:
 def _one_check(args: dict, cwd, pinned, good: dict, _err: dict, checks: int,
                started: float):
     """One poll. Returns ``(final_result_or_None, good, err, pinned)``."""
-    res = gitlab_pipeline(_poll_args(args, pinned), cwd, skip_jobs=True)
+    res = _pkg().gitlab_pipeline(_poll_args(args, pinned), cwd, skip_jobs=True)
     if not res.get("ok"):
         if _is_fatal(res):
             return _watch_fatal(good, res, checks, started), good, res, pinned

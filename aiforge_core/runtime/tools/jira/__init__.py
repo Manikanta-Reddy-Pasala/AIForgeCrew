@@ -16,9 +16,10 @@ Soft-error contract: every function returns ``{"ok": bool, ...}`` and never
 raises into the agent loop.
 
 This module was split (grouped by concern) into ``_core`` / ``_format`` /
-``_attachments`` / ``_projects`` submodules; the issue CRUD/workflow tools stay
-in this package body (so ``jira._request`` / ``jira._SEARCH_PAGE`` patch points
-resolve identically). The package re-exports the full former public surface so
+``_attachments`` / ``_projects`` / ``_edit`` submodules. Search, read and
+worklog tools stay in this package body; the tools that change an issue live in
+``_edit`` and read ``jira._request`` and the other patch points through the
+package. The package re-exports the full former public surface so
 ``from aiforge_core.runtime.tools import jira`` and every ``jira.<name>``
 attribute access is unchanged.
 """

@@ -208,7 +208,7 @@ def jira_transition(args: dict, _cwd: str | None = None) -> dict:
                or args.get("status") or args.get("name") or "").strip()
     if not want:
         return {"ok": False, "error": "missing 'transition' (name, id or status)"}
-    lst = jira_transitions({"key": key})
+    lst = pkg.jira_transitions({"key": key})
     if not lst["ok"]:
         return lst
     tid = None

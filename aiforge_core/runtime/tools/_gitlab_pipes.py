@@ -258,8 +258,8 @@ def gitlab_pipelines(args: dict, _cwd: str | None = None) -> dict:
     pkg = _pkg()
     proj = pkg._proj_id(args)
     if not proj:
-        return {"ok": False, "error": pkg._MISSING_PROJECT,
-                "hint": pkg._PROJECT_HINT}
+        return {"ok": False, "error": _MISSING_PROJECT,
+                "hint": _PROJECT_HINT}
     params: dict = {"per_page": _pipe_int(args, "limit", 20, 1, 100),
                     "order_by": "id", "sort": "desc"}
     ref = (args.get("ref") or args.get("branch") or "").strip()
