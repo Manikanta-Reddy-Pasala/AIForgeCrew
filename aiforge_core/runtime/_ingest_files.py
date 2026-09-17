@@ -16,8 +16,9 @@ def _pkg():
 
 
 def _iter_files(root: Path, exts: set[str]):
+    noise = _pkg()._NOISE_DIRS
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in _pkg()._NOISE_DIRS
+        dirnames[:] = [d for d in dirnames if d not in noise
                        and not d.startswith(".")]
         for fn in filenames:
             if Path(fn).suffix.lower() in exts:

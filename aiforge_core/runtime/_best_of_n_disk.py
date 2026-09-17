@@ -4,9 +4,6 @@ from __future__ import annotations
 import os
 
 from aiforge_core.runtime.git_pr import _EXCLUDE_DIR_SEGMENTS
-from aiforge_core.runtime.parallel_subtasks import (
-    _git,
-)
 
 
 def _pkg():
@@ -21,11 +18,12 @@ def _pkg():
 def _cleanup(repo: str, attempt: dict) -> None:
     """Discard a (loser) attempt's worktree + branch — mirrors the best-effort
     cleanup ``parallel_subtasks.run_parallel`` does after merging."""
+    pkg = _pkg()
     wt = attempt.get("worktree")
     if wt and os.path.isdir(wt):
-        _git(["worktree", "remove", "--force", wt], repo)
+        pkg._git(["worktree", "remove", "--force", wt], repo)
     if attempt.get("branch"):
-        _git(["branch", "-D", attempt["branch"]], repo)
+        pkg._git(["branch", "-D", attempt["branch"]], repo)
 
 
 def _tree_bytes(cwd: str, cap: int = 50_000) -> int:
@@ -58,7 +56,7 @@ def _disk_preflight(cwd: str, n: int, *, safety: float = 1.2) -> str | None:
     heavy deps — a bounded ``os.walk``."""
     pkg = _pkg()
     try:
-        total = _tree_bytes(cwd)
+        total = pkg._tree_bytes(cwd)
         if total <= 0:
             return None
         st = os.statvfs(cwd)

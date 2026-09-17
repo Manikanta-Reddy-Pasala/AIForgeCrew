@@ -19,11 +19,11 @@ from aiforge_core.config import languages as _languages
 
 from ._report_pytest import (  # noqa: F401  # re-exported
     _AIFORGE_VENV,
-    _VENV,
-    _WORKTREES,
     _IMPORT_SCAN_SKIP,
     _STDLIB,
     _TEST_SKIP_DIRS,
+    _VENV,
+    _WORKTREES,
     _ensure_pytest_venv,
     _imported_modules,
     _local_names,

@@ -145,7 +145,7 @@ def _ensure_pytest_venv(cwd: str, venv: str, py: str, timeout: int) -> str:
     # unresolvable/mis-detected name (a stray stdlib module, a private package)
     # must NOT abort the whole install and strand pytest. Each failure is
     # isolated; a genuinely-missing import just surfaces as a real test error.
-    for dep in _third_party_imports(cwd):
+    for dep in _pkg()._third_party_imports(cwd):
         subprocess.run([py, "-m", "pip", "-q", "install", dep],
                        capture_output=True, timeout=timeout)
     req = os.path.join(cwd, "requirements.txt")
@@ -204,7 +204,7 @@ def run_bare_python_tests(cwd: str, timeout: int = 300):
     or ``None`` when there are no tests (nothing to check). The venv lives at
     ``.aiforge-venv`` (git-ignored) and is reused across reconcile rounds."""
     pkg = _pkg()
-    if not _python_test_files(cwd):
+    if not pkg._python_test_files(cwd):
         return None
     venv = os.path.join(cwd, pkg._AIFORGE_VENV)
     py = os.path.join(venv, "bin", "python")
@@ -217,7 +217,7 @@ def run_bare_python_tests(cwd: str, timeout: int = 300):
         ok = rc == 0
         # LINT gate (Python leg): when tests otherwise PASS, run the real-bug ruff
         # codes via the managed venv's ruff. The generic multi-language dispatch
-        # below handles other stacks.
+        # in ``integration_report`` handles other stacks.
         if ok and os.environ.get("AIFORGE_LINT_GATE", "1") not in ("0", "false"):
             lok, lout = pkg._static_lint_python(cwd, py, env)
             if not lok:
