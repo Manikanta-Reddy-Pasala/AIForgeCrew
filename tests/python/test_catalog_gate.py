@@ -139,7 +139,8 @@ def test_email_counts_as_configured_when_a_mail_host_is_set(monkeypatch, env):
     from aiforge_core.runtime.chat_agent import _catalog_gate as cg
     from aiforge_core.runtime.tools import email_tool
     monkeypatch.setattr(email_tool, "_stored", dict)
-    for var in ("AIFORGE_SMTP_HOST", "AIFORGE_IMAP_HOST"):
+    for var in ("AIFORGE_SMTP_HOST", "AIFORGE_IMAP_HOST",
+                "AIFORGE_EMAIL_DISABLE", "AIFORGE_EGRESS_OFF"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv(env, "mail.example.test")
     assert cg._email() is True

@@ -99,8 +99,9 @@ class _FakeIMAP:
         self.login_creds = (user, pw)
         return ("OK", [b"logged in"])
 
-    def select(self, folder):
+    def select(self, folder, readonly=False):
         self.selected = folder
+        self.readonly = readonly
         return ("OK", [b"3"])
 
     def search(self, charset, *criteria):
@@ -108,6 +109,7 @@ class _FakeIMAP:
         return ("OK", [b"1 2 3"])
 
     def fetch(self, num, spec):
+        self.fetch_spec = spec
         key = num if isinstance(num, bytes) else str(num).encode()
         return ("OK", [(b"%s (RFC822)" % key, self._store[key]), b")"])
 
@@ -344,3 +346,10 @@ def test_read_refuses_a_folder_with_a_line_break(imap_cfg, monkeypatch):
     out = et.email_read({"folder": "INBOX\r\nA1 DELETE INBOX"})
     assert out["ok"] is False and "line break" in out["error"]
     assert _FakeIMAP.last.selected is None
+
+
+def test_read_does_not_mark_mail_as_read(imap_cfg, monkeypatch):
+    monkeypatch.setattr("imaplib.IMAP4_SSL", _FakeIMAP)
+    assert et.email_read({"limit": 1})["ok"] is True
+    assert _FakeIMAP.last.readonly is True
+    assert "PEEK" in _FakeIMAP.last.fetch_spec

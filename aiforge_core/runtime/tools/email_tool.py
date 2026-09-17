@@ -299,7 +299,7 @@ def _message_row(num, m) -> dict:
 def _fetch_message(srv, num):
     """The parsed message, or None when it cannot be read."""
     try:
-        _typ, msg_data = srv.fetch(num, "(RFC822)")
+        _typ, msg_data = srv.fetch(num, "(BODY.PEEK[])")
     except Exception:  # noqa: BLE001 — skip an unreadable message
         return None
     raw = _first_bytes(msg_data)
@@ -311,7 +311,8 @@ def _collect_messages(srv, folder: str, *, unseen: bool, query: str,
     """Newest-first messages matching ``query`` (subject + from)."""
     if "\r" in folder or "\n" in folder:
         raise ValueError("folder name contains a line break")
-    srv.select(folder)
+    # Read-only + BODY.PEEK: reading must not mark the mailbox as read.
+    srv.select(folder, readonly=True)
     _typ, data = srv.search(None, *(["UNSEEN"] if unseen else ["ALL"]))
     ids = list(reversed(data[0].split() if data and data[0] else []))[:_SCAN_MAX]
     out: list[dict] = []

@@ -1,7 +1,8 @@
 """Shared trace-event emitter for the OpenHands-parity tool surface.
 
 Every tool calls :func:`emit` to record a labelled event on the
-``aiforge.tools.trace`` logger (DEBUG). The emit path is best-effort: a
+``aiforge.tools.trace`` logger at DEBUG, so the trail is only written when
+that logger is set to DEBUG (``aiforge`` runs at INFO). The emit path is best-effort: a
 sink outage or missing config never bubbles into the model loop.
 Oversized string fields are truncated to 4 KB to keep the audit trail
 bounded.
