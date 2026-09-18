@@ -35,10 +35,20 @@ def confluence_create(title: str, space: str, body: str, parent_id: str = "") ->
                                  "parent_id": parent_id}, str(root()))
 
 
-def confluence_update(id: str, body: str, title: str = "") -> dict:
-    """Update a Confluence page body (version auto-incremented). ``id`` required."""
+def confluence_update(id: str, body: str, title: str = "", mode: str = "replace",
+                      section: str = "", find: str = "",
+                      allow_loss: bool = False) -> dict:
+    """Edit a Confluence page; ``body`` is MERGED into the live page.
+    ``mode``: "append" / "prepend" (add ``body``), "replace_section" (replace
+    the section under heading ``section``), "replace_text" (replace the exact
+    text ``find`` copied from the page), or "replace" (``body`` is the COMPLETE
+    page — refused if it would drop most of the text or any table/macro,
+    unless ``allow_loss`` because the user asked for that content to go).
+    Send only the part that changes."""
     from aiforge_core.runtime.tools import confluence as _c
-    return _c.confluence_update({"id": id, "body": body, "title": title}, str(root()))
+    return _c.confluence_update({"id": id, "body": body, "title": title,
+                                 "mode": mode, "section": section, "find": find,
+                                 "allow_loss": allow_loss}, str(root()))
 
 
 def jira_search(query: str = "", jql: str = "", limit=50) -> dict:
@@ -173,16 +183,23 @@ def jira_create(project: str, summary: str, description: str = "",
 
 
 def jira_update(key: str, summary: str = "", description: str = "",
-                labels: str = "", status: str = "") -> dict:
+                labels: str = "", status: str = "", mode: str = "replace",
+                section: str = "", find: str = "",
+                allow_loss: bool = False) -> dict:
     """Update JIRA issue fields by ``key``. ``labels`` = comma-separated.
     ``status`` moves the issue through its workflow (auto-routed to a
-    transition — Jira status is not a plain editable field)."""
+    transition — Jira status is not a plain editable field). ``description``
+    is MERGED into the current one per ``mode`` ("append", "prepend",
+    "replace_section" + ``section`` heading, "replace_text" + ``find``, or
+    "replace" = the COMPLETE description, refused if it drops content unless
+    ``allow_loss``). Send only the part that changes."""
     from aiforge_core.runtime.tools import jira as _j
     args: dict = {"key": key}
     if summary:
         args["summary"] = summary
     if description:
-        args["description"] = description
+        args.update(description=description, mode=mode, section=section,
+                    find=find, allow_loss=allow_loss)
     if labels:
         args["labels"] = labels
     if status:

@@ -4,7 +4,8 @@ from __future__ import annotations
 import sys
 import urllib.parse
 
-from ..confluence_format import md_to_storage
+from ..confluence_format import inline_fragment, md_to_storage
+from ..edit_merge import EditError, apply_edit
 from ._config import (_BODY_CAP, _TIMEOUT_S, _auth_scheme, _base, _configured,
                       _headers, _page_url, _ssl_ctx, _truthy,
                       default_space)
@@ -102,6 +103,10 @@ def confluence_read(args: dict, _cwd: str | None = None) -> dict:
            "space": (d.get("space") or {}).get("key"),
            "version": (d.get("version") or {}).get("number"),
            "body": body[:_BODY_CAP], "url": _page_url(d)}
+    if len(body) > _BODY_CAP:
+        # Never let a model rewrite a page it only saw part of.
+        out["truncated"] = True
+        out["body_chars"] = len(body)
     atts = _read_attachments(args, d.get("id") or pid)
     if atts:
         out["attachments"] = atts
@@ -140,21 +145,54 @@ def confluence_create(args: dict, cwd: str | None = None) -> dict:
     return out
 
 
+def _fragment_to_storage(body: str, mode: str) -> str:
+    """The sent body as storage XHTML. A one-line ``replace_text`` swap stays
+    INLINE — wrapping it in <p> would nest a paragraph inside the one it lands
+    in — and keeps any markup or entities it copied from the page as-is."""
+    if mode == "replace_text" and "\n" not in body:
+        return inline_fragment(body)
+    return md_to_storage(body)
+
+
+def merged_body(current: str, args: dict) -> "tuple[str, list]":
+    """(new page body, image refs to upload) for an update ``args`` against
+    the ``current`` storage body — the SAME merge the tool performs, so the
+    approval preview shows exactly what will be written. Raises EditError."""
+    mode = (args.get("mode") or "replace").strip().lower()
+    body = str(args.get("body") or "")
+    fragment, img_refs = (_storagify_media(_fragment_to_storage(body, mode))
+                          if body else ("", []))
+    return apply_edit(current, fragment, args, kind="storage"), img_refs
+
+
 def confluence_update(args: dict, cwd: str | None = None) -> dict:
-    """Update a page body. Required: ``id``, ``body``. Optional: ``title``,
-    ``representation``. Version is auto-incremented (reads current first)."""
+    """Edit a page. Required: ``id``, ``body``. ``mode`` says what ``body`` is:
+    ``append`` / ``prepend`` (added to the page), ``replace_section`` (with
+    ``section`` = heading text), ``replace_text`` (with ``find`` = exact text
+    from the page), or ``replace`` (the WHOLE page; refused when it would drop
+    most of the text or its tables/macros, unless ``allow_loss``). Optional
+    ``title``. Merged into the live body, version auto-incremented."""
     pid = args.get("id")
     if not pid:
         return {"ok": False, "error": _MISSING_ID}
-    if not args.get("body"):
+    mode = (args.get("mode") or "replace").strip().lower()
+    # An EMPTY body deletes a section / a piece of text; anywhere else it is
+    # a mistake (a whole page emptied, or nothing appended).
+    if not args.get("body") and not (
+            args.get("body") == "" and mode in ("replace_section", "replace_text")):
         return {"ok": False, "error": "missing 'body'"}
-    cur = _request("GET", f"/rest/api/content/{pid}", params={"expand": "version"})
+    cur = _request("GET", f"/rest/api/content/{pid}",
+                   params={"expand": "version,body.storage"})
     if not cur["ok"]:
         return cur
     d = cur["data"] if isinstance(cur["data"], dict) else {}
     next_ver = ((d.get("version") or {}).get("number") or 0) + 1
     title = args.get("title") or d.get("title")
-    xhtml, img_refs = _storagify_media(md_to_storage(str(args["body"])))
+    current = (((d.get("body") or {}).get("storage") or {}).get("value") or "")
+    try:
+        xhtml, img_refs = merged_body(current, args)
+    except EditError as exc:
+        return {"ok": False, "error": str(exc), "page_chars": len(current)}
     # Upload attachments FIRST (page id already exists) so the <ri:attachment>
     # references in the new body resolve as soon as the version is published.
     attachments = _upload_page_images(str(pid), img_refs, cwd) if img_refs else []
@@ -169,6 +207,7 @@ def confluence_update(args: dict, cwd: str | None = None) -> dict:
         return r
     rd = r["data"] if isinstance(r["data"], dict) else {}
     out = {"ok": True, "id": pid, "version": next_ver, "title": title,
+           "mode": (args.get("mode") or "replace"),
            "url": _page_url(rd), "written": {"title": title, "body": xhtml[:2000]}}
     if attachments:
         out["attachments"] = attachments

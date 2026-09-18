@@ -15,11 +15,22 @@ Markdown parser.
 """
 from __future__ import annotations
 
-import html as _html
 import re
 
 # Already-storage signal: real block/format tags or a Confluence macro.
-_STORAGE_HINT = re.compile(r"<(p|h[1-6]|ul|ol|li|strong|em|a|table|ac:)\b", re.I)
+_STORAGE_HINT = re.compile(
+    r"<(p|h[1-6]|ul|ol|li|strong|em|a|table|tbody|thead|tr|td|th|pre|code|"
+    r"blockquote|hr|br|span|div|time|u|s|sub|sup|ac:|ri:)\b", re.I)
+# A bare "&" — not the start of an entity the body already carries (&amp;,
+# &nbsp;, &#8377;). Escaping those again showed "&amp;amp;" on the page.
+_BARE_AMP = re.compile(r"&(?!#?\w+;)")
+
+
+def _escape(s: str) -> str:
+    """XHTML-escape plain text without double-escaping existing entities."""
+    return _BARE_AMP.sub("&amp;", s).replace("<", "&lt;").replace(">", "&gt;")
+
+
 _FENCE = re.compile(r"```.*?```", re.DOTALL)
 _ORDERED_ITEM = r"^\s*\d+\.\s+"  # markdown ordered-list item: "1. ", "2. ", ...
 
@@ -53,7 +64,7 @@ def _inline(s: str) -> str:
     """Inline markdown → storage XHTML on ONE line's text. Escapes bare XHTML
     special chars first so user text can't inject tags, then re-introduces the
     intended emphasis/code/link tags."""
-    s = _html.escape(s, quote=False)
+    s = _escape(s)
     # inline code `x` first (so bold/italic never touch its contents)
     s = re.sub(r"`([^`]+)`", lambda m: f"<code>{m.group(1)}</code>", s)
     # links [t](u) -> <a href="u">t</a>
@@ -66,6 +77,20 @@ def _inline(s: str) -> str:
     s = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<em>\1</em>", s)
     s = re.sub(r"(?<!_)_([^_\n]+)_(?!_)", r"<em>\1</em>", s)
     return s
+
+
+def inline_fragment(text: str) -> str:
+    """A one-line replacement dropped INTO an existing paragraph: storage
+    markup passes through; plain text is escaped (entities kept) with only
+    `code`, [links](url) and **bold** converted — single-underscore/asterisk
+    italics would turn ``my_var_name`` into ``my<em>var</em>name``."""
+    if _STORAGE_HINT.search(text) or re.search(r"<[A-Za-z/!]", text):
+        return text
+    s = _escape(text)
+    s = re.sub(r"`([^`]+)`", lambda m: f"<code>{m.group(1)}</code>", s)
+    s = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)",
+               lambda m: f'<a href="{m.group(2)}">{m.group(1)}</a>', s)
+    return re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
 
 
 def _consume_list(lines: list[str], i: int) -> "tuple[str, int]":
@@ -112,4 +137,4 @@ def _blocks_to_storage(s: str) -> str:
     return "\n".join(out)
 
 
-__all__ = ["md_to_storage"]
+__all__ = ["inline_fragment", "md_to_storage"]

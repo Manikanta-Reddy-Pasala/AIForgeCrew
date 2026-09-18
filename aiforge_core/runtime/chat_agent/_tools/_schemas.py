@@ -190,9 +190,14 @@ CATALOG: dict = {
     "jira_create": ("WRITE: create a NEW Jira issue. Only when explicitly asked to create/file/raise one — never to look tickets up.",
                     {"project": "s", "summary": "s", "issuetype": "s",
                      "description": "s"}, ("project", "summary")),
-    "jira_update": ("WRITE: edit an existing Jira issue's fields.",
+    "jira_update": ("WRITE: edit an existing Jira issue's fields. The description "
+                    "is MERGED per `mode`: append | prepend | replace_section "
+                    "(+`section` heading) | replace_text (+`find` exact text) | "
+                    "replace (the COMPLETE description; refused if it drops "
+                    "content unless `allow_loss`). Send only the part that changes.",
                     {"key": "s", "summary": "s", "description": "s",
-                     "labels": "arrs", "status": "s"}, ("key",)),
+                     "labels": "arrs", "status": "s", "mode": "s",
+                     "section": "s", "find": "s", "allow_loss": "b"}, ("key",)),
     "jira_comments": ("READ the comments on a Jira issue.",
                       {"key": "s", "limit": "s"}, ("key",)),
     "jira_comment": ("WRITE: post a NEW comment onto a Jira issue. To read comments use jira_comments.", {"key": "s", "body": "s"},
@@ -225,8 +230,15 @@ CATALOG: dict = {
     "confluence_create": ("WRITE: create a NEW Confluence page. Only when explicitly asked to create one — never to look pages up.",
                           {"title": "s", "space": "s", "body": "s",
                            "parent_id": "s"}, ("title", "space", "body")),
-    "confluence_update": ("WRITE: edit an existing Confluence page.",
-                          {"id": "s", "body": "s", "title": "s"},
+    "confluence_update": ("WRITE: edit an existing Confluence page. `body` is "
+                          "MERGED into the live page per `mode`: append | prepend | "
+                          "replace_section (+`section` heading) | replace_text "
+                          "(+`find` exact text from confluence_read) | replace "
+                          "(the COMPLETE page, tables/macros kept; refused if it "
+                          "drops content unless `allow_loss`). Send only the part "
+                          "that changes.",
+                          {"id": "s", "body": "s", "title": "s", "mode": "s",
+                           "section": "s", "find": "s", "allow_loss": "b"},
                           ("id", "body")),
     "confluence_attach": ("Upload a file as a page attachment.",
                           {"id": "s", "path": "s", "url": "s"}, ("id",)),

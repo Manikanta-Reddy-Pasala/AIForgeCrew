@@ -351,7 +351,8 @@ def test_raw_fields_merge_last_and_win(rest, monkeypatch):
 def test_a_description_can_be_cleared(rest, monkeypatch):
     monkeypatch.setattr(jira, "to_jira_wiki", lambda s: s)
     jira.jira_update({"key": "ENG-1", "description": ""})
-    assert rest["calls"][0]["body"]["fields"]["description"] == ""
+    put = next(c for c in rest["calls"] if c["method"] == "PUT")
+    assert put["body"]["fields"]["description"] == ""
 
 
 def test_the_written_summary_reports_what_changed(rest, monkeypatch):
