@@ -772,6 +772,9 @@ button.icon:hover:not(:disabled) { color: var(--fg-0); background: var(--bg-3); 
 .bubble-body p:last-child { margin: 0; }
 .bubble-body ul, .bubble-body ol { margin: 6px 0; padding-left: 22px; }
 .bubble-body li { margin: 2px 0; }
+/* A sub-list sits indented under its item, with a little air around it. */
+.bubble-body li > ul, .bubble-body li > ol { margin: 4px 0 6px; padding-left: 20px; }
+.bubble-body ol > li + li { margin-top: 6px; }
 .bubble-body pre { margin: 8px 0; }
 .bubble-body code { font-size: .92em; }
 
@@ -813,6 +816,7 @@ button.icon:hover:not(:disabled) { color: var(--fg-0); background: var(--bg-3); 
 .md-body { white-space: normal; }
 .md-body p { margin: 0 0 8px; }
 .md-body ul, .md-body ol { margin: 6px 0; padding-left: 22px; }
+.md-body li > ul, .md-body li > ol { margin: 4px 0 6px; padding-left: 20px; }
 
 .bubble-footer {
   margin-top: 6px;

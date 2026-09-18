@@ -3,7 +3,7 @@
  *
  * Block level:  # headings, fenced ```code``` (with language label), GFM
  *   tables, > blockquotes, --- horizontal rules, ordered (1.) and unordered
- *   (-, *) lists, blank-line paragraphs.
+ *   (-, *, +) lists nested by indentation, blank-line paragraphs.
  * Inline level: **bold**, *italic* / _italic_, `code`, [text](url), and bare
  *   http(s) URLs (auto-linked). Formatting nests (bold inside a list item,
  *   code inside bold, …) except inside `code` and links, which stay literal.
@@ -267,51 +267,96 @@ function blockquoteBlock(lines: string[], i: number, k: number): Block {
            next: j, k: k + 1 };
 }
 
-// ordered list (1. 2. …). Keep numbered items in ONE list across blank lines —
-// LLM output routinely blank-separates items, and breaking there made each item
-// its own <ol> that restarts at 1 (every item showed "1"). Honor the source's
-// first number via `start` so a list that begins at N renders from N.
-function orderedListBlock(lines: string[], i: number, k: number): Block {
-  const line = lines[i];
-  if (!/^\s*\d+\.\s+/.test(line)) return null;
-  const startNum = Number.parseInt(/^\s*(\d+)\./.exec(line)?.[1] ?? '1', 10) || 1;
-  const items: string[] = [];
+// Lists — ordered (1. / 1)) and unordered (- * +), NESTED by indentation.
+// The model writes "2. **Grammar fixes:**" then "   - item" under it; flat
+// parsing ended the numbered list there, drew the sub-points flush with the
+// numbers, and restarted the numbering at the next item. Rules:
+//  * an item indented deeper than the current one nests under it;
+//  * bullets right after a numbered item belong to it even when the model did
+//    not indent them (the common "1. Heading:" / "- point" shape);
+//  * blank lines between items do not end the list (LLM output routinely
+//    blank-separates items — breaking there restarted every item at 1);
+//  * an indented non-item line continues the item above it.
+const ITEM_RE = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
+
+type ListItem = { text: string[]; children: ListNode[] };
+type ListNode = { ordered: boolean; start: number; indent: number; items: ListItem[] };
+
+function indentOf(ws: string): number {
+  return ws.replace(/\t/g, '    ').length;
+}
+
+function parseItem(line: string): { indent: number; ordered: boolean; num: number; text: string } | null {
+  const m = ITEM_RE.exec(line);
+  if (!m) return null;
+  const ordered = /\d/.test(m[2]);
+  return { indent: indentOf(m[1]), ordered, num: ordered ? Number.parseInt(m[2], 10) || 1 : 1, text: m[3] };
+}
+
+// The next non-blank line from j, or -1.
+function nextFilled(lines: string[], j: number): number {
+  while (j < lines.length && !lines[j].trim()) j++;
+  return j < lines.length ? j : -1;
+}
+
+function parseList(lines: string[], i: number, baseIndent: number, ordered: boolean): { node: ListNode; next: number } {
+  const first = parseItem(lines[i])!;
+  const node: ListNode = { ordered, start: first.num, indent: baseIndent, items: [] };
   let j = i;
   while (j < lines.length) {
-    if (/^\s*\d+\.\s+/.test(lines[j])) {
-      items.push(lines[j].replace(/^\s*\d+\.\s+/, ''));
+    const line = lines[j];
+    if (!line.trim()) {
+      const n = nextFilled(lines, j);
+      const it = n >= 0 ? parseItem(lines[n]) : null;
+      // A blank line ends the list unless the list goes on after it.
+      const continues = it && (it.indent > baseIndent
+        || (it.indent === baseIndent && it.ordered === ordered));
+      if (!continues) break;
+      j = n;
+      continue;
+    }
+    const it = parseItem(line);
+    const last = node.items[node.items.length - 1];
+    if (it && it.indent === baseIndent && it.ordered === ordered) {
+      node.items.push({ text: [it.text], children: [] });
       j++;
-    } else if (lines[j].trim() === '' && /^\s*\d+\.\s+/.test(lines[j + 1] ?? '')) {
-      j++;                       // skip a blank line BETWEEN numbered items
+    } else if (it && last && (it.indent > baseIndent || (ordered && !it.ordered && it.indent === baseIndent))) {
+      const sub = parseList(lines, j, it.indent, it.ordered);
+      last.children.push(sub.node);
+      j = sub.next;
+    } else if (!it && last && indentOf(/^\s*/.exec(line)![0]) > baseIndent) {
+      last.text.push(line.trim());              // continuation of the item above
+      j++;
     } else {
       break;
     }
   }
-  const node = (
-    <ol key={`ol-${k}`} start={startNum}>
-      {/* key=index: immutable parsed items, may duplicate, never reorder. (S6479 exception) */}
-      {items.map((it, idx) => <li key={idx}>{renderInline(it, `oli-${k + 1}-${idx}`)}</li>) /* NOSONAR */}
-    </ol>
-  );
-  return { node, next: j, k: k + 1 };
+  return { node, next: j };
 }
 
-// unordered list (- or *)
-function unorderedListBlock(lines: string[], i: number, k: number): Block {
-  if (!/^\s*[-*]\s+/.test(lines[i])) return null;
-  const items: string[] = [];
-  let j = i;
-  while (j < lines.length && /^\s*[-*]\s+/.test(lines[j])) {
-    items.push(lines[j].replace(/^\s*[-*]\s+/, ''));
-    j++;
-  }
-  const node = (
-    <ul key={`ul-${k}`}>
-      {/* key=index: immutable parsed items, may duplicate, never reorder. (S6479 exception) */}
-      {items.map((it, idx) => <li key={idx}>{renderInline(it, `li-${k + 1}-${idx}`)}</li>) /* NOSONAR */}
-    </ul>
-  );
-  return { node, next: j, k: k + 1 };
+function renderList(node: ListNode, key: string): React.ReactNode {
+  /* key=index: immutable parsed items, may duplicate, never reorder. (S6479 exception) */
+  const items = node.items.map((it, idx) => (
+    <li key={idx} /* NOSONAR */>
+      {it.text.map((t, ti) => (
+        <React.Fragment key={ti} /* NOSONAR */>
+          {ti > 0 && <br />}
+          {renderInline(t, `${key}-${idx}-${ti}`)}
+        </React.Fragment>
+      ))}
+      {it.children.map((c, ci) => renderList(c, `${key}-${idx}-c${ci}`))}
+    </li>
+  ));
+  return node.ordered
+    ? <ol key={key} start={node.start}>{items}</ol>
+    : <ul key={key}>{items}</ul>;
+}
+
+function listBlock(lines: string[], i: number, k: number): Block {
+  const it = parseItem(lines[i]);
+  if (!it) return null;
+  const { node, next } = parseList(lines, i, it.indent, it.ordered);
+  return { node: renderList(node, `list-${k}`), next, k: k + 1 };
 }
 
 // paragraph: gather until a blank line or a block starter. Always applies (the
@@ -325,8 +370,7 @@ function paragraphBlock(lines: string[], i: number, k: number): NonNullable<Bloc
     !/^\s*```/.test(lines[j]) &&
     !/^#{1,6}\s/.test(lines[j]) &&
     !/^\s*>\s?/.test(lines[j]) &&
-    !/^\s*\d+\.\s+/.test(lines[j]) &&
-    !/^\s*[-*]\s+/.test(lines[j])
+    !ITEM_RE.test(lines[j])
   ) {
     pLines.push(lines[j]);
     j++;
@@ -362,8 +406,7 @@ export function MdLite({ text }: Readonly<{ text: string }>) {
       ?? hrBlock(lines, i, k)
       ?? tableBlock(lines, i, k)
       ?? blockquoteBlock(lines, i, k)
-      ?? orderedListBlock(lines, i, k)
-      ?? unorderedListBlock(lines, i, k)
+      ?? listBlock(lines, i, k)
       ?? paragraphBlock(lines, i, k);
     out.push(r.node);
     i = r.next;
