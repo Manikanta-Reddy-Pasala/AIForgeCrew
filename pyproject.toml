@@ -201,7 +201,8 @@ toolchain = ["uv>=0.5", "nodejs-wheel-binaries>=20"]
 [project.scripts]
 # What the installed packages run. Every OS package is a thin wrapper around
 # this one command, so the .deb, the .app and the .msi cannot drift apart.
-aiforge = "aiforge_core.cli.serve:main"
+# `aiforge` itself is the terminal client (packages/aiforge_cli).
+aiforge-server = "aiforge_core.cli.serve:main"
 aiforge-agents-tb = "aiforge_core.memory.trial_balance:main"
 aiforge-tool = "aiforge_core.runtime.tool_cli:main"
 aiforge-memory-instructions = "aiforge_core.memory.instructions_ingest:main"

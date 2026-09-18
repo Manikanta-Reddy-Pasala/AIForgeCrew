@@ -4,7 +4,7 @@
 # Layout, and why:
 #   /opt/aiforge/            the payload (wheel + uv). Root-owned, read-only,
 #                            replaced wholesale by an upgrade.
-#   /usr/bin/aiforge         a wrapper that builds the CURRENT USER's venv on
+#   /usr/bin/aiforge-server  a wrapper that builds the CURRENT USER's venv on
 #                            first run and then execs it.
 #   ~/.local/share/aiforge/  that venv. Per-user on purpose: the agent runs as
 #                            you and writes your repos, so the runtime it can
@@ -48,21 +48,21 @@ for w in "$PAYLOAD"/*.whl "$PAYLOAD"/lock-pins.txt "$PAYLOAD"/index-url.txt; do 
 install -m 0755 "$PAYLOAD/uv/$UV_DIR/uv"    "$STAGE/opt/aiforge/uv/uv"
 install -m 0755 "$REPO_ROOT/installer/common/first-run.sh" "$STAGE/opt/aiforge/first-run.sh"
 
-cat > "$STAGE/usr/bin/aiforge" <<'WRAP'
+cat > "$STAGE/usr/bin/aiforge-server" <<'WRAP'
 #!/usr/bin/env bash
 # Thin wrapper: the package is immutable, the runtime is yours.
 export AIFORGE_APP_HOME=/opt/aiforge
 export AIFORGE_DATA_HOME="${AIFORGE_DATA_HOME:-$HOME/.local/share/aiforge}"
 exec /opt/aiforge/first-run.sh "$@"
 WRAP
-chmod 0755 "$STAGE/usr/bin/aiforge"
+chmod 0755 "$STAGE/usr/bin/aiforge-server"
 
 cat > "$STAGE/usr/share/applications/aiforge.desktop" <<DESK
 [Desktop Entry]
 Type=Application
 Name=AIForge
 Comment=Local AI engineering crew — API, chat and the ticket pipeline
-Exec=/usr/bin/aiforge --open
+Exec=/usr/bin/aiforge-server --open
 Terminal=true
 Categories=Development;
 DESK

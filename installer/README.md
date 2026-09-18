@@ -1,7 +1,7 @@
 # AIForge installers — macOS, Windows, Ubuntu
 
 Three native packages, one runtime. Each package is a thin wrapper around the
-same `aiforge` command (`aiforge_core.cli.serve`), so the three cannot drift
+same `aiforge-server` command (`aiforge_core.cli.serve`), so the three cannot drift
 apart: the .app, the .msi and the .deb all start uvicorn plus the ticket runner
 and the memory sync loop, exactly as `run.sh` does.
 
@@ -34,10 +34,10 @@ the machine needs **Python 3.12** from its own package manager:
 | | macOS | Windows | Ubuntu / Debian |
 |---|---|---|---|
 | Artifact | `AIForge-<ver>.dmg` | `AIForge-<ver>.msi` | `aiforge_<ver>_amd64.deb` |
-| Installs to | `/Applications/AIForge.app` | `%ProgramFiles%\AIForge` | `/opt/aiforge` + `/usr/bin/aiforge` |
+| Installs to | `/Applications/AIForge.app` | `%ProgramFiles%\AIForge` | `/opt/aiforge` + `/usr/bin/aiforge-server` |
 | Your runtime | `~/Library/Application Support/AIForge` | `%LOCALAPPDATA%\AIForge` | `~/.local/share/aiforge` |
 | Your data | `~/.aiforge` | `%USERPROFILE%\.aiforge` | `~/.aiforge` |
-| Start it | double-click AIForge | Start Menu → AIForge | `aiforge` |
+| Start it | double-click AIForge | Start Menu → AIForge | `aiforge-server` |
 
 Open <http://localhost:8799/ui/> — the mac and Windows launchers do it for you.
 
@@ -131,7 +131,7 @@ The default is loopback. Binding elsewhere without a token is an open box, and
 the launcher says so:
 
 ```bash
-aiforge --host 0.0.0.0 --port 8799      # set AIFORGE_API_TOKEN as well
+aiforge-server --host 0.0.0.0 --port 8799      # set AIFORGE_API_TOKEN as well
 ```
 
 ## Options

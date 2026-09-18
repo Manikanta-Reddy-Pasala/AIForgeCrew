@@ -164,7 +164,7 @@ def reachability(host: str, port: int) -> list[str]:
                 "    from another machine, tunnel:",
                 f"      ssh -L {port}:127.0.0.1:{port} <user>@<this-host>",
                 "    or bind wider (a non-loopback bind needs a token):",
-                f"      AIFORGE_API_TOKEN=$(openssl rand -hex 24) aiforge "
+                f"      AIFORGE_API_TOKEN=$(openssl rand -hex 24) aiforge-server "
                 f"--host 0.0.0.0 --port {port}"]
     if host in ("0.0.0.0", "::", ""):
         return ["  reachable: from any machine that can route to this host."]
@@ -208,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
 
     ap = argparse.ArgumentParser(
-        prog="aiforge", description="Run the AIForge API and its background loops.")
+        prog="aiforge-server", description="Run the AIForge API and its background loops.")
     ap.add_argument("--host", default=os.environ.get("AIFORGE_HOST", DEFAULT_HOST))
     ap.add_argument("--port", type=int,
                     default=_env_int("AIFORGE_PORT", DEFAULT_PORT))

@@ -36,7 +36,7 @@ exec docker run --rm -v "$REPO_ROOT":/src "$IMAGE" bash -euo pipefail -c '
   # hide a permissions mistake in it.
   useradd -m tester
   echo "==> first run (builds the per-user venv on the system python3.12)"
-  su tester -c "nohup aiforge --no-runner --no-sync >/tmp/aiforge.log 2>&1 &"
+  su tester -c "nohup aiforge-server --no-runner --no-sync >/tmp/aiforge.log 2>&1 &"
   for _ in $(seq 1 90); do
     curl -sf http://127.0.0.1:8799/ui/ >/dev/null 2>&1 && break
     sleep 2
@@ -56,7 +56,7 @@ exec docker run --rm -v "$REPO_ROOT":/src "$IMAGE" bash -euo pipefail -c '
   if [ "$code" = "200" ]; then echo "    ok   /api/…          200"
   else echo "    FAIL /api/…          $code"; fail=1; fi
 
-  su tester -c "test -x ~/.local/share/aiforge/venv/bin/aiforge" \
+  su tester -c "test -x ~/.local/share/aiforge/venv/bin/aiforge-server" \
     && echo "    ok   runtime         per-user venv" \
     || { echo "    FAIL runtime"; fail=1; }
 

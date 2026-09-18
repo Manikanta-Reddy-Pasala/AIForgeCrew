@@ -44,7 +44,7 @@ if (-not $wheel) { throw "AIForge: no wheel in $appHome - the package is incompl
 # without the user having to know that is what happened.
 $marker    = Join-Path $dataHome (".installed-" + $wheel.Name)
 $venvPy    = Join-Path $venv 'Scripts\python.exe'
-$venvStart = Join-Path $venv 'Scripts\aiforge.exe'
+$venvStart = Join-Path $venv 'Scripts\aiforge-server.exe'
 
 if (-not (Test-Path $marker) -or -not (Test-Path $venvStart)) {
     Write-Host 'AIForge: preparing the runtime (first run after install - this needs the network once)...'

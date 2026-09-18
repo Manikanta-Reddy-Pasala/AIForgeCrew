@@ -124,7 +124,7 @@ echo "cwd=$PWD index=$UV_DEFAULT_INDEX args=$*" >> "{log}"
 [ "$1 $2" = "python find" ] && exit {0 if python_found else 1}
 case "$1" in
   venv) eval "v=\\${{$#}}"; mkdir -p "$v/bin"; printf '#!/bin/sh\\n' > "$v/bin/python"; chmod +x "$v/bin/python" ;;
-  pip)  v="$(dirname "$(dirname "$4")")"; printf '#!/bin/sh\\necho APP-STARTED\\n' > "$v/bin/aiforge"; chmod +x "$v/bin/aiforge" ;;
+  pip)  v="$(dirname "$(dirname "$4")")"; printf '#!/bin/sh\\necho APP-STARTED\\n' > "$v/bin/aiforge-server"; chmod +x "$v/bin/aiforge-server" ;;
 esac
 """)
     uv.chmod(0o755)

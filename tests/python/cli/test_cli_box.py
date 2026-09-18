@@ -98,7 +98,7 @@ def test_a_healthy_api_returns_as_soon_as_it_answers(tmp_path):
 
 def test_a_missing_image_and_no_repo_names_all_three_ways_out(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr(box, "require_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(box, "require_docker", lambda **kw: "/usr/bin/docker")
     monkeypatch.setattr(box, "image_present", lambda _exe, _image: False)
     with pytest.raises(box.BoxError) as exc:
         box.start(cfg, env={})
@@ -123,3 +123,52 @@ def test_one_sandbox_is_shared_the_second_starter_waits(tmp_path):
 def test_the_start_lock_lives_outside_the_mounted_config_dir(tmp_path):
     env = {"XDG_CONFIG_HOME": str(tmp_path / "cfg")}
     assert ".aiforge" not in str(box.start_lock_path(env))
+
+
+# ── a stopped docker daemon is started, not just reported ─────────────────
+
+def _docker_fakes(monkeypatch, *, up_after: int, launched: list):
+    """`docker info` fails until it has been asked ``up_after`` times."""
+    import subprocess as sp
+    calls = {"info": 0}
+
+    def fake_run(argv, **kw):
+        if argv[1:2] == ["info"]:
+            calls["info"] += 1
+            return sp.CompletedProcess(argv, 0 if calls["info"] > up_after else 1, "27.0", "")
+        launched.append(argv)
+        return sp.CompletedProcess(argv, 0, "", "")
+    monkeypatch.setattr(box, "docker_bin", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(box.subprocess, "run", fake_run)
+    return calls
+
+
+def test_a_stopped_docker_is_started_and_waited_for(monkeypatch):
+    launched: list = []
+    _docker_fakes(monkeypatch, up_after=3, launched=launched)
+    monkeypatch.setattr(box._platform, "system", lambda: "Darwin")
+    waits: list = []
+    assert box.require_docker(launch=True, on_wait=waits.append, sleep=lambda s: None) == "/usr/bin/docker"
+    assert launched == [["open", "-g", "-a", "Docker"]]
+    assert waits == [2.0, 4.0, 6.0]           # up on the 4th `docker info`
+
+
+def test_linux_starts_the_user_service_without_sudo(monkeypatch):
+    launched: list = []
+    _docker_fakes(monkeypatch, up_after=1, launched=launched)
+    monkeypatch.setattr(box._platform, "system", lambda: "Linux")
+    box.require_docker(launch=True, sleep=lambda s: None)
+    assert launched == [["systemctl", "--user", "start", "docker"]]
+
+
+def test_without_launch_or_when_it_never_comes_up_the_hint_is_the_fix(monkeypatch):
+    launched: list = []
+    _docker_fakes(monkeypatch, up_after=10_000, launched=launched)
+    monkeypatch.setattr(box._platform, "system", lambda: "Darwin")
+    with pytest.raises(box.BoxError, match="Start Docker Desktop"):
+        box.require_docker()                       # no launch: status/logs never start docker
+    assert launched == []
+    monkeypatch.setattr(box, "DOCKER_START_WAIT_S", 6.0)
+    with pytest.raises(box.BoxError):
+        box.require_docker(launch=True, sleep=lambda s: None)
+    assert launched == [["open", "-g", "-a", "Docker"]]

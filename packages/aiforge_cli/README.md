@@ -10,8 +10,8 @@ from a checkout of this repo, so run it inside the repo (or set
 
 Two ways to get the CLI:
 
-- **From source** (`aiforge-cli`) — needs Python 3.11–3.13.
-- **Standalone binary** (`aiforge`) — ~12 MB, needs only Docker; build it on the
+- **From source** — needs Python 3.11–3.13.
+- **Standalone binary** — ~12 MB, needs only Docker; build it on the
   OS you run it on (see [installer/cli/README.md](../../installer/cli/README.md)).
 
 ## Ubuntu
@@ -30,15 +30,15 @@ cd AIForgeCrew
 python3 -m venv .venv-cli
 . .venv-cli/bin/activate
 pip install -e packages/aiforge_cli
-aiforge-cli --version
+aiforge --version
 
 # 3. Start the sandbox (the first run builds the image — several minutes)
-aiforge-cli box up
+aiforge box up
 
 # 4. Chat in a project
-aiforge-cli mount add ~/work/my-project    # let the sandbox see it (you approve it here)
+aiforge mount add ~/work/my-project    # let the sandbox see it (you approve it here)
 cd ~/work/my-project
-aiforge-cli
+aiforge
 ```
 
 On **Ubuntu 22.04** (Python 3.10) get a newer Python with `uv` instead of step 2's
@@ -66,8 +66,8 @@ Needs Docker Desktop. The system `python3` is too old; `uv` fetches 3.12:
 cd AIForgeCrew
 uv venv .venv-cli --python 3.12 && source .venv-cli/bin/activate
 uv pip install -e packages/aiforge_cli
-aiforge-cli box up
-cd ~/path/to/project && aiforge-cli
+aiforge box up
+cd ~/path/to/project && aiforge
 ```
 
 ## Windows
@@ -80,8 +80,8 @@ cd AIForgeCrew
 py -3.12 -m venv .venv-cli
 .venv-cli\Scripts\activate
 pip install -e packages\aiforge_cli
-aiforge-cli box up
-cd C:\path\to\project; aiforge-cli
+aiforge box up
+cd C:\path\to\project; aiforge
 ```
 
 ## Off the corporate network
@@ -102,18 +102,18 @@ the web UI's home page at `http://127.0.0.1:8799/ui/`).
 
 | You want | Run |
 |---|---|
-| Chat in this folder | `aiforge-cli` (or `aiforge-cli "fix the flaky retry test"` to send one message; `-q` prints only the answer) |
+| Chat in this folder | `aiforge` (or `aiforge "fix the flaky retry test"` to send one message; `-q` prints only the answer) |
 | Stop the run | `Esc`, or `/stop` |
 | Help inside a chat | `/help` |
-| Everything | `aiforge-cli help` |
-| Let the sandbox see a folder | `aiforge-cli mount add ~/work` · list: `mount ls` |
-| Sandbox state / logs / shell | `aiforge-cli box status` · `box logs --tail 50` · `box shell` |
-| Stop the sandbox | `aiforge-cli box down` |
-| A second chat in the same repo | `aiforge-cli worktree add fix-retry "make the retry test deterministic"` |
-| Past chats | `aiforge-cli sessions` · `aiforge-cli resume <id>` |
-| Jira / Confluence / GitLab / email credentials | `aiforge-cli integrations set jira base_url=https://jira.internal default_project=ONE` · check: `integrations test jira` |
-| Shell completion | `aiforge-cli completion bash >> ~/.bashrc` (also zsh, fish, powershell) |
-| Help for one command | `aiforge-cli help mount` |
+| Everything | `aiforge help` |
+| Let the sandbox see a folder | `aiforge mount add ~/work` · list: `mount ls` |
+| Sandbox state / logs / shell | `aiforge box status` · `box logs --tail 50` · `box shell` |
+| Stop the sandbox | `aiforge box down` |
+| A second chat in the same repo | `aiforge worktree add fix-retry "make the retry test deterministic"` |
+| Past chats | `aiforge sessions` · `aiforge resume <id>` |
+| Jira / Confluence / GitLab / email credentials | `aiforge integrations set jira base_url=https://jira.internal default_project=ONE` · check: `integrations test jira` |
+| Shell completion | `aiforge completion bash >> ~/.bashrc` (also zsh, fish, powershell) |
+| Help for one command | `aiforge help mount` |
 
 Settings, highest wins: flags → environment (`AIFORGE_CLI_PORT`, `AIFORGE_REPO`,
 `AIFORGE_SANDBOX_IMAGE`) → `~/.config/aiforge/cli.toml` → defaults.

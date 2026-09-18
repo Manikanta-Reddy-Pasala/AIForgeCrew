@@ -46,7 +46,7 @@ if [[ -z "$WHEEL" ]]; then
 fi
 MARKER="$DATA_HOME/.installed-$(basename "$WHEEL")"
 
-if [[ ! -f "$MARKER" || ! -x "$VENV/bin/aiforge" ]]; then
+if [[ ! -f "$MARKER" || ! -x "$VENV/bin/aiforge-server" ]]; then
   echo "AIForge: preparing the runtime (first run after install — this needs the network once)…"
   mkdir -p "$DATA_HOME"
   # 0700: the venv holds the tokens' reach, not the tokens, but everything the
@@ -133,4 +133,4 @@ if [[ ! -f "$MARKER" || ! -x "$VENV/bin/aiforge" ]]; then
   cd "$LAUNCH_DIR"
 fi
 
-exec "$VENV/bin/aiforge" "$@"
+exec "$VENV/bin/aiforge-server" "$@"

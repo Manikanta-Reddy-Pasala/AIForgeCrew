@@ -21,6 +21,8 @@ dependencies = [
 ]
 
 [project.scripts]
+# `aiforge` is the command; `aiforge-cli` stays as an alias for old scripts.
+aiforge = "aiforge_cli.__main__:main"
 aiforge-cli = "aiforge_cli.__main__:main"
 
 [project.optional-dependencies]
