@@ -157,3 +157,27 @@ def test_first_run_without_python_312_stops_and_downloads_nothing(tmp_path):
     assert "needs Python 3.12" in r.stderr
     calls = log.read_text().splitlines()
     assert not [c for c in calls if " args=venv" in c or " args=pip" in c], calls
+
+
+def test_an_upgrade_from_the_old_launcher_name_reinstalls_the_app(tmp_path):
+    """The launcher was renamed `aiforge` → `aiforge-server` at the same
+    version: uv would see the app installed and never create the new script,
+    and every launch would fail. A venv without it reinstalls the app."""
+    app, data, launch, log = _fake_app(tmp_path)
+    venv = data / "venv" / "bin"
+    venv.mkdir(parents=True)
+    (venv / "python").write_text("#!/bin/sh\n")
+    (venv / "python").chmod(0o755)
+    (venv / "aiforge").write_text("#!/bin/sh\necho OLD\n")      # the pre-rename launcher
+    (venv / "aiforge").chmod(0o755)
+    (data / "venv" / "pyvenv.cfg").write_text("")
+    (data / ".installed-aiforgecrew-9.9.9-py3-none-any.whl").write_text("")   # same version
+    r = _first_run(app, data, launch)
+    assert "APP-STARTED" in r.stdout, r.stdout + r.stderr
+    pip = [c for c in log.read_text().splitlines() if " args=pip install" in c]
+    assert pip and "--reinstall-package aiforgecrew" in pip[0], pip
+    # a normal launch after that reinstalls nothing
+    log.write_text("")
+    r = _first_run(app, data, launch)
+    assert "APP-STARTED" in r.stdout
+    assert not [c for c in log.read_text().splitlines() if " args=pip install" in c]

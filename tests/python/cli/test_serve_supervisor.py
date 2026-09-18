@@ -1,6 +1,6 @@
 """The launcher every installer calls.
 
-The .deb, the .app and the .msi all run `aiforge` — so what this module does on
+The .deb, the .app and the .msi all run `aiforge-server` — so what this module does on
 start and, more importantly, on the way OUT is the contract three packages
 depend on. Nothing here starts uvicorn or the real loops; the supervisor is
 driven directly with a fake child so the test is fast and hermetic.

@@ -94,8 +94,8 @@ cat > "$STAGE/DEBIAN/postinst" <<'POST'
 set -e
 # Deliberately does NOT build a venv here. postinst runs as root, and a
 # root-built runtime is one the user who actually runs the agent cannot repair.
-# The first `aiforge` does it, as them, in their home.
-echo "AIForge installed. Run 'aiforge' to start it (first run installs its dependencies)."
+# The first `aiforge-server` does it, as them, in their home.
+echo "AIForge installed. Run 'aiforge-server' to start it (first run installs its dependencies)."
 exit 0
 POST
 chmod 0755 "$STAGE/DEBIAN/postinst"

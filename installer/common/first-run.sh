@@ -111,6 +111,11 @@ if [[ ! -f "$MARKER" || ! -x "$VENV/bin/aiforge-server" ]]; then
   # cannot, and the install would be unsatisfiable.
   PIN_ARGS=()
   [[ -f "$APP_HOME/lock-pins.txt" ]] && PIN_ARGS=(--override "$APP_HOME/lock-pins.txt")
+  # A venv whose app is installed but has no aiforge-server (the launcher was
+  # called `aiforge` before) would be "audited, no changes" by uv at the same
+  # version, and the launcher below would never exist: reinstall the app.
+  REINSTALL_ARGS=()
+  [[ -x "$VENV/bin/python" && ! -x "$VENV/bin/aiforge-server" ]] && REINSTALL_ARGS=(--reinstall-package aiforgecrew)
   # The index the package was built against (the internal Artifactory) — uv's
   # own default would be pypi.org. UV_DEFAULT_INDEX in the environment wins.
   if [[ -z "${UV_DEFAULT_INDEX:-}" && -s "$APP_HOME/index-url.txt" ]]; then
@@ -121,7 +126,7 @@ if [[ ! -f "$MARKER" || ! -x "$VENV/bin/aiforge-server" ]]; then
   # this script, every dependency has one on the index, and nothing is ever
   # built from a downloaded source archive.
   "$UV" pip install --python "$VENV/bin/python" --no-build ${OFFLINE_ARGS[@]+"${OFFLINE_ARGS[@]}"} \
-        ${PIN_ARGS[@]+"${PIN_ARGS[@]}"} --find-links "$APP_HOME" \
+        ${PIN_ARGS[@]+"${PIN_ARGS[@]}"} ${REINSTALL_ARGS[@]+"${REINSTALL_ARGS[@]}"} --find-links "$APP_HOME" \
         "${WHEEL}[xlsx,structured,crawl,chunking,embed-static]"
   # Written last: a half-built venv must not look finished on the next launch.
   : > "$MARKER"

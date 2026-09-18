@@ -91,18 +91,35 @@ def _daemon_up(exe: str) -> "tuple[bool, str]":
                            capture_output=True, text=True, timeout=25)
     except (OSError, subprocess.SubprocessError) as exc:
         return False, str(exc)
-    return r.returncode == 0, ""
+    lines = (r.stderr or "").strip().splitlines()
+    return r.returncode == 0, (lines[-1] if lines else "")
+
+
+def _local_daemon(exe: str, env: "dict[str, str]") -> bool:
+    """Whether docker points at the daemon THIS machine runs. With DOCKER_HOST
+    set, or a context such as colima / orbstack / a remote host, starting
+    Docker Desktop is not ours to do."""
+    if env.get("DOCKER_HOST"):
+        return False
+    try:
+        ctx = subprocess.run([exe, "context", "show"], capture_output=True,
+                             text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return ctx in ("", "default", "desktop-linux", "desktop-windows", "rootless")
 
 
 def _launch_daemon() -> bool:
     """Start the docker daemon the way this OS runs it, without sudo: Docker
     Desktop on macOS/Windows, the rootless user service on Linux. True when a
-    start was attempted (it may still take a while to come up)."""
+    start was attempted (it may still take a while to come up). Never blocks:
+    the rootless unit is Type=notify with no start timeout, so a plain
+    `systemctl start` could wait forever."""
     sysname = _platform.system()
     try:
         if sysname == "Darwin":
             return subprocess.run(["open", "-g", "-a", "Docker"],
-                                  capture_output=True).returncode == 0
+                                  capture_output=True, timeout=20).returncode == 0
         if sysname == "Windows":
             for root in (os.environ.get("ProgramFiles", r"C:\Program Files"),
                          os.environ.get("LOCALAPPDATA", "")):
@@ -111,32 +128,39 @@ def _launch_daemon() -> bool:
                     subprocess.Popen([exe], close_fds=True)   # noqa: S603 — fixed path
                     return True
             return False
-        return subprocess.run(["systemctl", "--user", "start", "docker"],
-                              capture_output=True).returncode == 0
+        return subprocess.run(["systemctl", "--user", "--no-block", "start", "docker"],
+                              capture_output=True, timeout=15).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
 
 
 def require_docker(*, launch: bool = False, on_wait: "Callable[[float], None] | None" = None,
-                   sleep: "Callable[[float], None]" = time.sleep) -> str:
+                   sleep: "Callable[[float], None]" = time.sleep,
+                   clock: "Callable[[], float]" = time.monotonic,
+                   env: "dict[str, str] | None" = None) -> str:
     """The docker binary, or a BoxError whose message is the remedy. With
-    ``launch``, a stopped daemon is started (Docker Desktop / the user
-    service) and waited for, so `aiforge` just works from a cold machine."""
+    ``launch``, a stopped LOCAL daemon is started (Docker Desktop / the user
+    service) and waited for — by the clock, not by counting sleeps, since one
+    `docker info` against a half-started engine can take 25 s."""
+    env = os.environ if env is None else env
     exe = docker_bin()
     if not exe:
         raise BoxError(_install_hint())
     up, why = _daemon_up(exe)
     if up:
         return exe
-    if launch and _launch_daemon():
-        waited = 0.0
-        while waited < DOCKER_START_WAIT_S:
+    if launch and _local_daemon(exe, env) and _launch_daemon():
+        t0 = clock()
+        while clock() - t0 < DOCKER_START_WAIT_S:
             sleep(2.0)
-            waited += 2.0
             if on_wait:
-                on_wait(waited)
+                on_wait(clock() - t0)
             if _daemon_up(exe)[0]:
                 return exe
+        raise BoxError(f"docker was started but did not answer within "
+                       f"{DOCKER_START_WAIT_S:.0f}s — check Docker Desktop / "
+                       f"`systemctl --user status docker`, then re-run aiforge."
+                       + (f" ({why})" if why else ""))
     raise BoxError(f"{_daemon_hint()} ({why})" if why else _daemon_hint())
 
 
@@ -323,7 +347,7 @@ def start(cfg: Config, *, on_line: Callable[[str], None] | None = None,
     never asks anything."""
     env = os.environ if env is None else env
     say = on_line or (lambda _s: None)
-    exe = require_docker(launch=True,
+    exe = require_docker(launch=True, env=env,
                          on_wait=lambda s: say(f"waiting for docker to start… {s:.0f}s"))
 
     if cfg.repo is not None and shutil.which("bash"):

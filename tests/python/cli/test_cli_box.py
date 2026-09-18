@@ -127,7 +127,7 @@ def test_the_start_lock_lives_outside_the_mounted_config_dir(tmp_path):
 
 # ── a stopped docker daemon is started, not just reported ─────────────────
 
-def _docker_fakes(monkeypatch, *, up_after: int, launched: list):
+def _docker_fakes(monkeypatch, *, up_after: int, launched: list, context: str = "default"):
     """`docker info` fails until it has been asked ``up_after`` times."""
     import subprocess as sp
     calls = {"info": 0}
@@ -135,7 +135,10 @@ def _docker_fakes(monkeypatch, *, up_after: int, launched: list):
     def fake_run(argv, **kw):
         if argv[1:2] == ["info"]:
             calls["info"] += 1
-            return sp.CompletedProcess(argv, 0 if calls["info"] > up_after else 1, "27.0", "")
+            ok = calls["info"] > up_after
+            return sp.CompletedProcess(argv, 0 if ok else 1, "27.0", "" if ok else "Cannot connect")
+        if argv[1:3] == ["context", "show"]:
+            return sp.CompletedProcess(argv, 0, context + "\n", "")
         launched.append(argv)
         return sp.CompletedProcess(argv, 0, "", "")
     monkeypatch.setattr(box, "docker_bin", lambda: "/usr/bin/docker")
@@ -143,32 +146,58 @@ def _docker_fakes(monkeypatch, *, up_after: int, launched: list):
     return calls
 
 
+class _Clock:
+    """Time that moves only when the code sleeps — and can be made slow, like a
+    `docker info` that hangs against a half-started engine."""
+    def __init__(self, per_check: float = 0.0):
+        self.t, self.per_check = 0.0, per_check
+
+    def __call__(self) -> float:
+        return self.t
+
+    def sleep(self, s: float) -> None:
+        self.t += s + self.per_check
+
+
 def test_a_stopped_docker_is_started_and_waited_for(monkeypatch):
     launched: list = []
     _docker_fakes(monkeypatch, up_after=3, launched=launched)
     monkeypatch.setattr(box._platform, "system", lambda: "Darwin")
-    waits: list = []
-    assert box.require_docker(launch=True, on_wait=waits.append, sleep=lambda s: None) == "/usr/bin/docker"
+    clock, waits = _Clock(), []
+    assert box.require_docker(launch=True, on_wait=waits.append, sleep=clock.sleep,
+                              clock=clock, env={}) == "/usr/bin/docker"
     assert launched == [["open", "-g", "-a", "Docker"]]
-    assert waits == [2.0, 4.0, 6.0]           # up on the 4th `docker info`
+    assert waits == [2.0, 4.0, 6.0]              # up on the 4th `docker info`
 
 
-def test_linux_starts_the_user_service_without_sudo(monkeypatch):
+def test_linux_starts_the_user_service_without_blocking_or_sudo(monkeypatch):
     launched: list = []
     _docker_fakes(monkeypatch, up_after=1, launched=launched)
     monkeypatch.setattr(box._platform, "system", lambda: "Linux")
-    box.require_docker(launch=True, sleep=lambda s: None)
-    assert launched == [["systemctl", "--user", "start", "docker"]]
+    clock = _Clock()
+    box.require_docker(launch=True, sleep=clock.sleep, clock=clock, env={})
+    assert launched == [["systemctl", "--user", "--no-block", "start", "docker"]]
 
 
-def test_without_launch_or_when_it_never_comes_up_the_hint_is_the_fix(monkeypatch):
+def test_the_wait_is_by_the_clock_not_by_counting_sleeps(monkeypatch):
+    launched: list = []
+    _docker_fakes(monkeypatch, up_after=10_000, launched=launched)
+    monkeypatch.setattr(box._platform, "system", lambda: "Darwin")
+    clock = _Clock(per_check=25.0)               # every check hangs 25 s
+    with pytest.raises(box.BoxError, match="did not answer within 120s"):
+        box.require_docker(launch=True, sleep=clock.sleep, clock=clock, env={})
+    assert clock.t < box.DOCKER_START_WAIT_S + 30  # ~2 min, not 60 checks x 27 s
+
+
+def test_no_launch_for_status_or_for_a_daemon_that_is_not_local(monkeypatch):
     launched: list = []
     _docker_fakes(monkeypatch, up_after=10_000, launched=launched)
     monkeypatch.setattr(box._platform, "system", lambda: "Darwin")
     with pytest.raises(box.BoxError, match="Start Docker Desktop"):
-        box.require_docker()                       # no launch: status/logs never start docker
-    assert launched == []
-    monkeypatch.setattr(box, "DOCKER_START_WAIT_S", 6.0)
+        box.require_docker()                     # no launch: status/logs never start docker
+    with pytest.raises(box.BoxError, match="Start Docker Desktop"):
+        box.require_docker(launch=True, env={"DOCKER_HOST": "ssh://nuc"})
+    _docker_fakes(monkeypatch, up_after=10_000, launched=launched, context="colima")
     with pytest.raises(box.BoxError):
-        box.require_docker(launch=True, sleep=lambda s: None)
-    assert launched == [["open", "-g", "-a", "Docker"]]
+        box.require_docker(launch=True, env={})
+    assert launched == []

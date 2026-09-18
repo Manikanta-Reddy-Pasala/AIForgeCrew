@@ -93,6 +93,9 @@ if (-not (Test-Path $marker) -or -not (Test-Path $venvStart)) {
     $pin = @()
     $lockPins = Join-Path $appHome 'lock-pins.txt'
     if (Test-Path $lockPins) { $pin = @('--override', $lockPins) }
+    # The launcher was renamed aiforge -> aiforge-server with no version bump:
+    # uv would see the app as installed and never create it. Reinstall the app.
+    if ((Test-Path $venvPy) -and -not (Test-Path $venvStart)) { $pin += @('--reinstall-package', 'aiforgecrew') }
     # --no-build: wheels only, nothing built from a downloaded source archive.
     & $uv pip install --python $venvPy --no-build @pin --find-links $appHome ($wheel.FullName + '[xlsx,structured,crawl,chunking,embed-static]')
     if ($LASTEXITCODE -ne 0) { throw "AIForge: could not install the app (uv pip exit $LASTEXITCODE)" }

@@ -96,7 +96,7 @@ install into WSL2 with the .deb instead.
 
 ```bash
 sudo apt install ./aiforge_<ver>_amd64.deb
-aiforge                 # first run installs the locked dependencies, then starts
+aiforge-server          # first run installs the locked dependencies, then starts
 ```
 
 `python3.12` and `tmux` are dependencies. 24.04 has 3.12 in its archive; on
@@ -137,7 +137,7 @@ aiforge-server --host 0.0.0.0 --port 8799      # set AIFORGE_API_TOKEN as well
 ## Options
 
 ```
-aiforge [--host H] [--port N] [--no-runner] [--no-sync] [--open]
+aiforge-server [--host H] [--port N] [--no-runner] [--no-sync] [--open]
 ```
 
 `--no-runner` serves the API without claiming tickets; `--no-sync` skips the

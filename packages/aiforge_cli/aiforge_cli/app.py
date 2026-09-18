@@ -176,7 +176,10 @@ class App:
                     # for it beats racing `compose up` and losing on a
                     # container-name conflict.
                     self.tail.set("another terminal is starting the sandbox…")
-                waited = box.wait_healthy(self.client.healthy, timeout=120.0,
+                # A terminal that did not start the box may be waiting on one
+                # that is still starting DOCKER first: give it that time too.
+                budget = 120.0 if mine else 120.0 + box.DOCKER_START_WAIT_S
+                waited = box.wait_healthy(self.client.healthy, timeout=budget,
                                           on_tick=lambda s: self.tail.set(
                                               f"sandbox starting… {s:.0f}s"),
                                           sleep=self._sleep)
