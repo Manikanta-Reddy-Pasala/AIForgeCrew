@@ -104,6 +104,7 @@ export class Controller implements vscode.Disposable {
   }
 
   async send(text: string): Promise<void> {
+    await this.runner?.settle();
     if (this.runner?.running) {
       try {
         await this.runner.send(text, { mode: this.mode, reviewEdits: false });
@@ -392,7 +393,10 @@ export class Controller implements vscode.Disposable {
       },
       onError: message => {
         if (this.runner !== runner) return;
-        this.runFailed = true;
+        // Failed only if the server never got the turn: once part of it
+        // streamed, edit-from was applied, and replaying it would delete the
+        // turn that just ran.
+        if (!runner.started) this.runFailed = true;
         this.post({ type: 'error', text: message });
       },
       onNotice: message => {

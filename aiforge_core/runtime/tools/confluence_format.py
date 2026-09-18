@@ -92,17 +92,34 @@ def _inline(s: str) -> str:
     def _hold(html: str) -> str:
         held.append(html)
         return f"\uE000{len(held) - 1}\uE001"
+
+    def _url(m: re.Match) -> str:
+        # A URL ends before trailing emphasis/punctuation: `**https://x**`,
+        # `(see https://x).`
+        url = m.group(0)
+        tail = re.search(r"[*_.,;:!?)\]]+$", url)
+        cut = tail.start() if tail else len(url)
+        return _hold(url[:cut]) + url[cut:]
+
     s = re.sub(r"`([^`]+)`", lambda m: _hold(f"<code>{m.group(1)}</code>"), s)
+    # Link text keeps its own formatting (``[`file.py`](url)``, ``[**x**](url)``).
     s = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)",
-               lambda m: _hold(f'<a href="{m.group(2)}">{m.group(1)}</a>'), s)
-    s = re.sub(r"https?://[^\s<]+", lambda m: _hold(m.group(0)), s)       # bare URLs
-    # bold **x** / __x__ -> <strong>
+               lambda m: _hold(f'<a href="{m.group(2)}">{_emphasis(m.group(1))}</a>'), s)
+    s = re.sub(r"https?://[^\s<]+", _url, s)                    # bare URLs
+    s = _emphasis(s)
+    # Placeholders can nest (a code span inside link text): restore until none.
+    while "\uE000" in s:
+        s = re.sub(r"\uE000(\d+)\uE001", lambda m: held[int(m.group(1))], s)
+    return s
+
+
+def _emphasis(s: str) -> str:
+    """**bold** / __bold__ / *italic* / _italic_ at word boundaries, hugging
+    their text. ``__init__`` stays a name (a dunder is no bold)."""
     s = re.sub(r"\*\*(?=\S)([^*]+?)(?<=\S)\*\*", r"<strong>\1</strong>", s)
-    s = re.sub(r"(?<!\w)__(?=\S)([^_]+?)(?<=\S)__(?!\w)", r"<strong>\1</strong>", s)
-    # italic *x* / _x_ -> <em>: at word boundaries, hugging the text
+    s = re.sub(r"(?<!\w)__(?=\S)([^_]*[^\w_][^_]*?)(?<=\S)__(?!\w)", r"<strong>\1</strong>", s)
     s = re.sub(r"(?<![\w*])\*(?=\S)([^*\n]+?)(?<=\S)\*(?![\w*])", r"<em>\1</em>", s)
-    s = re.sub(r"(?<![\w_])_(?=\S)([^_\n]+?)(?<=\S)_(?![\w_])", r"<em>\1</em>", s)
-    return re.sub(r"\uE000(\d+)\uE001", lambda m: held[int(m.group(1))], s)
+    return re.sub(r"(?<![\w_])_(?=\S)([^_\n]+?)(?<=\S)_(?![\w_])", r"<em>\1</em>", s)
 
 
 def inline_fragment(text: str) -> str:

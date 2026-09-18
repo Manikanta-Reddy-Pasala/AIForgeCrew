@@ -169,6 +169,8 @@ test('runner: a send right after a reopen waits for the attach instead of steeri
     onError: m => assert.fail(m), onNotice: () => undefined });
   const attach = r.attach();
   await new Promise(res => setTimeout(res, 20));
+  await r.settle();                                        // what the controller does first
+  assert.equal(r.running, false);
   await r.send('hello', { mode: 'simple', reviewEdits: false });
   await attach;
   assert.deepEqual(f.calls, ['attach', 'send']);            // not a steer

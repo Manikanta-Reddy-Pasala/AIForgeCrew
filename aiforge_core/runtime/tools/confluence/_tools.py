@@ -391,8 +391,8 @@ def confluence_comment(args: dict, cwd: str | None = None) -> dict:
     # fences and images included (a bare ``` block left `<` / `&` unescaped:
     # invalid XHTML, refused). Storage input passes through unchanged.
     xhtml, img_refs = _storagify_media(md_to_storage(body))
-    if img_refs:
-        _upload_page_images(pid, img_refs, cwd)      # the comment's images live on the page
+    # The comment's images live on the page; a failed upload is reported.
+    uploads = _upload_page_images(pid, img_refs, cwd) if img_refs else []
     payload = {
         "type": "comment",
         "container": {"id": pid, "type": "page"},
@@ -402,7 +402,10 @@ def confluence_comment(args: dict, cwd: str | None = None) -> dict:
     if not r["ok"]:
         return r
     d = r["data"] if isinstance(r["data"], dict) else {}
-    return {"ok": True, "id": d.get("id"), "page_id": pid}
+    out = {"ok": True, "id": d.get("id"), "page_id": pid}
+    if uploads:
+        out["attachments"] = uploads
+    return out
 
 
 def confluence_descendants(args: dict, _cwd: str | None = None) -> dict:

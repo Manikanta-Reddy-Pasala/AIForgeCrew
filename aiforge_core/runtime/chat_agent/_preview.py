@@ -24,8 +24,12 @@ except (TypeError, ValueError):
 
 def _fence(body: str, lang: str = "") -> str:
     """Wrap text in a fenced code block so the markdown renderer shows it as a
-    monospace block (diffs, commands, JSON) instead of reflowed prose."""
-    return f"```{lang}\n{body}\n```"
+    monospace block (diffs, commands, JSON) instead of reflowed prose. The
+    fence is longer than any backtick run inside, so text holding ``` cannot
+    close it early."""
+    longest = max((len(r) for r in re.findall(r"`+", body)), default=0)
+    ticks = "`" * max(3, longest + 1)
+    return f"{ticks}{lang}\n{body}\n{ticks}"
 
 
 def _xhtml_to_md(xhtml: str) -> str:
@@ -225,8 +229,11 @@ def _preview_jira_comment(args: dict, cwd: str) -> str:
 
 
 def _preview_confluence_comment(args: dict, cwd: str) -> str:
+    body = str(args.get("body") or args.get("text") or "")
+    note = ("\n\n_Images in it are uploaded to the page as attachments._"
+            if re.search(r"!\[[^\]]*\]\(|<img\b", body, re.I) else "")
     return (f"### Comment on Confluence page `{args.get('id', '?')}`\n\n"
-            f"{_body_md(args.get('body') or args.get('text'))}")
+            f"{_body_md(body)}{note}")
 
 
 def _preview_confluence_add_label(args: dict, cwd: str) -> str:
@@ -245,7 +252,8 @@ def _preview_confluence_attach(args: dict, cwd: str) -> str:
 
 
 def _preview_jira_transition(args: dict, cwd: str) -> str:
-    to = args.get("transition") or args.get("status") or args.get("to") or args.get("name")
+    # the tool's own order (jira/_edit.py jira_transition)
+    to = args.get("transition") or args.get("to") or args.get("status") or args.get("name")
     md = f"### Move Jira `{args.get('key', '?')}`\n\n**To:** {to or '?'}\n"
     if args.get("comment"):
         md += f"\n**Comment:**\n\n{_jira_md(args['comment'])}\n"
@@ -270,7 +278,7 @@ def _preview_jira_link_issues(args: dict, cwd: str) -> str:
 
 def _preview_jira_log_work(args: dict, cwd: str) -> str:
     t = args.get("time_spent") or args.get("timeSpent") or args.get("time")
-    md = f"### Log work on Jira `{args.get('key', '?')}`\n\n**Time:** {t or '?'}\n"
+    md = f"### Log work on Jira `{args.get('key') or args.get('id') or '?'}`\n\n**Time:** {t or '?'}\n"
     if args.get("started"):
         md += f"\n**Started:** {args['started']}\n"
     if args.get("comment"):

@@ -40,12 +40,20 @@ export class Runner {
 
   /** Start a turn — or, while one runs, steer it (the text is folded in at the
    *  agent's next step, as the web UI does). */
-  async send(content: string, opts: SendOptions): Promise<void> {
-    // A reopen's attach is "running" until the server says whether anything
-    // is: wait for that answer instead of steering a run that may not exist.
+  /** A reopen's attach reads as "running" until the server says whether
+   *  anything is. Wait (briefly) for that answer before deciding steer vs a
+   *  new turn — the CALLER decides, with the right options for each. */
+  async settle(): Promise<void> {
     for (let waited = 0; this._running && !this.confirmed && waited < CONFIRM_WAIT_MS; waited += 100) {
       await new Promise(r => setTimeout(r, 100));
     }
+  }
+
+  /** The current stream has delivered part of a real run (not only the attach
+   *  handshake): the server has the turn. */
+  get started(): boolean { return this.confirmed; }
+
+  async send(content: string, opts: SendOptions): Promise<void> {
     if (this._running) {
       const r = await this.api.steer(this.sessionId, content);
       if (!r?.queued) {

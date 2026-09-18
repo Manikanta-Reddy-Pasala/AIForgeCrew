@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -79,9 +80,20 @@ def _seed_from_real_index(cwd: str, env: dict) -> bool:
     real = _git(cwd, "rev-parse", "--git-path", "index").stdout.strip()
     if not real:
         return False
+    # Files flagged assume-unchanged / skip-worktree are NOT re-read by
+    # `add -A` in a copied index — the snapshot would record the committed
+    # version and a "go back" would destroy the user's local edit. A split
+    # index leaves a sharedindex file per copy. Both: build from HEAD instead.
+    flagged = _git(cwd, "ls-files", "-v").stdout
+    if re.search(r"^(?:[a-z]|S) ", flagged, re.M):
+        return False
+    if _git(cwd, "config", "--bool", "core.splitIndex").stdout.strip() == "true":
+        return False
     src = real if os.path.isabs(real) else os.path.join(cwd, real)
     try:
-        shutil.copyfile(src, env["GIT_INDEX_FILE"])
+        # copy2 keeps the index's mtime: git's racy-entry check (a same-second,
+        # same-size edit after the index was written) depends on it.
+        shutil.copy2(src, env["GIT_INDEX_FILE"])
         return True
     except OSError:
         return False

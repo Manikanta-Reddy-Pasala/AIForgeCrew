@@ -179,3 +179,27 @@ def test_plain_mail_with_one_bullet_or_a_quote_stays_plain():
     assert et._markdown_html("Hi,\n- one thing\n\n> earlier reply\nThanks") == ""
     html = et._markdown_html("- a\n- b\n\n![x](https://track/p.png) <img src=https://t/p>")
     assert "<ul>" in html and "img" not in html.lower()
+
+
+def test_links_keep_their_formatting_and_urls_their_emphasis():
+    from aiforge_core.runtime.tools.confluence_format import md_to_storage
+    out = md_to_storage("[`src/foo.py`](https://g.io/x) and [**big**](https://g.io/y); "
+                        "see **https://jira/ONE-3** now, `__init__` and __init__")
+    assert '<a href="https://g.io/x"><code>src/foo.py</code></a>' in out
+    assert '<a href="https://g.io/y"><strong>big</strong></a>' in out
+    assert "<strong>https://jira/ONE-3</strong>" in out
+    assert "" not in out and "__init__" in out and "<strong>init</strong>" not in out
+
+
+def test_email_keeps_code_that_shows_image_tags_and_entities():
+    from aiforge_core.runtime.tools import email_tool as et
+    html = et._markdown_html('## Snippet\n```html\n<img src="logo.png"> &amp; &lt;b&gt;\n```\n'
+                             'Inline `![alt](url)` and a real ![px](https://t/p.png)')
+    assert "&lt;img src=&quot;logo.png&quot;&gt; &amp;amp; &amp;lt;b&amp;gt;" in html
+    assert "<code>![alt](url)</code>" in html and "t/p.png" not in html
+
+
+def test_a_fence_inside_a_script_does_not_break_the_preview():
+    from aiforge_core.runtime.chat_agent._preview import _diff_preview
+    md = _diff_preview("create_job_script", {"script": "echo hi\n```\nrm -rf x\n```\nls"}, ".")
+    assert "````\necho hi\n```\nrm -rf x\n```\nls\n````" in md

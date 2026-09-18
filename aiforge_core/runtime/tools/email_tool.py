@@ -167,19 +167,26 @@ def _markdown_html(body: str) -> str:
     """The HTML part for a Markdown body — the agent writes Markdown, and a
     text/plain mail showed the reader raw `**`, `#` and `- `. The plain part
     stays as written for clients that prefer text. "" for plain prose. Images
-    are never embedded (a remote image in mail is a tracking pixel)."""
+    are never embedded (a remote image in mail is a tracking pixel) — code that
+    merely SHOWS an image tag is left alone."""
     if not body or not (_MD_STRONG.search(body) or _MD_LIST.search(body + "\n")):
         return ""
     import html as _html
 
     from aiforge_core.runtime.tools.confluence_format import md_to_storage
-    out = md_to_storage(_IMG.sub("", body))
-    # md_to_storage leaves ``` fences for Confluence's code macro; mail wants <pre>.
+    code: list[str] = []
+
+    def _keep(m: re.Match) -> str:
+        code.append(m.group(0))
+        return f"\uE100{len(code) - 1}\uE101"
+    masked = _IMG.sub("", re.sub(r"```.*?```|`[^`\n]+`", _keep, body, flags=re.S))
+    out = md_to_storage(re.sub(r"\uE100(\d+)\uE101", lambda m: code[int(m.group(1))], masked))
+    # md_to_storage leaves ``` fences (raw) for Confluence's code macro; mail wants <pre>.
     out = re.sub(r"```[^\n]*\n(.*?)```",
-                 lambda m: f"<pre><code>{_html.escape(_html.unescape(m.group(1).rstrip()))}</code></pre>",
+                 lambda m: f"<pre><code>{_html.escape(m.group(1).rstrip())}</code></pre>",
                  out, flags=re.S)
     return ('<div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;'
-            f'font-size:14px;line-height:1.5">{_IMG.sub("", out)}</div>')
+            f'font-size:14px;line-height:1.5">{out}</div>')
 
 
 def _smtp_open(c: dict):

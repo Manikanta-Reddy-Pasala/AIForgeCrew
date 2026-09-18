@@ -158,3 +158,17 @@ def test_a_snapshot_seeds_from_the_real_index(repo, tmp_path, monkeypatch):
     seeded = checkpoints.worktree_tree(repo)
     monkeypatch.setattr(checkpoints, "_seed_from_real_index", lambda cwd, env: False)
     assert checkpoints.worktree_tree(repo) == seeded
+
+
+def test_a_snapshot_keeps_local_edits_to_assume_unchanged_files(repo, tmp_path, monkeypatch):
+    """A copied index carries assume-unchanged / skip-worktree bits that make
+    `add -A` skip the file: the snapshot recorded the committed version and a
+    go-back destroyed the user's local edit."""
+    monkeypatch.setenv("AIFORGE_CHECKPOINT_DIR", str(tmp_path.parent / f"{tmp_path.name}-ck"))
+    from aiforge_core.runtime import checkpoints
+    (tmp_path / "a.txt").write_text("LOCAL EDIT\n")
+    _git(repo, "update-index", "--assume-unchanged", "a.txt")
+    snap = checkpoints.snapshot(repo, label="before")
+    (tmp_path / "a.txt").write_text("AGENT CHANGED\n")
+    assert checkpoints.restore(repo, snap["sha"], paths=["a.txt"])["ok"]
+    assert (tmp_path / "a.txt").read_text() == "LOCAL EDIT\n"

@@ -86,9 +86,10 @@ function newTurn(): LiveTurn {
   return { role: 'assistant', text: '', steps: [], streaming: true };
 }
 
-/** The user's words back in the box (never lost when they did not go). */
-function giveBack(text: string | null): void {
-  if (text && !state.echo && !input.value.trim()) input.value = text;
+/** The user's words back in the box (never lost when they did not go). The
+ *  pending bubble of an Explain is the extension's text, not theirs. */
+function giveBack(text: string | null, pending = false): void {
+  if (text && !(pending && state.echo) && !input.value.trim()) input.value = text;
 }
 
 function onEvent(ev: any): void {
@@ -117,7 +118,7 @@ window.addEventListener('message', e => {
     case 'replacing': state.replaceFrom = m.from ? Number(m.from) : null; break;
     case 'notice':
       state.notice = String(m.text || '');
-      if (m.restoreText) { giveBack(state.pendingUser); state.pendingUser = null; }
+      if (m.restoreText) { giveBack(state.pendingUser, true); state.pendingUser = null; }
       break;
     case 'history':
       state.messages = Array.isArray(m.messages) ? m.messages : [];
@@ -136,7 +137,7 @@ window.addEventListener('message', e => {
       // A turn that never started (nothing streamed yet): hand the words back.
       const started = state.live && (state.live.steps.length || state.live.text || state.live.streamText);
       if (state.pendingUser && !started) {
-        giveBack(state.pendingUser);
+        giveBack(state.pendingUser, true);
         state.pendingUser = null;
         state.live = null;
       }

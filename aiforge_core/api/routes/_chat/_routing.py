@@ -272,7 +272,7 @@ def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
     except Exception:  # noqa: BLE001
         fresh = True
     cat = None
-    if fresh:
+    if fresh and not quick:      # a quick turn is one doer: no classifier, no fan-out
         try:
             from aiforge_core.runtime import task_router as _tr
             cat = _tr.classify_task(prompt, history=history, cwd=cwd)
