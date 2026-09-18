@@ -201,7 +201,8 @@ def _events(pc):
     # the is_running slot and 409-blocks the user's next (resume) message.
     if awaiting_ctx["awaiting"]:
         return
-    yield from _post_run_events(pc.prompt, pc.cwd, pc.agent_mode, _simple_sha)
+    _since = (getattr(pc, "_checkpoint_sha", "") or _simple_sha) if _simple_sha else ""
+    yield from _post_run_events(pc.prompt, pc.cwd, pc.agent_mode, _since)
 
 
 def _wait_for_slot(pc) -> bool:

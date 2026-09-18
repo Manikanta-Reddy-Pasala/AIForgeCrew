@@ -1,7 +1,7 @@
 # uv's managed CPython comes from GitHub, not a package index: never download one.
 export UV_PYTHON_DOWNLOADS ?= never
 
-.PHONY: help install test test-docker ui clean installers installer-payload installer-deb installer-dmg installer-msi installer-portable installer-verify
+.PHONY: help install test test-docker ui vscode vscode-test clean installers installer-payload installer-deb installer-dmg installer-msi installer-portable installer-verify
 
 help:
 	@echo "Dev targets:"
@@ -9,6 +9,8 @@ help:
 	@echo "  test      pytest tests/python"
 	@echo "  test-docker  the CI run, in a throwaway container (fresh clone + uv.lock)"
 	@echo "  ui        vite build (web/dist)"
+	@echo "  vscode    the VS Code extension: packages/aiforge_vscode/dist/aiforge.vsix"
+	@echo "  vscode-test  its unit tests + typecheck"
 	@echo "  installers   .dmg + .msi + .deb + portable bundles into dist/installer"
 	@echo "  installer-portable  unpack-and-run bundles (state lives in the folder)"
 	@echo "  installer-verify  build the .deb AND install+serve it in a container"
@@ -69,6 +71,13 @@ installer-verify:
 
 ui:
 	cd web && npm install && npm run build
+
+# The VS Code extension (packages/aiforge_vscode/README.md): build + package.
+vscode:
+	cd packages/aiforge_vscode && npm ci && npm run package
+
+vscode-test:
+	cd packages/aiforge_vscode && npm ci && npm run typecheck && npm test
 
 clean:
 	rm -rf .pytest_cache .ruff_cache __pycache__ build dist *.egg-info

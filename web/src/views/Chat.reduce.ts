@@ -1,6 +1,6 @@
 // The live-turn reducer: applies one chat SSE event to the in-progress
 // assistant turn. Pure, so it can be exercised without the view.
-import { AgentStep, LiveTurn, SubtaskItem } from './Chat.types';
+import type { AgentStep, LiveTurn, SubtaskItem } from './Chat.model';
 
 // A 'tool' event: flip the matching pending row to its real result (matched on
 // call_id), or append when there's no pending row (hook-blocked/rejected path).

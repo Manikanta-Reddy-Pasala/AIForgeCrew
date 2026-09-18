@@ -1,0 +1,175 @@
+{
+  "name": "aiforge-vscode",
+  "displayName": "AIForge",
+  "description": "Chat with the AIForge agent from VS Code: streamed replies, approvals, questions and the files it changed.",
+  "version": "0.1.0",
+  "publisher": "aiforge",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew.git",
+    "directory": "packages/aiforge_vscode"
+  },
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "main": "./dist/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "aiforge",
+          "title": "AIForge",
+          "icon": "media/aiforge.svg"
+        }
+      ]
+    },
+    "views": {
+      "aiforge": [
+        {
+          "type": "webview",
+          "id": "aiforge.chat",
+          "name": "Chat"
+        },
+        {
+          "id": "aiforge.changes",
+          "name": "Changed files"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "aiforge.newChat",
+        "title": "AIForge: New chat",
+        "icon": "$(add)"
+      },
+      {
+        "command": "aiforge.stop",
+        "title": "AIForge: Stop the run",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "aiforge.startBox",
+        "title": "AIForge: Start the sandbox"
+      },
+      {
+        "command": "aiforge.mountWorkspace",
+        "title": "AIForge: Let the agent use this folder"
+      },
+      {
+        "command": "aiforge.setToken",
+        "title": "AIForge: Set API token"
+      },
+      {
+        "command": "aiforge.clearChanges",
+        "title": "AIForge: Clear changed files",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "aiforge.openDiff",
+        "title": "AIForge: Open diff"
+      },
+      {
+        "command": "aiforge.showPatch",
+        "title": "AIForge: Show the agent's patch"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "aiforge.newChat",
+          "when": "view == aiforge.chat",
+          "group": "navigation"
+        },
+        {
+          "command": "aiforge.stop",
+          "when": "view == aiforge.chat && aiforge.running",
+          "group": "navigation"
+        },
+        {
+          "command": "aiforge.clearChanges",
+          "when": "view == aiforge.changes",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "aiforge.showPatch",
+          "when": "view == aiforge.changes && viewItem == aiforge.file.patch"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "aiforge.openDiff",
+          "when": "false"
+        },
+        {
+          "command": "aiforge.showPatch",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AIForge",
+      "properties": {
+        "aiforge.apiUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8799",
+          "description": "The AIForge API. The local sandbox listens on 127.0.0.1:8799."
+        },
+        "aiforge.cliPath": {
+          "type": "string",
+          "default": "aiforge",
+          "description": "The aiforge CLI, used to start the sandbox and to mount folders (it owns the host-side approval of mounts)."
+        },
+        "aiforge.mode": {
+          "type": "string",
+          "enum": [
+            "simple",
+            "plan",
+            "team"
+          ],
+          "default": "simple",
+          "enumDescriptions": [
+            "One agent that reads and edits",
+            "Read-only planning and analysis",
+            "The multi-agent build pipeline"
+          ],
+          "description": "How new messages run."
+        },
+        "aiforge.reviewEdits": {
+          "type": "boolean",
+          "default": false,
+          "description": "Hold every file change for your Approve/Reject, with its diff, before it lands (chat and plan modes)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "node esbuild.mjs --tests && node --test out-test/*.test.js",
+    "package": "npm run build && vsce package --no-dependencies -o dist/aiforge.vsix",
+    "test:e2e": "node esbuild.mjs && node esbuild.mjs --e2e && node out-e2e/run.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.24.0",
+    "typescript": "~5.9",
+    "@vscode/test-electron": "^2.4.1"
+  }
+}

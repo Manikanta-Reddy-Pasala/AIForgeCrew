@@ -78,3 +78,54 @@ def test_chat_store_edit_resend_helpers(tmp_path, monkeypatch):
     assert removed == 2
     remaining = [m["content"] for m in chat_store.get_messages(sid)]
     assert remaining == ["first", "reply1"]
+
+
+# ── a turn's Changes: since ITS checkpoint, without touching the user's index ──
+
+def _changes(cwd, since):
+    from aiforge_core.runtime.parallel_subtasks import _emit_changes
+    evs = list(_emit_changes(cwd, since, include_worktree=True))
+    return {f["path"]: f for f in evs[0]["files"]} if evs else {}
+
+
+def test_changes_are_this_turns_only_and_the_index_is_untouched(repo, tmp_path, monkeypatch):
+    # sidecar OUTSIDE the repo, or it shows up as a change itself
+    monkeypatch.setenv("AIFORGE_CHECKPOINT_DIR", str(tmp_path.parent / f"{tmp_path.name}-ck"))
+    from aiforge_core.runtime import checkpoints
+    (tmp_path / "a.txt").write_text("user wip\n")          # the user's own edit
+    snap = checkpoints.snapshot(repo, label="before turn 2")
+    (tmp_path / "b.txt").write_text("b1\n")                # this turn
+    (tmp_path / "new.txt").write_text("n\n")               # this turn, untracked
+    files = _changes(repo, snap["sha"])
+    assert set(files) == {"b.txt", "new.txt"}              # not a.txt
+    assert files["new.txt"]["status"] == "added"
+    assert _git(repo, "diff", "--cached", "--name-only").stdout == ""
+    assert "?? new.txt" in _git(repo, "status", "--porcelain").stdout
+
+
+def test_changes_in_a_subfolder_of_a_repo_are_relative_to_it(repo, tmp_path, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHECKPOINT_DIR", str(tmp_path / "ck"))
+    from aiforge_core.runtime import checkpoints
+    sub = tmp_path / "pkg"
+    sub.mkdir()
+    (sub / "x.py").write_text("x = 1\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "pkg")
+    snap = checkpoints.snapshot(str(sub), label="before")
+    (sub / "x.py").write_text("x = 2\n")
+    (tmp_path / "a.txt").write_text("outside\n")           # outside the project
+    files = _changes(str(sub), snap["sha"])
+    assert set(files) == {"x.py"}
+    assert "+x = 2" in files["x.py"]["diff"]
+
+
+def test_undo_of_a_file_created_after_the_checkpoint_removes_it(repo, tmp_path, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHECKPOINT_DIR", str(tmp_path / "ck"))
+    from aiforge_core.runtime import checkpoints
+    snap = checkpoints.snapshot(repo, label="s")
+    (tmp_path / "made.txt").write_text("m\n")
+    (tmp_path / "a.txt").write_text("a1\n")
+    res = checkpoints.restore(repo, snap["sha"], paths=["made.txt"], delete_orphans=True)
+    assert res["ok"], res
+    assert not (tmp_path / "made.txt").exists()
+    assert (tmp_path / "a.txt").read_text() == "a1\n"      # not asked for
