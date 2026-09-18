@@ -218,6 +218,8 @@ aiforge_core/
   net/ config/    egress allowlist + CA handling; providers, env, roles
   jobs/ recipes/ tickets/ workflows/ indexing/ observability/ llm/ cli/
 packages/aiforge_memory/   standalone memory package (chunking, embeddings)
+packages/aiforge_cli/      the `aiforge` terminal client
+packages/aiforge_vscode/   the VS Code extension (build + install: its README)
 web/              React UI
 ```
 

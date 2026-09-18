@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Api, ApiDown, Busy, Stalled } from '../src/api';
-import { MAX_REATTACH, Runner } from '../src/runner';
+import { MAX_REATTACH, NotSteered, Runner } from '../src/runner';
 
 function sseResponse(chunks: string[], { hang = false } = {}): Response {
   const enc = new TextEncoder();
@@ -70,7 +70,7 @@ function fakeApi(script: Array<() => AsyncGenerator<any>>) {
     send: () => next('send'),
     attach: () => next('attach'),
     stop: async () => { calls.push('stop'); },
-    steer: async () => { calls.push('steer'); },
+    steer: async (): Promise<any> => { calls.push('steer'); return { queued: true }; },
   };
 }
 
@@ -87,7 +87,7 @@ test('runner: a dropped stream re-attaches and finishes the run', async () => {
   const seen: any[] = [];
   const states: boolean[] = [];
   const r = new Runner(f as any, 1, { onEvent: e => seen.push(e.type),
-    onRunning: v => states.push(v), onError: m => assert.fail(m) });
+    onRunning: v => states.push(v), onError: m => assert.fail(m), onNotice: () => undefined });
   await r.send('x', { mode: 'simple', reviewEdits: false });
   assert.deepEqual(f.calls, ['send', 'attach']);
   assert.deepEqual(seen, ['delta', 'attached', 'done']);
@@ -96,11 +96,35 @@ test('runner: a dropped stream re-attaches and finishes the run', async () => {
 
 test('runner: a busy chat is watched, and the user is told their message did not go', async () => {
   const f = fakeApi([() => events([], new Busy('409')), () => events([{ type: 'done' }])]);
-  const seen: any[] = [];
-  const r = new Runner(f as any, 1, { onEvent: e => seen.push(e), onRunning: () => undefined,
-    onError: m => assert.fail(m) });
+  const notices: string[] = [];
+  const r = new Runner(f as any, 1, { onEvent: () => undefined, onRunning: () => undefined,
+    onError: m => assert.fail(m), onNotice: m => notices.push(m) });
   await r.send('x', { mode: 'simple', reviewEdits: false });
-  assert.match(String(seen[0].text), /not sent/);
+  assert.match(notices[0], /not sent/);
+  assert.deepEqual(f.calls, ['send', 'attach']);
+});
+
+test('runner: the drop budget is for drops in a row, not per run', async () => {
+  const drop = () => events([{ type: 'delta', text: '.' }], new Stalled('drop'));
+  const script = Array.from({ length: MAX_REATTACH + 2 }, () => drop);
+  script.push(() => events([{ type: 'done' }]));
+  const f = fakeApi(script);
+  const r = new Runner(f as any, 1, { onEvent: () => undefined, onRunning: () => undefined,
+    onError: m => assert.fail(`gave up: ${m}`), onNotice: () => undefined });
+  await r.send('x', { mode: 'simple', reviewEdits: false });   // each drop made progress
+});
+
+test('runner: a steer the server did not take is reported, not swallowed', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(res => { release = res; });
+  const f: any = fakeApi([async function* () { await gate; yield { type: 'done' }; }]);
+  f.steer = async () => ({ queued: false });
+  const r = new Runner(f, 1, { onEvent: () => undefined, onRunning: () => undefined,
+    onError: m => assert.fail(m), onNotice: () => undefined });
+  const run = r.send('first', { mode: 'simple', reviewEdits: false });
+  await assert.rejects(r.send('late', { mode: 'simple', reviewEdits: false }), NotSteered);
+  release();
+  await run;
 });
 
 test('runner: it gives up after MAX_REATTACH drops and says so', async () => {
@@ -108,7 +132,7 @@ test('runner: it gives up after MAX_REATTACH drops and says so', async () => {
   const f = fakeApi(drops);
   let error = '';
   const r = new Runner(f as any, 1, { onEvent: () => undefined, onRunning: () => undefined,
-    onError: m => { error = m; } });
+    onError: m => { error = m; }, onNotice: () => undefined });
   await r.send('x', { mode: 'simple', reviewEdits: false });
   assert.equal(f.calls.length, MAX_REATTACH + 1);
   assert.match(error, /drop/);
@@ -118,7 +142,7 @@ test('runner: attach with nothing running ends quietly; a send while running ste
   const f = fakeApi([() => events([{ type: 'attached', running: false }, { type: 'done' }])]);
   const seen: any[] = [];
   const r = new Runner(f as any, 1, { onEvent: e => seen.push(e), onRunning: () => undefined,
-    onError: m => assert.fail(m) });
+    onError: m => assert.fail(m), onNotice: () => undefined });
   await r.attach();
   assert.deepEqual(seen, []);
   let release!: () => void;

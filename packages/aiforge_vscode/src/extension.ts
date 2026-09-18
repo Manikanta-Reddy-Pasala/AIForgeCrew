@@ -7,7 +7,7 @@ import { ChangesView, openDiff, showPatch } from './changesView';
 import { ChatView } from './chatView';
 import { Controller } from './controller';
 
-export function activate(ctx: vscode.ExtensionContext): void {
+export function activate(ctx: vscode.ExtensionContext): { controller: Controller } {
   const ctl = new Controller(ctx);
   const tree = new ChangesView(ctl);
   const run = (fn: () => unknown) => async () => {
@@ -37,6 +37,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
       (item: { hostPath: string } | string) =>
         run(() => showPatch(ctl, typeof item === 'string' ? item : item.hostPath))()),
   );
+  return { controller: ctl };     // for the end-to-end test (e2e/suite.ts)
 }
 
 export function deactivate(): void {

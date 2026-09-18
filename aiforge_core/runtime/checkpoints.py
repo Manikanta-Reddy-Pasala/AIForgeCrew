@@ -92,6 +92,25 @@ def _build_snapshot_tree(cwd: str, env: dict) -> "tuple[str | None, dict]":
     return tree.stdout.strip(), {}
 
 
+def worktree_tree(cwd: str) -> "str | None":
+    """The working tree as it is NOW (tracked + untracked, not ignored) written
+    as a git tree — through a throwaway index, so the user's own index is never
+    touched. None outside a repo / on failure. What a "what changed since the
+    checkpoint" diff compares against."""
+    if not _is_repo(cwd):
+        return None
+    tmp = tempfile.NamedTemporaryFile(prefix="aiforge-wt-idx-", delete=False)
+    tmp.close()
+    try:
+        tree_sha, _ = _build_snapshot_tree(cwd, {"GIT_INDEX_FILE": tmp.name})
+        return tree_sha
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
 def _commit_snapshot_tree(cwd: str, tree_sha: str, label: str) -> "tuple[str | None, dict]":
     """Commit ``tree_sha`` (parented on HEAD when there is one). Returns
     ``(commit_sha, {})`` or ``(None, error_dict)``."""
@@ -218,9 +237,18 @@ def restore(cwd: str, sha: str, *, paths: list[str] | None = None,
     if not sha or _git(cwd, "cat-file", "-e", sha).returncode != 0:
         return {"ok": False, "error": "unknown_checkpoint"}
     left = _worktree_vs_snapshot(cwd, sha)
-    err = _restore_worktree(cwd, sha, list(paths) if paths else ["."])
-    if err is not None:
-        return err
+    targets = list(paths) if paths else ["."]
+    if paths:
+        # A file created AFTER the checkpoint is not in it: `git restore` of
+        # that path fails ("pathspec did not match") before the orphan
+        # deletion below could remove it — so undoing a new file errored.
+        # Restore what the snapshot has; the rest are orphans.
+        targets = [p for p in targets
+                   if _git(cwd, "cat-file", "-e", f"{sha}:./{p}").returncode == 0]
+    if targets:
+        err = _restore_worktree(cwd, sha, targets)
+        if err is not None:
+            return err
     deleted: list[str] = []
     if delete_orphans:
         deleted = _delete_orphans(cwd, left, paths)

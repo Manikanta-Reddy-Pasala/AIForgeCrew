@@ -6,8 +6,12 @@ import { readdirSync } from 'node:fs';
 
 const watch = process.argv.includes('--watch');
 const tests = process.argv.includes('--tests');
+const e2e = process.argv.includes('--e2e');
 
-const builds = tests
+const builds = e2e
+  ? [{ entryPoints: ['e2e/run.ts', 'e2e/suite.ts'], outdir: 'out-e2e', platform: 'node',
+       format: 'cjs', bundle: true, external: ['vscode', '@vscode/test-electron'] }]
+  : tests
   ? [{
       entryPoints: readdirSync('test').filter(f => f.endsWith('.test.ts')).map(f => `test/${f}`),
       outdir: 'out-test', platform: 'node', format: 'cjs', bundle: true,

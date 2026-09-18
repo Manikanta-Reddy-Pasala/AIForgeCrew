@@ -80,3 +80,32 @@ test('a draft that is really a tool call is not shown', () => {
   t.draft = 'THOUGHT: reading the tests first';
   assert.ok(renderLive(t, null).includes('reading the tests first'));
 });
+
+test('markdown: sub-points nest under their numbered item and numbering continues', () => {
+  const html = renderMarkdown('1. **Naming:** confusing\n2. **Grammar:**\n   - a\n   - b\n3. Structure\n\n4. Missing:\n- x');
+  assert.equal(html, '<ol><li><strong>Naming:</strong> confusing</li><li><strong>Grammar:</strong>'
+    + '<ul><li>a</li><li>b</li></ul></li><li>Structure</li><li>Missing:<ul><li>x</li></ul></li></ol>');
+});
+
+test('after "go back" the replaced turns are faded and lose their buttons', () => {
+  const msgs: any[] = [
+    { id: 1, role: 'user', content: 'a', steps: [], checkpoint_sha: 's1' },
+    { id: 2, role: 'assistant', content: 'A', steps: [{ kind: 'changes', files: [{ path: 'x', status: 'modified' }] }] },
+    { id: 3, role: 'user', content: 'b', steps: [], checkpoint_sha: 's2' },
+    { id: 4, role: 'assistant', content: 'B', steps: [{ kind: 'changes', files: [{ path: 'y', status: 'modified' }] }] },
+  ];
+  const html = renderHistory(msgs, { replaceFrom: 3 });
+  assert.ok(html.includes('data-action="restore" data-sha="s1" data-msg="1"'));
+  assert.ok(!/data-action="(restore|undoFile)"[^>]*data-sha="s2"/.test(html));
+  assert.equal((html.match(/class="turn [a-z]+ replaced"/g) ?? []).length, 2);
+});
+
+test('while a run is going, past turns offer no Explain / Undo / go back', () => {
+  const msgs: any[] = [
+    { id: 1, role: 'user', content: 'a', steps: [], checkpoint_sha: 's1' },
+    { id: 2, role: 'assistant', content: 'A', steps: [{ kind: 'changes', files: [{ path: 'x', status: 'modified' }] }] },
+  ];
+  const html = renderHistory(msgs, { running: true });
+  assert.ok(!/data-action="(explain|undoFile|restore)"/.test(html));
+  assert.ok(html.includes('data-action="openFile"'));
+});

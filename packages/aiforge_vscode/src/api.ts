@@ -21,7 +21,12 @@ export type Session = { id: number; title?: string; cwd?: string | null };
 export type Message = { id: number; role: 'user' | 'assistant'; content: string; steps: any[];
                         checkpoint_sha?: string | null };
 export type Mounts = { sandbox?: boolean; folders: { path: string; kind: string; status: string }[] };
-export type SendOptions = { mode: string; reviewEdits: boolean };
+export type SendOptions = {
+  mode: string;
+  reviewEdits: boolean;
+  quick?: boolean;             // one doer, a hard step cap — for small asks
+  editFrom?: number;           // replace this user message and everything after it
+};
 
 type FetchFn = typeof fetch;
 
@@ -64,8 +69,14 @@ export class Api {
   stop(id: number): Promise<unknown> { return this.json('POST', `/api/chat/sessions/${id}/stop`); }
 
   // The server's field is `content` (the CLI once sent `text`: 422 every time).
-  steer(id: number, content: string): Promise<unknown> {
+  steer(id: number, content: string): Promise<{ queued?: boolean; unsupported?: boolean }> {
     return this.json('POST', `/api/chat/sessions/${id}/steer`, { content });
+  }
+
+  /** Snapshot the chat's folder now — taken before "go back", so going back
+   *  can itself be undone. */
+  snapshot(id: number, label: string): Promise<{ ok: boolean; sha?: string; error?: string }> {
+    return this.json('POST', `/api/chat/sessions/${id}/checkpoints`, { label });
   }
 
   approve(id: number, approvalId: number, decision: 'approve' | 'reject'): Promise<unknown> {
@@ -83,8 +94,10 @@ export class Api {
   // ── streams ──────────────────────────────────────────────────────────────
 
   send(id: number, content: string, opts: SendOptions, signal?: AbortSignal): AsyncGenerator<AgentEvent> {
-    return this.stream('POST', `/api/chat/sessions/${id}/message`,
-      { content, mode: opts.mode, review_edits: opts.reviewEdits }, signal);
+    const body: Record<string, unknown> = { content, mode: opts.mode, review_edits: opts.reviewEdits };
+    if (opts.quick) body.quick = true;
+    if (opts.editFrom) body.edit_from_message_id = opts.editFrom;
+    return this.stream('POST', `/api/chat/sessions/${id}/message`, body, signal);
   }
 
   /** Replay an in-flight run's buffered events, then tail it live. The first

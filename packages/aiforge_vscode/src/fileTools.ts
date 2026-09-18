@@ -17,7 +17,8 @@ export function writtenPath(t: ToolLike): string | null {
   const name = String(t.name || '');
   const args = (t.args || {}) as Record<string, unknown>;
   if (!FILE_WRITE_TOOLS.has(name) || typeof args.path !== 'string' || !args.path) return null;
-  if (name === 'editor' && EDITOR_READONLY.has(String(args.command || ''))) return null;
+  const sub = String(args.command ?? args.sub_command ?? '').toLowerCase();   // as mutating.py
+  if (name === 'editor' && EDITOR_READONLY.has(sub)) return null;
   const result = (t.result || {}) as Record<string, unknown>;
   if (result.ok === false || result.error || result.blocked) return null;
   return args.path;

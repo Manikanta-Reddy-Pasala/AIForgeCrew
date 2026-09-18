@@ -178,6 +178,10 @@ def _auto_checkpoint(pc):
         # can restore the workspace to exactly this turn's starting state.
         if isinstance(_snap, dict) and _snap.get("ok") and _snap.get("sha"):
             chat_store.set_message_checkpoint(pc._user_msg_id, _snap["sha"])
+            # …and the turn's Changes diff starts from it: exactly what THIS
+            # turn changed, not everything since HEAD (earlier turns, the
+            # user's own uncommitted work).
+            pc._checkpoint_sha = _snap["sha"]
     except Exception:  # noqa: BLE001
         pass
 

@@ -9,6 +9,10 @@ body { padding: 0; margin: 0; color: var(--vscode-foreground); font-family: var(
 .turn.user .bubble { background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent);
   border-radius: 6px; padding: 6px 8px; white-space: pre-wrap; }
 .answer p { margin: 6px 0; line-height: 1.5; }
+.answer ul, .answer ol { margin: 6px 0; padding-left: 20px; }
+.answer li { margin: 2px 0; line-height: 1.5; }
+.answer ol > li + li { margin-top: 6px; }
+.answer li > ul, .answer li > ol { margin: 4px 0 6px; padding-left: 18px; }
 .answer pre, .preview pre { background: var(--vscode-textCodeBlock-background); padding: 6px; overflow-x: auto; border-radius: 4px; }
 code { font-family: var(--vscode-editor-font-family); font-size: .95em; }
 .steps { margin: 4px 0; opacity: .85; }
@@ -59,4 +63,8 @@ button.link:hover { text-decoration: underline; background: none; }
 select { background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground);
   border: 1px solid var(--vscode-dropdown-border); padding: 2px 4px; }
 .error { color: var(--vscode-errorForeground); font-size: .9em; margin-bottom: 6px; white-space: pre-wrap; }
+.notice { font-size: .9em; margin-bottom: 6px; white-space: pre-wrap; opacity: .85; }
+.banner { margin: 4px 0 8px; padding: 6px 8px; border-left: 3px solid var(--vscode-focusBorder);
+  background: var(--vscode-editorWidget-background); font-size: .9em; }
+.turn.replaced { opacity: .45; }
 `;

@@ -41,11 +41,27 @@ def _changed_file(name_status_line: str, counts: dict, ref: list, cwd: str,
     if any(h in path for h in _CHANGES_HIDE):
         return None
     adds, dels = counts.get(path, ("0", "0"))
-    fdiff = _pkg()._git(["diff", *ref, "--", path], cwd).stdout or ""
+    fdiff = _pkg()._git(["diff", "--relative", *ref, "--", path], cwd).stdout or ""
     truncated = len(fdiff) > cap
     return {"path": path, "status": _STATUS_WORD.get(status, "changed"),
             "additions": _to_int(adds), "deletions": _to_int(dels),
             "diff": fdiff[:cap] + ("\n… (truncated)" if truncated else "")}
+
+
+def _worktree_ref(cwd: str, start_sha: str) -> list:
+    """Diff args for "the working tree now vs ``start_sha``", untracked files
+    included. Compares against a tree written through a throwaway index, so the
+    user's own index is untouched — `git add -N .` marked every untracked file
+    "Added" in their editor's source control, and left them so."""
+    try:
+        from aiforge_core.runtime import checkpoints
+        tree = checkpoints.worktree_tree(cwd)
+    except Exception:  # noqa: BLE001
+        tree = None
+    if tree:
+        return [start_sha, tree]
+    _pkg()._git(["add", "-N", "--", ".", *_EXCLUDE_PATHSPECS], cwd)
+    return [start_sha]
 
 
 def _emit_changes(cwd: str, start_sha: str, include_worktree: bool = False):
@@ -63,13 +79,13 @@ def _emit_changes(cwd: str, start_sha: str, include_worktree: bool = False):
     except ValueError:
         cap = 8000
     if include_worktree:
-        # make untracked files appear in the diff without staging their content
-        pkg._git(["add", "-N", "--", ".", *_EXCLUDE_PATHSPECS], cwd)
-        ref = [start_sha]
+        ref = _worktree_ref(cwd, start_sha)
     else:
         ref = [f"{start_sha}..HEAD"]
-    counts = _numstat_counts(pkg._git(["diff", "--numstat", *ref], cwd).stdout or "")
-    name_status = pkg._git(["diff", "--name-status", *ref], cwd).stdout or ""
+    # --relative: paths relative to ``cwd`` (a project that is a subfolder of a
+    # bigger repo), and only changes inside it.
+    counts = _numstat_counts(pkg._git(["diff", "--relative", "--numstat", *ref], cwd).stdout or "")
+    name_status = pkg._git(["diff", "--relative", "--name-status", *ref], cwd).stdout or ""
     files = [f for f in (_changed_file(ln, counts, ref, cwd, cap)
                          for ln in name_status.splitlines()) if f]
     if not files:

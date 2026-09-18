@@ -58,20 +58,24 @@ function button(action: string, label: string, data: Record<string, string> = {}
   return `<button class="link" data-action="${action}"${extra}${title ? ` title="${attr(title)}"` : ''}>${label}</button>`;
 }
 
-function changesCard(files: FileChange[], sha: string | null, live: boolean): string {
+// ``turn``: the message id the files belong to — the page looks the diffs up
+// there for Explain (they are not copied into every button). A live card has
+// none: its files are still changing.
+function changesCard(files: FileChange[], sha: string | null, turn: number | null): string {
   if (!files.length) return '';
   const adds = files.reduce((n, f) => n + (f.additions ?? 0), 0);
   const dels = files.reduce((n, f) => n + (f.deletions ?? 0), 0);
   const counted = files.some(f => f.additions !== undefined);
   const rows = files.map(f => {
-    const shaData: Record<string, string> = sha ? { sha } : {};
+    const ref: Record<string, string> = { path: f.path, ...(sha ? { sha } : {}),
+                                          ...(turn !== null ? { turn: String(turn) } : {}) };
     const counts = f.additions !== undefined
       ? `<span class="add">+${f.additions}</span> <span class="del">−${f.deletions ?? 0}</span>` : '';
     const actions = [
-      button('openFile', 'Diff', { path: f.path, ...shaData }, 'Open the before/after diff in the editor'),
-      button('explain', 'Explain', { path: f.path }, 'What changed here and why, in simple English'),
-      !live && sha ? button('undoFile', 'Undo', { path: f.path, sha },
-                            'Put this file back the way it was before this turn') : '',
+      button('openFile', 'Diff', ref, 'Open the before/after diff in the editor'),
+      turn !== null ? button('explain', 'Explain', ref, 'What changed here and why, in simple English') : '',
+      turn !== null && sha ? button('undoFile', 'Undo', ref,
+                                    'Put this file back the way it was before this turn') : '',
     ].join('');
     const inline = f.diff ? `<details class="filediff"><summary>show changes</summary>${renderDiff(f.diff)}</details>` : '';
     return `<div class="file"><div class="filerow"><span class="st st-${attr(f.status)}">${attr(f.status)}</span>
@@ -79,8 +83,9 @@ function changesCard(files: FileChange[], sha: string | null, live: boolean): st
       <span class="acts">${actions}</span></div>${inline}</div>`;
   }).join('');
   const total = counted ? ` <span class="add">+${adds}</span> <span class="del">−${dels}</span>` : '';
+  const all = turn !== null ? button('explain', 'Explain all in simple English', { turn: String(turn) }) : '';
   return `<div class="changes"><div class="changes-head">Changed ${files.length} file${files.length === 1 ? '' : 's'}${total}
-    ${button('explain', 'Explain all in simple English')}</div>${rows}</div>`;
+    ${all}</div>${rows}</div>`;
 }
 
 function stepRow(s: any): string {
@@ -110,18 +115,27 @@ function stepsBlock(steps: any[], open: boolean): string {
   return `<details class="steps"${open ? ' open' : ''}><summary>${rows.length} step${rows.length === 1 ? '' : 's'}</summary>${rows.join('')}</details>`;
 }
 
-export function renderHistory(msgs: Msg[], cwd = ''): string {
+export type HistoryOpts = { cwd?: string; replaceFrom?: number | null; running?: boolean };
+
+/** Past turns. After "go back", the turns from ``replaceFrom`` on are shown
+ *  faded: the next message replaces them. */
+export function renderHistory(msgs: Msg[], opts: HistoryOpts = {}): string {
   let lastSha: string | null = null;
+  let faded = false;
   return msgs.map(m => {
+    if (opts.replaceFrom && m.id === opts.replaceFrom) faded = true;
+    const cls = faded ? ' replaced' : '';
     if (m.role === 'user') {
       lastSha = m.checkpoint_sha ?? null;
-      const back = lastSha ? button('restore', '↺ Go back to before this', { sha: lastSha },
-        'Put the folder back the way it was before this message') : '';
-      return `<div class="turn user"><div class="bubble">${escapeHtml(m.content)}</div>${back}</div>`;
+      const back = lastSha && !faded && !opts.running
+        ? button('restore', '↺ Go back to before this', { sha: lastSha, msg: String(m.id) },
+                 'Put the folder back the way it was before this message') : '';
+      return `<div class="turn user${cls}"><div class="bubble">${escapeHtml(m.content)}</div>${back}</div>`;
     }
-    return `<div class="turn agent">${stepsBlock(m.steps || [], false)}
-      <div class="answer">${renderMarkdown(m.content || '')}</div>
-      ${changesCard(turnChanges(m.steps || [], cwd), lastSha, false)}</div>`;
+    const card = changesCard(turnChanges(m.steps || [], opts.cwd), lastSha,
+                             faded || opts.running ? null : m.id);
+    return `<div class="turn agent${cls}">${stepsBlock(m.steps || [], false)}
+      <div class="answer">${renderMarkdown(m.content || '')}</div>${card}</div>`;
   }).join('');
 }
 
@@ -135,7 +149,7 @@ export function renderLive(t: LiveTurn | null, pendingUser: string | null, cwd =
   const ask = t.awaiting ? '<div class="ask">The agent is waiting for your answer — reply below.</div>' : '';
   return `${user}<div class="turn agent live">${stepsBlock(t.steps, t.streaming)}${draft}
     <div class="answer">${renderMarkdown(text)}</div>${ask}
-    ${changesCard(turnChanges(t.steps, cwd), null, true)}${working}</div>`;
+    ${changesCard(turnChanges(t.steps, cwd), null, null)}${working}</div>`;
 }
 
 export function renderApproval(ev: any | null): string {

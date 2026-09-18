@@ -11,7 +11,17 @@ export type RunHooks = {
   onEvent(ev: AgentEvent): void;
   onRunning(running: boolean): void;
   onError(message: string): void;
+  /** Something the user must know that is not an event of the run (their
+   *  message did not go because another client is running this chat). */
+  onNotice(message: string): void;
 };
+
+/** A steer the server did not take: the run had just ended, or cannot steer. */
+export class NotSteered extends Error {}
+
+// After Stop, the server ends the stream itself (it saves the stopped turn
+// first); wait this long before dropping it anyway.
+export const STOP_GRACE_MS = 15_000;
 
 export class Runner {
   private ctrl: AbortController | null = null;
@@ -26,7 +36,12 @@ export class Runner {
    *  agent's next step, as the web UI does). */
   async send(content: string, opts: SendOptions): Promise<void> {
     if (this._running) {
-      await this.api.steer(this.sessionId, content);
+      const r = await this.api.steer(this.sessionId, content);
+      if (!r?.queued) {
+        throw new NotSteered(r?.unsupported
+          ? 'This run cannot take guidance — wait for it to finish, then send it.'
+          : 'The run had already finished — send it again as a new message.');
+      }
       return;
     }
     await this.drive(signal => this.api.send(this.sessionId, content, opts, signal));
@@ -40,13 +55,12 @@ export class Runner {
   }
 
   async stop(): Promise<void> {
-    // Stop the SERVER's run first, then drop our stream: aborting only the
-    // stream would leave the agent working with nobody watching.
-    try {
-      await this.api.stop(this.sessionId);
-    } finally {
-      this.ctrl?.abort();
-    }
+    // Stop the SERVER's run and let its stream end by itself: the server saves
+    // the stopped turn and says so. Dropping the stream at once made the
+    // stopped turn vanish from the chat. Only a stream that never ends is cut.
+    const ctrl = this.ctrl;
+    await this.api.stop(this.sessionId);
+    if (ctrl) setTimeout(() => { if (this.ctrl === ctrl) ctrl.abort(); }, STOP_GRACE_MS);
   }
 
   dispose(): void { this.ctrl?.abort(); }
@@ -62,6 +76,7 @@ export class Runner {
         try {
           for await (const ev of stream) {
             if (ev.type === 'attached' && !ev.running) return;   // nothing in flight
+            reattached = 0;             // the budget is for drops IN A ROW
             this.hooks.onEvent(ev);
           }
           return;                                   // the run ended its stream
@@ -72,9 +87,8 @@ export class Runner {
           // 409: someone else runs this chat — watch theirs. Stalled: the run
           // is still alive server-side, so resume it rather than report an error.
           if (e instanceof Stalled) reattached += 1;
-          else this.hooks.onEvent({ type: 'thought', role: 'system', text:
-            'This chat is already running elsewhere (the web UI or the CLI) — '
-            + 'showing that run. Your message was not sent.' });
+          else this.hooks.onNotice('This chat is already running elsewhere (the web '
+            + 'UI or the CLI), so your message was not sent — showing that run.');
           stream = this.api.attach(this.sessionId, ctrl.signal);
         }
       }

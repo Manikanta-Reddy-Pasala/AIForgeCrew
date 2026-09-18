@@ -2,7 +2,7 @@
 // side relays its actions (send, stop, approve, open a diff) to the controller
 // and the controller's events back to it.
 import * as vscode from 'vscode';
-import { Controller, config } from './controller';
+import { Controller } from './controller';
 
 export class ChatView implements vscode.WebviewViewProvider {
   static readonly id = 'aiforge.chat';
@@ -40,7 +40,8 @@ export class ChatView implements vscode.WebviewViewProvider {
     switch (m?.type) {
       case 'ready': {
         this.ready = true;
-        this.post({ type: 'config', mode: config().get('mode', 'simple') });
+        this.ctl.viewReady = true;
+        this.post({ type: 'config', mode: this.ctl.mode });
         for (const q of this.queue.splice(0)) this.post(q);
         await this.ctl.reopen();
         return;
@@ -50,16 +51,23 @@ export class ChatView implements vscode.WebviewViewProvider {
       case 'newChat': return this.ctl.newChat();
       case 'approve': return this.ctl.approve(Number(m.id), m.decision === 'approve' ? 'approve' : 'reject');
       case 'restore':
-        return this.ctl.restore(String(m.sha), Array.isArray(m.paths) ? m.paths.map(String) : undefined);
-      case 'explain': return this.ctl.explain(m.path ? String(m.path) : undefined);
-      case 'mode':
-        await config().update('mode', String(m.mode), vscode.ConfigurationTarget.Workspace);
-        return;
-      case 'openFile': {
+        return this.ctl.restore(String(m.sha), Array.isArray(m.paths) ? m.paths.map(String) : undefined,
+                                m.msgId ? Number(m.msgId) : undefined);
+      case 'explain':
+        return this.ctl.explain((Array.isArray(m.files) ? m.files : [])
+          .map((f: any) => ({ path: String(f.path), diff: f.diff ? String(f.diff) : undefined })));
+      case 'mode': return this.ctl.setMode(String(m.mode));
+      case 'openFile':
+        // No checkpoint for that turn (team mode): the agent's own patch is
+        // the only honest "before ↔ after".
+        if (!m.sha && m.patch) {
+          const doc = await vscode.workspace.openTextDocument({ content: String(m.patch), language: 'diff' });
+          await vscode.window.showTextDocument(doc, { preview: true });
+          return;
+        }
         await vscode.commands.executeCommand('aiforge.openDiff',
           this.ctl.hostPathOf(String(m.path)), m.sha ? String(m.sha) : undefined);
         return;
-      }
     }
   }
 }

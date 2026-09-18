@@ -1,29 +1,48 @@
 // One controller per window: which AIForge chat belongs to this workspace,
 // whether the sandbox is up and can see the folder, and where every event of a
 // run goes (the chat view, the changed-files tree, approval prompts).
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { Api, ApiDown, Message, Session } from './api';
 import { ChangeSet } from './changeset';
 import { coveringMount, toBox, toHost } from './paths';
-import { Runner } from './runner';
+import { NotSteered, Runner } from './runner';
 import { AgentEvent } from './sse';
 
 const SESSION_KEY = 'aiforge.session';
+const MODE_KEY = 'aiforge.mode';
 const TOKEN_KEY = 'aiforge.apiToken';
+// An "explain" prompt carries the turn's diff; more than this is cut.
+const EXPLAIN_DIFF_MAX = 12_000;
 
 export interface ChatSink {
   post(msg: Record<string, unknown>): void;
 }
 
+export type ExplainFile = { path: string; diff?: string };
+
 export class Controller implements vscode.Disposable {
   readonly api: Api;
   readonly changes = new vscode.EventEmitter<void>();
   changeSet: ChangeSet | null = null;
+  /** The folder as it was before this chat's first turn: the left side of the
+   *  changed-files diffs ("what did the agent change in this chat"). */
+  baseSha: string | null = null;
+  /** The chat page has loaded and said so (its first message). */
+  viewReady = false;
   private session: Session | null = null;
   private runner: Runner | null = null;
   private chat: ChatSink | null = null;
   private status: vscode.StatusBarItem;
   private pendingApproval: number | null = null;
+  private prompted = new Set<number>();
+  // After "go back": the next message REPLACES this user message and every
+  // message after it (the server truncates the chat there).
+  private replaceFrom: number | null = null;
+  // One session setup at a time: reopening the stored chat and a first send
+  // raced, and whichever bound last won.
+  private settingUp: Promise<Session | null> | null = null;
+  private warnedPlainToken = false;
 
   constructor(private readonly ctx: vscode.ExtensionContext) {
     this.api = new Api(() => config().get<string>('apiUrl', 'http://127.0.0.1:8799'),
@@ -42,40 +61,39 @@ export class Controller implements vscode.Disposable {
 
   attachChat(chat: ChatSink | null): void { this.chat = chat; }
 
+  get mode(): string {
+    return this.ctx.workspaceState.get<string>(MODE_KEY) ?? config().get<string>('mode', 'simple');
+  }
+
+  /** Kept in this window's state, not in .vscode/settings.json (that dirtied
+   *  the user's repo, and failed with no folder open). */
+  async setMode(mode: string): Promise<void> {
+    await this.ctx.workspaceState.update(MODE_KEY, mode);
+  }
+
   // ── entry points (commands and the chat view) ────────────────────────────
 
   /** The chat view (re)opened: show this workspace's chat and any live run. */
   async reopen(): Promise<void> {
-    const id = this.ctx.workspaceState.get<number>(SESSION_KEY);
-    if (!id || !(await this.api.healthy())) return;
-    try {
-      const { session, messages } = await this.api.session(id);
-      this.bind(session);
-      this.noteHistory(messages);
-      this.post({ type: 'history', messages });
-      await this.runner!.attach();
-    } catch {
-      await this.ctx.workspaceState.update(SESSION_KEY, undefined);   // deleted
-    }
+    await this.setUp(false);
   }
 
   async send(text: string): Promise<void> {
-    await this.sendAs(text, config().get<string>('mode', 'simple'));
-  }
-
-  private async sendAs(text: string, mode: string): Promise<void> {
-    if (!(await this.ready())) {
-      this.post({ type: 'error', text: 'AIForge is not reachable — your message was not sent.' });
+    if (this.runner?.running) {
+      try {
+        await this.runner.send(text, { mode: this.mode, reviewEdits: false });
+      } catch (e) {
+        this.post({ type: 'error', text: (e as Error).message, restoreText: text });
+        if (!(e instanceof NotSteered)) throw e;
+      }
       return;
     }
-    const session = this.session ?? (await this.openSession());
-    if (!session) {
-      this.post({ type: 'error', text: 'No chat was opened — your message was not sent.' });
-      return;
+    const editFrom = this.replaceFrom ?? undefined;
+    const ok = await this.run(text, { mode: this.mode, editFrom });
+    if (ok && editFrom) {
+      this.replaceFrom = null;
+      this.post({ type: 'replacing', from: null });
     }
-    await this.runner!.send(text, {
-      mode, reviewEdits: config().get<boolean>('reviewEdits', false),
-    });
   }
 
   async stop(): Promise<void> { await this.runner?.stop(); }
@@ -91,41 +109,77 @@ export class Controller implements vscode.Disposable {
     this.runner = null;
     this.session = null;
     this.baseSha = null;
+    this.replaceFrom = null;
     await this.ctx.workspaceState.update(SESSION_KEY, undefined);
     this.changeSet?.clear();
     this.changes.fire();
     this.post({ type: 'reset' });
   }
 
-  /** Go back to how the folder was before a turn — the whole folder, or only
-   *  ``paths`` (one file's "Undo"). Asks first: this overwrites files. */
-  async restore(sha: string, paths?: string[]): Promise<void> {
+  /** Go back to how the folder was before a turn — the whole folder (``msgId``
+   *  = that user message: the next message then replaces it and everything
+   *  after it, as in Cursor), or only ``paths`` (one file's "Undo"). A
+   *  snapshot is taken first, so going back can itself be undone. */
+  async restore(sha: string, paths?: string[], msgId?: number): Promise<void> {
     if (!this.session) return;
     if (this.runner?.running) {
       void vscode.window.showWarningMessage('Stop the run before going back to an earlier version.');
       return;
     }
-    const what = paths?.length ? paths.join(', ') : 'every file in this chat\'s folder';
+    const what = paths?.length ? paths.join(', ') : 'the folder';
     const ok = await vscode.window.showWarningMessage(
-      `Put ${what} back the way it was before that message? Changes made since are lost.`,
-      { modal: true }, 'Go back');
+      paths?.length
+        ? `Put ${what} back the way it was before that message?`
+        : 'Put the folder back the way it was before that message? Your next message '
+          + 'will replace it and everything after it.',
+      { modal: true, detail: 'A snapshot of the folder is taken first, so you can undo this.' },
+      'Go back');
     if (ok !== 'Go back') return;
-    const r = await this.api.restore(this.session.id, sha, paths);
+    const id = this.session.id;
+    const before = await this.api.snapshot(id, `before going back to ${sha.slice(0, 8)}`)
+      .catch(() => ({ ok: false } as { ok: boolean; sha?: string }));
+    const r = await this.api.restore(id, sha, paths);
     if (!r.ok) throw new Error(`could not go back: ${r.error ?? 'unknown error'}`);
-    void vscode.window.showInformationMessage(
-      paths?.length ? `Restored ${what}.` : 'The folder is back to that point.');
+    if (!paths?.length && msgId) {
+      this.replaceFrom = msgId;
+      this.post({ type: 'replacing', from: msgId });
+    }
+    const pick = await vscode.window.showInformationMessage(
+      paths?.length ? `Restored ${what}.` : 'The folder is back to that point.',
+      ...(before.ok && before.sha ? ['Undo this'] : []));
+    if (pick === 'Undo this' && before.sha) {
+      const redo = await this.api.restore(id, before.sha);
+      if (!redo.ok) throw new Error(`could not undo: ${redo.error ?? 'unknown error'}`);
+      if (!paths?.length) {
+        this.replaceFrom = null;
+        this.post({ type: 'replacing', from: null });
+      }
+      void vscode.window.showInformationMessage('Back to where you were.');
+    }
   }
 
-  /** Ask the agent to explain its changes in plain words — in read-only plan
-   *  mode, so explaining can never edit anything. */
-  async explain(file?: string): Promise<void> {
-    const ask = file
-      ? `In simple English, explain what you changed in \`${file}\` and why. `
+  /** Explain a change in plain words. The turn's diff goes WITH the question,
+   *  so the answer is about that turn even after later ones, and the agent has
+   *  no reason to touch a file (review-edits is on for this message: any write
+   *  would still wait for your Approve). */
+  async explain(files: ExplainFile[]): Promise<void> {
+    if (this.runner?.running) {
+      void vscode.window.showInformationMessage(
+        'Wait for the current run to finish (or Stop it), then ask for the explanation.');
+      return;
+    }
+    const one = files.length === 1 ? files[0] : null;
+    let diffs = files.filter(f => f.diff).map(f => `--- ${f.path}\n${f.diff}`).join('\n\n');
+    if (diffs.length > EXPLAIN_DIFF_MAX) diffs = diffs.slice(0, EXPLAIN_DIFF_MAX) + '\n… (cut)';
+    const ask = (one
+      ? `In simple English, explain what changed in \`${one.path}\` and why. `
         + 'Two to four short sentences, no jargon.'
-      : 'In simple English, explain the changes you just made: for each file, '
-        + 'what changed and why, in one or two short sentences. No jargon.';
-    this.post({ type: 'echo', text: ask });
-    await this.sendAs(ask, 'plan');
+      : `In simple English, explain these changes (${files.map(f => `\`${f.path}\``).join(', ')}): `
+        + 'for each file, what changed and why, in one or two short sentences. No jargon.')
+      + ' Only explain — do not change any files.'
+      + (diffs ? `\n\nThe change:\n\`\`\`diff\n${diffs}\n\`\`\`` : '');
+    this.post({ type: 'echo', text: one ? `Explain the change to ${one.path}` : 'Explain these changes' });
+    await this.run(ask, { mode: 'simple', quick: true, reviewEdits: true });
   }
 
   async approve(approvalId: number, decision: 'approve' | 'reject'): Promise<void> {
@@ -154,7 +208,65 @@ export class Controller implements vscode.Disposable {
     if (folder) this.cli(['mount', 'add', folder]);
   }
 
+  /** A path the agent reported, as a file on this machine. */
+  hostPathOf(reported: string): string {
+    return this.changeSet ? this.changeSet.hostPathOf(reported) : reported;
+  }
+
   // ── internals ────────────────────────────────────────────────────────────
+
+  /** Start a turn (never a steer). False when it could not start. */
+  private async run(text: string, opts: { mode: string; quick?: boolean; reviewEdits?: boolean;
+                                          editFrom?: number }): Promise<boolean> {
+    if (!(await this.ready())) {
+      this.post({ type: 'error', text: 'AIForge is not reachable — your message was not sent.' });
+      return false;
+    }
+    const session = await this.setUp(true);
+    if (!session || !this.runner) {
+      this.post({ type: 'error', text: 'No chat was opened — your message was not sent.' });
+      return false;
+    }
+    this.warnPlainToken();
+    await this.runner.send(text, {
+      mode: opts.mode, quick: opts.quick, editFrom: opts.editFrom,
+      reviewEdits: opts.reviewEdits ?? config().get<boolean>('reviewEdits', false),
+    });
+    return true;
+  }
+
+  /** Bind this window to its chat: the stored one when it still exists, else
+   *  (``create``) a new one. Serialised. */
+  private setUp(create: boolean): Promise<Session | null> {
+    if (this.session) return Promise.resolve(this.session);
+    if (!this.settingUp) {
+      this.settingUp = this.doSetUp(create).finally(() => { this.settingUp = null; });
+      return this.settingUp;
+    }
+    return this.settingUp.then(s => s ?? (create ? this.setUp(true) : null));
+  }
+
+  private async doSetUp(create: boolean): Promise<Session | null> {
+    const id = this.ctx.workspaceState.get<number>(SESSION_KEY);
+    if (id && (await this.api.healthy())) {
+      try {
+        const { session, messages } = await this.api.session(id);
+        this.bind(session);
+        this.showHistory(messages);
+        void this.runner!.attach();
+        return session;
+      } catch (e) {
+        // Only a chat the server no longer has is forgotten — a 401, a 5xx or
+        // a timeout must not cost the user their conversation.
+        if (!(e instanceof ApiDown && /^404\b/.test(e.message))) {
+          this.post({ type: 'error', text: `Could not load this chat: ${(e as Error).message}` });
+          return null;
+        }
+        await this.ctx.workspaceState.update(SESSION_KEY, undefined);
+      }
+    }
+    return create ? this.openSession() : null;
+  }
 
   private async ready(): Promise<boolean> {
     if (await this.api.healthy()) return true;
@@ -182,7 +294,12 @@ export class Controller implements vscode.Disposable {
           `The agent can't see ${folder} yet. Mount it (you approve it on this machine; `
           + 'the sandbox restarts), or chat in a scratch workspace inside the sandbox.',
           'Mount this folder', 'Use a scratch workspace');
-        if (pick === 'Mount this folder') { this.mountWorkspace(); return null; }
+        if (pick === 'Mount this folder') {
+          this.mountWorkspace();
+          this.post({ type: 'error', text: 'Mounting the folder — send your message again once '
+            + 'the sandbox has restarted (see the AIForge terminal).' });
+          return null;
+        }
         if (pick !== 'Use a scratch workspace') return null;
         boxCwd = null;
       }
@@ -212,20 +329,32 @@ export class Controller implements vscode.Disposable {
   private bind(session: Session): void {
     this.runner?.dispose();
     this.session = session;
-    // The chat's own folder, not whichever editor is active now.
+    this.prompted.clear();
     const folder = workspaceFolder();
     const boxCwd = session.cwd || (folder ? toBox(folder) : '/');
-    this.changeSet = new ChangeSet(boxCwd, session.cwd ? toHost(session.cwd) : (folder ?? boxCwd));
-    this.post({ type: 'session', cwd: boxCwd });
+    const hostCwd = session.cwd ? toHost(session.cwd) : (folder ?? boxCwd);
+    this.changeSet = new ChangeSet(boxCwd, hostCwd);
     this.changes.fire();
-    this.runner = new Runner(this.api, session.id, {
-      onEvent: ev => this.onEvent(ev),
+    // Working somewhere other than the open folder (a scratch workspace in the
+    // sandbox): say so, or edits and "go back" seem to do nothing.
+    const rel = folder ? path.relative(folder, hostCwd) : '..';
+    const scratch = rel.startsWith('..') || path.isAbsolute(rel);
+    this.post({ type: 'session', cwd: boxCwd, scratch });
+    // Callbacks from a runner that has been replaced (the view was re-created,
+    // a new chat) are dropped: its late "stopped" flipped the live one to idle.
+    const runner: Runner = new Runner(this.api, session.id, {
+      onEvent: ev => { if (this.runner === runner) this.onEvent(ev); },
       onRunning: running => {
+        if (this.runner !== runner) return;
         this.setRunning(running);
         if (!running) void this.reloadHistory(session.id);
       },
-      onError: message => this.post({ type: 'error', text: message }),
+      onError: message => { if (this.runner === runner) this.post({ type: 'error', text: message }); },
+      onNotice: message => {
+        if (this.runner === runner) this.post({ type: 'notice', text: message, restoreText: true });
+      },
     });
+    this.runner = runner;
   }
 
   /** After a run: the persisted turn (with its checkpoint, for "go back")
@@ -234,32 +363,35 @@ export class Controller implements vscode.Disposable {
     if (this.session?.id !== id) return;
     try {
       const { messages } = await this.api.session(id);
-      if (this.session?.id !== id) return;
-      this.noteHistory(messages);
-      this.post({ type: 'history', messages });
+      // A new run may have started meanwhile: its live turn must stay.
+      if (this.session?.id === id && !this.runner?.running) this.showHistory(messages);
     } catch {
       // keep the live view; the next open reloads it
     }
   }
 
-  /** The folder as it was before this chat's first turn: the left side of the
-   *  changed-files diffs ("what did the agent change in this chat"). */
-  baseSha: string | null = null;
-
-  private noteHistory(messages: Message[]): void {
+  private showHistory(messages: Message[]): void {
     this.baseSha = messages.find(m => m.role === 'user' && m.checkpoint_sha)?.checkpoint_sha ?? null;
-  }
-
-  /** A path the agent reported, as a file on this machine. */
-  hostPathOf(reported: string): string {
-    return this.changeSet ? this.changeSet.hostPathOf(reported) : reported;
+    // The changed-files tree covers the whole chat, not just this window's runs.
+    if (this.changeSet) {
+      this.changeSet.clear();
+      for (const m of messages) {
+        for (const s of m.role === 'assistant' ? m.steps ?? [] : []) {
+          this.changeSet.apply({ ...s, type: s.type ?? s.kind });
+        }
+      }
+      this.changes.fire();
+    }
+    this.post({ type: 'history', messages });
   }
 
   private onEvent(ev: AgentEvent): void {
     this.post({ type: 'event', ev });
     if (this.changeSet?.apply(ev)) this.changes.fire();
     if (ev.type === 'approval') void this.promptApproval(ev);
-    if (ev.type === 'tool' || ev.type === 'message' || ev.type === 'approval_expired') {
+    // Other agents' tool calls (team mode) do not answer an open approval.
+    if (ev.type === 'approval_expired' || ev.type === 'done'
+        || (ev.type === 'message' && !ev.supplementary)) {
       this.pendingApproval = null;
     }
     if (ev.type === 'message' && ev.awaiting_input) {
@@ -273,17 +405,27 @@ export class Controller implements vscode.Disposable {
   private async promptApproval(ev: AgentEvent): Promise<void> {
     const id = Number(ev.id);
     this.pendingApproval = id;
-    const pick = await vscode.window.showWarningMessage(
-      `AIForge wants to run ${ev.name}${ev.reason ? ` — ${ev.reason}` : ''}`,
-      'Approve', 'Reject', 'Details');
-    if (pick === 'Details') {
-      const doc = await vscode.workspace.openTextDocument({
-        content: String(ev.preview || JSON.stringify(ev.args, null, 2)), language: 'markdown' });
-      await vscode.window.showTextDocument(doc, { preview: true });
+    if (this.prompted.has(id)) return;           // a re-attach replays old approvals
+    this.prompted.add(id);
+    for (;;) {
+      const pick = await vscode.window.showWarningMessage(
+        `AIForge wants to run ${ev.name}${ev.reason ? ` — ${ev.reason}` : ''}`,
+        'Approve', 'Reject', 'Details');
+      if (pick === 'Details') {
+        const doc = await vscode.workspace.openTextDocument({
+          content: String(ev.preview || JSON.stringify(ev.args, null, 2)), language: 'markdown' });
+        await vscode.window.showTextDocument(doc, { preview: true });
+        if (this.pendingApproval !== id) return;
+        continue;                                // ask again after the details
+      }
+      if (pick === 'Approve' || pick === 'Reject') {
+        if (this.pendingApproval !== id) {
+          void vscode.window.showInformationMessage('That approval was already answered.');
+          return;
+        }
+        await this.approve(id, pick === 'Approve' ? 'approve' : 'reject').catch(e => this.error(e));
+      }
       return;
-    }
-    if (pick === 'Approve' || pick === 'Reject') {
-      await this.approve(id, pick === 'Approve' ? 'approve' : 'reject').catch(e => this.error(e));
     }
   }
 
@@ -294,17 +436,30 @@ export class Controller implements vscode.Disposable {
     this.post({ type: 'running', value: running });
   }
 
+  /** Run the CLI in a visible terminal with no shell in between, so nothing
+   *  needs quoting (PowerShell, cmd and bash all quote differently). */
   private cli(args: string[]): void {
-    const term = vscode.window.createTerminal({ name: 'AIForge' });
+    const term = vscode.window.createTerminal({
+      name: 'AIForge', shellPath: config().get<string>('cliPath', 'aiforge'), shellArgs: args,
+    });
     term.show();
-    const quote = (a: string) => (/^[\w./:@=-]+$/.test(a) ? a : `"${a.replace(/(["\\$`])/g, '\\$1')}"`);
-    term.sendText([config().get<string>('cliPath', 'aiforge'), ...args].map(quote).join(' '));
+  }
+
+  private warnPlainToken(): void {
+    const url = config().get<string>('apiUrl', '');
+    if (this.warnedPlainToken || isLoopback(url) || !url.startsWith('http://')) return;
+    void this.ctx.secrets.get(TOKEN_KEY).then(t => {
+      if (!t || this.warnedPlainToken) return;
+      this.warnedPlainToken = true;
+      void vscode.window.showWarningMessage(
+        'The AIForge API token is sent over plain http. Use an https URL or an SSH tunnel.');
+    });
   }
 
   private post(msg: Record<string, unknown>): void { this.chat?.post(msg); }
 
   private error(e: unknown): void {
-    const text = e instanceof ApiDown || e instanceof Error ? e.message : String(e);
+    const text = e instanceof Error ? e.message : String(e);
     this.post({ type: 'error', text });
     void vscode.window.showErrorMessage(`AIForge: ${text}`);
   }
