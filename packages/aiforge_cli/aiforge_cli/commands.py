@@ -170,7 +170,7 @@ KEYS: tuple[tuple[str, str], ...] = (
 )
 
 GLOBAL_FLAGS: tuple[tuple[str, str], ...] = (
-    ("-q, --quiet", "answers only"),
+    ("-q, --quiet", "hide tool steps and thinking"),
     ("-v, --verbose", "full tool arguments and results"),
     ("--json", "raw event stream, one JSON object per line"),
     ("--mode MODE", "simple (default), plan or team"),

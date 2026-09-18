@@ -269,4 +269,6 @@ cli:publish:
       echo
       echo "for a mac or windows build, from that machine:"
       echo "  curl -k -u \"\$ARTIFACTORY_USER:\$ARTIFACTORY_TOKEN\" -T dist/cli/aiforge \\"
-      echo "       \"$BASE/<macos-universal2|windows-amd64>/aiforge\""
+      echo "       \"$BASE/macos-universal2/aiforge\""
+      echo "  curl -k -u \"\$ARTIFACTORY_USER:\$ARTIFACTORY_TOKEN\" -T dist/cli/aiforge.exe \\"
+      echo "       \"$BASE/windows-amd64/aiforge.exe\""

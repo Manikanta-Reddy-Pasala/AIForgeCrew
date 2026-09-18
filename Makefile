@@ -14,7 +14,7 @@ help:
 	@echo "  aiforge   the one installer: dist/cli/aiforge (./aiforge install = CLI + sandbox + web UI)"
 	@echo "  clean     remove caches + build artifacts"
 	@echo ""
-	@echo "Run the full stack with: docker compose up -d --build  (see QUICKSTART.md)"
+	@echo "Run it: ./run.sh from this checkout, or the binary: make aiforge then dist/cli/aiforge install  (see INSTALL.md)"
 
 install:
 	uv venv .venv

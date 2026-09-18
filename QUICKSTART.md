@@ -1,104 +1,38 @@
 # AIForgeCrew — Quickstart
 
-Everything you need to go from clone → running → configured → doing real work.
-**Read this first.**
+From installed → configured → doing real work. Install first:
+**[INSTALL.md](INSTALL.md)**, then open **<http://127.0.0.1:8799/ui/>**.
 
-- [1. Run it](#1-run-it)
-- [2. Configure models](#2-configure-models)
-- [3. Configure integrations](#3-configure-integrations)
-- [4. Create a scheduled Job](#4-create-a-scheduled-job)
-- [5. Create Rules, Skills & Workflows](#5-create-rules-skills--workflows)
-- [6. Index your code into Memory](#6-index-your-code-into-memory)
-- [7. Do work: Chat & Tickets](#7-do-work-chat--tickets)
+- [1. Add your model](#1-add-your-model)
+- [2. Configure integrations](#2-configure-integrations)
+- [3. Create a scheduled Job](#3-create-a-scheduled-job)
+- [4. Create Rules, Skills & Workflows](#4-create-rules-skills--workflows)
+- [5. Memory](#5-memory)
+- [6. Do work: Chat & Tickets](#6-do-work-chat--tickets)
 - [Data, security & where things live](#data-security--where-things-live)
 
 ---
 
-## 1. Run it
+## 1. Add your model
 
-**Prereqs:** **Docker**, `git`, and one reachable model endpoint (LM Studio,
-vLLM, Ollama, OpenRouter, a cloud key…). AIForge runs in an Ubuntu 24.04
-sandbox — the only mode; there is no host option. Storage is embedded SQLite +
-Markdown memory: no Postgres, no Neo4j, no GPU.
+On the home page (**Settings → Agent**), in the **Models** card:
 
-You do **not** need Node installed: it comes in as a Python dependency for the
-UI build. Nor `uv` — same. `run.sh` never pipes a remote installer into a shell;
-see **[INSTALL.md](INSTALL.md)** for the offline and corporate-CA notes.
+1. Paste your model server's address into **Base URL**:
+   - LM Studio on this computer: `http://127.0.0.1:1234/v1` on Linux,
+     `http://host.docker.internal:1234/v1` on macOS/Windows
+   - Ollama, vLLM, OpenRouter, Groq, a cloud endpoint: its `/v1` URL (plus **API key** if it needs one)
+2. Press **🔍 Identify models from URL** and click the model you want, or type
+   its **Model id** and press **+ Add model**.
 
-```bash
-git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew.git
-cd AIForgeCrew
-./run.sh
-```
+That is all: AIForge decides which agent uses which model. Add a second, stronger
+model later if you like. **🔧 Test tools** on a model's row checks that it answers.
 
-Settings live in **`aiforge.env`** — one fixed file, committed, identical on
-every box, which `run.sh` reads and never writes to. Anything per-box (the
-model endpoint, the memory role, keys) goes in the real environment, which
-overrides the file. There is no `.env`.
-
-Open **http://127.0.0.1:8799/ui/**. First boot builds the sandbox image, then
-the venv + UI inside it, and starts the api + team-pipeline runner in the box —
-a few minutes once, then fast. Follow it with `./run.sh --logs`.
-
-**Memory recall — hash (default) vs semantic:**
-
-| Backend | What it does | Cost |
-|---|---|---|
-| **hash** (default) | keyword / exact-id / spell-correction. Fully works — briefs, migration, chat, contradiction-resolve, seed-index, lint, hot-cache. | none — no heavy download |
-| **model2vec** (opt-in) | adds meaning/paraphrase vector KNN ("how do we ship a release" → the deploy brief, zero shared words) | static embeddings, ~30 MB model, **no torch** |
-| **api** (opt-in) | semantic from an OpenAI-compatible `/v1/embeddings` endpoint you already run (LM Studio / Ollama) | no local model at all |
-
-Enable semantic **once** (installs model2vec, then starts with it active):
-```bash
-./run.sh --install-model2vec
-```
-Afterwards every plain `./run.sh` auto-detects it. Force hash:
-`AIFORGE_EMBED_BACKEND=hash ./run.sh`. Or the API backend:
-`AIFORGE_EMBED_BACKEND=api AIFORGE_EMBED_API_MODEL=<embed-model> ./run.sh`.
-
-Handy flags:
-
-| Flag | Does |
-|---|---|
-| `--port N` / `--host 0.0.0.0` | change the bind; off-loopback needs `AIFORGE_API_TOKEN` |
-| `--dev` | hot reload |
-| `--test` | probe the model endpoint, then exit |
-| `--reset-config` | wipe the saved model config |
-| `--skip-web` | don't rebuild the UI |
-| `--migrate` | force a re-converge of a prior install |
-| `--recompact-all` | re-fold every memory brief, then exit |
-
-> `--lite` / `--hybrid` / `--no-build` are legacy no-ops — storage is always
-> single-mode SQLite now. `--docker` is real: it runs the container instead.
+Model on a server with an internal TLS certificate: see
+[docs/ADVANCED.md](docs/ADVANCED.md#behind-a-corporate-ca-or-proxy).
 
 ---
 
-## 2. Configure models
-
-The landing page and **Settings → Agents** are config-first. Each pipeline role
-(planner, doer, feedback, learner, supervisor) and the chat agent can point at its
-own model.
-
-1. **Pick a provider.** Choose **OpenAI-compatible** and paste any base URL:
-   - LM Studio: `http://localhost:1234/v1` (leave key blank)
-   - vLLM / Ollama / LocalAI / Together / Groq / OpenRouter / a cloud endpoint (+ key)
-2. **Test connection** — verifies reachability + that the served model answers.
-3. **Register a model** (Settings → Agents → add) with a label + the model id the
-   endpoint serves (e.g. `qwen/qwen3-coder-next`).
-4. **Apply it to roles** — assign a model per role, or use a **profile** to switch
-   all roles at once. The chat agent's model is set the same way.
-
-> Tip: for a local setup, register several models (a fast coder + a bigger
-> reasoner) and assign the strong one to `planner`/`doer`.
->
-> **TLS on an internal endpoint?** Load your CA in Settings → *Local certificate
-> authority* (the root **and** its intermediates). Only if you have no CA at all,
-> tick *skip TLS verify* on the row — that pins the endpoint's certificate rather
-> than disabling verification.
-
----
-
-## 3. Configure integrations
+## 2. Configure integrations
 
 **Settings → Integrations** — connect tools the chat agent can then search/read/write
 (writes go through the chat approval gate):
@@ -115,7 +49,7 @@ env var of the same name always overrides the stored value.
 
 ---
 
-## 4. Create a scheduled Job
+## 3. Create a scheduled Job
 
 **Jobs** page. A job fires on a cron schedule. Two kinds:
 
@@ -131,7 +65,7 @@ folder are ever executed, with a timeout).
 
 ---
 
-## 5. Create Rules, Skills & Workflows
+## 4. Create Rules, Skills & Workflows
 
 Go to the **Library** page — Skills / Workflows / Rules each have their own screen,
 with a **Default** tab (built-in, ships with AIForge) and a **Custom** tab (yours).
@@ -147,76 +81,28 @@ that interviews you and saves it):
 
 ---
 
-## 6. Memory
+## 5. Memory
 
-Memory is **scoped OKR briefs** — human-readable Markdown files under
-`~/.aiforge/memory/`:
-
-```
-~/.aiforge/memory/
-├── compacted/          the briefs — one per scope (OKR envelope:
-│   ├── compacted-shared.md          Objective / Key Results / Facts / Links / Learnings)
-│   ├── compacted-<repo>.md          · shared = global (cross-project)
-│   └── compacted-<topic>.md         · <repo> = one project · <topic> = a theme
-├── archive/            raw captures, folded + archived (reversible)
-└── okf/                (marker only — the old node-DAG is consolidated out)
-```
-
-**How it fills:**
-- The **Memory** page → **Add source** indexes a repo/docs folder (tree-sitter
-  symbols + code/doc chunks + facts) for code context.
-- Agents write learnings during runs; each chat **session** distils into briefs
-  when it goes idle.
-- **Seed a fresh machine** from agent-instruction files — a committed, repeatable
-  command (works on hash **or** semantic; no CLAUDE.md needed on other boxes,
-  their briefs come from migrated memory):
-  ```bash
-  # stop the api first, then:
-  aiforge-memory-instructions --clear --root <repos-dir>   # CLAUDE.md / AGENTS.md / GEMINI.md
-  ```
-
-**Recall** is hybrid + self-maintaining:
-- **Search** (Memory page or the agents' `memory_lookup`) fuses semantic vector
-  KNN (if installed) + keyword/BM25 + spell-correction, and **follows brief
-  Links** to pull related briefs' full text. The API/UI split results into
-  **vector** vs **markdown** groups.
-- A **seed index** (TOC of every brief) is injected into the chat prompt so the
-  agent knows what memory exists to query.
-- Housekeeping runs nightly (02:00 local) + hourly: consolidation, **contradiction
-  resolve** (a newer fact overwrites a stale contradicting one in any scope),
-  cross-scope link mapping, and a graph-health **lint** (dangling links / orphans).
-- A **hot cache** surfaces just-written facts immediately, before compaction.
-
-The chat/coding agents recall this memory automatically ("memory-first") before
-searching files.
+AIForge remembers what it learns, as readable Markdown under `~/.aiforge/memory/`.
+To give it a repo's code and docs up front: **Memory** page → **Add source**. The
+agents recall memory automatically before searching files. Details:
+[docs/OKR_MEMORY.md](docs/OKR_MEMORY.md) and [docs/ADVANCED.md](docs/ADVANCED.md#memory-details).
 
 ---
 
-## 7. Do work: Chat & Tickets
+## 6. Do work: Chat & Tickets
 
-- **Chat** — a full-filesystem coding agent. For work on a specific repo, start the
-  chat **rooted at that repo** (the 📁 "new chat with a working directory" button) so
-  it operates there instead of an empty scratch dir. It uses memory + LSP + tests.
-- **Tickets** — file a plain-language ticket; the pipeline runs it end to end:
-  triage → enhance → plan → code (Doer loop with verify) → validate → learn → PR.
+- **Chat** — ask for anything in your code. Easiest: run `aiforge` in the project
+  folder. In the web app, start the chat in that folder (the 📁 button) so it works
+  there.
+- **Tickets** — describe a change in plain words; AIForge plans it, writes the
+  code, tests it and opens a pull request.
 
 ---
 
 ## Data, security & where things live
 
-- **Storage:** SQLite under `~/.aiforge/` — the one folder of this machine the
-  sandbox sees.
-- **Config + user data:** `~/.aiforge/` (agent config, chat db, jobs, skills,
-  workflows, rules, memory).
-- **Security:** the agent has full rights **inside its box**, and from this machine
-  reaches only `~/.aiforge` plus folders you approved with `--mount`. There is no host
-  mode. Binding non-loopback (`--host 0.0.0.0`) requires
-  `AIFORGE_API_TOKEN` (or the explicit `AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1` opt-out
-  when you front it with your own auth/tunnel); the check reads the real socket, so
-  a bare `uvicorn --host 0.0.0.0` is refused too. **If a reverse proxy on the same
-  host fronts the API, also set `AIFORGE_TRUST_LOOPBACK=0`** — otherwise every
-  proxied request looks like `127.0.0.1` and skips the token. `/admin` follows that
-  same loopback-or-token rule — it is **not** token-only (that special case was
-  reverted in `11f5778`: a browser navigation cannot send an `Authorization` header,
-  so the page stopped opening the day a token existed). What protects it instead is
-  that a remote caller is refused **even with a valid token**.
+- **Your data:** everything (settings, chats, memory, tickets) is under `~/.aiforge/`.
+- **Security:** the agent has full rights inside its sandbox, but from your
+  computer it sees only `~/.aiforge` and folders you approved (`aiforge mount add`).
+- More detail (tokens, reverse proxies, `/admin`): [docs/ADVANCED.md](docs/ADVANCED.md).

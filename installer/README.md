@@ -17,7 +17,7 @@ gives you all three:
 
 The only thing the machine needs is **Docker with Compose v2** (Docker Desktop
 on macOS and Windows; `docker.io` + `docker-compose-v2` on Ubuntu; Docker's own
-repo elsewhere — see [INSTALL.md](../INSTALL.md#prerequisites)). If Docker is
+repo elsewhere — see [INSTALL.md](../INSTALL.md#1-install-docker)). If Docker is
 installed but stopped, `aiforge` starts it.
 
 After that: set the model on the web UI's home page, `cd` into a project and run
@@ -25,7 +25,7 @@ After that: set the model on the web UI's home page, `cd` into a project and run
 builds a new sandbox image). `aiforge uninstall` stops the sandbox and removes
 the CLI; your chats, settings and memory in `~/.aiforge` stay. Networking, the
 environment it passes to the box, and use off the corporate network:
-[INSTALL.md](../INSTALL.md#the-aiforge-binary).
+[docs/ADVANCED.md](../docs/ADVANCED.md#the-aiforge-binary).
 
 The VS Code extension is installed separately — see
 [packages/aiforge_vscode](../packages/aiforge_vscode/README.md).
