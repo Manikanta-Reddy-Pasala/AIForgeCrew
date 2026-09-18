@@ -19,7 +19,7 @@ def test_diff_preview_is_markdown_not_json_string():
     # command / diff → fenced code so the renderer shows monospace; an unknown
     # tool → a heading + its fields (a raw JSON dump was unreadable)
     assert "```bash" in ca._diff_preview("run_command", {"cmd": "ls"}, "/tmp")
-    assert ca._diff_preview("weird_tool", {"a": 1}, "/tmp") == "### Weird tool\n\n**A:** 1\n\n"
+    assert ca._diff_preview("weird_tool", {"a": 1}, "/tmp") == "### Weird tool\n\n**A:** `1`\n\n"
     gl = ca._diff_preview("gitlab_comment",
                           {"project": "g/p", "iid": 5, "body": "looks good"}, "/tmp")
     assert gl.startswith("### Comment on GitLab")
@@ -122,3 +122,60 @@ def test_a_markdown_email_also_goes_out_as_html():
     plain = et._build_message({"from": "me@x", "user": ""}, {"subject": "s", "body": "Hi there."},
                               ["a@b.c"], [])
     assert plain.get_body(preferencelist=("html",)) is None
+
+
+def test_jira_previews_show_what_jira_renders_even_without_headings():
+    from aiforge_core.runtime.chat_agent._preview import _diff_preview
+    md = _diff_preview("jira_comment", {"key": "E-1", "body": "1. Build it\n2. Test it\n\n**the bug** in `parse()`"}, ".")
+    assert "# Build it" not in md and "{{" not in md
+    assert "Build it" in md and "parse()" in md
+
+
+def test_code_in_a_markdown_body_is_not_read_as_html():
+    from aiforge_core.runtime.chat_agent._preview import _diff_preview
+    body = "Wrap text in `<p>` and use `<br/>`.\n\n```html\n<div><b>New</b> &amp; improved</div>\n```"
+    md = _diff_preview("gitlab_comment", {"project": "p", "iid": 1, "body": body}, ".")
+    assert md.endswith(body)
+
+
+def test_scripts_and_cron_lines_are_shown_exactly():
+    from aiforge_core.runtime.chat_agent._preview import _diff_preview
+    md = _diff_preview("create_job_script", {"name": "clean", "cron": "*/5 * * * *",
+                                             "script": "# nightly cleanup\nrm -rf /tmp/*_old/*"}, ".")
+    assert "`*/5 * * * *`" in md
+    assert "```\n# nightly cleanup\nrm -rf /tmp/*_old/*\n```" in md
+
+
+def test_the_email_preview_shows_every_part_sent():
+    from aiforge_core.runtime.chat_agent._preview import _diff_preview
+    md = _diff_preview("email_send", {"to": "a@b.c", "subject": "s", "body": "plain part",
+                                      "html": '<a href="https://evil">https://bank.com</a>'}, ".")
+    assert "plain part" in md and 'href="https://evil"' in md
+
+
+def test_identifiers_urls_and_code_survive_the_confluence_conversion():
+    from aiforge_core.runtime.tools.confluence_format import md_to_storage
+    out = md_to_storage("Renamed `get_user_by_id` to `fetch_user`; see [PR](https://git.x/a_b/c_d) "
+                        "and https://x.io/my_run_book — my_var_name, 2 * 3 * 4, **bold**, *it*, _em_")
+    assert "<code>get_user_by_id</code>" in out and "<code>fetch_user</code>" in out
+    assert 'href="https://git.x/a_b/c_d"' in out and "https://x.io/my_run_book" in out
+    assert "my_var_name" in out and "2 * 3 * 4" in out
+    assert "<strong>bold</strong>" in out and "<em>it</em>" in out and "<em>em</em>" in out
+
+
+def test_a_comment_with_a_code_block_posts_well_formed_storage(monkeypatch):
+    import xml.dom.minidom
+    from aiforge_core.runtime.tools import confluence as cf
+    sent = []
+    monkeypatch.setattr(cf, "_request", lambda m, p, **k: sent.append(k["body"]) or {"ok": True, "data": {}})
+    cf.confluence_comment({"id": "1", "body": "Fix:\n\n```python\nif a < b and c & d:\n    pass\n```"})
+    value = sent[-1]["body"]["storage"]["value"]
+    assert "ac:structured-macro" in value
+    xml.dom.minidom.parseString(f'<r xmlns:ac="a" xmlns:ri="r">{value}</r>')   # well-formed
+
+
+def test_plain_mail_with_one_bullet_or_a_quote_stays_plain():
+    from aiforge_core.runtime.tools import email_tool as et
+    assert et._markdown_html("Hi,\n- one thing\n\n> earlier reply\nThanks") == ""
+    html = et._markdown_html("- a\n- b\n\n![x](https://track/p.png) <img src=https://t/p>")
+    assert "<ul>" in html and "img" not in html.lower()
