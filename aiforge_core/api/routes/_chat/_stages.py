@@ -96,14 +96,14 @@ def _integration_verify_events(cwd):
         _af_log.debug("integration report skipped: %s", exc)
 
 
-def _post_run_events(prompt, cwd, agent_mode, simple_sha):
+def _post_run_events(prompt, cwd, agent_mode, simple_sha, changes_only=False):
     """After the single agent finishes: (1) build+test+self-heal ONLY when this
     turn wrote source, the mode isn't plan/read-only, it's env-enabled, and
     there's a stack worth verifying; (2) emit a clean PR-style Changes diff (gated
     on not-read-only ONLY — a doc/config edit still shows its diff; _emit_changes
     self-guards an empty diff)."""
     readonly = _looks_like_analysis(prompt)
-    if (agent_mode != "plan" and not readonly and _turn_wrote_source(cwd)
+    if (not changes_only and agent_mode != "plan" and not readonly and _turn_wrote_source(cwd)
             and os.environ.get("AIFORGE_CHAT_INTEGRATION_TEST", "1")
             not in ("0", "false") and _worth_verifying(cwd)):
         yield from _integration_verify_events(cwd)

@@ -104,14 +104,18 @@ test('runner: a busy chat is watched, and the user is told their message did not
   assert.deepEqual(f.calls, ['send', 'attach']);
 });
 
-test('runner: the drop budget is for drops in a row, not per run', async () => {
-  const drop = () => events([{ type: 'delta', text: '.' }], new Stalled('drop'));
-  const script = Array.from({ length: MAX_REATTACH + 2 }, () => drop);
-  script.push(() => events([{ type: 'done' }]));
-  const f = fakeApi(script);
+test('runner: a stream that keeps dropping right after its replay still gives up', async () => {
+  // Each re-attach replays events and drops at once: those replayed events
+  // must not refill the budget, or a dead stream is retried forever.
+  const drop = () => events([{ type: 'attached', running: true }, { type: 'delta', text: '.' }],
+                            new Stalled('drop'));
+  const f = fakeApi(Array.from({ length: MAX_REATTACH + 3 }, () => drop));
+  let error = '';
   const r = new Runner(f as any, 1, { onEvent: () => undefined, onRunning: () => undefined,
-    onError: m => assert.fail(`gave up: ${m}`), onNotice: () => undefined });
-  await r.send('x', { mode: 'simple', reviewEdits: false });   // each drop made progress
+    onError: m => { error = m; }, onNotice: () => undefined });
+  await r.send('x', { mode: 'simple', reviewEdits: false });
+  assert.equal(f.calls.length, MAX_REATTACH + 1);
+  assert.match(error, /drop/);
 });
 
 test('runner: a steer the server did not take is reported, not swallowed', async () => {
@@ -153,4 +157,19 @@ test('runner: attach with nothing running ends quietly; a send while running ste
   release();
   await run;
   assert.ok(f.calls.includes('steer'));
+});
+
+test('runner: a send right after a reopen waits for the attach instead of steering', async () => {
+  // reopen: attach says nothing is running (after a moment) → the send is a new turn
+  const f: any = fakeApi([
+    async function* () { await new Promise(r => setTimeout(r, 300)); yield { type: 'attached', running: false }; },
+    () => events([{ type: 'done' }]),
+  ]);
+  const r = new Runner(f, 1, { onEvent: () => undefined, onRunning: () => undefined,
+    onError: m => assert.fail(m), onNotice: () => undefined });
+  const attach = r.attach();
+  await new Promise(res => setTimeout(res, 20));
+  await r.send('hello', { mode: 'simple', reviewEdits: false });
+  await attach;
+  assert.deepEqual(f.calls, ['attach', 'send']);            // not a steer
 });

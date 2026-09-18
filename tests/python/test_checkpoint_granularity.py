@@ -129,3 +129,32 @@ def test_undo_of_a_file_created_after_the_checkpoint_removes_it(repo, tmp_path, 
     assert res["ok"], res
     assert not (tmp_path / "made.txt").exists()
     assert (tmp_path / "a.txt").read_text() == "a1\n"      # not asked for
+
+
+def test_restoring_a_path_that_matches_nothing_says_so(repo, tmp_path, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHECKPOINT_DIR", str(tmp_path.parent / f"{tmp_path.name}-ck"))
+    from aiforge_core.runtime import checkpoints
+    snap = checkpoints.snapshot(repo, label="s")
+    res = checkpoints.restore(repo, snap["sha"], paths=["/etc/hosts"], delete_orphans=True)
+    assert res["ok"] is False and "nothing to restore" in res["error"]
+
+
+def test_the_changes_listing_still_hides_env_files(repo, tmp_path, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHECKPOINT_DIR", str(tmp_path.parent / f"{tmp_path.name}-ck"))
+    from aiforge_core.runtime import checkpoints
+    snap = checkpoints.snapshot(repo, label="s")
+    (tmp_path / ".env").write_text("SECRET=1\n")
+    (tmp_path / "b.txt").write_text("b1\n")
+    assert set(_changes(repo, snap["sha"])) == {"b.txt"}
+
+
+def test_a_snapshot_seeds_from_the_real_index(repo, tmp_path, monkeypatch):
+    """Copying the index (with its stat cache) instead of `read-tree HEAD`
+    must give the same tree."""
+    monkeypatch.setenv("AIFORGE_CHECKPOINT_DIR", str(tmp_path.parent / f"{tmp_path.name}-ck"))
+    from aiforge_core.runtime import checkpoints
+    (tmp_path / "a.txt").write_text("a1\n")
+    (tmp_path / "c.txt").write_text("c\n")
+    seeded = checkpoints.worktree_tree(repo)
+    monkeypatch.setattr(checkpoints, "_seed_from_real_index", lambda cwd, env: False)
+    assert checkpoints.worktree_tree(repo) == seeded
