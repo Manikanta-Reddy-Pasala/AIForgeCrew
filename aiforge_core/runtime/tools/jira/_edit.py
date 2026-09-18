@@ -295,7 +295,8 @@ def jira_transition(args: dict, _cwd: str | None = None) -> dict:
                 "available": [t.get("name") for t in lst["transitions"]]}
     body: dict = {"transition": {"id": tid}}
     if args.get("comment"):
-        body["update"] = {"comment": [{"add": {"body": args["comment"]}}]}
+        # Wiki markup, like every other comment: Markdown showed literally.
+        body["update"] = {"comment": [{"add": {"body": pkg.to_jira_wiki(str(args["comment"]))}}]}
     r = pkg._request("POST",
                  f"/rest/api/2/issue/{urllib.parse.quote(key)}/transitions",
                  body=body)
@@ -337,7 +338,7 @@ def jira_link_issues(args: dict, _cwd: str | None = None) -> dict:
                   "inwardIssue": {"key": inward},
                   "outwardIssue": {"key": outward}}
     if args.get("comment"):
-        body["comment"] = {"body": str(args["comment"])}
+        body["comment"] = {"body": _pkg().to_jira_wiki(str(args["comment"]))}
     r = _pkg()._request("POST", "/rest/api/2/issueLink", body=body)
     if not r["ok"]:
         return r

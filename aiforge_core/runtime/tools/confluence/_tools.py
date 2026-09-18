@@ -380,18 +380,19 @@ def confluence_comments(args: dict, _cwd: str | None = None) -> dict:
 
 
 def confluence_comment(args: dict, _cwd: str | None = None) -> dict:
-    """Add a comment to a page. Required: ``id`` (page id), ``body`` (storage
-    XHTML or plain text)."""
+    """Add a comment to a page. Required: ``id`` (page id), ``body`` (Markdown,
+    or storage XHTML)."""
     pid = str(args.get("id") or "").strip()
     body = (args.get("body") or args.get("text") or "").strip()
     if not pid or not body:
         return {"ok": False, "error": "id and body are required"}
+    # The agent writes Markdown; Confluence renders storage XHTML and showed
+    # the comment's `**` / `#` / `- ` literally. Same conversion as a page
+    # (storage input passes through unchanged).
     payload = {
         "type": "comment",
         "container": {"id": pid, "type": "page"},
-        "body": {"storage": {"value": body,
-                             "representation": args.get("representation",
-                                                        "storage")}},
+        "body": {"storage": {"value": md_to_storage(body), "representation": "storage"}},
     }
     r = _request("POST", _REST_API_CONTENT, body=payload)
     if not r["ok"]:
