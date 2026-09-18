@@ -21,6 +21,8 @@ Needs **Docker**. No Postgres, no Neo4j, no GPU.
 |---|---|
 | **[QUICKSTART.md](QUICKSTART.md)** | Run it, configure models and integrations, create jobs / rules / skills / workflows |
 | **[INSTALL.md](INSTALL.md)** | Docker vs native, how the sandbox works, credentials, offline and corporate-CA notes |
+| **[CLI](packages/aiforge_cli/README.md)** | Run the `aiforge` terminal client on Ubuntu, macOS or Windows |
+| **[VS Code extension](packages/aiforge_vscode/README.md)** | Build the `.vsix`, install it, use the chat with diffs / explain / undo |
 | **[SYSTEM_OVERVIEW.md](docs/SYSTEM_OVERVIEW.md)** | Request flow (chat + pipeline), memory, skills/workflows/rules, operating it |
 | **[TOOLS.md](docs/TOOLS.md)** | Every tool, args, gating, per-agent allowlists |
 | **[OKR_MEMORY.md](docs/OKR_MEMORY.md)** | The OKR-DAG memory — markdown nodes, typed edges, surgical retrieval |
@@ -218,7 +220,7 @@ aiforge_core/
   net/ config/    egress allowlist + CA handling; providers, env, roles
   jobs/ recipes/ tickets/ workflows/ indexing/ observability/ llm/ cli/
 packages/aiforge_memory/   standalone memory package (chunking, embeddings)
-packages/aiforge_cli/      the `aiforge` terminal client
+packages/aiforge_cli/      the `aiforge` terminal client (install + run: its README)
 packages/aiforge_vscode/   the VS Code extension (build + install: its README)
 web/              React UI
 ```
