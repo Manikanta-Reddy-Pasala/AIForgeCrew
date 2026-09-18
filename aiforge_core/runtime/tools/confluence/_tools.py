@@ -379,19 +379,24 @@ def confluence_comments(args: dict, _cwd: str | None = None) -> dict:
     return {"ok": True, "id": pid, "count": len(out), "comments": out}
 
 
-def confluence_comment(args: dict, _cwd: str | None = None) -> dict:
-    """Add a comment to a page. Required: ``id`` (page id), ``body`` (storage
-    XHTML or plain text)."""
+def confluence_comment(args: dict, cwd: str | None = None) -> dict:
+    """Add a comment to a page. Required: ``id`` (page id), ``body`` (Markdown,
+    or storage XHTML)."""
     pid = str(args.get("id") or "").strip()
     body = (args.get("body") or args.get("text") or "").strip()
     if not pid or not body:
         return {"ok": False, "error": "id and body are required"}
+    # The agent writes Markdown; Confluence renders storage XHTML and showed
+    # the comment's `**` / `#` / `- ` literally. The SAME conversion as a page,
+    # fences and images included (a bare ``` block left `<` / `&` unescaped:
+    # invalid XHTML, refused). Storage input passes through unchanged.
+    xhtml, img_refs = _storagify_media(md_to_storage(body))
+    if img_refs:
+        _upload_page_images(pid, img_refs, cwd)      # the comment's images live on the page
     payload = {
         "type": "comment",
         "container": {"id": pid, "type": "page"},
-        "body": {"storage": {"value": body,
-                             "representation": args.get("representation",
-                                                        "storage")}},
+        "body": {"storage": {"value": xhtml, "representation": "storage"}},
     }
     r = _request("POST", _REST_API_CONTENT, body=payload)
     if not r["ok"]:

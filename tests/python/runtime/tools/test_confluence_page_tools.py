@@ -443,7 +443,8 @@ def test_a_comment_is_posted_against_its_page(rest):
     assert out == {"ok": True, "id": "7", "page_id": "1"}
     body = rest["calls"][0]["body"]
     assert body["container"] == {"id": "1", "type": "page"}
-    assert body["body"]["storage"]["value"] == "nice"
+    # Markdown/plain text is converted to storage XHTML, as for a page
+    assert body["body"]["storage"]["value"] == "<p>nice</p>"
 
 
 def test_posting_a_comment_needs_an_id_and_a_body(rest):

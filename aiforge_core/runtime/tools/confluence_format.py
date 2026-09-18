@@ -78,20 +78,31 @@ def md_to_storage(text):
 def _inline(s: str) -> str:
     """Inline markdown → storage XHTML on ONE line's text. Escapes bare XHTML
     special chars first so user text can't inject tags, then re-introduces the
-    intended emphasis/code/link tags."""
+    intended emphasis/code/link tags.
+
+    Code spans and links are set aside BEFORE emphasis: the italic pass used to
+    run over them, so `get_user_by_id` became ``get<em>user</em>by…`` with the
+    tags crossing the ``<code>`` (invalid XHTML — Confluence refuses the whole
+    body) and a URL's ``my_run_book`` grew an ``<em>`` inside its href. Italic
+    underscores/asterisks also need a word boundary, so ``my_var_name`` and
+    ``2 * 3 * 4`` stay as written."""
     s = _escape(s)
-    # inline code `x` first (so bold/italic never touch its contents)
-    s = re.sub(r"`([^`]+)`", lambda m: f"<code>{m.group(1)}</code>", s)
-    # links [t](u) -> <a href="u">t</a>
+    held: list[str] = []
+
+    def _hold(html: str) -> str:
+        held.append(html)
+        return f"\uE000{len(held) - 1}\uE001"
+    s = re.sub(r"`([^`]+)`", lambda m: _hold(f"<code>{m.group(1)}</code>"), s)
     s = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)",
-               lambda m: f'<a href="{m.group(2)}">{m.group(1)}</a>', s)
+               lambda m: _hold(f'<a href="{m.group(2)}">{m.group(1)}</a>'), s)
+    s = re.sub(r"https?://[^\s<]+", lambda m: _hold(m.group(0)), s)       # bare URLs
     # bold **x** / __x__ -> <strong>
-    s = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
-    s = re.sub(r"__([^_]+)__", r"<strong>\1</strong>", s)
-    # italic *x* / _x_ -> <em>  (after bold so ** isn't half-eaten)
-    s = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<em>\1</em>", s)
-    s = re.sub(r"(?<!_)_([^_\n]+)_(?!_)", r"<em>\1</em>", s)
-    return s
+    s = re.sub(r"\*\*(?=\S)([^*]+?)(?<=\S)\*\*", r"<strong>\1</strong>", s)
+    s = re.sub(r"(?<!\w)__(?=\S)([^_]+?)(?<=\S)__(?!\w)", r"<strong>\1</strong>", s)
+    # italic *x* / _x_ -> <em>: at word boundaries, hugging the text
+    s = re.sub(r"(?<![\w*])\*(?=\S)([^*\n]+?)(?<=\S)\*(?![\w*])", r"<em>\1</em>", s)
+    s = re.sub(r"(?<![\w_])_(?=\S)([^_\n]+?)(?<=\S)_(?![\w_])", r"<em>\1</em>", s)
+    return re.sub(r"\uE000(\d+)\uE001", lambda m: held[int(m.group(1))], s)
 
 
 def inline_fragment(text: str) -> str:
