@@ -351,7 +351,10 @@ def start(cfg: Config, *, on_line: Callable[[str], None] | None = None,
                          on_wait=lambda s: say(f"waiting for docker to start… {s:.0f}s"))
 
     if cfg.repo is not None and shutil.which("bash"):
-        args = ["bash", str(cfg.repo / RUN_SH), "--port", str(cfg.port), "--skip-web"]
+        # No --skip-web: run.sh forwards it into the box, which then never built
+        # the web UI — a box started from the CLI had the API and no /ui/.
+        # The build runs once; later starts see it is up to date.
+        args = ["bash", str(cfg.repo / RUN_SH), "--port", str(cfg.port)]
         if recreate:
             subprocess.run(["bash", str(cfg.repo / RUN_SH), "--stop"],
                            cwd=str(cfg.repo), capture_output=True, text=True)

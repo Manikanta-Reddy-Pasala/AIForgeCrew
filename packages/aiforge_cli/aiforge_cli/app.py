@@ -187,7 +187,8 @@ class App:
             self.tail.clear()
             raise Exit(EXIT_ENV, f"{self.pal('✗', 'error')} {exc}") from exc
         self.tail.clear()
-        self.ok("sandbox ready", f"{waited:.1f}s")
+        # The box serves the web UI too: say where, once, when it comes up.
+        self.ok("sandbox ready", f"{waited:.1f}s · web UI {self.cfg.base_url}/ui/")
 
     def _box_line(self, line: str) -> None:
         """docker's own chatter: pulls are worth showing, the rest is noise."""
@@ -1024,6 +1025,7 @@ class App:
                  f"  api       "
                  f"{self.pal('up' if healthy else 'down', 'ok' if healthy else 'fail')}"
                  f"   {self.pal(self.cfg.base_url, 'dim')}",
+                 f"  web UI    {self.pal(self.cfg.base_url + '/ui/', 'dim')}",
                  f"  image     {self.pal(self.cfg.image, 'dim')}",
                  f"  strategy  {self.pal(strategy, 'dim')}")
         return EXIT_OK if healthy else EXIT_ENV
@@ -1031,7 +1033,7 @@ class App:
     def _box_up(self, *, recreate: bool) -> int:
         box.start(self.cfg, on_line=self._box_line, recreate=recreate, env=self.env)
         box.wait_healthy(self.client.healthy, timeout=120.0, sleep=self._sleep)
-        self.ok(f"sandbox {'restart' if recreate else 'up'}")
+        self.ok(f"sandbox {'restart' if recreate else 'up'}", f"web UI {self.cfg.base_url}/ui/")
         return EXIT_OK
 
     # ── completion sources ─────────────────────────────────────────────────

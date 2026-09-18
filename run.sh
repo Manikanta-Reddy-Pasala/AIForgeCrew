@@ -685,6 +685,12 @@ if ! _in_box; then
   echo "  projects: ${AIFORGE_REPOS_DIR:-$AIFORGE_CONFIG_DIR/repos}   (full rights inside the box)"
   echo "  first start installs its dependencies — follow it: ./run.sh --logs"
   echo "  stop: ./run.sh --stop   ·   shell inside: ./run.sh --shell"
+  # The other two ways in talk to this same box.
+  if command -v aiforge >/dev/null 2>&1 && aiforge --version 2>/dev/null | grep -q '^aiforge '; then
+    echo "  terminal: aiforge   ·   VS Code: packages/aiforge_vscode (make vscode)"
+  else
+    echo "  terminal: pip install -e packages/aiforge_cli, then aiforge   ·   VS Code: make vscode"
+  fi
   exit 0
 fi
 
