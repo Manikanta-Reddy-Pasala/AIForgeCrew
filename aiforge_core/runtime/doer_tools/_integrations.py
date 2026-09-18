@@ -197,7 +197,9 @@ def jira_update(key: str, summary: str = "", description: str = "",
     args: dict = {"key": key}
     if summary:
         args["summary"] = summary
-    if description:
+    # An empty description with replace_section / replace_text deletes that
+    # part; anywhere else "" means "not changing the description".
+    if description or mode in ("replace_section", "replace_text"):
         args.update(description=description, mode=mode, section=section,
                     find=find, allow_loss=allow_loss)
     if labels:

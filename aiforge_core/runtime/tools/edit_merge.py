@@ -69,11 +69,14 @@ def _norm(s: str) -> str:
 
 # Code a heading-lookalike can hide in: a macro's CDATA body (storage), a
 # {code}/{noformat} block (wiki). Masked before looking for headings.
-_STORAGE_OPAQUE = re.compile(r"<!\[CDATA\[.*?\]\]>", re.S)
+_STORAGE_OPAQUE = re.compile(r"<!\[CDATA\[.*?\]\]>|<!--.*?-->", re.S)
 _WIKI_OPAQUE = re.compile(r"\{(code|noformat)(?::[^}]*)?\}.*?\{\1\}", re.S | re.I)
 
-# One storage tag (or CDATA, skipped whole).
-_TAG = re.compile(r"<!\[CDATA\[.*?\]\]>|<(/?)([A-Za-z][\w:.-]*)\b[^>]*?(/?)>", re.S)
+# One storage tag, or CDATA / a comment (skipped whole). Attribute values are
+# matched as quoted strings: XML allows a raw ">" inside them ("Q1 > Q2").
+_TAG = re.compile(r"<!\[CDATA\[.*?\]\]>|<!--.*?-->"
+                  r"|<(/?)([A-Za-z][\w:.-]*)((?:[^>\"']|\"[^\"]*\"|'[^']*')*?)(/?)>",
+                  re.S)
 _VOID = {"br", "hr", "img", "col", "input", "meta", "link", "wbr", "area", "base"}
 
 
@@ -98,9 +101,9 @@ def _storage_section_end(body: str, head_end: int, level: int) -> int:
     cell) — never past it, which would cut the page's structure apart."""
     depth = 0
     for m in _TAG.finditer(body, head_end):
-        if m.group(2) is None:                       # CDATA
+        if m.group(2) is None:                       # CDATA / comment
             continue
-        closing, name, selfclose = m.group(1), m.group(2).lower(), m.group(3)
+        closing, name, selfclose = m.group(1), m.group(2).lower(), m.group(4)
         if selfclose or name in _VOID:
             continue
         if closing:
@@ -131,7 +134,29 @@ def _find_section(body: str, kind: str, section: str) -> tuple[int, int, int]:
     if kind == "storage":
         return start, end, _storage_section_end(body, end, level)
     after = [h[0] for h in heads if h[0] > start and h[2] <= level]
-    return start, end, (after[0] if after else len(body))
+    stop = after[0] if after else len(body)
+    return start, end, min(stop, _wiki_container_close(_mask(body, kind), end, stop))
+
+
+_WIKI_MACRO = re.compile(r"\{(panel|quote|info|note|warning|tip|expand|color|section|column)"
+                         r"(:[^}\n]*)?\}", re.I)
+
+
+def _wiki_container_close(masked: str, start: int, stop: int) -> int:
+    """Where a wiki macro the section sits INSIDE closes ({panel}…{panel}),
+    if before ``stop`` — a section must not swallow its container's closer."""
+    open_: list[str] = []
+    for m in _WIKI_MACRO.finditer(masked, start, stop):
+        name = m.group(1).lower()
+        if m.group(2):                       # {panel:title=…} always opens
+            open_.append(name)
+        elif name in open_:                  # closes one opened in the section
+            del open_[len(open_) - 1 - open_[::-1].index(name)]
+        elif re.search(r"\{" + re.escape(name) + r"\}", masked[m.end():stop], re.I):
+            open_.append(name)               # a bare opener, closed later on
+        else:
+            return m.start()                 # closes the container around us
+    return stop
 
 
 def _starts_with_heading(fragment: str, kind: str) -> bool:
@@ -179,16 +204,22 @@ def merge(current: str, fragment: str, mode: str, *, kind: str,
     return current.replace(find, fragment, 1)
 
 
-def loss(current: str, merged: str, *, kind: str) -> str | None:
-    """Why ``merged`` would lose content ``current`` has, or None."""
-    rules = _STORAGE_STRUCTURES if kind == "storage" else _WIKI_STRUCTURES
+def loss(current: str, merged: str, *, kind: str,
+         structures_only: bool = False) -> str | None:
+    """Why ``merged`` would lose content ``current`` has, or None. With
+    ``structures_only`` (a section swap, which may legitimately shorten) only
+    dropped sub-headings, tables, macros… count, not the text length."""
+    rules = dict(_STORAGE_STRUCTURES if kind == "storage" else _WIKI_STRUCTURES)
+    if structures_only:
+        rules["sub-heading"] = _STORAGE_HEADING if kind == "storage" else _WIKI_HEADING
     dropped = []
     for name, rx in rules.items():
         before, after = len(rx.findall(current or "")), len(rx.findall(merged or ""))
         if after < before:
             dropped.append(f"{before - after} of {before} {name}(s)")
     old, new = len(_text(current or "", kind)), len(_text(merged or "", kind))
-    shrunk = old >= _MIN_GUARDED_CHARS and new < old * _KEEP_RATIO
+    shrunk = (not structures_only and old >= _MIN_GUARDED_CHARS
+              and new < old * _KEEP_RATIO)
     if not dropped and not shrunk:
         return None
     what = []
@@ -205,6 +236,16 @@ def apply_edit(current: str, fragment: str, args: dict, *, kind: str) -> str:
     mode = (args.get("mode") or "replace").strip().lower()
     merged = merge(current, fragment, mode, kind=kind,
                    section=args.get("section"), find=args.get("find"))
+    if mode == "replace_section" and not _truthy(args.get("allow_loss")):
+        _, head_end, end = _find_section(current, kind, args.get("section") or "")
+        why = loss(current[head_end:end], fragment, kind=kind,
+                   structures_only=True)
+        if why:
+            raise EditError(
+                f"refused: in section {args.get('section')!r}, {why}. Send the "
+                "section's COMPLETE new content, keeping its sub-sections, "
+                "tables and macros; only if the user asked for them to go, "
+                "retry with allow_loss: true.")
     if mode == "replace" and not _truthy(args.get("allow_loss")):
         why = loss(current, merged, kind=kind)
         if why:

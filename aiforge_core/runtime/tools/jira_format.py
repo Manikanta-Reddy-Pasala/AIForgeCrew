@@ -45,10 +45,12 @@ def to_jira_wiki(text, *, hash_is_list: bool = False):
     H1."""
     if not text:
         return text
-    if _HTML_HINT.search(text):
-        return _html_to_wiki(text)
+    # Wiki first: an issue's own {code:html}<div>…{code} is wiki, and the HTML
+    # converter would strip the tags inside its code block.
     if _looks_like_wiki(text):
         return text
+    if _HTML_HINT.search(text):
+        return _html_to_wiki(text)
     return _md_to_wiki(text, hash_is_list=hash_is_list)
 
 

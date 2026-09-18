@@ -84,10 +84,10 @@ def _phase_from_line(m, seen: set) -> "dict | None":
         return None
     slug = _slugify(title)
     if slug == "step" and m.group("n"):
-        # A title with no ASCII (the plan written in Hindi, Telugu… — the
-        # reply-language setting) slugs to "step" every time, and the
-        # duplicates were dropped until no plan was left. Slugs stay ASCII:
-        # they name branches and worktrees. Number them instead.
+        # A title with no ASCII letters or digits (a plan written in another
+        # script) slugs to "step" every time, and the duplicates were dropped
+        # until no plan was left. Slugs stay ASCII: they name branches and
+        # worktrees. Number them instead.
         slug = f"step-{m.group('n')}"
     if slug in seen:
         return None

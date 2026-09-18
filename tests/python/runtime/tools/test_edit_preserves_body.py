@@ -318,3 +318,82 @@ def test_the_team_agent_tools_offer_the_edit_modes():
     for fn in (t.confluence_update, t.jira_update):
         params = inspect.signature(fn).parameters
         assert {"mode", "section", "find", "allow_loss"} <= set(params), fn.__name__
+
+
+# ── review round 2 ─────────────────────────────────────────────────────────
+
+def test_a_section_swap_that_drops_its_subsections_is_refused():
+    body = ("<h1>Overview</h1><p>intro</p><h2>Scope</h2><table><tr><td>x</td>"
+            "</tr></table><h2>Plan</h2><p>p</p>")
+    with pytest.raises(em.EditError, match="sub-heading"):
+        em.apply_edit(body, "<p>new intro</p>",
+                      {"mode": "replace_section", "section": "Overview"}, kind="storage")
+    kept = em.apply_edit(body, "<p>new intro</p><h2>Scope</h2><table><tr><td>x</td>"
+                         "</tr></table><h2>Plan</h2><p>p</p>",
+                         {"mode": "replace_section", "section": "Overview"}, kind="storage")
+    assert kept.startswith("<h1>Overview</h1><p>new intro</p>")
+
+
+def test_a_wiki_section_stops_at_its_panel():
+    desc = "{panel:title=Notes}\nh3. Risks\n* a\n{panel}\nh3. Plan\n* p"
+    out = em.merge(desc, "* new risk", "replace_section", kind="wiki", section="Risks")
+    assert out == "{panel:title=Notes}\nh3. Risks\n* new risk\n\n{panel}\nh3. Plan\n* p"
+
+
+def test_quoted_gt_and_comments_do_not_confuse_the_section_end():
+    body = ("<ac:layout><ac:layout-section><ac:layout-cell><h2>A</h2>"
+            "<ac:link><ri:url ri:value=\"Q1>Q2\"/></ac:link><!-- <div> -->"
+            "</ac:layout-cell><ac:layout-cell><h2>B</h2><p>b</p></ac:layout-cell>"
+            "</ac:layout-section></ac:layout>")
+    out = em.merge(body, "<p>a</p>", "replace_section", kind="storage", section="A")
+    assert out.count("<ac:layout-cell>") == 2 and "<h2>B</h2><p>b</p>" in out
+
+
+def test_markdown_mentioning_tags_in_code_is_still_converted():
+    from aiforge_core.runtime.tools.confluence_format import md_to_storage
+    out = md_to_storage("## JSX\n```\n<div className='x'/>\n```\nUse `List<String>`.")
+    assert out.startswith("<h2>JSX</h2>")
+    assert "<code>List&lt;String&gt;</code>" in out
+
+
+def test_inline_generics_and_undefined_entities_are_escaped():
+    from aiforge_core.runtime.tools.confluence_format import inline_fragment
+    assert inline_fragment("List<String> for AT&T;") == "List&lt;String&gt; for AT&amp;T;"
+    assert inline_fragment("R&amp;D &nbsp;") == "R&amp;D &nbsp;"
+
+
+def test_jira_find_with_crlf_and_kept_line_breaks(monkeypatch):
+    crlf = "h2. Notes\r\nold line\r\nnext line\r\n"
+    monkeypatch.setattr(jira, "_request", lambda m, p, **k: (
+        {"ok": True, "data": {"fields": {"description": crlf}}} if m == "GET"
+        else puts.append(k["body"]) or {"ok": True, "data": {}}))
+    monkeypatch.setattr(jira, "_issue_url", lambda k: "u")
+    puts: list = []
+    out = jira.jira_update({"key": "E-1", "mode": "replace_text",
+                            "find": "old line\r\n", "description": "new line\n"})
+    assert out["ok"], out
+    assert puts[-1]["fields"]["description"] == "h2. Notes\nnew line\nnext line\n"
+
+
+def test_wiki_with_html_in_a_code_block_is_left_alone():
+    desc = "h2. Snippet\n{code:html}\n<div class=\"x\">&lt;</div>\n{code}"
+    assert to_jira_wiki(desc) == desc
+
+
+def test_an_unreadable_current_body_is_never_overwritten(monkeypatch):
+    puts = []
+    monkeypatch.setattr(cf, "_request", lambda m, p, **k: (
+        {"ok": True, "data": "<truncated json>"} if m == "GET"
+        else puts.append(1) or {"ok": True, "data": {}}))
+    out = cf.confluence_update({"id": "10", "mode": "append", "body": "x"})
+    assert out["ok"] is False and puts == []
+    monkeypatch.setattr(jira, "_request", lambda m, p, **k: (
+        {"ok": True, "data": "<truncated json>"} if m == "GET"
+        else puts.append(1) or {"ok": True, "data": {}}))
+    out = jira.jira_update({"key": "E-1", "mode": "append", "description": "x"})
+    assert out["ok"] is False and puts == []
+
+
+def test_written_shows_what_this_edit_wrote(page):
+    out = cf.confluence_update({"id": "10", "mode": "append", "body": "<p>tail</p>"})
+    assert out["written"]["body"] == "<p>tail</p>"

@@ -97,7 +97,9 @@ def confluence_read(args: dict, _cwd: str | None = None) -> dict:
                  params={"expand": "body.storage,version,space"})
     if not r["ok"]:
         return r
-    d = r["data"] if isinstance(r["data"], dict) else {}
+    if not isinstance(r["data"], dict):
+        return {"ok": False, "error": "page response too large or unreadable"}
+    d = r["data"]
     body = (((d.get("body") or {}).get("storage") or {}).get("value") or "")
     out = {"ok": True, "id": d.get("id"), "title": d.get("title"),
            "space": (d.get("space") or {}).get("key"),
@@ -154,6 +156,11 @@ def _fragment_to_storage(body: str, mode: str) -> str:
     return md_to_storage(body)
 
 
+def _sent(args: dict, mode: str) -> str:
+    body = str(args.get("body") or "")
+    return _fragment_to_storage(body, mode) if body else "(section/text removed)"
+
+
 def merged_body(current: str, args: dict) -> "tuple[str, list]":
     """(new page body, image refs to upload) for an update ``args`` against
     the ``current`` storage body — the SAME merge the tool performs, so the
@@ -185,7 +192,12 @@ def confluence_update(args: dict, cwd: str | None = None) -> dict:
                    params={"expand": "version,body.storage"})
     if not cur["ok"]:
         return cur
-    d = cur["data"] if isinstance(cur["data"], dict) else {}
+    if not isinstance(cur["data"], dict):
+        # Over the response cap (or not JSON): merging into "" would write the
+        # fragment alone over the whole page.
+        return {"ok": False, "error": "could not read the current page (response "
+                "too large or unreadable) — not editing it"}
+    d = cur["data"]
     next_ver = ((d.get("version") or {}).get("number") or 0) + 1
     title = args.get("title") or d.get("title")
     current = (((d.get("body") or {}).get("storage") or {}).get("value") or "")
@@ -199,8 +211,8 @@ def confluence_update(args: dict, cwd: str | None = None) -> dict:
     payload = {
         "type": "page", "title": title,
         "version": {"number": next_ver},
-        "body": {"storage": {"value": xhtml,
-                             "representation": args.get("representation", "storage")}},
+        # Always storage: the merged body IS the page's storage XHTML.
+        "body": {"storage": {"value": xhtml, "representation": "storage"}},
     }
     r = _request("PUT", f"/rest/api/content/{pid}", body=payload)
     if not r["ok"]:
@@ -208,7 +220,11 @@ def confluence_update(args: dict, cwd: str | None = None) -> dict:
     rd = r["data"] if isinstance(r["data"], dict) else {}
     out = {"ok": True, "id": pid, "version": next_ver, "title": title,
            "mode": (args.get("mode") or "replace"),
-           "url": _page_url(rd), "written": {"title": title, "body": xhtml[:2000]}}
+           "url": _page_url(rd),
+           # What THIS edit wrote: the whole page for a replace, else the part
+           # sent — the top of a long page says nothing about an append.
+           "written": {"title": title,
+                       "body": (xhtml if mode == "replace" else _sent(args, mode))[:2000]}}
     if attachments:
         out["attachments"] = attachments
     return out

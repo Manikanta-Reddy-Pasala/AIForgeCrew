@@ -194,3 +194,22 @@ def test_what_the_model_said_with_a_tool_call_is_kept_as_its_thought():
     assert parsed["args"] == {"path": "app.yaml"}
     assert parsed["thought"].startswith("Let me read the config first.")
     assert "rm is not it" in parsed["thought"]          # not cut at "Note:"
+
+
+def test_narration_does_not_defeat_the_duplicate_call_drop():
+    call = {"function": {"name": "file_read", "arguments": {"path": "a.py"}}}
+    msg = {"content": "Let me read it.", "tool_calls": [call, call]}
+    assert _native._queued_steps(msg) == ([], 0)
+
+
+def test_a_done_pseudo_call_keeps_no_narration():
+    msg = {"content": "All done: fixed X.\n\nDetails", "tool_calls": [
+        {"function": {"name": "final_answer", "arguments": {}}}]}
+    assert "THOUGHT" not in _native._synth_step(msg)
+
+
+def test_narration_written_as_text_protocol_keeps_only_the_prose():
+    msg = {"content": "THOUGHT: check the config\nACTION: file_read\nARGS_JSON: {}",
+           "tool_calls": [{"function": {"name": "file_read",
+                                        "arguments": {"path": "a.yaml"}}}]}
+    assert _parse(_native._synth_step(msg))["thought"] == "check the config"

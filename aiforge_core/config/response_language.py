@@ -188,9 +188,12 @@ def _has_mark(content) -> bool:
 
 
 def apply(role: str | None, messages: list[dict]) -> list[dict]:
-    """``messages`` with the directive added to the system message (a new one
-    in front when there is none). Returns the SAME list when there is nothing
-    to add or a message already carries it; never mutates the caller's."""
+    """``messages`` with the directive added to the system message. A call
+    that has NO system message keeps it that way — some callers (review_gates)
+    send one plain user turn on purpose, because a local model returns nothing
+    when a system message is present — so the directive leads the first user
+    turn instead. Returns the SAME list when there is nothing to add or a
+    system message already carries it; never mutates the caller's."""
     text = for_role(role)
     if not text or not messages:
         return messages
@@ -203,8 +206,16 @@ def apply(role: str | None, messages: list[dict]) -> list[dict]:
     first = out[0] if isinstance(out[0], dict) else {}
     if first.get("role") == "system" and isinstance(first.get("content"), str):
         out[0] = {**first, "content": f"{first['content']}\n\n{text}"}
-    else:
-        out.insert(0, {"role": "system", "content": text})
+        return out
+    for i, m in enumerate(out):
+        if isinstance(m, dict) and m.get("role") == "user":
+            content = m.get("content")
+            if isinstance(content, str):
+                out[i] = {**m, "content": f"[{text}]\n\n{content}"}
+            elif isinstance(content, list):
+                out[i] = {**m, "content": [{"type": "text", "text": f"[{text}]"},
+                                           *content]}
+            return out
     return out
 
 

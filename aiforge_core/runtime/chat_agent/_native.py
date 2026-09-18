@@ -209,6 +209,11 @@ def _synth_step(msg: dict) -> str:
     args = _resolve_call_args(fn.get("arguments"))
     if not isinstance(args, dict):
         return _NATIVE_ARGS_UNRECOVERABLE
+    from ._prompt import _COMPLETION_TOOL_NAMES
+    if name.lower() in _COMPLETION_TOOL_NAMES:
+        # A "done"-style pseudo-call: its answer is read off the step text, so
+        # narration appended here would be published — minus its first line.
+        return _action_text(name, args)
     return _action_text(name, args) + _narration(msg)
 
 
@@ -222,6 +227,11 @@ def _narration(msg: dict) -> str:
     or pass for a protocol marker."""
     from aiforge_core.llm.client._text import _strip_think
     text = _strip_think((msg.get("content") or "").strip()).strip()
+    # A hybrid model may also WRITE the text protocol in its content: keep the
+    # prose, not a second copy of the call.
+    text = re.sub(r"^[ \t]*THOUGHT[ \t]*:[ \t]*", "", text, flags=re.I)
+    cut = re.search(r"^[ \t]*(ACTION|ARGS_JSON|FINAL|ASK)[ \t]*:", text, re.M)
+    text = (text[:cut.start()] if cut else text).strip()
     if not text:
         return ""
     text = re.sub(r"(?m)^(?=[ \t]*[A-Za-z_]+[ \t]*:)", " ", text)
@@ -265,7 +275,7 @@ def _queued_steps(msg: dict) -> "tuple[list[str], int]":
     calls = msg.get("tool_calls") or []
     if len(calls) < 2:
         return [], 0
-    first = _synth_step(msg)
+    first = _synth_step({**msg, "content": None})   # the call, not its narration
     batchable = True
     broken = 0
     wanted: list[str] = []

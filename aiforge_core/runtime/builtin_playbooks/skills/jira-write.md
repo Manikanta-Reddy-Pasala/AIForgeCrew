@@ -11,6 +11,11 @@ scope: global
    - **Create** — `jira_create` with `project`, `summary` (one line), `issuetype`
      (default Task), `description` (the detail), optional `labels`.
    - **Update fields** — `jira_update` with `key` + the fields to change.
+     The `description` is MERGED into the current one: send only the part that
+     changes with `mode` = `append` / `prepend` / `replace_section` (+ `section`
+     heading) / `replace_text` (+ `find`, exact text from `jira_read`). `replace`
+     means the COMPLETE description and is refused if it drops content, unless
+     the user asked for that (`allow_loss: true`). Keep the issue's wiki markup.
    - **Change status** (e.g. To Do → In Progress → Done) — status is NOT an
      editable field; it moves through a workflow transition. Use `jira_update`
      with `status: "In Progress"` (auto-routed) OR `jira_transition` directly.

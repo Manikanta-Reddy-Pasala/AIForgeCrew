@@ -148,7 +148,7 @@ row are deleted — a disabled row is a loop nobody closed.
 | `jira_transitions` | `{key}` | available workflow transitions | RO |
 | `jira_resolve_project` | `{name}` | loose name → real project key | RO |
 | `jira_create` | `{project, summary, issuetype, description}` | new issue | ASK |
-| `jira_update` | `{key, …, status}` | edit fields; `status` auto-routes a transition | ASK |
+| `jira_update` | `{key, …, status, mode?, section?, find?, allow_loss?}` | edit fields; `status` auto-routes a transition; `description` is merged per `mode` (append / prepend / replace_section / replace_text / replace — a full replace that drops content is refused unless `allow_loss`) | ASK |
 | `jira_comment` | `{key, body}` | add a comment | ASK |
 | `jira_transition` / `jira_assign` / `jira_link_issues` | `{key, …}` | move status / assign / link | ASK |
 | `jira_log_work` | `{key, time_spent, comment}` | record time | ASK |
@@ -164,7 +164,7 @@ row are deleted — a disabled row is a loop nobody closed.
 | `confluence_children` / `confluence_descendants` | `{id}` | direct children / all descendants | RO |
 | `confluence_labels` / `confluence_comments` | `{id}` | read labels / comments | RO |
 | `confluence_resolve_space` | `{name}` | loose name → real space key | RO |
-| `confluence_create` / `confluence_update` | `{title, space, body…}` / `{id, body…}` | new / edit page | ASK |
+| `confluence_create` / `confluence_update` | `{title, space, body…}` / `{id, body, mode?, section?, find?, allow_loss?}` | new / edit page — the edit is merged into the live page per `mode` (append / prepend / replace_section / replace_text / replace; a full replace that drops text, tables or macros is refused unless `allow_loss`) | ASK |
 | `confluence_add_label` / `confluence_comment` / `confluence_attach` | `{id, …}` | add label / comment / attachment | ASK |
 
 ### GitLab issues

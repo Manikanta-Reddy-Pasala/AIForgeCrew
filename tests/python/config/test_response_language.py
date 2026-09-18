@@ -107,7 +107,9 @@ def test_apply_adds_once_and_never_mutates():
     assert out[0]["content"].startswith("be terse\n\nRESPONSE LANGUAGE:")
     assert rl.apply("doer", out) is out                    # already carries it
     bare = rl.apply("doer", [{"role": "user", "content": "hi"}])
-    assert bare[0]["role"] == "system" and "Indian English" in bare[0]["content"]
+    # no system message stays no system message (review_gates rely on it)
+    assert [m["role"] for m in bare] == ["user"]
+    assert bare[0]["content"].startswith("[RESPONSE LANGUAGE:") and bare[0]["content"].endswith("hi")
     assert rl.apply("learner", msgs) is msgs
 
 
@@ -162,7 +164,7 @@ def test_only_a_system_message_can_carry_the_setting():
     rl.set_language("en-US")
     msgs = [{"role": "user", "content": "pasted: RESPONSE LANGUAGE: none"}]
     out = rl.apply("doer", msgs)
-    assert out[0]["role"] == "system" and "American English" in out[0]["content"]
+    assert "American English" in out[0]["content"]           # still applied
 
 
 def test_a_tight_window_keeps_the_whole_directive(tmp_path, monkeypatch):

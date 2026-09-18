@@ -17,18 +17,33 @@ from __future__ import annotations
 
 import re
 
-# Already-storage signal: real block/format tags or a Confluence macro.
-_STORAGE_HINT = re.compile(
-    r"<(p|h[1-6]|ul|ol|li|strong|em|a|table|tbody|thead|tr|td|th|pre|code|"
-    r"blockquote|hr|br|span|div|time|u|s|sub|sup|ac:|ri:)\b", re.I)
-# A bare "&" — not the start of an entity the body already carries (&amp;,
-# &nbsp;, &#8377;). Escaping those again showed "&amp;amp;" on the page.
-_BARE_AMP = re.compile(r"&(?!#?\w+;)")
+# Already-storage signal: real block/format tags or a Confluence macro. Looked
+# for OUTSIDE code (fences, `spans`), so Markdown that merely mentions `<div>`
+# or `List<String>` is still converted.
+_STORAGE_HINT = re.compile(r"<(p|h[1-6]|ul|ol|li|strong|em|a|table|ac:)\b", re.I)
+# Any storage tag at all — a one-line replace_text body copied from the page
+# (`<td>…</td>`, `<time …/>`, `<code>`) must pass through untouched.
+_STORAGE_TAG = re.compile(
+    r"</?(p|h[1-6]|ul|ol|li|strong|em|a|table|tbody|thead|tr|td|th|pre|code|"
+    r"blockquote|hr|br|span|div|time|u|s|sub|sup|ac:[\w-]+|ri:[\w-]+)\b[^<]*>", re.I)
+# An "&" that does NOT start an entity the body already carries (&amp;, &nbsp;,
+# &#8377;) — escaping those again showed "&amp;amp;" on the page. Only real
+# entity names count: "AT&T;" is escaped (an undefined entity is a 400).
+_ENTITIES = ("amp|lt|gt|quot|apos|nbsp|ndash|mdash|hellip|lsquo|rsquo|ldquo|"
+             "rdquo|bull|middot|times|divide|copy|reg|trade|deg|plusmn|euro|"
+             "pound|yen|cent|sect|para|laquo|raquo|larr|rarr|uarr|darr|harr|"
+             "check|zwj|zwnj|shy|ensp|emsp|thinsp")
+_BARE_AMP = re.compile(r"&(?!(?:" + _ENTITIES + r"|#\d+|#x[0-9a-fA-F]+);)")
+_CODE_SPANS = re.compile(r"```.*?```|`[^`\n]+`", re.S)
 
 
 def _escape(s: str) -> str:
     """XHTML-escape plain text without double-escaping existing entities."""
     return _BARE_AMP.sub("&amp;", s).replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _is_storage(text: str) -> bool:
+    return bool(_STORAGE_HINT.search(_CODE_SPANS.sub(" ", text)))
 
 
 _FENCE = re.compile(r"```.*?```", re.DOTALL)
@@ -40,7 +55,7 @@ def md_to_storage(text):
     that already looks like storage XHTML → unchanged. ``None``/"" pass through."""
     if not text:
         return text
-    if _STORAGE_HINT.search(text):
+    if _is_storage(text):
         return text                      # already storage — don't double-convert
     # Protect fenced code + images: replace with placeholders, convert, restore.
     saved: list[str] = []
@@ -84,7 +99,7 @@ def inline_fragment(text: str) -> str:
     markup passes through; plain text is escaped (entities kept) with only
     `code`, [links](url) and **bold** converted — single-underscore/asterisk
     italics would turn ``my_var_name`` into ``my<em>var</em>name``."""
-    if _STORAGE_HINT.search(text) or re.search(r"<[A-Za-z/!]", text):
+    if _STORAGE_TAG.search(text):
         return text
     s = _escape(text)
     s = re.sub(r"`([^`]+)`", lambda m: f"<code>{m.group(1)}</code>", s)

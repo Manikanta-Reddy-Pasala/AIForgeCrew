@@ -87,13 +87,22 @@ def merged_description(current: str, args: dict) -> str:
     the SAME merge jira_update performs, so the approval preview shows exactly
     what will be written (see edit_merge: mode/section/find/allow_loss).
     Raises EditError."""
-    current = (current or "").replace("\r\n", "\n")
+    from ..edit_merge import _mask
+    crlf = lambda t: (t or "").replace("\r\n", "\n")  # noqa: E731
+    current = crlf(current)          # Jira Server stores browser edits as CRLF
+    args = {**args, "find": crlf(args.get("find")) or None}
     # An edit of an issue that numbers its steps "# step" sends "# next step";
-    # that is one more list item, not an H1.
-    as_list = bool(re.search(r"^[ \t]*#[ \t]+\S", current, re.M))
+    # that is one more list item, not an H1. (Comments in {code} don't count.)
+    as_list = bool(re.search(r"^[ \t]*#[ \t]+\S", _mask(current, "wiki"), re.M))
     to_wiki = _pkg().to_jira_wiki
-    text = str(args["description"])
+    text = crlf(str(args["description"]))
     fragment = (to_wiki(text, hash_is_list=True) if as_list else to_wiki(text)) or ""
+    if (args.get("mode") or "").strip().lower() == "replace_text" and fragment:
+        # The converter tidies (strips) its output; a text swap must keep the
+        # line breaks around it or two lines are glued together.
+        lead = text[:len(text) - len(text.lstrip())]
+        trail = text[len(text.rstrip()):]
+        fragment = lead + fragment.strip() + trail
     return apply_edit(current, fragment, args, kind="wiki")
 
 
@@ -104,8 +113,12 @@ def _current_description(key: str) -> "str | dict":
                      params={"fields": "description"})
     if not r["ok"]:
         return r
-    d = r["data"] if isinstance(r["data"], dict) else {}
-    return str(((d.get("fields") or {}) or {}).get("description") or "")
+    if not isinstance(r["data"], dict):
+        # Over the response cap (or not JSON): merging into "" would write the
+        # fragment alone over the whole description.
+        return {"ok": False, "error": "could not read the current description "
+                "(response too large or unreadable) — not editing it"}
+    return str(((r["data"].get("fields") or {}) or {}).get("description") or "")
 
 
 def _update_fields(args: dict, raw_fields: dict,
