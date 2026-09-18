@@ -1,7 +1,10 @@
 """Jira tools that change an issue: create, update, comments, transitions, assignment and links."""
 from __future__ import annotations
 
+import re
 import urllib.parse
+
+from ..edit_merge import EditError, apply_edit
 
 
 def _pkg():
@@ -63,12 +66,55 @@ def _wanted_status(args: dict, raw_fields: dict) -> str:
     return (st.get("name") if isinstance(st, dict) else str(st)).strip()
 
 
-def _update_fields(args: dict, raw_fields: dict) -> dict:
+def description_args(args: dict) -> dict:
+    """``args`` with a raw ``fields.description`` folded into ``description``
+    (the named arg wins) and removed from ``fields`` — so the raw path gets the
+    same merge + guard, and can never overwrite a merged description after it.
+    A raw ``None`` means "clear it" (as Jira reads it): ``""``."""
+    raw = args.get("fields")
+    if not isinstance(raw, dict) or "description" not in raw:
+        return args
+    raw = dict(raw)
+    val = raw.pop("description")
+    out = {**args, "fields": raw}
+    if args.get("description") is None:
+        out["description"] = "" if val is None else val
+    return out
+
+
+def merged_description(current: str, args: dict) -> str:
+    """The description to write for ``args`` against the ``current`` one —
+    the SAME merge jira_update performs, so the approval preview shows exactly
+    what will be written (see edit_merge: mode/section/find/allow_loss).
+    Raises EditError."""
+    current = (current or "").replace("\r\n", "\n")
+    # An edit of an issue that numbers its steps "# step" sends "# next step";
+    # that is one more list item, not an H1.
+    as_list = bool(re.search(r"^[ \t]*#[ \t]+\S", current, re.M))
+    to_wiki = _pkg().to_jira_wiki
+    text = str(args["description"])
+    fragment = (to_wiki(text, hash_is_list=True) if as_list else to_wiki(text)) or ""
+    return apply_edit(current, fragment, args, kind="wiki")
+
+
+def _current_description(key: str) -> "str | dict":
+    """The issue's description now, or the error dict of the read."""
+    pkg = _pkg()
+    r = pkg._request("GET", f"/rest/api/2/issue/{urllib.parse.quote(key)}",
+                     params={"fields": "description"})
+    if not r["ok"]:
+        return r
+    d = r["data"] if isinstance(r["data"], dict) else {}
+    return str(((d.get("fields") or {}) or {}).get("description") or "")
+
+
+def _update_fields(args: dict, raw_fields: dict,
+                   description: "str | None" = None) -> dict:
     fields: dict = {}
     if args.get("summary"):
         fields["summary"] = args["summary"]
-    if args.get("description") is not None:
-        fields["description"] = _pkg().to_jira_wiki(str(args["description"]))
+    if description is not None:
+        fields["description"] = description
     if args.get("priority"):
         fields["priority"] = {"name": args["priority"]}
     if args.get("assignee"):
@@ -92,8 +138,21 @@ def jira_update(args: dict, cwd: str | None = None) -> dict:
     key = (args.get("key") or args.get("id") or "").strip()
     if not key:
         return {"ok": False, "error": pkg._MISSING_KEY}
+    args = description_args(args)
     raw_fields = dict(args["fields"]) if isinstance(args.get("fields"), dict) else {}
     status_want = _wanted_status(args, raw_fields)
+    # The description is read, merged and guarded BEFORE any transition: a
+    # refused edit must not leave the status already moved.
+    description = None
+    if args.get("description") is not None:
+        current = _current_description(key)
+        if isinstance(current, dict):
+            return current
+        try:
+            description = merged_description(current, args)
+        except EditError as exc:
+            return {"ok": False, "error": str(exc),
+                    "description_chars": len(current)}
     transitioned = None
     if status_want:
         tr = pkg.jira_transition({"key": key, "transition": status_want,
@@ -101,7 +160,7 @@ def jira_update(args: dict, cwd: str | None = None) -> dict:
         if not tr.get("ok"):
             return tr
         transitioned = status_want
-    fields = _update_fields(args, raw_fields)
+    fields = _update_fields(args, raw_fields, description)
     if not fields:
         # A status-only change is legit (it went through the transition above).
         if transitioned:

@@ -19,12 +19,37 @@ _HTML_HINT = re.compile(r"</?(p|br|ul|ol|li|strong|b|em|i|code|pre|h[1-6]|a|div)
                         re.I)
 
 
-def to_jira_wiki(text):
+# Already wiki markup: headings "h2. ", tables "||", macros "{code}"/"{panel}",
+# links to a URL/user/anchor/issue "[text|https://…]", nested bullets "** ".
+# Such text came from the issue itself (the model edited what jira_read
+# returned) — "converting" it again turned every numbered item ("# step")
+# into an "h1." heading. Code spans and fences are ignored when looking, so a
+# `list[int | None]` or a `{note}` placeholder does not make Markdown "wiki".
+_WIKI_HINT = re.compile(
+    r"^[ \t]*h[1-6]\.[ \t]|^[ \t]*\|\||^[ \t]*\*\*+[ \t]"
+    r"|\{(code|noformat|panel|quote|color|info|note|warning|tip)(:[^}\n]*)?\}"
+    r"|\[[^\]\n|]+\|(https?://|mailto:|~|#|[A-Z][A-Z0-9]+-\d+)[^\]\n]*\]",
+    re.M)
+_MD_CODE = re.compile(r"```.*?```|`[^`\n]+`", re.S)
+
+
+def _looks_like_wiki(text: str) -> bool:
+    return bool(_WIKI_HINT.search(_MD_CODE.sub(" ", text)))
+
+
+def to_jira_wiki(text, *, hash_is_list: bool = False):
     """Return ``text`` as Jira wiki markup. HTML input → converted; Markdown
-    input → converted; plain text → unchanged. ``None``/"" pass through."""
+    input → converted; text that is already wiki markup, or plain text →
+    unchanged. ``None``/"" pass through. ``hash_is_list``: every "# x" line is
+    a numbered item (the target issue numbers its steps that way), never an
+    H1."""
     if not text:
         return text
-    return _html_to_wiki(text) if _HTML_HINT.search(text) else _md_to_wiki(text)
+    if _HTML_HINT.search(text):
+        return _html_to_wiki(text)
+    if _looks_like_wiki(text):
+        return text
+    return _md_to_wiki(text, hash_is_list=hash_is_list)
 
 
 # ── HTML → wiki ──────────────────────────────────────────────────────────────
@@ -73,7 +98,7 @@ def _strip_tags(s: str) -> str:
 
 
 # ── Markdown → wiki ──────────────────────────────────────────────────────────
-def _md_to_wiki(s: str) -> str:
+def _md_to_wiki(s: str, *, hash_is_list: bool = False) -> str:
     # fenced code ```lang\n…\n``` -> {code:lang}…{code}
     def _fence(m):
         lang = (m.group(1) or "").strip()
@@ -82,7 +107,13 @@ def _md_to_wiki(s: str) -> str:
     s = re.sub(r"```([^\n`]*)\n(.*?)```", _fence, s, flags=re.S)
 
     out_lines = []
-    for line in s.split("\n"):
+    lines = s.split("\n")
+    for i, line in enumerate(lines):
+        # A RUN of "# item" lines is a Jira numbered list, not a stack of
+        # markdown H1s — keep it (a lone "# Title" is still a heading).
+        if _one_hash(line) and (hash_is_list or _in_hash_list(lines, i)):
+            out_lines.append(line)
+            continue
         # atx heading -> hN. (inline-convert the heading text too, so a
         # '## **Bold**' heading doesn't keep its markdown '**')
         m = re.match(r"^(#{1,6})[ \t]++(.*)$", line)
@@ -102,6 +133,16 @@ def _md_to_wiki(s: str) -> str:
             continue
         out_lines.append(_md_inline(line))
     return _tidy("\n".join(out_lines))
+
+
+def _one_hash(line: str) -> bool:
+    return bool(re.match(r"^[ \t]*#[ \t]+\S", line))
+
+
+def _in_hash_list(lines: list[str], i: int) -> bool:
+    return _one_hash(lines[i]) and (
+        (i > 0 and _one_hash(lines[i - 1]))
+        or (i + 1 < len(lines) and _one_hash(lines[i + 1])))
 
 
 def _md_inline(line: str) -> str:

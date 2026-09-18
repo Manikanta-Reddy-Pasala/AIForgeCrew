@@ -113,13 +113,30 @@ def _preview_confluence_create(args: dict, cwd: str) -> str:
 def _preview_confluence_update(args: dict, cwd: str) -> str:
     from aiforge_core.runtime.tools import confluence
     pid = args.get("id", "?")
-    cur = _fetch_current(confluence.confluence_read, {"id": pid}, cwd)
+    # No attachment download: analysing images would outrun the 4 s budget,
+    # and the merge preview needs only the body.
+    cur = _fetch_current(confluence.confluence_read,
+                         {"id": pid, "attachments": False}, cwd)
     cur_md = _xhtml_to_md(str(cur.get("body") or "")) if cur else ""
     out = f"### Update Confluence page `{pid}`\n\n"
     if args.get("title"):
         out += f"**New title:** {args['title']}\n\n"
     if args.get("body") is not None:
-        new_md = _xhtml_to_md(str(args.get("body", "")))
+        # Preview the MERGED page (the same merge the tool performs), so what
+        # you approve is the page as it will be, not the fragment sent.
+        from aiforge_core.runtime.tools.confluence._tools import merged_body
+        from aiforge_core.runtime.tools.edit_merge import EditError
+        mode = args.get("mode") or "replace"
+        out += f"**Mode:** `{mode}`" + (f" · section *{args['section']}*"
+                                         if args.get("section") else "") + "\n\n"
+        if not cur:           # current page unavailable: show what is sent
+            return out + "**Sent (" + mode + "):**\n\n" + _xhtml_to_md(
+                str(args.get("body", "")))
+        try:
+            merged, _ = merged_body(str(cur.get("body") or ""), args)
+        except EditError as exc:
+            return out + f"⚠ **Will be refused:** {exc}\n"
+        new_md = _xhtml_to_md(merged)
         out += ("**Body changes:**\n\n" + _change_diff(cur_md, new_md, "body")
                 if cur_md else "**New body:**\n\n" + new_md)
     return out
@@ -144,23 +161,31 @@ def _preview_jira_create(args: dict, cwd: str) -> str:
 
 def _preview_jira_update(args: dict, cwd: str) -> str:
     from aiforge_core.runtime.tools import jira
-    from aiforge_core.runtime.tools.jira_format import to_jira_wiki
     key = args.get("key", "?")
-    cur = _fetch_current(jira.jira_read, {"key": key}, cwd)
+    cur = _fetch_current(jira.jira_read, {"key": key, "attachments": False}, cwd)
     md = f"### Update Jira issue `{key}`\n\n"
     if args.get("summary"):
         md += (f"**Summary:** {cur.get('summary', '(current)')} "
                f"→ **{args['summary']}**\n\n")
     md += _field_lines(args, ("priority", "assignee", "labels"))
+    from aiforge_core.runtime.tools.jira._edit import description_args
+    args = description_args(args)             # a raw fields.description too
     if args.get("description") is not None:
         # Diff Jira-wiki vs Jira-wiki: the current body is already wiki
-        # markup, so convert the new one too — otherwise every '*bold*'
-        # line reads as a change (markdown '**' vs wiki '*') and the
-        # preview shows the wrong '**'. Now the diff is real content only.
+        # markup, and the new one is the MERGED description (the same merge
+        # jira_update performs) — so the diff is the real change only.
+        from aiforge_core.runtime.tools.edit_merge import EditError
+        from aiforge_core.runtime.tools.jira._edit import merged_description
+        if not cur:           # current issue unavailable: show what is sent
+            return md + (f"**Description sent ({args.get('mode') or 'replace'}):**"
+                         f"\n\n{args['description']}\n")
+        current = str(cur.get("description") or "")
+        try:
+            new = merged_description(current, args)
+        except EditError as exc:
+            return md + f"⚠ **Will be refused:** {exc}\n"
         md += ("**Description changes:**\n\n"
-               + _change_diff(str(cur.get("description") or ""),
-                              to_jira_wiki(str(args["description"])),
-                              "description"))
+               + _change_diff(current, new, "description"))
     return md
 
 
