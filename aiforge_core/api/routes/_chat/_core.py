@@ -54,6 +54,33 @@ def approval_settings_set(mode: str, body: _ApprovalModeBody) -> dict:
     return approval_settings_get()
 
 
+class _ResponseLanguageBody(BaseModel):
+    language: str | None = Field(None, description='"en-IN", "en-US" or "" (no preference); omit to keep')
+    style: str | None = Field(None, description='"simple", "formal" or "" (no preference); omit to keep')
+
+
+@router.get("/api/chat/response-language")
+def response_language_get() -> dict:
+    """The English variety and tone every model writes in, and the choices."""
+    from aiforge_core.config import response_language as rl
+    return {"language": rl.get(), "style": rl.get_style(),
+            "options": rl.options(), "styles": rl.style_options()}
+
+
+@router.put("/api/chat/response-language", responses={400: {"description": "Bad request"}})
+def response_language_set(body: _ResponseLanguageBody) -> dict:
+    """Choose the language and/or tone. Unknown values are refused."""
+    from aiforge_core.config import response_language as rl
+    try:
+        if body.language is not None:
+            rl.set_language(body.language)
+        if body.style is not None:
+            rl.set_style(body.style)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return response_language_get()
+
+
 class _ChatAskBody(BaseModel):
     query: str = Field(..., description="The operator's free-text question")
     top_k: int = Field(12, description="Memory hits per role")

@@ -29,6 +29,21 @@ from ._rescue import _RescueMixin
 from ._streaming import _StreamMixin
 
 
+def _add_language(llm_request: LlmRequest, role: str) -> None:
+    """The operator's reply language (Settings) on this agent's system
+    instruction — the ADK half of what llm.client does for every other call.
+    Once per request: the candidates below retry the SAME request object."""
+    try:
+        from aiforge_core.config import response_language
+        text = response_language.for_role(role)
+        cfg = getattr(llm_request, "config", None)
+        current = str(getattr(cfg, "system_instruction", None) or "")
+        if text and "RESPONSE LANGUAGE:" not in current:
+            llm_request.append_instructions([text])
+    except Exception:  # noqa: BLE001 — a language hint is never worth a failed call
+        log.debug("response language not applied", exc_info=True)
+
+
 async def _throttle_global(role: "str | None" = None) -> None:
     """Obey the operator's calls-per-minute ceiling on the PIPELINE path too.
 
@@ -396,6 +411,7 @@ class EscalatingLlm(_RescueMixin, _StreamMixin, BaseLlm):
     async def generate_content_async(
         self, llm_request: LlmRequest, stream: bool = False,
     ) -> AsyncGenerator[LlmResponse, None]:
+        _add_language(llm_request, self.role)
         if stream:
             # Closed in a `finally`, not left to the loop: a consumer that walks
             # away throws GeneratorExit in HERE, and an inner generator merely

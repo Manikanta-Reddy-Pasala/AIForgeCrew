@@ -47,6 +47,7 @@ from ._chat._core import (  # noqa: F401
     _ChatAgentBody,
     _ChatAskBody,
     _ChatMessage,
+    _ResponseLanguageBody,
     _default_cwd,
     _request_repo_root,
     approval_settings_get,
@@ -54,6 +55,8 @@ from ._chat._core import (  # noqa: F401
     chat_agent,
     chat_ask,
     chat_retain,
+    response_language_get,
+    response_language_set,
     router,
 )
 from ._chat._history import (  # noqa: F401

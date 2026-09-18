@@ -100,6 +100,15 @@ def _seed_prompt(messages, cwd, readonly_mode):
     return last_user, cave, rules, prefs, sys_msg
 
 
+def _language_directive(role) -> str:
+    """The reply language chosen in Settings, or "" (no preference)."""
+    try:
+        from aiforge_core.config import response_language
+        return response_language.for_role(role)
+    except Exception:  # noqa: BLE001 — never break prompt build
+        return ""
+
+
 def _sandbox_directive(readonly_mode: bool) -> str:
     """Inside the docker-mode sandbox the agent owns the box: it must install
     whatever the task needs and finish, not stop at "command not found"."""
@@ -140,6 +149,12 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
     _asks = [] if (builder or strict_finish) else _split_asks(last_user)
     sys_msg = _prepend_priority_blocks(
         sys_msg, _asks, prefs, rules, analyze_mode, plan_mode, builder)
+    # Reply language (Settings): part of the protected core, never trimmed —
+    # a half-kept block said "write in X" and lost its "never change code or
+    # protocol markers" clause. (llm.client adds it for every other call.)
+    _lang = _language_directive(role)
+    if _lang:
+        sys_msg += "\n\n" + _lang
     # C2: budget the (un-condensable) system prompt. The CORE prompt + rules
     # above are ALWAYS kept; each optional block below is appended via a
     # budget-aware helper that truncates/drops it (lowest priority = appended

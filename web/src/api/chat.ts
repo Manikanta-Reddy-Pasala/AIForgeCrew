@@ -75,6 +75,8 @@ export const chatApi = {
   syncModels: api.syncModels,
   approvalSettings: api.approvalSettings,
   setApprovalMode: api.setApprovalMode,
+  responseLanguage: api.responseLanguage,
+  setResponseLanguage: api.setResponseLanguage,
   providersTest: api.providersTest,
   testNative: api.testNative,
   // AgentSettings reads the per-role config through chatApi too; without this

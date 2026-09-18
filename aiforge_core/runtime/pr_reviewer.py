@@ -105,11 +105,19 @@ def _llm_review(prompt: str) -> dict[str, Any]:
                                       model=model, max_wait_s=60.0)
         except Exception:  # noqa: BLE001 — a limiter fault must not skip a review
             pass
+        # The review is posted on the PR for people: the reply language
+        # (Settings) applies here too, like every llm.client call.
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            from aiforge_core.config import response_language
+            messages = response_language.apply("pr_reviewer", messages)
+        except Exception:  # noqa: BLE001 — a language hint never costs a review
+            pass
         resp = litellm.completion(
             model=model,
             api_base=base, api_key=api_key,
             extra_headers={"User-Agent": user_agent()},
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
             temperature=0.1, timeout=120,
         )
         text = resp["choices"][0]["message"]["content"]

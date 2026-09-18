@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { chatApi, RegistryModel, AgentRoleConfig } from '../api';
 import { clickable } from '../a11y';
+import { ResponseLanguageCard } from './Settings.LanguageCard';
 
 const ORCH: string[] = ['enhancer', 'architect', 'planner'];
 const MAIN: string[] = ['doer', 'verifier', 'feedback', 'learner', 'refiner',
@@ -218,6 +219,8 @@ export default function AgentSettings() {
       <ModelsCard models={models} reload={loadModels} />
 
       <ApprovalsCard />
+
+      <ResponseLanguageCard />
 
       <div className="card" style={{ marginBottom: 16 }}>
         <h2 style={{ fontSize: 14 }}>Agents <span className="small muted">· auto-decided</span></h2>

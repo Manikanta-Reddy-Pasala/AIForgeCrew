@@ -155,6 +155,17 @@ def _trace_generation(role: str, messages: list[dict], output: str,
         pass
 
 
+def _with_language(role: str, messages: list[dict]) -> list[dict]:
+    """The operator's reply language (Settings) added to the system message —
+    every model call that writes for people passes through here or the ADK
+    wrapper. Never breaks a call."""
+    try:
+        from aiforge_core.config import response_language
+        return response_language.apply(role, messages)
+    except Exception:  # noqa: BLE001 — a language hint is never worth a failed call
+        return messages
+
+
 def complete(role: str, messages: list[dict], *,
              temperature: float | None = None,
              max_tokens: int | None = None,
@@ -166,6 +177,7 @@ def complete(role: str, messages: list[dict], *,
     Perf recording soft-fails and never affects the call result. When
     Langfuse env keys are set, every completion is also mirrored there
     (aiforge_core/integrations/langfuse_adapter)."""
+    messages = _with_language(role, messages)
     # Only the IMPORT is guarded — an exception raised from inside
     # _complete_impl must propagate, never trigger a SECOND (double-cost) call.
     try:
@@ -222,6 +234,7 @@ def complete_raw(role: str, messages: list[dict], *,
     if tool_choice is not None:
         ex["tool_choice"] = tool_choice
     ep: Endpoint = resolve(role)
+    messages = _with_language(role, messages)
     payload = _build_body(ep, messages, temperature, max_tokens, top_p, ex)
     # The meter token, threaded exactly as `_try_post` does it. Without it the
     # tokens land machine-wide but on NO turn — and this is the DEFAULT chat

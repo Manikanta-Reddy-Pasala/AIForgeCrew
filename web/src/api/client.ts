@@ -22,6 +22,15 @@ export type EgressHosts = {
   writable: string[];
 };
 
+/** The English variety and tone every model writes in. `language` is
+ *  "en-IN" / "en-US", `style` "simple" / "formal"; "" = no preference. */
+export type ResponseLanguage = {
+  language: string;
+  style: string;
+  options: { code: string; label: string }[];
+  styles: { code: string; label: string }[];
+};
+
 /** The certificate authority this box trusts. `source` is an env var name,
  *  "ui" for one saved from this screen, or "" when there is none — an env-set
  *  bundle wins, so the screen says so instead of pretending the box is
@@ -129,6 +138,12 @@ export const api = {
     j<{ chat: boolean; plan: boolean; pipeline: boolean }>(`/chat/approval-settings/${mode}`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled }),
+    }),
+  responseLanguage: () => j<ResponseLanguage>('/chat/response-language'),
+  setResponseLanguage: (change: { language?: string; style?: string }) =>
+    j<ResponseLanguage>('/chat/response-language', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(change),
     }),
   // Capability-based auto-assignment: thinking→reasoning model, coder→fast coder,
   // vision→vision model. Applies to every archetype internally.
