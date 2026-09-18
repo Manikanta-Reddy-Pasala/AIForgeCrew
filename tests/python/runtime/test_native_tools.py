@@ -180,3 +180,17 @@ def test_round11_runtime_fn_not_disabled_on_tool_choice_rejection(monkeypatch):
     out = fn("planner", [{"role": "user", "content": "hi"}])
     assert out == "TEXT_FALLBACK"                 # text this turn
     assert _native._NATIVE_CACHE.get("m-tc") is not False   # NOT disabled
+
+
+def test_what_the_model_said_with_a_tool_call_is_kept_as_its_thought():
+    """The narration streamed to the user before the tool ran; the step used to
+    drop it, so it vanished from the chat and was never saved."""
+    msg = {"role": "assistant",
+           "content": "Let me read the config first.\nNote: ACTION: rm is not it",
+           "tool_calls": [{"function": {"name": "file_read",
+                                        "arguments": {"path": "app.yaml"}}}]}
+    parsed = _parse(_native._synth_step(msg))
+    assert parsed["kind"] == "action" and parsed["tool"] == "file_read"
+    assert parsed["args"] == {"path": "app.yaml"}
+    assert parsed["thought"].startswith("Let me read the config first.")
+    assert "rm is not it" in parsed["thought"]          # not cut at "Note:"

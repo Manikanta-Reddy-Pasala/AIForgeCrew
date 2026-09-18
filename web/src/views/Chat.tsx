@@ -15,6 +15,7 @@ import { CtxReload } from './Chat.CtxReload';
 import { AutoApprovalsPanel } from './Chat.AutoApprovalsPanel';
 import { MediaStrip } from './Chat.MediaStrip';
 import { AssistantBubble } from './Chat.AssistantBubble';
+import { reduceTurn } from './Chat.reduce';
 import { clickable, backdrop } from '../a11y';
 
 // Module-level builder-launch guard: epoch-ms of the last ?builder= launch.
@@ -118,102 +119,6 @@ function mergeUsage(prev: LiveTurn, evt: any): LiveTurn {
   } };
 }
 
-// A 'tool' event: flip the matching pending row to its real result (matched on
-// call_id), or append when there's no pending row (hook-blocked/rejected path).
-function reduceToolEvent(prev: LiveTurn, evt: any): LiveTurn {
-  const idx = evt.call_id !== undefined
-    ? prev.steps.findIndex(s => s.kind === 'tool' && s.pending && s.call_id === evt.call_id)
-    : -1;
-  if (idx !== -1) {
-    const steps = [...prev.steps];
-    steps[idx] = { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: evt.result || {}, role: evt.role, call_id: evt.call_id };
-    return { ...prev, steps };
-  }
-  return { ...prev, steps: [...prev.steps, { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: evt.result || {}, role: evt.role }] };
-}
-
-// A 'message' event: a supplementary report is an extra step; the primary
-// message replaces the answer text and ends streaming.
-function reduceMessageEvent(prev: LiveTurn, evt: any, onAwaiting: () => void): LiveTurn {
-  if (evt.supplementary) {
-    return { ...prev, steps: [...prev.steps, { kind: 'message' as const, text: evt.text, role: evt.role }] };
-  }
-  if (evt.awaiting_input) onAwaiting();
-  return { ...prev, text: evt.text, streaming: false, awaiting: !!evt.awaiting_input };
-}
-
-// Apply a subtask status update by slug (named so it stays off reduceTurn's
-// complexity budget).
-function withSubtaskStatus(subtasks: SubtaskItem[], slug: string, status: string): SubtaskItem[] {
-  return subtasks.map(s => s.slug === slug ? { ...s, status } : s);
-}
-
-// Append a plain step (thought/tool_start/changes) — the simple, guard-free
-// event types, resolved by a small lookup so reduceTurn stays flat.
-function appendStepFor(prev: LiveTurn, evt: any): LiveTurn | null {
-  if (evt.type === 'thought') {
-    return { ...prev, steps: [...prev.steps, { kind: 'thought' as const, text: evt.text, role: evt.role }] };
-  }
-  if (evt.type === 'tool_start') {
-    // Live "it's running" row — flipped to the real result by the matching
-    // 'tool' event (matched on call_id) instead of showing nothing while a
-    // slow bash/test/build runs.
-    return { ...prev, steps: [...prev.steps, { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: {}, role: evt.role, pending: true, call_id: evt.call_id }] };
-  }
-  if (evt.type === 'changes') {
-    return { ...prev, steps: [...prev.steps, { kind: 'changes' as const, files: evt.files || [], summary: evt.summary || { files: (evt.files || []).length, additions: 0, deletions: 0 } }] };
-  }
-  if (evt.type === 'error') {
-    return { ...prev, text: evt.text, steps: [...prev.steps, { kind: 'error' as const, text: evt.text }], streaming: false };
-  }
-  if (evt.type === 'done') {
-    return { ...prev, streaming: false };
-  }
-  return null;
-}
-
-// A 'delta' event: the reply as the model writes it. "answer" text streams into
-// the bubble; "draft" (a tool step being written) and "thinking" (reasoning)
-// keep only a short muted tail; "reset" starts a new model call afresh.
-const DRAFT_TAIL = 240;
-function reduceDelta(prev: LiveTurn, evt: any): LiveTurn {
-  switch (evt.phase) {
-    case 'reset': return { ...prev, streamText: '', draft: '' };
-    case 'answer': return { ...prev, streamText: (prev.streamText ?? '') + (evt.text ?? '') };
-    case 'draft':
-    case 'thinking': return { ...prev, draft: ((prev.draft ?? '') + (evt.text ?? '')).slice(-DRAFT_TAIL) };
-    default: return prev;
-  }
-}
-
-// Events that settle a model call: its streamed text is replaced by the real
-// step / answer they carry.
-const SETTLES_STREAM = new Set(['thought', 'tool_start', 'tool', 'message', 'error', 'done']);
-
-// The live-turn "step" reducer (subtasks/thought/tool/changes/message/…).
-function reduceTurn(prev: LiveTurn | null, evt: any, onAwaiting: () => void): LiveTurn | null {
-  if (!prev) return prev;
-  if (evt.type === 'delta') return reduceDelta(prev, evt);
-  const next = reduceStep(prev, evt, onAwaiting);
-  return next && SETTLES_STREAM.has(evt.type) ? { ...next, streamText: '', draft: '' } : next;
-}
-
-function reduceStep(prev: LiveTurn, evt: any, onAwaiting: () => void): LiveTurn | null {
-  if (evt.type === 'subtasks') {
-    return { ...prev, subtasks: evt.items || [] };
-  }
-  if (evt.type === 'subtask_update' && prev.subtasks) {
-    return { ...prev, subtasks: withSubtaskStatus(prev.subtasks, evt.slug, evt.status) };
-  }
-  if (evt.type === 'tool') {
-    return reduceToolEvent(prev, evt);
-  }
-  if (evt.type === 'message') {
-    return reduceMessageEvent(prev, evt, onAwaiting);
-  }
-  const stepped = appendStepFor(prev, evt);
-  return stepped ?? prev;
-}
 
 // The POST body for a send — mode/quick/resume/builder/edit flags folded in.
 function buildSendPayload(
@@ -1282,7 +1187,11 @@ export default function Chat() {
   function handleAttached(evt: any) {
     if (!evt.running) return;
     setBusy(true);
-    setLiveTurn(prev => prev ?? { role: 'assistant', text: '', steps: [], streaming: true });
+    // The replay re-streams the in-flight call from its reset: a partial left
+    // from before the drop would otherwise be kept as a stray step.
+    setLiveTurn(prev => prev
+      ? { ...prev, streamText: '', draft: '' }
+      : { role: 'assistant', text: '', steps: [], streaming: true });
     sendStartRef.current = evt.started_at ? evt.started_at * 1000 : Date.now();
     setElapsedSec(Math.max(0, Math.floor((Date.now() - sendStartRef.current) / 1000)));
     if (timerRef.current !== null) clearInterval(timerRef.current);

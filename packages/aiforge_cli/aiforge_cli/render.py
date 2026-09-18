@@ -200,11 +200,19 @@ class Renderer:
         text = str(ev.get("text") or "").strip()
         if not text or self._dup(f"thought:{text}"):
             return Op()
+        if not ev.get("role") and self._already_streamed(text):
+            # The model's own words, already on screen from its stream (the
+            # narration before a tool call, a draft a gate set aside).
+            return Op(tail=self._tail())
         if self.verbosity < 0:
             return Op(tail=self._tail(_ellipsize(text, 60)))
         return Op(lines=[f"{self.pal('●', 'thought')} "
                          f"{self.pal('thinking', 'thought')} {self.pal(text, 'thought')}"],
                   tail=self._tail())
+
+    def _already_streamed(self, text: str) -> bool:
+        squash = " ".join(text.split())
+        return len(squash) >= 24 and squash in " ".join(self._streamed.split())
 
     def _on_tool_start(self, ev: dict[str, Any]) -> Op:
         self._tool = {"name": ev.get("name") or "tool", "args": ev.get("args")}

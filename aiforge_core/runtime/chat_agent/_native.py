@@ -11,6 +11,7 @@ only changes HOW the next step is produced. Text protocol stays the fallback.
 from __future__ import annotations
 
 import json
+import re
 import logging
 import os
 
@@ -208,7 +209,23 @@ def _synth_step(msg: dict) -> str:
     args = _resolve_call_args(fn.get("arguments"))
     if not isinstance(args, dict):
         return _NATIVE_ARGS_UNRECOVERABLE
-    return _action_text(name, args)
+    return _action_text(name, args) + _narration(msg)
+
+
+def _narration(msg: dict) -> str:
+    """What the model SAID alongside its tool call, as a trailing THOUGHT line.
+
+    The user watched that text stream in, and the step used to drop it — gone
+    from the chat the moment the tool started, and never saved. It goes AFTER
+    the action so its prose can never be read as the action or its args, and
+    a line opening with "WORD:" is indented so it cannot end the thought early
+    or pass for a protocol marker."""
+    from aiforge_core.llm.client._text import _strip_think
+    text = _strip_think((msg.get("content") or "").strip()).strip()
+    if not text:
+        return ""
+    text = re.sub(r"(?m)^(?=[ \t]*[A-Za-z_]+[ \t]*:)", " ", text)
+    return f"\nTHOUGHT: {text}"
 
 
 def _batch_cap() -> int:

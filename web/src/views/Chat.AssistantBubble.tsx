@@ -6,6 +6,7 @@ import { fmtElapsed } from './Chat.helpers';
 import { SubtaskList } from './Chat.SubtaskList';
 import { CapturedPill } from './Chat.CapturedPill';
 import { AgentStepRow } from './Chat.AgentSteps';
+import { similarText } from './Chat.reduce';
 
 // ── AssistantBubble — renders steps + final text ──────────────────────────────
 
@@ -24,6 +25,18 @@ function stepKey(s: AgentStep): string {
     case 'message': return `message:${s.role ?? ''}:${s.text}`;
     case 'changes': return `changes:${s.files.map(f => f.path).join(',')}`;
   }
+}
+
+// Content keys, made unique: the same "Let me check the file." can precede
+// two tool calls, and React needs one key per row.
+function uniqueKeys(steps: AgentStep[]): string[] {
+  const seen = new Map<string, number>();
+  return steps.map(s => {
+    const base = stepKey(s);
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    return n ? `${base}#${n}` : base;
+  });
 }
 
 export function AssistantBubble({
@@ -59,7 +72,11 @@ export function AssistantBubble({
   // The Changes diff is the DELIVERABLE — pull it OUT of the collapsible steps so
   // it's always visible (thoughts/tools stay collapsed once the turn is done).
   const changeSteps = steps.filter(s => s.kind === 'changes');
-  const otherSteps = steps.filter(s => s.kind !== 'changes');
+  // A model thought that IS the answer below (a draft a gate set aside and the
+  // model then resent) would show the reply twice.
+  const otherSteps = steps.filter(s => s.kind !== 'changes'
+    && !(s.kind === 'thought' && !s.role && text && similarText(s.text, text)));
+  const keys = uniqueKeys(otherSteps);
   return (
     <div>
       {captured?.map(c => <CapturedPill key={c.id} item={c} />)}
@@ -78,8 +95,8 @@ export function AssistantBubble({
           </button>
           {showSteps && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {otherSteps.map((s) => (
-                <AgentStepRow key={stepKey(s)} step={s} />
+              {otherSteps.map((s, i) => (
+                <AgentStepRow key={keys[i]} step={s} />
               ))}
             </div>
           )}

@@ -77,6 +77,23 @@ def test_multiask_final_gate_forces_completeness_pass(tmp_path):
     # (fn saw convo; check via the first call's system message)
 
 
+def test_multiask_gate_keeps_the_answer_it_sets_aside(tmp_path):
+    """The user watched the first FINAL stream in. The completeness gate sets
+    it aside to re-check; it must stay on screen as a step, not vanish."""
+    outs = ["FINAL: 1) fixed the bug",
+            "FINAL: 1) fixed the bug 2) meter resets because X 3) retry added"]
+    evs = _collect(ca.run_chat_agent(
+        [{"role": "user", "content":
+          "fix the login bug. also why does the meter reset? and add a retry "
+          "to the sync client"}],
+        cwd=str(tmp_path), complete_fn=lambda role, convo: outs.pop(0)))
+    kinds = [(e["type"], e.get("role"), e.get("text", "")) for e in evs
+             if e["type"] in ("thought", "message")]
+    kept = kinds.index(("thought", None, "1) fixed the bug"))
+    gate = next(i for i, k in enumerate(kinds) if "checking all" in k[2])
+    assert kept < gate                      # the draft, then the gate note
+
+
 def test_multiask_tracked_as_subtasks(tmp_path):
     """Multi-part turn: checklist surfaces in the UI subtasks dock, the agent
     flips items via plan_progress, and FINAL closes out any stragglers."""
@@ -263,3 +280,12 @@ def test_the_give_up_line_does_not_claim_the_work_is_done(tmp_path):
     assert "finished the work" not in msgs
     assert "FINAL×" not in msgs
     assert "ACTION: FINAL" not in msgs
+
+
+def test_a_plan_in_another_script_keeps_its_steps():
+    """Titles with no ASCII (a plan written in Hindi) all slugged to "step" and
+    were dropped as duplicates — no subtasks, no parallel split."""
+    from aiforge_core.runtime.subtasks_callback import _phases_from_markdown
+    plan = "1. डेटाबेस बदलें\n2. एपीआई जोड़ें\n3. परीक्षण लिखें"
+    assert [p["slug"] for p in _phases_from_markdown(plan)] == [
+        "step-1", "step-2", "step-3"]

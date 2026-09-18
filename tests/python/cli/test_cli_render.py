@@ -228,3 +228,13 @@ def test_the_status_line_colours_context_by_pressure():
     assert PLAIN.ctx(10) == "ok"
     assert PLAIN.ctx(70) == "warn"
     assert PLAIN.ctx(90) == "fail"
+
+
+def test_a_thought_repeating_the_streamed_text_is_not_printed_twice():
+    r = Renderer(PLAIN)
+    r.begin_turn()
+    r.handle({"type": "delta", "text": "Let me read the config file first."})
+    op = r.handle({"type": "thought", "text": "Let me read the config file first."})
+    assert not op.lines
+    op = r.handle({"type": "thought", "role": "system", "text": "⧗ running the checks"})
+    assert op.lines

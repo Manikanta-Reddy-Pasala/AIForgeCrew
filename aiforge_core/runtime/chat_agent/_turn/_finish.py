@@ -30,7 +30,7 @@ from ._shared import (
 from ._tasks import board_nudge_allowed, open_planned, unfinished_reminder
 
 
-def _verify_on_final(st, cwd, plan_mode, builder):
+def _verify_on_final(st, step, cwd, plan_mode, builder):
     """Progress-gated verify->fix on FINAL: only an act-mode run that edited
     files with a real suite; loop while failures drop, else accept honestly.
     Returns continue or None."""
@@ -60,6 +60,8 @@ def _verify_on_final(st, cwd, plan_mode, builder):
             st.verify_prev_fails = _fails
             if st.verify_stalls < 2:
                 st.verify_rounds += 1
+                if step.get("text"):        # the streamed answer, set aside
+                    yield {"type": "thought", "text": step["text"]}
                 yield {"type": "thought", "role": "system",
                        "text": f"✗ tests failing ({_fails}) — fixing "
                                f"(verify round {st.verify_rounds}/"
@@ -168,6 +170,11 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
     # and silently dropping the rest.
     if _asks and not st.multiask_checked and not builder:
         st.multiask_checked = True
+        # The answer the user just watched stream in is set aside for the
+        # re-check; without this step it vanished from the chat until (and
+        # unless) the model sent it again.
+        if step.get("text"):
+            yield {"type": "thought", "text": step["text"]}
         yield {"type": "thought", "role": "system",
                "text": f"✔ checking all {len(_asks)} parts of the "
                        "request are addressed…"}
@@ -277,7 +284,7 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
     _sig = yield from _claim_guard(st, step, cwd, readonly_mode, builder, _wt_fp0)
     if _sig == "continue":
         return "continue"
-    _sig = yield from _verify_on_final(st, cwd, plan_mode, builder)
+    _sig = yield from _verify_on_final(st, step, cwd, plan_mode, builder)
     if _sig == "continue":
         return "continue"
     # FINAL accepted on a multi-part turn: close out the tracker so
