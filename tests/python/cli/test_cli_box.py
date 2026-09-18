@@ -195,9 +195,30 @@ def test_no_launch_for_status_or_for_a_daemon_that_is_not_local(monkeypatch):
     monkeypatch.setattr(box._platform, "system", lambda: "Darwin")
     with pytest.raises(box.BoxError, match="Start Docker Desktop"):
         box.require_docker()                     # no launch: status/logs never start docker
-    with pytest.raises(box.BoxError, match="Start Docker Desktop"):
+    with pytest.raises(box.BoxError, match=r"DOCKER_HOST=ssh://nuc is not answering"):
         box.require_docker(launch=True, env={"DOCKER_HOST": "ssh://nuc"})
     _docker_fakes(monkeypatch, up_after=10_000, launched=launched, context="colima")
-    with pytest.raises(box.BoxError):
+    with pytest.raises(box.BoxError, match="context `colima`"):
         box.require_docker(launch=True, env={})
     assert launched == []
+
+
+@pytest.mark.parametrize("host,local", [
+    ("unix:///run/user/1000/docker.sock", True),          # rootless, as Docker's docs export it
+    ("unix:///Users/me/.docker/run/docker.sock", True),   # Docker Desktop on macOS
+    ("npipe:////./pipe/docker_engine", True),
+    ("unix:///Users/me/.colima/default/docker.sock", False),
+    ("tcp://10.0.0.5:2376", False),
+    ("ssh://nuc", False),
+])
+def test_a_local_docker_host_socket_still_gets_the_auto_start(host, local):
+    assert box._host_is_local(host) is local
+
+
+def test_docker_desktop_for_linux_starts_its_own_unit(monkeypatch):
+    launched: list = []
+    _docker_fakes(monkeypatch, up_after=1, launched=launched, context="desktop-linux")
+    monkeypatch.setattr(box._platform, "system", lambda: "Linux")
+    clock = _Clock()
+    box.require_docker(launch=True, sleep=clock.sleep, clock=clock, env={})
+    assert launched == [["systemctl", "--user", "--no-block", "start", "docker-desktop"]]

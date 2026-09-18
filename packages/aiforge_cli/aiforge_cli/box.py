@@ -95,26 +95,43 @@ def _daemon_up(exe: str) -> "tuple[bool, str]":
     return r.returncode == 0, (lines[-1] if lines else "")
 
 
-def _local_daemon(exe: str, env: "dict[str, str]") -> bool:
-    """Whether docker points at the daemon THIS machine runs. With DOCKER_HOST
-    set, or a context such as colima / orbstack / a remote host, starting
-    Docker Desktop is not ours to do."""
-    if env.get("DOCKER_HOST"):
+# A DOCKER_HOST that is still THIS machine's daemon: the rootless socket Docker's
+# own docs tell you to export, Docker Desktop's ~/.docker/run socket, the
+# Windows named pipes. Remote hosts and other runtimes' sockets are not ours.
+_OTHER_RUNTIMES = ("colima", "orbstack", "/.rd/", "lima", "podman")
+
+
+def _host_is_local(host: str) -> bool:
+    h = host.strip().lower()
+    if h.startswith(("tcp://", "ssh://", "http://", "https://")):
         return False
+    if h.startswith(("unix://", "npipe://")):
+        return not any(r in h for r in _OTHER_RUNTIMES)
+    return False
+
+
+def _docker_target(exe: str, env: "dict[str, str]") -> "tuple[bool, str]":
+    """(is it THIS machine's daemon, how to name it). With a remote
+    DOCKER_HOST, or a context such as colima / orbstack / a remote host,
+    starting Docker Desktop is not ours to do."""
+    if env.get("DOCKER_HOST"):
+        return _host_is_local(env["DOCKER_HOST"]), f"DOCKER_HOST={env['DOCKER_HOST']}"
     try:
-        ctx = subprocess.run([exe, "context", "show"], capture_output=True,
-                             text=True, timeout=10).stdout.strip()
+        ctx = subprocess.run([exe, "context", "show"], capture_output=True, text=True,
+                             timeout=10, env={**os.environ, **env}).stdout.strip()
     except (OSError, subprocess.SubprocessError):
-        return True
-    return ctx in ("", "default", "desktop-linux", "desktop-windows", "rootless")
+        return True, ""
+    local = ctx in ("", "default", "desktop-linux", "desktop-windows", "rootless")
+    return local, f"docker context `{ctx}`"
 
 
-def _launch_daemon() -> bool:
+def _launch_daemon(desktop: bool = False) -> bool:
     """Start the docker daemon the way this OS runs it, without sudo: Docker
-    Desktop on macOS/Windows, the rootless user service on Linux. True when a
-    start was attempted (it may still take a while to come up). Never blocks:
-    the rootless unit is Type=notify with no start timeout, so a plain
-    `systemctl start` could wait forever."""
+    Desktop on macOS/Windows (and on Linux when that is the context), else the
+    rootless user service on Linux. True when a start was attempted (it may
+    still take a while to come up). Never blocks: the rootless unit is
+    Type=notify with no start timeout, so a plain `systemctl start` could wait
+    forever."""
     sysname = _platform.system()
     try:
         if sysname == "Darwin":
@@ -128,10 +145,18 @@ def _launch_daemon() -> bool:
                     subprocess.Popen([exe], close_fds=True)   # noqa: S603 — fixed path
                     return True
             return False
-        return subprocess.run(["systemctl", "--user", "--no-block", "start", "docker"],
+        unit = "docker-desktop" if desktop else "docker"
+        return subprocess.run(["systemctl", "--user", "--no-block", "start", unit],
                               capture_output=True, timeout=15).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
+
+
+def _timeout_hint() -> str:
+    sysname = _platform.system()
+    if sysname in ("Darwin", "Windows"):
+        return "check that Docker Desktop finished starting"
+    return "check `systemctl --user status docker`"
 
 
 def require_docker(*, launch: bool = False, on_wait: "Callable[[float], None] | None" = None,
@@ -149,17 +174,22 @@ def require_docker(*, launch: bool = False, on_wait: "Callable[[float], None] | 
     up, why = _daemon_up(exe)
     if up:
         return exe
-    if launch and _local_daemon(exe, env) and _launch_daemon():
+    local, target = _docker_target(exe, env) if launch else (True, "")
+    if launch and not local:
+        raise BoxError(f"docker at {target} is not answering — start it (it is not "
+                       f"this machine's Docker Desktop), then re-run aiforge."
+                       + (f" ({why})" if why else ""))
+    if launch and _launch_daemon(desktop=target.endswith("`desktop-linux`")):
         t0 = clock()
         while clock() - t0 < DOCKER_START_WAIT_S:
             sleep(2.0)
             if on_wait:
                 on_wait(clock() - t0)
-            if _daemon_up(exe)[0]:
+            up, why = _daemon_up(exe)
+            if up:
                 return exe
         raise BoxError(f"docker was started but did not answer within "
-                       f"{DOCKER_START_WAIT_S:.0f}s — check Docker Desktop / "
-                       f"`systemctl --user status docker`, then re-run aiforge."
+                       f"{DOCKER_START_WAIT_S:.0f}s — {_timeout_hint()}, then re-run aiforge."
                        + (f" ({why})" if why else ""))
     raise BoxError(f"{_daemon_hint()} ({why})" if why else _daemon_hint())
 

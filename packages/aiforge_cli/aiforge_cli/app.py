@@ -171,18 +171,25 @@ class App:
             with box.start_lock(self.env) as mine:
                 if mine:
                     box.start(self.cfg, on_line=self._box_line, env=self.env)
-                else:
-                    # Another terminal is creating the one shared box. Waiting
-                    # for it beats racing `compose up` and losing on a
-                    # container-name conflict.
-                    self.tail.set("another terminal is starting the sandbox…")
-                # A terminal that did not start the box may be waiting on one
-                # that is still starting DOCKER first: give it that time too.
-                budget = 120.0 if mine else 120.0 + box.DOCKER_START_WAIT_S
-                waited = box.wait_healthy(self.client.healthy, timeout=budget,
-                                          on_tick=lambda s: self.tail.set(
-                                              f"sandbox starting… {s:.0f}s"),
-                                          sleep=self._sleep)
+                    waited = box.wait_healthy(self.client.healthy, timeout=120.0,
+                                              on_tick=lambda s: self.tail.set(
+                                                  f"sandbox starting… {s:.0f}s"),
+                                              sleep=self._sleep)
+            if not mine:
+                # Another terminal is creating the one shared box (and maybe
+                # starting docker first). Wait for IT to finish — the lock is
+                # released when its start succeeds or fails — instead of a
+                # fixed budget that could outlast a failure or undershoot a
+                # slow docker start; then one short health check says which.
+                self.tail.set("another terminal is starting the sandbox…")
+                with box.start_lock(self.env, wait=True):
+                    pass
+                try:
+                    waited = box.wait_healthy(self.client.healthy, timeout=15.0,
+                                              sleep=self._sleep)
+                except box.BoxError as exc:
+                    raise box.BoxError("the other terminal's sandbox start did not come "
+                                       "up — run `aiforge box up` here to see why") from exc
         except box.BoxError as exc:
             self.tail.clear()
             raise Exit(EXIT_ENV, f"{self.pal('✗', 'error')} {exc}") from exc
