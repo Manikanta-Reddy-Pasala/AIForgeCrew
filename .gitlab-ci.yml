@@ -246,7 +246,9 @@ cli:publish:
   script:
     - |
       : "${ARTIFACTORY_USER:?set as a CI/CD variable}" "${ARTIFACTORY_TOKEN:?set as a masked CI/CD variable}"
-      VER="$(sed -n 's/^version = "\(.*\)"/\1/p' packages/aiforge_cli/pyproject.toml)"
+      # The binary carries the whole app, not just the CLI: the CLI's version
+      # alone would overwrite one path with a different app on every release.
+      VER="$(sed -n 's/^version = "\(.*\)"/\1/p' packages/aiforge_cli/pyproject.toml)-$CI_COMMIT_SHORT_SHA"
       BASE="https://$ARTIFACTORY_HOST/artifactory/$CLI_ARTIFACT_REPO/aiforge-cli/$VER"
       echo "== publishing aiforge-cli $VER to $BASE"
       found=0

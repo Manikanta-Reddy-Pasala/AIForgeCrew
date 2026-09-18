@@ -9,7 +9,7 @@ description = "AIForge terminal client — streaming chat against the sandboxed 
 requires-python = ">=3.11"
 authors = [{name = "Manikanta Reddy Pasala"}]
 license = {text = "MIT"}
-# Deliberately tiny. This package is frozen into a ~15 MB single-file binary
+# Deliberately tiny. This package is frozen into a single-file binary
 # per OS, so its dependency tree is the binary's size and its import time is
 # the CLI's startup latency. The engine's tree (ADK, litellm, scipy,
 # tree-sitter) stays in the sandbox image where it belongs — see

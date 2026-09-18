@@ -160,7 +160,8 @@ CATALOG: dict = {
                       {"path": "s"}, ("path",)),
     "list_repos": ("Show configured repo folders.", {}, ()),
     "mount_folder": ("Docker sandbox: ask for a HOST folder to be mounted (same "
-                     "path); it is mounted on the next ./run.sh — tell the user.",
+                     "path); the user approves it on the host with `aiforge mount add` "
+                     "(or ./run.sh) — tell them.",
                      {"path": "s"}, ("path",)),
     "save_secret": ("Store a key/token/password the user gives you in the "
                     "security folder; memory records only where it is. NEVER "

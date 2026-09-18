@@ -71,10 +71,16 @@ class Client:
             return r.status_code == 200
         except (httpx.ConnectError, httpx.ConnectTimeout):
             return False
-        except httpx.HTTPError:
-            # Something answered the connection and then took too long, or the
-            # read broke: the port is occupied, so the box exists.
+        except httpx.ReadTimeout:
+            # Something answered the connection and is taking its time: a box
+            # that is up and busy.
             return True
+        except httpx.HTTPError:
+            # Connected, then dropped with no reply: that is docker's port
+            # forwarder with nothing listening behind it yet (a box still
+            # installing on its first start), not an API. Counting it as up
+            # made `aiforge install` report a sandbox that did not answer.
+            return False
 
     def sessions(self) -> list[dict[str, Any]]:
         return self._json("GET", "/api/chat/sessions")

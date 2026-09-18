@@ -63,7 +63,7 @@ def test_the_mount_tool_hands_over_the_exact_host_command(monkeypatch):
     from aiforge_core.runtime.chat_agent import TOOLS
     monkeypatch.setenv("AIFORGE_MOUNTS", "/home/me/.aiforge")
     out = TOOLS["mount_folder"]({"path": "/work/proj"}, "/")
-    assert out["next_step"] == "./run.sh --mount /work/proj"
+    assert out["next_step"] == "aiforge mount add /work/proj"
     assert "--mount /work/proj" in out["note"]
 
 

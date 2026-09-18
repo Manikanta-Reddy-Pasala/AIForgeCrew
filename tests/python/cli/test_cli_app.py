@@ -510,13 +510,32 @@ def test_box_restart_refuses_the_same_way(tmp_path):
 def test_force_takes_the_box_down_anyway(tmp_path, monkeypatch):
     from aiforge_cli import box as boxmod
     stopped = []
-    monkeypatch.setattr(boxmod, "stop", lambda cfg: stopped.append(cfg))
+    monkeypatch.setattr(boxmod, "stop", lambda cfg, env=None: stopped.append(cfg) or True)
     client = FakeClient(running=[4])
     client.sessions_rows.append({"id": 4})
     app = _app(tmp_path, client, answers=["n"])
     app.force = True
     assert app.box_command(["down"]) == EXIT_OK
     assert stopped, "--force should have gone through to the stop"
+
+
+def test_box_up_on_an_answering_box_starts_nothing(tmp_path, monkeypatch):
+    """A box run.sh started is already up: a `compose up` beside it would only
+    collide on the container name (the binary's `install` runs `box up`)."""
+    from aiforge_cli import box as boxmod
+    monkeypatch.setattr(boxmod, "start", lambda *a, **k: pytest.fail("started twice"))
+    app = _app(tmp_path, FakeClient(healthy=True))
+    assert app.box_command(["up"]) == EXIT_OK
+    assert "sandbox up" in app.out.getvalue()
+
+
+def test_box_down_says_so_when_the_box_is_still_running(tmp_path, monkeypatch):
+    from aiforge_cli import box as boxmod
+    monkeypatch.setattr(boxmod, "stop", lambda cfg, env=None: False)
+    app = _app(tmp_path, FakeClient())
+    assert app.box_command(["down"]) == EXIT_ENV
+    assert "still running" in app.out.getvalue()
+    assert "sandbox stopped" not in app.out.getvalue()
 
 
 def test_a_second_ctrl_c_does_not_wipe_another_sessions_run(tmp_path):

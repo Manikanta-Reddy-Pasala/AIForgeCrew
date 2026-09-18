@@ -54,14 +54,15 @@ export default function MountsCard() {
         <p style={{ fontSize: 13, opacity: 0.8 }}>
           AIForge runs in an Ubuntu 24.04 box with full rights inside it. From this machine it
           sees only the folders below, each at the same path. Add a folder to give the agent
-          access to it; the next time you run <code>./run.sh</code> in a terminal on the host it asks
-          you to approve the folder, then mounts it. (The list lives in a folder the sandbox
+          access to it, then approve it in a terminal on the host
+          with <code>aiforge mount add &lt;folder&gt;</code> (or <code>./run.sh</code> from a checkout),
+          which mounts it. (The list lives in a folder the sandbox
           can write, so only an approval on the host can grant access.)
         </p>
       ) : (
         <p style={{ fontSize: 13, opacity: 0.8 }}>
           Mounts apply inside the sandbox, and this process is not reporting one — nothing
-          below is mounted yet. Start AIForge with <code>./run.sh</code>.
+          below is mounted yet. Start AIForge with <code>aiforge</code> (or <code>./run.sh</code>).
         </p>
       )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10 }}>
@@ -90,7 +91,7 @@ export default function MountsCard() {
       </div>
       {data.restart_needed && (
         <div className="xs" style={{ marginTop: 8, color: 'var(--warn, #dd9b3c)' }}>
-          To apply: run <code>./run.sh</code> in a terminal on the host and approve the new folder.
+          To apply: in a terminal on the host run <code>aiforge mount add &lt;folder&gt;</code> (or <code>./run.sh</code>) and approve the new folder.
         </div>
       )}
       {msg && <div className="xs" style={{ marginTop: 6, color: 'var(--err)' }}>{msg}</div>}

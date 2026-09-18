@@ -77,14 +77,19 @@ def _find_repo(env: dict[str, str], cwd: Path) -> Path | None:
     """A checkout of AIForgeCrew, if this host has one.
 
     With a repo, box lifecycle goes through its run.sh — the maintained path
-    that builds the image and generates the mount overlay. Without one (the
-    normal case for someone who installed a binary) the CLI drives docker
-    compose itself against a prebuilt image.
+    that builds the image and generates the mount overlay. The `aiforge` binary
+    carries its own source, and uses THAT (the compose strategy) wherever it is
+    run: otherwise one machine got two boxes — run.sh's from a checkout it
+    happened to stand in, the binary's everywhere else — fighting over the one
+    container name. AIFORGE_REPO still picks a checkout explicitly.
     """
-    cand = []
+    from . import payload
     if env.get("AIFORGE_REPO"):
-        cand.append(Path(env["AIFORGE_REPO"]))
-    cand += [cwd, *cwd.parents, Path.home() / "AIForgeCrew"]
+        repo = Path(env["AIFORGE_REPO"])
+        return repo if is_repo(repo) else None
+    if payload.tarball() is not None:
+        return None
+    cand = [cwd, *cwd.parents, Path.home() / "AIForgeCrew"]
     for c in cand:
         if is_repo(c):
             return c
@@ -123,13 +128,19 @@ def load(args=None, env: dict[str, str] | None = None, cwd: Path | None = None) 
         return default
 
     port = pick(getattr(args, "port", None), "AIFORGE_CLI_PORT", "port", DEFAULT_PORT)
-    image = pick(None, "AIFORGE_SANDBOX_IMAGE", "image", "aiforge-sandbox:local")
+    # The binary carries the sandbox source: its image is named for that
+    # source, so a new binary builds a new box. From a checkout (run.sh builds
+    # `aiforge-sandbox:local`) the old name stays.
+    from . import payload
+    repo = _find_repo(env, cwd)
+    image = pick(None, "AIFORGE_SANDBOX_IMAGE", "image",
+                 (payload.image_tag() if repo is None else None) or "aiforge-sandbox:local")
     auto = bool(pick(getattr(args, "yes", None) or None, "AIFORGE_CLI_AUTO_MOUNT",
                      "auto_mount", False))
     return Config(
         port=int(port),
         config_dir=cfg_dir,
-        repo=_find_repo(env, cwd),
+        repo=repo,
         image=str(image),
         auto_mount=auto in (True, "1", "true", "yes"),
         verbosity=int(getattr(args, "verbosity", 0) or 0),

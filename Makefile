@@ -1,7 +1,7 @@
 # uv's managed CPython comes from GitHub, not a package index: never download one.
 export UV_PYTHON_DOWNLOADS ?= never
 
-.PHONY: help install test test-docker ui vscode vscode-test clean installers installer-payload installer-deb installer-dmg installer-msi installer-portable installer-verify
+.PHONY: help install test test-docker ui vscode vscode-test clean aiforge
 
 help:
 	@echo "Dev targets:"
@@ -11,9 +11,7 @@ help:
 	@echo "  ui        vite build (web/dist)"
 	@echo "  vscode    the VS Code extension: packages/aiforge_vscode/dist/aiforge.vsix"
 	@echo "  vscode-test  its unit tests + typecheck"
-	@echo "  installers   .dmg + .msi + .deb + portable bundles into dist/installer"
-	@echo "  installer-portable  unpack-and-run bundles (state lives in the folder)"
-	@echo "  installer-verify  build the .deb AND install+serve it in a container"
+	@echo "  aiforge   the one installer: dist/cli/aiforge (./aiforge install = CLI + sandbox + web UI)"
 	@echo "  clean     remove caches + build artifacts"
 	@echo ""
 	@echo "Run the full stack with: docker compose up -d --build  (see QUICKSTART.md)"
@@ -33,41 +31,10 @@ test-docker:
 	# Extra args: make test-docker ARGS="-m live_tmux"
 	scripts/test_in_docker.sh $(ARGS)
 
-# ── native installers (see installer/README.md) ───────────────────────
-# The payload (wheel + uv per target) is built once; each package is a thin
-# wrapper around it. Targets whose toolchain is missing are SKIPPED loudly
-# rather than failing the run: a mac can build the .dmg and the .msi (wixl) but
-# not the .deb, and a Linux box is the other way round.
-installer-payload:
-	installer/build_payload.sh
-
-installer-deb: installer-payload
-	@command -v dpkg-deb >/dev/null 2>&1 \
-	  && installer/linux/build-deb.sh \
-	  || echo "skip .deb — no dpkg-deb (build it in a container: make installer-verify)"
-
-installer-dmg: installer-payload
-	@command -v hdiutil >/dev/null 2>&1 \
-	  && installer/macos/build-dmg.sh \
-	  || echo "skip .dmg — hdiutil is macOS-only"
-
-installer-msi: installer-payload
-	@command -v wixl >/dev/null 2>&1 \
-	  && installer/windows/build-msi.sh \
-	  || echo "skip .msi — no wixl (brew install msitools / apt-get install wixl)"
-
-installer-portable: installer-payload
-	installer/portable/build-portable.sh --target macos
-	installer/portable/build-portable.sh --target linux
-	installer/portable/build-portable.sh --target windows
-
-installers: installer-deb installer-dmg installer-msi installer-portable
-	@ls -lh dist/installer/*.deb dist/installer/*.dmg dist/installer/*.msi 2>/dev/null || true
-
-# The only test that proves a package works: install it on a clean OS and hit
-# the API it serves.
-installer-verify:
-	installer/verify-deb.sh
+# ── the one installer: the `aiforge` binary (installer/README.md) ─────
+# It carries the sandbox source: `./aiforge install` = CLI + sandbox + web UI.
+aiforge:
+	installer/cli/build-binary.sh
 
 ui:
 	cd web && npm install && npm run build

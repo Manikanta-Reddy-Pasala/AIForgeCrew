@@ -1,7 +1,7 @@
 # AIForge CLI — design
 
 Date: 2026-09-15
-Status: approved, in implementation
+Status: implemented. The packaging plan (§ .dmg/.deb/.msi, installer/portable) is SUPERSEDED: the binary itself is the one installer (`aiforge install`) — see docs/DECISIONS.md, "Install & distribution".
 
 A terminal front-end for AIForge: one command, a streaming chat, and a sandbox
 it starts for you. The brain is the code that already ships — the FastAPI app,

@@ -299,13 +299,13 @@ def _t_mount_folder(args: dict, _cwd: str) -> dict:
                         "machine's files; the folder is mounted when it runs in "
                         "the sandbox."}
     return {"ok": True, "path": path, "status": row.get("status", "waiting"),
-            "next_step": f"./run.sh --mount {path}",
+            "next_step": f"aiforge mount add {path}",
             "note": "Tell the user to run this on the HOST, in a terminal: "
-                    f"./run.sh --mount {path} — that approves the folder and "
-                    "restarts the box with it mounted at the same path. (Plain "
-                    "./run.sh works too: it asks for approval at a prompt. "
-                    "Settings → Sandbox folders lists it either way.) Until then "
-                    "the folder is NOT visible here, so do not try to read it."}
+                    f"aiforge mount add {path} (from an AIForgeCrew checkout, "
+                    f"./run.sh --mount {path} does the same) — that approves the "
+                    "folder and restarts the box with it mounted at the same "
+                    "path. Settings → Sandbox folders lists it either way. Until "
+                    "then the folder is NOT visible here, so do not try to read it."}
 
 
 def _t_unmount_folder(args: dict, _cwd: str) -> dict:
@@ -333,7 +333,8 @@ def _t_unmount_folder(args: dict, _cwd: str) -> dict:
             "status": "removed — still mounted until restart" if still_mounted
                       else "removed",
             "note": ("Tell the user it is removed from the list; it stays visible "
-                     "until they restart the box with ./run.sh on the host."
+                     "until they restart the box on the host (aiforge box restart, "
+                     "or ./run.sh from a checkout)."
                      if still_mounted else
                      "Tell the user it is removed from the mount list.")}
 

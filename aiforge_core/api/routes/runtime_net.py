@@ -143,8 +143,9 @@ class _MountBody(BaseModel):
 
 @router.get("/api/runtime/mounts")
 def runtime_mounts() -> dict:
-    """Host folders the docker-mode sandbox sees, and ones waiting for the next
-    ./run.sh (a running container cannot mount into itself)."""
+    """Host folders the docker-mode sandbox sees, and ones waiting for the host
+    to approve them (`aiforge mount add`, or ./run.sh) — a running container
+    cannot mount into itself."""
     from aiforge_core.runtime import sandbox_mounts
     return sandbox_mounts.state()
 

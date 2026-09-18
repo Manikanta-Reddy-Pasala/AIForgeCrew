@@ -93,6 +93,22 @@ def test_a_slow_health_reply_does_not_mean_the_box_is_missing():
     assert _client(handler).healthy() is True
 
 
+def test_dockers_port_forwarder_with_nothing_behind_it_is_not_an_api():
+    """Published ports: docker-proxy accepts the connection and drops it while
+    the box is still installing on its first start. That read error counted
+    as "up and busy", so `aiforge install` reported a sandbox that did not
+    answer."""
+    def handler(_request):
+        raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+
+    assert _client(handler).healthy() is False
+
+    def reset(_request):
+        raise httpx.ReadError("[Errno 104] Connection reset by peer")
+
+    assert _client(reset).healthy() is False
+
+
 def test_a_refused_connection_does_mean_the_box_is_missing():
     def handler(_request):
         raise httpx.ConnectError("connection refused")

@@ -1,13 +1,12 @@
-"""One cross-platform way to START AIForge — the thing every installer calls.
+"""`aiforge-server` — run AIForge without run.sh or docker.
 
-``run.sh`` is 1100 lines of bash that bootstraps a box AND runs the app. An
-installer has already done the bootstrapping (that is what installing IS), so
-what a packaged app needs is only the second half: the API, plus the two
-background loops that make it more than a web server.
-
-That half is written HERE, in Python, because the .deb, the .app and the .msi
-all have to do exactly the same thing and only one of the three can run bash.
-The supervision is deliberately the same shape run.sh gives it:
+``run.sh`` is 1100 lines of bash that bootstraps a box AND runs the app. When
+the environment is already there (``pip install -e .`` from a checkout, into a
+venv you manage, with ``web/dist`` built for the UI),
+only the second half is needed: the API, plus the two background loops that
+make it more than a web server. It is written in Python so it runs the same on
+Linux, macOS and Windows. The supervision is deliberately the same shape
+run.sh gives it:
 
 * **uvicorn** serving ``aiforge_core.api.api:app`` — the foreground process; when
   it exits, everything exits.
@@ -76,8 +75,8 @@ class _Supervisor:
         self._lock = threading.Lock()
 
     def _spawn(self, module: str) -> subprocess.Popen | None:
-        # sys.executable, not "python": inside a .app bundle or an MSI install
-        # there is frequently no python on PATH at all.
+        # sys.executable, not "python": the venv aiforge-server runs from is
+        # frequently not the first python on PATH.
         kwargs: dict = {}
         if _IS_WINDOWS:
             # Own process group, so Ctrl-C in the console does not race us to
@@ -135,8 +134,7 @@ class _Supervisor:
 
 def _terminate(proc: subprocess.Popen) -> None:
     """Ask, then insist. A background pass that ignores the ask (a wedged
-    network read) must not keep the installer's app alive after the window is
-    closed."""
+    network read) must not keep aiforge-server alive after it is told to stop."""
     if proc.poll() is not None:
         return
     try:
@@ -180,15 +178,15 @@ def _announce(host: str, port: int) -> None:
         print(line)
     if host not in LOOPBACK_HOSTS and not os.environ.get("AIFORGE_API_TOKEN"):
         # Same rule run.sh enforces: off-loopback without a token is an open
-        # box, and the installers make off-loopback a checkbox away.
+        # box.
         print("  ! bound off-loopback with no AIFORGE_API_TOKEN — anyone who can "
               "reach this port can drive the agent", file=sys.stderr)
     print("")
 
 
 def _open_browser_when_up(host: str, port: int, timeout: float = 30.0) -> None:
-    """Open the UI once the port answers — an installed app that opens a dead
-    tab teaches the user it is broken."""
+    """Open the UI once the port answers — a dead tab teaches the user it is
+    broken."""
     import socket
     target = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     deadline = time.monotonic() + timeout

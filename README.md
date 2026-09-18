@@ -4,6 +4,8 @@ Autonomous code-fix pipeline — plain-language ticket → enriched intent → P
 plus a full-filesystem chat coding agent.
 
 ```bash
+./aiforge install        # the one-file binary: CLI + sandbox + web UI (see Install below)
+# or, from a checkout:
 git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew.git
 cd AIForgeCrew
 ./run.sh
@@ -13,14 +15,14 @@ Then open **http://127.0.0.1:8799/ui/**. The landing page is config-first: pick 
 provider + model per pipeline step, **Test connection**, then use **Chat** or file a
 **Ticket**. Choose **OpenAI-compatible** and paste any base URL — LM Studio
 (`http://localhost:1234/v1`), OpenRouter, Groq, Together, vLLM, or a cloud endpoint.
-Needs **Docker**. No Postgres, no Neo4j, no GPU.
+Needs **Docker** (with Compose). No Postgres, no Neo4j, no GPU.
 
 ## Docs
 
 | Doc | What's in it |
 |---|---|
 | **[QUICKSTART.md](QUICKSTART.md)** | Run it, configure models and integrations, create jobs / rules / skills / workflows |
-| **[INSTALL.md](INSTALL.md)** | Docker vs native, how the sandbox works, credentials, offline and corporate-CA notes |
+| **[INSTALL.md](INSTALL.md)** | The binary vs a checkout, how the sandbox works, credentials, offline and corporate-CA notes |
 | **[CLI](packages/aiforge_cli/README.md)** | Run the `aiforge` terminal client on Ubuntu, macOS or Windows |
 | **[VS Code extension](packages/aiforge_vscode/README.md)** | Build the `.vsix`, install it, use the chat with diffs / explain / undo |
 | **[SYSTEM_OVERVIEW.md](docs/SYSTEM_OVERVIEW.md)** | Request flow (chat + pipeline), memory, skills/workflows/rules, operating it |
@@ -29,9 +31,16 @@ Needs **Docker**. No Postgres, no Neo4j, no GPU.
 | **[OKF.md](docs/OKF.md)** | The on-disk memory format (Open Knowledge Format v0.1) |
 | **[DECISIONS.md](docs/DECISIONS.md)** | Why things are the way they are (ADR-lite, evidence-linked) |
 
+## Install
+
+One file: `./aiforge install` (Windows: `aiforge.exe install`) puts the `aiforge`
+CLI on your PATH and builds + starts the sandbox, which serves the web UI at
+`http://127.0.0.1:8799/ui/`. Only Docker (with Compose) is needed. Build the binary with
+`make aiforge`; details in [installer/README.md](installer/README.md).
+
 ## How it runs
 
-`./run.sh` starts AIForge in an **Ubuntu 24.04 sandbox**: full rights inside it, sees
+`aiforge` (or `./run.sh` from a checkout) starts AIForge in an **Ubuntu 24.04 sandbox**: full rights inside it, sees
 only `~/.aiforge` of your machine, outbound network open. That is the only mode:
 there is no host option to pick.
 

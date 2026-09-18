@@ -1,8 +1,7 @@
-"""The launcher every installer calls.
+"""`aiforge-server`, the no-run.sh launcher.
 
-The .deb, the .app and the .msi all run `aiforge-server` — so what this module does on
-start and, more importantly, on the way OUT is the contract three packages
-depend on. Nothing here starts uvicorn or the real loops; the supervisor is
+What this module does on start and, more importantly, on the way OUT is its
+whole contract. Nothing here starts uvicorn or the real loops; the supervisor is
 driven directly with a fake child so the test is fast and hermetic.
 """
 from __future__ import annotations
@@ -147,7 +146,7 @@ def test_a_loop_that_cannot_start_does_not_spin(monkeypatch, capsys):
 ])
 def test_binding_off_loopback_without_a_token_is_called_out(
         host, expect_warning, monkeypatch, capsys):
-    """The installers put "listen on the network" one checkbox away."""
+    """"Listen on the network" is one flag away."""
     monkeypatch.delenv("AIFORGE_API_TOKEN", raising=False)
     serve._announce(host, 8799)
     err = capsys.readouterr().err

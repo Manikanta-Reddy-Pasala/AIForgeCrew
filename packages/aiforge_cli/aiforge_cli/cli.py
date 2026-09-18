@@ -80,6 +80,10 @@ def main(argv: list[str] | None = None) -> int:
 
     words: list[str] = list(opts.args)
     command = words[0] if words and words[0] in tbl.top_names() else None
+    if command in ("install", "uninstall") and len(words) > 1:
+        # `aiforge uninstall the unused npm deps` is a request to the agent,
+        # not an order to delete aiforge: these two take no arguments.
+        command = None
     rest = words[1:] if command else words
 
     # Version, help and completion are answers, not work: they must not need a
@@ -114,7 +118,10 @@ def main(argv: list[str] | None = None) -> int:
 def _answer_offline(opts, pal, command: str | None, rest: list[str]) -> int | None:
     """version / help / completion — or None when there is real work to do."""
     if opts.version or command == "version":
-        print(f"aiforge {__version__}")
+        from . import payload
+        tag = payload.image_tag()
+        # The binary carries the whole app: say WHICH source, not just the CLI's.
+        print(f"aiforge {__version__}" + (f" (sandbox {tag})" if tag else ""))
         return EXIT_OK
     if opts.help or command == "help":
         topic = _help_topic(command, rest)
@@ -136,6 +143,9 @@ def _dispatch(app: App, command: str | None, rest: list[str], opts) -> int:
     # it — so they run before any boot.
     if command == "box":
         return app.box_command(rest or ["status"], tail=opts.tail, follow=opts.follow)
+    if command in ("install", "uninstall"):
+        from . import install
+        return install.run_install(app) if command == "install" else install.run_uninstall(app)
     if command == "mount":
         return _print_lines(app.mount_command(rest or ["ls"]))
 

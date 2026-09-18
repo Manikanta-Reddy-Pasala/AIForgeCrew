@@ -1,0 +1,7 @@
+# Everything under these runs inside the Linux sandbox. A Windows checkout
+# with core.autocrlf would otherwise write CRLF, and `#!/usr/bin/env bash\r`
+# kills the box at the shebang (installer/cli/pack_source.py also normalises).
+*.sh          text eol=lf
+Dockerfile    text eol=lf
+*.env         text eol=lf
+.dockerignore text eol=lf

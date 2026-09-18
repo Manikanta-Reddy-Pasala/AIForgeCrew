@@ -1,146 +1,43 @@
-# AIForge installers — macOS, Windows, Ubuntu
+# Installing AIForge — one file
 
-Three native packages, one runtime. Each package is a thin wrapper around the
-same `aiforge-server` command (`aiforge_core.cli.serve`), so the three cannot drift
-apart: the .app, the .msi and the .deb all start uvicorn plus the ticket runner
-and the memory sync loop, exactly as `run.sh` does.
-
-There are two shapes. **Installed** (below) puts the app on the machine and your
-data in your home directory. **Portable** unpacks anywhere and keeps everything —
-runtime, memory, tickets, chat — inside its own folder, so the folder IS the
-installation: copy it to a USB stick or another machine and it carries its
-history with it. No admin, nothing written outside it, delete the folder to
-remove it.
-
-```
-AIForge-<ver>-<os>-portable.tar.gz   (.zip on Windows)   ~20 MB
-  AIForge.command / AIForge.sh / AIForge.cmd   ← run this
-  app/    the payload
-  data/   runtime/ + config/  ← everything it writes
-```
-
-Add `--offline` at build time and it carries every locked wheel, so even the
-first run needs no network — the air-gapped case.
-
-**Nothing is downloaded from GitHub** — not uv, not a Python, not a Docker
-image. Every package comes from the internal Artifactory (the index URL is
-baked into the package as `index-url.txt`; `UV_DEFAULT_INDEX` overrides), so
-the machine needs **Python 3.12** from its own package manager:
-
-| macOS | Ubuntu 24.04 | Ubuntu 22.04 | Windows |
-|---|---|---|---|
-| [python.org installer](https://www.python.org/downloads/macos/) (Homebrew bottles come from ghcr.io) | pulled in by the `.deb` | `sudo add-apt-repository ppa:deadsnakes/ppa` first | `winget install Python.Python.3.12` |
-
-| | macOS | Windows | Ubuntu / Debian |
-|---|---|---|---|
-| Artifact | `AIForge-<ver>.dmg` | `AIForge-<ver>.msi` | `aiforge_<ver>_amd64.deb` |
-| Installs to | `/Applications/AIForge.app` | `%ProgramFiles%\AIForge` | `/opt/aiforge` + `/usr/bin/aiforge-server` |
-| Your runtime | `~/Library/Application Support/AIForge` | `%LOCALAPPDATA%\AIForge` | `~/.local/share/aiforge` |
-| Your data | `~/.aiforge` | `%USERPROFILE%\.aiforge` | `~/.aiforge` |
-| Start it | double-click AIForge | Start Menu → AIForge | `aiforge-server` |
-
-Open <http://localhost:8799/ui/> — the mac and Windows launchers do it for you.
-
-## What is (and is not) in the box
-
-**In:** the app, the built web UI (inside the wheel — no npm on your machine),
-a `uv` binary, and `lock-pins.txt` — the exact versions `uv.lock` pins, so the
-runtime first launch builds is the one CI tested.
-
-**Not in:** a Python interpreter. The first launch builds the runtime on the
-machine's own Python 3.12 and never downloads one (uv's managed CPython comes
-from GitHub releases, not an index); without 3.12 it stops and prints the
-install command for that OS. That first launch needs the package index; every
-launch after it does not.
-
-Packages are ~130 MB (mostly `uv` plus the wheel). The runtime it builds in your
-profile is a few hundred MB more.
-
-## Per-user runtime, on purpose
-
-The venv is built in **your** profile on first run, not by the installer as
-root/admin. The agent runs as you and writes your repos, your git config and
-your `~/.aiforge`; a runtime you cannot repair, extend or upgrade without an
-administrator would be the wrong shape. The installed package stays immutable
-and is replaced wholesale by an upgrade — which the first-run marker notices,
-rebuilding the runtime without you having to know that is what happened.
-
-## macOS
-
-The .dmg is **not signed or notarised** (that needs an Apple Developer ID).
-Gatekeeper will refuse the first open:
-
-```
-right-click AIForge.app → Open → Open      # once, then it is remembered
-# or:
-xattr -d com.apple.quarantine /Applications/AIForge.app
-```
-
-Double-clicking opens Terminal on purpose: this app is a server plus two
-background loops, and its first run prints what it is downloading. A silent
-Dock bounce is indistinguishable from a failure.
-
-## Windows
-
-Native — no WSL, no Docker Desktop. The MSI needs admin once (it writes Program
-Files); everything after that is per-user.
-
-**One real limitation.** The agent's `bash` tool keeps each run's shell state in
-a tmux session, and there is no tmux on Windows. It degrades to a stateless
-subprocess per command (`BashFallback`, `reason=tmux_missing`), so `cd` and
-`export` do **not** carry between calls. Everything else — the API, chat, the
-pipeline, memory, integrations — is unaffected. If you need that persistence,
-install into WSL2 with the .deb instead.
-
-## Ubuntu / Debian
+AIForge installs from ONE binary per OS: `aiforge` (`aiforge.exe` on Windows).
+It is the CLI, and it carries the AIForge source the sandbox is built from, so
 
 ```bash
-sudo apt install ./aiforge_<ver>_amd64.deb
-aiforge-server          # first run installs the locked dependencies, then starts
+./aiforge install
 ```
 
-`python3.12` and `tmux` are dependencies. 24.04 has 3.12 in its archive; on
-22.04 add `ppa:deadsnakes/ppa` first, or apt refuses the package (by design —
-better than a first launch that cannot build its runtime). Without tmux the
-agent silently loses shell state between calls.
+gives you all three:
 
-Removing the package leaves `~/.local/share/aiforge` and `~/.aiforge` alone —
-that is your memory, tickets and chat history, not package state.
+- **the CLI** — `aiforge` on your PATH (`~/.local/bin`, or
+  `%LOCALAPPDATA%\Programs\AIForge` on Windows);
+- **the sandbox** — an Ubuntu 24.04 container built from the carried source and
+  started (first time: a few minutes);
+- **the web UI** — served by the sandbox at `http://127.0.0.1:8799/ui/`.
 
-## Building them
+The only thing the machine needs is **Docker with Compose v2** (Docker Desktop
+on macOS and Windows; `docker.io` + `docker-compose-v2` on Ubuntu; Docker's own
+repo elsewhere — see [INSTALL.md](../INSTALL.md#prerequisites)). If Docker is
+installed but stopped, `aiforge` starts it.
+
+After that: set the model on the web UI's home page, `cd` into a project and run
+`aiforge`. Re-run `aiforge install` from a newer binary to update (a new binary
+builds a new sandbox image). `aiforge uninstall` stops the sandbox and removes
+the CLI; your chats, settings and memory in `~/.aiforge` stay. Networking, the
+environment it passes to the box, and use off the corporate network:
+[INSTALL.md](../INSTALL.md#the-aiforge-binary).
+
+The VS Code extension is installed separately — see
+[packages/aiforge_vscode](../packages/aiforge_vscode/README.md).
+
+## Building the binary
 
 ```bash
-installer/build_payload.sh              # web UI → wheel, + uv for all three targets
-installer/linux/build-deb.sh            # needs dpkg-deb   (Linux, or a container)
-installer/macos/build-dmg.sh            # needs hdiutil    (macOS)
-installer/windows/build-msi.sh          # needs wixl       (brew install msitools)
-installer/portable/build-portable.sh --target macos|linux|windows
+make aiforge                    # = installer/cli/build-binary.sh → dist/cli/aiforge[.exe]
 ```
 
-or `make installers` for the lot (skipping any whose toolchain is absent).
-Artifacts land in `dist/installer/`. Build detail: [BUILDING.md](BUILDING.md).
+Build on the OS you ship to (PyInstaller cannot cross-compile); details, CI and
+publishing in [cli/README.md](cli/README.md).
 
-`build-msi.sh` produces a real MSI from macOS/Linux via `wixl`, so all three
-come out of one CI job rather than needing a Windows runner. Its **structure**
-is verified there; its **behaviour** is not — run it on Windows before shipping
-it to anyone.
-
-## Bind address
-
-The default is loopback. Binding elsewhere without a token is an open box, and
-the launcher says so:
-
-```bash
-aiforge-server --host 0.0.0.0 --port 8799      # set AIFORGE_API_TOKEN as well
-```
-
-## Options
-
-```
-aiforge-server [--host H] [--port N] [--no-runner] [--no-sync] [--open]
-```
-
-`--no-runner` serves the API without claiming tickets; `--no-sync` skips the
-memory sync loop. Both loops otherwise restart on their own schedule
-(`AIFORGE_RUNNER_POLL_SEC`, `AIFORGE_SYNC_POLL_SEC`) and are killed with the
-app — closing the window does not leave them polling.
+The earlier native packages (.deb / .dmg / .msi / portable), which ran AIForge
+directly on the machine without a sandbox, are retired: the binary replaces them.

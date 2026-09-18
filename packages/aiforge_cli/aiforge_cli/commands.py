@@ -113,6 +113,16 @@ TOP: tuple[Command, ...] = (
     Command("help", "[command]", "this, or the long form for one command",
             arg=ARG_COMMAND, group="main",
             examples=("aiforge help", "aiforge help mount")),
+    Command("install", "", "put aiforge on your PATH and set up the sandbox + web UI",
+            group="main",
+            long=("Run it once from the downloaded binary. It copies itself to\n"
+                  "~/.local/bin (or %LOCALAPPDATA%\\Programs\\AIForge on Windows),\n"
+                  "adds that to PATH, builds the sandbox from the source it carries\n"
+                  "and starts it — the web UI is served at 127.0.0.1:8799/ui/.\n"
+                  "Needs only docker. Re-run it to update."),
+            examples=("./aiforge install", "aiforge.exe install")),
+    Command("uninstall", "", "stop the sandbox and remove aiforge (keeps your data)",
+            group="main", examples=("aiforge uninstall",)),
     Command("version", "", "print the version and exit", group="main"),
 )
 

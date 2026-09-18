@@ -55,7 +55,7 @@ def requested() -> list[str]:
 
 def _write(paths: list[str]) -> None:
     body = ("# Host folders mounted into the AIForge sandbox (same path inside).\n"
-            "# Read by ./run.sh on the host at every start; edit in Settings.\n"
+            "# Requests only: the host approves them (aiforge mount add, or ./run.sh).\n"
             + "".join(f"{p}\n" for p in paths))
     _atomic.write_text(_path(), body)
 
@@ -113,7 +113,7 @@ def state() -> dict:
             rows.append({"path": p, "kind": "folder", "status": "mounted" if p in want
                          else "removed — still mounted until restart"})
     rows += [{"path": p, "kind": "folder",
-              "status": "waiting — approve it by running ./run.sh in a terminal on the host"}
+              "status": "waiting — approve it on the host: aiforge mount add <folder> (or ./run.sh)"}
              for p in want if p not in live]
     return {"sandbox": in_sandbox(), "folders": rows,
             "restart_needed": any(r["status"] != "mounted" for r in rows),

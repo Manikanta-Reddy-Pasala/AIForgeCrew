@@ -199,9 +199,9 @@ toolchain = ["uv>=0.5", "nodejs-wheel-binaries>=20"]
 #   uv run --with 'ragas<0.4' --with 'langchain-openai<1' python scripts/rag_eval.py
 
 [project.scripts]
-# What the installed packages run. Every OS package is a thin wrapper around
-# this one command, so the .deb, the .app and the .msi cannot drift apart.
-# `aiforge` itself is the terminal client (packages/aiforge_cli).
+# `aiforge-server` runs the API and its background loops without run.sh or
+# docker (`pip install -e .` from a checkout with web/dist built). `aiforge` itself is the
+# terminal client and installer (packages/aiforge_cli).
 aiforge-server = "aiforge_core.cli.serve:main"
 aiforge-agents-tb = "aiforge_core.memory.trial_balance:main"
 aiforge-tool = "aiforge_core.runtime.tool_cli:main"
@@ -222,10 +222,6 @@ include = ["aiforge_core*"]
     # silently empty repo map rather than an error — they must ship.
     "indexing/repomap/queries/*/*.scm",
     "indexing/repomap/queries/*/README.md",
-    # The built UI, copied in by installer/build_payload.sh. Absent in a plain
-    # checkout — a repo run serves web/dist directly (see api/_ui_serving.py's
-    # two candidates), so this pattern matching nothing is normal there.
-    "web_dist/**/*",
 ]
 
 [tool.ruff]

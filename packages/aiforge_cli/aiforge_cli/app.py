@@ -171,10 +171,7 @@ class App:
             with box.start_lock(self.env) as mine:
                 if mine:
                     box.start(self.cfg, on_line=self._box_line, env=self.env)
-                    waited = box.wait_healthy(self.client.healthy, timeout=120.0,
-                                              on_tick=lambda s: self.tail.set(
-                                                  f"sandbox starting… {s:.0f}s"),
-                                              sleep=self._sleep)
+                    waited = self._wait_ready()
             if not mine:
                 # Another terminal is creating the one shared box (and maybe
                 # starting docker first). Wait for IT to finish — the lock is
@@ -196,6 +193,13 @@ class App:
         self.tail.clear()
         # The box serves the web UI too: say where, once, when it comes up.
         self.ok("sandbox ready", f"{waited:.1f}s · web UI {self.cfg.base_url}/ui/")
+
+    def _wait_ready(self) -> float:
+        """Until the box answers — its first start installs everything inside."""
+        return box.wait_ready(
+            self.client.healthy, env=self.env, sleep=self._sleep,
+            on_tick=lambda s, line: self.tail.set(
+                f"sandbox starting… {s:.0f}s" + (f"  {line}" if line else "")))
 
     def _box_line(self, line: str) -> None:
         """docker's own chatter: pulls are worth showing, the rest is noise."""
@@ -255,8 +259,9 @@ class App:
                        f"(the run is lost)")
         self.tail.set("restarting the sandbox with the new mount…")
         try:
-            box.start(self.cfg, on_line=self._box_line, recreate=True, env=self.env)
-            box.wait_healthy(self.client.healthy, timeout=120.0, sleep=self._sleep)
+            with box.start_lock(self.env, wait=True):
+                box.start(self.cfg, on_line=self._box_line, recreate=True, env=self.env)
+                self._wait_ready()
         except box.BoxError as exc:
             self.tail.clear()
             raise Exit(EXIT_ENV, f"{self.pal('✗', 'error')} {exc}") from exc
@@ -1013,9 +1018,13 @@ class App:
             return self._box_up(recreate=action == "restart")
         if action == "down":
             self._refuse_if_busy("stop the sandbox")
-            box.stop(self.cfg)
-            self.ok("sandbox stopped")
-            return EXIT_OK
+            if box.stop(self.cfg, self.env):
+                self.ok("sandbox stopped")
+                return EXIT_OK
+            self.warn(f"the sandbox `{box.container_name(self.env)}` is still running — "
+                      f"it was not started by this aiforge (./run.sh --stop, or "
+                      f"docker stop {box.container_name(self.env)})")
+            return EXIT_ENV
         if action == "logs":
             return box.logs(tail=tail, follow=follow)
         if action == "shell":
@@ -1025,7 +1034,7 @@ class App:
 
     def _box_status(self) -> int:
         exe = box.docker_bin()
-        state = box.container_state(exe) if exe else "no docker"
+        state = box.container_state(exe, self.env) if exe else "no docker"
         healthy = self.client.healthy()
         strategy = f"run.sh {self.cfg.repo}" if self.cfg.repo else "compose"
         self.say(f"  container {self.pal(state, 'ok' if state == 'running' else 'warn')}",
@@ -1038,9 +1047,23 @@ class App:
         return EXIT_OK if healthy else EXIT_ENV
 
     def _box_up(self, *, recreate: bool) -> int:
-        box.start(self.cfg, on_line=self._box_line, recreate=recreate, env=self.env)
-        box.wait_healthy(self.client.healthy, timeout=120.0, sleep=self._sleep)
-        self.ok(f"sandbox {'restart' if recreate else 'up'}", f"web UI {self.cfg.base_url}/ui/")
+        if not recreate:
+            # Already answering: nothing to start (and a `compose up` beside a
+            # box run.sh started would only collide on the container name).
+            # Otherwise the same locked start every terminal uses, so a second
+            # `aiforge` during a minutes-long first build waits for it.
+            if self.client.healthy():
+                self.ok("sandbox up", f"web UI {self.cfg.base_url}/ui/")
+            else:
+                self._start_box()
+            return EXIT_OK
+        try:
+            with box.start_lock(self.env, wait=True):
+                box.start(self.cfg, on_line=self._box_line, recreate=True, env=self.env)
+                self._wait_ready()
+        finally:
+            self.tail.clear()
+        self.ok("sandbox restart", f"web UI {self.cfg.base_url}/ui/")
         return EXIT_OK
 
     # ── completion sources ─────────────────────────────────────────────────

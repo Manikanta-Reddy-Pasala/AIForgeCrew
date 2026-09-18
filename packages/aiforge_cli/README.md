@@ -1,20 +1,36 @@
-# aiforge — the AIForge terminal client
+# aiforge — the AIForge terminal client (and installer)
 
 A thin client for AIForge: it starts the sandbox (a Docker container) and
 streams the agent's work into your terminal. The engine runs in the sandbox, not
-in the CLI. It talks to the sandbox on `127.0.0.1:8799`.
+in the CLI. It talks to the sandbox on `127.0.0.1:8799`, where the sandbox also
+serves the web UI (`/ui/`).
 
-**Every OS needs Docker running.** The first `box up` builds the sandbox image
-from a checkout of this repo, so run it inside the repo (or set
-`AIFORGE_REPO=/path/to/AIForgeCrew`).
+## Install: one file
 
-Two ways to get the CLI:
+The `aiforge` binary (`aiforge.exe` on Windows) is the whole installer. It carries
+the AIForge source the sandbox is built from:
 
-- **From source** — needs Python 3.11–3.13.
-- **Standalone binary** — ~12 MB, needs only Docker; build it on the
-  OS you run it on (see [installer/cli/README.md](../../installer/cli/README.md)).
+```bash
+./aiforge install         # Windows: .\aiforge.exe install
+```
 
-## Ubuntu
+puts `aiforge` on your PATH, builds and starts the sandbox, and prints the web UI
+address. **Docker is the only prerequisite** (if it is installed but stopped,
+`aiforge` starts it). The first install builds the image and installs the
+sandbox's dependencies inside it — several minutes; later starts take seconds.
+Then `cd` into a project and run `aiforge`. `aiforge uninstall` removes it and
+keeps your data in `~/.aiforge`.
+
+Build the binary on the OS you run it on: `make aiforge` → `dist/cli/aiforge`
+(see [installer/cli/README.md](../../installer/cli/README.md)).
+
+## From source (development)
+
+Every OS needs Docker running. From a checkout, `aiforge` builds the sandbox with
+`./run.sh`, so run it inside the repo (or set `AIFORGE_REPO=/path/to/AIForgeCrew`).
+Needs Python 3.11–3.13.
+
+### Ubuntu
 
 Ubuntu 24.04 ships Python 3.12, which is all it needs:
 
@@ -41,24 +57,16 @@ cd ~/work/my-project
 aiforge
 ```
 
-On **Ubuntu 22.04** (Python 3.10) get a newer Python with `uv` instead of step 2's
-venv:
+On **Ubuntu 22.04** (Python 3.10) use its Python 3.11 package instead of step
+2's venv:
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv .venv-cli --python 3.12 && . .venv-cli/bin/activate
-uv pip install -e packages/aiforge_cli
+sudo apt install -y python3.11 python3.11-venv
+python3.11 -m venv .venv-cli && . .venv-cli/bin/activate
+pip install -e packages/aiforge_cli
 ```
 
-**Standalone binary on Ubuntu** (build on the OLDEST Ubuntu you will run it on —
-a binary built on 24.04 does not start on 20.04):
-
-```bash
-installer/cli/build-binary.sh --out ~/bin     # → ~/bin/aiforge
-~/bin/aiforge box up
-```
-
-## macOS
+### macOS
 
 Needs Docker Desktop. The system `python3` is too old; `uv` fetches 3.12:
 
@@ -70,7 +78,7 @@ aiforge box up
 cd ~/path/to/project && aiforge
 ```
 
-## Windows
+### Windows
 
 Needs Docker Desktop and Python 3.12 (python.org or `winget install Python.Python.3.12`).
 In PowerShell:
@@ -86,17 +94,24 @@ cd C:\path\to\project; aiforge
 
 ## Off the corporate network
 
-The sandbox build installs packages from the internal Artifactory by default.
-Where that host does not resolve, point it at the public registries in
-`aiforge.env` (repo root) **before the first `box up`**:
+The sandbox installs packages from the internal Artifactory by default. Where
+that host does not resolve, export the public registries **before**
+`aiforge install` (binary) or the first `aiforge box up` (checkout):
 
 ```bash
-UV_DEFAULT_INDEX=https://pypi.org/simple
-AIFORGE_NPM_REGISTRY=https://registry.npmjs.org/
+export UV_DEFAULT_INDEX=https://pypi.org/simple
+export AIFORGE_NPM_REGISTRY=https://registry.npmjs.org/
+# only if Docker Hub / the Ubuntu archive are not reachable either:
+export AIFORGE_BASE_REGISTRY=<registry prefix>  AIFORGE_APT_MIRROR=<ubuntu mirror>
 ```
 
-The model the agent uses is `AIFORGE_LM_BASE_URL` in the same file (or set it on
-the web UI's home page at `http://127.0.0.1:8799/ui/`).
+Set the model on the web UI's home page at `http://127.0.0.1:8799/ui/` (or
+export `AIFORGE_LM_BASE_URL`). A model server on this machine is
+`http://127.0.0.1:<port>/v1` on native Linux docker, and
+`http://host.docker.internal:<port>/v1` on Docker Desktop (rootless docker: the
+machine's LAN address). The environment is read whenever the box is
+(re)created, so keep these exports in your shell profile; an already-running
+box picks them up on `aiforge box restart`.
 
 ## Everyday use
 

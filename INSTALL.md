@@ -1,25 +1,83 @@
 # Installing AIForge
 
-## How it runs
+Two ways to run the same sandbox:
 
-`./run.sh` starts an Ubuntu 24.04 sandbox. That is the only mode.
-
-- **Command** — `./run.sh`
-- **Needs on the machine** — Docker + Compose
-- **What the agent can touch** — everything **inside** the box; of this machine only `~/.aiforge` plus folders you approve
-- **Rights** — full: your uid + passwordless sudo, no workspace jail
-- **Network** — outbound open (`--isolated` closes it)
+- **The `aiforge` binary** — one file, nothing but Docker needed. The normal way.
+- **A checkout + `./run.sh`** — for working on AIForge itself.
 
 ## Prerequisites
 
-**Docker (with Compose) and `git`** — all your OS must provide. Python, Node and
-tmux live inside the box; the image installs them.
+**Docker with Compose.** A checkout also needs `git`. Python, Node and tmux
+live inside the box; the image installs them.
 
 | | macOS | Debian/Ubuntu | Fedora/RHEL | Windows |
 |---|---|---|---|---|
-| Docker | [Docker Desktop](https://www.docker.com/products/docker-desktop/) or `brew install --cask docker` | `sudo apt install -y docker.io docker-compose-plugin` | `sudo dnf install -y docker docker-compose-plugin` | Docker Desktop (WSL 2 backend) |
+| Docker | [Docker Desktop](https://www.docker.com/products/docker-desktop/) or `brew install --cask docker` | Ubuntu: `sudo apt install -y docker.io docker-compose-v2`. Debian: [Docker's repo](https://docs.docker.com/engine/install/debian/) → `docker-ce docker-compose-plugin` (Debian's own `docker-compose` is v1, which the binary does not use) | [Docker's repo](https://docs.docker.com/engine/install/fedora/) → `docker-ce docker-compose-plugin`, then `sudo systemctl enable --now docker` | Docker Desktop (WSL 2 backend) |
 
 On Linux: `sudo usermod -aG docker $USER`, then log in again.
+
+The Linux binary built by CI runs on glibc 2.39 or newer (Ubuntu 24.04,
+Debian 13, Fedora 40+). For an older Linux, build it there: `make aiforge`.
+
+## The `aiforge` binary
+
+Build or download the binary for your OS (`make aiforge` → `dist/cli/aiforge`,
+see [installer/README.md](installer/README.md)), then:
+
+```bash
+./aiforge install        # Windows: aiforge.exe install
+```
+
+That is the whole installation: the CLI goes on your PATH, the sandbox image is
+built from the AIForge source the binary carries (first time: a few minutes)
+and started, and the sandbox serves the web UI at `http://127.0.0.1:8799/ui/`.
+Then set the model on the web UI's home page, and run `aiforge` in any project
+folder to chat there. Re-running `install` from a newer binary updates both.
+
+The binary always uses the source it carries, even when run inside a checkout
+(set `AIFORGE_REPO=<checkout>` to make it drive that checkout's `run.sh`
+instead).
+
+- **What the box sees** — `~/.aiforge` (settings, memory, tickets, chat
+  workspaces), at `/home/aiforge/.aiforge` inside, and folders you approve, each
+  at its own path: `aiforge mount add <folder>`, or answer `y` when `aiforge`
+  asks in an unmounted folder.
+- **Network** — on native Linux docker the box shares the host's network with
+  the API bound to `127.0.0.1`, so a model server on this machine is at
+  `http://127.0.0.1:<port>/v1` as usual. On Docker Desktop (macOS, Windows) and
+  rootless docker the API port is published on `127.0.0.1` only, and a model
+  server on this machine is `http://host.docker.internal:<port>/v1` (rootless:
+  the model server must listen on the machine's LAN address, not only on
+  127.0.0.1 — rootlesskit does not forward the host's loopback). A docker on
+  another machine (`DOCKER_HOST=tcp://…`, `ssh://…`) is refused.
+- **Environment** — exported before `aiforge` / `aiforge install` starts the
+  box, these reach it: `AIFORGE_LM_BASE_URL`, `AIFORGE_ROLE`,
+  `AIFORGE_ADMIN_URL`, `AIFORGE_SYNC_GROUP`, `AIFORGE_EXTRAS`,
+  `AIFORGE_EMBED_BACKEND`, `AIFORGE_RUNNER_POLL_SEC`, `AIFORGE_NPM_REGISTRY`,
+  `AIFORGE_APT_MIRROR`, `UV_DEFAULT_INDEX`, `npm_config_registry` and the proxy
+  variables. They are read every time the box is (re)created — `aiforge box
+  restart`, `aiforge mount add`, a start after `box down` — so put the exports
+  in your shell profile, or a later terminal without them drops them.
+- **Off the corporate network** — the box installs from the internal
+  Artifactory by default. Elsewhere, export `UV_DEFAULT_INDEX=https://pypi.org/simple`
+  and `AIFORGE_NPM_REGISTRY=https://registry.npmjs.org/` (and, for the image
+  build, `AIFORGE_BASE_REGISTRY` / `AIFORGE_APT_MIRROR` if Docker Hub or the
+  Ubuntu archive are not reachable) — in your shell profile, before
+  `aiforge install`.
+- **Box commands** — `aiforge box status|up|down|restart|logs|shell`.
+- **Uninstall** — `aiforge uninstall` stops the box and removes the binary,
+  its PATH lines, its tab completion and the source it unpacked. Your data in
+  `~/.aiforge` stays; it prints the three `docker` commands that remove the
+  container, its state volume (`aiforge_aiforge-state`) and the images.
+
+## How it runs
+
+The sandbox is an Ubuntu 24.04 container. That is the only mode.
+
+- **Command** — `aiforge`, or `./run.sh` from a checkout
+- **What the agent can touch** — everything **inside** the box; of this machine only `~/.aiforge` plus folders you approve
+- **Rights** — full: your uid + passwordless sudo, no workspace jail
+- **Network** — outbound open (a checkout's `./run.sh --isolated` closes it)
 
 ## First run: what gets installed
 
@@ -59,7 +117,7 @@ AIFORGE_EXTRAS=structured,crawl,chunking ./run.sh   # richer tools
 uv tool install graphifyy                           # the graphify CLI — NEVER into .venv
 ```
 
-## Docker (default)
+## From a checkout: `./run.sh`
 
 ```bash
 ./run.sh                  # build the box (first time: a few minutes), start it
@@ -115,7 +173,7 @@ Settings (GitLab, Jira, the model key) land here too.
 ### Environment
 
 Set in the shell that runs `./run.sh`; compose passes them through, and they
-reach the box. `aiforge.env` holds what is identical on every box
+reach the box (the binary passes the shorter list above). `aiforge.env` holds what is identical on every box
 and is never written to — the environment wins. Catalogue: `.env.example`.
 
 | Var | Default | Purpose |
@@ -135,7 +193,7 @@ and is never written to — the environment wins. Catalogue: `.env.example`.
 | `UV_DEFAULT_INDEX`, `npm_config_registry` | Artifactory | registry overrides |
 | `http_proxy`/`https_proxy`/`no_proxy` | — | passed through (upper and lower case) |
 
-`docker volume rm <project>_aiforge-state` only forces a reinstall — your data
+`docker volume rm <project>_aiforge-state` (`<project>` is the checkout's folder name; `aiforge` for the binary's box) only forces a reinstall — your data
 is in `~/.aiforge`, never in a volume.
 
 ## Isolated network (`--isolated`)
@@ -184,8 +242,7 @@ python deps.
 
 After the first run nothing is fetched. For a box that never had a network,
 pre-seed `.venv`, `web/node_modules` (or `web/dist`) and `.venv/codegraph` from
-a box of the same OS/arch — or build the portable bundle with every locked
-wheel baked in (`installer/BUILDING.md`, `build-portable.sh --offline`).
+a box of the same OS/arch.
 
 ### Behind a corporate CA or proxy
 

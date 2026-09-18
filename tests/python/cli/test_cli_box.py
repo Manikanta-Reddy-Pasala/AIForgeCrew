@@ -99,6 +99,9 @@ def test_a_healthy_api_returns_as_soon_as_it_answers(tmp_path):
 def test_a_missing_image_and_no_repo_names_all_three_ways_out(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(box, "require_docker", lambda **kw: "/usr/bin/docker")
+    monkeypatch.setattr(box, "require_compose", lambda exe: None)
+    monkeypatch.setattr(box, "daemon_kind", lambda exe, env=None: "native")
+    monkeypatch.setattr(box, "_refuse_a_foreign_box", lambda exe, env: None)
     monkeypatch.setattr(box, "image_present", lambda _exe, _image: False)
     with pytest.raises(box.BoxError) as exc:
         box.start(cfg, env={})
@@ -222,3 +225,93 @@ def test_docker_desktop_for_linux_starts_its_own_unit(monkeypatch):
     clock = _Clock()
     box.require_docker(launch=True, sleep=clock.sleep, clock=clock, env={})
     assert launched == [["systemctl", "--user", "--no-block", "start", "docker-desktop"]]
+
+
+# ── waiting for a first start ─────────────────────────────────────────────
+
+
+def _wait(monkeypatch, statuses, *, logs=lambda *a, **k: "installing deps"):
+    """Drive wait_ready with a fake clock: each probe (every 5 s) reads the
+    next (state, restarts); the API never answers."""
+    seq = iter(statuses)
+    monkeypatch.setattr(box, "docker_bin", lambda: "docker")
+    monkeypatch.setattr(box, "container_status", lambda exe, env=None: next(seq))
+    monkeypatch.setattr(box, "log_tail", logs)
+    now = [0.0]
+    return box.wait_ready(lambda: False, env={}, timeout=600,
+                          clock=lambda: now[0],
+                          sleep=lambda s: now.__setitem__(0, now[0] + 5.0))
+
+
+def test_a_crash_loop_sampled_as_running_is_caught_by_its_restart_count(monkeypatch):
+    with pytest.raises(box.BoxError, match="keeps restarting"):
+        _wait(monkeypatch, [("running", 0), ("running", 1), ("running", 2)])
+
+
+def test_a_paused_box_fails_at_once(monkeypatch):
+    with pytest.raises(box.BoxError, match="paused"):
+        _wait(monkeypatch, [("paused", 0)])
+
+
+def test_no_container_at_all_fails_after_a_minute_not_thirty(monkeypatch):
+    with pytest.raises(box.BoxError, match="no container named"):
+        _wait(monkeypatch, [("missing", 0)] * 20)
+
+
+def test_a_docker_that_times_out_is_unknown_not_a_traceback(monkeypatch):
+    def slow_logs(*a, **k):
+        raise box.subprocess.TimeoutExpired("docker logs", 10)
+    monkeypatch.setattr(box.subprocess, "run", lambda *a, **k: slow_logs())
+    assert box.log_tail("docker") == ""
+    assert box.container_status("docker") == ("unknown", 0)
+
+
+def test_the_binary_uses_its_own_source_even_inside_a_checkout(tmp_path, monkeypatch):
+    """Otherwise one machine got two boxes fighting over one container name."""
+    from aiforge_cli import config, payload
+    repo = tmp_path / "AIForgeCrew"
+    for marker in config._MARKERS:
+        (repo / marker).parent.mkdir(parents=True, exist_ok=True)
+        (repo / marker).write_text("")
+    monkeypatch.setattr(payload, "tarball", lambda: None)
+    assert config._find_repo({}, repo) == repo                     # from source: run.sh
+    monkeypatch.setattr(payload, "tarball", lambda: tmp_path / "sandbox-src.tar.gz")
+    assert config._find_repo({}, repo) is None                     # the binary: its own
+    assert config._find_repo({"AIFORGE_REPO": str(repo)}, tmp_path) == repo
+
+
+def test_a_first_probe_that_timed_out_is_not_a_restart_baseline(monkeypatch):
+    """"unknown" reports 0 restarts: an old box with restarts in its history
+    must not then look like a crash loop."""
+    assert _wait_until_healthy(monkeypatch, [("unknown", 0), ("running", 5), ("running", 5)])
+
+
+def _wait_until_healthy(monkeypatch, statuses):
+    seq = iter(statuses)
+    answers = iter([False] * len(statuses) + [True])
+    monkeypatch.setattr(box, "docker_bin", lambda: "docker")
+    monkeypatch.setattr(box, "container_status", lambda exe, env=None: next(seq))
+    monkeypatch.setattr(box, "log_tail", lambda *a, **k: "")
+    now = [0.0]
+    box.wait_ready(lambda: next(answers), env={}, timeout=600, clock=lambda: now[0],
+                   sleep=lambda s: now.__setitem__(0, now[0] + 5.0))
+    return True
+
+
+def test_a_container_from_a_checkout_is_named_not_collided_with(monkeypatch):
+    monkeypatch.setattr(box.subprocess, "run", lambda *a, **k: type(
+        "R", (), {"returncode": 0, "stdout": "aiforgecrew\n"})())
+    with pytest.raises(box.BoxError, match="started from a checkout"):
+        box._refuse_a_foreign_box("docker", {})
+    monkeypatch.setattr(box.subprocess, "run", lambda *a, **k: type(
+        "R", (), {"returncode": 0, "stdout": "aiforge\n"})())
+    box._refuse_a_foreign_box("docker", {})                       # our own: fine
+
+
+def test_stop_does_not_claim_a_box_it_could_not_see(monkeypatch, tmp_path):
+    monkeypatch.setattr(box, "require_docker", lambda **kw: "docker")
+    cfg = _cfg(tmp_path)
+    for state, stopped in (("exited", True), ("missing", True), ("unknown", False),
+                           ("restarting", False), ("running", False)):
+        monkeypatch.setattr(box, "container_state", lambda exe, env=None, s=state: s)
+        assert box.stop(cfg, {"XDG_CONFIG_HOME": str(tmp_path)}) is stopped, state

@@ -1,6 +1,6 @@
 """The CLI must stay freezable.
 
-`aiforge_cli` is compiled into a ~15 MB single-file binary for macOS, Linux and
+`aiforge_cli` is compiled into a small single-file binary for macOS, Linux and
 Windows. One import of aiforge_core would drag ADK, litellm, scipy and
 tree-sitter into that binary — hundreds of megabytes that cannot be frozen and
 are not needed on the host, because the engine runs in the sandbox. This test

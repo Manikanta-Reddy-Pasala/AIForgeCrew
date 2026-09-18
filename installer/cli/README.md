@@ -1,12 +1,16 @@
 # Building the `aiforge` CLI binaries
 
-The CLI is a thin client: it starts the sandbox and streams its events. The
-engine is NOT inside it, which is why the binary is ~12 MB instead of ~2 GB.
+The binary is the ONE AIForge installer: the CLI, plus the AIForge source the
+sandbox is built from (packed at build time by `pack_source.py`, ~11 MB), so `./aiforge install`
+gives the CLI on PATH, the sandbox and the web UI it serves. The engine itself
+is NOT inside it — it is built into the sandbox image on the user's machine —
+which is why the binary is ~22 MB instead of ~2 GB.
 One binary per OS, and **each one must be built on that OS** — PyInstaller
 freezes the interpreter it runs on and cannot cross-compile.
 
-The host that runs the binary needs **docker and nothing else**: no python, no
-git, no node.
+The host that runs the binary needs **docker with compose and nothing else**: no
+python, no git, no node. The machine that BUILDS it needs python 3, git and a
+checkout of this repo.
 
 ## One command
 
@@ -16,13 +20,17 @@ installer/cli/build-binary.sh --out /tmp/out  # somewhere else
 ```
 
 It creates a throwaway venv, installs the pinned PyInstaller from
-`installer/cli/pins.txt` plus this package, freezes
+`installer/cli/pins.txt` plus this package, packs the sandbox source (the files
+git knows about under the paths the Dockerfile copies — tracked, plus new
+untracked files `.gitignore` does not exclude; never secrets; LF line endings;
+the same bytes for the same source, so the same image tag), freezes
 `packages/aiforge_cli/aiforge_cli/_entry.py`, writes the four shell-completion
 scripts next to the binary, and smoke-tests the result (`--version`, `help`).
 Nothing is left behind but the output directory.
 
-Everything comes from the configured index. On a box that cannot reach the
-internal Artifactory, name another one:
+Everything comes from the configured index: `UV_DEFAULT_INDEX`, else the
+default `[[tool.uv.index]]` in `pyproject.toml` — never pip's public default.
+On a box that cannot reach the internal Artifactory, name another one:
 
 ```bash
 UV_DEFAULT_INDEX=https://pypi.org/simple installer/cli/build-binary.sh
@@ -32,9 +40,9 @@ UV_DEFAULT_INDEX=https://pypi.org/simple installer/cli/build-binary.sh
 
 | OS | Where | Result |
 |---|---|---|
-| Linux x86_64 | any Linux box (the nuc) | ~11 MB; `ldd` shows only glibc/libz/libdl/libpthread |
+| Linux x86_64 | any Linux box (the nuc) | ~22 MB; `ldd` shows only glibc/libz/libdl/libpthread |
 | Linux arm64 | an arm64 box, or x86_64 with binfmt (see CI below) | same |
-| macOS | a Mac — needs python **3.11–3.13** | ~12 MB, `universal2` (x86_64 + arm64), ad-hoc signed |
+| macOS | a Mac — needs python **3.11–3.13** | similar, `universal2` (x86_64 + arm64), ad-hoc signed |
 | Windows | a Windows box, from **Git Bash** | `aiforge.exe` |
 
 **Build on the oldest Linux you intend to support.** glibc is forward- but not
@@ -132,7 +140,9 @@ port and state volume each) — not built.
 ## Uploading by hand
 
 ```bash
-VER=$(sed -n 's/^version = "\(.*\)"/\1/p' packages/aiforge_cli/pyproject.toml)
+# The same folder CI's cli:publish uses: CLI version + commit (the binary
+# carries the whole app, so the CLI version alone is not unique).
+VER=$(sed -n 's/^version = "\(.*\)"/\1/p' packages/aiforge_cli/pyproject.toml)-$(git rev-parse --short=8 HEAD)
 curl -k -u "$ARTIFACTORY_USER:$ARTIFACTORY_TOKEN" \
      -T dist/cli/aiforge \
      "https://artifactory.internal/artifactory/generic-local/aiforge-cli/$VER/linux-amd64/aiforge"
