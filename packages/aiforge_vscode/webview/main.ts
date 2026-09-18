@@ -22,6 +22,10 @@ const state = {
   scratch: false,
   replaceFrom: null as number | null,
   notice: '',
+  // The pending bubble is text the extension wrote (Explain), not the user's:
+  // never hand it back into the input box.
+  echo: false,
+  approvalName: '',
 };
 
 const app = document.getElementById('app')!;
@@ -84,16 +88,17 @@ function newTurn(): LiveTurn {
 
 /** The user's words back in the box (never lost when they did not go). */
 function giveBack(text: string | null): void {
-  if (text && !input.value.trim()) input.value = text;
+  if (text && !state.echo && !input.value.trim()) input.value = text;
 }
 
 function onEvent(ev: any): void {
   if (ev.type === 'ping' || ev.type === 'usage' || ev.type === 'suggestion') return;
-  if (ev.type === 'approval') { state.approval = ev; render(); return; }
-  // Only the end of the step answers an approval — another agent's tool call
-  // (team mode) does not.
+  if (ev.type === 'approval') { state.approval = ev; state.approvalName = String(ev.name ?? ''); render(); return; }
+  // Answered — here, in another client, or earlier in a replay — when the
+  // gated call itself runs or is refused; another agent's call is no answer.
   if (ev.type === 'approval_expired' || ev.type === 'done'
-      || (ev.type === 'message' && !ev.supplementary)) state.approval = null;
+      || (ev.type === 'message' && !ev.supplementary)
+      || (ev.type === 'tool' && ev.name === state.approvalName)) state.approval = null;
   if (ev.type === 'attached') {
     // A replay of a run in flight: start its turn fresh (the replay resends it all).
     if (ev.running) state.live = newTurn();
@@ -124,7 +129,7 @@ window.addEventListener('message', e => {
       if (!state.running && state.live) state.live = { ...state.live, streaming: false };
       if (!state.running) state.approval = null;
       break;
-    case 'echo': state.pendingUser = String(m.text || ''); state.live = newTurn(); break;
+    case 'echo': state.pendingUser = String(m.text || ''); state.echo = true; state.live = newTurn(); break;
     case 'error': {
       state.error = String(m.text || '');
       if (typeof m.restoreText === 'string') giveBack(m.restoreText);     // a steer that did not go
@@ -138,7 +143,8 @@ window.addEventListener('message', e => {
       break;
     }
     case 'reset':
-      Object.assign(state, { messages: [], live: null, pendingUser: null, approval: null, error: '' });
+      Object.assign(state, { messages: [], live: null, pendingUser: null, approval: null, error: '',
+                             notice: '', replaceFrom: null, scratch: false, echo: false });
       break;
   }
   render();
@@ -151,6 +157,7 @@ function send(): void {
   state.notice = '';
   if (!state.running) {
     state.pendingUser = text;
+    state.echo = false;
     state.live = newTurn();
   } else {
     state.live = reduceTurn(state.live ?? newTurn(),

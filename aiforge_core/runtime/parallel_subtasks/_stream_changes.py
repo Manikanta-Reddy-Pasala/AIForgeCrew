@@ -84,8 +84,11 @@ def _emit_changes(cwd: str, start_sha: str, include_worktree: bool = False):
         ref = [f"{start_sha}..HEAD"]
     # --relative: paths relative to ``cwd`` (a project that is a subfolder of a
     # bigger repo), and only changes inside it.
-    counts = _numstat_counts(pkg._git(["diff", "--relative", "--numstat", *ref], cwd).stdout or "")
-    name_status = pkg._git(["diff", "--relative", "--name-status", *ref], cwd).stdout or ""
+    # The working-tree listing keeps the excludes the old add -N path applied
+    # (.env, editor folders …).
+    specs = ["--", ".", *_EXCLUDE_PATHSPECS] if include_worktree else []
+    counts = _numstat_counts(pkg._git(["diff", "--relative", "--numstat", *ref, *specs], cwd).stdout or "")
+    name_status = pkg._git(["diff", "--relative", "--name-status", *ref, *specs], cwd).stdout or ""
     files = [f for f in (_changed_file(ln, counts, ref, cwd, cap)
                          for ln in name_status.splitlines()) if f]
     if not files:

@@ -22,10 +22,16 @@ export class NotSteered extends Error {}
 // After Stop, the server ends the stream itself (it saves the stopped turn
 // first); wait this long before dropping it anyway.
 export const STOP_GRACE_MS = 15_000;
+// A stream up this long before it dropped resets the re-attach budget.
+export const REATTACH_RESET_MS = 60_000;
+// How long a send waits for an attach to say whether a run is live.
+export const CONFIRM_WAIT_MS = 5_000;
 
 export class Runner {
   private ctrl: AbortController | null = null;
   private _running = false;
+  // A live run was seen on the current stream (not just the attach handshake).
+  private confirmed = false;
 
   constructor(private readonly api: Api, private readonly sessionId: number,
               private readonly hooks: RunHooks) {}
@@ -35,6 +41,11 @@ export class Runner {
   /** Start a turn — or, while one runs, steer it (the text is folded in at the
    *  agent's next step, as the web UI does). */
   async send(content: string, opts: SendOptions): Promise<void> {
+    // A reopen's attach is "running" until the server says whether anything
+    // is: wait for that answer instead of steering a run that may not exist.
+    for (let waited = 0; this._running && !this.confirmed && waited < CONFIRM_WAIT_MS; waited += 100) {
+      await new Promise(r => setTimeout(r, 100));
+    }
     if (this._running) {
       const r = await this.api.steer(this.sessionId, content);
       if (!r?.queued) {
@@ -59,13 +70,17 @@ export class Runner {
     // the stopped turn and says so. Dropping the stream at once made the
     // stopped turn vanish from the chat. Only a stream that never ends is cut.
     const ctrl = this.ctrl;
-    await this.api.stop(this.sessionId);
-    if (ctrl) setTimeout(() => { if (this.ctrl === ctrl) ctrl.abort(); }, STOP_GRACE_MS);
+    try {
+      await this.api.stop(this.sessionId);
+    } finally {
+      if (ctrl) setTimeout(() => { if (this.ctrl === ctrl) ctrl.abort(); }, STOP_GRACE_MS);
+    }
   }
 
   dispose(): void { this.ctrl?.abort(); }
 
   private async drive(open: (s: AbortSignal) => AsyncGenerator<AgentEvent>): Promise<void> {
+    this.confirmed = false;
     const ctrl = new AbortController();
     this.ctrl = ctrl;
     this.setRunning(true);
@@ -74,9 +89,13 @@ export class Runner {
     try {
       for (;;) {
         try {
+          const opened = Date.now();
           for await (const ev of stream) {
             if (ev.type === 'attached' && !ev.running) return;   // nothing in flight
-            reattached = 0;             // the budget is for drops IN A ROW
+            if (ev.type !== 'attached') this.confirmed = true;
+            // The budget is for drops in a row: a stream that stayed up a
+            // while earned it back (a replay's burst of old events does not).
+            if (Date.now() - opened > REATTACH_RESET_MS) reattached = 0;
             this.hooks.onEvent(ev);
           }
           return;                                   // the run ended its stream

@@ -36,6 +36,7 @@ export class Controller implements vscode.Disposable {
   private status: vscode.StatusBarItem;
   private pendingApproval: number | null = null;
   private prompted = new Set<number>();
+  private approvalName = '';
   // After "go back": the next message REPLACES this user message and every
   // message after it (the server truncates the chat there).
   private replaceFrom: number | null = null;
@@ -43,8 +44,19 @@ export class Controller implements vscode.Disposable {
   // raced, and whichever bound last won.
   private settingUp: Promise<Session | null> | null = null;
   private warnedPlainToken = false;
+  // Set by the runner's error/notice hooks: the last run did not start.
+  private runFailed = false;
+  // The message on screen is one the extension wrote (Explain), not the user's.
+  private echo = false;
 
   constructor(private readonly ctx: vscode.ExtensionContext) {
+    // Changing the aiforge.mode SETTING takes over again from a dropdown pick.
+    ctx.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+      if (e.affectsConfiguration('aiforge.mode')) {
+        void ctx.workspaceState.update(MODE_KEY, undefined);
+        this.post({ type: 'config', mode: this.mode });
+      }
+    }));
     this.api = new Api(() => config().get<string>('apiUrl', 'http://127.0.0.1:8799'),
                        async () => ctx.secrets.get(TOKEN_KEY));
     this.status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
@@ -75,7 +87,20 @@ export class Controller implements vscode.Disposable {
 
   /** The chat view (re)opened: show this workspace's chat and any live run. */
   async reopen(): Promise<void> {
-    await this.setUp(false);
+    if (!this.session) {
+      await this.setUp(false);
+      return;
+    }
+    // A re-created page starts empty: give it the chat again.
+    this.postSession();
+    this.post({ type: 'running', value: !!this.runner?.running });
+    this.post({ type: 'replacing', from: this.replaceFrom });
+    try {
+      const { messages } = await this.api.session(this.session.id);
+      this.showHistory(messages);
+    } catch {
+      // the next run end reloads it
+    }
   }
 
   async send(text: string): Promise<void> {
@@ -89,8 +114,11 @@ export class Controller implements vscode.Disposable {
       return;
     }
     const editFrom = this.replaceFrom ?? undefined;
+    this.runFailed = false;
     const ok = await this.run(text, { mode: this.mode, editFrom });
-    if (ok && editFrom) {
+    // A 409 or a failed start never reached the server's edit-from: keep
+    // "replace from here" for the next try.
+    if (ok && editFrom && !this.runFailed) {
       this.replaceFrom = null;
       this.post({ type: 'replacing', from: null });
     }
@@ -110,6 +138,7 @@ export class Controller implements vscode.Disposable {
     this.session = null;
     this.baseSha = null;
     this.replaceFrom = null;
+    this.setRunning(false);        // the old runner's own "stopped" is ignored now
     await this.ctx.workspaceState.update(SESSION_KEY, undefined);
     this.changeSet?.clear();
     this.changes.fire();
@@ -138,6 +167,12 @@ export class Controller implements vscode.Disposable {
     const id = this.session.id;
     const before = await this.api.snapshot(id, `before going back to ${sha.slice(0, 8)}`)
       .catch(() => ({ ok: false } as { ok: boolean; sha?: string }));
+    if (!before.ok) {
+      const go = await vscode.window.showWarningMessage(
+        'Could not take a snapshot first, so this cannot be undone. Go back anyway?',
+        { modal: true }, 'Go back anyway');
+      if (go !== 'Go back anyway') return;
+    }
     const r = await this.api.restore(id, sha, paths);
     if (!r.ok) throw new Error(`could not go back: ${r.error ?? 'unknown error'}`);
     if (!paths?.length && msgId) {
@@ -148,7 +183,13 @@ export class Controller implements vscode.Disposable {
       paths?.length ? `Restored ${what}.` : 'The folder is back to that point.',
       ...(before.ok && before.sha ? ['Undo this'] : []));
     if (pick === 'Undo this' && before.sha) {
-      const redo = await this.api.restore(id, before.sha);
+      if (this.runner?.running) {
+        void vscode.window.showWarningMessage('A run is going — stop it before undoing the go-back.');
+        return;
+      }
+      // Only what the go-back touched: a one-file Undo is undone for that
+      // file, not by rewinding everything done since.
+      const redo = await this.api.restore(id, before.sha, paths);
       if (!redo.ok) throw new Error(`could not undo: ${redo.error ?? 'unknown error'}`);
       if (!paths?.length) {
         this.replaceFrom = null;
@@ -338,8 +379,8 @@ export class Controller implements vscode.Disposable {
     // Working somewhere other than the open folder (a scratch workspace in the
     // sandbox): say so, or edits and "go back" seem to do nothing.
     const rel = folder ? path.relative(folder, hostCwd) : '..';
-    const scratch = rel.startsWith('..') || path.isAbsolute(rel);
-    this.post({ type: 'session', cwd: boxCwd, scratch });
+    this.sessionView = { cwd: boxCwd, scratch: rel.startsWith('..') || path.isAbsolute(rel) };
+    this.postSession();
     // Callbacks from a runner that has been replaced (the view was re-created,
     // a new chat) are dropped: its late "stopped" flipped the live one to idle.
     const runner: Runner = new Runner(this.api, session.id, {
@@ -349,9 +390,15 @@ export class Controller implements vscode.Disposable {
         this.setRunning(running);
         if (!running) void this.reloadHistory(session.id);
       },
-      onError: message => { if (this.runner === runner) this.post({ type: 'error', text: message }); },
+      onError: message => {
+        if (this.runner !== runner) return;
+        this.runFailed = true;
+        this.post({ type: 'error', text: message });
+      },
       onNotice: message => {
-        if (this.runner === runner) this.post({ type: 'notice', text: message, restoreText: true });
+        if (this.runner !== runner) return;
+        this.runFailed = true;
+        this.post({ type: 'notice', text: message, restoreText: true });
       },
     });
     this.runner = runner;
@@ -388,10 +435,16 @@ export class Controller implements vscode.Disposable {
   private onEvent(ev: AgentEvent): void {
     this.post({ type: 'event', ev });
     if (this.changeSet?.apply(ev)) this.changes.fire();
-    if (ev.type === 'approval') void this.promptApproval(ev);
-    // Other agents' tool calls (team mode) do not answer an open approval.
+    if (ev.type === 'approval') {
+      this.approvalName = String(ev.name ?? '');
+      void this.promptApproval(ev);
+    }
+    // Answered (here, in another client, or earlier in a replay): the gated
+    // call itself runs or is refused. Other agents' calls (team mode) are not
+    // an answer.
     if (ev.type === 'approval_expired' || ev.type === 'done'
-        || (ev.type === 'message' && !ev.supplementary)) {
+        || (ev.type === 'message' && !ev.supplementary)
+        || (ev.type === 'tool' && ev.name === this.approvalName)) {
       this.pendingApproval = null;
     }
     if (ev.type === 'message' && ev.awaiting_input) {
@@ -455,6 +508,10 @@ export class Controller implements vscode.Disposable {
         'The AIForge API token is sent over plain http. Use an https URL or an SSH tunnel.');
     });
   }
+
+  private sessionView = { cwd: '', scratch: false };
+
+  private postSession(): void { this.post({ type: 'session', ...this.sessionView }); }
 
   private post(msg: Record<string, unknown>): void { this.chat?.post(msg); }
 

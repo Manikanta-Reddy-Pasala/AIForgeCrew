@@ -623,3 +623,14 @@ def test_a_successful_pass_returns_the_class_store_and_intent():
         recognize_gate_intent=lambda c: "gate")
     assert C._run_capture_pass(rc, "p", "repo", "/cwd", 1) == (
         {"category": "fact"}, {"id": 3}, "gate")
+
+
+def test_a_quick_turn_is_never_escalated_into_the_build_pipeline(pp, decide, monkeypatch):
+    """Explain (from the VS Code extension) is a quick turn whose text carries
+    a diff; a diff line like "create the user through the api" must not route
+    it into the pipeline that writes code."""
+    monkeypatch.delenv("AIFORGE_AUTO_ESCALATE", raising=False)
+    C._decide_chat_route(pp["ns"], "explain", "simple", False, False, "/repo", [], quick=True)
+    assert decide["auto_escalate"] is False
+    C._decide_chat_route(pp["ns"], "build it", "simple", False, False, "/repo", [])
+    assert decide["auto_escalate"] is True

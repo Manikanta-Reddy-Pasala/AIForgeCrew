@@ -252,7 +252,7 @@ def _plan_mode_route(_pp, _enriched, _enriched_history, cwd, role, session_id,
 
 
 def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
-                       history):
+                       history, quick=False):
     """Gather the (side-effecting) inputs to the task-type router and return its
     decision. The heavy which-path decision is a PURE function in chat_router;
     here we only probe parallel capability, greenfield-ness, follow-up-ness, the
@@ -289,7 +289,10 @@ def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
         prompt, agent_mode=agent_mode, team=team, psub_on=psub_on,
         greenfield=greenfield, fresh=fresh, cat=cat,
         team_approvals=team_approvals,
-        auto_escalate=os.environ.get("AIFORGE_AUTO_ESCALATE", "1")
+        # A QUICK turn is one doer with a step cap by request — never escalated
+        # into the build pipeline because its text (e.g. a diff to explain)
+        # happens to read like "create the user through the api".
+        auto_escalate=(not quick) and os.environ.get("AIFORGE_AUTO_ESCALATE", "1")
         not in ("0", "false"))
 
 

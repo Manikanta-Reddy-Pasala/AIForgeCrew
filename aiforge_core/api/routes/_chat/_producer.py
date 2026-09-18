@@ -139,7 +139,8 @@ def _events(pc):
     #   • _team_approvals  Pipeline-approvals ON → force the gated sequential
     #                pipeline (the parallel path can't gate — J).
     _rd = _decide_chat_route(_pp, pc.prompt, pc.agent_mode, pc.team,
-                             pc._parallel_team, pc.cwd, pc.history)
+                             pc._parallel_team, pc.cwd, pc.history,
+                             quick=bool(getattr(pc.body, "quick", False)))
     _doc_task = _rd.doc_task
     _is_build_task = _rd.is_build_task
     _build_escalate = _rd.build_escalate
@@ -199,9 +200,12 @@ def _events(pc):
     # the post-run integration build: on a turn with an earlier APPLIED edit,
     # _turn_wrote_source() is True and the build fires AFTER the reject, holds
     # the is_running slot and 409-blocks the user's next (resume) message.
-    if awaiting_ctx["awaiting"]:
-        return
     _since = (getattr(pc, "_checkpoint_sha", "") or _simple_sha) if _simple_sha else ""
+    if awaiting_ctx["awaiting"]:
+        # No build, but still the Changes card: the next turn's checkpoint
+        # already holds these edits, so they would never show anywhere.
+        yield from _post_run_events(pc.prompt, pc.cwd, "plan", _since, changes_only=True)
+        return
     yield from _post_run_events(pc.prompt, pc.cwd, pc.agent_mode, _since)
 
 

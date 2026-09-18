@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -72,6 +73,20 @@ def _save(cwd: str, rows: list[dict]) -> None:
         pass
 
 
+def _seed_from_real_index(cwd: str, env: dict) -> bool:
+    """Copy the repo's index to the temp index path in ``env``. False when
+    there is none (a new repo) or it cannot be read."""
+    real = _git(cwd, "rev-parse", "--git-path", "index").stdout.strip()
+    if not real:
+        return False
+    src = real if os.path.isabs(real) else os.path.join(cwd, real)
+    try:
+        shutil.copyfile(src, env["GIT_INDEX_FILE"])
+        return True
+    except OSError:
+        return False
+
+
 def _build_snapshot_tree(cwd: str, env: dict) -> "tuple[str | None, dict]":
     """Stage the whole worktree into the temp index and write a tree. Returns
     ``(tree_sha, {})`` on success, or ``(None, error_dict)``."""
@@ -79,10 +94,14 @@ def _build_snapshot_tree(cwd: str, env: dict) -> "tuple[str | None, dict]":
     # brand-new workspace has no commit yet — without this the zero-byte temp
     # file isn't a valid index and ``git add -A`` fails "index file smaller
     # than expected").
-    if _has_head(cwd):
-        _git(cwd, "read-tree", "HEAD", env=env)
-    else:
-        _git(cwd, "read-tree", "--empty", env=env)
+    # Seed it from a COPY of the real index when there is one: its stat cache
+    # lets `add -A` skip re-hashing every unchanged tracked file (a fresh
+    # `read-tree HEAD` index has none, so each snapshot hashed the whole tree).
+    if not _seed_from_real_index(cwd, env):
+        if _has_head(cwd):
+            _git(cwd, "read-tree", "HEAD", env=env)
+        else:
+            _git(cwd, "read-tree", "--empty", env=env)
     add = _git(cwd, "add", "-A", env=env)
     if add.returncode != 0:
         return None, {"ok": False, "error": f"git add failed: {add.stderr[:200]}"}
@@ -253,5 +272,10 @@ def restore(cwd: str, sha: str, *, paths: list[str] | None = None,
     if delete_orphans:
         deleted = _delete_orphans(cwd, left, paths)
         left = [p for p in left if p not in set(deleted)]
+    if paths and not targets and not deleted:
+        # Nothing matched (a path outside this folder, an ignored file): say
+        # so instead of reporting a restore that changed nothing.
+        return {"ok": False, "error": "nothing to restore for "
+                + ", ".join(paths) + " (not in the checkpoint, not created since)"}
     return {"ok": True, "restored": sha, "left_in_place": left,
             "deleted": deleted}
