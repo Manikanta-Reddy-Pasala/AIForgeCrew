@@ -26,22 +26,39 @@ cd ~/AIForgeCrew && git pull --ff-only && bash scripts/runtime/nuc/deploy.sh
 
 Idempotent, and the source of truth for what actually gets enabled. It pulls
 both repos (AIForgeCrew and AiForgeMemory), reinstalls the editable packages,
-copies the `%h`-relative units into `~/.config/systemd/user`, restarts the
-services, enables the timers and runs health checks — API :8799, embed :8764,
-rerank :8765, Neo4j :7687, Postgres :5432. It exits non-zero if any check fails.
+then runs `ensure-boot.sh` so the stack survives reboot: linger, `aiforge-api`
+(+ sidecars) enabled, docker enabled, WireGuard `wg-quick@wg0` enabled when
+`/etc/wireguard/wg0.conf` exists. It restarts the services and health-checks
+API :8799, embed :8764, rerank :8765, Neo4j :7687, Postgres :5432. It exits
+non-zero if any check fails.
 
 `aiforge-reindex-daily.timer` ships here but is not in the script's enable list;
 enable it by hand if you want it.
 
+## Survive reboot (boot persistence)
+
+After a NUC reboot, `tickets.oneshell.in` needs: docker up, the `aiforge`
+container on `:8799` (bound `0.0.0.0`), and WireGuard so the reverse proxy at
+`77.42.45.12:9443` can reach `10.66.66.3:8799`. One shot:
+
+```bash
+bash scripts/runtime/nuc/ensure-boot.sh
+```
+
+Or the full deploy above (it calls `ensure-boot.sh`).
+
 ## Manual install
 
 ```bash
-mkdir -p ~/.config/systemd/user
-cp scripts/runtime/nuc/*.service scripts/runtime/nuc/*.timer ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now aiforge-api
-# then enable the timers you want from the table above
-sudo loginctl enable-linger "$(whoami)"   # units run without a login session
+bash scripts/runtime/nuc/ensure-boot.sh
+# equivalent pieces:
+# mkdir -p ~/.config/systemd/user
+# cp scripts/runtime/nuc/*.service scripts/runtime/nuc/*.timer ~/.config/systemd/user/
+# systemctl --user daemon-reload
+# systemctl --user enable --now aiforge-api
+# sudo loginctl enable-linger "$(whoami)"
+# sudo systemctl enable --now docker
+# sudo systemctl enable --now wg-quick@wg0   # if wg0.conf is installed
 ```
 
 ## Cross-host tunnels

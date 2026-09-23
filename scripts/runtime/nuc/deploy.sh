@@ -42,10 +42,10 @@ else
 fi
 "$PY" -c "import aiforge_core, aiforge_memory"     || { echo "FATAL: package import broken" >&2; exit 1; }
 
-step "sync systemd user units"
-mkdir -p "$UNIT_DST"
-cp "$UNIT_SRC"/*.service "$UNIT_SRC"/*.timer "$UNIT_DST"/
-systemctl --user daemon-reload
+step "boot persistence (linger + enable units + docker + WireGuard)"
+# Previously this script restarted aiforge-api but never enabled it, and never
+# turned on linger — so a reboot left tickets.oneshell.in with no backend.
+bash "$UNIT_SRC/ensure-boot.sh"
 
 step "restart services"
 systemctl --user restart aiforge-api
@@ -58,16 +58,6 @@ for runner in aiforge-runner aiforge-graph-runner graph-runner; do
     if systemctl --user list-unit-files "$runner.service" --no-legend \
             2>/dev/null | grep -q "$runner"; then
         systemctl --user restart "$runner" && echo "restarted $runner"
-    fi
-done
-
-step "enable timers"
-for t in aiforge-git-pull.timer aiforge-repo-pull.timer \
-         aiforge-memory-decay.timer aiforge-pr-comments.timer \
-         aiforge-worktree-janitor.timer aiforge-lms-ensure.timer; do
-    if [[ -f "$UNIT_DST/$t" ]]; then
-        systemctl --user enable --now "$t" 2>/dev/null \
-            && echo "enabled $t" || echo "WARN: enable failed: $t"
     fi
 done
 
