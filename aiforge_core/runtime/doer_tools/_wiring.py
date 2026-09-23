@@ -97,6 +97,8 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
     from aiforge_core.runtime.tools.ensure_runtime import ensure_runtime
     from aiforge_core.runtime.tools.project_runner import project
 
+    from ._threaded import tool_for
+
     new_canonical = [editor, new_bash, think, finish, ensure_runtime, project]
     legacy_canonical = [file_read, file_write, file_patch, list_dir, run_shell,
                         grep_repo, repo_map, impacted_tests, fetch_url,
@@ -125,7 +127,7 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
                grep, search, http_get, web_fetch, web_crawl,
                commit, git_add_commit,
                todo_write, todowrite, glob, task]
-    tools = [FunctionTool(func=fn)
+    tools = [tool_for(fn)
              for fn in new_canonical + legacy_canonical + aliases]
     # Web egress:
     #   * web_fetch + web_crawl are in the base list — every agent gets them,
