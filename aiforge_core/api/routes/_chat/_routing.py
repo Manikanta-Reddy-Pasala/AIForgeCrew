@@ -63,6 +63,7 @@ def _pipeline_route(_pp, prompt, cwd, session_id, history, _with_resume, _path,
     from aiforge_core.runtime.chat_agent import _chat_repo_key as _crk
     _pl_repo = _crk(cwd)
     _spec = _pp._enhance(prompt, history=history, cwd=cwd, repo=_pl_repo)  # 1. clean spec
+    _pctx["spec"] = _spec   # a single-task fall-through reuses it, not a 2nd enhance
     _files = _pp._architect(_spec, cwd=cwd)  # 2. design file structure
     _subs = _pp._plan_files(_files) if len(_files) >= 2 \
         else _pp._decompose(_spec)          # 3. split (per file, or plan)
@@ -354,6 +355,10 @@ def _rule_capture_pass(prompt, cwd, session_id, _pctx):
                            "text": f"Got it — saved as {_cls['category']} "
                                    f"({_cls['scope']})."}
                     yield {"type": "done"}
+                    # Without the flag the producer went on and ran the full
+                    # agent on a message with no task in it, and its reply
+                    # replaced the ack as the saved answer.
+                    _pctx["done"] = True
                     return
     except Exception as _exc:  # noqa: BLE001 — capture must never break a turn
         _af_log.debug("rule_capture pre-agent pass failed: %s", _exc)

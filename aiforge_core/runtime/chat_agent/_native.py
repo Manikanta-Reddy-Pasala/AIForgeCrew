@@ -345,6 +345,7 @@ def make_native_complete_fn():
 
     queued: list[str] = []
     skipped = [0]
+    tools: list[dict] = []   # gated once per turn, on the first call
 
     def take_queued() -> "tuple[list[str], int]":
         """The read-only calls the last reply batched after its first one, and
@@ -362,9 +363,16 @@ def make_native_complete_fn():
         model = _model_for(role)
         if _NATIVE_CACHE.get(model) is False:
             return client.complete(role, convo)
+        if not tools:
+            try:
+                from ._catalog_gate import gate_schemas
+                tools[:] = gate_schemas(NATIVE_TOOL_SCHEMAS)
+            except Exception as exc:  # noqa: BLE001 — never break a turn
+                log.debug("schema gate failed, sending all: %s", exc)
+                tools[:] = NATIVE_TOOL_SCHEMAS
         try:
             msg = client.complete_raw(
-                role, convo, tools=NATIVE_TOOL_SCHEMAS, tool_choice="auto")
+                role, convo, tools=tools, tool_choice="auto")
         except Exception as exc:  # noqa: BLE001
             if _native_error_is_permanent(exc, model):
                 return client.complete(role, convo)

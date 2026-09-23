@@ -211,6 +211,10 @@ def _dispatch_agent_route(_rd, _pp, prompt, cwd, session_id, history,
                                         session_id=session_id, history=history,
                                         started_at=_turn_t0,
                                         resume_brief=_resume_brief)
+        # The team run IS the turn: without this the producer fell through and
+        # ran the same request again with the single agent (enhancer, baseline
+        # commit, run_chat_agent, post-run checks) after the team had finished.
+        rctx["done"] = True
 
 
 def _early_route_events(cmd_help_text, body, history, cwd, role, session_id, pctx):

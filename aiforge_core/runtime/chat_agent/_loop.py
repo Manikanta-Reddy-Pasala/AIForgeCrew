@@ -138,8 +138,9 @@ def _emit_loop_prelude(st):
     # ACTION/ARGS_JSON protocol). Opt out of the banner: AIFORGE_CHAT_NATIVE_BANNER=0.
     if st.native_on and os.environ.get("AIFORGE_CHAT_NATIVE_BANNER", "1") not in ("0", "false"):
         try:
+            from ._catalog_gate import gate_schemas
             from ._tools._schemas import NATIVE_TOOL_SCHEMAS
-            _ntools = len(NATIVE_TOOL_SCHEMAS)
+            _ntools = len(gate_schemas(NATIVE_TOOL_SCHEMAS))   # what is sent
         except Exception:  # noqa: BLE001
             _ntools = 0
         yield {"type": "thought", "role": "system",
