@@ -82,20 +82,25 @@ else
 fi
 
 step "WireGuard client (tickets.oneshell.in bridge)"
-if [[ -f /etc/wireguard/wg0.conf ]]; then
-  if _sudo_n systemctl enable --now wg-quick@wg0 2>/dev/null; then
-    echo "wg-quick@wg0 enabled and started"
-    _sudo_n wg show wg0 2>/dev/null | head -8 || true
-  elif systemctl is-enabled wg-quick@wg0 >/dev/null 2>&1 \
-      && systemctl is-active wg-quick@wg0 >/dev/null 2>&1; then
-    echo "wg-quick@wg0 already enabled and active"
+WG_IFACE=""
+for i in wg1 wg0; do
+  [[ -f "/etc/wireguard/${i}.conf" ]] && { WG_IFACE="$i"; break; }
+done
+WG_IFACE="${WG_IFACE:-${AIFORGE_WG_IFACE:-wg1}}"
+if [[ -f "/etc/wireguard/${WG_IFACE}.conf" ]]; then
+  if _sudo_n systemctl enable --now "wg-quick@${WG_IFACE}" 2>/dev/null; then
+    echo "wg-quick@${WG_IFACE} enabled and started"
+    _sudo_n wg show "$WG_IFACE" 2>/dev/null | head -8 || true
+  elif systemctl is-enabled "wg-quick@${WG_IFACE}" >/dev/null 2>&1 \
+      && systemctl is-active "wg-quick@${WG_IFACE}" >/dev/null 2>&1; then
+    echo "wg-quick@${WG_IFACE} already enabled and active"
   else
-    need_sudo "cannot enable/start wg-quick@wg0" \
-      "sudo systemctl enable --now wg-quick@wg0"
+    need_sudo "cannot enable/start wg-quick@${WG_IFACE}" \
+      "sudo systemctl enable --now wg-quick@${WG_IFACE}"
   fi
 else
-  need_sudo "/etc/wireguard/wg0.conf missing" \
-    "bash $UNIT_SRC/install-wireguard.sh /path/to/wg0.conf"
+  need_sudo "/etc/wireguard/${WG_IFACE}.conf missing" \
+    "bash $UNIT_SRC/install-wireguard.sh /path/to/${WG_IFACE}.conf"
 fi
 
 step "enable AIForge at boot"

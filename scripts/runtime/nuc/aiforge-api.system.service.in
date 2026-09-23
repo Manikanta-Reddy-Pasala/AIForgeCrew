@@ -2,6 +2,10 @@
 # install-system-boot.sh fills __USER__ / __HOME__ / __CREW__ and installs to
 # /etc/systemd/system/aiforge-api.service so the API starts at boot with NO
 # graphical login and NO linger dependency.
+#
+# NUC-only registry / longer timeout live in a DROP-IN
+# (aiforge-api.service.d/nuc-registry.conf) so re-running this installer does
+# not erase operator overrides.
 [Unit]
 Description=AIForge sandbox (system, boots without login)
 After=network-online.target docker.service
@@ -11,6 +15,8 @@ Requires=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# First start installs deps from the public index — can take many minutes.
+TimeoutStartSec=2400
 User=__USER__
 Group=__USER__
 WorkingDirectory=__CREW__
