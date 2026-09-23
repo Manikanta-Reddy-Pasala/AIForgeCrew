@@ -48,7 +48,13 @@ step "boot persistence (linger + enable units + docker + WireGuard)"
 bash "$UNIT_SRC/ensure-boot.sh"
 
 step "restart services"
-systemctl --user restart aiforge-api
+if [[ -f /etc/systemd/system/aiforge-api.service ]]; then
+    sudo -n systemctl restart aiforge-api.service 2>/dev/null \
+      || systemctl restart aiforge-api.service 2>/dev/null \
+      || echo "WARN: could not restart system aiforge-api" >&2
+else
+    systemctl --user restart aiforge-api
+fi
 for svc in aiforge-embed-sidecar aiforge-rerank-sidecar; do
     systemctl --user restart "$svc" 2>/dev/null \
         || echo "note: $svc not active (ok if model files absent)"
