@@ -39,9 +39,52 @@ else
     "sudo loginctl enable-linger $USER_NAME"
 fi
 
+# docker BEFORE aiforge-api: the unit Requires=docker.service, so enable --now
+# would abort under set -e if docker is not up yet.
+step "docker at boot"
+if ! command -v docker >/dev/null 2>&1; then
+  need_sudo "docker not on PATH" "install docker and re-run ensure-boot.sh"
+elif sudo -n systemctl enable --now docker 2>/dev/null; then
+  echo "docker enabled"
+elif systemctl is-enabled docker >/dev/null 2>&1 \
+    && systemctl is-active docker >/dev/null 2>&1; then
+  echo "docker already enabled and active"
+elif systemctl is-enabled docker >/dev/null 2>&1; then
+  if sudo -n systemctl start docker 2>/dev/null; then
+    echo "docker started"
+  else
+    need_sudo "docker enabled but not running" "sudo systemctl start docker"
+  fi
+else
+  need_sudo "cannot enable docker at boot" \
+    "sudo systemctl enable --now docker"
+fi
+
+step "WireGuard client (tickets.oneshell.in bridge)"
+if [[ -f /etc/wireguard/wg0.conf ]]; then
+  if sudo -n systemctl enable --now wg-quick@wg0 2>/dev/null; then
+    echo "wg-quick@wg0 enabled and started"
+    sudo -n wg show wg0 2>/dev/null | head -8 || true
+  elif systemctl is-enabled wg-quick@wg0 >/dev/null 2>&1 \
+      && systemctl is-active wg-quick@wg0 >/dev/null 2>&1; then
+    echo "wg-quick@wg0 already enabled and active"
+  else
+    need_sudo "cannot enable/start wg-quick@wg0" \
+      "sudo systemctl enable --now wg-quick@wg0"
+  fi
+else
+  need_sudo "/etc/wireguard/wg0.conf missing" \
+    "bash $UNIT_SRC/install-wireguard.sh /path/to/wg0.conf"
+fi
+
 step "enable AIForge at boot"
 systemctl --user enable aiforge-api.service
-systemctl --user enable --now aiforge-api.service
+if systemctl is-active docker >/dev/null 2>&1; then
+  systemctl --user enable --now aiforge-api.service
+else
+  echo "WARN: docker not active — enabled aiforge-api but not starting it yet" >&2
+  fail=1
+fi
 if ! systemctl --user is-enabled aiforge-api.service >/dev/null 2>&1; then
   need_sudo "aiforge-api.service is not enabled" \
     "systemctl --user enable --now aiforge-api.service"
@@ -64,34 +107,6 @@ for t in aiforge-git-pull.timer aiforge-repo-pull.timer \
       && echo "enabled $t" || echo "WARN: enable failed: $t"
   fi
 done
-
-step "docker at boot"
-if ! command -v docker >/dev/null 2>&1; then
-  need_sudo "docker not on PATH" "install docker and re-run ensure-boot.sh"
-elif sudo -n systemctl enable --now docker 2>/dev/null; then
-  echo "docker enabled"
-elif systemctl is-enabled docker >/dev/null 2>&1; then
-  echo "docker already enabled ($(systemctl is-active docker 2>/dev/null || true))"
-else
-  need_sudo "cannot enable docker at boot" \
-    "sudo systemctl enable --now docker"
-fi
-
-step "WireGuard client (tickets.oneshell.in bridge)"
-if [[ -f /etc/wireguard/wg0.conf ]]; then
-  if sudo -n systemctl enable --now wg-quick@wg0 2>/dev/null; then
-    echo "wg-quick@wg0 enabled and started"
-    sudo -n wg show wg0 2>/dev/null | head -8 || true
-  elif systemctl is-enabled wg-quick@wg0 >/dev/null 2>&1 \
-      && systemctl is-active wg-quick@wg0 >/dev/null 2>&1; then
-    echo "wg-quick@wg0 already enabled and active"
-  else
-    need_sudo "cannot enable/start wg-quick@wg0" \
-      "sudo systemctl enable --now wg-quick@wg0"
-  fi
-else
-  echo "note: /etc/wireguard/wg0.conf missing — install via install-wireguard.sh"
-fi
 
 step "status"
 systemctl --user is-enabled aiforge-api.service || true
