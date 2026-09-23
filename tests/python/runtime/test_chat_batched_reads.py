@@ -296,7 +296,7 @@ def test_the_note_names_each_reason():
     from types import SimpleNamespace
 
     from aiforge_core.runtime.chat_agent import _loop
-    st = SimpleNamespace(pending_steps=["a", "b"], batch_skipped=3,
+    st = SimpleNamespace(pending_steps=["a", "b"], batch_skipped=3, early_reads={},
                          convo=[{"role": "user", "content": "OBSERVATION: x"}])
     _loop._drop_batch(st, "an earlier call was blocked")
     note = st.convo[-1]["content"]
@@ -333,3 +333,277 @@ def test_the_prompt_forbids_promises_and_made_up_results():
     from aiforge_core.runtime.chat_agent._prompt import _SYSTEM
     for rule in ("NEVER END ON A PROMISE", "NEVER FABRICATE", "BE OBJECTIVE"):
         assert rule in _SYSTEM
+
+
+# --- remote reads of a batch run at the same time --------------------------
+
+def _jira_reads(*keys):
+    return [f'ACTION: jira_read\nARGS_JSON: {{"key": "{k}"}}' for k in keys]
+
+
+@pytest.fixture
+def _slow_jira(monkeypatch):
+    """jira_read that takes 0.4 s. Each read is recorded when it STARTS as
+    [key, thread, start, end]; end is filled in when it finishes."""
+    import threading
+    import time
+
+    from aiforge_core.runtime.chat_agent._registry import TOOLS
+    ran = []
+
+    def _read(args, cwd):
+        row = [args["key"], threading.current_thread().name, time.monotonic(), None]
+        ran.append(row)
+        time.sleep(0.4)
+        row[3] = time.monotonic()
+        return {"ok": True, "text": f"issue {args['key']}"}
+    monkeypatch.setitem(TOOLS, "jira_read", _read)
+    return ran
+
+
+def _keys(evs):
+    return [e["args"]["key"] for e in evs
+            if e["type"] == "tool" and e["name"] == "jira_read"]
+
+
+def _early(ran):
+    return sorted(r[0] for r in ran if r[1].startswith("batch-read"))
+
+
+def _span(ran, key):
+    return next((r[2], r[3]) for r in ran if r[0] == key)
+
+
+def test_remote_reads_of_a_batch_run_at_the_same_time(tmp_path, _slow_jira):
+    fn, calls = _batching_fn(_jira_reads("A-1", "A-2", "A-3", "A-4"), "FINAL: ok")
+    evs = _run(tmp_path, fn)
+    assert _keys(evs) == ["A-1", "A-2", "A-3", "A-4"], "results keep reply order"
+    assert _early(_slow_jira) == ["A-2", "A-3", "A-4"]
+    spans = [_span(_slow_jira, k) for k in ("A-1", "A-2", "A-3", "A-4")]
+    assert max(s for s, _ in spans) < min(e for _, e in spans), \
+        "every read started before the first one ended"
+    assert len(calls) == 2
+    for key in ("A-1", "A-2", "A-3", "A-4"):
+        assert f"issue {key}" in _seen(calls, 1)
+
+
+def test_the_parallel_cap_limits_reads_in_flight(tmp_path, _slow_jira, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_PARALLEL_READS", "1")
+    fn, _ = _batching_fn(_jira_reads("A-1", "A-2", "A-3"), "FINAL: ok")
+    _run(tmp_path, fn)
+    # A-1 runs in the loop alongside one background worker doing A-2 then A-3.
+    assert _early(_slow_jira) == ["A-2", "A-3"]
+    assert _span(_slow_jira, "A-2")[0] < _span(_slow_jira, "A-1")[1]
+    assert _span(_slow_jira, "A-3")[0] >= _span(_slow_jira, "A-2")[1]
+
+
+def test_cap_zero_runs_the_batch_in_line(tmp_path, _slow_jira, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_PARALLEL_READS", "0")
+    fn, _ = _batching_fn(_jira_reads("A-1", "A-2"), "FINAL: ok")
+    assert _keys(_run(tmp_path, fn)) == ["A-1", "A-2"]
+    assert _early(_slow_jira) == []
+
+
+def test_a_read_a_hook_watches_is_not_started_early(tmp_path, _slow_jira,
+                                                     monkeypatch):
+    """A PreToolUse hook may block the call: it has to see it before it runs."""
+    from aiforge_core.runtime import hooks
+    monkeypatch.setattr(hooks, "has_matching", lambda event, tool, cwd=None: True)
+    fn, _ = _batching_fn(_jira_reads("A-1", "A-2"), "FINAL: ok")
+    assert _keys(_run(tmp_path, fn)) == ["A-1", "A-2"]
+    assert _early(_slow_jira) == []
+
+
+def test_a_read_that_needs_approval_is_not_started_early(tmp_path, _slow_jira,
+                                                          monkeypatch):
+    monkeypatch.setenv("AIFORGE_TOOL_POLICY", "jira_read=ask")
+    fn, _ = _batching_fn(_jira_reads("A-1", "A-2"), "FINAL: ok")
+    _run(tmp_path, fn)
+    assert _early(_slow_jira) == []
+
+
+def test_local_reads_are_never_started_early(_two_files, monkeypatch):
+    import threading
+
+    from aiforge_core.runtime.chat_agent._registry import TOOLS
+    threads = []
+    real = TOOLS["file_read"]
+
+    def _read(args, cwd):
+        threads.append(threading.current_thread().name)
+        return real(args, cwd)
+    monkeypatch.setitem(TOOLS, "file_read", _read)
+    fn, _ = _batching_fn(_reads("a", "b", "c"), "FINAL: ok")
+    assert _paths(_run(_two_files, fn)) == ["a.txt", "b.txt", "c.txt"]
+    assert not any(t.startswith("batch-read") for t in threads)
+
+
+_DENIED = 'ACTION: list_dir\nARGS_JSON: {"path": "."}'
+
+
+def test_a_dropped_batch_never_shows_its_early_results(tmp_path, _slow_jira,
+                                                       monkeypatch):
+    monkeypatch.setenv("AIFORGE_TOOL_POLICY", "list_dir=deny")
+    batch = _jira_reads("A-1") + [_DENIED] + _jira_reads("A-2", "A-3")
+    fn, calls = _batching_fn(batch, "FINAL: ok")
+    evs = _run(tmp_path, fn)
+    assert _keys(evs) == ["A-1"]
+    assert _early(_slow_jira) == ["A-2", "A-3"], "they did start early"
+    assert "issue A-2" not in _seen(calls, 1)
+    assert "2 because an earlier call was blocked" in _seen(calls, 1)
+
+
+def test_a_dropped_batch_cancels_reads_still_waiting(tmp_path, monkeypatch):
+    """One worker: A-2 holds it until the batch is dropped, so A-3 is still
+    waiting then and must never run."""
+    import threading
+
+    from aiforge_core.runtime.chat_agent._registry import TOOLS
+    from aiforge_core.runtime.chat_agent._turn import _batch
+    dropped, took_a2, ran = threading.Event(), threading.Event(), []
+
+    def _read(args, cwd):
+        ran.append(args["key"])
+        if args["key"] == "A-1":       # inline: let the worker take A-2 first
+            took_a2.wait(5)
+        if args["key"] == "A-2":
+            took_a2.set()
+            dropped.wait(5)
+        return {"ok": True}
+    monkeypatch.setitem(TOOLS, "jira_read", _read)
+    real_cancel = _batch._cancel_early_reads
+
+    def _cancel(st):
+        waiting = bool(st.early_reads)
+        real_cancel(st)
+        if waiting:
+            dropped.set()
+    monkeypatch.setattr(_batch, "_cancel_early_reads", _cancel)
+    monkeypatch.setenv("AIFORGE_CHAT_PARALLEL_READS", "1")
+    monkeypatch.setenv("AIFORGE_TOOL_POLICY", "list_dir=deny")
+    batch = _jira_reads("A-1") + [_DENIED] + _jira_reads("A-2", "A-3")
+    fn, _ = _batching_fn(batch, "FINAL: ok")
+    _run(tmp_path, fn)
+    assert dropped.is_set()
+    threading.Event().wait(0.3)      # time for A-3 to run, had it not been cancelled
+    assert sorted(ran) == ["A-1", "A-2"]
+
+
+def test_the_check_is_per_call(tmp_path, _slow_jira, monkeypatch):
+    """A hook on jira_read holds back only jira_read."""
+    from aiforge_core.runtime import hooks
+    from aiforge_core.runtime.chat_agent._registry import TOOLS
+    monkeypatch.setitem(TOOLS, "confluence_read", lambda args, cwd: {"ok": True})
+    monkeypatch.setattr(hooks, "has_matching",
+                        lambda event, tool, cwd=None: tool == "jira_read")
+    started = []
+    from aiforge_core.runtime.chat_agent._turn import _batch
+    orig = _batch._invoke_tool
+    monkeypatch.setattr(_batch, "_invoke_tool",
+                        lambda fn, name, args, cwd: started.append(name)
+                        or orig(fn, name, args, cwd))
+    batch = _jira_reads("A-1", "A-2") + [
+        'ACTION: confluence_read\nARGS_JSON: {"page_id": "7"}']
+    fn, _ = _batching_fn(batch, "FINAL: ok")
+    _run(tmp_path, fn)
+    assert started == ["confluence_read"]
+    assert _early(_slow_jira) == []
+
+
+def test_an_early_read_that_raises_is_an_error_result(tmp_path, monkeypatch):
+    from aiforge_core.runtime.chat_agent._registry import TOOLS
+
+    def _boom(args, cwd):
+        raise RuntimeError("jira is down")
+    monkeypatch.setitem(TOOLS, "jira_read", _boom)
+    fn, calls = _batching_fn(_jira_reads("A-1", "A-2"), "FINAL: ok")
+    evs = _run(tmp_path, fn)
+    results = [e["result"] for e in evs
+               if e["type"] == "tool" and e["name"] == "jira_read"]
+    assert results == [{"ok": False, "error": "jira is down"}] * 2
+    assert len(calls) == 2
+
+
+def test_every_remote_read_is_batchable_and_read_only():
+    """Plan/Analyze mode lets read-only tools through: a remote read that is
+    not one would be started early and then refused."""
+    from aiforge_core.runtime.chat_agent._registry import _READONLY_TOOLS
+    assert _native.REMOTE_READS <= _native.BATCHABLE_READS
+    assert _native.REMOTE_READS.issubset(_READONLY_TOOLS)
+
+
+def test_a_turn_that_ends_cancels_reads_still_waiting(tmp_path, monkeypatch):
+    """The reply's first call is refused and the run pauses for the user: the
+    batch's reads still waiting for a worker must not run after the turn."""
+    import threading
+
+    from aiforge_core.runtime.chat_agent import _loop
+    from aiforge_core.runtime.chat_agent._registry import TOOLS
+    release, took_a2, ran = threading.Event(), threading.Event(), []
+
+    def _read(args, cwd):
+        ran.append(args["key"])
+        took_a2.set()
+        release.wait(5)
+        return {"ok": True}
+    monkeypatch.setitem(TOOLS, "jira_read", _read)
+    monkeypatch.setenv("AIFORGE_CHAT_PARALLEL_READS", "1")
+
+    def _pause(st, step, name, args, sig, n, cwd, session_id):
+        took_a2.wait(5)                # the worker holds A-2; A-3 waits
+        return "return"
+        yield
+    monkeypatch.setattr(_loop, "_gated_action", _pause)
+    fn, _ = _batching_fn(_jira_reads("A-1", "A-2", "A-3"), "FINAL: ok")
+    _run(tmp_path, fn)
+    release.set()
+    threading.Event().wait(0.3)
+    assert ran == ["A-2"], "A-3 was still waiting when the turn ended"
+
+
+def test_a_read_already_done_is_not_started_again(tmp_path):
+    from types import SimpleNamespace
+
+    from aiforge_core.runtime.chat_agent._turn import _batch
+    sig = _batch._call_sig("jira_read", {"key": "A-1"})
+    st = SimpleNamespace(long_chain_help=True, read_sigs_seen={sig},
+                         cwd=str(tmp_path))
+    assert not _batch._can_start_early(st, "jira_read", {"key": "A-1"}, sig)
+    st.read_sigs_seen = set()
+    assert _batch._can_start_early(st, "jira_read", {"key": "A-1"}, sig)
+
+
+def test_a_batch_that_will_stop_starts_nothing(tmp_path, _slow_jira, monkeypatch):
+    import threading
+
+    from aiforge_core.runtime import chat_interject
+    monkeypatch.setattr(chat_interject, "pending", lambda sid: True)
+    monkeypatch.setattr(chat_interject, "drain_items", lambda sid: [])
+    fn, _ = _batching_fn(_jira_reads("A-1", "A-2"), "FINAL: ok")
+    _run(tmp_path, fn, session_id=987658)
+    threading.Event().wait(0.2)      # time for an early read to have started
+    assert _early(_slow_jira) == []
+
+
+def test_a_failure_to_start_runs_the_batch_in_line(tmp_path, _slow_jira,
+                                                   monkeypatch):
+    from aiforge_core.runtime.chat_agent._turn import _batch
+
+    def _no_threads(st):
+        raise RuntimeError("can't start new thread")
+    monkeypatch.setattr(_batch, "_start_parallel_reads", _no_threads)
+    fn, _ = _batching_fn(_jira_reads("A-1", "A-2"), "FINAL: ok")
+    assert _keys(_run(tmp_path, fn)) == ["A-1", "A-2"]
+    assert _early(_slow_jira) == []
+
+
+def test_has_matching_follows_the_hook_files(tmp_path, monkeypatch):
+    from aiforge_core.runtime import hooks
+    monkeypatch.setattr(hooks, "_global_path", lambda: str(tmp_path / "none.json"))
+    (tmp_path / ".aiforge").mkdir()
+    (tmp_path / ".aiforge" / "hooks.json").write_text(json.dumps(
+        {"PreToolUse": [{"matcher": "jira_read|gitlab_read", "command": "true"}]}))
+    assert hooks.has_matching("PreToolUse", "jira_read", str(tmp_path))
+    assert not hooks.has_matching("PreToolUse", "confluence_read", str(tmp_path))
+    monkeypatch.setenv("AIFORGE_HOOKS_DISABLE", "1")
+    assert not hooks.has_matching("PreToolUse", "jira_read", str(tmp_path))

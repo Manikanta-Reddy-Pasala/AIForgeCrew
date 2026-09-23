@@ -249,16 +249,20 @@ def _batch_cap() -> int:
 #: Reads that return in seconds. The turn deadline is only checked between
 #: calls, so a slow read-only tool (a pipeline watch, a crawl, a type check, a
 #: document summary that calls a model) never joins a batch.
-BATCHABLE_READS = frozenset({
+#: The batchable reads that wait on a remote server: a batch runs these at the
+#: same time. Local reads take milliseconds and run one after another.
+REMOTE_READS = frozenset({
+    "jira_read", "jira_search", "jira_transitions", "jira_worklog",
+    "confluence_read", "confluence_search", "confluence_children",
+    "gitlab_read", "gitlab_search",
+})
+BATCHABLE_READS = REMOTE_READS | {
     "file_read", "read_files", "read_lines", "list_dir", "find", "grep",
     "git_status", "git_diff", "git_log", "git_blame",
     "memory_lookup", "search_chat_sessions", "skill_search", "workflow_search",
     "codegraph_query", "codegraph_callers", "codegraph_callees",
     "codegraph_impact", "resolve_repo", "list_services",
-    "jira_read", "jira_search", "jira_transitions", "jira_worklog",
-    "confluence_read", "confluence_search", "confluence_children",
-    "gitlab_read", "gitlab_search",
-})
+}
 #: Bookkeeping the loop handles itself; safe to run inside a batch of reads.
 _BATCHABLE = BATCHABLE_READS | {"plan_progress"}
 
