@@ -36,8 +36,14 @@ def test_install_system_boot_nopasswd_and_autologin() -> None:
     text = INSTALL.read_text(encoding="utf-8")
     assert "/etc/sudoers.d/aiforge-boot" in text
     assert "NOPASSWD" in text
-    assert "visudo -cf" in text  # never install a broken sudoers
+    assert "visudo -cf" in text
+    assert "Cmnd_Alias AIFORGE_BOOT" in text
+    assert "enable --now docker" in text
+    # User-writable scripts must not appear in the sudoers drop-in content.
+    assert "ensure-boot.sh, \\" not in text
+    assert "deploy-nuc.sh" not in text.split("visudo")[0]
     assert "AutomaticLoginEnable" in text or "autologin-user" in text
+    assert "systemctl --user -M" in text or "XDG_RUNTIME_DIR" in text
     assert "multi-user.target" in SYSTEM_IN.read_text(encoding="utf-8")
     assert "AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1" in SYSTEM_IN.read_text(
         encoding="utf-8")
