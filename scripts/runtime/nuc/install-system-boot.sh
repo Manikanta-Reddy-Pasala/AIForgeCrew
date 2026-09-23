@@ -58,36 +58,62 @@ _sudo systemctl enable aiforge-api.service
 echo "installed /etc/systemd/system/aiforge-api.service (WantedBy=multi-user.target)"
 
 # Prefer the system unit over the user unit so they never fight.
-if systemctl --user is-enabled aiforge-api.service >/dev/null 2>&1; then
-  systemctl --user disable aiforge-api.service 2>/dev/null || true
-  echo "disabled user aiforge-api.service (system unit owns boot now)"
+# When this script is run via sudo, `systemctl --user` would hit *root's*
+# user manager — target TARGET_USER's lingering session instead.
+_uid="$(id -u "$TARGET_USER")"
+_runtime="/run/user/${_uid}"
+if [[ -d "$_runtime" ]] || _sudo loginctl enable-linger "$TARGET_USER" 2>/dev/null; then
+  if _sudo systemctl --user -M "${TARGET_USER}@" disable aiforge-api.service 2>/dev/null \
+    || _sudo -u "$TARGET_USER" env XDG_RUNTIME_DIR="$_runtime" \
+         systemctl --user disable aiforge-api.service 2>/dev/null; then
+    echo "disabled user aiforge-api.service for $TARGET_USER (system unit owns boot)"
+  else
+    echo "note: user aiforge-api.service not enabled for $TARGET_USER (ok)"
+  fi
 fi
 
 # ── 2. passwordless sudo for boot ops only ────────────────────────────────
-# Tight list — not NOPASSWD: ALL. Needed so ensure-boot / timers / operators
-# can re-enable docker/WG/linger without typing a password after reboot.
+# Fixed system binaries + explicit args — NEVER NOPASSWD on scripts under
+# $CREW_DIR (user-writable → trivial root escalation). Never bare systemctl.
 SUDOERS=/etc/sudoers.d/aiforge-boot
 sudoers_tmp="$(mktemp)"
-cat > "$sudoers_tmp" <<EOF
-# AIForge NUC boot — managed by scripts/runtime/nuc/install-system-boot.sh
-# Passwordless ONLY for the reboot path (docker, wg, linger, this unit).
-Cmnd_Alias AIFORGE_BOOT = \\
-  /bin/systemctl, /usr/bin/systemctl, \\
-  /bin/journalctl, /usr/bin/journalctl, \\
-  /bin/loginctl, /usr/bin/loginctl, \\
-  /usr/bin/wg, /usr/bin/wg-quick, \\
-  /usr/sbin/ufw, \\
-  /bin/docker, /usr/bin/docker, \\
-  $CREW_DIR/scripts/runtime/nuc/ensure-boot.sh, \\
-  $CREW_DIR/scripts/runtime/nuc/install-wireguard.sh, \\
-  $CREW_DIR/scripts/runtime/nuc/ufw-open.sh, \\
-  $CREW_DIR/scripts/deploy-nuc.sh
-$TARGET_USER ALL=(root) NOPASSWD: AIFORGE_BOOT
-EOF
-# visudo -c rejects bad files; never install a broken sudoers drop-in.
+# Resolve realpaths so both /bin and /usr/bin forms match what sudo -n sees.
+_sc="$(command -v systemctl)"
+_lc="$(command -v loginctl)"
+_wg="$(command -v wg || true)"
+_wq="$(command -v wg-quick || true)"
+{
+  echo "# AIForge NUC boot — managed by scripts/runtime/nuc/install-system-boot.sh"
+  echo "# Passwordless ONLY for the listed subcommands (not systemctl/ufw wholesale)."
+  echo "Cmnd_Alias AIFORGE_BOOT = \\"
+  echo "  ${_sc} enable docker, \\"
+  echo "  ${_sc} enable --now docker, \\"
+  echo "  ${_sc} start docker, \\"
+  echo "  ${_sc} restart docker, \\"
+  echo "  ${_sc} enable wg-quick@wg0, \\"
+  echo "  ${_sc} enable --now wg-quick@wg0, \\"
+  echo "  ${_sc} start wg-quick@wg0, \\"
+  echo "  ${_sc} restart wg-quick@wg0, \\"
+  echo "  ${_sc} enable aiforge-api.service, \\"
+  echo "  ${_sc} enable --now aiforge-api.service, \\"
+  echo "  ${_sc} start aiforge-api.service, \\"
+  echo "  ${_sc} restart aiforge-api.service, \\"
+  echo "  ${_sc} daemon-reload, \\"
+  echo "  ${_sc} status aiforge-api.service, \\"
+  echo "  ${_lc} enable-linger ${TARGET_USER}"
+  if [[ -n "$_wg" ]]; then
+    echo "Cmnd_Alias AIFORGE_WG = ${_wg} show, ${_wg} show wg0"
+    [[ -n "$_wq" ]] && echo "Cmnd_Alias AIFORGE_WGQ = ${_wq} up wg0, ${_wq} down wg0"
+  fi
+  echo "$TARGET_USER ALL=(root) NOPASSWD: AIFORGE_BOOT"
+  if [[ -n "$_wg" ]]; then
+    echo "$TARGET_USER ALL=(root) NOPASSWD: AIFORGE_WG"
+    [[ -n "$_wq" ]] && echo "$TARGET_USER ALL=(root) NOPASSWD: AIFORGE_WGQ"
+  fi
+} > "$sudoers_tmp"
 if _sudo visudo -cf "$sudoers_tmp" >/dev/null 2>&1; then
   _sudo install -m 440 "$sudoers_tmp" "$SUDOERS"
-  echo "installed $SUDOERS (NOPASSWD for boot commands only)"
+  echo "installed $SUDOERS (NOPASSWD for listed boot commands only)"
 else
   echo "FAIL: generated sudoers failed visudo -c — not installing" >&2
   cat "$sudoers_tmp" >&2
