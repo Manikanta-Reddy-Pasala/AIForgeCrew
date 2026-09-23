@@ -29,6 +29,10 @@ def test_ensure_boot_enables_linger_api_docker_and_wireguard() -> None:
     assert "systemctl --user enable aiforge-api.service" in text
     assert "systemctl enable --now docker" in text
     assert "wg-quick@wg0" in text
+    # Must not claim success when sudo could not enable boot prerequisites.
+    assert 'fail=1' in text or "fail=1" in text
+    assert "exit 1" in text
+    assert "boot persistence is incomplete" in text
 
 
 def test_deploy_calls_ensure_boot() -> None:
