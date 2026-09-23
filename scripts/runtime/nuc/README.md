@@ -45,14 +45,19 @@ container on `:8799` (bound `0.0.0.0`), and WireGuard so the reverse proxy at
 auto-login, so reboot needs nobody at the keyboard:
 
 ```bash
-sudo bash scripts/runtime/nuc/install-system-boot.sh
+# NUC login is usually `ai`:
+sudo AIFORGE_BOOT_USER=ai bash scripts/runtime/nuc/install-system-boot.sh
 # skip greeter auto-login: AIFORGE_AUTO_LOGIN=0 sudo bash …/install-system-boot.sh
 ```
 
 That installs:
-- `/etc/systemd/system/aiforge-api.service` (WantedBy=multi-user.target)
+- `/etc/systemd/system/aiforge-api.service` (WantedBy=multi-user.target, TimeoutStartSec=2400)
+- `/etc/systemd/system/aiforge-api.service.d/nuc-registry.conf` — public PyPI/npm
+  for the NUC (Artifactory unreachable without corp VPN). **Reinstall does not
+  overwrite** this drop-in.
 - `/etc/sudoers.d/aiforge-boot` (NOPASSWD only for docker/wg/systemctl/linger)
 - GDM / LightDM / SDDM AutomaticLogin for your user (optional)
+- WireGuard `wg-quick@wg1` (or `wg0` if that conf is present)
 
 Afterwards, any time:
 

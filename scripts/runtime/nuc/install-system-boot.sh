@@ -22,7 +22,7 @@ UNIT_SRC="$CREW/scripts/runtime/nuc"
 TEMPLATE="$UNIT_SRC/aiforge-api.system.service.in"
 TARGET_USER="${AIFORGE_BOOT_USER:-${SUDO_USER:-$(id -un)}}"
 if [[ "$TARGET_USER" == root ]]; then
-  echo "refuse to install as root — set AIFORGE_BOOT_USER=mani (the NUC login)" >&2
+  echo "refuse to install as root — set AIFORGE_BOOT_USER=ai (the NUC login)" >&2
   exit 2
 fi
 TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
@@ -34,6 +34,16 @@ CREW_DIR="${AIFORGE_CREW_DIR:-$TARGET_HOME/AIForgeCrew}"
 [[ -f "$TEMPLATE" ]] || { echo "missing $TEMPLATE" >&2; exit 2; }
 
 AUTO_LOGIN="${AIFORGE_AUTO_LOGIN:-1}"
+
+# Which WireGuard iface this box uses (NUC currently ships wg1.conf).
+_wg_iface() {
+  local i
+  for i in wg1 wg0; do
+    [[ -f "/etc/wireguard/${i}.conf" ]] && { echo "$i"; return 0; }
+  done
+  echo "${AIFORGE_WG_IFACE:-wg1}"
+}
+WG_IFACE="$(_wg_iface)"
 
 _sudo() {
   if [[ $EUID -eq 0 ]]; then
@@ -53,6 +63,20 @@ sed -e "s|__USER__|$TARGET_USER|g" \
     "$TEMPLATE" > "$tmp"
 _sudo install -m 644 "$tmp" /etc/systemd/system/aiforge-api.service
 rm -f "$tmp"
+
+# NUC registry drop-in: public PyPI/npm + 40m TimeoutStartSec. Never overwrite
+# an existing file — operators (and a prior install) keep their pin.
+DROP_DIR=/etc/systemd/system/aiforge-api.service.d
+DROP_DST="$DROP_DIR/nuc-registry.conf"
+DROP_SRC="$UNIT_SRC/nuc-registry.conf"
+_sudo mkdir -p "$DROP_DIR"
+if [[ -f "$DROP_DST" ]]; then
+  echo "kept existing $DROP_DST (reinstall does not overwrite)"
+elif [[ -f "$DROP_SRC" ]]; then
+  _sudo install -m 644 "$DROP_SRC" "$DROP_DST"
+  echo "installed $DROP_DST (public PyPI/npm + TimeoutStartSec=2400)"
+fi
+
 _sudo systemctl daemon-reload
 _sudo systemctl enable aiforge-api.service
 echo "installed /etc/systemd/system/aiforge-api.service (WantedBy=multi-user.target)"
@@ -94,6 +118,10 @@ _wq="$(command -v wg-quick || true)"
   echo "  ${_sc} enable --now wg-quick@wg0, \\"
   echo "  ${_sc} start wg-quick@wg0, \\"
   echo "  ${_sc} restart wg-quick@wg0, \\"
+  echo "  ${_sc} enable wg-quick@wg1, \\"
+  echo "  ${_sc} enable --now wg-quick@wg1, \\"
+  echo "  ${_sc} start wg-quick@wg1, \\"
+  echo "  ${_sc} restart wg-quick@wg1, \\"
   echo "  ${_sc} enable aiforge-api.service, \\"
   echo "  ${_sc} enable --now aiforge-api.service, \\"
   echo "  ${_sc} start aiforge-api.service, \\"
@@ -102,8 +130,8 @@ _wq="$(command -v wg-quick || true)"
   echo "  ${_sc} status aiforge-api.service, \\"
   echo "  ${_lc} enable-linger ${TARGET_USER}"
   if [[ -n "$_wg" ]]; then
-    echo "Cmnd_Alias AIFORGE_WG = ${_wg} show, ${_wg} show wg0"
-    [[ -n "$_wq" ]] && echo "Cmnd_Alias AIFORGE_WGQ = ${_wq} up wg0, ${_wq} down wg0"
+    echo "Cmnd_Alias AIFORGE_WG = ${_wg} show, ${_wg} show wg0, ${_wg} show wg1"
+    [[ -n "$_wq" ]] && echo "Cmnd_Alias AIFORGE_WGQ = ${_wq} up wg0, ${_wq} down wg0, ${_wq} up wg1, ${_wq} down wg1"
   fi
   echo "$TARGET_USER ALL=(root) NOPASSWD: AIFORGE_BOOT"
   if [[ -n "$_wg" ]]; then
@@ -132,11 +160,11 @@ echo "linger enabled for $TARGET_USER (user timers still work)"
 
 # ── 4. docker + WireGuard enable ──────────────────────────────────────────
 _sudo systemctl enable --now docker
-if [[ -f /etc/wireguard/wg0.conf ]]; then
-  _sudo systemctl enable --now wg-quick@wg0
-  echo "wg-quick@wg0 enabled"
+if [[ -f "/etc/wireguard/${WG_IFACE}.conf" ]]; then
+  _sudo systemctl enable --now "wg-quick@${WG_IFACE}"
+  echo "wg-quick@${WG_IFACE} enabled"
 else
-  echo "WARN: /etc/wireguard/wg0.conf missing — install via install-wireguard.sh" >&2
+  echo "WARN: /etc/wireguard/${WG_IFACE}.conf missing — install via install-wireguard.sh" >&2
 fi
 
 # ── 5. optional display auto-login (no password at the greeter) ───────────
@@ -215,7 +243,7 @@ _sudo systemctl --no-pager --full status aiforge-api.service | head -20 || true
 echo
 echo "Done. After reboot:"
 echo "  - multi-user.target starts aiforge-api (no login required)"
-echo "  - docker + wg-quick@wg0 come up"
+echo "  - docker + wg-quick@${WG_IFACE} come up"
 if [[ "$AUTO_LOGIN" == "1" ]]; then
   echo "  - display manager auto-logs in $TARGET_USER (no password at greeter)"
 fi
