@@ -39,26 +39,34 @@ enable it by hand if you want it.
 
 After a NUC reboot, `tickets.oneshell.in` needs: docker up, the `aiforge`
 container on `:8799` (bound `0.0.0.0`), and WireGuard so the reverse proxy at
-`77.42.45.12:9443` can reach `10.66.66.3:8799`. One shot:
+`77.42.45.12:9443` can reach `10.66.66.3:8799`.
+
+**One-time setup (password once)** — system unit + NOPASSWD sudo + greeter
+auto-login, so reboot needs nobody at the keyboard:
+
+```bash
+sudo bash scripts/runtime/nuc/install-system-boot.sh
+# skip greeter auto-login: AIFORGE_AUTO_LOGIN=0 sudo bash …/install-system-boot.sh
+```
+
+That installs:
+- `/etc/systemd/system/aiforge-api.service` (WantedBy=multi-user.target)
+- `/etc/sudoers.d/aiforge-boot` (NOPASSWD only for docker/wg/systemctl/linger)
+- GDM / LightDM / SDDM AutomaticLogin for your user (optional)
+
+Afterwards, any time:
 
 ```bash
 bash scripts/runtime/nuc/ensure-boot.sh
 ```
 
-Or the full deploy above (it calls `ensure-boot.sh`).
+Or the full deploy (it calls `ensure-boot.sh`).
 
 ## Manual install
 
 ```bash
+sudo bash scripts/runtime/nuc/install-system-boot.sh
 bash scripts/runtime/nuc/ensure-boot.sh
-# equivalent pieces:
-# mkdir -p ~/.config/systemd/user
-# cp scripts/runtime/nuc/*.service scripts/runtime/nuc/*.timer ~/.config/systemd/user/
-# systemctl --user daemon-reload
-# systemctl --user enable --now aiforge-api
-# sudo loginctl enable-linger "$(whoami)"
-# sudo systemctl enable --now docker
-# sudo systemctl enable --now wg-quick@wg0   # if wg0.conf is installed
 ```
 
 ## Cross-host tunnels
