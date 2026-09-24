@@ -21,7 +21,7 @@ import os
 import queue
 import threading
 import time  # noqa: F401  # tests patch time through this module
-from collections.abc import Callable, Iterator
+from collections.abc import Generator
 
 from .chat_pipeline_events import (  # noqa: F401  # re-exported
     _enhancer_block_reason,
@@ -41,14 +41,19 @@ from .chat_pipeline_prompt import (  # noqa: F401  # re-exported
     _history_preamble,
 )
 from .chat_pipeline_turn import (  # noqa: F401  # re-exported
+    _HANDED_OFF,
     _SENTINEL,
+    _answer_ready,
     _bind_team_session,
+    _close_turn,
     _compute_team_answer,
     _dur,
     _finalize_subtasks,
+    _hand_off_turn,
     _persist_fallback_turn,
     _persist_stop_before_start,
     _promote_team_answer,
+    _run_async_in_thread,
     _run_pipeline_fallback,
     _tail_team_queue,
     _team_deadline_s,
@@ -103,47 +108,6 @@ def force_release_run_lock() -> bool:
             return False
 
 
-def _run_async_in_thread(coro_factory: Callable) -> None:
-    import asyncio
-    loop = asyncio.new_event_loop()
-
-    def _quiet_handler(loop, context):  # noqa: ANN001
-        # Swallow litellm LoggingWorker noise (CancelledError / TimeoutError
-        # / "task was destroyed") that asyncio would otherwise print to
-        # stderr when we tear the loop down. Surface anything else.
-        msg = str(context.get("message", "")) + str(context.get("exception", ""))
-        if "LoggingWorker" in msg or "logging_worker" in repr(context.get("future", "")):
-            return
-        exc = context.get("exception")
-        if isinstance(exc, (asyncio.CancelledError, TimeoutError)):
-            return
-        loop.default_exception_handler(context)
-
-    try:
-        asyncio.set_event_loop(loop)
-        loop.set_exception_handler(_quiet_handler)
-        loop.run_until_complete(coro_factory())
-    finally:
-        # Drain leftover background tasks (litellm's LoggingWorker etc.)
-        # BEFORE closing — otherwise abruptly closing the loop cancels them
-        # mid-flight and spams "Task exception was never retrieved" /
-        # "task_done() called too many times".
-        try:
-            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
-            for t in pending:
-                t.cancel()
-            if pending:
-                loop.run_until_complete(
-                    asyncio.gather(*pending, return_exceptions=True))
-            loop.run_until_complete(loop.shutdown_asyncgens())
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            loop.close()
-        except Exception:  # noqa: BLE001
-            pass
-
-
 def _release_run_lock(my_lock_gen, prev_root) -> None:
     """Restore ``prev_root`` and release the run lock — but ONLY when this holder
     still owns it. If a kill-all force-released the lock (bumping the generation)
@@ -166,50 +130,34 @@ def _release_run_lock(my_lock_gen, prev_root) -> None:
 
 def _drive_teardown(root_token, my_lock_gen, prev_root, session_id, cwd,
                     raw_prompt, final_text, steps, sub_items, run_ok,
-                    started_at, q) -> None:
+                    started_at, q, handed_off=False) -> None:
     """The team-run finally: reset the repo-root contextvar, release the run
     lock, reconcile the subtask panel to the outcome, persist the turn and clear
     the session's approver/cancel/steer state. Persistence is done HERE (the
     background thread), not the SSE generator, so a client disconnect can't drop
-    the real answer or persist a partial one."""
-    from aiforge_core.runtime import chat_cancel
+    the real answer or persist a partial one.
+
+    A run that ``handed_off`` closed its turn when it posted the answer
+    (:func:`_hand_off_turn`). A follow-up turn may own the session by now, so
+    only the lock and the contextvar are left for this run to release."""
     if root_token is not None:
         from aiforge_core.runtime import request_context
         request_context.reset_repo_root(root_token)
     _release_run_lock(my_lock_gen, prev_root)
-    cancelled = bool(session_id is not None
-                     and chat_cancel.is_cancelled(session_id))
-    # Reconcile the subtask panel (done on a clean finish, failed on error/stop)
-    # — emit live updates AND mutate the persisted item dicts (same objects in
-    # `steps`) so a reload shows the same.
-    for ev in _finalize_subtasks(sub_items, run_ok, cancelled):
-        q.put(ev)
-    if session_id is not None:
-        try:
-            from aiforge_core.runtime import chat_persist
-            chat_persist.persist_turn(
-                session_id=session_id, cwd=cwd, prompt=raw_prompt,
-                final_text=final_text, steps=steps, team=True,
-                cancelled=cancelled, awaiting=False, mode="team",
-                duration_s=_dur(started_at))
-        except Exception:  # noqa: BLE001
-            pass
-        from aiforge_core.runtime import chat_approve, chat_interject
-        chat_approve.clear_emitter(session_id)
-        chat_approve.finish(session_id)
-        chat_cancel.finish(session_id)
-        # Team mode does NOT fold steers mid-run — but still clear so a queued
-        # steer can't leak into the next turn.
-        chat_interject.clear(session_id)
-        # END THE RUN HERE, last. The SSE producer deliberately leaves it open
-        # for a team turn (this driver owns the run's lifetime, the same way it
-        # owns persistence), so this is what wakes every subscriber and tells
-        # the idle compactor the box is free again. Finishing it in the producer
-        # marked the run done the moment the driver was launched: minutes of
-        # team work then looked like an idle box, and memory compaction folded
-        # briefs in the middle of a run that was still calling tools.
-        from aiforge_core.runtime import chat_runs
-        chat_runs.finish(session_id)
+    if not handed_off:
+        _close_turn(session_id, cwd, raw_prompt, final_text, steps, sub_items,
+                    run_ok, started_at, q)
+        if session_id is not None:
+            # END THE RUN HERE, last. The SSE producer deliberately leaves it
+            # open for a team turn (this driver owns the run's lifetime, the
+            # same way it owns persistence), so this is what wakes every
+            # subscriber and tells the idle compactor the box is free again.
+            # Finishing it in the producer marked the run done the moment the
+            # driver was launched: minutes of team work then looked like an
+            # idle box, and memory compaction folded briefs in the middle of a
+            # run that was still calling tools.
+            from aiforge_core.runtime import chat_runs
+            chat_runs.finish(session_id)
     q.put(_SENTINEL)
 
 
@@ -239,22 +187,34 @@ def _emit_steer_acks(session_id, chat_interject, q) -> None:
 
 
 async def _drive_run_events(agen, runner, q, session_id, chat_interject,
-                            steps: list) -> dict:
+                            steps: list, on_answer=None) -> dict:
     """Drive the team pipeline's event stream: surface steer acks, honour Stop,
     map each ADK event to the queue + accumulators, and stop on the Enhancer's
-    too-vague sentinel. Returns ``{by_role, final, sub_items, enhancer_blocked}``
-    (``steps`` is mutated in place)."""
+    too-vague sentinel. Returns ``{by_role, final, sub_items, enhancer_blocked,
+    answered}`` (``steps`` is mutated in place).
+
+    ``on_answer`` is awaited once, with the accumulators so far, when the answer
+    is final (:func:`_answer_ready`), before the Learner runs. From then on the
+    session belongs to the next turn: its steers and its Stop are not this
+    run's, and the Learner runs to completion."""
     from aiforge_core.runtime import chat_cancel
     by_role: dict[str, str] = {}
     final = ""
     acc = {"emitted_subtasks": False, "sub_items": None}
     enhancer_blocked = None
+    answered = False
     async for event in agen:
-        _emit_steer_acks(session_id, chat_interject, q)
-        if session_id is not None and chat_cancel.is_cancelled(session_id):
-            await _close_team_run(agen, runner)
-            q.put({"type": "error", "text": "stopped by user", "stopped": True})
-            break
+        if not answered:
+            _emit_steer_acks(session_id, chat_interject, q)
+            if session_id is not None and chat_cancel.is_cancelled(session_id):
+                await _close_team_run(agen, runner)
+                q.put({"type": "error", "text": "stopped by user", "stopped": True})
+                break
+            if on_answer is not None and _answer_ready(event):
+                answered = True
+                await on_answer({"by_role": by_role, "final": final,
+                                 "sub_items": acc["sub_items"],
+                                 "enhancer_blocked": enhancer_blocked})
         if getattr(event, "partial", False):
             # A streamed chunk: shown live as the agent's draft line. The full
             # (non-partial) event that follows carries the same text and is
@@ -271,7 +231,7 @@ async def _drive_run_events(agen, runner, q, session_id, chat_interject,
         if t:
             final = t
     return {"by_role": by_role, "final": final, "sub_items": acc["sub_items"],
-            "enhancer_blocked": enhancer_blocked}
+            "enhancer_blocked": enhancer_blocked, "answered": answered}
 
 
 def _acquire_team_run_lock(session_id, cwd, raw_prompt, started_at, q):
@@ -326,6 +286,7 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
     # "0/N pending" even after the run reports complete.
     _sub_items: list[dict] | None = None
     _run_ok = False
+    _handed_off = False                  # answer posted, Learner still running
     _run_id = None                       # keys this run's shell/browser/kernel
     try:
         os.environ["AIFORGE_REPO_ROOT"] = cwd
@@ -405,9 +366,27 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
         except Exception:
             pass
         agen = runner.run_async(**kw)
+
+        async def _answer_now(res) -> None:
+            # The validator passed: post the answer now and let the Learner
+            # (an LLM call + its memory writes) finish behind it.
+            nonlocal final_text, _run_ok, _sub_items, _handed_off
+            msg, change_events = await _compute_team_answer(
+                svc, session, res["by_role"], res["final"],
+                res["enhancer_blocked"], cwd, _seq_start_sha)
+            if res["sub_items"] is not None:
+                _sub_items = res["sub_items"]
+            final_text, _run_ok = msg, True
+            q.put({"type": "message", "text": msg})
+            for _ev in change_events:
+                q.put(_ev)
+            _hand_off_turn(q, session_id, cwd, raw_prompt, final_text, steps,
+                           _sub_items, started_at)
+            _handed_off = True
+
         evres = await _events_under_deadline(agen, runner, q, session_id,
-                                             chat_interject, steps)
-        if evres is None:                # hit the deadline — already reported
+                                             chat_interject, steps, _answer_now)
+        if evres is None or _handed_off:  # deadline (reported) / answered
             return
         by_role, final = evres["by_role"], evres["final"]
         _sub_items = evres["sub_items"] if evres["sub_items"] is not None else _sub_items
@@ -435,11 +414,11 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
             destroy_run_resources(_run_id)
         _drive_teardown(root_token, my_lock_gen, prev_root, session_id, cwd,
                         raw_prompt, final_text, steps, _sub_items, _run_ok,
-                        started_at, q)
+                        started_at, q, _handed_off)
 
 
 async def _events_under_deadline(agen, runner, q, session_id, chat_interject,
-                                 steps):
+                                 steps, on_answer=None):
     """``_drive_run_events`` bounded by :func:`_team_deadline_s`. Returns its
     result, or None after reporting a deadline stop (same structural marker a
     user Stop leaves, so Retry resumes instead of redoing the whole run)."""
@@ -451,7 +430,7 @@ async def _events_under_deadline(agen, runner, q, session_id, chat_interject,
     try:
         async with cm:
             return await _drive_run_events(agen, runner, q, session_id,
-                                           chat_interject, steps)
+                                           chat_interject, steps, on_answer)
     except TimeoutError:
         with contextlib.suppress(Exception):
             await agen.aclose()
@@ -479,7 +458,10 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                          session_id: int | None = None,
                          history: list[dict] | None = None,
                          started_at: float | None = None,
-                         resume_brief: str = "") -> Iterator[dict]:
+                         resume_brief: str = "") -> Generator[dict, None, bool]:
+    """Yield the team turn's events, ending with ``done``. Returns True when the
+    driver handed the turn off (answer posted and persisted, Learner still
+    running); the caller then finishes the chat run itself."""
     q: queue.Queue = queue.Queue()
     from aiforge_core.runtime import chat_cancel
     raw_prompt = prompt   # the user's actual request (before context augmentation)
@@ -497,3 +479,4 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
     if flags["errored"] and not flags["saw_real"] and not flags["stopped"]:
         yield from _run_pipeline_fallback(raw_prompt, cwd, session_id, started_at)
     yield {"type": "done"}
+    return bool(flags.get("handed_off"))

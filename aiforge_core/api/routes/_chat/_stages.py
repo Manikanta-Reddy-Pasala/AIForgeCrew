@@ -207,10 +207,11 @@ def _dispatch_agent_route(_rd, _pp, prompt, cwd, session_id, history,
         # its own argument so raw_prompt stays the user's actual request.
         _path["driver"] = True
         from aiforge_core.runtime.chat_pipeline import stream_chat_pipeline
-        yield from stream_chat_pipeline(prompt, cwd=cwd,
-                                        session_id=session_id, history=history,
-                                        started_at=_turn_t0,
-                                        resume_brief=_resume_brief)
+        # True when the driver posted + persisted the answer and only its
+        # Learner is still running: the producer then ends the chat run.
+        _path["handed_off"] = yield from stream_chat_pipeline(
+            prompt, cwd=cwd, session_id=session_id, history=history,
+            started_at=_turn_t0, resume_brief=_resume_brief)
         # The team run IS the turn: without this the producer fell through and
         # ran the same request again with the single agent (enhancer, baseline
         # commit, run_chat_agent, post-run checks) after the team had finished.
