@@ -335,3 +335,60 @@ def test_dead_local_maybe_substitute_is_noop(
            "api_key": "lm-studio"}
     out = lp.maybe_substitute_primary("doer", cfg)
     assert out is cfg
+
+
+# ─── the model id reaches a REMOTE shell: allow-list + quote ──────────
+
+
+@pytest.mark.parametrize("bad", ["m; rm -rf ~", "m$(id)", "m`id`",
+                                 "m && curl x", "m\nid", "m\n", "m'x"])
+def test_try_start_refuses_an_unsafe_model_id(
+        monkeypatch: pytest.MonkeyPatch, bad: str) -> None:
+    monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
+    with patch("subprocess.run") as run_mock:
+        assert ls.try_start("http://x:1234/v1", bad) is False
+    run_mock.assert_not_called()
+
+
+def test_an_unsafe_configured_model_is_refused_too(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
+    monkeypatch.setenv("AIFORGE_LMS_MODEL", "m; rm -rf ~")
+    with patch("subprocess.run") as run_mock:
+        assert ls.try_start("http://x:1234/v1") is False
+    run_mock.assert_not_called()
+
+
+def test_load_model_now_refuses_an_unsafe_model_id(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
+    with patch("subprocess.run") as run_mock:
+        out = ls.load_model_now("m; rm -rf ~", 131072)
+    assert out == {"ok": False, "error": "invalid model id"}
+    run_mock.assert_not_called()
+
+
+def test_recovery_loads_the_model_that_crashed(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Crash recovery passes the crashed role's model; it wins over the env
+    (and the doer), and the litellm ``openai/`` prefix is stripped."""
+    monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
+    monkeypatch.setenv("AIFORGE_LMS_WARMUP_S", "0")
+    with patch("subprocess.run", return_value=_proc_ok()) as run_mock, \
+         patch.object(lp, "is_alive", return_value=True), \
+         patch("time.sleep"):
+        assert ls.try_recover("http://x:1234/v1",
+                              "openai/vendor/other@4bit") is True
+    remote = run_mock.call_args[0][0][-1]
+    assert "lms load vendor/other@4bit " in remote
+    assert "m1" not in remote
+
+
+def test_the_model_id_is_shell_quoted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Belt and braces: even an allowed id goes through shlex.quote."""
+    monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
+    with patch("subprocess.run", return_value=_proc_ok()) as run_mock, \
+         patch.object(ls.shlex, "quote", side_effect=lambda s: f"<{s}>"):
+        ls.load_model_now("a/b", 131072)
+    remote = run_mock.call_args[0][0][-1]
+    assert "unload <a/b>" in remote and "load <a/b> " in remote
