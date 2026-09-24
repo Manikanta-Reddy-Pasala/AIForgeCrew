@@ -130,7 +130,7 @@ def _release_run_lock(my_lock_gen, prev_root) -> None:
 
 def _drive_teardown(root_token, my_lock_gen, prev_root, session_id, cwd,
                     raw_prompt, final_text, steps, sub_items, run_ok,
-                    started_at, q, handed_off=False) -> None:
+                    started_at, q, handed_off=False, chat_run=None) -> None:
     """The team-run finally: reset the repo-root contextvar, release the run
     lock, reconcile the subtask panel to the outcome, persist the turn and clear
     the session's approver/cancel/steer state. Persistence is done HERE (the
@@ -139,7 +139,11 @@ def _drive_teardown(root_token, my_lock_gen, prev_root, session_id, cwd,
 
     A run that ``handed_off`` closed its turn when it posted the answer
     (:func:`_hand_off_turn`). A follow-up turn may own the session by now, so
-    only the lock and the contextvar are left for this run to release."""
+    only the lock and the contextvar are left for this run to release — plus
+    ``chat_run``, THIS turn's run object (never looked up by session id): the
+    producer normally finished it already, but one that stopped reading early
+    (a Stop or an error mid-stream) never learnt of the hand-off, and without
+    this the run stayed open and 409'd every later message."""
     if root_token is not None:
         from aiforge_core.runtime import request_context
         request_context.reset_repo_root(root_token)
@@ -158,6 +162,8 @@ def _drive_teardown(root_token, my_lock_gen, prev_root, session_id, cwd,
             # run that was still calling tools.
             from aiforge_core.runtime import chat_runs
             chat_runs.finish(session_id)
+    elif chat_run is not None:
+        chat_run.finish()
     q.put(_SENTINEL)
 
 
@@ -259,6 +265,10 @@ def _acquire_team_run_lock(session_id, cwd, raw_prompt, started_at, q):
 
 async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state):
     _bind_team_session(session_id, q)
+    # THIS turn's chat run, held by object: after a hand-off a follow-up turn
+    # may replace the session's entry (see _drive_teardown).
+    from aiforge_core.runtime import chat_runs
+    _chat_run = chat_runs.get(session_id) if session_id is not None else None
     # Serialize the AIFORGE_REPO_ROOT mutation across concurrent team runs,
     # cancellably + with feedback so a 2nd concurrent run doesn't stall its
     # client silently behind a long-running first run.
@@ -414,7 +424,7 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
             destroy_run_resources(_run_id)
         _drive_teardown(root_token, my_lock_gen, prev_root, session_id, cwd,
                         raw_prompt, final_text, steps, _sub_items, _run_ok,
-                        started_at, q, _handed_off)
+                        started_at, q, _handed_off, _chat_run)
 
 
 async def _events_under_deadline(agen, runner, q, session_id, chat_interject,

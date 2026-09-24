@@ -178,6 +178,23 @@ def test_a_handed_off_teardown_only_releases_the_lock(session_state,
     assert not P._RUN_LOCK.locked()
 
 
+def test_a_handed_off_run_is_finished_even_if_the_producer_stopped_early(
+        session_state, monkeypatch):
+    """A producer that stopped reading (a Stop in the answer window, an error)
+    never learns of the hand-off and leaves the run open; the driver finishes
+    THIS turn's run object, never the session's current entry."""
+    from aiforge_core.runtime import chat_runs
+    monkeypatch.setattr(chat_runs, "finish",
+                        lambda sid: pytest.fail("finished by session id"))
+    this_turn = chat_runs._Run(7)
+    P._RUN_LOCK.acquire()
+    P._drive_teardown(None, P._run_lock_gen(), None, 7, "/repo", "build",
+                      "the answer", [], None, True, 0.0, queue.Queue(),
+                      handed_off=True, chat_run=this_turn)
+    assert this_turn.done is True
+    this_turn.finish()                        # the producer's finish: harmless
+
+
 def test_the_tail_ends_on_the_hand_off():
     q: queue.Queue = queue.Queue()
     q.put({"type": "message", "text": "the answer"})
