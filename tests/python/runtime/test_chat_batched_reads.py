@@ -335,7 +335,7 @@ def test_the_prompt_forbids_promises_and_made_up_results():
         assert rule in _SYSTEM
 
 
-# --- remote reads of a batch run at the same time --------------------------
+# --- slow reads of a batch run at the same time --------------------------
 
 def _jira_reads(*keys):
     return [f'ACTION: jira_read\nARGS_JSON: {{"key": "{k}"}}' for k in keys]
@@ -374,7 +374,7 @@ def _span(ran, key):
     return next((r[2], r[3]) for r in ran if r[0] == key)
 
 
-def test_remote_reads_of_a_batch_run_at_the_same_time(tmp_path, _slow_jira):
+def test_slow_reads_of_a_batch_run_at_the_same_time(tmp_path, _slow_jira):
     fn, calls = _batching_fn(_jira_reads("A-1", "A-2", "A-3", "A-4"), "FINAL: ok")
     evs = _run(tmp_path, fn)
     assert _keys(evs) == ["A-1", "A-2", "A-3", "A-4"], "results keep reply order"
@@ -524,12 +524,104 @@ def test_an_early_read_that_raises_is_an_error_result(tmp_path, monkeypatch):
     assert len(calls) == 2
 
 
-def test_every_remote_read_is_batchable_and_read_only():
-    """Plan/Analyze mode lets read-only tools through: a remote read that is
-    not one would be started early and then refused."""
-    from aiforge_core.runtime.chat_agent._registry import _READONLY_TOOLS
-    assert _native.REMOTE_READS <= _native.BATCHABLE_READS
-    assert _native.REMOTE_READS.issubset(_READONLY_TOOLS)
+def test_every_concurrent_read_is_batchable_and_read_only():
+    """Plan/Analyze mode lets read-only tools through: a concurrent read that
+    is not one would be started early and then refused."""
+    from aiforge_core.runtime.chat_agent._registry import _READONLY_TOOLS, TOOLS
+    assert _native.CONCURRENT_READS <= _native.BATCHABLE_READS
+    assert _native.CONCURRENT_READS.issubset(_READONLY_TOOLS)
+    assert _native.CONCURRENT_READS.issubset(TOOLS)
+
+
+@pytest.mark.parametrize("name", [
+    "web_crawl",               # writes a work/web dossier
+    "email_read",              # an IMAP login per call
+    "gitlab_pipeline_watch",   # blocks for minutes
+    "context_gather",          # fans out itself and writes its cache
+    "repo_map",                # shares aider's map cache
+])
+def test_tools_with_side_effects_or_long_waits_never_run_concurrently(name):
+    assert name not in _native.CONCURRENT_READS
+
+
+def test_a_web_fetch_the_egress_gate_refuses_is_not_started_early(
+        tmp_path, monkeypatch):
+    """tool_policy does not look at URLs: the batch asks the egress gate
+    itself, so a refused fetch waits for the loop instead of running ahead."""
+    from types import SimpleNamespace
+
+    from aiforge_core.net import egress
+    from aiforge_core.runtime.chat_agent._turn._batch import (
+        _call_sig,
+        _can_start_early,
+    )
+    args = {"url": "https://docs.example.com/page"}
+    sig = _call_sig("web_fetch", args)
+    st = SimpleNamespace(long_chain_help=False, read_sigs_seen=set(),
+                         cwd=str(tmp_path))
+    for var in ("AIFORGE_EGRESS_OFF", "AIFORGE_WEB_FETCH_DISABLE",
+                "AIFORGE_WEB_SEARCH_DISABLE", "AIFORGE_TOOL_POLICY",
+                "AIFORGE_CHAT_TOOL_POLICY"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(egress, "host_allowed", lambda url: True)
+    monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "0")
+    assert not _can_start_early(st, "web_fetch", args, sig)
+    monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
+    assert _can_start_early(st, "web_fetch", args, sig)
+    monkeypatch.setenv("AIFORGE_WEB_FETCH_DISABLE", "1")
+    assert not _can_start_early(st, "web_fetch", args, sig)
+    monkeypatch.delenv("AIFORGE_WEB_FETCH_DISABLE")
+    search = {"url": "https://www.google.com/search?q=secret"}
+    assert not _can_start_early(st, "web_fetch", search,
+                                _call_sig("web_fetch", search))
+    monkeypatch.setattr(egress, "host_allowed", lambda url: False)
+    assert not _can_start_early(st, "web_fetch", args, sig)
+
+
+def test_web_fetches_of_a_batch_run_at_the_same_time(tmp_path, monkeypatch):
+    import threading
+    import time
+
+    from aiforge_core.net import egress
+    from aiforge_core.runtime.chat_agent._registry import TOOLS
+    monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
+    for var in ("AIFORGE_EGRESS_OFF", "AIFORGE_WEB_FETCH_DISABLE",
+                "AIFORGE_WEB_SEARCH_DISABLE", "AIFORGE_TOOL_POLICY",
+                "AIFORGE_CHAT_TOOL_POLICY"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(egress, "host_allowed", lambda url: True)
+    ran = []
+
+    def _fetch(args, cwd):
+        row = [args["url"], threading.current_thread().name,
+               time.monotonic(), None]
+        ran.append(row)
+        time.sleep(0.3)
+        row[3] = time.monotonic()
+        return {"ok": True, "text": args["url"]}
+    monkeypatch.setitem(TOOLS, "web_fetch", _fetch)
+    urls = [f"https://docs.example.com/{i}" for i in range(3)]
+    batch = [f'ACTION: web_fetch\nARGS_JSON: {{"url": "{u}"}}' for u in urls]
+    fn, _ = _batching_fn(batch, "FINAL: ok")
+    _run(tmp_path, fn)
+    assert sorted(r[0] for r in ran if r[1].startswith("batch-read")) == urls[1:]
+    assert max(r[2] for r in ran) < min(r[3] for r in ran), \
+        "every fetch started before the first one ended"
+
+
+def test_a_refused_web_fetch_still_runs_in_order(tmp_path, monkeypatch):
+    """Not started early is not dropped: the loop runs it in its turn and the
+    model sees the refusal."""
+    monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "0")
+    urls = [f"https://docs.example.com/{i}" for i in range(2)]
+    batch = [f'ACTION: web_fetch\nARGS_JSON: {{"url": "{u}"}}' for u in urls]
+    fn, _ = _batching_fn(batch, "FINAL: ok")
+    evs = _run(tmp_path, fn)
+    results = [e["result"] for e in evs
+               if e["type"] == "tool" and e["name"] == "web_fetch"]
+    assert len(results) == 2
+    assert all(r["ok"] is False and "web fetch disabled" in r["error"]
+               for r in results)
 
 
 def test_a_turn_that_ends_cancels_reads_still_waiting(tmp_path, monkeypatch):

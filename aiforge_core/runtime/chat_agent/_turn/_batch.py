@@ -19,7 +19,7 @@ from ._tool_dispatch import _invoke_tool
 
 
 def _parallel_cap() -> int:
-    """Most remote reads of one batch running in the background at once,
+    """Most slow reads of one batch running in the background at once,
     besides the reply's first call (servers rate-limit)."""
     try:
         return max(0, int(os.environ.get("AIFORGE_CHAT_PARALLEL_READS", "4")))
@@ -54,17 +54,21 @@ def _queue_batched_reads(st, n):
 
 def _can_start_early(st, name, args, sig):
     """A read may run ahead of its turn only when no gate could stop it: the
-    policy allows it outright, no PreToolUse hook watches it, and the repeat
-    guard will not skip it as already read. Anything else waits and passes the
-    gates in order."""
+    policy allows it outright, no PreToolUse hook watches it, the repeat
+    guard will not skip it as already read, and a page fetch passes the egress
+    gate (tool_policy does not look at URLs). Anything else waits and passes
+    the gates in order."""
+    from aiforge_core.net import egress
     from aiforge_core.runtime import hooks
     from aiforge_core.runtime.tools import tool_policy
 
-    from .._native import REMOTE_READS
+    from .._native import CONCURRENT_READS
     from .._registry import TOOLS
-    if name not in REMOTE_READS or name not in TOOLS:
+    if name not in CONCURRENT_READS or name not in TOOLS:
         return False
     if st.long_chain_help and sig in st.read_sigs_seen:
+        return False
+    if name == "web_fetch" and egress.check(str(args.get("url") or "")):
         return False
     try:
         if tool_policy.decide(name, args)["policy"] != tool_policy.ALLOW:
@@ -75,7 +79,7 @@ def _can_start_early(st, name, args, sig):
 
 
 def _start_parallel_reads(st):
-    """Start the batch's remote reads now, a few at a time and alongside the
+    """Start the batch's slow reads now, a few at a time and alongside the
     reply's first call, so the loop finds each result ready when it gets there.
     The loop still walks the batch in order through every gate; the reads of a
     dropped batch are cancelled or go unused."""
