@@ -275,7 +275,8 @@ def blocked_learner(monkeypatch):
         "verifier": '{"verdict": "pass", "rationale": "ok"}',
         "doer": "Here is the answer.",
     }
-    st = {"release": threading.Event(), "learner_done": threading.Event()}
+    st = {"release": threading.Event(), "learner_done": threading.Event(),
+          "fail": False}
 
     def make(role):
         class _Stub(BaseLlm):
@@ -283,6 +284,8 @@ def blocked_learner(monkeypatch):
                 if role == "learner":
                     await asyncio.to_thread(st["release"].wait, 60)
                     st["learner_done"].set()
+                    if st["fail"]:
+                        raise RuntimeError("learner model down")
                 yield LlmResponse(content=gt.Content(role="model", parts=[
                     gt.Part(text=replies.get(role, f"{role} output"))]))
         return _Stub(model="stub")
@@ -292,17 +295,26 @@ def blocked_learner(monkeypatch):
     st["release"].set()
 
 
-def test_the_answer_arrives_while_the_learner_still_runs(blocked_learner,
-                                                         tmp_path):
-    gen = P.stream_chat_pipeline("add a greeting", cwd=str(tmp_path),
+def _team_turn(cwd) -> tuple:
+    """One team turn through stream_chat_pipeline: (events, handed_off)."""
+    gen = P.stream_chat_pipeline("add a greeting", cwd=str(cwd),
                                  session_id=None, history=[])
     events: list = []
     while True:
         try:
             events.append(next(gen))
         except StopIteration as stop:
-            handed_off = stop.value
-            break
+            return events, stop.value
+
+
+def _wait_for_the_lock() -> None:
+    assert P._RUN_LOCK.acquire(timeout=60), "the lock was never released"
+    P._RUN_LOCK.release()
+
+
+def test_the_answer_arrives_while_the_learner_still_runs(blocked_learner,
+                                                         tmp_path):
+    events, handed_off = _team_turn(tmp_path)
     assert handed_off is True
     assert not blocked_learner["learner_done"].is_set(), \
         "the turn waited for the Learner"
@@ -313,5 +325,131 @@ def test_the_answer_arrives_while_the_learner_still_runs(blocked_learner,
 
     blocked_learner["release"].set()
     assert blocked_learner["learner_done"].wait(60), "the Learner never ran"
-    assert P._RUN_LOCK.acquire(timeout=60), "the lock was never released"
-    P._RUN_LOCK.release()
+    _wait_for_the_lock()
+
+
+def test_stopping_a_turn_queued_behind_the_learner_frees_the_session(
+        blocked_learner, tmp_path, monkeypatch):
+    """Turn A answered and its Learner holds the team lock; team turn B waits
+    on it and the user stops B. Nothing but the driver ends B's chat run — left
+    open, every later message on the session was a 409 until kill-all."""
+    from aiforge_core.runtime import (
+        chat_cancel,
+        chat_interject,
+        chat_persist,
+        chat_runs,
+    )
+    monkeypatch.setattr(chat_persist, "persist_turn", lambda **kw: None)
+    monkeypatch.setenv("AIFORGE_CURRENT_SESSION", "")
+    _, handed_off = _team_turn(tmp_path)                    # turn A
+    assert handed_off is True and P._RUN_LOCK.locked()
+
+    sid = 424242                                            # turn B
+    run_b = chat_runs.start(sid)
+    chat_cancel.start(sid)
+    q: queue.Queue = queue.Queue()
+    driver = threading.Thread(target=lambda: P._run_async_in_thread(
+        lambda: P._drive(q, sid, str(tmp_path), "b", 0.0, "b", {})))
+    try:
+        driver.start()
+        assert "waiting for another team run" in q.get(timeout=10)["text"]
+        chat_cancel.cancel(sid)                             # Stop B
+        driver.join(10)
+        assert not driver.is_alive()
+        assert run_b.done is True
+        assert chat_runs.settle(sid, timeout=0) is True, "a new message 409s"
+    finally:
+        chat_cancel.finish(sid)
+        chat_interject.clear(sid)
+        chat_runs._RUNS.pop(sid, None)
+        blocked_learner["release"].set()
+    _wait_for_the_lock()
+
+
+def test_a_learner_failure_after_the_answer_is_logged(blocked_learner,
+                                                      tmp_path, caplog):
+    """After the hand-off nobody reads the turn's queue, so an error there
+    would vanish without a trace."""
+    blocked_learner["fail"] = True
+    _, handed_off = _team_turn(tmp_path)
+    assert handed_off is True
+    with caplog.at_level("WARNING", logger=P.__name__):
+        blocked_learner["release"].set()
+        _wait_for_the_lock()
+    assert any("Learner failed after the answer" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_a_learner_past_the_deadline_is_logged(blocked_learner, tmp_path,
+                                               caplog, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_TEAM_DEADLINE_S", "8")
+    with caplog.at_level("WARNING", logger=P.__name__):
+        _, handed_off = _team_turn(tmp_path)   # the Learner is never released
+        assert handed_off is True
+        _wait_for_the_lock()
+    assert any("Learner stopped at the deadline" in r.getMessage()
+               for r in caplog.records)
+
+
+# ─── the request meter ─────────────────────────────────────────────────
+
+
+def test_the_driver_thread_bills_to_its_own_turn(monkeypatch):
+    """The driver thread inherits no context; unbound, the Learner's calls
+    after a hand-off billed to whatever turn the session was on by then."""
+    import contextlib
+    import contextvars
+
+    from aiforge_core.llm import call_meter
+    from aiforge_core.runtime import keep_awake
+    monkeypatch.setattr(keep_awake, "keep_awake",
+                        lambda reason="": contextlib.nullcontext())
+    seen: list = []
+    monkeypatch.setattr(P, "_run_async_in_thread",
+                        lambda f: seen.append(call_meter._TURN_EPOCH.get()))
+
+    def producer():
+        call_meter.bind_turn((None, 42))
+        epoch = P._turn_epoch()
+        t = threading.Thread(target=lambda: P._drive_awake(
+            None, 7, "/repo", "b", 0.0, "b", {}, epoch))
+        t.start()
+        t.join(10)
+    contextvars.copy_context().run(producer)
+    assert seen == [42]
+
+
+# ─── teardown after a kill-all ─────────────────────────────────────────
+
+
+def test_an_old_teardown_leaves_a_newer_turn_alone(session_state,
+                                                   monkeypatch):
+    """Kill-all, then a new message: the wedged run's teardown must end ITS
+    run and leave the new turn's run and gates alone."""
+    from aiforge_core.runtime import chat_runs
+    old = chat_runs._Run(7)
+    new = chat_runs.start(7)
+    try:
+        P._RUN_LOCK.acquire()
+        P._drive_teardown(None, P._run_lock_gen(), None, 7, "/repo", "build",
+                          "", [], None, False, 0.0, queue.Queue(),
+                          chat_run=old)
+        assert old.done is True and new.done is False
+        assert session_state["cleared"] == []
+        assert session_state["persisted"], "its own turn is still saved"
+    finally:
+        chat_runs._RUNS.pop(7, None)
+
+
+def test_a_hand_off_that_fails_after_saving_still_ends_the_tail(
+        session_state, monkeypatch):
+    from aiforge_core.runtime import chat_approve
+
+    def boom(sid):
+        raise RuntimeError("approve gate")
+    monkeypatch.setattr(chat_approve, "finish", boom)
+    q: queue.Queue = queue.Queue()
+    with pytest.raises(RuntimeError):
+        P._hand_off_turn(q, 7, "/repo", "build", "the answer", [], None, 0.0)
+    assert q.get() is P._HANDED_OFF
+    assert len(session_state["persisted"]) == 1

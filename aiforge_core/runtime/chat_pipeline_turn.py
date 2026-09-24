@@ -103,9 +103,11 @@ def _bind_team_session(session_id, q) -> None:
 
 
 def _close_turn(session_id, cwd, raw_prompt, final_text, steps, sub_items,
-                run_ok, started_at, q) -> None:
+                run_ok, started_at, q, chat_run=None) -> None:
     """Reconcile the subtask panel to the outcome, persist the turn and clear
-    the session's approver/cancel/steer state."""
+    the session's approver/cancel/steer state — the latter only while this
+    turn's ``chat_run`` is still the session's current run (after a kill-all a
+    new turn may own those gates)."""
     from aiforge_core.runtime import chat_cancel
     cancelled = bool(session_id is not None
                      and chat_cancel.is_cancelled(session_id))
@@ -124,7 +126,9 @@ def _close_turn(session_id, cwd, raw_prompt, final_text, steps, sub_items,
                 duration_s=_dur(started_at))
         except Exception:  # noqa: BLE001
             pass
-        from aiforge_core.runtime import chat_approve, chat_interject
+        from aiforge_core.runtime import chat_approve, chat_interject, chat_runs
+        if chat_run is not None and chat_runs.get(session_id) is not chat_run:
+            return
         chat_approve.clear_emitter(session_id)
         chat_approve.finish(session_id)
         chat_cancel.finish(session_id)
@@ -134,17 +138,23 @@ def _close_turn(session_id, cwd, raw_prompt, final_text, steps, sub_items,
 
 
 def _hand_off_turn(q, session_id, cwd, raw_prompt, final_text, steps,
-                   sub_items, started_at) -> None:
+                   sub_items, started_at, chat_run=None) -> None:
     """Close the turn while the Learner still runs. The answer is already on
     the queue: reconcile, persist and clear exactly as the teardown would, then
     end the client's tail. The producer finishes the chat run once it has
     published the answer and ``done``, so the UI settles and a follow-up is
     accepted with this answer in its history. The Learner runs on holding the
     team run lock (a team follow-up waits for it) and persists its facts; the
-    teardown then only releases the lock."""
-    _close_turn(session_id, cwd, raw_prompt, final_text, steps, sub_items,
-                True, started_at, q)
-    q.put(_HANDED_OFF)
+    teardown then only releases the lock.
+
+    The caller marks the run handed off BEFORE calling this, and the marker is
+    posted even if closing raises: the turn is persisted at most once, never
+    again by the teardown."""
+    try:
+        _close_turn(session_id, cwd, raw_prompt, final_text, steps, sub_items,
+                    True, started_at, q, chat_run)
+    finally:
+        q.put(_HANDED_OFF)
 
 
 def _answer_ready(event) -> bool:
@@ -254,6 +264,54 @@ def _run_pipeline_fallback(raw_prompt, cwd, session_id, started_at):
             _persist_fallback_turn(session_id, cwd, raw_prompt, fb_final,
                                    fb_steps, started_at)
     except Exception:
+        pass
+
+
+async def _close_team_run(agen, runner) -> None:
+    """ADK-native stop: aclose() the run generator (cancels the in-flight agent +
+    all its sub-agents) and close the runner. Both best-effort."""
+    try:
+        await agen.aclose()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        await runner.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _emit_steer_acks(session_id, chat_interject, q) -> None:
+    """Surface a "📌 Got your message" ack for any queued steer (Gap A): the
+    Doer/Refiner's before_model callback already folded it into its next model
+    call — this just mirrors the ack the simple loop shows, polled once per
+    event since the callback has no direct handle to this queue."""
+    if session_id is None:
+        return
+    from aiforge_core.runtime import chat_steer
+    for applied in chat_interject.pop_applied(session_id):
+        q.put(chat_steer.applied_event(applied))
+
+
+def _turn_epoch():
+    """The request meter's turn epoch bound in THIS context (the producer's), or
+    None. The driver runs on a bare thread that inherits no context."""
+    try:
+        from aiforge_core.llm import call_meter
+        return call_meter._TURN_EPOCH.get()
+    except Exception:  # noqa: BLE001 — metering never breaks a turn
+        return None
+
+
+def _bind_turn_epoch(epoch) -> None:
+    """Stamp the driver thread with its turn's epoch, so its LLM calls — the
+    Learner's too, which outlive the turn after a hand-off — bill to this turn
+    and never to the session's next one."""
+    if epoch is None:
+        return
+    try:
+        from aiforge_core.llm import call_meter
+        call_meter.bind_turn((None, epoch))
+    except Exception:  # noqa: BLE001
         pass
 
 

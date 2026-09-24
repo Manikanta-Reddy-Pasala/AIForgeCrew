@@ -17,6 +17,7 @@ run errors, so chat never hard-breaks.
 """
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import threading
@@ -45,9 +46,12 @@ from .chat_pipeline_turn import (  # noqa: F401  # re-exported
     _SENTINEL,
     _answer_ready,
     _bind_team_session,
+    _bind_turn_epoch,
+    _close_team_run,
     _close_turn,
     _compute_team_answer,
     _dur,
+    _emit_steer_acks,
     _finalize_subtasks,
     _hand_off_turn,
     _persist_fallback_turn,
@@ -59,7 +63,10 @@ from .chat_pipeline_turn import (  # noqa: F401  # re-exported
     _team_deadline_s,
     _team_final_state,
     _team_plugins,
+    _turn_epoch,
 )
+
+log = logging.getLogger(__name__)
 
 # Team runs mutate the process-global ``AIFORGE_REPO_ROOT`` (read by the
 # sandbox + git tools). Two concurrent team chats would interleave that env
@@ -139,57 +146,31 @@ def _drive_teardown(root_token, my_lock_gen, prev_root, session_id, cwd,
 
     A run that ``handed_off`` closed its turn when it posted the answer
     (:func:`_hand_off_turn`). A follow-up turn may own the session by now, so
-    only the lock and the contextvar are left for this run to release — plus
-    ``chat_run``, THIS turn's run object (never looked up by session id): the
-    producer normally finished it already, but one that stopped reading early
-    (a Stop or an error mid-stream) never learnt of the hand-off, and without
-    this the run stayed open and 409'd every later message."""
+    only the lock, the contextvar and ``chat_run`` are left for it to release.
+    ``chat_run`` is THIS turn's run object, never looked up by session id."""
     if root_token is not None:
         from aiforge_core.runtime import request_context
         request_context.reset_repo_root(root_token)
     _release_run_lock(my_lock_gen, prev_root)
     if not handed_off:
         _close_turn(session_id, cwd, raw_prompt, final_text, steps, sub_items,
-                    run_ok, started_at, q)
-        if session_id is not None:
-            # END THE RUN HERE, last. The SSE producer deliberately leaves it
-            # open for a team turn (this driver owns the run's lifetime, the
-            # same way it owns persistence), so this is what wakes every
-            # subscriber and tells the idle compactor the box is free again.
-            # Finishing it in the producer marked the run done the moment the
-            # driver was launched: minutes of team work then looked like an
-            # idle box, and memory compaction folded briefs in the middle of a
-            # run that was still calling tools.
-            from aiforge_core.runtime import chat_runs
-            chat_runs.finish(session_id)
-    elif chat_run is not None:
+                    run_ok, started_at, q, chat_run)
+    # END THE RUN HERE, last. The SSE producer deliberately leaves it open for
+    # a team turn (this driver owns the run's lifetime, the same way it owns
+    # persistence), so this is what wakes every subscriber and tells the idle
+    # compactor the box is free again. Finishing it in the producer marked the
+    # run done the moment the driver was launched: minutes of team work then
+    # looked like an idle box, and memory compaction folded briefs in the
+    # middle of a run that was still calling tools. By object, not by session
+    # id: after a kill-all a NEW turn may own the session's entry. A handed-off
+    # run's producer normally finished it already (finish is idempotent), but
+    # one that stopped reading early never learnt of the hand-off.
+    if chat_run is not None:
         chat_run.finish()
+    elif session_id is not None and not handed_off:
+        from aiforge_core.runtime import chat_runs
+        chat_runs.finish(session_id)        # no run captured (no registry entry)
     q.put(_SENTINEL)
-
-
-async def _close_team_run(agen, runner) -> None:
-    """ADK-native stop: aclose() the run generator (cancels the in-flight agent +
-    all its sub-agents) and close the runner. Both best-effort."""
-    try:
-        await agen.aclose()
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        await runner.close()
-    except Exception:  # noqa: BLE001
-        pass
-
-
-def _emit_steer_acks(session_id, chat_interject, q) -> None:
-    """Surface a "📌 Got your message" ack for any queued steer (Gap A): the
-    Doer/Refiner's before_model callback already folded it into its next model
-    call — this just mirrors the ack the simple loop shows, polled once per
-    event since the callback has no direct handle to this queue."""
-    if session_id is None:
-        return
-    from aiforge_core.runtime import chat_steer
-    for applied in chat_interject.pop_applied(session_id):
-        q.put(chat_steer.applied_event(applied))
 
 
 async def _drive_run_events(agen, runner, q, session_id, chat_interject,
@@ -274,8 +255,10 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
     # client silently behind a long-running first run.
     my_lock_gen = _acquire_team_run_lock(session_id, cwd, raw_prompt,
                                          started_at, q)
-    if my_lock_gen is None:
-        return                       # stopped while waiting — already handled
+    if my_lock_gen is None:          # stopped while waiting — already persisted
+        if _chat_run is not None:    # ...but nothing else ends the run: 409s
+            _chat_run.finish()
+        return
     from aiforge_core.runtime import chat_interject
     # Lock is held — everything from here is inside try/finally so the
     # env mutation can't leak the lock if it raises.
@@ -390,12 +373,15 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
             q.put({"type": "message", "text": msg})
             for _ev in change_events:
                 q.put(_ev)
+            _handed_off = True           # first: never persisted twice
             _hand_off_turn(q, session_id, cwd, raw_prompt, final_text, steps,
-                           _sub_items, started_at)
-            _handed_off = True
+                           _sub_items, started_at, _chat_run)
 
         evres = await _events_under_deadline(agen, runner, q, session_id,
                                              chat_interject, steps, _answer_now)
+        if evres is None and _handed_off:    # nobody reads q after a hand-off
+            log.warning("team run session=%s: Learner stopped at the deadline "
+                        "after the answer was posted", session_id)
         if evres is None or _handed_off:  # deadline (reported) / answered
             return
         by_role, final = evres["by_role"], evres["final"]
@@ -410,6 +396,9 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
         for _ev in _change_events:
             q.put(_ev)
     except Exception as exc:  # noqa: BLE001
+        if _handed_off:                  # nobody reads q after a hand-off
+            log.warning("team run session=%s: Learner failed after the answer "
+                        "was posted: %s", session_id, exc)
         q.put({"type": "error", "text": f"pipeline: {exc}"})
         # The turn ended with no answer, and whatever the run had already
         # written is on disk. Same structural marker a Stop leaves, for the
@@ -452,7 +441,9 @@ async def _events_under_deadline(agen, runner, q, session_id, chat_interject,
 
 
 
-def _drive_awake(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state):
+def _drive_awake(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state,
+                 turn_epoch=None):
+    _bind_turn_epoch(turn_epoch)     # before the loop: its tasks copy this context
     # A team run is minutes of work. Locking the screen and walking away
     # used to let the box idle into sleep mid-run, which suspends the whole
     # process: the model socket dies and everything already done waits to
@@ -478,7 +469,10 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
     prompt, _team_state = _build_team_prompt(cwd, prompt, history, session_id,
                                              resume_brief)
 
-    t = threading.Thread(target=lambda: _drive_awake(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state), daemon=True)
+    _epoch = _turn_epoch()           # the producer's; the driver thread has none
+    t = threading.Thread(target=lambda: _drive_awake(
+        q, session_id, cwd, raw_prompt, started_at, prompt, _team_state, _epoch),
+        daemon=True)
     t.start()
     flags = {"errored": False, "stopped": False, "saw_real": False}
     yield from _tail_team_queue(q, flags)
