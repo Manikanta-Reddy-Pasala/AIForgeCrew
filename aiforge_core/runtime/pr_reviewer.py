@@ -76,8 +76,8 @@ def _gh_pr_comment(owner: str, repo: str, num: str, body: str) -> bool:
 
 
 def _reviewer_endpoint() -> dict[str, Any] | None:
-    """The reviewer's ``{model, api_base, api_key}``, or None when no model is
-    configured anywhere.
+    """The reviewer's ``{model, api_base, api_key, insecure_tls}``, or None
+    when no model is configured anywhere.
 
     ``AIFORGE_REVIEWER_MODEL`` (explicit override) → the ``reviewer`` role via
     ``agent_config.resolve_litellm`` — the same resolution every pipeline role
@@ -92,8 +92,12 @@ def _reviewer_endpoint() -> dict[str, Any] | None:
     except Exception as exc:  # noqa: BLE001 — unreadable config = unconfigured
         log.warning("pr_reviewer: reviewer model unresolved (%s)", exc)
         cfg = {}
-    model = (os.environ.get("AIFORGE_REVIEWER_MODEL", "").strip()
-             or cfg.get("model_id") or "")
+    override = os.environ.get("AIFORGE_REVIEWER_MODEL", "").strip()
+    # A bare override gets the provider prefix, as resolve_litellm does for
+    # every configured model (litellm refuses an unprefixed id).
+    if override and not override.startswith(_acfg.KNOWN_PREFIXES):
+        override = f"openai/{override}"
+    model = override or cfg.get("model_id") or ""
     if not model or model.endswith(_acfg._LOCAL_FALLBACK_MODEL):
         return None
     return {
@@ -101,8 +105,8 @@ def _reviewer_endpoint() -> dict[str, Any] | None:
         "api_base": (cfg.get("api_base")
                      or os.environ.get("AIFORGE_LM_BASE_URL",
                                        "http://127.0.0.1:1234/v1")),
-        "api_key": cfg.get("api_key") or os.environ.get(
-            "AIFORGE_LM_API_KEY", "lm-studio"),
+        # resolve_litellm always yields a key (provider default "not-needed").
+        "api_key": cfg.get("api_key") or "not-needed",
         "insecure_tls": bool(cfg.get("insecure_tls")),
     }
 
@@ -150,8 +154,17 @@ def _llm_review(prompt: str) -> dict[str, Any]:
             messages = response_language.apply("pr_reviewer", messages)
         except Exception:  # noqa: BLE001 — a language hint never costs a review
             pass
-        kwargs: dict[str, Any] = {}
-        try:  # a self-signed internal endpoint: same TLS rule as the pipeline
+        # Same send shape as the pipeline's _build_one: shed params a strict
+        # endpoint rejects, reasoning off where the registry says so, and the
+        # TLS rule for a self-signed internal endpoint.
+        kwargs: dict[str, Any] = {"drop_params": True}
+        try:
+            from aiforge_core.llm import reasoning as _reasoning
+            if _reasoning.reasoning_off(model, base):
+                kwargs["extra_body"] = dict(_reasoning.NO_THINK_KWARGS)
+        except Exception:  # noqa: BLE001 — a reasoning hint never costs a review
+            pass
+        try:
             from aiforge_core.runtime.escalating_llm._builder import (
                 _maybe_relax_tls,
             )

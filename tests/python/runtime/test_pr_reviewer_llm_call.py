@@ -227,3 +227,54 @@ def test_review_pr_says_why_it_skipped(monkeypatch, tmp_path):
     out = pr_reviewer.review_pr("https://github.com/o/r/pull/1", "t", "b")
 
     assert out == {"ok": False, "error": "no_reviewer_model"}
+
+
+def test_a_bare_override_gets_the_provider_prefix(monkeypatch):
+    """litellm refuses an unprefixed id — resolve_litellm prefixes every
+    configured model, so the override must be prefixed the same way."""
+    monkeypatch.setenv("AIFORGE_REVIEWER_MODEL", "vendor/bare-id")
+    seen = _fake_litellm(monkeypatch)
+
+    pr_reviewer._llm_review("review this")
+
+    assert seen["model"] == "openai/vendor/bare-id"
+
+
+# ── same send shape as the pipeline ──────────────────────────────────────
+
+def test_the_send_drops_params_a_strict_endpoint_rejects(monkeypatch):
+    seen = _fake_litellm(monkeypatch)
+    pr_reviewer._llm_review("review this")
+    assert seen["drop_params"] is True
+
+
+def test_reasoning_off_rides_in_the_body(monkeypatch):
+    from aiforge_core.llm import reasoning
+    monkeypatch.setenv("AIFORGE_NO_REASONING", "1")
+    seen = _fake_litellm(monkeypatch)
+
+    pr_reviewer._llm_review("review this")
+
+    assert seen["extra_body"] == reasoning.NO_THINK_KWARGS
+
+
+def test_an_insecure_tls_endpoint_skips_verification(monkeypatch):
+    """A self-signed internal endpoint the operator marked insecure: the review
+    must not die on CERTIFICATE_VERIFY_FAILED where the pipeline succeeds."""
+    from aiforge_core.config import agent_config
+    monkeypatch.delenv("AIFORGE_LLM_CA_BUNDLE", raising=False)
+    agent_config.set_role("doer", "openai_compatible", "cfg-model",
+                          base_url="https://box.internal/v1",
+                          insecure_tls=True)
+    seen = _fake_litellm(monkeypatch)
+
+    pr_reviewer._llm_review("review this")
+
+    assert seen["api_base"] == "https://box.internal/v1"
+    assert seen["ssl_verify"] is False
+
+
+def test_a_secure_endpoint_keeps_verification(monkeypatch):
+    seen = _fake_litellm(monkeypatch)
+    pr_reviewer._llm_review("review this")
+    assert "ssl_verify" not in seen

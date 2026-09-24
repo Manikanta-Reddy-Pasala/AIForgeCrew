@@ -86,10 +86,11 @@ def _resilient_json_parse(raw: str | None) -> dict | None:
 def _role_for(model_hint: str | None) -> str:
     """Map archetype-supplied model hint → router role.
 
-    Archetypes historically passed a literal model id (e.g.
-    ``Qwen3-Coder-Next``); the router uses logical role names. This
-    function infers the role from the model id when an explicit
-    ``AIFORGE_LLM_CLIENT_DEFAULT_ROLE`` is unset.
+    Archetypes historically passed a literal model id; the router uses
+    logical role names. This function infers the role from generic size /
+    kind hints in the id when an explicit ``AIFORGE_LLM_CLIENT_DEFAULT_ROLE``
+    is unset. It only picks a ROLE — the model always comes from that role's
+    configuration, so no model id is selected here.
     """
     explicit = os.environ.get("AIFORGE_LLM_CLIENT_DEFAULT_ROLE")
     if explicit:
@@ -97,7 +98,7 @@ def _role_for(model_hint: str | None) -> str:
     if not model_hint:
         return "doer"
     m = model_hint.lower()
-    if "coder" in m or "qwen3-coder" in m:
+    if "coder" in m:
         return "doer"
     if "27b" in m or "32b" in m or "planner" in m:
         return "planner"

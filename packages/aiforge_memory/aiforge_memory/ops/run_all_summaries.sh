@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# Symbol summaries for every repo, restarting LM Studio when a run wedges.
+#
+# Env (from ~/.aiforge/runtime.env):
+#   AIFORGE_LMS_MODEL     model ref to (re)load with `lms load`. REQUIRED for
+#                         the auto-restart — no default model; unset = no
+#                         restart (loud ERROR on stderr).
+#   AIFORGE_LMS_MODEL_ID  served identifier (`lms load --identifier`, and the
+#                         "model" in requests). Defaults to AIFORGE_LMS_MODEL.
+#                         It MUST equal the identifier already loaded on the
+#                         host — otherwise the unload misses it and the reload
+#                         puts a SECOND copy of the model into memory.
 set -uo pipefail
 set -a; source ~/.aiforge/runtime.env; set +a
 
@@ -39,7 +50,7 @@ MODEL_ID="${AIFORGE_LMS_MODEL_ID:-$MODEL_REF}"
 
 restart_lms() {
   if [[ -z "$MODEL_REF" ]]; then
-    echo "[$(date)] LM-Studio restart skipped: AIFORGE_LMS_MODEL unset (no model configured)" | tee -a "$LOGDIR/master.log"
+    echo "[$(date)] ERROR: LM-Studio restart skipped: AIFORGE_LMS_MODEL unset (no model configured)" | tee -a "$LOGDIR/master.log" >&2
     return 1
   fi
   echo "[$(date)] LM-Studio restart: unload+reload $MODEL_ID" | tee -a $LOGDIR/master.log

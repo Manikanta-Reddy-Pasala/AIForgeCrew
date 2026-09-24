@@ -19,14 +19,15 @@ from pathlib import Path
 
 import yaml
 
+from aiforge_memory.llm_compat import require_model
+
 PROMPT_PATH = Path(__file__).parent / "prompts" / "service_extract.txt"
 DEFAULT_LM_URL = os.environ.get(
     "AIFORGE_CODEMEM_LM_URL",
     os.environ.get("AIFORGE_INTENT_LM_URL", "http://127.0.0.1:1235/v1"),
 )
-DEFAULT_MODEL = os.environ.get(
-    "AIFORGE_CODEMEM_LM_MODEL", "qwen3.6-27b-instruct"
-)
+# No default model id — unset raises LmModelUnset at call time.
+DEFAULT_MODEL = os.environ.get("AIFORGE_CODEMEM_LM_MODEL", "")
 
 
 class ServiceExtractError(RuntimeError):
@@ -221,7 +222,7 @@ def _call_llm(pack_text: str, *, system: str = "", user: str = "") -> str:
     )
     from aiforge_memory.llm_compat import response_format
     create_kwargs: dict = {
-        "model": DEFAULT_MODEL,
+        "model": require_model(DEFAULT_MODEL, "service extract"),
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},

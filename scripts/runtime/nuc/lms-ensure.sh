@@ -51,7 +51,7 @@ if [[ -z "$SPECS" && -n "$LEGACY_MODEL" ]]; then
     SPECS="${LEGACY_MODEL}:${LEGACY_CTX}:${LEGACY_TTL}"
 fi
 if [[ -z "$SPECS" ]]; then
-    echo "lms-ensure: AIFORGE_LMS_MODELS / AIFORGE_LMS_MODEL unset — skipping (no model configured to load)"
+    echo "lms-ensure: ERROR: AIFORGE_LMS_MODELS / AIFORGE_LMS_MODEL unset — no model configured; NOT loading or checking any model" >&2
     exit 0
 fi
 
