@@ -21,9 +21,12 @@ def _history_preamble(history: list[dict] | None) -> str:
     return "CONVERSATION SO FAR (continue with this context):\n" + "\n".join(lines)
 
 
-def _build_team_prompt(cwd, prompt, history, session_id, resume_brief):
+def _build_team_prompt(cwd, prompt, history, session_id, resume_brief,
+                       enhanced=None):
     """Build the planner-facing prompt (project summary + prior conversation +
     session images + the current request) and the pipeline STATE keys.
+    ``enhanced`` is a spec the caller already produced for this request; it is
+    seeded so the graph's Enhancer reuses it instead of rewriting the request.
 
     ONE shared context bundle — same source-selection/scoping/gating as single
     chat (context_bundle.build_bundle), so team-chat can never silently miss a
@@ -65,4 +68,7 @@ def _build_team_prompt(cwd, prompt, history, session_id, resume_brief):
         team_state["memory_brief_md"] = bundle.memory_md
     if bundle.preferences_md:
         team_state["user_prefs_md"] = bundle.preferences_md
+    if enhanced:
+        from ._pipeline_graph import PRE_ENHANCED_KEY
+        team_state[PRE_ENHANCED_KEY] = enhanced
     return prompt, team_state

@@ -200,17 +200,24 @@ def _dispatch_agent_route(_rd, _pp, prompt, cwd, session_id, history,
             return
     if team and not _doc_task:
         # Sequential team pipeline has its own ADK enhancer; don't double-
-        # enhance. Mark the driver launched ONLY here so a crash in the
+        # enhance. A spec the build route already wrote (and put in SPEC.md)
+        # is handed on so that enhancer reuses it instead of running again —
+        # only when it actually rewrote the prompt; an unchanged prompt (the
+        # route skipped or fell back) still gets the team's own enhancer.
+        # Mark the driver launched ONLY here so a crash in the
         # parallel pre-steps above still persists + cleans up inline in the
         # producer's finally. A DOC/ANALYSIS task falls through to the single
         # research agent below even in team mode. The resume brief goes in as
         # its own argument so raw_prompt stays the user's actual request.
         _path["driver"] = True
         from aiforge_core.runtime.chat_pipeline import stream_chat_pipeline
+        _spec = rctx.get("spec")
+        _pre = _spec if _spec and _spec.strip() != (prompt or "").strip() else None
         yield from stream_chat_pipeline(prompt, cwd=cwd,
                                         session_id=session_id, history=history,
                                         started_at=_turn_t0,
-                                        resume_brief=_resume_brief)
+                                        resume_brief=_resume_brief,
+                                        enhanced=_pre)
         # The team run IS the turn: without this the producer fell through and
         # ran the same request again with the single agent (enhancer, baseline
         # commit, run_chat_agent, post-run checks) after the team had finished.

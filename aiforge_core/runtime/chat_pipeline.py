@@ -479,12 +479,12 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                          session_id: int | None = None,
                          history: list[dict] | None = None,
                          started_at: float | None = None,
-                         resume_brief: str = "") -> Iterator[dict]:
+                         resume_brief: str = "",
+                         enhanced: str | None = None) -> Iterator[dict]:
     q: queue.Queue = queue.Queue()
-    from aiforge_core.runtime import chat_cancel
     raw_prompt = prompt   # the user's actual request (before context augmentation)
     prompt, _team_state = _build_team_prompt(cwd, prompt, history, session_id,
-                                             resume_brief)
+                                             resume_brief, enhanced)
 
     t = threading.Thread(target=lambda: _drive_awake(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state), daemon=True)
     t.start()
