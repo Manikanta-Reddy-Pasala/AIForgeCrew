@@ -32,10 +32,16 @@ LOGDIR=/home/mani/.aiforge/symsum_logs
 mkdir -p "$LOGDIR"
 SSH_MS='ssh -o ConnectTimeout=10 -o ServerAliveInterval=15 manikanta@192.168.70.185'
 LMS=/Users/manikanta/.lmstudio/bin/lms
-MODEL_REF='qwen/qwen3-coder-next'
-MODEL_ID='qwen3-coder'
+# The model to (re)load comes from env / runtime.env — never a hard-coded id.
+# MODEL_ID is the served identifier (defaults to the model ref itself).
+MODEL_REF="${AIFORGE_LMS_MODEL:-}"
+MODEL_ID="${AIFORGE_LMS_MODEL_ID:-$MODEL_REF}"
 
 restart_lms() {
+  if [[ -z "$MODEL_REF" ]]; then
+    echo "[$(date)] LM-Studio restart skipped: AIFORGE_LMS_MODEL unset (no model configured)" | tee -a "$LOGDIR/master.log"
+    return 1
+  fi
   echo "[$(date)] LM-Studio restart: unload+reload $MODEL_ID" | tee -a $LOGDIR/master.log
   $SSH_MS "$LMS unload $MODEL_ID 2>&1 | tail -1" >> $LOGDIR/master.log 2>&1 || true
   sleep 3

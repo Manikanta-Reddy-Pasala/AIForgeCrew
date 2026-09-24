@@ -10,17 +10,17 @@
 # poison path recurs — so this runs on a timer and reloads whenever a
 # loaded ctx is wrong or a model is missing.
 #
-# Multi-model (2026-06-13): the box runs the Doer (qwen3-coder-next)
-# AND the judge/reviewer (nex-n2-mini) side by side (45G + 20G on a
-# 96G box). Spec list format:
+# Multi-model (2026-06-13): the box can run the Doer AND a judge/reviewer
+# model side by side. Spec list format:
 #   AIFORGE_LMS_MODELS="model:ctx:ttl,model:ctx:ttl"
-# Falls back to the legacy single-model envs when unset.
+# Falls back to the legacy single-model envs when unset. No model id is
+# hard-coded: with neither set, the script skips (never loads a guess).
 #
 # Env (same family as runtime/local_starter.py):
 #   AIFORGE_LMS_HOST    ssh target           (default manikanta@192.168.70.185)
 #   AIFORGE_LMS_BIN     lms path on the host (default ~/.lmstudio/bin/lms)
 #   AIFORGE_LMS_MODELS  spec list, see above
-#   AIFORGE_LMS_MODEL   legacy single model  (default qwen/qwen3-coder-next)
+#   AIFORGE_LMS_MODEL   legacy single model  (no default — unset = skip)
 #   AIFORGE_LMS_CTX     legacy ctx           (default 262144 = 256K, matches load-models.sh)
 #   AIFORGE_LMS_TTL     legacy ttl seconds   (default 43200)
 set -euo pipefail
@@ -39,14 +39,21 @@ fi
 # so the model stayed at whatever context a JIT load had given it, which is
 # the exact failure this script exists to prevent.
 BIN="${AIFORGE_LMS_BIN:-\$HOME/.lmstudio/bin/lms}"
-LEGACY_MODEL="${AIFORGE_LMS_MODEL:-qwen/qwen3-coder-next}"
+LEGACY_MODEL="${AIFORGE_LMS_MODEL:-}"
 LEGACY_CTX="${AIFORGE_LMS_CTX:-262144}"
 LEGACY_TTL="${AIFORGE_LMS_TTL:-43200}"
 # Concurrent predictions per model. At a big context a 30B+ model's KV cache is
 # multi-GB per slot; parallel>1 at 256K can exceed VRAM and make LM Studio drop
 # to a tiny context. Default 1 (serial, stable). Raise only with headroom.
 PARALLEL="${AIFORGE_LMS_PARALLEL:-1}"
-SPECS="${AIFORGE_LMS_MODELS:-${LEGACY_MODEL}:${LEGACY_CTX}:${LEGACY_TTL}}"
+SPECS="${AIFORGE_LMS_MODELS:-}"
+if [[ -z "$SPECS" && -n "$LEGACY_MODEL" ]]; then
+    SPECS="${LEGACY_MODEL}:${LEGACY_CTX}:${LEGACY_TTL}"
+fi
+if [[ -z "$SPECS" ]]; then
+    echo "lms-ensure: AIFORGE_LMS_MODELS / AIFORGE_LMS_MODEL unset — skipping (no model configured to load)"
+    exit 0
+fi
 
 # Marker dir: remember the (ctx:parallel) WE last loaded per model. The ctx-only
 # guard below can't see a parallel change (loaded_ctx stays >= required), so a
