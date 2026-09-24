@@ -7,7 +7,10 @@ hand the LLM one brief" step the recall path was missing: given the query + its
 hits, one cheap LLM call synthesizes a compact briefing of only what's relevant.
 
 Config: ``AIFORGE_UMEM_SUMMARIZE`` (default on), ``AIFORGE_UMEM_SUMMARIZE_MIN``
-(min hits to bother folding, default 5). Below the threshold — or on ANY
+(min hits to bother folding, default 5), ``AIFORGE_UMEM_SUMMARIZE_TIMEOUT_S``
+(default 60, min 1) — a hang guard on the fold's generation (not the
+client-side queueing), so a stalled model can't hold the turn's first model
+call for the global LLM timeout. Below the threshold — or on ANY
 failure — returns ``""`` so the caller keeps its raw ranked list. Never raises.
 """
 from __future__ import annotations
@@ -63,7 +66,8 @@ def summarize_hits(query, hits, *, role: str = "learner",
             role,
             [{"role": "system", "content": _SUM_SYS},
              {"role": "user", "content": payload[:8000]}],
-            max_tokens=500, temperature=0.0)
+            max_tokens=500, temperature=0.0,
+            timeout_s=max(1, _int_env("AIFORGE_UMEM_SUMMARIZE_TIMEOUT_S", 60)))
     except Exception as exc:  # noqa: BLE001 — model down → caller keeps raw list
         log.debug("recall summarize failed: %s", exc)
         return ""
