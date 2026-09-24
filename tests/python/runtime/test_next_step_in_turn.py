@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import subprocess
+import threading
+import time
 import types
+import uuid
 
 from aiforge_core.runtime import next_step
 from aiforge_core.runtime.chat_agent import _loop
@@ -249,3 +252,176 @@ def test_an_echo_emits_no_event_at_all(monkeypatch, tmp_path):
         "protect?", "explained it", "/repo"))
 
     assert evs == []
+
+
+# ── off the critical path: the answer and `done` never wait on it ───────
+
+def _timing(monkeypatch, grace):
+    """Every timing test pins its own grace and runs with the feature ON."""
+    monkeypatch.setenv("AIFORGE_PREDICT_GRACE_S", str(grace))
+    monkeypatch.delenv("AIFORGE_PREDICT_DISABLE", raising=False)
+
+
+def _unique(**kw):
+    return next_step.Prediction(**{**dict(
+        id=f"p-{uuid.uuid4().hex[:8]}", action="check it", tool="read_file",
+        args={}, confidence=0.9, rationale="x", verdict=next_step.OFFER), **kw})
+
+
+def _stored_ids():
+    from aiforge_core.runtime.next_step import _store
+    return {r.get("id") for r in _store._read()}
+
+
+def _final_st():
+    return types.SimpleNamespace(
+        board_used=False, board={}, edits_made=0, readonly_mode=False,
+        action_counts={"read_file": 1},
+        convo=[{"role": "user", "content": "hello"}])
+
+
+def _final_gen(monkeypatch, tmp_path):
+    monkeypatch.setattr(_finish, "_fire_stop", lambda *a, **k: None)
+    return _finish._handle_final(_final_st(), {"type": "final", "text": "x"},
+                                 None, False, False, False, str(tmp_path), [], "")
+
+
+def _blocks_until_cancelled(seen):
+    """A predictor that behaves like an LLM call honouring its cancel token."""
+    from aiforge_core.llm.client import _http
+
+    def _pred(*a, **k):
+        ev = _http._CANCEL.get()
+        seen["token"] = ev
+        seen["cancelled"] = bool(ev is not None and ev.wait(10))
+        seen["over"] = True
+        return seen["p"]
+    return _pred
+
+
+def _wait_for(seen, key="over", s=5.0):
+    t0 = time.monotonic()
+    while key not in seen and time.monotonic() - t0 < s:
+        time.sleep(0.01)
+    return key in seen
+
+
+def test_a_slow_prediction_does_not_hold_done_back_and_is_cancelled(
+        monkeypatch, tmp_path):
+    """The enhancer can take ~20 s; the turn ends after the grace, and the
+    dropped call is aborted instead of holding a one-slot local model."""
+    _timing(monkeypatch, 0.2)
+    seen = {"p": _unique()}
+    monkeypatch.setattr(_finish, "_predict_next_step", _blocks_until_cancelled(seen))
+    t0 = time.monotonic()
+    evs = list(_final_gen(monkeypatch, tmp_path))
+    assert time.monotonic() - t0 < 2
+    assert [e["type"] for e in evs] == ["message", "done"]
+    assert _wait_for(seen)
+    assert seen["cancelled"] is True, "the LLM call must see the cancellation"
+    assert seen["p"].id not in _stored_ids(), "never shown, so never offered"
+
+
+def test_closing_the_turn_mid_answer_cancels_the_prediction(monkeypatch, tmp_path):
+    _timing(monkeypatch, 5)
+    seen = {"p": _unique()}
+    monkeypatch.setattr(_finish, "_predict_next_step", _blocks_until_cancelled(seen))
+    gen = _final_gen(monkeypatch, tmp_path)
+    assert next(gen)["type"] == "message"
+    gen.close()
+    assert _wait_for(seen)
+    assert seen["cancelled"] is True
+
+
+def test_a_late_prediction_is_not_recorded_as_offered(monkeypatch):
+    """Never shown, so it must not suppress the same suggestion next turn."""
+    _timing(monkeypatch, 0.05)
+    seen = {"p": _unique()}
+    monkeypatch.setattr(_finish, "_predict_next_step", _blocks_until_cancelled(seen))
+    assert list(_loop._emit_suggestion("hello", "read_file", "/repo")) == []
+    assert _wait_for(seen)
+    time.sleep(0.05)
+    assert seen["p"].id not in _stored_ids()
+
+
+def test_a_timely_prediction_is_emitted_between_answer_and_done(monkeypatch, tmp_path):
+    _timing(monkeypatch, 5)
+    p = _unique()
+    monkeypatch.setattr(_finish, "_predict_next_step", lambda *a, **k: p)
+    evs = list(_final_gen(monkeypatch, tmp_path))
+    assert [e["type"] for e in evs] == ["message", "suggestion", "done"]
+    assert evs[1]["id"] == p.id
+    assert p.id in _stored_ids(), "an emitted suggestion is recorded as offered"
+
+
+def test_the_prediction_runs_while_the_answer_is_consumed(monkeypatch, tmp_path):
+    """Started when the answer is accepted, not after it is handed over: time
+    the consumer spends on the message comes off the grace."""
+    _timing(monkeypatch, 5)
+    started = threading.Event()
+
+    def _pred(*a, **k):
+        started.set()
+        return _unique()
+
+    monkeypatch.setattr(_finish, "_predict_next_step", _pred)
+    gen = _final_gen(monkeypatch, tmp_path)
+    assert next(gen)["type"] == "message"
+    assert started.wait(5), "prediction must already be running"
+    assert [e["type"] for e in gen] == ["suggestion", "done"]
+
+
+def test_the_grace_is_env_tunable_and_survives_garbage(monkeypatch):
+    """Default = the prediction's own timeout: a slow local model still gets
+    its suggestion shown, as before the prediction moved off the answer path."""
+    for key in ("AIFORGE_PREDICT_GRACE_S", "AIFORGE_PREDICT_TIMEOUT_S"):
+        monkeypatch.delenv(key, raising=False)
+    assert _finish._suggest_grace_s() == 10.0
+    monkeypatch.setenv("AIFORGE_PREDICT_TIMEOUT_S", "25")
+    assert _finish._suggest_grace_s() == 25.0
+    monkeypatch.setenv("AIFORGE_PREDICT_GRACE_S", "0.3")
+    assert _finish._suggest_grace_s() == 0.3
+    monkeypatch.setenv("AIFORGE_PREDICT_GRACE_S", "soon")
+    assert _finish._suggest_grace_s() == 25.0
+    monkeypatch.setenv("AIFORGE_PREDICT_GRACE_S", "-4")
+    assert _finish._suggest_grace_s() == 0.0
+
+
+def test_the_clean_tree_probe_takes_no_optional_locks(monkeypatch):
+    """It runs on a side thread while the next turn may be writing."""
+    calls = []
+
+    def _run(cmd, **kw):
+        calls.append(cmd)
+        return types.SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(_finish.subprocess, "run", _run)
+    assert _finish._is_clean_tree("/repo") is True
+    assert "--no-optional-locks" in calls[0]
+
+
+# ── store=False: only what is shown is recorded ──────────────────────────
+
+def _raw_row(pid):
+    return {"id": pid, "action": "open the deploy log for the api service",
+            "tool": "read_file", "args": {"path": "deploy.log"},
+            "confidence": 0.99, "rationale": "x"}
+
+
+def test_predict_without_store_writes_no_row(monkeypatch):
+    from aiforge_core.runtime.next_step import _predict as _np
+
+    monkeypatch.setenv("AIFORGE_PREDICT_REPEAT_H", "0")
+    pid = f"p-{uuid.uuid4().hex[:8]}"
+    monkeypatch.setattr(_np, "raw_prediction", lambda ctx: _raw_row(pid))
+    p = next_step.predict({"message": "why did the build fail", "repo": "R"},
+                          store=False)
+    assert p is not None and p.id == pid
+    assert pid not in _stored_ids()
+
+
+def test_remember_writes_the_row(monkeypatch):
+    pid = f"p-{uuid.uuid4().hex[:8]}"
+    next_step.remember(_unique(id=pid), {"message": "why did the build fail",
+                                         "repo": "R"})
+    assert pid in _stored_ids()

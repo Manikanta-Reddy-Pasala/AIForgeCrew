@@ -8,6 +8,7 @@ improves a good turn must never be able to break one.
 """
 from __future__ import annotations
 
+import contextlib
 from dataclasses import asdict, dataclass
 
 from aiforge_core.runtime.next_step import _predict, _repeat, _risk, _store
@@ -34,11 +35,15 @@ class Prediction:
         return {"type": "suggestion", **row}
 
 
-def predict(ctx: dict) -> Prediction | None:
+def predict(ctx: dict, *, store: bool = True) -> Prediction | None:
     """The likely next action, or None. Never raises.
 
     ``ctx`` carries ``message`` (what the user said), ``did`` (what the agent
     did about it), ``repo`` and ``clean_tree``.
+
+    ``store=False`` leaves recording to the caller (``remember``): a chat turn
+    predicts off the critical path and drops a prediction that arrives too
+    late, and a dropped one was never offered, so it must not count as offered.
     """
     try:
         row = _predict.raw_prediction(ctx or {})
@@ -72,10 +77,17 @@ def predict(ctx: dict) -> Prediction | None:
                                   clean_tree=bool((ctx or {}).get("clean_tree"))),
             **{k: row[k] for k in ("id", "action", "tool", "args",
                                    "confidence", "rationale")})
-        _store.remember(p, ctx or {})
+        if store:
+            _store.remember(p, ctx or {})
         return p
     except Exception:  # noqa: BLE001 — see the module docstring
         return None
+
+
+def remember(prediction: Prediction, ctx: dict) -> None:
+    """Record a prediction as offered (pending). Never raises."""
+    with contextlib.suppress(Exception):  # see the module docstring
+        _store.remember(prediction, ctx or {})
 
 
 def outcome(prediction_id: str, accepted: bool, *, edited: str = "") -> None:
@@ -92,5 +104,5 @@ def history(limit: int = 20) -> list[dict]:
     return _store.history(limit)
 
 
-__all__ = ["ACT", "OFFER", "Prediction", "predict", "outcome", "outcome_row",
-           "history"]
+__all__ = ["ACT", "OFFER", "Prediction", "predict", "remember", "outcome",
+           "outcome_row", "history"]

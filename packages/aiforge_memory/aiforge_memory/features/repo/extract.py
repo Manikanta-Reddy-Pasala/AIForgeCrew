@@ -1,7 +1,7 @@
 """Stage 2 — LLM repo summary.
 
 Sends the RepoMix pack + a strict-JSON system prompt to the planner
-LLM (qwen3.6-27b at LM Studio :1235 by default) and parses the result
+LLM (``AIFORGE_CODEMEM_LM_MODEL`` at ``AIFORGE_CODEMEM_LM_URL``) and parses the result
 into a `RepoSummary` dataclass. One automatic retry on invalid JSON
 with a stricter system suffix; second failure raises RepoSummaryError.
 
@@ -16,14 +16,15 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from aiforge_memory.llm_compat import require_model
+
 PROMPT_PATH = Path(__file__).parent / "prompts" / "repo_summary.txt"
 DEFAULT_LM_URL = os.environ.get(
     "AIFORGE_CODEMEM_LM_URL",
     os.environ.get("AIFORGE_INTENT_LM_URL", "http://127.0.0.1:1235/v1"),
 )
-DEFAULT_MODEL = os.environ.get(
-    "AIFORGE_CODEMEM_LM_MODEL", "qwen3.6-27b-instruct"
-)
+# No default model id — unset raises LmModelUnset at call time.
+DEFAULT_MODEL = os.environ.get("AIFORGE_CODEMEM_LM_MODEL", "")
 
 
 class RepoSummaryError(RuntimeError):
@@ -139,7 +140,7 @@ def _call_llm(pack_text: str, *, system: str = "", user: str = "") -> str:
     )
     from aiforge_memory.llm_compat import response_format
     create_kwargs: dict = {
-        "model": DEFAULT_MODEL,
+        "model": require_model(DEFAULT_MODEL, "repo summary"),
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},

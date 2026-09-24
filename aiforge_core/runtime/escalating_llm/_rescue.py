@@ -198,7 +198,8 @@ class _RescueMixin:
         pkg = _pkg()
         from .. import local_starter
         self.lm_recovery_tried = True
-        recovered = local_starter.try_recover(pkg._api_base_of(model))
+        recovered = local_starter.try_recover(
+            pkg._api_base_of(model), getattr(model, "model", None) or None)
         log.warning("llm.lm_crash_recovery role=%s recovered=%s",
                     self.role, recovered)
         if not recovered:

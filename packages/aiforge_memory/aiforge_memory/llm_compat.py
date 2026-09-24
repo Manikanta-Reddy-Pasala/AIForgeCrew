@@ -58,4 +58,22 @@ def response_format() -> dict | None:
     return {"type": "json_schema", "json_schema": _PERMISSIVE_OBJECT_SCHEMA}
 
 
-__all__ = ["response_format"]
+class LmModelUnset(RuntimeError):
+    """No LLM model is configured for code-memory — nothing is guessed."""
+
+
+def require_model(model: str, feature: str) -> str:
+    """``model`` when set; else raise :class:`LmModelUnset` with the fix.
+
+    There is deliberately NO default model id: a baked-in one makes the LLM
+    server load a model the operator never configured (on LM Studio a second
+    large model next to — or evicting — theirs).
+    """
+    if model:
+        return model
+    raise LmModelUnset(
+        f"{feature}: AIFORGE_CODEMEM_LM_MODEL is unset — no model configured. "
+        "Set it to the model served at AIFORGE_CODEMEM_LM_URL.")
+
+
+__all__ = ["response_format", "LmModelUnset", "require_model"]

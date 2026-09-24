@@ -246,19 +246,36 @@ def _batch_cap() -> int:
         return 8
 
 
-#: Reads that return in seconds. The turn deadline is only checked between
-#: calls, so a slow read-only tool (a pipeline watch, a crawl, a type check, a
-#: document summary that calls a model) never joins a batch.
-BATCHABLE_READS = frozenset({
+#: Reads bounded by per-request timeouts of seconds. The turn deadline is only
+#: checked between calls, so a read-only tool that waits for minutes by design
+#: (a pipeline watch, a crawl, a type check, a document summary that calls a
+#: model) never joins a batch.
+#: The batchable reads that wait on a server or a subprocess: a batch (and an
+#: ADK reply, see doer_tools._threaded) runs these at the same time. Each is
+#: thread-safe: no chdir, no shared state beyond benign caches, and no writes
+#: of ours but a TLS pin (net.trust, atomic and locked).
+#: Local reads take milliseconds and run one after another.
+CONCURRENT_READS = frozenset({
+    "jira_read", "jira_search", "jira_transitions", "jira_worklog",
+    "jira_remote_links",
+    "confluence_read", "confluence_search", "confluence_children",
+    "confluence_spaces", "confluence_page_by_title", "confluence_labels",
+    "confluence_comments", "confluence_descendants",
+    "gitlab_read", "gitlab_search", "gitlab_pipelines", "gitlab_pipeline",
+    # A `codegraph` subprocess reading the SQLite index; the index is built
+    # before the turn (ensure_indexed), never by a query.
+    "codegraph_query", "codegraph_callers", "codegraph_callees",
+    "codegraph_impact", "codegraph_explore",
+    # Egress-gated inside the tool; the batch also checks the gate before
+    # starting one early.
+    "web_fetch",
+})
+BATCHABLE_READS = CONCURRENT_READS | {
     "file_read", "read_files", "read_lines", "list_dir", "find", "grep",
     "git_status", "git_diff", "git_log", "git_blame",
     "memory_lookup", "search_chat_sessions", "skill_search", "workflow_search",
-    "codegraph_query", "codegraph_callers", "codegraph_callees",
-    "codegraph_impact", "resolve_repo", "list_services",
-    "jira_read", "jira_search", "jira_transitions", "jira_worklog",
-    "confluence_read", "confluence_search", "confluence_children",
-    "gitlab_read", "gitlab_search",
-})
+    "resolve_repo", "list_services",
+}
 #: Bookkeeping the loop handles itself; safe to run inside a batch of reads.
 _BATCHABLE = BATCHABLE_READS | {"plan_progress"}
 
@@ -341,6 +358,7 @@ def make_native_complete_fn():
 
     queued: list[str] = []
     skipped = [0]
+    tools: list[dict] = []   # gated once per turn, on the first call
 
     def take_queued() -> "tuple[list[str], int]":
         """The read-only calls the last reply batched after its first one, and
@@ -358,9 +376,16 @@ def make_native_complete_fn():
         model = _model_for(role)
         if _NATIVE_CACHE.get(model) is False:
             return client.complete(role, convo)
+        if not tools:
+            try:
+                from ._catalog_gate import gate_schemas
+                tools[:] = gate_schemas(NATIVE_TOOL_SCHEMAS)
+            except Exception as exc:  # noqa: BLE001 — never break a turn
+                log.debug("schema gate failed, sending all: %s", exc)
+                tools[:] = NATIVE_TOOL_SCHEMAS
         try:
             msg = client.complete_raw(
-                role, convo, tools=NATIVE_TOOL_SCHEMAS, tool_choice="auto")
+                role, convo, tools=tools, tool_choice="auto")
         except Exception as exc:  # noqa: BLE001
             if _native_error_is_permanent(exc, model):
                 return client.complete(role, convo)

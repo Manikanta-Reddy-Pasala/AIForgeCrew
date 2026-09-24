@@ -127,3 +127,103 @@ def test_legacy_search_disable_var_still_locks_fetch(monkeypatch):
     monkeypatch.setenv("AIFORGE_WEB_SEARCH_DISABLE", "1")
     out, _ = gate_catalog(_SYSTEM, ALL)
     assert "WEB ACCESS IS OFF" in out
+
+
+# --- the native tool schemas follow the same gate --------------------------
+
+def _names(schemas):
+    return {s["function"]["name"] for s in schemas}
+
+
+def test_schemas_everything_configured_is_a_noop():
+    from aiforge_core.runtime.chat_agent._catalog_gate import gate_schemas
+    from aiforge_core.runtime.chat_agent._tools._schemas import NATIVE_TOOL_SCHEMAS
+    assert gate_schemas(NATIVE_TOOL_SCHEMAS, ALL) == NATIVE_TOOL_SCHEMAS
+
+
+def test_schemas_of_unconfigured_integrations_are_not_sent():
+    from aiforge_core.runtime.chat_agent._catalog_gate import gate_schemas
+    from aiforge_core.runtime.chat_agent._tools._schemas import NATIVE_TOOL_SCHEMAS
+    kept = _names(gate_schemas(NATIVE_TOOL_SCHEMAS, {"gitlab"}))
+    assert not any(n.startswith(("jira_", "confluence_", "email_")) for n in kept)
+    assert "gitlab_read" in kept and "file_read" in kept and "run_command" in kept
+    assert "context_gather" not in kept, "shared Jira/Confluence tool, neither is set up"
+
+
+def test_schemas_match_the_catalog_lines_the_prompt_keeps():
+    """One rule for both: a tool is either advertised in both places or neither."""
+    from aiforge_core.runtime.chat_agent._catalog_gate import gate_schemas
+    from aiforge_core.runtime.chat_agent._tools._schemas import NATIVE_TOOL_SCHEMAS
+    for have in (set(), {"jira"}, {"confluence", "email"}, ALL):
+        out, _ = gate_catalog(_SYSTEM, have)
+        kept = _names(gate_schemas(NATIVE_TOOL_SCHEMAS, have))
+        for name in _names(NATIVE_TOOL_SCHEMAS):
+            if f"- {name} " in _SYSTEM:
+                assert (name in kept) == (f"- {name} " in out), (have, name)
+
+
+def test_schemas_web_tools_follow_the_web_lockdown(monkeypatch):
+    from aiforge_core.runtime.chat_agent import _catalog_gate
+    from aiforge_core.runtime.chat_agent._tools._schemas import NATIVE_TOOL_SCHEMAS
+    monkeypatch.setattr(_catalog_gate, "_web_fetch_on", lambda: False)
+    kept = _names(_catalog_gate.gate_schemas(NATIVE_TOOL_SCHEMAS, ALL))
+    assert "web_fetch" not in kept and "web_crawl" not in kept
+
+
+def test_schemas_gate_off_keeps_the_integrations(monkeypatch):
+    from aiforge_core.runtime.chat_agent._catalog_gate import gate_schemas
+    from aiforge_core.runtime.chat_agent._tools._schemas import NATIVE_TOOL_SCHEMAS
+    monkeypatch.setenv("AIFORGE_CHAT_GATE_TOOLS", "0")
+    assert gate_schemas(NATIVE_TOOL_SCHEMAS, set()) == NATIVE_TOOL_SCHEMAS
+
+
+def test_the_native_call_sends_the_gated_schemas(monkeypatch):
+    from aiforge_core.llm import client
+    from aiforge_core.runtime.chat_agent import _catalog_gate, _native
+    monkeypatch.setattr(_catalog_gate, "configured_integrations", lambda: set())
+    _native.reset_native_cache()
+    monkeypatch.setattr(_native, "_model_for", lambda role: "m-gate")
+    sent = []
+
+    def _raw(role, convo, tools=None, tool_choice=None):
+        sent.append(_names(tools))
+        return {"role": "assistant", "content": "FINAL: ok"}
+    monkeypatch.setattr(client, "complete_raw", _raw)
+    fn = _native.make_native_complete_fn()
+    fn("chat", [])
+    fn("chat", [])
+    assert sent[0] == sent[1]
+    assert not any(n.startswith("jira_") for n in sent[0]) and "file_read" in sent[0]
+
+
+def test_email_counts_as_configured_once_smtp_or_imap_has_a_host(monkeypatch):
+    """The probe used to call a helper email_tool never had, so email was
+    'not configured' on every install and its tools were hidden."""
+    from aiforge_core.runtime.chat_agent._catalog_gate import configured_integrations
+    for key in ("AIFORGE_SMTP_HOST", "AIFORGE_IMAP_HOST", "AIFORGE_EMAIL_DISABLE"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr("aiforge_core.runtime.tools.email_tool._stored", lambda: {})
+    assert "email" not in configured_integrations()
+    monkeypatch.setenv("AIFORGE_SMTP_HOST", "smtp.example.com")
+    assert "email" in configured_integrations()
+    monkeypatch.delenv("AIFORGE_SMTP_HOST")
+    monkeypatch.setenv("AIFORGE_IMAP_HOST", "imap.example.com")
+    assert "email" in configured_integrations()
+    monkeypatch.setenv("AIFORGE_EMAIL_DISABLE", "1")
+    assert "email" not in configured_integrations()
+
+
+def test_the_gate_runs_once_per_turn(monkeypatch):
+    from aiforge_core.llm import client
+    from aiforge_core.runtime.chat_agent import _catalog_gate, _native
+    probes = []
+    monkeypatch.setattr(_catalog_gate, "configured_integrations",
+                        lambda: probes.append(1) or set())
+    _native.reset_native_cache()
+    monkeypatch.setattr(_native, "_model_for", lambda role: "m-gate-once")
+    monkeypatch.setattr(client, "complete_raw",
+                        lambda *a, **k: {"role": "assistant", "content": "FINAL: ok"})
+    fn = _native.make_native_complete_fn()
+    for _ in range(3):
+        fn("chat", [])
+    assert len(probes) == 1

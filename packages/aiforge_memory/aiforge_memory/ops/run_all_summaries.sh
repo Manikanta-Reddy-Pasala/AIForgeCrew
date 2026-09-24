@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# Symbol summaries for every repo, restarting LM Studio when a run wedges.
+#
+# Env (from ~/.aiforge/runtime.env):
+#   AIFORGE_LMS_MODEL     model ref to (re)load with `lms load`. REQUIRED for
+#                         the auto-restart — no default model; unset = no
+#                         restart (loud ERROR on stderr).
+#   AIFORGE_LMS_MODEL_ID  served identifier (`lms load --identifier`, and the
+#                         "model" in requests). Defaults to AIFORGE_LMS_MODEL.
+#                         It MUST equal the identifier already loaded on the
+#                         host — otherwise the unload misses it and the reload
+#                         puts a SECOND copy of the model into memory.
 set -uo pipefail
 set -a; source ~/.aiforge/runtime.env; set +a
 
@@ -32,10 +43,16 @@ LOGDIR=/home/mani/.aiforge/symsum_logs
 mkdir -p "$LOGDIR"
 SSH_MS='ssh -o ConnectTimeout=10 -o ServerAliveInterval=15 manikanta@192.168.70.185'
 LMS=/Users/manikanta/.lmstudio/bin/lms
-MODEL_REF='qwen/qwen3-coder-next'
-MODEL_ID='qwen3-coder'
+# The model to (re)load comes from env / runtime.env — never a hard-coded id.
+# MODEL_ID is the served identifier (defaults to the model ref itself).
+MODEL_REF="${AIFORGE_LMS_MODEL:-}"
+MODEL_ID="${AIFORGE_LMS_MODEL_ID:-$MODEL_REF}"
 
 restart_lms() {
+  if [[ -z "$MODEL_REF" ]]; then
+    echo "[$(date)] ERROR: LM-Studio restart skipped: AIFORGE_LMS_MODEL unset (no model configured)" | tee -a "$LOGDIR/master.log" >&2
+    return 1
+  fi
   echo "[$(date)] LM-Studio restart: unload+reload $MODEL_ID" | tee -a $LOGDIR/master.log
   $SSH_MS "$LMS unload $MODEL_ID 2>&1 | tail -1" >> $LOGDIR/master.log 2>&1 || true
   sleep 3

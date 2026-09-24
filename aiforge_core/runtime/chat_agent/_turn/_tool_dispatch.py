@@ -75,11 +75,12 @@ def _unknown_tool_result(name) -> dict:
     return {"ok": False, "error": f"unknown tool: {name}"}
 
 
-def _dispatch_tool(name, args, cwd, n, _hook_block):
+def _dispatch_tool(name, args, cwd, n, _hook_block, early=None):
     """Dispatch one tool call: honour a PreToolUse hook block / unknown tool,
     else emit ``tool_start`` and run ``fn(args, cwd)`` under a scoped sandbox
-    root override (reset in finally) with perf recording. Returns the result
-    dict."""
+    root override (reset in finally) with perf recording. ``early`` is the
+    future of a batched read already started in the background: its result is
+    used instead of running the call again. Returns the result dict."""
     fn = TOOLS.get(name)
     if _hook_block is not None:
         result = {"ok": False, "blocked": "hook", "hook": _hook_block,
@@ -95,7 +96,8 @@ def _dispatch_tool(name, args, cwd, n, _hook_block):
         # instead of appending a second, duplicate row.
         yield {"type": "tool_start", "name": name,
                "args": _shown_args(name, args), "call_id": n}
-        result = _invoke_tool(fn, name, args, cwd)
+        result = (early.result() if early is not None
+                  else _invoke_tool(fn, name, args, cwd))
     return result
 
 

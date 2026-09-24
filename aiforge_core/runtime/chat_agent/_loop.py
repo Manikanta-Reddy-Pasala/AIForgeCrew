@@ -6,7 +6,6 @@ keeps working. Patch a helper in the ``_turn`` module that calls it.
 """
 from __future__ import annotations
 
-import json
 import os
 import time  # noqa: F401  # tests patch time.sleep through this module
 from collections.abc import Callable, Iterator
@@ -40,10 +39,13 @@ from ._turn._approval import (  # noqa: F401
 from ._turn._batch import (  # noqa: F401
     _NOT_BATCHABLE,
     _batch_stop_reason,
+    _call_sig,
+    _cancel_early_reads,
     _drop_batch,
     _pop_queued_step,
     _queue_batched_reads,
     _rebase_batch,
+    _take_early_read,
     _unread_batch_msgs,
 )
 from ._turn._blocks import (  # noqa: F401
@@ -136,8 +138,9 @@ def _emit_loop_prelude(st):
     # ACTION/ARGS_JSON protocol). Opt out of the banner: AIFORGE_CHAT_NATIVE_BANNER=0.
     if st.native_on and os.environ.get("AIFORGE_CHAT_NATIVE_BANNER", "1") not in ("0", "false"):
         try:
+            from ._catalog_gate import gate_schemas
             from ._tools._schemas import NATIVE_TOOL_SCHEMAS
-            _ntools = len(NATIVE_TOOL_SCHEMAS)
+            _ntools = len(gate_schemas(NATIVE_TOOL_SCHEMAS))   # what is sent
         except Exception:  # noqa: BLE001
             _ntools = 0
         yield {"type": "thought", "role": "system",
@@ -183,7 +186,7 @@ def _run_action_path(st, step, n, cwd, session_id):
     # which parses to None/non-dict; every tool does `args.get(...)` and would
     # crash. An empty dict lets the tool return its own instructive error.
     args = step["args"] if isinstance(step["args"], dict) else {}
-    sig = name + "|" + json.dumps(args, sort_keys=True, default=str)
+    sig = _call_sig(name, args)
     _sig = yield from _gated_action(st, step, name, args, sig, n, cwd, session_id)
     if _sig in ("repeat", "handled"):
         return "continue"
@@ -219,7 +222,8 @@ def _gated_action(st, step, name, args, sig, n, cwd, session_id):
     _hb = yield from _pre_tool_checks(st, name, args, cwd, st.scope_globs)
     if _hb in ("continue", "return"):
         return _hb
-    result = yield from _dispatch_tool(name, args, cwd, n, _hb)
+    result = yield from _dispatch_tool(name, args, cwd, n, _hb,
+                                       _take_early_read(st, sig))
     yield from _post_tool(st, name, args, result, cwd, sig, n,
                           st.long_chain_help, st.bundle)
     return None
@@ -292,22 +296,27 @@ def run_chat_agent(
     complete_fn = st.complete_fn
     n = 0
     yield from _emit_loop_prelude(st)
-    while True:
-        n += 1
-        # A batch of reads from the last reply runs without asking the model
-        # again; each still passes every gate in _dispatch_step.
-        out = _pop_queued_step(st, n, session_id)
-        if out is None:
-            out, _sig = yield from _step_prologue(
-                st, n, cwd, role, complete_fn, session_id, builder)
+    try:
+        while True:
+            n += 1
+            # A batch of reads from the last reply runs without asking the model
+            # again; each still passes every gate in _dispatch_step.
+            out = _pop_queued_step(st, n, session_id)
+            if out is None:
+                out, _sig = yield from _step_prologue(
+                    st, n, cwd, role, complete_fn, session_id, builder)
+                if _sig == "return":
+                    return
+                if _sig == "continue":
+                    continue
+                _queue_batched_reads(st, n)
+            _sig = yield from _dispatch_step(
+                st, out, n, cwd, role, complete_fn, session_id, builder, strict_finish)
             if _sig == "return":
                 return
             if _sig == "continue":
                 continue
-            _queue_batched_reads(st)
-        _sig = yield from _dispatch_step(
-            st, out, n, cwd, role, complete_fn, session_id, builder, strict_finish)
-        if _sig == "return":
-            return
-        if _sig == "continue":
-            continue
+    finally:
+        # However the turn ends (answer, a pause for the user, a closed
+        # stream), batched reads still waiting for a worker never run.
+        _cancel_early_reads(st)

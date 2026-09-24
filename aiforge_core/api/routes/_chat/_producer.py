@@ -167,10 +167,16 @@ def _events(pc):
         yield {"type": "thought", "role": "router",
                "text": "Small follow-up — handling directly (skipped the "
                        "full pipeline for speed)."}
-    if not _skip_enhance:
-        yield {"type": "thought", "role": "enhancer",
-               "text": "Enhancing request + gathering context…"}
-    _enriched = _enhance_prompt(_pp, pc.prompt, pc.history, pc.cwd, _skip_enhance)
+    if rctx.get("spec") is not None:
+        # The build route already enhanced this exact prompt (same history,
+        # cwd and repo scope) before it found a single task: reuse that spec.
+        _enriched = rctx["spec"]
+    else:
+        if not _skip_enhance:
+            yield {"type": "thought", "role": "enhancer",
+                   "text": "Enhancing request + gathering context…"}
+        _enriched = _enhance_prompt(_pp, pc.prompt, pc.history, pc.cwd,
+                                    _skip_enhance, pc.session_id)
     _enriched_history = _fold_enriched_history(
         pc.history, _enriched, pc._resume_brief, pc.prompt, _doc_task)
     if pc.agent_mode == "plan":
