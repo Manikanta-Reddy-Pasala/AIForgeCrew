@@ -91,6 +91,29 @@ def test_the_answer_is_taken_before_the_learner_runs(monkeypatch):
     assert out["by_role"]["learner"], "the Learner still ran to the end"
 
 
+def test_a_replan_then_a_pass_answers_once_with_the_second_attempt(
+        monkeypatch):
+    """ADK sends a gate's state delta and its route as separate events; a
+    replan loops back through the Doer before the gate passes."""
+    from aiforge_core.runtime import chat_cancel
+    monkeypatch.setattr(chat_cancel, "is_cancelled", lambda sid: False)
+    seen: list = []
+
+    async def on_answer(res):
+        seen.append(res["by_role"].get("doer"))
+
+    events = [_ev(author="doer", text="first try", node="doer"),
+              _ev(node="validator_gate"),                   # state only
+              _ev(node="validator_gate", route="replan"),
+              _ev(author="doer", text="second try", node="doer"),
+              _ev(node="validator_gate"),
+              _ev(node="validator_gate", route="done"),
+              _ev(author="learner", text="facts", node="learner")]
+    asyncio.run(P._drive_run_events(_agen(events), None, queue.Queue(),
+                                    None, None, [], on_answer))
+    assert seen == ["second try"]
+
+
 def test_after_the_answer_a_stop_belongs_to_the_next_turn(monkeypatch):
     """The session's cancel token and steer queue belong to whatever turn the
     user started next; the Learner must neither obey that Stop nor eat its
