@@ -1,10 +1,12 @@
 """The team run's turn bookkeeping: its subtask panel, session binding, queue
-tail, final answer, and the persisted turn when it stops early or falls back."""
+tail, final answer, the hand-off before the Learner, the persisted turn when it
+stops early or falls back, and the event loop the driver thread runs on."""
 from __future__ import annotations
 
 import os
 import queue
 import time
+from collections.abc import Callable
 
 from .chat_pipeline_events import _guard_edit_claim, _team_change_events
 
@@ -15,6 +17,9 @@ def _dur(started_at: "float | None") -> "float | None":
 
 
 _SENTINEL = object()
+# The driver posted the answer and persisted the turn; only the Learner is still
+# running. Ends the client's tail like the sentinel does (see _hand_off_turn).
+_HANDED_OFF = object()
 
 
 def _finalize_subtasks(items: list[dict] | None, run_ok: bool,
@@ -97,6 +102,77 @@ def _bind_team_session(session_id, q) -> None:
     _rc.set_session_id(session_id)
 
 
+def _close_turn(session_id, cwd, raw_prompt, final_text, steps, sub_items,
+                run_ok, started_at, q, chat_run=None) -> None:
+    """Reconcile the subtask panel to the outcome, persist the turn and clear
+    the session's approver/cancel/steer state — the latter only while this
+    turn's ``chat_run`` is still the session's current run (after a kill-all a
+    new turn may own those gates)."""
+    from aiforge_core.runtime import chat_cancel
+    cancelled = bool(session_id is not None
+                     and chat_cancel.is_cancelled(session_id))
+    # Reconcile the subtask panel (done on a clean finish, failed on error/stop)
+    # — emit live updates AND mutate the persisted item dicts (same objects in
+    # `steps`) so a reload shows the same.
+    for ev in _finalize_subtasks(sub_items, run_ok, cancelled):
+        q.put(ev)
+    if session_id is not None:
+        try:
+            from aiforge_core.runtime import chat_persist
+            chat_persist.persist_turn(
+                session_id=session_id, cwd=cwd, prompt=raw_prompt,
+                final_text=final_text, steps=steps, team=True,
+                cancelled=cancelled, awaiting=False, mode="team",
+                duration_s=_dur(started_at))
+        except Exception:  # noqa: BLE001
+            pass
+        from aiforge_core.runtime import chat_approve, chat_interject, chat_runs
+        if chat_run is not None and chat_runs.get(session_id) is not chat_run:
+            return
+        chat_approve.clear_emitter(session_id)
+        chat_approve.finish(session_id)
+        chat_cancel.finish(session_id)
+        # Team mode does NOT fold steers mid-run — but still clear so a queued
+        # steer can't leak into the next turn.
+        chat_interject.clear(session_id)
+
+
+def _hand_off_turn(q, session_id, cwd, raw_prompt, final_text, steps,
+                   sub_items, started_at, chat_run=None) -> None:
+    """Close the turn while the Learner still runs. The answer is already on
+    the queue: reconcile, persist and clear exactly as the teardown would, then
+    end the client's tail. The producer finishes the chat run once it has
+    published the answer and ``done``, so the UI settles and a follow-up is
+    accepted with this answer in its history. The Learner runs on holding the
+    team run lock (a team follow-up waits for it) and persists its facts; the
+    teardown then only releases the lock.
+
+    The caller marks the run handed off BEFORE calling this, and the marker is
+    posted even if closing raises: the turn is persisted at most once, never
+    again by the teardown."""
+    try:
+        _close_turn(session_id, cwd, raw_prompt, final_text, steps, sub_items,
+                    True, started_at, q, chat_run)
+    finally:
+        q.put(_HANDED_OFF)
+
+
+def _answer_ready(event) -> bool:
+    """True when ``event`` means the answer is final: the validator gate routed
+    ``done`` (the Learner is next), or the Learner itself spoke. The Learner
+    distils facts for memory; nothing it says reaches the answer
+    (:func:`_promote_team_answer`)."""
+    from .graph_pipeline import ROUTE_DONE
+    if getattr(event, "author", None) == "learner":
+        return True
+    path = getattr(getattr(event, "node_info", None), "path", None) or ""
+    node = str(path).rsplit("/", 1)[-1].split("@", 1)[0]
+    if node == "learner":
+        return True
+    route = getattr(getattr(event, "actions", None), "route", None)
+    return node == "validator_gate" and route == ROUTE_DONE
+
+
 def _persist_stop_before_start(session_id, cwd, raw_prompt, started_at) -> None:
     """Persist a stopped turn for a Stop that landed while WAITING on the run
     lock — the api _produce finally skips persistence for the team path
@@ -118,10 +194,11 @@ def _persist_stop_before_start(session_id, cwd, raw_prompt, started_at) -> None:
 
 
 def _tail_team_queue(q, flags: dict):
-    """Yield events off the team run's queue until the sentinel, tracking
-    errored/stopped/saw_real in ``flags``. A 10s ``get`` timeout emits a ``ping``
-    heartbeat — a slow local model can leave minute-long gaps and without periodic
-    output the SSE connection idles and the browser/proxy drops it."""
+    """Yield events off the team run's queue until the sentinel (or the
+    hand-off), tracking errored/stopped/saw_real/handed_off in ``flags``. A
+    10s ``get`` timeout emits a ``ping`` heartbeat — a slow local model can
+    leave minute-long gaps and without periodic output the SSE connection idles
+    and the browser/proxy drops it."""
     while True:
         try:
             item = q.get(timeout=10)
@@ -129,6 +206,9 @@ def _tail_team_queue(q, flags: dict):
             yield {"type": "ping"}
             continue
         if item is _SENTINEL:
+            return
+        if item is _HANDED_OFF:
+            flags["handed_off"] = True
             return
         if item.get("type") == "error":
             flags["errored"] = True
@@ -185,6 +265,95 @@ def _run_pipeline_fallback(raw_prompt, cwd, session_id, started_at):
                                    fb_steps, started_at)
     except Exception:
         pass
+
+
+async def _close_team_run(agen, runner) -> None:
+    """ADK-native stop: aclose() the run generator (cancels the in-flight agent +
+    all its sub-agents) and close the runner. Both best-effort."""
+    try:
+        await agen.aclose()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        await runner.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _emit_steer_acks(session_id, chat_interject, q) -> None:
+    """Surface a "📌 Got your message" ack for any queued steer (Gap A): the
+    Doer/Refiner's before_model callback already folded it into its next model
+    call — this just mirrors the ack the simple loop shows, polled once per
+    event since the callback has no direct handle to this queue."""
+    if session_id is None:
+        return
+    from aiforge_core.runtime import chat_steer
+    for applied in chat_interject.pop_applied(session_id):
+        q.put(chat_steer.applied_event(applied))
+
+
+def _turn_epoch():
+    """The request meter's turn epoch bound in THIS context (the producer's), or
+    None. The driver runs on a bare thread that inherits no context."""
+    try:
+        from aiforge_core.llm import call_meter
+        return call_meter._TURN_EPOCH.get()
+    except Exception:  # noqa: BLE001 — metering never breaks a turn
+        return None
+
+
+def _bind_turn_epoch(epoch) -> None:
+    """Stamp the driver thread with its turn's epoch, so its LLM calls — the
+    Learner's too, which outlive the turn after a hand-off — bill to this turn
+    and never to the session's next one."""
+    if epoch is None:
+        return
+    try:
+        from aiforge_core.llm import call_meter
+        call_meter.bind_turn((None, epoch))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _run_async_in_thread(coro_factory: Callable) -> None:
+    import asyncio
+    loop = asyncio.new_event_loop()
+
+    def _quiet_handler(loop, context):  # noqa: ANN001
+        # Swallow litellm LoggingWorker noise (CancelledError / TimeoutError
+        # / "task was destroyed") that asyncio would otherwise print to
+        # stderr when we tear the loop down. Surface anything else.
+        msg = str(context.get("message", "")) + str(context.get("exception", ""))
+        if "LoggingWorker" in msg or "logging_worker" in repr(context.get("future", "")):
+            return
+        exc = context.get("exception")
+        if isinstance(exc, (asyncio.CancelledError, TimeoutError)):
+            return
+        loop.default_exception_handler(context)
+
+    try:
+        asyncio.set_event_loop(loop)
+        loop.set_exception_handler(_quiet_handler)
+        loop.run_until_complete(coro_factory())
+    finally:
+        # Drain leftover background tasks (litellm's LoggingWorker etc.)
+        # BEFORE closing — otherwise abruptly closing the loop cancels them
+        # mid-flight and spams "Task exception was never retrieved" /
+        # "task_done() called too many times".
+        try:
+            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+            for t in pending:
+                t.cancel()
+            if pending:
+                loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True))
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            loop.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _team_plugins() -> list:
