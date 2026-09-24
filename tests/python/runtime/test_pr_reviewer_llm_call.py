@@ -278,3 +278,15 @@ def test_a_secure_endpoint_keeps_verification(monkeypatch):
     seen = _fake_litellm(monkeypatch)
     pr_reviewer._llm_review("review this")
     assert "ssl_verify" not in seen
+
+
+def test_the_reviewer_key_falls_back_to_the_lm_key(monkeypatch):
+    """A deployment that set the reviewer's key only in AIFORGE_LM_API_KEY
+    keeps authenticating; a key configured for the role still wins."""
+    from aiforge_core.runtime.pr_reviewer import _reviewer_key
+    monkeypatch.setenv("AIFORGE_LM_API_KEY", "sk-lm")
+    assert _reviewer_key("not-needed") == "sk-lm"
+    assert _reviewer_key(None) == "sk-lm"
+    assert _reviewer_key("sk-role") == "sk-role"
+    monkeypatch.delenv("AIFORGE_LM_API_KEY")
+    assert _reviewer_key(None) == "not-needed"

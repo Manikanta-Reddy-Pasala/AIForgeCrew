@@ -90,6 +90,10 @@ def regex_build_fallback(p: str) -> bool:
     return bool(verb and (noun or cues))
 
 
+_CHORE_RE = re.compile(
+    r"\b(run|runs|execute|print|prints|echo|empty|touch|ls|cat|list the files)\b")
+
+
 def is_small_task(p: str) -> bool:
     """A trivial file/shell chore ("create a.txt b.txt c.txt then run ls",
     "create hello.py and run it") that a single agent finishes in a few calls.
@@ -98,9 +102,9 @@ def is_small_task(p: str) -> bool:
     create files, and escalation then spent 40+ model calls and minutes on the
     enhance → architect → plan → parallel team pipeline, which even failed to
     build three empty files. Deliberately narrow: it only fires when the ask
-    is short, names one to three concrete files, and carries no app/service/
-    game/scraper noun and no tests / storage / many-files cue, so a real
-    multi-module build still escalates."""
+    is short, names one to three concrete files, is a chore (run / print /
+    empty / touch / ls), and carries no app/service/game/scraper noun and no
+    tests / storage / many-files cue, so real feature work still escalates."""
     p = (p or "").lower()
     if len(p) >= _SMALL_MAX_CHARS:
         return False
@@ -115,7 +119,12 @@ def is_small_task(p: str) -> bool:
             or _MULTI_PART_RE.search(rest)):
         return False
     m = _MANY_FILES_RE.search(rest)
-    return not (m and (not m.group(1).isdigit() or int(m.group(1)) > 3))
+    if m and (not m.group(1).isdigit() or int(m.group(1)) > 3):
+        return False
+    # Only a CHORE: running it, printing, empty/touched files, listing. Feature
+    # work that names a file or two ("implement OAuth in auth.py and routes.py")
+    # keeps the build pipeline's plan and review.
+    return bool(_CHORE_RE.search(rest))
 
 
 @dataclass

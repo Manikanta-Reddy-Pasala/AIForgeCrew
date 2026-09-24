@@ -392,3 +392,12 @@ def test_the_model_id_is_shell_quoted(monkeypatch: pytest.MonkeyPatch) -> None:
         ls.load_model_now("a/b", 131072)
     remote = run_mock.call_args[0][0][-1]
     assert "unload <a/b>" in remote and "load <a/b> " in remote
+
+
+
+def test_every_configured_provider_prefix_is_stripped():
+    from aiforge_core.runtime.local_starter import _bare_model
+    assert _bare_model("openai/qwen/qwen3-coder-30b") == "qwen/qwen3-coder-30b"
+    assert _bare_model("ollama/llama-x") == "llama-x"
+    assert _bare_model("qwen/qwen3-coder-30b") == "qwen/qwen3-coder-30b"
+    assert _bare_model("") == ""

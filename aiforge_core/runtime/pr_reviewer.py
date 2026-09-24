@@ -75,6 +75,12 @@ def _gh_pr_comment(owner: str, repo: str, num: str, body: str) -> bool:
     return proc.returncode == 0
 
 
+def _reviewer_key(configured: str | None) -> str:
+    if configured and configured != "not-needed":
+        return configured
+    return os.environ.get("AIFORGE_LM_API_KEY") or configured or "not-needed"
+
+
 def _reviewer_endpoint() -> dict[str, Any] | None:
     """The reviewer's ``{model, api_base, api_key, insecure_tls}``, or None
     when no model is configured anywhere.
@@ -105,8 +111,9 @@ def _reviewer_endpoint() -> dict[str, Any] | None:
         "api_base": (cfg.get("api_base")
                      or os.environ.get("AIFORGE_LM_BASE_URL",
                                        "http://127.0.0.1:1234/v1")),
-        # resolve_litellm always yields a key (provider default "not-needed").
-        "api_key": cfg.get("api_key") or "not-needed",
+        # resolve_litellm falls back to "not-needed"; a deployment that set the
+        # reviewer's key only in AIFORGE_LM_API_KEY keeps working.
+        "api_key": _reviewer_key(cfg.get("api_key")),
         "insecure_tls": bool(cfg.get("insecure_tls")),
     }
 

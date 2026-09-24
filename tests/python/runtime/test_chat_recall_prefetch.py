@@ -54,6 +54,7 @@ def test_prefetched_result_is_used_and_block_is_identical(monkeypatch, tmp_path)
 
     calls.clear()
     _recall_prefetch.start(_msgs(ask), cwd, 7)
+    assert 7 in _recall_prefetch._PENDING            # the prefetch really started
     # The bundle sees the user's words after the enhancer folded its spec in.
     folded = f"{ask}\n\n---\n[Interpreted request — ...:]\nSPEC"
     q = folded.split("\n\n---\n[Interpreted request")[0].strip()
@@ -84,7 +85,10 @@ def test_prefetch_error_falls_back_to_a_fresh_query(monkeypatch, tmp_path):
     monkeypatch.setattr("aiforge_core.memory.unified_query.query",
                         _fake_query(calls, fail=True))
     _recall_prefetch.start(_msgs("why does sync stall"), cwd, 4)
-    time.sleep(0.05)
+    # Wait until the failing prefetch has actually run before swapping in the
+    # good query (a sleep would race on a slow box and test nothing).
+    _recall_prefetch._PENDING[4][1].exception(timeout=10)
+    assert calls, "the failing prefetch never ran"
     good: list = []
     monkeypatch.setattr("aiforge_core.memory.unified_query.query", _fake_query(good))
     out = chat_agent._memory_recall(cwd, "why does sync stall", limit=6, session_id=4)

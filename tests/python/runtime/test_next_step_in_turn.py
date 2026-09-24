@@ -372,12 +372,17 @@ def test_the_prediction_runs_while_the_answer_is_consumed(monkeypatch, tmp_path)
 
 
 def test_the_grace_is_env_tunable_and_survives_garbage(monkeypatch):
-    monkeypatch.delenv("AIFORGE_PREDICT_GRACE_S", raising=False)
-    assert _finish._suggest_grace_s() == 3.0
+    """Default = the prediction's own timeout: a slow local model still gets
+    its suggestion shown, as before the prediction moved off the answer path."""
+    for key in ("AIFORGE_PREDICT_GRACE_S", "AIFORGE_PREDICT_TIMEOUT_S"):
+        monkeypatch.delenv(key, raising=False)
+    assert _finish._suggest_grace_s() == 10.0
+    monkeypatch.setenv("AIFORGE_PREDICT_TIMEOUT_S", "25")
+    assert _finish._suggest_grace_s() == 25.0
     monkeypatch.setenv("AIFORGE_PREDICT_GRACE_S", "0.3")
     assert _finish._suggest_grace_s() == 0.3
     monkeypatch.setenv("AIFORGE_PREDICT_GRACE_S", "soon")
-    assert _finish._suggest_grace_s() == 3.0
+    assert _finish._suggest_grace_s() == 25.0
     monkeypatch.setenv("AIFORGE_PREDICT_GRACE_S", "-4")
     assert _finish._suggest_grace_s() == 0.0
 

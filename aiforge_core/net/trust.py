@@ -43,7 +43,15 @@ _DIR = "trusted_certs"
 # worth pinning down rather than trusting.
 _SAFE_HOST_RE = re.compile(r"^[A-Za-z0-9._-]{1,253}$")
 _FETCH_TIMEOUT_S = 8
-_FIRST_PIN = threading.Lock()
+_FIRST_PIN: dict[str, threading.Lock] = {}   # host -> its first-pin lock
+_FIRST_PIN_GUARD = threading.Lock()
+
+
+def _first_pin_lock(host: str) -> threading.Lock:
+    """One lock per host: first pins of DIFFERENT hosts (8 s fetch each) must
+    not wait on one another."""
+    with _FIRST_PIN_GUARD:
+        return _FIRST_PIN.setdefault(host, threading.Lock())
 
 
 def _dir(*, create: bool = False) -> Path:
@@ -161,7 +169,7 @@ def ensure_pinned(host: str, port: int = 443) -> str:
     # Page fetches run in parallel: one first pin at a time, and a second
     # caller uses the pin the first recorded instead of fetching again (a host
     # behind several certificates would otherwise log a false "CHANGED").
-    with _FIRST_PIN:
+    with _first_pin_lock(host):
         pem = pinned_pem(host) or fetch(host, port)
         if pem and not pinned_pem(host):
             store(host, pem)

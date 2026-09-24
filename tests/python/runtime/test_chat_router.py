@@ -202,7 +202,7 @@ def test_real_builds_are_not_small(p):
     "Create server.js using node.js that prints hi",       # node.js not a file
     "Create a.txt b.txt c.txt and run ls",                 # exactly 3 files
     "Create a Dockerfile and a Makefile and run make",
-    "Create build.gradle and app.properties",
+    "Create an empty build.gradle and app.properties",
 ])
 def test_trivial_chores_are_small(p):
     assert cr.is_small_task(p)
@@ -216,3 +216,17 @@ def test_plan_mode_small_prompt_unchanged():
     assert r.is_build_task             # plan mode keeps the classifier's view
     assert not r.build_escalate        # and plan never escalates anyway
     assert not r.route_pipeline
+
+
+
+@pytest.mark.parametrize("prompt", [
+    "Implement OAuth login in auth.py and routes.py",
+    "Implement rate limiting in middleware.py and settings.py",
+    "Create a Kafka consumer in consumer.py that writes to Postgres",
+    "Refactor utils.py into helpers.py and format.py",
+])
+def test_feature_work_naming_a_few_files_is_not_a_chore(prompt):
+    """Only chores (run / print / empty / touch / ls) skip the pipeline's plan
+    and review; feature work that names a file or two keeps them."""
+    from aiforge_core.runtime.chat_router import is_small_task
+    assert is_small_task(prompt) is False

@@ -391,6 +391,30 @@ def test_a_learner_past_the_deadline_is_logged(blocked_learner, tmp_path,
                for r in caplog.records)
 
 
+def test_a_hung_learner_is_closed_after_its_budget(blocked_learner, tmp_path,
+                                                   caplog, monkeypatch):
+    """After the answer nobody can Stop the Learner, and it holds the team
+    lock: a hung one must not block every team run until the team deadline."""
+    import time as _time
+    monkeypatch.setenv("AIFORGE_LEARNER_AFTER_ANSWER_S", "1")
+    with caplog.at_level("WARNING"):
+        t0 = _time.monotonic()
+        _, handed_off = _team_turn(tmp_path)   # the Learner is never released
+        assert handed_off is True
+        _wait_for_the_lock()
+        assert _time.monotonic() - t0 < 30, "the lock waited for the team deadline"
+    assert not blocked_learner["learner_done"].is_set()
+    assert any("still running" in r.getMessage() for r in caplog.records)
+
+
+def test_the_learner_budget_setting(monkeypatch):
+    monkeypatch.delenv("AIFORGE_LEARNER_AFTER_ANSWER_S", raising=False)
+    assert P._learner_budget_s() == 180.0
+    for raw, want in (("30", 30.0), ("0", 1.0), ("abc", 180.0)):
+        monkeypatch.setenv("AIFORGE_LEARNER_AFTER_ANSWER_S", raw)
+        assert P._learner_budget_s() == want
+
+
 # ─── the request meter ─────────────────────────────────────────────────
 
 

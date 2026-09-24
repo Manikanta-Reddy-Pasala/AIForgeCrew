@@ -3,12 +3,15 @@ tail, final answer, the hand-off before the Learner, the persisted turn when it
 stops early or falls back, and the event loop the driver thread runs on."""
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import time
 from collections.abc import Callable
 
 from .chat_pipeline_events import _guard_edit_claim, _team_change_events
+
+log = logging.getLogger(__name__)
 
 
 def _dur(started_at: "float | None") -> "float | None":
@@ -392,3 +395,36 @@ def _team_deadline_s() -> float:
         return float(_pipeline_deadline_s())
     except Exception:  # noqa: BLE001
         return 5400.0
+
+
+_NO_EVENT = object()     # the run ended
+_TIMED_OUT = object()    # the Learner ran past its budget after the answer
+
+
+def _learner_budget_s() -> float:
+    """How long the Learner may keep running after the answer went out. It
+    still holds the team lock and nobody can Stop it any more (the turn is
+    over), so a hung model call would block every team run until the team
+    deadline. Default 180 s."""
+    try:
+        return max(1.0, float(os.environ.get("AIFORGE_LEARNER_AFTER_ANSWER_S", "180")))
+    except (TypeError, ValueError):
+        return 180.0
+
+
+async def _next_event(it, deadline):
+    """The run's next event, ``_NO_EVENT`` when it has ended, or
+    ``_TIMED_OUT`` when it ran past ``deadline`` (a ``time.monotonic()``
+    value; None waits as long as it takes)."""
+    import asyncio
+    try:
+        if deadline is None:
+            return await it.__anext__()
+        return await asyncio.wait_for(it.__anext__(),
+                                      max(0.0, deadline - time.monotonic()))
+    except StopAsyncIteration:
+        return _NO_EVENT
+    except TimeoutError:
+        log.warning("team learner still running %.0f s after the answer — "
+                    "closing it so the team lock is released", _learner_budget_s())
+        return _TIMED_OUT

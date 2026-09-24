@@ -43,7 +43,9 @@ from .chat_pipeline_prompt import (  # noqa: F401  # re-exported
 )
 from .chat_pipeline_turn import (  # noqa: F401  # re-exported
     _HANDED_OFF,
+    _NO_EVENT,
     _SENTINEL,
+    _TIMED_OUT,
     _answer_ready,
     _bind_team_session,
     _bind_turn_epoch,
@@ -54,6 +56,8 @@ from .chat_pipeline_turn import (  # noqa: F401  # re-exported
     _emit_steer_acks,
     _finalize_subtasks,
     _hand_off_turn,
+    _learner_budget_s,
+    _next_event,
     _persist_fallback_turn,
     _persist_stop_before_start,
     _promote_team_answer,
@@ -190,7 +194,11 @@ async def _drive_run_events(agen, runner, q, session_id, chat_interject,
     acc = {"emitted_subtasks": False, "sub_items": None}
     enhancer_blocked = None
     answered = False
-    async for event in agen:
+    it, deadline = agen.__aiter__(), None
+    while (event := await _next_event(it, deadline)) is not _NO_EVENT:
+        if event is _TIMED_OUT:
+            await _close_team_run(agen, runner)
+            break
         if not answered:
             _emit_steer_acks(session_id, chat_interject, q)
             if session_id is not None and chat_cancel.is_cancelled(session_id):
@@ -199,6 +207,7 @@ async def _drive_run_events(agen, runner, q, session_id, chat_interject,
                 break
             if on_answer is not None and _answer_ready(event):
                 answered = True
+                deadline = time.monotonic() + _learner_budget_s()
                 await on_answer({"by_role": by_role, "final": final,
                                  "sub_items": acc["sub_items"],
                                  "enhancer_blocked": enhancer_blocked})

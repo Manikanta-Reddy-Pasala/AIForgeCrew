@@ -274,12 +274,19 @@ _DEFAULT_SUGGEST_GRACE_S = 3.0
 
 def _suggest_grace_s() -> float:
     """How long the end of a turn waits for the prediction before dropping it.
-    ``AIFORGE_PREDICT_GRACE_S``; 0 = emit only one that is already done."""
+    ``AIFORGE_PREDICT_GRACE_S``; 0 = emit only one that is already done.
+    Default = the prediction's own timeout, so a slow local model still gets
+    its suggestion shown (as before); the saving is the overlap with the
+    answer being streamed, not a shorter wait."""
     try:
-        return max(0.0, float(os.environ.get("AIFORGE_PREDICT_GRACE_S")
-                              or _DEFAULT_SUGGEST_GRACE_S))
+        from aiforge_core.runtime.next_step._predict import _timeout
+        default = float(_timeout())
+    except Exception:  # noqa: BLE001
+        default = _DEFAULT_SUGGEST_GRACE_S
+    try:
+        return max(0.0, float(os.environ.get("AIFORGE_PREDICT_GRACE_S") or default))
     except ValueError:
-        return _DEFAULT_SUGGEST_GRACE_S
+        return default
 
 
 def _start_suggestion(message: str, did: str, cwd):
@@ -361,7 +368,8 @@ def _emit_suggestion(message: str, did: str, cwd):
     Emitted AFTER the answer and before ``done`` — the same ordering
     ``plan_ready`` uses. The user reads what they asked for either way, so a
     prediction that is slow, wrong or broken costs them nothing: it is waited
-    for at most ``AIFORGE_PREDICT_GRACE_S`` (default 3 s), then dropped.
+    for at most ``AIFORGE_PREDICT_GRACE_S`` (default: the prediction timeout),
+    then dropped.
     """
     yield from _collect_suggestion(_start_suggestion(message, did, cwd))
 

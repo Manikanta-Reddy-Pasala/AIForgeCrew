@@ -68,8 +68,13 @@ def start(messages, cwd, session_id) -> None:
             return
         from ._recall import _run_recall
         fut = _POOL.submit(contextvars.copy_context().run, _run_recall, args)
+        now = time.monotonic()
+        max_age = _env_float("AIFORGE_RECALL_PREFETCH_MAX_AGE_S", 300.0)
         with _LOCK:
-            _PENDING[session_id] = (args, fut, time.monotonic())
+            # A turn stopped mid-enhancer never takes its prefetch: sweep them.
+            for sid in [k for k, v in _PENDING.items() if now - v[2] > max_age]:
+                del _PENDING[sid]
+            _PENDING[session_id] = (args, fut, now)
     except Exception:  # noqa: BLE001 — a prefetch must never break a turn
         pass
 

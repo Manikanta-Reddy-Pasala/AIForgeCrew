@@ -95,7 +95,7 @@ def _model_id() -> str:
         return ""
     if not model or model == _acfg._LOCAL_FALLBACK_MODEL:
         return ""
-    return model.removeprefix("openai/")
+    return _bare_model(model)
 
 
 # A model id can come from UI config and is placed in a REMOTE shell command,
@@ -104,8 +104,17 @@ _SAFE_MODEL_RE = re.compile(r"^[\w./:@-]+$")
 
 
 def _bare_model(model: str) -> str:
-    """The ``lms`` model key for a litellm id (``openai/<key>`` → ``<key>``)."""
-    return (model or "").removeprefix("openai/")
+    """The ``lms`` model key for a litellm id: the provider prefix the config
+    adds (``openai/`` and the other KNOWN_PREFIXES) stripped."""
+    model = model or ""
+    try:
+        from aiforge_core.config.agent_config._litellm import KNOWN_PREFIXES as prefixes
+    except Exception:  # noqa: BLE001
+        prefixes = ("openai/",)
+    for prefix in prefixes:
+        if model.startswith(prefix):
+            return model[len(prefix):]
+    return model
 
 
 def _is_safe_model(model: str) -> bool:
