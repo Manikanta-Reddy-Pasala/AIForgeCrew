@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -52,6 +52,12 @@ export default function Tickets() {
   const [status, setStatus] = useState('');
   const [search, setSearch] = useState('');
   const [creating, setCreating] = useState(false);
+  // One create in flight at a time. With files attached the base64 upload is
+  // slow, the button gave no feedback, and every extra click POSTed another
+  // copy of the ticket (ONE-337..356 were one ticket clicked 20 times). The
+  // ref blocks clicks landing before the re-render; the state drives the UI.
+  const submittingRef = useRef(false);
+  const [submitting, setSubmitting] = useState(false);
   const [draft, setDraft] = useState<Draft>(FRESH_DRAFT);
 
   // Workflow registry — pulled once, drives the override dropdown.
@@ -102,7 +108,7 @@ export default function Tickets() {
   });
 
   async function submit() {
-    if (!draft.title.trim()) return;
+    if (!draft.title.trim() || submittingRef.current) return;
     const atts = draft.attachments
       .split(',').map(s => s.trim()).filter(Boolean);
     // Translate UI mode → API payload.
@@ -150,6 +156,8 @@ export default function Tickets() {
       payload.route = 'workflow';
       payload.route_workflow = draft.route_workflow;
     }
+    submittingRef.current = true;
+    setSubmitting(true);
     try {
       await api.create(payload);
       toast.success(`Created: ${draft.title}`);
@@ -158,6 +166,9 @@ export default function Tickets() {
       qc.invalidateQueries({ queryKey: ['tickets'] });
     } catch (e: any) {
       toast.error(`Create failed: ${e.message}`);
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
     }
   }
 
@@ -445,9 +456,10 @@ export default function Tickets() {
             </div>
 
             <div className="row" style={{ justifyContent: 'flex-end' }}>
-              <button type="button" className="ghost" onClick={() => setCreating(false)}>Cancel</button>
-              <button type="button" onClick={submit} disabled={!draft.title.trim()}>
-                <Icon.Check size={14} /> Create ticket
+              <button type="button" className="ghost" onClick={() => setCreating(false)}
+                      disabled={submitting}>Cancel</button>
+              <button type="button" onClick={submit} disabled={!draft.title.trim() || submitting}>
+                <Icon.Check size={14} /> {submitting ? 'Creating…' : 'Create ticket'}
               </button>
             </div>
           </div>
