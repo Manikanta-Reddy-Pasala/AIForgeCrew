@@ -126,3 +126,48 @@ def test_question_never_escalates_even_if_classed_build():
 def test_auto_escalate_off():
     r = _d(cat="code_build", auto_escalate=False)
     assert not r.build_escalate
+
+
+# ── trivial file/shell chores stay on the single agent ───────────────────
+_TRIVIAL = [
+    "Create three empty files a.txt b.txt c.txt, then run ls -1 and reply "
+    "with ONLY the number of entries.",
+    "Create hello.py that prints hi, run it with python3, and reply with ONLY "
+    "its output.",
+]
+_REAL_BUILDS = [
+    "Build a Python CLI task manager with storage, cli and tests",
+    "build a flask api with tests",
+    "Create main.py, models.py, views.py and utils.py for a todo manager",
+]
+
+
+@pytest.mark.parametrize("p", _TRIVIAL)
+@pytest.mark.parametrize("cat", ["code_build", None])
+def test_trivial_chore_not_escalated(p, cat):
+    r = _d(prompt=p, cat=cat)
+    assert cr.is_small_task(p)
+    assert not r.is_build_task
+    assert not r.build_escalate
+    assert not r.route_pipeline
+    assert r.notice is None
+
+
+@pytest.mark.parametrize("p", _REAL_BUILDS)
+def test_real_build_still_escalates(p):
+    assert not cr.is_small_task(p)
+    r = _d(prompt=p, cat="code_build")
+    assert r.is_build_task
+    assert r.build_escalate
+    assert r.route_pipeline
+
+
+def test_explicit_team_keeps_trivial_as_build():
+    # the small-task guard is for simple-mode auto-escalation only
+    r = _d(prompt=_TRIVIAL[1], cat="code_build", team=True)
+    assert r.is_build_task
+    assert r.route_pipeline
+
+
+def test_version_number_is_not_a_named_file():
+    assert not cr.is_small_task("create a parser for python 3.11 syntax")

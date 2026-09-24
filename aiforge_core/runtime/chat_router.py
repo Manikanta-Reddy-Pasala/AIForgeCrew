@@ -39,6 +39,15 @@ _BUILD_NOUN_RE = re.compile(
     r"system|library|package|project|backend|frontend|module|engine|bot|"
     r"dashboard|parser|compiler|microservice)\b", re.IGNORECASE)
 _BUILD_CUES = ("with test", "unit test", " files", "endpoints", "multiple file")
+# A named file ("hello.py", "a.txt"): name, dot, a short extension starting
+# with a letter (so "3.11" or "v1.2" is not a file).
+_NAMED_FILE_RE = re.compile(r"\b[\w\-/]+\.[a-z][a-z0-9]{0,4}\b", re.IGNORECASE)
+_SHELL_RE = re.compile(r"\b(run|execute)\b", re.IGNORECASE)
+# Anything that says "this is more than a snippet": tests, several modules,
+# persistence, an explicit multi-file layout.
+_MULTI_PART_CUES = ("test", "endpoint", "multiple file", "several file",
+                    "storage", "database", "structure")
+_SMALL_MAX_FILES = 3
 
 
 def is_advice_question(p: str) -> bool:
@@ -65,6 +74,26 @@ def regex_build_fallback(p: str) -> bool:
     return bool(verb and (noun or cues))
 
 
+def is_small_task(p: str) -> bool:
+    """A trivial file/shell chore ("create a.txt b.txt c.txt then run ls",
+    "create hello.py and run it") that a single agent finishes in a few calls.
+
+    The classifier (and the " files" regex cue) call these BUILD because they
+    create files, and escalation then spent 40+ model calls and minutes on the
+    enhance → architect → plan → parallel team pipeline, which even failed to
+    build three empty files. Deliberately narrow: it only fires when the ask
+    names at most a few concrete files or is a run-this chore, and carries no
+    app/service/cli noun and no tests / modules / storage cue, so a real
+    multi-module build still escalates."""
+    p = (p or "").lower()
+    if _BUILD_NOUN_RE.search(p) or any(c in p for c in _MULTI_PART_CUES):
+        return False
+    named = set(_NAMED_FILE_RE.findall(p))
+    if len(named) > _SMALL_MAX_FILES:
+        return False
+    return bool(named) or bool(_SHELL_RE.search(p))
+
+
 @dataclass
 class RouteDecision:
     doc_task: bool          # → research / analysis agent
@@ -88,6 +117,10 @@ def decide(prompt: str, *, agent_mode: str, team: bool, psub_on: bool,
     else:
         doc_task = False                       # no positive doc class → single agent
         is_build_task = regex_build_fallback(prompt)
+    # Simple mode only: a trivial file/shell chore stays on the single agent
+    # even when it reads like a build. An explicit team pick is left alone.
+    if is_build_task and not team and is_small_task(prompt):
+        is_build_task = False
     # (C) PLAN owns its own analysis + yields a change-PLAN — never re-route a
     # plan turn to the research agent on a doc class.
     if agent_mode == "plan":
@@ -145,4 +178,4 @@ def _notice(*, agent_mode, team, psub_on, doc_task, is_build_task,
     return None
 
 
-__all__ = ["is_advice_question", "regex_build_fallback", "RouteDecision", "decide"]
+__all__ = ["is_advice_question", "regex_build_fallback", "is_small_task", "RouteDecision", "decide"]
