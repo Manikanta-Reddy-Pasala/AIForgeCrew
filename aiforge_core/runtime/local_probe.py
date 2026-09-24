@@ -8,8 +8,8 @@ latency on every Doer turn (ONE-109 wall-clock 866s vs ONE-108's 81s).
 
 Fix: probe the local endpoint at pipeline-build time. If it doesn't
 answer ``/v1/models`` within 2 seconds, swap the primary cfg to a
-sensible cloud default (Ollama Cloud's ``qwen3-coder-next``) BEFORE
-the first agent call. Result is the cloud serves directly as primary,
+configured cloud fallback (``cloud_default_for_local``; none unless an
+operator pins one) BEFORE the first agent call. Result is the cloud serves directly as primary,
 no wasted local round-trips.
 
 Probe results are cached so the build doesn't pay the 2-second tax for

@@ -48,6 +48,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import shlex
 import subprocess
 import time
 
@@ -77,10 +79,41 @@ def _ssh_host() -> str:
 
 
 def _model_id() -> str:
-    """Pick the model name to load. Defaults to qwen3-coder-next per
-    the operator's profile preset. Empty means "skip the load step";
-    we still try ``lms server start`` in that case."""
-    return os.environ.get("AIFORGE_LMS_MODEL", "qwen3-coder-next")
+    """Pick the model name to load: ``AIFORGE_LMS_MODEL``, else the doer's
+    configured model (bare id, as ``lms load`` wants it). Empty means "skip
+    the load step"; we still try ``lms server start`` in that case.
+
+    No hard-coded model id: loading one the operator never configured makes
+    LM Studio pull a second large model next to (or instead of) theirs."""
+    env = os.environ.get("AIFORGE_LMS_MODEL")
+    if env is not None:
+        return env.strip()
+    try:
+        from aiforge_core.config import agent_config as _acfg
+        model = (_acfg.get("doer").get("model") or "").strip()
+    except Exception:  # noqa: BLE001 — unreadable config = nothing to load
+        return ""
+    if not model or model == _acfg._LOCAL_FALLBACK_MODEL:
+        return ""
+    return model.removeprefix("openai/")
+
+
+# A model id can come from UI config and is placed in a REMOTE shell command,
+# so it is allow-listed (LM Studio keys, HF refs, filesystem paths) AND quoted.
+_SAFE_MODEL_RE = re.compile(r"^[\w./:@-]+$")
+
+
+def _bare_model(model: str) -> str:
+    """The ``lms`` model key for a litellm id (``openai/<key>`` → ``<key>``)."""
+    return (model or "").removeprefix("openai/")
+
+
+def _is_safe_model(model: str) -> bool:
+    if _SAFE_MODEL_RE.fullmatch(model):  # fullmatch: "$" allows a final \n
+        return True
+    log.error("lms: refusing unsafe model id %r (allowed: letters, digits, "
+              "_ . / : @ -)", model)
+    return False
 
 
 def _int_env(name: str, default: int) -> int:
@@ -94,8 +127,11 @@ def _disabled() -> bool:
     return os.environ.get("AIFORGE_LMS_AUTOSTART_DISABLE", "0") in ("1", "true")
 
 
-def try_start(api_base: str) -> bool:
+def try_start(api_base: str, model: str | None = None) -> bool:
     """Try to bring the local LM Studio endpoint back up.
+
+    ``model`` is the model to ``lms load`` (e.g. the role whose model crashed);
+    omitted → :func:`_model_id` (``AIFORGE_LMS_MODEL`` / the doer's model).
 
     Returns True iff the post-warmup re-probe succeeds. Returns False
     quickly when:
@@ -114,7 +150,9 @@ def try_start(api_base: str) -> bool:
         log.info("lms_autostart: no AIFORGE_LMS_HOST configured")
         return False
 
-    model = _model_id()
+    model = _bare_model(model) if model else _model_id()
+    if model and not _is_safe_model(model):
+        return False
     cache_key = (host, model)
     cached = _ATTEMPTED.get(cache_key)
     if cached is not None:
@@ -150,7 +188,7 @@ def try_start(api_base: str) -> bool:
     parallel = max(_int_env("AIFORGE_LMS_PARALLEL", 1), 1)
     if model:
         load_cmd = (
-            f"{bin_name} load {model} "
+            f"{bin_name} load {shlex.quote(model)} "
             f"--context-length {ctx} --parallel {parallel}"
         )
         if ttl > 0:
@@ -234,13 +272,16 @@ def load_model_now(
         return {"ok": False, "error": "no AIFORGE_LMS_HOST configured"}
     if not model:
         return {"ok": False, "error": "model required"}
+    if not _is_safe_model(model):
+        return {"ok": False, "error": "invalid model id"}
+    q = shlex.quote(model)
 
     bin_name = os.environ.get("AIFORGE_LMS_BIN", "lms")
     ctx = max(int(context_length), _CTX_FLOOR)
     par = max(parallel if parallel is not None
               else _int_env("AIFORGE_LMS_PARALLEL", 1), 1)
     load_cmd = (
-        f"{bin_name} load {model} "
+        f"{bin_name} load {q} "
         f"--context-length {ctx} --parallel {par} -y"
     )
     if ttl and ttl > 0:
@@ -249,7 +290,7 @@ def load_model_now(
     # so the new context length actually takes effect on reload.
     remote = (
         f"{bin_name} server start && "
-        f"{bin_name} unload {model} 2>/dev/null; {load_cmd}"
+        f"{bin_name} unload {q} 2>/dev/null; {load_cmd}"
     )
 
     log.info("lms_load_now: ssh %s -> %s (timeout=%ds)",
@@ -302,15 +343,16 @@ def looks_like_lm_crash(err: str) -> bool:
     return any(m in low for m in _CRASH_MARKERS)
 
 
-def try_recover(api_base: str) -> bool:
+def try_recover(api_base: str, model: str | None = None) -> bool:
     """Force a re-attempt of :func:`try_start` even if already tried
     once in this process. Used by EscalatingLlm when LM Studio
     crashes mid-pipeline — the per-process cache would otherwise lock
-    us out of recovery for the rest of the run.
+    us out of recovery for the rest of the run. ``model`` is the model
+    that crashed, so recovery reloads THAT one, not the doer's.
     """
     log.warning("lms_autostart: forced recovery (cache cleared)")
     reset()
-    return try_start(api_base)
+    return try_start(api_base, model)
 
 
 __all__ = ["try_start", "try_recover", "looks_like_lm_crash", "reset"]

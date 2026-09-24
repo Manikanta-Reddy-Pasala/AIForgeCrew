@@ -3,7 +3,7 @@
 After ``commit_push_open_pr`` succeeds, run a Reviewer pass over the
 final diff and post the verdict as a PR comment. KISS: no new ADK
 LlmAgent (the Refiner already does in-loop review). One blocking
-LiteLLM call against the planner model is enough.
+LiteLLM call against the configured reviewer/doer model is enough.
 """
 from __future__ import annotations
 
@@ -75,20 +75,61 @@ def _gh_pr_comment(owner: str, repo: str, num: str, body: str) -> bool:
     return proc.returncode == 0
 
 
+def _reviewer_endpoint() -> dict[str, Any] | None:
+    """The reviewer's ``{model, api_base, api_key, insecure_tls}``, or None
+    when no model is configured anywhere.
+
+    ``AIFORGE_REVIEWER_MODEL`` (explicit override) → the ``reviewer`` role via
+    ``agent_config.resolve_litellm`` — the same resolution every pipeline role
+    uses, so it lands on the operator's ``_default`` / doer model and endpoint
+    (``AIFORGE_REVIEWER_BASE_URL`` / ``_API_KEY`` still apply). No hard-coded
+    model id: on a one-box LM Studio a baked-in default JIT-loaded a second
+    44 GB model (112.9 s for one review) and evicted the configured one.
+    """
+    from aiforge_core.config import agent_config as _acfg
+    try:
+        cfg = _acfg.resolve_litellm("reviewer")
+    except Exception as exc:  # noqa: BLE001 — unreadable config = unconfigured
+        log.warning("pr_reviewer: reviewer model unresolved (%s)", exc)
+        cfg = {}
+    override = os.environ.get("AIFORGE_REVIEWER_MODEL", "").strip()
+    # A bare override gets the provider prefix, as resolve_litellm does for
+    # every configured model (litellm refuses an unprefixed id).
+    if override and not override.startswith(_acfg.KNOWN_PREFIXES):
+        override = f"openai/{override}"
+    model = override or cfg.get("model_id") or ""
+    if not model or model.endswith(_acfg._LOCAL_FALLBACK_MODEL):
+        return None
+    return {
+        "model": model,
+        "api_base": (cfg.get("api_base")
+                     or os.environ.get("AIFORGE_LM_BASE_URL",
+                                       "http://127.0.0.1:1234/v1")),
+        # resolve_litellm always yields a key (provider default "not-needed").
+        "api_key": cfg.get("api_key") or "not-needed",
+        "insecure_tls": bool(cfg.get("insecure_tls")),
+    }
+
+
 def _llm_review(prompt: str) -> dict[str, Any]:
     """Single review call via LiteLLM against the configured endpoint.
 
-    Defaults to the local LM Studio served model; override with
-    ``AIFORGE_REVIEWER_MODEL`` (e.g. ``openai/<id>`` for any
-    OpenAI-compatible endpoint). Returns parsed JSON or ``{}`` on failure.
+    Model + endpoint come from :func:`_reviewer_endpoint`. With no model
+    configured the review is SKIPPED (logged) rather than sent to an invented
+    model. Returns parsed JSON or ``{}`` on failure / skip.
     """
-    model = os.environ.get("AIFORGE_REVIEWER_MODEL", "openai/qwen3-coder-next")
+    ep = _reviewer_endpoint()
+    if ep is None:
+        log.warning("pr_reviewer: no model configured (set a model in the UI, "
+                    "or AIFORGE_REVIEWER_MODEL) — PR review skipped")
+        return {}
+    model = ep["model"]
     try:
         import litellm
     except ImportError:
         return {}
-    base = os.environ.get("AIFORGE_LM_BASE_URL", "http://127.0.0.1:1234/v1")
-    api_key = os.environ.get("AIFORGE_LM_API_KEY", "lm-studio")
+    base = ep["api_base"]
+    api_key = ep["api_key"]
     # Bound BEFORE the try: the failure handler below reads it, and an import
     # that raises inside the try would otherwise leave it unbound there.
     _tok = None
@@ -113,12 +154,29 @@ def _llm_review(prompt: str) -> dict[str, Any]:
             messages = response_language.apply("pr_reviewer", messages)
         except Exception:  # noqa: BLE001 — a language hint never costs a review
             pass
+        # Same send shape as the pipeline's _build_one: shed params a strict
+        # endpoint rejects, reasoning off where the registry says so, and the
+        # TLS rule for a self-signed internal endpoint.
+        kwargs: dict[str, Any] = {"drop_params": True}
+        try:
+            from aiforge_core.llm import reasoning as _reasoning
+            if _reasoning.reasoning_off(model, base):
+                kwargs["extra_body"] = dict(_reasoning.NO_THINK_KWARGS)
+        except Exception:  # noqa: BLE001 — a reasoning hint never costs a review
+            pass
+        try:
+            from aiforge_core.runtime.escalating_llm._builder import (
+                _maybe_relax_tls,
+            )
+            _maybe_relax_tls(kwargs, ep, base)
+        except Exception:  # noqa: BLE001 — TLS relax is best-effort
+            pass
         resp = litellm.completion(
             model=model,
             api_base=base, api_key=api_key,
             extra_headers={"User-Agent": user_agent()},
             messages=messages,
-            temperature=0.1, timeout=120,
+            temperature=0.1, timeout=120, **kwargs,
         )
         text = resp["choices"][0]["message"]["content"]
     except Exception as exc:  # noqa: BLE001
@@ -272,6 +330,9 @@ def review_pr(
     parsed = _parse_pr_url(pr_url)
     if parsed is None:
         return {"ok": False, "error": "bad_pr_url"}
+    if _reviewer_endpoint() is None:
+        log.warning("pr_reviewer: no model configured — PR review skipped")
+        return {"ok": False, "error": "no_reviewer_model"}
     owner, repo, num = parsed
     diff = _gh_pr_diff(owner, repo, num)
     if not diff.strip():

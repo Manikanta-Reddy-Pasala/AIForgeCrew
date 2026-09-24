@@ -144,8 +144,8 @@ def build_litellm_model(role: str):
 
     1. Operator profile via ``agent_config.resolve_litellm``.
     2. Pre-flight local-endpoint probe — if local mlx-lm is dead,
-       swap to ``cloud_default_for_local`` (Ollama Cloud
-       ``qwen3-coder-next`` by default) so the agent loop doesn't pay
+       swap to ``cloud_default_for_local`` (an operator-pinned cloud
+       provider; none by default) so the agent loop doesn't pay
        a failed-primary round-trip on every turn.
 
     EscalatingLlm wrapping always applies (primary → cloud chain →
