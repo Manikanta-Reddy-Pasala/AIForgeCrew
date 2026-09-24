@@ -3,10 +3,12 @@ guard, final nudges, turn summary, next-step suggestion) and narration
 without an action."""
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import os
 import subprocess
 import threading
+import time
 
 from .._context import (
     _claims_file_edits,
@@ -207,7 +209,10 @@ def _is_clean_tree(cwd) -> bool:
     if not cwd:
         return False
     try:
-        out = subprocess.run(["git", "status", "--porcelain"], cwd=str(cwd),
+        # --no-optional-locks: this runs on a side thread while the next turn
+        # may already be writing; a status must never take index.lock.
+        out = subprocess.run(["git", "--no-optional-locks", "status",
+                              "--porcelain"], cwd=str(cwd),
                              capture_output=True, text=True, timeout=5)
     except Exception:  # noqa: BLE001 — a git hiccup must never break the turn
         return False
@@ -262,7 +267,9 @@ def _predict_next_step(message: str, did: str, cwd):
                               "clean_tree": _is_clean_tree(cwd)}, store=False)
 
 
-_DEFAULT_SUGGEST_GRACE_S = 1.5
+# 3 s, not less: a slow local model rarely writes ~250 tokens in 1.5 s, and a
+# grace it can never meet silently kills the feature.
+_DEFAULT_SUGGEST_GRACE_S = 3.0
 
 
 def _suggest_grace_s() -> float:
@@ -278,15 +285,22 @@ def _suggest_grace_s() -> float:
 def _start_suggestion(message: str, did: str, cwd):
     """Start the prediction (LLM call + clean-tree probe) on a side thread, so
     it overlaps the answer being streamed instead of holding ``done`` back.
-    Returns a handle for ``_collect_suggestion``, or None when disabled."""
+    Returns a handle for ``_collect_suggestion``, or None when disabled.
+
+    The call is bound to its own cancel token, set when the prediction is
+    dropped, so an abandoned request does not keep a single-slot local model
+    busy into the next turn."""
     from aiforge_core.runtime.next_step import _predict as _np
 
     if _np._disabled():
         return None
-    ready, box = threading.Event(), {}
+    ready, cancel, box = threading.Event(), threading.Event(), {}
 
     def _run():
         try:
+            with contextlib.suppress(Exception):  # uncancellable is still correct
+                from aiforge_core.llm import client as _client
+                _client.set_cancel_event(cancel)
             box["p"] = _predict_next_step(message, did, cwd)
         except Exception as exc:  # noqa: BLE001 — a prediction never breaks a turn
             _log.debug("next_step: prediction skipped: %s", exc)
@@ -296,19 +310,36 @@ def _start_suggestion(message: str, did: str, cwd):
     # copy_context: the LLM call is metered/attributed via contextvars.
     threading.Thread(target=contextvars.copy_context().run, args=(_run,),
                      name="aiforge-next-step", daemon=True).start()
-    return ready, box, message, cwd
+    return ready, cancel, box, message, cwd, time.monotonic()
+
+
+def _cancel_suggestion(handle) -> None:
+    """Abort the prediction's in-flight call (a no-op once it has finished)."""
+    if handle is not None:
+        handle[1].set()
 
 
 def _collect_suggestion(handle):
     """Yield at most one ``suggestion`` event: the prediction if it is ready
-    within the grace, else nothing. Never raises. A late prediction is dropped
-    unrecorded — the user never saw it, so it must not suppress a repeat."""
+    within the grace, else nothing. Never raises. A late prediction is
+    cancelled and dropped unrecorded — the user never saw it, so it must not
+    suppress a repeat."""
     if handle is None:
         return
-    ready, box, message, cwd = handle
-    if not ready.wait(_suggest_grace_s()):
-        _log.debug("next_step: prediction not ready in %.1fs — dropped",
-                   _suggest_grace_s())
+    try:
+        yield from _ready_suggestion(handle)
+    finally:
+        _cancel_suggestion(handle)
+
+
+def _ready_suggestion(handle):
+    ready, _cancel, box, message, cwd, t0 = handle
+    grace = _suggest_grace_s()
+    if not ready.wait(max(0.0, grace - (time.monotonic() - t0))):
+        # info, not debug: a grace the model never meets is a dead feature,
+        # and it should be visible as one.
+        _log.info("next_step: suggestion dropped — not ready %.1fs after the "
+                  "answer (grace %.1fs)", time.monotonic() - t0, grace)
         return
     p = box.get("p")
     if p is None:
@@ -330,7 +361,7 @@ def _emit_suggestion(message: str, did: str, cwd):
     Emitted AFTER the answer and before ``done`` — the same ordering
     ``plan_ready`` uses. The user reads what they asked for either way, so a
     prediction that is slow, wrong or broken costs them nothing: it is waited
-    for at most ``AIFORGE_PREDICT_GRACE_S`` (default 1.5 s), then dropped.
+    for at most ``AIFORGE_PREDICT_GRACE_S`` (default 3 s), then dropped.
     """
     yield from _collect_suggestion(_start_suggestion(message, did, cwd))
 
@@ -363,8 +394,11 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
     # Started before the answer is yielded so the prediction runs while the
     # consumer streams/persists it; only the remainder of the grace is waited.
     _sugg = _start_suggestion(_last_user_message(st), _turn_summary(st), cwd)
-    yield {"type": "message", "text": _strip_reasoning_prefix(step["text"])}
-    yield from _collect_suggestion(_sugg)
+    try:
+        yield {"type": "message", "text": _strip_reasoning_prefix(step["text"])}
+        yield from _collect_suggestion(_sugg)
+    finally:                # also when the consumer closes us mid-answer
+        _cancel_suggestion(_sugg)
     yield {"type": "done"}
     return "return"
 
