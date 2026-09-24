@@ -17,14 +17,27 @@ import pytest
 from aiforge_core.runtime import pr_reviewer
 
 
+def _clear_model_env(monkeypatch):
+    """No box env may leak a model/endpoint into what these tests resolve."""
+    import os
+    for k in list(os.environ):
+        if k.startswith("AIFORGE_") and k.endswith(
+                ("_MODEL", "_PROVIDER", "_BASE_URL", "_API_KEY")):
+            monkeypatch.delenv(k, raising=False)
+
+
 @pytest.fixture(autouse=True)
 def _cfg(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
     monkeypatch.delenv("AIFORGE_LLM_MAX_RPM", raising=False)
-    from aiforge_core.config import _filecache
+    _clear_model_env(monkeypatch)
+    from aiforge_core.config import _filecache, agent_config
     from aiforge_core.llm import rate_limiter as rl
     _filecache.clear()
     rl.reset_global()
+    # The operator's configured doer — what an unpinned reviewer runs on.
+    agent_config.set_role("doer", "openai_compatible", "cfg-model",
+                          base_url="http://box:1234/v1", api_key="k")
     yield
     rl.reset_global()
 
@@ -157,3 +170,60 @@ def test_an_unparseable_reply_is_no_findings_not_a_crash(monkeypatch):
     autonomous run."""
     _fake_litellm(monkeypatch, reply="I have opinions but no JSON")
     assert pr_reviewer._llm_review("review this") == {}
+
+
+# ── it runs on the operator's model, never an invented one ───────────────
+
+def test_an_unpinned_review_uses_the_configured_doer_model(monkeypatch):
+    """A hard-coded default made LM Studio JIT-load a second 44 GB model on a
+    one-box install (112.9 s for one review) and evict the configured one."""
+    seen = _fake_litellm(monkeypatch)
+
+    pr_reviewer._llm_review("review this")
+
+    assert seen["model"] == "openai/cfg-model"
+    assert seen["api_base"] == "http://box:1234/v1"
+    assert seen["api_key"] == "k"
+
+
+def test_a_default_row_wins_over_the_doer(monkeypatch):
+    """"Apply to all" (the ``_default`` row) is the operator's one endpoint."""
+    from aiforge_core.config import agent_config
+    agent_config.set_role("_default", "openai_compatible", "all-model",
+                          base_url="http://all:1234/v1")
+    seen = _fake_litellm(monkeypatch)
+
+    pr_reviewer._llm_review("review this")
+
+    assert seen["model"] == "openai/all-model"
+    assert seen["api_base"] == "http://all:1234/v1"
+
+
+def test_the_env_override_still_wins_on_the_configured_endpoint(monkeypatch):
+    monkeypatch.setenv("AIFORGE_REVIEWER_MODEL", "openai/pinned")
+    seen = _fake_litellm(monkeypatch)
+
+    pr_reviewer._llm_review("review this")
+
+    assert seen["model"] == "openai/pinned"
+    assert seen["api_base"] == "http://box:1234/v1"
+
+
+def test_nothing_configured_skips_the_review(monkeypatch, tmp_path):
+    """No model anywhere → no send at all, not a guess at one."""
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "empty"))
+    seen = _fake_litellm(monkeypatch)
+
+    assert pr_reviewer._llm_review("review this") == {}
+    assert not seen, "a review went out with no configured model"
+
+
+def test_review_pr_says_why_it_skipped(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "empty"))
+    monkeypatch.setattr(pr_reviewer.shutil, "which", lambda _: "/usr/bin/gh")
+    monkeypatch.setattr(pr_reviewer, "_gh_pr_diff",
+                        lambda *a: pytest.fail("diff fetched for a skip"))
+
+    out = pr_reviewer.review_pr("https://github.com/o/r/pull/1", "t", "b")
+
+    assert out == {"ok": False, "error": "no_reviewer_model"}

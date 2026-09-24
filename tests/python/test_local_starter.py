@@ -19,6 +19,8 @@ def _clean(monkeypatch: pytest.MonkeyPatch) -> None:
     for k in list(_os.environ.keys()):
         if k.startswith(("AIFORGE_LMS_", "AIFORGE_CLAUDE_HOST")):
             monkeypatch.delenv(k, raising=False)
+    # The load command needs a model; there is no hard-coded default one.
+    monkeypatch.setenv("AIFORGE_LMS_MODEL", "m1")
 
 
 def _proc_ok() -> subprocess.CompletedProcess:
@@ -63,13 +65,45 @@ def test_success_path_keeps_local(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "user@studio" in args
     joined = " ".join(args)
     assert "lms server start" in joined
-    assert "lms load" in joined
+    assert "lms load m1 " in joined
     # Default ctx is 256K (Mac Studio has the headroom and 32K was too
     # tight for the ONE-116 3kLOC ticket); floor stays at 64K.
     assert "--context-length 262144" in joined
     # Default TTL is 0 → omit the flag so the model stays loaded
     # until an explicit ``lms unload`` (operator-driven lifetime).
     assert "--ttl" not in joined
+
+
+@pytest.fixture
+def cfgdir(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """An isolated agent_config with no model env leaking in from the box."""
+    import os as _os
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    for k in list(_os.environ):
+        if k.startswith("AIFORGE_") and k.endswith(
+                ("_MODEL", "_PROVIDER", "_BASE_URL", "_API_KEY")):
+            monkeypatch.delenv(k, raising=False)
+    from aiforge_core.config import _filecache, agent_config
+    _filecache.clear()
+    return agent_config
+
+
+def test_model_defaults_to_the_configured_doer(cfgdir) -> None:
+    """No hard-coded id: loading a model the operator never configured makes
+    LM Studio pull a second large model next to theirs."""
+    cfgdir.set_role("doer", "openai_compatible", "openai/qwen/some-coder")
+    assert ls._model_id() == "qwen/some-coder"
+
+
+def test_model_is_empty_when_nothing_is_configured(cfgdir) -> None:
+    """Empty = skip the load step (``lms server start`` only)."""
+    assert ls._model_id() == ""
+
+
+def test_model_env_still_wins(cfgdir, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfgdir.set_role("doer", "openai_compatible", "cfg")
+    monkeypatch.setenv("AIFORGE_LMS_MODEL", "pinned")
+    assert ls._model_id() == "pinned"
 
 
 def test_explicit_ttl_env_appends_flag(monkeypatch: pytest.MonkeyPatch) -> None:

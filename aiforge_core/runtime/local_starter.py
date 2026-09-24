@@ -77,10 +77,23 @@ def _ssh_host() -> str:
 
 
 def _model_id() -> str:
-    """Pick the model name to load. Defaults to qwen3-coder-next per
-    the operator's profile preset. Empty means "skip the load step";
-    we still try ``lms server start`` in that case."""
-    return os.environ.get("AIFORGE_LMS_MODEL", "qwen3-coder-next")
+    """Pick the model name to load: ``AIFORGE_LMS_MODEL``, else the doer's
+    configured model (bare id, as ``lms load`` wants it). Empty means "skip
+    the load step"; we still try ``lms server start`` in that case.
+
+    No hard-coded model id: loading one the operator never configured makes
+    LM Studio pull a second large model next to (or instead of) theirs."""
+    env = os.environ.get("AIFORGE_LMS_MODEL")
+    if env is not None:
+        return env.strip()
+    try:
+        from aiforge_core.config import agent_config as _acfg
+        model = (_acfg.get("doer").get("model") or "").strip()
+    except Exception:  # noqa: BLE001 — unreadable config = nothing to load
+        return ""
+    if not model or model == _acfg._LOCAL_FALLBACK_MODEL:
+        return ""
+    return model.removeprefix("openai/")
 
 
 def _int_env(name: str, default: int) -> int:
