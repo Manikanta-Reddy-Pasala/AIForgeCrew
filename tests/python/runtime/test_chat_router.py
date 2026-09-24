@@ -170,4 +170,49 @@ def test_explicit_team_keeps_trivial_as_build():
 
 
 def test_version_number_is_not_a_named_file():
-    assert not cr.is_small_task("create a parser for python 3.11 syntax")
+    # "3.11" is not a file, and "run" alone no longer makes a task small
+    assert not cr.is_small_task("create notes for python 3.11 and run it")
+
+
+@pytest.mark.parametrize("p", [
+    "Create a snake game in pygame and run it",
+    "Implement a markdown to HTML converter and run it on README.md",
+    "Generate a Go web scraper for HN and run it",
+    "Create five python files for an inventory manager and run them",
+    "Create a.txt b.txt c.txt d.txt and run ls",           # 4 files > 3
+    "Create 4 files a.txt b.txt c.txt and run ls",
+    "Create a chat app with socket.io and next.js and run it",
+    "Create Dockerfile, Makefile, go.mod and main.go",     # 4 files
+    "Create hello.py with tests and run them",
+    "Create main.py and a test file and run it",
+    "Create hello.py that prints hi and run it. " + "x " * 100,  # too long
+])
+def test_real_builds_are_not_small(p):
+    assert not cr.is_small_task(p)
+    r = _d(prompt=p, cat="code_build")
+    assert r.build_escalate
+
+
+@pytest.mark.parametrize("p", [
+    "Create app.py that prints hi and run it",
+    "Create server.js that prints hi and run it with node",
+    "Create cli.py that prints its args and run it",
+    "Create bot.py that prints hello",
+    "Create test.py that prints the latest date and run it",
+    "Create server.js using node.js that prints hi",       # node.js not a file
+    "Create a.txt b.txt c.txt and run ls",                 # exactly 3 files
+    "Create a Dockerfile and a Makefile and run make",
+    "Create build.gradle and app.properties",
+])
+def test_trivial_chores_are_small(p):
+    assert cr.is_small_task(p)
+    r = _d(prompt=p, cat="code_build")
+    assert not r.build_escalate
+    assert not r.route_pipeline
+
+
+def test_plan_mode_small_prompt_unchanged():
+    r = _d(prompt=_TRIVIAL[1], cat="code_build", agent_mode="plan")
+    assert r.is_build_task             # plan mode keeps the classifier's view
+    assert not r.build_escalate        # and plan never escalates anyway
+    assert not r.route_pipeline
