@@ -88,8 +88,6 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
     are DEPRECATED — kept one release as escape hatches for hallucinated
     names. Doer's ``forbidden`` list in ``agents.yaml`` blocks them.
     """
-    from google.adk.tools import FunctionTool
-
     # New OH-parity surface (sub-project #1)
     from aiforge_core.runtime.tools.bash import bash as new_bash
     from aiforge_core.runtime.tools.cognition import finish, think
@@ -141,7 +139,7 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
     #     UNGATED: an unattended pre-planner role with gate-free egress was the
     #     widest hole in the system once search was removed.
     if role == "researcher":
-        tools = tools + [FunctionTool(func=web_read)]
+        tools = tools + [tool_for(web_read)]
     tools = _apply_codegraph_gate(tools)
     if role is None:
         return tools

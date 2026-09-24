@@ -192,3 +192,39 @@ def test_round12_timeout_keeps_unprobeable_index(tmp_path, monkeypatch):
     assert cg.ensure_indexed(str(repo)) is True
     assert (d / "graph.kuzu").exists()      # good build kept despite timeout
     assert str(repo) not in cg._FAILED or True  # not cooldown-locked out
+
+
+def test_concurrent_queries_run_together_and_never_build(monkeypatch):
+    """A batch runs codegraph queries in worker threads: each is its own
+    read-only subprocess, and none of them may start (or wait on) an index
+    build — the build happens before the turn, never from a query."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from aiforge_core.runtime.tools import codegraph as cg
+    both_in = threading.Barrier(2, timeout=5)
+
+    class _P:
+        returncode = 0
+        stderr = ""
+
+        def __init__(self, cmd):
+            self.stdout = " ".join(cmd[1:3])
+
+    def fake_run(cmd, **k):
+        assert cmd[1] != cg._init_cmd(), "a query started an index build"
+        both_in.wait()                  # raises if the calls were serialised
+        return _P(cmd)
+
+    def _no_build(*a, **k):
+        raise AssertionError("a query touched the index build")
+    monkeypatch.setattr(cg, "_bin", lambda: "/usr/bin/codegraph")
+    monkeypatch.setenv("AIFORGE_CODEGRAPH_PATH", "/repo/x")
+    monkeypatch.setattr(cg.subprocess, "run", fake_run)
+    monkeypatch.setattr(cg, "_run_init", _no_build)
+    monkeypatch.setattr(cg, "_acquire_build_lock", _no_build)
+    with ThreadPoolExecutor(2) as pool:
+        a = pool.submit(cg.codegraph_callers, {"symbol": "Foo"}, "/cwd")
+        b = pool.submit(cg.codegraph_explore, {"query": "login"}, "/cwd")
+        assert a.result()["result"] == "callers Foo"
+        assert b.result()["result"] == "explore login"

@@ -1,13 +1,14 @@
-"""Remote reads that run in a worker thread in the ADK pipeline.
+"""Slow reads that run in a worker thread in the ADK pipeline.
 
 ADK runs the calls of one model reply with ``asyncio.gather``, but a plain
 ``FunctionTool`` calls a sync function straight on the event loop, so the
-calls still ran one after another. A remote read (Jira, Confluence, GitLab)
-spends its time waiting on a server; run in a thread, the reads of one reply
-overlap. Everything else still runs on the loop. A read and a write asked for
-in the same reply may now overlap too, as ADK's gather always allowed: a model
-puts only independent calls in one reply. The before-tool callbacks (policy,
-approval, hooks) still run on the loop before the thread starts.
+calls still ran one after another. A slow read (Jira, Confluence, GitLab, a
+web page, a codegraph subprocess) spends its time waiting; run in a thread,
+the reads of one reply overlap. Everything else still runs on the loop. A read
+and a write asked for in the same reply may now overlap too, as ADK's gather
+always allowed: a model puts only independent calls in one reply. The
+before-tool callbacks (policy, approval, hooks) still run on the loop before
+the thread starts.
 
 ADK's own ``RunConfig.tool_thread_pool_config`` is not used: it applies to live
 mode only, threads writes as well, and skips the mandatory-argument check.
@@ -20,13 +21,17 @@ import weakref
 
 from google.adk.tools import FunctionTool
 
-from aiforge_core.runtime.chat_agent._native import REMOTE_READS
+from aiforge_core.runtime.chat_agent._native import CONCURRENT_READS
 from aiforge_core.runtime.chat_agent._turn._batch import _parallel_cap
 
 #: One semaphore per event loop. Each pipeline run has its own loop, so the cap
 #: (AIFORGE_CHAT_PARALLEL_READS, as in chat) holds per run: parallel subtasks
 #: never wait on each other's reads.
 _LOOP_SLOTS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+#: The pipeline's own names for web_fetch: the same egress-gated GET.
+_FETCH_ALIASES = frozenset({"fetch_url", "http_get", "web_read"})
+THREADED_READS = CONCURRENT_READS | _FETCH_ALIASES
 
 
 def _slots(loop, cap: int) -> asyncio.Semaphore:
@@ -58,6 +63,6 @@ class ThreadedReadTool(FunctionTool):
 
 
 def tool_for(fn) -> FunctionTool:
-    """The ADK tool for ``fn``: threaded for a remote read, plain otherwise."""
-    cls = ThreadedReadTool if fn.__name__ in REMOTE_READS else FunctionTool
+    """The ADK tool for ``fn``: threaded for a slow read, plain otherwise."""
+    cls = ThreadedReadTool if fn.__name__ in THREADED_READS else FunctionTool
     return cls(func=fn)

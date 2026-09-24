@@ -1,7 +1,7 @@
-"""In the ADK pipeline, the remote reads of one model reply run at the same time.
+"""In the ADK pipeline, the slow reads of one model reply run at the same time.
 
 ADK gathers a reply's calls, but a plain FunctionTool runs a sync function on
-the event loop, so they ran one after another. Remote reads now run in a
+the event loop, so they ran one after another. Slow reads now run in a
 worker thread; everything else stays on the loop.
 """
 from __future__ import annotations
@@ -91,7 +91,7 @@ def _drive(agent):
     return asyncio.run(_go())
 
 
-def test_remote_reads_of_one_reply_run_at_the_same_time():
+def test_slow_reads_of_one_reply_run_at_the_same_time():
     ran = []
     responses = _run(tool_for(_recording_read(ran)), ["A-1", "A-2", "A-3", "A-4"])
     assert [r["key"] for r in responses] == ["A-1", "A-2", "A-3", "A-4"]
@@ -182,7 +182,7 @@ def test_an_error_in_the_thread_reaches_the_tool_error_callbacks():
     assert responses == [{"error": "jira is down"}]
 
 
-def test_only_remote_reads_are_threaded():
+def test_only_slow_reads_are_threaded():
     def jira_read(key: str) -> dict:
         """Read."""
         return {}
@@ -200,10 +200,40 @@ def test_the_schema_the_model_sees_is_unchanged():
             == FunctionTool(func=fn)._get_declaration())
 
 
-def test_the_pipeline_tool_set_threads_its_remote_reads():
-    from aiforge_core.runtime.chat_agent._native import REMOTE_READS
+def test_the_pipeline_tool_set_threads_its_slow_reads():
     from aiforge_core.runtime.doer_tools import adk_function_tools
+    from aiforge_core.runtime.doer_tools._threaded import THREADED_READS
     tools = {t.name: t for t in adk_function_tools()}
-    assert REMOTE_READS.issubset(tools)
+    assert {"jira_read", "jira_remote_links", "gitlab_pipeline",
+            "gitlab_pipelines", "confluence_children", "web_fetch",
+            "fetch_url", "http_get"}.issubset(tools)
     for name, tool in tools.items():
-        assert isinstance(tool, ThreadedReadTool) == (name in REMOTE_READS), name
+        assert isinstance(tool, ThreadedReadTool) == (name in THREADED_READS), name
+
+
+def _named(name):
+    def fn(url: str) -> dict:
+        """Read."""
+        return {}
+    fn.__name__ = name
+    return fn
+
+
+def test_the_researcher_reads_pages_in_a_thread(monkeypatch):
+    from aiforge_core.runtime.doer_tools import adk_function_tools
+    monkeypatch.delenv("AIFORGE_TOOL_ENFORCE", raising=False)
+    tools = {t.name: t for t in adk_function_tools(role="researcher")}
+    assert isinstance(tools["web_read"], ThreadedReadTool)
+    assert isinstance(tools["jira_read"], ThreadedReadTool)
+
+
+def test_the_pipeline_names_for_a_page_fetch_are_threaded():
+    for name in ("web_fetch", "fetch_url", "http_get", "web_read",
+                 "codegraph_explore"):
+        assert type(tool_for(_named(name))) is ThreadedReadTool, name
+
+
+@pytest.mark.parametrize("name", ["web_crawl", "email_read",
+                                  "gitlab_pipeline_watch", "repo_map"])
+def test_reads_with_side_effects_or_long_waits_stay_on_the_loop(name):
+    assert type(tool_for(_named(name))) is FunctionTool
