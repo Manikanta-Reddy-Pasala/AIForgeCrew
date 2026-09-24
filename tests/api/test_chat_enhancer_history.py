@@ -47,7 +47,7 @@ def test_followup_enhancer_sees_history_no_double_fold(app_client, monkeypatch):
     enhance_calls: list = []
     agent_histories: list = []
 
-    def fake_enhance(prompt, *, history=None, cwd=None, repo=None):
+    def fake_enhance(prompt, *, history=None, cwd=None, repo=None, **_k):
         enhance_calls.append({"prompt": prompt, "history": history})
         return f"SPEC<{prompt}>"
 

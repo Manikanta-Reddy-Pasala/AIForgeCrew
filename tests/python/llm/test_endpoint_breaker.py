@@ -193,3 +193,41 @@ def test_the_pipeline_skips_a_dead_candidate_and_moves_on(monkeypatch):
     assert attempted == [], "a known-dead endpoint was still attempted"
     assert "unreachable" in str(state["exc"])
     assert state["done"] is False                    # the chain continues
+
+
+# ── the retry loop stops sleeping once the breaker has given up ──────────────
+def _retry_against(url, monkeypatch):
+    """Drive the real retry loop against a refused port; returns (sleeps, error)."""
+    from aiforge_core.llm.client import _http_retry
+    from aiforge_core.llm.types import Endpoint
+    sleeps = []
+    for key, value in (("AIFORGE_LLM_RETRY_MAX", "3"), ("AIFORGE_LLM_BREAKER_FAILS", "2"),
+                       ("AIFORGE_LLM_CONNECT_TIMEOUT_S", "2")):
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(_http_retry.time, "sleep", sleeps.append)
+    ep = Endpoint(base_url=url + "/v1", api_key="x", model="m",
+                  provider="openai_compatible", role="enhancer", extras={})
+    with pytest.raises(ConnectionError) as info:
+        _http_retry._post_with_retry(ep, b"{}", 10, role="enhancer", source="primary")
+    return sleeps, info.value
+
+
+def test_a_dead_endpoint_costs_one_backoff_not_two(monkeypatch):
+    """First refusal: one retry (a server mid-restart may be back). Second
+    refusal opens the breaker, and the loop gives up instead of sleeping
+    again only to hit the open breaker."""
+    sleeps, _ = _retry_against(DEAD, monkeypatch)
+    assert len(sleeps) == 1
+
+
+def test_an_endpoint_already_written_off_fails_at_once(monkeypatch):
+    br.record_failure(DEAD + "/v1", "refused")
+    br.record_failure(DEAD + "/v1", "refused")
+    sleeps, err = _retry_against(DEAD, monkeypatch)
+    assert sleeps == [] and "skipping it" in str(err)
+
+
+def test_with_the_breaker_off_the_retries_are_unchanged(monkeypatch):
+    monkeypatch.setenv("AIFORGE_LLM_BREAKER_COOLDOWN_S", "0")
+    sleeps, _ = _retry_against(DEAD, monkeypatch)
+    assert len(sleeps) >= 2

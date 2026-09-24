@@ -11,18 +11,23 @@
 # reloads without a per-load flag (the CLI has none).
 #
 # 8-bit KV quant is near-lossless; do NOT drop to 4-bit for the Doer
-# (code generation degrades). Vision-language models (e.g. nex-n2-mini,
-# an mlx-vlm) do NOT support KV quant — the batched vision path raises
+# (code generation degrades). Vision-language models (mlx-vlm) do NOT
+# support KV quant — the batched vision path raises
 # "does not support KV cache quantization yet"; skip them (their small
 # 32K KV needs no help anyway).
 #
 #   AIFORGE_LMS_HOST   ssh target (default manikanta@192.168.70.185)
 #   KV_MODELS          "publisher/ModelDir:ctx:bits" list, comma-sep
-#                      default: lmstudio-community/Qwen3-Coder-Next-MLX-4bit:262144:8
+#                      REQUIRED (no default model), e.g.
+#                      publisher/Model-MLX-4bit:262144:8
 set -euo pipefail
 
 HOST="${AIFORGE_LMS_HOST:-manikanta@192.168.70.185}"
-KV_MODELS="${KV_MODELS:-lmstudio-community/Qwen3-Coder-Next-MLX-4bit:262144:8}"
+KV_MODELS="${KV_MODELS:-}"
+if [[ -z "$KV_MODELS" ]]; then
+    echo "lms-kv-quant-config: ERROR: KV_MODELS unset — no model configured; skipping" >&2
+    exit 0
+fi
 
 IFS=',' read -ra SPECS <<< "$KV_MODELS"
 for spec in "${SPECS[@]}"; do

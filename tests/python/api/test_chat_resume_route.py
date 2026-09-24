@@ -51,7 +51,7 @@ def _capture(monkeypatch):
     from aiforge_core.runtime import parallel_subtasks as pp
     seen: list = []
 
-    def fake_enhance(prompt, *, history=None, cwd=None, repo=None):
+    def fake_enhance(prompt, *, history=None, cwd=None, repo=None, **_k):
         return prompt
 
     def fake_run_chat_agent(history, session_id=None, **kw):
@@ -178,7 +178,7 @@ def test_a_user_stop_is_resumable_even_with_no_banner(app_client, monkeypatch):
     from aiforge_core.runtime import parallel_subtasks as pp
     seen: list = []
 
-    def fake_enhance(prompt, *, history=None, cwd=None, repo=None):
+    def fake_enhance(prompt, *, history=None, cwd=None, repo=None, **_k):
         return prompt
 
     def fake_run(history, session_id=None, **kw):
@@ -226,7 +226,7 @@ def test_a_turn_that_died_on_an_llm_error_is_resumable(app_client, monkeypatch):
     from aiforge_core.runtime import parallel_subtasks as pp
     seen: list = []
 
-    def fake_enhance(prompt, *, history=None, cwd=None, repo=None):
+    def fake_enhance(prompt, *, history=None, cwd=None, repo=None, **_k):
         return prompt
 
     def fake_run(history, session_id=None, **kw):

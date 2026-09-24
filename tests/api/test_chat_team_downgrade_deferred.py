@@ -54,7 +54,7 @@ def test_team_turn_downgraded_runs_simple_path_and_sets_review_edits(
         yield {"type": "message", "text": "should not run"}
         yield {"type": "done"}
 
-    def fake_enhance(prompt, *, history=None, cwd=None, repo=None):
+    def fake_enhance(prompt, *, history=None, cwd=None, repo=None, **_k):
         return prompt
 
     def fake_run_chat_agent(history, session_id=None, **kw):
@@ -91,7 +91,7 @@ def test_review_edits_defaults_off_auto_approve(app_client, monkeypatch):
 
     seen = []
 
-    def fake_enhance(prompt, *, history=None, cwd=None, repo=None):
+    def fake_enhance(prompt, *, history=None, cwd=None, repo=None, **_k):
         return prompt
 
     def fake_run_chat_agent(history, session_id=None, **kw):
@@ -119,7 +119,7 @@ def test_review_edits_env_forces_gate_on(app_client, monkeypatch):
 
     seen = []
 
-    def fake_enhance(prompt, *, history=None, cwd=None, repo=None):
+    def fake_enhance(prompt, *, history=None, cwd=None, repo=None, **_k):
         return prompt
 
     def fake_run_chat_agent(history, session_id=None, **kw):

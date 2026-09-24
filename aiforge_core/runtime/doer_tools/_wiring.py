@@ -88,14 +88,14 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
     are DEPRECATED — kept one release as escape hatches for hallucinated
     names. Doer's ``forbidden`` list in ``agents.yaml`` blocks them.
     """
-    from google.adk.tools import FunctionTool
-
     # New OH-parity surface (sub-project #1)
     from aiforge_core.runtime.tools.bash import bash as new_bash
     from aiforge_core.runtime.tools.cognition import finish, think
     from aiforge_core.runtime.tools.editor import editor
     from aiforge_core.runtime.tools.ensure_runtime import ensure_runtime
     from aiforge_core.runtime.tools.project_runner import project
+
+    from ._threaded import tool_for
 
     new_canonical = [editor, new_bash, think, finish, ensure_runtime, project]
     legacy_canonical = [file_read, file_write, file_patch, list_dir, run_shell,
@@ -125,7 +125,7 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
                grep, search, http_get, web_fetch, web_crawl,
                commit, git_add_commit,
                todo_write, todowrite, glob, task]
-    tools = [FunctionTool(func=fn)
+    tools = [tool_for(fn)
              for fn in new_canonical + legacy_canonical + aliases]
     # Web egress:
     #   * web_fetch + web_crawl are in the base list — every agent gets them,
@@ -139,7 +139,7 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
     #     UNGATED: an unattended pre-planner role with gate-free egress was the
     #     widest hole in the system once search was removed.
     if role == "researcher":
-        tools = tools + [FunctionTool(func=web_read)]
+        tools = tools + [tool_for(web_read)]
     tools = _apply_codegraph_gate(tools)
     if role is None:
         return tools

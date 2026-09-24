@@ -4,7 +4,8 @@
 # Steps:
 #   1. Ensure aiforge Postgres schema (tickets tables) via migration SQL.
 #   2. Install openai into AIForgeCrew .venv.
-#   3. Load LM Studio models at max context with 8h TTL.
+#   3. Load the Doer model (AIFORGE_LMS_MODEL) at 128K context with 8h TTL;
+#      skipped when unset — no model id is guessed.
 #   4. Install launchd plists.
 #
 # Usage (on Mac Studio):
@@ -27,9 +28,15 @@ cd "$REPO" && /opt/homebrew/bin/uv pip install --python "$VENV/bin/python" \
   openai 2>&1 | tail -4
 
 echo ">>> 3/4 loading Doer model (always hot); Planner loads on-demand via memguard"
-"$LMS" unload --all 2>&1 | tail -1
-"$LMS" load qwen3-coder-next --context-length 131072 --ttl 28800 --parallel 4 --yes 2>&1 | tail -1
-"$LMS" ps
+MODEL="${AIFORGE_LMS_MODEL:-}"
+if [[ -z "$MODEL" ]]; then
+  echo "    AIFORGE_LMS_MODEL unset — skipping model load (set it to the model"
+  echo "    configured for the Doer, e.g. AIFORGE_LMS_MODEL=provider/model-id)"
+else
+  "$LMS" unload --all 2>&1 | tail -1
+  "$LMS" load "$MODEL" --context-length 131072 --ttl 28800 --parallel 4 --yes 2>&1 | tail -1
+  "$LMS" ps
+fi
 
 echo ">>> 4/4 installing launchd plists"
 bash "$REPO/scripts/runtime/install-launchd.sh"

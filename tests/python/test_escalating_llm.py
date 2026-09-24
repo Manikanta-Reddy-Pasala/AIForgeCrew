@@ -331,7 +331,8 @@ def test_lm_crash_triggers_recovery_then_retry(monkeypatch) -> None:
     ls.reset()
     recover_calls = {"n": 0}
     monkeypatch.setattr(ls, "try_recover",
-                        lambda api_base: recover_calls.update(n=1) or True)
+                        lambda api_base, model=None: recover_calls.update(
+                            n=1, model=model) or True)
 
     class _CrashThenRecover(BaseLlm):
         api_base: str = "http://127.0.0.1:1234/v1"
@@ -357,6 +358,8 @@ def test_lm_crash_triggers_recovery_then_retry(monkeypatch) -> None:
                       chain_labels=["cloud"])
     out = _drive(e)
     assert recover_calls["n"] == 1
+    # The model that CRASHED is reloaded — not the doer's configured one.
+    assert recover_calls["model"] == "local-mlx"
     assert out[0].content.parts[0].text == "recovered output"
     assert cloud.calls == 0  # cloud bypassed by inline recovery
     assert e.lm_recovery_tried is True
@@ -369,7 +372,7 @@ def test_lm_crash_recovery_capped_per_pipeline(monkeypatch) -> None:
     ls.reset()
     recover_calls = {"n": 0}
     monkeypatch.setattr(ls, "try_recover",
-                        lambda api_base: recover_calls.update(
+                        lambda api_base, model=None: recover_calls.update(
                             n=recover_calls["n"] + 1) or True)
     primary = _StubModel(model="local",
                          error=RuntimeError("model has crashed"))
@@ -390,7 +393,7 @@ def test_non_crash_error_bypasses_recovery(monkeypatch) -> None:
     ls.reset()
     recover_calls = {"n": 0}
     monkeypatch.setattr(ls, "try_recover",
-                        lambda api_base: recover_calls.update(
+                        lambda api_base, model=None: recover_calls.update(
                             n=recover_calls["n"] + 1) or True)
     primary = _StubModel(model="local",
                          error=RuntimeError("connection refused"))
@@ -593,7 +596,7 @@ def test_the_lm_crash_recovery_retry_is_counted_too(monkeypatch, _meter) -> None
     its traffic."""
     from aiforge_core.runtime import local_starter as ls
     ls.reset()
-    monkeypatch.setattr(ls, "try_recover", lambda api_base: True)
+    monkeypatch.setattr(ls, "try_recover", lambda api_base, model=None: True)
 
     class _CrashThenRecover(BaseLlm):
         api_base: str = "http://127.0.0.1:1234/v1"
@@ -626,7 +629,7 @@ def test_a_recovery_retry_that_answers_nothing_is_counted_as_empty(
         monkeypatch, _meter) -> None:
     from aiforge_core.runtime import local_starter as ls
     ls.reset()
-    monkeypatch.setattr(ls, "try_recover", lambda api_base: True)
+    monkeypatch.setattr(ls, "try_recover", lambda api_base, model=None: True)
 
     class _CrashThenEmpty(BaseLlm):
         api_base: str = "http://127.0.0.1:1234/v1"

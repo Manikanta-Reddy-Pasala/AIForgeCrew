@@ -41,6 +41,67 @@ def test_a_pin_is_stored_owner_only_next_to_the_credentials(_isolated):
     assert fp.count(":") == 31       # SHA-256, colon-separated
 
 
+def test_a_pin_being_written_is_never_read_half_done(_isolated):
+    """Page fetches run in parallel, and two can pin the same host at once:
+    a reader sees no pin or the whole pin, never a truncated one."""
+    import threading
+    pem = self_signed_pem()
+    trust.store("jira.internal", pem)
+    seen, done = set(), threading.Event()
+
+    def _read():
+        while not done.is_set():
+            seen.add(trust.pinned_pem("jira.internal"))
+
+    def _write():
+        for _ in range(200):
+            trust.store("jira.internal", pem)
+    reader = threading.Thread(target=_read)
+    writers = [threading.Thread(target=_write) for _ in range(2)]
+    reader.start()
+    try:
+        for w in writers:
+            w.start()
+        for w in writers:
+            w.join()
+    finally:
+        done.set()
+        reader.join()
+    assert seen == {pem}, "a reader saw an emptied or partial pin"
+    assert list(trust.pin_path("jira.internal").parent.iterdir()) == [
+        trust.pin_path("jira.internal")], "no temp file left behind"
+
+
+def test_a_failed_pin_write_leaves_no_temp_file(_isolated, monkeypatch):
+    import os
+
+    def _refuse(src, dst):
+        raise OSError("disk full")
+    monkeypatch.setattr(os, "replace", _refuse)
+    trust.store("jira.internal", self_signed_pem())
+    assert list(trust.pin_path("jira.internal").parent.iterdir()) == []
+
+
+def test_two_first_pins_at_once_fetch_and_record_one_certificate(monkeypatch):
+    """A host behind two certificates (two nodes, an inspecting appliance)
+    must not be pinned twice, with a false "CHANGED" in between."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    certs = iter([self_signed_pem(), another_self_signed_pem()])
+    fetched = []
+
+    def _fetch(host, port=443):
+        fetched.append(host)
+        threading.Event().wait(0.1)
+        return next(certs)
+    monkeypatch.setattr(trust, "fetch", _fetch)
+    with ThreadPoolExecutor(2) as pool:
+        got = list(pool.map(lambda _: trust.ensure_pinned("jira.internal"),
+                            range(2)))
+    assert fetched == ["jira.internal"]
+    assert got[0] == got[1] == trust.pinned_pem("jira.internal")
+
+
 def test_the_pin_round_trips():
     pem = self_signed_pem()
     trust.store("jira.internal", pem)

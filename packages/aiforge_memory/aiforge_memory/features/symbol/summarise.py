@@ -29,15 +29,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from aiforge_memory.features.symbol.extract import WalkedFile
+from aiforge_memory.llm_compat import LmModelUnset, require_model
 
 PROMPT_PATH = Path(__file__).parent / "prompts" / "symbol_summary.txt"
 DEFAULT_LM_URL = os.environ.get(
     "AIFORGE_CODEMEM_LM_URL",
     os.environ.get("AIFORGE_INTENT_LM_URL", "http://127.0.0.1:1235/v1"),
 )
-DEFAULT_MODEL = os.environ.get(
-    "AIFORGE_CODEMEM_LM_MODEL", "qwen3.6-27b-instruct",
-)
+# No default model id — unset raises LmModelUnset at call time.
+DEFAULT_MODEL = os.environ.get("AIFORGE_CODEMEM_LM_MODEL", "")
 MIN_LINES = int(os.environ.get("AIFORGE_SYMSUM_MIN_LINES", "8"))
 MAX_FILE_BYTES = int(os.environ.get(
     "AIFORGE_SYMSUM_MAX_FILE_BYTES", "262144",
@@ -176,6 +176,8 @@ def _process_one(wf: WalkedFile, sym, *, repo: str,
             ss.skipped_reason = "trivial"
         else:
             ss.summary = parsed
+    except LmModelUnset:
+        raise                               # config error: stop, don't skip
     except Exception:
         ss.skipped_reason = "llm_error"
     return ss
@@ -235,6 +237,8 @@ def _result_or_error(fut, repo: str, sym) -> SymbolSummary:
     """A worker's result, or an llm_error summary when the worker itself blew up."""
     try:
         return fut.result()
+    except LmModelUnset:
+        raise
     except Exception:
         return SymbolSummary(repo=repo, fqname=sym.fqname,
                              skipped_reason="llm_error")
@@ -469,7 +473,7 @@ def _call_llm(
     import httpx
 
     payload = {
-        "model": DEFAULT_MODEL,
+        "model": require_model(DEFAULT_MODEL, "symbol summary"),
         "messages": [{"role": "user", "content": _summary_prompt(
             body=body, signature=signature, doc=doc, lang=lang, fqname=fqname,
         )}],

@@ -200,6 +200,10 @@ def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
                              max_wait_s=cfg.left(), throttled=throttled, **extra)
         except Exception as exc:  # noqa: BLE001 — classifier handles
             retry, label = pkg._is_transient_exc(exc)
+            if retry and _endpoint_down(ep):
+                # Keep the label: a shipped timeout / 429 is still marked as
+                # such below, only the pointless retry is dropped.
+                retry = False
             last = exc
             cfg.extend(throttled[0])
             sleep_s = _next_sleep(cfg, attempt, exc, label, ep.provider)
@@ -220,6 +224,18 @@ def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
     # Defensive — loop above always either returns or raises.
     assert last is not None
     raise last
+
+
+def _endpoint_down(ep: Endpoint) -> bool:
+    """The breaker has written this endpoint off: it failed to connect again
+    and again and stays skipped for its cooldown (30 s). A retry inside the
+    backoff would only hit the open breaker, so give up now instead of sleeping
+    through it. A single connect failure still gets its retry."""
+    from aiforge_core.llm import endpoint_breaker
+    try:
+        return bool(endpoint_breaker.is_open(ep.base_url))
+    except Exception:  # noqa: BLE001 — unsure: keep the normal retry
+        return False
 
 
 def _mark_shipped_timeout(exc: Exception, label: str, sent: bool) -> None:

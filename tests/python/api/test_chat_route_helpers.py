@@ -136,6 +136,29 @@ def test_a_finished_parallel_build_ends_the_turn(pp, tmp_path):
     assert pctx["done"] is True
 
 
+def test_a_finished_team_run_ends_the_turn(monkeypatch, tmp_path):
+    """Same fall-through, team route: the sequential team finished, then the
+    producer ran the whole request again with the single agent."""
+    from aiforge_core.runtime import chat_pipeline
+    ran = []
+    monkeypatch.setattr(chat_pipeline, "stream_chat_pipeline",
+                        lambda prompt, **kw: ran.append(prompt) or iter([{"type": "done"}]))
+    rd = pytypes.SimpleNamespace(doc_task=False, route_pipeline=False, notice=None)
+    rctx: dict = {"done": False}
+    evs = _drain(C._dispatch_agent_route(rd, None, "fix it", str(tmp_path), 1, [],
+                                         lambda s: s, {}, 0.0, True, None, rctx))
+    assert ran == ["fix it"] and evs == [{"type": "done"}]
+    assert rctx["done"] is True
+
+
+def test_simple_mode_still_falls_through_to_the_single_agent(tmp_path):
+    rd = pytypes.SimpleNamespace(doc_task=False, route_pipeline=False, notice=None)
+    rctx: dict = {"done": False}
+    assert _drain(C._dispatch_agent_route(rd, None, "fix it", str(tmp_path), 1, [],
+                                          lambda s: s, {}, 0.0, False, None, rctx)) == []
+    assert rctx["done"] is False
+
+
 def test_a_best_of_n_build_ends_the_turn(pp, tmp_path, monkeypatch):
     from aiforge_core.runtime import best_of_n as bon
     from aiforge_core.runtime import chat_interject
@@ -148,6 +171,17 @@ def test_a_best_of_n_build_ends_the_turn(pp, tmp_path, monkeypatch):
     _drain(C._pipeline_route(pp["ns"], "build", str(tmp_path), 1, [],
                              lambda s: s, {}, 0.0, pctx))
     assert pctx["done"] is True
+
+
+def test_a_single_task_build_hands_its_spec_on(pp, tmp_path):
+    """It falls through to the single agent, which used to enhance the same
+    prompt a second time; the route's spec is kept for it instead."""
+    pp["subs"] = [{"slug": "one"}]
+    pctx: dict = {"done": False}
+    _drain(C._pipeline_route(pp["ns"], "build", str(tmp_path), 1, [],
+                             lambda s: s, {}, 0.0, pctx))
+    assert pctx["done"] is False
+    assert pctx["spec"] == "spec(build)"
 
 
 def test_the_enhancers_recall_is_scoped_to_this_sessions_repo(pp, tmp_path):
@@ -555,9 +589,18 @@ def test_a_directive_stated_in_passing_is_captured(capture):
 
 
 def test_a_pure_capture_acks_and_skips_the_agent(capture):
-    evs = _capture()
+    pctx: dict = {"done": False}
+    evs = _capture(pctx=pctx)
     assert "saved as preference (global)" in evs[1]["text"]
     assert evs[-1] == {"type": "done"}
+    assert pctx["done"] is True, "the producer must not go on to run the agent"
+
+
+def test_a_capture_with_a_task_lets_the_agent_run(capture):
+    capture["cls"] = {**capture["cls"], "task_present": True}
+    pctx: dict = {"done": False}
+    _capture(pctx=pctx)
+    assert pctx["done"] is False
 
 
 def test_a_task_riding_along_with_the_capture_still_runs(capture):

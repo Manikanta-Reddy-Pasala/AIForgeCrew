@@ -55,9 +55,13 @@ def _gitlab() -> bool:
 
 
 def _email() -> bool:
+    # email_tool has no _conf(): the old probe always said "not configured",
+    # hiding email on every install. Configured = SMTP or IMAP has a host.
     from aiforge_core.runtime.tools import email_tool
-    conf = email_tool._conf() if hasattr(email_tool, "_conf") else {}
-    return bool(conf.get("host"))
+    if email_tool._disabled():
+        return False
+    return bool(email_tool._smtp_conf().get("host")
+                or email_tool._imap_conf().get("host"))
 
 
 _PROBES = {"jira": _jira, "confluence": _confluence,
@@ -169,4 +173,20 @@ def gate_catalog(system_prompt: str,
     return out, sorted(missing)
 
 
-__all__ = ["configured_integrations", "gate_catalog"]
+def gate_schemas(schemas: list[dict], available: set[str] | None = None) -> list[dict]:
+    """The native tool schemas with the same tools left out as ``gate_catalog``
+    drops from the prompt. Every schema is prompt the model reads on every
+    step; one for a tool that can only return ``*_not_configured`` costs time
+    and teaches nothing. ``AIFORGE_CHAT_GATE_TOOLS=0`` keeps the integration
+    schemas, as it keeps their catalog lines. The web tools always follow the
+    web lockdown (the prompt tells the model not to call them then)."""
+    if os.environ.get("AIFORGE_CHAT_GATE_TOOLS", "1") in ("0", "false", "no"):
+        have = {fam for _, fam in _PREFIX_FAMILY}
+    else:
+        have = configured_integrations() if available is None else set(available)
+    shown = "\n".join("- " + s["function"]["name"] + " " for s in schemas)
+    kept = set(_drop_lines(shown, have, _web_fetch_on()).splitlines())
+    return [s for s in schemas if "- " + s["function"]["name"] + " " in kept]
+
+
+__all__ = ["configured_integrations", "gate_catalog", "gate_schemas"]

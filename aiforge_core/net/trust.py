@@ -31,6 +31,8 @@ import logging
 import os
 import re
 import ssl
+import tempfile
+import threading
 from pathlib import Path
 
 log = logging.getLogger("aiforge.trust")
@@ -41,6 +43,15 @@ _DIR = "trusted_certs"
 # worth pinning down rather than trusting.
 _SAFE_HOST_RE = re.compile(r"^[A-Za-z0-9._-]{1,253}$")
 _FETCH_TIMEOUT_S = 8
+_FIRST_PIN: dict[str, threading.Lock] = {}   # host -> its first-pin lock
+_FIRST_PIN_GUARD = threading.Lock()
+
+
+def _first_pin_lock(host: str) -> threading.Lock:
+    """One lock per host: first pins of DIFFERENT hosts (8 s fetch each) must
+    not wait on one another."""
+    with _FIRST_PIN_GUARD:
+        return _FIRST_PIN.setdefault(host, threading.Lock())
 
 
 def _dir(*, create: bool = False) -> Path:
@@ -101,8 +112,17 @@ def store(host: str, pem: str) -> str:
     old = pinned_pem(host)
     try:
         _dir(create=True)
-        p.write_text(pem)
-        p.chmod(0o600)
+        # Written aside (mkstemp: 0600 from the start) and renamed into place,
+        # so two fetches pinning the same host at once never read a half-
+        # written pin.
+        fd, tmp = tempfile.mkstemp(dir=p.parent, prefix=".pin-")
+        try:
+            with os.fdopen(fd, "w") as fh:
+                fh.write(pem)
+            os.replace(tmp, p)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
     except OSError as exc:  # noqa: BLE001 — never break a connection over this
         log.warning("trust: could not pin %s — %s", host, exc)
         return fp
@@ -146,9 +166,13 @@ def ensure_pinned(host: str, port: int = 443) -> str:
                     "is off (AIFORGE_TLS_NO_TOFU) — pin it by hand or supply a "
                     "CA bundle", host)
         return ""
-    pem = fetch(host, port)
-    if pem:
-        store(host, pem)
+    # Page fetches run in parallel: one first pin at a time, and a second
+    # caller uses the pin the first recorded instead of fetching again (a host
+    # behind several certificates would otherwise log a false "CHANGED").
+    with _first_pin_lock(host):
+        pem = pinned_pem(host) or fetch(host, port)
+        if pem and not pinned_pem(host):
+            store(host, pem)
     return pem
 
 

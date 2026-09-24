@@ -186,19 +186,34 @@ _RECALL_PREAMBLE = ("RELEVANT MEMORY recalled for this request (prior decisions 
                     "request:\n")
 
 
-def _recall_hits(cwd: str, q: str, limit: int, session_id) -> list:
-    """Ranked memory hits for this query. Best-effort — never breaks a turn.
+def _recall_args(cwd: str, q: str, limit: int, session_id) -> tuple:
+    """The exact unified_query call for this recall, as a comparable tuple.
 
     F2/M3: recall under the SAME repo the chat WRITE path files facts under
     (git-toplevel basename), else sqlite_memory.recall filters them out
     (WHERE repo=?). M4: exclude the current live session so this turn's own
     messages don't come back as "prior chat".
     """
+    return (q, limit, _chat_repo_key(cwd), session_id, tuple(_tool_tags(q)))
+
+
+def _run_recall(args: tuple) -> dict:
+    from aiforge_core.memory import unified_query as _uq
+    q, limit, repo, session_id, tags = args
+    return _uq.query(q, limit=limit, repo=repo, exclude_session=session_id,
+                     boost_tags=list(tags))
+
+
+def _recall_hits(cwd: str, q: str, limit: int, session_id) -> list:
+    """Ranked memory hits for this query — the session-start prefetch's result
+    when it made this very call, else a fresh query. Best-effort — never
+    breaks a turn."""
     try:
-        from aiforge_core.memory import unified_query as _uq
-        res = _uq.query(q, limit=limit, repo=_chat_repo_key(cwd),
-                        exclude_session=session_id,
-                        boost_tags=_tool_tags(q))
+        from . import _recall_prefetch
+        args = _recall_args(cwd, q, limit, session_id)
+        res = _recall_prefetch.take(args)
+        if res is None:
+            res = _run_recall(args)
     except Exception:  # noqa: BLE001
         return []
     return (res.get("hits", []) or []) if isinstance(res, dict) else []

@@ -19,6 +19,8 @@ def _clean(monkeypatch: pytest.MonkeyPatch) -> None:
     for k in list(_os.environ.keys()):
         if k.startswith(("AIFORGE_LMS_", "AIFORGE_CLAUDE_HOST")):
             monkeypatch.delenv(k, raising=False)
+    # The load command needs a model; there is no hard-coded default one.
+    monkeypatch.setenv("AIFORGE_LMS_MODEL", "m1")
 
 
 def _proc_ok() -> subprocess.CompletedProcess:
@@ -63,13 +65,45 @@ def test_success_path_keeps_local(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "user@studio" in args
     joined = " ".join(args)
     assert "lms server start" in joined
-    assert "lms load" in joined
+    assert "lms load m1 " in joined
     # Default ctx is 256K (Mac Studio has the headroom and 32K was too
     # tight for the ONE-116 3kLOC ticket); floor stays at 64K.
     assert "--context-length 262144" in joined
     # Default TTL is 0 → omit the flag so the model stays loaded
     # until an explicit ``lms unload`` (operator-driven lifetime).
     assert "--ttl" not in joined
+
+
+@pytest.fixture
+def cfgdir(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """An isolated agent_config with no model env leaking in from the box."""
+    import os as _os
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    for k in list(_os.environ):
+        if k.startswith("AIFORGE_") and k.endswith(
+                ("_MODEL", "_PROVIDER", "_BASE_URL", "_API_KEY")):
+            monkeypatch.delenv(k, raising=False)
+    from aiforge_core.config import _filecache, agent_config
+    _filecache.clear()
+    return agent_config
+
+
+def test_model_defaults_to_the_configured_doer(cfgdir) -> None:
+    """No hard-coded id: loading a model the operator never configured makes
+    LM Studio pull a second large model next to theirs."""
+    cfgdir.set_role("doer", "openai_compatible", "openai/qwen/some-coder")
+    assert ls._model_id() == "qwen/some-coder"
+
+
+def test_model_is_empty_when_nothing_is_configured(cfgdir) -> None:
+    """Empty = skip the load step (``lms server start`` only)."""
+    assert ls._model_id() == ""
+
+
+def test_model_env_still_wins(cfgdir, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfgdir.set_role("doer", "openai_compatible", "cfg")
+    monkeypatch.setenv("AIFORGE_LMS_MODEL", "pinned")
+    assert ls._model_id() == "pinned"
 
 
 def test_explicit_ttl_env_appends_flag(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -301,3 +335,69 @@ def test_dead_local_maybe_substitute_is_noop(
            "api_key": "lm-studio"}
     out = lp.maybe_substitute_primary("doer", cfg)
     assert out is cfg
+
+
+# ─── the model id reaches a REMOTE shell: allow-list + quote ──────────
+
+
+@pytest.mark.parametrize("bad", ["m; rm -rf ~", "m$(id)", "m`id`",
+                                 "m && curl x", "m\nid", "m\n", "m'x"])
+def test_try_start_refuses_an_unsafe_model_id(
+        monkeypatch: pytest.MonkeyPatch, bad: str) -> None:
+    monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
+    with patch("subprocess.run") as run_mock:
+        assert ls.try_start("http://x:1234/v1", bad) is False
+    run_mock.assert_not_called()
+
+
+def test_an_unsafe_configured_model_is_refused_too(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
+    monkeypatch.setenv("AIFORGE_LMS_MODEL", "m; rm -rf ~")
+    with patch("subprocess.run") as run_mock:
+        assert ls.try_start("http://x:1234/v1") is False
+    run_mock.assert_not_called()
+
+
+def test_load_model_now_refuses_an_unsafe_model_id(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
+    with patch("subprocess.run") as run_mock:
+        out = ls.load_model_now("m; rm -rf ~", 131072)
+    assert out == {"ok": False, "error": "invalid model id"}
+    run_mock.assert_not_called()
+
+
+def test_recovery_loads_the_model_that_crashed(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Crash recovery passes the crashed role's model; it wins over the env
+    (and the doer), and the litellm ``openai/`` prefix is stripped."""
+    monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
+    monkeypatch.setenv("AIFORGE_LMS_WARMUP_S", "0")
+    with patch("subprocess.run", return_value=_proc_ok()) as run_mock, \
+         patch.object(lp, "is_alive", return_value=True), \
+         patch("time.sleep"):
+        assert ls.try_recover("http://x:1234/v1",
+                              "openai/vendor/other@4bit") is True
+    remote = run_mock.call_args[0][0][-1]
+    assert "lms load vendor/other@4bit " in remote
+    assert "m1" not in remote
+
+
+def test_the_model_id_is_shell_quoted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Belt and braces: even an allowed id goes through shlex.quote."""
+    monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
+    with patch("subprocess.run", return_value=_proc_ok()) as run_mock, \
+         patch.object(ls.shlex, "quote", side_effect=lambda s: f"<{s}>"):
+        ls.load_model_now("a/b", 131072)
+    remote = run_mock.call_args[0][0][-1]
+    assert "unload <a/b>" in remote and "load <a/b> " in remote
+
+
+
+def test_every_configured_provider_prefix_is_stripped():
+    from aiforge_core.runtime.local_starter import _bare_model
+    assert _bare_model("openai/qwen/qwen3-coder-30b") == "qwen/qwen3-coder-30b"
+    assert _bare_model("ollama/llama-x") == "llama-x"
+    assert _bare_model("qwen/qwen3-coder-30b") == "qwen/qwen3-coder-30b"
+    assert _bare_model("") == ""

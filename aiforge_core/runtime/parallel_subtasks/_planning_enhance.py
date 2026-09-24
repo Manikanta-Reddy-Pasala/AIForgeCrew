@@ -2,6 +2,7 @@
 given, and the rewrite itself."""
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 
@@ -249,14 +250,17 @@ def _readme_block(cwd: str | None) -> str:
 
 
 def _enhance(prompt: str, *, history: list[dict] | None = None,
-             cwd: str | None = None, repo: str | None = None) -> str:
+             cwd: str | None = None, repo: str | None = None,
+             on_context=None) -> str:
     """Layer-1 step 1: fix spelling/grammar, write proper sentences, RECALL
     context (memory + recent conversation + repo README), and fold it all into
     a clear, concrete build spec the planner/doer can act on.
 
     Backward compatible: existing callers pass just ``prompt``. Falls back to
     the raw ``prompt`` on any error or empty output. Disable entirely via
-    ``AIFORGE_ENHANCER_DISABLE=1``."""
+    ``AIFORGE_ENHANCER_DISABLE=1``. ``on_context`` (optional) is called once the
+    context is gathered, right before the LLM call — a caller's cue to start
+    work that can overlap it."""
     if _enhancer_disabled():
         return prompt
     # Triviality / intent gate: greetings, thanks, short questions and other
@@ -295,6 +299,10 @@ def _enhance(prompt: str, *, history: list[dict] | None = None,
           "instructions above to decide build spec vs. restated question. "
           "Output ONLY the rewritten request."
     )
+    if on_context is not None:
+        # A caller's hook must never cost the spec.
+        with contextlib.suppress(Exception):
+            on_context()
     try:
         from aiforge_core.llm import client
         out = client.complete("enhancer", [

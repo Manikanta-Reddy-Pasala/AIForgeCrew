@@ -22,15 +22,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from aiforge_memory.features.symbol.extract import WalkedFile
+from aiforge_memory.llm_compat import LmModelUnset, require_model
 
 PROMPT_PATH = Path(__file__).parent / "prompts" / "file_summary.txt"
 DEFAULT_LM_URL = os.environ.get(
     "AIFORGE_CODEMEM_LM_URL",
     os.environ.get("AIFORGE_INTENT_LM_URL", "http://127.0.0.1:1235/v1"),
 )
-DEFAULT_MODEL = os.environ.get(
-    "AIFORGE_CODEMEM_LM_MODEL", "qwen3.6-27b-instruct"
-)
+# No default model id — unset raises LmModelUnset at call time.
+DEFAULT_MODEL = os.environ.get("AIFORGE_CODEMEM_LM_MODEL", "")
 
 MAX_FILE_BYTES = int(os.environ.get("AIFORGE_CODEMEM_FILE_SUMMARY_MAX_BYTES", "32768"))
 
@@ -64,6 +64,8 @@ def summarize_files(
                 parsed = _summarize_one(content or b"", wf)
                 if parsed is not None:
                     fs.summary, fs.purpose_tags = parsed
+            except LmModelUnset:
+                raise                       # config error: stop, don't skip
             except Exception:
                 fs.skipped_reason = "llm_error"
         out.append(fs)
@@ -147,7 +149,7 @@ def _call_llm(
     user = f"File: {path}\nLanguage: {lang}\n\n{content}"
     from aiforge_memory.llm_compat import response_format
     create_kwargs: dict = {
-        "model": DEFAULT_MODEL,
+        "model": require_model(DEFAULT_MODEL, "file summary"),
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},

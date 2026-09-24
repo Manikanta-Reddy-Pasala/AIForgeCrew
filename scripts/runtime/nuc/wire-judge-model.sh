@@ -4,14 +4,18 @@
 #
 # Idempotent; run on the NUC after deploy. Reverse with REVERT=1.
 #
-#   JUDGE_MODEL  (default nex-n2-mini-nvfp4)
+#   JUDGE_MODEL  REQUIRED (no default — the model id the judge roles use)
 #   ROLES        (default "triage feedback verify_correctness verify_scope verify_risk")
 #   REVERT=1     reassign the roles back to the dynamic local default
 set -euo pipefail
 
-JUDGE_MODEL="${JUDGE_MODEL:-nex-n2-mini-nvfp4}"
+JUDGE_MODEL="${JUDGE_MODEL:-}"
 ROLES="${ROLES:-triage feedback verify_correctness verify_scope verify_risk}"
 REVERT="${REVERT:-0}"
+if [[ -z "$JUDGE_MODEL" && "$REVERT" != "1" ]]; then
+    echo "wire-judge-model: ERROR: JUDGE_MODEL unset — no model configured; nothing changed" >&2
+    exit 1
+fi
 
 cd "$(dirname "$0")/../../.."
 PY="${AIFORGE_PY:-.venv/bin/python}"

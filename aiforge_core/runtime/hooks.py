@@ -126,6 +126,18 @@ def _run_one(hook: dict, event: str, tool: str | None, payload: dict,
         return {"command": cmd, "ok": False, "error": str(exc)}
 
 
+def has_matching(event: str, tool: str | None, cwd: str | None = None) -> bool:
+    """True when *fire* would run at least one hook for this tool. An error
+    reads as True: a caller uses this to skip work a hook might block."""
+    if os.environ.get("AIFORGE_HOOKS_DISABLE") == "1" or event not in _EVENTS:
+        return False
+    try:
+        return any(_matches(h.get("matcher"), tool)
+                   for h in _load_event_hooks(event, cwd))
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def fire(event: str, payload: dict | None = None,
          cwd: str | None = None) -> dict:
     """Run every hook matching *event* and return the outcome.
