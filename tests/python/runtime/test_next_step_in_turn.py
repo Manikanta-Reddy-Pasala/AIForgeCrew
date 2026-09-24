@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import subprocess
+import threading
+import time
 import types
 
 from aiforge_core.runtime import next_step
@@ -249,3 +251,96 @@ def test_an_echo_emits_no_event_at_all(monkeypatch, tmp_path):
         "protect?", "explained it", "/repo"))
 
     assert evs == []
+
+
+# ── off the critical path: the answer and `done` never wait on it ───────
+
+def _final_st():
+    return types.SimpleNamespace(
+        board_used=False, board={}, edits_made=0, readonly_mode=False,
+        action_counts={"read_file": 1},
+        convo=[{"role": "user", "content": "hello"}])
+
+
+def _run_final(monkeypatch, tmp_path):
+    monkeypatch.setattr(_finish, "_fire_stop", lambda *a, **k: None)
+    step = {"type": "final", "text": "the answer"}
+    return list(_finish._handle_final(_final_st(), step, None, False, False,
+                                      False, str(tmp_path), [], ""))
+
+
+def test_a_slow_prediction_does_not_hold_done_back(monkeypatch, tmp_path):
+    """The enhancer can take ~20 s; the turn must end after the grace, not it."""
+    release = threading.Event()
+    monkeypatch.setattr(_finish, "_predict_next_step",
+                        lambda *a, **k: release.wait(10) and _prediction())
+    monkeypatch.setenv("AIFORGE_PREDICT_GRACE_S", "0.2")
+    t0 = time.monotonic()
+    try:
+        evs = _run_final(monkeypatch, tmp_path)
+    finally:
+        release.set()
+    assert time.monotonic() - t0 < 2
+    assert [e["type"] for e in evs] == ["message", "done"]
+
+
+def test_a_late_prediction_is_not_recorded_as_offered(monkeypatch):
+    """Never shown, so it must not suppress the same suggestion next turn."""
+    from aiforge_core.runtime.next_step import _store
+
+    release, finished = threading.Event(), threading.Event()
+
+    def _late(*a, **k):
+        release.wait(10)
+        finished.set()
+        return _prediction()
+
+    monkeypatch.setattr(_finish, "_predict_next_step", _late)
+    monkeypatch.setenv("AIFORGE_PREDICT_GRACE_S", "0.05")
+    before = len(_store._read())
+    assert list(_loop._emit_suggestion("hello", "read_file", "/repo")) == []
+    release.set()
+    assert finished.wait(5)
+    time.sleep(0.1)
+    assert len(_store._read()) == before
+
+
+def test_a_timely_prediction_is_emitted_between_answer_and_done(monkeypatch, tmp_path):
+    from aiforge_core.runtime.next_step import _store
+
+    monkeypatch.setattr(_finish, "_predict_next_step",
+                        lambda *a, **k: _prediction())
+    evs = _run_final(monkeypatch, tmp_path)
+    assert [e["type"] for e in evs] == ["message", "suggestion", "done"]
+    assert evs[1]["id"] == "p-1"
+    assert any(r.get("id") == "p-1" for r in _store._read()), \
+        "an emitted suggestion is recorded as offered"
+
+
+def test_the_prediction_runs_while_the_answer_is_consumed(monkeypatch, tmp_path):
+    """Started when the answer is accepted, not after it is handed over: time
+    the consumer spends on the message comes off the grace."""
+    started = threading.Event()
+
+    def _pred(*a, **k):
+        started.set()
+        return _prediction()
+
+    monkeypatch.setattr(_finish, "_predict_next_step", _pred)
+    monkeypatch.setattr(_finish, "_fire_stop", lambda *a, **k: None)
+    gen = _finish._handle_final(_final_st(), {"type": "final", "text": "x"},
+                                None, False, False, False, str(tmp_path), [], "")
+    assert next(gen)["type"] == "message"
+    assert started.wait(5), "prediction must already be running"
+    assert [e["type"] for e in gen] == ["suggestion", "done"]
+
+
+def test_the_grace_is_env_tunable_and_survives_garbage(monkeypatch):
+    monkeypatch.delenv("AIFORGE_PREDICT_GRACE_S", raising=False)
+    assert _finish._suggest_grace_s() == 1.5
+    monkeypatch.setenv("AIFORGE_PREDICT_GRACE_S", "0.3")
+    assert _finish._suggest_grace_s() == 0.3
+    monkeypatch.setenv("AIFORGE_PREDICT_GRACE_S", "soon")
+    assert _finish._suggest_grace_s() == 1.5
+    monkeypatch.setenv("AIFORGE_PREDICT_GRACE_S", "-4")
+    assert _finish._suggest_grace_s() == 0.0
