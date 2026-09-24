@@ -166,16 +166,24 @@ def _prelude_notices(resume_brief, cmd_expanded):
                "text": f"Expanded /{cmd_expanded} command template."}
 
 
-def _enhance_prompt(_pp, prompt, history, cwd, skip_enhance):
+def _enhance_prompt(_pp, prompt, history, cwd, skip_enhance, session_id=None):
     """The enriched spec for this turn. A skippable follow-up uses the raw prompt;
     otherwise the enhancer folds ``history`` INTO the spec (restoring referent
     resolution — "no, use postgres instead" must resolve against prior turns, not
     fabricate a context-free spec) with recall SCOPED to this session's repo
-    (anti-contamination)."""
+    (anti-contamination). While the enhancer's LLM call runs, the chat agent's
+    session-start memory recall is prefetched (it keys on the raw words, not on
+    this spec)."""
     if skip_enhance:
         return prompt
     from aiforge_core.runtime.chat_agent import _chat_repo_key as _crk2
-    return _pp._enhance(prompt, history=history, cwd=cwd, repo=_crk2(cwd))
+    from aiforge_core.runtime.chat_agent._context import _recall_prefetch
+
+    def _prefetch():
+        _recall_prefetch.start(history, cwd, session_id)
+
+    return _pp._enhance(prompt, history=history, cwd=cwd, repo=_crk2(cwd),
+                        on_context=_prefetch)
 
 
 def _dispatch_agent_route(_rd, _pp, prompt, cwd, session_id, history,
