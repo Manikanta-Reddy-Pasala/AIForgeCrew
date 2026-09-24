@@ -44,7 +44,7 @@ def _wire(monkeypatch, classify_return):
 
     enhance_calls = []
 
-    def fake_enhance(prompt, *, history=None, cwd=None, repo=None):
+    def fake_enhance(prompt, *, history=None, cwd=None, repo=None, **_k):
         enhance_calls.append(prompt)
         return f"SPEC<{prompt}>"
 
@@ -100,7 +100,7 @@ def test_classify_failure_keeps_enhancer_mandatory(app_client, monkeypatch):
 
     enhance_calls = []
 
-    def fake_enhance(prompt, *, history=None, cwd=None, repo=None):
+    def fake_enhance(prompt, *, history=None, cwd=None, repo=None, **_k):
         enhance_calls.append(prompt)
         return f"SPEC<{prompt}>"
 

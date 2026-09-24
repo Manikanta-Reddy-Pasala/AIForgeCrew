@@ -176,7 +176,7 @@ def _events(pc):
             yield {"type": "thought", "role": "enhancer",
                    "text": "Enhancing request + gathering context…"}
         _enriched = _enhance_prompt(_pp, pc.prompt, pc.history, pc.cwd,
-                                    _skip_enhance)
+                                    _skip_enhance, pc.session_id)
     _enriched_history = _fold_enriched_history(
         pc.history, _enriched, pc._resume_brief, pc.prompt, _doc_task)
     if pc.agent_mode == "plan":
