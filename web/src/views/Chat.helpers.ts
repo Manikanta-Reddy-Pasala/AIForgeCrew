@@ -14,9 +14,10 @@ export const menuItem: React.CSSProperties = {
 // ── Elapsed time formatter ────────────────────────────────────────────────────
 
 export function fmtElapsed(sec: number): string {
-  if (sec < 60) return `${sec}s`;
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
+  const whole = Math.max(0, Math.round(sec));
+  if (whole < 60) return `${whole}s`;
+  const m = Math.floor(whole / 60);
+  const s = whole % 60;
   return `${m}m ${String(s).padStart(2, '0')}s`;
 }
 

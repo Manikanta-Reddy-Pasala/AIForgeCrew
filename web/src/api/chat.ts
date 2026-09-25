@@ -38,6 +38,9 @@ export interface ChatMsg {
   content: string;
   steps: any[];
   created_at: string;
+  /** Seconds the turn took, saved with the assistant message. */
+  duration_s?: number | null;
+  elapsedSec?: number;
 }
 
 export interface ChatTraceAction {

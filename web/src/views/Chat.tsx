@@ -979,7 +979,7 @@ export default function Chat() {
       // (simple/plan/team) shows its time-taken after reload, not just live.
       setMessages((res.messages || []).map((m: any) =>
         m.duration_s != null && m.elapsedSec === undefined
-          ? { ...m, elapsedSec: m.duration_s } : m));
+          ? { ...m, elapsedSec: Math.max(0, Math.round(m.duration_s)) } : m));
       // M4 — rehydrate the "Approve & Execute" button if the LAST assistant
       // turn ended with an un-acted plan_ready step (persisted server-side but
       // dropped by toAgentStep). Only the last turn — older plans are stale.
@@ -1462,10 +1462,23 @@ export default function Chat() {
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
-      const finalElapsed = Math.floor((Date.now() - sendStartRef.current) / 1000);
+      const finalElapsed = Math.max(0, Math.round((Date.now() - sendStartRef.current) / 1000));
       setElapsedSec(finalElapsed);
       setLiveTurn(prev => prev ? { ...prev, streaming: false, elapsedSec: finalElapsed } : null);
       if (sessionId != null) await loadSession(sessionId);
+      // The server stores duration_s, and loadSession maps it. If that write
+      // hasn't landed, keep the timer we already measured — including a turn
+      // that stopped to ask a question.
+      setMessages(prev => {
+        const next = [...prev];
+        for (let i = next.length - 1; i >= 0; i--) {
+          if (next[i].role !== 'assistant') continue;
+          if (next[i].elapsedSec == null)
+            next[i] = { ...next[i], elapsedSec: finalElapsed };
+          break;
+        }
+        return next;
+      });
       setLiveTurn(null);
       if (isFirstMessage) {
         await loadSessions(true);
@@ -1497,7 +1510,7 @@ export default function Chat() {
         return;
       }
       reconnectRef.current = 0;
-      const finalElapsed = Math.floor((Date.now() - sendStartRef.current) / 1000);
+      const finalElapsed = Math.max(0, Math.round((Date.now() - sendStartRef.current) / 1000));
       setElapsedSec(finalElapsed);
       // Render a PERSISTENT error turn — even when the failure happened before
       // any stream event created a live turn (e.g. a non-ok POST), so the error
@@ -1885,6 +1898,7 @@ export default function Chat() {
                           text={msg.content}
                           steps={(msg.steps || []).map(toAgentStep).filter((s): s is AgentStep => s !== null)}
                           streaming={false}
+                          elapsedSec={msg.elapsedSec}
                           /* subtasks render in the pinned bottom dock, not inline */
                           captured={(msg.steps || []).filter((s: any) => s?.type === 'captured').map((s: any) => ({
                             id: s.id, category: s.category, scope: s.scope, text: s.text || '',

@@ -215,14 +215,26 @@ def _followup_needs_enhance(prompt: str) -> bool:
 
 def _should_skip_enhance(auto_downgraded, route_pipeline, is_build_task,
                          history, prompt) -> bool:
-    """Whether the Enhancer can be skipped this turn. A short non-build message
-    has nothing to restate: a follow-up already has the history, and a first
-    turn has no prior referents. The enhancer is a model call before the agent
-    speaks. A long message or a build task still enhances."""
-    skip = auto_downgraded and not route_pipeline
-    if skip or route_pipeline or is_build_task:
-        return skip
-    return not _followup_needs_enhance(prompt)
+    """Whether the Enhancer can be skipped this turn.
+
+    A short message the agent will answer or ask about is one model call —
+    the restatement is the pause before it speaks, and a classifier that
+    labelled the remark a build does not change that. A real build (the
+    regex, not that label), a long prompt, and the pipeline route still
+    enhance. The pipeline calls ``_enhance`` on its own and keeps the
+    2048-token budget; this gate only covers the single-agent path.
+    ``is_build_task`` stays in the signature so callers that already
+    computed it don't have to change; a short non-build ignores it."""
+    # A downgrade off the pipeline does not by itself skip the restatement.
+    # A long prompt and a real build still enhance; only a short non-build
+    # (direct_reply) does. The pipeline enhances on its own at 2048 tokens.
+    del history, is_build_task, auto_downgraded
+    if route_pipeline:
+        return False
+    if _followup_needs_enhance(prompt):
+        return False
+    from aiforge_core.runtime.chat_router import direct_reply
+    return direct_reply(prompt or "")
 
 
 def _plan_mode_route(_pp, _enriched, _enriched_history, cwd, role, session_id,
@@ -290,14 +302,13 @@ def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
         except Exception:  # noqa: BLE001
             greenfield = True
     cat = None
-    # A quick turn is one doer: no classifier. A short simple-mode message
-    # that the regex does not call a build is also one doer — the classifier
-    # is a model call (5–15s) whose only job here is to catch a build the
-    # regex missed or to un-classify a false one. Short chat does neither.
+    # A quick turn is one doer: no classifier. A short message is also one
+    # doer — the classifier is a model call (5–15s) before the agent speaks,
+    # and on a short question it was one of the three calls the turn paid
+    # for. A long prompt still classifies, so a build the regex missed is
+    # still caught. Team mode classifies too: that route is the pipeline.
     from aiforge_core.runtime import chat_router as _cr
-    _needs_class = (
-        team or _cr.regex_build_fallback(prompt or "")
-        or len((prompt or "").strip()) > 500)
+    _needs_class = team or not _cr.is_short_prompt(prompt or "")
     # An approved plan is carried out by this agent. Classifying it as a
     # document sends it down the read-only research path, so the plan's
     # edits never happen.

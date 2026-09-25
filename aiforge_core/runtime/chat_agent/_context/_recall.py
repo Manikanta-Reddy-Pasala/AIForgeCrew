@@ -263,10 +263,22 @@ def _memory_recall(cwd: str, query: str, limit: int = 6,
     hits = _recall_hits(cwd, q, limit, session_id)
     if not hits:
         return ""
-    # Map→summarize: many scattered hits → ONE compact briefing (LLM). Empty
-    # (disabled / too few / model down) falls back to the raw ranked list.
-    body = _summarised(q, hits) or _ranked_lines(hits, limit)
+    # Map→summarize is its own model call (the learner role). A short message
+    # already has the ranked hits; folding them was one of the calls a
+    # question paid before the agent spoke. A long prompt still folds.
+    body = _ranked_lines(hits, limit)
+    if not _skip_recall_summary(q):
+        body = _summarised(q, hits) or body
     return (_RECALL_PREAMBLE + body) if body else ""
+
+
+def _skip_recall_summary(query: str) -> bool:
+    """A short message does not spend a model call compressing memory."""
+    try:
+        from aiforge_core.runtime.chat_router import is_short_prompt
+        return is_short_prompt(query)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _chat_recall_line(h: dict, drop_session: "int | None") -> "str | None":

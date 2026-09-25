@@ -139,13 +139,16 @@ def _emit_loop_prelude(st):
     # ACTION/ARGS_JSON protocol). Opt out of the banner: AIFORGE_CHAT_NATIVE_BANNER=0.
     if st.native_on and os.environ.get("AIFORGE_CHAT_NATIVE_BANNER", "1") not in ("0", "false"):
         try:
-            from ._catalog_gate import gate_schemas
-            from ._tools._schemas import NATIVE_TOOL_SCHEMAS, filter_native
+            from ._native import select_native_tools
             _mode = ("plan" if st.plan_mode else
                      "analyze" if st.analyze_mode else "act")
-            _ntools = len(filter_native(
-                gate_schemas(NATIVE_TOOL_SCHEMAS), mode=_mode,
-                text=getattr(st, "goal", "") or ""))
+            # The same list the native call sends. Counting the gated catalog
+            # here reported ~63 tools while the model was offered the short
+            # core list — or the reverse, when the system prompt's "jira" /
+            # "https://" lines were treated as the user naming those systems.
+            _ntools = len(select_native_tools(
+                getattr(st, "convo", None), mode=_mode,
+                builder=getattr(st, "builder", "") or ""))
         except Exception:  # noqa: BLE001
             _ntools = 0
         yield {"type": "thought", "role": "system",
