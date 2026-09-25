@@ -140,8 +140,12 @@ def _emit_loop_prelude(st):
     if st.native_on and os.environ.get("AIFORGE_CHAT_NATIVE_BANNER", "1") not in ("0", "false"):
         try:
             from ._catalog_gate import gate_schemas
-            from ._tools._schemas import NATIVE_TOOL_SCHEMAS
-            _ntools = len(gate_schemas(NATIVE_TOOL_SCHEMAS))   # what is sent
+            from ._tools._schemas import NATIVE_TOOL_SCHEMAS, filter_native
+            _mode = ("plan" if st.plan_mode else
+                     "analyze" if st.analyze_mode else "act")
+            _ntools = len(filter_native(
+                gate_schemas(NATIVE_TOOL_SCHEMAS), mode=_mode,
+                text=getattr(st, "goal", "") or ""))
         except Exception:  # noqa: BLE001
             _ntools = 0
         yield {"type": "thought", "role": "system",

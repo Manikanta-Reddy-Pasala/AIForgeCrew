@@ -347,18 +347,65 @@ def _log_native_step(calls: list) -> None:
         log.info("native content step (no tool_call)")
 
 
-def make_native_complete_fn():
+# A user-role message the loop wrote, not the person. The body after the
+# header (pytest's docs URL, a path named ticket) must not add tools either.
+# A steer merged on with a blank line is the person's words and is kept.
+_HARNESS_SEGMENT = re.compile(
+    r"^(?:OBSERVATION:|\[loop guard|\[(?:[^\]]*not the user|system reminder)"
+    r"[^\]]*\]|You (?:narrated|signalled|described) )")
+# A steer, or the correction typed when a tool call is rejected. Both are
+# the person's words and are merged onto the observation with a blank line.
+_USER_SEGMENT = (
+    "[NEW MESSAGE FROM THE USER",
+    "The user rejected the last action",
+)
+
+
+def _convo_text(convo) -> str:
+    """The user's own words, including a mid-run steer.
+
+    Tool results, loop-guard notes, and automated checks are stored as user
+    messages. A URL or the word ticket inside one of those must not add web
+    or Jira tools. Once a harness header starts, the rest of that message is
+    its body, until a steer or a rejection correction."""
+    parts = []
+    for message in convo or []:
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content") or ""
+        if isinstance(content, list):
+            content = "\n\n".join(
+                str(part.get("text") or "") for part in content
+                if isinstance(part, dict))
+        dropping = False
+        for segment in str(content).split("\n\n"):
+            stripped = segment.lstrip()
+            if not stripped:
+                continue
+            if stripped.startswith(_USER_SEGMENT):
+                dropping = False
+                parts.append(segment)
+                continue
+            if dropping or _HARNESS_SEGMENT.match(stripped):
+                dropping = True
+                continue
+            parts.append(segment)
+    return "\n".join(parts)
+
+
+def make_native_complete_fn(mode: str = "act", builder: str = ""):
     """A drop-in ``complete_fn(role, convo) -> str`` that calls the model with
-    native tools and returns the adapted text step. Passing the CORE tool schemas
-    natively while the full tool catalog stays in the system prompt is
-    deliberate: core coding tools get reliable native args, the long tail is
-    still callable via a text ACTION in the same turn (hybrid)."""
+    native tools and returns the adapted text step. The core tool schemas go
+    natively; the long tail stays in the system prompt and is still callable
+    as a text ACTION, and is added natively when the message names that
+    system. A steer can add tools. It does not remove them."""
     from aiforge_core.llm import client
-    from ._tools._schemas import NATIVE_TOOL_SCHEMAS
+    from ._tools._schemas import NATIVE_TOOL_SCHEMAS, filter_native
 
     queued: list[str] = []
     skipped = [0]
-    tools: list[dict] = []   # gated once per turn, on the first call
+    gated: list[dict] = []    # integration gate, once per turn
+    tools: list[dict] = []    # grows if a later message names another system
 
     def take_queued() -> "tuple[list[str], int]":
         """The read-only calls the last reply batched after its first one, and
@@ -376,13 +423,19 @@ def make_native_complete_fn():
         model = _model_for(role)
         if _NATIVE_CACHE.get(model) is False:
             return client.complete(role, convo)
-        if not tools:
+        if not gated:
             try:
                 from ._catalog_gate import gate_schemas
-                tools[:] = gate_schemas(NATIVE_TOOL_SCHEMAS)
+                gated[:] = gate_schemas(NATIVE_TOOL_SCHEMAS)
             except Exception as exc:  # noqa: BLE001 — never break a turn
                 log.debug("schema gate failed, sending all: %s", exc)
-                tools[:] = NATIVE_TOOL_SCHEMAS
+                gated[:] = list(NATIVE_TOOL_SCHEMAS)
+        have = {((s.get("function") or {}).get("name")) for s in tools}
+        for schema in filter_native(gated, mode=mode, text=_convo_text(convo),
+                                    builder=builder):
+            name = (schema.get("function") or {}).get("name")
+            if name not in have:
+                tools.append(schema)
         try:
             msg = client.complete_raw(
                 role, convo, tools=tools, tool_choice="auto")

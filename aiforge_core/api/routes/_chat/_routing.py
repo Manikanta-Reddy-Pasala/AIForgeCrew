@@ -263,7 +263,8 @@ def _plan_mode_route(_pp, _enriched, _enriched_history, cwd, role, session_id,
 
 
 def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
-                       history, quick=False, session_id=None):
+                       history, quick=False, session_id=None,
+                       single_agent=False):
     """Gather the (side-effecting) inputs to the task-type router and return its
     decision. The heavy which-path decision is a PURE function in chat_router;
     here we only probe parallel capability, greenfield-ness, follow-up-ness, the
@@ -297,7 +298,10 @@ def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
     _needs_class = (
         team or _cr.regex_build_fallback(prompt or "")
         or len((prompt or "").strip()) > 500)
-    if fresh and not quick and _needs_class:
+    # An approved plan is carried out by this agent. Classifying it as a
+    # document sends it down the read-only research path, so the plan's
+    # edits never happen.
+    if fresh and not quick and _needs_class and not single_agent:
         try:
             from aiforge_core.runtime import task_router as _tr
             cat = _tr.classify_task(prompt, history=history, cwd=cwd,
@@ -317,8 +321,8 @@ def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
         # A QUICK turn is one doer with a step cap by request — never escalated
         # into the build pipeline because its text (e.g. a diff to explain)
         # happens to read like "create the user through the api".
-        auto_escalate=(not quick) and os.environ.get("AIFORGE_AUTO_ESCALATE", "1")
-        not in ("0", "false"))
+        auto_escalate=(not quick) and (not single_agent)
+        and os.environ.get("AIFORGE_AUTO_ESCALATE", "1") not in ("0", "false"))
 
 
 def _run_capture_pass(_rc, prompt, repo, cwd, session_id):

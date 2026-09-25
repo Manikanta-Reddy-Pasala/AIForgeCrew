@@ -23,7 +23,7 @@ from ._progress import progress_fields
 from ._tasks import seed_board
 
 
-def _resolve_complete_fn(complete_fn, role):
+def _resolve_complete_fn(complete_fn, role, mode="act", builder=""):
     """Resolve the completion fn: when the caller injected none, use the default
     and swap in native OpenAI tool-calling if the model/role supports it. Returns
     (complete_fn, native_on)."""
@@ -40,7 +40,8 @@ def _resolve_complete_fn(complete_fn, role):
         try:
             from .._native import make_native_complete_fn, native_tools_enabled
             if native_tools_enabled(role):
-                complete_fn = make_native_complete_fn()
+                complete_fn = make_native_complete_fn(
+                    mode=mode or "act", builder=builder or "")
                 _native_on = True
         except Exception:  # noqa: BLE001 — native must never break the turn
             pass
@@ -119,7 +120,8 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     """Assemble everything the ReAct loop needs (native detection, mode/read-only
     flags, scope allowlist, budget-capped convo, cap/deadline/extension budgets,
     the request meter and every per-turn counter) into one st namespace."""
-    complete_fn, _native_on = _resolve_complete_fn(complete_fn, role)
+    complete_fn, _native_on = _resolve_complete_fn(
+        complete_fn, role, mode, builder)
     from aiforge_core.runtime import chat_cancel
     chat_cancel.set_active(session_id)
     _mode = (mode or "act").lower()

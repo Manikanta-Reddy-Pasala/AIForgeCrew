@@ -232,6 +232,75 @@ def test_email_counts_as_configured_once_smtp_or_imap_has_a_host(monkeypatch):
     assert "email" not in configured_integrations()
 
 
+def test_act_mode_offers_the_core_tools_not_every_integration():
+    from aiforge_core.runtime.chat_agent._tools._schemas import (
+        NATIVE_TOOL_SCHEMAS, filter_native)
+    names = _names(filter_native(NATIVE_TOOL_SCHEMAS, mode="act",
+                                 text="what is 2+2"))
+    assert "file_read" in names and "file_patch" in names
+    assert "run_command" in names
+    assert not any(n.startswith("jira_") for n in names)
+    assert len(names) < 25
+
+
+def test_naming_jira_adds_it_and_plan_mode_stays_read_only():
+    from aiforge_core.runtime.chat_agent._tools._schemas import (
+        NATIVE_TOOL_SCHEMAS, filter_native)
+    named = _names(filter_native(NATIVE_TOOL_SCHEMAS, mode="act",
+                                 text="show my jira tickets"))
+    assert any(n.startswith("jira_") for n in named)
+    plan = _names(filter_native(NATIVE_TOOL_SCHEMAS, mode="plan",
+                                text="plan the jira change"))
+    assert "file_read" in plan and "jira_search" in plan
+    assert "file_write" not in plan and "run_command" not in plan
+    assert "jira_create" not in plan
+
+
+def test_a_read_file_does_not_add_tools_but_a_steer_does():
+    from aiforge_core.runtime.chat_agent import _native
+    from aiforge_core.runtime.chat_agent._tools._schemas import (
+        NATIVE_TOOL_SCHEMAS, filter_native)
+    text = _native._convo_text([
+        {"role": "user", "content": "fix the typo"},
+        {"role": "user", "content":
+            'OBSERVATION: {"text": "see https://example.com and a ticket"}'},
+        {"role": "user", "content":
+            "OBSERVATION: {}\n\n[NEW MESSAGE FROM THE USER]\ncheck jira"},
+        {"role": "user", "content":
+            "[automated verification — not the user] tests failed.\n\n"
+            "TEST OUTPUT:\n-- Docs: https://docs.pytest.org/en/stable/\n"
+            "tests/ticket/test_x.py"},
+        {"role": "user", "content":
+            "[automated syntax check — not the user] syntax error:\n"
+            'requests.get("https://api.x.com")'},
+    ])
+    assert "https://" not in text and "ticket" not in text and "jira" in text
+    names = _names(filter_native(NATIVE_TOOL_SCHEMAS, mode="act", text=text))
+    assert not any(n.startswith("web_") for n in names)
+    assert any(n.startswith("jira_") for n in names)
+    rejected = _native._convo_text([{
+        "role": "user",
+        "content": (
+            "OBSERVATION: wrote 0 bytes\n\n"
+            "The user rejected the last action and gave this correction: "
+            "check jira first\n"
+            "Adjust accordingly and CONTINUE the current task."
+        ),
+    }])
+    assert "jira" in rejected
+    rejected_names = _names(filter_native(
+        NATIVE_TOOL_SCHEMAS, mode="act", text=rejected))
+    assert any(n.startswith("jira_") for n in rejected_names)
+
+
+def test_a_job_builder_is_offered_its_finalize_tool():
+    from aiforge_core.runtime.chat_agent._tools._schemas import (
+        NATIVE_TOOL_SCHEMAS, filter_native)
+    names = _names(filter_native(
+        NATIVE_TOOL_SCHEMAS, mode="act", text="a nightly job", builder="job"))
+    assert "create_job_script" in names
+
+
 def test_the_gate_runs_once_per_turn(monkeypatch):
     from aiforge_core.llm import client
     from aiforge_core.runtime.chat_agent import _catalog_gate, _native

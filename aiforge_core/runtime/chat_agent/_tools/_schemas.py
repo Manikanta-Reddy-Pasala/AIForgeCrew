@@ -12,6 +12,8 @@ reply dispatches through the exact same path as a text ACTION.
 """
 from __future__ import annotations
 
+import re
+
 # Compact type DSL → JSON-schema property fragment.
 _T = {
     "s": {"type": "string"},
@@ -395,3 +397,77 @@ def _build() -> list[dict]:
 
 NATIVE_TOOL_SCHEMAS: list[dict] = _build()
 NATIVE_TOOL_NAMES = frozenset(s["function"]["name"] for s in NATIVE_TOOL_SCHEMAS)
+
+# What a small model can actually choose among. Claude Code and Cursor keep
+# about this many tools in front of the agent. The rest of the registry stays
+# in the prompt and is still callable as a text ACTION; it is added to the
+# native list only when the message names that system.
+_CORE_ACT = frozenset({
+    "plan_progress",
+    "file_read", "read_files", "read_lines", "list_dir", "find", "grep",
+    "file_patch", "multi_edit", "file_write", "file_create", "editor",
+    "run_command", "run_tests",
+    "memory_lookup", "memory_write",
+    "git_status", "git_diff", "repo_map",
+})
+_CORE_READ = frozenset({
+    "plan_progress",
+    "file_read", "read_files", "read_lines", "list_dir", "find", "grep",
+    "memory_lookup", "git_status", "git_diff", "repo_map",
+    "search_chat_sessions",
+})
+_FAMILY_CUE = (
+    ("jira", re.compile(r"\bjira\b|\bticket\b|\bjql\b", re.I)),
+    ("confluence", re.compile(r"\bconfluence\b|\bwiki\b", re.I)),
+    ("gitlab", re.compile(r"\bgitlab\b", re.I)),
+    ("email", re.compile(r"\bemail\b|\bsmtp\b|\binbox\b", re.I)),
+    ("web", re.compile(r"https?://|\bweb_fetch\b|\bweb_crawl\b", re.I)),
+)
+_FAMILY_PREFIX = {
+    "jira": "jira_", "confluence": "confluence_", "gitlab": "gitlab_",
+    "email": "email_", "web": "web_",
+}
+_SHARED_WHEN = {
+    "jira": ("context_gather", "set_integration_default"),
+    "confluence": ("context_gather", "set_integration_default"),
+}
+
+
+def _named_families(text: str) -> set[str]:
+    return {name for name, cre in _FAMILY_CUE if cre.search(text or "")}
+
+
+def _schema_name(schema: dict) -> str:
+    return ((schema.get("function") or {}).get("name") or "")
+
+
+def filter_native(schemas: list[dict], *, mode: str = "act",
+                  text: str = "", builder: str = "") -> list[dict]:
+    """The native schemas for this turn.
+
+    Act mode gets the core coding tools. Plan and analyze get the read-only
+    core, so the model is not invited to call a write that the loop will
+    reject. Naming Jira, Confluence, GitLab, email, or a URL adds that
+    family's tools (read-only ones, in plan mode)."""
+    readonly = (mode or "act").lower() in ("plan", "analyze")
+    keep = set(_CORE_READ if readonly else _CORE_ACT)
+    if builder and not readonly:
+        from .._registry import _BUILDER_FINALIZE_TOOL
+        fin = _BUILDER_FINALIZE_TOOL.get(builder)
+        if fin:
+            keep.add(fin)
+    families = _named_families(text)
+    allowed_read: set[str] | None = None
+    if readonly:
+        from .._registry import _READONLY_TOOLS
+        allowed_read = set(_READONLY_TOOLS) | {"plan_progress"}
+    for schema in schemas:
+        name = _schema_name(schema)
+        for fam in families:
+            prefix = _FAMILY_PREFIX.get(fam, "")
+            shared = name in _SHARED_WHEN.get(fam, ())
+            if prefix and (name.startswith(prefix) or shared):
+                if allowed_read is not None and name not in allowed_read:
+                    continue
+                keep.add(name)
+    return [s for s in schemas if _schema_name(s) in keep]

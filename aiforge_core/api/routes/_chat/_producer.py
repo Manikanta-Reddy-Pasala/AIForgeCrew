@@ -151,7 +151,9 @@ def _events(pc):
     _rd = _decide_chat_route(_pp, pc.prompt, pc.agent_mode, pc.team,
                              pc._parallel_team, pc.cwd, pc.history,
                              quick=bool(getattr(pc.body, "quick", False)),
-                             session_id=pc.session_id)
+                             session_id=pc.session_id,
+                             single_agent=bool(getattr(
+                                 pc.body, "single_agent", False)))
     if _turn_was_stopped(pc.session_id):
         yield from _stopped_turn()
         return

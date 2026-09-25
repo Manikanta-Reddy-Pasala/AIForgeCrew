@@ -123,18 +123,41 @@ function mergeUsage(prev: LiveTurn, evt: any): LiveTurn {
 // The POST body for a send — mode/quick/resume/builder/edit flags folded in.
 function buildSendPayload(
   q: string, runMode: ChatMode, builder: unknown, editFrom: number | null,
-  opts: { resume?: boolean } | undefined, reviewEdits: boolean, quickMode: boolean,
+  opts: { resume?: boolean; singleAgent?: boolean } | undefined,
+  reviewEdits: boolean, quickMode: boolean,
 ): Record<string, unknown> {
   return {
     content: q, mode: builder ? 'simple' : runMode, review_edits: reviewEdits,
     // Quick only applies to the single-agent modes; Team runs its own pipeline.
-    quick: runMode !== 'team' ? quickMode : false,
+    // An approved plan is real work. The Quick toggle must not cap it at
+    // a handful of steps the way it would a one-line question.
+    quick: (runMode !== 'team' && !opts?.singleAgent) ? quickMode : false,
     // Resume a stopped turn rather than redo it. The server also infers this
     // when the same words are re-sent; the flag covers a rephrase.
     ...(opts?.resume ? { resume: true } : {}),
+    ...(opts?.singleAgent ? { single_agent: true } : {}),
     ...(builder ? { builder } : {}),
     ...(editFrom != null ? { edit_from_message_id: editFrom } : {}),
   };
+}
+
+// An approved plan is carried out as a simple single-agent turn. Retry and
+// "rerun fresh" resend the last user text with the current mode toggle, which
+// is still Plan, so without this they re-plan instead of continuing the work.
+const SINGLE_AGENT_TURN = 'aiforge.singleAgentTurn.';
+
+function rememberSingleAgentTurn(sessionId: number, on: boolean) {
+  try {
+    const key = SINGLE_AGENT_TURN + sessionId;
+    if (on) localStorage.setItem(key, '1');
+    else localStorage.removeItem(key);
+  } catch { /* private mode */ }
+}
+
+function lastTurnWasApprovedPlan(sessionId: number | null): boolean {
+  if (sessionId == null) return false;
+  try { return localStorage.getItem(SINGLE_AGENT_TURN + sessionId) === '1'; }
+  catch { return false; }
 }
 
 // Throw a descriptive error for a non-ok send POST (detail from JSON, then text).
@@ -1349,7 +1372,7 @@ export default function Chat() {
   // ── SSE streaming send ────────────────────────────────────────────────────
 
   async function send(overrideContent?: string, overrideMode?: ChatMode,
-                      opts?: { resume?: boolean }) {
+                      opts?: { resume?: boolean; singleAgent?: boolean }) {
     const q = (overrideContent ?? input).trim();
     if (!q || busy) return;
     // A suggestion is about the turn that just ended. Leaving it under a new
@@ -1389,6 +1412,12 @@ export default function Chat() {
       if (newId === null) return;
       sessionId = newId;
     }
+    // A reply or retry while the approved plan is being carried out stays on
+    // this agent. Choosing Plan or Team again ends that.
+    const carryPlan = !opts?.singleAgent && runMode === 'simple'
+      && lastTurnWasApprovedPlan(sessionId);
+    if (carryPlan) opts = { ...opts, singleAgent: true };
+    rememberSingleAgentTurn(sessionId, !!opts?.singleAgent);
 
     // Optimistically append user message
     const optimisticUser: ChatMsg = {
@@ -1555,13 +1584,21 @@ export default function Chat() {
   // job instead of starting it again.
   function regenerate() {
     if (busy || !lastUserMsg?.content) return;
-    send(lastUserMsg.content, undefined, { resume: lastTurnStopped });
+    const carry = lastTurnWasApprovedPlan(activeId) && chatMode === 'simple';
+    send(lastUserMsg.content, carry ? 'simple' : undefined, {
+      resume: lastTurnStopped,
+      ...(carry ? { singleAgent: true } : {}),
+    });
   }
   // The escape hatch: the partial work may be junk the user wants abandoned.
   // Without this, every route back to "run this again" meant "continue this".
   function rerunFresh() {
     if (busy || !lastUserMsg?.content) return;
-    send(lastUserMsg.content, undefined, { resume: false });
+    const carry = lastTurnWasApprovedPlan(activeId) && chatMode === 'simple';
+    send(lastUserMsg.content, carry ? 'simple' : undefined, {
+      resume: false,
+      ...(carry ? { singleAgent: true } : {}),
+    });
   }
   // M2: pull the last user message back into the composer to edit + resend.
   function editLastUser() {
@@ -2211,15 +2248,15 @@ export default function Chat() {
                   );
                 })()}
               </div>
-              {/* Plan→approve→execute (Gap B): one-click run the approved plan
-                  as a team build. */}
+              {/* Plan→approve→execute: the same agent carries the plan out.
+                  A team run is what the user picks in the mode toggle. */}
               {planReady && !busy && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8,
                               marginTop: 8, padding: '8px 10px',
                               border: '1px solid var(--accent, #6366f1)',
                               borderRadius: 6, background: 'var(--bg-2)' }}>
                   <span className="small muted" style={{ flex: 1 }}>
-                    Plan ready. Approve to execute it as a team build.
+                    Plan ready. Approve and the agent carries it out.
                   </span>
                   <button type="button" onClick={() => {
                             // FE3: remember the dismissal so loadSession (reload /
@@ -2230,8 +2267,11 @@ export default function Chat() {
                             setPlanReady(null);
                           }} className="ghost"
                           style={{ whiteSpace: 'nowrap' }}>Dismiss</button>
-                  <button type="button" onClick={() => send(planReady.spec, 'team')}
-                          title="Run the approved plan as a full team build"
+                  <button type="button" onClick={() => {
+                            setChatMode('simple');
+                            send(planReady.spec, 'simple', { singleAgent: true });
+                          }}
+                          title="Carry out this plan with the agent"
                           style={{ whiteSpace: 'nowrap' }}>
                     ✓ Approve &amp; Execute
                   </button>
