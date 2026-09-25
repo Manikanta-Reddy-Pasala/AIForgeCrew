@@ -46,6 +46,11 @@ def _verify_on_final(st, step, cwd, plan_mode, builder):
     # improvement) accept the HONEST still-failing final rather than
     # churn. This gives simple/doer runs the pipeline's no-false-green
     # guarantee. Opt out: AIFORGE_CHAT_VERIFY_ON_FINAL=0.
+    # The agent already ran this suite and the tree has not changed since.
+    # Running it again, then again after the turn, is the triple test run.
+    if getattr(st, "last_green_fp", None):
+        if _worktree_fingerprint(cwd) == st.last_green_fp:
+            return None
     if (not plan_mode and not builder and st.edits_made > 0
             and st.verify_rounds < _verify_max_rounds()
             and _verify_on_final_enabled()):
@@ -169,29 +174,8 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
                        "continuing"}
         st.convo.append({"role": "user", "content": unfinished_reminder(st.board)})
         return "continue"
-    # Multi-ask completeness gate (once): before accepting FINAL on a
-    # multi-part message, make the model self-check its answer against
-    # the checklist — the #1 simple-mode complaint is answering ask 1
-    # and silently dropping the rest.
-    if _asks and not st.multiask_checked and not builder:
-        st.multiask_checked = True
-        # The answer the user just watched stream in is set aside for the
-        # re-check; without this step it vanished from the chat until (and
-        # unless) the model sent it again.
-        if step.get("text"):
-            yield {"type": "thought", "text": step["text"]}
-        yield {"type": "thought", "role": "system",
-               "text": f"✔ checking all {len(_asks)} parts of the "
-                       "request are addressed…"}
-        st.convo.append({"role": "user", "content":
-            "[completeness check — not the user] The user's message "
-            f"contained {len(_asks)} distinct asks:\n"
-            + "\n".join(f"{i + 1}. {a}" for i, a in enumerate(_asks))
-            + "\nRe-read your answer above. If EVERY ask is addressed, "
-            "resend it unchanged as FINAL. If any is missing, do the "
-            "missing work now (ACTIONs as needed) and produce ONE "
-            "complete FINAL covering all parts, numbered."})
-        return "continue"
+    # A finished answer is the answer. The task board above is the check,
+    # and it does not ask the model to resend the same text as FINAL.
     return None
 
 
@@ -362,14 +346,42 @@ def _ready_suggestion(handle):
     yield ev
 
 
+def _endpoint_one_slot() -> bool:
+    """A loopback model serves one request at a time. Skip the extra call."""
+    try:
+        from aiforge_core.llm.router import is_local_endpoint
+        return bool(is_local_endpoint("chat"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _emit_ready_suggestion(handle):
+    """Yield a suggestion only when it has already finished. Never waits."""
+    if handle is None or not handle[0].is_set():
+        return
+    _ready, _cancel, box, message, cwd, _t0 = handle
+    p = box.get("p")
+    if p is None:
+        return
+    try:
+        from aiforge_core.runtime import next_step
+        next_step.remember(p, {"message": message,
+                               "repo": _repo_name(str(cwd or ""))})
+        ev = p.as_event()
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("next_step: suggestion skipped: %s", exc)
+        return
+    if ev:
+        yield ev
+
+
 def _emit_suggestion(message: str, did: str, cwd):
     """Yield at most one ``suggestion`` event. Never raises.
 
-    Emitted AFTER the answer and before ``done`` — the same ordering
-    ``plan_ready`` uses. The user reads what they asked for either way, so a
-    prediction that is slow, wrong or broken costs them nothing: it is waited
-    for at most ``AIFORGE_PREDICT_GRACE_S`` (default: the prediction timeout),
-    then dropped.
+    Emitted AFTER ``done`` when the prediction is already finished. A
+    prediction that is slow, wrong or broken costs the user nothing: it is
+    waited for at most ``AIFORGE_PREDICT_GRACE_S`` (default: the prediction
+    timeout), then dropped.
     """
     yield from _collect_suggestion(_start_suggestion(message, did, cwd))
 
@@ -377,7 +389,7 @@ def _emit_suggestion(message: str, did: str, cwd):
 def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
                   cwd, _asks, _wt_fp0):
     """Handle a FINAL step: builder-not-finalized nudge, implicit-final doer
-    nudge, multi-ask completeness gate, claim-vs-reality guard, and the
+    nudge, task-board gate, claim-vs-reality guard, and the
     progress-gated verify→fix loop — then accept (fire stop + emit the answer).
     Returns "continue"/"return"."""
     _sig = yield from _final_nudges(st, step, builder, strict_finish, _asks)
@@ -399,15 +411,24 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
                 continue            # the model said so; don't overwrite it
             yield {"type": "subtask_update", "slug": _slug, "status": "done"}
     _fire_stop("final", cwd)
-    # Started before the answer is yielded so the prediction runs while the
-    # consumer streams/persists it; only the remainder of the grace is waited.
-    _sugg = _start_suggestion(_last_user_message(st), _turn_summary(st), cwd)
+    if plan_mode:
+        try:
+            from .._pause import save as _save_pause
+            _save_pause(getattr(st, "session_id", None), st.convo,
+                        asked=bool(getattr(st, "plan_asked", False)))
+        except Exception:  # noqa: BLE001
+            pass
+    # done goes out before any next-step prediction. A one-slot local
+    # endpoint skips that extra call entirely so it cannot hold the model.
+    _sugg = None if _endpoint_one_slot() else _start_suggestion(
+        _last_user_message(st), _turn_summary(st), cwd)
     try:
         yield {"type": "message", "text": _strip_reasoning_prefix(step["text"])}
-        yield from _collect_suggestion(_sugg)
-    finally:                # also when the consumer closes us mid-answer
+        yield {"type": "done"}
+        if _sugg is not None and _sugg[0].is_set():
+            yield from _emit_ready_suggestion(_sugg)
+    finally:
         _cancel_suggestion(_sugg)
-    yield {"type": "done"}
     return "return"
 
 

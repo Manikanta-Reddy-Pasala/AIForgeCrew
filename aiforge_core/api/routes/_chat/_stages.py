@@ -103,10 +103,10 @@ def _post_run_events(prompt, cwd, agent_mode, simple_sha, changes_only=False):
     on not-read-only ONLY — a doc/config edit still shows its diff; _emit_changes
     self-guards an empty diff)."""
     readonly = _looks_like_analysis(prompt)
-    if (not changes_only and agent_mode != "plan" and not readonly and _turn_wrote_source(cwd)
-            and os.environ.get("AIFORGE_CHAT_INTEGRATION_TEST", "1")
-            not in ("0", "false") and _worth_verifying(cwd)):
-        yield from _integration_verify_events(cwd)
+    # Simple mode does not start a second repair agent after the turn. That
+    # agent held the session (the next message got 409) and re-ran a suite
+    # the chat agent had already run. _verify_on_final still feeds a real
+    # new failure back to the same agent. The changes diff stays.
     if simple_sha and not readonly:
         try:
             from aiforge_core.runtime.parallel_subtasks import _emit_changes

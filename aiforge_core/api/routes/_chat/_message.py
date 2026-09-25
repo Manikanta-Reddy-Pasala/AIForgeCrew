@@ -52,6 +52,11 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     Auto-titles a fresh session. The model is the session's role
     (model picker)."""
     from aiforge_core.runtime import chat_store
+    try:
+        from aiforge_core.llm.interactive_gate import note_interactive
+        note_interactive()
+    except Exception:  # noqa: BLE001
+        pass
 
     session = chat_store.get_session(session_id)
     if not session:

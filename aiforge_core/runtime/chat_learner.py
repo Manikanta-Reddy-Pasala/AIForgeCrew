@@ -157,6 +157,8 @@ def _distil_facts_llm(messages, prompt, repo, session_id, event_time, learner_pe
             timeout_s=_int_env("AIFORGE_CHAT_LEARNER_TIMEOUT_S", 120),
         )
     except Exception as exc:  # noqa: BLE001
+        if "cancel" in str(exc).lower():
+            return None, False
         log.debug("chat_learner llm failed: %s", exc)
         raw, _llm_down = "", True
         # DETERMINISTIC FALLBACK: when the distil LLM is down (flaky endpoint), an
@@ -216,6 +218,8 @@ def learn_from_chat(*, prompt: str, final_text: str, steps: list | None,
             "one-off chatter.\n\n" + _transcript(prompt, final_text, steps)},
     ]
     raw, _llm_down = _distil_facts_llm(messages, prompt, repo, session_id, event_time, learner_persist)
+    if raw is None:
+        return {"ok": False, "skipped": "preempted"}
 
     facts = learner_persist._coerce_facts(_extract_json(raw))
     # GROUND-TRUTH SOLUTION: if this turn actually changed the repo (edit tools

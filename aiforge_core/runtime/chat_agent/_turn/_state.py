@@ -51,7 +51,7 @@ def _resolve_complete_fn(complete_fn, role, mode="act", builder=""):
 
 #: Blocks the server appends to the user's message before the loop sees it.
 _ADDED_BLOCKS = ("\n\n---\n[Interpreted request", "\n\n---\n[RESUME]",
-                 "\n\n---\n[Deliverable")
+                 "\n\n---\n[Deliverable", "\n\n---\n[Already read")
 
 
 def _turn_goal(messages) -> str:
@@ -174,6 +174,9 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         plan_mode=plan_mode, analyze_mode=analyze_mode, builder=builder,
         strict_finish=strict_finish, session_id=session_id, native=_native_on,
         unlimited=_unlimited)
+    from .._pause import inject as _inject_pause
+    from .._pause import take as _take_pause
+    _plan_asked = _inject_pause(convo, _take_pause(session_id))
 
     # OrderedDict, not dict: the prune in ``_action`` needs least-recently-SEEN order,
     # which only move_to_end can maintain (see its call site).
@@ -284,8 +287,9 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         user_roots=_user_roots,
         dropped_playbooks=_dropped_playbooks, native_on=_native_on,
         pending_steps=[], batch_skipped=0, batch_mark=len(convo),
-        batch_unread=False, early_reads={}, board=seed_board(_asks),
-        board_used=False,
+        batch_unread=False, early_reads={},
+        board=seed_board(_asks, _turn_goal(messages)),
+        board_used=False, plan_asked=_plan_asked, last_green_fp=None,
         board_nudges=0, board_closed_mark=None, unlimited=_unlimited,
         goal=_turn_goal(messages), steers=[],
         **progress_fields())

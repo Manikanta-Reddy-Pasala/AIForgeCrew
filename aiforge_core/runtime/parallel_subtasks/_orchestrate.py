@@ -233,8 +233,10 @@ def _dispatch_batch(batch: list[dict], *, repo_root, base_branch, ticket_id,
 
 def _rerun_rounds() -> int:
     try:
+        from aiforge_core.runtime.parallel_subtasks._worktree import _max_workers
+        default = "0" if _max_workers() == 1 else "3"
         return max(0, min(5, int(os.environ.get(
-            "AIFORGE_PARALLEL_RERUN_ROUNDS", "3"))))
+            "AIFORGE_PARALLEL_RERUN_ROUNDS", default))))
     except ValueError:
         return 1
 

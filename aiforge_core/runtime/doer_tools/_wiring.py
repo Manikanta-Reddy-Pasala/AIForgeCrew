@@ -125,6 +125,9 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
                grep, search, http_get, web_fetch, web_crawl,
                commit, git_add_commit,
                todo_write, todowrite, glob, task]
+    # Aliases stay on the unfiltered registry. A role's allowlist does not
+    # name them, so they are not advertised. The phantom-tool guard still
+    # runs one when the model types the alias.
     tools = [tool_for(fn)
              for fn in new_canonical + legacy_canonical + aliases]
     # Web egress:
@@ -146,7 +149,27 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
     if os.environ.get("AIFORGE_TOOL_ENFORCE", "1").strip().lower() in (
             "0", "false", "no", "off"):
         return tools
-    return _filter_tools_by_role(tools, role)
+    filtered = _filter_tools_by_role(tools, role)
+    # Fail-open and unrestricted roles return the same list. Gating those
+    # would make role=None and a typo'd allowlist disagree.
+    if filtered is tools:
+        return tools
+    alias_ids = {id(fn) for fn in aliases}
+    filtered = [t for t in filtered
+                if id(getattr(t, "func", None)) not in alias_ids]
+    return _apply_integration_gate(filtered)
+
+
+def _apply_integration_gate(tools: list) -> list:
+    """Drop tools whose integration is not configured, same rule as chat."""
+    try:
+        from aiforge_core.runtime.chat_agent._catalog_gate import gate_schemas
+        fake = [{"type": "function", "function": {"name": _tool_name(t)}}
+                for t in tools]
+        kept = {s["function"]["name"] for s in gate_schemas(fake)}
+    except Exception:  # noqa: BLE001
+        return tools
+    return [t for t in tools if _tool_name(t) in kept]
 
 
 def _tool_name(t) -> str:

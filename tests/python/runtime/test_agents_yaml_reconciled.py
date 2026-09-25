@@ -56,6 +56,12 @@ def _ground_truth() -> set[str]:
                 getattr(t, "func", None), "__name__", "")
             if n:
                 out.add(n)
+    # Real tools the runtime gate hides when the binary is absent. The
+    # allowlist may still name them.
+    out.update({
+        "codegraph_impact", "codegraph_callers", "codegraph_callees",
+        "codegraph_query", "codegraph_explore",
+    })
     return out
 
 
@@ -162,16 +168,19 @@ def test_ctx_memory_scoped_to_memory_lookup_only():
 
 
 def test_doer_keeps_full_working_surface():
-    """The Doer is intentionally NOT scoped (left full-set): its prompt
-    references the legacy read/write/exec tools heavily, so scoping would
-    starve it. Guard that the full surface still carries the doer essentials."""
+    """The unfiltered registry still carries the working surface, and the
+    role-scoped Doer keeps that surface while dropping write-to-the-world
+    tools and training aliases."""
     names = _names(doer_tools.adk_function_tools())
-    # web_crawl IS in the base surface (66784fc); the ungated web_read stays
-    # researcher-scoped and web_search no longer exists.
     for t in ("project", "subtask_update", "serve", "editor",
               "run_shell", "file_write", "file_patch", "file_read",
               "git_commit", "bash", "ensure_runtime", "web_crawl"):
         assert t in names, f"doer full surface is missing {t}"
     assert "web_read" not in names, "ungated web_read stays researcher-only"
-    # doer.py must remain unwired (full set) — not in the scoped set.
-    assert "doer" not in _wired_roles()
+    scoped = _names(doer_tools.adk_function_tools(role="doer"))
+    for t in ("file_read", "file_write", "editor", "bash", "run_shell",
+              "ensure_runtime", "project", "run_tests"):
+        assert t in scoped, f"scoped doer is missing {t}"
+    for absent in ("jira_create", "email_send", "github_pr", "read", "write"):
+        assert absent not in scoped, f"{absent} should not be advertised"
+    assert "doer" in _wired_roles()

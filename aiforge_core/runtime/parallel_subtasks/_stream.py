@@ -228,12 +228,19 @@ def _finalize(cwd: str, subs: list, spec_md: str, agg: dict, start_sha: str,
     # the original requirement file" step). Best-effort; never blocks the result.
     yield {"type": "thought", "role": "verifier",
            "text": "Verifying the merged result against SPEC.md…"}
+    verdict = ""
     try:
-        verdict = _verify_against_spec(cwd, spec_md)
+        verdict = _verify_against_spec(cwd, spec_md) or ""
         if verdict:
             yield {"type": "thought", "role": "verifier", "text": verdict[:1500]}
     except Exception as exc:  # noqa: BLE001
         log.debug("spec verification skipped: %s", exc)
+        verdict = ""
+    spec_gaps = ""
+    low = verdict.lower()
+    if verdict and "everything is covered" not in low and (
+            "missing" in low or "incomplete" in low):
+        spec_gaps = verdict
 
     yield from _prune_offplan(cwd, subs)
     # Compile + end-to-end test the merged result (any language). Subtasks are
@@ -244,7 +251,8 @@ def _finalize(cwd: str, subs: list, spec_md: str, agg: dict, start_sha: str,
     res: dict = {}
     rep: dict = {}
     try:
-        yield from _reconcile_integration(cwd, res, should_cancel=cancelled)
+        yield from _reconcile_integration(
+            cwd, res, should_cancel=cancelled, spec_gaps=spec_gaps)
         rep = res.get("rep") or {}
         if rep.get("md"):
             integ_md = "\n\n---\n\n" + rep["md"]

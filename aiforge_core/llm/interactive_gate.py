@@ -54,8 +54,33 @@ def _marker() -> "str | None":
         return None
 
 
+_bg: list[threading.Event] = []
+
+
+def track_background(ev: threading.Event) -> None:
+    with _LOCK:
+        _bg.append(ev)
+
+
+def untrack_background(ev: threading.Event) -> None:
+    with _LOCK:
+        try:
+            _bg.remove(ev)
+        except ValueError:
+            pass
+
+
+def abort_background() -> None:
+    """Close in-flight background model calls so a person can use the slot."""
+    with _LOCK:
+        evs = list(_bg)
+    for ev in evs:
+        ev.set()
+
+
 def note_interactive(now: "float | None" = None) -> None:
     """Record that an interactive send is going out. Never raises."""
+    abort_background()
     global _last_local, _last_touch
     if window_s() <= 0:
         return
@@ -117,6 +142,7 @@ def reset() -> None:
     with _LOCK:
         _last_local = 0.0
         _last_touch = 0.0
+        _bg.clear()
     path = _marker()
     if path:
         try:
@@ -125,5 +151,6 @@ def reset() -> None:
             pass
 
 
-__all__ = ["busy_for", "note_interactive", "reset", "window_s",
+__all__ = ["abort_background", "busy_for", "note_interactive", "reset",
+           "track_background", "untrack_background", "window_s",
            "yield_to_interactive"]

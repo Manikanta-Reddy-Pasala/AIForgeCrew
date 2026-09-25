@@ -174,6 +174,11 @@ def _events(pc):
     # call; when we skip, start it here so it overlaps the baseline commit.
     _skip_enhance = _should_skip_enhance(pc._auto_downgraded, _route_pipeline,
                                          _is_build_task, pc.history, pc.prompt)
+    # Approve & Execute sends the plan, not a fresh request. Enhancing it
+    # again would restate the original ask and drop the plan.
+    from aiforge_core.runtime.chat_agent._native_prompt import is_plan_execution
+    if is_plan_execution(pc.prompt):
+        _skip_enhance = True
     if pc._auto_downgraded:
         yield {"type": "thought", "role": "router",
                "text": "Small follow-up — handling directly (skipped the "

@@ -32,8 +32,24 @@ _MAX_ITEMS = 60
 _MAX_TITLE = 200
 
 
-def seed_board(asks) -> dict:
-    """A board holding the parts of a multi-part message."""
+_PLAN_STEP = re.compile(r"(?m)^\s*(?:\d+[\.\)]\s+)(.+)$")
+
+
+def _plan_steps(goal: str) -> list[str]:
+    from .._native_prompt import is_plan_execution
+    if not is_plan_execution(goal or ""):
+        return []
+    return [m.group(1).strip()[:_MAX_TITLE]
+            for m in _PLAN_STEP.finditer(goal or "")][:_MAX_ITEMS]
+
+
+def seed_board(asks, goal: str = "") -> dict:
+    """A board holding the parts of a multi-part message, or the approved plan."""
+    steps = _plan_steps(goal)
+    if steps:
+        return {f"plan-{i}": {"title": step, "status": "pending",
+                              "from_request": True}
+                for i, step in enumerate(steps, 1)}
     return {f"part-{i + 1}": {"title": str(a)[:_MAX_TITLE], "status": "pending",
                               "from_request": True}
             for i, a in enumerate(asks or [])}
@@ -139,8 +155,10 @@ def turn_pin(st) -> str | None:
     goal = (getattr(st, "goal", "") or "").strip()
     if not goal:
         return None
+    from .._native_prompt import is_plan_execution
+    limit = 4000 if is_plan_execution(goal) else 1200
     parts = ["ORIGINAL TASK (stay on this until it's fully done + verified):",
-             goal[:1200]]
+             goal[:limit]]
     if (getattr(st, "unlimited", False) and not getattr(st, "readonly_mode", False)
             and not getattr(st, "builder", None)):
         # Only a run long enough to be condensed gets this reminder.

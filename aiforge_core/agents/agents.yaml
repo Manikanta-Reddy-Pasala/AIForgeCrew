@@ -306,13 +306,11 @@ agents:
       max_turns: 40
       max_wall_s: 1500
     tools:
-      # NOTE: enforcement is OFF for the Doer — `agents/doer.py` builds its
-      # tools via `adk_function_tools()` with NO `role=`, so this block does
-      # NOT filter anything at runtime; it documents the Doer's INTENDED scope.
-      # The names below are the tools actually wired to the Doer factory in
-      # `runtime/doer_tools.py` (new_canonical + legacy_canonical). Do NOT turn
-      # enforcement on here without reconciling — it would strip the Doer's
-      # primary file/shell surface and brick it.
+      # Enforcement is ON: agents/doer.py calls adk_function_tools(role="doer").
+      # `allowed` is the short list the model is given. Aliases (read, write,
+      # shell, …) are not schemas; a stray alias name is dispatched by the
+      # phantom-tool guard. `forbidden` names are real tools the Doer must
+      # not receive.
       allowed:
         - web_crawl              # page -> dossier. Really gated now (AIFORGE_ALLOW_WEB_FETCH
         #                          + hard-off + SSRF guard): the doer wrapper used to
@@ -326,6 +324,12 @@ agents:
         - run_shell                 # real primary surface — repo-root shell
         - think                     # no-op + :Think trace
         - finish                    # Doer-only termination signal
+        - ensure_runtime            # install what the task needs
+        - project                   # run the project's own entry
+        - run_tests                 # the suite that gates a change
+        - typecheck                 # compile/type gate before tests
+        - git_status
+        - git_diff
         - graphify_lookup           # read-only graph traversal (no fs writes)
         - memory_lookup             # read-only AiForgeMemory recall
         - skill_search              # find reusable SKILL.md playbooks before solving
@@ -356,14 +360,13 @@ agents:
         - confluence_read
         - confluence_children
       forbidden:
-        - ask_user
-        - start_long_term_update
-        - create_child_ticket
-        - write_fact
-        - write_plan
-        - web_scan
-        - web_execute_js
-        - code_run                  # not a Doer tool — use bash / run_shell
+        - jira_create
+        - jira_update
+        - jira_comment
+        - email_send
+        - github_pr
+        - confluence_create
+        - confluence_update
     memory:
       read_scope: scoped            # only :Fact ABOUT files in allowlist globs
       write_scope: none

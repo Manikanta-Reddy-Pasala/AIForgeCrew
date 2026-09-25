@@ -6,6 +6,7 @@ call was in flight on the same endpoint.
 """
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -82,6 +83,22 @@ def test_a_chat_send_never_waits_behind_a_memory_send(on):
     t0 = time.monotonic()
     assert rl.acquire_global(role="chat", max_wait_s=5) == 0.0
     assert time.monotonic() - t0 < 0.1
+
+
+def test_a_new_interactive_send_aborts_a_tracked_background_call(on):
+    ev = threading.Event()
+    gate.track_background(ev)
+    gate.note_interactive()
+    assert ev.is_set()
+    gate.untrack_background(ev)
+    assert ev not in gate._bg
+
+
+def test_reset_drops_tracked_background_calls(on):
+    ev = threading.Event()
+    gate.track_background(ev)
+    gate.reset()
+    assert gate._bg == []
 
 
 def test_pipeline_roles_count_as_interactive(on):

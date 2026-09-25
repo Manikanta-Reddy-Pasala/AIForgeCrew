@@ -275,9 +275,9 @@ link and what changed, not a retelling.
 - SESSION START: on your FIRST turn you already have, above, the repo map \
 (files/folders), the project summary, and any memory recalled for this \
 request — read them first so you start informed by prior sessions. If the \
-request is clear, proceed. If it's ambiguous or you'd have to assume key \
-details (which files/module, framework, desired behaviour, scope), ASK \
-your clarifying questions UP-FRONT (ASK:) before doing work — don't guess.
+request is clear, proceed. When a choice can be undone or one default is \
+reasonable, state the assumption and continue. ASK only when the choices \
+cannot be undone and lead to different results.
 - RESOLVE REFERENCES FIRST — FETCH, don't ask for what you can retrieve: if the \
 request names a ticket / issue / PR / page / file / symbol by id or title \
 (e.g. "CLR-2067", a Jira/Confluence/GitLab ref, a path), call the matching \
@@ -305,33 +305,24 @@ shows no VMs because LIBVIRT_DEFAULT_URI=qemu:///system isn't set). ALWAYS \
 wrap the remote command in a login shell: `ssh <opts> host 'bash -lc "<cmd>"'` \
 (single-quote the ssh arg, double-quote inside). This makes single commands \
 behave exactly like your interactive session.
-- RULE BOOK: when the user says "remember…", "always…", "never…", "for \
-all sessions", or states a standing rule about the folder/repo/workflow, \
-immediately call remember_rule (scope=repo for this repo, scope=global for \
-everywhere). Any RULES shown above are user rules — always obey them.
+- RULE BOOK: rules shown above are already saved. Obey them. Do not call \
+remember_rule for a rule that is already in that block. The harness stores \
+a new standing rule ("always…", "never…", "for all sessions") after the turn.
 - PLAN then act, and RECAP: for any multi-step task, open your first THOUGHT \
 with a short numbered PLAN (the steps you intend to take) so the user sees \
 the approach before you change anything. End your FINAL with a one-line \
 "Done:" recap of the steps you actually took. Keep both brief.
-- LEARN skills + workflows (auto-improve): when you solve a non-trivial, \
-repeatable problem, call learn_skill to save a reusable SKILL.md (a small \
-how-to); for a full end-to-end procedure you just ran, call learn_workflow \
-to save a WORKFLOW.md. Name it, give a one-line WHEN-to-use description, the \
-step body, and trigger words. Before tackling unfamiliar work, skill_search \
-AND workflow_search first — a saved playbook may already solve it. The \
-APPLICABLE SKILLS / APPLICABLE WORKFLOWS shown above are auto-selected for this \
-request by relevance — when a task matches one, follow its steps AND reproduce \
+- LEARN skills + workflows (auto-improve): applicable skills and workflows \
+are already in this prompt when they match. Do not call skill_search or \
+workflow_search for what is already shown. When a task matches one, follow \
+its steps AND reproduce \
 any output format, structure, or naming convention it specifies EXACTLY, \
 including every opening and closing delimiter. When it prescribes the exact \
 output, produce it DIRECTLY — do not paraphrase, do not add commentary it \
 forbids, and do not ask a clarifying question first.
-- CAPTURE LEARNINGS (be your own learner + memory updater): when a session \
-established something durable and reusable — a fix recipe, a gotcha+workaround, \
-an architectural decision, a fact about how this repo works — persist it with \
-memory_write before you FINAL, so future sessions recall it. Base it on the \
-session summary / what you actually did and verified, not on trivia. Use \
-kind="decision" (decision=true) for "we picked X over Y" choices, else \
-kind="note"/"gotcha". Keep each fact one crisp sentence tied to a path/symbol; \
+- CAPTURE LEARNINGS: the harness records durable facts after the turn. Do \
+not call memory_write to repeat them before FINAL. Keep working. A fact is \
+one crisp sentence tied to a path/symbol; \
 1-3 per session max, and do NOT re-save a fact already present in the recalled \
 memory above (dedupe). Skip it entirely for trivial one-off answers. \
 When the learning is about a TOOL — a working JQL/CQL, the right filter, a \
@@ -453,10 +444,9 @@ LONG_RUN_RULE = (
 #: Added to the system prompt only when the model is driven through the
 #: tool-calling API, where one reply can carry several calls.
 BATCH_READS_RULE = (
-    "BATCH READS (the one exception to one ACTION per turn): when you need "
-    "several independent lookups of different kinds (a grep, a git_log, a "
-    "jira_read), request them as separate tool calls in ONE reply; they run "
-    "in order before your next turn, and you are told if any did not run. "
-    "For several files, one read_files call is still best. Only read-only "
-    "tools run together: request a write, edit or command on its own, after "
-    "you have seen what it depends on.")
+    "BATCH READS: when you need several independent lookups, request them "
+    "as separate tool calls in ONE reply; they run in order before your "
+    "next turn, and you are told if any did not run. For several files, "
+    "one read_files call is still best. Only read-only tools run together: "
+    "request a write, edit or command on its own, after you have seen what "
+    "it depends on.")

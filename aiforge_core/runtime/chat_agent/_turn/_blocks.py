@@ -95,12 +95,10 @@ def _append_learning_recall(add, bundle, last_user, session_id, proactive,
         # Tell the model it HAS memory + the tools to reach it, so it pulls
         # only what THIS turn needs.
         add("memory-tools",
-            "MEMORY: a project brief for this repo is above. For anything "
-            "specific you don't already see — past decisions/learnings, code, "
-            "symbols, or what was discussed in earlier chats — CALL the tools: "
-            "memory_lookup(query) for learnings/decisions, graphify_lookup for "
-            "concept-graph, grep/repo_map/read for code, search_chat_sessions "
-            "for prior chats. Look it up; don't guess or assume it's absent.")
+            "MEMORY: the project brief and anything already recalled for this "
+            "turn are above. That context is already gathered. Do not call "
+            "memory_lookup for it. Look something up only when it is not "
+            "already in this prompt.")
 
 def _append_recall_blocks(add, bundle, cwd, last_user, messages, session_id,
                           role, proactive, is_init):
@@ -261,9 +259,9 @@ def _prepend_priority_blocks(sys_msg, asks, prefs, rules, analyze_mode,
                    "your final answer to match. Checklist:\n"
                    + "\n".join(f"{i + 1}. {a}" for i, a in enumerate(_asks))
                    + "\nTRACK your progress: when you START part N call "
-                     'ACTION: plan_progress ARGS_JSON: {"slug": "part-N", '
-                     '"status": "running"}, and when it is DONE call it again '
-                     'with "status": "done" — the user watches this live.'
+                     "plan_progress with slug part-N and status running, and "
+                     "when it is DONE call it again with status done — the "
+                     "user watches this live."
                    + "\n\n" + sys_msg)
     if prefs:                       # standing user preferences — always applied
         sys_msg = prefs + "\n\n" + sys_msg
@@ -272,7 +270,9 @@ def _prepend_priority_blocks(sys_msg, asks, prefs, rules, analyze_mode,
     if analyze_mode:                # read-only ANALYSIS (findings, not a plan)
         sys_msg = _ANALYZE_BANNER + "\n\n" + sys_msg
     elif plan_mode:                 # plan banner second — constrains this turn
-        sys_msg = _PLAN_BANNER + "\n\n" + sys_msg
+        # Native plan mode already sent the short read-and-plan rules.
+        if "You are read-only this turn" not in sys_msg:
+            sys_msg = _PLAN_BANNER + "\n\n" + sys_msg
     if builder:                     # task-specific builder charter (highest)
         try:
             from aiforge_core.runtime.prompts_extended import builders as _bld
