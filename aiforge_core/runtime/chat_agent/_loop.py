@@ -298,6 +298,8 @@ def run_chat_agent(
     ``{"type": "approval", ...}`` (ask-policy gate) ·
     ``{"type": "error", "text"}`` · ``{"type": "done"}``.
     """
+    from aiforge_core.runtime.context_seen import reset_seen_bodies
+    reset_seen_bodies()
     st = _build_loop_state(
         messages, cwd, role, max_steps, complete_fn, session_id, mode,
         scope_globs, builder, strict_finish)

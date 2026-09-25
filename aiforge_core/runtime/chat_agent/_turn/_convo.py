@@ -169,6 +169,17 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
         nonlocal sys_msg
         if not block:
             return
+        # A skill, workflow, OKF brief, or memory hit already in this turn
+        # (the seed, or an earlier block) is not pasted again. The first copy
+        # stays. A changed body still comes through whole.
+        _kind = {"skills": "skill", "workflows": "workflow",
+                 "recall": "memory", "project-memory": "okf"}.get(label)
+        if _kind:
+            from aiforge_core.runtime.context_seen import shrink_block
+            block = shrink_block(
+                [*messages, {"role": "system", "content": sys_msg}], _kind, block)
+            if not block:
+                return
         # R7: don't spend budget on a block whose exact text was already added
         # (e.g. prev-session vs a recall block that surfaced the same content).
         _bkey = " ".join(block.split())

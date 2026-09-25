@@ -337,4 +337,8 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
     # (some providers reject those) and keeps the tail's alternation intact.
     sys_text = _pin_goal(_stripped_system(convo), convo, pin)
     head = [{"role": "system", "content": (sys_text + "\n\n" + note).strip()}]
-    return head + convo[-keep_recent:]
+    # A pointer is only honest while the body it names is still in the kept
+    # system message or the tail. Compaction just dropped the middle, so put
+    # that body back if the pointer would otherwise dangle.
+    from aiforge_core.runtime.context_seen import restore_dangling
+    return restore_dangling(head + convo[-keep_recent:], middle)

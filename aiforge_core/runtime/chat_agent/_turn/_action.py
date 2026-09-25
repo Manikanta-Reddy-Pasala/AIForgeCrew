@@ -367,7 +367,6 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     if name in _FINALIZE_TOOLS and isinstance(result, dict) and result.get("ok"):
         st.builder_finalized = True
         yield {"type": "builder_done", "kind": name}
-    _obs_cap = _MAX_OBS_READ if name in _READ_OBS_TOOLS else _MAX_OBS
     # A blocked / unreachable call tells the model to change approach instead
     # of retrying or routing around the block (see _blocked). The guidance
     # goes FIRST so a long result cannot truncate it away.
@@ -375,11 +374,23 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     _seen = _blocked_for_model(st, name, result)
     if _seen is not result:
         result = {"next_step": _seen["next_step"], **result}
+    # The UI event above already carried the raw result. What the model sees
+    # drops a skill, workflow, OKF page, or memory hit whose identical body
+    # is already in this turn. A changed body is kept whole.
+    from aiforge_core.runtime.context_seen import (
+        carries_fresh_body, dedupe_tool_result)
+    try:
+        model_result = dedupe_tool_result(st.convo, name, args, result, cwd)
+    except Exception:  # noqa: BLE001 — a dedupe miss must still deliver the result
+        model_result = result
+    _obs_cap = _MAX_OBS_READ if (
+        name in _READ_OBS_TOOLS or carries_fresh_body(name, model_result)
+    ) else _MAX_OBS
     # Content-READ tools: cut oversized documents at a STRUCTURE boundary
     # (chonkie) with a continuation note, instead of a blunt slice that
     # hands the model a broken JSON/sentence tail. Others keep the slice.
-    obs = (_smart_truncate_obs(result, _obs_cap)
-           if name in _READ_OBS_TOOLS else json.dumps(result)[:_obs_cap])
+    obs = (_smart_truncate_obs(model_result, _obs_cap)
+           if name in _READ_OBS_TOOLS else json.dumps(model_result)[:_obs_cap])
     # Recency reminder: a strict output format from an APPLICABLE SKILL sits
     # in the system prompt (far above), while this fresh tool result sits at
     # the end where the model attends most — so after a tool round-trip it
