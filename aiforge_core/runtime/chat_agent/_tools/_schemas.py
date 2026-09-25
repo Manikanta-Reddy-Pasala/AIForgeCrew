@@ -74,12 +74,18 @@ CATALOG: dict = {
             {"command": "s", "path": "s", "line": "i", "character": "i"},
             ("command", "path")),
     # ── run / build / test ───────────────────────────────────────────────
-    "run_command": ("Run a shell command (timeout SECONDS, default 600).",
-                    {"cmd": "s", "timeout": "i"}, ("cmd",)),
+    "run_command": (
+        "Run a shell command (timeout SECONDS, default 600). "
+        "background:true, or a trailing &, returns a handle immediately and "
+        "leaves the process running. Several may run at once. The outcome "
+        "is posted in this chat. Stop kills them.",
+        {"cmd": "s", "timeout": "i", "background": "b"}, ("cmd",)),
     "watch_until": (
         "Re-run one command until a condition holds — polling, monitoring, "
-        "'wait until it's ready/done/green'. The loop is code: ONE call covers "
-        "the whole watch (do NOT hand-roll a poll loop with run_command). "
+        "'wait until it's ready/done/green'. In chat this returns at once "
+        "and the watch runs in the background (start several; the result is "
+        "posted here; it does not hold the turn). An extra detail does not "
+        "end it; Stop or a drop/replace message does. "
         "Derive interval_s/max_checks/timeout_s from what the user asked for — "
         "'monitor for 10 minutes every 15 seconds' is interval_s=15, "
         "max_checks=40, timeout_s=600. until: exit_zero (default) | "
@@ -87,17 +93,21 @@ CATALOG: dict = {
         {"cmd": "s", "until": "s", "interval_s": "i", "max_checks": "i",
          "timeout_s": "i", "cmd_timeout": "i"}, ("cmd",)),
     "schedule_task": (
-        "Run an instruction LATER and REPEATEDLY on a schedule (it outlives "
-        "this chat; each run files a ticket). action: create | list | cancel. "
-        "Give `cron` (5-field) or `every_minutes`. `until` is HOW LONG it "
-        "keeps running — pass the user's own words when they said any "
-        "('until tomorrow' -> until='tomorrow', 'for 3 days' -> until='3d', "
-        "'2 hours' -> until='2h'); leave it out and the job closes itself "
-        "after 2 hours. Only 'forever' when the user asked for a permanent "
-        "job. Closing keeps a learning + any script and deletes the job. "
-        "For waiting on something NOW, use watch_until instead.",
+        "Run an instruction LATER and REPEATEDLY. action: create | list | "
+        "cancel. kind 'agent' runs the instruction itself in this chat "
+        "(use when the user wants you to do it); kind 'ticket' (default) "
+        "files a pipeline ticket. Tickets cannot be more frequent than 15 "
+        "minutes; agent crons have no extra floor. A finished run posts a "
+        "short outcome here. Cancel stops a running worker for ticket, "
+        "agent, and script jobs. Webhook: POST /api/jobs/{id}/webhook with "
+        "the API's existing Authorization bearer (AIFORGE_API_TOKEN). "
+        "`until` is HOW LONG it keeps running — pass the user's own words "
+        "('until tomorrow' -> until='tomorrow'); leave it out and the job "
+        "closes itself after 2 hours. Only 'forever' when they asked for a "
+        "permanent job. For waiting on something NOW, use watch_until.",
         {"action": "s", "name": "s", "instruction": "s", "cron": "s",
-         "every_minutes": "i", "until": "s", "job_id": "i", "project": "s"}, ()),
+         "every_minutes": "i", "until": "s", "job_id": "i", "project": "s",
+         "kind": "s"}, ()),
     "project": ("Detect + build/test/run the project.", {"action": "s"},
                 ("action",)),
     "ensure_runtime": ("Install + verify missing toolchain binaries.",
@@ -406,7 +416,7 @@ _CORE_ACT = frozenset({
     "plan_progress",
     "file_read", "read_files", "read_lines", "list_dir", "find", "grep",
     "file_patch", "multi_edit", "file_write", "file_create", "editor",
-    "run_command", "run_tests",
+    "run_command", "run_tests", "watch_until", "schedule_task",
     "memory_lookup", "memory_write",
     "git_status", "git_diff", "repo_map",
 })

@@ -7,10 +7,17 @@ from aiforge_core.runtime.tools.mutating import FILE_WRITE_TOOLS
 
 def _fire_stop(reason: str, cwd: str) -> None:
     """Best-effort Stop lifecycle hook at a terminal loop exit. Soft-fail: a
-    hooks error must never break the turn's clean shutdown."""
+    hooks error must never break the turn's clean shutdown.
+
+    Also fires Notification (the run finished) and keeps any hook output
+    the model can read on the next turn."""
     try:
         from aiforge_core.runtime import hooks as _hooks
-        _hooks.fire("Stop", {"reason": reason}, cwd)
+        stopped = _hooks.fire("Stop", {"reason": reason}, cwd)
+        _hooks.note_into(None, "Stop", stopped)
+        note = _hooks.fire(
+            "Notification", {"reason": "finished", "phase": reason}, cwd)
+        _hooks.note_into(None, "Notification", note)
     except Exception:  # noqa: BLE001
         pass
 

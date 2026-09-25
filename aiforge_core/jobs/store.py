@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
+import uuid
 from contextlib import contextmanager
 from datetime import datetime
 
@@ -26,7 +27,8 @@ _LOCK = threading.Lock()
 
 _UPDATABLE = {"name", "cron", "ticket_title", "ticket_body", "project",
               "enabled", "next_run_at", "last_error", "script_path",
-              "expires_at"}
+              "expires_at", "session_id", "run_status", "run_token",
+              "run_attempt", "run_pid"}
 
 
 def now_iso() -> str:
@@ -80,6 +82,16 @@ _SQLITE_ADDED_COLUMNS = (
     ("kind", "TEXT NOT NULL DEFAULT 'ticket'"),
     ("script_path", "TEXT"),
     ("expires_at", "TEXT"),
+    # Chat session that created the job, so a finished run can report back
+    # and a later message in that chat can steer the agent run.
+    ("session_id", "INTEGER"),
+    # A claimed slot whose worker has not finished. Startup resumes it once.
+    ("run_status", "TEXT"),
+    ("run_token", "TEXT"),
+    ("run_attempt", "INTEGER NOT NULL DEFAULT 0"),
+    # Script process group, so a restart can reattach instead of launching
+    # a second copy while the first is still alive.
+    ("run_pid", "INTEGER"),
 )
 
 
@@ -127,16 +139,17 @@ class _SqliteJobStore:
 
     def create(self, *, name, cron, ticket_title, ticket_body,
                project=None, next_run_at, kind="ticket",
-               script_path=None, expires_at=None) -> dict:
+               script_path=None, expires_at=None, session_id=None) -> dict:
         next_run_at = _norm_ts(next_run_at)
         expires_at = _norm_ts(expires_at) if expires_at else None
         with _LOCK, self._conn() as con:
             cur = con.execute(
                 "INSERT INTO jobs (name, cron, ticket_title, ticket_body, "
                 "project, next_run_at, created_at, kind, script_path, "
-                "expires_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "expires_at, session_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (name, cron, ticket_title, ticket_body, project,
-                 next_run_at, now_iso(), kind, script_path, expires_at))
+                 next_run_at, now_iso(), kind, script_path, expires_at,
+                 session_id))
             r = con.execute(_SELECT_FROM_JOBS_WHERE_ID,
                             (cur.lastrowid,)).fetchone()
             return _row(r)
@@ -156,6 +169,24 @@ class _SqliteJobStore:
         vals = [int(v) if isinstance(v, bool) else v for v in fields.values()]
         with _LOCK, self._conn() as con:
             con.execute(f"UPDATE jobs SET {sets} WHERE id=?", (*vals, job_id))
+            r = con.execute(_SELECT_FROM_JOBS_WHERE_ID, (job_id,)).fetchone()
+            return _row(r) if r else None
+
+    def update_if_token(self, job_id, token, fields) -> "dict | None":
+        """Update only while ``token`` still owns this claimed slot.
+
+        No token (tests / a direct dispatch) writes by id, same as
+        ``_claim_still_held`` treating an empty token as still held."""
+        if not token:
+            return self.update(job_id, fields)
+        sets = ", ".join(f"{k}=?" for k in fields)
+        vals = [int(v) if isinstance(v, bool) else v for v in fields.values()]
+        with _LOCK, self._conn() as con:
+            cur = con.execute(
+                f"UPDATE jobs SET {sets} WHERE id=? AND run_token=?",
+                (*vals, job_id, token))
+            if (cur.rowcount or 0) == 0:
+                return None
             r = con.execute(_SELECT_FROM_JOBS_WHERE_ID, (job_id,)).fetchone()
             return _row(r) if r else None
 
@@ -199,12 +230,52 @@ class _SqliteJobStore:
         claim's WHERE matches — the second sees the already-advanced slot and
         gets rowcount 0, so it must not fire. Prevents the double-fire the old
         non-atomic mark_fired allowed."""
+        token = uuid.uuid4().hex
         with _LOCK, self._conn() as con:
             cur = con.execute(
-                "UPDATE jobs SET last_run_at=?, next_run_at=?, last_error=? "
+                "UPDATE jobs SET last_run_at=?, next_run_at=?, last_error=?, "
+                "run_status='running', run_token=?, run_attempt=1 "
                 "WHERE id=? AND next_run_at=?",
                 (_norm_ts(last_run_at), _norm_ts(next_run_at), last_error,
-                 job_id, _norm_ts(expected_next_run_at)))
+                 token, job_id, _norm_ts(expected_next_run_at)))
+            return (cur.rowcount or 0) > 0
+
+    def inflight_jobs(self) -> list[dict]:
+        """Jobs whose claimed run never finished (process died mid-flight)."""
+        with self._conn() as con:
+            rs = con.execute(
+                "SELECT * FROM jobs WHERE run_status='running' ORDER BY id"
+            ).fetchall()
+            return [_row(r) for r in rs]
+
+    def clear_run(self, job_id, token) -> bool:
+        """Drop the in-flight mark only if this worker still owns it."""
+        if not token:
+            return False
+        with _LOCK, self._conn() as con:
+            cur = con.execute(
+                "UPDATE jobs SET run_status=NULL, run_token=NULL, "
+                "run_attempt=0 WHERE id=? AND run_token=?",
+                (job_id, token))
+            return (cur.rowcount or 0) > 0
+
+    def bump_inflight(self, job_id, expected_attempt: int) -> bool:
+        """One process wins the startup retry. Returns True only for the winner."""
+        with _LOCK, self._conn() as con:
+            cur = con.execute(
+                "UPDATE jobs SET run_attempt=? WHERE id=? "
+                "AND run_status='running' AND run_attempt=?",
+                (int(expected_attempt) + 1, job_id, int(expected_attempt)))
+            return (cur.rowcount or 0) > 0
+
+    def release_retried(self, job_id, last_error: str) -> bool:
+        """Clear an in-flight row that was already retried. One winner only."""
+        with _LOCK, self._conn() as con:
+            cur = con.execute(
+                "UPDATE jobs SET run_status=NULL, run_token=NULL, "
+                "run_attempt=0, last_error=? WHERE id=? "
+                "AND run_status='running' AND run_attempt>=2",
+                (last_error, job_id))
             return (cur.rowcount or 0) > 0
 
 
@@ -235,11 +306,12 @@ def reset_backend_for_tests():
 def create(*, name: str, cron: str, ticket_title: str, ticket_body: str,
            project: str | None = None, next_run_at: str,
            kind: str = "ticket", script_path: str | None = None,
-           expires_at: str | None = None) -> dict:
+           expires_at: str | None = None, session_id: int | None = None) -> dict:
     return _backend().create(
         name=name, cron=cron, ticket_title=ticket_title,
         ticket_body=ticket_body, project=project, next_run_at=next_run_at,
-        kind=kind, script_path=script_path, expires_at=expires_at)
+        kind=kind, script_path=script_path, expires_at=expires_at,
+        session_id=session_id)
 
 
 def get(job_id: int) -> "dict | None":
@@ -259,6 +331,21 @@ def update(job_id: int, **fields) -> "dict | None":
     if fields.get("next_run_at") is not None:
         fields["next_run_at"] = _norm_ts(fields["next_run_at"])
     return _backend().update(job_id, fields)
+
+
+def update_if_token(job_id: int, token: str | None, **fields) -> "dict | None":
+    """Write fields only if this run_token still owns the row.
+
+    Returns the row on success, None when a later claim already owns it.
+    No token falls back to ``update`` (direct dispatch / tests)."""
+    bad = set(fields) - _UPDATABLE
+    if bad:
+        raise ValueError(f"unknown job fields: {sorted(bad)}")
+    if not fields:
+        return get(job_id)
+    if fields.get("next_run_at") is not None:
+        fields["next_run_at"] = _norm_ts(fields["next_run_at"])
+    return _backend().update_if_token(job_id, token, fields)
 
 
 def delete(job_id: int) -> bool:
@@ -289,7 +376,26 @@ def claim(job_id: int, *, expected_next_run_at: str, last_run_at: str,
           next_run_at: str, last_error: str | None = None) -> bool:
     """Atomically claim + advance a job's due slot. Returns True iff THIS caller
     won the slot (the row was still at ``expected_next_run_at``). Only the winner
-    should fire — prevents run-now + tick (or multi-replica) double-fires."""
+    should fire — prevents run-now + tick (or multi-replica) double-fires.
+
+    The winner is also marked in-flight (``run_status='running'``) so a process
+    restart can retry that claimed run once instead of dropping it."""
     return _backend().claim(
         job_id, expected_next_run_at=expected_next_run_at,
         last_run_at=last_run_at, next_run_at=next_run_at, last_error=last_error)
+
+
+def inflight_jobs() -> list[dict]:
+    return _backend().inflight_jobs()
+
+
+def clear_run(job_id: int, token: str | None) -> bool:
+    return _backend().clear_run(job_id, token)
+
+
+def bump_inflight(job_id: int, expected_attempt: int) -> bool:
+    return _backend().bump_inflight(job_id, expected_attempt)
+
+
+def release_retried(job_id: int, last_error: str) -> bool:
+    return _backend().release_retried(job_id, last_error)

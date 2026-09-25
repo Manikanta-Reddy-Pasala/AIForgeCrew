@@ -351,6 +351,14 @@ def close_job(job: dict, reason: str = "expired") -> dict:
     """
     from aiforge_core.jobs import store
 
+    # Stop a worker that has already started. Deleting the row alone leaves
+    # the thread (and its shell) running.
+    try:
+        from aiforge_core.jobs import scheduler
+        scheduler.request_stop(job.get("id"))
+    except Exception:  # noqa: BLE001
+        pass
+
     # Scripts out of the workspace FIRST, so the learning can name where they
     # went; the workspace itself goes with them.
     kept = _harvest_scripts(job)

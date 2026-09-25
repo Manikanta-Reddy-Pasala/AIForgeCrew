@@ -42,6 +42,33 @@ def test_drop_that_replaces_a_running_task():
     chat_interject.clear(81)
 
 
+def test_hard_stop_is_only_an_explicit_stop_phrase():
+    cut = run_interrupt.text_cuts_running_work
+    for phrase in ("stop that", "cancel it", "abort the run",
+                   "drop that", "kill it", "halt now"):
+        assert cut(phrase) is True, phrase
+    for phrase in ("don't forget the date", "use the API instead",
+                   "forget the extra log", "also add a log line",
+                   "please continue"):
+        assert cut(phrase) is False, phrase
+
+
+def test_a_watch_only_cuts_on_an_explicit_stop_phrase():
+    """only_replace still sees don't/instead. A watch uses only_cut."""
+    chat_interject.clear(83)
+    chat_interject.push(83, "don't forget the date")
+    assert run_interrupt.replaces_running_work(83) is True
+    assert run_interrupt.attention(83, only_replace=True) == "steer"
+    assert run_interrupt.attention(83, only_cut=True) is None
+    chat_interject.clear(83)
+    chat_interject.push(83, "use grep instead")
+    assert run_interrupt.attention(83, only_cut=True) is None
+    chat_interject.clear(83)
+    chat_interject.push(83, "stop")
+    assert run_interrupt.attention(83, only_cut=True) == "steer"
+    chat_interject.clear(83)
+
+
 def test_a_queued_message_is_a_steer_not_a_stop():
     chat_cancel.start(79)
     chat_interject.push(79, "tear")

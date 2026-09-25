@@ -106,6 +106,20 @@ def finish(session_id: int) -> None:
         _RUNS.pop(session_id, None)
 
 
+def finish_if_owner(session_id: int, token: _Token | None) -> bool:
+    """Drop the run token only when it is still the one ``token`` is.
+
+    A scheduled agent must not pop a token a later user turn replaced.
+    """
+    if token is None:
+        return False
+    with _LOCK:
+        if _RUNS.get(session_id) is token:
+            _RUNS.pop(session_id, None)
+            return True
+    return False
+
+
 def active_sessions() -> list[int]:
     """Session ids with a currently-tracked run (cancelled or not)."""
     with _LOCK:

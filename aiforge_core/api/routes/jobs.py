@@ -217,3 +217,16 @@ def jobs_run_now(job_id: int) -> dict:
     _require_croniter()
     ok = jobs_scheduler.fire(job)
     return {"ok": ok, "job": jobs_store.get(job_id)}
+
+
+@router.post("/api/jobs/{job_id}/webhook", responses={
+    404: {"description": "Not found"},
+    503: {"description": "Service unavailable (croniter not installed)"}})
+def jobs_webhook(job_id: int) -> dict:
+    """Start an existing job now. Same fire path as run-now.
+
+    Auth is the API's existing check (``Authorization: Bearer`` /
+    ``AIFORGE_API_TOKEN``, or loopback when that is already how this API
+    is reached). There is no separate webhook secret.
+    """
+    return jobs_run_now(job_id)

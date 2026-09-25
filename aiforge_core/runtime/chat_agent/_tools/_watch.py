@@ -153,8 +153,9 @@ def _watch_sleep(interval: float, sid) -> "str | None":
     """Sleep ``interval`` in short slices. Returns ``"stop"`` or ``"steer"``
     when the user pressed Stop or typed a message during the wait, else None."""
     from aiforge_core.runtime.run_interrupt import pause
-    # A watch is the task. An extra detail does not end it; "drop that" does.
-    return pause(interval, sid, only_replace=True)
+    # A watch is the task. Extra detail stays queued; only stop/cancel/
+    # abort/drop/kill/halt ends it. "don't forget" and "instead" do not.
+    return pause(interval, sid, only_cut=True)
 
 
 def _check_outcome(last: dict, until: str, rx, checks: int,
@@ -230,7 +231,7 @@ def _stopped(checks: int, last: dict | None = None) -> dict:
     return res
 
 
-def _t_watch_until(args: dict, cwd: str) -> dict:
+def _watch_until_blocking(args: dict, cwd: str) -> dict:
     """Re-run one command until a condition holds, or the budget runs out.
 
     ONE tool call covers the whole watch: no model call per check. That is the
@@ -244,18 +245,20 @@ def _t_watch_until(args: dict, cwd: str) -> dict:
         return refusal
     sid = chat_cancel.active()
     interval, max_checks, budget, per_cmd = _watch_limits(args, sid)
-    from aiforge_core.runtime.run_interrupt import attention, steered
+    from aiforge_core.runtime.run_interrupt import (
+        attention, steered, watch_owns_process)
     started = time.monotonic()
     checks = 0
     last: dict = {}
     while checks < max_checks:
-        why = attention(sid, only_replace=True)
+        why = attention(sid, only_cut=True)
         if why == "stop" or (sid is not None and chat_cancel.is_cancelled(sid)):
             return _stopped(checks, last or None)
         if why == "steer":
             return steered(checks=checks, last=_tail(last) if last else None)
         checks += 1
-        last = _t_run_command({"cmd": cmd, "timeout": per_cmd}, cwd)
+        with watch_owns_process():
+            last = _t_run_command({"cmd": cmd, "timeout": per_cmd}, cwd)
         elapsed = round(time.monotonic() - started, 1)
         done = _check_outcome(last, until, rx, checks, elapsed)
         if done is not None:
@@ -269,7 +272,7 @@ def _t_watch_until(args: dict, cwd: str) -> dict:
             return steered(checks=checks, last=_tail(last))
     # The budget can end the loop without another sleep. A message that
     # arrived during the last check still has to win over "gave up".
-    why = attention(sid, only_replace=True)
+    why = attention(sid, only_cut=True)
     if why == "stop" or (sid is not None and chat_cancel.is_cancelled(sid)):
         return _stopped(checks, last or None)
     if why == "steer":
@@ -279,6 +282,22 @@ def _t_watch_until(args: dict, cwd: str) -> dict:
             "reason": f"gave up after {checks} check(s) — the condition "
                       f"({until}) was never met",
             "last": _tail(last)}
+
+
+def _t_watch_until(args: dict, cwd: str) -> dict:
+    """Start a watch. In a chat session it runs in the background and this
+    call returns at once, so the turn and a second watch are not blocked.
+    With no session (or ``inline``), it runs here — the path a watch that
+    is still inside a turn, and the unattended callers, already use."""
+    from aiforge_core.runtime import chat_cancel
+    try:
+        sid = chat_cancel.active()
+    except Exception:  # noqa: BLE001
+        sid = None
+    if sid is not None and not (args or {}).get("inline"):
+        from aiforge_core.runtime import bg_work
+        return bg_work.start_watch(int(sid), cwd, args or {})
+    return _watch_until_blocking(args, cwd)
 
 
 def _tail(res: dict) -> dict:
@@ -348,9 +367,8 @@ def _schedule_list(jobs_store) -> dict:
 
 
 def _schedule_cancel(args: dict, jobs_store) -> dict:
-    """Cancel a ticket job by numeric id. A script job is a host shell script
-    the OPERATOR installed — this tool schedules instructions, so it does not
-    get to delete those."""
+    """Cancel a ticket, agent, or script job. Closing the row also stops a
+    worker that has already started."""
     try:
         job_id = int(args.get("job_id"))
     except (TypeError, ValueError):
@@ -359,10 +377,6 @@ def _schedule_cancel(args: dict, jobs_store) -> dict:
     existing = jobs_store.get(job_id)
     if not existing:
         return {"ok": False, "error": f"no job {job_id}"}
-    if (existing.get("kind") or "ticket") != "ticket":
-        return {"ok": False, "error":
-                f"job {job_id} is a {existing.get('kind')} job installed "
-                "outside chat — cancel it from the Jobs page."}
     # Closed through lifecycle, not a bare delete: a loop cancelled by hand is
     # as worth remembering as one that timed out, and the residue is the same
     # (learning kept, script kept, row gone).
@@ -373,12 +387,13 @@ def _schedule_cancel(args: dict, jobs_store) -> dict:
             if res.get("ok") else {"ok": False, "error": f"no job {job_id}"})
 
 
-def _schedule_validate_cron(cron: str, jobs_parse) -> "dict | None":
-    """Cron guard: reject a too-frequent interval (each fire files a ticket the
-    pipeline then builds) or an unschedulable expression. None when OK."""
+def _schedule_validate_cron(cron: str, jobs_parse, kind: str = "ticket") -> "dict | None":
+    """Cron guard. Ticket jobs keep the 15-minute floor (each fire files a
+    ticket the pipeline builds). Agent jobs use whatever cron the jobs API
+    already accepts — no tighter floor. None when OK."""
     floor = _env_int("AIFORGE_SCHEDULE_MIN_MINUTES", 15)
     every = _interval_minutes(cron)
-    if every is not None and every < floor:
+    if kind != "agent" and every is not None and every < floor:
         return {"ok": False, "error":
                 f"`{cron}` fires every {every} minute(s); the floor is "
                 f"{floor} because each run files a ticket that the pipeline "
@@ -404,9 +419,16 @@ def _duplicate_job(name: str, jobs_store) -> dict | None:
     return None
 
 
-def _schedule_note(expires_at: str | None, asked: bool, default_min: int) -> str:
+def _schedule_note(expires_at: str | None, asked: bool, default_min: int,
+                   *, kind: str, job_id) -> str:
     """What the model should tell the user about when this job stops."""
-    note = "Each run files a ticket with this instruction."
+    if kind == "agent":
+        note = ("Each run executes the instruction in this chat. "
+                "A short outcome is posted here when it finishes.")
+    else:
+        note = "Each run files a ticket with this instruction."
+    note += (f" To start it from outside, POST /api/jobs/{job_id}/webhook "
+             "with the same Authorization bearer this API already uses.")
     if not expires_at:
         return note + " It NEVER closes itself — cancel it when it is done."
     note += f" It closes itself at {expires_at}"
@@ -430,7 +452,10 @@ def _schedule_create(args: dict, jobs_parse, jobs_store) -> dict:
     cron, err = _cron_from(args)
     if err:
         return {"ok": False, "error": err}
-    bad = _schedule_validate_cron(cron, jobs_parse)
+    kind = (args.get("kind") or "ticket").strip().lower()
+    if kind not in ("ticket", "agent"):
+        kind = "ticket"
+    bad = _schedule_validate_cron(cron, jobs_parse, kind)
     if bad is not None:
         return bad
     dupe = _duplicate_job(name, jobs_store)
@@ -443,18 +468,26 @@ def _schedule_create(args: dict, jobs_parse, jobs_store) -> dict:
     expires_at, err = lifecycle.parse_until(args.get("until"))
     if err:
         return {"ok": False, "error": err}
+    from aiforge_core.runtime import chat_cancel
+    try:
+        sid = chat_cancel.active()
+    except Exception:  # noqa: BLE001
+        sid = None
     try:
         nxt = jobs_parse.next_runs(cron, n=1)[0]
         job = jobs_store.create(
             name=name, cron=cron, ticket_title=name[:120],
             ticket_body=instruction, project=args.get("project") or None,
-            next_run_at=nxt, kind="ticket", expires_at=expires_at)
+            next_run_at=nxt, kind=kind, expires_at=expires_at,
+            session_id=sid)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"could not schedule: {exc}"}
     note = _schedule_note(expires_at, bool(args.get("until")),
-                          lifecycle.default_ttl_minutes())
+                          lifecycle.default_ttl_minutes(),
+                          kind=kind, job_id=job.get("id"))
     return {"ok": True, "job_id": job.get("id"), "name": job.get("name"),
-            "cron": cron, "next_run_at": job.get("next_run_at"),
+            "kind": kind, "cron": cron,
+            "next_run_at": job.get("next_run_at"),
             "expires_at": expires_at, "note": note}
 
 
@@ -480,4 +513,4 @@ def _t_schedule_task(args: dict, _cwd: str) -> dict:
     return _schedule_create(args, jobs_parse, jobs_store)
 
 
-__all__ = ["_t_watch_until", "_t_schedule_task"]
+__all__ = ["_t_watch_until", "_watch_until_blocking", "_t_schedule_task"]

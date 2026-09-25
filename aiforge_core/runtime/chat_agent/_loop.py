@@ -160,7 +160,16 @@ def _step_prologue(st, n, _cwd, role, complete_fn, session_id, builder):
     _sig = yield from _step_cap_guard(st, n)
     if _sig == "return":
         return None, "return"
-    if session_id is not None and chat_cancel.is_cancelled(session_id):
+    # The cancel token covers Stop on a live turn. A scheduled agent also
+    # binds a stop event so a later "drop that" can halt it without
+    # replacing a token a different turn already owns.
+    try:
+        from aiforge_core.runtime.run_interrupt import reason as _interrupt_reason
+        _job_stopped = _interrupt_reason(session_id) == "stop"
+    except Exception:  # noqa: BLE001
+        _job_stopped = False
+    if _job_stopped or (
+            session_id is not None and chat_cancel.is_cancelled(session_id)):
         yield {"type": "error", "text": "stopped by user"}
         yield {"type": "done"}
         return None, "return"

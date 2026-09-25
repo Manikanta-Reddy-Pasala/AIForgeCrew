@@ -254,6 +254,7 @@ def _pre_tool_checks(st, name, args, cwd, _scope_globs):
     try:
         from aiforge_core.runtime import hooks as _hooks
         _pre = _hooks.fire("PreToolUse", {"tool": name, "args": args}, cwd)
+        _hooks.note_into(st.convo, "PreToolUse", _pre)
         if _pre.get("blocked"):
             _hook_block = _pre
     except Exception:  # noqa: BLE001 — hooks must never break dispatch
@@ -345,8 +346,9 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     # PostToolUse hook (best-effort, never blocks).
     try:
         from aiforge_core.runtime import hooks as _hooks
-        _hooks.fire("PostToolUse",
-                    {"tool": name, "args": args, "result": result}, cwd)
+        _post = _hooks.fire("PostToolUse",
+                            {"tool": name, "args": args, "result": result}, cwd)
+        _hooks.note_into(st.convo, "PostToolUse", _post)
     except Exception:  # noqa: BLE001 — hooks must never break the turn
         pass
     yield {"type": "tool", "name": name, "args": args, "result": result,

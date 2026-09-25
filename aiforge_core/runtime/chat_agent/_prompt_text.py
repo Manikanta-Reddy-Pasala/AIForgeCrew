@@ -34,33 +34,53 @@ Tool arguments:
                 TEST SUITE run ONE file or case first — e.g. `pytest tests/test_x.py::TestY`
                 — not the whole suite; a full suite often exceeds any limit. A
                 timeout returns PARTIAL output, not a failure — narrow or raise
-                the timeout, never revert your edits over it.)
+                the timeout, never revert your edits over it.
+                BACKGROUND: {{"cmd": "sleep 30", "background": true}} or a
+                trailing `&` returns a handle immediately and keeps the process
+                running. You can start several. The outcome appears in this chat
+                when it exits. Stop kills them. Do not use a bare `&` expecting
+                it to be killed — it stays.)
 - watch_until  {{"cmd": "curl -sf localhost:8080/health", "until": "exit_zero", "interval_s": 30, "max_checks": 20}}
                 (KEEP RE-RUNNING one command until a condition holds — use this
                 whenever the user wants something WATCHED, POLLED, or repeated
                 "until it's done/ready/green/finished". The loop is CODE, not
-                you: ONE tool call covers the whole watch, so a 40-check watch
-                costs one model call, not forty. Never hand-roll a poll loop by
-                calling run_command over and over.
+                you. In this chat the watch runs in the BACKGROUND and returns
+                a handle at once: start several, keep working, the result is
+                posted here. It does not hold the turn. Never hand-roll a poll
+                loop by calling run_command over and over.
                 DERIVE the numbers from what the user said and PASS them — the
                 defaults (20 checks / 30s / 5min total) are not a guess at their
                 intent: "monitor for 10 minutes, check every 15 seconds" is
                 {{"interval_s": 15, "max_checks": 40, "timeout_s": 600}}.
                 until: exit_zero (default) | exit_nonzero | contains:TEXT |
-                not_contains:TEXT | regex:PATTERN. Stop interrupts it mid-wait.)
-- schedule_task {{"action": "create", "name": "nightly smoke", "instruction": "run the smoke suite and report failures", "cron": "0 2 * * *", "until": "forever"}}
-- schedule_task {{"action": "create", "name": "watch deploy errors", "instruction": "tail the deploy error log and report anything new", "every_minutes": 15, "until": "tomorrow"}}
+                not_contains:TEXT | regex:PATTERN.
+                An extra detail does NOT end the watch. Stop, or a message that
+                says stop/drop/replace, does. Answer the extra detail and leave
+                the watch running.)
+- schedule_task {{"action": "create", "name": "nightly smoke", "instruction": "run the smoke suite and report failures", "cron": "0 2 * * *", "until": "forever", "kind": "agent"}}
+- schedule_task {{"action": "create", "name": "watch deploy errors", "instruction": "tail the deploy error log and report anything new", "every_minutes": 15, "until": "tomorrow", "kind": "ticket"}}
                 (Do this LATER and REPEATEDLY — anything the user wants to
                 happen on a schedule rather than now. `cron` (5-field) or
                 `every_minutes`. action: create | list | cancel {{"job_id": N}}.
-                Each run files a ticket carrying the instruction, so it keeps
-                working after this chat ends. `until` is how long it keeps
-                running: pass the user's words when they gave any ("until
-                tomorrow" / "for 3 days" / "next 2 hours"); omit it and the
-                job closes itself after 2 hours; "forever" ONLY when they
-                asked for something permanent. A close keeps the learning and
-                any script and deletes the job. Use watch_until instead when
-                the user wants to WAIT for something now.)
+                kind "agent" (use this when the user wants YOU to do the thing:
+                read, check, summarise, email) runs the instruction as a chat
+                agent on that schedule. A later message in THIS chat can steer
+                it, and Stop or cancel stops the worker. kind "ticket" (default,
+                when they asked for a ticket or a pipeline change) files a
+                ticket each run. Ticket runs cannot be more frequent than 15
+                minutes. Agent runs can be as frequent as a normal cron.
+                When a run finishes, a short outcome is posted in this chat.
+                To fire a job from outside, tell the user: POST /api/jobs/{{id}}/webhook
+                with the same Authorization bearer the API already uses
+                (AIFORGE_API_TOKEN). No separate webhook secret.
+                `until` is how long it keeps running: pass the user's words
+                when they gave any ("until tomorrow" / "for 3 days" / "next 2
+                hours"); omit it and the job closes itself after 2 hours;
+                "forever" ONLY when they asked for something permanent. Cancel
+                works for ticket, agent, and script jobs and stops a run that
+                has already started. A close keeps the learning and any script
+                and deletes the job. Use watch_until instead when the user
+                wants to WAIT for something now.)
 - ensure_runtime {{"tools": ["java", "mvn"]}}    (install+verify missing tools)
 - project        {{"action": "build"}}    (detect+install+build/test/run:
                   maven, gradle, node/react/next/vite, python, go, rust)

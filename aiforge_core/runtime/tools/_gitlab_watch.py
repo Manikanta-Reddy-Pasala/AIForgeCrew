@@ -128,7 +128,7 @@ def _watch_sleep(b: "_WatchBudget") -> "str | None":
     One second, not a fifth: the budget math and the tests count whole seconds
     of ``time.sleep``, and a message is still seen long before a 20s poll."""
     from aiforge_core.runtime.run_interrupt import pause
-    return pause(b.interval, b.sid, slice_s=1.0, only_replace=True)
+    return pause(b.interval, b.sid, slice_s=1.0, only_cut=True)
 
 
 def _watch_timeout(b: "_WatchBudget", good: dict, err: dict, checks: int,
@@ -228,7 +228,7 @@ def gitlab_pipeline_watch(args: dict, cwd: str | None = None) -> dict:
         # One probe. Calling cancelled() and then attention() asked is_cancelled
         # twice, so a Stop that was meant to land in the sleep fired before
         # the first poll and dropped the snapshot.
-        why = attention(b.sid, only_replace=True)
+        why = attention(b.sid, only_cut=True)
         if why == "stop":
             return _watch_stopped(good, checks, started, err)
         if why == "steer":
@@ -250,7 +250,7 @@ def gitlab_pipeline_watch(args: dict, cwd: str | None = None) -> dict:
                     **steered()}
     # Budget / max_checks break skips the sleep. Look once more so a message
     # typed during the last poll is not reported as a successful give-up.
-    why = attention(b.sid, only_replace=True)
+    why = attention(b.sid, only_cut=True)
     if why == "stop":
         return _watch_stopped(good, checks, started, err)
     if why == "steer":

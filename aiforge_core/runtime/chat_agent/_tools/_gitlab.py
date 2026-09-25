@@ -49,6 +49,18 @@ def _t_gitlab_pipeline(args: dict, cwd: str) -> dict:
 
 
 def _t_gitlab_pipeline_watch(args: dict, cwd: str) -> dict:
+    """In a chat, watch in the background so the turn is not held.
+
+    The in-turn function (pipeline / doer, or ``inline``) keeps its 1-second
+    slices and only-replace behaviour."""
+    from aiforge_core.runtime import chat_cancel
+    try:
+        sid = chat_cancel.active()
+    except Exception:  # noqa: BLE001
+        sid = None
+    if sid is not None and not (args or {}).get("inline"):
+        from aiforge_core.runtime import bg_work
+        return bg_work.start_gitlab(int(sid), cwd, args or {})
     from aiforge_core.runtime.tools import gitlab
     return gitlab.gitlab_pipeline_watch(args, cwd)
 
