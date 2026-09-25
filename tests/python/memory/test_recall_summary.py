@@ -78,6 +78,30 @@ def test_timeout_knob(monkeypatch, env_value, expected):
     assert _timeout_seen(monkeypatch, env_value) == expected
 
 
+def test_a_short_question_does_not_spend_a_model_call_folding_memory(monkeypatch):
+    """The fold is a learner-role completion. A short question keeps the
+    ranked hits and lets the agent be the only model call."""
+    from aiforge_core.runtime.chat_agent._context import _recall
+    hits = [{"text": f"ranked fact {i}", "source": "memory"} for i in range(6)]
+    monkeypatch.setattr(_recall, "_recall_hits", lambda *a, **k: hits)
+    called = {"n": 0}
+
+    def _fold(*_a, **_k):
+        called["n"] += 1
+        return "folded away"
+
+    monkeypatch.setattr(
+        "aiforge_core.memory.recall_summary.summarize_hits", _fold)
+    out = _recall._memory_recall("/tmp", "what is the test cycle?")
+    assert called["n"] == 0
+    assert "ranked fact 0" in out
+    long = "what is the test cycle? " + ("please explain " * 40)
+    out = _recall._memory_recall("/tmp", long)
+    assert called["n"] == 1
+    assert out.startswith(_recall._RECALL_PREAMBLE)
+    assert "folded away" in out
+
+
 @pytest.mark.parametrize("fold", ["raise", "empty"])
 def test_chat_recall_falls_back_to_raw_lines(monkeypatch, fold):
     """A timed-out / failed fold must leave the chat first-turn recall with
@@ -93,7 +117,10 @@ def test_chat_recall_falls_back_to_raw_lines(monkeypatch, fold):
 
     monkeypatch.setattr(
         "aiforge_core.memory.recall_summary.summarize_hits", _fold)
-    out = _recall._memory_recall("/tmp", "how is the sync wired?")
+    # Long enough that the fold still runs. A short question keeps the ranked
+    # lines and never calls the model; this test is the failure path of that call.
+    q = "how does the sync loop work? " + ("please " * 80)
+    out = _recall._memory_recall("/tmp", q)
     assert out.startswith(_recall._RECALL_PREAMBLE)
     for i in range(3):
         assert f"- ranked fact {i}  (memory)" in out

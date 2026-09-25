@@ -232,6 +232,54 @@ def test_email_counts_as_configured_once_smtp_or_imap_has_a_host(monkeypatch):
     assert "email" not in configured_integrations()
 
 
+def test_the_system_prompt_does_not_turn_the_tool_list_into_the_whole_catalog():
+    """The prompt names Jira, Confluence, GitLab, email and URLs. Counting
+    those as the user asking for them sent the gated catalog (~63 tools).
+    The banner and the native call share one list, built from the user's
+    words."""
+    from aiforge_core.runtime.chat_agent import _native
+    from aiforge_core.runtime.chat_agent._prompt import _SYSTEM
+    convo = [
+        {"role": "system", "content": _SYSTEM.format(cwd="/tmp")},
+        {"role": "user", "content":
+            "You are AIForge, an autonomous coding assistant.\n"
+            "- jira_search\n- confluence_read\nhttps://example.com email gitlab"},
+        {"role": "user", "content":
+            "what is the test cycle?\n\n---\n[Interpreted request — a "
+            "restatement]\nCheck jira, confluence, gitlab, email and "
+            "https://example.com"},
+    ]
+    names = _names(_native.select_native_tools(convo, mode="act"))
+    assert "file_read" in names and "file_patch" in names
+    assert not any(n.startswith(("jira_", "confluence_", "gitlab_",
+                                 "email_", "web_")) for n in names)
+    assert len(names) < 25
+
+
+def test_the_native_call_sends_the_same_list_the_banner_counts(monkeypatch):
+    from aiforge_core.llm import client
+    from aiforge_core.runtime.chat_agent import _native
+    from aiforge_core.runtime.chat_agent._prompt import _SYSTEM
+    convo = [
+        {"role": "system", "content": _SYSTEM.format(cwd="/tmp")},
+        {"role": "user", "content": "what is the test cycle?"},
+    ]
+    _native.reset_native_cache()
+    monkeypatch.setattr(_native, "_model_for", lambda role: "m-short")
+    sent = []
+
+    def _raw(role, messages, tools=None, tool_choice=None):
+        sent.append(_names(tools or []))
+        return {"role": "assistant", "content": "FINAL: ok"}
+    monkeypatch.setattr(client, "complete_raw", _raw)
+    _native.make_native_complete_fn()("chat", convo)
+    banner = _names(_native.select_native_tools(convo, mode="act"))
+    assert sent[0] == banner
+    assert len(sent[0]) < 25
+    assert "file_read" in sent[0]
+    assert not any(n.startswith("jira_") for n in sent[0])
+
+
 def test_act_mode_offers_the_core_tools_not_every_integration():
     from aiforge_core.runtime.chat_agent._tools._schemas import (
         NATIVE_TOOL_SCHEMAS, filter_native)

@@ -1,12 +1,9 @@
-"""Simple/plan mode enhancer skip-on-followup gate.
+"""Simple/plan mode enhancer skip.
 
-The enhancer (`_pp._enhance`) is mandatory on a session's first turn, but a
-small follow-up ("fix that", "rename it") shouldn't pay for a second LLM
-round-trip (+ the memory recall inside `_enhance`) every single message.
-`turn_router.classify` (already used to auto-downgrade team turns) is reused
-to decide: follow-up + classifies "simple" => skip `_enhance`, use the raw
-prompt. First turn, or a follow-up that classifies "complex", or a classify
-failure => `_enhance` still runs (safe default).
+A real build ("build a todo app") and a long prompt still get a restatement.
+A short message the agent will answer or ask about does not, on the first
+turn or a follow-up, and a follow-up classifier label does not bring the
+enhancer back. The pipeline route enhances on its own path.
 """
 import importlib
 
@@ -80,7 +77,7 @@ def test_simple_followup_skips_enhancer(app_client, monkeypatch):
     assert enhance_calls == []          # enhancer skipped on this follow-up
 
 
-def test_complex_followup_still_enhances(app_client, monkeypatch):
+def test_a_short_followup_skips_even_when_labelled_complex(app_client, monkeypatch):
     client, _ = app_client
     enhance_calls = _wire(monkeypatch, "complex")
     sid = client.post("/api/chat/sessions", json={"title": "t"}).json()["id"]
@@ -89,10 +86,23 @@ def test_complex_followup_still_enhances(app_client, monkeypatch):
     enhance_calls.clear()
     client.post(f"/api/chat/sessions/{sid}/message",
                 json={"content": "no, use postgres instead", "mode": "act"})
-    assert enhance_calls == ["no, use postgres instead"]
+    assert enhance_calls == []
 
 
-def test_classify_failure_keeps_enhancer_mandatory(app_client, monkeypatch):
+def test_a_long_followup_still_gets_enhanced(app_client, monkeypatch):
+    client, _ = app_client
+    enhance_calls = _wire(monkeypatch, "simple")
+    sid = client.post("/api/chat/sessions", json={"title": "t"}).json()["id"]
+    client.post(f"/api/chat/sessions/{sid}/message",
+                json={"content": "build a todo app", "mode": "act"})
+    enhance_calls.clear()
+    long = ("no, use postgres instead. " + ("and the schema " * 40)).strip()
+    client.post(f"/api/chat/sessions/{sid}/message",
+                json={"content": long, "mode": "act"})
+    assert enhance_calls == [long]
+
+
+def test_a_short_followup_skips_when_classify_would_raise(app_client, monkeypatch):
     client, _ = app_client
     from aiforge_core.runtime import chat_agent
     from aiforge_core.runtime import parallel_subtasks as pp
@@ -121,4 +131,4 @@ def test_classify_failure_keeps_enhancer_mandatory(app_client, monkeypatch):
     enhance_calls.clear()
     client.post(f"/api/chat/sessions/{sid}/message",
                 json={"content": "tweak it", "mode": "act"})
-    assert enhance_calls == ["tweak it"]     # classify raised => stayed mandatory
+    assert enhance_calls == []

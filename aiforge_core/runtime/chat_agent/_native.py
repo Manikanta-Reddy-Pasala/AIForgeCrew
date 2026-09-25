@@ -366,13 +366,32 @@ _USER_SEGMENT = (
 )
 
 
+# Blocks the server appends. They quote the tool catalog, READMEs and
+# memory, so "jira" / "https://" in there would add every integration to
+# the native list. The person's own words are the part before the marker.
+_CUE_TAILS = (
+    "\n\n---\n[Interpreted request",
+    "\n\n---\n[Deliverable",
+    "\n\n---\n[RESUME]",
+)
+
+
+def _cue_body(content: str) -> str:
+    text = content or ""
+    for mark in _CUE_TAILS:
+        text = text.split(mark)[0]
+    return text
+
+
 def _convo_text(convo) -> str:
     """The user's own words, including a mid-run steer.
 
     Tool results, loop-guard notes, and automated checks are stored as user
     messages. A URL or the word ticket inside one of those must not add web
     or Jira tools. Once a harness header starts, the rest of that message is
-    its body, until a steer or a rejection correction."""
+    its body, until a steer or a rejection correction. The system prompt
+    names every integration; it is not the user asking for those tools, and
+    neither is a copy of that prompt stored as a user turn."""
     parts = []
     for message in convo or []:
         if not isinstance(message, dict) or message.get("role") != "user":
@@ -382,8 +401,11 @@ def _convo_text(convo) -> str:
             content = "\n\n".join(
                 str(part.get("text") or "") for part in content
                 if isinstance(part, dict))
+        content = _cue_body(str(content))
+        if content.lstrip().startswith("You are AIForge"):
+            continue
         dropping = False
-        for segment in str(content).split("\n\n"):
+        for segment in content.split("\n\n"):
             stripped = segment.lstrip()
             if not stripped:
                 continue
@@ -398,6 +420,25 @@ def _convo_text(convo) -> str:
     return "\n".join(parts)
 
 
+def select_native_tools(convo, *, mode: str = "act", builder: str = "",
+                        schemas: list | None = None) -> list:
+    """The native schemas this turn actually sends.
+
+    The banner and the model call both use this, so the "(N tools)" line is
+    the list on the wire. Family tools are added from the user's words, not
+    from the system prompt (that prompt names every integration and used to
+    make the count the whole gated catalog, about 63)."""
+    from ._tools._schemas import NATIVE_TOOL_SCHEMAS, filter_native
+    if schemas is None:
+        try:
+            from ._catalog_gate import gate_schemas
+            schemas = gate_schemas(NATIVE_TOOL_SCHEMAS)
+        except Exception:  # noqa: BLE001 — never break a turn
+            schemas = list(NATIVE_TOOL_SCHEMAS)
+    return filter_native(list(schemas), mode=mode or "act",
+                         text=_convo_text(convo), builder=builder or "")
+
+
 def make_native_complete_fn(mode: str = "act", builder: str = ""):
     """A drop-in ``complete_fn(role, convo) -> str`` that calls the model with
     native tools and returns the adapted text step. The core tool schemas go
@@ -405,7 +446,7 @@ def make_native_complete_fn(mode: str = "act", builder: str = ""):
     as a text ACTION, and is added natively when the message names that
     system. A steer can add tools. It does not remove them."""
     from aiforge_core.llm import client
-    from ._tools._schemas import NATIVE_TOOL_SCHEMAS, filter_native
+    from ._tools._schemas import NATIVE_TOOL_SCHEMAS
 
     queued: list[str] = []
     skipped = [0]
@@ -436,8 +477,8 @@ def make_native_complete_fn(mode: str = "act", builder: str = ""):
                 log.debug("schema gate failed, sending all: %s", exc)
                 gated[:] = list(NATIVE_TOOL_SCHEMAS)
         have = {((s.get("function") or {}).get("name")) for s in tools}
-        for schema in filter_native(gated, mode=mode, text=_convo_text(convo),
-                                    builder=builder):
+        for schema in select_native_tools(
+                convo, mode=mode, builder=builder, schemas=gated):
             name = (schema.get("function") or {}).get("name")
             if name not in have:
                 tools.append(schema)

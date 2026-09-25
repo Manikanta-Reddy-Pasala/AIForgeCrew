@@ -21,6 +21,7 @@ The two regex predicates are SAFETY NETS, not the classifier:
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 
@@ -139,6 +140,33 @@ _PLAIN_CUE_RE = re.compile(
     r"\b[A-Z][A-Z0-9]+-\d+\b",
     re.IGNORECASE,
 )
+
+
+def _short_prompt_limit() -> int:
+    """Same knob as the chat enhancer skip. A longer message still gets a
+    restatement and, on a fresh turn, the task classifier."""
+    try:
+        return max(0, int(os.environ.get(
+            "AIFORGE_CHAT_FOLLOWUP_ENHANCE_CHARS", "500")))
+    except (TypeError, ValueError):
+        return 500
+
+
+def is_short_prompt(prompt: str) -> bool:
+    """True when the message is short enough that a pre-turn model call is
+    just the pause before the agent speaks."""
+    p = (prompt or "").strip()
+    if not p:
+        return True
+    return len(p) <= _short_prompt_limit() and p.count("\n") < 8
+
+
+def direct_reply(prompt: str) -> bool:
+    """A short message the agent answers or asks about in one model call.
+
+    A real build (the regex, which does not need a model to decide) is not
+    one of these: it still gets a restatement. A long prompt is not either."""
+    return is_short_prompt(prompt) and not regex_build_fallback(prompt or "")
 
 
 def plain_chat(prompt: str) -> bool:

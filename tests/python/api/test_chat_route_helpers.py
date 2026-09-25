@@ -363,8 +363,15 @@ def test_a_long_first_turn_still_gets_the_enhancer(router):
     assert _skip(prompt=long) is False
 
 
-def test_a_build_task_is_never_under_enhanced(router):
-    assert _skip(is_build_task=True) is False
+def test_a_short_question_skips_even_if_labelled_a_build(router):
+    """A classifier that calls a short question a build must not spend an
+    enhancer call before the agent asks or answers."""
+    assert _skip(is_build_task=True, prompt="what is the test cycle?") is True
+
+
+def test_a_real_build_still_gets_the_enhancer(router):
+    assert _skip(is_build_task=False, prompt="build a todo app") is False
+    assert _skip(is_build_task=True, prompt="build a todo app") is False
 
 
 def test_a_short_follow_up_skips_without_calling_the_classifier(router, monkeypatch):
@@ -379,6 +386,14 @@ def test_a_short_follow_up_skips_without_calling_the_classifier(router, monkeypa
 def test_a_pipeline_route_answers_from_its_own_flags(router):
     assert _skip(route_pipeline=True, auto_downgraded=True) is False
     assert _skip(route_pipeline=False, auto_downgraded=True) is True
+
+
+def test_a_downgraded_build_or_long_prompt_still_enhances(router):
+    """Leaving the pipeline does not drop the restatement for a real build
+    or a long prompt. A short remark still skips."""
+    assert _skip(auto_downgraded=True, prompt="build a todo app") is False
+    long = "Please rework the authentication flow end to end.\n" * 40
+    assert _skip(auto_downgraded=True, prompt=long) is False
 
 
 def test_a_broken_router_module_never_blocks_the_turn(monkeypatch):
@@ -493,7 +508,8 @@ def test_the_gathered_inputs_reach_the_pure_router(pp, decide, monkeypatch):
     monkeypatch.setattr(tr2, "is_followup", lambda h: False)
     monkeypatch.setattr(tr, "classify_task",
                         lambda p, history=None, cwd=None, session_id=None: "code_build")
-    assert _decide(pp, prompt="build a backend service with tests") == "decision"
+    long = "build a backend service with tests. " + ("and the API " * 40)
+    assert _decide(pp, prompt=long) == "decision"
     assert decide["psub_on"] is True
     assert decide["greenfield"] is False
     assert decide["fresh"] is True
@@ -527,7 +543,21 @@ def test_a_dead_classifier_routes_on_without_a_class(pp, decide, monkeypatch):
     monkeypatch.setattr(tr2, "is_followup", lambda h: False)
     monkeypatch.setattr(tr, "classify_task",
                         lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
-    _decide(pp, prompt="build a backend service with tests")
+    long = "build a backend service with tests. " + ("and the API " * 40)
+    _decide(pp, prompt=long)
+    assert decide["cat"] is None
+
+
+def test_a_short_build_does_not_wait_on_the_task_classifier(pp, decide, monkeypatch):
+    """'build a todo app' is a real build (the enhancer still runs) but the
+    classifier was a second model call before the agent. The regex already
+    knows it is a build."""
+    from aiforge_core.runtime import task_router as tr
+    from aiforge_core.runtime import turn_router as tr2
+    monkeypatch.setattr(tr2, "is_followup", lambda h: False)
+    monkeypatch.setattr(tr, "classify_task",
+                        lambda *a, **k: pytest.fail("classified a short build"))
+    _decide(pp, prompt="build a todo app")
     assert decide["cat"] is None
 
 
