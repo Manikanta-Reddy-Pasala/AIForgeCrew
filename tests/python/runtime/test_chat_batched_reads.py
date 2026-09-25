@@ -40,12 +40,25 @@ def test_all_read_calls_after_the_first_are_queued():
     _call("typecheck", path="."),
 ])
 def test_a_batch_with_a_write_or_slow_tool_runs_one_call(other):
-    """A write depends on what the model saw first; a slow read would run far
-    past the turn deadline. The model is told the rest did not run."""
+    """A write's arguments were chosen before the reads returned, and a slow
+    tool would run far past the turn deadline. That call is held. A read
+    beside it still runs, so the model does not pay another round trip to
+    see the file."""
     msg = _reply(_call("file_read", path="a.py"), other)
     assert _native._queued_steps(msg) == ([], 1)
-    assert _native._queued_steps(_reply(other, _call("file_read", path="a.py"))) \
-        == ([], 1)
+    steps, skipped = _native._queued_steps(
+        _reply(other, _call("file_read", path="a.py")))
+    assert steps == ['ACTION: file_read\nARGS_JSON: {"path": "a.py"}']
+    assert skipped == 0
+
+
+def test_reads_in_a_mixed_reply_run_and_the_write_is_held():
+    msg = _reply(_call("file_read", path="a.py"),
+                 _call("grep", pattern="TODO"),
+                 _call("file_patch", path="a.py", old_text="a", new_text="b"))
+    steps, skipped = _native._queued_steps(msg)
+    assert steps == ['ACTION: grep\nARGS_JSON: {"pattern": "TODO"}']
+    assert skipped == 1
 
 
 def test_every_batchable_tool_is_read_only():
@@ -178,12 +191,28 @@ def test_the_model_is_told_about_calls_that_did_not_run(_two_files):
 
 
 def test_a_steer_drops_the_rest_of_the_batch(_two_files, monkeypatch):
+    """A message that arrives while the reply is in hand: do not start the
+    tool that reply chose, and do not run the reads batched behind it."""
     from aiforge_core.runtime import chat_interject
     fn, calls = _batching_fn(_reads("a", "b", "c"), "FINAL: ok")
-    monkeypatch.setattr(chat_interject, "pending", lambda sid: True)
-    monkeypatch.setattr(chat_interject, "drain_items", lambda sid: [])
-    evs = _run(_two_files, fn, session_id=987654)
-    assert _paths(evs) == ["a.txt"]
+    waiting = {"on": False}
+
+    def _fn(role, convo):
+        out = fn(role, convo)
+        if len(calls) == 1:
+            waiting["on"] = True
+        return out
+
+    _fn.take_queued = fn.take_queued
+
+    def _drain(sid):
+        waiting["on"] = False
+        return []
+
+    monkeypatch.setattr(chat_interject, "pending", lambda sid: waiting["on"])
+    monkeypatch.setattr(chat_interject, "drain_items", _drain)
+    evs = _run(_two_files, _fn, session_id=987654)
+    assert _paths(evs) == []
     assert len(calls) == 2
     assert "2 because the user sent new instructions" in _seen(calls, 1)
 
@@ -422,7 +451,80 @@ def test_a_read_that_needs_approval_is_not_started_early(tmp_path, _slow_jira,
     assert _early(_slow_jira) == []
 
 
-def test_local_reads_are_never_started_early(_two_files, monkeypatch):
+def test_reads_after_a_lookup_still_overlap(tmp_path, _slow_jira, monkeypatch):
+    """memory_lookup is batchable, so the reads beside it start while it
+    runs. They do not wait for it to finish, and they still overlap."""
+    import time
+
+    from aiforge_core.runtime.chat_agent._registry import TOOLS
+    span = {}
+
+    def _lookup(args, cwd):
+        span["start"] = time.monotonic()
+        time.sleep(0.5)
+        span["end"] = time.monotonic()
+        return {"ok": True}
+    monkeypatch.setitem(TOOLS, "memory_lookup", _lookup)
+    batch = ['ACTION: memory_lookup\nARGS_JSON: {"query": "auth"}',
+             *_jira_reads("A-1", "A-2")]
+    fn, _ = _batching_fn(batch, "FINAL: ok")
+    evs = _run(tmp_path, fn)
+    assert _keys(evs) == ["A-1", "A-2"]
+    assert _early(_slow_jira) == ["A-1", "A-2"]
+    assert _span(_slow_jira, "A-1")[0] < span["end"]
+    assert _span(_slow_jira, "A-2")[0] < span["end"]
+
+
+def test_early_reads_start_for_every_batchable_first_call():
+    from aiforge_core.runtime.chat_agent._turn._batch import _first_runs_alongside
+    started = (
+        'ACTION: file_read\nARGS_JSON: {"path": "a.py"}',
+        'ACTION: memory_lookup\nARGS_JSON: {"query": "auth"}',
+        'ACTION: skill_search\nARGS_JSON: {"query": "auth"}',
+        'ACTION: resolve_repo\nARGS_JSON: {"name": "crew"}',
+        'ACTION: plan_progress\nARGS_JSON: {"slug": "tests", "title": "Tests"}',
+    )
+    held = (
+        'ACTION: file_patch\nARGS_JSON: {"path": "a.py", "old_text": "a", "new_text": "b"}',
+        'ACTION: file_write\nARGS_JSON: {"path": "a.py", "content": "x"}',
+        'ACTION: editor\nARGS_JSON: {"command": "str_replace", "path": "a.py"}',
+        'ACTION: run_command\nARGS_JSON: {"cmd": "ls"}',
+    )
+    assert all(_first_runs_alongside(text) for text in started)
+    assert not any(_first_runs_alongside(text) for text in held)
+
+
+def test_a_leading_write_does_not_start_the_reads_beside_it(
+        tmp_path, _slow_jira, monkeypatch):
+    """file_patch as the first call runs this turn. The reads after it wait
+    until that write has finished."""
+    import time
+
+    from aiforge_core.runtime.chat_agent._registry import TOOLS
+    span = {}
+
+    def _patch(args, cwd):
+        span["end"] = None
+        time.sleep(0.4)
+        span["end"] = time.monotonic()
+        return {"ok": True}
+    monkeypatch.setitem(TOOLS, "file_patch", _patch)
+    batch = ['ACTION: file_patch\nARGS_JSON: {"path": "a.py", "old_text": "a", "new_text": "b"}',
+             *_jira_reads("A-1", "A-2")]
+    fn, _ = _batching_fn(batch, "FINAL: ok")
+    evs = _run(tmp_path, fn)
+    assert _keys(evs) == ["A-1", "A-2"]
+    assert _span(_slow_jira, "A-1")[0] >= span["end"] - 0.05
+    assert _span(_slow_jira, "A-2")[0] >= span["end"] - 0.05
+
+
+def test_the_batch_rule_runs_a_leading_patch():
+    from aiforge_core.runtime.chat_agent._prompt_text import BATCH_READS_RULE
+    assert "if the first call is file_patch, it runs now" in BATCH_READS_RULE
+    assert "later in that reply is held until your next turn" in BATCH_READS_RULE
+
+
+def test_local_reads_of_one_reply_start_together(_two_files, monkeypatch):
     import threading
 
     from aiforge_core.runtime.chat_agent._registry import TOOLS
@@ -435,7 +537,7 @@ def test_local_reads_are_never_started_early(_two_files, monkeypatch):
     monkeypatch.setitem(TOOLS, "file_read", _read)
     fn, _ = _batching_fn(_reads("a", "b", "c"), "FINAL: ok")
     assert _paths(_run(_two_files, fn)) == ["a.txt", "b.txt", "c.txt"]
-    assert not any(t.startswith("batch-read") for t in threads)
+    assert any(t.startswith("batch-read") for t in threads)
 
 
 _DENIED = 'ACTION: list_dir\nARGS_JSON: {"path": "."}'

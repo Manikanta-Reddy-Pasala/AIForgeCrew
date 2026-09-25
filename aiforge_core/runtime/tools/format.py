@@ -68,19 +68,23 @@ def format(path: str) -> dict[str, Any]:
     if shutil.which(tool_name) is None:
         return {"ok": False, "error": "missing_tool", "tool": tool_name}
     cmd = [str(abs_path) if part == _PATH else part for part in cmd_tmpl]
-    try:
-        p = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=60, cwd=str(root()),
-        )
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "timeout", "tool": tool_name}
-    return {
-        "ok": p.returncode == 0,
-        "formatter": tool_name,
-        "stdout": p.stdout[-2000:],
-        "stderr": p.stderr[-2000:],
-        "exit_code": p.returncode,
-    }
+    # The formatter rewrites the file in place. Hold the same per-path lock
+    # as file_read so a threaded read cannot cache a half-written file.
+    from aiforge_core.runtime.doer_tools._fs import _file_lock
+    with _file_lock(rel):
+        try:
+            p = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=60, cwd=str(root()),
+            )
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "timeout", "tool": tool_name}
+        return {
+            "ok": p.returncode == 0,
+            "formatter": tool_name,
+            "stdout": p.stdout[-2000:],
+            "stderr": p.stderr[-2000:],
+            "exit_code": p.returncode,
+        }
 
 
 __all__ = ["format"]

@@ -250,11 +250,10 @@ def _batch_cap() -> int:
 #: checked between calls, so a read-only tool that waits for minutes by design
 #: (a pipeline watch, a crawl, a type check, a document summary that calls a
 #: model) never joins a batch.
-#: The batchable reads that wait on a server or a subprocess: a batch (and an
-#: ADK reply, see doer_tools._threaded) runs these at the same time. Each is
-#: thread-safe: no chdir, no shared state beyond benign caches, and no writes
-#: of ours but a TLS pin (net.trust, atomic and locked).
-#: Local reads take milliseconds and run one after another.
+#: Reads a batch (and an ADK reply, see doer_tools._threaded) may run at the
+#: same time. Each is thread-safe: no chdir, and no writes of ours but a TLS
+#: pin (net.trust, atomic and locked). File reads of one path take a lock in
+#: the doer so they do not overlap a write of that same path.
 CONCURRENT_READS = frozenset({
     "jira_read", "jira_search", "jira_transitions", "jira_worklog",
     "jira_remote_links",
@@ -269,10 +268,14 @@ CONCURRENT_READS = frozenset({
     # Egress-gated inside the tool; the batch also checks the gate before
     # starting one early.
     "web_fetch",
-})
-BATCHABLE_READS = CONCURRENT_READS | {
+    # Local lookups. A grep or a git log on a real repo is not instant, and
+    # several of them in one reply should not wait on each other.
     "file_read", "read_files", "read_lines", "list_dir", "find", "grep",
     "git_status", "git_diff", "git_log", "git_blame",
+})
+BATCHABLE_READS = CONCURRENT_READS | {
+    # These share a connection or a cache, so they join a batch but run one
+    # after another on the calling thread.
     "memory_lookup", "search_chat_sessions", "skill_search", "workflow_search",
     "resolve_repo", "list_services",
 }
@@ -284,34 +287,36 @@ def _queued_steps(msg: dict) -> "tuple[list[str], int]":
     """``(steps, skipped)`` for the 2nd..Nth tool calls of one reply, so a model
     that asks for five lookups at once gets them without four more round trips.
 
-    Only when EVERY call is in :data:`BATCHABLE_READS`: a write depends on what the
-    model saw before it, so a mixed batch keeps one call per turn (the first
-    call runs; the model asks again). ``skipped`` counts the distinct calls that
-    will not run — the loop tells the model. Each queued step still goes
+    Every extra call in :data:`_BATCHABLE` is queued, even when the reply also
+    contains a write or a command. Those are held (counted in ``skipped``) so
+    the model writes on the next turn, after it has seen the reads. A write's
+    arguments were chosen before those reads returned, so running it in the
+    same reply would act on a guess. ``skipped`` counts the distinct calls
+    that will not run — the loop tells the model. Each queued step still goes
     through every loop gate."""
     calls = msg.get("tool_calls") or []
     if len(calls) < 2:
         return [], 0
     first = _synth_step({**msg, "content": None})   # the call, not its narration
-    batchable = True
     broken = 0
+    held = 0
     wanted: list[str] = []
     for c in calls[1:]:
         fn = (c or {}).get("function") or {}
         name = fn.get("name") or ""
-        batchable = batchable and name in _BATCHABLE
         args = _resolve_call_args(fn.get("arguments"))
         if not isinstance(args, dict):
             broken += 1
             continue
         step = _action_text(name, args)
-        if step != first and step not in wanted:
+        if step == first or step in wanted:
+            continue
+        if name in _BATCHABLE:
             wanted.append(step)
-    first_name = ((calls[0] or {}).get("function") or {}).get("name") or ""
-    if not batchable or first_name not in _BATCHABLE:
-        return [], len(wanted) + broken
+        else:
+            held += 1
     steps = wanted[:max(0, _batch_cap() - 1)]
-    return steps, len(wanted) - len(steps) + broken
+    return steps, len(wanted) - len(steps) + broken + held
 
 
 def _native_error_is_permanent(exc, model: str) -> bool:

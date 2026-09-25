@@ -5,6 +5,7 @@ Split out of the former ``doer_tools`` module — moved verbatim.
 """
 from __future__ import annotations
 
+import functools
 import os
 import shutil
 import subprocess
@@ -72,8 +73,43 @@ def reset_touched() -> None:
 # entry can never be served. Bounded FIFO.
 _READ_CACHE: dict[str, tuple[int, str]] = {}
 _READ_CACHE_MAX = 256
+_CACHE_LOCK = threading.Lock()
+# One lock per resolved path. ADK gathers a reply's calls, and a threaded
+# read can overlap a write that stayed on the event loop. Same file waits;
+# different files do not. The key is the path inside the repo, so "a.py"
+# and "./a.py" share a lock.
+_FILE_LOCKS: dict[str, threading.Lock] = {}
+_FILE_LOCKS_GUARD = threading.Lock()
 
 
+def _file_key(path: str) -> str:
+    """The lock key for ``path``. ``a.py`` and ``./a.py`` share one key."""
+    try:
+        key = str(resolve_inside_root(path))
+    except Exception:  # noqa: BLE001 — a bad path still must not race itself
+        key = os.path.normpath(str(path or ""))
+    return os.path.normcase(key)
+
+
+def _file_lock(path: str) -> threading.Lock:
+    key = _file_key(path)
+    with _FILE_LOCKS_GUARD:
+        lock = _FILE_LOCKS.get(key)
+        if lock is None:
+            lock = _FILE_LOCKS[key] = threading.Lock()
+        return lock
+
+
+def _same_path(fn):
+    """Serialize this tool with the other file tools on the same path."""
+    @functools.wraps(fn)
+    def wrapped(path, *args, **kwargs):
+        with _file_lock(path):
+            return fn(path, *args, **kwargs)
+    return wrapped
+
+
+@_same_path
 def file_read(path: str) -> dict:
     """Read a UTF-8 text file relative to the repo root.
 
@@ -89,14 +125,18 @@ def file_read(path: str) -> dict:
             mt = p.stat().st_mtime_ns
         except OSError:
             mt = -1
-        hit = _READ_CACHE.get(ap)
-        if hit is not None and hit[0] == mt:
-            text = hit[1]
-        else:
+        with _CACHE_LOCK:
+            hit = _READ_CACHE.get(ap)
+            text = hit[1] if hit is not None and hit[0] == mt else None
+        if text is None:
             text = p.read_text(encoding="utf-8", errors="replace")
-            if len(_READ_CACHE) >= _READ_CACHE_MAX:
-                _READ_CACHE.pop(next(iter(_READ_CACHE)))
-            _READ_CACHE[ap] = (mt, text)
+            with _CACHE_LOCK:
+                if len(_READ_CACHE) >= _READ_CACHE_MAX:
+                    try:
+                        _READ_CACHE.pop(next(iter(_READ_CACHE)))
+                    except StopIteration:
+                        pass
+                _READ_CACHE[ap] = (mt, text)
         return {"ok": True, "path": path,
                 "content": text, "bytes": len(text.encode("utf-8"))}
     except OSError as exc:
@@ -157,6 +197,7 @@ def _syntax_refusal(path: str, content: str) -> "dict | None":
     }
 
 
+@_same_path
 def file_write(path: str, content: str) -> dict:
     """Create or overwrite a UTF-8 text file relative to the repo root.
 
@@ -180,6 +221,7 @@ def file_write(path: str, content: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+@_same_path
 def file_patch(path: str, old_text: str, new_text: str) -> dict:
     """Replace the FIRST occurrence of ``old_text`` with ``new_text``.
 
@@ -380,6 +422,7 @@ def grep_repo(pattern: str, path: str = ".") -> dict:
     }
 
 
+@_same_path
 def read_lines(path: str, start: int = 1, end: int = 0) -> dict:
     """Read a LINE RANGE from a file (1-indexed, inclusive) — for big files you
     don't want whole. ``end=0`` reads to EOF (capped). Read-only."""
