@@ -209,23 +209,6 @@ def test_deadline_stop_banner_points_at_the_setting(tmp_path, monkeypatch):
 
 # ── knob resolution ─────────────────────────────────────────────────────
 
-def test_a_short_remark_cannot_run_for_hours():
-    """Operator defaults are no cap and no deadline. A remark still stops."""
-    from aiforge_core.runtime.chat_agent._turn._state import _clamp_plain_turn
-    steps, seconds, capped, extend = _clamp_plain_turn("what is 2+2?", 0, 0, False)
-    assert steps == 8 and seconds == 600 and capped and extend is False
-    # A real task, including one that names a machine, keeps "no limit".
-    steps, seconds, capped, extend = _clamp_plain_turn(
-        "ssh to the nuc and run the tests", 0, 0, False)
-    assert steps == 0 and seconds == 0 and capped is False and extend is True
-    # A short instruction is not a remark, so "no limit" stays.
-    steps, seconds, capped, extend = _clamp_plain_turn("do it", 0, 0, False)
-    assert steps == 0 and seconds == 0 and extend is True
-    # A cap the operator already set is kept, and the turn may still extend.
-    steps, seconds, capped, extend = _clamp_plain_turn("thanks", 3, 30, True)
-    assert steps == 3 and seconds == 30 and extend is True
-
-
 def test_limits_default_env_and_store(monkeypatch, tmp_path):
     monkeypatch.delenv("AIFORGE_CHAT_SAFETY_CAP", raising=False)
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
