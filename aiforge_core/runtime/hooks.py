@@ -19,7 +19,8 @@ Schema (Claude Code-inspired, simplified)::
       "PreToolUse":  [{"matcher": "run_command|file_write",
                        "command": "...", "block_on_nonzero": false}],
       "PostToolUse": [{"matcher": "*", "command": "..."}],
-      "Stop":        [{"command": "..."}]
+      "Stop":        [{"command": "..."}],
+      "Notification": [{"command": "..."}]
     }
 
 ``matcher`` is a tool-name pattern: ``*`` (or omitted) = all, ``a|b|c`` =
@@ -47,7 +48,7 @@ from aiforge_core.config.paths import config_dir
 
 log = logging.getLogger(__name__)
 
-_EVENTS = ("PreToolUse", "PostToolUse", "Stop")
+_EVENTS = ("PreToolUse", "PostToolUse", "Stop", "Notification")
 _NOOP = {"ok": True, "blocked": False, "results": []}
 
 
@@ -97,6 +98,24 @@ def _timeout_s() -> float:
         return 30.0
 
 
+def _stdout_max() -> int:
+    """How much hook output may enter the model context. A hook that prints
+    a log must not blow the window."""
+    try:
+        n = int(os.environ.get("AIFORGE_HOOK_STDOUT_MAX", "1500"))
+    except (TypeError, ValueError):
+        n = 1500
+    return max(200, min(8000, n))
+
+
+def _clip(text: str) -> str:
+    text = (text or "").strip()
+    cap = _stdout_max()
+    if len(text) <= cap:
+        return text
+    return text[:cap] + "…[truncated]"
+
+
 def _run_one(hook: dict, event: str, tool: str | None, payload: dict,
              cwd: str | None) -> dict:
     """Run one hook command locally; return ``{command, returncode, ...}``.
@@ -116,8 +135,15 @@ def _run_one(hook: dict, event: str, tool: str | None, payload: dict,
             cmd, shell=True, cwd=cwd or None, env=env,
             input=json.dumps(payload, default=str),
             capture_output=True, text=True, timeout=_timeout_s())
-        return {"command": cmd, "returncode": proc.returncode,
-                "ok": proc.returncode == 0}
+        out = {"command": cmd, "returncode": proc.returncode,
+               "ok": proc.returncode == 0}
+        stdout = _clip(proc.stdout or "")
+        stderr = _clip(proc.stderr or "")
+        if stdout:
+            out["stdout"] = stdout
+        if stderr:
+            out["stderr"] = stderr
+        return out
     except subprocess.TimeoutExpired:
         log.warning("hook timed out (%s): %s", event, cmd)
         return {"command": cmd, "ok": False, "error": "timeout"}
@@ -171,6 +197,45 @@ def fire(event: str, payload: dict | None = None,
     except Exception as exc:  # noqa: BLE001 — hooks must NEVER break the turn
         log.warning("hooks.fire soft-fail (%s): %s", event, exc)
         return dict(_NOOP)
+
+
+def context_note(fired: dict | None) -> str:
+    """Hook stdout/stderr the model should see, capped. Empty when there is
+    nothing to show."""
+    parts: list[str] = []
+    for res in (fired or {}).get("results") or []:
+        if not isinstance(res, dict):
+            continue
+        for key in ("stdout", "stderr"):
+            bit = (res.get(key) or "").strip()
+            if bit:
+                parts.append(bit)
+    if not parts:
+        return ""
+    return _clip("\n".join(parts))
+
+
+def note_into(convo, event: str, fired: dict | None) -> None:
+    """Put hook output where the model reads it: a short user-role note.
+
+    Also stored on the active chat session so the next turn still sees it.
+    A missing note, or a store that is down, changes nothing."""
+    note = context_note(fired)
+    if not note:
+        return
+    line = f"[hook {event} — not the user]\n{note}"
+    if convo is not None:
+        try:
+            convo.append({"role": "user", "content": line})
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        from aiforge_core.runtime import chat_cancel, chat_store
+        sid = chat_cancel.active()
+        if sid is not None:
+            chat_store.add_message(int(sid), "user", line)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("hook note not stored (%s): %s", event, exc)
 
 
 # ── ADK pipeline adapters ────────────────────────────────────────────────

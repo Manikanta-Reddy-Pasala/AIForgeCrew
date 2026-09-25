@@ -296,6 +296,14 @@ def _run_approval(name, args, cwd, session_id, convo, verdict, _destructive_del)
         _reason = "Confirm this destructive delete before it runs."
     else:
         _reason = "Review edits: confirm this file change before it lands."
+    try:
+        from aiforge_core.runtime import hooks as _hooks
+        _note = _hooks.fire(
+            "Notification",
+            {"reason": "needs_user", "tool": name, "phase": "approval"}, cwd)
+        _hooks.note_into(convo, "Notification", _note)
+    except Exception:  # noqa: BLE001 — a hook must not block the gate
+        pass
     yield {"type": "approval", "id": seq, "name": name, "args": args,
            "reason": _reason, "preview": preview}
     if session_id is None:

@@ -94,7 +94,8 @@ def test_stop_interrupts_the_watch(tmp_path, monkeypatch):
                                       "stderr": ""})
     monkeypatch.setattr(chat_cancel, "active", lambda: 42)
     monkeypatch.setattr(chat_cancel, "is_cancelled", lambda sid: True)
-    res = _watch._t_watch_until({"cmd": "x", "max_checks": 99}, str(tmp_path))
+    res = _watch._t_watch_until(
+        {"cmd": "x", "max_checks": 99, "inline": True}, str(tmp_path))
     assert res.get("stopped") is True
     assert res["checks"] == 0
 
@@ -134,7 +135,8 @@ def test_a_typed_message_cuts_the_watch_short(tmp_path, monkeypatch):
                         _run)
     monkeypatch.setattr(_watch.time, "sleep", lambda *_a: None)
     res = _watch._t_watch_until(
-        {"cmd": "x", "interval_s": 30, "max_checks": 20, "timeout_s": 300},
+        {"cmd": "x", "interval_s": 30, "max_checks": 20, "timeout_s": 300,
+         "inline": True},
         str(tmp_path))
     assert res.get("steered") is True
     assert calls["n"] == 1
@@ -155,10 +157,132 @@ def test_an_extra_detail_does_not_end_the_watch(tmp_path, monkeypatch):
                                       "stderr": ""})
     monkeypatch.setattr(_watch.time, "sleep", lambda *_a: None)
     res = _watch._t_watch_until(
-        {"cmd": "x", "interval_s": 30, "max_checks": 3, "timeout_s": 300},
+        {"cmd": "x", "interval_s": 30, "max_checks": 3, "timeout_s": 300,
+         "inline": True},
         str(tmp_path))
     assert res.get("steered") is not True
     assert res["checks"] == 3
+    assert chat_interject.pending(42) is True
+    chat_interject.clear(42)
+
+
+def test_dont_forget_does_not_end_the_watch_but_stop_does(tmp_path, monkeypatch):
+    """Queued reminders match the wide replace regex. A live watch must not
+    treat them as a stop; only an explicit stop phrase ends it."""
+    from aiforge_core.runtime import chat_cancel, chat_interject
+    monkeypatch.setattr(chat_cancel, "active", lambda: 42)
+    monkeypatch.setattr(chat_cancel, "is_cancelled", lambda sid: False)
+    monkeypatch.setattr("aiforge_core.runtime.chat_agent._shell._t_run_command",
+                        lambda a, c: {"ok": False, "code": 1, "stdout": "",
+                                      "stderr": ""})
+    monkeypatch.setattr(_watch.time, "sleep", lambda *_a: None)
+    chat_interject.clear(42)
+    chat_interject.push(42, "don't forget the date")
+    kept = _watch._t_watch_until(
+        {"cmd": "x", "interval_s": 30, "max_checks": 3, "timeout_s": 300,
+         "inline": True},
+        str(tmp_path))
+    assert kept.get("steered") is not True
+    assert kept.get("stopped") is not True
+    assert kept["checks"] == 3
+    assert chat_interject.pending(42) is True
+    chat_interject.clear(42)
+    chat_interject.push(42, "use grep instead")
+    kept = _watch._t_watch_until(
+        {"cmd": "x", "interval_s": 30, "max_checks": 3, "timeout_s": 300,
+         "inline": True},
+        str(tmp_path))
+    assert kept.get("steered") is not True
+    assert kept.get("stopped") is not True
+    assert kept["checks"] == 3
+    chat_interject.clear(42)
+    chat_interject.push(42, "stop")
+    ended = _watch._t_watch_until(
+        {"cmd": "x", "interval_s": 30, "max_checks": 3, "timeout_s": 300,
+         "inline": True},
+        str(tmp_path))
+    assert ended.get("stopped") or ended.get("steered")
+    assert ended["checks"] == 0
+    chat_interject.clear(42)
+
+
+def test_dont_forget_during_a_probe_does_not_end_the_watch(tmp_path, monkeypatch):
+    """Between checks, only_cut already holds. During a check the probe
+    used to wait with only_replace, so "don't forget" killed it and the
+    watch ended. Queue the reminder while that wait is blocked."""
+    import threading
+    import time
+
+    from aiforge_core.runtime import chat_cancel, chat_interject, proc_signals
+    from aiforge_core.runtime.chat_agent import _shell as S
+
+    blocked = threading.Event()
+    release = threading.Event()
+    killed = []
+
+    class _Held:
+        pid = 4321
+        returncode = None
+
+        def poll(self):
+            blocked.set()
+            if release.is_set():
+                self.returncode = 0
+                return 0
+            return None
+
+        def communicate(self, timeout=None):
+            return "ok", ""
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            killed.append("kill")
+            self.returncode = -9
+
+    def _spawn(cmd, **kw):
+        for key, text in (("stdout", "ok"), ("stderr", "")):
+            if hasattr(kw.get(key), "write"):
+                kw[key].write(text.encode())
+        return _Held()
+
+    monkeypatch.setattr(S.subprocess, "Popen", _spawn)
+    monkeypatch.setattr(S.os, "getpgid", lambda pid: 999)
+    monkeypatch.setattr(S, "_workspace_root", lambda: tmp_path)
+    monkeypatch.setattr(proc_signals, "stop_group",
+                        lambda *a, **k: killed.append("stop") or False)
+    monkeypatch.setattr(chat_cancel, "active", lambda: 42)
+    monkeypatch.setattr(chat_cancel, "is_cancelled", lambda sid: False)
+    monkeypatch.setattr(chat_cancel, "track_pgid", lambda *a, **k: None)
+    real_sleep = time.sleep
+    monkeypatch.setattr(time, "sleep", lambda s: release.wait(0.01))
+    chat_interject.clear(42)
+    out = {}
+
+    def _go():
+        out["res"] = _watch._t_watch_until(
+            {"cmd": "true", "until": "exit_zero", "max_checks": 3,
+             "interval_s": 30, "timeout_s": 300, "cmd_timeout": 30,
+             "inline": True},
+            str(tmp_path))
+
+    t = threading.Thread(target=_go)
+    t.start()
+    assert blocked.wait(2), "probe wait never started"
+    chat_interject.push(42, "don't forget the date")
+    real_sleep(0.12)
+    assert t.is_alive(), "don't forget ended the watch during the probe"
+    assert "res" not in out
+    assert killed == []
+    release.set()
+    t.join(2)
+    assert not t.is_alive()
+    res = out["res"]
+    assert res.get("steered") is not True
+    assert res.get("stopped") is not True
+    assert res.get("ok") is True
+    assert res.get("matched") is True
     assert chat_interject.pending(42) is True
     chat_interject.clear(42)
 
@@ -334,16 +458,18 @@ def test_it_will_not_double_schedule_the_same_name(jobs, tmp_path):
     assert "already exists" in dup["error"]
 
 
-def test_it_cannot_delete_an_operators_script_job(jobs, tmp_path):
+def test_cancel_stops_a_script_job_and_keeps_the_script(jobs, tmp_path):
+    """Cancel covers script jobs too. The script file stays; the row goes,
+    and a running worker is asked to stop (close_job does that)."""
     from aiforge_core.jobs import parse as jobs_parse
     job = jobs.create(name="backup", cron="0 3 * * *", ticket_title="backup",
                       ticket_body="", next_run_at=jobs_parse.next_runs("0 3 * * *", 1)[0],
                       kind="script", script_path="/usr/local/bin/backup.sh")
     res = _watch._t_schedule_task(
         {"action": "cancel", "job_id": job["id"]}, str(tmp_path))
-    assert res["ok"] is False
-    assert "Jobs page" in res["error"]
-    assert jobs.get(job["id"]) is not None
+    assert res["ok"] is True
+    assert res["cancelled"] == job["id"]
+    assert jobs.get(job["id"]) is None
 
 
 def test_the_job_list_does_not_ship_script_stderr_to_the_model(jobs, tmp_path):

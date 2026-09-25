@@ -91,12 +91,16 @@ def _timeout_s() -> int:
         return 900
 
 
-def run_script(path: str, *, timeout_s: int | None = None) -> dict:
+def run_script(path: str, *, timeout_s: int | None = None,
+               on_start=None) -> dict:
     """Execute a stored job script with bash under a timeout.
 
     Returns ``{"ok": bool, "returncode": int|None, "stdout": str, "stderr": str,
     "error": str|None}``. Refuses (ok=False) any path outside jobs_dir. Never
     raises — the scheduler must survive any script failure.
+
+    ``on_start(proc)`` runs once the process exists, so a cancel can kill its
+    process group. The process is its own session.
     """
     if not is_within_jobs_dir(path):
         return {"ok": False, "returncode": None, "stdout": "", "stderr": "",
@@ -105,21 +109,48 @@ def run_script(path: str, *, timeout_s: int | None = None) -> dict:
         return {"ok": False, "returncode": None, "stdout": "", "stderr": "",
                 "error": f"script not found: {path}"}
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             ["/bin/bash", os.path.expanduser(path)],
-            capture_output=True, text=True, timeout=timeout_s or _timeout_s(),
-            cwd=jobs_dir())
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "returncode": None, "stdout": "", "stderr": "",
-                "error": "script timed out"}
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            cwd=jobs_dir(), start_new_session=True)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "returncode": None, "stdout": "", "stderr": "",
                 "error": f"exec failed: {exc}"}
+    if on_start is not None:
+        try:
+            on_start(proc)
+        except Exception:  # noqa: BLE001 — tracking must not skip the script
+            pass
+    try:
+        out, err = proc.communicate(timeout=timeout_s or _timeout_s())
+    except subprocess.TimeoutExpired:
+        _stop_script(proc)
+        return {"ok": False, "returncode": None, "stdout": "", "stderr": "",
+                "error": "script timed out"}
+    except Exception as exc:  # noqa: BLE001
+        _stop_script(proc)
+        return {"ok": False, "returncode": None, "stdout": "", "stderr": "",
+                "error": f"exec failed: {exc}"}
     return {"ok": proc.returncode == 0, "returncode": proc.returncode,
-            "stdout": (proc.stdout or "")[-4000:],
-            "stderr": (proc.stderr or "")[-4000:],
+            "stdout": (out or "")[-4000:],
+            "stderr": (err or "")[-4000:],
             "error": None if proc.returncode == 0
             else f"script exited {proc.returncode}"}
+
+
+def _stop_script(proc) -> None:
+    try:
+        from aiforge_core.runtime import proc_signals
+        proc_signals.stop_group(proc.pid, pause_s=0.0)
+    except Exception:  # noqa: BLE001
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        proc.communicate(timeout=2)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def delete_script(path: str) -> bool:

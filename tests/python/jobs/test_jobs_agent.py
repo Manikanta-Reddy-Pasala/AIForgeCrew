@@ -25,8 +25,10 @@ def _wait_until(cond, timeout=5.0):
 @pytest.fixture(autouse=True)
 def _tmp_env(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
-    store._conn.cache_clear() if hasattr(store, "_conn") else None
+    monkeypatch.setenv("AIFORGE_JOBS_DB_PATH", str(tmp_path / "jobs.db"))
+    store.reset_backend_for_tests()
     yield
+    store.reset_backend_for_tests()
 
 
 def _make_agent_job(body="read JIRA-1 and email me a summary"):

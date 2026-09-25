@@ -9,6 +9,9 @@ from aiforge_core.jobs import store
 @pytest.fixture(autouse=True)
 def _tmp_db(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_JOBS_DB_PATH", str(tmp_path / "jobs.db"))
+    store.reset_backend_for_tests()
+    yield
+    store.reset_backend_for_tests()
 
 
 def _mk(**over):
@@ -88,3 +91,20 @@ def test_mark_fired_failure_records_error():
     store.mark_fired(j["id"], last_run_at="2026-07-03T08:00:01",
                      next_run_at="2026-07-04T08:00:00", last_error="boom")
     assert store.get(j["id"])["last_error"] == "boom"
+
+
+def test_update_if_token_refuses_a_stale_claim():
+    j = _mk()
+    assert store.claim(
+        j["id"], expected_next_run_at=j["next_run_at"],
+        last_run_at="2026-07-03T08:00:00", next_run_at="2026-07-04T08:00:00")
+    stale = store.get(j["id"])["run_token"]
+    assert store.claim(
+        j["id"], expected_next_run_at="2026-07-04T08:00:00",
+        last_run_at="2026-07-04T08:00:00", next_run_at="2026-07-05T08:00:00")
+    assert store.update_if_token(j["id"], stale, last_error="late boom") is None
+    row = store.get(j["id"])
+    assert row["last_error"] is None
+    assert row["run_token"] != stale
+    assert store.update_if_token(
+        j["id"], row["run_token"], last_error="fresh")["last_error"] == "fresh"

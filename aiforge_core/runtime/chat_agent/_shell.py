@@ -284,7 +284,8 @@ _SERVER_START_REFUSAL = (
     "command returns).")
 
 
-def _run_refusal(cmd: str, args: dict, base: str) -> dict | None:
+def _run_refusal(cmd: str, args: dict, base: str, *,
+                 background: bool = False) -> dict | None:
     """The pre-flight gates, all fail-CLOSED. None means the command may run.
 
     - a destructive delete without an explicit confirm;
@@ -309,7 +310,7 @@ def _run_refusal(cmd: str, args: dict, base: str) -> dict | None:
     if _is_blanket_git(cmd):
         return {"ok": False, "blocked": "blanket_git",
                 "error": _BLANKET_GIT_REFUSAL}
-    if _is_server_start(cmd, base):
+    if _is_server_start(cmd, base) and not background:
         return {"ok": False, "blocked": "server_start",
                 "error": _SERVER_START_REFUSAL}
     missing = _preflight_missing_path(cmd, base)
@@ -363,13 +364,18 @@ def _await_exit(proc, timeout: int, sid, spool=None) -> dict | None:
     """Poll until the process exits; a dict when it was stopped or timed out."""
     import time as _time
 
-    from aiforge_core.runtime.run_interrupt import attention, steered
+    from aiforge_core.runtime.run_interrupt import (
+        attention, steered, process_owned_by_watch)
     deadline = _time.monotonic() + timeout
     while proc.poll() is None:
         # Stop still kills immediately. A typed message is read first: the
         # command is the task, so it keeps running unless the message asks
-        # to stop or replace it.
-        why = attention(sid, only_replace=True)
+        # to stop or replace it. A watch probe is stricter: only the
+        # six-word stop set (and the Stop button) ends that wait.
+        if process_owned_by_watch():
+            why = attention(sid, only_cut=True)
+        else:
+            why = attention(sid, only_replace=True)
         if why == "stop":
             _kill_proc(proc)
             return {"ok": False, "stopped": True, "error": "stopped by user"}
@@ -407,13 +413,62 @@ def _collect_output(proc, spool=None) -> tuple[str, str]:
         return _drain(proc) or ("", "")
 
 
+def _marked_background(args: dict, cmd: str) -> bool:
+    """True when the user or the model marked this command as background.
+
+    ``background: true``, or a command that ends in a trailing ``&`` (not
+    ``&&``). That process must keep running after this tool returns."""
+    flag = args.get("background")
+    if flag in (True, 1, "1", "true", "True", "yes"):
+        return True
+    s = (cmd or "").rstrip()
+    return len(s) >= 2 and s.endswith("&") and not s.endswith("&&") \
+        and s[-2] != "&"
+
+
+def _without_trailing_amp(cmd: str) -> str:
+    """Run a trailing ``&`` in the foreground of its own session.
+
+    ``sleep 30 &`` makes the shell exit at once and leaves the child with
+    no handle for Stop. Dropping that one ``&`` (not ``&&``) keeps the
+    command as the session leader, so Stop still reaches it."""
+    s = (cmd or "").rstrip()
+    if len(s) >= 2 and s.endswith("&") and not s.endswith("&&") and s[-2] != "&":
+        return s[:-1].rstrip()
+    return cmd
+
+
+def _start_background(cmd: str, base: str) -> dict:
+    """Spawn ``cmd`` and return a handle. Do not kill it on the way out."""
+    from aiforge_core.runtime import bg_work, chat_cancel
+    cmd = _without_trailing_amp(cmd)
+    spool = Spool()
+    try:
+        proc = subprocess.Popen(
+            cmd, shell=True, cwd=base,
+            stdout=spool.out, stderr=spool.err,
+            start_new_session=True)
+    except Exception as exc:  # noqa: BLE001
+        spool.close()
+        return {"ok": False, "error": str(exc)}
+    spool.pgid = proc.pid
+    try:
+        sid = chat_cancel.active()
+    except Exception:  # noqa: BLE001
+        sid = None
+    return bg_work.track_command(sid, base, cmd, proc, spool)
+
+
 def _t_run_command(args: dict, cwd: str) -> dict:
     cmd = args["cmd"]
     root = _workspace_root()
     base = str(root) if root is not None else cwd
-    refusal = _run_refusal(cmd, args, base)
+    background = _marked_background(args, cmd)
+    refusal = _run_refusal(cmd, args, base, background=background)
     if refusal is not None:
         return refusal
+    if background:
+        return _start_background(cmd, base)
     # Default generous so dependency installs / builds (npm ci, mvn package,
     # pip install) aren't killed mid-run; agent may override per call.
     default_to = int(os.environ.get("AIFORGE_CHAT_CMD_TIMEOUT_S", "600"))

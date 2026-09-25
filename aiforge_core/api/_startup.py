@@ -258,6 +258,11 @@ def _start_jobs_scheduler() -> None:
     tests/python/api/test_jobs_scheduler_started.py asserts the registration,
     because nothing else would notice it disappearing again."""
     try:
+        from aiforge_core.runtime import bg_work
+        bg_work.resume_after_restart()
+    except Exception:  # noqa: BLE001 — startup must never crash the API
+        pass
+    try:
         from aiforge_core.jobs import scheduler as jobs_scheduler
         if jobs_scheduler._disabled():
             return

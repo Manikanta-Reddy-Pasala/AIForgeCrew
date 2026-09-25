@@ -108,10 +108,17 @@ def fire(job: dict, *, now: datetime | None = None) -> bool:
         log.info("jobs.fire slot already claimed job=%s — skipping (no double-fire)",
                  job["id"])
         return False
-    _kind = job.get("kind") or "ticket"
-    if _kind == "script":
+    fresh = store.get(job["id"]) or job
+    return _dispatch(fresh)
+
+
+def _dispatch(job: dict) -> bool:
+    """Run a job whose slot is already claimed. Used by fire() and by the
+    one startup retry of a run that died in flight."""
+    kind = job.get("kind") or "ticket"
+    if kind == "script":
         return _fire_script(job)
-    if _kind == "agent":
+    if kind == "agent":
         return _fire_agent(job)
     try:
         from aiforge_core.tickets import store as tickets_mod
@@ -119,8 +126,10 @@ def fire(job: dict, *, now: datetime | None = None) -> bool:
             title=job["ticket_title"], body=job["ticket_body"],
             project=job.get("project"),
             metadata={"source": "scheduled_job", "job_id": job["id"]})
-        log.info("jobs.fired job=%s ticket=%s", job["id"],
-                 getattr(t, "identifier", getattr(t, "id", "?")))
+        ident = getattr(t, "identifier", None) or getattr(t, "id", "?")
+        log.info("jobs.fired job=%s ticket=%s", job["id"], ident)
+        from aiforge_core.jobs.outcome import post
+        post(job, f"Scheduled “{job.get('name')}” filed ticket {ident}.")
         return True
     except Exception as exc:  # noqa: BLE001 — schedule already advanced
         # Slot is already consumed; record the error, do NOT re-fire.
@@ -130,6 +139,170 @@ def fire(job: dict, *, now: datetime | None = None) -> bool:
             pass
         log.warning("jobs.fire_failed job=%s: %s", job["id"], exc)
         return False
+    finally:
+        if kind == "ticket":
+            store.clear_run(job["id"], job.get("run_token"))
+
+
+# Cancel events and live process groups, so closing a job stops the worker
+# and not only the row. In-process: that is where the thread lives.
+_STOP: dict = {}
+_PROCS: dict = {}
+_SESSION_AGENT: dict = {}
+
+
+def request_stop(job_id) -> bool:
+    """Ask the in-flight worker for this job to stop, and kill its processes.
+
+    Returns True when something was actually running. A future job that has
+    not started yet is only a row; closing the row is the caller's job.
+
+    The stop Event is published before the worker thread starts. If it
+    is already set, the worker exits immediately. ``run_status`` is
+    always cleared so a restart cannot resume a run the user already
+    stopped, even when this call beat the Event publish.
+    """
+    stopped = False
+    inflight = False
+    try:
+        job = store.get(job_id)
+    except Exception:  # noqa: BLE001
+        job = None
+    if job and job.get("run_status") == "running":
+        inflight = True
+    sid = _session_of(job) if job else None
+    with _RUNNING_LOCK:
+        ev = _STOP.get(job_id)
+        procs = list(_PROCS.get(job_id) or ())
+        bound = sid is not None and _SESSION_AGENT.get(sid) == job_id
+    # A worker that has not published yet still exits: run_status is
+    # cleared below and _claim_still_held() fails. Do not plant a set
+    # Event here — a leftover would make the next claimed slot exit
+    # the moment it binds.
+    if ev is not None:
+        ev.set()
+        stopped = True
+    if procs:
+        from aiforge_core.runtime import proc_signals
+        for pgid in procs:
+            proc_signals.stop_group(pgid, pause_s=0.0)
+        stopped = True
+    if bound:
+        try:
+            from aiforge_core.runtime import chat_cancel, chat_runs
+            if not chat_runs.is_running(sid):
+                chat_cancel.cancel(sid)
+                stopped = True
+        except Exception:  # noqa: BLE001
+            pass
+    # Always drop the in-flight mark. Missing the Event used to leave
+    # run_status=running, and resume_inflight started the work again.
+    try:
+        store.update(job_id, run_status=None, run_token=None,
+                     run_attempt=0, run_pid=None)
+    except Exception:  # noqa: BLE001
+        pass
+    return stopped or inflight
+
+
+def request_stop_session(session_id) -> bool:
+    """Stop the scheduled agent run bound to this chat, when there is one."""
+    try:
+        sid = int(session_id)
+    except (TypeError, ValueError):
+        return False
+    with _RUNNING_LOCK:
+        job_id = _SESSION_AGENT.get(sid)
+    if job_id is None:
+        return False
+    return request_stop(job_id)
+
+
+def stop_all() -> int:
+    """Stop every in-flight scheduled worker. Used by kill-all."""
+    with _RUNNING_LOCK:
+        ids = list(set(_STOP) | set(_RUNNING))
+    n = 0
+    for job_id in ids:
+        if request_stop(job_id):
+            n += 1
+    return n
+
+
+def running_agent_for_session(session_id):
+    """Job id of the agent run this chat can steer, or None."""
+    try:
+        sid = int(session_id)
+    except (TypeError, ValueError):
+        return None
+    with _RUNNING_LOCK:
+        return _SESSION_AGENT.get(sid)
+
+
+def _session_of(job: dict):
+    raw = job.get("session_id")
+    if raw in (None, ""):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _remember_proc(job_id, pid: int) -> None:
+    if not pid:
+        return
+    with _RUNNING_LOCK:
+        _PROCS.setdefault(job_id, set()).add(int(pid))
+
+
+def _bind_stop(job_id):
+    """The Event this job's worker watches. Reuse one a stop already planted."""
+    with _RUNNING_LOCK:
+        ev = _STOP.get(job_id)
+        if ev is None:
+            ev = threading.Event()
+            _STOP[job_id] = ev
+        return ev
+
+
+def _claim_still_held(job: dict) -> bool:
+    """False when request_stop already dropped this claimed slot.
+
+    Direct dispatches (tests, a fire that has no token yet) have nothing
+    to check and are still held."""
+    token = job.get("run_token")
+    if not token:
+        return True
+    try:
+        row = store.get(job["id"])
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(row and row.get("run_status") == "running"
+                and row.get("run_token") == token)
+
+
+def _still_this_job(job: dict) -> bool:
+    """False when this id now names a different row or a later claim.
+
+    Name+kind is not enough: a reclaimed slot keeps both and would let a
+    late worker write ``last_error`` onto the new run. The token check
+    is the same predicate as ``_claim_still_held``."""
+    if not _claim_still_held(job):
+        return False
+    try:
+        row = store.get(job["id"])
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(row and row.get("name") == job.get("name")
+                and (row.get("kind") or "ticket") == (job.get("kind") or "ticket"))
+
+
+def _record_last_error(job: dict, last_error) -> None:
+    """Write last_error only while this claimed run still owns the row."""
+    if not _claim_still_held(job):
+        return
+    store.update_if_token(job["id"], job.get("run_token"), last_error=last_error)
 
 
 def _fire_script(job: dict) -> bool:
@@ -143,29 +316,63 @@ def _fire_script(job: dict) -> bool:
 
     from aiforge_core.jobs import scripts
     path = job.get("script_path") or ""
+    ev = _bind_stop(job["id"])
 
     def _run() -> None:
-        try:
-            res = scripts.run_script(path)
-        except Exception as exc:  # noqa: BLE001 — worker must never crash the thread
-            res = {"ok": False, "error": str(exc)}
-        if res.get("ok"):
+        def _on_start(proc) -> None:
+            _remember_proc(job["id"], proc.pid)
             try:
-                store.update(job["id"], last_error=None)
+                # start_new_session: pid is the process group.
+                if _still_this_job(job):
+                    store.update(job["id"], run_pid=proc.pid)
             except Exception:  # noqa: BLE001
                 pass
-            log.info("jobs.fired script job=%s path=%s", job["id"], path)
-            return
-        err = (res.get("error") or "script failed")
-        tail = (res.get("stderr") or res.get("stdout") or "").strip()
-        msg = f"{err}: {tail}"[:500] if tail else err[:500]
-        try:
-            store.update(job["id"], last_error=msg)
-        except Exception:  # noqa: BLE001
-            pass
-        log.warning("jobs.fire_script_failed job=%s: %s", job["id"], msg)
+            if ev.is_set():
+                from aiforge_core.runtime import proc_signals
+                proc_signals.stop_group(proc.pid, pause_s=0.0)
 
-    _t.Thread(target=_run, name=f"jobs-script-{job['id']}", daemon=True).start()
+        if ev.is_set() or not _claim_still_held(job):
+            with _RUNNING_LOCK:
+                _STOP.pop(job["id"], None)
+            store.clear_run(job["id"], job.get("run_token"))
+            return
+        try:
+            try:
+                res = scripts.run_script(path, on_start=_on_start)
+            except Exception as exc:  # noqa: BLE001 — worker must never crash the thread
+                res = {"ok": False, "error": str(exc)}
+            from aiforge_core.jobs.outcome import post
+            if res.get("ok"):
+                try:
+                    _record_last_error(job, None)
+                except Exception:  # noqa: BLE001
+                    pass
+                log.info("jobs.fired script job=%s path=%s", job["id"], path)
+                post(job, f"Scheduled “{job.get('name')}” finished.")
+                return
+            err = (res.get("error") or "script failed")
+            # One line on the job chip. The chat note stays shorter than that.
+            tail = (res.get("stderr") or res.get("stdout") or "").strip()
+            msg = f"{err}: {tail}"[:500] if tail else err[:500]
+            try:
+                _record_last_error(job, msg)
+            except Exception:  # noqa: BLE001
+                pass
+            log.warning("jobs.fire_script_failed job=%s: %s", job["id"], msg)
+            first = (tail or err).splitlines()[0][:160]
+            post(job, f"Scheduled “{job.get('name')}” failed: {first}")
+        finally:
+            with _RUNNING_LOCK:
+                _STOP.pop(job["id"], None)
+                _PROCS.pop(job["id"], None)
+            store.clear_run(job["id"], job.get("run_token"))
+
+    try:
+        _t.Thread(target=_run, name=f"jobs-script-{job['id']}", daemon=True).start()
+    except Exception:  # noqa: BLE001
+        with _RUNNING_LOCK:
+            _STOP.pop(job["id"], None)
+        raise
     return True
 
 
@@ -199,33 +406,82 @@ def _job_workspace(job: dict) -> str:
     return tempfile.mkdtemp(prefix=f"aiforge-job-{job.get('id')}-")
 
 
+def _arm_agent_session(job: dict):
+    """Publish the chat binding before the worker thread starts.
+
+    A message that arrives in the gap after Thread.start() and before the
+    worker runs must already fold into this job, not open a second turn.
+    The cancel token is the object this job created. A later turn that
+    replaces it is left alone when the job ends.
+    Returns ``(session_id, token_or_None)``."""
+    sid = _session_of(job)
+    if sid is None:
+        return None, None
+    from aiforge_core.runtime import chat_cancel, chat_interject, chat_runs
+    with _RUNNING_LOCK:
+        _SESSION_AGENT[sid] = job["id"]
+    token = None
+    try:
+        if not chat_runs.is_running(sid) and chat_cancel.get(sid) is None:
+            token = chat_cancel.start(sid)
+        chat_interject.set_steerable(sid, True)
+    except Exception:  # noqa: BLE001
+        pass
+    return sid, token
+
+
+def _disarm_agent_session(sid, job_id, token) -> None:
+    if sid is None:
+        return
+    try:
+        from aiforge_core.runtime import chat_cancel, chat_interject
+        if token is not None and chat_cancel.finish_if_owner(sid, token):
+            chat_interject.set_steerable(sid, False)
+    except Exception:  # noqa: BLE001
+        pass
+    with _RUNNING_LOCK:
+        if _SESSION_AGENT.get(sid) == job_id:
+            _SESSION_AGENT.pop(sid, None)
+
+
 def _run_agent_job(job: dict, prompt: str) -> None:
-    """Execute one agent job's request through the chat agent (full tool surface,
-    autonomous — session_id=None, no approval gate). Records the outcome on
-    ``last_error`` (None = ok). Never crashes the worker thread."""
+    """Execute one agent job's request through the chat agent (full tool surface).
+
+    A job created from a chat runs IN that session so a later message can
+    steer or stop it. A job from the Jobs page stays session-less. Records
+    the outcome on ``last_error`` (None = ok) and, when there is a session,
+    one short line in that chat. Never crashes the worker thread."""
+    from aiforge_core.jobs.outcome import post
+    sid = _session_of(job)
     try:
         from aiforge_core.runtime.chat_agent import run_chat_agent
         cwd = _job_workspace(job)
         final, err = "", None
         for ev in run_chat_agent([{"role": "user", "content": prompt}],
-                                 cwd=cwd, role="chat", session_id=None):
+                                 cwd=cwd, role="chat", session_id=sid):
             etype = ev.get("type")
             if etype == "message":
                 final = ev.get("text") or final
             elif etype == "error":
                 err = ev.get("text")
         if err:
-            store.update(job["id"], last_error=str(err)[:500])
+            _record_last_error(job, str(err)[:500])
             log.warning("jobs.fire_agent_failed job=%s: %s", job["id"], err)
+            post(job, f"Scheduled “{job.get('name')}” stopped."
+                 if "stopped" in str(err).lower()
+                 else f"Scheduled “{job.get('name')}” failed: {str(err)[:160]}")
         else:
-            store.update(job["id"], last_error=None)
+            _record_last_error(job, None)
             log.info("jobs.fired agent job=%s: %s", job["id"], (final or "")[:160])
+            summary = (final or "finished").splitlines()[0][:240]
+            post(job, f"Scheduled “{job.get('name')}”: {summary}")
     except Exception as exc:  # noqa: BLE001 — worker never crashes the thread
         try:
-            store.update(job["id"], last_error=str(exc)[:500])
+            _record_last_error(job, str(exc)[:500])
         except Exception:  # noqa: BLE001
             pass
         log.warning("jobs.fire_agent_crashed job=%s: %s", job["id"], exc)
+        post(job, f"Scheduled “{job.get('name')}” failed: {str(exc)[:160]}")
 
 
 def _fire_agent(job: dict) -> bool:
@@ -243,12 +499,28 @@ def _fire_agent(job: dict) -> bool:
         # needs it most: it fires while nobody is at the keyboard, so the box is
         # idling toward sleep the whole time it works. Screen lock is untouched.
         from aiforge_core.runtime.keep_awake import keep_awake
+        from aiforge_core.runtime.run_interrupt import bind_stop_event
+        from aiforge_core.runtime import chat_cancel
+        if ev.is_set() or not _claim_still_held(job):
+            _disarm_agent_session(sid, job["id"], owned_token)
+            with _RUNNING_LOCK:
+                _RUNNING.discard(job["id"])
+                _STOP.pop(job["id"], None)
+            store.clear_run(job["id"], job.get("run_token"))
+            return
         try:
+            if sid is not None:
+                chat_cancel.set_active(sid)
+            bind_stop_event(ev)
             with keep_awake(f"job {job.get('id')}"):
                 _run_agent_job(job, prompt)
         finally:
+            bind_stop_event(None)
+            _disarm_agent_session(sid, job["id"], owned_token)
             with _RUNNING_LOCK:
                 _RUNNING.discard(job["id"])
+                _STOP.pop(job["id"], None)
+            store.clear_run(job["id"], job.get("run_token"))
 
     # A slow run must not overlap its own next firing: both would work in the
     # same job workspace. This firing's slot is already consumed, so it is
@@ -267,12 +539,20 @@ def _fire_agent(job: dict) -> bool:
                                                "still running at this firing")
         except Exception:  # noqa: BLE001
             pass
+        # The slot was claimed, but no worker is going to clear it. Leaving
+        # the row in-flight would make the next startup run it again on top
+        # of the one that is still going.
+        store.clear_run(job["id"], job.get("run_token"))
         return False
+    ev = _bind_stop(job["id"])
+    sid, owned_token = _arm_agent_session(job)
     try:
         _t.Thread(target=_run, name=f"jobs-agent-{job['id']}", daemon=True).start()
     except Exception:  # noqa: BLE001 — a thread that never started is not running
         with _RUNNING_LOCK:
             _RUNNING.discard(job["id"])
+            _STOP.pop(job["id"], None)
+        _disarm_agent_session(sid, job["id"], owned_token)
         raise
     return True
 
@@ -299,12 +579,114 @@ def tick(now: datetime | None = None) -> int:
     return fired
 
 
+def _pid_alive(pid) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except OSError:
+        return False
+    return True
+
+
+def _kill_pid(pid) -> None:
+    if not pid:
+        return
+    try:
+        from aiforge_core.runtime import proc_signals
+        proc_signals.stop_group(int(pid), pause_s=0.0)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _watch_live_script(job: dict, ev, pid: int) -> None:
+    """Wait out a script that survived restart. Do not launch another."""
+    try:
+        if ev.is_set() or not _claim_still_held(job):
+            _kill_pid(pid)
+            return
+        while _pid_alive(pid):
+            if ev.is_set():
+                _kill_pid(pid)
+                break
+            time.sleep(0.5)
+    finally:
+        with _RUNNING_LOCK:
+            _STOP.pop(job["id"], None)
+            _PROCS.pop(job["id"], None)
+        store.clear_run(job["id"], job.get("run_token"))
+
+
+def resume_inflight() -> int:
+    """Retry a claimed run that died with the process, once.
+
+    A second restart finds ``run_attempt >= 2`` and marks the run stopped
+    instead of looping. The next cron slot is untouched."""
+    from aiforge_core.jobs.outcome import post
+    n = 0
+    try:
+        rows = store.inflight_jobs()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("jobs.resume query failed: %s", exc)
+        return 0
+    for job in rows:
+        attempt = int(job.get("run_attempt") or 1)
+        pid = job.get("run_pid")
+        if (job.get("kind") == "script") and _pid_alive(pid):
+            if attempt >= 2:
+                _kill_pid(pid)
+            else:
+                # One process wins the reattach. The loser must not
+                # dispatch a second copy of a script that is still alive.
+                try:
+                    won = store.bump_inflight(job["id"], attempt)
+                except Exception:  # noqa: BLE001
+                    won = False
+                if not won:
+                    continue
+                ev = _bind_stop(job["id"])
+                _remember_proc(job["id"], int(pid))
+                threading.Thread(
+                    target=_watch_live_script, name=f"jobs-reattach-{job['id']}",
+                    daemon=True, args=(job, ev, int(pid))).start()
+                continue
+        if attempt >= 2:
+            try:
+                won = store.release_retried(
+                    job["id"],
+                    "stopped after restart; already retried once")
+            except Exception:  # noqa: BLE001
+                won = False
+            if won:
+                post(job, f"Scheduled “{job.get('name')}” stopped: the process "
+                          "restarted and this run was already retried.")
+            continue
+        try:
+            won = store.bump_inflight(job["id"], attempt)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("jobs.resume mark failed job=%s: %s", job.get("id"), exc)
+            continue
+        if not won:
+            continue
+        fresh = store.get(job["id"]) or job
+        try:
+            _dispatch(fresh)
+            n += 1
+        except Exception as exc:  # noqa: BLE001
+            log.warning("jobs.resume job=%s: %s", job.get("id"), exc)
+    return n
+
+
 def run_loop() -> None:
     """Blocking loop for the daemon thread. Never raises."""
     if not _CRONITER_OK:
         log.warning("jobs.scheduler disabled — 'croniter' not installed "
                     "(run `uv pip install croniter` / `uv sync`)")
         return
+    try:
+        resume_inflight()
+    except Exception as exc:  # noqa: BLE001 — resume must not kill the loop
+        log.warning("jobs.resume crashed: %s", exc)
     log.info("jobs.scheduler loop started (tick=%ss)", _tick_s())
     while True:
         try:
