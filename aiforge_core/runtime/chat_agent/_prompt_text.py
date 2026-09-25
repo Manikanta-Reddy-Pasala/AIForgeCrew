@@ -454,9 +454,11 @@ LONG_RUN_RULE = (
 #: tool-calling API, where one reply can carry several calls.
 BATCH_READS_RULE = (
     "BATCH READS (the one exception to one ACTION per turn): when you need "
-    "several independent lookups of different kinds (a grep, a git_log, a "
-    "jira_read), request them as separate tool calls in ONE reply; they run "
-    "in order before your next turn, and you are told if any did not run. "
-    "For several files, one read_files call is still best. Only read-only "
-    "tools run together: request a write, edit or command on its own, after "
-    "you have seen what it depends on.")
+    "several independent lookups (files, a grep, a git_log, a jira_read), "
+    "request them as separate tool calls in ONE reply. They run at the same "
+    "time, and you are told if any did not run. For several files, one "
+    "read_files call is still best. A write, edit or command that is the "
+    "first call in the reply runs this turn: if the first call is file_patch, "
+    "it runs now. A write, edit or command later in that reply is held until "
+    "your next turn, so you see the reads before you change anything. "
+    "Request that later write then, on its own.")

@@ -32,7 +32,20 @@ def _call_sig(name, args):
     return name + "|" + json.dumps(args, sort_keys=True, default=str)
 
 
-def _queue_batched_reads(st, n):
+def _first_runs_alongside(text) -> bool:
+    """Early reads overlap the first call when that call is batchable: a
+    concurrent read, or memory_lookup, skill_search, resolve_repo,
+    plan_progress, and the other lookups in ``_BATCHABLE``. A write, an
+    edit, or a command is not batchable, so those reads wait until it
+    has finished."""
+    from .._native import _BATCHABLE
+    from .._prompt import _parse
+    step = _parse(text or "")
+    return (step.get("kind") == "action"
+            and (step.get("tool") or "") in _BATCHABLE)
+
+
+def _queue_batched_reads(st, n, first_text=""):
     """Keep the read-only calls the model batched after its first one. Called
     right after model call ``n``, so any earlier batch has now been read."""
     take = getattr(st.complete_fn, "take_queued", None)
@@ -45,7 +58,8 @@ def _queue_batched_reads(st, n):
     st.batch_unread = bool(steps)
     _cancel_early_reads(st)
     # The batch runs from step n + 1: a batch that would stop there starts nothing.
-    if steps and _batch_stop_reason(st, n + 1, st.session_id) is None:
+    if (steps and _first_runs_alongside(first_text)
+            and _batch_stop_reason(st, n + 1, st.session_id) is None):
         try:
             _start_parallel_reads(st)
         except Exception:  # noqa: BLE001 — e.g. no thread left: run them in line
@@ -93,7 +107,8 @@ def _start_parallel_reads(st):
         name = step["tool"]
         args = step["args"] if isinstance(step["args"], dict) else {}
         sig = _call_sig(name, args)
-        if sig not in calls and _can_start_early(st, name, args, sig):
+        if (sig not in calls and sig not in st.early_reads
+                and _can_start_early(st, name, args, sig)):
             calls[sig] = (name, args)
     cap = _parallel_cap()
     if not calls or cap == 0:

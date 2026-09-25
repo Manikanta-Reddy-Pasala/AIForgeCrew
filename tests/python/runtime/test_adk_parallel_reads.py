@@ -182,16 +182,157 @@ def test_an_error_in_the_thread_reaches_the_tool_error_callbacks():
     assert responses == [{"error": "jira is down"}]
 
 
-def test_only_slow_reads_are_threaded():
+def test_editor_rename_and_format_take_the_same_lock_as_file_read(
+        monkeypatch, tmp_path):
+    """A write through editor, rename_symbol, or format waits on the same
+    per-path lock file_read holds, so the read cannot cache a torn file."""
+    import re
+
+    from aiforge_core.runtime.doer_tools import _fs
+    from aiforge_core.runtime.doer_tools._repo import _rename_in_one_file
+    from aiforge_core.runtime.sandbox import reset_root_override, set_root_override
+    from aiforge_core.runtime.tools.editor import editor
+    from aiforge_core.runtime.tools.format import format as format_file
+    seen = []
+    real = _fs._file_lock
+
+    def _spy(path):
+        lock = real(path)
+        seen.append((path, lock))
+        return lock
+
+    monkeypatch.setattr(_fs, "_file_lock", _spy)
+    token = set_root_override(tmp_path)
+    try:
+        (tmp_path / "app.py").write_text("x = 1\n")
+        for command, kwargs in (
+            ("create", {"file_text": "y = 1\n"}),
+            ("str_replace", {"old_str": "x = 1\n", "new_str": "x = 2\n"}),
+            ("insert", {"insert_line": 0, "new_str": "z = 0\n"}),
+            ("undo_edit", {}),
+        ):
+            path = "new.py" if command == "create" else "app.py"
+            editor(command, path=path, **kwargs)
+        _rename_in_one_file(str(tmp_path / "app.py"), re.compile(r"\bx\b"),
+                            "w", False)
+        monkeypatch.setattr(
+            "aiforge_core.runtime.tools.format.shutil.which",
+            lambda name: "/usr/bin/ruff" if name == "ruff" else None)
+
+        class _Done:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        monkeypatch.setattr(
+            "aiforge_core.runtime.tools.format.subprocess.run",
+            lambda *args, **kwargs: _Done())
+        before = len(seen)
+        assert format_file("app.py")["ok"] is True
+        assert any(path == "app.py" for path, _lock in seen[before:])
+        assert seen, "a write took the file lock"
+        for path, lock in seen:
+            assert lock is real(path)
+        locked = {path for path, _lock in seen}
+        assert "app.py" in locked
+        assert str(tmp_path / "app.py") in locked
+        assert "new.py" in locked
+    finally:
+        reset_root_override(token)
+
+
+def test_a_later_write_waits_for_the_earlier_read_of_that_path(tmp_path, monkeypatch):
+    """Four reads fill the slots. read(note) waits. patch(other) still runs.
+    patch(note) waits until that read has seen the pre-patch bytes."""
+    monkeypatch.setenv("AIFORGE_DOER_SKIP_SYNTAX", "1")
+    from aiforge_core.runtime.doer_tools import _fs
+    from aiforge_core.runtime.sandbox import reset_root_override, set_root_override
+
+    token = set_root_override(tmp_path)
+    (tmp_path / "note.txt").write_text("old\n")
+    (tmp_path / "other.txt").write_text("zzz\n")
+    events = []
+
+    def jira_read(key: str) -> dict:
+        """Read a JIRA issue by key."""
+        time.sleep(0.35)
+        return {"key": key}
+
+    def file_read(path: str) -> dict:
+        """Read a file."""
+        out = _fs.file_read(path)
+        events.append(("read", path, out.get("content"), time.monotonic()))
+        return out
+
+    def file_patch(path: str, old_text: str, new_text: str) -> dict:
+        """Patch a file."""
+        events.append(("patch", path, time.monotonic()))
+        return _fs.file_patch(path, old_text, new_text)
+
+    reads = tool_for(jira_read)
+    reader = tool_for(file_read)
+    writer = tool_for(file_patch)
+
+    async def _go():
+        await asyncio.wait_for(asyncio.gather(
+            reads._invoke_callable(jira_read, {"key": "B-1"}),
+            reads._invoke_callable(jira_read, {"key": "B-2"}),
+            reads._invoke_callable(jira_read, {"key": "B-3"}),
+            reads._invoke_callable(jira_read, {"key": "B-4"}),
+            reader._invoke_callable(file_read, {"path": "note.txt"}),
+            writer._invoke_callable(
+                file_patch, {"path": "other.txt", "old_text": "zzz\n",
+                             "new_text": "yyy\n"}),
+            writer._invoke_callable(
+                file_patch, {"path": "note.txt", "old_text": "old\n",
+                             "new_text": "new\n"}),
+        ), timeout=3)
+
+    try:
+        asyncio.run(_go())
+    finally:
+        reset_root_override(token)
+    read = next(e for e in events if e[0] == "read")
+    other = next(e for e in events if e[0] == "patch" and e[1] == "other.txt")
+    note = next(e for e in events if e[0] == "patch" and e[1] == "note.txt")
+    assert read[2] == "old\n"
+    assert other[2] < read[3]
+    assert note[2] >= read[3]
+    assert (tmp_path / "note.txt").read_text() == "new\n"
+
+
+def test_reads_are_threaded_and_a_write_stays_on_the_loop():
+    from aiforge_core.runtime.doer_tools._threaded import OrderedWriteTool
+
     def jira_read(key: str) -> dict:
         """Read."""
+        return {}
+
+    def file_read(path: str) -> dict:
+        """Read a file."""
+        return {}
+
+    def grep_repo(pattern: str, path: str = ".") -> dict:
+        """Search."""
         return {}
 
     def file_write(path: str, content: str) -> dict:
         """Write."""
         return {}
+
+    def run_shell(cmd: str) -> dict:
+        """Run a command."""
+        return {}
+
+    def bash(cmd: str) -> dict:
+        """Run a command."""
+        return {}
     assert type(tool_for(jira_read)) is ThreadedReadTool
-    assert type(tool_for(file_write)) is FunctionTool
+    assert type(tool_for(file_read)) is ThreadedReadTool
+    assert type(tool_for(grep_repo)) is FunctionTool
+    assert type(tool_for(file_write)) is OrderedWriteTool
+    assert type(tool_for(run_shell)) is FunctionTool
+    assert type(tool_for(bash)) is FunctionTool
 
 
 def test_the_schema_the_model_sees_is_unchanged():
@@ -202,13 +343,20 @@ def test_the_schema_the_model_sees_is_unchanged():
 
 def test_the_pipeline_tool_set_threads_its_slow_reads():
     from aiforge_core.runtime.doer_tools import adk_function_tools
-    from aiforge_core.runtime.doer_tools._threaded import THREADED_READS
+    from aiforge_core.runtime.doer_tools._threaded import (
+        THREADED_READS, OrderedWriteTool)
     tools = {t.name: t for t in adk_function_tools()}
     assert {"jira_read", "jira_remote_links", "gitlab_pipeline",
             "gitlab_pipelines", "confluence_children", "web_fetch",
             "fetch_url", "http_get"}.issubset(tools)
     for name, tool in tools.items():
         assert isinstance(tool, ThreadedReadTool) == (name in THREADED_READS), name
+    assert type(tools["file_read"]) is ThreadedReadTool
+    assert type(tools["editor"]) is OrderedWriteTool
+    assert type(tools["format"]) is OrderedWriteTool
+    assert type(tools["rename_symbol"]) is OrderedWriteTool
+    assert type(tools["file_patch"]) is OrderedWriteTool
+    assert type(tools["run_shell"]) is FunctionTool
 
 
 def _named(name):

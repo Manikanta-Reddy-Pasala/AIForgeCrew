@@ -253,7 +253,8 @@ def _git(argv: list, timeout: int = 30) -> dict:
 def git_status() -> dict:
     """Working-tree status (branch + staged/unstaged/untracked, porcelain).
     Read-only — the fast way to see what changed before committing."""
-    return _git(["status", "--porcelain=v1", "-b"])
+    # --no-optional-locks: a status beside git_commit must not take index.lock.
+    return _git(["--no-optional-locks", "status", "--porcelain=v1", "-b"])
 
 
 def git_diff(path: str = "", staged: bool = False) -> dict:
@@ -295,7 +296,12 @@ _RENAME_SKIP_DIRS = (".git", "node_modules", ".venv", "venv", "dist", "build",
 def _rename_in_one_file(fp: str, pat, new_name: str, dry_run: bool) -> int:
     """Count (and, unless dry_run, apply) the rename in one file. Returns the
     number of occurrences, or 0 when unreadable / unmatched."""
-    import os as _os
+    from aiforge_core.runtime.doer_tools._fs import _file_lock
+    with _file_lock(fp):
+        return _rename_in_one_file_locked(fp, pat, new_name, dry_run)
+
+
+def _rename_in_one_file_locked(fp, pat, new_name, dry_run) -> int:
     try:
         with open(fp, encoding="utf-8", errors="replace") as fh:
             txt = fh.read()

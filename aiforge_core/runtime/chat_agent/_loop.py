@@ -36,6 +36,7 @@ from ._turn._approval import (  # noqa: F401
     _is_destructive_delete,
     _run_approval,
 )
+from ._turn import _batch as _batch_mod
 from ._turn._batch import (  # noqa: F401
     _NOT_BATCHABLE,
     _batch_stop_reason,
@@ -316,7 +317,16 @@ def run_chat_agent(
         while True:
             n += 1
             # A batch of reads from the last reply runs without asking the model
-            # again; each still passes every gate in _dispatch_step.
+            # again; each still passes every gate in _dispatch_step. When the
+            # first call was batchable, those reads already started beside it.
+            # When it was a write, an edit, or a command, they start now that
+            # it has finished, so they still overlap one another.
+            if (st.pending_steps
+                    and _batch_mod._batch_stop_reason(st, n, session_id) is None):
+                try:
+                    _batch_mod._start_parallel_reads(st)
+                except Exception:  # noqa: BLE001
+                    _batch_mod._cancel_early_reads(st)
             out = _pop_queued_step(st, n, session_id)
             if out is None:
                 out, _sig = yield from _step_prologue(
@@ -325,7 +335,7 @@ def run_chat_agent(
                     return
                 if _sig == "continue":
                     continue
-                _queue_batched_reads(st, n)
+                _queue_batched_reads(st, n, out)
             _sig = yield from _dispatch_step(
                 st, out, n, cwd, role, complete_fn, session_id, builder, strict_finish)
             if _sig == "return":

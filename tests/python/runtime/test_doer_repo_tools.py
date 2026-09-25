@@ -240,7 +240,8 @@ def test_status_is_read_in_porcelain_with_the_branch(git_ro, sandbox):
     res = R.git_status()
     assert res == {"ok": True, "code": 0, "stdout": "on branch main\n",
                    "stderr": ""}
-    assert git_ro["argv"] == ["git", "status", "--porcelain=v1", "-b"]
+    assert git_ro["argv"] == ["git", "--no-optional-locks", "status",
+                              "--porcelain=v1", "-b"]
     assert git_ro["cwd"] == str(sandbox)
 
 

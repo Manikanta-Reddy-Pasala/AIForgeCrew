@@ -296,14 +296,18 @@ def editor(
         if allowed is not None and command not in allowed:
             return {"ok": False, "error": "editor_command_not_allowed",
                     "command": command, "role": _agent_role}
-    if command == "view":
-        return _view(path, view_range)
-    if command == "create":
-        return _create(path, file_text)
-    if command == "str_replace":
-        return _str_replace(path, old_str, new_str)
-    if command == "insert":
-        return _insert(path, insert_line, new_str)
-    if command == "undo_edit":
-        return _undo_edit(path)
-    return {"ok": False, "error": "unknown_command", "command": command}
+    # Same lock as file_read / file_write. ADK runs those reads in a thread
+    # beside this call, and write_text truncates the file before it fills it.
+    from aiforge_core.runtime.doer_tools._fs import _file_lock
+    with _file_lock(path):
+        if command == "view":
+            return _view(path, view_range)
+        if command == "create":
+            return _create(path, file_text)
+        if command == "str_replace":
+            return _str_replace(path, old_str, new_str)
+        if command == "insert":
+            return _insert(path, insert_line, new_str)
+        if command == "undo_edit":
+            return _undo_edit(path)
+        return {"ok": False, "error": "unknown_command", "command": command}
