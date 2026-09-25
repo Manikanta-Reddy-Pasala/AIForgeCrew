@@ -215,21 +215,14 @@ def _followup_needs_enhance(prompt: str) -> bool:
 
 def _should_skip_enhance(auto_downgraded, route_pipeline, is_build_task,
                          history, prompt) -> bool:
-    """Whether the Enhancer can be skipped this turn. Mandatory on the first turn
-    (fresh context, referents to resolve). A short follow-up skips it with no
-    model call — the history already carries the context, and paying a classify
-    call to discover that was the latency. A long follow-up or a build task
-    still enhances."""
+    """Whether the Enhancer can be skipped this turn. A short non-build message
+    has nothing to restate: a follow-up already has the history, and a first
+    turn has no prior referents. The enhancer is a model call before the agent
+    speaks. A long message or a build task still enhances."""
     skip = auto_downgraded and not route_pipeline
-    if skip or route_pipeline:
+    if skip or route_pipeline or is_build_task:
         return skip
-    try:
-        from aiforge_core.runtime import turn_router as _tr2
-        if _tr2.is_followup(history) and not is_build_task:
-            return not _followup_needs_enhance(prompt)
-    except Exception as exc:  # noqa: BLE001 — never block a turn
-        _af_log.debug("enhancer skip-check failed: %s", exc)
-    return skip
+    return not _followup_needs_enhance(prompt)
 
 
 def _plan_mode_route(_pp, _enriched, _enriched_history, cwd, role, session_id,
@@ -289,14 +282,20 @@ def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
     except Exception:  # noqa: BLE001
         psub_on = parallel_team
     try:
-        greenfield = _pp._is_greenfield(cwd)
-    except Exception:  # noqa: BLE001
-        greenfield = True
-    try:
         from aiforge_core.runtime import turn_router as _tr2
         fresh = not _tr2.is_followup(history)
     except Exception:  # noqa: BLE001
         fresh = True
+    # Reading every source file. It changes the route only for a team
+    # follow-up that is not already a build: a fresh team turn pipelines
+    # either way, and a simple-mode build escalates because it IS a build.
+    # A short chat must not pay the walk.
+    greenfield = False
+    if team and not fresh:
+        try:
+            greenfield = _pp._is_greenfield(cwd)
+        except Exception:  # noqa: BLE001
+            greenfield = True
     cat = None
     # A quick turn is one doer: no classifier. A short simple-mode message
     # that the regex does not call a build is also one doer — the classifier

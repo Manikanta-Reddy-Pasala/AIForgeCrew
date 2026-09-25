@@ -350,10 +350,17 @@ def test_a_long_follow_up_still_gets_enhanced(router):
     assert _skip(prompt=long) is False
 
 
-def test_the_first_turn_always_gets_the_enhancer(router):
-    """Fresh context, referents still to resolve."""
+def test_a_short_first_turn_skips_the_enhancer(router):
+    """A first message with no prior referents does not need a restatement.
+    That model call was the pause before the agent spoke."""
     router["followup"] = False
-    assert _skip() is False
+    assert _skip(prompt="what does this function do?") is True
+
+
+def test_a_long_first_turn_still_gets_the_enhancer(router):
+    router["followup"] = False
+    long = "Please rework the authentication flow end to end.\n" * 40
+    assert _skip(prompt=long) is False
 
 
 def test_a_build_task_is_never_under_enhanced(router):
@@ -375,10 +382,12 @@ def test_a_pipeline_route_answers_from_its_own_flags(router):
 
 
 def test_a_broken_router_module_never_blocks_the_turn(monkeypatch):
+    """A short non-build skip does not ask the router, so a broken
+    is_followup cannot stall the turn."""
     from aiforge_core.runtime import turn_router as tr
     monkeypatch.setattr(tr, "is_followup",
                         lambda h: (_ for _ in ()).throw(RuntimeError("x")))
-    assert _skip() is False
+    assert _skip() is True
 
 
 # ─── plan mode ─────────────────────────────────────────────────────────
@@ -533,8 +542,27 @@ def test_each_probe_fails_safe(pp, decide, monkeypatch):
                         lambda h: (_ for _ in ()).throw(RuntimeError("x")))
     _decide(pp, parallel_team=True)
     assert decide["psub_on"] is True   # falls back to the explicit pick
-    assert decide["greenfield"] is True
     assert decide["fresh"] is True
+    # A simple turn does not read the tree. Greenfield cannot change its route.
+    assert decide["greenfield"] is False
+
+
+def test_a_team_follow_up_still_checks_greenfield(pp, decide, monkeypatch):
+    """The one route that still depends on it: a team follow-up on an
+    existing repo stays sequential. A dead probe fails safe to greenfield."""
+    from aiforge_core.runtime import turn_router as tr2
+    monkeypatch.setattr(tr2, "is_followup", lambda h: True)
+    pp["ns"]._is_greenfield = lambda cwd: (_ for _ in ()).throw(OSError("x"))
+    _decide(pp, team=True, prompt="tweak the naming")
+    assert decide["greenfield"] is True
+
+
+def test_a_short_chat_does_not_read_the_source_tree(pp, decide, monkeypatch):
+    from aiforge_core.runtime import turn_router as tr2
+    monkeypatch.setattr(tr2, "is_followup", lambda h: False)
+    pp["ns"]._is_greenfield = lambda cwd: pytest.fail("read the tree")
+    _decide(pp, prompt="what does this function do?")
+    assert decide["greenfield"] is False
 
 
 def test_pipeline_approvals_force_the_gated_sequential_path(pp, decide,

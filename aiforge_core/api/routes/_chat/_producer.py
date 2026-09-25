@@ -165,16 +165,11 @@ def _events(pc):
         pc._turn_t0, pc.team, pc._resume_brief, rctx)
     if rctx["done"]:
         return
-    # SIMPLE and PLAN modes — the Enhancer is MANDATORY on the FIRST turn
-    # of a session (fresh context, referents to resolve, no memory pulled
-    # yet). On a FOLLOW-UP, re-running the enhancer (an LLM round-trip
-    # that also fires the memory recall inside `_enhance`) on every single
-    # message is wasted latency for the common case ("fix that", "add a
-    # test") — so reuse the same cheap classify already used to
-    # auto-downgrade team turns (turn_router.classify) and skip the
-    # enhancer when this follow-up is small. Any classify failure (or the
-    # first turn, or a build-escalate spec already in flight) keeps the
-    # enhancer mandatory — safe default, never silently under-enhance.
+    # SIMPLE and PLAN modes. A short non-build message skips the enhancer:
+    # it is a model call that restates the prompt, and on a 27B that is the
+    # pause before the agent speaks. A long message or a build still
+    # enhances. The session memory recall normally starts during that LLM
+    # call; when we skip, start it here so it overlaps the baseline commit.
     _skip_enhance = _should_skip_enhance(pc._auto_downgraded, _route_pipeline,
                                          _is_build_task, pc.history, pc.prompt)
     if pc._auto_downgraded:
@@ -196,6 +191,16 @@ def _events(pc):
             return
     _enriched_history = _fold_enriched_history(
         pc.history, _enriched, pc._resume_brief, pc.prompt, _doc_task)
+    # After the fold: a doc turn and a resume append text the bundle will
+    # query on. Starting from the raw history made that prefetch miss, so
+    # the reranker ran twice.
+    if _skip_enhance and rctx.get("spec") is None:
+        try:
+            from aiforge_core.runtime.chat_agent._context import (
+                _recall_prefetch)
+            _recall_prefetch.start(_enriched_history, pc.cwd, pc.session_id)
+        except Exception:  # noqa: BLE001 — recall still runs in the bundle
+            pass
     if pc.agent_mode == "plan":
         yield from _plan_mode_route(_pp, _enriched, _enriched_history, pc.cwd,
                                     pc.role, pc.session_id, pc.body.quick)
