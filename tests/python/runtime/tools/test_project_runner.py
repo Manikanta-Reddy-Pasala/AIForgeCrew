@@ -302,6 +302,21 @@ def test_a_run_is_tracked_against_the_chat_session(cancel, tmp_path):
     assert cancel["tracked"][0][0] == 7
 
 
+def test_a_steered_command_is_the_project_result(monkeypatch, tmp_path):
+    from aiforge_core.runtime.run_interrupt import steered
+    from aiforge_core.runtime.tools import ensure_runtime
+    monkeypatch.setattr(pr, "detect",
+                        lambda cwd: {"ok": True, "stacks": ["python"]})
+    monkeypatch.setattr(pr, "_plan",
+                        lambda stack, action, cwd: (["python"], ["pytest"]))
+    monkeypatch.setattr(pr, "_exec", lambda cmd, cwd, timeout: steered(cmd=cmd))
+    monkeypatch.setattr(ensure_runtime, "ensure_runtime", lambda tools: {"ok": True})
+    r = pr.project("test", str(tmp_path), timeout=5)
+    assert r.get("steered") is True
+    assert r["ok"] is False
+    assert "latest instruction" in r["error"]
+
+
 def test_stop_kills_the_whole_process_group(cancel, monkeypatch, tmp_path):
     cancel["sid"] = 7
     cancel["cancelled"] = True

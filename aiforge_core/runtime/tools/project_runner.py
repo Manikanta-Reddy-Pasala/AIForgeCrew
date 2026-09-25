@@ -276,11 +276,16 @@ def _exec(cmd: str, cwd: str, timeout: int) -> dict:
             chat_cancel.track_pgid(sid, os.getpgid(proc.pid))
         except Exception:  # noqa: BLE001
             pass
+    from aiforge_core.runtime.run_interrupt import reason, steered
     deadline = time.monotonic() + timeout
     while proc.poll() is None:
-        if sid is not None and chat_cancel.is_cancelled(sid):
+        why = reason(sid)
+        if why == "stop" or (sid is not None and chat_cancel.is_cancelled(sid)):
             _kill(proc)
             return {"cmd": cmd, "ok": False, "stopped": True}
+        if why == "steer":
+            _kill(proc)
+            return steered(cmd=cmd)
         if time.monotonic() > deadline:
             _kill(proc)
             return {"cmd": cmd, "ok": False, "error": f"timeout after {timeout}s"}
@@ -343,6 +348,14 @@ def project(action: str = "detect", cwd: str = ".", timeout: int = 1800) -> dict
             r = _exec(cmd, cwd, timeout)
             r["stack"] = stack
             results.append(r)
+            if r.get("stopped") or r.get("steered"):
+                # A nested flag under results reads as an ordinary failed
+                # build. The turn loop needs it on the tool result itself.
+                return {"ok": False, "action": action, "stacks": stacks,
+                        "results": results,
+                        "stopped": bool(r.get("stopped")),
+                        "steered": bool(r.get("steered")),
+                        "error": r.get("error") or "stopped by user"}
             if not r.get("ok"):
                 overall = False
                 break

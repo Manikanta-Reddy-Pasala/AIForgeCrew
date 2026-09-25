@@ -287,6 +287,17 @@ def test_stop_kills_the_tree_mid_run(run, repo):
     assert run["killed"]
 
 
+def test_a_typed_message_kills_the_command_instead_of_waiting_it_out(run, repo,
+                                                                     monkeypatch):
+    from aiforge_core.runtime import chat_interject
+    run["sid"] = 7
+    run["proc"] = _Proc(polls=50)
+    monkeypatch.setattr(chat_interject, "pending", lambda sid: sid == 7)
+    res = S._t_run_command({"cmd": "sleep 600", "timeout": 600}, str(repo))
+    assert res.get("steered") is True
+    assert run["killed"]
+
+
 def test_a_timeout_keeps_the_partial_output_and_says_not_to_undo(run, repo,
                                                                  monkeypatch):
     """Which tests ran before the hang is the signal the agent needs."""

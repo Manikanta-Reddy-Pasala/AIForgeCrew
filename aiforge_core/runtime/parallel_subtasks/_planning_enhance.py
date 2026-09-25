@@ -251,7 +251,8 @@ def _readme_block(cwd: str | None) -> str:
 
 def _enhance(prompt: str, *, history: list[dict] | None = None,
              cwd: str | None = None, repo: str | None = None,
-             on_context=None) -> str:
+             on_context=None, session_id=None, max_tokens: int | None = None
+             ) -> str:
     """Layer-1 step 1: fix spelling/grammar, write proper sentences, RECALL
     context (memory + recent conversation + repo README), and fold it all into
     a clear, concrete build spec the planner/doer can act on.
@@ -263,6 +264,13 @@ def _enhance(prompt: str, *, history: list[dict] | None = None,
     work that can overlap it."""
     if _enhancer_disabled():
         return prompt
+    # Stop during "Enhancing…" used to wait out the whole model call, then
+    # this function swallowed the error and the turn carried on. Bail before
+    # the memory fan-out and the LLM call.
+    if session_id is not None:
+        from aiforge_core.runtime.run_interrupt import reason as _why
+        if _why(session_id) == "stop":
+            return prompt
     # Triviality / intent gate: greetings, thanks, short questions and other
     # non-build chit-chat are returned UNCHANGED — skip the memory fan-out and
     # the LLM call (latency) and don't reshape conversational turns into fake
@@ -305,10 +313,13 @@ def _enhance(prompt: str, *, history: list[dict] | None = None,
             on_context()
     try:
         from aiforge_core.llm import client
-        out = client.complete("enhancer", [
-            {"role": "system", "content": _ENHANCE_SYS},
-            {"role": "user", "content": user_msg}], max_tokens=2048,
-            timeout_s=_orchestrator_timeout_s())
+        from aiforge_core.runtime.run_interrupt import bind_llm_cancel
+        with bind_llm_cancel(session_id):
+            out = client.complete("enhancer", [
+                {"role": "system", "content": _ENHANCE_SYS},
+                {"role": "user", "content": user_msg}],
+                max_tokens=2048 if max_tokens is None else max_tokens,
+                timeout_s=_orchestrator_timeout_s())
         out = (out or "").strip()
         # DEGENERATE-SPEC GUARD: the enhancer is a single point of failure —
         # everything downstream (architect → subtasks → verification) builds

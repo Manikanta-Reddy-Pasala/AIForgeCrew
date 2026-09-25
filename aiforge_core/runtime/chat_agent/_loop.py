@@ -57,6 +57,7 @@ from ._turn._blocks import (  # noqa: F401
 )
 from ._turn._completion import (  # noqa: F401
     _RETRY_STOP,
+    _STEERED,
     _emit_completion_failure,
     _max_gen_per_step,
     _retry_completion,
@@ -169,6 +170,10 @@ def _step_prologue(st, n, _cwd, role, complete_fn, session_id, builder):
     st.batch_unread = False        # the model has now read the last batch
     if out is _RETRY_STOP:
         return None, "return"
+    if out is _STEERED:
+        # A message arrived during a retry/outage wait. Drain it next step
+        # and let the model decide; do not spend this step on the old call.
+        return None, "continue"
     _sig = yield from _stuck_output_guard(st, out)
     if _sig == "return":
         return None, "return"

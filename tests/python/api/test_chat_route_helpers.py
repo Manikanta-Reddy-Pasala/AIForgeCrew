@@ -88,7 +88,7 @@ def pp(monkeypatch):
                    "bon_events": [{"type": "step", "text": "bon"}],
                    "seen": {}}
 
-    def _enhance(prompt, history=None, cwd=None, repo=None):
+    def _enhance(prompt, history=None, cwd=None, repo=None, session_id=None):
         state["seen"]["repo"] = repo
         return f"spec({prompt})"
 
@@ -343,9 +343,11 @@ def test_a_simple_follow_up_skips_the_second_round_trip(router):
     assert _skip() is True
 
 
-def test_a_complex_follow_up_still_gets_enhanced(router):
-    router["cls"] = "complex"
-    assert _skip() is False
+def test_a_long_follow_up_still_gets_enhanced(router):
+    """A multi-part follow-up still needs the restatement. A short one does
+    not, and deciding that must not itself be a model call."""
+    long = "Please rework the authentication flow end to end.\n" * 40
+    assert _skip(prompt=long) is False
 
 
 def test_the_first_turn_always_gets_the_enhancer(router):
@@ -358,9 +360,13 @@ def test_a_build_task_is_never_under_enhanced(router):
     assert _skip(is_build_task=True) is False
 
 
-def test_a_classify_failure_keeps_the_enhancer(router):
-    router["cls"] = RuntimeError("model down")
-    assert _skip() is False
+def test_a_short_follow_up_skips_without_calling_the_classifier(router, monkeypatch):
+    """'tear' during a chat used to wait on a classify call, then often the
+    enhancer too, before the agent saw it."""
+    from aiforge_core.runtime import turn_router as tr
+    monkeypatch.setattr(tr, "classify",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("llm")))
+    assert _skip(prompt="tear") is True
 
 
 def test_a_pipeline_route_answers_from_its_own_flags(router):
@@ -467,9 +473,9 @@ def decide(monkeypatch):
 
 def _decide(pp, **kw):
     args = {"agent_mode": "chat", "team": False, "parallel_team": False,
-            "cwd": "/repo", "history": []}
+            "cwd": "/repo", "history": [], "prompt": "build it"}
     args.update(kw)
-    return C._decide_chat_route(pp["ns"], "build it", args["agent_mode"],
+    return C._decide_chat_route(pp["ns"], args.pop("prompt"), args["agent_mode"],
                                 args["team"], args["parallel_team"],
                                 args["cwd"], args["history"])
 
@@ -479,12 +485,22 @@ def test_the_gathered_inputs_reach_the_pure_router(pp, decide, monkeypatch):
     from aiforge_core.runtime import turn_router as tr2
     monkeypatch.setattr(tr2, "is_followup", lambda h: False)
     monkeypatch.setattr(tr, "classify_task",
-                        lambda p, history=None, cwd=None: "code_build")
-    assert _decide(pp) == "decision"
+                        lambda p, history=None, cwd=None, session_id=None: "code_build")
+    assert _decide(pp, prompt="build a backend service with tests") == "decision"
     assert decide["psub_on"] is True
     assert decide["greenfield"] is False
     assert decide["fresh"] is True
     assert decide["cat"] == "code_build"
+
+
+def test_a_short_chat_does_not_wait_on_the_task_classifier(pp, decide, monkeypatch):
+    from aiforge_core.runtime import task_router as tr
+    from aiforge_core.runtime import turn_router as tr2
+    monkeypatch.setattr(tr2, "is_followup", lambda h: False)
+    monkeypatch.setattr(tr, "classify_task",
+                        lambda *a, **k: pytest.fail("classified a short chat"))
+    _decide(pp, prompt="what does this function do?")
+    assert decide["cat"] is None
 
 
 def test_a_follow_up_is_not_re_classified(pp, decide, monkeypatch):
@@ -504,7 +520,7 @@ def test_a_dead_classifier_routes_on_without_a_class(pp, decide, monkeypatch):
     monkeypatch.setattr(tr2, "is_followup", lambda h: False)
     monkeypatch.setattr(tr, "classify_task",
                         lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
-    _decide(pp)
+    _decide(pp, prompt="build a backend service with tests")
     assert decide["cat"] is None
 
 

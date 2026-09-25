@@ -227,3 +227,11 @@ def test_the_gate_runs_once_per_turn(monkeypatch):
     for _ in range(3):
         fn("chat", [])
     assert len(probes) == 1
+
+
+def test_a_test_written_this_turn_cannot_fail_correct_code():
+    """A small model invents a wrong test, then treats the red result as a
+    broken implementation and rewrites code that was already right."""
+    assert "A test you wrote this turn does not count" in _SYSTEM
+    assert "Never change the implementation to satisfy" in _SYSTEM
+    assert "delete it" in _SYSTEM.lower()

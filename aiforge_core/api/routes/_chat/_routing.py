@@ -62,7 +62,16 @@ def _pipeline_route(_pp, prompt, cwd, session_id, history, _with_resume, _path,
     # contamination guard in unified_query only fires with a repo set.
     from aiforge_core.runtime.chat_agent import _chat_repo_key as _crk
     _pl_repo = _crk(cwd)
-    _spec = _pp._enhance(prompt, history=history, cwd=cwd, repo=_pl_repo)  # 1. clean spec
+    # Same token budget as before (the chat path passes its own cap). Stop
+    # aborts the call; without session_id the enhancer waited out its timeout.
+    _spec = _pp._enhance(prompt, history=history, cwd=cwd, repo=_pl_repo,
+                         session_id=session_id)  # 1. clean spec
+    from aiforge_core.runtime import chat_cancel as _cc
+    if session_id is not None and _cc.is_cancelled(session_id):
+        yield {"type": "error", "text": "stopped by user"}
+        yield {"type": "done"}
+        _pctx["done"] = True
+        return
     _pctx["spec"] = _spec   # a single-task fall-through reuses it, not a 2nd enhance
     _files = _pp._architect(_spec, cwd=cwd)  # 2. design file structure
     _subs = _pp._plan_files(_files) if len(_files) >= 2 \
@@ -184,24 +193,40 @@ def _doc_task_route(prompt, cwd, session_id, _with_resume, pctx):
 # edits — left as-is by design, no notice (avoids per-run noise).
 
 
+def _followup_enhance_chars() -> int:
+    """Follow-ups shorter than this skip the enhancer. The prior turns are
+    already in the history the agent reads; a classifier LLM call just to
+    decide that was itself a 5–10s wait on every message."""
+    try:
+        return max(0, int(os.environ.get(
+            "AIFORGE_CHAT_FOLLOWUP_ENHANCE_CHARS", "500")))
+    except (TypeError, ValueError):
+        return 500
+
+
+def _followup_needs_enhance(prompt: str) -> bool:
+    """A long or multi-part follow-up still gets a restatement. A short one
+    ("tear", "use postgres", "fix the import") does not."""
+    p = (prompt or "").strip()
+    if len(p) > _followup_enhance_chars():
+        return True
+    return p.count("\n") >= 8
+
+
 def _should_skip_enhance(auto_downgraded, route_pipeline, is_build_task,
                          history, prompt) -> bool:
     """Whether the Enhancer can be skipped this turn. Mandatory on the first turn
-    (fresh context, referents to resolve). Skippable ONLY for a SIMPLE follow-up
-    — there the history-fold carries the context and a second LLM round-trip +
-    memory recall is wasted latency. A COMPLEX follow-up, a build task, or a
-    classify FAILURE keeps it mandatory; never silently under-enhance."""
+    (fresh context, referents to resolve). A short follow-up skips it with no
+    model call — the history already carries the context, and paying a classify
+    call to discover that was the latency. A long follow-up or a build task
+    still enhances."""
     skip = auto_downgraded and not route_pipeline
     if skip or route_pipeline:
         return skip
     try:
         from aiforge_core.runtime import turn_router as _tr2
         if _tr2.is_followup(history) and not is_build_task:
-            try:
-                cls = _tr2.classify(prompt, history=history)
-            except Exception:  # noqa: BLE001 — classify blew up → enhance
-                cls = "complex"
-            return cls == "simple"
+            return not _followup_needs_enhance(prompt)
     except Exception as exc:  # noqa: BLE001 — never block a turn
         _af_log.debug("enhancer skip-check failed: %s", exc)
     return skip
@@ -253,7 +278,7 @@ def _plan_mode_route(_pp, _enriched, _enriched_history, cwd, role, session_id,
 
 
 def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
-                       history, quick=False):
+                       history, quick=False, session_id=None):
     """Gather the (side-effecting) inputs to the task-type router and return its
     decision. The heavy which-path decision is a PURE function in chat_router;
     here we only probe parallel capability, greenfield-ness, follow-up-ness, the
@@ -273,10 +298,19 @@ def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
     except Exception:  # noqa: BLE001
         fresh = True
     cat = None
-    if fresh and not quick:      # a quick turn is one doer: no classifier, no fan-out
+    # A quick turn is one doer: no classifier. A short simple-mode message
+    # that the regex does not call a build is also one doer — the classifier
+    # is a model call (5–15s) whose only job here is to catch a build the
+    # regex missed or to un-classify a false one. Short chat does neither.
+    from aiforge_core.runtime import chat_router as _cr
+    _needs_class = (
+        team or _cr.regex_build_fallback(prompt or "")
+        or len((prompt or "").strip()) > 500)
+    if fresh and not quick and _needs_class:
         try:
             from aiforge_core.runtime import task_router as _tr
-            cat = _tr.classify_task(prompt, history=history, cwd=cwd)
+            cat = _tr.classify_task(prompt, history=history, cwd=cwd,
+                                    session_id=session_id)
         except Exception:  # noqa: BLE001 — never break routing on the classifier
             cat = None
     team_approvals = bool(team)   # fail safe → gated sequential
@@ -285,7 +319,6 @@ def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
         team_approvals = bool(team and _aps.required("team"))
     except Exception:  # noqa: BLE001
         pass
-    from aiforge_core.runtime import chat_router as _cr
     return _cr.decide(
         prompt, agent_mode=agent_mode, team=team, psub_on=psub_on,
         greenfield=greenfield, fresh=fresh, cat=cat,
@@ -313,8 +346,12 @@ def _run_capture_pass(_rc, prompt, repo, cwd, session_id):
 
     ex = _cf.ThreadPoolExecutor(max_workers=1)
     try:
+        from aiforge_core.runtime.run_interrupt import STOPPED, wait_future
         budget = float(os.environ.get("AIFORGE_CAPTURE_BUDGET_S", "6"))
-        return ex.submit(_capture_pass).result(timeout=budget)
+        got = wait_future(ex.submit(_capture_pass), budget, session_id)
+        if got is STOPPED:
+            return None
+        return got
     except Exception as exc:  # noqa: BLE001 — timeout/any → no capture
         _af_log.debug("rule_capture pass timed out/failed: %s", exc)
         return None

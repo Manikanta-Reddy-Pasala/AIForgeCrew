@@ -464,6 +464,33 @@ def test_a_stopped_watch_says_stopped(monkeypatch, _clock):
     assert not out["ok"]
 
 
+def test_a_message_when_the_budget_ends_is_not_a_give_up(monkeypatch, _clock,
+                                                        _attended):
+    """The budget break skips the sleep. A message typed during that last
+    poll used to come back as ok:True timed_out."""
+    polls = {"n": 0}
+    _fake_request(monkeypatch, {
+        "/pipelines/116": {"ok": True, "data": _pipe(116, "running")},
+        "/jobs": {"ok": True, "data": []},
+    })
+    orig = gitlab.gitlab_pipeline
+
+    def _wrapped(args, cwd=None, skip_jobs=False):
+        out = orig(args, cwd, skip_jobs=skip_jobs)
+        polls["n"] += 1
+        return out
+
+    monkeypatch.setattr(gitlab, "gitlab_pipeline", _wrapped)
+    from aiforge_core.runtime import chat_interject
+    monkeypatch.setattr(chat_interject, "pending", lambda sid: polls["n"] >= 1)
+    out = gitlab.gitlab_pipeline_watch(
+        {"project": "g/p", "pipeline_id": 116, "interval_s": 20,
+         "timeout_s": 10, "max_checks": 50})
+    assert out.get("steered") is True
+    assert out["ok"] is False
+    assert out["status"] == "running"
+
+
 def test_a_stop_during_the_sleep_is_not_reported_as_success(monkeypatch, _clock):
     """THE REGRESSION. The stopped return spread `**last` AFTER its literals,
     so once one poll had succeeded `last["ok"]` overwrote `ok: False` and a

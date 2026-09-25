@@ -64,7 +64,7 @@ def _bind_turn_meter(session_id):
         return None, None
 
 
-def _note_staleness_notice(cwd):
+def _note_staleness_notice(cwd, session_id=None):
     """Staleness auto-curation: a session bound to a jira/confluence context
     folder re-verifies that note when it crosses AIFORGE_NOTE_STALE_HOURS. The
     pre-check is cheap + network-free; the curation re-fetches the source so it
@@ -78,10 +78,14 @@ def _note_staleness_notice(cwd):
             _cres = None
             _nex = _ncf.ThreadPoolExecutor(max_workers=1)
             try:
+                from aiforge_core.runtime.run_interrupt import STOPPED, wait_future
                 _nbudget = float(os.environ.get(
                     "AIFORGE_NOTE_CURATE_BUDGET_S", "10"))
-                _cres = _nex.submit(_nc.curate_note,
-                                    _stale_note).result(timeout=_nbudget)
+                _cres = wait_future(
+                    _nex.submit(_nc.curate_note, _stale_note), _nbudget,
+                    session_id)
+                if _cres is STOPPED:
+                    _cres = None
             except Exception as _nexc:  # noqa: BLE001 — timeout/any → skip
                 _af_log.debug("note curation timed out/failed: %s", _nexc)
             finally:
@@ -110,7 +114,10 @@ def _events(pc):
     # pre-check is cheap and network-free; the actual curation re-fetches
     # the source, so it's HARD time-boxed (like the rule_capture pass
     # below) — a dead Jira must never stall the chat turn. FAILS OPEN.
-    yield from _note_staleness_notice(pc.cwd)
+    yield from _note_staleness_notice(pc.cwd, pc.session_id)
+    if _turn_was_stopped(pc.session_id):
+        yield from _stopped_turn()
+        return
     # Rule / Memory / Feedback capture (deterministic, always-on) — runs
     # BEFORE any agent, independent of the agent's model, so a directive /
     # fact / correction stated in passing is captured + applied. FAILS OPEN:
@@ -118,6 +125,9 @@ def _events(pc):
     pctx = {"done": False}
     yield from _rule_capture_pass(pc.prompt, pc.cwd, pc.session_id, pctx)
     if pctx["done"]:
+        return
+    if _turn_was_stopped(pc.session_id):
+        yield from _stopped_turn()
         return
     # Team mode → full ADK agent flow (planner→…→learner) for complex
     # builds. Simple mode → single conversational agent for quick work.
@@ -140,7 +150,11 @@ def _events(pc):
     #                pipeline (the parallel path can't gate — J).
     _rd = _decide_chat_route(_pp, pc.prompt, pc.agent_mode, pc.team,
                              pc._parallel_team, pc.cwd, pc.history,
-                             quick=bool(getattr(pc.body, "quick", False)))
+                             quick=bool(getattr(pc.body, "quick", False)),
+                             session_id=pc.session_id)
+    if _turn_was_stopped(pc.session_id):
+        yield from _stopped_turn()
+        return
     _doc_task = _rd.doc_task
     _is_build_task = _rd.is_build_task
     _build_escalate = _rd.build_escalate
@@ -177,6 +191,9 @@ def _events(pc):
                    "text": "Enhancing request + gathering context…"}
         _enriched = _enhance_prompt(_pp, pc.prompt, pc.history, pc.cwd,
                                     _skip_enhance, pc.session_id)
+        if _turn_was_stopped(pc.session_id):
+            yield from _stopped_turn()
+            return
     _enriched_history = _fold_enriched_history(
         pc.history, _enriched, pc._resume_brief, pc.prompt, _doc_task)
     if pc.agent_mode == "plan":
@@ -213,6 +230,18 @@ def _events(pc):
         yield from _post_run_events(pc.prompt, pc.cwd, "plan", _since, changes_only=True)
         return
     yield from _post_run_events(pc.prompt, pc.cwd, pc.agent_mode, _since)
+
+
+def _turn_was_stopped(session_id) -> bool:
+    from aiforge_core.runtime import chat_cancel
+    return session_id is not None and chat_cancel.is_cancelled(session_id)
+
+
+def _stopped_turn():
+    """The user pressed Stop during a pre-agent wait (enhancer, classifier).
+    End the turn here — falling through used to start the agent anyway."""
+    yield {"type": "error", "text": "stopped by user"}
+    yield {"type": "done"}
 
 
 def _wait_for_slot(pc) -> bool:

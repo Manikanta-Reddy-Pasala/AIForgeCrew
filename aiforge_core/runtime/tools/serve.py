@@ -178,8 +178,25 @@ def _await_url(proc, log_path: str, port_hint: str,
                wait_s: float) -> tuple[str | None, str, dict | None]:
     """Watch the log for a URL/port (or an early crash) for up to ``wait_s``.
     Returns ``(url, port_hint, early_exit_result)``."""
+    from aiforge_core.runtime.run_interrupt import reason
+    from aiforge_core.runtime import chat_cancel
+    sid = chat_cancel.active()
     deadline = time.monotonic() + wait_s
     while time.monotonic() < deadline:
+        why = reason(sid)
+        if why == "stop":
+            _kill_pgid(proc.pid, (_SERVICES.get(proc.pid) or {}).get("pgid"))
+            _SERVICES.pop(proc.pid, None)
+            return None, port_hint, {"ok": False, "stopped": True,
+                                     "error": "stopped by user"}
+        if why == "steer":
+            # Leave it running: the new message may still want the server.
+            # The pid is how the model stops it if the message does not.
+            from aiforge_core.runtime.run_interrupt import steered
+            return None, port_hint, steered(
+                pid=proc.pid, log=log_path,
+                hint=(f"still running — stop with stop_service(pid={proc.pid}) "
+                      "if the new message does not need it"))
         if proc.poll() is not None:        # died on startup
             tail = _read_log(log_path)
             _SERVICES.pop(proc.pid, None)

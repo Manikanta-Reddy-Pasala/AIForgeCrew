@@ -121,17 +121,14 @@ def _watch_fatal(good: dict, res: dict, checks: int, started: float) -> dict:
     return out
 
 
-def _watch_sleep(b: "_WatchBudget") -> bool:
-    """Sleep one interval in slices so Stop is honoured mid-wait, not after it.
-    False when the watch was cancelled during the wait."""
-    import time as _time
-    waited = 0.0
-    while waited < b.interval:
-        if b.cancelled():
-            return False
-        _time.sleep(min(1.0, b.interval - waited))
-        waited += 1.0
-    return True
+def _watch_sleep(b: "_WatchBudget") -> "str | None":
+    """Sleep one interval in 1s slices. ``"stop"`` / ``"steer"`` when the user
+    pressed Stop or typed a message during the wait, else None.
+
+    One second, not a fifth: the budget math and the tests count whole seconds
+    of ``time.sleep``, and a message is still seen long before a 20s poll."""
+    from aiforge_core.runtime.run_interrupt import pause
+    return pause(b.interval, b.sid, slice_s=1.0)
 
 
 def _watch_timeout(b: "_WatchBudget", good: dict, err: dict, checks: int,
@@ -226,9 +223,17 @@ def gitlab_pipeline_watch(args: dict, cwd: str | None = None) -> dict:
     pinned = args.get("pipeline_id") or args.get("id") or None
     good: dict = {}          # the last snapshot we actually READ
     err: dict = {}           # the last failed poll, if the run ended on one
+    from aiforge_core.runtime.run_interrupt import reason, steered
     while checks < b.max_checks:
-        if b.cancelled():
+        # One probe. Calling cancelled() and then reason() asked is_cancelled
+        # twice, so a Stop that was meant to land in the sleep fired before
+        # the first poll and dropped the snapshot.
+        why = reason(b.sid)
+        if why == "stop":
             return _watch_stopped(good, checks, started, err)
+        if why == "steer":
+            return {**(good or {}), **_watch_envelope(checks, started),
+                    **steered()}
         checks += 1
         done, good, err, pinned = _one_check(args, cwd, pinned, good, err,
                                              checks, started)
@@ -237,6 +242,18 @@ def gitlab_pipeline_watch(args: dict, cwd: str | None = None) -> dict:
         if (_time.monotonic() - started) + b.interval > b.budget \
                 or checks >= b.max_checks:
             break
-        if not _watch_sleep(b):
+        why = _watch_sleep(b)
+        if why == "stop":
             return _watch_stopped(good, checks, started, err)
+        if why == "steer":
+            return {**(good or {}), **_watch_envelope(checks, started),
+                    **steered()}
+    # Budget / max_checks break skips the sleep. Look once more so a message
+    # typed during the last poll is not reported as a successful give-up.
+    why = reason(b.sid)
+    if why == "stop":
+        return _watch_stopped(good, checks, started, err)
+    if why == "steer":
+        return {**(good or {}), **_watch_envelope(checks, started),
+                **steered()}
     return _watch_timeout(b, good, err, checks, started)

@@ -78,7 +78,8 @@ def _recent_context(history, n: int = 3) -> str:
     return "\n".join(out)
 
 
-def classify_task(prompt: str, history=None, cwd: str | None = None) -> "str | None":
+def classify_task(prompt: str, history=None, cwd: str | None = None,
+                  session_id=None) -> "str | None":
     """Return one of :data:`CATEGORIES`, or ``None`` when the classifier is
     disabled / errored / ambiguous (caller then uses its regex fallback so
     routing never hard-depends on the model). Deterministic trivial/greeting →
@@ -105,12 +106,14 @@ def classify_task(prompt: str, history=None, cwd: str | None = None) -> "str | N
     user = (f"Recent conversation:\n{ctx}\n\n" if ctx else "") + \
         f"Request:\n{p}\n\nOne word — CHAT, TRACKER, DOC, BUILD, or EDIT?"
     try:
-        raw = _llm.complete(
-            role, [{"role": "system", "content": _SYS},
-                   {"role": "user", "content": user}],
-            max_tokens=8, temperature=0.0,
-            timeout_s=_int_env("AIFORGE_TASK_ROUTE_TIMEOUT_S", 15),
-        )
+        from aiforge_core.runtime.run_interrupt import bind_llm_cancel
+        with bind_llm_cancel(session_id):
+            raw = _llm.complete(
+                role, [{"role": "system", "content": _SYS},
+                       {"role": "user", "content": user}],
+                max_tokens=8, temperature=0.0,
+                timeout_s=_int_env("AIFORGE_TASK_ROUTE_TIMEOUT_S", 15),
+            )
     except Exception as exc:  # noqa: BLE001
         log.debug("task_router classify failed: %s", exc)
         return None

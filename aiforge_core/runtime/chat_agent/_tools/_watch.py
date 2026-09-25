@@ -149,17 +149,11 @@ def _watch_limits(args: dict, sid) -> tuple[int, int, int, int]:
     return interval, max_checks, budget, min(per_cmd, budget)
 
 
-def _watch_sleep(interval: float, sid) -> bool:
-    """Sleep ``interval`` in 1s slices so Stop is honoured mid-wait. Returns True
-    if the watch was cancelled during the sleep."""
-    from aiforge_core.runtime import chat_cancel
-    waited = 0.0
-    while waited < interval:
-        if sid is not None and chat_cancel.is_cancelled(sid):
-            return True
-        time.sleep(min(1.0, interval - waited))
-        waited += 1.0
-    return False
+def _watch_sleep(interval: float, sid) -> "str | None":
+    """Sleep ``interval`` in short slices. Returns ``"stop"`` or ``"steer"``
+    when the user pressed Stop or typed a message during the wait, else None."""
+    from aiforge_core.runtime.run_interrupt import pause
+    return pause(interval, sid)
 
 
 def _check_outcome(last: dict, until: str, rx, checks: int,
@@ -170,6 +164,11 @@ def _check_outcome(last: dict, until: str, rx, checks: int,
     if last.get("stopped"):
         return {"ok": False, "stopped": True, "checks": checks,
                 "error": _STOPPED_BY_USER, "last": _tail(last)}
+    if last.get("steered"):
+        # A message typed during the check. not_contains treats empty output
+        # as a match, so this has to win before _matches.
+        from aiforge_core.runtime.run_interrupt import steered
+        return steered(checks=checks, last=_tail(last))
     if last.get("blocked"):
         # A refused command will be refused every time — looping is waste.
         return {"ok": False, "checks": checks, "blocked": last["blocked"],
@@ -244,12 +243,16 @@ def _t_watch_until(args: dict, cwd: str) -> dict:
         return refusal
     sid = chat_cancel.active()
     interval, max_checks, budget, per_cmd = _watch_limits(args, sid)
+    from aiforge_core.runtime.run_interrupt import reason, steered
     started = time.monotonic()
     checks = 0
     last: dict = {}
     while checks < max_checks:
-        if sid is not None and chat_cancel.is_cancelled(sid):
-            return _stopped(checks)
+        why = reason(sid)
+        if why == "stop" or (sid is not None and chat_cancel.is_cancelled(sid)):
+            return _stopped(checks, last or None)
+        if why == "steer":
+            return steered(checks=checks, last=_tail(last) if last else None)
         checks += 1
         last = _t_run_command({"cmd": cmd, "timeout": per_cmd}, cwd)
         elapsed = round(time.monotonic() - started, 1)
@@ -258,8 +261,18 @@ def _t_watch_until(args: dict, cwd: str) -> dict:
             return done
         if elapsed + interval > budget or checks >= max_checks:
             break
-        if _watch_sleep(interval, sid):
+        why = _watch_sleep(interval, sid)
+        if why == "stop":
             return _stopped(checks, last)
+        if why == "steer":
+            return steered(checks=checks, last=_tail(last))
+    # The budget can end the loop without another sleep. A message that
+    # arrived during the last check still has to win over "gave up".
+    why = reason(sid)
+    if why == "stop" or (sid is not None and chat_cancel.is_cancelled(sid)):
+        return _stopped(checks, last or None)
+    if why == "steer":
+        return steered(checks=checks, last=_tail(last) if last else None)
     return {"ok": False, "matched": False, "checks": checks,
             "elapsed_s": round(time.monotonic() - started, 1),
             "reason": f"gave up after {checks} check(s) — the condition "

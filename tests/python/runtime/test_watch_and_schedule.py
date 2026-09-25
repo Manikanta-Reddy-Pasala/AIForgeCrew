@@ -99,6 +99,45 @@ def test_stop_interrupts_the_watch(tmp_path, monkeypatch):
     assert res["checks"] == 0
 
 
+def test_a_steered_check_is_not_reported_as_a_match(tmp_path, monkeypatch):
+    """not_contains treats empty output as a match. A command cut short by a
+    typed message must not come back as the condition holding."""
+    from aiforge_core.runtime.run_interrupt import steered
+    monkeypatch.setattr(
+        "aiforge_core.runtime.chat_agent._shell._t_run_command",
+        lambda a, c: steered(stdout="", stderr=""))
+    res = _watch._t_watch_until(
+        {"cmd": "x", "until": "not_contains:ready"}, str(tmp_path))
+    assert res.get("steered") is True
+    assert res.get("matched") is not True
+
+
+def test_a_typed_message_cuts_the_watch_short(tmp_path, monkeypatch):
+    """A message typed during the wait is picked up on the next slice, not
+    after the whole interval."""
+    from aiforge_core.runtime import chat_cancel, chat_interject
+    calls = {"n": 0}
+
+    def _run(a, c):
+        calls["n"] += 1
+        return {"ok": False, "code": 1, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr("aiforge_core.runtime.chat_agent._shell._t_run_command",
+                        _run)
+    monkeypatch.setattr(chat_cancel, "active", lambda: 42)
+    monkeypatch.setattr(chat_cancel, "is_cancelled", lambda sid: False)
+    # Pending only after the first check, so the watch starts, then the
+    # sleep sees the message and does not sit out interval_s.
+    monkeypatch.setattr(chat_interject, "pending", lambda sid: calls["n"] > 0)
+    monkeypatch.setattr(_watch.time, "sleep", lambda *_a: None)
+    res = _watch._t_watch_until(
+        {"cmd": "x", "interval_s": 30, "max_checks": 20, "timeout_s": 300},
+        str(tmp_path))
+    assert res.get("steered") is True
+    assert calls["n"] == 1
+    assert res["checks"] == 1
+
+
 def test_the_budget_is_bounded_however_the_model_asks(tmp_path, monkeypatch):
     """A model can ask for a million checks; it does not get them."""
     monkeypatch.setattr("aiforge_core.runtime.chat_agent._shell._t_run_command",

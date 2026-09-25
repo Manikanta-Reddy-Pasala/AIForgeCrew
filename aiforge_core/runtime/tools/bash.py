@@ -143,19 +143,23 @@ def _drain_until_prompt(
     last_seen = ""
     try:
         from aiforge_core.runtime import chat_cancel as _cc
+        from aiforge_core.runtime.run_interrupt import reason as _why
         _sid = _cc.active()
     except Exception:  # noqa: BLE001
-        _cc, _sid = None, None
+        _cc, _sid, _why = None, None, (lambda _s: None)
     while time.monotonic() < deadline:
-        # Stop button: interrupt the running tmux command (the tmux path
-        # previously ignored cancellation, so Stop did nothing until timeout).
-        if _cc is not None and _sid is not None and _cc.is_cancelled(_sid):
+        # Stop, or a message typed while the command is still running.
+        _hit = _why(_sid)
+        if _hit in ("stop", "steer") or (
+                _cc is not None and _sid is not None and _cc.is_cancelled(_sid)):
             try:
                 subprocess.run(["tmux", "send-keys", "-t", name, "C-c"],
                                capture_output=True)
             except Exception:  # noqa: BLE001
                 pass
-            return last_seen, -130, False   # SIGINT-style: cancelled, non-zero rc
+            # -130 stop, -131 a new message: the caller must not treat that
+            # as a normal command failure.
+            return last_seen, (-131 if _hit == "steer" else -130), False
         pane = _capture(name)
         matches = list(_SENTINEL_RE.finditer(pane))
         if expect_initial_only and len(matches) >= 1:
@@ -239,11 +243,17 @@ def _run_cancellable(command: str, timeout: int, sid, chat_cancel) -> dict[str, 
         chat_cancel.track_pgid(sid, os.getpgid(proc.pid))
     except Exception:  # noqa: BLE001
         pass
+    from aiforge_core.runtime.run_interrupt import reason as _why
+    from aiforge_core.runtime.run_interrupt import steered as _steered
     deadline = _t.monotonic() + timeout
     while proc.poll() is None:
-        if chat_cancel.is_cancelled(sid):
+        hit = _why(sid)
+        if hit == "stop" or chat_cancel.is_cancelled(sid):
             _kill_group_and_reap(proc)
             return _err_result(command, "stopped by user", stopped=True)
+        if hit == "steer":
+            _kill_group_and_reap(proc)
+            return _steered(command=command)
         if _t.monotonic() > deadline:
             _kill_group_and_reap(proc)
             return _err_result(command, "timeout", truncated=True)
@@ -270,9 +280,13 @@ def _run_plain(command: str, timeout: int) -> dict[str, Any]:
 
 def _fallback_run(command: str, timeout: int) -> dict[str, Any]:
     from aiforge_core.runtime import chat_cancel
+    from aiforge_core.runtime.run_interrupt import reason as _why
+    from aiforge_core.runtime.run_interrupt import steered as _steered
     sid = chat_cancel.active()
     if sid is None:
         return _run_plain(command, timeout)
+    if _why(sid) == "steer":
+        return _steered(command=command)
     if chat_cancel.is_cancelled(sid):
         return _err_result(command, "stopped by user", stopped=True)
     try:
@@ -333,6 +347,9 @@ def bash(
         check=True, capture_output=True,
     )
     body, rc, timed_out = _drain_until_prompt(name, timeout)
+    if rc == -131:
+        from aiforge_core.runtime.run_interrupt import steered as _steered
+        return _steered(command=command, stdout=(body or "")[:_STDOUT_CAP_BYTES])
     if timed_out:
         subprocess.run(
             ["tmux", "send-keys", "-t", name, "C-c"],

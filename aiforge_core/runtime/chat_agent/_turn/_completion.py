@@ -11,6 +11,10 @@ from .._context import (
     _complete_live,
 )
 
+# The retry/outage wait was cut short because the user typed a message.
+# The step loop drains it and asks the model again; this is not a Stop.
+_STEERED = object()
+
 
 def _max_gen_per_step() -> int:
     """Total model generations one ReAct step may cost, across every retry
@@ -180,14 +184,14 @@ def _wait_out_outage(complete_fn, role, convo, session_id, exc, wait_s):
            "text": f"⏸ the model is unreachable — waiting up to "
                    f"{_minutes(wait_s)} for it to come back, then continuing "
                    "where the run left off (Stop ends the run)"}
+    from aiforge_core.runtime.run_interrupt import pause
     last = exc
     for probe in range(probes):
-        waited = 0.0
-        while waited < _OUTAGE_PROBE_S:
-            if session_id is not None and chat_cancel.is_cancelled(session_id):
-                return _CANCELLED, None
-            time.sleep(_CANCEL_POLL_S)
-            waited += _CANCEL_POLL_S
+        why = pause(_OUTAGE_PROBE_S, session_id, slice_s=_CANCEL_POLL_S)
+        if why == "stop":
+            return _CANCELLED, None
+        if why == "steer":
+            return _STEERED, None
         try:
             out = _complete_cancellable(complete_fn, role, convo, session_id)
             if out is not _CANCELLED:
@@ -236,23 +240,32 @@ def _retry_completion(complete_fn, role, convo, session_id, exc,
     _last = exc
     for _rn in range(_retries):
         if session_id is not None and chat_cancel.is_cancelled(session_id):
-            break
+            return _CANCELLED
         if _over_budget():
             break
         yield {"type": "thought", "role": "system",
                "text": f"⟳ model didn't respond — retrying ({_rn + 1}/{_retries})…"}
-        # Escalating backoff: give a mid-load / busy local model (or a
-        # slow compress+forward hop) progressively more room to recover.
-        time.sleep(3.0 * (_rn + 1))
+        # Escalating backoff, but Stop and a typed message cut it short.
+        # The old bare sleep ignored both for the whole backoff (3s, 6s, …).
+        from aiforge_core.runtime.run_interrupt import pause
+        why = pause(3.0 * (_rn + 1), session_id)
+        if why == "stop":
+            return _CANCELLED
+        if why == "steer":
+            return _STEERED
         try:
             out = _complete_cancellable(complete_fn, role, convo, session_id)
             _last = None
             break
         except Exception as exc2:  # noqa: BLE001
             _last = exc2
+    if out is _STEERED or out is _CANCELLED:
+        return out
     if _last is not None and wait_s > 0 and _outage_waitable(_last):
         out, _last = yield from _wait_out_outage(
             complete_fn, role, convo, session_id, _last, wait_s)
+        if out is _STEERED or out is _CANCELLED:
+            return out
     if _last is not None:
         yield from _emit_completion_failure(_cfg_error, _meter, _step_tok,
                                             worked=worked and not _cfg_error)
@@ -305,6 +318,8 @@ def _run_completion(st, role, complete_fn, session_id, _meter):
         yield {"type": "error", "text": "stopped by user"}
         yield {"type": "done"}
         return _RETRY_STOP
+    if out is _STEERED:
+        return _STEERED
     if out is None:
         out = ""   # a real empty completion — treat as an empty turn
     return out
