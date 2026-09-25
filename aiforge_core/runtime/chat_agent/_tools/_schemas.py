@@ -188,7 +188,8 @@ CATALOG: dict = {
                       ("key", "time_spent")),
     "jira_remote_links": ("Confluence pages + web links on an issue.",
                           {"key": "s"}, ("key",)),
-    "jira_create": ("WRITE: create a NEW Jira issue. Only when explicitly asked to create/file/raise one — never to look tickets up.",
+    "jira_create": ("WRITE: create a NEW Jira issue. Only when explicitly asked to create/file/raise one — never to look tickets up. "
+                    "Default, unless they asked for more or gave you the text: summary is one line; description is one outcome line, a short numbered flow, then one done-when line.",
                     {"project": "s", "summary": "s", "issuetype": "s",
                      "description": "s"}, ("project", "summary")),
     "jira_update": ("WRITE: edit an existing Jira issue's fields. The description "
@@ -201,7 +202,7 @@ CATALOG: dict = {
                      "section": "s", "find": "s", "allow_loss": "b"}, ("key",)),
     "jira_comments": ("READ the comments on a Jira issue.",
                       {"key": "s", "limit": "s"}, ("key",)),
-    "jira_comment": ("WRITE: post a NEW comment onto a Jira issue. To read comments use jira_comments.", {"key": "s", "body": "s"},
+    "jira_comment": ("WRITE: post a NEW comment onto a Jira issue. Default, unless they asked for more or gave you the text: one or two sentences. To read comments use jira_comments.", {"key": "s", "body": "s"},
                      ("key", "body")),
     "jira_transition": ("Move a Jira issue's status.",
                         {"key": "s", "transition": "s"}, ("key", "transition")),
@@ -228,7 +229,8 @@ CATALOG: dict = {
                           {"query": "s", "cql": "s"}, ()),
     "confluence_read": ("READ one Confluence page (id, or title+space).",
                         {"id": "s", "title": "s", "space": "s"}, ()),
-    "confluence_create": ("WRITE: create a NEW Confluence page. Only when explicitly asked to create one — never to look pages up.",
+    "confluence_create": ("WRITE: create a NEW Confluence page. Only when explicitly asked to create one — never to look pages up. "
+                          "Default, unless they asked for more or gave you the text: a process page opens with a short numbered flow and a mermaid flowchart, then a few bullets or one small table. Do not invent a flowchart for notes or a reference table.",
                           {"title": "s", "space": "s", "body": "s",
                            "parent_id": "s"}, ("title", "space", "body")),
     "confluence_update": ("WRITE: edit an existing Confluence page. `body` is "
@@ -254,7 +256,7 @@ CATALOG: dict = {
                              {"id": "s", "labels": "arrs"}, ("id", "labels")),
     "confluence_comments": ("READ the comments on a Confluence page.",
                             {"id": "s"}, ("id",)),
-    "confluence_comment": ("WRITE: post a NEW comment onto a page. To read comments use confluence_comments.", {"id": "s", "body": "s"},
+    "confluence_comment": ("WRITE: post a NEW comment onto a page. Default, unless they asked for more or gave you the text: one or two sentences. To read comments use confluence_comments.", {"id": "s", "body": "s"},
                            ("id", "body")),
     "confluence_resolve_space": ("Loose space name → space key.",
                                  {"name": "s"}, ("name",)),

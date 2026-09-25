@@ -599,6 +599,21 @@ def test_test_first_runs_when_the_plan_has_both_kinds(monkeypatch):
     assert result["agg"] == {"done": 1, "total": 1}
 
 
+def test_the_default_builds_code_and_tests_together(monkeypatch):
+    """Tests are not written first. A test from this run must not become the
+    spec the implementation is then rewritten to match."""
+    monkeypatch.delenv("AIFORGE_SEQUENTIAL", raising=False)
+    monkeypatch.delenv("AIFORGE_TEST_FIRST", raising=False)
+    monkeypatch.setattr(st, "_run_test_first",
+                        lambda *a, **k: pytest.fail("built the tests first"))
+    monkeypatch.setattr(st, "run_parallel", lambda *a, **k: {"done": 2, "total": 2})
+    result: dict = {}
+    subs = [{"path": "app/a.py"}, {"path": "tests/test_a.py"}]
+    st._make_runner("/cwd", "base", subs, None, None, lambda: False, "spec",
+                    _Q(), result)()
+    assert result["agg"] == {"done": 2, "total": 2}
+
+
 def test_plain_parallel_when_there_are_no_test_subtasks(monkeypatch):
     monkeypatch.delenv("AIFORGE_SEQUENTIAL", raising=False)
     monkeypatch.setattr(st, "_is_test_subtask", lambda s: False)

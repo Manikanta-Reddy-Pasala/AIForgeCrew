@@ -80,6 +80,7 @@ _TOOL_TAG_HINTS = {
     "tool:git": ("git", "branch", "commit", "rebase", "pull request", " pr ", "merge"),
     "tool:email": ("email", "smtp", "inbox", "mailbox"),
     "tool:gitlab": ("gitlab", "merge request", " mr "),
+    "tool:ssh": ("ssh", "connect", "server", "host", "machine"),
 }
 
 

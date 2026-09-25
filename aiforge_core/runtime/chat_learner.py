@@ -95,6 +95,23 @@ def _changed_files(steps: list | None) -> list[str]:
     return list(dict.fromkeys(paths))          # dedupe, keep order
 
 
+_CMD_TOOLS = {"run_command", "bash", "run_shell", "shell", "serve"}
+
+
+def _ran_command(steps: list | None) -> bool:
+    """True when a shell command succeeded. A short "do it" that built or
+    deployed through the shell still has something for the learner to keep."""
+    for s in steps or []:
+        if not isinstance(s, dict) or s.get("type") != "tool":
+            continue
+        if (s.get("name") or "").lower() not in _CMD_TOOLS:
+            continue
+        res = s.get("result")
+        if isinstance(res, dict) and res.get("ok") is True:
+            return True
+    return False
+
+
 def _is_solution_fact(f: dict) -> bool:
     """Mirror of learner_persist._is_sol — does this fact already declare a
     completed feature/fix (so we should NOT synthesize a second one)?"""
@@ -169,6 +186,13 @@ def learn_from_chat(*, prompt: str, final_text: str, steps: list | None,
         return {"ok": False, "skipped": "disabled"}
     if not prompt or not (final_text or steps):
         return {"ok": False, "skipped": "empty"}
+    # A short remark has nothing to distil. Calling the learner model for it
+    # is the empty-response error on a chat that only said "thanks", and it
+    # does not store a connection or a project fact — those are written from
+    # the command that succeeded, before this runs.
+    from aiforge_core.runtime.chat_router import plain_chat
+    if plain_chat(prompt) and not _changed_files(steps) and not _ran_command(steps):
+        return {"ok": True, "skipped": "plain"}
     repo = repo or os.environ.get("AIFORGE_AFM_REPO", "") or "repo"
     try:
         from aiforge_core.llm import client as _llm

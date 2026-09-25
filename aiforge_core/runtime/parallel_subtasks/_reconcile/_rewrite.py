@@ -162,37 +162,39 @@ _WHOLE_FILE_OVERRIDE = (
     "CAUSE of the failing tests.")
 
 _AUDIT_PRINCIPLE = (
-    "\n\nRESOLUTION PRINCIPLE — TEST FIRST, BUT AUDIT A STUCK TEST.\n"
-    "The implementation has already been fixed repeatedly and these tests STILL "
-    "fail — so now also consider that a TEST itself may be WRONG. Default is "
-    "still: conform the IMPLEMENTATION to the test. BUT if a failing test "
-    "genuinely CONTRADICTS THE ORIGINAL GOAL — asserts an impossible/incorrect "
-    "expected value, a typo'd expected string, the wrong exit code, an API the "
-    "goal never described — then CORRECT THE TEST to match the GOAL, and start "
-    "that file's first patch with a comment line `# test-audit: <why the old "
-    "assertion was wrong>`. Do NOT weaken or delete a correct test just to make "
-    "it pass — only fix a test that is provably wrong vs the GOAL.\n\n")
+    "\n\nRESOLUTION PRINCIPLE — THE GOAL WINS. A STUCK TEST MAY BE WRONG.\n"
+    "These tests still fail after a fix. Judge the IMPLEMENTATION against the "
+    "ORIGINAL GOAL, not against a test written in this run. If a failing test "
+    "contradicts the goal — an impossible value, a typo'd string, the wrong "
+    "exit code, an API the goal never described — CORRECT THE TEST and start "
+    "that file's first patch with `# test-audit: <why>`. Do not rewrite "
+    "working code to satisfy that test. Do NOT weaken a test that already "
+    "existed and matches the goal. If it is the same failure as last time, "
+    "stop. Do not patch those lines again.\n\n")
 
 _TEST_WINS_PRINCIPLE = (
-    "\n\nCRITICAL RESOLUTION PRINCIPLE — THE TEST IS ALWAYS RIGHT.\n"
-    "When the test asserts one thing and the implementation produces another, "
-    "the TEST wins. Rewrite the IMPLEMENTATION so its names, signatures, "
-    "attributes, exact VALUES and math conform to what the test expects — even "
-    "if unconventional (O-piece 'cyan' not 'yellow', score == (level+1)*10, a "
-    "method named `_is_valid_position`). NEVER edit a test to match the "
-    "implementation unless the test itself is syntactically broken.\n\n")
+    "\n\nRESOLUTION PRINCIPLE — THE GOAL WINS, NOT A TEST WRITTEN THIS RUN.\n"
+    "Make the IMPLEMENTATION do what the ORIGINAL GOAL says. A test written in "
+    "this run does not count: if it fails and the code matches the goal, "
+    "correct that test and start the patch with `# test-audit: <why>`. Do not "
+    "delete a test to make the run green, and do not rewrite the implementation "
+    "to satisfy a test that contradicts the goal. A test that already existed "
+    "and matches the goal still stands — fix "
+    "the code for that one. If the same failure is still there after your "
+    "fix, stop. Do not patch the same lines again.\n\n")
 
 _MERGING_INSTRUCTIONS = (
     "MERGING INSTRUCTIONS:\n"
     "1. Re-read the ORIGINAL GOAL — the result must satisfy it.\n"
     "2. Cross-reference dependencies: align every import / class / function / "
-    "constant name + signature to ONE canonical spelling — the name the TEST "
-    "uses. A package __init__ / re-export must ONLY import names defined at "
-    "MODULE level in the target; if a name is a class METHOD or missing, "
-    "remove it from the import + __all__.\n"
-    "3. Do NOT drop working code — make the MINIMAL change that satisfies the "
-    "failing assertions (add the exact attribute/method the test calls, fix "
-    "the value/formula the test expects).\n"
+    "constant name + signature to ONE canonical spelling — the name the GOAL "
+    "and the implementation use. A test written in this run does not rename "
+    "the implementation. A package __init__ / re-export must ONLY import names "
+    "defined at MODULE level in the target; if a name is a class METHOD or "
+    "missing, remove it from the import + __all__.\n"
+    "3. Do NOT drop working code — make the MINIMAL change that matches the "
+    "GOAL. If an assertion contradicts the goal, correct the test. Do not "
+    "reshape the implementation to match a test written in this run.\n"
     "4. You are PROHIBITED from rewriting whole files (a full rewrite silently "
     "shifts working code and breaks other tests). Emit TARGETED "
     "Search-and-Replace PATCHES. For each file you change, output a header "

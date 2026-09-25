@@ -123,6 +123,98 @@ def test_capture_falls_back_when_no_model(monkeypatch):
     assert "unverified" in seen["body"]
 
 
+def _capture_notes(monkeypatch):
+    seen = []
+
+    def write(text, **k):
+        seen.append((text, k))
+        return {"ok": True, "id": len(seen)}
+
+    monkeypatch.setattr(
+        "aiforge_core.runtime.tools.memory_write.memory_write", write)
+    return seen
+
+
+def test_a_working_ssh_is_stored_for_the_next_session(monkeypatch):
+    _msgs(monkeypatch, [{"role": "assistant", "steps": [
+        {"type": "tool", "name": "run_command",
+         "args": {"cmd": "ssh nuc 'bash -lc \"pytest -q\"'"},
+         "result": {"ok": True}}]}])
+    seen = _capture_notes(monkeypatch)
+    out = sl.remember_working_ops(11, repo="shop")
+    assert out["written"] == 1
+    text, kwargs = seen[0]
+    assert "ssh nuc" in text and "bash -lc" in text
+    assert kwargs["scope"] == "global"
+    assert "tool:ssh" in kwargs["tags"]
+
+
+def test_a_failed_ssh_and_a_secret_are_not_stored(monkeypatch):
+    _msgs(monkeypatch, [{"role": "assistant", "steps": [
+        {"type": "tool", "name": "run_command",
+         "args": {"cmd": "ssh nuc 'ls'"},
+         "result": {"ok": False}},
+        {"type": "tool", "name": "run_command",
+         "args": {"cmd": "ssh ms 'echo token=abc'"},
+         "result": {"ok": True}},
+    ]}])
+    seen = _capture_notes(monkeypatch)
+    sl.remember_working_ops(12, repo="shop")
+    assert seen == []
+
+
+def test_the_stored_ssh_keeps_the_user_and_the_port(monkeypatch):
+    _msgs(monkeypatch, [{"role": "assistant", "steps": [
+        {"type": "tool", "name": "run_command",
+         "args": {"cmd": "ssh -p 2222 deploy@nuc 'bash -lc \"uptime\"'"},
+         "result": {"ok": True}}]}])
+    seen = _capture_notes(monkeypatch)
+    sl.remember_working_ops(14, repo="shop")
+    assert "ssh -p 2222 deploy@nuc" in seen[0][0]
+
+
+def test_ssh_keygen_and_a_credential_are_not_a_connection(monkeypatch):
+    _msgs(monkeypatch, [{"role": "assistant", "steps": [
+        {"type": "tool", "name": "run_command",
+         "args": {"cmd": "ssh-keygen -t ed25519"},
+         "result": {"ok": True}},
+        {"type": "tool", "name": "run_command",
+         "args": {"cmd": "git clone https://oauth2:glpat-abc@gitlab.com/x.git"},
+         "result": {"ok": True}},
+        {"type": "tool", "name": "run_command",
+         "args": {"cmd": "pytest -q 2>&1 | tail"},
+         "result": {"ok": True}},
+        {"type": "tool", "name": "run_command",
+         "args": {"cmd": "GITLAB_TOKEN=glx9abc python3 deploy.py"},
+         "result": {"ok": True}},
+        {"type": "tool", "name": "run_command",
+         "args": {"cmd": "sshpass -p hunter2 ssh nuc git pull"},
+         "result": {"ok": True}},
+        {"type": "tool", "name": "run_command",
+         "args": {"cmd": "npm start & sleep 5"},
+         "result": {"ok": True}},
+    ]}])
+    seen = _capture_notes(monkeypatch)
+    sl.remember_working_ops(15, repo="shop")
+    assert seen == []
+
+
+def test_a_project_command_that_worked_is_stored_on_the_repo(monkeypatch):
+    _msgs(monkeypatch, [{"role": "assistant", "steps": [
+        {"type": "tool", "name": "run_command",
+         "args": {"cmd": "pytest -q tests/python/runtime/test_chat_router.py"},
+         "result": {"ok": True}},
+        {"type": "tool", "name": "run_command", "args": {"cmd": "ls"},
+         "result": {"ok": True}},
+    ]}])
+    seen = _capture_notes(monkeypatch)
+    sl.remember_working_ops(13, repo="AIForgeCrew")
+    assert len(seen) == 1
+    assert seen[0][0].startswith("In AIForgeCrew, this command succeeded: pytest")
+    assert seen[0][1]["repo"] == "AIForgeCrew"
+    assert seen[0][1]["scope"] == ""
+
+
 def test_capture_skips_too_few_working(monkeypatch):
     _msgs(monkeypatch, [{"role": "assistant", "steps": [
         {"type": "tool", "name": "run_command", "args": {"cmd": "ls"},

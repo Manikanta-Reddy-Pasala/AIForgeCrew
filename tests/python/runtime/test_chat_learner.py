@@ -36,7 +36,7 @@ def _tool(name, ok=True, path=None):
 @pytest.mark.parametrize("flag", ["0", "false", "no"])
 def test_the_learner_can_be_turned_off(monkeypatch, flag):
     monkeypatch.setenv("AIFORGE_CHAT_LEARNER", flag)
-    assert cl.learn_from_chat(prompt="p", final_text="a", steps=None,
+    assert cl.learn_from_chat(prompt="fix the import", final_text="a", steps=None,
                               repo="r", session_id=1) == {"ok": False,
                                                           "skipped": "disabled"}
 
@@ -177,7 +177,7 @@ def learner(monkeypatch):
 def test_an_empty_turn_is_skipped(learner):
     assert cl.learn_from_chat(prompt="", final_text="a", steps=None, repo="r",
                               session_id=1)["skipped"] == "empty"
-    assert cl.learn_from_chat(prompt="p", final_text="", steps=None, repo="r",
+    assert cl.learn_from_chat(prompt="fix the import", final_text="", steps=None, repo="r",
                               session_id=1)["skipped"] == "empty"
 
 
@@ -192,12 +192,12 @@ def test_distilled_facts_are_persisted(learner):
     assert learner["role"] == "learner"
 
 
-def test_a_turn_worth_nothing_persists_nothing(learner):
+def test_a_short_remark_does_not_call_the_learner(learner):
     out = cl.learn_from_chat(prompt="hi", final_text="hello", steps=None,
                              repo="app", session_id=1)
-    assert out == {"ok": True, "written_observations": 0,
-                   "written_decisions": 0, "llm_down": False}
+    assert out == {"ok": True, "skipped": "plain"}
     assert learner["persisted"] == []
+    assert "role" not in learner
 
 
 def test_a_repo_change_always_lands_a_task_done_record(learner):
@@ -262,7 +262,7 @@ def test_a_failed_persist_is_reported(learner, monkeypatch):
     learner["reply"] = '[{"text": "a fact"}]'
     monkeypatch.setattr(learner_persist, "persist_facts",
                         lambda **kw: (_ for _ in ()).throw(OSError("db locked")))
-    out = cl.learn_from_chat(prompt="p", final_text="a", steps=None,
+    out = cl.learn_from_chat(prompt="fix the import", final_text="a", steps=None,
                              repo="app", session_id=1)
     assert out == {"ok": False, "error": "db locked"}
 
@@ -270,25 +270,25 @@ def test_a_failed_persist_is_reported(learner, monkeypatch):
 def test_the_repo_falls_back_to_the_configured_one(learner, monkeypatch):
     monkeypatch.setenv("AIFORGE_AFM_REPO", "fallback-repo")
     learner["reply"] = '[{"text": "a"}]'
-    cl.learn_from_chat(prompt="p", final_text="a", steps=None, repo="",
+    cl.learn_from_chat(prompt="fix the import", final_text="a", steps=None, repo="",
                        session_id=1)
     assert learner["persisted"][0]["repo"] == "fallback-repo"
 
 
 def test_the_learner_prompt_asks_for_the_task_done_record(learner):
     learner["reply"] = "[]"
-    cl.learn_from_chat(prompt="p", final_text="a", steps=None, repo="r",
+    cl.learn_from_chat(prompt="fix the import", final_text="a", steps=None, repo="r",
                        session_id=1)
     user = learner["messages"][1]["content"]
     assert "task-history" in user
     assert "DID:" in user
-    assert "USER:\np" in user
+    assert "USER:\nfix the import" in user
 
 
 def test_the_learner_call_is_bounded(learner, monkeypatch):
     monkeypatch.setenv("AIFORGE_CHAT_LEARNER_MAX_TOKENS", "128")
     monkeypatch.setenv("AIFORGE_CHAT_LEARNER_TIMEOUT_S", "5")
-    cl.learn_from_chat(prompt="p", final_text="a", steps=None, repo="r",
+    cl.learn_from_chat(prompt="fix the import", final_text="a", steps=None, repo="r",
                        session_id=1)
     assert learner["kw"]["max_tokens"] == 128
     assert learner["kw"]["timeout_s"] == 5

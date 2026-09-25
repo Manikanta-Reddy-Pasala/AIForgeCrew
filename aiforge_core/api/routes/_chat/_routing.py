@@ -227,22 +227,14 @@ def _should_skip_enhance(auto_downgraded, route_pipeline, is_build_task,
 
 def _plan_mode_route(_pp, _enriched, _enriched_history, cwd, role, session_id,
                      quick):
-    """Plan mode: decompose into a STATIC plan (marked "planned", never executed),
-    run the plan-mode agent, and emit ``plan_ready`` BEFORE the terminal ``done``
-    reaches the client (hold the done, yield plan_ready, release it) so the UI
-    sees the approvable plan — one-click "Approve & Execute" re-sends this
-    enriched spec as a TEAM run (Gap B)."""
+    """Plan mode: run the plan-mode agent, and emit ``plan_ready`` BEFORE the
+    terminal ``done`` reaches the client (hold the done, yield plan_ready,
+    release it) so the UI sees the approvable plan — one-click "Approve &
+    Execute" re-sends this enriched spec as a TEAM run (Gap B).
+
+    No planner model call first. That call ran before any plan text, so a
+    plan turn waited through two models. The agent writes the plan."""
     from aiforge_core.runtime.chat_agent import run_chat_agent
-    _subs = _pp._decompose(_enriched)       # Planner
-    if _subs:
-        # Plan mode shows a STATIC plan it never executes — mark them
-        # "planned" (not "pending") so the UI doesn't render them as
-        # stuck-forever pending-execution rows.
-        yield {"type": "subtasks", "items": [
-            {"slug": s.get("slug") or f"sub-{i+1}",
-             "goal": s.get("goal") or s.get("title") or "",
-             "status": "planned"}
-            for i, s in enumerate(_subs)]}
     # Plan→approve→execute (Gap B): hand the approved spec to the UI so
     # the user can one-click "Approve & Execute" — which re-sends this
     # enriched spec as a TEAM run. Persisted so the button survives a

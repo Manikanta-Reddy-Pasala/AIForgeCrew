@@ -13,6 +13,7 @@ Read-only + soft-fail: a ledger error must never break a turn.
 from __future__ import annotations
 
 import os
+import re
 
 from aiforge_core.runtime.tools.mutating import (
     FILE_WRITE_TOOLS,
@@ -291,4 +292,149 @@ def capture_working_workflow(session_id, repo: str = "repo") -> dict:
     return out
 
 
-__all__ = ["ledger_items", "ledger_block", "capture_working_workflow"]
+# A command that names a credential is never stored. The URL form is
+# user:password@host. -pVALUE is a password stuck to the flag; ssh -p 2222
+# has a space and is a port, so it stays.
+_SECRET_RE = re.compile(
+    r"password|passwd|secret|api[_-]?key|token|PRIVATE KEY|"
+    r"://[^\s/@]+:[^\s/@]+@|"
+    r"\b(?:ghp_|gho_|github_pat_|glpat-|sk-|hf_|npm_|xox[baprs]-)|"
+    r"(?:^|\s)-p\S|"
+    r"\b(?:docker|mysql|psql|redis-cli|sshpass)\b[^\n]*\s-p\s+\S|"
+    r"\b[\w.]*(?:token|key|secret|pass(?:word)?)\w*\s*=|"
+    r"authorization:\s*bearer",
+    re.IGNORECASE)
+# A backgrounded command. && is a chain and is kept.
+_BACKGROUND_RE = re.compile(r"(?<!&)&(?!&)")
+# A real `ssh` command: at the start, or after a shell separator. ssh-keygen
+# and the word ssh in the middle of another command do not match.
+_SSH_INVOKE_RE = re.compile(
+    r"(?:^|&&|\|\||[;&|`(])\s*ssh(?=\s)", re.IGNORECASE)
+# Flags that take the next word, so it is not the host.
+_SSH_ARG_FLAGS = {
+    "-p", "-i", "-o", "-F", "-l", "-J", "-c", "-b", "-W",
+    "-L", "-R", "-D", "-E", "-S", "-O", "-Q", "-w", "-B", "-e", "-m",
+}
+# A command worth remembering for this project. ls and echo are not.
+_PROJECT_CMD_RE = re.compile(
+    r"\b(pytest|mvn|mvnw|npm|yarn|pnpm|gradle|cargo|make|docker|podman|"
+    r"git|python3?|node|go|bundle|composer)\b",
+    re.IGNORECASE)
+_SKIP_REPO = {"", "repo", "chat"}
+_MAX_NOTES = 3
+
+
+def _ssh_target(cmd: str) -> "str | None":
+    """How to reach the host, or None when this is not an ssh command.
+
+    Keeps the user and the port, because ``ssh nuc`` is not the command that
+    worked when the session used ``ssh -p 2222 deploy@nuc``. Drops the remote
+    command itself."""
+    match = _SSH_INVOKE_RE.search(cmd or "")
+    if not match:
+        return None
+    parts = (cmd or "")[match.end():].split()
+    user = ""
+    port = ""
+    ident = ""
+    i = 0
+    while i < len(parts):
+        tok = parts[i].strip("'\"")
+        if tok == "--":
+            i += 1
+            if i >= len(parts):
+                return None
+            tok = parts[i].strip("'\"")
+        elif tok.startswith("-"):
+            if tok in _SSH_ARG_FLAGS and i + 1 < len(parts):
+                val = parts[i + 1].strip("'\"")
+                if tok == "-p":
+                    port = val
+                elif tok == "-l" and "@" not in val:
+                    user = val
+                elif tok == "-i":
+                    ident = val
+                i += 2
+            else:
+                i += 1
+            continue
+        dest = tok.split(":")[0]
+        if not dest or dest.startswith(("/", "-", "~")) or "/" in dest:
+            return None
+        if "@" not in dest and user:
+            dest = f"{user}@{dest}"
+        bits = []
+        if ident:
+            bits.append(f"-i {ident}")
+        if port:
+            bits.append(f"-p {port}")
+        bits.append(dest)
+        return " ".join(bits)[:120]
+    return None
+
+
+def _remember_note(text: str, *, repo, scope: str, tags: list) -> bool:
+    """One durable note. A repeat of the same text is a success, not a new row."""
+    try:
+        from aiforge_core.runtime.tools.memory_write import memory_write
+        res = memory_write(text, kind="note", tags=tags, repo=repo,
+                           source="chat", scope=scope)
+    except Exception:  # noqa: BLE001 — learning never breaks the turn
+        return False
+    return bool(isinstance(res, dict) and res.get("ok"))
+
+
+def remember_working_ops(session_id, repo: str = "") -> dict:
+    """Store a connection recipe and a project command that actually worked.
+
+    The end-of-turn learner asks another model to distil the transcript. That
+    call is what fails (empty reply, no model configured) and then nothing is
+    saved, so the next session rediscovers ssh and hits the same error. This
+    path writes the fact from the command that succeeded. Soft-fail.
+    """
+    written = 0
+    try:
+        items = ledger_items(session_id)
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "written": 0}
+    ssh_hosts: list[str] = []
+    project: list[str] = []
+    for item in items:
+        if item.get("outcome") is not True:
+            continue
+        key = item.get("key") or ""
+        if not key.startswith("cmd:"):
+            continue
+        cmd = key[4:].strip()
+        # A pipe or a backgrounded command reports the wrong exit code, so
+        # "succeeded" is not something to teach the next session.
+        if (not cmd or "|" in cmd or _BACKGROUND_RE.search(cmd)
+                or _SECRET_RE.search(cmd)):
+            continue
+        target = _ssh_target(cmd)
+        if target:
+            if target not in ssh_hosts:
+                ssh_hosts.append(target)
+            continue
+        if (repo not in _SKIP_REPO and not str(repo).startswith("session-")
+                and _PROJECT_CMD_RE.search(cmd) and cmd not in project):
+            project.append(cmd)
+    for target in ssh_hosts[:_MAX_NOTES]:
+        text = (
+            f"To run a command on {target}, use a login shell so the remote "
+            f"PATH and environment exist: "
+            f"ssh {target} 'bash -lc \"<command>\"'."
+        )
+        if _remember_note(text, repo=None, scope="global",
+                          tags=["tool:ssh", "connection"]):
+            written += 1
+    for cmd in project[-_MAX_NOTES:]:
+        text = f"In {repo}, this command succeeded: {cmd[:180]}"
+        if _remember_note(text, repo=repo, scope="",
+                          tags=["project", "command"]):
+            written += 1
+    return {"ok": True, "written": written}
+
+
+__all__ = ["ledger_items", "ledger_block", "capture_working_workflow",
+           "remember_working_ops"]

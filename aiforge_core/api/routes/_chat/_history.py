@@ -154,7 +154,13 @@ def _chat_learn_writeback(cwd, prompt, final_text, steps, session_id) -> None:
         # the old bare repo_key(cwd) filed subdir-pinned sessions under the subdir
         # while recall read the repo root, so facts were never found.
         repo = _chat_repo_key(cwd)
-        # PREFERENCE FIRST — a preference-cue message ("use X as default", "from
+        # A command that worked is stored here, with no extra model call. The
+        # learner below still distils prose, and that call is the one that
+        # errors when its model is down — the connection recipe must not
+        # depend on it.
+        from aiforge_core.runtime import session_ledger
+        session_ledger.remember_working_ops(session_id, repo)
+        # PREFERENCE FIRST — a preference-cue message ("use X as default", "from"
         # now on…") is UPSERTED by subject and owns the turn. The learner still
         # runs on EVERY turn to distil the OTHER signal (technical learnings,
         # project-structure findings, durable intent the pref capture didn't

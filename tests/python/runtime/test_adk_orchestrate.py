@@ -500,9 +500,9 @@ def test_a_failed_review_contributes_nothing(monkeypatch):
 # ─── workspace preparation ─────────────────────────────────────────────
 
 
-def test_a_spec_scaffold_is_written_for_a_build_ticket(monkeypatch, tmp_path):
+def test_a_spec_scaffold_is_written_when_the_switch_is_on(monkeypatch, tmp_path):
     import aiforge_core.runtime.spec_to_tests as s2t
-    monkeypatch.delenv("AIFORGE_SPEC_TO_TESTS", raising=False)
+    monkeypatch.setenv("AIFORGE_SPEC_TO_TESTS", "1")
     monkeypatch.setattr(orc, "_ticket_looks_readonly", lambda t: False)
     seen: dict = {}
     monkeypatch.setattr(s2t, "write_scaffold",
@@ -512,10 +512,18 @@ def test_a_spec_scaffold_is_written_for_a_build_ticket(monkeypatch, tmp_path):
     assert seen == {"ident": "ONE-1", "language": "python"}
 
 
+def test_the_default_does_not_plant_a_failing_test(monkeypatch, tmp_path):
+    import aiforge_core.runtime.spec_to_tests as s2t
+    monkeypatch.delenv("AIFORGE_SPEC_TO_TESTS", raising=False)
+    monkeypatch.setattr(s2t, "write_scaffold",
+                        lambda *a, **k: pytest.fail("planted a test before the code"))
+    orc._write_spec_scaffold(_ticket(), str(tmp_path))
+
+
 def test_a_read_only_ticket_gets_no_scaffold(monkeypatch, tmp_path):
     """Otherwise an analysis ticket dirties the tree and lands a spurious PR."""
     import aiforge_core.runtime.spec_to_tests as s2t
-    monkeypatch.delenv("AIFORGE_SPEC_TO_TESTS", raising=False)
+    monkeypatch.setenv("AIFORGE_SPEC_TO_TESTS", "1")
     monkeypatch.setattr(orc, "_ticket_looks_readonly", lambda t: True)
     monkeypatch.setattr(s2t, "write_scaffold",
                         lambda *a, **k: pytest.fail("scaffolded a read-only ticket"))
@@ -532,7 +540,7 @@ def test_the_scaffold_can_be_turned_off(monkeypatch, tmp_path):
 
 def test_a_failing_scaffold_is_not_fatal(monkeypatch, tmp_path):
     import aiforge_core.runtime.spec_to_tests as s2t
-    monkeypatch.delenv("AIFORGE_SPEC_TO_TESTS", raising=False)
+    monkeypatch.setenv("AIFORGE_SPEC_TO_TESTS", "1")
     monkeypatch.setattr(orc, "_ticket_looks_readonly", lambda t: False)
     monkeypatch.setattr(s2t, "write_scaffold",
                         lambda *a, **k: (_ for _ in ()).throw(OSError("no disk")))

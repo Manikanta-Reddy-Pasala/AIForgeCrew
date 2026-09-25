@@ -241,3 +241,32 @@ def test_a_short_message_about_code_or_earlier_work_still_recalls():
     assert cr.plain_chat("fix the import") is False
     assert cr.plain_chat("what does this function do?") is False
     assert cr.plain_chat("continue yesterday's auth fix") is False
+    assert cr.plain_chat("ssh to the nuc and run the tests") is False
+    assert cr.plain_chat("connect to the mac studio") is False
+
+
+def test_a_short_remark_skips_the_repo_walk_and_keeps_images(monkeypatch):
+    """The repo walk is the pause. A screenshot on a short remark still has
+    to reach the model, and so does the session ledger."""
+    from aiforge_core.runtime import context_bundle as cb
+    from aiforge_core.runtime.chat_agent._turn import _blocks as blocks
+
+    seen: dict = {}
+
+    def _build(*_a, **k):
+        seen["map"] = k.get("want_repo_map")
+        seen["summary"] = k.get("want_summary")
+        return cb.ContextBundle(workflows_md="use the branch workflow")
+
+    monkeypatch.setattr(blocks, "_ctx_on", lambda _b: True)
+    monkeypatch.setattr(cb, "build_bundle", _build)
+    monkeypatch.setattr(blocks, "_append_session_blocks",
+                        lambda *a: [{"type": "image"}])
+    added: list = []
+    _bundle, imgs = blocks._append_context_blocks(
+        lambda label, _block: added.append(label),
+        "/cwd", "what is 2+2?", [], 7, "chat", False)
+    assert seen["map"] is False
+    assert seen["summary"] is False
+    assert imgs == [{"type": "image"}]
+    assert "workflows" in added

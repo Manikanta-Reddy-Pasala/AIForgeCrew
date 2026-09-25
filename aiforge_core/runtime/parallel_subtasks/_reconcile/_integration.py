@@ -13,6 +13,7 @@ from ._testrun import (
     _directed_hints,
     _escalation_model,
     _fail_count,
+    _failure_signature,
     _is_hard_residual,
     _project_test_output,
     _reconcile_rounds,
@@ -134,6 +135,7 @@ def _repair_round(cwd: str, output: str, rounds: int, max_rounds: int,
         _restore_snapshot(cwd, snapshot)
         ok, output = _project_test_output(cwd)
         stalls += 1
+        written = []                       # rolled back — not a kept fix
         yield {"type": "thought", "role": "reconciler",
                "text": f"pass {rounds} REGRESSED ({prev_fails}→? ) — rolled back to "
                        f"{prev_fails} failing. Trying a different angle…"}
@@ -150,7 +152,11 @@ def _repair_round(cwd: str, output: str, rounds: int, max_rounds: int,
                "args": {"pass": rounds, "status": label},
                "result": {"ok": new_fails < 999, "files": written,
                           "output": (output or "")[-1500:] if new_fails >= 999 else None}}
-    state.update(ok=ok, output=output, prev_fails=prev_fails, stalls=stalls)
+    # A kept patch is one the round did not roll back and that actually wrote
+    # files. A rollback or a model error leaves the same tests red; that is
+    # not "we already fixed this", so the loop may try again.
+    state.update(ok=ok, output=output, prev_fails=prev_fails, stalls=stalls,
+                 kept_patch=bool(written))
 
 
 def _repair_loop(cwd: str, output: str, should_cancel, state: dict):
@@ -162,9 +168,20 @@ def _repair_loop(cwd: str, output: str, should_cancel, state: dict):
         if should_cancel is not None and should_cancel():
             return
         state["rounds"] += 1
+        before = _failure_signature(state["output"])
         yield from _repair_round(cwd, state["output"], state["rounds"],
                                  max_rounds, state["prev_fails"],
                                  state["stalls"], state)
+        if state["ok"]:
+            return
+        after = _failure_signature(state["output"])
+        # One fix that leaves the same tests red is enough. Another pass
+        # rewrites the same lines and the failure comes back.
+        if state.get("kept_patch") and before and after == before:
+            yield {"type": "thought", "role": "reconciler",
+                   "text": "The same tests still fail after a fix — stopping "
+                           "rather than patching them again."}
+            return
         if state["stalls"] >= 4:
             return                         # 4 no-progress rounds → give up
 

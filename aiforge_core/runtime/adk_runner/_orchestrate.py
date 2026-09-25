@@ -119,7 +119,10 @@ def _write_spec_scaffold(ticket, worktree: str) -> None:
     scaffold writes a test file, dirties the tree, and a ticket that meant only
     to read/comment gets a spurious PR (or a test_only_diff → blocked).
     """
-    if os.environ.get("AIFORGE_SPEC_TO_TESTS", "1") not in {"1", "true"} \
+    # Off by default: planting a failing test before the code exists is what
+    # makes the doer chase a scaffold it just invented. Opt in with
+    # AIFORGE_SPEC_TO_TESTS=1.
+    if os.environ.get("AIFORGE_SPEC_TO_TESTS", "0") not in {"1", "true"} \
             or _ticket_looks_readonly(ticket):
         return
     try:

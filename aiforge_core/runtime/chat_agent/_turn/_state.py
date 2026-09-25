@@ -2,6 +2,7 @@
 the loop state."""
 from __future__ import annotations
 
+import re
 import time
 import types
 
@@ -67,6 +68,35 @@ def _turn_goal(messages) -> str:
                 text = text.split(marker)[0]
             return text.strip() or _text_of(m).strip()
     return ""
+
+
+# A remark that never says FINAL. Eight steps and ten minutes, and the
+# extension that would stretch a real task does not apply. A short "do it"
+# or "run it" is an instruction, so it keeps the operator's "no limit".
+_PLAIN_STEPS = 8
+_PLAIN_SECONDS = 600
+_ACT_RE = re.compile(
+    r"\b(do|run|read|write|fix|build|make|go|start|continue|implement|"
+    r"deploy|edit|add|create|update|check|test|commit)\b",
+    re.IGNORECASE)
+
+
+def _clamp_plain_turn(text, safety, budget_s, capped):
+    """Bound a short remark. Real work is returned unchanged.
+
+    Returns (safety, budget_s, capped, extend). ``extend`` is False only for
+    the remark, so a model that keeps calling tools cannot turn ten minutes
+    into hours."""
+    from aiforge_core.runtime.chat_router import plain_chat
+    if not plain_chat(text or ""):
+        return safety, budget_s, capped, True
+    # A cap or a deadline already bounds the turn, and a turn that is still
+    # doing new work may extend it. Only the unbounded default — both knobs
+    # at 0 — lets a remark run for hours, and that is the case we close.
+    # An instruction ("do it", "run it") is not a remark.
+    if safety > 0 or budget_s > 0 or _ACT_RE.search(text or ""):
+        return safety, budget_s, capped, True
+    return _PLAIN_STEPS, _PLAIN_SECONDS, True, False
 
 
 def _compute_caps(max_steps, session_id):
@@ -144,6 +174,15 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     # an interactive turn (see _ext_budget below).
     _cap_base, _caller_cap, _unattended, safety, _capped = _compute_caps(
         max_steps, session_id)
+    _turn_budget_s = _turn_deadline_s()
+    # A short remark has no work to finish. With both knobs at 0 the loop has
+    # no step ceiling and no clock, so a model that never says FINAL keeps
+    # going for hours. Clamp that case. A caller-set budget and real work
+    # keep the operator's settings, including "no limit".
+    _extend = True
+    if session_id is not None and _caller_cap is None:
+        safety, _turn_budget_s, _capped, _extend = _clamp_plain_turn(
+            _turn_goal(messages), safety, _turn_budget_s, _capped)
     # Wall-clock turn backstop. The 2000-step cap is not a real stopping
     # point on a slow local model — 2000 steps × seconds-to-minutes each is
     # effectively "forever" from the user's chair. This deadline bounds the
@@ -152,7 +191,6 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     # run for hours. Generous default (1h) so it's a backstop, not a normal
     # limit; 0 disables. Set in Settings → Agent limits (or
     # AIFORGE_CHAT_TURN_DEADLINE_S).
-    _turn_budget_s = _turn_deadline_s()
     _turn_deadline = (time.monotonic() + _turn_budget_s) if _turn_budget_s > 0 else None
 
     # Latest user message drives mentions (#4) + skill triggers (#6) +
@@ -216,7 +254,8 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     # AND in wall clock) — each settings field validates in isolation, so the
     # multiplication is where an innocent-looking pair becomes a multi-day turn.
     _ext_budget = (_extension_budget(_cap_base, _turn_budget_s)
-                   if (_caller_cap is None and session_id is not None) else 0)
+                   if (_extend and _caller_cap is None and session_id is not None)
+                   else 0)
     _extensions_used = 0
     _granted_at_step = -1     # step whose extension is already paid for
     # Progress is NEW WORK, not novel tool arguments: an agent that varies its

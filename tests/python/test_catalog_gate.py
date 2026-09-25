@@ -119,6 +119,25 @@ def test_hard_off_switch_beats_the_allow_flag(monkeypatch):
     assert "WEB ACCESS IS OFF" in out
 
 
+def test_jira_and_confluence_default_to_a_crisp_flow():
+    # The writing rule is an operating principle, so it stays even when the
+    # tool catalog is gated down to nothing. The write-tool schemas repeat it
+    # next to the fields the model fills in.
+    from aiforge_core.runtime.chat_agent._tools._schemas import CATALOG
+
+    assert "write crisp by default" in _SYSTEM
+    assert "When EDITING an existing" in _SYSTEM
+    assert "post it as given" in _SYSTEM
+    out, _ = gate_catalog(_SYSTEM, set())
+    assert "write crisp by default" in out
+    by_name = {name: desc for name, (desc, _props, _req) in CATALOG.items()}
+    for name in ("jira_create", "confluence_create",
+                 "jira_comment", "confluence_comment"):
+        assert "unless they asked for more" in by_name[name]
+    assert "short numbered flow" in by_name["jira_create"]
+    assert "Do not invent a flowchart" in by_name["confluence_create"]
+
+
 def test_legacy_search_disable_var_still_locks_fetch(monkeypatch):
     """A box already locked down under AIFORGE_WEB_SEARCH_DISABLE must not
     reopen just because the search half of the module was deleted."""

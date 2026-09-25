@@ -141,8 +141,17 @@ def _append_recall_blocks(add, bundle, cwd, last_user, messages, session_id,
     _prev_session_on = bool(_prev_brief)
     # Self-learning recall — EVERY turn, keyed to the CURRENT user message
     # (from the shared bundle). Cave mode pulls fewer hits.
-    _append_learning_recall(add, _bundle, last_user, session_id,
-                            _proactive, _is_init, _prev_session_on, cwd)
+    # A short remark does not search memory. Images and the ledger, appended
+    # just below, still go on.
+    _skip_recall = False
+    try:
+        from aiforge_core.runtime.chat_router import plain_chat
+        _skip_recall = plain_chat(last_user or "")
+    except Exception:  # noqa: BLE001
+        _skip_recall = False
+    if not _skip_recall:
+        _append_learning_recall(add, _bundle, last_user, session_id,
+                                _proactive, _is_init, _prev_session_on, cwd)
     if _prev_brief:
         add("prev-session", _prev_brief)
     _img_blocks = _append_session_blocks(add, cwd, messages, session_id, role)
@@ -159,6 +168,16 @@ def _append_context_blocks(add, cwd, last_user, messages, session_id, role, cave
     # selection/scoping/gating as chat-team + the pipeline). rules+prefs are
     # already injected above as high-priority blocks, so skip them here.
     from aiforge_core.runtime import context_bundle as _cb
+    # A short remark skips the repo walk, the skill match and the memory
+    # query — those run before the model speaks. Images, the session ledger
+    # and workflows stay: a screenshot plus "what's this?", or "ok, commit",
+    # still needs them.
+    _plain = False
+    try:
+        from aiforge_core.runtime.chat_router import plain_chat
+        _plain = plain_chat(last_user or "")
+    except Exception:  # noqa: BLE001 — a classifier miss still builds context
+        _plain = False
     # Proactive-recall mode. "lite" (default): send a SMALL anchor (repo summary
     # + the compacted project brief) and let the model PULL specifics via the
     # memory tools on demand — instead of pre-dumping the full recall every turn.
@@ -171,11 +190,17 @@ def _append_context_blocks(add, cwd, last_user, messages, session_id, role, cave
     _is_init = not any(m.get("role") == "assistant" for m in messages)
     # In lite mode a FOLLOW-UP turn doesn't inject recall at all — skip the
     # unified_query work too instead of building a block that gets dropped.
-    _recall_wanted = _proactive == "full" or _is_init
+    _recall_wanted = (not _plain) and (_proactive == "full" or _is_init)
+
+    def _ctx(block: str) -> bool:
+        if _plain and block in ("recall", "skills", "repomap", "summary"):
+            return False
+        return _ctx_on(block) and (block != "recall" or _recall_wanted)
+
     _bundle = _cb.build_bundle(
-        cwd, last_user, cave=cave,
-        ctx_on=lambda b: _ctx_on(b) and (b != "recall" or _recall_wanted),
-        session_id=session_id, want_rules=False, want_prefs=False)
+        cwd, last_user, cave=cave, ctx_on=_ctx, session_id=session_id,
+        want_rules=False, want_prefs=False,
+        want_repo_map=not _plain, want_summary=not _plain)
     # Project memory (compacted per-repo brief) — small + high-value; the
     # "you already know this repo" anchor. Always injected.
     add("project-memory", _bundle.project_brief_md)

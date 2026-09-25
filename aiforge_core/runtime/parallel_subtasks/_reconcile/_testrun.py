@@ -398,6 +398,19 @@ def _dedupe_keep_order(hints: list[str]) -> list[str]:
     return [h for h in hints if not (h in seen or seen.add(h))]
 
 
+def _failure_signature(output: str) -> str:
+    """The set of failing test node ids. Empty when the output names none.
+
+    The repair loop uses this to stop when a fix leaves the SAME tests
+    failing. A count that wobbles (3 fails, then 2, then 3) used to reset
+    the stall counter and rewrite the same code for the whole round budget.
+    """
+    nodes = re.findall(r"^FAILED\s+(\S+)", output or "", re.M)
+    if not nodes:
+        return ""
+    return "|".join(sorted(set(nodes))[:40])
+
+
 def _fail_count(output: str) -> int:
     """Number of unhealthy tests from the build/test output (for the regression
     guard + reconcile progress signal). Sums pytest FAILED **and** ERRORS — a

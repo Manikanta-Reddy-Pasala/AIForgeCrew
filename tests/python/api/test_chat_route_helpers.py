@@ -418,22 +418,20 @@ def test_the_plan_reaches_the_ui_before_the_turn_ends(pp, plan_agent):
     assert evs[-2]["spec"] == "the spec"
 
 
-def test_the_planned_subtasks_are_never_rendered_as_pending(pp, plan_agent):
-    """Plan mode shows a static plan it never executes."""
+def test_plan_mode_starts_the_agent_without_a_planner_call(pp, plan_agent):
+    """A planner model call before the agent made every plan turn wait twice.
+    The agent writes the plan; there is no subtask panel from a decompose."""
+    calls = {"n": 0}
+
+    def _decompose(_spec):
+        calls["n"] += 1
+        return [{"slug": "s1"}]
+
+    pp["ns"]._decompose = _decompose
     evs = _plan_mode(pp)
-    items = evs[0]["items"]
-    assert [i["status"] for i in items] == ["planned", "planned"]
-    assert items[0]["slug"] == "s1"
-
-
-def test_a_subtask_without_a_slug_still_gets_one(pp, plan_agent):
-    pp["subs"] = [{"goal": "do it"}]
-    assert _plan_mode(pp)[0]["items"][0]["slug"] == "sub-1"
-
-
-def test_a_plan_that_will_not_decompose_emits_no_panel(pp, plan_agent):
-    pp["subs"] = []
-    assert [e["type"] for e in _plan_mode(pp)] == ["step", "plan_ready", "done"]
+    assert calls["n"] == 0
+    assert [e["type"] for e in evs] == ["step", "plan_ready", "done"]
+    assert "subtasks" not in [e["type"] for e in evs]
 
 
 def test_an_agent_that_never_finishes_still_yields_the_plan(pp, plan_agent):

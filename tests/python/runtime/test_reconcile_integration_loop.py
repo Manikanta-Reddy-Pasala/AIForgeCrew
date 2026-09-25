@@ -274,6 +274,46 @@ def test_the_loop_is_bounded_by_the_round_cap(monkeypatch):
     assert state["rounds"] == 3
 
 
+def test_the_same_failing_tests_stop_the_loop(monkeypatch):
+    """One fix that leaves the same tests red is enough. A second pass
+    rewrites the same lines."""
+    monkeypatch.setattr(ig, "_reconcile_rounds", lambda: 12)
+    monkeypatch.setattr(ig, "_fail_count", lambda out: 1)
+    rounds = {"n": 0}
+    same = "FAILED tests/test_calc.py::test_add - AssertionError\n"
+
+    def _round(cwd, output, r, mx, prev, stalls, state):
+        rounds["n"] += 1
+        state.update(ok=False, output=same, prev_fails=1, stalls=0,
+                     kept_patch=True)
+        return iter(())
+    monkeypatch.setattr(ig, "_repair_round", _round)
+    state: dict = {}
+    events = list(ig._repair_loop("/cwd", same, None, state))
+    assert rounds["n"] == 1
+    assert any("same tests still fail" in (e.get("text") or "") for e in events)
+
+
+def test_a_rolled_back_round_does_not_count_as_the_same_fix(monkeypatch):
+    """A patch that was thrown away did not fix anything. The loop may try
+    again. Only a kept patch that leaves the same tests red stops it."""
+    monkeypatch.setattr(ig, "_reconcile_rounds", lambda: 2)
+    monkeypatch.setattr(ig, "_fail_count", lambda out: 1)
+    same = "FAILED tests/test_calc.py::test_add - AssertionError\n"
+    rounds = {"n": 0}
+
+    def _round(cwd, output, r, mx, prev, stalls, state):
+        rounds["n"] += 1
+        state.update(ok=False, output=same, prev_fails=1, stalls=1,
+                     kept_patch=False)
+        return iter(())
+    monkeypatch.setattr(ig, "_repair_round", _round)
+    state: dict = {}
+    events = list(ig._repair_loop("/cwd", same, None, state))
+    assert rounds["n"] == 2
+    assert not any("same tests still fail" in (e.get("text") or "") for e in events)
+
+
 def test_four_no_progress_rounds_end_the_loop(monkeypatch):
     monkeypatch.setattr(ig, "_reconcile_rounds", lambda: 12)
     monkeypatch.setattr(ig, "_fail_count", lambda out: 2)

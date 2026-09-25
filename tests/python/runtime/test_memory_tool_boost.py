@@ -45,3 +45,4 @@ def test_tool_tags_derivation():
     assert _tool_tags("update the confluence space page") == ["tool:confluence"]
     assert "tool:git" in _tool_tags("rebase the branch and open a pull request")
     assert _tool_tags("what is 2 + 2") == []
+    assert _tool_tags("ssh to the nuc and run it") == ["tool:ssh"]

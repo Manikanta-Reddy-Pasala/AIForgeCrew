@@ -121,7 +121,10 @@ def _make_runner(cwd, base, subs, run_one, on_status, cancelled, spec_md, q,
                     cwd, base, subs, run_one, on_status=on_status,
                     should_cancel=cancelled, emit=q.put)
                 return
-            test_first = (os.environ.get("AIFORGE_TEST_FIRST", "1")
+            # Code first, tests after. A test written in this run must not be
+            # the spec the implementation is rewritten to match. Opt back in
+            # with AIFORGE_TEST_FIRST=1.
+            test_first = (os.environ.get("AIFORGE_TEST_FIRST", "0")
                           not in ("0", "false"))
             has_both = (any(_is_test_subtask(s) for s in subs)
                         and any(not _is_test_subtask(s) for s in subs))

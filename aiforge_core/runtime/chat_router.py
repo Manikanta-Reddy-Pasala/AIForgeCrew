@@ -133,6 +133,7 @@ def is_small_task(p: str) -> bool:
 _PLAIN_CUE_RE = re.compile(
     r"\b(remember|yesterday|last time|earlier|we decided|continue|again|"
     r"bug|error|broken|import|function|class|file|repo|code|test|"
+    r"ssh|connect|server|host|machine|deploy|"
     r"where is|how does|explain)\b|"
     r"\b[\w./-]+\.(?:py|ts|tsx|js|jsx|java|go|rs|md)\b|"
     r"\b[A-Z][A-Z0-9]+-\d+\b",
