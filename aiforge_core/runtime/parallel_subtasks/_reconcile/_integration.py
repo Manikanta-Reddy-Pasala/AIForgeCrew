@@ -186,7 +186,8 @@ def _repair_loop(cwd: str, output: str, should_cancel, state: dict):
             return                         # 4 no-progress rounds → give up
 
 
-def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
+def _reconcile_integration(cwd: str, result: dict, should_cancel=None,
+                           spec_gaps: str = ""):
     """Build + test the merged tree; while it fails on cross-file drift, run a
     bounded Doer pass over the WHOLE workspace — fed the RAW test output + a
     CONCRETE directed fix-list — to fix the mismatches, re-testing each round.
@@ -202,6 +203,20 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
                "args": {}, "result": {"files": pruned}}
 
     ok, output = _project_test_output(cwd)
+    gaps = (spec_gaps or "").strip()
+    missing = bool(gaps) and "everything is covered" not in gaps.lower()
+    if ok and missing:
+        # The suite is green. One patch pass for the spec items the auditor
+        # named, not the full repair loop.
+        try:
+            from ._rewrite import _rewrite_fix
+            _rewrite_fix(cwd, "SPEC ITEMS STILL MISSING:\n" + gaps, [])
+        except Exception as exc:  # noqa: BLE001
+            yield {"type": "thought", "role": "reconciler",
+                   "text": f"spec-gap patch skipped: {exc}"}
+        result["rep"] = build_and_test_report(cwd)
+        result["ok"] = ok
+        return
     if ok or os.environ.get("AIFORGE_RECONCILE_INTEGRATION", "1") in ("0", "false"):
         result["rep"] = build_and_test_report(cwd)
         result["ok"] = ok            # authoritative (matches the test runner)
@@ -230,6 +245,8 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
         output = (f"CONFIG ERROR — fix this FIRST, nothing can run until it "
                   f"parses: {cfg_err}\n\n{output}")
 
+    if missing:
+        output = "SPEC ITEMS STILL MISSING:\n" + gaps + "\n\n" + output
     state: dict = {}
     yield from _repair_loop(cwd, output, should_cancel, state)
     rounds = state.get("rounds", 0)

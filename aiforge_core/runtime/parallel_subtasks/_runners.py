@@ -59,6 +59,9 @@ def _doer_message(subtask: dict, spec_md: str, path: str, goal: str) -> str:
     if retry_err:
         msg += (f"\n\n⚠ YOUR PREVIOUS ATTEMPT FAILED with:\n{retry_err[:800]}\n"
                 "Fix exactly that this time.")
+        if subtask.get("_patch_retry"):
+            msg += (" The file is already on disk. Do NOT regenerate it. "
+                    "Apply a small patch that fixes the error above.")
     return msg
 
 

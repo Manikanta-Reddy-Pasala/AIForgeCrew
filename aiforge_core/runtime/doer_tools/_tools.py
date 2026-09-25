@@ -234,6 +234,38 @@ def task(_description: str = "", **_kw) -> dict:
     return {"ok": True, "note": "task no-op; use editor/bash directly"}
 
 
+_ALIAS_FNS = {
+    "read": read, "write": write, "patch": patch, "edit": edit,
+    "str_replace": str_replace, "ls": ls, "shell": shell, "run": run,
+    "grep": grep, "search": search, "http_get": http_get, "web_fetch": web_fetch,
+    "commit": commit, "git_add_commit": git_add_commit,
+    "todo_write": todo_write, "todowrite": todowrite, "glob": glob, "task": task,
+}
+
+
+def call_alias(name: str, args: dict | None):
+    """Run a training-alias the model typed. None when ``name`` is not one.
+
+    ``bash`` is not an alias here: that name is a real tool.
+    """
+    fn = _ALIAS_FNS.get(name or "")
+    if fn is None:
+        return None
+    import inspect
+    args = dict(args or {})
+    try:
+        sig = inspect.signature(fn)
+        kwargs = {}
+        for pname, param in sig.parameters.items():
+            if param.kind in (param.VAR_KEYWORD, param.VAR_POSITIONAL):
+                continue
+            if pname in args:
+                kwargs[pname] = args[pname]
+        return fn(**kwargs)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
 def skill_search(query: str, k: int = 5) -> dict:
     """Search the skill registry (SKILL.md playbooks) by relevance — find a
     reusable recipe before solving an unfamiliar problem from scratch."""

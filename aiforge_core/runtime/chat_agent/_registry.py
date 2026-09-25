@@ -224,12 +224,12 @@ def _is_mutating(name: str, args: dict) -> bool:
     return writes_files(name, args)
 
 _PLAN_BANNER = (
-    "PLAN MODE — you are READ-ONLY this turn. You may inspect the repo "
-    "(file_read, list_dir, find, grep) and recall memory (memory_lookup), but "
-    "you CANNOT write files, run commands, install, or change anything. "
-    "Investigate, then produce a concrete step-by-step PLAN in FINAL: (files "
-    "to touch, commands to run, tests, risks). The user switches to Act mode "
-    "to execute it. ASK if you need input to plan well."
+    "PLAN MODE — you are READ-ONLY this turn. Inspect with the read tools "
+    "you were given. You CANNOT write files, install, or change anything. "
+    "Write a numbered PLAN in FINAL: files to touch, commands, tests, risks. "
+    "Ask at most one question, and only when the choices cannot be undone "
+    "and lead to different results. Otherwise state the assumption and write "
+    "the plan. When the user approves, you carry this plan out."
 )
 
 _ANALYZE_BANNER = (

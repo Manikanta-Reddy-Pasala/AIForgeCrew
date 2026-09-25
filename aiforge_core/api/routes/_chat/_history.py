@@ -142,7 +142,8 @@ def _capture_chat_cue(prompt, repo: str, session_id) -> None:
         pass
 
 
-def _chat_learn_writeback(cwd, prompt, final_text, steps, session_id) -> None:
+def _chat_learn_writeback(cwd, prompt, final_text, steps, session_id,
+                          _retry: bool = False) -> None:
     """Single-chat (simple/plan) memory writeback on a daemon thread. The team
     pipeline runs a Learner node itself; the inline simple/plan path never did,
     so chat work never reached long-term memory. Distils + persists durable
@@ -169,6 +170,15 @@ def _chat_learn_writeback(cwd, prompt, final_text, steps, session_id) -> None:
         lr = chat_learner.learn_from_chat(
             prompt=prompt, final_text=final_text, steps=steps, repo=repo,
             session_id=session_id)
+        if isinstance(lr, dict) and lr.get("skipped") == "preempted" and not _retry:
+            import threading
+            t = threading.Timer(
+                30.0, _chat_learn_writeback,
+                args=(cwd, prompt, final_text, steps, session_id),
+                kwargs={"_retry": True})
+            t.daemon = True
+            t.start()
+            return
         _warn_if_not_persisted(lr, "chat_learner", repo)
         _warn_if_not_persisted(pc, "preference_capture", repo)
         # …and the LIBRARY half: a turn that established a repeatable procedure

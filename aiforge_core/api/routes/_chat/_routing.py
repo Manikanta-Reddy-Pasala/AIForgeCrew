@@ -241,21 +241,21 @@ def _plan_mode_route(_pp, _enriched, _enriched_history, cwd, role, session_id,
                      quick):
     """Plan mode: run the plan-mode agent, and emit ``plan_ready`` BEFORE the
     terminal ``done`` reaches the client (hold the done, yield plan_ready,
-    release it) so the UI sees the approvable plan — one-click "Approve &
-    Execute" re-sends this enriched spec as a TEAM run (Gap B).
+    release it) so the UI sees the approvable plan — one-click approve sends
+    that plan back on the same conversation.
 
     No planner model call first. That call ran before any plan text, so a
     plan turn waited through two models. The agent writes the plan."""
     from aiforge_core.runtime.chat_agent import run_chat_agent
-    # Plan→approve→execute (Gap B): hand the approved spec to the UI so
-    # the user can one-click "Approve & Execute" — which re-sends this
-    # enriched spec as a TEAM run. Persisted so the button survives a
-    # reload until the plan is acted on. Emit plan_ready BEFORE the
-    # agent's terminal `done` reaches the client (hold the `done`, yield
-    # plan_ready, then release `done`) so the UI sees the plan, not a
-    # finished turn with no plan.
+    # Plan→approve→execute: hand the plan to the UI so the user can
+    # one-click approve — which sends that plan on the same conversation.
+    # Persisted so the button survives a reload until the plan is acted on.
+    # Emit plan_ready BEFORE the agent's terminal `done` reaches the client
+    # (hold the `done`, yield plan_ready, then release `done`) so the UI
+    # sees the plan, not a finished turn with no plan.
     _pending_done = None
     _no_plan = False
+    _plan_text = ""
     for _ev in run_chat_agent(_enriched_history, cwd=cwd, role=role,
                               session_id=session_id, mode="plan",
                               max_steps=_quick_step_cap(quick)):
@@ -267,9 +267,12 @@ def _plan_mode_route(_pp, _enriched, _enriched_history, cwd, role, session_id,
         # offering "Approve & Execute" then ran an unplanned build.
         if _ev.get("type") in ("error", "stopped") or _ev.get("awaiting_input"):
             _no_plan = True
+        if (_ev.get("type") == "message" and _ev.get("text")
+                and not _ev.get("awaiting_input")):
+            _plan_text = _ev.get("text") or ""
         yield _ev
     if not _no_plan:
-        yield {"type": "plan_ready", "spec": _enriched}
+        yield {"type": "plan_ready", "spec": _enriched, "plan": _plan_text}
     if _pending_done is not None:
         yield _pending_done
 

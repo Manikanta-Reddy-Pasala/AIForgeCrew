@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 from .._context import (
     _post_edit_syntax_error,
@@ -14,7 +15,8 @@ from .._registry import (
     _FINALIZE_TOOLS,
     _READONLY_TOOLS,
 )
-from .._shell import _MAX_OBS, _MAX_OBS_READ, _READ_OBS_TOOLS, _smart_truncate_obs
+from .._obs_text import render_observation
+from .._shell import _MAX_OBS, _MAX_OBS_READ, _READ_OBS_TOOLS
 from ._approval import (
     _handle_rejection,
 )
@@ -127,6 +129,28 @@ def _loop_nudge(name, reason, recap) -> str:
             "previous action.")
 
 
+_TEST_CMD = re.compile(
+    r"\b(pytest|npm test|mvn test|go test|cargo test|gradlew? test)\b")
+
+
+def _note_green_tests(st, name, args, result, cwd) -> None:
+    """Remember a passing test run and the tree it ran against."""
+    if not isinstance(result, dict):
+        return
+    cmd = str((args or {}).get("cmd") or "")
+    is_test = name == "run_tests" or (name == "run_command" and bool(_TEST_CMD.search(cmd)))
+    if not is_test:
+        return
+    if result.get("ok") is not True:
+        st.last_green_fp = None
+        return
+    try:
+        from .._context import _worktree_fingerprint
+        st.last_green_fp = _worktree_fingerprint(cwd)
+    except Exception:  # noqa: BLE001
+        st.last_green_fp = None
+
+
 def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
     """Pre-dispatch bookkeeping gates: plan_progress flips a UI subtask (pure
     bookkeeping, allowed in every mode); read-only Plan/Analyze mode blocks a
@@ -135,6 +159,19 @@ def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
     # Simple-mode task tracker: plan_progress flips a checklist item in
     # the UI's subtasks dock. Pure bookkeeping — no side effects, allowed
     # in every mode (incl. plan), never gated.
+    if name == "tool_help":
+        wanted = str((args or {}).get("name") or "").strip()
+        result = {
+            "ok": bool(wanted),
+            "added": wanted,
+            "note": (f"{wanted} is available on your next step. Call it directly."
+                     if wanted else "Pass the tool's exact name."),
+        }
+        yield {"type": "tool", "name": name, "args": args, "result": result}
+        st.convo.append({"role": "user",
+                         "content": f"OBSERVATION: {json.dumps(result)}"})
+        return "handled"
+
     if name == "plan_progress":
         result, events = apply_progress(st.board, args)
         st.board_used = st.board_used or any(
@@ -389,8 +426,12 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     # Content-READ tools: cut oversized documents at a STRUCTURE boundary
     # (chonkie) with a continuation note, instead of a blunt slice that
     # hands the model a broken JSON/sentence tail. Others keep the slice.
-    obs = (_smart_truncate_obs(model_result, _obs_cap)
-           if name in _READ_OBS_TOOLS else json.dumps(model_result)[:_obs_cap])
+    # File reads and commands are plain text (raw lines, or exit code then
+    # the stderr tail then the stdout tail). Other tools stay JSON so a
+    # structured field such as next_step is still parseable. Deduped
+    # bodies (same skill/OKF/memory hit already in this turn) stay short.
+    obs = render_observation(name, model_result, _obs_cap)
+    _note_green_tests(st, name, args, result, cwd)
     # Recency reminder: a strict output format from an APPLICABLE SKILL sits
     # in the system prompt (far above), while this fresh tool result sits at
     # the end where the model attends most — so after a tool round-trip it

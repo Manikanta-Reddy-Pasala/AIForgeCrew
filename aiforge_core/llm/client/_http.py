@@ -369,6 +369,30 @@ def _post(ep: Endpoint, payload: bytes, timeout_s: int,
         except Exception:  # noqa: BLE001
             pass
     cancel = _CANCEL.get()
+    _owned_cancel = None
+    if cancel is None and role:
+        try:
+            from aiforge_core.llm._rate_settings import _category
+            if _category(role) == "compaction":
+                _owned_cancel = threading.Event()
+                from aiforge_core.llm.interactive_gate import track_background
+                track_background(_owned_cancel)
+                cancel = _owned_cancel
+        except Exception:  # noqa: BLE001
+            _owned_cancel = None
+    try:
+        return _post_after_cancel(ep, payload, timeout_s, role=role, sent=sent,
+                                  throttled=throttled, meter=meter, cancel=cancel)
+    finally:
+        if _owned_cancel is not None:
+            try:
+                from aiforge_core.llm.interactive_gate import untrack_background
+                untrack_background(_owned_cancel)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _post_after_cancel(ep, payload, timeout_s, *, role, sent, throttled, meter, cancel):
     # ONE preflight for both paths, BEFORE the meter. It used to sit inside
     # _post_cancellable, so the cancellable path (which is every chat
     # generation) counted a request that the preflight then proved could not

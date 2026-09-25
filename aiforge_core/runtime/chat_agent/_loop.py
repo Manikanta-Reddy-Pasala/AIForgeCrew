@@ -265,8 +265,21 @@ def _dispatch_step(st, out, n, cwd, role, _complete_fn, session_id, builder,
         if _sig == "continue":
             return "continue"
     if step["kind"] == "ask":
-        # Agent is asking the user a question — show it + wait for the next
-        # message (which answers it). awaiting_input flags the UI.
+        # Plan mode gets one question. A second one is an assumption, then
+        # the plan. The reads already made are kept for the answer.
+        if getattr(st, "plan_mode", False) and getattr(st, "plan_asked", False):
+            st.convo.append({"role": "user", "content":
+                "[plan] You already asked once. State the assumption and "
+                "write the numbered plan as FINAL. Do not ask again."})
+            return "continue"
+        try:
+            from ._pause import save as _save_pause
+            _save_pause(session_id, st.convo,
+                        asked=bool(getattr(st, "plan_mode", False)))
+        except Exception:  # noqa: BLE001
+            pass
+        if getattr(st, "plan_mode", False):
+            st.plan_asked = True
         yield {"type": "message", "awaiting_input": True, "text": step["text"]}
         yield {"type": "done"}
         return "return"

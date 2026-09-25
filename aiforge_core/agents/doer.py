@@ -19,7 +19,7 @@ OUTPUT_KEY = "doer_outcome"
 def _tools_factory() -> list:
     """All Doer tools come from one place to keep the surface canonical."""
     from aiforge_core.runtime.doer_tools import adk_function_tools
-    return adk_function_tools()
+    return adk_function_tools(role="doer")
 
 
 TOOLS_FACTORY = _tools_factory

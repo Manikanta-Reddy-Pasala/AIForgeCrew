@@ -293,3 +293,13 @@ def test_the_learner_call_is_bounded(learner, monkeypatch):
     assert learner["kw"]["max_tokens"] == 128
     assert learner["kw"]["timeout_s"] == 5
     assert learner["kw"]["temperature"] == 0.0
+
+
+def test_a_cancelled_distil_is_preempted(learner):
+    from aiforge_core.llm.client._errors import _LLMCancelled
+    learner["raise"] = _LLMCancelled("cancelled before request")
+    out = cl.learn_from_chat(prompt="fix the import", final_text="done",
+                             steps=[_tool("file_write", path="a.py")],
+                             repo="r", session_id=1)
+    assert out == {"ok": False, "skipped": "preempted"}
+    assert learner["persisted"] == []

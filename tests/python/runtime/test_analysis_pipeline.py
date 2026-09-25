@@ -351,7 +351,17 @@ def test_an_absolute_path_is_not_discovered(files_repo):
                                      str(files_repo)) == []
 
 
+def test_small_named_files_stay_on_one_agent(files_repo):
+    """Six (or eight) files that fit in one read must not fan out."""
+    prompt = "summarise " + ", ".join(f"mod{i}.py" for i in range(8))
+    plan, groups, _topics = ap.plan_single_repo(prompt, str(files_repo))
+    assert plan is False
+    assert groups == []
+
+
 def test_many_named_files_are_split_into_bounded_groups(files_repo):
+    for i in range(8):
+        (files_repo / f"mod{i}.py").write_text("x = 1\n" * 12_000)
     prompt = "summarise " + ", ".join(f"mod{i}.py" for i in range(8))
     plan, groups, _topics = ap.plan_single_repo(prompt, str(files_repo))
     assert plan is True

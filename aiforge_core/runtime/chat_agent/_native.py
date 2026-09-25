@@ -427,7 +427,8 @@ def select_native_tools(convo, *, mode: str = "act", builder: str = "",
     The banner and the model call both use this, so the "(N tools)" line is
     the list on the wire. Family tools are added from the user's words, not
     from the system prompt (that prompt names every integration and used to
-    make the count the whole gated catalog, about 63)."""
+    make the count the whole gated catalog, about 63). ``tool_help`` extras
+    stay on the list for the rest of the turn."""
     from ._tools._schemas import NATIVE_TOOL_SCHEMAS, filter_native
     if schemas is None:
         try:
@@ -436,7 +437,90 @@ def select_native_tools(convo, *, mode: str = "act", builder: str = "",
         except Exception:  # noqa: BLE001 — never break a turn
             schemas = list(NATIVE_TOOL_SCHEMAS)
     return filter_native(list(schemas), mode=mode or "act",
-                         text=_convo_text(convo), builder=builder or "")
+                         text=_convo_text(convo), builder=builder or "",
+                         extra=helped_names(convo))
+
+
+_ACTION_BLOCK = re.compile(
+    r"ACTION:\s*([A-Za-z0-9_]+)\s*\nARGS_JSON:\s*(\{.*\})", re.S)
+_HELP_NAME = re.compile(
+    r'ACTION:\s*tool_help\s*\nARGS_JSON:\s*(\{.*?\})', re.S)
+
+
+def helped_names(convo) -> set[str]:
+    """Tools ``tool_help`` added earlier in this turn."""
+    found: set[str] = set()
+    for message in convo or []:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content") or ""
+        if not isinstance(content, str):
+            continue
+        for match in _HELP_NAME.finditer(content):
+            try:
+                name = str(json.loads(match.group(1)).get("name") or "").strip()
+            except (ValueError, TypeError):
+                name = ""
+            if name:
+                found.add(name)
+    return found
+
+
+def _parse_action_block(content: str):
+    match = _ACTION_BLOCK.search(content or "")
+    if not match:
+        return None
+    try:
+        args = json.loads(match.group(2))
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(args, dict):
+        return None
+    return match.group(1), args
+
+
+def to_native_messages(convo) -> list[dict]:
+    """Replay ACTION steps as ``assistant.tool_calls`` and the following
+    OBSERVATION as a ``role: tool`` result. Other messages pass through."""
+    out: list[dict] = []
+    index = 0
+    messages = list(convo or [])
+    while index < len(messages):
+        message = messages[index]
+        if not isinstance(message, dict):
+            index += 1
+            continue
+        content = message.get("content") if isinstance(message.get("content"), str) else ""
+        parsed = _parse_action_block(content) if message.get("role") == "assistant" else None
+        if parsed is None:
+            out.append(message)
+            index += 1
+            continue
+        name, args = parsed
+        call_id = f"call_{index}"
+        out.append({
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)},
+            }],
+        })
+        nxt = messages[index + 1] if index + 1 < len(messages) else None
+        nxt_body = (nxt or {}).get("content") if isinstance(nxt, dict) else ""
+        if (isinstance(nxt, dict) and nxt.get("role") == "user"
+                and isinstance(nxt_body, str) and nxt_body.startswith("OBSERVATION:")):
+            out.append({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "name": name,
+                "content": nxt_body[len("OBSERVATION:"):].strip(),
+            })
+            index += 2
+            continue
+        index += 1
+    return out
 
 
 def make_native_complete_fn(mode: str = "act", builder: str = ""):
@@ -484,7 +568,7 @@ def make_native_complete_fn(mode: str = "act", builder: str = ""):
                 tools.append(schema)
         try:
             msg = client.complete_raw(
-                role, convo, tools=tools, tool_choice="auto")
+                role, to_native_messages(convo), tools=tools, tool_choice="auto")
         except Exception as exc:  # noqa: BLE001
             if _native_error_is_permanent(exc, model):
                 return client.complete(role, convo)

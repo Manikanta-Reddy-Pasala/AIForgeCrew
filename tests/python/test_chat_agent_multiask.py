@@ -53,17 +53,15 @@ def test_split_asks_variants():
     assert ca._split_asks("thanks") == []
 
 
-def test_multiask_final_gate_forces_completeness_pass(tmp_path):
-    """FINAL on a multi-part message triggers ONE self-check turn with the
-    checklist; the second FINAL passes through."""
-    prompts: list[str] = []
+def test_multiask_final_is_accepted_without_a_resend(tmp_path):
+    """A finished answer is the answer — two sentences do not force a second
+    generation that resends the same text as FINAL."""
+    calls = {"n": 0}
 
     def fn(role, convo):
-        prompts.append(convo[-1]["content"] if isinstance(
-            convo[-1]["content"], str) else "")
-        if len(prompts) == 1:
-            return "FINAL: 1) fixed the bug"
-        return "FINAL: 1) fixed the bug 2) meter resets because X 3) retry added"
+        calls["n"] += 1
+        return ("FINAL: 1) fixed the bug 2) meter resets because X "
+                "3) retry added")
 
     evs = _collect(ca.run_chat_agent(
         [{"role": "user", "content":
@@ -71,27 +69,24 @@ def test_multiask_final_gate_forces_completeness_pass(tmp_path):
           "to the sync client"}],
         cwd=str(tmp_path), complete_fn=fn))
     final = [e for e in evs if e["type"] == "message"][-1]
-    assert "retry added" in final["text"]          # second (complete) FINAL won
-    assert any("completeness check" in p for p in prompts)
-    # checklist also pinned in the system prompt
-    # (fn saw convo; check via the first call's system message)
+    assert "retry added" in final["text"]
+    assert calls["n"] == 1
+    assert not any("completeness check" in (e.get("text") or "")
+                   for e in evs)
 
 
-def test_multiask_gate_keeps_the_answer_it_sets_aside(tmp_path):
-    """The user watched the first FINAL stream in. The completeness gate sets
-    it aside to re-check; it must stay on screen as a step, not vanish."""
-    outs = ["FINAL: 1) fixed the bug",
-            "FINAL: 1) fixed the bug 2) meter resets because X 3) retry added"]
+def test_multiask_does_not_set_the_answer_aside_to_recheck(tmp_path):
+    """The first FINAL is published. There is no 'checking all N parts' pass."""
     evs = _collect(ca.run_chat_agent(
         [{"role": "user", "content":
           "fix the login bug. also why does the meter reset? and add a retry "
           "to the sync client"}],
-        cwd=str(tmp_path), complete_fn=lambda role, convo: outs.pop(0)))
+        cwd=str(tmp_path), complete_fn=lambda role, convo:
+            "FINAL: 1) fixed the bug 2) meter resets because X 3) retry added"))
     kinds = [(e["type"], e.get("role"), e.get("text", "")) for e in evs
              if e["type"] in ("thought", "message")]
-    kept = kinds.index(("thought", None, "1) fixed the bug"))
-    gate = next(i for i, k in enumerate(kinds) if "checking all" in k[2])
-    assert kept < gate                      # the draft, then the gate note
+    assert not any("checking all" in k[2] for k in kinds)
+    assert any(k[0] == "message" and "retry added" in k[2] for k in kinds)
 
 
 def test_multiask_tracked_as_subtasks(tmp_path):
@@ -99,7 +94,6 @@ def test_multiask_tracked_as_subtasks(tmp_path):
     flips items via plan_progress, and FINAL closes out any stragglers."""
     fn = _scripted([
         'ACTION: plan_progress\nARGS_JSON: {"slug": "part-1", "status": "done"}',
-        "FINAL: 1) bug fixed 2) meter explained 3) retry added",
         "FINAL: 1) bug fixed 2) meter explained 3) retry added",
     ])
     evs = _collect(ca.run_chat_agent(

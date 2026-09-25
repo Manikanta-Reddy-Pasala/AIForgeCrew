@@ -834,8 +834,9 @@ def _post(prompt="fix the parser", mode="chat", sha="abc"):
     return [e["type"] for e in C._post_run_events(prompt, "/repo", mode, sha)]
 
 
-def test_a_turn_that_wrote_code_is_built_and_diffed(postrun):
-    assert _post() == ["verify", "changes"]
+def test_a_turn_that_wrote_code_is_diffed_not_rebuilt(postrun):
+    """Simple mode does not start a second repair agent after the turn."""
+    assert _post() == ["changes"]
 
 
 def test_a_read_only_turn_gets_neither(postrun):
@@ -862,14 +863,14 @@ def test_the_build_can_be_switched_off(postrun, monkeypatch):
 
 
 def test_a_turn_with_no_baseline_shows_no_diff(postrun):
-    assert _post(sha="") == ["verify"]
+    assert _post(sha="") == []
 
 
 def test_a_failing_diff_never_breaks_the_turn(postrun, monkeypatch):
     import aiforge_core.runtime.parallel_subtasks as ps
     monkeypatch.setattr(ps, "_emit_changes",
                         lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
-    assert _post() == ["verify"]
+    assert _post() == []
 
 
 # ─── the per-turn diff baseline ────────────────────────────────────────

@@ -46,6 +46,14 @@ class PhantomToolGuardPlugin(BasePlugin):
         if not any(m in msg for m in _NOT_FOUND_MARKERS):
             return None
         name = getattr(tool, "name", None) or "?"
+        try:
+            from aiforge_core.runtime.doer_tools._tools import call_alias
+            aliased = call_alias(name, tool_args if isinstance(tool_args, dict) else {})
+        except Exception:  # noqa: BLE001
+            aliased = None
+        if aliased is not None:
+            log.info("phantom_tool_guard: dispatched alias %r", name)
+            return aliased if isinstance(aliased, dict) else {"ok": True, "result": aliased}
         log.warning("phantom_tool_guard: rescued unknown tool call %r "
                     "(kept the pipeline alive)", name)
         return {

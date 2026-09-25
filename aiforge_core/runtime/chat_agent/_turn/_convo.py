@@ -62,10 +62,14 @@ def _codegraph_directive(cwd, readonly_mode) -> str:
     return ""
 
 
-def _seed_prompt(messages, cwd, readonly_mode):
+def _seed_prompt(messages, cwd, readonly_mode, *, native=False, plan_mode=False):
     """Seed the system prompt: extract the raw last-user message, load cave/rules/
     prefs, format the core prompt, and apply the catalog + codegraph gates.
-    Returns (last_user, cave, rules, prefs, sys_msg)."""
+    Returns (last_user, cave, rules, prefs, sys_msg).
+
+    Native mode sends rules and no tool catalog. Plan mode sends the short
+    read-and-plan rules, not the act prompt. The text catalog is the fallback
+    for a model that cannot call tools."""
     last_user = next(
         (_text_of(m) for m in reversed(messages)
          if (m.get("role") or "user") == "user" and m.get("content")), "")
@@ -80,22 +84,24 @@ def _seed_prompt(messages, cwd, readonly_mode):
     cave = _cave_mode()
     rules = _rules_context(cwd, last_user)
     prefs = _preferences_context(cwd)
-    sys_msg = _SYSTEM.format(cwd=cwd)
-    # Advertise only integrations this install can reach. Same principle as the
-    # CodeGraph gate below: a tool the model is told about but that always
-    # answers `*_not_configured` costs prompt budget and invites a wrong pick.
-    try:
-        from .._catalog_gate import gate_catalog
-        sys_msg, _ungated = gate_catalog(sys_msg)
-    except Exception:  # noqa: BLE001 — never let gating break a turn
-        pass
-    # CodeGraph tools are advertised ONLY when actually usable on this run — the
-    # single shared gate (binary + real index for THIS repo + not env-disabled +
-    # not opted out per-ticket). Otherwise the model would be told to call a tool
-    # that always errors (un-indexed repo) / the A/B "without" arm would leak.
-    # Without this block the tools are in TOOLS but absent from the catalog, so
-    # the model never learns they exist.
-    sys_msg += _codegraph_directive(cwd, readonly_mode)
+    if native:
+        from .._native_prompt import native_rules, plan_rules
+        sys_msg = plan_rules(cwd) if plan_mode else native_rules(cwd)
+    else:
+        sys_msg = _SYSTEM.format(cwd=cwd)
+        # Advertise only integrations this install can reach. Same principle as the
+        # CodeGraph gate below: a tool the model is told about but that always
+        # answers `*_not_configured` costs prompt budget and invites a wrong pick.
+        try:
+            from .._catalog_gate import gate_catalog
+            sys_msg, _ungated = gate_catalog(sys_msg)
+        except Exception:  # noqa: BLE001 — never let gating break a turn
+            pass
+        # CodeGraph tools are advertised ONLY when actually usable on this run —
+        # native mode does not write a tool catalog: those tools, when this
+        # turn actually has them, are already on the request's tool list.
+        if not plan_mode:
+            sys_msg += _codegraph_directive(cwd, readonly_mode)
     sys_msg += _sandbox_directive(readonly_mode)
     return last_user, cave, rules, prefs, sys_msg
 
@@ -120,13 +126,13 @@ def _sandbox_directive(readonly_mode: bool) -> str:
         return ""
     repos = os.environ.get("AIFORGE_REPO_ROOT") or "~/.aiforge/repos"
     return ("\n\nSANDBOX: you run inside a disposable Ubuntu 24.04 box with "
-            "passwordless sudo and open network. Install ANY tool the task "
-            "needs — ensure_runtime, or `sudo apt-get update && sudo apt-get "
-            "install -y <pkg>`, pip, npm — and complete the task; never stop "
-            "because a tool is missing. Packages come from the configured "
-            f"internal registries. Projects live in {repos}; the user's own "
-            "files outside the mounted folders are not reachable. Pushing, "
-            "opening PRs and deleting data still need the user's OK.")
+            "passwordless sudo and open network. Install ANY package the task "
+            "needs (`sudo apt-get update && sudo apt-get install -y <pkg>`, "
+            "pip, npm) and complete the task; never stop because a tool is "
+            "missing. Packages come from the configured internal registries. "
+            f"Projects live in {repos}; the user's own files outside the "
+            "mounted folders are not reachable. Pushing, opening PRs and "
+            "deleting data still need the user's OK.")
 
 
 def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
@@ -137,7 +143,8 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
     every dynamic context block via the shared bundle), fold history + vision
     images into the message list. Returns
     ``(convo, bundle, asks, dropped_playbooks)``."""
-    last_user, cave, rules, prefs, sys_msg = _seed_prompt(messages, cwd, readonly_mode)
+    last_user, cave, rules, prefs, sys_msg = _seed_prompt(
+        messages, cwd, readonly_mode, native=native, plan_mode=plan_mode)
     # Multi-part message (simple mode has no enhancer/spec, so nothing else
     # tracks the parts): derive an ASK CHECKLIST and pin it HIGH in the
     # system prompt — the model must cover every part, not answer #1 and stop.
@@ -146,7 +153,8 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
     # ("CONTEXT-FIRST…", "MINIMAL DIFF…") are style rules, not asks — counting
     # them made the Doer enumerate its own charter in FINAL and burned an extra
     # model turn on the completeness gate every run.
-    _asks = [] if (builder or strict_finish) else _split_asks(last_user)
+    from .._native_prompt import is_plan_execution
+    _asks = [] if (builder or strict_finish or is_plan_execution(last_user)) else _split_asks(last_user)
     sys_msg = _prepend_priority_blocks(
         sys_msg, _asks, prefs, rules, analyze_mode, plan_mode, builder)
     # Reply language (Settings): part of the protected core, never trimmed —

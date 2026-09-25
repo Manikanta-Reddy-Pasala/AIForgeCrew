@@ -253,6 +253,16 @@ def plan_single_repo(prompt: str, cwd: str) -> tuple[bool, list[dict], list[str]
     topics = extract_topics(prompt)
     if len(files) < _min_files_to_plan():
         return (False, [], topics)
+    # Six files that fit in one read stay with one agent. Split only when
+    # they together exceed the observation budget.
+    total = 0
+    for rel in files:
+        try:
+            total += os.path.getsize(os.path.join(cwd, rel))
+        except OSError:
+            total += 80_000
+    if total <= 80_000:
+        return (False, [], topics)
     per = _files_per_group()
     groups: list[dict] = []
     for i in range(0, len(files), per):

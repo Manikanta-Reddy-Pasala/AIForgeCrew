@@ -53,6 +53,13 @@ def _max_workers() -> int:
             return max(1, min(8, int(raw)))
         except ValueError:
             return 4
+    # A local endpoint serves one request at a time. Extra workers only queue.
+    try:
+        from aiforge_core.llm.router import is_local_endpoint
+        if is_local_endpoint("doer"):
+            return 1
+    except Exception:  # noqa: BLE001
+        pass
     return 4
 
 
@@ -113,7 +120,8 @@ def _commit_all(wt: str, slug: str) -> bool:
 
 def _retries() -> int:
     try:
-        return max(0, min(6, int(os.environ.get("AIFORGE_SUBTASK_RETRIES", "3"))))
+        default = "1" if _max_workers() == 1 else "3"
+        return max(0, min(6, int(os.environ.get("AIFORGE_SUBTASK_RETRIES", default))))
     except ValueError:
         return 2
 
@@ -170,8 +178,13 @@ def _run_with_retries(subtask: dict, wt: str, slug: str, base_branch: str,
     i = 0
     for i in range(attempts):
         if i > 0:
-            _reset_worktree(wt, base_branch)
             subtask = _retry_subtask(subtask, last, i)
+            # One slot: keep the file and patch the error. Resetting and
+            # regenerating the whole file is the 16-generation blowup.
+            if _max_workers() == 1:
+                subtask = {**subtask, "_patch_retry": True}
+            else:
+                _reset_worktree(wt, base_branch)
             _emit(ticket_id, slug, "subtask_retry",
                   f"{slug} retry {i}/{attempts - 1}", {"slug": slug, "attempt": i})
         last = _attempt(subtask, wt, slug, run_one, validate_one)

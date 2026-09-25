@@ -780,7 +780,7 @@ export default function Chat() {
   const [approvalNote, setApprovalNote] = useState('');
   // Plan→approve→execute (Gap B): set when a plan-mode run emits a plan_ready
   // event carrying the approved spec the user can one-click execute as a team run.
-  const [planReady, setPlanReady] = useState<{ spec: string; msgId?: number } | null>(null);
+  const [planReady, setPlanReady] = useState<{ spec: string; plan?: string; msgId?: number } | null>(null);
   // The predicted next step for the turn that just ended. Cleared when a new
   // send starts: a stale suggestion under a new question is worse than none.
   const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
@@ -991,7 +991,7 @@ export default function Chat() {
           const pr = (lastAssistant.steps || []).find((s: any) => s?.type === 'plan_ready');
           // FE3: skip rehydration if the user already dismissed THIS plan.
           if (pr && !getDismissedPlans(id).has(lastAssistant.id)) {
-            setPlanReady({ spec: pr.spec || '', msgId: lastAssistant.id });
+            setPlanReady({ spec: pr.spec || '', plan: pr.plan || '', msgId: lastAssistant.id });
           }
         }
       } catch { /* best-effort rehydrate — ignore */ }
@@ -1293,7 +1293,7 @@ export default function Chat() {
 
       // Plan ready (Gap B): a plan-mode run produced an approvable spec.
       if (evt.type === 'plan_ready') {
-        setPlanReady({ spec: evt.spec || '' });
+        setPlanReady({ spec: evt.spec || '', plan: evt.plan || '' });
         return;
       }
 
@@ -2283,7 +2283,11 @@ export default function Chat() {
                           style={{ whiteSpace: 'nowrap' }}>Dismiss</button>
                   <button type="button" onClick={() => {
                             setChatMode('simple');
-                            send(planReady.spec, 'simple', { singleAgent: true });
+                            const plan = (planReady.plan || '').trim();
+                            const text = plan
+                              ? `Carry out the approved plan.\n\n${plan}`
+                              : planReady.spec;
+                            send(text, 'simple', { singleAgent: true });
                           }}
                           title="Carry out this plan with the agent"
                           style={{ whiteSpace: 'nowrap' }}>
