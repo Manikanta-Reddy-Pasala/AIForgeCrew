@@ -143,13 +143,14 @@ def _drain_until_prompt(
     last_seen = ""
     try:
         from aiforge_core.runtime import chat_cancel as _cc
-        from aiforge_core.runtime.run_interrupt import reason as _why
+        from aiforge_core.runtime.run_interrupt import attention as _why
         _sid = _cc.active()
     except Exception:  # noqa: BLE001
-        _cc, _sid, _why = None, None, (lambda _s: None)
+        _cc, _sid, _why = None, None, (lambda _s, **_k: None)
     while time.monotonic() < deadline:
-        # Stop, or a message typed while the command is still running.
-        _hit = _why(_sid)
+        # Stop kills the pane. A message stops it only when the message
+        # asks to stop or replace the command.
+        _hit = _why(_sid, only_replace=True)
         if _hit in ("stop", "steer") or (
                 _cc is not None and _sid is not None and _cc.is_cancelled(_sid)):
             try:
@@ -243,11 +244,11 @@ def _run_cancellable(command: str, timeout: int, sid, chat_cancel) -> dict[str, 
         chat_cancel.track_pgid(sid, os.getpgid(proc.pid))
     except Exception:  # noqa: BLE001
         pass
-    from aiforge_core.runtime.run_interrupt import reason as _why
+    from aiforge_core.runtime.run_interrupt import attention as _why
     from aiforge_core.runtime.run_interrupt import steered as _steered
     deadline = _t.monotonic() + timeout
     while proc.poll() is None:
-        hit = _why(sid)
+        hit = _why(sid, only_replace=True)
         if hit == "stop" or chat_cancel.is_cancelled(sid):
             _kill_group_and_reap(proc)
             return _err_result(command, "stopped by user", stopped=True)
@@ -280,12 +281,12 @@ def _run_plain(command: str, timeout: int) -> dict[str, Any]:
 
 def _fallback_run(command: str, timeout: int) -> dict[str, Any]:
     from aiforge_core.runtime import chat_cancel
-    from aiforge_core.runtime.run_interrupt import reason as _why
+    from aiforge_core.runtime.run_interrupt import attention as _why
     from aiforge_core.runtime.run_interrupt import steered as _steered
     sid = chat_cancel.active()
     if sid is None:
         return _run_plain(command, timeout)
-    if _why(sid) == "steer":
+    if _why(sid, only_replace=True) == "steer":
         return _steered(command=command)
     if chat_cancel.is_cancelled(sid):
         return _err_result(command, "stopped by user", stopped=True)

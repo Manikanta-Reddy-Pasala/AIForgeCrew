@@ -5,15 +5,15 @@ from __future__ import annotations
 import os
 import time
 
+# A retry or outage wait was cut short because the user typed a message.
+# The step loop drains it and asks again; this is not a Stop.
+from aiforge_core.runtime.run_interrupt import STEERED as _STEERED
+
 from .._context import (
     _CANCELLED,
     _complete_cancellable,
     _complete_live,
 )
-
-# The retry/outage wait was cut short because the user typed a message.
-# The step loop drains it and asks the model again; this is not a Stop.
-_STEERED = object()
 
 
 def _max_gen_per_step() -> int:

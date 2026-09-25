@@ -128,6 +128,24 @@ def pending(session_id: int) -> bool:
         return bool(_QUEUES.get(session_id))
 
 
+def peek_texts(session_id: int) -> list:
+    """The queued message texts, oldest first, without removing them.
+
+    A running scheduler or task reads these before it decides whether to
+    stop. Draining here would drop a direction the model still has to see."""
+    if session_id is None:
+        return []
+    with _LOCK:
+        msgs = list(_QUEUES.get(session_id) or [])
+    out = []
+    for m in msgs:
+        text = m[1] if isinstance(m, tuple) else str(m)
+        text = str(text).strip()
+        if text:
+            out.append(text)
+    return out
+
+
 def clear(session_id: int) -> None:
     """Drop any queued steer messages for ``session_id`` (no leak across turns)."""
     if session_id is None:

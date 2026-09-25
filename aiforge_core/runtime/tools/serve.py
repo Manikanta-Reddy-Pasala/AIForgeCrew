@@ -178,12 +178,12 @@ def _await_url(proc, log_path: str, port_hint: str,
                wait_s: float) -> tuple[str | None, str, dict | None]:
     """Watch the log for a URL/port (or an early crash) for up to ``wait_s``.
     Returns ``(url, port_hint, early_exit_result)``."""
-    from aiforge_core.runtime.run_interrupt import reason
+    from aiforge_core.runtime.run_interrupt import attention
     from aiforge_core.runtime import chat_cancel
     sid = chat_cancel.active()
     deadline = time.monotonic() + wait_s
     while time.monotonic() < deadline:
-        why = reason(sid)
+        why = attention(sid, only_replace=True)
         if why == "stop":
             _kill_pgid(proc.pid, (_SERVICES.get(proc.pid) or {}).get("pgid"))
             _SERVICES.pop(proc.pid, None)

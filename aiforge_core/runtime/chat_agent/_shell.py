@@ -363,13 +363,13 @@ def _await_exit(proc, timeout: int, sid, spool=None) -> dict | None:
     """Poll until the process exits; a dict when it was stopped or timed out."""
     import time as _time
 
-    from aiforge_core.runtime.run_interrupt import reason, steered
+    from aiforge_core.runtime.run_interrupt import attention, steered
     deadline = _time.monotonic() + timeout
     while proc.poll() is None:
-        # Stop AND a message typed mid-command. Checked every slice, not when
-        # the timeout finally expires — a 10-minute command otherwise held
-        # both until the process exited on its own.
-        why = reason(sid)
+        # Stop still kills immediately. A typed message is read first: the
+        # command is the task, so it keeps running unless the message asks
+        # to stop or replace it.
+        why = attention(sid, only_replace=True)
         if why == "stop":
             _kill_proc(proc)
             return {"ok": False, "stopped": True, "error": "stopped by user"}

@@ -128,7 +128,7 @@ def _watch_sleep(b: "_WatchBudget") -> "str | None":
     One second, not a fifth: the budget math and the tests count whole seconds
     of ``time.sleep``, and a message is still seen long before a 20s poll."""
     from aiforge_core.runtime.run_interrupt import pause
-    return pause(b.interval, b.sid, slice_s=1.0)
+    return pause(b.interval, b.sid, slice_s=1.0, only_replace=True)
 
 
 def _watch_timeout(b: "_WatchBudget", good: dict, err: dict, checks: int,
@@ -223,12 +223,12 @@ def gitlab_pipeline_watch(args: dict, cwd: str | None = None) -> dict:
     pinned = args.get("pipeline_id") or args.get("id") or None
     good: dict = {}          # the last snapshot we actually READ
     err: dict = {}           # the last failed poll, if the run ended on one
-    from aiforge_core.runtime.run_interrupt import reason, steered
+    from aiforge_core.runtime.run_interrupt import attention, steered
     while checks < b.max_checks:
-        # One probe. Calling cancelled() and then reason() asked is_cancelled
+        # One probe. Calling cancelled() and then attention() asked is_cancelled
         # twice, so a Stop that was meant to land in the sleep fired before
         # the first poll and dropped the snapshot.
-        why = reason(b.sid)
+        why = attention(b.sid, only_replace=True)
         if why == "stop":
             return _watch_stopped(good, checks, started, err)
         if why == "steer":
@@ -250,7 +250,7 @@ def gitlab_pipeline_watch(args: dict, cwd: str | None = None) -> dict:
                     **steered()}
     # Budget / max_checks break skips the sleep. Look once more so a message
     # typed during the last poll is not reported as a successful give-up.
-    why = reason(b.sid)
+    why = attention(b.sid, only_replace=True)
     if why == "stop":
         return _watch_stopped(good, checks, started, err)
     if why == "steer":

@@ -474,21 +474,24 @@ def test_a_message_when_the_budget_ends_is_not_a_give_up(monkeypatch, _clock,
         "/jobs": {"ok": True, "data": []},
     })
     orig = gitlab.gitlab_pipeline
+    from aiforge_core.runtime import chat_interject
+    chat_interject.clear("sess-test")
 
     def _wrapped(args, cwd=None, skip_jobs=False):
         out = orig(args, cwd, skip_jobs=skip_jobs)
         polls["n"] += 1
+        if polls["n"] == 1:
+            chat_interject.push("sess-test", "stop watching")
         return out
 
     monkeypatch.setattr(gitlab, "gitlab_pipeline", _wrapped)
-    from aiforge_core.runtime import chat_interject
-    monkeypatch.setattr(chat_interject, "pending", lambda sid: polls["n"] >= 1)
     out = gitlab.gitlab_pipeline_watch(
         {"project": "g/p", "pipeline_id": 116, "interval_s": 20,
          "timeout_s": 10, "max_checks": 50})
     assert out.get("steered") is True
     assert out["ok"] is False
     assert out["status"] == "running"
+    chat_interject.clear("sess-test")
 
 
 def test_a_stop_during_the_sleep_is_not_reported_as_success(monkeypatch, _clock):

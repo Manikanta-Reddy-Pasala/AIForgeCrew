@@ -118,17 +118,20 @@ def test_a_typed_message_cuts_the_watch_short(tmp_path, monkeypatch):
     from aiforge_core.runtime import chat_cancel, chat_interject
     calls = {"n": 0}
 
+    monkeypatch.setattr(chat_cancel, "active", lambda: 42)
+    monkeypatch.setattr(chat_cancel, "is_cancelled", lambda sid: False)
+    # The message arrives after the first check. It asks to drop the watch,
+    # so the sleep does not sit out interval_s.
+    chat_interject.clear(42)
+
     def _run(a, c):
         calls["n"] += 1
+        if calls["n"] == 1:
+            chat_interject.push(42, "drop that")
         return {"ok": False, "code": 1, "stdout": "", "stderr": ""}
 
     monkeypatch.setattr("aiforge_core.runtime.chat_agent._shell._t_run_command",
                         _run)
-    monkeypatch.setattr(chat_cancel, "active", lambda: 42)
-    monkeypatch.setattr(chat_cancel, "is_cancelled", lambda sid: False)
-    # Pending only after the first check, so the watch starts, then the
-    # sleep sees the message and does not sit out interval_s.
-    monkeypatch.setattr(chat_interject, "pending", lambda sid: calls["n"] > 0)
     monkeypatch.setattr(_watch.time, "sleep", lambda *_a: None)
     res = _watch._t_watch_until(
         {"cmd": "x", "interval_s": 30, "max_checks": 20, "timeout_s": 300},
@@ -136,6 +139,28 @@ def test_a_typed_message_cuts_the_watch_short(tmp_path, monkeypatch):
     assert res.get("steered") is True
     assert calls["n"] == 1
     assert res["checks"] == 1
+    chat_interject.clear(42)
+
+
+def test_an_extra_detail_does_not_end_the_watch(tmp_path, monkeypatch):
+    """The watch is the task. \"also add a log\" is applied after it, not
+    by killing it."""
+    from aiforge_core.runtime import chat_cancel, chat_interject
+    chat_interject.clear(42)
+    chat_interject.push(42, "also add a log line")
+    monkeypatch.setattr(chat_cancel, "active", lambda: 42)
+    monkeypatch.setattr(chat_cancel, "is_cancelled", lambda sid: False)
+    monkeypatch.setattr("aiforge_core.runtime.chat_agent._shell._t_run_command",
+                        lambda a, c: {"ok": False, "code": 1, "stdout": "",
+                                      "stderr": ""})
+    monkeypatch.setattr(_watch.time, "sleep", lambda *_a: None)
+    res = _watch._t_watch_until(
+        {"cmd": "x", "interval_s": 30, "max_checks": 3, "timeout_s": 300},
+        str(tmp_path))
+    assert res.get("steered") is not True
+    assert res["checks"] == 3
+    assert chat_interject.pending(42) is True
+    chat_interject.clear(42)
 
 
 def test_the_budget_is_bounded_however_the_model_asks(tmp_path, monkeypatch):

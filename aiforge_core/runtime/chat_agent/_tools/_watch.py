@@ -153,7 +153,8 @@ def _watch_sleep(interval: float, sid) -> "str | None":
     """Sleep ``interval`` in short slices. Returns ``"stop"`` or ``"steer"``
     when the user pressed Stop or typed a message during the wait, else None."""
     from aiforge_core.runtime.run_interrupt import pause
-    return pause(interval, sid)
+    # A watch is the task. An extra detail does not end it; "drop that" does.
+    return pause(interval, sid, only_replace=True)
 
 
 def _check_outcome(last: dict, until: str, rx, checks: int,
@@ -243,12 +244,12 @@ def _t_watch_until(args: dict, cwd: str) -> dict:
         return refusal
     sid = chat_cancel.active()
     interval, max_checks, budget, per_cmd = _watch_limits(args, sid)
-    from aiforge_core.runtime.run_interrupt import reason, steered
+    from aiforge_core.runtime.run_interrupt import attention, steered
     started = time.monotonic()
     checks = 0
     last: dict = {}
     while checks < max_checks:
-        why = reason(sid)
+        why = attention(sid, only_replace=True)
         if why == "stop" or (sid is not None and chat_cancel.is_cancelled(sid)):
             return _stopped(checks, last or None)
         if why == "steer":
@@ -268,7 +269,7 @@ def _t_watch_until(args: dict, cwd: str) -> dict:
             return steered(checks=checks, last=_tail(last))
     # The budget can end the loop without another sleep. A message that
     # arrived during the last check still has to win over "gave up".
-    why = reason(sid)
+    why = attention(sid, only_replace=True)
     if why == "stop" or (sid is not None and chat_cancel.is_cancelled(sid)):
         return _stopped(checks, last or None)
     if why == "steer":

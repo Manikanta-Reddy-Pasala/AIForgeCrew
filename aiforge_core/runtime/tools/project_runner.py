@@ -276,10 +276,10 @@ def _exec(cmd: str, cwd: str, timeout: int) -> dict:
             chat_cancel.track_pgid(sid, os.getpgid(proc.pid))
         except Exception:  # noqa: BLE001
             pass
-    from aiforge_core.runtime.run_interrupt import reason, steered
+    from aiforge_core.runtime.run_interrupt import attention, steered
     deadline = time.monotonic() + timeout
     while proc.poll() is None:
-        why = reason(sid)
+        why = attention(sid, only_replace=True)
         if why == "stop" or (sid is not None and chat_cancel.is_cancelled(sid)):
             _kill(proc)
             return {"cmd": cmd, "ok": False, "stopped": True}

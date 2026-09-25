@@ -251,6 +251,14 @@ def _memory_recall(cwd: str, query: str, limit: int = 6,
     q = (query or "").strip()
     if not q:
         return ""
+    # A short remark with no repo, ticket, or prior-decision cue does not
+    # wait on the reranker. The tools stay available if the model needs them.
+    try:
+        from aiforge_core.runtime.chat_router import plain_chat
+        if plain_chat(q):
+            return ""
+    except Exception:  # noqa: BLE001
+        pass
     hits = _recall_hits(cwd, q, limit, session_id)
     if not hits:
         return ""

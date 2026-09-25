@@ -8,6 +8,16 @@ Stop looked dead and the message sat unread for the whole command.
 from __future__ import annotations
 
 import contextlib
+import re
+
+# The latest message asks to stop or replace the work already running.
+# "also name it add_numbers" does not. The newest message wins.
+_REPLACE_RE = re.compile(
+    r"\b(stop|cancel|abort|drop|kill|halt|quit|forget|instead|"
+    r"scratch|never\s*mind|do not|don't|dont|no longer|hold on|"
+    r"wait no|actually no|switch)\b",
+    re.IGNORECASE,
+)
 
 # Shown to the model when a tool bails out because the user typed something.
 # The steer text itself is folded in by the turn loop; this only says why the
@@ -21,6 +31,11 @@ STEER_ERROR = (
 
 # wait_future returns this when Stop fired, distinct from any real result.
 STOPPED = object()
+
+# A retry or outage wait ended because a new message arrived. The step
+# loop drains it and calls the model again. A task that is already
+# running is not cut off this way — see attention(only_replace=True).
+STEERED = object()
 
 
 def reason(session_id) -> "str | None":
@@ -39,21 +54,54 @@ def reason(session_id) -> "str | None":
     return None
 
 
-def pause(seconds: float, session_id, slice_s: float = 0.2) -> "str | None":
-    """Sleep up to ``seconds``, returning as soon as Stop or a new message
-    arrives. None means the full wait elapsed with neither."""
+def replaces_running_work(session_id) -> bool:
+    """True when the newest queued message tells the agent to stop or
+    replace the scheduler or task that is already running.
+
+    An extra detail stays queued and is applied when that work returns.
+    The work itself is not cut off to read it."""
+    from aiforge_core.runtime import chat_interject
+    try:
+        texts = chat_interject.peek_texts(session_id)
+    except Exception:  # noqa: BLE001
+        return False
+    if not texts:
+        return False
+    return _REPLACE_RE.search(texts[-1]) is not None
+
+
+def attention(session_id, *, only_replace: bool = False) -> "str | None":
+    """What a running wait should do about Stop or a new message.
+
+    ``only_replace`` is for a scheduler or task already in progress: a
+    message is noticed, and the work stops only when that message asks
+    to stop or replace it. Stop still wins immediately."""
+    why = reason(session_id)
+    if why == "steer" and only_replace and not replaces_running_work(session_id):
+        return None
+    return why
+
+
+def pause(seconds: float, session_id, slice_s: float = 0.2,
+          *, only_replace: bool = False) -> "str | None":
+    """Sleep up to ``seconds``, returning as soon as Stop arrives.
+
+    A new message returns immediately too, unless ``only_replace`` is set:
+    then an extra detail lets the wait finish, and only a message that
+    stops or replaces the work cuts it short. None means the full wait
+    elapsed with nothing to act on."""
     import time
     if seconds <= 0:
-        return reason(session_id)
+        return attention(session_id, only_replace=only_replace)
     waited = 0.0
     while waited < seconds:
-        why = reason(session_id)
+        why = attention(session_id, only_replace=only_replace)
         if why:
             return why
         step = min(slice_s, seconds - waited)
         time.sleep(step)
         waited += step
-    return reason(session_id)
+    return attention(session_id, only_replace=only_replace)
 
 
 def steered(**extra) -> dict:

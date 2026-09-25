@@ -240,6 +240,13 @@ def _dispatch_step(st, out, n, cwd, role, _complete_fn, session_id, builder,
     path (stall guard, plan/approval/hook/scope gates, tool dispatch, post-tool
     bookkeeping). Returns 'return'/'continue'/None."""
     st.convo.append({"role": "assistant", "content": out})
+    # A direction arrived while this reply was being written. Do not start
+    # the tool, end the turn, or schedule the task from a reply that has
+    # not seen it. The next step folds the message in and the model decides.
+    if session_id is not None:
+        from aiforge_core.runtime import chat_interject
+        if chat_interject.pending(session_id):
+            return "continue"
     step = _parse(out)
     if step["kind"] == "final":
         _sig = yield from _handle_final(

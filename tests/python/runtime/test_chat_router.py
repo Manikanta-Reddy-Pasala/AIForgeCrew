@@ -230,3 +230,14 @@ def test_feature_work_naming_a_few_files_is_not_a_chore(prompt):
     and review; feature work that names a file or two keeps them."""
     from aiforge_core.runtime.chat_router import is_small_task
     assert is_small_task(prompt) is False
+
+
+def test_a_short_remark_skips_the_memory_search():
+    assert cr.plain_chat("what is 2+2?") is True
+    assert cr.plain_chat("thanks") is True
+
+
+def test_a_short_message_about_code_or_earlier_work_still_recalls():
+    assert cr.plain_chat("fix the import") is False
+    assert cr.plain_chat("what does this function do?") is False
+    assert cr.plain_chat("continue yesterday's auth fix") is False

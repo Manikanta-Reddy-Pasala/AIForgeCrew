@@ -127,6 +127,30 @@ def is_small_task(p: str) -> bool:
     return bool(_CHORE_RE.search(rest))
 
 
+# A short remark that does not point at this repo, a ticket, or an earlier
+# decision. The memory reranker is several seconds and does not change the
+# answer. Anything that names code or prior work still recalls.
+_PLAIN_CUE_RE = re.compile(
+    r"\b(remember|yesterday|last time|earlier|we decided|continue|again|"
+    r"bug|error|broken|import|function|class|file|repo|code|test|"
+    r"where is|how does|explain)\b|"
+    r"\b[\w./-]+\.(?:py|ts|tsx|js|jsx|java|go|rs|md)\b|"
+    r"\b[A-Z][A-Z0-9]+-\d+\b",
+    re.IGNORECASE,
+)
+
+
+def plain_chat(prompt: str) -> bool:
+    """True when a short message can be answered without a memory search.
+
+    "what is 2+2" and "thanks" qualify. "fix the import", "what does this
+    function do?", and "CLR-2067" do not — those still get recall and tools."""
+    p = (prompt or "").strip()
+    if not p or len(p) >= _SMALL_MAX_CHARS or p.count("\n") >= 8:
+        return False
+    return _PLAIN_CUE_RE.search(p) is None
+
+
 @dataclass
 class RouteDecision:
     doc_task: bool          # → research / analysis agent

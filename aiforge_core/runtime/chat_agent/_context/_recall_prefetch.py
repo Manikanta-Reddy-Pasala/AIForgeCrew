@@ -53,6 +53,12 @@ def _predicted_args(messages, cwd, session_id) -> tuple | None:
     q = (last_user.split(_INTERPRETED_MARK)[0].strip() or last_user).strip()
     if not q:
         return None
+    try:
+        from aiforge_core.runtime.chat_router import plain_chat
+        if plain_chat(q):
+            return None
+    except Exception:  # noqa: BLE001
+        pass
     return _recall_args(cwd, q, 3 if _cave_mode() else 6, session_id)
 
 
@@ -88,8 +94,14 @@ def take(args: tuple) -> dict | None:
     if entry is None:
         return None
     want, fut, started = entry
+    # Stop during this wait used to sit out the whole reranker. The turn
+    # ends as soon as the button is pressed.
     try:
-        res = fut.result(timeout=_env_float("AIFORGE_RECALL_PREFETCH_WAIT_S", 30.0))
+        from aiforge_core.runtime.run_interrupt import STOPPED, wait_future
+        res = wait_future(
+            fut, _env_float("AIFORGE_RECALL_PREFETCH_WAIT_S", 30.0), want[3])
+        if res is STOPPED:
+            return None
     except Exception:  # noqa: BLE001 — timeout or a failed query: query again
         return None
     # A leftover from a turn that never built its bundle must not stand in for

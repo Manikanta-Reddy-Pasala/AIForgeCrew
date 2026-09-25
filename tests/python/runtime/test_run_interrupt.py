@@ -1,4 +1,6 @@
 """Stop and a typed message cut a chat-agent wait short."""
+import threading
+
 import pytest
 
 from aiforge_core.runtime import chat_cancel, chat_interject, run_interrupt
@@ -24,6 +26,22 @@ def test_stop_wins_over_a_queued_message():
         chat_interject.clear(78)
 
 
+def test_an_extra_detail_does_not_replace_a_running_task():
+    chat_interject.clear(80)
+    chat_interject.push(80, "also name the function add_numbers")
+    assert run_interrupt.replaces_running_work(80) is False
+    assert run_interrupt.attention(80, only_replace=True) is None
+    chat_interject.clear(80)
+
+
+def test_drop_that_replaces_a_running_task():
+    chat_interject.clear(81)
+    chat_interject.push(81, "drop the sleep and write the file")
+    assert run_interrupt.replaces_running_work(81) is True
+    assert run_interrupt.attention(81, only_replace=True) == "steer"
+    chat_interject.clear(81)
+
+
 def test_a_queued_message_is_a_steer_not_a_stop():
     chat_cancel.start(79)
     chat_interject.push(79, "tear")
@@ -47,3 +65,23 @@ def test_stop_skips_the_enhancer_model_call(monkeypatch):
         assert _enhance(prompt, session_id=80) == prompt
     finally:
         chat_cancel.finish(80)
+
+
+def test_stop_ends_the_memory_wait():
+    """The reranker used to hold Stop for its whole timeout."""
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from aiforge_core.runtime.chat_agent._context import _recall_prefetch as rp
+    release = threading.Event()
+    chat_cancel.start(90)
+    chat_cancel.cancel(90)
+    ex = ThreadPoolExecutor(max_workers=1)
+    fut = ex.submit(release.wait, 30)
+    args = ("what is 2+2", 6, "repo", 90, ())
+    rp._PENDING[90] = (args, fut, time.monotonic())
+    try:
+        assert rp.take(args) is None
+    finally:
+        release.set()
+        ex.shutdown(wait=False)
+        chat_cancel.finish(90)

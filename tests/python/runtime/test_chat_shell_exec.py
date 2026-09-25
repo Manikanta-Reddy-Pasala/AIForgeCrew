@@ -287,15 +287,30 @@ def test_stop_kills_the_tree_mid_run(run, repo):
     assert run["killed"]
 
 
-def test_a_typed_message_kills_the_command_instead_of_waiting_it_out(run, repo,
-                                                                     monkeypatch):
+def test_a_typed_message_kills_the_command_instead_of_waiting_it_out(run, repo):
     from aiforge_core.runtime import chat_interject
     run["sid"] = 7
     run["proc"] = _Proc(polls=50)
-    monkeypatch.setattr(chat_interject, "pending", lambda sid: sid == 7)
+    chat_interject.clear(7)
+    chat_interject.push(7, "drop the sleep")
     res = S._t_run_command({"cmd": "sleep 600", "timeout": 600}, str(repo))
     assert res.get("steered") is True
     assert run["killed"]
+    chat_interject.clear(7)
+
+
+def test_an_extra_detail_does_not_kill_the_running_command(run, repo):
+    """\"also name it\" is not \"drop the command\". The task finishes."""
+    from aiforge_core.runtime import chat_interject
+    run["sid"] = 7
+    run["proc"] = _Proc(polls=3)
+    chat_interject.clear(7)
+    chat_interject.push(7, "also name the function add_numbers")
+    res = S._t_run_command({"cmd": "pytest", "timeout": 30}, str(repo))
+    assert res.get("ok") is True
+    assert res.get("steered") is not True
+    assert chat_interject.pending(7) is True
+    chat_interject.clear(7)
 
 
 def test_a_timeout_keeps_the_partial_output_and_says_not_to_undo(run, repo,
