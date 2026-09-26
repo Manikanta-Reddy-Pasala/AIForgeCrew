@@ -481,7 +481,7 @@ def test_a_run_with_work_done_waits_for_the_model(_no_sleep):
         fn, "chat", [], None, ConnectionRefusedError("refused"),
         None, None, None, wait_s=1800))
     assert out == "FINAL: back"
-    assert any("waiting up to 30 min" in e.get("text", "") for e in evs)
+    assert any("waiting for the model" in e.get("text", "") for e in evs)
     assert not any(e["type"] == "stopped" for e in evs)
 
 
@@ -494,13 +494,26 @@ def test_the_wait_is_bounded(_no_sleep):
     assert any(e["type"] == "stopped" for e in evs)
 
 
-def test_a_fresh_request_does_not_wait(_no_sleep):
+def test_waiting_switched_off_fails_after_the_sweep(_no_sleep):
     fn = _flaky(12)
     evs, out = _drive(_completion._retry_completion(
         fn, "chat", [], None, ConnectionRefusedError("refused"),
-        None, None, None, wait_s=0))
+        None, None, None, wait_s=None))
     assert out is _completion._RETRY_STOP
     assert not any("waiting" in e.get("text", "") for e in evs)
+
+
+def test_no_bound_waits_until_the_model_is_back(_no_sleep):
+    """wait_s=0 is the default: no bound, however long the model is down."""
+    fn = _flaky(40)
+    evs, out = _drive(_completion._retry_completion(
+        fn, "chat", [], None, ConnectionRefusedError("refused"),
+        None, None, None, wait_s=0))
+    assert out == "FINAL: back"
+    waits = [e for e in evs if "waiting for the model" in e.get("text", "")]
+    # One line per change of the probe gap (2, 5, 10, 30 s) and one per
+    # 5 min at the cap (~19 min here) — not one per probe (40).
+    assert 4 <= len(waits) <= 8
 
 
 @pytest.mark.parametrize("exc", [
@@ -536,7 +549,7 @@ def test_what_counts_as_an_outage():
     assert not _completion._outage_waitable(_http(401))
 
 
-def test_only_an_interactive_run_with_work_done_waits(monkeypatch):
+def test_every_run_waits_fresh_or_not_interactive_or_not(monkeypatch):
     seen = []
 
     def fake_retry(*a, wait_s=0.0, **k):
@@ -549,10 +562,12 @@ def test_only_an_interactive_run_with_work_done_waits(monkeypatch):
         yield  # pragma: no cover
     monkeypatch.setattr(_completion, "_retry_completion", fake_retry)
     monkeypatch.setattr(_completion, "_complete_live", boom)
+    monkeypatch.setenv("AIFORGE_LLM_WAIT_MAX_S", "0")
+    monkeypatch.delenv("AIFORGE_CHAT_OUTAGE_WAIT_S", raising=False)
     for sid, edits in ((7, 1), (None, 1), (7, 0)):
         st = SimpleNamespace(convo=[], edits_made=edits, action_counts={"x": 1})
         _drive(_completion._run_completion(st, "chat", None, sid, None))
-    assert seen[0] > 0 and seen[1] == 0 and seen[2] == 0     # a read-only turn fails fast
+    assert seen == [0.0, 0.0, 0.0]            # all wait, with no bound
 
 
 def test_stop_during_the_wait_stops_the_run(_no_sleep, monkeypatch):
@@ -568,12 +583,17 @@ def test_stop_during_the_wait_stops_the_run(_no_sleep, monkeypatch):
 
 
 def test_outage_wait_setting(monkeypatch):
+    from aiforge_core.llm import model_wait
     monkeypatch.delenv("AIFORGE_CHAT_OUTAGE_WAIT_S", raising=False)
-    assert _completion._outage_wait_s() == 1800
+    monkeypatch.delenv("AIFORGE_LLM_WAIT_MAX_S", raising=False)
+    monkeypatch.setattr(model_wait, "_DEFAULT_MAX_S", 0.0)  # production default
+    assert _completion._outage_wait_s() == 0          # forever, by default
+    monkeypatch.setenv("AIFORGE_LLM_WAIT_MAX_S", "600")
+    assert _completion._outage_wait_s() == 600        # the shared knob
     monkeypatch.setenv("AIFORGE_CHAT_OUTAGE_WAIT_S", "0")
-    assert _completion._outage_wait_s() == 0
+    assert _completion._outage_wait_s() == 0          # the chat knob wins
     monkeypatch.setenv("AIFORGE_CHAT_OUTAGE_WAIT_S", "-5")
-    assert _completion._outage_wait_s() == 1800
+    assert _completion._outage_wait_s() == -5         # negative: do not wait
 
 
 # ── stored events stay small ─────────────────────────────────────────────

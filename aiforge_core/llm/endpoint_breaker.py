@@ -13,7 +13,9 @@ the ADK pipeline:
 * it OPENS after ``AIFORGE_LLM_BREAKER_FAILS`` (default 2) consecutive
   CONNECT failures — a single dropped SYN does not take an endpoint out;
 * while open, a call to that endpoint fails at once, without touching the
-  network, so the caller moves straight to its next endpoint;
+  network, so the caller moves straight to its next endpoint — and when every
+  endpoint is down, the caller WAITS (llm/model_wait) instead of failing: its
+  probe is the half-open check, and a probe that answers closes the breaker;
 * after ``AIFORGE_LLM_BREAKER_COOLDOWN_S`` (default 30) the next call probes
   again (half-open), and one successful connect closes it.
 

@@ -124,9 +124,13 @@ def _probe_native(role: str) -> bool:
     # ("Invalid tool_choice type: 'object'"). "required" forces a call so the
     # probe gets a deterministic positive signal on a tool-capable endpoint.
     try:
-        m = client.complete_raw(
-            role, msgs, tools=tools, tool_choice="required",
-            max_tokens=64, timeout_s=_probe_timeout())
+        # A capability probe, not the work: it does not wait out an outage
+        # (inconclusive → optimistic below); the real call that follows does.
+        from aiforge_core.llm import model_wait
+        with model_wait.optional():
+            m = client.complete_raw(
+                role, msgs, tools=tools, tool_choice="required",
+                max_tokens=64, timeout_s=_probe_timeout())
         ok = bool(m.get("tool_calls"))
         _NATIVE_CACHE[model] = ok          # definitive: endpoint responded
         return ok

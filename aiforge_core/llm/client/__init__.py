@@ -188,20 +188,14 @@ def complete(role: str, messages: list[dict], *,
         perf_recorder = None
     import time as _time
     _t0 = _time.monotonic()
+    kw = {"temperature": temperature, "max_tokens": max_tokens,
+          "top_p": top_p, "extras": extras, "timeout_s": timeout_s}
     try:
         if perf_recorder is not None:
             with perf_recorder.timed("LLM", role):
-                out = _complete_impl(
-                    role, messages, temperature=temperature,
-                    max_tokens=max_tokens, top_p=top_p, extras=extras,
-                    timeout_s=timeout_s,
-                )
+                out = _waiting(role, lambda: _complete_impl(role, messages, **kw))
         else:
-            out = _complete_impl(
-                role, messages, temperature=temperature,
-                max_tokens=max_tokens, top_p=top_p, extras=extras,
-                timeout_s=timeout_s,
-            )
+            out = _waiting(role, lambda: _complete_impl(role, messages, **kw))
     except Exception as exc:
         _trace_generation(role, messages, "",
                           int((_time.monotonic() - _t0) * 1000),
@@ -212,6 +206,21 @@ def complete(role: str, messages: list[dict], *,
     return out
 
 
+def _waiting(role: str, call):
+    """``call()``, waiting out a model OUTAGE and re-sending (see
+    :mod:`aiforge_core.llm.model_wait`). The role's own endpoint is the one
+    probed: the chain behind it has already been tried by ``call``."""
+    from aiforge_core.llm import model_wait
+
+    def _endpoint():
+        try:
+            ep = resolve(role)
+            return ep.base_url, ep.api_key or "", ep.model
+        except Exception:  # noqa: BLE001 — cannot resolve: nothing to probe
+            return "", "", ""
+    return model_wait.call_with_wait(call, endpoint=_endpoint, what=role)
+
+
 def complete_raw(role: str, messages: list[dict], *,
                  tools: list | None = None,
                  tool_choice=None,
@@ -220,6 +229,22 @@ def complete_raw(role: str, messages: list[dict], *,
                  top_p: float | None = None,
                  extras: dict | None = None,
                  timeout_s: int | None = None) -> dict:
+    """:func:`_complete_raw_once`, waiting out a model outage (see
+    :func:`_waiting`)."""
+    return _waiting(role, lambda: _complete_raw_once(
+        role, messages, tools=tools, tool_choice=tool_choice,
+        temperature=temperature, max_tokens=max_tokens, top_p=top_p,
+        extras=extras, timeout_s=timeout_s))
+
+
+def _complete_raw_once(role: str, messages: list[dict], *,
+                       tools: list | None = None,
+                       tool_choice=None,
+                       temperature: float | None = None,
+                       max_tokens: int | None = None,
+                       top_p: float | None = None,
+                       extras: dict | None = None,
+                       timeout_s: int | None = None) -> dict:
     """Native tool-calling completion. Returns the RAW assistant message dict
     (``{"role","content","tool_calls"?}``) instead of extracted text, so the
     caller can dispatch native ``tool_calls`` — the reliable alternative to the

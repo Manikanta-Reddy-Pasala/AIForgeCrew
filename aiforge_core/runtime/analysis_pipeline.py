@@ -352,8 +352,14 @@ def _fan_out_and_synthesize(prompt, units, explore_fn, topics, session_id, noun)
     results: list[dict] = []
     cancelled = False
     workers = min(_max_workers(), max(1, len(units)))
+    # Pool threads do not see the session's Stop: pass it, so an explorer
+    # waiting for a model that is down (llm/model_wait) stops with the turn.
+    from aiforge_core.llm import model_wait
+    explore = model_wait.scoped(
+        explore_fn, (lambda: chat_cancel.is_cancelled(session_id))
+        if session_id is not None else None)
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
-        fut_map = {ex.submit(explore_fn, u, topics, prompt): u for u in units}
+        fut_map = {ex.submit(explore, u, topics, prompt): u for u in units}
         for fut in concurrent.futures.as_completed(fut_map):
             if session_id is not None and chat_cancel.is_cancelled(session_id):
                 # Break silently — the SSE producer stops on the first post-cancel

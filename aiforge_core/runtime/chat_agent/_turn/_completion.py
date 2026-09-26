@@ -3,7 +3,7 @@ completion."""
 from __future__ import annotations
 
 import os
-import time
+import time  # noqa: F401  # tests patch _completion.time.sleep
 
 # A retry or outage wait was cut short because the user typed a message.
 # The step loop drains it and asks again; this is not a Stop.
@@ -120,78 +120,78 @@ def _emit_completion_failure(_cfg_error, _meter, _step_tok, worked=False):
         _meter.step_reset(_step_tok)
 
 def _outage_wait_s() -> float:
-    """How long a run that has already done work waits for an unreachable
-    model to come back (``AIFORGE_CHAT_OUTAGE_WAIT_S``, default 1800; 0 = do
-    not wait). Hours of work should not end because a model reloaded."""
-    try:
-        val = float(os.environ.get("AIFORGE_CHAT_OUTAGE_WAIT_S", "1800"))
-    except ValueError:
-        return 1800.0
-    return val if val >= 0 else 1800.0
+    """How long a chat run waits for an unreachable model: 0 = until it comes
+    back (the default — the run never ends because the model is down), >0 = a
+    bound in seconds, <0 = do not wait. ``AIFORGE_CHAT_OUTAGE_WAIT_S`` when set,
+    else the shared ``AIFORGE_LLM_WAIT_MAX_S`` (llm/model_wait)."""
+    raw = os.environ.get("AIFORGE_CHAT_OUTAGE_WAIT_S", "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    from aiforge_core.llm import model_wait
+    return model_wait.wait_max_s()
 
 
-_OUTAGE_PROBE_S = 60.0
-_CANCEL_POLL_S = 5.0
-
-
-#: Gateway answers that mean the model server is restarting or overloaded.
-_OUTAGE_HTTP = frozenset({502, 503, 504})
-
-
-def _error_chain(exc):
-    seen = []
-    while exc is not None and len(seen) < 8 and exc not in seen:
-        seen.append(exc)
-        exc = (getattr(exc, "transport_error", None) or exc.__cause__
-               or exc.__context__)
-    return seen
+_CANCEL_POLL_S = 0.25
 
 
 def _outage_waitable(exc) -> bool:
     """The model server is unreachable, reloading, or behind a gateway that
-    says it is down — worth waiting for. Not a call the model is still
-    generating, not a config or auth error, not a server that rejects this
-    prompt."""
+    says it is down — worth waiting for. THE classification lives in
+    llm/model_outage; not a call the model is still generating, not a config
+    or auth error, not a server that rejects this prompt."""
     try:
-        from aiforge_core.llm.client import model_missing, shipped_timeout
-        from aiforge_core.llm.client._errors import _ModelReloading
-        from aiforge_core.llm.endpoint_breaker import is_connect_error
-        if shipped_timeout(exc) or model_missing(exc):
-            return False
-        for link in _error_chain(exc):
-            if isinstance(link, _ModelReloading) or is_connect_error(link):
-                return True
-            if getattr(link, "code", None) in _OUTAGE_HTTP:
-                return True
-        return False
+        from aiforge_core.llm import model_outage
+        return model_outage.classify(exc) == model_outage.OUTAGE
     except Exception:  # noqa: BLE001 — unknown → do not wait
         return False
 
 
-def _minutes(seconds: float) -> str:
-    return f"{int(seconds // 60)} min" if seconds >= 60 else f"{int(seconds)} s"
+def _will_wait(wait_s) -> bool:
+    """Does this wait setting wait at all? A bound shorter than the first
+    probe gap does not (the test suite sets one, so unstubbed calls stay fast)."""
+    if wait_s is None or wait_s < 0:
+        return False
+    from aiforge_core.llm import model_wait
+    return wait_s == 0 or wait_s >= next(model_wait.delays())
 
 
 def _wait_out_outage(complete_fn, role, convo, session_id, exc, wait_s):
-    """Probe the model once a minute until it answers, the wait runs out, the
-    error stops looking transient, or the user presses Stop. Yields progress;
-    returns ``(completion, last_error)``."""
+    """Wait for the model with the shared backoff (2 s → 5 s → 10 s → 30 s),
+    re-trying the completion itself as the probe, until it answers, the error
+    stops looking like an outage, the bound (``wait_s`` > 0) runs out, or the
+    user presses Stop / types a message. ``wait_s`` 0 = no bound. Yields a
+    status line whenever the wait changes (never one per probe); returns
+    ``(completion, last_error)``."""
+    from aiforge_core.llm import model_wait
     from aiforge_core.runtime import chat_cancel
+    from aiforge_core.runtime.run_interrupt import pause
     if session_id is not None and chat_cancel.is_cancelled(session_id):
         return _CANCELLED, None
-    probes = max(1, int(wait_s // _OUTAGE_PROBE_S))
-    yield {"type": "thought", "role": "system",
-           "text": f"⏸ the model is unreachable — waiting up to "
-                   f"{_minutes(wait_s)} for it to come back, then continuing "
-                   "where the run left off (Stop ends the run)"}
-    from aiforge_core.runtime.run_interrupt import pause
-    last = exc
-    for probe in range(probes):
-        why = pause(_OUTAGE_PROBE_S, session_id, slice_s=_CANCEL_POLL_S)
+    import time as _t
+    t0 = _t.monotonic()
+    shown: dict = {}
+    last, waited = exc, 0.0
+    for gap in model_wait.delays():
+        if wait_s > 0 and waited + gap > wait_s:
+            return None, last
+        if shown.get("gap") != gap or waited - shown.get("at", 0.0) >= 300:
+            shown["gap"], shown["at"] = gap, waited      # a change, or 5 min
+            down = model_wait._fmt(_t.monotonic() - t0)
+            yield {"type": "thought", "role": "system",
+                   "text": f"⏸ waiting for the model (down {down}, next probe "
+                           f"{model_wait._fmt(gap)}) — the run continues where "
+                           "it left off (Stop ends it)"}
+        why = pause(gap, session_id, slice_s=_CANCEL_POLL_S)
+        if why is None and model_wait.cancel_reason():
+            why = "stop"          # shutdown, a lost ticket claim, a worker stop
         if why == "stop":
             return _CANCELLED, None
         if why == "steer":
             return _STEERED, None
+        waited += gap
         try:
             out = _complete_cancellable(complete_fn, role, convo, session_id)
             if out is not _CANCELLED:
@@ -202,20 +202,17 @@ def _wait_out_outage(complete_fn, role, convo, session_id, exc, wait_s):
             last = exc2
         if not _outage_waitable(last):
             return None, last
-        if (probe + 1) % 5 == 0:
-            yield {"type": "thought", "role": "system",
-                   "text": f"⏸ still waiting for the model "
-                           f"({_minutes((probe + 1) * _OUTAGE_PROBE_S)})…"}
-    return None, last
+    return None, last  # pragma: no cover — delays() never ends
 
 
 def _retry_completion(complete_fn, role, convo, session_id, exc,
-                      _step_calls, _meter, _step_tok, wait_s=0.0, worked=False):
+                      _step_calls, _meter, _step_tok, wait_s=None, worked=False):
     """Recover a failed model completion: retry (bounded by the per-step
     generation budget; 0 retries for a shipped-timeout or unserved-model error)
-    with escalating backoff. Yields progress/stop events; returns the completion
-    text (possibly None) on recovery, or ``_RETRY_STOP`` when the caller must end
-    the turn."""
+    with escalating backoff. A model OUTAGE is waited out instead (``wait_s``:
+    None = do not wait, 0 = no bound, >0 = bound in seconds). Yields
+    progress/stop events; returns the completion text (possibly None) on
+    recovery, or ``_RETRY_STOP`` when the caller must end the turn."""
     from aiforge_core.runtime import chat_cancel
     # RESILIENCE: a local model can transiently drop a request (mid-load,
     # busy, a one-off empty/4xx). Retry a few times before surfacing, and
@@ -238,6 +235,10 @@ def _retry_completion(complete_fn, role, convo, session_id, exc,
         return int(_step_calls.get("n") or 0) >= _budget
     out = None
     _last = exc
+    # A model OUTAGE is not a bad answer: skip the sweep (its sends would only
+    # hit the same dead endpoint and spend the step's budget) and wait.
+    if _will_wait(wait_s) and _outage_waitable(exc):
+        _retries = 0
     for _rn in range(_retries):
         if session_id is not None and chat_cancel.is_cancelled(session_id):
             return _CANCELLED
@@ -261,7 +262,7 @@ def _retry_completion(complete_fn, role, convo, session_id, exc,
             _last = exc2
     if out is _STEERED or out is _CANCELLED:
         return out
-    if _last is not None and wait_s > 0 and _outage_waitable(_last):
+    if _last is not None and _will_wait(wait_s) and _outage_waitable(_last):
         out, _last = yield from _wait_out_outage(
             complete_fn, role, convo, session_id, _last, wait_s)
         if out is _STEERED or out is _CANCELLED:
@@ -293,12 +294,12 @@ def _run_completion(st, role, complete_fn, session_id, _meter):
     try:
         out = yield from _complete_live(complete_fn, role, st.convo, session_id)
     except Exception as exc:  # noqa: BLE001
-        # A run that has already done work waits out an outage; a fresh
-        # request fails fast so the user is not left staring at nothing.
-        # Only an interactive run waits: a background run has no Stop button
-        # and holds a slot other work may need.
+        # EVERY run waits out a model outage — fresh or with work done,
+        # interactive or background: "if the LLM is not available it should
+        # keep on waiting". Stop (or a worker's stop event) ends the wait.
         _worked = st.edits_made > 0
-        _wait = _outage_wait_s() if _worked and session_id is not None else 0.0
+        _w = _outage_wait_s()
+        _wait = _w if _w >= 0 else None
         out = yield from _retry_completion(
             complete_fn, role, st.convo, session_id, exc,
             _step_calls, _meter, _step_tok, wait_s=_wait, worked=_worked)

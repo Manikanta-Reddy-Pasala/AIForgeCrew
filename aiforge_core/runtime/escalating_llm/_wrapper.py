@@ -15,6 +15,7 @@ from google.adk.models.llm_response import LlmResponse
 
 from aiforge_core.llm import endpoint_breaker as _breaker
 
+from . import _outage
 from ._builder import _build_one, _mirror_to_langfuse
 from ._policy import (
     _api_base_of,
@@ -413,6 +414,7 @@ class EscalatingLlm(_RescueMixin, _StreamMixin, BaseLlm):
             log.info("llm.candidate_skipped role=%s attempt=%s reason=%s",
                      self.role, label, skipped)
             state["exc"] = ConnectionError(f"LLM endpoint unreachable: {skipped}")
+            state["outage"] = state["exc"]
             return
         meter: dict = {}
         try:
@@ -420,6 +422,7 @@ class EscalatingLlm(_RescueMixin, _StreamMixin, BaseLlm):
         except Exception as exc:  # noqa: BLE001
             if _breaker.is_connect_error(exc):
                 _breaker.record_failure(base, str(exc))
+            _outage.note(state, exc)
             async for r in self._rescue_after_failure(exc, model, req, label,
                                                       target, t0, state):
                 yield r
@@ -459,14 +462,30 @@ class EscalatingLlm(_RescueMixin, _StreamMixin, BaseLlm):
             return
 
         t0 = _time.monotonic()
-        state: dict = {"exc": None, "done": False}
-        for label, model in self._candidates():
-            async for r in self._try_candidate(label, model, llm_request,
-                                               t0, state):
-                yield r
-            if state["done"]:
-                return
-        self._exhausted(state["exc"])
+        waiter = None
+        while True:
+            state: dict = {"exc": None, "done": False}
+            for label, model in self._candidates():
+                async for r in self._try_candidate(label, model, llm_request,
+                                                   t0, state):
+                    yield r
+                if state["done"]:
+                    if waiter is not None:
+                        waiter.recovered()
+                    return
+            # Every candidate failed. A model OUTAGE is waited out — the run
+            # must not end because the model is down — then the same request
+            # goes round the chain again. Anything else ends as before.
+            waiter = waiter or self._outage_waiter()
+            # The OUTAGE decides, even when a later candidate (a cloud entry
+            # without a key, say) failed for another reason after it.
+            exc = state.get("outage") or state["exc"]
+            if exc is None or not waiter.waitable(exc):
+                self._exhausted(state["exc"])
+            await waiter.await_wait(exc)
+
+    def _outage_waiter(self):
+        return _outage.waiter_for(self.primary_model, self.role)
 
     @classmethod
     def supported_models(cls) -> list[str]:

@@ -68,7 +68,10 @@ class _StreamMixin:
         target = getattr(model, "model", None)
         req = self._stamp_request(llm_request, model)
         tries = _attempt_retries()
-        for attempt in range(tries):
+        waiter = None
+        attempt = -1
+        while True:
+            attempt += 1
             emitted = False          # has the consumer seen ANY chunk yet?
             answered = False         # has it seen any real CONTENT?
             buffered: list = []
@@ -100,6 +103,17 @@ class _StreamMixin:
                     log.warning("llm.stream_retry role=%s try=%d/%d err=%.140s",
                                 self.role, attempt + 1, tries, str(exc))
                     continue
-                raise
+                # Nothing emitted yet and the model is DOWN: wait for it, then
+                # start the stream again (a fresh set of tries).
+                if emitted or not isinstance(exc, Exception):
+                    raise
+                waiter = waiter or self._outage_waiter()
+                if not waiter.waitable(exc):
+                    raise
+                await waiter.await_wait(exc)
+                attempt = -1
+                continue
+            if waiter is not None:
+                waiter.recovered()
             self._settle_stream(tok, target, answered, buffered)
             return

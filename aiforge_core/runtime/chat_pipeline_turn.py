@@ -97,6 +97,10 @@ def _bind_team_session(session_id, q) -> None:
     chat_cancel.set_active(session_id)
     if session_id is None:
         return
+    # A wait for a model that is down (llm/model_wait) shows in the team chat.
+    from aiforge_core.llm import model_wait
+    model_wait.bind_status_sink(lambda st: q.put(
+        {"type": "thought", "role": "system", "text": st.get("text", "")}))
     from aiforge_core.runtime import chat_approve, chat_interject
     from aiforge_core.runtime import request_context as _rc
     chat_approve.set_emitter(session_id, q.put)

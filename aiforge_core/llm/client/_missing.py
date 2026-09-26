@@ -131,6 +131,9 @@ def _model_missing_error(role: str, primary: Endpoint, missing: list):
         f"failure: point the role at one of the models above, or load it "
         f"on the endpoint. Retrying cannot fix it.")
     setattr(exhausted, MODEL_MISSING_ATTR, True)
+    # What the box serves: [] means nothing is loaded right now (an idle
+    # unload, a restart), which model_outage reads as an outage to wait out.
+    exhausted.served_models = list(missing or [])
     _pkg()._log.error("llm.model_missing role=%s model=%s endpoint=%s available=%s",
                role, primary.model, primary.base_url, have,
                extra={"aiforge": {"role": role, "model": primary.model,

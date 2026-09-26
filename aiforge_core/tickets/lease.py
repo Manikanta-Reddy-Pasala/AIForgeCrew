@@ -37,14 +37,24 @@ def _interval_s() -> float:
 
 @contextlib.contextmanager
 def hold_claim(ticket_id: int, interval_s: "float | None" = None):
-    """Renew ``ticket_id``'s claim every ``interval_s`` until the block exits."""
+    """Renew ``ticket_id``'s claim every ``interval_s`` until the block exits.
+
+    The beat runs on its own thread, so a run that is WAITING for the model
+    (llm/model_wait — unbounded by default) keeps its claim: it is never reaped
+    or run twice, and the reclaim cap never sees the wait. When a beat finds the
+    ticket no longer ``in_progress`` (cancelled, or taken over), the claim is
+    LOST: every model wait inside the block ends (ModelWaitCancelled) instead
+    of waiting for a model on behalf of a run nobody wants any more. The block
+    also reports each wait's status on the ticket as an ``llm_wait`` event."""
     stop = threading.Event()
+    lost = threading.Event()
     every = interval_s or _interval_s()
 
     def _beat():
         while not stop.wait(every):
             try:
-                store.renew_claim(ticket_id)
+                if store.renew_claim(ticket_id) is False:
+                    lost.set()
             except Exception as exc:  # noqa: BLE001 — a missed beat is not fatal
                 log.debug("claim heartbeat ticket=%s failed: %s", ticket_id, exc)
 
@@ -53,13 +63,28 @@ def hold_claim(ticket_id: int, interval_s: "float | None" = None):
     owner = _jobs_owner(ticket_id)
     _stop_jobs(owner)            # a reclaim: the last attempt's leftovers go
     tok = _own_jobs(owner)
+    from aiforge_core.llm import model_wait
     try:
-        yield
+        with model_wait.scope(lost, "ticket claim lost (cancelled or taken "
+                                    "over)"), \
+                model_wait.status_sink(_wait_event(ticket_id)):
+            yield
     finally:
         stop.set()
         t.join(timeout=5)
         _disown_jobs(tok)
         _stop_jobs(owner)        # this attempt's commands end with its claim
+
+
+def _wait_event(ticket_id):
+    """A model_wait status sink that records the status on the ticket."""
+    def _sink(st: dict) -> None:
+        try:
+            store.add_event(ticket_id, "llm", "llm_wait", st.get("text", ""),
+                            {k: v for k, v in st.items() if k != "text"})
+        except Exception as exc:  # noqa: BLE001 — status is best-effort
+            log.debug("llm_wait event ticket=%s failed: %s", ticket_id, exc)
+    return _sink
 
 
 def _jobs_owner(ticket_id) -> str:

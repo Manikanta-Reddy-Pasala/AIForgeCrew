@@ -338,6 +338,13 @@ def _run_claimed_ticket(ticket) -> None:
         _run_ticket(ticket, worktree)
     except Exception as exc:  # noqa: BLE001 — a ticket must never kill the runner
         _log_run_failure(ticket, exc)
+        if _wait_was_cancelled(exc):
+            # The run was waiting for the model and its ticket was cancelled or
+            # taken over (or the process is exiting): the ticket's status is
+            # someone else's now — do not overwrite it with `blocked`.
+            log.info("ticket=%s: model wait cancelled (%s) — status left as is",
+                     ticket.identifier, exc)
+            return
         # A workflow ticket never had a worktree: the rescue would resolve the
         # runner's DEFAULT repo and commit + push whatever sat uncommitted there.
         rescue_meta = ({} if getattr(ticket, "route", "code") == "workflow"
@@ -357,6 +364,16 @@ def _run_claimed_ticket(ticket) -> None:
         set_force_provider(None)
         if prior_env is not None:
             _restore_env(prior_env)
+
+
+def _wait_was_cancelled(exc: BaseException) -> bool:
+    try:
+        from aiforge_core.llm import model_outage
+        from aiforge_core.llm.model_wait import ModelWaitCancelled
+        return any(isinstance(e, ModelWaitCancelled)
+                   for e in model_outage.chain(exc))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def main() -> int:
