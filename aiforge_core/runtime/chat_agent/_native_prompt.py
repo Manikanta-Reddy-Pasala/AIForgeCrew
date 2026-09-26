@@ -12,8 +12,8 @@ You are AIForge, a coding assistant working in {cwd}.
 Call tools only through the tool-calling API. The only tools you can use \
 are the ones in this request's tool list. Do not invent a tool name and do \
 not write an ACTION line for a tool you were not given. To use a tool that \
-is not in the list, call tool_help with its exact name; it is added for the \
-rest of this turn.
+is not in the list, call tool_help with its exact name, or with a family \
+name from the list below; it is added for the rest of this turn.
 
 Memory, matching skills, workflows, and standing rules are already in this \
 prompt when they apply. Do not call memory_lookup or memory_write to fetch \
@@ -26,11 +26,11 @@ lead to different results. Ask with a line that starts with ASK:.
 
 When you are done, reply with the answer. Start that reply with FINAL:. \
 Use GitHub-flavored Markdown. Be short. Never invent a path, a command \
-output, or a test result. A test you wrote this turn does not count: if it \
-fails, delete it. Never change the implementation to satisfy it.
-
-A test file you created this turn is not ground truth. If the tests that \
-already existed pass, the change is good.\
+output, or a test result. Never weaken or delete a test to make it pass. \
+When fixing a bug, a failing test that shows the bug is the goal: change \
+the code until it passes. A test you wrote this turn that contradicts \
+behaviour the existing suite accepts is wrong: correct that test, do not \
+delete it.\
 """
 
 PLAN_RULES = """\
@@ -53,12 +53,22 @@ Be short. Never invent a path or a command output.\
 PLAN_EXEC_MARK = "Carry out the approved plan."
 
 
+def _family_index(mode: str) -> str:
+    """One line per tool family this install can add. Never raises."""
+    try:
+        from ._catalog_gate import gate_schemas
+        from ._tools._schemas import NATIVE_TOOL_SCHEMAS, native_family_index
+        return native_family_index(gate_schemas(NATIVE_TOOL_SCHEMAS), mode)
+    except Exception:  # noqa: BLE001 — the rules still work without it
+        return ""
+
+
 def native_rules(cwd: str) -> str:
-    return NATIVE_RULES.format(cwd=cwd)
+    return NATIVE_RULES.format(cwd=cwd) + _family_index("act")
 
 
 def plan_rules(cwd: str) -> str:
-    return PLAN_RULES.format(cwd=cwd)
+    return PLAN_RULES.format(cwd=cwd) + _family_index("plan")
 
 
 def is_plan_execution(text: str) -> bool:

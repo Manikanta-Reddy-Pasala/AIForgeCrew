@@ -334,6 +334,9 @@ agents:
         - memory_lookup             # read-only AiForgeMemory recall
         - skill_search              # find reusable SKILL.md playbooks before solving
         - learn_skill               # author a reusable skill after solving (self-improve)
+        - workflow_search           # find a reusable WORKFLOW.md (read-only)
+        - learn_workflow            # author a WORKFLOW.md, same as learn_skill
+        - fetch_url                 # a URL the task names; egress-gated like web_crawl
         - repo_map                  # tree-sitter PageRank repo map (AST, no vectors)
         - codegraph_impact          # blast-radius of changing a symbol (pre-edit)
         - codegraph_callers         # who calls a symbol

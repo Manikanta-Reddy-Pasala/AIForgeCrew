@@ -11,9 +11,25 @@ only changes HOW the next step is produced. Text protocol stays the fallback.
 from __future__ import annotations
 
 import json
-import re
 import logging
 import os
+import re
+
+# Tool selection and history replay live in their own modules; these names
+# stay importable from here.
+from ._native_replay import (  # noqa: F401
+    _parse_action_block,
+    flatten_tool_messages,
+    to_native_messages,
+)
+from ._native_select import (  # noqa: F401
+    _convo_text,
+    _cue_body,
+    helped_names,
+    remember_session_tools,
+    select_native_tools,
+    used_families,
+)
 
 log = logging.getLogger("aiforge.chat.native")
 
@@ -352,178 +368,23 @@ def _log_native_step(calls: list) -> None:
         log.info("native content step (no tool_call)")
 
 
-# A user-role message the loop wrote, not the person. The body after the
-# header (pytest's docs URL, a path named ticket) must not add tools either.
-# A steer merged on with a blank line is the person's words and is kept.
-_HARNESS_SEGMENT = re.compile(
-    r"^(?:OBSERVATION:|\[loop guard|\[(?:[^\]]*not the user|system reminder)"
-    r"[^\]]*\]|You (?:narrated|signalled|described) )")
-# A steer, or the correction typed when a tool call is rejected. Both are
-# the person's words and are merged onto the observation with a blank line.
-_USER_SEGMENT = (
-    "[NEW MESSAGE FROM THE USER",
-    "The user rejected the last action",
-)
-
-
-# Blocks the server appends. They quote the tool catalog, READMEs and
-# memory, so "jira" / "https://" in there would add every integration to
-# the native list. The person's own words are the part before the marker.
-_CUE_TAILS = (
-    "\n\n---\n[Interpreted request",
-    "\n\n---\n[Deliverable",
-    "\n\n---\n[RESUME]",
-)
-
-
-def _cue_body(content: str) -> str:
-    text = content or ""
-    for mark in _CUE_TAILS:
-        text = text.split(mark)[0]
-    return text
-
-
-def _convo_text(convo) -> str:
-    """The user's own words, including a mid-run steer.
-
-    Tool results, loop-guard notes, and automated checks are stored as user
-    messages. A URL or the word ticket inside one of those must not add web
-    or Jira tools. Once a harness header starts, the rest of that message is
-    its body, until a steer or a rejection correction. The system prompt
-    names every integration; it is not the user asking for those tools, and
-    neither is a copy of that prompt stored as a user turn."""
-    parts = []
-    for message in convo or []:
-        if not isinstance(message, dict) or message.get("role") != "user":
-            continue
-        content = message.get("content") or ""
-        if isinstance(content, list):
-            content = "\n\n".join(
-                str(part.get("text") or "") for part in content
-                if isinstance(part, dict))
-        content = _cue_body(str(content))
-        if content.lstrip().startswith("You are AIForge"):
-            continue
-        dropping = False
-        for segment in content.split("\n\n"):
-            stripped = segment.lstrip()
-            if not stripped:
-                continue
-            if stripped.startswith(_USER_SEGMENT):
-                dropping = False
-                parts.append(segment)
-                continue
-            if dropping or _HARNESS_SEGMENT.match(stripped):
-                dropping = True
-                continue
-            parts.append(segment)
-    return "\n".join(parts)
-
-
-def select_native_tools(convo, *, mode: str = "act", builder: str = "",
-                        schemas: list | None = None) -> list:
-    """The native schemas this turn actually sends.
-
-    The banner and the model call both use this, so the "(N tools)" line is
-    the list on the wire. Family tools are added from the user's words, not
-    from the system prompt (that prompt names every integration and used to
-    make the count the whole gated catalog, about 63). ``tool_help`` extras
-    stay on the list for the rest of the turn."""
-    from ._tools._schemas import NATIVE_TOOL_SCHEMAS, filter_native
-    if schemas is None:
-        try:
-            from ._catalog_gate import gate_schemas
-            schemas = gate_schemas(NATIVE_TOOL_SCHEMAS)
-        except Exception:  # noqa: BLE001 — never break a turn
-            schemas = list(NATIVE_TOOL_SCHEMAS)
-    return filter_native(list(schemas), mode=mode or "act",
-                         text=_convo_text(convo), builder=builder or "",
-                         extra=helped_names(convo))
-
-
-_ACTION_BLOCK = re.compile(
-    r"ACTION:\s*([A-Za-z0-9_]+)\s*\nARGS_JSON:\s*(\{.*\})", re.S)
-_HELP_NAME = re.compile(
-    r'ACTION:\s*tool_help\s*\nARGS_JSON:\s*(\{.*?\})', re.S)
-
-
-def helped_names(convo) -> set[str]:
-    """Tools ``tool_help`` added earlier in this turn."""
-    found: set[str] = set()
-    for message in convo or []:
-        if not isinstance(message, dict):
-            continue
-        content = message.get("content") or ""
-        if not isinstance(content, str):
-            continue
-        for match in _HELP_NAME.finditer(content):
-            try:
-                name = str(json.loads(match.group(1)).get("name") or "").strip()
-            except (ValueError, TypeError):
-                name = ""
-            if name:
-                found.add(name)
-    return found
-
-
-def _parse_action_block(content: str):
-    match = _ACTION_BLOCK.search(content or "")
-    if not match:
-        return None
+def _complete_repaired(client, role, msgs, tools, exc):
+    """A strict server rejected the replayed history (HTTP 400). Retry once
+    with the tool messages flattened to text, tools still on the request;
+    only if that fails too, use the text protocol for this call."""
+    log.info("native call rejected (%s) → retrying with flattened history", exc)
     try:
-        args = json.loads(match.group(2))
-    except (ValueError, TypeError):
+        return client.complete_raw(
+            role, flatten_tool_messages(msgs), tools=tools, tool_choice="auto")
+    except Exception as exc2:  # noqa: BLE001
+        if _native_error_transient(exc2):
+            raise
+        log.info("flattened retry failed → text this call (%s)", exc2)
         return None
-    if not isinstance(args, dict):
-        return None
-    return match.group(1), args
 
 
-def to_native_messages(convo) -> list[dict]:
-    """Replay ACTION steps as ``assistant.tool_calls`` and the following
-    OBSERVATION as a ``role: tool`` result. Other messages pass through."""
-    out: list[dict] = []
-    index = 0
-    messages = list(convo or [])
-    while index < len(messages):
-        message = messages[index]
-        if not isinstance(message, dict):
-            index += 1
-            continue
-        content = message.get("content") if isinstance(message.get("content"), str) else ""
-        parsed = _parse_action_block(content) if message.get("role") == "assistant" else None
-        if parsed is None:
-            out.append(message)
-            index += 1
-            continue
-        name, args = parsed
-        call_id = f"call_{index}"
-        out.append({
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [{
-                "id": call_id,
-                "type": "function",
-                "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)},
-            }],
-        })
-        nxt = messages[index + 1] if index + 1 < len(messages) else None
-        nxt_body = (nxt or {}).get("content") if isinstance(nxt, dict) else ""
-        if (isinstance(nxt, dict) and nxt.get("role") == "user"
-                and isinstance(nxt_body, str) and nxt_body.startswith("OBSERVATION:")):
-            out.append({
-                "role": "tool",
-                "tool_call_id": call_id,
-                "name": name,
-                "content": nxt_body[len("OBSERVATION:"):].strip(),
-            })
-            index += 2
-            continue
-        index += 1
-    return out
-
-
-def make_native_complete_fn(mode: str = "act", builder: str = ""):
+def make_native_complete_fn(mode: str = "act", builder: str = "",
+                            session_id=None):
     """A drop-in ``complete_fn(role, convo) -> str`` that calls the model with
     native tools and returns the adapted text step. The core tool schemas go
     natively; the long tail stays in the system prompt and is still callable
@@ -562,20 +423,23 @@ def make_native_complete_fn(mode: str = "act", builder: str = ""):
                 gated[:] = list(NATIVE_TOOL_SCHEMAS)
         have = {((s.get("function") or {}).get("name")) for s in tools}
         for schema in select_native_tools(
-                convo, mode=mode, builder=builder, schemas=gated):
+                convo, mode=mode, builder=builder, schemas=gated,
+                session_id=session_id):
             name = (schema.get("function") or {}).get("name")
             if name not in have:
                 tools.append(schema)
+        remember_session_tools(convo, session_id)
+        msgs = to_native_messages(convo)
         try:
-            msg = client.complete_raw(
-                role, to_native_messages(convo), tools=tools, tool_choice="auto")
+            msg = client.complete_raw(role, msgs, tools=tools, tool_choice="auto")
         except Exception as exc:  # noqa: BLE001
             if _native_error_is_permanent(exc, model):
                 return client.complete(role, convo)
             if _native_error_transient(exc):
                 raise
-            log.info("native call failed non-transiently → text this turn (%s)", exc)
-            return client.complete(role, convo)
+            msg = _complete_repaired(client, role, msgs, tools, exc)
+            if msg is None:
+                return client.complete(role, convo)
         _log_native_step(msg.get("tool_calls") or [])
         step = _synth_step(msg)
         if step == _NATIVE_ARGS_UNRECOVERABLE:
