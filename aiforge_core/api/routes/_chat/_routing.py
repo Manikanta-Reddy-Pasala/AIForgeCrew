@@ -213,8 +213,13 @@ def _followup_needs_enhance(prompt: str) -> bool:
     return p.count("\n") >= 8
 
 
+# Classes whose answer is prose from reading, not a change: the agent answers
+# the request as written, a restatement only delays it.
+_ANSWER_CLASSES = ("chat", "doc_analysis")
+
+
 def _should_skip_enhance(auto_downgraded, route_pipeline, is_build_task,
-                         history, prompt) -> bool:
+                         history, prompt, cat=None) -> bool:
     """Whether the Enhancer can be skipped this turn.
 
     A short message the agent will answer or ask about is one model call —
@@ -231,10 +236,20 @@ def _should_skip_enhance(auto_downgraded, route_pipeline, is_build_task,
     del history, is_build_task, auto_downgraded
     if route_pipeline:
         return False
+    # The classifier read this request as a question or a review/analysis:
+    # nothing is built, so the long prompt goes to the agent unrestated.
+    if cat in _ANSWER_CLASSES and _answer_skip_enabled():
+        return True
     if _followup_needs_enhance(prompt):
         return False
     from aiforge_core.runtime.chat_router import direct_reply
     return direct_reply(prompt or "")
+
+
+def _answer_skip_enabled() -> bool:
+    """AIFORGE_SKIP_ENHANCE_ANSWERS=0 enhances answer/review requests again."""
+    return os.environ.get("AIFORGE_SKIP_ENHANCE_ANSWERS", "1").strip().lower() \
+        not in ("0", "false", "no", "off")
 
 
 def _plan_mode_route(_pp, _enriched, _enriched_history, cwd, role, session_id,

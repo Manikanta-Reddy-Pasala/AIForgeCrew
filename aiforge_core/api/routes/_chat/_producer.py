@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import os
 
-from . import _overlap
+from . import _capture_bg, _overlap
 from ._core import (
     _PRODUCE_SEM,
     _af_log,
@@ -130,8 +130,13 @@ def _events(pc):
     # BEFORE any agent, independent of the agent's model, so a directive /
     # fact / correction stated in passing is captured + applied. FAILS OPEN:
     # any error here is swallowed and the normal run proceeds.
+    # A long message carries its own task, so it is never a pure capture: its
+    # classify runs in the background and never holds up routing.
     pctx = {"done": False}
-    yield from _rule_capture_pass(pc.prompt, pc.cwd, pc.session_id, pctx)
+    if _capture_bg.inline_needed(pc.prompt):
+        yield from _rule_capture_pass(pc.prompt, pc.cwd, pc.session_id, pctx)
+    else:
+        _capture_bg.begin(pc)
     if pctx["done"]:
         return
     if _turn_was_stopped(pc.session_id):
@@ -187,7 +192,8 @@ def _events(pc):
     # enhances. The session memory recall normally starts during that LLM
     # call; when we skip, start it here so it overlaps the baseline commit.
     _skip_enhance = _should_skip_enhance(pc._auto_downgraded, _route_pipeline,
-                                         _is_build_task, pc.history, pc.prompt)
+                                         _is_build_task, pc.history, pc.prompt,
+                                         cat=getattr(_rd, "cat", None))
     # Approve & Execute sends the plan, not a fresh request. Enhancing it
     # again would restate the original ask and drop the plan.
     from aiforge_core.runtime.chat_agent._native_prompt import is_plan_execution
@@ -205,6 +211,8 @@ def _events(pc):
         if not _skip_enhance:
             yield {"type": "thought", "role": "enhancer",
                    "text": "Enhancing request + gathering context…"}
+        if _skip_enhance:
+            _overlap.discard(pc)  # started beside the classifier, not needed
         _early = None if _skip_enhance else _overlap.claim(pc)
         _enriched = (_overlap.take(_early, pc.session_id) if _early is not None
                      else _enhance_prompt(_pp, pc.prompt, pc.history, pc.cwd,
@@ -245,8 +253,12 @@ def _events(pc):
     _simple_sha, _skip_worktree = _commit_simple_baseline(pc.cwd)
     _single_mode = "analyze" if _doc_task and pc.agent_mode != "plan" else pc.agent_mode
     awaiting_ctx = {"awaiting": False}
-    yield from _single_agent_events(_enriched_history, pc.cwd, pc.role, pc.session_id,
-                                    _single_mode, pc.body.quick, awaiting_ctx)
+    for _ev in _single_agent_events(_enriched_history, pc.cwd, pc.role,
+                                    pc.session_id, _single_mode, pc.body.quick,
+                                    awaiting_ctx):
+        if _ev.get("type") == "done":
+            _capture_bg.kick(pc)   # beside the end-of-turn suggestion
+        yield _ev
     # A turn that ended AWAITING user input (a REJECT/ASK) must NOT fall into
     # the post-run integration build: on a turn with an earlier APPLIED edit,
     # _turn_wrote_source() is True and the build fires AFTER the reject, holds
@@ -256,8 +268,10 @@ def _events(pc):
         # No build, but still the Changes card: the next turn's checkpoint
         # already holds these edits, so they would never show anywhere.
         yield from _post_run_events(pc.prompt, pc.cwd, "plan", _since, changes_only=True)
+        yield from _capture_bg.events(pc)
         return
     yield from _post_run_events(pc.prompt, pc.cwd, pc.agent_mode, _since)
+    yield from _capture_bg.events(pc)
 
 
 def _warm_repo_map(cwd) -> None:
@@ -354,6 +368,7 @@ def _produce(pc):
         pc.run.publish({"type": "done"})
     finally:
         _overlap.discard(pc)     # an early enhance the turn never used
+        _capture_bg.flush(pc)    # a background capture still in flight
         _finalize_produce_turn(
             pc.session_id, pc.cwd, pc.prompt, st["final_text"], steps, st["awaiting"],
             pc.team, pc._path, pc._turn_mode, pc._turn_t0,
