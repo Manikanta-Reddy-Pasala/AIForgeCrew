@@ -1,6 +1,8 @@
 """Session execution ledger — no-repeat context + working-workflow capture."""
 from __future__ import annotations
 
+import pytest
+
 from aiforge_core.runtime import session_ledger as sl
 
 
@@ -220,3 +222,64 @@ def test_capture_skips_too_few_working(monkeypatch):
         {"type": "tool", "name": "run_command", "args": {"cmd": "ls"},
          "result": {"ok": True}}]}])
     assert sl.capture_working_workflow(1, repo="r")["skipped"] == "too_few_working_steps"
+
+
+@pytest.mark.parametrize("cmd", [
+    "curl -u admin:hunter2 https://api.example.com/x",
+    "curl --user admin:hunter2 https://api.example.com/x",
+    "curl --user=admin:hunter2 https://api.example.com/x",
+    "mysql -uroot -phunter2 shop",
+    "mysql -u root -p hunter2 shop",
+    "psql --password=hunter2 -h db shop",
+    "some-cli --password hunter2",
+    "curl -H 'Authorization: Bearer abc123' https://api.example.com",
+    "curl -H 'Authorization:Basic YWRtaW46aHVudGVy' https://api.example.com",
+    "curl -H 'X-Api: Bearer abc123' https://api.example.com",
+    "curl https://api.example.com/x?token=abc123",
+    "python3 deploy.py --auth=abc123",
+    "git clone https://deploy:hunter2@git.example.com/x.git",
+    "rsync admin:hunter2@backup.example.com::share /tmp/x",
+    "aws s3 ls --profile AKIAABCDEFGHIJKLMNOP",
+    "curl -H 'x: eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0' https://api.example.com",
+])
+def test_a_command_carrying_a_credential_is_never_stored(cmd):
+    assert sl._SECRET_RE.search(cmd), cmd
+
+
+@pytest.mark.parametrize("cmd", [
+    "ssh -p 2222 deploy@nuc uptime",
+    "pytest -q tests/python",
+    "docker run -u 1000:1000 alpine true",
+    "git clone git@github.com:org/repo.git",
+    "scp build.tar deploy@nuc:/tmp/",
+    "npm run build",
+])
+def test_an_ordinary_command_is_not_mistaken_for_a_credential(cmd):
+    assert not sl._SECRET_RE.search(cmd), cmd
+
+
+def test_the_ssh_note_says_what_actually_worked(monkeypatch):
+    """A command that ran without a login shell is not taught as bash -lc."""
+    _msgs(monkeypatch, [{"role": "assistant", "steps": [
+        {"type": "tool", "name": "run_command",
+         "args": {"cmd": "ssh ms 'uptime'"},
+         "result": {"ok": True}}]}])
+    seen = _capture_notes(monkeypatch)
+    sl.remember_working_ops(16, repo="shop")
+    text = seen[0][0]
+    assert "ssh ms '<command>'" in text
+    assert "bash -lc" not in text
+
+
+def test_a_login_shell_that_worked_is_kept_in_the_note(monkeypatch):
+    _msgs(monkeypatch, [{"role": "assistant", "steps": [
+        {"type": "tool", "name": "run_command",
+         "args": {"cmd": "ssh ms 'uptime'"},
+         "result": {"ok": True}},
+        {"type": "tool", "name": "run_command",
+         "args": {"cmd": "ssh ms 'zsh -lc \"pytest -q\"'"},
+         "result": {"ok": True}}]}])
+    seen = _capture_notes(monkeypatch)
+    sl.remember_working_ops(17, repo="shop")
+    assert len(seen) == 1
+    assert "zsh -lc" in seen[0][0]

@@ -30,6 +30,10 @@ from ._producer import (
     _produce,
     _stream,
 )
+from ._sched_fold import (  # noqa: F401 — re-exported for callers and tests
+    _cut_background_watches,
+    _fold_into_scheduled_agent,
+)
 
 
 class _SessionMsgBody(BaseModel):
@@ -72,11 +76,12 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     if chat_runs.is_running(session_id) and not chat_runs.settle(session_id):
         raise HTTPException(409, "a run is already in progress for this session "
                                  "— stop it or attach to it before sending again")
-    # A scheduled agent owns this chat and no user turn is in flight. A new
-    # message steers that run. Stop/drop/replace language stops it. An extra
-    # detail does not start a second agent and does not cut the run off.
+    # A scheduled agent owns this chat and no user turn is in flight. An
+    # explicit stop ends it; an extra detail steers it. A question, a new
+    # request, per-turn options, or a run that is already ending fall through
+    # to a normal turn, so no message is swallowed.
     _cut_background_watches(session_id, body.content)
-    folded = _fold_into_scheduled_agent(session_id, body.content)
+    folded = _fold_into_scheduled_agent(session_id, body.content, body)
     if folded is not None:
         return folded
 
@@ -263,51 +268,6 @@ def chat_session_stop(session_id: int) -> dict:
     except Exception:  # noqa: BLE001
         pass
     return {"stopped": bool(active or bg_n), "session_id": session_id}
-
-
-def _cut_background_watches(session_id: int, text: str) -> None:
-    """A drop/replace message ends background watches in this chat.
-
-    Any other message leaves them running. Stop still ends them on its own."""
-    from aiforge_core.runtime.run_interrupt import text_cuts_running_work
-    if not text_cuts_running_work(text):
-        return
-    try:
-        from aiforge_core.runtime import bg_work
-        bg_work.stop_session(session_id)
-    except Exception:  # noqa: BLE001
-        pass
-
-
-def _fold_into_scheduled_agent(session_id: int, text: str):
-    """Steer or stop a scheduled agent that is running in this chat.
-
-    None when there is nothing to fold into, so the caller starts a normal
-    turn."""
-    try:
-        from aiforge_core.jobs import scheduler as jobs_scheduler
-        job_id = jobs_scheduler.running_agent_for_session(session_id)
-    except Exception:  # noqa: BLE001
-        return None
-    if not job_id:
-        return None
-    from aiforge_core.runtime import chat_interject, chat_store
-    from aiforge_core.runtime.run_interrupt import text_cuts_running_work
-    chat_store.add_message(session_id, "user", text)
-    if text_cuts_running_work(text):
-        jobs_scheduler.request_stop(job_id)
-        note = "Stopping the scheduled run."
-    else:
-        chat_interject.push(session_id, text, require_steerable=True)
-        note = ("Noted. The scheduled run keeps going and will take this "
-                "in. It is not stopped.")
-    chat_store.add_message(session_id, "assistant", note)
-
-    def _gen():
-        yield f"data: {json.dumps({'type': 'message', 'text': note})}\n\n"
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
-
-    return sse_response(_gen(), label=f"chat-sched-{session_id}")
 
 
 @router.post("/api/chat/kill-all")

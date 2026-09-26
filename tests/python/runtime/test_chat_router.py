@@ -245,6 +245,24 @@ def test_a_short_message_about_code_or_earlier_work_still_recalls():
     assert cr.plain_chat("connect to the mac studio") is False
 
 
+@pytest.mark.parametrize("text", [
+    "what did we use for auth?", "why is login slow?",
+    "how does the scheduler work?", "what was our db schema?",
+    "which api do we call for payments?", "did we fix that earlier?",
+    "is the cache still on?", "remind me what we decided last time",
+])
+def test_a_question_about_past_work_or_the_system_gets_recall(text):
+    assert cr.plain_chat(text) is False
+
+
+@pytest.mark.parametrize("text", [
+    "thanks", "ok", "hi", "2+2", "what is 2+2?", "thank you!", "cool",
+    "good morning", "sounds good",
+])
+def test_a_trivial_remark_stays_fast(text):
+    assert cr.plain_chat(text) is True
+
+
 def test_a_short_remark_skips_the_repo_walk_and_keeps_images(monkeypatch):
     """The repo walk is the pause. A screenshot on a short remark still has
     to reach the model, and so does the session ledger."""

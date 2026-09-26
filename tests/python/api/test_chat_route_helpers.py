@@ -548,16 +548,48 @@ def test_a_dead_classifier_routes_on_without_a_class(pp, decide, monkeypatch):
     assert decide["cat"] is None
 
 
-def test_a_short_build_does_not_wait_on_the_task_classifier(pp, decide, monkeypatch):
-    """'build a todo app' is a real build (the enhancer still runs) but the
-    classifier was a second model call before the agent. The regex already
-    knows it is a build."""
+def test_a_short_build_match_is_confirmed_by_the_classifier(pp, decide, monkeypatch):
+    """The build regex alone would escalate a short remark ("create the user
+    through the api") into the pipeline. The classifier is its veto."""
     from aiforge_core.runtime import task_router as tr
     from aiforge_core.runtime import turn_router as tr2
+    from aiforge_core.runtime import chat_router as cr
     monkeypatch.setattr(tr2, "is_followup", lambda h: False)
+    asked = []
     monkeypatch.setattr(tr, "classify_task",
-                        lambda *a, **k: pytest.fail("classified a short build"))
-    _decide(pp, prompt="build a todo app")
+                        lambda p, **k: asked.append(p) or "code_edit")
+    monkeypatch.setattr(cr, "regex_build_fallback", lambda p: True)
+    monkeypatch.setattr(cr, "is_small_task", lambda p: False)
+    _decide(pp, prompt="create the user through the api")
+    assert asked == ["create the user through the api"]
+    assert decide["cat"] == "code_edit"
+
+
+def test_a_short_non_build_skips_the_classifier_even_if_imperative(
+        pp, decide, monkeypatch):
+    from aiforge_core.runtime import task_router as tr
+    from aiforge_core.runtime import turn_router as tr2
+    from aiforge_core.runtime import chat_router as cr
+    monkeypatch.setattr(tr2, "is_followup", lambda h: False)
+    monkeypatch.setattr(cr, "regex_build_fallback", lambda p: False)
+    monkeypatch.setattr(tr, "classify_task",
+                        lambda *a, **k: pytest.fail("classified a short chat"))
+    _decide(pp, prompt="rename foo to bar")
+    assert decide["cat"] is None
+
+
+def test_a_small_chore_build_match_skips_the_classifier(pp, decide, monkeypatch):
+    """A chore the small-task rule keeps on one agent cannot escalate, so
+    there is nothing for the classifier to veto."""
+    from aiforge_core.runtime import task_router as tr
+    from aiforge_core.runtime import turn_router as tr2
+    from aiforge_core.runtime import chat_router as cr
+    monkeypatch.setattr(tr2, "is_followup", lambda h: False)
+    monkeypatch.setattr(cr, "regex_build_fallback", lambda p: True)
+    monkeypatch.setattr(cr, "is_small_task", lambda p: True)
+    monkeypatch.setattr(tr, "classify_task",
+                        lambda *a, **k: pytest.fail("classified a chore"))
+    _decide(pp, prompt="create hello.py and run it")
     assert decide["cat"] is None
 
 

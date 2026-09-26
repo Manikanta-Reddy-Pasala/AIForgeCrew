@@ -130,12 +130,19 @@ def is_small_task(p: str) -> bool:
 
 # A short remark that does not point at this repo, a ticket, or an earlier
 # decision. The memory reranker is several seconds and does not change the
-# answer. Anything that names code or prior work still recalls.
+# answer. Anything that names code, the system, or prior work still recalls:
+# "what did we use for auth?" and "why is login slow?" need the memory.
 _PLAIN_CUE_RE = re.compile(
-    r"\b(remember|yesterday|last time|earlier|we decided|continue|again|"
-    r"bug|error|broken|import|function|class|file|repo|code|test|"
-    r"ssh|connect|server|host|machine|deploy|"
-    r"where is|how does|explain)\b|"
+    r"\b(remember|yesterday|last time|earlier|before|previously|we decided|"
+    r"continue|again|we|we'?ve|we'?re|our|ours|us|did we|"
+    r"bug|error|broken|fail\w*|crash\w*|slow|fast(?:er)?|latency|timeout|"
+    r"import|function|method|class|module|file|repo|code|test\w*|"
+    r"ssh|connect|server|host|machine|deploy\w*|"
+    r"auth\w*|login|logout|sign[- ]?in|session|token|password|user|"
+    r"api|endpoint|route|db|database|schema|table|query|queries|sql|mongo\w*|"
+    r"cache|queue|config\w*|env|build|pipeline|service|backend|frontend|"
+    r"ui|page|component|model|job|cron|log|logs|"
+    r"where is|how does|how do|how is|why|explain)\b|"
     r"\b[\w./-]+\.(?:py|ts|tsx|js|jsx|java|go|rs|md)\b|"
     r"\b[A-Z][A-Z0-9]+-\d+\b",
     re.IGNORECASE,
@@ -172,8 +179,9 @@ def direct_reply(prompt: str) -> bool:
 def plain_chat(prompt: str) -> bool:
     """True when a short message can be answered without a memory search.
 
-    "what is 2+2" and "thanks" qualify. "fix the import", "what does this
-    function do?", and "CLR-2067" do not — those still get recall and tools."""
+    "what is 2+2", "thanks", "ok" and "hi" qualify. "fix the import", "what
+    did we use for auth?", "why is login slow?" and "CLR-2067" do not — past
+    work and the system's own parts still get recall and tools."""
     p = (prompt or "").strip()
     if not p or len(p) >= _SMALL_MAX_CHARS or p.count("\n") >= 8:
         return False

@@ -294,15 +294,22 @@ def capture_working_workflow(session_id, repo: str = "repo") -> dict:
 
 # A command that names a credential is never stored. The URL form is
 # user:password@host. -pVALUE is a password stuck to the flag; ssh -p 2222
-# has a space and is a port, so it stays.
+# has a space and is a port, so it stays. curl -u/--user takes user:pass.
 _SECRET_RE = re.compile(
-    r"password|passwd|secret|api[_-]?key|token|PRIVATE KEY|"
+    r"password|passwd|secret|api[_-]?key|token|PRIVATE KEY|credential|"
     r"://[^\s/@]+:[^\s/@]+@|"
-    r"\b(?:ghp_|gho_|github_pat_|glpat-|sk-|hf_|npm_|xox[baprs]-)|"
+    r"(?:^|[\s'\"=])[^\s/@:'\"=]+:[^\s/@'\"]+@[\w.-]+|"
+    r"\b(?:ghp_|gho_|ghs_|github_pat_|glpat-|sk-|hf_|npm_|xox[baprs]-|AKIA)|"
+    r"\beyJ[\w-]{8,}\.[\w-]{8,}|"
     r"(?:^|\s)-p\S|"
-    r"\b(?:docker|mysql|psql|redis-cli|sshpass)\b[^\n]*\s-p\s+\S|"
-    r"\b[\w.]*(?:token|key|secret|pass(?:word)?)\w*\s*=|"
-    r"authorization:\s*bearer",
+    r"\b(?:docker|mysql|mysqldump|psql|redis-cli|sshpass|mongosh|mongo)\b"
+    r"[^\n]*\s-p\s+\S|"
+    # -u 1000:1000 is docker's uid:gid, not a login.
+    r"(?:^|\s)(?:-u|--user|--proxy-user)(?:\s+|=)['\"]?"
+    r"(?!\d+:\d+\b)[^\s:'\"]+:\S|"
+    r"--pass(?:word)?\b|"
+    r"\b[\w.]*(?:token|key|secret|pass(?:word)?|auth)\w*\s*[=:]\s*\S|"
+    r"authorization\s*:|\bbearer\s+\S|\bbasic\s+[A-Za-z0-9+/=]{8,}",
     re.IGNORECASE)
 # A backgrounded command. && is a chain and is kept.
 _BACKGROUND_RE = re.compile(r"(?<!&)&(?!&)")
@@ -320,6 +327,9 @@ _PROJECT_CMD_RE = re.compile(
     r"\b(pytest|mvn|mvnw|npm|yarn|pnpm|gradle|cargo|make|docker|podman|"
     r"git|python3?|node|go|bundle|composer)\b",
     re.IGNORECASE)
+# The remote side of an ssh command ran through a login shell.
+_LOGIN_SHELL_RE = re.compile(
+    r"\b(bash|zsh|sh)\s+(?:-l[a-z]*c\b|-l\s+-c\b|--login\s+-c\b)")
 _SKIP_REPO = {"", "repo", "chat"}
 _MAX_NOTES = 3
 
@@ -373,6 +383,24 @@ def _ssh_target(cmd: str) -> "str | None":
     return None
 
 
+def _login_shell(cmd: str) -> str:
+    """``"bash -lc"`` when the command ran its remote side through a login
+    shell, else ""."""
+    m = _LOGIN_SHELL_RE.search(cmd or "")
+    return f"{m.group(1)} -lc" if m else ""
+
+
+def _ssh_note(target: str, shell: str) -> str:
+    """The note says what worked. A login shell is advised only when the
+    successful command actually used one."""
+    if shell:
+        return (f"To run a command on {target}, use a login shell so the "
+                f"remote PATH and environment exist: "
+                f"ssh {target} '{shell} \"<command>\"'.")
+    return (f"To run a command on {target}, this worked: "
+            f"ssh {target} '<command>'.")
+
+
 def _remember_note(text: str, *, repo, scope: str, tags: list) -> bool:
     """One durable note. A repeat of the same text is a success, not a new row."""
     try:
@@ -397,7 +425,8 @@ def remember_working_ops(session_id, repo: str = "") -> dict:
         items = ledger_items(session_id)
     except Exception:  # noqa: BLE001
         return {"ok": False, "written": 0}
-    ssh_hosts: list[str] = []
+    # target -> the login shell the working command used ("" = none).
+    ssh_hosts: dict[str, str] = {}
     project: list[str] = []
     for item in items:
         if item.get("outcome") is not True:
@@ -413,19 +442,15 @@ def remember_working_ops(session_id, repo: str = "") -> dict:
             continue
         target = _ssh_target(cmd)
         if target:
-            if target not in ssh_hosts:
-                ssh_hosts.append(target)
+            shell = _login_shell(cmd)
+            if target not in ssh_hosts or (shell and not ssh_hosts[target]):
+                ssh_hosts[target] = shell
             continue
         if (repo not in _SKIP_REPO and not str(repo).startswith("session-")
                 and _PROJECT_CMD_RE.search(cmd) and cmd not in project):
             project.append(cmd)
-    for target in ssh_hosts[:_MAX_NOTES]:
-        text = (
-            f"To run a command on {target}, use a login shell so the remote "
-            f"PATH and environment exist: "
-            f"ssh {target} 'bash -lc \"<command>\"'."
-        )
-        if _remember_note(text, repo=None, scope="global",
+    for target, shell in list(ssh_hosts.items())[:_MAX_NOTES]:
+        if _remember_note(_ssh_note(target, shell), repo=None, scope="global",
                           tags=["tool:ssh", "connection"]):
             written += 1
     for cmd in project[-_MAX_NOTES:]:
