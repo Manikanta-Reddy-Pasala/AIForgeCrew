@@ -14,6 +14,14 @@ from __future__ import annotations
 
 import re
 
+from ._families import (
+    FAMILIES,
+    FAMILY_TOOLS,
+    family_index,
+    family_members,
+    named_families,
+)
+
 # Compact type DSL → JSON-schema property fragment.
 _T = {
     "s": {"type": "string"},
@@ -426,49 +434,16 @@ _CORE_READ = frozenset({
     "memory_lookup", "git_status", "git_diff", "repo_map",
     "search_chat_sessions",
 })
-_FAMILY_CUE = (
-    ("jira", re.compile(r"\bjira\b|\bticket\b|\bjql\b", re.I)),
-    ("confluence", re.compile(r"\bconfluence\b|\bwiki\b", re.I)),
-    ("gitlab", re.compile(r"\bgitlab\b", re.I)),
-    ("email", re.compile(r"\bemail\b|\bsmtp\b|\binbox\b", re.I)),
-    ("web", re.compile(r"https?://|\bweb_fetch\b|\bweb_crawl\b", re.I)),
-    ("watch", re.compile(r"\bwatch_until\b|\bwatch until\b|\bpoll until\b", re.I)),
-    ("schedule", re.compile(r"\bschedule_task\b|\bschedule\b|\bcron\b", re.I)),
-    ("serve", re.compile(r"\bserve\b|\bdev server\b|\bnpm run dev\b", re.I)),
-    ("ui", re.compile(r"\bui_check\b|\bscreenshot\b", re.I)),
-    ("codegraph", re.compile(r"\bcodegraph\b|\bcallers\b|\bcallees\b", re.I)),
-)
-_FAMILY_TOOLS = {
-    "watch": ("watch_until",),
-    "schedule": ("schedule_task",),
-    "serve": ("serve", "stop_service"),
-    "ui": ("ui_check", "ui_ask"),
-    "codegraph": (
-        "codegraph_query", "codegraph_callers", "codegraph_callees",
-        "codegraph_impact", "codegraph_explore",
-    ),
-}
 _TOOL_HELP = {"type": "function", "function": {
     "name": "tool_help",
     "description": (
-        "Add one tool that is not in your list. Pass its exact name. "
-        "It is callable on your next step."
+        "Add a tool that is not in your list: pass its exact name, or a "
+        "family name from your instructions (jira, web, ...) to add all "
+        "of that family's tools. They are callable on your next step."
     ),
     "parameters": {"type": "object", "properties": {
         "name": {"type": "string"}}, "required": ["name"]},
 }}
-_FAMILY_PREFIX = {
-    "jira": "jira_", "confluence": "confluence_", "gitlab": "gitlab_",
-    "email": "email_", "web": "web_",
-}
-_SHARED_WHEN = {
-    "jira": ("context_gather", "set_integration_default"),
-    "confluence": ("context_gather", "set_integration_default"),
-}
-
-
-def _named_families(text: str) -> set[str]:
-    return {name for name, cre in _FAMILY_CUE if cre.search(text or "")}
 
 
 def _schema_name(schema: dict) -> str:
@@ -492,9 +467,10 @@ def filter_native(schemas: list[dict], *, mode: str = "act",
 
     Act mode gets the core coding tools. Plan and analyze get the read-only
     core, so the model is not invited to call a write that the loop will
-    reject. Naming Jira, Confluence, GitLab, email, a URL, or a tool by its
-    exact name adds that tool (read-only ones, in plan mode). ``extra`` is
-    the set ``tool_help`` already added this turn."""
+    reject. A family the text points at (Jira, an issue key, a URL, a merge
+    request, mail, …) or a tool named exactly adds those tools (read-only
+    ones, in plan mode). ``extra`` holds tool or family names added by
+    ``tool_help`` or kept from earlier turns of the session."""
     readonly = (mode or "act").lower() in ("plan", "analyze")
     keep = set(_CORE_READ if readonly else _CORE_ACT)
     if builder and not readonly:
@@ -502,34 +478,28 @@ def filter_native(schemas: list[dict], *, mode: str = "act",
         fin = _BUILDER_FINALIZE_TOOL.get(builder)
         if fin:
             keep.add(fin)
-    families = _named_families(text)
-    allowed_read: set[str] | None = None
+    extra = set(extra or ())
+    families = named_families(text) | (extra & set(FAMILIES))
+    names = [_schema_name(s) for s in schemas]
+    wanted = set(extra) | _named_tool_hits(text, schemas)
+    for fam in families:
+        wanted |= family_members(fam, names) | set(FAMILY_TOOLS.get(fam, ()))
     if readonly:
         from .._registry import _READONLY_TOOLS
-        allowed_read = set(_READONLY_TOOLS) | {"plan_progress", "tool_help"}
-    for fam in families:
-        for name in _FAMILY_TOOLS.get(fam, ()):
-            if allowed_read is not None and name not in allowed_read:
-                continue
-            keep.add(name)
-    for name in (extra or ()):
-        if allowed_read is not None and name not in allowed_read:
-            continue
-        keep.add(name)
-    for schema in schemas:
-        name = _schema_name(schema)
-        if name in _named_tool_hits(text, [schema]):
-            if allowed_read is not None and name not in allowed_read:
-                continue
-            keep.add(name)
-        for fam in families:
-            prefix = _FAMILY_PREFIX.get(fam, "")
-            shared = name in _SHARED_WHEN.get(fam, ())
-            if prefix and (name.startswith(prefix) or shared):
-                if allowed_read is not None and name not in allowed_read:
-                    continue
-                keep.add(name)
+        wanted &= set(_READONLY_TOOLS) | {"plan_progress", "tool_help"}
+    keep |= wanted
     out = [s for s in schemas if _schema_name(s) in keep]
     if not any(_schema_name(s) == "tool_help" for s in out):
         out.append(_TOOL_HELP)
     return out
+
+
+def native_family_index(schemas: list[dict], mode: str = "act") -> str:
+    """The one-line-per-family index for the native system rules."""
+    readonly = (mode or "act").lower() in ("plan", "analyze")
+    allowed = None
+    if readonly:
+        from .._registry import _READONLY_TOOLS
+        allowed = set(_READONLY_TOOLS)
+    return family_index([_schema_name(s) for s in schemas],
+                        _CORE_READ if readonly else _CORE_ACT, allowed)

@@ -301,33 +301,12 @@ def _endpoint_one_slot() -> bool:
         return False
 
 
-def _emit_ready_suggestion(handle):
-    """Yield a suggestion only when it has already finished. Never waits."""
-    if handle is None or not handle[0].is_set():
-        return
-    _ready, _cancel, box, message, cwd, _t0 = handle
-    p = box.get("p")
-    if p is None:
-        return
-    try:
-        from aiforge_core.runtime import next_step
-        next_step.remember(p, {"message": message,
-                               "repo": _repo_name(str(cwd or ""))})
-        ev = p.as_event()
-    except Exception as exc:  # noqa: BLE001
-        _log.debug("next_step: suggestion skipped: %s", exc)
-        return
-    if ev:
-        yield ev
-
-
 def _emit_suggestion(message: str, did: str, cwd):
     """Yield at most one ``suggestion`` event. Never raises.
 
-    Emitted AFTER ``done`` when the prediction is already finished. A
-    prediction that is slow, wrong or broken costs the user nothing: it is
-    waited for at most ``AIFORGE_PREDICT_GRACE_S`` (default: the prediction
-    timeout), then dropped.
+    Emitted AFTER ``done``. A prediction that is slow, wrong or broken costs
+    the user nothing: it is waited for at most ``AIFORGE_PREDICT_GRACE_S``
+    (default: the prediction timeout), then dropped.
     """
     yield from _collect_suggestion(_start_suggestion(message, did, cwd))
 
@@ -371,8 +350,10 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
     try:
         yield {"type": "message", "text": _strip_reasoning_prefix(step["text"])}
         yield {"type": "done"}
-        if _sugg is not None and _sugg[0].is_set():
-            yield from _emit_ready_suggestion(_sugg)
+        # The run stays open after done until the producer finishes, and the
+        # UI applies a suggestion that arrives then. Wait out the rest of the
+        # grace here: the answer is already on screen.
+        yield from _collect_suggestion(_sugg)
     finally:
         _cancel_suggestion(_sugg)
     return "return"

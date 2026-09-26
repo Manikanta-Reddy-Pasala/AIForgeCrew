@@ -120,6 +120,11 @@ def _forget_grants(session_id=None) -> None:
             chat_write_grants.forget(session_id)
     except Exception:  # noqa: BLE001 — never block a delete on this
         pass
+    try:
+        from aiforge_core.runtime.chat_agent import _sticky_tools
+        _sticky_tools.forget(session_id)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def delete_session(session_id: int) -> bool:

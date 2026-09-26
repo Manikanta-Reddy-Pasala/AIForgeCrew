@@ -23,7 +23,8 @@ from ._progress import progress_fields
 from ._tasks import seed_board
 
 
-def _resolve_complete_fn(complete_fn, role, mode="act", builder=""):
+def _resolve_complete_fn(complete_fn, role, mode="act", builder="",
+                         session_id=None):
     """Resolve the completion fn: when the caller injected none, use the default
     and swap in native OpenAI tool-calling if the model/role supports it. Returns
     (complete_fn, native_on)."""
@@ -41,7 +42,8 @@ def _resolve_complete_fn(complete_fn, role, mode="act", builder=""):
             from .._native import make_native_complete_fn, native_tools_enabled
             if native_tools_enabled(role):
                 complete_fn = make_native_complete_fn(
-                    mode=mode or "act", builder=builder or "")
+                    mode=mode or "act", builder=builder or "",
+                    session_id=session_id)
                 _native_on = True
         except Exception:  # noqa: BLE001 — native must never break the turn
             pass
@@ -121,7 +123,7 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     flags, scope allowlist, budget-capped convo, cap/deadline/extension budgets,
     the request meter and every per-turn counter) into one st namespace."""
     complete_fn, _native_on = _resolve_complete_fn(
-        complete_fn, role, mode, builder)
+        complete_fn, role, mode, builder, session_id)
     from aiforge_core.runtime import chat_cancel
     chat_cancel.set_active(session_id)
     _mode = (mode or "act").lower()
@@ -176,7 +178,10 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         unlimited=_unlimited)
     from .._pause import inject as _inject_pause
     from .._pause import take as _take_pause
-    _plan_asked = _inject_pause(convo, _take_pause(session_id))
+    from .._native_prompt import is_plan_execution
+    _plan_asked = _inject_pause(
+        convo, _take_pause(session_id), plan_mode=plan_mode,
+        plan_exec=is_plan_execution(_turn_goal(messages)))
 
     # OrderedDict, not dict: the prune in ``_action`` needs least-recently-SEEN order,
     # which only move_to_end can maintain (see its call site).

@@ -150,7 +150,8 @@ def _emit_loop_prelude(st):
             # "https://" lines were treated as the user naming those systems.
             _ntools = len(select_native_tools(
                 getattr(st, "convo", None), mode=_mode,
-                builder=getattr(st, "builder", "") or ""))
+                builder=getattr(st, "builder", "") or "",
+                session_id=getattr(st, "session_id", None)))
         except Exception:  # noqa: BLE001
             _ntools = 0
         yield {"type": "thought", "role": "system",

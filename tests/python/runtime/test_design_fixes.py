@@ -71,7 +71,7 @@ def test_native_rules_have_no_catalog():
     assert "skill_search" not in text
     assert "workflow_search" not in text
     assert "remember_rule" not in text
-    assert "A test you wrote this turn does not count" in text
+    assert "Never weaken or delete a test" in text
     assert "Ask only when the choices cannot be undone" in text
 
 
@@ -231,7 +231,7 @@ def test_pause_reads_survive_the_next_message():
         {"role": "user", "content": "OBSERVATION: 1|print(1)"},
     ], asked=True)
     nxt = [{"role": "user", "content": "the blue one"}]
-    asked = inject(nxt, take(7))
+    asked = inject(nxt, take(7), plan_mode=True)
     assert asked is True
     assert "Already read" in nxt[0]["content"]
     assert "1|print(1)" in nxt[0]["content"]
