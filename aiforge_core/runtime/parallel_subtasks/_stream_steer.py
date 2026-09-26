@@ -2,8 +2,6 @@
 draining queued steers."""
 from __future__ import annotations
 
-import os
-
 
 def _pkg():
     """``_stream``, the module this code was split from, looked up on each call.
@@ -54,7 +52,8 @@ def _append_spec_mandate(cwd: str, heading: str, text: str) -> str:
     """
     err = ""
     try:
-        with open(os.path.join(cwd, _pkg()._SPEC_MD), "a", encoding="utf-8") as fh:
+        from aiforge_core.runtime.team_workspace import spec_path
+        with open(spec_path(cwd), "a", encoding="utf-8") as fh:
             fh.write(f"\n\n{heading}\n- **MUST:** {text}\n")
     except Exception as exc:  # noqa: BLE001
         err = str(exc)

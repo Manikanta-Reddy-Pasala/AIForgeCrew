@@ -95,20 +95,57 @@ def _auto_pick_reviewer() -> str | None:
     return picked
 
 
-def review_once(prompt: str, max_tokens: int) -> str | None:
+def _planning_fast() -> bool:
+    """Plan and spec reviews answer CLEAN or a short list: they run with
+    reasoning off. A reasoning reviewer spent 4096 tokens thinking about a
+    3-file plan, came back EMPTY, and the empty-retry ladder asked again —
+    200s of a 228s planning phase. ``AIFORGE_REVIEW_PLANNING_THINK=1`` keeps
+    the reasoning on."""
+    return os.environ.get("AIFORGE_REVIEW_PLANNING_THINK", "0") in _OFF
+
+
+def _fast_extras() -> dict:
+    """``reasoning_effort`` for the doer's server (llm.fast_reasoning: skipped
+    once that server has refused the field)."""
+    try:
+        from aiforge_core.llm import fast_reasoning
+        from aiforge_core.llm.router import resolve
+        return fast_reasoning.extras_for(
+            getattr(resolve("doer"), "base_url", "") or "", True)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def review_once(prompt: str, max_tokens: int, fast: bool = False) -> str | None:
     """One review call as a single user turn, routed to the reviewer model when
     one is configured. No retry — an empty response is the 'nothing to fix'
-    signal. Returns the raw text (or None on error)."""
+    signal. Returns the raw text (or None on error). ``fast`` (plan / spec
+    reviews): reasoning off and the caller's own token budget."""
     reviewer = pick_reviewer_model()
-    extras = {"model": reviewer} if reviewer else None
-    if reviewer:                       # a reasoning reviewer THINKS before it emits
+    extras = {"model": reviewer} if reviewer else {}
+    fast = fast and _planning_fast()
+    if fast:
+        extras.update(_fast_extras())
+    elif reviewer:                     # a reasoning reviewer THINKS before it emits
         max_tokens = max(max_tokens, 4096)
+    from aiforge_core.llm.client import complete
+    msgs = [{"role": "user", "content": prompt + (" /no_think" if fast else "")}]
     try:
-        from aiforge_core.llm.client import complete
-        return complete("doer", [{"role": "user", "content": prompt}],
-                        max_tokens=max_tokens, temperature=0.3, extras=extras)
-    except Exception:  # noqa: BLE001
-        return None
+        return complete("doer", msgs, max_tokens=max_tokens, temperature=0.3,
+                        extras=extras or None)
+    except Exception as exc:  # noqa: BLE001
+        if not (fast and "reasoning_effort" in extras):
+            return None
+        try:
+            from aiforge_core.llm import fast_reasoning
+            from aiforge_core.llm.router import resolve
+            fast_reasoning.note_rejection(
+                getattr(resolve("doer"), "base_url", "") or "", exc)
+            extras.pop("reasoning_effort", None)
+            return complete("doer", msgs, max_tokens=max_tokens,
+                            temperature=0.3, extras=extras or None)
+        except Exception:  # noqa: BLE001
+            return None
 
 
 # ── the gates ──────────────────────────────────────────────────────────────
@@ -125,7 +162,7 @@ def review_spec(request: str, spec_md: str) -> tuple[str, str]:
              "reply with the single word CLEAN. If not, output ONLY the corrected "
              "full spec in markdown (no fences, no prose).")
     out = (review_once(f"{instr}\n\n---\n\nREQUEST:\n{request[:2000]}\n\n"
-                       f"SPEC:\n{spec_md[:6000]}", 4096) or "").strip()
+                       f"SPEC:\n{spec_md[:6000]}", 3072, fast=True) or "").strip()
     if not out or out.upper().startswith("CLEAN") or len(out) < 60:
         return spec_md, "spec reviewed — sound"
     return out, "spec reviewed + refined (contradictions/ambiguity/scope)"
@@ -154,7 +191,7 @@ def review_plan(request: str, subs: list) -> tuple[list, str]:
              "ONE line per file, exactly `path | one-line goal` — minimal and "
              "coherent, no prose, no fences.")
     out = (review_once(f"{instr}\n\n---\n\nREQUEST:\n{request[:2000]}\n\n"
-                       f"PLAN:\n{manifest}", 2048) or "").strip()
+                       f"PLAN:\n{manifest}", 1024, fast=True) or "").strip()
     if not out or out.upper().startswith("CLEAN") or "|" not in out:
         return subs, _PLAN_REVIEWED_SOUND
     corrected = _parse_plan(out, subs)
@@ -274,6 +311,9 @@ def _write_reviewed_files(cwd: str, out: str) -> list[str]:
         rel = rel.lstrip("/").replace("..", "")
         if not rel or not content.strip():
             continue
+        from aiforge_core.runtime.parallel_subtasks._protected import is_protected
+        if is_protected(cwd, rel):
+            continue                    # the user said not to edit it
         try:
             from aiforge_core.runtime.syntax_guard import validate_syntax
             ok, _ = validate_syntax(rel, content)

@@ -103,6 +103,10 @@ def _apply_one_patch(cwd: str, rel: str, seg: str, failures: list) -> str | None
     if not _inside(cwd, rel):
         failures.append((rel, "path outside the workspace"))
         return None
+    from .._protected import is_protected, refusal
+    if is_protected(cwd, rel):
+        failures.append((rel, refusal(rel)))
+        return None
     fp = os.path.join(cwd, rel)
     if not os.path.isfile(fp):
         failures.append((rel, "file not found"))
@@ -288,10 +292,13 @@ def _write_whole_files(cwd: str, out: str, written: list) -> None:
     """Fallback: the model may have ignored the patch format and emitted whole
     ``=== path ===`` files — accept those (syntax-checked) so a round isn't
     lost."""
+    from .._protected import is_protected
     from .._runners import _parse_file_blocks
     for rel, content in _parse_file_blocks(out).items():
         rel = rel.lstrip("/").replace("..", "")
         if not rel or not content.strip() or not _inside(cwd, rel):
+            continue
+        if is_protected(cwd, rel):
             continue
         if not _syntax_ok(rel, content):
             continue
@@ -316,8 +323,17 @@ def _rewrite_fix(cwd: str, output: str, hints: list[str], *,
     from aiforge_core.llm.client import complete as _complete
     from .._stream import _USER_MANDATES
 
+    from .._protected import TESTS, rules_for
+    ro = rules_for(cwd).get("patterns") or []
+    if TESTS in ro:
+        audit_tests = False          # the user's tests are the spec here
     prompt = _fix_prompt(cwd, output, hints, audit_tests,
                          _USER_MANDATES.get(cwd) or [])
+    if ro:
+        prompt += ("\n\nREAD-ONLY — the user said not to edit these; a patch "
+                   "to them is rejected, so change the implementation only: "
+                   + ", ".join("every test file" if p == TESTS else p
+                               for p in ro))
     max_tokens = _int_env("AIFORGE_LLM_MAX_TOKENS", 8192, 4096)
     system = _PATCH_SYS
     temperature = None

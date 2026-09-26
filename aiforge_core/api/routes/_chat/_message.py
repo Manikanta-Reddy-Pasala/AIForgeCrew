@@ -342,8 +342,10 @@ def chat_session_steer(session_id: int, body: _SteerBody) -> dict:
     # to slip a stale steer into the next turn (CC3).
     queued = chat_interject.push(session_id, body.content, require_steerable=True)
     # "stop it" / "kill the build" ends the commands this run handed back to
-    # the model now — not only when the agent next calls command_wait.
-    stopped = _stop_commands_for(session_id, body.content)
+    # the model now — not only when the agent next calls command_wait. Only
+    # when the steer reached a run: a refused one (no run, blank, a run that
+    # cannot be steered) must not kill anything behind the user's back.
+    stopped = _stop_commands_for(session_id, body.content) if queued else 0
     if queued:
         out = {"queued": True, "session_id": session_id}
         if stopped:

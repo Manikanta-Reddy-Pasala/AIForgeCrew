@@ -19,9 +19,10 @@ path-shaped subfolder of the workspace.
 """
 from __future__ import annotations
 
+import functools
 import logging
 import os
-import subprocess
+import re
 from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
@@ -42,31 +43,104 @@ class TeamTarget:
     named: str = ""
     missing: list[str] = field(default_factory=list)
     others: list[str] = field(default_factory=list)
+    # The named folder is not inside a git repo: the team needs one, and the
+    # caller must ASK before initialising it (never ``git init`` silently).
+    init_needed: bool = False
+    # Named folders that can never be a build target (``~``, ``/``, ``/tmp``,
+    # ``~/Documents`` …).
+    ignored: list[str] = field(default_factory=list)
 
     @property
     def retargeted(self) -> bool:
         return bool(self.named)
 
 
+# Pasted material is not an instruction: a fenced block, a quoted line, a
+# traceback frame or a shell-prompt line naming /opt/app does not ask for work
+# there.
+_FENCE_RE = re.compile(r"```.*?(?:```|$)", re.S)
+_PASTED_LINE_RE = re.compile(
+    r"^(?:\s*>|\s*\$ |\s{4,}|\t|\s*File \"|\s*at \S|\s*\[?\d{4}-\d\d-\d\d|"
+    r"\s*\d\d:\d\d:\d\d|\s*(?:INFO|DEBUG|WARN(?:ING)?|ERROR|TRACE)\b|\s*Traceback)")
+# System trees are only a target when the user's own phrase directs work
+# there ("in /opt/app", "fix /usr/local/bin/tool"); device/kernel trees never.
+_NEVER_PREFIXES = ("/dev/", "/proc/", "/sys/")
+_SYSTEM_PREFIXES = ("/usr/", "/var/", "/etc/", "/opt/", "/bin/", "/sbin/",
+                    "/lib/", "/private/etc/", "/System/", "/Library/")
+_DIRECTIVE_RE = re.compile(
+    r"\b(?:in|into|inside|under|within|at|fix|edit|update|modify|change|patch|"
+    r"refactor|create|build|write|implement|repair|debug|work\s+(?:in|on))"
+    r"\s+(?:the\s+(?:folder|directory|repo|project|code|file)\s+(?:in|at)\s+)?"
+    r"[`'\"(]?$", re.I)
+
+
+def _instruction_text(text: str) -> str:
+    """The user's own instruction lines: fenced blocks and pasted log /
+    traceback / prompt lines blanked out."""
+    t = _FENCE_RE.sub(" ", str(text or ""))
+    return "\n".join("" if _PASTED_LINE_RE.match(ln) else ln
+                     for ln in t.splitlines())
+
+
 def _raw_paths(text: str) -> list[str]:
     from .scope_guard import _USER_PATH_RE
+    t = _instruction_text(text)
     out = []
-    for raw in _USER_PATH_RE.findall(str(text or "")):
-        p = raw.rstrip(".:!?*_`'\")]")
-        if p and p not in out:
-            out.append(p)
+    for m in _USER_PATH_RE.finditer(t):
+        p = m.group(1).rstrip(".:!?*_`'\")]")
+        if not p or p in out:
+            continue
+        probe = p if p.endswith("/") else p + "/"
+        if probe.startswith(_NEVER_PREFIXES) or p in ("/dev", "/proc", "/sys"):
+            continue
+        if probe.startswith(_SYSTEM_PREFIXES):
+            line_start = t.rfind("\n", 0, m.start()) + 1
+            if not _DIRECTIVE_RE.search(t[line_start:m.start()]):
+                continue                  # mentioned, not asked for
+        out.append(p)
     return out
 
 
+@functools.lru_cache(maxsize=256)
 def _git_root(path: str) -> str:
-    try:
-        r = subprocess.run(["git", "-C", path, "rev-parse", "--show-toplevel"],
-                           capture_output=True, text=True, timeout=10)
-        if r.returncode == 0 and r.stdout.strip():
-            return os.path.realpath(r.stdout.strip())
-    except Exception:  # noqa: BLE001 — git missing / timeout
-        pass
+    """The repo root above ``path`` — found on the filesystem (a ``.git``
+    dir or file), no subprocess per path. A "repo" at ``~`` or above (a
+    dotfiles repo) is not a project root."""
+    cur = path
+    while cur and cur != os.sep:
+        if _broad(cur):
+            return ""
+        if os.path.exists(os.path.join(cur, ".git")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
     return ""
+
+
+_BROAD_HOME = ("Documents", "Desktop", "Downloads", "Library", "Pictures",
+               "Movies", "Music", "Public", "Applications", "Dropbox",
+               "iCloud Drive", "OneDrive", "Google Drive")
+_BROAD_SYSTEM = ("/tmp", "/var", "/private", "/private/tmp", "/private/var",
+                 "/usr", "/usr/local", "/opt", "/etc", "/private/etc", "/srv",
+                 "/mnt", "/media", "/Volumes", "/Users", "/home", "/root",
+                 "/System", "/Library", "/Applications", "/bin", "/sbin",
+                 "/lib", "/var/tmp", "/var/folders")
+
+
+def _broad(path: str) -> bool:
+    """``/``, the home directory or above it, a system directory, or a
+    top-level personal folder (``~/Documents``) — never a build target: the
+    team would commit everything in it."""
+    home = os.path.realpath(os.path.expanduser("~"))
+    p = path.rstrip(os.sep) or os.sep
+    if p in (os.sep, home) or home.startswith(p + os.sep):
+        return True
+    if p in _BROAD_SYSTEM or p in {os.path.realpath(x) for x in _BROAD_SYSTEM
+                                   if os.path.exists(x)}:
+        return True
+    return os.path.dirname(p) == home and os.path.basename(p) in _BROAD_HOME
 
 
 def _looks_like_file(path: str) -> bool:
@@ -97,7 +171,9 @@ def _inside(path: str, root: str) -> bool:
 
 def _root_for(raw: str) -> tuple[str, str, bool]:
     """``(named_dir, work_root, missing)`` for one path the user typed. Empty
-    strings when the path is not a folder reference at all."""
+    strings when the path is not a folder reference at all. ``work_root`` is
+    the git root; empty when the folder is in no repo (the caller asks before
+    initialising one)."""
     try:
         real = os.path.realpath(os.path.expanduser(raw))
     except Exception:  # noqa: BLE001
@@ -117,7 +193,7 @@ def _root_for(raw: str) -> tuple[str, str, bool]:
         # A lone file outside any repo (/tmp/app.log): a thing to read, not a
         # project to build in.
         return "", "", False
-    return named, (git or named), False
+    return named, git, False
 
 
 def user_texts(prompt, history) -> list[str]:
@@ -150,27 +226,43 @@ def resolve_team_target(texts, cwd: str) -> TeamTarget:
         for text in texts or ():
             roots: list[tuple[str, str]] = []
             missing: list[str] = []
+            ignored: list[str] = []
             for raw in _raw_paths(text):
                 named, root, miss = _root_for(raw)
                 if miss:
                     missing.append(raw)
-                elif root and (root, named) not in roots:
+                elif named and _broad(root or named):
+                    ignored.append(raw)
+                elif named and (root, named) not in roots:
                     roots.append((root, named))
             if not roots and not missing:
+                res.ignored = ignored
+                if ignored:
+                    return res
                 continue                       # this turn named no folder
             outside = [(r, n) for r, n in roots
                        if not (base and _inside(n, base))]
+            res.ignored = ignored
             if missing and not outside:
                 res.missing = missing
                 return res
             if outside:
-                res.cwd, res.named = outside[0]
-                res.others = sorted({r for r, _ in outside[1:]} - {res.cwd})
+                root, res.named = outside[0]
+                res.cwd = root or res.named
+                res.init_needed = not root
+                res.others = sorted({r or n for r, n in outside[1:]} - {res.cwd})
                 res.missing = missing
             return res
     except Exception as exc:  # noqa: BLE001 — never break a turn over this
         log.debug("team target resolution skipped: %s", exc)
     return res
+
+
+def init_question(folder: str) -> str:
+    """Asked before a team run initialises git in a folder the user named."""
+    return (f"`{folder}` is not a git repository. The team commits every step "
+            "with git, so running there means `git init` plus a baseline commit "
+            "of what is in it now. Allow that?")
 
 
 def clarify_text(missing) -> str:
@@ -208,22 +300,23 @@ def anchor_subtask_paths(subs: list, cwd: str) -> tuple[list, list]:
                 continue
         elif rel_base and (cand == rel_base or cand.startswith(rel_base + "/")):
             s = dict(s, path=cand[len(rel_base):].lstrip("/") or ".")
-        elif _outside_shaped(cand, base):
+        elif _stripped_home_path(cand, base):
             dropped.append(p)
             continue
         kept.append(s)
     return kept, dropped
 
 
-def _outside_shaped(rel: str, base: str) -> bool:
-    """``Users/me/other/x.py`` — a stripped absolute path to a folder that
-    exists outside ``base`` (its first two segments exist at ``/``)."""
-    parts = [x for x in rel.split("/") if x]
-    if len(parts) < 3:
+def _stripped_home_path(rel: str, base: str) -> bool:
+    """``Users/me/other/x.py`` — the user's home folder with its leading ``/``
+    stripped, pointing outside ``base``. Only that shape is dropped: a real
+    relative path such as ``var/lib/x.py`` or ``etc/config.py`` is a file the
+    project may well contain."""
+    home = os.path.realpath(os.path.expanduser("~")).strip(os.sep)
+    if not home or not (rel == home or rel.startswith(home + "/")):
         return False
-    head = os.sep + os.path.join(parts[0], parts[1])
-    return os.path.isdir(head) and not _inside(os.path.realpath(head), base)
+    return not _inside(os.path.realpath(os.sep + rel), base)
 
 
 __all__ = ["TeamTarget", "anchor_subtask_paths", "clarify_text",
-           "resolve_team_target", "user_texts"]
+           "init_question", "resolve_team_target", "user_texts"]

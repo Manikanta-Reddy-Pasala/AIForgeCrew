@@ -186,6 +186,21 @@ def _events(pc):
     if rctx["done"]:
         _overlap.discard(pc)     # another route answered: free its slot now
         return
+    # A build that was retargeted to the user's repo and then found ONE task
+    # runs the single agent in the same place — the run's own worktree — so
+    # every route of the turn uses one cwd (never the repo for SPEC.md and the
+    # session workspace for the agent).
+    cwd = rctx.get("cwd") or pc.cwd
+    yield from _single_agent_route(pc, _rd, _pp, rctx, cwd, _doc_task,
+                                   _is_build_task, _route_pipeline)
+    if rctx.get("team_ws") is not None:
+        from aiforge_core.runtime import team_workspace as _tw
+        yield from _tw.close(rctx["team_ws"])
+
+
+def _single_agent_route(pc, _rd, _pp, rctx, cwd, _doc_task, _is_build_task,
+                        _route_pipeline):
+    """SIMPLE / PLAN modes (and a single-task build) after routing."""
     # SIMPLE and PLAN modes. A short non-build message skips the enhancer:
     # it is a model call that restates the prompt, and on a 27B that is the
     # pause before the agent speaks. A long message or a build still
@@ -215,7 +230,7 @@ def _events(pc):
             _overlap.discard(pc)  # started beside the classifier, not needed
         _early = None if _skip_enhance else _overlap.claim(pc)
         _enriched = (_overlap.take(_early, pc.session_id) if _early is not None
-                     else _enhance_prompt(_pp, pc.prompt, pc.history, pc.cwd,
+                     else _enhance_prompt(_pp, pc.prompt, pc.history, cwd,
                                           _skip_enhance, pc.session_id))
         if _turn_was_stopped(pc.session_id):
             yield from _stopped_turn()
@@ -229,11 +244,11 @@ def _events(pc):
         try:
             from aiforge_core.runtime.chat_agent._context import (
                 _recall_prefetch)
-            _recall_prefetch.start(_enriched_history, pc.cwd, pc.session_id)
+            _recall_prefetch.start(_enriched_history, cwd, pc.session_id)
         except Exception:  # noqa: BLE001 — recall still runs in the bundle
             pass
     if pc.agent_mode == "plan":
-        yield from _plan_mode_route(_pp, _enriched, _enriched_history, pc.cwd,
+        yield from _plan_mode_route(_pp, _enriched, _enriched_history, cwd,
                                     pc.role, pc.session_id, pc.body.quick)
         return
     # Baseline commit so we can show a Changes diff after the single-agent run
@@ -250,10 +265,10 @@ def _events(pc):
     # `git status` reports THEM, so a no-code Jira/Q&A turn wrongly triggers
     # the build/integration pipeline on stale files and the Changes view
     # shows the previous ticket's edits.
-    _simple_sha, _skip_worktree = _commit_simple_baseline(pc.cwd)
+    _simple_sha, _skip_worktree = _commit_simple_baseline(cwd)
     _single_mode = "analyze" if _doc_task and pc.agent_mode != "plan" else pc.agent_mode
     awaiting_ctx = {"awaiting": False}
-    for _ev in _single_agent_events(_enriched_history, pc.cwd, pc.role,
+    for _ev in _single_agent_events(_enriched_history, cwd, pc.role,
                                     pc.session_id, _single_mode, pc.body.quick,
                                     awaiting_ctx):
         if _ev.get("type") == "done":
@@ -267,10 +282,10 @@ def _events(pc):
     if awaiting_ctx["awaiting"]:
         # No build, but still the Changes card: the next turn's checkpoint
         # already holds these edits, so they would never show anywhere.
-        yield from _post_run_events(pc.prompt, pc.cwd, "plan", _since, changes_only=True)
+        yield from _post_run_events(pc.prompt, cwd, "plan", _since, changes_only=True)
         yield from _capture_bg.events(pc)
         return
-    yield from _post_run_events(pc.prompt, pc.cwd, pc.agent_mode, _since)
+    yield from _post_run_events(pc.prompt, cwd, pc.agent_mode, _since)
     yield from _capture_bg.events(pc)
 
 

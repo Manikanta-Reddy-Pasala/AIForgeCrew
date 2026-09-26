@@ -91,6 +91,8 @@ def _safe_run(run_one, s: dict, cwd: str) -> dict:
 
 
 def _commit_all(cwd: str, message: str) -> None:
+    from ._protected import revert
+    revert(cwd, "HEAD")              # a read-only file never gets committed
     _git(["add", "-A"], cwd)
     _git(["commit", "--no-edit", "-m", message], cwd)
 

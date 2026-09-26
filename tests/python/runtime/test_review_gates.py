@@ -31,7 +31,7 @@ def _clean_env(monkeypatch):
 
 def _reviewer(monkeypatch, reply):
     """Pin what the reviewer model 'says' (a string, or an exception to raise)."""
-    def _fake(prompt, max_tokens):
+    def _fake(prompt, max_tokens, **_kw):
         if isinstance(reply, Exception):
             raise reply
         return reply

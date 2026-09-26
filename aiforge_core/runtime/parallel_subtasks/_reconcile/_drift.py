@@ -145,10 +145,14 @@ def _prune_dead_python_imports(cwd: str) -> list[str]:
         if tree is not None:
             modsyms[_rel_to_mod(rel)] = _module_level_symbols(tree)
 
+    from .._protected import is_protected
     changed: list[str] = []
     for rel, src in pyfiles.items():
         tree = _parsed(src)
-        if tree is None:
+        if tree is None or is_protected(cwd, rel):
+            # A read-only test importing a name the code lacks is the bug
+            # report, not dead code: "Do not edit the tests" run lost its
+            # `from money import fmt` line here and all three tests broke.
             continue
         dead = _dead_imported_names(tree, modsyms)
         if not dead:

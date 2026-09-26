@@ -110,6 +110,11 @@ def _commit_all(wt: str, slug: str) -> bool:
     # Excludes keep .aiforge-worktrees/ + junk out even though this runs in
     # an isolated worktree (touched-path tracking isn't shared across the
     # per-subtask worktrees, so excludes are the right guard here).
+    # A read-only file the worker changed anyway never reaches the merge.
+    from ._protected import revert
+    reverted = revert(wt, "HEAD")
+    if reverted:
+        log.info("subtask %s: put back read-only file(s) %s", slug, reverted)
     _git(["add", "-A", "--", ".", *_EXCLUDE_PATHSPECS], wt)
     st = _git(["status", "--porcelain"], wt)
     if st.stdout.strip():
