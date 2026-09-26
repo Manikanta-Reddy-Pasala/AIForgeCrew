@@ -137,8 +137,17 @@ def _schedule_llm_summary(middle, complete_fn, run_key, gen: int,
                          lambda: _text_complete(complete_fn, role, msgs))
 
 
+def _clean_summary(text: str) -> str:
+    """The model's text, bounded and unable to fake the note's own markers
+    (a later splice or carry would otherwise cut it at the wrong place)."""
+    text = (text or "").replace(_SUM_CLOSE.strip(), "(end)")
+    text = re.sub(r"(?m)^(Earlier (?:asks|outcomes)):", r"\1 -", text)
+    text = text.replace(_CONDENSE_OPEN, "").replace(_CONDENSE_CLOSE, "")
+    return text.strip()[:_SUMMARY_MAX_CHARS]
+
+
 def _with_summary(block: str, summary: str) -> str:
-    summary = summary.strip()[:_SUMMARY_MAX_CHARS]
+    summary = _clean_summary(summary)
     part = _SUM_OPEN + summary + _SUM_CLOSE
     if _SUM_RE.search(block):
         return _SUM_RE.sub(lambda _m: part, block, count=1)
@@ -263,7 +272,7 @@ def _carry_prior_thread(prior: str, user_asks: list, finals: list) -> tuple[list
                       + re.escape(_CONDENSE_CLOSE), prior or "", flags=re.S)
     if not block:
         return user_asks, finals
-    text = block.group(1)
+    text = _SUM_RE.sub("", block.group(1))    # the model summary is not asks
     pa = re.search(r"Earlier asks: (.+)", text)
     po = re.search(r"Earlier outcomes: (.+)", text)
     if pa:
@@ -296,7 +305,7 @@ def _breadcrumb(middle: list, used: str, summary: str, llm_summary: str,
     the model summary may lag this slice, the tool tally never does. The
     asks/outcomes tail lets the next condense carry the thread forward.
     """
-    llm = (f"\n{_SUM_OPEN}{llm_summary.strip()[:_SUMMARY_MAX_CHARS]}{_SUM_CLOSE}"
+    llm = (f"\n{_SUM_OPEN}{_clean_summary(llm_summary)}{_SUM_CLOSE}"
            if llm_summary else "")
     body = ("[earlier conversation auto-condensed to fit the context window "
             f"(condense #{gen}) — {len(middle)} messages omitted. Work done so "

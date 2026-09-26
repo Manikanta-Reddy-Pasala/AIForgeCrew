@@ -40,9 +40,19 @@ def tail_start(convo: list, keep: int, room: int = 0) -> "tuple[int, bool]":
     """
     n = len(convo)
     start = max(1, n - keep)
-    while start > 1 and convo[start].get("role") == "tool":
-        start -= 1
-    if convo[start].get("role") == "user":
+    back, walked = start, 0
+    while back > 1 and convo[back].get("role") == "tool":
+        back -= 1
+        walked += _chars(convo[back])
+    if back != start and room and walked > room:
+        # Keeping the whole tool exchange would not fit: drop it instead and
+        # start after it.
+        fwd = start
+        while fwd < n and convo[fwd].get("role") == "tool":
+            fwd += 1
+        back = fwd if fwd < n else back
+    start = back
+    if convo[start].get("role") in ("user", "system"):
         return start, False
     extra = 0
     for i in range(start - 1, max(0, start - 1 - _BACK_STEPS), -1):
@@ -64,20 +74,11 @@ def opener() -> dict:
 
 
 def within_budget(before: list, after: list, room: int) -> list:
-    """``after`` (``before`` with pointer bodies restored), cut back to what
-    fits in ``room`` extra chars. Per message: a restore that does not fit is
-    dropped, and that message keeps its pointer."""
+    """``after`` (``before`` with pointer bodies restored) when the restored
+    text fits in ``room`` extra chars, else ``before``. All or nothing: a
+    body is restored at its FIRST pointer only, so keeping a later message's
+    restore while reverting the first would leave every pointer dangling."""
     if after is before or len(after) != len(before):
         return after
     grow = sum(_chars(a) - _chars(b) for a, b in zip(after, before))
-    if grow <= room:
-        return after
-    out, used = [], 0
-    for a, b in zip(after, before):
-        d = _chars(a) - _chars(b)
-        if d <= 0 or used + d <= room:
-            out.append(a)
-            used += max(0, d)
-        else:
-            out.append(b)
-    return out
+    return after if grow <= room else before

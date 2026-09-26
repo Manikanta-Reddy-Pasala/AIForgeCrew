@@ -97,8 +97,10 @@ def _stamp(path: str):
     try:
         st = os.stat(path)
     except OSError:
-        return (path, None, None)
-    return (path, st.st_mtime_ns, st.st_size)
+        return (path, None, None, None)
+    # The inode too: an atomic rename changes it even when a coarse mtime
+    # and the size do not.
+    return (path, st.st_mtime_ns, st.st_size, st.st_ino)
 
 
 def _load() -> list[dict]:

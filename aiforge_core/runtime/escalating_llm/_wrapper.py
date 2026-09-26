@@ -98,6 +98,9 @@ async def _throttle_global(role: "str | None" = None) -> None:
         except asyncio.CancelledError:
             stop.set()
             raise
+        if stop.is_set():
+            # Stopped through the run's token while parked: nothing goes out.
+            raise asyncio.CancelledError()
     except Exception:  # noqa: BLE001 — a throttle must never break a call
         # Including the limiter giving up: acquire_global lets the call through
         # rather than raising, and even if that changes, one throttled call
