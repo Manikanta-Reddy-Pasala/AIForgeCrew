@@ -389,7 +389,8 @@ def test_cleaning_a_tree_without_sidecars_is_fine(tmp_path):
 
 
 def test_green_verdict(tmp_path):
-    assert st._build_verdict(True, str(tmp_path)) == "✅ **Built — all tests pass.**"
+    assert st._build_verdict(True, str(tmp_path), "2 passed in 0.1s") \
+        == "✅ **Built — all 2 tests pass.**"
 
 
 def test_failing_tests_are_not_called_a_defect(tmp_path):
@@ -714,5 +715,6 @@ def test_a_partial_build_says_how_many_failed(tmp_path):
     from aiforge_core.runtime.parallel_subtasks import _stream as st2
     out = st2._outcome_verdict({"done": 3, "total": 5}, True, str(tmp_path))
     assert out.startswith("⚠️ **2 of 5 subtasks failed**")
-    assert st2._outcome_verdict({"done": 5, "total": 5}, True, str(tmp_path)) \
-        == "✅ **Built — all tests pass.**"
+    assert st2._outcome_verdict({"done": 5, "total": 5}, True, str(tmp_path),
+                                "5 passed in 1s") \
+        == "✅ **Built — all 5 tests pass.**"

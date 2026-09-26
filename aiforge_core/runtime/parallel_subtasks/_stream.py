@@ -39,6 +39,7 @@ from ._stream_steer import (  # noqa: F401  # re-exported
     _steer_headings,
     _steering_drain,
 )
+from ._test_evidence import executed_tests, failed_tests
 
 
 def _spec_runner(cwd: str, spec_md: str):
@@ -176,15 +177,34 @@ def _detected_stacks(cwd: str) -> list:
         return []
 
 
-def _build_verdict(ok, cwd: str) -> str:
+def _green_verdict(cwd: str, output) -> str:
+    """``ok`` is True: success ONLY with the runner's own count of executed
+    tests above zero. A clean exit with nothing collected, no runner, or no
+    readable summary is "built, NOT tested" — never ✅."""
+    n = executed_tests(output)
+    if n:
+        return f"✅ **Built — all {n} test{'s' if n != 1 else ''} pass.**"
+    if n == 0:
+        return (f"⚠️ **Built — NO tests were run.** The test runner found no "
+                f"tests in `{cwd}`, so nothing checked this change.")
+    return (f"⚠️ **Built — NO tests were run** that the check could count: it "
+            f"finished cleanly in `{cwd}` but printed no test summary, so "
+            "nothing confirms the change works.")
+
+
+def _build_verdict(ok, cwd: str, output: str | None = None) -> str:
     """Honest verdict — ``ok`` is True (green) / False (some tests fail) / None
-    (couldn't run tests here). A False is NOT necessarily a code defect: a local
-    model also writes buggy tests, which the reviewer/audit flags + fixes; say so
-    rather than a bare "failed"."""
+    (couldn't run tests here); ``output`` is the final test run's output (the
+    evidence for a green verdict). A False is NOT necessarily a code defect: a
+    local model also writes buggy tests, which the reviewer/audit flags +
+    fixes; say so rather than a bare "failed"."""
     if ok is True:
-        return "✅ **Built — all tests pass.**"
+        return _green_verdict(cwd, output)
     if ok is False:
-        return ("⚠️ **Built — some tests still fail.** This may not be a code "
+        n = failed_tests(output)
+        head = (f"{n} test{'s' if n != 1 else ''} failed" if n
+                else "some tests still fail")
+        return (f"⚠️ **Built — {head}.** This may not be a code "
                 "defect: a local model sometimes writes incorrect tests, which "
                 "the reviewer flags + fixes where it can. Check the remaining "
                 "failing assertions against the intent before treating them as "
@@ -203,7 +223,7 @@ def _build_verdict(ok, cwd: str) -> str:
             "toolchain is available.")
 
 
-def _outcome_verdict(agg: dict, ok, cwd: str) -> str:
+def _outcome_verdict(agg: dict, ok, cwd: str, output: str | None = None) -> str:
     """The verdict line, honest about subtasks that never landed. A run whose
     every subtask failed (the model endpoint dropped mid-run) reported
     "0/5 subtasks built + merged. ✅ Built — all tests pass": the test runner
@@ -213,7 +233,7 @@ def _outcome_verdict(agg: dict, ok, cwd: str) -> str:
         return ("❌ **Nothing was built** — every subtask failed, so there is no "
                 "code to test. Check that the model endpoint stayed reachable, "
                 "then run the request again.")
-    verdict = _build_verdict(ok, cwd)
+    verdict = _build_verdict(ok, cwd, output)
     if total and done < total:
         return (f"⚠️ **{total - done} of {total} subtasks failed** and are not "
                 f"in the tree. " + verdict.replace("✅ ", ""))
@@ -264,7 +284,7 @@ def _finalize(cwd: str, subs: list, spec_md: str, agg: dict, start_sha: str,
     # pytest); the report's ok can disagree — it uses a separate runner that may
     # miss deps.
     ok = res.get("ok") if "ok" in res else rep.get("ok")
-    build_verdict = _outcome_verdict(agg, ok, cwd)
+    build_verdict = _outcome_verdict(agg, ok, cwd, res.get("output"))
     # Only attach the detailed integration report when it AGREES with the
     # authoritative verdict — otherwise it contradicts (e.g. "✅ all tests pass"
     # followed by "❌ tests failed" from a different runner that missed a dep).
@@ -281,6 +301,27 @@ def _finalize(cwd: str, subs: list, spec_md: str, agg: dict, start_sha: str,
            f"subtasks built + merged. {build_verdict}\n\nSPEC.md holds the "
            "requirements each subtask built against."
            + (integ_md if show_report else "")}
+
+
+def _anchor_paths(subs: list, cwd: str):
+    """Subtask paths relative to ``cwd``: never a path-shaped copy of an
+    absolute folder (see team_target.anchor_subtask_paths)."""
+    from aiforge_core.runtime.team_target import anchor_subtask_paths
+    try:
+        subs, dropped = anchor_subtask_paths(subs, cwd)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("subtask path anchoring skipped: %s", exc)
+        return subs
+    if dropped:
+        yield {"type": "thought", "role": "planner",
+               "text": f"Dropped {len(dropped)} subtask(s) whose file is outside "
+                       f"the workspace `{cwd}`: {', '.join(dropped[:4])}"}
+        if not subs:
+            yield {"type": "message", "text":
+                   "Every planned file lies outside the workspace "
+                   f"`{cwd}`, so nothing was built. Name the project folder "
+                   "in your message and ask again."}
+    return subs
 
 
 def _drain_run(q, session_id, subs: list, cwd: str, cancelled):
@@ -320,6 +361,7 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
     state: dict = {}
     yield from _plan_subtasks(prompt, subtasks, state)
     subs = state.get("subs") or []
+    subs = yield from _anchor_paths(subs, cwd)
     if not subs:
         return
     yield from _write_spec(prompt, subs, cwd, state)
