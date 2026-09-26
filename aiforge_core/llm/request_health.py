@@ -59,8 +59,16 @@ def _env_num(name: str, default: float, low: float) -> float:
 
 
 def crash_resends() -> int:
-    """``AIFORGE_LLM_CRASH_RESENDS`` (default 3, at least 1)."""
-    return int(_env_num("AIFORGE_LLM_CRASH_RESENDS", 3, 1))
+    """``AIFORGE_LLM_CRASH_RESENDS``: crash cycles in a row that STOP the
+    request. Default 0 = never stop, only warn: a server that restarts on
+    its own looks exactly like one this request crashes, and an ambiguous
+    case waits (the user can press Stop)."""
+    return int(_env_num("AIFORGE_LLM_CRASH_RESENDS", 0, 0))
+
+
+def crash_warn_after() -> int:
+    """Crash cycles in a row after which the user is told (default 3)."""
+    return int(_env_num("AIFORGE_LLM_CRASH_WARN", 3, 1))
 
 
 def crash_window_s() -> float:
@@ -83,6 +91,7 @@ def note_answer(url: str) -> None:
     if url:
         with _PREFILL_LOCK:
             _ANSWERED[_ep(url)] = time.monotonic()
+            _TRACKED.discard(_ep(url))   # answered: nothing to watch here
 
 
 def last_answer(url: str) -> "float | None":

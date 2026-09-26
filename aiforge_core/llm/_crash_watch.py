@@ -33,7 +33,10 @@ def judge(waiter, exc: BaseException, sent: "float | None",
     h.crashes += 1
     h.crash_at = time.monotonic()
     request_health.track_crashes(waiter.url, True)
-    if h.crashes < request_health.crash_resends():
+    stop_at = request_health.crash_resends()
+    if not stop_at or h.crashes < stop_at:
+        if h.crashes == request_health.crash_warn_after():
+            waiter._emit("crashing", force=True)
         return
     log.warning("llm.request_crashes url=%s n=%d err=%.200s", waiter.url,
                 h.crashes, exc)

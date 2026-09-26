@@ -319,7 +319,38 @@ def test_a_recent_success_is_reused_not_reprobed():
 
 # ── a request that crashes the server ──────────────────────────────────────
 
-def test_a_request_that_crashes_the_server_is_an_llm_issue():
+def test_by_default_a_crashing_server_is_warned_about_and_waited_for():
+    """A server that restarts on its own looks exactly like one this request
+    crashes, so by default the wait goes on: the user is told once and can
+    press Stop. Here the server stops crashing after five tries."""
+    seen = {"n": 0}
+
+    def handler(body, probe):
+        if probe:
+            return _OK
+        seen["n"] += 1
+        return "crash" if seen["n"] <= 5 else _OK
+
+    events: list = []
+    srv = _Raw(handler, down_s=0.3)
+
+    def call():
+        # the status sink is a contextvar: install it on the worker thread
+        with model_wait.status_sink(events.append):
+            return model_wait.call_with_wait(
+                lambda: _post(srv.url), url=srv.url, model="m")
+    try:
+        box = _bounded(call, 60)
+    finally:
+        srv.stop()
+    assert "exc" not in box, box
+    warned = [e for e in events if e.get("state") == "crashing"]
+    assert len(warned) == 1
+    assert "press Stop" in warned[0]["text"]
+
+
+def test_a_request_that_crashes_the_server_is_an_llm_issue(monkeypatch):
+    monkeypatch.setenv("AIFORGE_LLM_CRASH_RESENDS", "3")
     srv = _Raw(lambda body, probe: _OK if probe else "crash")
     try:
         box = _bounded(lambda: model_wait.call_with_wait(
@@ -346,7 +377,9 @@ def test_the_crash_count_is_a_knob(monkeypatch):
     assert srv.crashes == 3
 
 
-def test_a_server_that_dies_seconds_after_this_request_is_an_llm_issue():
+def test_a_server_that_dies_seconds_after_this_request_is_an_llm_issue(
+        monkeypatch):
+    monkeypatch.setenv("AIFORGE_LLM_CRASH_RESENDS", "3")
     srv = _Raw(lambda body, probe: _OK if probe else ("crash", 1.0),
                down_s=0.4)
     try:
@@ -465,3 +498,27 @@ def test_a_waiter_marks_the_resend_after_recovery(monkeypatch):
     w = model_wait.Waiter("http://m/v1")
     w.wait(ConnectionRefusedError("refused"))
     assert w.health.up_at is not None
+
+
+# ── probe-state edge cases (final review) ──────────────────────────────────
+
+def test_a_route_404_is_not_busy_forever():
+    from aiforge_core.llm import _probe_states as ps
+    assert ps.status_state(404, '{"detail":"Not Found"}') != ps.BUSY
+    assert ps.status_state(404, "model 'x' not found, pulling") == ps.BUSY
+
+
+def test_a_proxy_503_saying_connection_refused_is_busy_not_refused():
+    from aiforge_core.llm import _probe_states as ps
+
+    class ProxyErr(Exception):
+        status_code = 503
+    st = ps.exc_state(ProxyErr("upstream connect error: Connection refused"))
+    assert st == ps.BUSY
+
+
+def test_an_answer_stops_crash_tracking():
+    request_health.track_crashes("http://h:1/v1", True)
+    assert request_health.crashes_tracked()
+    request_health.note_answer("http://h:1/v1")
+    assert not request_health.crashes_tracked()

@@ -208,6 +208,11 @@ class Waiter:
             text = f"⚠ gave up waiting for the model at {url} after {_fmt(down)}"
         elif state == "cancelled":
             text = f"⏹ stopped waiting for the model at {url}"
+        elif state == "crashing":
+            text = (f"⚠ the model server at {url} went down within seconds "
+                    f"of this request {self.health.crashes} times in a row — "
+                    "it may be crashing on it. Still waiting; press Stop to "
+                    "give up.")
         elif state == "resend":
             text = (f"⟳ the model at {url} is up but this request failed "
                     f"({self.health.total()}/{request_health.same_request_fails()})"

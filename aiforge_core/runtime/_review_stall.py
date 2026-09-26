@@ -5,6 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 
+#: Only a failure to CONNECT; "Connection timed out" on a read is a stall.
+_CONNECT_TEXT = ("connecttimeout", "connect timeout", "connecterror",
+                 "failed to establish", "connection refused",
+                 "could not connect", "cannot connect", "failed to connect")
+
+
 def _is_read_timeout(exc: BaseException) -> bool:
     """litellm's / httpx's READ timeout: the per-read bound ran out. A
     CONNECT timeout is not one — the server never had the request (an
@@ -14,7 +20,7 @@ def _is_read_timeout(exc: BaseException) -> bool:
     if names & {"connecttimeout", "connecterror", "connectionerror",
                 "apiconnectionerror"}:
         return False
-    if any("connect" in str(e).lower() for e in links):
+    if any(m in str(e).lower() for e in links for m in _CONNECT_TEXT):
         return False
     try:
         from aiforge_core.llm import endpoint_breaker

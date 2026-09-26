@@ -29,7 +29,7 @@ REFUSED = "refused"
 DOWN = "down"
 
 #: A 4xx with this text is a router / server mid-load: wait for it.
-_BUSY_TEXT = ("not found", "loading", "pulling", "swapping", "unavailable",
+_BUSY_TEXT = ("loading", "pulling", "swapping", "unavailable",
               "starting", "not loaded", "not ready", "no model", "warming")
 #: A 401/403 with this text is really an auth failure.
 _AUTH_TEXT = ("auth", "api key", "api-key", "apikey", "x-api-key", "token",
@@ -58,6 +58,10 @@ def status_state(code: int, text: str = "") -> State:
         return State(BUSY, code)
     if any(m in t for m in _BUSY_TEXT):
         return State(BUSY, code)
+    if "not found" in t and "model" in t:
+        # a router swapping or pulling THIS model; a bare route 404 (no
+        # chat endpoint) is not busy — waiting on it would never end
+        return State(BUSY, code)
     return State(INCONCLUSIVE, code)
 
 
@@ -77,6 +81,11 @@ def exc_state(exc: BaseException) -> State:
     links = _links(exc)
     names = " ".join(type(x).__name__.lower() for x in links)
     text = " ".join(str(x).lower() for x in links)
+    code = getattr(exc, "status_code", None)
+    if isinstance(code, int) and 100 <= code < 600:
+        # an HTTP answer came back (a proxy's 503 whose body says
+        # "connection refused" is the proxy talking, not a refused socket)
+        return status_state(code, text)
     if any(isinstance(x, TimeoutError) for x in links) \
             or "timeout" in names or "timed out" in text:
         return State(BUSY)
@@ -86,9 +95,6 @@ def exc_state(exc: BaseException) -> State:
         return State(REFUSED)
     if "connection" in names or any(isinstance(x, OSError) for x in links):
         return State(DOWN)        # DNS, no route, TLS: never reached it
-    code = getattr(exc, "status_code", None)
-    if isinstance(code, int) and 100 <= code < 600:
-        return status_state(code, text)
     return State(DOWN)
 
 
